@@ -47,7 +47,8 @@ run_committed() {
 main() {
   [ "$#" -eq 0 ] || { fail 'no positional arguments are accepted'; return 2; }
   local root workspace sha short stamp out resume jobs iterations warmups rounds
-  local threshold all_configs sdk_root plan planner analyzer q fmt format_defs build build_log
+  local threshold all_configs profile actual_profile sdk_root plan planner analyzer fitter q fmt format_defs build build_log
+  local dense_count grouped_count
   local binary library target_make round order log rc
   local -a dense_args grouped_args run_args
 
@@ -62,7 +63,12 @@ main() {
   iterations="${PERF_ITERATIONS:-11}"; warmups="${PERF_WARMUPS:-3}"
   rounds="${PERF_ROUNDS:-3}"; threshold="${REGRESSION_THRESHOLD_PCT:-3.0}"
   all_configs="${SWEEP_CONFIGS:-0}"
+  profile="${SWEEP_PROFILE:-layout-ab}"
   case "$resume:$all_configs" in 0:0|0:1|1:0|1:1) ;; *) fail 'RESUME/SWEEP_CONFIGS must be 0 or 1'; return 2;; esac
+  case "$profile" in layout-ab|heuristic) ;; *) fail 'SWEEP_PROFILE must be layout-ab or heuristic'; return 2;; esac
+  if [ "$profile" = heuristic ] && [ "$all_configs" != 1 ]; then
+    fail 'SWEEP_PROFILE=heuristic requires SWEEP_CONFIGS=1'; return 2
+  fi
   case "$jobs:$iterations:$warmups:$rounds" in
     *[!0-9:]*|0:*|*:0:*|*:*:0:*|*:*:*:0) fail 'JOBS/iterations/warmups/rounds must be positive integers'; return 2;;
   esac
@@ -90,16 +96,25 @@ PY
 
   planner="$root/tools/plan_fq_kquant_kpack_perf.py"
   analyzer="$root/tools/analyze_fq_kquant_kpack_perf.py"
+  fitter="$root/tools/fit_fq_kquant_config_heuristic.py"
   plan="$out/plan.json"
   python3 -B "$planner" self-test || return 2
   python3 -B "$analyzer" self-test >/dev/null || return 2
+  python3 -B "$fitter" self-test >/dev/null || return 2
   if [ -s "$plan" ]; then
     [ "$resume" = 1 ] || { fail 'plan exists without RESUME=1'; return 2; }
     python3 -B "$planner" validate --plan "$plan" || return 2
   else
     [ "$resume" != 1 ] || { fail 'resume bundle lost plan.json'; return 2; }
-    python3 -B "$planner" materialize --output "$plan" || return 2
+    python3 -B "$planner" materialize --profile "$profile" --output "$plan" || return 2
   fi
+  actual_profile="$(python3 -B - "$plan" <<'PY'
+import json,sys
+p=json.load(open(sys.argv[1])); print(p.get('profile','layout-ab'))
+PY
+  )" || return 2
+  [ "$actual_profile" = "$profile" ] || {
+    fail "plan profile=$actual_profile differs from requested $profile"; return 2; }
   mapfile -t dense_args < <(python3 -B - "$plan" <<'PY'
 import json,sys
 p=json.load(open(sys.argv[1]))
@@ -113,7 +128,13 @@ for r in p['grouped']:
  print(f"--grouped={r['tokens']},{r['n']},{r['k']},{r['experts']},{r['topk']}")
 PY
   ) || return 2
-  [ "${#dense_args[@]}" -eq 77 ] && [ "${#grouped_args[@]}" -eq 24 ] || {
+  read -r dense_count grouped_count < <(python3 -B - "$plan" <<'PY'
+import json,sys
+p=json.load(open(sys.argv[1])); print(len(p['dense']), len(p['grouped']))
+PY
+  ) || return 2
+  [ "${#dense_args[@]}" -eq "$dense_count" ] && \
+    [ "${#grouped_args[@]}" -eq "$grouped_count" ] || {
     fail 'plan-to-CLI denominator differs'; return 2; }
 
   if [ "$resume" != 1 ]; then
@@ -128,7 +149,8 @@ PY
         "$root/quactlize/include/kquant_kpack_offline.hpp" \
         "$root/quactlize/include/ppu_dense_configs.inc" \
         "$root/quactlize/include/ppu_grouped_configs.inc" \
-        "$planner" "$analyzer" "$root/tools/run_fq_kquant_kpack_perf_box.sh"
+        "$planner" "$analyzer" "$fitter" \
+        "$root/tools/run_fq_kquant_kpack_perf_box.sh"
     } > "$out/source-authority.sha256" || return 2
   else
     [ -s "$out/source-authority.sha256" ] || { fail 'resume source authority is missing'; return 2; }
@@ -200,6 +222,19 @@ PY
   python3 -B "$analyzer" analyze --plan "$plan" --runs "$out/runs" \
     --output "$out/results" --rounds "$rounds" --iterations "$iterations" \
     --threshold-pct "$threshold" --all-configs "$all_configs" || return 2
+  if [ "$all_configs" = 1 ]; then
+    python3 -B "$fitter" fit \
+      --summary "$out/results/summary.json" \
+      --output "$out/results/config-heuristic.json" \
+      --regret-threshold-pct "$threshold" \
+      --max-leaves "${HEURISTIC_MAX_LEAVES:-8}" \
+      --min-leaf-rows "${HEURISTIC_MIN_LEAF_ROWS:-2}" \
+      --min-leaf-families "${HEURISTIC_MIN_LEAF_FAMILIES:-1}" \
+      | tee "$out/results/config-heuristic.log" || return 2
+    sha256sum "$out/results/summary.json" \
+      "$out/results/config-heuristic.json" \
+      > "$out/results/config-heuristic.sha256" || return 2
+  fi
   printf '[fq-kquant-perf] DIAGNOSTIC_COMPLETE sha=%s artifacts=%s\n' "$sha" "$out"
   printf '[fq-kquant-perf] summary=%s\n' "$out/results/summary.tsv"
 }

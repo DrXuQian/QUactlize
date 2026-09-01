@@ -21,6 +21,7 @@ from tools.gguf_internal_shape_inventory import _routing_fixture  # noqa: E402
 
 
 SCHEMA = "quactlize.fq-kquant-kpack-perf-plan.v2"
+HEURISTIC_SCHEMA = "quactlize.fq-kquant-config-training-plan.v1"
 FORMATS = {
     10: {"name": "Q2_K", "packed_format": 2, "low_bits": 2,
          "high_bits": 0, "group_size": 16, "tactic_tile_k": 256,
@@ -40,6 +41,8 @@ FORMATS = {
 }
 DENSE_M = (1, 2, 4, 8, 64, 2048, 4096)
 GROUPED_TOKENS = tuple(N_TOKENS)
+HEURISTIC_DYNAMIC = (1, 2, 4, 8, 16, 32, 64, 128, 256, 512,
+                     1024, 2048, 4096)
 EXPERTS = 256
 TOPK = 8
 ROUTER = "token-topk-hot16x4-wor-sm64-s44-v1"
@@ -82,17 +85,26 @@ def source_families() -> tuple[dict[tuple[int, int], set[str]],
     return dense, grouped
 
 
-def materialize() -> dict[str, Any]:
+def profile_axes(profile: str) -> tuple[str, tuple[int, ...], tuple[int, ...]]:
+    if profile == "layout-ab":
+        return SCHEMA, DENSE_M, GROUPED_TOKENS
+    if profile == "heuristic":
+        return HEURISTIC_SCHEMA, HEURISTIC_DYNAMIC, HEURISTIC_DYNAMIC
+    raise PlanError(f"unknown profile {profile!r}")
+
+
+def materialize(profile: str = "layout-ab") -> dict[str, Any]:
+    schema, dense_m, grouped_tokens = profile_axes(profile)
     dense_families, grouped_families = source_families()
     dense = [
         {"key": f"dense_m{m}_n{n}_k{k}", "m": m, "n": n, "k": k,
          "sources": sorted(sources)}
         for (n, k), sources in sorted(dense_families.items())
-        for m in DENSE_M
+        for m in dense_m
     ]
     grouped = []
     for (n, k), sources in sorted(grouped_families.items()):
-        for tokens in GROUPED_TOKENS:
+        for tokens in grouped_tokens:
             route = _routing_fixture(EXPERTS, TOPK, tokens)
             if route["fixture"] != ROUTER:
                 raise PlanError("routing fixture identity differs")
@@ -104,8 +116,8 @@ def materialize() -> dict[str, Any]:
                 "zero": route["zero"], "max_rows": route["max_rows"],
                 "sources": sorted(sources),
             })
-    return {
-        "schema": SCHEMA,
+    result = {
+        "schema": schema,
         "formats": {str(q): row for q, row in FORMATS.items()},
         "layouts": {
             "xplane": {"layout": 0, "mapping_id": "0x0000000000000000",
@@ -123,8 +135,8 @@ def materialize() -> dict[str, Any]:
             "correctness": "full-output-raw-bit-device-compare",
             "archive_threshold_pct": 3.0,
         },
-        "dense_m": list(DENSE_M),
-        "grouped_tokens": list(GROUPED_TOKENS),
+        "dense_m": list(dense_m),
+        "grouped_tokens": list(grouped_tokens),
         "dense_families": len(dense_families),
         "grouped_families": len(grouped_families),
         "dense": dense,
@@ -136,24 +148,36 @@ def materialize() -> dict[str, Any]:
                 (ROOT / "benchmarks/moe_router_fixture.hpp").read_bytes()).hexdigest(),
         },
     }
+    # Preserve the byte-for-byte v2 layout-A/B plan used by resumable evidence.
+    # The expanded training profile has its own schema and names itself.
+    if profile != "layout-ab":
+        result["profile"] = profile
+    return result
 
 
 def validate(value: dict[str, Any]) -> None:
-    expected = materialize()
+    profile = value.get("profile", "layout-ab")
+    expected = materialize(profile)
     if value != expected:
         raise PlanError("plan differs from the workloads/router authority")
     dense = value["dense"]
     grouped = value["grouped"]
-    if len(dense) != 77 or len(grouped) != 24:
+    dense_count = 77 if profile == "layout-ab" else 143
+    grouped_count = 24 if profile == "layout-ab" else 52
+    if len(dense) != dense_count or len(grouped) != grouped_count:
         raise PlanError(
             f"shape denominator differs: dense={len(dense)} grouped={len(grouped)}")
-    if len({row["key"] for row in dense + grouped}) != 101:
-        raise PlanError("shape keys are not 101 unique identities")
+    if len({row["key"] for row in dense + grouped}) != dense_count + grouped_count:
+        raise PlanError("shape keys are not unique identities")
 
 
 def self_test() -> None:
-    value = materialize()
+    value = materialize("layout-ab")
     validate(value)
+    heuristic = materialize("heuristic")
+    validate(heuristic)
+    if len(heuristic["dense"]) != 143 or len(heuristic["grouped"]) != 52:
+        raise AssertionError("heuristic profile denominator differs")
     plants = []
     broken = copy.deepcopy(value); broken["dense"].pop(); plants.append(broken)
     broken = copy.deepcopy(value); broken["grouped"][0]["experts"] = 255; plants.append(broken)
@@ -167,8 +191,9 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("plan negative stayed green")
-    print("[fq-kquant-perf-plan:self-test] PASS formats=5 dense=77/11-family "
-          "grouped=24/4-family Q4=grouped-only; five plants RED")
+    print("[fq-kquant-perf-plan:self-test] PASS formats=5 layout=77+24 "
+          "heuristic=143+52, 11 dense/4 grouped families, Q4=grouped-only; "
+          "five plants RED")
 
 
 def main() -> int:
@@ -177,6 +202,8 @@ def main() -> int:
     sub.add_parser("self-test")
     emit = sub.add_parser("materialize")
     emit.add_argument("--output", type=pathlib.Path, required=True)
+    emit.add_argument("--profile", choices=("layout-ab", "heuristic"),
+                      default="layout-ab")
     check = sub.add_parser("validate")
     check.add_argument("--plan", type=pathlib.Path, required=True)
     args = parser.parse_args()
@@ -184,8 +211,10 @@ def main() -> int:
         if args.command == "self-test":
             self_test()
         elif args.command == "materialize":
-            value = materialize(); validate(value); atomic_json(args.output, value)
-            print(f"[fq-kquant-perf-plan] PASS dense=77 grouped=24 output={args.output}")
+            value = materialize(args.profile); validate(value); atomic_json(args.output, value)
+            print(f"[fq-kquant-perf-plan] PASS profile={args.profile} "
+                  f"dense={len(value['dense'])} grouped={len(value['grouped'])} "
+                  f"output={args.output}")
         else:
             validate(json.loads(args.plan.read_text()))
             print(f"[fq-kquant-perf-plan] PASS validated={args.plan}")

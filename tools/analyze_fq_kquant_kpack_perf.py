@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 import plan_fq_kquant_kpack_perf as planner  # noqa: E402
 
 
-SCHEMA = "quactlize.fq-kquant-kpack-perf-result.v2"
+SCHEMA = "quactlize.fq-kquant-kpack-perf-result.v3"
 
 
 class AnalysisError(ValueError):
@@ -254,6 +254,12 @@ def analyze(plan_path: pathlib.Path, runs: pathlib.Path, rounds: int,
                     "qtype": qtype, "format": planner.FORMATS[qtype]["name"],
                     "operator": operator, "key": source["key"],
                     "shape": source, "xplane": x, "kpack": k,
+                    # Preserve the complete measured candidate set.  A layout
+                    # A/B needs only each arm's winner, but a later tactic
+                    # selector needs every candidate's regret.  Discarding the
+                    # losing rows here would force it to reparse mutable logs
+                    # and would make minimax M-bucketing impossible.
+                    "candidates": candidates,
                     "delta_pct": delta, "envelopes_overlap": overlap,
                     "verdict": verdict,
                 }
@@ -283,6 +289,9 @@ def analyze(plan_path: pathlib.Path, runs: pathlib.Path, rounds: int,
     return {
         "schema": SCHEMA, "rounds": rounds, "iterations": iterations,
         "threshold_pct": threshold, "all_configs": all_configs,
+        "profile": plan.get("profile", "layout-ab"),
+        "dense_shape_count": len(plan["dense"]),
+        "grouped_shape_count": len(plan["grouped"]),
         "plan": str(plan_path.resolve()), "rows": rows, "boards": boards,
         "archive_verdict": archive,
     }
@@ -318,7 +327,10 @@ def publish(result: dict[str, Any], output: pathlib.Path) -> None:
         print(line); lines.append(line)
     final = ("FQ_KQUANT_LAYOUT_ARCHIVE "
              f"verdict={result['archive_verdict']} formats=5 "
-             f"dense_shapes=77x4 grouped_shapes=24x5 q4_scope=grouped-only "
+             f"profile={result['profile']} "
+             f"dense_shapes={result['dense_shape_count']}x4 "
+             f"grouped_shapes={result['grouped_shape_count']}x5 "
+             f"q4_scope=grouped-only "
              f"threshold_pct={result['threshold_pct']:.6f}")
     print(final); lines.append(final)
     atomic(output / "verdict.log", "\n".join(lines) + "\n")
