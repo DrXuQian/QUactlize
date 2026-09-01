@@ -264,12 +264,9 @@ struct MainloopPolicy {
                 "ArtifactTileK must survive the shared policy/schedule boundary into CollectiveBuilder");
   using CollectiveOp = typename CollectiveBuilderType::CollectiveOp;
 
-#if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
-  static constexpr bool PackedRowA = ArtifactLowFold == 1 && HighBits == 0;
-#else
   static constexpr bool PackedRowA = false;
-#endif
-  using AProvider = std::conditional_t<PackedRowA, PackedRowAProvider, AiuAProvider>;
+  static constexpr int PackedARows = 0;
+  using AProvider = AiuAProvider;
   using BProvider = std::conditional_t<(HighBits > 0), TwoPlaneBProvider<ArtifactLowFold, ArtifactHighFold>,
       std::conditional_t<(ArtifactLowFold > 1), FoldedBProvider<ArtifactLowFold>, OrdinaryBProvider>>;
   using Descriptor = MixedPolicyDescriptor<CollectiveOp, BaseSchedule, KernelSchedule, ElementBInfo,

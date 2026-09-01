@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """Build-graph selector and fail-closed checker for K-pack4 fragment mapping.
 
-The closure contains the four production geometries that L231 and the first
-72-row device screen classify as non-identity, plus two identity controls.  A
-candidate and the exact legacy loader-stride arm are built from the same Git
-tree.  The candidate must make all six rows raw-bit exact; the legacy arm must
-leave only the four predicted rows red with their exact output stripe sizes.
+The closure contains all six geometries covered by L231. The selected product
+mapping must make every row raw-bit exact; the wrong-stride control lives in
+L231 as independent test logic rather than as a product selector.
 """
 
 from __future__ import annotations
@@ -27,21 +25,16 @@ def symbol(tn: int, wn: int) -> str:
 
 
 CASES = (
-    # Two controls whose loader N stride already equals the compute stride.
-    (32, 16, True, 0),
-    (128, 32, True, 0),
-    # The four geometry groups made red by the legacy destination view.
-    (32, 32, False, 512),
-    (64, 32, False, 512),
-    (64, 64, False, 1024),
-    (128, 64, False, 512),
+    (32, 16),
+    (128, 32),
+    (32, 32),
+    (64, 32),
+    (64, 64),
+    (128, 64),
 )
 EXPECTED = {
-    symbol(tn, wn): {
-        "tn": tn, "wn": wn, "legacy_clean": clean,
-        "legacy_raw_bad": raw_bad,
-    }
-    for tn, wn, clean, raw_bad in CASES
+    symbol(tn, wn): {"tn": tn, "wn": wn}
+    for tn, wn in CASES
 }
 
 
@@ -181,7 +174,7 @@ def check_fixture(text: str) -> None:
         raise ClosureError("K-pack4 recovery is not native-byte exact")
 
 
-def load_arm(path: pathlib.Path, *, legacy: bool) -> dict[str, dict[str, str]]:
+def load_arm(path: pathlib.Path) -> dict[str, dict[str, str]]:
     text = path.read_text()
     check_fixture(text)
     shard = one(text, "FQ_SHARD ")
@@ -195,7 +188,7 @@ def load_arm(path: pathlib.Path, *, legacy: bool) -> dict[str, dict[str, str]]:
     for marker in (shard, done):
         if any(marker.get(key) != value for key, value in common.items()):
             raise ClosureError(f"arm marker identity differs: {marker}")
-    if done.get("status") != ("FAIL" if legacy else "PASS"):
+    if done.get("status") != "PASS":
         raise ClosureError(f"arm completion status differs: {done}")
 
     cells = [fields(line, "FQ_TC_CELL ") for line in text.splitlines()
@@ -216,39 +209,25 @@ def load_arm(path: pathlib.Path, *, legacy: bool) -> dict[str, dict[str, str]]:
         }
         if any(cell.get(key) != value for key, value in axes.items()):
             raise ClosureError(f"cell axes differ for {name}: {cell}")
-        should_pass = not legacy or bool(expected["legacy_clean"])
-        if should_pass:
-            required = {
-                "state": "MEASURED", "raw_bad": "0",
-                "failure_step": "NONE", "failure_repeat": "-1",
-            }
-            if any(cell.get(key) != value for key, value in required.items()) or \
-                    float(cell.get("us", "0")) <= 0 or cell.get("samples") == "[]":
-                raise ClosureError(f"clean cell is not measured/raw-bit exact: {cell}")
-        else:
-            required = {
-                "state": "RAW_FP16_MISMATCH",
-                "raw_bad": str(expected["legacy_raw_bad"]),
-                "failure_step": "RAW_FP16_MISMATCH", "failure_repeat": "0",
-                "us": "0.000000000", "samples": "[]",
-            }
-            if any(cell.get(key) != value for key, value in required.items()):
-                raise ClosureError(f"legacy failure signature differs: {cell}")
+        required = {
+            "state": "MEASURED", "raw_bad": "0",
+            "failure_step": "NONE", "failure_repeat": "-1",
+        }
+        if any(cell.get(key) != value for key, value in required.items()) or \
+                float(cell.get("us", "0")) <= 0 or cell.get("samples") == "[]":
+            raise ClosureError(f"cell is not measured/raw-bit exact: {cell}")
     return by_symbol
 
 
-def check(candidate: pathlib.Path, legacy: pathlib.Path,
-          candidate_rc: int, legacy_rc: int) -> None:
-    if candidate_rc != 0 or legacy_rc != 1:
-        raise ClosureError(
-            f"arm return codes differ: candidate={candidate_rc} legacy={legacy_rc}")
-    load_arm(candidate, legacy=False)
-    load_arm(legacy, legacy=True)
+def check(candidate: pathlib.Path, candidate_rc: int) -> None:
+    if candidate_rc != 0:
+        raise ClosureError(f"candidate return code differs: {candidate_rc}")
+    load_arm(candidate)
     print("[fq-kpack4-fragment-check] PASS candidate=6/6-RAW-BIT "
-          "legacy=2/6-clean+4/6-predicted-RED overlap=EXACT-L231")
+          "mapping=FIXED overlap=EXACT-L231")
 
 
-def fixture(*, legacy: bool) -> str:
+def fixture() -> str:
     lines = [
         f"FQ_KPACK4_FIXTURE phase=prepare q=12 shape={SHAPE} version=2 "
         "layout=1 bits=4 high_bits=0 artifact_tile_k=0 transport_tile_k=64 "
@@ -261,20 +240,16 @@ def fixture(*, legacy: bool) -> str:
         "only_split=1 bc_mode=skip bc_batch=native-grid-y-m-lt8 iterations=1 correctness_repeats=8",
     ]
     for name, expected in EXPECTED.items():
-        clean = not legacy or expected["legacy_clean"]
-        tail = ("state=MEASURED us=20.000000000 raw_bad=0 "
-                "failure_step=NONE failure_repeat=-1 samples=[20.0]" if clean else
-                f"state=RAW_FP16_MISMATCH us=0.000000000 raw_bad={expected['legacy_raw_bad']} "
-                "failure_step=RAW_FP16_MISMATCH failure_repeat=0 samples=[]")
         lines.append(
             f"FQ_TC_CELL q=12 A=0 bchunk=0 shape={SHAPE} symbol={name} "
             f"tm=8 tn={expected['tn']} tk=256 wm=8 wn={expected['wn']} stages=2 "
             "provider=standard-aiu S=1 scope=FULL_OUTPUT provider_capacity_rows=0 "
-            f"reducer_untimed=0 partial_bytes=0 {tail}")
+            "reducer_untimed=0 partial_bytes=0 state=MEASURED us=20.000000000 "
+            "raw_bad=0 failure_step=NONE failure_repeat=-1 samples=[20.0]")
     lines.append(
         f"FQ_SHAPE_DONE q=12 A=0 bchunk=0 shape={SHAPE} weight_layout=1 "
         f"weight_mapping_id={MAPPING_ID} typed_rows=6 selected_rows=6 only_split=1 "
-        f"bc_mode=skip bc_batch=native-grid-y-m-lt8 status={'FAIL' if legacy else 'PASS'}")
+        "bc_mode=skip bc_batch=native-grid-y-m-lt8 status=PASS")
     return "\n".join(lines) + "\n"
 
 
@@ -287,7 +262,7 @@ def self_test() -> None:
     rows = []
     for i in range(144):
         if i < len(CASES):
-            tn, wn, _, _ = CASES[i]
+            tn, wn = CASES[i]
             rows.append({**source_row, "symbol": symbol(tn, wn),
                          "tile_n": tn, "warp_n": wn})
         elif i < 72:
@@ -313,28 +288,22 @@ def self_test() -> None:
     with tempfile.TemporaryDirectory(prefix="qz-kpack4-fragment-check-") as temp:
         root = pathlib.Path(temp)
         candidate = root / "candidate.log"
-        legacy = root / "legacy.log"
-        candidate.write_text(fixture(legacy=False))
-        legacy.write_text(fixture(legacy=True))
-        check(candidate, legacy, 0, 1)
+        candidate.write_text(fixture())
+        check(candidate, 0)
         negatives = (
-            (fixture(legacy=False).replace("raw_bad=0", "raw_bad=32", 1),
-             fixture(legacy=True), 0, 1),
-            (fixture(legacy=False),
-             fixture(legacy=True).replace("raw_bad=512", "raw_bad=32", 1), 0, 1),
-            (fixture(legacy=False), fixture(legacy=True), 0, 0),
+            (fixture().replace("raw_bad=0", "raw_bad=32", 1), 0),
+            (fixture(), 1),
         )
-        for cand_text, legacy_text, cand_rc, legacy_rc in negatives:
+        for cand_text, cand_rc in negatives:
             candidate.write_text(cand_text)
-            legacy.write_text(legacy_text)
             try:
-                check(candidate, legacy, cand_rc, legacy_rc)
+                check(candidate, cand_rc)
             except ClosureError:
                 pass
             else:
                 raise AssertionError("fragment closure RED control stayed green")
     print("[fq-kpack4-fragment-check:self-test] PASS exact six-row selection; "
-          "candidate, legacy-stripe and return-code negatives RED")
+          "candidate-value and return-code negatives RED")
 
 
 def main() -> int:
@@ -346,9 +315,7 @@ def main() -> int:
     select_parser.add_argument("--out-dir", type=pathlib.Path, required=True)
     check_parser = sub.add_parser("check")
     check_parser.add_argument("--candidate-log", type=pathlib.Path, required=True)
-    check_parser.add_argument("--legacy-log", type=pathlib.Path, required=True)
     check_parser.add_argument("--candidate-rc", type=int, required=True)
-    check_parser.add_argument("--legacy-rc", type=int, required=True)
     args = parser.parse_args()
     try:
         if args.command == "self-test":
@@ -356,8 +323,7 @@ def main() -> int:
         elif args.command == "select":
             materialize(args.source_dir.resolve(), args.out_dir.resolve())
         else:
-            check(args.candidate_log, args.legacy_log,
-                  args.candidate_rc, args.legacy_rc)
+            check(args.candidate_log, args.candidate_rc)
         return 0
     except (ClosureError, OSError, KeyError, AssertionError) as error:
         print(f"[fq-kpack4-fragment-check] FAIL: {error}", file=sys.stderr)

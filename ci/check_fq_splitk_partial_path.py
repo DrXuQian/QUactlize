@@ -38,6 +38,15 @@ ACTLIZE_COPY = ROOT / "third_party/actlize/include/cute/algorithm/ppu_copy.hpp"
 ACTLIZE_ASYNC = ROOT / "third_party/actlize/include/cute/arch/copy_ppu.hpp"
 ACTLIZE_M8 = ROOT / "third_party/actlize/include/cute/arch/copy_ppu0010_aiu.hpp"
 
+RETIRED_ONE_PLANE_MACROS = (
+    "PPU_MIXED_LEGACY_MODULO_METADATA_PUBLISHERS",
+    "PPU_Q4_KPACK4_LEGACY_LOADER_OUTPUT_LAYOUT",
+    "PPU_PACKED_PAIR",
+    "PPU_SCALE_PAD",
+    "PPU_SCALE_SWIZZLE",
+    "PPU_SCALE_PREFETCH",
+)
+
 
 def ordered(text: str, needles: tuple[str, ...], label: str) -> list[str]:
     errors: list[str] = []
@@ -67,10 +76,10 @@ def check(texts: dict[str, str]) -> list[str]:
 
     if kernel.count("store_splitk_accumulators_direct(") != 1:
         errors.append("fixed Split-K must have one production direct store")
-    if kernel.count("PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE") != 3:
-        errors.append("exactly one guarded legacy shared-output negative is required")
-    if kernel.count("partial_epilogue(partial_shape") != 1:
-        errors.append("legacy negative no longer invokes the historical collective")
+    if "PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE" in kernel:
+        errors.append("retired shared-output negative remains in the product kernel")
+    if "partial_epilogue(partial_shape" in kernel:
+        errors.append("product Split-K still invokes the historical shared partial epilogue")
 
     banned = (
         "PPU_SPLITK_SHARED_PREFIX_POLICY",
@@ -95,6 +104,9 @@ def check(texts: dict[str, str]) -> list[str]:
     for token in banned:
         if token in combined:
             errors.append(f"retired diagnostic seam returned: {token}")
+    for token in RETIRED_ONE_PLANE_MACROS:
+        if token in one_plane:
+            errors.append(f"retired one-plane selector returned: {token}")
 
     owner_contract = (
         "static constexpr bool owns_physical_thread(int thread_idx)",
@@ -128,13 +140,11 @@ def check(texts: dict[str, str]) -> list[str]:
                 f"{label} packed metadata transport order")
             if "if constexpr (kPackedScaleOn && Scale_NumThreads > 32 &&" in operator_body:
                 errors.append(f"{label} restored redundant packed init barrier")
-        if source.count("clear(tSsS)") != 1 or not re.search(
-                r"if constexpr\s*\(!kPackedScaleOn \|\| "
-                r"kLegacyModuloMetadataPublishers\)\s*\{\s*"
-                r"if\s*\(scale_copy_owner\)\s*clear\(tSsS\);",
-                source):
-            errors.append(
-                f"{label} ordinary/legacy fp16 initialization is not isolated from packed production")
+        clear_pattern = (
+            r"if constexpr\s*\(!kPackedScaleOn\)\s*\{\s*"
+            r"if\s*\(scale_copy_owner\)\s*clear\(tSsS\);")
+        if source.count("clear(tSsS)") != 1 or not re.search(clear_pattern, source):
+            errors.append(f"{label} fp16 initialization is not isolated from packed production")
         if source.count("PACKED METADATA TOTAL-OVERWRITE CONTRACT") != 1:
             errors.append(f"{label} packed total-overwrite contract differs")
         tail = source.split("PACKED METADATA TOTAL-OVERWRITE CONTRACT", 1)[-1]
@@ -159,9 +169,9 @@ def check(texts: dict[str, str]) -> list[str]:
             errors.append(f"{label} partition helper lost distinct logical copy slots")
         if source.count("if (packed_copy_owner)") != 2:
             errors.append(f"{label} packed prologue/steady-state copies are not both owner-guarded")
-        if source.count("PPU_MIXED_LEGACY_MODULO_METADATA_PUBLISHERS") != 2 or \
-                source.count("kLegacyModuloMetadataPublishers") != 5:
-            errors.append(f"{label} exact legacy modulo-publisher negative differs")
+        if "PPU_MIXED_LEGACY_MODULO_METADATA_PUBLISHERS" in source or \
+                "kLegacyModuloMetadataPublishers" in source:
+            errors.append(f"{label} retired modulo-publisher negative remains")
 
     required_direct = (
         "tiled_mma.get_thread_slice(thread_idx)",
@@ -261,7 +271,7 @@ def self_test(texts: dict[str, str]) -> None:
         ("one_plane", "// Start async loads for all pipes but the last",
          "if constexpr (kPackedScaleOn && Scale_NumThreads > 32 && true) {\n"
          "      __syncthreads();\n    }\n\n    // Start async loads for all pipes but the last"),
-        ("two_plane", "if constexpr (!kPackedScaleOn || kLegacyModuloMetadataPublishers) {",
+        ("two_plane", "if constexpr (!kPackedScaleOn) {",
          "if constexpr (true) {"),
         ("one_plane", "sSZw(n, cute::Int<G>{}, stage) = uint32_t(0);",
          "/* planted missing fused-tail store */"),
@@ -275,6 +285,11 @@ def self_test(texts: dict[str, str]) -> None:
         planted[key] = planted[key].replace(old, new, 1)
         if not check(planted):
             raise AssertionError(f"negative plant stayed green: {key}/{old}")
+    for token in RETIRED_ONE_PLANE_MACROS:
+        planted = dict(texts)
+        planted["one_plane"] = token + "\n" + planted["one_plane"]
+        if not check(planted):
+            raise AssertionError(f"retired one-plane macro plant stayed green: {token}")
 
 
 def main() -> int:
@@ -303,9 +318,9 @@ def main() -> int:
     except (AssertionError, OSError, ValueError) as error:
         print(f"[fq-splitk-partial-path] FAIL: {error}", file=sys.stderr)
         return 2
-    print("[fq-splitk-partial-path] PASS direct ownership, legacy negative, "
+    print("[fq-splitk-partial-path] PASS direct ownership, fixed metadata ownership, "
           "mainloop/epilogue synchronization, distinct S1 type, "
-          "ordered-close timing, packed decode-owner total overwrite, and thirteen negative plants")
+          "ordered-close timing, packed decode-owner total overwrite, and nineteen negative plants")
     return 0
 
 

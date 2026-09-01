@@ -362,8 +362,7 @@ void launch(uint8_t const* low,uint8_t const* high,uint8_t const* units,
   // consumes the same resident bytes as prefill; only the reader/work
   // ownership changes.  PPU, grouped mode, other formats/arrangements and K
   // tails retain the generic route until their own device evidence exists.
-  if constexpr (T == KType::Q4_K && ArtifactTileK == 64 && !Grouped &&
-                vecdot::kVecdotFp16Activation) {
+  if constexpr (T == KType::Q4_K && ArtifactTileK == 64 && !Grouped) {
     if (::gguf_scale::bc_q4_gemv::launch_default(
             reinterpret_cast<half const*>(x), low, units,
             out, unsigned(max_rows), unsigned(n), unsigned(bpr * 256), stream))

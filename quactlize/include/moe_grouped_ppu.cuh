@@ -192,51 +192,9 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
   static_assert(!RequireUniversalFallback ||
                     GemmKernel::SharedStorageSize <= ppu_tactics::kBlockSmemBytes,
                 "the compiled grouped default must fit one ppu001 block for every admitted shape");
-#if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
-  static_assert(!RequireUniversalFallback,
-                "PPU_A_PACK=R is bounded to Mmax<=R and cannot be the universal grouped fallback");
-#endif
+  static_assert(!RequireUniversalFallback || MainloopPolicy::PackedARows == 0,
+                "a bounded packed-A provider cannot be the universal grouped fallback");
   if constexpr (GemmKernel::SharedStorageSize > ppu_tactics::kBlockSmemBytes) return false;
-  // PPU_FORCE_INSTANTIATE: odr-use the kernel's operator() so the WHOLE collective -- mainloop included -- is
-  // instantiated by the front end. Without this the local nvcc gate parses the collective but never instantiates it,
-  // so every template-DEPENDENT error in the mainloop is invisible: a deliberate undefined symbol there is caught
-  // (non-dependent, checked at parse time) while a wrong copy coordinate is not. Two static errors reached the box
-  // behind exactly that gap. Costs nothing in a real build (the kernel is instantiated anyway) and is opt-in.
-#if defined(PPU_FORCE_INSTANTIATE) && (PPU_FORCE_INSTANTIATE != 0)
-  // Taking the address of the __global__ device_kernel<GemmKernel> odr-uses it, which instantiates op(params, smem)
-  // and with it the ENTIRE mainloop. (&GemmKernel::operator() does not: it is CUTLASS_DEVICE, and naming it from host
-  // code instantiates nothing.) device_kernel is what cutlass::kernel_launch would reference anyway.
-  { [[maybe_unused]] void const* _probe = (void const*) cutlass::device_kernel<GemmKernel>; }
-#endif
-
-  // MOEG_SMEM=1: report the block's shared-memory budget READ OFF THE TYPES, not recomputed from a formula.
-  // Two reasons this exists. (1) Which A path a binary was built with is otherwise invisible in a log -- the perf
-  // tag's abcast marker reads an env var, not the macro, so both builds print identically and a timing pair cannot
-  // be attributed. (2) "A's smem shrank" is exactly the kind of claim I twice asserted from arithmetic and had the
-  // hardware refute; SharedStorageSize and cosize_v<SmemLayoutA> are the objects the compiler actually sized.
-  if (std::getenv("MOEG_SMEM")) {
-    static bool once = false;
-    if (!once) {
-      once = true;
-      // cosize_v<SmemLayoutA> is the LAYOUT's extent. It equals the allocation only while SharedStorage actually
-      // has an A member; a variant that dropped the member but kept the layout printed 'A = 16384 B, 160%' of a
-      // 10240 B block.
-      // TM8 exposes a logical eight-row MMA view, but the AIU writes a physical 16-row cube.  Report the
-      // allocation-bearing view, not the smaller logical view, or MOEG_SMEM silently undercharges A by 2x.
-      constexpr int a_elems = int(cute::cosize_v<typename CollectiveMainloop::SmemLayoutAPhysical>);
-      constexpr int a_bytes = a_elems * int(sizeof(ElementA));
-      std::printf("[moe_grouped] smem/block = %d B  (A = %d B = %d elems, %.0f%%)  A path: %s\n",
-                  int(GemmKernel::SharedStorageSize), a_bytes, a_elems,
-                  100.0 * a_bytes / double(GemmKernel::SharedStorageSize),
-#if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
-                  "A in smem, PACKED cubes, cp.async first R rows + swzl read"
-#else
-                  "A in smem via AIU + swzl"
-#endif
-      );
-      std::printf("[moe_grouped]   blocks/CU at 256 KB = %d\n", 262144 / int(GemmKernel::SharedStorageSize));
-    }
-  }
 
   using StrideA = typename GemmKernel::StrideA;  using StrideB = typename GemmKernel::StrideB;
   using StrideC = typename CollectiveEpilogue::StrideC;  using StrideD = typename CollectiveEpilogue::StrideD;
@@ -258,18 +216,14 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
   // STRIDES FROM k_full, SHAPES FROM k -- see the k_full parameter. Getting this backwards makes every
   // slice after the first walk gmem with a shrunken row pitch and read the wrong rows entirely.
   StrideA sA = cutlass::make_cute_packed_stride(StrideA{}, cute::make_shape(m, k_full, L));
-  // PPU_A_PACK=R: A's cubes overlap in smem and only rows [0,R) of each carry data, so later rows read a
-  // neighbour's bytes. Sound only where those later accumulator rows are discarded, i.e. Mmax <= R.
-#if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
-  if (m > PPU_A_PACK) {
-    if constexpr (!QueryOnly) {
-      std::printf("[moe_grouped] PPU_A_PACK=%d requires Mmax <= %d, got %d\n",
-                  int(PPU_A_PACK), int(PPU_A_PACK), m);
-      ++moeg_fail_count();
+  if constexpr (MainloopPolicy::PackedARows > 0) {
+    static_assert(MainloopPolicy::PackedARows == 1,
+                  "the first typed packed-A provider remains the exact M==1 path");
+    if (m != MainloopPolicy::PackedARows) {
+      if constexpr (!QueryOnly) ++moeg_fail_count();
+      return false;
     }
-    return false;
   }
-#endif
   // All remaining work constructs strides/arguments or touches the runtime. The checks above are the only
   // M-dependent properties of the compiled type; N/K/operator-domain checks live in the exported query beside the
   // corresponding ABI guards. Thus this path is host-only and does not need valid device pointers or a PPU context.
@@ -346,16 +300,6 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
       ++moeg_fail_count();
       return false;
     }
-    if (char const* value = std::getenv("MOEG_PERSISTENT_GRID_CTAS")) {
-      long const parsed = std::strtol(value, nullptr, 10);
-      if (parsed <= 0 || uint64_t(parsed) > args.logical_work_upper) {
-        std::printf("[moe_grouped persistent] grid override %ld outside [1,%llu]\n",
-                    parsed, static_cast<unsigned long long>(args.logical_work_upper));
-        ++moeg_fail_count();
-        return false;
-      }
-      args.grid_ctas_override = uint32_t(parsed);
-    }
     args.splitk = 1;
   } else {
     args.group_M = group_M;
@@ -371,18 +315,14 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
     }
     args.splitk = splitk;
     // O(1) decode hint: if every expert has the SAME #m-tiles (ceil(M_e/TM)), the kernel uses blockIdx.z (no scan).
-    // MOEG_FORCE3D (diagnostic): force the 3D Mmax grid + blockIdx.z decode even for ragged (small experts idle)
-    // to isolate whether the ragged gap is the O(L) scan (jumps -> yes) or load-imbalance (unchanged -> no).
     if (group_shapes_host != nullptr) {
       int const mt0 = int(cute::ceil_div(int(cute::get<0>(group_shapes_host[0])), TMv));
-      int mt_max = mt0; bool uni = true;
+      bool uni = true;
       for (int e = 1; e < L; ++e) {
         int const me = int(cute::ceil_div(int(cute::get<0>(group_shapes_host[e])), TMv));
-        if (me > mt_max) mt_max = me;
         if (me != mt0) uni = false;
       }
-      bool const force3d = std::getenv("MOEG_FORCE3D") != nullptr;
-      args.mtiles_uniform = uni ? mt0 : (force3d ? mt_max : 0);
+      args.mtiles_uniform = uni ? mt0 : 0;
     } else {
       // A device-only caller cannot read the ragged tile sum without synchronising. Use the caller's M upper
       // bound for a conservative 3D grid; the kernel already rejects tiles beyond each device-resident M_e.

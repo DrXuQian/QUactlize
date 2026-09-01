@@ -230,21 +230,6 @@ bool prepare_selected(
     cutlass::half_t const* scales, cutlass::half_t* out,
     int m, int n, int k, char* workspace, std::size_t workspace_bytes,
     hggcStream_t stream) {
-#if defined(QUACTLIZE_W4_SPLITK_SEVER_PREPARE_EDGE)
-  (void)selection;
-  (void)prepared;
-  (void)act;
-  (void)weight_xplane;
-  (void)scales;
-  (void)out;
-  (void)m;
-  (void)n;
-  (void)k;
-  (void)workspace;
-  (void)workspace_bytes;
-  (void)stream;
-  return false;
-#else
   return selector::dispatch_selected(
       selection,
       [&]() {
@@ -257,7 +242,6 @@ bool prepare_selected(
             act, weight_xplane, scales, nullptr, out, m, n, k, 128,
             selected_s, workspace, workspace_bytes, stream);
       });
-#endif
 }
 
 }  // namespace ppu_dense_w4_splitk

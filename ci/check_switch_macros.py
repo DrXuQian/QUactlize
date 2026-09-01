@@ -4,13 +4,10 @@
     python3 ci/check_switch_macros.py            verdict
     python3 ci/check_switch_macros.py --list     the whole inventory, live ones included
 
-WHAT THIS COST, and it is not hypothetical. Three macros in this tree mean "shrink A's 15/16 padding at small M":
-PPU_A_PACK (a binary-wide #if that WINS over everything downstream; the only survivor), PPU_A_CPASYNC (a policy default that an
-explicit per-row value silently overrides), and the ACR column of the tactic table. docs/CHECKPOINT.md lists the
-first two on one line as if they were one thing. On 2026-08-06 a measurement was filed as "compact A at capacity 1
-is 45% slower" and could not be attributed afterwards, because the run's A provider was never witnessed and two of
-the three spellings were reachable only by remembering which was passed. One idea, three spellings, and the cost
-landed on a number in BACKTEST rather than on a compile.
+WHAT THIS COST, and it is not hypothetical. A provider once had three independent spellings: a binary-wide macro,
+a policy default and a tactic-table field. A performance result could not be attributed afterwards because the
+selected provider was not part of the compiled type identity. That global A-provider switch is now retired; this
+inventory remains useful for the build switches that still exist, but reachability alone is never product admission.
 
 WHAT IT CHECKS, AND WHAT IT DOES NOT. It reports every owned switch with no RECORDED way in. It does NOT report
 unreachable switches, and the first version of this file said it did -- which was wrong, and wrong in the
@@ -35,15 +32,12 @@ Two ways count as recorded:
 A switch with neither is reported. That is NOT automatically "delete it": the initially exempted switches split
 into three kinds, and the distinction is the useful part --
 
-  * a FEATURE with no recorded invocation. PPU_MAXREG and QUACTLIZE_DENSE_ONLY were in this bucket; their owning
-    files now carry the exact `PPU_DEFS=... TARGET=... ./build.sh` command, which is the whole reachability fix.
-  * a RECORDED DIAGNOSTIC. PPU_PACKED_PAIR=0 is the surviving example: it has a build command and a historical
-    rowC result, so it needs no ALLOWED exemption. The earlyclobber experiment was already run and retired; the
-    guessed arithmetic `.noftz` switch was deleted after independent end-to-end evidence excluded its FTZ theory.
-  * a TOOL. PPU_B_CHUNK_BISECT exists BECAUSE PPU_B_CHUNK=2 once shipped a debug mode inside the flag that turns
-    the feature on, so deleting it invites back the mistake that separating it fixed. Its owning collective now
-    records BOTH required defines and an input that can see scale-register errors. GEMV_GATE_FAST was the
-    counter-example: it shortened a run whose own comment required the full matrix, so it was deleted.
+  * a FEATURE with no recorded invocation. A real build axis needs an exact
+    `PPU_DEFS=... TARGET=... ./build.sh` route.
+  * a RECORDED DIAGNOSTIC. Historical diagnosis belongs in a test or document,
+    not as a dormant product branch.
+  * a TOOL. Tool-only controls belong to the tool that owns their denominator;
+    they must not share values with a product feature switch.
 
 So this prints the inventory and fails; a human decides which kind each is.
 

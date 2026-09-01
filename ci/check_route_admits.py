@@ -15,12 +15,12 @@ must pass, and a control that stops failing fails the gate louder than the subje
     a subject that unexpectedly fails  -> the route rejects a geometry we thought it took   (a finding)
     a control that unexpectedly passes -> THE PROBE IS BLIND, and every green above it is void
 
-REQUIRES nvcc. Compiled with syntax_check.sh's flag set, including -DPPU_FORCE_INSTANTIATE=1.
+REQUIRES nvcc. The probe itself odr-uses the selected kernel types; product headers do not expose a gate-only
+instantiation switch.
 
-A CORRECTION THAT COST TWO ROUNDS AND IS THE REASON THE THIRD CONTROL EXISTS. This file first claimed that
-without PPU_FORCE_INSTANTIATE the controls stop firing, which is how syntax_check.sh describes its own flag set.
-Measured, it is FALSE for this probe: the counts are identical either way, because probe_shapes() reads
-DenseKernel::SharedStorageSize and that already drags the collective in. So the first two controls only prove
+A CORRECTION THAT COST TWO ROUNDS AND IS THE REASON THE THIRD CONTROL EXISTS. The counts are identical with the
+ordinary compile because probe_shapes() reads DenseKernel::SharedStorageSize and that already drags the
+collective in. So the first two controls only prove
 TYPE-LEVEL errors are visible -- and the failures we care about (the metadata assert(false) sites that became
 static_asserts) live in DEVICE FUNCTION BODIES, which type completeness does not reach.
 
@@ -73,7 +73,7 @@ CASES = [
 
 def compile_case(defs, extra_flags, include_root=None, quactlize_root=None):
     cmd = ["nvcc", "-std=c++17", "-arch=sm_80", "--expt-relaxed-constexpr",
-           "-D__HGGCCC__", "-DPPU_FORCE_INSTANTIATE=1", *defs, *extra_flags,
+           "-D__HGGCCC__", *defs, *extra_flags,
            "-I" + str(STUB), "-I" + str(include_root or (ACT / "include")),
            "-I" + str(ACT / "tools" / "util" / "include"),
            "-I" + str(ROOT / "tests"), "-I" + str(ROOT / "benchmarks"),
@@ -177,8 +177,7 @@ def main() -> int:
         print("               verdict above is void, including the ones that look green:")
         for b in blind:
             print(f"                 {b}")
-        print("               Check -DPPU_FORCE_INSTANTIATE=1 reaches the probe: without it the mainloop is")
-        print("               parsed and never instantiated, and template-dependent errors disappear.")
+        print("               The planted device-body error was not instantiated; inspect the probe's type odr-use.")
         return 1
     if wrong:
         print("\n[route-admits] FAIL -- a route rejected a geometry it was expected to admit:")

@@ -5,7 +5,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 out="${QUACTLIZE_L148_OUT:-/tmp/quactlize_l148_dense_shipping_tm8}"
 mkdir -p "${out}"
 src="${repo}/dev/fold_derivation/l148_dense_shipping_tm8_compiled.cu"
-flags=(-std=c++17 -arch=sm_80 -w --expt-relaxed-constexpr -D__HGGCCC__ -DPPU_FORCE_INSTANTIATE=1
+flags=(-std=c++17 -arch=sm_80 -w --expt-relaxed-constexpr -D__HGGCCC__
        -I "${repo}/dev/fold_derivation/stub_inc"
        -I "${repo}/third_party/actlize/include"
        -I "${repo}/third_party/actlize/tools/util/include"

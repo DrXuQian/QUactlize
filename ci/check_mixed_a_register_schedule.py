@@ -49,7 +49,6 @@ def audit(detail: str, collectives: tuple[str, ...]) -> list[str]:
         "BBlock == BCopyBlocks - 1",
         "prepare_mixed_a_for_b",
         "finish_mixed_a_after_consume",
-        "PPU_MIXED_LEGACY_B_INDEXED_A_COPY",
     ):
         if needle not in d:
             bad.append(f"shared schedule lost {needle}")

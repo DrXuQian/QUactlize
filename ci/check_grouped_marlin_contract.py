@@ -90,7 +90,7 @@ def compile_types() -> tuple[int, str]:
         out = Path(td) / "l135.cu.cpp"
         cmd = [
             "nvcc", "-std=c++17", "-arch=sm_80", "--expt-relaxed-constexpr",
-            "-D__HGGCCC__", "-DPPU_FORCE_INSTANTIATE=1",
+            "-D__HGGCCC__",
             "-Xcudafe", "--error_limit=100000",
             f"-I{ROOT / 'dev/fold_derivation/stub_inc'}",
             f"-I{ROOT / 'third_party/actlize/include'}",

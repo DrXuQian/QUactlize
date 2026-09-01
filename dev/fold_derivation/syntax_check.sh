@@ -86,8 +86,8 @@ for f in $FILES; do
   # template-DEPENDENT error in the mainloop is invisible and only parse-time typos are caught:
   #   -arch=sm_80              without a real arch, __hfma2 is undeclared -> an error -> EDG stops instantiating
   #   --expt-relaxed-constexpr nvcc-only restriction on constexpr host fns in device code; clang/hgcc allow it
-  #   -DPPU_FORCE_INSTANTIATE  odr-uses device_kernel<GemmKernel>, which pulls in the whole mainloop
-  # Verified: with these, a static_assert planted in the 2-plane mainloop fires 32 times; without them, 0.
+  # The source under test must itself odr-use its selected kernel. Product
+  # headers do not expose a gate-only instantiation switch.
   #
   # THREE ERROR FORMS, READ OFF THE ACTUAL OUTPUT. The pattern was `: error`, so a source that could not even find its
 # headers was reported CLEAN -- which happened to test_lowbit_moe_bench.cu the moment it started including a GENERATED
@@ -115,7 +115,7 @@ for f in $FILES; do
   # removes the cute:: noise at its source (5957 -> 164 errors) but the 164 that remain are actlize's inline-asm
   # constraint checks, which would all have to enter the baselines, AND it takes the rows that currently compile
   # to a full artifact from 6 to 1. Removing noise is not worth acquiring a vendor error floor.
-  nvcc -std=c++17 -arch=sm_80 --expt-relaxed-constexpr -D__HGGCCC__ -DPPU_FORCE_INSTANTIATE=1 $EXTRA_DEFS $_gen_flag \
+  nvcc -std=c++17 -arch=sm_80 --expt-relaxed-constexpr -D__HGGCCC__ $EXTRA_DEFS $_gen_flag \
         -Xcudafe --error_limit=100000 \
         -I"$STUB" -I"$ACT/include" -I"$ACT/tools/util/include" -I"$SRC" -I"$ROOT/benchmarks" -I"$ROOT/quactlize/include" -I"$ROOT/dev" \
         -cuda -o "$_out" -x cu "$f" -Wno-deprecated-gpu-targets >"$_raw" 2>&1

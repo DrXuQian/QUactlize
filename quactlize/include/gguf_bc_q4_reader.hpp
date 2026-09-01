@@ -200,13 +200,7 @@ struct Q4PairConstants {
   static constexpr int kBitPosition = (Pair & 1) * 4;
   static constexpr uint32_t kMask16 = uint32_t(0x000fu << kBitPosition);
   static constexpr uint32_t kMask = kMask16 | (kMask16 << 16);
-#if defined(Q4K_BC_PLANT_WRONG_MAGIC)
-  // Negative-control-only: corrupt exactly one exponent bit in the high half.
-  // The shipping build must never define this macro.
-  static constexpr uint32_t kMagic = 0x60006400u;
-#else
   static constexpr uint32_t kMagic = 0x64006400u; // half2(1024, 1024)
-#endif
   static constexpr uint32_t kMul16 = uint32_t((15 - kBitPosition) << 10);
   static constexpr uint32_t kMul = kMul16 | (kMul16 << 16);
   // Convert unsigned Q4: (1024 + q*2^bpos) * 2^-bpos - 2^(10-bpos) = q.
@@ -216,9 +210,7 @@ struct Q4PairConstants {
 
 static_assert(Q4PairConstants<0>::kMask == 0x000f000fu &&
               Q4PairConstants<1>::kMask == 0x00f000f0u &&
-#if !defined(Q4K_BC_PLANT_WRONG_MAGIC)
               Q4PairConstants<0>::kMagic == 0x64006400u &&
-#endif
               Q4PairConstants<0>::kMul == 0x3c003c00u &&
               Q4PairConstants<1>::kMul == 0x2c002c00u &&
               Q4PairConstants<0>::kAdd == 0xe400e400u &&

@@ -8,9 +8,8 @@
 // compares that function against the scalar group_of_words over 32768 REAL Q4_K groups and reports 0 bad -- but it
 // compiles with nvcc, where the guard picks the SCALAR FALLBACK. So l96 proves the arithmetic and proves NOTHING about
 // the two instructions the device actually executes. An intermittent rowC failure originally motivated this probe,
-// but it was never assigned to these instructions: PPU_PACKED_PAIR=0 also changes pressure and scheduling, and later
-// rowC runs passed with both output constraints. Keep this as direct instruction/guard/layout coverage, not as a
-// root-cause claim.
+// but later runs passed with both output constraints. Keep this as direct instruction/guard/layout coverage, not as
+// a root-cause claim or a product implementation switch.
 //
 // This harness is deliberately NOT a GEMM. It runs one tiny kernel, no shared memory, no cp.async, no mma, so a
 // failure here cannot be confused with tile or fragment plumbing. Four sections, narrowing:

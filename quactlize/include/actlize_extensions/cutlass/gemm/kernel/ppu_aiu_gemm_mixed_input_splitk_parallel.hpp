@@ -20,12 +20,10 @@
  * completion policy may append a post-store actual-last protocol without
  * changing the mainloop or partial ABI.
  *
- * CollectivePartialEpilogue still supplies the pointer/stride Params ABI:
+ * CollectivePartialEpilogue supplies the pointer/stride Params ABI:
  *   - ElementD is exactly the mainloop accumulator type (FP32 in shipping kernels),
  *   - Arguments/Params and to_underlying_arguments(problem_shape, args, workspace),
  *   - to_underlying_arguments(problem_shape, args, workspace).
- * The historical shared R2S/S2R collective call remains available only under
- * PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE for hash-bound negative controls.
  * Its D tensor must be compact [M,N,S], with stride-S == M*N.  The kernel deliberately does not
  * allocate that buffer implicitly; the two-launch device wrapper owns its lifetime and size.
  **************************************************************************************************/
@@ -381,20 +379,6 @@ class GemmUniversalMixedInputSplitKParallel {
     int const plane = int(work.peer_idx);
     auto const partial_shape = make_shape(M, N, K, int(params.partition.splits));
     auto const partial_coord = make_coord(m_coord, n_coord, _, Int<0>{});
-#if defined(PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE) && \
-    (PPU_SPLITK_LEGACY_SHARED_PARTIAL_EPILOGUE != 0)
-    // Exact historical negative for the PPU raw-bit closure.  The generic
-    // output epilogue redistributes FP32 accumulators through shared memory.
-    // That is unnecessary for a same-type partial workspace; in this Split-K
-    // kernel context the additional shared-store lowering/footprint is the
-    // device-confirmed corruption trigger.  Barrier variants did not repair it.
-    CollectivePartialEpilogue partial_epilogue{
-        params.partial_epilogue, plane};
-    partial_epilogue(partial_shape, blk_shape, partial_coord, accumulators,
-                     tiled_mma, residue_mnk, thread_idx,
-                     reinterpret_cast<char*>(
-                         &shared_storage.tensors.partial_epilogue));
-#else
     // The mainloop accumulator is already partitioned by the production MMA's
     // exact C ownership.  Store that FP32 fragment directly to the split-major
     // FP32 workspace: no conversion, no shared redistribution, no added fence
@@ -402,7 +386,6 @@ class GemmUniversalMixedInputSplitKParallel {
     detail::store_splitk_accumulators_direct(
         params.partial_epilogue, partial_shape, blk_shape, partial_coord,
         accumulators, tiled_mma, residue_mnk, plane, thread_idx);
-#endif
     CompletionPolicy::after_partial(
         params.completion, work, thread_idx, TileShape{},
         shared_storage.tensors.completion);

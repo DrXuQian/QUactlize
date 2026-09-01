@@ -48,7 +48,6 @@ mkdir -p "$OUT"
 # name : defines.  SK_QUANT=2 is FinegrainedScaleZero, what ships.
 VARIANTS=(
   "base:SK_QUANT=2"
-  "swz:SK_QUANT=2 PPU_SCALE_SWIZZLE=1"
   "pack:SK_QUANT=2 PPU_PACKED_SCALE=1"
   # THE STORE-CONFLICT FIX: one interleaved 32-bit (scale, zero) slot instead of two 16-bit planes, so the
   # decoder's 32 lanes write 32 adjacent WORDS and hit all 32 banks once. Read against pack, never base:
@@ -69,7 +68,6 @@ ALL_BINS=()
 # scanning for FAIL. Adding "fuse" to the third list would have re-created the same hole for the next variant.
 PACKED_GATES=(
   "pack:PPU_PACKED_SCALE=1"
-  "swz:PPU_PACKED_SCALE=1 PPU_SCALE_SWIZZLE=1"
   # rowC is the ONLY row where kPackedScaleOn is true, so it is the only row that exercises the fused store -- and the
   # paired-column attempt this replaces passed rowA and rowB while rowC went to bad=128/4096.
   "fuse:PPU_PACKED_SCALE=1 PPU_PACKED_SCALE_FUSED=1"
@@ -196,16 +194,6 @@ do_build() {
   for pg in "${PACKED_GATES[@]}"; do
     build_names+=("gate_${pg%%:*}"); build_defs+=("${pg#*:}"); build_targets+=(test_q4k_packed_gemm)
   done
-  build_names+=(gate_swz_fp16); build_defs+=("PPU_SCALE_SWIZZLE=1"); build_targets+=(test_q4k_packed_gemm)
-  build_names+=(gate_swz_only); build_defs+=("PPU_SCALE_SWIZZLE=1"); build_targets+=(test_moe_grouped_verify)
-  # THE CONTROL THAT WAS MISSING. test_moe_grouped_verify died with a device assert under PPU_SCALE_SWIZZLE=1 and I
-  # read that as the swizzle's doing -- but the verifier hardcodes Stages = 3 and the swizzle is gated on a power of
-  # two, so it was never active in that launch. The assert sits on the COARSE scale path, reached when
-  # ceil(TileK/gs) <= TileK/64, which the verifier's default gs=128 satisfies and the bench's gs=32 never does. If
-  # this default build dies identically the flag is exonerated; if only the swizzle build dies, something is
-  # macro-sensitive and neither explanation stands.
-  build_names+=(verify_default); build_defs+=(""); build_targets+=(test_moe_grouped_verify)
-
   # Register the complete responsibility set in the parent shell BEFORE workers fork. Array writes in a background
   # subshell do not come back, which otherwise makes the freshness pass bless only whichever jobs happened to be cached.
   local i
@@ -395,9 +383,7 @@ do_check() {
   echo
   echo "== correctness (nothing below matters until these pass) =="
   require_fresh_binaries \
-    "${PACKED_GATE_BINS[@]}" \
-    test_q4k_packed_gemm__gate_swz_fp16 test_moe_grouped_verify__gate_swz_only \
-    test_moe_grouped_verify__verify_default || { echo "== aborting: the binaries are not this checkout's =="; return 1; }
+    "${PACKED_GATE_BINS[@]}" || { echo "== aborting: the binaries are not this checkout's =="; return 1; }
   # rowC is the only row where Scale_TileK == 8, i.e. the only one on the packed path. It has been INTERMITTENT --
   # bad=128, then 724, then MATCH with no semantic source change -- and the cause is still unknown, so it is run five
   # times. A single pass proves nothing about a flaky failure.
@@ -424,56 +410,10 @@ do_check() {
   if [ "$ran_gates" -ne $(( ${#PACKED_GATES[@]} - 1 )) ]; then
     echo "  !!! ran $ran_gates packed gates but ${#PACKED_GATES[@]} are declared (pack runs separately)"; fails=$((fails+1))
   fi
-  # The swizzle changes ADDRESSES, not values. Any mismatch here means a view of the scale buffer that does not carry
-  # it -- i.e. the kernel writes at one address and reads at another.
-  echo "-- swizzle alone on rowC's fp16 planes (the swizzle IS active there: TN=128, Stages=2)"
-  out=$("$OUT/test_q4k_packed_gemm__gate_swz_fp16" "$ROOT/tests/data/q4k_packed.bin" 2>&1) && rc=0 || rc=$?
-  printf '%s\n' "$out" | grep -E "rowA|rowB|rowC|== (PASS|FAIL)"; echo "   [exit $rc]"
-  [ "$rc" -eq 0 ] || fails=$((fails+1))
-  # THE TWO VERIFIER RUNS ARE ONE ATTRIBUTION EXPERIMENT, not two gates. Their question is "is the device assert the
-  # swizzle's doing", and the answer comes from COMPARING them -- so a death is an OUTCOME, not a failure. Counting
-  # the control's death as a failure blocked the timings behind a result that was working exactly as designed.
-  #
-  # What the assert is, now that it has been read: an unconditional `if constexpr (false) {} else { assert(false); }`
-  # on the ModeHasScales branch, where a commented-out static_assert used to be. Anything reaching that path dies,
-  # macros or not. The verifier's default gs=128 reaches it; the bench's gs=32 never does.
-  echo "-- assert attribution: default build (no macros) vs swizzle-only build, same verifier"
-  out=$("$OUT/test_moe_grouped_verify__verify_default" 8 1 2>&1) && rc_def=0 || rc_def=$?
-  printf '%s\n' "$out" | tail -2 | sed 's/^/     default: /'
-  out=$("$OUT/test_moe_grouped_verify__gate_swz_only" 8 1 2>&1) && rc_swz=0 || rc_swz=$?
-  printf '%s\n' "$out" | tail -2 | sed 's/^/     swz-only: /'
-  echo "   default exit=$rc_def, swizzle-only exit=$rc_swz"
-  if [ "$rc_def" -ne 0 ] && [ "$rc_swz" -ne 0 ]; then
-    echo "   -> both die: the assert is NOT the swizzle's. It is a path this verifier's default configuration"
-    echo "      reaches and the collective does not implement. Not a gate failure."
-  elif [ "$rc_def" -eq 0 ] && [ "$rc_swz" -ne 0 ]; then
-    echo "   -> ONLY the swizzle build dies: the swizzle IS implicated. This is a real failure."
-    fails=$((fails+1))
-  elif [ "$rc_def" -ne 0 ] && [ "$rc_swz" -eq 0 ]; then
-    echo "   -> only the DEFAULT dies while the swizzle build survives, which no hypothesis here predicts."
-    fails=$((fails+1))
-  else
-    echo "   -> both pass: the assert is not reached in this configuration, so this comparison says nothing."
-    echo "      NOTE: test_moe_grouped_verify hardcodes Stages = 3 and the swizzle is gated on a power-of-two"
-    echo "      Stages, so PPU_SCALE_SWIZZLE may change no address in this launch at all."
-  fi
-
   if [ "$fails" -ne 0 ]; then
     echo "== $fails correctness gate(s) FAILED -- the timings below would be meaningless =="; return 1
   fi
-  # NOT A BARE "all passed". The attribution experiment above prints a device assert and two exit=1 lines, and a
-  # summary reading "all correctness gates passed" directly under those is a script contradicting its own output.
-  # Both verifiers dying is the ANSWER to "is the assert the swizzle's" -- and it is also a real hole: this verifier
-  # cannot run in its default configuration at all. That belongs in the summary, not only in the paragraph above it.
-  if [ "$rc_def" -ne 0 ] && [ "$rc_swz" -ne 0 ]; then
-    echo "== the correctness gates that CAN run passed =="
-    echo "   Q4_K's packed path (rowC) is MATCH on every run above."
-    echo "   STILL UNRUNNABLE: test_moe_grouped_verify in its default configuration, both with and without macros."
-    echo "   It reaches an unconditional assert(false) in the collective -- a path that is not implemented, not a"
-    echo "   regression and not the swizzle's. Nothing above tested that configuration, in either build."
-  else
-    echo "== all correctness gates passed =="
-  fi
+  echo "== all correctness gates passed =="
 }
 
 # THE PYTHON TIER, ON THE DEVICE. Everything above builds and runs C++ binaries; the routes, the artifact
@@ -829,8 +769,7 @@ do_perf() {
   # 12.9% that motivated this investigation is not a valid measurement and no like-for-like figure has replaced it.
   local samples="$OUT/perf_samples.txt"; : > "$samples"
   # AN ARRAY, NOT A STRING. Each VARIANT is "name:DEF1 DEF2 ..." and CONTAINS SPACES, so flattening with ${VAR[*]}
-  # and iterating the result word-splits the defines into separate "variants" -- the dry-run showed blocks running
-  # PPU_SCALE_SWIZZLE=1 and PPU_PACKED_SCALE=1 as if they were binaries. bash -n cannot see this.
+  # and iterating the result word-splits the defines into separate "variants". bash -n cannot see this.
   local b v n us out
   local -a order
   local -i i

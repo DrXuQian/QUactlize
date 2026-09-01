@@ -406,10 +406,11 @@ static void gate_record(const char* tag) {
 
   // round-trip through a file, as the offline pass would write it
   char path[256];
-  std::snprintf(path, sizeof(path), "/tmp/claude-0/-root/57027199-de80-4d5b-b901-e3ed437519e8/scratchpad/wfmt_%s.bin", tag);
+  std::snprintf(path, sizeof(path), "/tmp/quactlize_wfmt_%s.bin", tag);
   WeightFormatRecord back{};
   bool const io_ok = wfmt_write(path, rec) && wfmt_read(path, back)
                   && std::memcmp(&rec, &back, sizeof(rec)) == 0;
+  std::remove(path);
 
   // negative controls: each perturbation must be REFUSED
   int refused = 0, controls = 0;

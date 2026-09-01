@@ -4498,20 +4498,6 @@ void xcheck_grouped(Options const& options) {
 int main(int argc, char const **args) {
   // FIRST, before any allocation: a device switch after the context exists is not a switch.
   bench_device::bind_from_env();
-  // WITNESS THE A PROVIDER, IN main(), because nothing else does -- and because the first version of
-  // this sat inside `if (options.search_configs)`, so the --config= path that every A/B actually uses printed
-  // nothing at all. A witness on the branch nobody takes is the defect it was written against.
-  //
-  // PPU_A_PACK is a binary-wide #if in ppu_mixed_policy.hpp that selects PackedRowAProvider and outranks
-  // everything downstream. The grouped launcher prints its A path; this bench builds its own Gemm and printed
-  // nothing, which is how BACKTEST's D7 became a number nobody could attribute.
-  std::printf("  [A path] %s\n",
-#if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
-              "PACKED cubes (PPU_A_PACK), cp.async row0 + swzl read -- ONE-ROW EXPERIMENT, valid at M<=1 only"
-#else
-              "ordinary AIU + swzl"
-#endif
-  );
   hggcDeviceProp props;
   int current_device_id;
   CUTLASS_PPU_CHECK(hggcGetDevice(&current_device_id));

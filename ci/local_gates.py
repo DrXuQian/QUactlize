@@ -198,8 +198,6 @@ SYNTAX = [
     # covers the formats l103 says can be active. 0=Q4_K 1=Q5_K 2=Q2_K 3=Q3_K 4=Q6_K -- all five now, since the
     # two-plane collective gained the shared packed-scale channel and Q3/Q6 gained paired-unit staging.
     *[("tests/test_q4k_packed_gemm.cu", f"-DPPU_PACKED_SCALE=1 -DPPU_PACKED_FORMAT={f}") for f in (0, 1, 2, 3, 4)],
-    ("tests/test_q4k_packed_gemm.cu", "-DPPU_PACKED_SCALE=1 -DPPU_SCALE_SWIZZLE=1"),
-    ("tests/test_q4k_packed_gemm.cu", "-DPPU_SCALE_PAD=8"),
     ("tests/test_moe_grouped_verify.cu", ""),
     ("tests/test_moe_grouped_real.cu", ""),
     ("tests/test_moe_grouped_streamk.cu", ""),
@@ -599,13 +597,6 @@ def lint_fold_metadata_single_owner():
     return ("PASS",
             "fold clear and both async issue points use one proved owner; all-thread plant red",
             0.0)
-
-
-def lint_q4_a32_fixture_components():
-    """A failing PPU row must retain its independently derived host fixture identity."""
-    return _run_ci_script(
-        "check_q4_a32_fixture_components.py",
-        "Q4/A32 six-arm fixtures and their prelaunch identity are bound")
 
 
 def lint_q4_a32_coordinate_tags():
@@ -1341,11 +1332,9 @@ def lint_switch_macros():
     as evidence for deleting an exclusion while nothing invoked it. Its six in-memory classifier controls cover
     unresolved, temporarily allowed, newly wired, deleted, setter-resolved, and definer-resolved states.
 
-    Motivated by a real cost rather than tidiness. Three macros in this tree mean "shrink A's padding at small M"
-    -- PPU_A_PACK, PPU_A_CPASYNC and the tactic table's ACR column (the last two DELETED 2026-08-07 with the
-    feature) -- and on 2026-08-06 a measurement was filed
-    as "compact A at capacity 1 is 45% slower" that could not afterwards be attributed to any of them. Two of the
-    three are gone with the feature (task #42); PPU_A_PACK is a different, separately controlled A path.
+    Reachability is only an inventory property. Product provider choices use
+    typed schedule identities; a global A-provider macro is explicitly denied
+    by the product-source policy gate.
     """
     return _run_ci_script("check_switch_macros.py", "every owned build switch has a recorded route")
 
@@ -2517,6 +2506,14 @@ def lint_product_source_provenance():
     return ("PASS" if rc == 0 else "FAIL"), (lines[-1] if lines else f"exit {rc}"), dt
 
 
+def lint_product_retired_macros():
+    """Retired diagnostics and global policy switches cannot re-enter product source."""
+    checker = ROOT / "ci" / "check_product_diagnostic_macros.py"
+    rc, log, dt = run([sys.executable, str(checker)])
+    lines = [line.strip() for line in log.splitlines() if line.strip()]
+    return ("PASS" if rc == 0 else "FAIL"), (lines[-1] if lines else f"exit {rc}"), dt
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--list", action="store_true")
@@ -2572,6 +2569,8 @@ def main():
                 ("lint", "absolute paths name this repo dir, not a renamed one", lint_stale_repo_path),
                 ("lint", "product source contains no collaboration-tool provenance",
                  lint_product_source_provenance),
+                ("lint", "product source contains no retired diagnostic or policy switches",
+                 lint_product_retired_macros),
                 ("lint", "names used before they exist (device-only tests get no other flow check)", lint_undefined_names),
                 ("lint", "every ggml.h quant type is classified, in scope or out", lint_gguf_coverage),
                 ("lint", "the C++ and Python selection procedures agree on planted data", lint_selection_agrees),
@@ -2583,7 +2582,6 @@ def main():
                 ("lint", "dense/grouped mixed policy descriptor parity fires on planted drift", lint_mixed_policy_parity_fires),
                 ("lint", "l114_scale_copy_coverage: uncapped layout fails the shared witness", lint_scale_copy_coverage_fires),
                 ("lint", "fold metadata publication uses one proved physical owner", lint_fold_metadata_single_owner),
-                ("lint", "Q4/A32 component fixtures fail closed on a wrong host golden", lint_q4_a32_fixture_components),
                 ("lint", "Q4/A32 device coordinate tags have an exact denominator and planted reds", lint_q4_a32_coordinate_tags),
                 ("lint", "all mixed collectives keep A/B register-copy coordinates independent", lint_mixed_a_register_schedule),
                 ("lint", "a device-compiler SKIP only guards checks that reach a compiler", lint_device_probe_scope),

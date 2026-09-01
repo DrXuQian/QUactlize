@@ -9,7 +9,7 @@ started by asking for it again" -- and this file is the same fix for the GEMV.
   ./benchmarks/gemv_bench.py --sizes       %peak against problem size: where saturation begins
   ./benchmarks/gemv_bench.py --rpw         rows-per-warp sweep at both shapes, which is how the mis-tuning was found
   ./benchmarks/gemv_bench.py --rpw --bpr 4 repeat the sweep at K=1024 for the rows/bpr dispatcher
-  ./benchmarks/gemv_bench.py --define X=1  add a -D, e.g. GGUF_VECDOT_FP32_ACTIVATION=1
+  ./benchmarks/gemv_bench.py --define X=1  add a local compile-time experiment
 
 TWO THINGS THAT WILL MISLEAD YOU IF NOBODY SAYS THEM.
 

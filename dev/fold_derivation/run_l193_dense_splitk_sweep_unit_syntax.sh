@@ -46,7 +46,7 @@ fi
 
 flags=(
   -std=c++17 -arch=sm_80 --expt-relaxed-constexpr
-  -D__HGGCCC__ -DPPU_FORCE_INSTANTIATE=1
+  -D__HGGCCC__
   -Xcudafe --error_limit=100000
   -I "${repo}/dev/fold_derivation/stub_inc"
   -I "${repo}/third_party/actlize/include"

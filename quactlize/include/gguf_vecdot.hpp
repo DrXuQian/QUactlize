@@ -369,16 +369,10 @@ CUTLASS_HOST_DEVICE void unpack_block(uint8_t const* b, int8_t* codes, half_t* s
 // The old GEMV is retained as a named timing baseline. One thread owns an entire output row, so a warp's raw-weight
 // loads are blocks_per_row*block_bytes apart (1152 B for Q4_K at eight superblocks). That is the source-side analogue
 // of dequantize_kernel_warp's measured store pathology below.
-#if defined(GGUF_VECDOT_FP32_ACTIVATION) && (GGUF_VECDOT_FP32_ACTIVATION != 0)
-using VecdotActivation = float;
-static constexpr bool kVecdotFp16Activation = false;
-#else
-// Production. The fp32 arm is measurement-only: after independently retuning rpw for both dtypes, converting every
+// Production. After independently retuning rpw for both dtypes, converting every
 // pair inside every output row still costs 1.06-1.32x cold at rows=131072. The native route can instead convert its
 // one K-vector once before fan-out over N rows.
 using VecdotActivation = half_t;
-static constexpr bool kVecdotFp16Activation = true;
-#endif
 
 template <KType T>
 __global__ void vecdot_rows_kernel_serial(uint8_t const* blocks, int64_t block_bytes, VecdotActivation const* x,
@@ -410,11 +404,7 @@ __device__ __forceinline__ half2 vecdot_float2_to_half2(float x, float y) {
 }
 
 __device__ __forceinline__ half2 vecdot_load_activation2(VecdotActivation const* p) {
-  if constexpr (kVecdotFp16Activation) {
-    return *reinterpret_cast<half2 const*>(p);
-  } else {
-    return vecdot_float2_to_half2(p[0], p[1]);
-  }
+  return *reinterpret_cast<half2 const*>(p);
 }
 
 __device__ __forceinline__ half vecdot_load_activation(VecdotActivation const* p) {
@@ -448,17 +438,9 @@ __device__ __forceinline__ half vecdot_apply_group_half(half2 qx, half2 sx, floa
   return vecdot_half2_horizontal(__hmul2(sums, affine));
 }
 
-// Measurement-only NOPs used by the rows=131072 cost probes. A constant nonzero code removes packed-code loads and
-// extraction while every lane still consumes x, scale and the final reduction. Unit scale/min codes remove the
-// packed per-group field loads and extraction while preserving header loads, both accumulators and every live lane.
 template <KType T>
 __device__ __forceinline__ int vecdot_kernel_code_at(uint8_t const* b, int g, int j) {
-#if defined(GGUF_VECDOT_CODE_NOP)
-  (void)b; (void)g; (void)j;
-  return 1;
-#else
   return code_at_group<T>(b, g, j);
-#endif
 }
 
 // One aligned 32-bit load supplies four adjacent packed bytes. Raw k-quant blocks are compact: Q2/Q4/Q5 strides
@@ -496,13 +478,6 @@ __device__ __forceinline__ VecdotCode4 vecdot_code4_from_bytes(uint32_t bytes) {
 // shared conversion's Bias template applies the format offset while constructing the half pairs.
 template <KType T>
 __device__ __forceinline__ VecdotCode4 vecdot_kernel_code4(uint8_t const* b, int g, int j) {
-#if defined(GGUF_VECDOT_CODE_NOP)
-  (void)b; (void)g; (void)j;
-  VecdotCode4 one;
-  CUTLASS_PRAGMA_UNROLL
-  for (int lane = 0; lane < 4; ++lane) one[lane] = half_t(1.f);
-  return one;
-#else
   using C = CodeTraits<T>;
   int const c = C::word_coord(g, j / 4);
   uint8_t const* lo_ptr = b + C::kLoOffset + C::Lo::byte_of(c);
@@ -517,19 +492,11 @@ __device__ __forceinline__ VecdotCode4 vecdot_kernel_code4(uint8_t const* b, int
     else                            codes = lo | (high << 4);  // Q5 raw, Q6 q+32
   }
   return vecdot_code4_from_bytes<T>(codes);
-#endif
 }
 
 template <KType T>
 __device__ __forceinline__ VecdotCodePair4 vecdot_kernel_q45_pair4(uint8_t const* b, int pair, int j) {
   static_assert(T == KType::Q4_K || T == KType::Q5_K, "paired word decode is only Q4/Q5");
-#if defined(GGUF_VECDOT_CODE_NOP)
-  (void)b; (void)pair; (void)j;
-  VecdotCode4 one;
-  CUTLASS_PRAGMA_UNROLL
-  for (int lane = 0; lane < 4; ++lane) one[lane] = half_t(1.f);
-  return {one, one};
-#else
   using C = CodeTraits<T>;
   int const g0 = 2 * pair;
   int const c0 = C::word_coord(g0, j / 4);
@@ -545,20 +512,12 @@ __device__ __forceinline__ VecdotCodePair4 vecdot_kernel_q45_pair4(uint8_t const
     hi |= C::Hi::extract_word(high, c1) << 4;
   }
   return {vecdot_code4_from_bytes<T>(lo), vecdot_code4_from_bytes<T>(hi)};
-#endif
 }
 
 template <KType T>
 __device__ __forceinline__ void vecdot_kernel_group_dl_ml(uint8_t const* b, int g, float d, float dmin,
                                                           float& dl, float& ml) {
-#if defined(GGUF_VECDOT_SCALE_NOP)
-  (void)b; (void)g;
-  dl = d;
-  if constexpr (T == KType::Q2_K || T == KType::Q4_K || T == KType::Q5_K) ml = dmin;
-  else ml = 0.f;
-#else
   group_dl_ml_from_base<T>(b, g, d, dmin, dl, ml);
-#endif
 }
 
 // Saturated defaults, retuned after fp16 activation + half2 accumulation at rows=131072, blocks_per_row=8. Keep

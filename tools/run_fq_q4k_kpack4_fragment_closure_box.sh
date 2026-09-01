@@ -111,21 +111,15 @@ main() {
   } >"$out/source-authority.sha256" || return 2
 
   candidate="$(build_arm "$root" "$generated" "$out" candidate "" "$jobs")" || return $?
-  legacy="$(build_arm "$root" "$generated" "$out" legacy \
-    'PPU_Q4_KPACK4_LEGACY_LOADER_OUTPUT_LAYOUT=1' "$jobs")" || return $?
 
   candidate_log="$out/results/candidate.log"
-  legacy_log="$out/results/legacy.log"
   run_arm "$candidate" "$candidate_log" "$repeats"
   candidate_rc=$?
-  run_arm "$legacy" "$legacy_log" "$repeats"
-  legacy_rc=$?
   python3 -B "$root/tools/check_fq_q4k_kpack4_fragment_closure.py" check \
-    --candidate-log "$candidate_log" --legacy-log "$legacy_log" \
-    --candidate-rc "$candidate_rc" --legacy-rc "$legacy_rc" || return 2
-  sha256sum "$candidate" "$legacy" "$candidate_log" "$legacy_log" \
+    --candidate-log "$candidate_log" --candidate-rc "$candidate_rc" || return 2
+  sha256sum "$candidate" "$candidate_log" \
     >"$out/results/authority.sha256" || return 2
-  printf '[fq-kpack4-fragment] PASS sha=%s candidate=6/6 legacy=2/6 artifacts=%s\n' \
+  printf '[fq-kpack4-fragment] PASS sha=%s candidate=6/6 mapping=fixed artifacts=%s\n' \
     "$sha" "$out"
 }
 

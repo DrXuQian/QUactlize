@@ -71,12 +71,6 @@ CUTLASS_DEVICE void prepare_mixed_a_for_b(
     BBlock const& b_block,
     Prime const&) {
   constexpr int B = BBlock::value;
-#if defined(PPU_MIXED_LEGACY_B_INDEXED_A_COPY) && \
-    (PPU_MIXED_LEGACY_B_INDEXED_A_COPY != 0)
-  // Device negative: reproduce the historical cross-view coordinate reuse.
-  cute::copy(smem_tiled_copy_A, tCsA_p(cute::_, cute::_, b_block),
-             tCrA_copy_view(cute::_, cute::_, b_block));
-#else
   cute::for_each(cute::make_int_sequence<Schedule::ABlocks>{},
                  [&] (auto a_block) {
     constexpr int A = decltype(a_block)::value;
@@ -88,7 +82,6 @@ CUTLASS_DEVICE void prepare_mixed_a_for_b(
                  tCrA_copy_view(cute::_, cute::_, a_block));
     }
   });
-#endif
 }
 
 template <class Schedule, class SmemTiledCopyA, class TCsA, class TCrA,
@@ -98,15 +91,12 @@ CUTLASS_DEVICE void finish_mixed_a_after_consume(
     TCsA const& tCsA_p,
     TCrA& tCrA_copy_view,
     BBlock const&) {
-#if !defined(PPU_MIXED_LEGACY_B_INDEXED_A_COPY) || \
-    (PPU_MIXED_LEGACY_B_INDEXED_A_COPY == 0)
   constexpr int B = BBlock::value;
   if constexpr (Schedule::template load_after_consume<B>()) {
     cute::copy(smem_tiled_copy_A,
                tCsA_p(cute::_, cute::_, cute::Int<0>{}),
                tCrA_copy_view(cute::_, cute::_, cute::Int<0>{}));
   }
-#endif
 }
 
 }  // namespace cutlass::gemm::collective::detail

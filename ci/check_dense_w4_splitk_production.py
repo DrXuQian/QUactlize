@@ -124,13 +124,14 @@ def source_errors(
         "return selector::select(request, decoded_ptr);",
         "selector::kMeasuredWorkspaceAlignment, (std::numeric_limits<std::size_t>::max)(), profile",
         "selector::required_partial_bytes( production_key(m, n, k).problem, selected.split_k_slices())",
-        "#if defined(QUACTLIZE_W4_SPLITK_SEVER_PREPARE_EDGE)",
         "m, n, k, 128, 1, workspace, workspace_bytes, stream",
         "m, n, k, 128, selected_s, workspace, workspace_bytes, stream",
     )
     for token in launch_tokens:
         if token not in lf:
             bad.append("production launch authority missing " + token)
+    if "QUACTLIZE_W4_SPLITK_SEVER_PREPARE_EDGE" in lf:
+        bad.append("retired prepare-edge severing diagnostic remains in product launch authority")
     if launch.count("return prepared.initialize(") != 2:
         bad.append("production authority must have exactly S1 and selected-S initialize edges")
     if launch.count("scales, nullptr, out") != 2:
@@ -142,6 +143,8 @@ def source_errors(
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 12
 #define QUACTLIZE_PPU_DENSE_W4_SPLITK_ENABLED 1
 #include "ppu_dense_w4_splitk_launch.cuh"
+#include "scalefirst_persistent_policy.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_persistent.hpp"
 #else
 #define QUACTLIZE_PPU_DENSE_W4_SPLITK_ENABLED 0
 #endif
@@ -253,10 +256,9 @@ def source_errors(
         "Q2 island instantiated or referenced the W4 production type",
         "_Static_assert(sizeof(quactlize_ppu_dense_w4_splitk_key_v1) == 88",
         "L200_PRODUCTION_PREPARE_REACHED_PREPARED_INITIALIZE",
-        "-DQUACTLIZE_W4_SPLITK_SEVER_PREPARE_EDGE=1",
         "real production prepare edge did not reach Prepared::initialize exactly once",
         "profile/workspace denominator is not 35 controls",
-        "controls=35/35 call-edge=instantiated/severed",
+        "controls=35/35 call-edge=instantiated",
     )
     for token in runner_tokens:
         if token not in rf:
@@ -298,7 +300,7 @@ def main() -> int:
     required_output = (
         "[l200] PASS controls=35 shipping_calls=32 parallel_calls=3 ",
         "[l200:runner] PASS abi=C-v1 production=backend-W4-ScaleOnly-gs128-",
-        "call-edge=instantiated/severed",
+        "call-edge=instantiated",
     )
     if positive.returncode or any(
             token not in positive.stdout for token in required_output):
@@ -352,8 +354,9 @@ def main() -> int:
          "ppu_dense_splitk_shipping::kMeasuredWorkspaceAlignment", 1),
         ("prepared-run", "backend",
          "prepared.run(launch_stream)", "cutlass::Status::kSuccess", 1),
-        ("gguf-zero-plane", "backend", "!scale || !zero || !out",
-         "!scale || !out", 1),
+        ("gguf-zero-plane", "backend",
+         "if (!act || !low || !scale || !zero || !out || m <= 0",
+         "if (!act || !low || !scale || !out || m <= 0", 1),
         ("gguf-q4-gs32", "backend",
          "case 12: return group_size == 32 ? dense<cutlass::int4b_t,void,32,",
          "case 12: return group_size == 128 ? dense<cutlass::int4b_t,void,32,", 2),

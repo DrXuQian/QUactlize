@@ -24,7 +24,6 @@ required = (
     # retaining its historical schedule/type aliases.  The destination seam
     # is therefore guarded by the generic physical-provider fact.
     "if constexpr (kKPackTranspose)",
-    "PPU_Q4_KPACK4_LEGACY_LOADER_OUTPUT_LAYOUT",
     "compact_col_major(\n            shape<1>(cvt_in.layout()), stride<1>(tCrB_mma.layout()))",
     "class TensorLayoutIn,\n            class TensorLayoutOut",
     "static_assert(N == NOut",
@@ -42,7 +41,10 @@ planted = source.replace(
 )
 if planted == source or wrong not in planted:
     raise SystemExit("[l231-source] RED: wrong-stride plant did not fire")
-print("[l231-source] PASS compute-N-stride=BOUND legacy-negative=BOUND separate-layout-converter=BOUND")
+retired = "PPU_Q4_KPACK4_LEGACY_LOADER_OUTPUT_LAYOUT"
+if retired in source:
+    raise SystemExit(f"[l231-source] RED: retired product selector remains: {retired}")
+print("[l231-source] PASS compute-N-stride=FIXED separate-layout-converter=BOUND")
 PY
 
   local -a common=(

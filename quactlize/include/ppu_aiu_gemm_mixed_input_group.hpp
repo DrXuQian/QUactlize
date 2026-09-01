@@ -85,24 +85,9 @@ public:
   };
   static constexpr int SharedStorageSize = sizeof(SharedStorage);
   static constexpr uint32_t MaxThreadsPerBlock = cute::size(TiledMma{});
-  // Reproduce the recorded occupancy arm: PPU_DEFS=PPU_MAXREG=100 TARGET=test_w4a16_diag ./build.sh
-  // 100 is load-bearing: the measured default was 106 regs/thread. At 128 threads, 100 asks for 10 blocks and a
-  // nominal <=102 regs/thread, while writing 106 would still ask for only 9 blocks and impose no new constraint.
-  // PPU_MAXREG: cap registers per thread by asking __launch_bounds__ for more resident blocks. device_kernel.h
-  // passes MinBlocksPerMultiprocessor straight into __launch_bounds__, so the compiler must fit
-  // 131072 / (blocks * threads) registers. Expressed as a REGISTER target and converted here, because the block
-  // count that implies depends on MaxThreadsPerBlock -- 10 blocks means 102 registers at 128 threads and 51 at 256,
-  // and hardcoding the block count would silently over-constrain the wider tiles.
-  //
-  // Whether it pays is a separate question: at S=1 the grid supplies 4 blocks/CU for a 16x64 tile while 106
-  // registers already allow 9, so registers are NOT the binding limit there. Measured, not assumed.
-#if defined(PPU_MAXREG) && (PPU_MAXREG > 0)
-  static constexpr uint32_t MinBlocksPerMultiprocessor =
-      (131072u / (uint32_t(PPU_MAXREG) * MaxThreadsPerBlock)) > 0
-          ? (131072u / (uint32_t(PPU_MAXREG) * MaxThreadsPerBlock)) : 1u;
-#else
+  // Use the ordinary launch-bound policy. Register-cap experiments did not
+  // improve the selected grouped schedule and are not a product configuration.
   static constexpr uint32_t MinBlocksPerMultiprocessor = 1;
-#endif
   static constexpr uint32_t NumMmaWarpGroups = 1;
   static constexpr int MinWorkspaceAlignment = 16;   // [Q1] array_group takes this from an outer scope; define locally
 
@@ -249,21 +234,17 @@ public:
     if (params.mtiles_uniform > 0) {
       return dim3(params.mtiles_uniform, int(cute::ceil_div(params.representative_n, TN)), L * S);
     }
-    int total_m_tiles = 0, N = 1, mt0 = -1, mt_max = 0; bool uni = true;
+    int total_m_tiles = 0, N = 1;
     for (int e = 0; e < L; ++e) {
       auto ps = params.problem_shape.get_host_problem_shape(e);
       int const mte = int(cute::ceil_div(int(cute::get<0>(ps)), TM));
-      total_m_tiles += mte;  N = int(cute::get<1>(ps));  mt_max = mte > mt_max ? mte : mt_max;
-      if (mt0 < 0) mt0 = mte; else if (mte != mt0) uni = false;
+      total_m_tiles += mte;
+      N = int(cute::get<1>(ps));
     }
     int const Nt = int(cute::ceil_div(N, TN));
-    bool const force3d = std::getenv("MOEG_FORCE3D") != nullptr;   // diagnostic: force 3D Mmax grid for ragged
-    // UNIFORM (or forced): 3D grid (mt_max, N_tiles, L), blockIdx.z=expert, O(1) decode. small experts' extra
-    // m-tiles early-exit (idle). RAGGED default: flat grid (total,N,1), no idle blocks but O(L) decode scan.
     // THE SLICE LIVES ON z. The ragged (flat) path leaves z unused, so it is free there; the uniform path already
     // spends z on the expert, so the two are packed as z = expert*S + slice -- the same packing
     // ppu_aiu_gemm_parallel.hpp uses for (l, slice).
-    if (uni || force3d) return dim3(uni ? mt0 : mt_max, Nt, L * S);
     return dim3(total_m_tiles, Nt, S);
   }
   static dim3 get_block_shape() { return dim3(MaxThreadsPerBlock, 1, 1); }

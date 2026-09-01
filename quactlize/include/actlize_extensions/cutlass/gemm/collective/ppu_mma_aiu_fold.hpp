@@ -14,13 +14,6 @@
 //   * when T>A, delivery is an explicit destination dimension inside the converter's fold groups, so consecutive
 //     artifact bytes retain the same logical owners instead of overlapping a T-derived flat fragment slice.
 // NOT gated on int4 ceiling -- int2/int1-fold reaching int4 geometry is guaranteed; biggest win is int1 (4x occ).
-// FULL-FRAGMENT BISECTION (diagnostic, not a tactic). Both defines are load-bearing; FOLD_SVARY prevents an all-one
-// scale fixture from hiding a scale-register error. Build the ordinary chunk arm as the control, then the bisection:
-//   PPU_BUILD_DIR="$PWD/build_bchunk_control" PPU_DEFS=PPU_B_CHUNK=1 TARGET=test_fold_int2 ./build.sh
-//   PPU_BUILD_DIR="$PWD/build_bchunk_bisect" PPU_DEFS=PPU_B_CHUNK_BISECT=1\ PPU_B_CHUNK=1 TARGET=test_fold_int2 ./build.sh
-//   BC=$(find build_bchunk_control -type f -name test_fold_int2 -perm -u+x -print -quit); test -n "$BC"
-//   BB=$(find build_bchunk_bisect -type f -name test_fold_int2 -perm -u+x -print -quit); test -n "$BB"
-//   FOLD_SVARY=1 "$BC" 256 256 32; FOLD_SVARY=1 "$BB" 256 256 32
 // =============================================================================================================
 /***************************************************************************************************
  * Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD. All rights reserved.
@@ -890,26 +883,6 @@ public:
     static_assert(ARegisterSchedule::BAtomsPerCopy ==
                       decltype(K_ATOM_PER_COPY)::value,
                   "B delivery and MMA atom partitions must agree");
-#if defined(PPU_Q4_A32_EXACT_TYPE_PROBE) && (PPU_Q4_A32_EXACT_TYPE_PROBE != 0)
-    static_assert(decltype(K_BLOCK_MAX)::value == 4,
-                  "the exact Q4/A32 row must retain four resident B deliveries per K tile");
-    static_assert(decltype(K_ATOM_PER_COPY)::value == 2,
-                  "the exact Q4/A32 row must consume two MMA K atoms from each delivery");
-#endif
-    // PPU_MMA_PROBE=1: print the two numbers any per-atom / chunked B scheme depends on, from the DEFAULT build.
-    // Added because writing them as static_asserts and then building the dependent code on top is backwards -- the
-    // assert makes a wrong assumption loud but not cheap, and it would only fire after the whole chunked path had
-    // been written. One printf on the default path settles it first, for free.
-#if defined(PPU_MMA_PROBE) && (PPU_MMA_PROBE != 0)
-    if (thread0()) {
-      cute::print("[mma probe] K_BLOCK_MAX(CPY_K)="); cute::print(K_BLOCK_MAX);
-      cute::print("  K_ATOM_PER_COPY="); cute::print(K_ATOM_PER_COPY);
-      cute::print("  MMA_K(tCrB_mma)="); cute::print(size<2>(tCrB_mma));
-      cute::print("  MMA_N="); cute::print(size<1>(tCrB_mma));
-      cute::print("  Scale_TileK="); cute::print(int(Scale_TileK));
-      cute::print("\n");
-    }
-#endif
     // One k-atom of converted B, reused across atoms, instead of tCrB_mma's MMA_K atoms held simultaneously:
     // 4*MMA_N*MMA_K registers -> 4*MMA_N. Declared unconditionally and dead-code-eliminated when kBChunk is false,
     // because the for_each lambda below captures it by reference.
@@ -959,34 +932,7 @@ public:
         // N-FOLD: IDENTICAL to the unfolded mainloop. The fold lives only in the load layer -- gmem/smem are
         // (N/FoldF) x (FoldF*K) to satisfy the AIU 32B contiguous minimum, and the swzl ldmatrix already delivers the
         // fragment with ordinary N x K register semantics (same as int4). So no fold-specific compute code at all.
-        // PPU_B_CHUNK=2 is a BISECTION, not a candidate: chunked EMISSION written at full-fragment indices, so it
-        // keeps tCrB_mma (no register saving) and isolates the gating from the small-buffer plumbing. bad=0 here and
-        // nonzero at PPU_B_CHUNK=1 points at tCrB_one / the pointers / the scale; nonzero here points at keep()/at().
-        // A DEBUG bisection, on its OWN macro rather than sharing values with the production flag -- PPU_B_CHUNK=2 meant a
-        // debug mode shipped inside the switch that turns the feature on.
-#if defined(PPU_B_CHUNK_BISECT) && (PPU_B_CHUNK_BISECT != 0)
-        constexpr bool kChunkFull = kBChunk;
-#else
-        constexpr bool kChunkFull = false;
-#endif
-        if constexpr (kChunkFull) {
-          for_each(make_int_sequence<decltype(K_ATOM_PER_COPY)::value>{}, [&] (auto k_loop) {
-            constexpr int kC = decltype(k_loop)::value;
-            auto atom_idx = k_block * K_ATOM_PER_COPY + k_loop;
-            Tensor dst = tCrB_mma(_,_,k_block * K_ATOM_PER_COPY);            // base of this k_block's atoms
-            transform_B_atom<RealInternalElementB, kC, decltype(K_ATOM_PER_COPY)::value, false,
-                             decltype(tCrB_mma.layout())>(
-                tCrB_copy_view, dst, partitioned_extra_info, k_block, atom_idx,
-                copy_partitions_extra_info, b_consume_stage);
-          });
-          CUTLASS_PRAGMA_UNROLL
-          for (int k_loop = 0; k_loop < K_ATOM_PER_COPY; k_loop++) {
-            auto atom_idx = k_block * K_ATOM_PER_COPY + k_loop;
-            cute::transform(tCrA(_,_,atom_idx), TransformA{});
-            cute::transform(tCrB_mma(_,_,atom_idx), TransformB{});
-            cute::gemm(tiled_mma, tCrA(_,_,atom_idx), tCrB_mma(_,_,atom_idx), accum);
-          }
-        } else if constexpr (kBChunk) {
+        if constexpr (kBChunk) {
           // for_each, not a for loop: the chunk must be a TEMPLATE argument so the emission gate stays compile-time.
           for_each(make_int_sequence<decltype(K_ATOM_PER_COPY)::value>{}, [&] (auto k_loop) {
             constexpr int kChunk = decltype(k_loop)::value;

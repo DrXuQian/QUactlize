@@ -61,27 +61,6 @@
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 namespace cutlass::gemm::collective::detail {
-// Instantiates composition() ONLY when selected: naming both branches of a conditional_t instantiates both, and the
-// unselected one fires cute's "Requires pow2 shape*stride".
-// PER Scale_TileN, because the conflict map depends on it through the mma B operand's TV layout. A member template
-// cannot be explicitly specialised inside the class, so the table lives here. A width with no entry gets the identity
-// swizzle and keeps the plain map rather than pretending to be fixed.
-// The pattern is closed-form -- Swizzle<2, 3, log2(TN) - 2> -- because the donor bits are always the group index's
-// bits 1 and 2, and the group stride is TN halfs, so they sit at bit log2(TN)+1; MBase stays 3 so the low three bits
-// are untouched and the 16 B cp.async keeps its contiguity. Written as explicit specialisations anyway, so the table
-// claims exactly the three widths l98 measured and any other width gets the identity and keeps the plain map. A
-// formula would have silently extended a result to widths nobody checked, which is how the first version of this
-// table -- one entry, applied to all three widths -- left TN=32 at 4-way while advertising 1-way.
-template <int TN> struct ScaleSwizzleFor      { using type = cute::Swizzle<0, 4, 4>; };   // identity
-template <>       struct ScaleSwizzleFor<32>  { using type = cute::Swizzle<2, 3, 3>; };   // l98: 4-way -> 1-way
-template <>       struct ScaleSwizzleFor<64>  { using type = cute::Swizzle<2, 3, 4>; };   // l98: 4-way -> 1-way
-template <>       struct ScaleSwizzleFor<128> { using type = cute::Swizzle<2, 3, 5>; };   // l98: 4-way -> 1-way
-
-template <bool On, class Swz, class L> struct MaybeScaleSwizzle { using type = L; };
-template <class Swz, class L> struct MaybeScaleSwizzle<true, Swz, L> {
-  using type = decltype(cute::composition(Swz{}, L{}));
-};
-
 // One issue seam for every physical B writer.  Opaque AIU delivery is a
 // logical single-issuer operation and must retain copy_aiu's warp ownership;
 // a cp.async tiled copy is already partitioned over physical CTA threads and
@@ -337,13 +316,6 @@ public:
       int(Scale_TileN), int(Scale_NumThreads)>;
   static constexpr int kPackedOwnerThreads = PackedMetadataOwnership::owner_threads;
   static constexpr int kPackedColsPerThread = PackedMetadataOwnership::columns_per_thread;
-#if defined(PPU_MIXED_LEGACY_MODULO_METADATA_PUBLISHERS) && \
-    (PPU_MIXED_LEGACY_MODULO_METADATA_PUBLISHERS != 0)
-  // Must-red device control: reconstruct the historical all-thread modulo publication and omit its missing init edge.
-  static constexpr bool kLegacyModuloMetadataPublishers = true;
-#else
-  static constexpr bool kLegacyModuloMetadataPublishers = false;
-#endif
   // Keep one metadata column as the value tile. When TileN exceeds the owner
   // count, CuTe expresses the additional columns in the partition's rest
   // mode; widening the value tile would instead cross a column boundary
@@ -420,15 +392,7 @@ public:
   static constexpr int kASlices     = kACubeW / 16;                          // 8 words per slice
   static constexpr int kScheduledAPackRows =
       a_provider_schedule_traits<KernelSchedule>::Rows;
-#if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
-  static constexpr int kLegacyAPackRows = PPU_A_PACK;
-#else
-  static constexpr int kLegacyAPackRows = 0;
-#endif
-  static_assert(kScheduledAPackRows == 0 || kLegacyAPackRows == 0,
-                "typed packed-A schedule and legacy PPU_A_PACK cannot both own the A provider");
-  static constexpr int kAPackRows =
-      kScheduledAPackRows > 0 ? kScheduledAPackRows : kLegacyAPackRows;
+  static constexpr int kAPackRows = kScheduledAPackRows;
   static constexpr bool kPackedA = kAPackRows > 0;
   static constexpr int kAPackGeometryRows = kPackedA ? kAPackRows : 1;
   // Every selected pitch is a 64-half/128-B multiple. Besides aligning every cube base, that makes the whole A span
@@ -522,8 +486,8 @@ public:
   // the quantity this path does not use and left untouched the one it does, and the hardware still turned
   // coordinate m into base + m*(cube row pitch). On ppu001 that reads 16x past the 16x smaller allocation:
   //     tsm.ld.swzl.b32x4.s0.t1.trans0  vreg[64:67], [sreg63] @sreg27      (bases 512 B apart: 0xc00, 0xe00)
-  // nvcc's front end accepted it with PPU_FORCE_INSTANTIATE and every static_assert passing, so the front end was
-  // no evidence at all here.
+  // Front-end type and static-assert checks accepted it, so those checks alone
+  // were no evidence about the runtime coordinate interpretation.
   //
   // NO LAYOUT CHANGE CAN DO THIS. The fix has to pin the M COORDINATE, which is partition_S's output, not a
   // stride: copy(smem_tiled_copy_A, tCsA_p(_,0,k_block), tCrA_copy_view(_,i,k_block)) for each destination i.
@@ -585,84 +549,12 @@ public:
       make_shape(shape<1>(TileShape{}), Int<PhysicalBTileK>{},
                  Int<DispatchPolicy::Stages>{})));
 
-  // It is assumed that the scales and zero-points share the same smem layout
-  // PPU_SCALE_PAD: break the bank period on the GROUP stride.
-  //
-  // The natural layout is (Scale_TileN, Scale_TileK, Stages) : (1, Scale_TileN, Scale_TileN*Scale_TileK), and at
-  // Scale_TileN = 64 halfs the group stride is 128 B -- exactly 32 banks x 4 B, so consecutive groups start on the
-  // SAME bank. N is contiguous inside a group, so a single group covers the banks once and is fine; the conflicts
-  // come from accesses that step in the group or stage direction. acu, sz against pc: +252k conflicts on +272k scale
-  // reads, about 1.02 each, and they double the channel's transactions (+504k) while shared memory sits at 28% of
-  // peak -- so this is transactions times latency, and padding is free apart from the extra bytes.
-  //
-  // Padding by 8 halfs (16 B) shifts each group by 4 banks. The data, the gmem->smem copy and every read all go
-  // through this layout, so nothing else changes.
-  // PER TileN, not one constant. The conflict map depends on Scale_TileN through the mma B operand's TV layout, and
-  // fold_derivation/l98 sweeps each width against the collective's own layout: Swizzle<2,3,5> takes TN=128 from 4-way
-  // to 1-way but leaves TN=32 at 4-way, i.e. it was overfit to the one width l98 originally hardcoded. The table below
-  // is filled from that sweep; a width with no entry keeps the plain layout rather than pretending to be fixed.
-  using ScaleSwizzleT = typename detail::ScaleSwizzleFor<int(shape<0>(ScaleTileShape{}))>::type;
-
-#if defined(PPU_SCALE_PAD) && (PPU_SCALE_PAD > 0)
-  static constexpr int kScalePad = PPU_SCALE_PAD;
-  using SmemLayoutScale = decltype(make_layout(
-    make_shape(shape<0>(ScaleTileShape{}), shape<1>(ScaleTileShape{}), Int<DispatchPolicy::Stages>{}),
-    make_stride(_1{},
-                Int<int(shape<0>(ScaleTileShape{})) + kScalePad>{},
-                Int<(int(shape<0>(ScaleTileShape{})) + kScalePad) * int(shape<1>(ScaleTileShape{}))>{})));
-#else
-  // PPU_SCALE_SWIZZLE -- an XOR on the scale tile's address, chosen by sweeping the collective's OWN layout in
-  // fold_derivation/l98 rather than derived here. Today's map is 4-way conflicted on 4 banks (l94 (2) and l98 agree);
-  // Swizzle<2,3,5> takes it to 1-way on 16 banks. It moves two bits from position 8 -- inside the group field, since
-  // the group stride is 128 halfs = bit 7 -- down to position 3, so it never touches the stage field and stays a
-  // permutation of the allocation (cosize 2048 halfs is a power of two, which l98 checks).
-  //
-  // WHY A SWIZZLE AND NOT PADDING: PPU_SCALE_PAD added halfs to the group stride and LOST, because an additive pad
-  // makes the address non-power-of-two and the multiply costs more than the conflict. An XOR is free.
-  //
-  // WHY IT IS WORTH TRYING, bounded by numbers already in TODO.md: SK_QUANT=0 prices the whole per-group scale reload
-  // at 7.3%, and PPU_SCALE_PREFETCH -- which removes only the WAITING -- recovered 0.7%. So nine tenths of that
-  // channel is work, not stall, and a 4-way conflict is work: four shared-pipe services for one instruction, which
-  // prefetching provably cannot reach. This attacks the part prefetch left behind.
-  //
-  // IT MUST BE COMPOSED ON BOTH VIEWS. partition_extra_inputs builds sS with THIS layout while
-  // partition_extra_mma_info builds a tensor also called sS with SmemCopyLayoutScale (n, 1, stage*Scale_TileK + g).
-  // composition(Swz, L)(c) = Swz(L(c)), so the two stay equal iff they are equal unswizzled -- l98 (2) checks exactly
-  // that, 0 bad over every coordinate, before and after. Swizzling one and not the other is the same class of bug as
-  // the two-literals pitch that faulted with an invalid VA.
-  //
-  // APPLICABILITY, AND WHY IT IS A PARTIAL SPECIALISATION AND NOT conditional_t. cute requires a power-of-two
-  // shape*stride to compose a swizzle, and this bench builds many units into one binary -- Stages = 3 alone makes
-  // smem_scale_k = 3*Scale_TileK non-power-of-two. `conditional_t` does not help: BOTH branch types are instantiated
-  // to be named, so the assert fires from the branch that was not taken. A partial specialisation instantiates only
-  // the selected body. The local front-end check caught this on the first build; a static_assert here would instead
-  // have failed the whole binary for the shapes that cannot carry it, which is the mistake PPU_SCALE_PREFETCH made.
-  using PlainSmemLayoutScale = decltype(tile_to_shape(
+  // Scale and zero-point tiles share the same compact (N, group, stage)
+  // layout. Both the publication view and the flattened MMA read view below
+  // are derived from this one layout authority.
+  using SmemLayoutScale = decltype(tile_to_shape(
     SmemLayoutAtomScale{},
     make_shape(shape<0>(ScaleTileShape{}), shape<1>(ScaleTileShape{}), Int<DispatchPolicy::Stages>{})));
-  static constexpr bool kScaleSwizzleOkInner =
-#if defined(PPU_SCALE_SWIZZLE) && (PPU_SCALE_SWIZZLE != 0)
-      cute::is_static<PlainSmemLayoutScale>::value &&
-      ((int(cute::cosize_v<PlainSmemLayoutScale>) & (int(cute::cosize_v<PlainSmemLayoutScale>) - 1)) == 0) &&
-      ((int(DispatchPolicy::Stages) & (int(DispatchPolicy::Stages) - 1)) == 0) &&
-      ((int(shape<0>(ScaleTileShape{})) & (int(shape<0>(ScaleTileShape{})) - 1)) == 0) &&
-      ((int(shape<1>(ScaleTileShape{})) & (int(shape<1>(ScaleTileShape{})) - 1)) == 0);
-#else
-      false;
-#endif
-  using SmemLayoutScale = typename detail::MaybeScaleSwizzle<kScaleSwizzleOkInner, ScaleSwizzleT, PlainSmemLayoutScale>::type;
-#endif
-  // DECLARED IN BOTH BRANCHES, because partition_extra_mma_info uses them unconditionally. Putting them only in the
-  // #else broke `PPU_SCALE_PAD=8` outright -- "identifier ScaleSwizzle is undefined" -- and the local front-end check
-  // does not exercise that macro unless asked, so it shipped. Same shape as every other defect here: a definition and
-  // its use governed by two different conditions.
-  static constexpr bool kScaleSwizzleOk =
-#if defined(PPU_SCALE_PAD) && (PPU_SCALE_PAD > 0)
-      false;                       // padding already changes the map; the two are alternatives, not a stack
-#else
-      kScaleSwizzleOkInner;
-#endif
-
 
   static_assert(DispatchPolicy::Stages >= 2, "CpAsync mainloop must have at least 2 stages in the pipeline.");
 
@@ -684,13 +576,6 @@ private:
   static constexpr bool ModeHasScales = KernelConversionMode == ConversionMode::ConvertAndScale ||
                                         KernelConversionMode == ConversionMode::ConvertAndScaleWithZero;
 
-  // PLACED HERE, AFTER KernelConversionMode, AND THAT IS NOT COSMETIC. This block first sat next to the swizzle
-  // constants 70 lines above, where KernelConversionMode does not exist yet -- and because the offending conjunct
-  // lives inside `#if defined(PPU_PACKED_SCALE_FUSED)`, EVERY build without the macro preprocessed it away and
-  // compiled. The one configuration that used it was the only one that could not build, and nothing local covered
-  // that configuration, so it reached the box as a define that quietly failed to apply. See ci/local_gates.py's
-  // SYNTAX table, which now carries the macro, and l100_fused_active, which asserts the path is actually on.
-  // -----------------------------------------------------------------------------------------------------------------
   // PPU_PACKED_SCALE_FUSED -- ONE INTERLEAVED (scale, zero) TILE INSTEAD OF TWO PLANES.
   //
   // WHAT IT IS FOR, and it is the STORE side only. The packed decoder writes `sS(n,G,st)` and `sZ(n,G,st)` as two
@@ -705,9 +590,7 @@ private:
   //     and rowC went to bad=128/4096, concentrated in odd columns. This is ownership-safe by construction: a thread
   //     derives BOTH halves from its OWN column's unit.
   //   * AN OFFLINE PERMUTATION of the scale tensor cannot do it at all. A reorder changes which VALUE sits at an
-  //     address; a bank conflict is a property of the ADDRESSES the warp issues, which are unchanged -- and composing
-  //     the permutation into the read view to keep it correct is exactly the runtime address arithmetic that made
-  //     PPU_SCALE_SWIZZLE cost ~7% for zero conflicts removed.
+  //     address; a bank conflict is a property of the ADDRESSES the warp issues, which are unchanged.
   //
   // BYTES ARE UNCHANGED, in both memories. Stored bytes: the interleave is a pure rearrangement. Shared: scale 4 KiB
   // plus zero 4 KiB is 8 KiB either way -- the fused tile takes 2x the elements and the zero tile goes to zero, so
@@ -721,25 +604,19 @@ private:
   // plus a register deinterleave) and is not attempted here -- one variable at a time, and this one is the 73,728.
   static constexpr bool kFusedScaleZero =
 #if defined(PPU_PACKED_SCALE_FUSED) && (PPU_PACKED_SCALE_FUSED != 0)
-      kPackedScaleOn && (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero) && !kScaleSwizzleOk;
+      kPackedScaleOn && (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero);
 #else
       false;
 #endif
 
-  // THE ASSUMPTION IS CHECKED, NOT ASSUMED. The fused layouts below are written out compactly rather than derived
-  // from SmemLayoutScale, because a stride-doubling transform of an arbitrary (possibly swizzled, possibly padded)
-  // layout is not a thing I can state in one line and be sure of. That is only sound while the layout it replaces IS
-  // the compact one, so say so and let the build fail otherwise -- the alternative is the failure mode this file has
-  // hit twice, where two functions build a tensor of the same name with different layouts and the second one faults
-  // as "TSM out of range".
+  // The fused views below require the compact layout selected above. Keep that
+  // relationship explicit so the publication and flattened read views cannot
+  // drift apart.
   static constexpr int kSZ_N   = int(shape<0>(ScaleTileShape{}));
   static constexpr int kSZ_G   = int(shape<1>(ScaleTileShape{}));
   static constexpr int kSZ_St  = int(DispatchPolicy::Stages);
-  // THE GATE IS A TEMPLATE PARAMETER, NOT `!Fused || ...`. A disjunction does not stop the right-hand side from being
-  // INSTANTIATED, and with PPU_SCALE_SWIZZLE on SmemLayoutScale is a ComposedLayout whose stride<> is deleted -- so the
-  // first version of this check failed to compile the swizzle build while claiming to be inert there. `if constexpr` on
-  // a template parameter is the only form that actually discards, which this file already says in as many words about
-  // kPackedScaleOn. The local syntax gate caught it, which is the whole reason that gate exists.
+  // Use a template gate so the inactive fused-layout checks are not
+  // instantiated for conversion modes that do not carry scale and zero.
   template <bool Fused, class L>
   static constexpr bool sz_layout_is_compact() {
     if constexpr (!Fused) { return true; }
@@ -1177,11 +1054,9 @@ public:
     // every physical CTA thread.  The fp16 scale/zero tile and the packed raw tile have different copy layouts, so
     // keep both exact owner predicates and both logical slots.  Surplus threads remain consumers only.
     bool const scale_copy_owner =
-        kLegacyModuloMetadataPublishers ||
         (ScaleCopyPlan::thread_slots == Scale_NumThreads) ||
         ScaleCopyPlan::owns_physical_thread(thread_idx);
     bool const packed_copy_owner =
-        kLegacyModuloMetadataPublishers ||
         (kPackedOwnerThreads == Scale_NumThreads) ||
         PackedMetadataOwnership::owns_physical_thread(thread_idx);
     auto extra_input_partitions = partition_extra_inputs(
@@ -1341,35 +1216,6 @@ public:
     // extra inputs partition and retile
     auto partitioned_extra_info = partition_extra_mma_info(tiled_mma, storage, thread_idx);
     auto copy_partitions_extra_info = retile_extra_mma_info(tiled_mma, partitioned_extra_info, thread_idx);
-#if defined(PPU_SCALE_PREFETCH) && (PPU_SCALE_PREFETCH != 0)
-    // GROUP-AHEAD SCALE PREFETCH. On the FINE path the scale and zero are reloaded from smem at each group's first
-    // mma atom and used one or two instructions later -- 8 times per k-tile at gs=32 with TileK=256. With 14.2 warps
-    // per CU and no spare (this shape is work-bound), every one of those is a Memory Dependency stall that costs
-    // time directly, and Memory Dependency is the top warp state at 0.98.
-    //
-    // Priced by removing the channel entirely (SK_QUANT on the bench): per-group reload = 7.3% of the kernel, which
-    // is this change's ceiling. Dropping the zero as well is another 11.5%, but that is a format question (#20), not
-    // a scheduling one.
-    //
-    // A second register set lets a copy step issue BOTH its groups' loads up front. Built here, not in
-    // partition_extra_mma_info, because that helper is shared with the fold and 2plane collectives; retile_D is only
-    // a call, so a local pair costs nothing but registers. Passed as ONE named tuple parameter -- appending to
-    // transform_B_kblock's cute::tuple<Ts...> does not deduce.
-    // Only the WithZero tuple has a get<3>; on the ScaleOnly path that index is out of range, so the pack is built
-    // inside an if constexpr and the other modes get an empty tuple.
-    auto scale_pf = [&] {
-      if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero) {
-        auto thr_pf = make_tiled_copy_B(SmemCopyAtomScale{}, tiled_mma).get_thread_slice(thread_idx);
-        auto s_pf = cute::make_fragment_like(cute::get<1>(partitioned_extra_info));
-        auto z_pf = cute::make_fragment_like(cute::get<3>(partitioned_extra_info));
-        return cute::make_tuple(s_pf, z_pf, thr_pf.retile_D(s_pf), thr_pf.retile_D(z_pf));
-      } else {
-        return cute::tuple<>{};
-      }
-    }();
-#else
-    auto scale_pf = cute::tuple<>{};
-#endif
 
     //
     // PIPELINED MAIN LOOP
@@ -1408,7 +1254,7 @@ public:
       detail::prepare_mixed_a_for_b<ARegisterSchedule>(
           smem_tiled_copy_A, tCsA_p, tCrA_copy_view, k_block, prime);
       transform_B_kblock<RealInternalElementB>(tCrB_copy_view, tCrB_mma, partitioned_extra_info, k_block,
-          K_ATOM_PER_COPY, copy_partitions_extra_info, read_stage, scale_pf);
+          K_ATOM_PER_COPY, copy_partitions_extra_info, read_stage);
     };
     auto prefetch = [&] (auto k_tile, int write_stage) {
           auto k_iter_crd = cute::idx2crd(k_tile, k_iter_shape);
@@ -1622,10 +1468,10 @@ private:
       Tensor cSp   = make_identity_tensor(make_shape(Int<Scale_TileN>{}, Int<kPackedScaleUnit>{}));
       Tensor tScSp = gmem_thr_copy_raw.partition_S(cSp);
 
-      // Ordinary fp16 metadata still needs predicated-copy destination initialization.  Packed metadata does not:
+      // Ordinary fp16 metadata still needs predicated-copy destination initialization. Packed metadata does not:
       // its decode owner is the sole writer of the complete destination column, including explicit zeroes for the N
-      // tail below.  Keeping the historical clear only behind the legacy switch preserves the exact race negative.
-      if constexpr (!kPackedScaleOn || kLegacyModuloMetadataPublishers) {
+      // tail below.
+      if constexpr (!kPackedScaleOn) {
         if (scale_copy_owner) clear(tSsS);
       }
 
@@ -1746,27 +1592,12 @@ private:
   // whole words for the same reason, so reading the extra bytes is in-bounds.
   static constexpr int kPackedUnitWords = (kPackedScaleUnit + 3) / 4;
 
-  // THE PACKED (f16x2) PER-GROUP DECODE, which needs both fields to pack against each other and the 6-bit unsigned
-  // extraction code_pair_from_words performs. Q4_K is the only format with a min, so this is exactly Q4_K today; the
-  // scalar group_of_words stays for everything else and is what the `else` arm below still calls. The bias/mask/OR
-  // identity it rests on is NOT restricted to unsigned codes -- l96 (A0) pinned its true bound at [-128, 895] -- so a
-  // future signed format only needs its own extraction, not its own arithmetic.
-  //
-  // PPU_PACKED_PAIR=0 FORCES THE SCALAR DECODE BACK, and it exists to BISECT rather than to tune. rowC of
-  // test_q4k_packed_gemm -- the only row where kPackedScaleOn is true -- regressed when the packed pair landed, and
-  // the two candidate causes cannot be separated by reading: (i) the f16x2 asm, which has zero local coverage because
-  // the local gate compiles under nvcc where the scalar fallback is selected, and (ii) anything else the same commits
-  // touched. One build each answers it: PAIR=0 restoring MATCH indicts the packed arithmetic/asm, PAIR=0 still failing
-  // exonerates it and points at the rest of the change.
-#if defined(PPU_PACKED_PAIR) && (PPU_PACKED_PAIR == 0)
-  static constexpr bool kPackedPairFast = false;
-#else
-  // AND SIX-BIT FIELDS. The pair path folds the field width into kMagic1152x2, so Q2_K (4 bits) and Q6_K
-  // (8 bits) must take the scalar arm -- which they would otherwise enter, since Q2_K has a min and a zero
-  // bias and satisfies the old condition exactly.
+  // The packed f16x2 per-group decode requires both fields to use six-bit
+  // unsigned codes. Other formats keep the scalar group decoder. The pair
+  // path folds the field width into kMagic1152x2, so Q2_K (four-bit fields)
+  // and Q6_K (eight-bit fields) must not enter it.
   static constexpr bool kPackedPairFast = kPackedHasMin && (kPackedScaleBias == 0)
                                       && (PackedUnit::kScaleBits == 6) && (PackedUnit::kMinBits == 6);
-#endif
 
 
   // ON IS A TEMPLATE PARAMETER, and that is the whole point: `if constexpr` only skips INSTANTIATING a discarded branch
@@ -1980,12 +1811,10 @@ private:
       auto smem_thr_copy_S     = smem_tiled_copy_S.get_thread_slice(thread_idx);
 
       static constexpr int smem_scale_k = Scale_TileK * DispatchPolicy::Stages;
-      // THE SAME swizzle as SmemLayoutScale, for the reason spelled out there: one buffer, two views, and they are
-      // equal only while both carry it.
-      using PlainSmemCopyLayoutScale = decltype(tile_to_shape(SmemLayoutAtomScale{},
+      // Flatten group and stage for the MMA reader while retaining the same
+      // compact N-major address map as SmemLayoutScale.
+      using UnfusedSmemCopyLayoutScale = decltype(tile_to_shape(SmemLayoutAtomScale{},
           make_shape(shape<0>(ScaleTileShape{}), Int<1>{}, Int<smem_scale_k>{})));
-      using UnfusedSmemCopyLayoutScale =
-          typename detail::MaybeScaleSwizzle<kScaleSwizzleOk, ScaleSwizzleT, PlainSmemCopyLayoutScale>::type;
       // THE READ SIDE'S FLATTENED VIEW, FUSED. Same shape (n, 1, stage*Scale_TileK + g), strides doubled, so a reader
       // written against the unfused layout keeps its code and only walks 4 bytes per element instead of 2. Checked
       // against the unfused layout rather than assumed, for the reason given at SmemLayoutScaleFusedWord: this is the
@@ -2015,9 +1844,9 @@ private:
       // arm reads only 0 and 1; ScaleZero puts it at 4 and nothing reads past 3 -- but it was built on smem_scale, the
       // fp16 plane, with SmemLayoutScalePackedStaged, which describes the 16-byte staging. That is a leftover from
       // when the staging lived inside smem_scale, and it is exactly the kind of thing that is revived and then wrong
-      // twice over: wrong buffer, and (since PPU_SCALE_SWIZZLE) an unswizzled view of a buffer every live view now
-      // swizzles. Repointed rather than deleted so the tuple indices, which every consumer reads positionally, do not
-      // move. Found by enumerating every tensor built on smem_scale/smem_zero -- six of them, where I had claimed two.
+      // twice over: wrong buffer and a layout for a different allocation.
+      // Repointed rather than deleted so the tuple indices, which every
+      // consumer reads positionally, do not move.
       Tensor sSp  = make_tensor(make_smem_ptr(reinterpret_cast<uint8_t*>(
                                     kPackedScaleOn ? (void*)storage.smem_scale_raw.begin()
                                                    : (void*)storage.smem_scale.begin())),
@@ -2167,25 +1996,21 @@ private:
             int K_ATOM_PER_COPY,
             class... Ts,
             class CopyViews,
-            class KBlockT,
-            class PfPack>
+            class KBlockT>
   CUTLASS_DEVICE
   void transform_B_kblock(
     TCrB_load const& tCrB_load,
     TCrB_mma& tCrB_mma,
     cute::tuple<Ts...>& partitioned_extra_info,
     // KBlockT, NOT int: the callers already hold a static k_block (for_each gives Int<x>, and k_block_next is
-    // (Int<x> + _1) % K_BLOCK_MAX, also static). Taking it as an int erased that, so atom_idx, g = atom_idx/APG_
-    // and the `% APG_ == 0` guard all turned into runtime work -- s.cmp 0.54 + s.csel 0.41 + s.cbr 0.56 +
+    // (Int<x> + _1) % K_BLOCK_MAX, also static). Taking it as an int erased that, so atom_idx and its metadata
+    // group all turned into runtime work -- s.cmp 0.54 + s.csel 0.41 + s.cbr 0.56 +
     // s.shra 0.09 + s.mull 0.16 per mma in the profile, ~1.8 of 34. Kept static, the guard folds to if constexpr
     // and vanishes with the division and modulo. Constant folding only; numerics unchanged.
     KBlockT const& k_block,
     cute::Int<K_ATOM_PER_COPY> k_atom,
     CopyViews const& tiled_copy_and_views,
-    int const read_stage,
-    // The second scale/zero register set, or an empty tuple. A separate template parameter and NOT an extension of
-    // the Ts... pack above: appending to cute::tuple<Ts...> fails deduction.
-    PfPack const& pf) {
+    int const read_stage) {
 
     static constexpr int K_BLOCK_STATIC = int(KBlockT{});
     Tensor cvt_in  = recast<RealInternalElementB>(tCrB_load(_, _, k_block));
@@ -2205,12 +2030,6 @@ private:
         // emission order -- and derive a compact N layout beginning at the
         // compute fragment's own N stride.  Nested physical N modes such as
         // (2,2) then become (128,256), rather than inheriting (32,256).
-#if defined(PPU_Q4_KPACK4_LEGACY_LOADER_OUTPUT_LAYOUT) && \
-    (PPU_Q4_KPACK4_LEGACY_LOADER_OUTPUT_LAYOUT != 0)
-        return make_tensor(
-            tCrB_mma(_, _, k_block * K_ATOM_PER_COPY).data(),
-            cvt_in.layout());
-#else
         auto dst_n_stride = compact_col_major(
             shape<1>(cvt_in.layout()), stride<1>(tCrB_mma.layout()));
         auto dst_layout = make_layout(
@@ -2218,7 +2037,6 @@ private:
             make_stride(stride<0>(cvt_in.layout()), dst_n_stride));
         return make_tensor(
             tCrB_mma(_, _, k_block * K_ATOM_PER_COPY).data(), dst_layout);
-#endif
       } else {
         return make_tensor(
             tCrB_mma(_, _, k_block * K_ATOM_PER_COPY).data(),
@@ -2233,7 +2051,6 @@ private:
     constexpr int KBM_    = MMA_KA_ / K_ATOM_PER_COPY;                  // K_BLOCK_MAX (copy steps)
     using FinePolicy = typename MetadataPolicy::template Fine<KBM_, MMA_KA_>;
     constexpr bool FINE = FinePolicy::active;
-    constexpr int APG_  = FinePolicy::atoms_per_group;
 
     if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
       // do nothing
@@ -2248,8 +2065,8 @@ private:
       } else {
         // FINE: write via tCrS_copy_view (a retile VIEW of the ORIGINAL fragment) then read the ORIGINAL back --
         // NOT the local `tCrS` copy above (make_fragment_like is owning, so `auto tCrS` snapshots stale rmem).
-    // COMPILE-TIME ATOM INDEX. i used to be a runtime int, so atom_idx, g = atom_idx / APG_ and the
-    // `atom_idx % APG_ == 0` guard all became runtime work even though K_ATOM_PER_COPY, APG_ and k_block are
+    // COMPILE-TIME ATOM INDEX. i used to be a runtime int, so the atom/group lookup and group-boundary guard
+    // all became runtime work even though K_ATOM_PER_COPY, the metadata group size and k_block are
     // constants: the profile showed s.cmp 0.54 + s.csel 0.41 + s.cbr 0.56 + s.shra 0.09 + s.mull 0.16 per mma,
     // about 1.8 of 34. With for_each the index is Int<i>, the guard folds to if constexpr and disappears, and the
     // division and modulo fold away. Same reason the main loop uses for_each -- see its comment about needing
@@ -2276,76 +2093,20 @@ private:
         });
       } else {
         // FINE: see ConvertAndScale note -- write via the copy VIEWs, read the ORIGINAL fragments back.
-    // COMPILE-TIME ATOM INDEX. i used to be a runtime int, so atom_idx, g = atom_idx / APG_ and the
-    // `atom_idx % APG_ == 0` guard all became runtime work even though K_ATOM_PER_COPY, APG_ and k_block are
-    // constants: the profile showed s.cmp 0.54 + s.csel 0.41 + s.cbr 0.56 + s.shra 0.09 + s.mull 0.16 per mma,
-    // about 1.8 of 34. With for_each the index is Int<i>, the guard folds to if constexpr and disappears, and the
-    // division and modulo fold away. Same reason the main loop uses for_each -- see its comment about needing
-    // k_block to be Int<x>. Numerics are unchanged; this is constant folding only.
-        // PREFETCH IS AN APPLICABILITY, NOT A REQUIREMENT. Two register sets cover a copy step with at most two
-        // scale groups; TileK=64 configs have more and must keep the original per-group reload. Writing that as a
-        // static_assert made three units fail to compile instead of falling back -- the same shape of mistake as a
-        // boundary check that only guards one end.
-        constexpr int GRP = (K_ATOM_PER_COPY % APG_ == 0) ? (K_ATOM_PER_COPY / APG_) : 0;
-        // Prefetching a smem read that no longer happens: where the packed path is on, a group costs kPackedSlots
-        // decodes from registers and there is no load latency to hide. Per UNIT, not per binary.
-        constexpr bool kPfOk = !kPackedScaleOn &&
-#if defined(PPU_SCALE_PREFETCH) && (PPU_SCALE_PREFETCH != 0)
-            (GRP == 2) && (cute::tuple_size<PfPack>::value == 4);
-#else
-            false;
-#endif
-        if constexpr (kPfOk) {
-          auto smem_tiled_copy_S = cute::get<0>(tiled_copy_and_views);
-          auto tCsS              = cute::get<0>(partitioned_extra_info);
-          auto tCsZ              = cute::get<2>(partitioned_extra_info);
-          auto tCrS_copy_view    = cute::get<1>(tiled_copy_and_views);
-          auto tCrZ_copy_view    = cute::get<2>(tiled_copy_and_views);
-          // BOTH groups load before any transform, group gi into register set gi % 2, so the second group's data has
-          // a whole group of atoms to arrive in instead of being used one instruction after its load. pf carries the
-          // second set: fragments 0,1 and their copy views 2,3.
-          constexpr int g0 = FinePolicy::group(K_BLOCK_STATIC * K_ATOM_PER_COPY);
-          cute::for_each(cute::make_int_sequence<GRP>{}, [&] (auto gi_) {
-            constexpr int GI = decltype(gi_)::value;
-            const int sk = read_stage * int(Scale_TileK) + g0 + GI;
-            if constexpr (GI % 2 == 0) {
-              copy(smem_tiled_copy_S, tCsS(_,_,0,sk), tCrS_copy_view(_,_,0));
-              copy(smem_tiled_copy_S, tCsZ(_,_,0,sk), tCrZ_copy_view(_,_,0));
-            } else {
-              copy(smem_tiled_copy_S, tCsS(_,_,0,sk), cute::get<2>(pf)(_,_,0));
-              copy(smem_tiled_copy_S, tCsZ(_,_,0,sk), cute::get<3>(pf)(_,_,0));
-            }
-          });
-          cute::for_each(cute::make_int_sequence<K_ATOM_PER_COPY>{}, [&] (auto i_) {
-            constexpr int I        = decltype(i_)::value;
-            constexpr int atom_idx = K_BLOCK_STATIC * K_ATOM_PER_COPY + I;
-            constexpr int GI       = I / APG_;
-            if constexpr (GI % 2 == 0) {
-              transform_fragment(tCrB_mma(_,_,Int<atom_idx>{}), cute::get<1>(partitioned_extra_info)(_,_,0),
-                              tCrB_mma(_,_,Int<atom_idx>{}), cute::multiplies{});
-              transform_fragment(tCrB_mma(_,_,Int<atom_idx>{}), cute::get<3>(partitioned_extra_info)(_,_,0),
-                              tCrB_mma(_,_,Int<atom_idx>{}), cute::plus{});
-            } else {
-              transform_fragment(tCrB_mma(_,_,Int<atom_idx>{}), cute::get<0>(pf)(_,_,0),
-                              tCrB_mma(_,_,Int<atom_idx>{}), cute::multiplies{});
-              transform_fragment(tCrB_mma(_,_,Int<atom_idx>{}), cute::get<1>(pf)(_,_,0),
-                              tCrB_mma(_,_,Int<atom_idx>{}), cute::plus{});
-            }
-          });
-                } else {
-          cute::for_each(cute::make_int_sequence<K_ATOM_PER_COPY>{}, [&] (auto i_) {
-            constexpr int I = decltype(i_)::value;
-            constexpr int atom_idx = K_BLOCK_STATIC * K_ATOM_PER_COPY + I;
-            if constexpr (FinePolicy::starts_group(atom_idx)) {          // reload only at a group's first atom
-              MetadataPolicy::reload(partitioned_extra_info, tiled_copy_and_views,
-                                     FinePolicy::group(atom_idx), read_stage);
-            }
-            transform_fragment(tCrB_mma(_, _, Int<atom_idx>{}), cute::get<1>(partitioned_extra_info)(_, _, 0),
-                            tCrB_mma(_, _, Int<atom_idx>{}), cute::multiplies{});
-            transform_fragment(tCrB_mma(_, _, Int<atom_idx>{}), cute::get<3>(partitioned_extra_info)(_, _, 0),
-                            tCrB_mma(_, _, Int<atom_idx>{}), cute::plus{});
-          });
-        }
+        // Keep the atom index compile-time so group boundaries, division and
+        // modulo all fold before code generation.
+        cute::for_each(cute::make_int_sequence<K_ATOM_PER_COPY>{}, [&] (auto i_) {
+          constexpr int I = decltype(i_)::value;
+          constexpr int atom_idx = K_BLOCK_STATIC * K_ATOM_PER_COPY + I;
+          if constexpr (FinePolicy::starts_group(atom_idx)) {
+            MetadataPolicy::reload(partitioned_extra_info, tiled_copy_and_views,
+                                   FinePolicy::group(atom_idx), read_stage);
+          }
+          transform_fragment(tCrB_mma(_, _, Int<atom_idx>{}), cute::get<1>(partitioned_extra_info)(_, _, 0),
+                          tCrB_mma(_, _, Int<atom_idx>{}), cute::multiplies{});
+          transform_fragment(tCrB_mma(_, _, Int<atom_idx>{}), cute::get<3>(partitioned_extra_info)(_, _, 0),
+                          tCrB_mma(_, _, Int<atom_idx>{}), cute::plus{});
+        });
       }
     }
     else {

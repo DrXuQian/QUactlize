@@ -326,12 +326,6 @@ public:
       int(Scale_TileN), int(Scale_NumThreads)>;
   static constexpr int kPackedOwnerThreads = PackedMetadataOwnership::owner_threads;
   static constexpr int kPackedColsPerThread = PackedMetadataOwnership::columns_per_thread;
-#if defined(PPU_MIXED_LEGACY_MODULO_METADATA_PUBLISHERS) && \
-    (PPU_MIXED_LEGACY_MODULO_METADATA_PUBLISHERS != 0)
-  static constexpr bool kLegacyModuloMetadataPublishers = true;
-#else
-  static constexpr bool kLegacyModuloMetadataPublishers = false;
-#endif
 
   // Q5 is one legal 16-byte cp.async per column; Q3/Q6 are seven/nine 4-byte copies of their byte-neutral 28/36-byte
   // paired units. The value tile remains exactly one complete column. If owners < TileN, CuTe carries additional
@@ -880,11 +874,9 @@ public:
     // The fp16 scale/zero tile and packed raw tile use different logical copy layouts.  Construct an in-range slice for
     // every physical thread, but let exactly one physical owner publish each destination; surplus threads only consume.
     bool const scale_copy_owner =
-        kLegacyModuloMetadataPublishers ||
         (ScaleCopyPlan::thread_slots == Scale_NumThreads) ||
         ScaleCopyPlan::owns_physical_thread(thread_idx);
     bool const packed_copy_owner =
-        kLegacyModuloMetadataPublishers ||
         (kPackedOwnerThreads == Scale_NumThreads) ||
         PackedMetadataOwnership::owns_physical_thread(thread_idx);
     auto extra_input_partitions = partition_extra_inputs(
@@ -1073,35 +1065,6 @@ public:
                               * (decltype(cute::size<1>(tCrB_mma))::value / decltype(cute::size<1>(tCrB_copy_view))::value)
                               == Cvt2Plane::kAtoms,
         "PPU_B_CHUNK (2-plane): K_ATOM_PER_COPY * (MMA_N / CPY_N) must be the kAtoms one int2 delivery carries");
-
-    // PPU_MMA_PROBE=1: the same "let the kernel report its own indices" probe the fold collective has, plus the two
-    // LAYOUTS -- because chunking B here needs to know what the emission's index space actually is, and a local cute
-    // stub cannot answer it. This collective's tiled_mma carries PermutationM/N from the builder and its B fragment is
-    // loaded through an int8 m16n16k32 atom (NOT the fp16 k16 one), so neither the fragment's mode order nor CPY_K can
-    // be reproduced offline. What a stub CAN establish, and did (fold_derivation/l39_2plane_frag.cu): every fold-path
-    // config has MMA_N == MMA_K == 4, so 8*MMA_K and 8*MMA_N coincide there and no fold measurement distinguishes
-    // k-inner from k-outer. At TK=256, MMA_N=2 and MMA_K=16 -- they differ by 8x. Print it instead of assuming it.
-#if defined(PPU_MMA_PROBE) && (PPU_MMA_PROBE != 0)
-    if (thread0()) {
-      cute::print("[2plane probe] K_BLOCK_MAX(CPY_K)="); cute::print(K_BLOCK_MAX);
-      cute::print("  K_ATOM_PER_COPY="); cute::print(K_ATOM_PER_COPY);
-      cute::print("  P2_DIV="); cute::print(P2_DIV);
-      cute::print("  Scale_TileK="); cute::print(int(Scale_TileK));
-      cute::print("\n  tCrB_mma      : "); cute::print(tCrB_mma.layout());
-      cute::print("\n  tCrB_load     : "); cute::print(tCrB_load.layout());
-      cute::print("\n  tCrB_copy_view: "); cute::print(tCrB_copy_view.layout());
-      cute::print("\n  tCrB2_load    : "); cute::print(tCrB2_load.layout());
-      // The emission index space: cvt_in's layout is what the converter's flat output pointer walks, and cvt_out
-      // aliases tCrB_mma's registers THROUGH it. If cvt_in's mode-1 stride != tCrB_mma's MMA_N stride, a chunk gate
-      // built on tCrB_mma's layout is built on the wrong space.
-      cute::print("\n  cvt_in(=recast<B>(tCrB_load(_,_,0))): ");
-      cute::print(recast<RealInternalElementB>(tCrB_load(_, _, 0)).layout());
-      cute::print("\n  MMA_N stride of tCrB_mma="); cute::print(stride<1>(tCrB_mma.layout()));
-      cute::print("  8*MMA_K="); cute::print(8 * int(size<2>(tCrB_mma)));
-      cute::print("  8*MMA_N="); cute::print(8 * int(size<1>(tCrB_mma)));
-      cute::print("\n");
-    }
-#endif
 
     int initial_read_stage = 0;
     Tensor tCsA_p = tCsA(_,_,_,initial_read_stage);
@@ -1435,10 +1398,9 @@ private:
       Tensor tSsSp = gmem_thr_copy_raw.partition_D(sSraw);
       Tensor cSp = make_identity_tensor(make_shape(Int<Scale_TileN>{}, Int<kPackedScaleUnit>{}));
       Tensor tScSp = gmem_thr_copy_raw.partition_S(cSp);
-      // Ordinary fp16 metadata still needs predicated-copy destination initialization.  Packed metadata is a total
+      // Ordinary fp16 metadata still needs predicated-copy destination initialization. Packed metadata is a total
       // decode-owner write: valid columns are decoded and invalid N-tail columns are zeroed below by that same owner.
-      // Retain the old clear only for the exact legacy race negative.
-      if constexpr (!kPackedScaleOn || kLegacyModuloMetadataPublishers) {
+      if constexpr (!kPackedScaleOn) {
         if (scale_copy_owner) clear(tSsS);
       }
       // init scale_residue_k

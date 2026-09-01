@@ -162,20 +162,6 @@ for token in \
   }
 done
 
-# Same exact source/header overlay, changing only the production prepare edge.
-# The marker must disappear and front-end lowering must be clean.
-nvcc "${device_flags[@]}" -DQUACTLIZE_W4_SPLITK_SEVER_PREPARE_EDGE=1 \
-  "${source}" -o "${out}/production-severed.cu.cpp" \
-  >"${out}/production-severed.log" 2>&1 || {
-    echo '[l200:runner] FAIL: severed production prepare control did not compile cleanly' >&2
-    sed -n '1,150p' "${out}/production-severed.log" >&2
-    exit 1
-  }
-if grep -Fq "${marker}" "${out}/production-severed.log"; then
-  echo '[l200:runner] FAIL: Prepared::initialize marker survived prepare-edge severing' >&2
-  exit 1
-fi
-
 binary="${out}/l200-dense-w4-splitk-production"
 nvcc "${base_flags[@]}" "${source}" -o "${binary}" \
   >"${out}/host-build.log" 2>&1 || {
@@ -210,4 +196,4 @@ grep -Fq \
     exit 1
   }
 
-echo "[l200:runner] PASS abi=C-v1 production=backend-W4-ScaleOnly-gs128-tacticTK128-artifactTK64 controls=35/35 call-edge=instantiated/severed artifacts=${out}"
+echo "[l200:runner] PASS abi=C-v1 production=backend-W4-ScaleOnly-gs128-tacticTK128-artifactTK64 controls=35/35 call-edge=instantiated artifacts=${out}"

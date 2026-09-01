@@ -154,21 +154,8 @@ template <
   // InternalSmemCopyAtomA gives PPU0010_TSM_LD_SWZL<half_t, 16, 64, true, false, 4>, whose (Block_MN,
   // AiuContElemSize, InstNum) match here and not DefaultGemm_AIU_Operand's, which is why an override placed there
   // was inert.
-  // PPU_A_PACK=R: pack the cube BASES together. Each of the first R rows owns 32 of a cube's 512 words, in four
-  // 8-word runs (fold_derivation/l84, l86); the bytes between those runs are read only into accumulator rows the
-  // epilogue masks. l85 derives the writer-collision-free, 128-B-aligned cube pitch for R. The projected m8 opcode
-  // still physically reads x4, so pipeline stages use a separate full-footprint pitch. Geometry, swizzle and the
-  // write/read pairing are untouched.
-#if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
-  // Both the read atom and collective writer call the same constexpr function. Separate literals once diverged
-  // (16 here, 64 there), making the kernel write at one spacing and read at another until the AIU load faulted.
-  static constexpr int kCubePitchA = detail::aPackPitchForRows(PPU_A_PACK);
-  static constexpr int kStagePitchA = detail::aPackStagePitchHalfs(
-      kCubePitchA, InstNum, Block_MN{} * AiuContElemSize{});
-#else
   static constexpr int kCubePitchA = 0;    // 0 = natural CUBE_H * CUBE_W
   static constexpr int kStagePitchA = 0;   // 0 = CubePitch * InstNum
-#endif
   using SmemCopyOp = PPU0010_TSM_LD_SWZL<Element, Block_MN{}, AiuContElemSize{}, Swap, false, InstNum, kCubePitchA>;
   using SmemCopyAtom = Copy_Atom<SmemCopyOp, Element>;
   // m8's A fragment has two registers per lane, but the physical swzl instruction always produces x4.  The
@@ -707,12 +694,6 @@ public:
                 "quactlize mixed-input builder supports only the ppu001 m8/m16 fp16 atom families");
   static_assert(MmaInstM != 8 || physicalBlockM == 16,
                 "m8 must retain the physical 16-row A write/read cube");
-#if defined(PPU_A_PACK) && (PPU_A_PACK != 0)
-  static_assert(ScheduledAPackRows == 0,
-                "do not combine the legacy global PPU_A_PACK experiment with a typed packed-A schedule");
-  static_assert(MmaInstM != 8,
-                "PPU_A_PACK is disabled for m8: logical TileM=8 does not equal the physical 16-row A cube");
-#endif
   static_assert(ScheduledAPackRows == 0 ||
                     (ScheduledAPackRows == 1 && MmaInstM == 8 && physicalBlockM == 16),
                 "typed packed-A schedule must be the exact physical16/logical8 M==1 provider");
