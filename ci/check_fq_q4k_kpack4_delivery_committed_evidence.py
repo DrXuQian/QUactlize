@@ -1,29 +1,38 @@
 #!/usr/bin/env python3
-"""Validate SHA-bound host evidence without executing nvcc on a PPU box."""
+"""Validate archived host-only K-pack4 delivery evidence.
+
+This file deliberately does not bind old host-proof hashes to the current
+source tree.  It records what the historical proof covered, while current
+device admission remains a fresh PPU-box responsibility.
+"""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
 import pathlib
+import subprocess
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 EXPECTED = ROOT / "dev/fold_derivation/q4_kpack4_delivery_host.expected.txt"
-L229 = ROOT / "dev/fold_derivation/l229_q4_kpack4_production_type.cu"
-L231 = ROOT / "dev/fold_derivation/l231_q4_kpack4_production_fragment.cu"
-L231_RUNNER = ROOT / "dev/fold_derivation/run_l231_q4_kpack4_production_fragment.sh"
-L232 = ROOT / "dev/fold_derivation/l232_q4_kpack4_fused_metadata_store.cu"
 BOX_RUNNER = ROOT / "tools/run_fq_q4k_kpack4_delivery_ab_box.sh"
-SCHEMA = "quactlize.fq-q4k-kpack4-delivery-host-evidence.v2"
+SCHEMA = "quactlize.fq-q4k-kpack4-delivery-host-evidence.v3"
+HISTORICAL_COMMIT = "d5998079af9d4c1afa7e6e79e62cf528676acc52"
+HISTORICAL_SOURCES = {
+    "historical_l229_source_sha256":
+        "dev/fold_derivation/l229_q4_kpack4_production_type.cu",
+    "historical_l231_source_sha256":
+        "dev/fold_derivation/l231_q4_kpack4_production_fragment.cu",
+    "historical_l231_runner_sha256":
+        "dev/fold_derivation/run_l231_q4_kpack4_production_fragment.sh",
+    "historical_l232_source_sha256":
+        "dev/fold_derivation/l232_q4_kpack4_fused_metadata_store.cu",
+}
 
 
 class CheckError(ValueError):
     pass
-
-
-def sha256_text(text: str) -> str:
-    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def parse(text: str) -> dict[str, str]:
@@ -38,22 +47,38 @@ def parse(text: str) -> dict[str, str]:
     return rows
 
 
-def validate(evidence: str, l229: str, l231: str, l231_runner: str, l232: str,
-             box_runner: str) -> None:
+def historical_sha256(commit: str, path: str) -> str:
+    result = subprocess.run(
+        ("git", "-C", str(ROOT), "show", f"{commit}:{path}"),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        raise CheckError(f"historical source is unavailable: {commit}:{path}: {detail}")
+    return hashlib.sha256(result.stdout).hexdigest()
+
+
+def validate(evidence: str, box_runner: str) -> None:
     rows = parse(evidence)
     expected_keys = {
-        "schema", "l229_source_sha256", "l231_source_sha256",
-        "l231_runner_sha256", "l232_source_sha256", "l229", "l231_source",
+        "schema", "evidence_kind", "source_commit", "current_admission",
+        "historical_l229_source_sha256", "historical_l231_source_sha256",
+        "historical_l231_runner_sha256", "historical_l232_source_sha256", "l229", "l231_source",
         "l231_d32", "l231_d16", "l231_rotate", "l231_legacy", "l232",
     }
     if set(rows) != expected_keys or rows["schema"] != SCHEMA:
         raise CheckError(f"evidence schema/denominator differs: {sorted(rows)}")
-    for key, source in (("l229_source_sha256", l229),
-                        ("l231_source_sha256", l231),
-                        ("l231_runner_sha256", l231_runner),
-                        ("l232_source_sha256", l232)):
-        if rows[key] != sha256_text(source):
-            raise CheckError(f"{key} differs from the committed source")
+    if rows["evidence_kind"] != "historical-host-only":
+        raise CheckError("evidence must be explicitly historical host-only")
+    if rows["source_commit"] != HISTORICAL_COMMIT:
+        raise CheckError("historical evidence commit differs")
+    if rows["current_admission"] != "fresh-ppu-box-required":
+        raise CheckError("historical evidence cannot admit current device code")
+    for key, path in HISTORICAL_SOURCES.items():
+        value = rows[key]
+        if len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+            raise CheckError(f"archived source digest is malformed: {key}")
+        if value != historical_sha256(rows["source_commit"], path):
+            raise CheckError(f"archived source digest differs: {key}")
     exact = {
         "l229": "L229 Q4_K KPACK4 production-type PASS layout=0x00000001 "
                 "mapping=0x51344b5034540001 physical=NxK/4 "
@@ -87,22 +112,27 @@ def validate(evidence: str, l229: str, l231: str, l231_runner: str, l232: str,
         raise CheckError("box runner lost the exact committed-evidence boundary")
 
 
-def self_test(evidence: str, sources: tuple[str, str, str, str], box: str) -> None:
-    validate(evidence, *sources, box)
+def self_test(evidence: str, box: str) -> None:
+    validate(evidence, box)
     plants = (
-        (evidence.replace("l231_d32=", "l231_d33=", 1), sources, box),
+        (evidence.replace("l231_d32=", "l231_d33=", 1), box),
         (evidence.replace("candidate=IDENTITY", "candidate=NONIDENTITY", 1),
-         sources, box),
-        (evidence, (sources[0] + "\n// drift", sources[1], sources[2], sources[3]), box),
-        (evidence, (sources[0], sources[1], sources[2], sources[3] + "\n// drift"), box),
-        (evidence, sources, box.replace(
+         box),
+        (evidence.replace("evidence_kind=historical-host-only",
+                          "evidence_kind=current-device", 1), box),
+        (evidence.replace("current_admission=fresh-ppu-box-required",
+                          "current_admission=admitted", 1), box),
+        (evidence.replace(
+            "historical_l229_source_sha256=f1fc2a3492578a83a8854a93e6c2bd06c453440ee584396858951f99ef9e7e27",
+            "historical_l229_source_sha256=" + "0" * 64, 1), box),
+        (evidence, box.replace(
             "--committed-only --evidence", "--evidence", 1)),
-        (evidence, sources, box +
+        (evidence, box +
          '\npython3 -B "$root/ci/local_gates.py" -k l229\n'),
     )
-    for broken, broken_sources, broken_box in plants:
+    for broken, broken_box in plants:
         try:
-            validate(broken, *broken_sources, broken_box)
+            validate(broken, broken_box)
         except CheckError:
             pass
         else:
@@ -116,16 +146,14 @@ def main() -> int:
     args = parser.parse_args()
     try:
         evidence = args.evidence.read_text()
-        sources = (L229.read_text(), L231.read_text(), L231_RUNNER.read_text(),
-                   L232.read_text())
         box = BOX_RUNNER.read_text()
-        validate(evidence, *sources, box)
-        self_test(evidence, sources, box)
+        validate(evidence, box)
+        self_test(evidence, box)
     except (OSError, CheckError, AssertionError) as exc:
         print(f"[fq-kpack4-delivery-committed] FAIL: {exc}")
         return 2
-    print("[fq-kpack4-delivery-committed] PASS exact L229 type + "
-          "L231 D32/D16/2-RED + L232 fused-store map evidence; "
+    print("[fq-kpack4-delivery-committed] PASS historical-host-only "
+          f"source_commit={HISTORICAL_COMMIT} current_admission=fresh-ppu-box-required "
           "fresh_box_execution=0")
     return 0
 

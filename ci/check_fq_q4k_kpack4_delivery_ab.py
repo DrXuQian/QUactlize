@@ -29,13 +29,37 @@ def require(text: str, needles: tuple[str, ...], label: str) -> None:
         raise CheckError(f"{label} lost source seams: {missing}")
 
 
+def require_region(text: str, start: str, end: str, needles: tuple[str, ...],
+                   label: str) -> None:
+    begin = text.find(start)
+    finish = text.find(end, begin + len(start))
+    if begin < 0 or finish < 0:
+        raise CheckError(f"{label} region is absent")
+    require(text[begin:finish], needles, label)
+
+
 def check(texts: list[str]) -> None:
     dispatch, builder, collective, policy, bench, driver, l229, l231, analyzer, runner = texts
     require(dispatch, (
-        "template<class WrappedSchedule_, int DeliveryN_ = 0>",
-        "using WrappedSchedule = WrappedSchedule_;\n  static constexpr int DeliveryN = DeliveryN_;",
+        "template<class WrappedSchedule_, int DeliveryN_ = 0,\n"
+        "         class MetadataPublication_ = SeparateHalfPlanes>",
+        "template<int LowPack_, int HighPack_, class WrappedSchedule_, int DeliveryN_ = 0>\n"
+        "struct KernelAiuKPackTranspose {",
+        "static constexpr int LowPack = LowPack_;",
+        "static constexpr int HighPack = HighPack_;",
+        "static constexpr int DeliveryN = DeliveryN_;",
+        "using WrappedSchedule = WrappedSchedule_;",
         "WrappedTraits::DeliveryN",
     ), "dispatch")
+    require_region(dispatch,
+                   "template<class WrappedSchedule_, int DeliveryN_ = 0,\n"
+                   "         class MetadataPublication_ = SeparateHalfPlanes>\n"
+                   "struct KernelAiuQ4KPack4Transpose {",
+                   "// Converter-native b16 transport shared by Q2/Q3/Q5/Q6.",
+                   ("using WrappedSchedule = WrappedSchedule_;",
+                    "using MetadataPublication = MetadataPublication_;",
+                    "static constexpr int DeliveryN = DeliveryN_;"),
+                   "Q4 K-pack dispatch")
     require(builder, (
         "int ScheduledDeliveryN = 0",
         "static constexpr int AutoDeliveryN = Block_N{} < 64 ? Block_N{} : 64;",
@@ -133,8 +157,10 @@ def main() -> int:
     texts = [path.read_text() for path in paths]
     check(texts)
     plants = (
-        (0, "using WrappedSchedule = WrappedSchedule_;\n  static constexpr int DeliveryN = DeliveryN_;",
-         "using WrappedSchedule = WrappedSchedule_;\n  static constexpr int DeliveryN = 64;"),
+        (0, "template<int LowPack_, int HighPack_, class WrappedSchedule_, int DeliveryN_ = 0>",
+         "template<int LowPackFixed_, int HighPack_, class WrappedSchedule_, int DeliveryN_ = 0>"),
+        (0, "using MetadataPublication = MetadataPublication_;",
+         "using MetadataPublication = SeparateHalfPlanes;"),
         (1, "static constexpr int InstNum = Block_N{} / DeliveryN;",
          "static constexpr int InstNum = 1;"),
         (1, "Stride<_1, Int<DeliveryN>>", "Stride<_1, Block_N>"),
