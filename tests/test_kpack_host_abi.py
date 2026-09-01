@@ -59,6 +59,16 @@ def _library(qtype):
     return prepare, recover
 
 
+def _role_library(role):
+    root = os.environ.get("QUACTLIZE_PPU_BUNDLE")
+    if not root:
+        pytest.skip("QUACTLIZE_PPU_BUNDLE is required for the compiled host ABI test")
+    path = Path(root) / role.filename
+    if not path.is_file():
+        pytest.skip(f"PPU library is absent: {path}")
+    return ctypes.CDLL(str(path))
+
+
 def _u8_pointer(array):
     return array.ctypes.data_as(U8P) if array.size else None
 
@@ -82,6 +92,49 @@ def test_arrangement_v2_ctypes_layout_matches_the_public_c_abi():
     assert ArrangementV2.version.offset == 0
     assert ArrangementV2.reserved.offset == 28
     assert ArrangementV2.mapping_id.offset == 32
+
+
+@pytest.mark.parametrize("role", ppu_bundle.LIBRARY_ROLES,
+                         ids=lambda role: role.role)
+def test_format_selected_canonical_arrangement_query_fails_closed(role):
+    library = _role_library(role)
+    query = library.quactlize_ppu_canonical_arrangement_v2
+    query.argtypes = [ctypes.c_int, ARRP]
+    query.restype = ctypes.c_int
+
+    def cleared(value):
+        return bytes(value) == bytes(ctypes.sizeof(ArrangementV2))
+
+    # A null destination never has an address to clear, but still reports the
+    # public malformed-output status rather than selecting a descriptor.
+    assert query(int(role.qtype), None) == 23
+
+    known = tuple(formats.BLOCKS)
+    if role.packed_format is None:
+        for qtype in known:
+            out = ArrangementV2(*([0x5A5A5A5A] * 8), 0x5A5A5A5A5A5A5A5A)
+            assert query(int(qtype), ctypes.byref(out)) == 29
+            assert cleared(out)
+        return
+
+    expected = (formats.q4_kpack4_arrangement()
+                if role.qtype == int(formats.QuantType.Q4_K)
+                else formats.kquant_kpack_arrangement(formats.QuantType(role.qtype)))
+    out = ArrangementV2(*([0x5A5A5A5A] * 8), 0x5A5A5A5A5A5A5A5A)
+    assert query(int(role.qtype), ctypes.byref(out)) == 0
+    assert tuple(getattr(out, field) for field, _ctype in ArrangementV2._fields_) == (
+        routes.PLACED_ARTIFACT_VERSION_V2, *expected)
+
+    for qtype in known:
+        if int(qtype) == role.qtype:
+            continue
+        out = ArrangementV2(*([0x5A5A5A5A] * 8), 0x5A5A5A5A5A5A5A5A)
+        assert query(int(qtype), ctypes.byref(out)) == 29
+        assert cleared(out)
+
+    out = ArrangementV2(*([0x5A5A5A5A] * 8), 0x5A5A5A5A5A5A5A5A)
+    assert query(99, ctypes.byref(out)) == 22
+    assert cleared(out)
 
 
 def test_unknown_qtype_error_does_not_depend_on_high_pointer():

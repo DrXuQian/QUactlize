@@ -22,6 +22,7 @@
 #include "ppu_dense_configs.inc"
 #include "ppu_format_config.hpp"
 #include "ppu_grouped_configs.inc"
+#include "ppu_placed_arrangement.hpp"
 #include "quactlize_ppu_device.h"
 
 
@@ -329,6 +330,32 @@ extern "C" int32_t quactlize_ppu_build_packed_format_v1() {
   return PPU_PACKED_FORMAT;
 #else
   return -1;
+#endif
+}
+
+// The loaded library owns exactly one canonical K-pack byte map.  Keep this
+// query independent of device state: loaders use it before allocating or
+// uploading a resident tensor.  In particular, never infer a map from qtype
+// in the default/ScaleFirst library, because that library has no
+// format-selected fully-quantized reader.
+extern "C" int quactlize_ppu_canonical_arrangement_v2(
+    int qtype, quactlize_ppu_placed_arrangement_v2* out) {
+  if (!out) return 23;
+  std::memset(out, 0, sizeof(*out));
+  auto const& format = ppu_formats::for_qtype(qtype);
+  if (format.qtype < 0) return 22;
+
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && defined(PPU_PACKED_FORMAT)
+  auto const& selected = ppu_formats::for_packed_format(PPU_PACKED_FORMAT);
+  if (selected.qtype < 0 || qtype != selected.qtype) return 29;
+
+  *out = PPU_PACKED_FORMAT == 0
+      ? ppu_arrangements::q4_kpack4_transpose_v1()
+      : ppu_arrangements::kquant_kpack_transpose_v1(qtype);
+  return 0;
+#else
+  (void)format;
+  return 29;
 #endif
 }
 

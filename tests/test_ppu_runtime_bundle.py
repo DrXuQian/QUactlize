@@ -49,6 +49,30 @@ def test_runtime_bundle_manifest_binds_all_six_files(tmp_path):
     assert ppu_bundle.verify_bundle(tmp_path, inspect_binaries=False) == expected
 
 
+def test_runtime_bundle_requires_loader_facing_arrangement_v2_exports():
+    assert {
+        "quactlize_ppu_canonical_arrangement_v2",
+        "quactlize_ppu_prepare_fully_quantized_for_arrangement_v2",
+        "quactlize_ppu_recover_fully_quantized_for_arrangement_v2",
+        "quactlize_ppu_dense_fully_quantized_workspace_bytes_for_arrangement_v2",
+        "quactlize_ppu_dense_fully_quantized_dev_for_arrangement_v2",
+        "quactlize_ppu_grouped_fully_quantized_workspace_bytes_for_arrangement_v2",
+        "quactlize_ppu_grouped_fully_quantized_dev_for_arrangement_v2",
+        "quactlize_ppu_list_valid_dense_fully_quantized_configs_for_arrangement_v2_v4",
+        "quactlize_ppu_dense_fully_quantized_config_valid_for_arrangement_v2",
+        "quactlize_ppu_list_valid_grouped_fully_quantized_configs_for_arrangement_v2",
+        "quactlize_ppu_grouped_fully_quantized_config_valid_for_arrangement_v2",
+    } <= ppu_bundle.REQUIRED_EXPORTS
+
+
+def test_runtime_bundle_requires_complete_units_producer_exports():
+    assert {
+        "quactlize_ppu_units_bytes",
+        "quactlize_ppu_prepare_units",
+        "quactlize_ppu_prepare_units_grouped",
+    } <= ppu_bundle.REQUIRED_EXPORTS
+
+
 @pytest.mark.parametrize("plant", [
     "wrong-role", "wrong-format", "wrong-hash", "wrong-definitions",
     "extra-manifest-field", "extra-library-field", "extra-file", "symlink",

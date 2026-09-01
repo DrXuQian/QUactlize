@@ -63,11 +63,26 @@ LIBRARY_ROLES = (
 
 REQUIRED_EXPORTS = {
     "quactlize_ppu_build_packed_format_v1",
+    "quactlize_ppu_canonical_arrangement_v2",
     "quactlize_ppu_prepare_dense_for_arrangement_v2",
     "quactlize_ppu_recover_dense_for_arrangement_v2",
+    "quactlize_ppu_units_bytes",
+    "quactlize_ppu_prepare_units",
+    "quactlize_ppu_prepare_units_grouped",
+    "quactlize_ppu_prepare_fully_quantized_for_arrangement_v2",
+    "quactlize_ppu_recover_fully_quantized_for_arrangement_v2",
     "quactlize_ppu_dense_lowbit_for_arrangement_v2",
+    "quactlize_ppu_dense_lowbit_dev_for_arrangement_v2",
     "quactlize_ppu_dense_fully_quantized_for_arrangement_v2",
+    "quactlize_ppu_dense_fully_quantized_workspace_bytes_for_arrangement_v2",
+    "quactlize_ppu_dense_fully_quantized_dev_for_arrangement_v2",
+    "quactlize_ppu_list_valid_dense_fully_quantized_configs_for_arrangement_v2_v4",
+    "quactlize_ppu_dense_fully_quantized_config_valid_for_arrangement_v2",
     "quactlize_ppu_grouped_fully_quantized_for_arrangement_v2",
+    "quactlize_ppu_grouped_fully_quantized_workspace_bytes_for_arrangement_v2",
+    "quactlize_ppu_grouped_fully_quantized_dev_for_arrangement_v2",
+    "quactlize_ppu_list_valid_grouped_fully_quantized_configs_for_arrangement_v2",
+    "quactlize_ppu_grouped_fully_quantized_config_valid_for_arrangement_v2",
 }
 
 

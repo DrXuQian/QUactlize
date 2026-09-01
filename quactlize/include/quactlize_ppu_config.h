@@ -60,6 +60,12 @@ typedef struct quactlize_ppu_placed_arrangement_v1 {
 #define QUACTLIZE_PPU_Q4_KPACK4_MAPPING_ID UINT64_C(0x51344b5034540001)
 #define QUACTLIZE_PPU_KQUANT_KPACK_MAPPING_ID UINT64_C(0x514b504b54000001)
 #define QUACTLIZE_PPU_Q4_N16K64_DIRECT_MAPPING_ID UINT64_C(0x51344e3136440001)
+
+// Host-only identity of the loaded binary. The default/ScaleFirst library returns -1; format-selected fully
+// quantized builds return FMT0..FMT4. Loaders must compare this value with the filename/manifest role before using
+// any arrangement-aware producer, inventory or launch entry.
+int32_t quactlize_ppu_build_packed_format_v1(void);
+
 typedef struct quactlize_ppu_placed_arrangement_v2 {
   int32_t version;
   int32_t layout;
@@ -73,6 +79,17 @@ typedef struct quactlize_ppu_placed_arrangement_v2 {
   int32_t reserved;
   uint64_t mapping_id;
 } quactlize_ppu_placed_arrangement_v2;
+
+// Return the one canonical resident K-pack descriptor owned by this loaded
+// library for qtype. This query is host-only and does not create a PPU context
+// or launch work. It succeeds only in a format-selected PPU_PACKED_FORMAT
+// build for that format's one qtype; the default/ScaleFirst build and every
+// other qtype return a nonzero status. `out` is zeroed before every such
+// failure so a caller cannot accidentally reuse a descriptor from a previous
+// library. A null `out` returns 23 without a write; an unknown qtype returns
+// 22; a known qtype not owned by the loaded format returns 29.
+int quactlize_ppu_canonical_arrangement_v2(
+    int qtype, quactlize_ppu_placed_arrangement_v2* out);
 
 // Host-only offline placement/recovery.  The v2 descriptor is checked by the
 // same library that produces the bytes; null/unknown/mismatched descriptors
