@@ -174,6 +174,7 @@ GATES = [
     ("l243_q4_n16k64_direct_layout3_abi", []),
     ("l244_q4_n16k64_cross_semantic", []),
     ("l245_q4_n16k64_grouped_offline", []),
+    ("l249_q4_n16k64_multim_warp_layout", []),
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that
@@ -446,6 +447,8 @@ RUNNER_GATES = {
         "run_l244_q4_n16k64_cross_semantic.sh",
     "l245_q4_n16k64_grouped_offline":
         "run_l245_q4_n16k64_grouped_offline.sh",
+    "l249_q4_n16k64_multim_warp_layout":
+        "run_l249_q4_n16k64_multim_warp_layout.sh",
 }
 
 GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
