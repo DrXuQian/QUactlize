@@ -118,15 +118,21 @@
   "bundle_tools": [
     {
       "mode": "0755",
+      "path": "fq-kquant-sdk-identity.py",
+      "sha256": "35d27853f4eed26bc5bbb13b59609344427d2642a861ce98d81710407b096b1d",
+      "size": 16321
+    },
+    {
+      "mode": "0755",
       "path": "run-prebuilt.sh",
-      "sha256": "b8499439bf202aa609385651ca7be1a89f3310cd4ef005f35b7ad8073dc99096",
-      "size": 19622
+      "sha256": "61a9cfa6842b4272ab9853c028b0f34ffb7ae40535819c799dff99fe30fc2145",
+      "size": 21257
     },
     {
       "mode": "0755",
       "path": "verify-bundle.py",
-      "sha256": "a26432297fd556fd18019cae148882094e33814d8eef892dbdad91ee7419bcac",
-      "size": 23782
+      "sha256": "563b6daacba56ec2beb3e45d92e770fe8a16a85c3b70213bc1ef914a3bea1d5d",
+      "size": 26044
     }
   ],
   "execution": {

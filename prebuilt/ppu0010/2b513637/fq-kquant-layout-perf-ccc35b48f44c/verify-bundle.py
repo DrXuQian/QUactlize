@@ -289,12 +289,12 @@ def validate_manifest(value: dict[str, Any]) -> tuple[list[dict[str, Any]], list
         raise BundleError("host compatibility link provenance differs")
 
     bundle_tools = value["bundle_tools"]
-    if not isinstance(bundle_tools, list) or len(bundle_tools) != 2:
+    if not isinstance(bundle_tools, list) or len(bundle_tools) != 3:
         raise BundleError("bundle tool denominator differs")
     tool_records = [file_record(row, f"bundle_tools[{index}]")
                     for index, row in enumerate(bundle_tools)]
     if {row["path"].as_posix() for row in tool_records} != {
-            "run-prebuilt.sh", "verify-bundle.py"}:
+            "fq-kquant-sdk-identity.py", "run-prebuilt.sh", "verify-bundle.py"}:
         raise BundleError("bundle tool paths differ")
     if any(row["mode"] != "0755" for row in tool_records):
         raise BundleError("bundle tool mode differs")
@@ -437,6 +437,41 @@ def validate_manifest(value: dict[str, Any]) -> tuple[list[dict[str, Any]], list
     return bundle_records, authority_records
 
 
+def validate_runner_contract(runner: str, sdk_helper: str) -> None:
+    runner_required = (
+        'fq-kquant-sdk-identity.py',
+        'quactlize.fq-kquant-prebuilt-runtime-preflight.v2',
+        'runtime-preflight.sha256',
+        'cmp -s -- "$runtime_preflight_current" "$runtime_preflight"',
+        'resume runtime preflight differs (host, SDK root, policy, or actual identity)',
+        'quactlize.fq-kquant-prebuilt-result-authority.v2',
+        '"evidence_grade": grade',
+        '"sdk_mismatch_count": mismatch_count',
+    )
+    missing = [item for item in runner_required if item not in runner]
+    if missing:
+        raise BundleError(f"runner relaxed-SDK contract is incomplete: {missing[0]}")
+    compare = runner.index(
+        'cmp -s -- "$runtime_preflight_current" "$runtime_preflight"')
+    execution = runner.index('for qtype in 10 11 12 13 14; do', compare)
+    if compare >= execution:
+        raise BundleError("runner binds runtime preflight after benchmark execution")
+    if 'quactlize.fq-kquant-prebuilt-runtime-preflight.v1' in runner:
+        raise BundleError("runner retains the obsolete runtime preflight schema")
+    helper_required = (
+        'ALLOW_UNVERIFIED_SDK',
+        '"identity_status": "MISMATCH_ALLOWED" if unverified else "VERIFIED"',
+        '"evidence_grade": "unverified-sdk" if unverified else "verified-sdk"',
+        '"expected": expected',
+        '"actual": actual',
+        '"matches": matches',
+        '"mismatches": mismatches',
+    )
+    missing = [item for item in helper_required if item not in sdk_helper]
+    if missing:
+        raise BundleError(f"SDK helper evidence contract is incomplete: {missing[0]}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", type=pathlib.Path)
@@ -453,6 +488,10 @@ def main() -> int:
             safe_payload(manifest.parent, record, "bundle payload")
         for record in authority_records:
             safe_payload(repo_root, record, "source authority")
+        runner_text = (manifest.parent / "run-prebuilt.sh").read_text(encoding="utf-8")
+        sdk_helper_text = (manifest.parent / "fq-kquant-sdk-identity.py").read_text(
+            encoding="utf-8")
+        validate_runner_contract(runner_text, sdk_helper_text)
         if args.self_test:
             plants = []
             broken = copy.deepcopy(value)
@@ -465,6 +504,11 @@ def main() -> int:
             plants.append(lambda: safe_payload(manifest.parent, broken_record,
                                                 "planted payload"))
             plants.append(lambda: unique_object([("duplicate", 1), ("duplicate", 2)]))
+            plants.append(lambda: validate_runner_contract(
+                runner_text.replace(
+                    'cmp -s -- "$runtime_preflight_current" "$runtime_preflight"',
+                    'true # planted missing runtime-preflight comparison', 1),
+                sdk_helper_text))
             for plant in plants:
                 try:
                     plant()
@@ -475,9 +519,9 @@ def main() -> int:
     except BundleError as error:
         print(f"prebuilt FQ K-quant bundle rejected: {error}", file=sys.stderr)
         return 2
-    print(f"[prebuilt-fq-kquant] VERIFIED source={SOURCE} pairs=5 payloads=30")
+    print(f"[prebuilt-fq-kquant] VERIFIED source={SOURCE} pairs=5 payloads=31")
     if args.self_test:
-        print("[prebuilt-fq-kquant] SELF_TEST PASS plants=4")
+        print("[prebuilt-fq-kquant] SELF_TEST PASS plants=5")
     return 0
 
 

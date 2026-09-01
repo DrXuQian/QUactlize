@@ -16,11 +16,11 @@ execution.
 ## Fetch and verify
 
 ```bash
-git fetch origin artifacts/ppu0010/2b513637-fq-kquant-862356d76d97
-git switch --detach origin/artifacts/ppu0010/2b513637-fq-kquant-862356d76d97
+git fetch origin artifacts/ppu0010/2b513637-fq-kquant-ccc35b48f44c
+git switch --detach origin/artifacts/ppu0010/2b513637-fq-kquant-ccc35b48f44c
 git lfs pull
 
-BUNDLE=prebuilt/ppu0010/2b513637/fq-kquant-layout-perf-862356d76d97
+BUNDLE=prebuilt/ppu0010/2b513637/fq-kquant-layout-perf-ccc35b48f44c
 "$BUNDLE/run-prebuilt.sh" --verify-only
 ```
 
@@ -61,6 +61,22 @@ checks without launching a benchmark.  The normal execution performs these
 checks first and records them in `inputs/runtime-preflight.json`.  It hashes
 but never invokes the SDK compiler or inspector, and it has no compilation
 fallback.
+
+The default SDK policy remains exact: release receipt, compiler, inspector,
+runtime libraries and runtime alias must match the build manifest.  To run a
+deliberate compatibility measurement with a different installed SDK, set
+`ALLOW_UNVERIFIED_SDK=1`.  This opt-in relaxes identity equality only; the SDK
+root, tools, runtime files, runtime alias, host floor and all five ELF loader
+closures must still be usable.  The runner records both expected and actual
+size/SHA-256 identities, per-field match booleans and mismatches.  A run with
+an actual identity mismatch is labelled `evidence_grade=unverified-sdk` in both
+`inputs/runtime-preflight.json` and `results/result-authority.json`; it is
+never reported as an exact SDK match.
+
+`RESUME=1` binds the already committed runtime preflight and its digest
+sidecar before reusing a benchmark log.  Changing the SDK root, actual SDK
+identity, strict/opt-in policy, or host preflight requires a fresh `OUT` and
+cannot relabel measurements from an earlier run.
 
 If a JSON identity receipt is unavailable, the runner accepts all four
 one-line operator assertions `QUACTLIZE_BOX_DEVICE_MODEL`,

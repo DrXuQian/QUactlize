@@ -101,6 +101,18 @@ if [ -n "${PPU_RUNTIME_LIB_DIR:-}" ]; then
     fail 'PPU_RUNTIME_LIB_DIR must equal PPU_SDK/lib'
 fi
 
+runtime_preflight_current=""
+sdk_identity_current="$(mktemp "${TMPDIR:-/tmp}/fq-kquant-sdk-identity.XXXXXX.json")" || \
+  fail 'cannot allocate SDK identity staging file'
+[ -n "$sdk_identity_current" ] && [ -f "$sdk_identity_current" ] && \
+  [ ! -L "$sdk_identity_current" ] || fail 'SDK identity staging file is invalid'
+cleanup_sdk_identity() {
+  [ ! -e "$sdk_identity_current" ] || rm -f -- "$sdk_identity_current"
+  [ -z "$runtime_preflight_current" ] || [ ! -e "$runtime_preflight_current" ] || \
+    rm -f -- "$runtime_preflight_current"
+}
+trap cleanup_sdk_identity EXIT
+
 python3 -B - <<'PY'
 import os
 import pathlib
@@ -121,46 +133,8 @@ if match is None or tuple(map(int, match.groups())) < (2, 38):
 print(f"[prebuilt-fq-kquant] host-floor PASS ubuntu=24.04 {libc}")
 PY
 
-python3 -B - "$manifest" "$sdk_root" <<'PY'
-import hashlib
-import json
-import os
-import pathlib
-import stat
-import sys
-
-manifest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-root = pathlib.Path(sys.argv[2])
-
-def digest(path):
-    value = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            value.update(chunk)
-    return value.hexdigest()
-
-def regular(path, size, expected_digest, executable):
-    if path.is_symlink() or not path.is_file():
-        raise SystemExit(f"SDK identity path must be a real regular file: {path}")
-    status = path.stat()
-    if status.st_size != size or digest(path) != expected_digest:
-        raise SystemExit(f"SDK identity differs: {path}")
-    if executable and not status.st_mode & stat.S_IXUSR:
-        raise SystemExit(f"SDK identity path is not executable: {path}")
-
-receipt = manifest["sdk"]["receipt"]
-regular(root / "release.yaml", receipt["size"], receipt["sha256"], False)
-for name in ("compiler", "inspector"):
-    row = manifest["sdk"][name]
-    path = root / "bin" / pathlib.Path(row["installed_path"]).name
-    regular(path, path.stat().st_size, row["sha256"], True)
-for row in manifest["sdk"]["runtime_libraries"]:
-    regular(root / row["path"], row["size"], row["sha256"], True)
-alias = root / "lib" / "libhggcrt1.so"
-if not alias.is_symlink() or os.readlink(alias) != "libhggcrt.13.0.so":
-    raise SystemExit("SDK runtime alias libhggcrt1.so differs")
-print(f"[prebuilt-fq-kquant] sdk-identity PASS release={manifest['sdk']['release']} root={root}")
-PY
+python3 -B "$bundle/fq-kquant-sdk-identity.py" \
+  --manifest "$manifest" --sdk-root "$sdk_root" --output "$sdk_identity_current"
 
 runtime_tail="$runtime_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 for qtype in 10 11 12 13 14; do
@@ -229,7 +203,10 @@ else
     cmp -s -- "$manifest" "$manifest_copy" || fail 'resume manifest differs'
 fi
 
-python3 -B - "$manifest" "$sdk_root" "$out/inputs/runtime-preflight.json" <<'PY'
+runtime_preflight="$out/inputs/runtime-preflight.json"
+runtime_preflight_digest="$out/inputs/runtime-preflight.sha256"
+runtime_preflight_current="$out/inputs/.runtime-preflight.current.$$"
+python3 -B - "$manifest" "$sdk_identity_current" "$runtime_preflight_current" <<'PY'
 import hashlib
 import json
 import os
@@ -238,29 +215,25 @@ import tempfile
 import sys
 
 manifest_path = pathlib.Path(sys.argv[1])
-sdk_root = pathlib.Path(sys.argv[2])
+sdk_identity_path = pathlib.Path(sys.argv[2])
 output = pathlib.Path(sys.argv[3])
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+sdk_identity = json.loads(sdk_identity_path.read_text(encoding="utf-8"))
 os_release = {}
 for line in pathlib.Path("/etc/os-release").read_text(encoding="utf-8").splitlines():
     if "=" in line:
         key, value = line.split("=", 1)
         os_release[key] = value.strip().strip('"')
 document = {
-    "schema": "quactlize.fq-kquant-prebuilt-runtime-preflight.v1",
+    "schema": "quactlize.fq-kquant-prebuilt-runtime-preflight.v2",
+    "evidence_grade": sdk_identity["evidence_grade"],
     "host": {
         "distribution": os_release["ID"],
         "version_id": os_release["VERSION_ID"],
         "glibc": os.confstr("CS_GNU_LIBC_VERSION"),
     },
     "runtime_floor": manifest["runtime"]["execution_floor"],
-    "sdk": {
-        "root": str(sdk_root),
-        "release": manifest["sdk"]["release"],
-        "compiler_sha256": manifest["sdk"]["compiler"]["sha256"],
-        "inspector_sha256": manifest["sdk"]["inspector"]["sha256"],
-        "runtime_libraries": manifest["sdk"]["runtime_libraries"],
-    },
+    "sdk_identity": sdk_identity,
     "loader_closures": {
         str(row["qtype"]): {
             "status": "PASS",
@@ -279,6 +252,29 @@ with tempfile.NamedTemporaryFile(dir=output.parent, prefix=output.name + ".",
     os.fsync(stream.fileno())
 os.replace(temporary, output)
 PY
+current_preflight_sha="$(sha256sum "$runtime_preflight_current" | awk '{print $1}')"
+if [ "$resume" = 0 ]; then
+  [ ! -e "$runtime_preflight" ] && [ ! -e "$runtime_preflight_digest" ] || \
+    fail 'fresh OUT already contains runtime preflight authority'
+  mv -- "$runtime_preflight_current" "$runtime_preflight"
+  atomic_text "$runtime_preflight_digest" \
+    "$current_preflight_sha  runtime-preflight.json"
+else
+  [ -f "$runtime_preflight" ] && [ ! -L "$runtime_preflight" ] && \
+    [ -f "$runtime_preflight_digest" ] && [ ! -L "$runtime_preflight_digest" ] || \
+    fail 'resume runtime preflight authority is missing'
+  expected_preflight_sha="$(sed -n 's/^\([0-9a-f]\{64\}\)  runtime-preflight\.json$/\1/p' \
+    "$runtime_preflight_digest")"
+  [ -n "$expected_preflight_sha" ] && \
+    [ "$(wc -l < "$runtime_preflight_digest")" -eq 1 ] || \
+    fail 'resume runtime preflight sidecar is malformed'
+  [ "$(sha256sum "$runtime_preflight" | awk '{print $1}')" = "$expected_preflight_sha" ] || \
+    fail 'resume runtime preflight digest differs'
+  if ! cmp -s -- "$runtime_preflight_current" "$runtime_preflight"; then
+    fail 'resume runtime preflight differs (host, SDK root, policy, or actual identity)'
+  fi
+  rm -f -- "$runtime_preflight_current"
+fi
 
 python3 -B "$planner" self-test
 python3 -B "$analyzer" self-test >/dev/null
@@ -431,6 +427,7 @@ import sys
 out = pathlib.Path(sys.argv[1])
 manifest = pathlib.Path(sys.argv[2])
 authority = out / "results" / "result-authority.json"
+preflight_path = out / "inputs" / "runtime-preflight.json"
 
 def digest(path):
     value = hashlib.sha256()
@@ -452,10 +449,33 @@ for directory in (out / "inputs", out / "runs", out / "results"):
                 "size": path.stat().st_size,
                 "sha256": digest(path),
             })
+preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
+if preflight.get("schema") != "quactlize.fq-kquant-prebuilt-runtime-preflight.v2":
+    raise SystemExit("runtime preflight schema differs")
+sdk_identity = preflight.get("sdk_identity")
+if not isinstance(sdk_identity, dict):
+    raise SystemExit("runtime preflight SDK identity is missing")
+grade = preflight.get("evidence_grade")
+if grade not in {"verified-sdk", "unverified-sdk"} or \
+        sdk_identity.get("evidence_grade") != grade:
+    raise SystemExit("runtime preflight evidence grade differs")
+status = sdk_identity.get("identity_status")
+mismatch_count = len(sdk_identity.get("mismatches", []))
+if ((grade, status, mismatch_count == 0) not in {
+        ("verified-sdk", "VERIFIED", True),
+        ("unverified-sdk", "MISMATCH_ALLOWED", False)}):
+    raise SystemExit("runtime preflight SDK grade/status/mismatch contract differs")
 document = {
-    "schema": "quactlize.fq-kquant-prebuilt-result-authority.v1",
+    "schema": "quactlize.fq-kquant-prebuilt-result-authority.v2",
     "source_commit": "2b513637fc3d315077b14ab81784ff1fb21e1bb7",
     "bundle_manifest_sha256": digest(manifest),
+    "evidence_grade": grade,
+    "runtime_preflight": {
+        "path": "inputs/runtime-preflight.json",
+        "sha256": digest(preflight_path),
+        "sdk_identity_status": status,
+        "sdk_mismatch_count": mismatch_count,
+    },
     "controls": {
         "profile": sys.argv[3],
         "all_configs": 1,
