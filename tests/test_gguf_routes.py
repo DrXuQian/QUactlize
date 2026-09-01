@@ -148,6 +148,118 @@ def ppu_backend_cuda(tmp_path_factory):
     return out
 
 
+@pytest.fixture(scope="module")
+def ppu_kquant_kpack_format_backends(ppu_backend_cuda, tmp_path_factory):
+    """Four format-owned host test libraries without compiling the CUDA backend four times.
+
+    The fully-quantized K-pack ABI is intentionally one library per
+    ``PPU_PACKED_FORMAT``.  The NVIDIA route fixture above predates that
+    contract and is a generic CUDA-core library (identity ``-1``), so it is
+    not a valid stand-in for FMT1..4 merely by assigning its pathname to all
+    four environment variables.
+
+    Each test wrapper links that already-built generic library as DT_NEEDED
+    and recompiles only the small host producer/inverse TU with the selected
+    format macro.  The wrapper owns the identity plus
+    ``prepare/recover_fully_quantized_*_v2``; its dependency supplies the
+    unchanged CUDA-core and dense-layout entries.  This models the loader's
+    one-format-per-handle rule while avoiding four expensive
+    ``ppu_backend.cu`` builds in a CUDA-only test.
+
+    A device test job may instead provide all real FMT libraries.  In that
+    case use them verbatim rather than creating an NVIDIA wrapper around a
+    PPU image.
+    """
+    import ctypes
+    import shutil
+    import subprocess
+
+    formats_by_id = (1, 2, 3, 4)
+
+    def identity(path):
+        lib = ctypes.CDLL(str(path))
+        fn = lib.quactlize_ppu_build_packed_format_v1
+        fn.restype = ctypes.c_int32
+        return int(fn())
+
+    supplied = {}
+    for packed_format in formats_by_id:
+        value = os.environ.get(f"QUACTLIZE_PPU_LIB_FMT{packed_format}", "")
+        if value:
+            path = Path(value)
+            if not path.is_file():
+                pytest.fail(
+                    f"QUACTLIZE_PPU_LIB_FMT{packed_format} is not a file: {path}")
+            supplied[packed_format] = path
+    if len(supplied) == len(formats_by_id):
+        for packed_format, path in supplied.items():
+            assert identity(path) == packed_format, (
+                f"QUACTLIZE_PPU_LIB_FMT{packed_format} does not identify as FMT{packed_format}: {path}")
+        return supplied
+    if supplied:
+        missing = [str(fmt) for fmt in formats_by_id if fmt not in supplied]
+        pytest.fail(
+            "external K-pack device test bundle is incomplete: missing "
+            + ", ".join(f"QUACTLIZE_PPU_LIB_FMT{fmt}" for fmt in missing))
+
+    # An externally supplied library belongs to a PPU/device job.  It must
+    # supply the real four-library set above; compiling an NVCC host wrapper
+    # around an arbitrary external image would test a hybrid that production
+    # never loads.  The ordinary CUDA path below has no supplied base: it
+    # receives the generic library built by ``ppu_backend_cuda`` in this
+    # pytest process.
+    supplied_base = os.environ.get("QUACTLIZE_PPU_LIB", "")
+    if supplied_base and Path(supplied_base).is_file():
+        pytest.fail(
+            "externally supplied device library needs all QUACTLIZE_PPU_LIB_FMT1..4 "
+            "for the K-pack multi-format closure")
+
+    # A format-selected PPU image is not the generic CUDA stand-in this
+    # wrapper composes with.  Do not relabel it: that would weaken exactly the
+    # production identity check the test is meant to exercise.
+    generic_identity = identity(ppu_backend_cuda)
+    if generic_identity != -1:
+        pytest.skip(
+            "K-pack CUDA wrappers need either all QUACTLIZE_PPU_LIB_FMT1..4 "
+            "or a generic (-1) CUDA test library")
+    if shutil.which("nvcc") is None or not torch.cuda.is_available():
+        pytest.skip("K-pack CUDA format wrappers need nvcc and a CUDA device")
+
+    root = Path(__file__).resolve().parent.parent
+    major, minor = torch.cuda.get_device_capability()
+    tmp = tmp_path_factory.mktemp("ppu_kquant_format_wrappers")
+    common = ["nvcc", "-std=c++17", "-O3", f"-arch=sm_{major}{minor}", "--expt-relaxed-constexpr",
+              "-Xcompiler=-fPIC", f"-I{root / 'quactlize' / 'include'}"]
+    unit_includes = [f"-I{root / 'dev' / 'fold_derivation' / 'stub_inc'}",
+                     f"-I{root / 'third_party' / 'actlize' / 'include'}",
+                     f"-I{root / 'third_party' / 'cutlass' / 'include'}"]
+    wrappers = {}
+    for packed_format in formats_by_id:
+        unit_o = tmp / f"unit_pack_fmt{packed_format}.o"
+        shim = tmp / f"identity_fmt{packed_format}.cpp"
+        shim_o = tmp / f"identity_fmt{packed_format}.o"
+        output = tmp / f"libquactlize_ppu_fmt{packed_format}.so"
+        shim.write_text(
+            "#include <cstdint>\n"
+            "extern \"C\" int32_t quactlize_ppu_build_packed_format_v1() "
+            f"{{ return {packed_format}; }}\n")
+        commands = [
+            common + ["-DPPU_PACKED_SCALE=1", f"-DPPU_PACKED_FORMAT={packed_format}",
+                      "-x", "cu", "-c", *unit_includes, "-o", str(unit_o),
+                      str(root / "quactlize" / "csrc" / "device" / "ppu_unit_pack.cpp")],
+            common + ["-c", "-o", str(shim_o), str(shim)],
+            ["nvcc", "-shared", f"-arch=sm_{major}{minor}", "-o", str(output),
+             str(unit_o), str(shim_o), "-Xlinker", "--no-as-needed", str(ppu_backend_cuda),
+             "-Xlinker", "-rpath", "-Xlinker", str(ppu_backend_cuda.parent)],
+        ]
+        for command in commands:
+            built = subprocess.run(command, capture_output=True, text=True)
+            assert built.returncode == 0, built.stdout + built.stderr
+        assert identity(output) == packed_format, output
+        wrappers[packed_format] = output
+    return wrappers
+
+
 def test_device_decode_routes_match_official_oracle_and_reject_planted_faults(ppu_backend_cuda):
     """All 20 decode cases: native dense/MoE plus scale-first dense/MoE, five formats each.
 
@@ -432,7 +544,7 @@ def test_dense_artifact_affine_chain_matches_official_oracle_and_rejects_faults(
 
 
 def test_kquant_kpack_dense_and_grouped_artifacts_match_official_gguf(
-        ppu_backend_cuda):
+        ppu_backend_cuda, ppu_kquant_kpack_format_backends):
     """Host/NVIDIA closure for the new Q2/Q3/Q5/Q6 resident byte maps.
 
     The PPU collective itself is covered by the type/fragment gates and still
@@ -509,12 +621,38 @@ def test_kquant_kpack_dense_and_grouped_artifacts_match_official_gguf(
     ''')
     env = os.environ.copy()
     env["QUACTLIZE_PPU_LIB"] = str(ppu_backend_cuda)
-    for packed_format in (1, 2, 3, 4):
-        env[f"QUACTLIZE_PPU_LIB_FMT{packed_format}"] = str(ppu_backend_cuda)
+    for packed_format, library in ppu_kquant_kpack_format_backends.items():
+        env[f"QUACTLIZE_PPU_LIB_FMT{packed_format}"] = str(library)
     run = subprocess.run(
         [sys.executable, "-c", code], cwd=root, env=env,
         capture_output=True, text=True)
     assert run.returncode == 0, run.stdout + run.stderr
+
+    # The positive closure above proves that each wrapper carries the correct
+    # host producer/inverse.  This independent process proves the loader does
+    # not silently accept a library whose embedded identity belongs to another
+    # format -- the error must occur before artifact bytes are consumed.
+    bad_env = dict(env)
+    bad_env["QUACTLIZE_PPU_LIB_FMT2"] = str(ppu_kquant_kpack_format_backends[1])
+    rejected = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent("""
+            import torch, quactlize
+            from quactlize import routes
+            blocks = torch.zeros((512, 84), dtype=torch.uint8)
+            status = quactlize.gguf_backend_for_qtype(10)
+            assert status.startswith('cpu (packed-format identity mismatch'), status
+            try:
+                routes.prepare_fully_quantized_dense(blocks, 256, 512, 10, layout='kquant-kpack')
+            except RuntimeError as exc:
+                # Public producers deliberately use one stable outer message
+                # for every unavailable dense-layout backend.  The query
+                # above preserves the specific identity rejection; this arm
+                # proves the production operation still fails closed.
+                assert 'gguf_prepare_dense requires an hgcc' in str(exc), exc
+            else:
+                raise AssertionError('FMT2 accepted an FMT1 library')
+        """)], cwd=root, env=bad_env, capture_output=True, text=True)
+    assert rejected.returncode == 0, rejected.stdout + rejected.stderr
     print(run.stdout.strip())
 
 
