@@ -1,0 +1,59 @@
+-- The CXX compiler identification is GNU 11.4.0
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- quactlize: header-only interface; device targets are built by build.sh via actlize
+-- CMake Version: 4.4.3
+-- CUTLASS 3.6.0
+-- PPU SDK Root    : /root/ppu-sdk/2.1.1
+-- PPU hgcc        : /root/ppu-sdk/2.1.1/bin/hgcc
+-- PPU device archs: ppu0010 (flags: -arch=ppu_10)
+-- PPU libhg_wrapper   : /root/ppu-sdk/2.1.1/lib/libhg_wrapper.so
+-- PPU libhggc_wrapper : /root/ppu-sdk/2.1.1/lib/libhggc_wrapper.so
+-- PPU libhggcrt1      : /root/ppu-sdk/2.1.1/lib/libhggcrt1.so
+-- PPU libhggc         : /root/ppu-sdk/2.1.1/lib/libhggc.so
+-- PPU libhgrtc        : /root/ppu-sdk/2.1.1/lib/libhgrtc.so
+-- Default Install Location: install
+-- Found Python3: /root/miniconda3/bin/python3.12 (found suitable version "3.12.3", minimum required is "3.5") found components: Interpreter
+-- Make cute::tuple be the new standard-layout tuple type
+-- Device Compilation Architectures: ppu0010
+-- Enable caching of reference results in conv unit tests
+-- Enable rigorous conv problem sizes in conv unit tests
+-- Host CXX flags:  -DCUTLASS_USE_PACKED_TUPLE=1 -DCUTE_USE_PACKED_TUPLE=1 -DCUTLASS_VERSIONS_GENERATED -DCUTLASS_TEST_LEVEL=0 -DCUTLASS_TEST_ENABLE_CACHED_RESULTS=1 -DCUTLASS_CONV_UNIT_TEST_RIGOROUS_SIZE_ENABLED=1 -DCUTLASS_DEBUG_TRACE_LEVEL=0 -Wno-sign-conversion -Wno-unused-parameter -Wno-strict-aliasing -Wconversion -fno-strict-aliasing
+-- Device hgcc flags: --forward-unknown-to-host-compiler;--forward-unknown-to-host-linker;-arch=ppu_10;-x;hg;-DSWITCH_TO_HGGCRT;-Xcompiler;-ftemplate-depth=8192;-Xllvm;-wno-loop-miss-transform;-Xllvm;-ppu-simt-branch=false;-Xllvm;-ppu-patch-fence-ppu=false;-Xllvm;-ppu-cg-to-kp1=true;-Xllvm;-ppu-fix-uninit=true;--expt-relaxed-constexpr;-DUSE_CLANG;-DCUTLASS_VERSIONS_GENERATED;-DCUTLASS_USE_PACKED_TUPLE=1;-DCUTE_USE_PACKED_TUPLE=1;-DCUTLASS_TEST_LEVEL=0;-DCUTLASS_TEST_ENABLE_CACHED_RESULTS=1;-DCUTLASS_CONV_UNIT_TEST_RIGOROUS_SIZE_ENABLED=1;-DCUTLASS_DEBUG_TRACE_LEVEL=0
+fatal: not a git repository (or any parent up to mount point /root)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+-- CUTLASS Revision: Unable to detect, Git returned code 128.
+-- PPU SDK Root    : /root/ppu-sdk/2.1.1
+-- PPU hgcc        : /root/ppu-sdk/2.1.1/bin/hgcc
+-- PPU device archs: ppu0010 (flags: -arch=ppu_10)
+-- PPU libhg_wrapper   : /root/ppu-sdk/2.1.1/lib/libhg_wrapper.so
+-- PPU libhggc_wrapper : /root/ppu-sdk/2.1.1/lib/libhggc_wrapper.so
+-- PPU libhggcrt1      : /root/ppu-sdk/2.1.1/lib/libhggcrt1.so
+-- PPU libhggc         : /root/ppu-sdk/2.1.1/lib/libhggc.so
+-- PPU libhgrtc        : /root/ppu-sdk/2.1.1/lib/libhgrtc.so
+-- PPU_EXTRA_DEFS -> device -DPPU_PACKED_SCALE=1;-DPPU_PACKED_FORMAT=3;-DQUACTLIZE_DENSE_ONLY=11 / host PPU_PACKED_SCALE=1;PPU_PACKED_FORMAT=3;QUACTLIZE_DENSE_ONLY=11
+-- Dense tactic sweep (lowbit_dense_configs.inc): 1772 wrappers in 443 generated units (4 configs/unit)
+-- Q8 ScaleFirst full scheduler sweep: source=2501 eligible=2501 heuristic_pruned=0; 626 private units
+-- Dense Stream-K prefill sweep (lowbit_dense_configs.inc, TM>=16, gs32): source_rows=1772 eligible_rows=577 filtered_rows=1195; 145 private generated units
+-- Dense Marlin sweep (lowbit_dense_configs.inc): source_rows=1772 eligible_rows=1772 filtered_rows=0; 443 private generated units
+-- Standalone Marlin tactic sweep: 70 private generated row units; artifact=W4/gs128/TK64, scheduler=standalone-marlin
+-- GEMV sweep: 540 generated units in /root/autodl-tmp/quactlize-fq-kquant-2b513637/build/q11/ppu_targets/gemv_units (10 groups)
+-- GEMV sweep: 540 units > MOE_CORES=192 -> 3 compile waves. Narrow with -DGEMV_GROUPS=... to get back to one.
+-- split-K bench: 15 generated units in /root/autodl-tmp/quactlize-fq-kquant-2b513637/build/q11/ppu_targets/splitk_units
+-- Narrow a MoE axis (MOE_FORMATS / MOE_TM_LIST / MOE_TN_LIST / MOE_WM_LIST / MOE_STAGES); MOE_CORES changes MoE TU batching and GEMV wave reporting only
+-- MoE full sweep (table Mmax=0): 1881 shapes (bc0=1139, bc1=742) -> 189 TUs, up to 10 shapes/TU, 1 compile wave(s) at MOE_CORES=192 in /root/autodl-tmp/quactlize-fq-kquant-2b513637/build/q11/ppu_targets/moe_units
+-- MoE decode sweep (table Mmax=3): 360 shapes (bc0=216, bc1=144) -> 180 TUs, up to 2 shapes/TU, 1 compile wave(s) at MOE_CORES=192 in /root/autodl-tmp/quactlize-fq-kquant-2b513637/build/q11/ppu_targets/moe_decode_units
+-- FullyQuantized K-quant layout perf: qtype=11 carrier=production-C-ABI
+-- Dense fixed Split-K sweep: source=1772 packedA=201 wrappers=201 units=51 runtime_cells=804
+-- Configuring done (25.4s)
+-- Generating done (0.4s)
+CMake Warning (unused-cli):
+  Manually-specified variables were not used by the project:
+
+    FETCHCONTENT_FULLY_DISCONNECTED
+
+
+-- Build files have been written to: /root/autodl-tmp/quactlize-fq-kquant-2b513637/build/q11

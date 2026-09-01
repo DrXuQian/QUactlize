@@ -1,0 +1,505 @@
+{
+  "arch": "ppu0010",
+  "authorities": [
+    {
+      "mode": "0644",
+      "path": "benchmarks/moe_router_fixture.hpp",
+      "sha256": "9e3ee6f10f9fe2e98a6f9d9c8154209a3351e3582d34bb42179cfb0a204831c5",
+      "size": 3142
+    },
+    {
+      "mode": "0644",
+      "path": "benchmarks/test_fq_kquant_layout_perf.cu",
+      "sha256": "a6c0b7824f709e63e9cfc0a719336dd76fa08b7099940c990fd67fe18762755c",
+      "size": 33195
+    },
+    {
+      "mode": "0644",
+      "path": "benchmarks/workloads.py",
+      "sha256": "85310496f07abd796f1144c3ccadc5851c773408561ec260bebfeef813432d08",
+      "size": 10356
+    },
+    {
+      "mode": "0755",
+      "path": "build.sh",
+      "sha256": "123f8a9280868a0978e23eadda8cda9b21432a60785fad66082152b5c72786d3",
+      "size": 37676
+    },
+    {
+      "mode": "0644",
+      "path": "quactlize/csrc/device/ppu_dense_backend.cu",
+      "sha256": "5bbebb1719e7fdceffd11d8dba4a22fa67971438e04622b58c983299ed1ce5b0",
+      "size": 146604
+    },
+    {
+      "mode": "0644",
+      "path": "quactlize/gguf_roles.py",
+      "sha256": "69cdd17a33fffa993889799a2a06b3e2539be1da2efdbb61167b6d85f89eace8",
+      "size": 6685
+    },
+    {
+      "mode": "0644",
+      "path": "quactlize/include/kquant_kpack_offline.hpp",
+      "sha256": "b43fcc5eb60d6a8509f0aca3fc6ddf7c076697974abc0cbc843cbe4d60167873",
+      "size": 12521
+    },
+    {
+      "mode": "0644",
+      "path": "quactlize/include/ppu_dense_configs.inc",
+      "sha256": "575cfa9e4f0cc2dbe86737dbaa50641c549e66d283ec967361e1442c4b42297f",
+      "size": 2284
+    },
+    {
+      "mode": "0644",
+      "path": "quactlize/include/ppu_format_config.inc",
+      "sha256": "6545b3bf49cf1e67d025a0138cfa892fadb76b993b46eb72dfa4e3e2945fb1d1",
+      "size": 1294
+    },
+    {
+      "mode": "0644",
+      "path": "quactlize/include/ppu_grouped_configs.inc",
+      "sha256": "2744f4e19f0ba09386f9403a144789cb7169358b0e0edbd90208085689bca0da",
+      "size": 1262
+    },
+    {
+      "mode": "0755",
+      "path": "tools/analyze_fq_kquant_kpack_perf.py",
+      "sha256": "233a6c62b316ab5d134aacc3822e453736604c561840505fa59f376cd2d735e6",
+      "size": 23097
+    },
+    {
+      "mode": "0644",
+      "path": "tools/box_identity_schema.py",
+      "sha256": "54e7ad3c9feecb2b5a98292cd4f0e5e1f4e276b831d7912ebf44617110939123",
+      "size": 9649
+    },
+    {
+      "mode": "0644",
+      "path": "tools/fit_fq_kquant_config_heuristic.py",
+      "sha256": "b421f01a05693e24a438b5dbb02e987e7a4387bf04587d3b79e593f3d37a0b90",
+      "size": 17411
+    },
+    {
+      "mode": "0644",
+      "path": "tools/gguf_internal_shape_inventory.py",
+      "sha256": "4d6d6675152057da0e6f09250ee2a701570cfa92c76d13c40e3dea7106afa26e",
+      "size": 83729
+    },
+    {
+      "mode": "0755",
+      "path": "tools/plan_fq_kquant_kpack_perf.py",
+      "sha256": "e873ce53cf93aa3fa718aea68323cdec26c9ab1c03b1ef4e3b6425d6f48b12dd",
+      "size": 9321
+    },
+    {
+      "mode": "0755",
+      "path": "tools/run_fq_kquant_kpack_perf_box.sh",
+      "sha256": "3f7447f580b47f7040474c763e8d79e0097cb69ce54e010d3400b97513348fba",
+      "size": 11449
+    }
+  ],
+  "build": {
+    "common_env": {
+      "PPU_ARCHS": "ppu0010"
+    },
+    "host_env_unset": [
+      "CC",
+      "CXX",
+      "CMAKE_GENERATOR",
+      "CMAKE_TOOLCHAIN_FILE",
+      "PPU_EXTRA_DEFS"
+    ],
+    "host_link_option": "-Wl,--allow-shlib-undefined",
+    "host_link_provenance_commit": "44ca067ca75941ea0c0b861ead324b6bb1cb6881",
+    "jobs": 4,
+    "source_contains_host_link_option": false,
+    "target": "test_fq_kquant_layout_perf"
+  },
+  "bundle_tools": [
+    {
+      "mode": "0755",
+      "path": "run-prebuilt.sh",
+      "sha256": "b8499439bf202aa609385651ca7be1a89f3310cd4ef005f35b7ad8073dc99096",
+      "size": 19622
+    },
+    {
+      "mode": "0755",
+      "path": "verify-bundle.py",
+      "sha256": "a26432297fd556fd18019cae148882094e33814d8eef892dbdad91ee7419bcac",
+      "size": 23782
+    }
+  ],
+  "execution": {
+    "all_configs": 1,
+    "default_profile": "heuristic",
+    "heuristic": {
+      "max_leaves": 8,
+      "min_leaf_families": 1,
+      "min_leaf_rows": 2
+    },
+    "iterations": 11,
+    "qtype_operators": {
+      "10": [
+        "dense",
+        "grouped"
+      ],
+      "11": [
+        "dense",
+        "grouped"
+      ],
+      "12": [
+        "grouped"
+      ],
+      "13": [
+        "dense",
+        "grouped"
+      ],
+      "14": [
+        "dense",
+        "grouped"
+      ]
+    },
+    "rounds": 3,
+    "threshold_pct": 3.0,
+    "warmups": 3
+  },
+  "pairs": [
+    {
+      "binary": {
+        "mode": "0755",
+        "path": "q10/test_fq_kquant_layout_perf",
+        "sha256": "bba8979885bd9088bcd63232b65fcf1fcfd690566d7b3d13d200b3af2271c717",
+        "size": 393456
+      },
+      "evidence": {
+        "binary_device_images": 1,
+        "build_log": {
+          "mode": "0644",
+          "path": "evidence/build-q10.log",
+          "sha256": "7ebe0ab9fbc6c81f89c8d6ad7515893e544244401b3061c9c52a076a520f2979",
+          "size": 19676
+        },
+        "cmake_log": {
+          "mode": "0644",
+          "path": "evidence/cmake-q10.log",
+          "sha256": "d2773dee83df58d044e4e7ad97977bf4e64944d424b2524dd593b40b67bf7ee5",
+          "size": 4996
+        },
+        "initial_link_exit": 2,
+        "library_device_images": 2,
+        "link_command": {
+          "mode": "0644",
+          "path": "evidence/link-q10.txt",
+          "sha256": "565aa80a898cbd2f4f32bffe276a8c5303a05c3c261577b0ebe23e3027d92623",
+          "size": 1002
+        }
+      },
+      "format": "Q2_K",
+      "library": {
+        "mode": "0755",
+        "path": "q10/libquactlize_ppu.so",
+        "sha256": "20cab0ee0e70df8cb0e8c464ac90932f51c449652aac9349a144278fee4c08af",
+        "size": 29204840
+      },
+      "packed_format": 2,
+      "ppu_defs": [
+        "PPU_PACKED_SCALE=1",
+        "PPU_PACKED_FORMAT=2",
+        "QUACTLIZE_DENSE_ONLY=10",
+        "FQ_KQUANT_PERF_QTYPE=10"
+      ],
+      "qtype": 10
+    },
+    {
+      "binary": {
+        "mode": "0755",
+        "path": "q11/test_fq_kquant_layout_perf",
+        "sha256": "24e32e176158e71027a0b931f4ed90f7ae2b29294556081f380752e3d8d2a063",
+        "size": 389616
+      },
+      "evidence": {
+        "binary_device_images": 1,
+        "build_log": {
+          "mode": "0644",
+          "path": "evidence/build-q11.log",
+          "sha256": "61f014d662127a6ef188cf65a72bcf72ad63ebc8bf86553e6fc3d73f94f7cc30",
+          "size": 19183
+        },
+        "cmake_log": {
+          "mode": "0644",
+          "path": "evidence/cmake-q11.log",
+          "sha256": "54882f6d7bc1c8ae39adaa4e040bacfd720752db6f346868cce5786bef9d0f40",
+          "size": 4996
+        },
+        "initial_link_exit": 2,
+        "library_device_images": 2,
+        "link_command": {
+          "mode": "0644",
+          "path": "evidence/link-q11.txt",
+          "sha256": "60aabbfceec7b0f77dae99918518860eb8798a160f72fefccd7d5e3034dd955b",
+          "size": 1002
+        }
+      },
+      "format": "Q3_K",
+      "library": {
+        "mode": "0755",
+        "path": "q11/libquactlize_ppu.so",
+        "sha256": "8ee2bfab7af4d4b313f34817fe0456b3f9df42f0edcd41fc24f0fd9d532185cf",
+        "size": 30927528
+      },
+      "packed_format": 3,
+      "ppu_defs": [
+        "PPU_PACKED_SCALE=1",
+        "PPU_PACKED_FORMAT=3",
+        "QUACTLIZE_DENSE_ONLY=11",
+        "FQ_KQUANT_PERF_QTYPE=11"
+      ],
+      "qtype": 11
+    },
+    {
+      "binary": {
+        "mode": "0755",
+        "path": "q12/test_fq_kquant_layout_perf",
+        "sha256": "e515c5fffcbc7c0f9b3d596edbf2c53554b5703bb26ea39c77aced3ab662b09c",
+        "size": 388000
+      },
+      "evidence": {
+        "binary_device_images": 1,
+        "build_log": {
+          "mode": "0644",
+          "path": "evidence/build-q12.log",
+          "sha256": "1f057724ef7ea8740b67442696ec22f50ad7b4e290208beb2c2b29ff56f43db9",
+          "size": 19460
+        },
+        "cmake_log": {
+          "mode": "0644",
+          "path": "evidence/cmake-q12.log",
+          "sha256": "2f7155b7f07aa4e7495e9d97347c89c2813f42c55a70a61c40a0b9172f8ec98f",
+          "size": 4996
+        },
+        "initial_link_exit": 2,
+        "library_device_images": 2,
+        "link_command": {
+          "mode": "0644",
+          "path": "evidence/link-q12.txt",
+          "sha256": "5c6f4187c31d1a3de51f403d216dda617eb0396b2a035f5b12099f7af1898060",
+          "size": 1002
+        }
+      },
+      "format": "Q4_K",
+      "library": {
+        "mode": "0755",
+        "path": "q12/libquactlize_ppu.so",
+        "sha256": "0c013a432954eed88b3826ac18efc2319d03995780214abbbf9a395789fb0f2d",
+        "size": 31790544
+      },
+      "packed_format": 0,
+      "ppu_defs": [
+        "PPU_PACKED_SCALE=1",
+        "PPU_PACKED_FORMAT=0",
+        "QUACTLIZE_DENSE_ONLY=12",
+        "FQ_KQUANT_PERF_QTYPE=12"
+      ],
+      "qtype": 12
+    },
+    {
+      "binary": {
+        "mode": "0755",
+        "path": "q13/test_fq_kquant_layout_perf",
+        "sha256": "4db298ec8dcd4d40c623f4ee4072009204b53f60c4f203be6683e0d4e05c948d",
+        "size": 392624
+      },
+      "evidence": {
+        "binary_device_images": 1,
+        "build_log": {
+          "mode": "0644",
+          "path": "evidence/build-q13.log",
+          "sha256": "88acf33f99a069f34bef8831c92aa977b6bed9dbd5cb6cf4b8210e2267aec581",
+          "size": 19208
+        },
+        "cmake_log": {
+          "mode": "0644",
+          "path": "evidence/cmake-q13.log",
+          "sha256": "3b6856a4932bcaa20849b58e97b558303970ceddec4e66dd719609befe9ce6f9",
+          "size": 4996
+        },
+        "initial_link_exit": 2,
+        "library_device_images": 2,
+        "link_command": {
+          "mode": "0644",
+          "path": "evidence/link-q13.txt",
+          "sha256": "78d88095f2d68f31b870e1693d127a35e4d36c9c87d4aa9f0a06ac96bb6c4078",
+          "size": 1002
+        }
+      },
+      "format": "Q5_K",
+      "library": {
+        "mode": "0755",
+        "path": "q13/libquactlize_ppu.so",
+        "sha256": "c90118be60fe4cf55206e2f1e9e28a67a79e59f07cbece4aa7d9e1521ff159da",
+        "size": 28734296
+      },
+      "packed_format": 1,
+      "ppu_defs": [
+        "PPU_PACKED_SCALE=1",
+        "PPU_PACKED_FORMAT=1",
+        "QUACTLIZE_DENSE_ONLY=13",
+        "FQ_KQUANT_PERF_QTYPE=13"
+      ],
+      "qtype": 13
+    },
+    {
+      "binary": {
+        "mode": "0755",
+        "path": "q14/test_fq_kquant_layout_perf",
+        "sha256": "01da40c595941c1f7f451d9461bf163627ba8586667421f0fc5a4efc3384b6c2",
+        "size": 389624
+      },
+      "evidence": {
+        "binary_device_images": 1,
+        "build_log": {
+          "mode": "0644",
+          "path": "evidence/build-q14.log",
+          "sha256": "374696f8b3ea1bd379e21f4f930186a2a5511ed7a0515191f4a8b5eb2b444f9b",
+          "size": 19183
+        },
+        "cmake_log": {
+          "mode": "0644",
+          "path": "evidence/cmake-q14.log",
+          "sha256": "f7db111b8f6b5b3c9f3e42146d55208dcfd9fe68ffb61b909eb258198b15eac4",
+          "size": 4996
+        },
+        "initial_link_exit": 2,
+        "library_device_images": 2,
+        "link_command": {
+          "mode": "0644",
+          "path": "evidence/link-q14.txt",
+          "sha256": "bbb35e0a246112a04289558caa934f72b5b234673863661d40a7b35e6442fe7a",
+          "size": 1002
+        }
+      },
+      "format": "Q6_K",
+      "library": {
+        "mode": "0755",
+        "path": "q14/libquactlize_ppu.so",
+        "sha256": "01d0680495c8dd0d0d7905c2e0b050fc7ad6dfbad599a835d5f1bd121551a4ac",
+        "size": 29552552
+      },
+      "packed_format": 4,
+      "ppu_defs": [
+        "PPU_PACKED_SCALE=1",
+        "PPU_PACKED_FORMAT=4",
+        "QUACTLIZE_DENSE_ONLY=14",
+        "FQ_KQUANT_PERF_QTYPE=14"
+      ],
+      "qtype": 14
+    }
+  ],
+  "plans": [
+    {
+      "dense": 77,
+      "file": {
+        "mode": "0644",
+        "path": "plans/plan-layout-ab.json",
+        "sha256": "9f394a141e58608679371cf0f67bf7f8372ce2bffe9d993dab97b618a226aa18",
+        "size": 24084
+      },
+      "grouped": 24,
+      "profile": "layout-ab"
+    },
+    {
+      "dense": 143,
+      "file": {
+        "mode": "0644",
+        "path": "plans/plan-heuristic.json",
+        "sha256": "a706e1eac6eb7da985ede167f8219c82d6856396cfcf8fc8857df1ac697aa43f",
+        "size": 45738
+      },
+      "grouped": 52,
+      "profile": "heuristic"
+    }
+  ],
+  "runtime": {
+    "build_host": {
+      "distribution": "ubuntu",
+      "execution_verified": false,
+      "glibc": "2.35",
+      "glibcxx_max": "GLIBCXX_3.4.30",
+      "version_id": "22.04"
+    },
+    "execution_floor": {
+      "distribution": "ubuntu",
+      "glibc_min": "2.38",
+      "glibcxx_min": "GLIBCXX_3.4.32",
+      "version_id": "24.04"
+    },
+    "loader_preflight": {
+      "build_host_status": "blocked-by-runtime-floor",
+      "target_requirement": "all five ldd closures: no missing/version errors",
+      "verified_on_target": false
+    }
+  },
+  "schema": "quactlize.fq-kquant-prebuilt-execution-bundle.v1",
+  "schema_version": 1,
+  "sdk": {
+    "archive": {
+      "authority_path": "/root/ppu-sdk-cache/PPU_SDK_cuda-13.0.0-ubuntu2404-2.1.1-a5c56e.tar.gz",
+      "filename": "PPU_SDK_cuda-13.0.0-ubuntu2404-2.1.1-a5c56e.tar.gz",
+      "sha256": "63ca196b152f2fec667fce8b18c04f1d6d0fa9e7bc7f72e18f017c96d11731dd",
+      "size": 1875743407,
+      "verified_this_build": true
+    },
+    "compiler": {
+      "identity": "hgcc(HGGC C/C++ Compiler) | Release version 2.1.1-a5c56e | Built on Jul 25 2026 at 09:15:42",
+      "installed_path": "/root/ppu-sdk/2.1.1/bin/hgcc",
+      "sha256": "fa62c590c67411c23fa4028f15fa562b39ce0cf830830d038a1ec04c59d8c76e"
+    },
+    "inspector": {
+      "identity": "LLVM version 13.0.1 | ppu version: 2.1.1-a5c56e-",
+      "installed_path": "/root/ppu-sdk/2.1.1/bin/hgobjdump",
+      "sha256": "4176b21eb5b26e9f73acb5e17667a01fbb2808987b303d95cd8b31078221d16c"
+    },
+    "receipt": {
+      "mode": "0644",
+      "path": "evidence/sdk-release.yaml",
+      "sha256": "7ba29b9d2e768c3edd1e165bceaf90e27880248f2327d44852de37833d0a2cf7",
+      "size": 22
+    },
+    "release": "2.1.1-a5c56e",
+    "runtime_libraries": [
+      {
+        "mode": "0755",
+        "path": "lib/libhggc.so",
+        "sha256": "4acb6f71da458fbef346db163e5c04a1bdc341c8c560158412ec2c9618c1525a",
+        "size": 37126360
+      },
+      {
+        "mode": "0755",
+        "path": "lib/libhggcrt.13.0.so",
+        "sha256": "f4765821e374712a5d9a21cb7276101067ff7da56f9e3c55366ffe88c1997e9f",
+        "size": 6490712
+      },
+      {
+        "mode": "0755",
+        "path": "lib/libhggc_wrapper.so",
+        "sha256": "71c32cb41191458503234324360fcd3f1fa890dd5a082d465bb07328630c775e",
+        "size": 5573896
+      },
+      {
+        "mode": "0755",
+        "path": "lib/libhg_wrapper.so",
+        "sha256": "fd93f23bfb05dfee0ffa48fd07d3c0cf6d8ab37d266e12f841ee056291affcd5",
+        "size": 7623832
+      }
+    ]
+  },
+  "source": {
+    "commit": "2b513637fc3d315077b14ab81784ff1fb21e1bb7",
+    "submodules": {
+      "third_party/actlize": "8d46b758c8931807df840a6ed87d272d74a8fdf4",
+      "third_party/cutlass": "f94ec46f4f63f96003d6cfdf2014731e7672c281"
+    },
+    "tracked_clean": true,
+    "tree": "261ca1bcd5911d76d4c7c9d91dafd970f24a3b42"
+  }
+}
