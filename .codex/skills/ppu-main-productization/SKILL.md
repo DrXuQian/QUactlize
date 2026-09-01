@@ -39,6 +39,14 @@ A new kernel path is not admitted by host simulation or CuTe type formation. Req
 
 Keep measured K-pack versus Xplane regressions visible as technical debt. A maintenance decision or bounded performance waiver may permit shipment, but it must not rewrite a technical `KEEP_XPLANE` result into a false performance win.
 
+## Binary handoff to the PPU box
+
+- Build every box target locally with the pinned PPU SDK whenever the target can be compiled off-device. The box should execute an already-built artifact, not spend its run rebuilding it.
+- Publish the exact executable or loadable library together with the source commit, submodule commits, PPU architecture, SDK/compiler identity, target, compile definitions, SHA-256, and invocation. A compile-only object is code-generation evidence, not a runnable box binary.
+- Keep binary bundles out of `develop` and `main`. Publish them on a dedicated artifact branch or artifact store so product source history remains reviewable; the box fetches the exact bundle named by its manifest. When Git carries the bundle, store payloads with Git LFS and verify `git lfs ls-files` before pushing; never force-add a compiled payload as an ordinary Git blob.
+- A prebuilt runner must verify the manifest and binary digest before launch and must not silently rebuild when the requested artifact is absent or mismatched.
+- Device output remains authoritative only for execution, raw-bit/numeric results, hardware ordering, counters, and performance. Bind returned evidence to the published binary digest.
+
 ## Main review checklist
 
 - No Xplane or NVIDIA-only code is reachable or packaged.
