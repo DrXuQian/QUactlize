@@ -137,8 +137,10 @@ int quactlize_ppu_dense_fully_quantized_dev_v2(
     char const* config_name);
 // Arrangement-aware successor.  Unlike v1/v2, this entry never infers the resident fold from qtype or tactic.
 // A null/unknown/mismatched descriptor fails before launch; an unknown non-empty config name returns 39 rather than
-// falling back. Null/empty config still selects the M-aware shipping default. The old entries keep their
-// registry-default behavior.
+// falling back. For v1 and v2 Xplane, null/empty retains the M-aware shipping
+// default. Canonical K-quant K-pack v2 first uses an exact measured
+// `(qtype,m,n,k)` selection and falls back to that same shipping default;
+// Q4 K-pack4 retains its independent shape policy.
 int quactlize_ppu_dense_fully_quantized_dev_for_arrangement_v1(
     uint16_t const* act, uint8_t const* low, uint8_t const* high, uint8_t const* units, uint16_t* out,
     int m, int n, int k, int qtype, void* workspace, int64_t workspace_bytes, void* stream,

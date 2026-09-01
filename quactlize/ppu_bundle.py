@@ -61,7 +61,11 @@ LIBRARY_ROLES = (
     LibraryRole("fmt4", "libquactlize_ppu_fmt4.so", 1, 4, 14),
 )
 
-REQUIRED_EXPORTS = {
+# Name the predecessor contract separately, but require the successor exports
+# below for current bundle admission. Frozen legacy artifacts retain their own
+# versioned verifier; weakening this one would let an older library masquerade
+# as a measured-policy release.
+LEGACY_REQUIRED_EXPORTS = {
     "quactlize_ppu_build_packed_format_v1",
     "quactlize_ppu_canonical_arrangement_v2",
     "quactlize_ppu_prepare_dense_for_arrangement_v2",
@@ -85,6 +89,13 @@ REQUIRED_EXPORTS = {
     "quactlize_ppu_list_valid_grouped_fully_quantized_configs_for_arrangement_v2",
     "quactlize_ppu_grouped_fully_quantized_config_valid_for_arrangement_v2",
 }
+
+SELECTED_CONFIG_REQUIRED_EXPORTS = {
+    "quactlize_ppu_dense_fully_quantized_selected_config_for_arrangement_v2",
+    "quactlize_ppu_grouped_fully_quantized_selected_config_for_arrangement_v2",
+}
+
+REQUIRED_EXPORTS = LEGACY_REQUIRED_EXPORTS | SELECTED_CONFIG_REQUIRED_EXPORTS
 
 
 class BundleError(ValueError):

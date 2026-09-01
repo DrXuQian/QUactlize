@@ -26,6 +26,8 @@
 #include "moe_grouped_ppu.cuh"
 #include "gemv_lowbit/gemv_rt.hpp"
 #include "ppu_dense_shipping_policy.hpp"
+#include "ppu_grouped_shipping_policy.hpp"
+#include "ppu_kquant_measured_policy.hpp"
 #include "ppu_q4_kpack4_shipping_policy.hpp"
 #if !defined(QUACTLIZE_DENSE_ONLY) || QUACTLIZE_DENSE_ONLY == 12
 #define QUACTLIZE_PPU_DENSE_W4_SPLITK_ENABLED 1
@@ -36,7 +38,6 @@
 #define QUACTLIZE_PPU_DENSE_W4_SPLITK_ENABLED 0
 #endif
 #include "ppu_format_config.hpp"
-#include "ppu_grouped_configs.inc"
 #include "ppu_placed_arrangement.hpp"
 #include "quactlize_ppu_device.h"
 
@@ -67,6 +68,7 @@ static_assert(kSelectedFormat.qtype >= 0, "PPU_PACKED_FORMAT must name a row in 
 using SelectedPackedUnit = cutlass::gguf_packed::Unit<kSelectedPackedFmt>;
 
 using DenseConfigId = ppu_dense_shipping::ConfigId;
+using GroupedConfigId = ppu_grouped_shipping::ConfigId;
 using Kpack4ConfigId = ppu_q4_kpack4_shipping::ConfigId;
 
 constexpr quactlize_ppu_config_v1 kDenseConfigs[] = {
@@ -99,13 +101,6 @@ DenseConfigId resolve_dense_config(char const* name, int m) {
   return kDefaultDenseConfig;
 }
 
-enum class GroupedConfigId {
-#define QUACTLIZE_PPU_GROUPED_CONFIG_ID(ID, NAME, TM, TN, WM, WN, STAGES) ID,
-  QUACTLIZE_PPU_GROUPED_CONFIGS(QUACTLIZE_PPU_GROUPED_CONFIG_ID)
-#undef QUACTLIZE_PPU_GROUPED_CONFIG_ID
-  Count,
-};
-
 constexpr quactlize_ppu_config_v1 kGroupedConfigs[] = {
 #define QUACTLIZE_PPU_GROUPED_CONFIG_ROW(ID, NAME, TM, TN, WM, WN, STAGES) \
   {false, NAME, TM, TN, WM, WN, STAGES},
@@ -114,19 +109,14 @@ constexpr quactlize_ppu_config_v1 kGroupedConfigs[] = {
   // The CUDA-core MoE GEMV is one family-level tactic. Its tile fields deliberately carry no meaning.
   {true, QUACTLIZE_PPU_GROUPED_CUDA_CONFIG_NAME, 0, 0, 0, 0, 0},
 };
-constexpr GroupedConfigId kDefaultGroupedConfig = GroupedConfigId::Default;
+constexpr GroupedConfigId kDefaultGroupedConfig = ppu_grouped_shipping::kDefault;
 static_assert(int(GroupedConfigId::Count) > 1,
               "libquactlize_ppu must compile a grouped config set, not one frozen tactic");
 static_assert(sizeof(kGroupedConfigs) / sizeof(kGroupedConfigs[0]) == size_t(GroupedConfigId::Count) + 1,
               "the grouped inventory must contain every tensor-core config followed by its one CUDA tactic");
 
 bool find_grouped_tensor_config(char const* name, GroupedConfigId& config) {
-  if (!name || !name[0]) { config = kDefaultGroupedConfig; return true; }
-#define QUACTLIZE_PPU_GROUPED_CONFIG_MATCH(ID, NAME, TM, TN, WM, WN, STAGES) \
-  if (std::strcmp(name, NAME) == 0) { config = GroupedConfigId::ID; return true; }
-  QUACTLIZE_PPU_GROUPED_CONFIGS(QUACTLIZE_PPU_GROUPED_CONFIG_MATCH)
-#undef QUACTLIZE_PPU_GROUPED_CONFIG_MATCH
-  return false;
+  return ppu_grouped_shipping::find_config(name, config);
 }
 
 GroupedConfigId resolve_grouped_config(char const* name) {
@@ -136,6 +126,22 @@ GroupedConfigId resolve_grouped_config(char const* name) {
                "[quactlize_ppu] grouped tensor config '%s' is not compiled in; declining to default '%s'\n",
                name, kGroupedConfigs[0].name);
   return kDefaultGroupedConfig;
+}
+
+// Only canonical K-pack artifacts use the measured tactic cache.  An
+// explicit name remains authoritative, and every cache miss retains the
+// established compiled default.  Keeping these predicates arrangement-aware
+// prevents legacy Xplane callers from silently acquiring a K-pack policy.
+bool find_dense_config_for_arrangement_v2(
+    char const* name, int qtype, int m, int n, int k,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement,
+    DenseConfigId& config) {
+  if (arrangement &&
+      arrangement->layout == QUACTLIZE_PPU_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1) {
+    return ppu_kquant_measured_policy::find_dense_config(
+        name, qtype, m, n, k, config);
+  }
+  return find_dense_config(name, m, config);
 }
 
 constexpr size_t align16(size_t value) { return (value + 15) & ~size_t(15); }
@@ -1701,7 +1707,8 @@ extern "C" int32_t quactlize_ppu_dense_fully_quantized_config_valid_for_arrangem
                config, m, n, k, group_size, qtype, arrangement);
   }
   DenseConfigId config{};
-  return find_dense_config(config_name, m, config) &&
+  return find_dense_config_for_arrangement_v2(
+             config_name, qtype, m, n, k, arrangement, config) &&
          dense_fully_quantized_config_valid(
              config, m, n, k, group_size, qtype, arrangement);
 }
@@ -1733,6 +1740,70 @@ extern "C" int32_t quactlize_ppu_grouped_fully_quantized_config_valid_for_arrang
          grouped_fully_quantized_config_valid(
              config, total_rows, n, k, group_size, experts, max_rows, qtype,
              arrangement);
+}
+
+extern "C" int32_t quactlize_ppu_dense_fully_quantized_selected_config_for_arrangement_v2(
+    quactlize_ppu_config_v4* out,
+    int m, int n, int k, int group_size, int qtype,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement,
+    char const* requested_config_name) {
+  if (!out) return 0;
+  std::memset(out, 0, sizeof(*out));
+  if (arrangement &&
+      arrangement->layout == QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1) {
+    Kpack4ConfigId config{};
+    if (!ppu_q4_kpack4_shipping::find_config(
+            requested_config_name, m, n, k, config) ||
+        !q4_kpack4_config_valid(
+            config, m, n, k, group_size, qtype, arrangement)) {
+      return 0;
+    }
+    auto const& row = ppu_q4_kpack4_shipping::row(config);
+    *out = {false, row.name, row.tile_m, row.tile_n, row.tile_k, 0,
+            row.warp_m, row.warp_n, row.stages, row.split};
+    return 1;
+  }
+  DenseConfigId config{};
+  if (!find_dense_config_for_arrangement_v2(
+          requested_config_name, qtype, m, n, k, arrangement, config) ||
+      !dense_fully_quantized_config_valid(
+          config, m, n, k, group_size, qtype, arrangement)) {
+    return 0;
+  }
+  auto const& row = kDenseConfigs[static_cast<int>(config)];
+  int const tactic_tile_k = ppu_formats::for_qtype(qtype).fully_quantized_tile_k;
+  int const artifact_tile_k =
+      arrangement->layout == QUACTLIZE_PPU_LAYOUT_XPLANE_V1
+          ? arrangement->artifact_tile_k : 0;
+  *out = {row.enable_cuda_kernel, row.name, row.tile_m, row.tile_n,
+          tactic_tile_k, artifact_tile_k, row.warp_m, row.warp_n,
+          row.stages, 1};
+  return 1;
+}
+
+extern "C" int32_t quactlize_ppu_grouped_fully_quantized_selected_config_for_arrangement_v2(
+    quactlize_ppu_config_v3* out,
+    int total_rows, int n, int k, int group_size, int experts, int max_rows,
+    int qtype, quactlize_ppu_placed_arrangement_v2 const* arrangement,
+    char const* requested_config_name) {
+  if (!out) return 0;
+  std::memset(out, 0, sizeof(*out));
+  GroupedConfigId config{};
+  if (!find_grouped_tensor_config(requested_config_name, config) ||
+      !grouped_fully_quantized_config_valid(
+          config, total_rows, n, k, group_size, experts, max_rows, qtype,
+          arrangement)) {
+    return 0;
+  }
+  auto const& row = kGroupedConfigs[static_cast<int>(config)];
+  int const tactic_tile_k = ppu_formats::for_qtype(qtype).fully_quantized_tile_k;
+  int const artifact_tile_k =
+      arrangement->layout == QUACTLIZE_PPU_LAYOUT_XPLANE_V1
+          ? arrangement->artifact_tile_k : 0;
+  *out = {row.enable_cuda_kernel, row.name, row.tile_m, row.tile_n,
+          tactic_tile_k, artifact_tile_k, row.warp_m, row.warp_n,
+          row.stages};
+  return 1;
 }
 
 extern "C" int32_t quactlize_ppu_list_valid_dense_lowbit_configs_v2(
@@ -2103,7 +2174,8 @@ extern "C" int quactlize_ppu_dense_fully_quantized_for_arrangement_v2(
   if (arrangement->layout ==
           QUACTLIZE_PPU_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1) {
     DenseConfigId config{};
-    if (!find_dense_config(config_name, m, config)) return 39;
+    if (!find_dense_config_for_arrangement_v2(
+            config_name, qtype, m, n, k, arrangement, config)) return 39;
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && \
     defined(PPU_PACKED_FORMAT)
 #if PPU_PACKED_FORMAT == 2
@@ -2179,7 +2251,8 @@ extern "C" int64_t quactlize_ppu_dense_fully_quantized_workspace_bytes_for_arran
 #endif
   }
   DenseConfigId config{};
-  if (!find_dense_config(nullptr, m, config) ||
+  if (!find_dense_config_for_arrangement_v2(
+          nullptr, qtype, m, n, k, arrangement, config) ||
       !dense_fully_quantized_config_valid(
           config, m, n, k, qtype_group_size(qtype), qtype,
           arrangement)) {
@@ -2320,7 +2393,8 @@ extern "C" int quactlize_ppu_dense_fully_quantized_dev_for_arrangement_v2(
   if (arrangement->layout ==
           QUACTLIZE_PPU_LAYOUT_KQUANT_KPACK_TRANSPOSE_V1) {
     DenseConfigId config{};
-    if (!find_dense_config(config_name, m, config)) return 39;
+    if (!find_dense_config_for_arrangement_v2(
+            config_name, qtype, m, n, k, arrangement, config)) return 39;
     ppu_gemv::rt_clear_error();
     hggcStream_t const s = static_cast<hggcStream_t>(stream);
 #if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0) && \
@@ -2789,8 +2863,6 @@ extern "C" int quactlize_ppu_grouped_fully_quantized_for_arrangement_v2(
       total_rows <= 0 || n <= 0 || k <= 0 || experts <= 0) {
     return 30;
   }
-  GroupedConfigId config{};
-  if (!find_grouped_tensor_config(config_name, config)) return 39;
   int max_rows = 0;
   int64_t row_sum = 0;
   for (int e = 0; e < experts; ++e) {
@@ -2798,6 +2870,8 @@ extern "C" int quactlize_ppu_grouped_fully_quantized_for_arrangement_v2(
     max_rows = std::max(max_rows, rows_per_expert[e]);
     row_sum += rows_per_expert[e];
   }
+  GroupedConfigId config{};
+  if (!find_grouped_tensor_config(config_name, config)) return 39;
   if (row_sum != total_rows ||
       !grouped_fully_quantized_config_valid(
           config, total_rows, n, k, qtype_group_size(qtype),

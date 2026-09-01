@@ -249,6 +249,28 @@ ABI checks, and planted negative controls. These checks do not establish a
 device result; development-only probes and negative controls are intentionally
 not part of the installed product.
 
+The production fully-quantized config policy is generated only from an
+all-config K-pack measurement result and its authority file. Reproduce or
+audit the checked-in table with:
+
+```bash
+python3 -B tools/generate_fq_kquant_measured_policy.py self-test
+python3 -B tools/generate_fq_kquant_measured_policy.py generate --check \
+  --summary "$OUT/results/summary.json" \
+  --config-heuristic "$OUT/results/config-heuristic.json" \
+  --authority "$OUT/results/result-authority.json" \
+  --evidence-root "$OUT" \
+  --output quactlize/include/ppu_kquant_measured_policy_data.inc
+```
+
+The evidence root must contain every relative path recorded by the authority;
+generation hashes the actual files rather than trusting the JSON records. The
+table is a pure dense lookup: explicit compiled config, exact measured point,
+then the compiled default. It neither profiles nor interpolates at runtime.
+Grouped measurements are evidence-checked but are not routed automatically
+until the ABI carries the full expert-row distribution. See
+`docs/WHEN_TO_TUNE.md` for that boundary and the evidence contract.
+
 The box is required for:
 
 - raw-bit and numeric correctness on PPU;

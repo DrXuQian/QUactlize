@@ -4,17 +4,19 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
-Last updated: 2026-09-01. Persistent sidecar schema v3 and the complete
-loader-facing host ABI are current. The published runtime bundle has passed
-strict binary inspection and all 26 host ABI cases; PPU device execution
-remains a separate box-admission step.
+Last updated: 2026-09-02. Persistent sidecar schema v3 is current. The
+published `0f330cb` runtime bundle has passed strict binary inspection and all
+26 host ABI cases for its frozen loader contract, but it is now a **legacy
+config-selection bundle**: it predates the host-visible selected-config ABI and
+the measured dense K-pack policy. PPU device execution remains a separate
+box-admission step.
 
 ## Runtime libraries
 
-The current PPU0010 six-library bundle was built from clean source commit
-`0f330cbed40cff57e88679081b5ed00676301471`. Its immutable artifact commit is
-`8580346e244945a4a384091dfb054944913ae1a2`, whose only parent is that source
-commit. The durable Git authority is:
+The currently published PPU0010 six-library bundle was built from clean source
+commit `0f330cbed40cff57e88679081b5ed00676301471`. Its immutable artifact commit
+is `8580346e244945a4a384091dfb054944913ae1a2`, whose only parent is that
+source commit. The durable Git authority is:
 
 ```text
 origin/artifacts/ppu0010/0f330cb-runtime6-051b7204a08d
@@ -61,6 +63,23 @@ python3 "$ARTIFACT/verify_bundle.py" "$BUNDLE" \
 Do not use `--manifest-only`: it omits exported-symbol and embedded-image
 inspection. Setting `QUACTLIZE_PPU_BUNDLE` only selects a directory and does
 not perform this verification automatically.
+
+The verifier stored on that artifact branch checks the exact legacy contract
+that was current at source commit `0f330cb`. The current develop verifier also
+requires these two successor exports:
+
+```text
+quactlize_ppu_dense_fully_quantized_selected_config_for_arrangement_v2
+quactlize_ppu_grouped_fully_quantized_selected_config_for_arrangement_v2
+```
+
+Consequently, running current `quactlize.ppu_bundle` or
+`tools/verify_kquant_selected_config.py` against `0f330cb` must reject it as a
+legacy selected-config bundle. That rejection does not invalidate its frozen
+loader/packing ABI; it prevents the old library from being presented as a new
+measured-policy release. The llama.cpp integration may use `0f330cb` now for
+loader, sidecar, conversion and explicit/default launch plumbing, then replace
+all six libraries together after the successor bundle is published.
 
 Format selection is mandatory:
 
@@ -131,8 +150,10 @@ quactlize/include/quactlize_ppu_packed.h
 ```
 
 They are included in both Python package manifests at source commit
-`0f330cbed40cff57e88679081b5ed00676301471` and are byte-identical on current
-develop.
+`0f330cbed40cff57e88679081b5ed00676301471`. Pin those exact headers when using
+the legacy bundle. Current develop has added selected-config declarations and
+must be paired with a newly built bundle exporting them; do not mix current
+headers with the legacy libraries and infer that the new symbols exist.
 
 `quactlize_ppu_placed_arrangement_v2` is 40 bytes on the target ABI:
 
@@ -158,6 +179,40 @@ Q2/Q3/Q5/Q6:     layout=2 mapping_id=0x514b504b54000001
 ```
 
 ## Fully-quantized device execution
+
+### Selected-config observability
+
+The successor bundle exposes the exact tactic chosen by the same host policy
+used by workspace queries and launches. These calls are host-only: they create
+no PPU context and enqueue no work.
+
+```c
+quactlize_ppu_dense_fully_quantized_selected_config_for_arrangement_v2
+quactlize_ppu_grouped_fully_quantized_selected_config_for_arrangement_v2
+```
+
+For dense K-pack Q2/Q3/Q5/Q6, a null or empty requested name selects an exact
+measured `(qtype,M,N,K)` point when present, then falls back to the established
+compiled M-dependent default. A known nonempty name is an explicit override.
+An unknown nonempty name fails and clears the output record. Grouped currently
+exposes only explicit/compiled-default selection because its measured sweep
+depends on the full per-expert row distribution, which is not represented by
+the public aggregate arguments.
+
+Before publishing a successor six-library bundle, run both gates:
+
+```bash
+python3 -m quactlize.ppu_bundle /path/to/bundle \
+  --ppu-sdk "${PPU_SDK:?set PPU_SDK to the admitted SDK root}"
+python3 tools/verify_kquant_selected_config.py /path/to/bundle
+```
+
+The second command validates all six build identities and selected-config
+exports, then calls the FMT2 host ABI at an exact measured dense point, an
+unmeasured compiled-default point, an explicit override, a stale-name
+fail-closed control, and a grouped-default point. It does not need a visible
+PPU device. The successor bundle is not admitted until that command reports
+`[kquant-selected-config] PASS` on the exact published files.
 
 Dense decode/prefill fallback:
 
