@@ -165,9 +165,20 @@ def test_box_gate_has_no_compiler_or_host_extension_build_surface():
         assert forbidden not in source
     assert source.count("subprocess.run(") == 1
     assert "def _run_git(" in source
+    args = gate.parse_args([
+        "/bundle", "--ppu-sdk", "/sdk", "--output", "/result",
+    ])
+    assert args.bundle == Path("/bundle")
+    assert args.q4_correctness_repeats == 1
     assert gate.parse_args([
         "/bundle", "--ppu-sdk", "/sdk", "--output", "/result",
-    ]).bundle == Path("/bundle")
+        "--q4-correctness-repeats", "8192",
+    ]).q4_correctness_repeats == 8192
+    with pytest.raises(SystemExit):
+        gate.parse_args([
+            "/bundle", "--ppu-sdk", "/sdk", "--output", "/result",
+            "--q4-correctness-repeats", "0",
+        ])
 
 
 def test_format_table_is_exactly_the_five_canonical_kpack_roles():
@@ -276,6 +287,83 @@ def test_selected_config_contract_rejects_geometry_drift_with_same_name():
     arrangement = gate.ArrangementV2(*spec.expected_arrangement)
     with pytest.raises(gate.GateError, match="null dense selector differs"):
         gate._assert_selected_config_contract(library, spec, arrangement)
+
+
+def test_q4_product_policy_is_explicit_and_bound_to_exact_selected_rows():
+    spec = gate.FORMATS[2]
+    arrangement = gate.ArrangementV2(*spec.expected_arrangement)
+    _dense, _grouped, selected = gate._assert_selected_config_contract(
+        _selected_library(spec), spec, arrangement)
+    evidence = gate._assert_product_policy_contract(spec, selected)
+    assert evidence == {
+        "dense": {
+            "packed_a_rows": 0,
+            "bchunk": 0,
+            "metadata_publication": "InterleavedHalf2",
+        },
+        "grouped": {
+            "packed_a_rows": 0,
+            "bchunk": 0,
+            "metadata_publication": "SeparateHalfPlanes",
+        },
+        "authority": "manifest-bound runtime source plus exact selected-config ABI",
+    }
+    assert gate._assert_product_policy_contract(gate.FORMATS[0], selected) is None
+
+    drifted = dict(selected)
+    drifted["dense"] = (*spec.expected_dense_record[:-1], 1)
+    with pytest.raises(gate.GateError, match="lost its exact selected rows"):
+        gate._assert_product_policy_contract(spec, drifted)
+
+
+def test_q4_product_policy_source_contract_has_ap_metadata_and_bchunk_reds():
+    sources = {
+        path: (ROOT / path).read_text(encoding="utf-8")
+        for path in gate.Q4_PRODUCT_POLICY_SOURCE_FILES
+    }
+    evidence = gate._assert_q4_product_source_contract(sources)
+    assert evidence["checks"] == {
+        "dense_ap0_dispatch": 1,
+        "dense_interleaved_metadata": 1,
+        "dense_interleaved_assert": 1,
+        "grouped_ap0_separate_metadata": 1,
+        "grouped_separate_assert": 1,
+        "canonical_bchunk0": 1,
+    }
+    assert set(evidence["source_sha256"]) == set(
+        gate.Q4_PRODUCT_POLICY_SOURCE_FILES)
+
+    backend_path, types_path, policy_path = gate.Q4_PRODUCT_POLICY_SOURCE_FILES
+    plants = []
+    dense_ap = dict(sources)
+    dense_ap[backend_path] = dense_ap[backend_path].replace(
+        "          0, TM, TN, TK, WM, WN, STAGES, QueryOnly>(",
+        "          1, TM, TN, TK, WM, WN, STAGES, QueryOnly>(", 1)
+    plants.append((dense_ap, "dense_ap0_dispatch"))
+
+    dense_metadata = dict(sources)
+    dense_metadata[types_path] = dense_metadata[types_path].replace(
+        "class MetadataPublication = cutlass::gemm::InterleavedHalf2>",
+        "class MetadataPublication = cutlass::gemm::SeparateHalfPlanes>", 1)
+    plants.append((dense_metadata, "dense_interleaved_metadata"))
+
+    grouped_metadata = dict(sources)
+    grouped_metadata[backend_path] = grouped_metadata[backend_path].replace(
+        "true, 0, 0, cutlass::gemm::SeparateHalfPlanes>",
+        "true, 0, 0, cutlass::gemm::InterleavedHalf2>", 1)
+    plants.append((grouped_metadata, "grouped_ap0_separate_metadata"))
+
+    bchunk = dict(sources)
+    q4_begin = bchunk[policy_path].index("struct Q4KPack4MainloopPolicy")
+    prefix, q4_and_after = bchunk[policy_path][:q4_begin], bchunk[policy_path][q4_begin:]
+    bchunk[policy_path] = prefix + q4_and_after.replace(
+        "static constexpr int BChunkRequest = 0;",
+        "static constexpr int BChunkRequest = 1;", 1)
+    plants.append((bchunk, "canonical_bchunk0"))
+
+    for planted, diagnostic in plants:
+        with pytest.raises(gate.GateError, match=diagnostic):
+            gate._assert_q4_product_source_contract(planted)
 
 
 @pytest.mark.parametrize("spec", gate.FORMATS, ids=lambda spec: spec.name)
@@ -555,7 +643,7 @@ def test_launch_status_checks_before_immediate_sync_and_deferred_errors():
 
 def test_ctypes_device_runner_uses_null_explicit_and_both_fault_plants():
     runtime = _FakeRuntime()
-    spec = gate.FORMATS[0]
+    spec = gate.FORMATS[2]
     arrangement = gate.ArrangementV2(*spec.expected_arrangement)
 
     def dense(_act, _low, high, units, output, m, n, k, qtype,
@@ -575,17 +663,23 @@ def test_ctypes_device_runner_uses_null_explicit_and_both_fault_plants():
         runtime, dense_library, spec, arrangement,
         np.arange(16, dtype=np.uint8), np.empty(0, dtype=np.uint8),
         np.ones(8, dtype=np.uint8), dense_activation,
-        spec.expected_dense_config.encode(), 32)
-    automatic, explicit, planted, dense_status = dense_outputs
+        spec.expected_dense_config.encode(), 32, 3)
+    automatic, explicit, planted, dense_status, dense_stability = dense_outputs
     assert np.array_equal(automatic.view(np.uint16), explicit.view(np.uint16))
     assert np.all(automatic == 3) and np.all(planted == 0)
     assert [row["phase"] for row in dense_status] == [
         "null-config", "same-row-explicit-config", "zeroed-scale-unit-plant"]
+    assert dense_stability["launches"] == 3
+    assert dense_stability["raw_bits_stable"] is True
+    assert dense_stability["raw_sha256"] == gate._array_sha256(
+        explicit.view(np.uint16))
 
     original_low = np.arange(16, dtype=np.uint8)
     planted_low = gate._plant_grouped_expert_zero(original_low, 4)
+    original_units = np.arange(8, dtype=np.uint8)
+    planted_units = gate._plant_grouped_expert_zero(original_units, 4)
 
-    def grouped(_act, low, high, _units, _offsets, output,
+    def grouped(_act, low, high, units, _offsets, output,
                 total, n, k, experts, max_rows, qtype,
                 _workspace, workspace_bytes, stream, config, _arrangement):
         assert (total, n, k, experts, max_rows, qtype) == (
@@ -593,9 +687,10 @@ def test_ctypes_device_runner_uses_null_explicit_and_both_fault_plants():
             gate.GROUPED_SHAPE[2], gate.GROUPED_SHAPE[3],
             max(gate.GROUPED_ROWS), spec.qtype)
         assert high is None and workspace_bytes == 64 and stream is None
-        rebound = bytes(runtime.memory[low.value]) == planted_low.tobytes()
-        runtime.store(output, np.full((total, n), 0 if rebound else 5,
-                                      dtype=np.float16))
+        low_rebound = bytes(runtime.memory[low.value]) == planted_low.tobytes()
+        units_rebound = bytes(runtime.memory[units.value]) == planted_units.tobytes()
+        value = 0 if low_rebound and units_rebound else 1 if units_rebound else 5
+        runtime.store(output, np.full((total, n), value, dtype=np.float16))
         assert config in (None, gate.GROUPED_DEFAULT_NAME.encode())
         return 0
 
@@ -604,13 +699,34 @@ def test_ctypes_device_runner_uses_null_explicit_and_both_fault_plants():
         (gate.GROUPED_SHAPE[0], gate.GROUPED_SHAPE[2]), dtype=np.float16)
     grouped_outputs = gate._grouped_launches(
         runtime, grouped_library, spec, arrangement, original_low,
-        np.empty(0, dtype=np.uint8), np.arange(8, dtype=np.uint8),
-        grouped_activation, gate.GROUPED_DEFAULT_NAME.encode(), 64)
-    automatic, explicit, planted, grouped_status = grouped_outputs
+        np.empty(0, dtype=np.uint8), original_units, grouped_activation,
+        gate.GROUPED_DEFAULT_NAME.encode(), 64, 3, True)
+    (automatic, explicit, planted, metadata_planted,
+     grouped_status, grouped_stability) = grouped_outputs
     assert np.array_equal(automatic.view(np.uint16), explicit.view(np.uint16))
     assert np.all(automatic == 5) and np.all(planted == 0)
+    assert np.all(metadata_planted == 1)
     assert [row["phase"] for row in grouped_status] == [
-        "null-config", "same-row-explicit-config", "expert0-rebind-plant"]
+        "null-config", "same-row-explicit-config",
+        "expert0-units-only-metadata-plant", "expert0-rebind-plant"]
+    assert grouped_stability["launches"] == 3
+    assert grouped_stability["raw_bits_stable"] is True
+
+
+def test_repeated_raw_bit_launch_rejects_one_changed_fp16_bit():
+    calls = 0
+
+    def launch(_config, _phase):
+        nonlocal calls
+        calls += 1
+        output = np.array([1.0, 2.0], dtype=np.float16)
+        if calls == 3:
+            output.view(np.uint16)[1] ^= 1
+        return output, {"before": 0, "device_call": 0, "immediate": 0,
+                        "synchronize": 0, "deferred": 0}
+
+    with pytest.raises(gate.GateError, match="repeat 3/3: first_bad=1"):
+        gate._repeat_raw_bit_launch(launch, b"config", "repeat-test", 3)
 
 
 def test_evidence_publish_is_atomic_strict_json_and_never_overwrites(tmp_path):
@@ -700,17 +816,20 @@ def test_run_gate_verifies_elf_and_executes_all_five_without_building(
     monkeypatch.setattr(
         gate, "_bind_format_library", lambda path: SimpleNamespace(path=path))
 
-    def run_format(runtime, library, spec):
+    def run_format(runtime, library, spec, q4_correctness_repeats):
         assert runtime.path == sdk / "lib" / "libhggc_wrapper.so"
         assert library.path == bundle / next(
             role.filename for role in ppu_bundle.LIBRARY_ROLES
             if role.role == spec.role)
-        calls.append(spec.name)
+        calls.append((spec.name, q4_correctness_repeats))
         return {"qtype": spec.qtype, "status": "PASS"}
 
     monkeypatch.setattr(gate, "_run_format_gate", run_format)
-    result = gate.run_gate(bundle, sdk, output)
-    assert calls == ["Q2_K", "Q3_K", "Q4_K", "Q5_K", "Q6_K"]
+    result = gate.run_gate(
+        bundle, sdk, output, q4_correctness_repeats=7)
+    assert calls == [
+        ("Q2_K", 1), ("Q3_K", 1), ("Q4_K", 7),
+        ("Q5_K", 1), ("Q6_K", 1)]
     assert result["status"] == "PASS"
     assert result["execution"] == {
         "device_library_builds": 0,
@@ -718,6 +837,19 @@ def test_run_gate_verifies_elf_and_executes_all_five_without_building(
         "runner": "python-ctypes",
         "library_load_mode": "six DSOs, RTLD_LOCAL, one process",
     }
-    assert set(result["formats"]) == set(calls)
+    assert set(result["formats"]) == {name for name, _repeats in calls}
+    assert result["coverage"]["q4_correctness_repeats"] == 7
+    assert result["coverage"]["q4_product_policy"] == gate.Q4_PRODUCT_POLICY
+    assert result["coverage"]["q4_product_policy_source"]["checks"][
+        "canonical_bchunk0"] == 1
     assert json.loads((output / "result.json").read_text()) == result
     assert (output / "bundle.json").is_file()
+
+
+def test_run_gate_rejects_nonpositive_repeat_before_creating_output(tmp_path):
+    output = tmp_path / "must-not-exist"
+    with pytest.raises(gate.GateError, match="repeat count must be positive"):
+        gate.run_gate(
+            tmp_path / "bundle", tmp_path / "sdk", output,
+            q4_correctness_repeats=0)
+    assert not output.exists()

@@ -287,6 +287,7 @@ does not configure CMake, compile, or link anything on the box:
 CUDA_VISIBLE_DEVICES=0 \
   python3 tools/run_prebuilt_ppu_box_gate.py /path/to/bundle \
     --ppu-sdk /path/to/ppu-sdk-2.1.1 \
+    --q4-correctness-repeats 8192 \
     --output /workspace/quactlize-prebuilt-gate-result
 ```
 
@@ -298,6 +299,11 @@ evidence. `CUDA_VISIBLE_DEVICES` must contain exactly one numeric device
 ordinal; `0` above is an example, not a device-name or multi-device selector.
 The box environment also needs NumPy and the official
 `gguf==0.19.0` oracle required by the runner.
+
+`--q4-correctness-repeats` repeats the exact fmt0 dense and grouped explicit
+launches and requires one stable raw-bit output hash. Its default is `1` so
+local runner tests remain fast; use `8192` for normal device admission or
+`32768` for the stronger timing-sensitive closure.
 
 Before launching a kernel, the runner verifies the manifest, every library
 digest and embedded PPU image, the source/submodule authority, all six format

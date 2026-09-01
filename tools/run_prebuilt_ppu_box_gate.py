@@ -82,7 +82,7 @@ ARRP = ctypes.POINTER(ArrangementV2)
 VOIDP = ctypes.c_void_p
 
 SCHEMA = "quactlize.prebuilt-six-library-box-gate"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 GGUF_ORACLE_VERSION = "0.19.0"
 HGG_RUNTIME_SHA256 = "71c32cb41191458503234324360fcd3f1fa890dd5a082d465bb07328630c775e"
 CORRECTNESS_BOUND = 5e-3
@@ -95,6 +95,18 @@ GROUPED_DEFAULT_NAME = "16x128:16x16:s2"
 SMALL_SQUARE_NAME = "32x32:16x16:s3"
 DECODE_DEFAULT_NAME = "8x128:8x32:s3"
 Q4_DECODE_NAME = "kpack4:8x32x256:8x16:s3:S4"
+Q4_PRODUCT_POLICY = {
+    "dense": {
+        "packed_a_rows": 0,
+        "bchunk": 0,
+        "metadata_publication": "InterleavedHalf2",
+    },
+    "grouped": {
+        "packed_a_rows": 0,
+        "bchunk": 0,
+        "metadata_publication": "SeparateHalfPlanes",
+    },
+}
 HOST_ABI_FIXTURE_SHAPE = (256, 512)  # N, K
 # Independent reference/gguf_kpack.py output for raw[i]=(37*i+qtype)&255.
 # These hashes lock the offline bytes; prepare+recover alone would only prove
@@ -133,6 +145,11 @@ SOURCE_INPUTS = (
     "third_party/cutlass",
 )
 RUNNER_INPUT = "tools/run_prebuilt_ppu_box_gate.py"
+Q4_PRODUCT_POLICY_SOURCE_FILES = (
+    "quactlize/csrc/device/ppu_dense_backend.cu",
+    "quactlize/include/fpA_intB_ppu.cuh",
+    "quactlize/include/ppu_mixed_policy.hpp",
+)
 
 
 class GateError(RuntimeError):
@@ -353,6 +370,18 @@ def _array_sha256(value: np.ndarray) -> str:
     return hashlib.sha256(_contiguous(value).tobytes()).hexdigest()
 
 
+def _positive_int(value: str) -> int:
+    try:
+        result = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"expected a positive integer, got {value!r}") from exc
+    if result <= 0:
+        raise argparse.ArgumentTypeError(
+            f"expected a positive integer, got {value!r}")
+    return result
+
+
 def _write_json(path: pathlib.Path, value: object) -> None:
     try:
         payload = json.dumps(
@@ -482,6 +511,74 @@ def _assert_source_authority(manifest: Mapping[str, object]) -> dict[str, str]:
         "bundle_source_commit": recorded,
         "checkout_head": head,
         "runner_sha256": _sha256(pathlib.Path(__file__).resolve()),
+    }
+
+
+def _assert_q4_product_source_contract(
+        sources: Mapping[str, str] | None = None,
+        ) -> dict[str, object]:
+    if sources is None:
+        sources = {
+            path: (ROOT / path).read_text(encoding="utf-8")
+            for path in Q4_PRODUCT_POLICY_SOURCE_FILES
+        }
+    if set(sources) != set(Q4_PRODUCT_POLICY_SOURCE_FILES):
+        raise GateError(
+            "Q4 product policy source set differs: "
+            f"got={sorted(sources)} expected={sorted(Q4_PRODUCT_POLICY_SOURCE_FILES)}")
+
+    backend = sources[Q4_PRODUCT_POLICY_SOURCE_FILES[0]]
+    kernel_types = sources[Q4_PRODUCT_POLICY_SOURCE_FILES[1]]
+    policy = sources[Q4_PRODUCT_POLICY_SOURCE_FILES[2]]
+    patterns = {
+        "dense_ap0_dispatch": (
+            backend,
+            r"return\s+launch_dense_q4_kpack4_exact<[\s\\]*0,\s*TM,\s*TN,"
+            r"\s*TK,\s*WM,\s*WN,\s*STAGES,\s*QueryOnly>"),
+        "dense_interleaved_metadata": (
+            kernel_types,
+            r"class MetadataPublication\s*=\s*cutlass::gemm::InterleavedHalf2>"
+            r"\s*struct DenseQ4KPack4KernelTypes"),
+        "dense_interleaved_assert": (
+            backend,
+            r"Shipping::MainloopPolicy::Descriptor::interleaved_metadata\s*&&"
+            r"\s*Mainloop::is_fused_scale_zero"),
+        "grouped_ap0_separate_metadata": (
+            backend,
+            r"using Kpack4Policy\s*=\s*"
+            r"ppu_mixed_policy::Q4KPack4MainloopPolicy<.*?"
+            r"Stages,\s*true,\s*0,\s*0,\s*"
+            r"cutlass::gemm::SeparateHalfPlanes>;"),
+        "grouped_separate_assert": (
+            backend,
+            r"static_assert\(!Kpack4Policy::Descriptor::interleaved_metadata"),
+    }
+    checks: dict[str, int] = {}
+    for name, (text, pattern) in patterns.items():
+        count = len(re.findall(pattern, text, flags=re.DOTALL))
+        if count != 1:
+            raise GateError(
+                f"Q4 product policy source check {name} matched {count}, expected 1")
+        checks[name] = count
+
+    q4_begin = policy.find("struct Q4KPack4MainloopPolicy")
+    q4_end = policy.find("struct KPackMainloopPolicy", q4_begin + 1)
+    if q4_begin < 0 or q4_end < 0:
+        raise GateError("Q4 product policy source section is missing")
+    bchunk_count = policy[q4_begin:q4_end].count(
+        "static constexpr int BChunkRequest = 0;")
+    if bchunk_count != 1:
+        raise GateError(
+            "Q4 product policy source check canonical_bchunk0 matched "
+            f"{bchunk_count}, expected 1")
+    checks["canonical_bchunk0"] = bchunk_count
+
+    return {
+        "checks": checks,
+        "source_sha256": {
+            path: hashlib.sha256(text.encode("utf-8")).hexdigest()
+            for path, text in sources.items()
+        },
     }
 
 
@@ -832,6 +929,31 @@ def _assert_selected_config_contract(
     )
 
 
+def _assert_product_policy_contract(
+        spec: FormatSpec, selected: Mapping[str, object],
+        ) -> dict[str, object] | None:
+    """Bind Q4's typed product policy to the exact selected shipping rows.
+
+    The public selected-config ABI intentionally reports tactic geometry rather
+    than C++ policy types. The bundle/source authority binds those rows to the
+    implementation compiled into the DSO; this check makes the corresponding
+    AP, BChunk and metadata-publication contract explicit in device evidence.
+    """
+    if spec.qtype != 12:
+        return None
+    dense = tuple(selected.get("dense", ()))
+    grouped = tuple(selected.get("grouped", ()))
+    if dense != spec.expected_dense_record or grouped != spec.expected_grouped_record:
+        raise GateError(
+            f"{spec.name} shipping policy lost its exact selected rows: "
+            f"dense={dense!r} grouped={grouped!r}")
+    return {
+        "dense": dict(Q4_PRODUCT_POLICY["dense"]),
+        "grouped": dict(Q4_PRODUCT_POLICY["grouped"]),
+        "authority": "manifest-bound runtime source plus exact selected-config ABI",
+    }
+
+
 def _assert_any_m_contract(
         library: BoundLibrary, spec: FormatSpec,
         arrangement: ArrangementV2) -> dict[str, dict[str, int]]:
@@ -1011,12 +1133,48 @@ def _error_evidence(value: float) -> float | str:
     return value if math.isfinite(value) else "NONFINITE"
 
 
+def _repeat_raw_bit_launch(launch, config: bytes, phase: str,
+                           repeats: int) -> tuple[np.ndarray, dict[str, object]]:
+    if repeats <= 0:
+        raise GateError(f"{phase} repeat count must be positive, got {repeats}")
+    first: np.ndarray | None = None
+    first_status: dict[str, int] | None = None
+    last_status: dict[str, int] | None = None
+    for repeat in range(repeats):
+        current, status = launch(
+            config, f"{phase}[{repeat + 1}/{repeats}]")
+        if first is None:
+            first = current
+            first_status = status
+        elif not np.array_equal(first.view(np.uint16), current.view(np.uint16)):
+            want = first.view(np.uint16).reshape(-1)
+            got = current.view(np.uint16).reshape(-1)
+            first_bad = int(np.flatnonzero(want != got)[0])
+            raise GateError(
+                f"{phase} raw output changed at repeat {repeat + 1}/{repeats}: "
+                f"first_bad={first_bad} want=0x{int(want[first_bad]):04x} "
+                f"got=0x{int(got[first_bad]):04x}")
+        last_status = status
+    assert first is not None
+    assert first_status is not None
+    assert last_status is not None
+    return first, {
+        "phase": phase,
+        "launches": repeats,
+        "raw_bits_stable": True,
+        "raw_sha256": _array_sha256(first.view(np.uint16)),
+        "first_launch_status": first_status,
+        "last_launch_status": last_status,
+    }
+
+
 def _dense_launches(
         runtime: HggcRuntime, library: BoundLibrary, spec: FormatSpec,
         arrangement: ArrangementV2, low: np.ndarray, high: np.ndarray,
         units: np.ndarray, activation: np.ndarray, explicit_name: bytes,
-        workspace_bytes: int,
-        ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[dict[str, object]]]:
+        workspace_bytes: int, correctness_repeats: int,
+        ) -> tuple[np.ndarray, np.ndarray, np.ndarray,
+                   list[dict[str, object]], dict[str, object]]:
     m, n, k = DENSE_SHAPE
     poison = np.full((m, n), np.nan, dtype=np.float16)
     zero_workspace = np.zeros(workspace_bytes, dtype=np.uint8)
@@ -1029,7 +1187,8 @@ def _dense_launches(
         device_out = arena.upload(poison)
         device_workspace = arena.upload(zero_workspace)
 
-        def launch(config: bytes | None, phase: str) -> np.ndarray:
+        def launch(config: bytes | None, phase: str
+                   ) -> tuple[np.ndarray, dict[str, int]]:
             arena.copy_to_device(device_out, poison)
             arena.copy_to_device(device_workspace, zero_workspace)
             status = _checked_device_launch(
@@ -1040,24 +1199,30 @@ def _dense_launches(
                     device_units.pointer, device_out.pointer,
                     m, n, k, spec.qtype, device_workspace.pointer,
                     workspace_bytes, None, config, ctypes.byref(arrangement)))
-            launch_status.append({"phase": phase, **status})
             result = np.empty_like(poison)
             arena.download(device_out, result)
-            return result
+            return result, status
 
-        automatic = launch(None, "null-config")
-        explicit = launch(explicit_name, "same-row-explicit-config")
+        automatic, automatic_status = launch(None, "null-config")
+        launch_status.append({"phase": "null-config", **automatic_status})
+        explicit, stability = _repeat_raw_bit_launch(
+            launch, explicit_name, "same-row-explicit-config",
+            correctness_repeats)
+        launch_status.append(stability)
         arena.copy_to_device(device_units, np.zeros_like(units))
-        planted = launch(explicit_name, "zeroed-scale-unit-plant")
-    return automatic, explicit, planted, launch_status
+        planted, planted_status = launch(explicit_name, "zeroed-scale-unit-plant")
+        launch_status.append({"phase": "zeroed-scale-unit-plant", **planted_status})
+    return automatic, explicit, planted, launch_status, stability
 
 
 def _grouped_launches(
         runtime: HggcRuntime, library: BoundLibrary, spec: FormatSpec,
         arrangement: ArrangementV2, low: np.ndarray, high: np.ndarray,
         units: np.ndarray, activation: np.ndarray, explicit_name: bytes,
-        workspace_bytes: int,
-        ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[dict[str, object]]]:
+        workspace_bytes: int, correctness_repeats: int,
+        units_only_metadata_plant: bool,
+        ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None,
+                   list[dict[str, object]], dict[str, object]]:
     total, n, k, experts = GROUPED_SHAPE
     offsets = np.concatenate((
         np.zeros(1, dtype=np.int32), np.cumsum(GROUPED_ROWS, dtype=np.int32)))
@@ -1076,7 +1241,8 @@ def _grouped_launches(
         device_out = arena.upload(poison)
         device_workspace = arena.upload(zero_workspace)
 
-        def launch(config: bytes | None, phase: str) -> np.ndarray:
+        def launch(config: bytes | None, phase: str
+                   ) -> tuple[np.ndarray, dict[str, int]]:
             arena.copy_to_device(device_out, poison)
             arena.copy_to_device(device_workspace, zero_workspace)
             status = _checked_device_launch(
@@ -1088,19 +1254,32 @@ def _grouped_launches(
                     device_out.pointer, total, n, k, experts,
                     max(GROUPED_ROWS), spec.qtype, device_workspace.pointer,
                     workspace_bytes, None, config, ctypes.byref(arrangement)))
-            launch_status.append({"phase": phase, **status})
             result = np.empty_like(poison)
             arena.download(device_out, result)
-            return result
+            return result, status
 
-        automatic = launch(None, "null-config")
-        explicit = launch(explicit_name, "same-row-explicit-config")
+        automatic, automatic_status = launch(None, "null-config")
+        launch_status.append({"phase": "null-config", **automatic_status})
+        explicit, stability = _repeat_raw_bit_launch(
+            launch, explicit_name, "same-row-explicit-config",
+            correctness_repeats)
+        launch_status.append(stability)
+        metadata_planted: np.ndarray | None = None
+        if units_only_metadata_plant:
+            arena.copy_to_device(device_units, planted_units)
+            metadata_planted, metadata_status = launch(
+                explicit_name, "expert0-units-only-metadata-plant")
+            launch_status.append({
+                "phase": "expert0-units-only-metadata-plant", **metadata_status})
+        else:
+            arena.copy_to_device(device_units, planted_units)
         arena.copy_to_device(device_low, planted_low)
         if device_high:
             arena.copy_to_device(device_high, planted_high)
-        arena.copy_to_device(device_units, planted_units)
-        planted = launch(explicit_name, "expert0-rebind-plant")
-    return automatic, explicit, planted, launch_status
+        planted, planted_status = launch(explicit_name, "expert0-rebind-plant")
+        launch_status.append({"phase": "expert0-rebind-plant", **planted_status})
+    return (automatic, explicit, planted, metadata_planted,
+            launch_status, stability)
 
 
 def _plant_grouped_expert_zero(value: np.ndarray, experts: int) -> np.ndarray:
@@ -1157,7 +1336,8 @@ def _mapping_red(
 
 def _run_format_gate(
         runtime: HggcRuntime, library: BoundLibrary,
-        spec: FormatSpec) -> dict[str, object]:
+        spec: FormatSpec, q4_correctness_repeats: int = 1,
+        ) -> dict[str, object]:
     identity = int(library.identity())
     if identity != spec.packed_format:
         raise GateError(
@@ -1174,6 +1354,8 @@ def _run_format_gate(
         library, spec, arrangement)
     dense_config, grouped_config, selected = _assert_selected_config_contract(
         library, spec, arrangement)
+    shipping_policy = _assert_product_policy_contract(spec, selected)
+    correctness_repeats = q4_correctness_repeats if spec.qtype == 12 else 1
     bad_mapping = _mapping_red(library, spec, arrangement)
     frozen_artifact = _assert_frozen_host_artifact(
         library, spec, arrangement)
@@ -1192,9 +1374,11 @@ def _run_format_gate(
         m, n, k, spec.qtype, ctypes.byref(arrangement)))
     if dense_workspace <= 0:
         raise GateError(f"{spec.name} dense workspace query returned {dense_workspace}")
-    dense_auto, dense_explicit, dense_plant, dense_launch_status = _dense_launches(
+    (dense_auto, dense_explicit, dense_plant, dense_launch_status,
+     dense_stability) = _dense_launches(
         runtime, library, spec, arrangement, dense_low, dense_high,
-        dense_units, dense_activation, dense_config, dense_workspace)
+        dense_units, dense_activation, dense_config, dense_workspace,
+        correctness_repeats)
     dense_auto_error = _conditioned_error(
         dense_auto, dense_reference, dense_denominator)
     dense_explicit_error = _conditioned_error(
@@ -1233,15 +1417,21 @@ def _run_format_gate(
     if grouped_workspace <= 0:
         raise GateError(
             f"{spec.name} grouped workspace query returned {grouped_workspace}")
-    grouped_auto, grouped_explicit, grouped_plant, grouped_launch_status = _grouped_launches(
+    (grouped_auto, grouped_explicit, grouped_plant, grouped_metadata_plant,
+     grouped_launch_status, grouped_stability) = _grouped_launches(
         runtime, library, spec, arrangement, grouped_low, grouped_high,
-        grouped_units, grouped_activation, grouped_config, grouped_workspace)
+        grouped_units, grouped_activation, grouped_config, grouped_workspace,
+        correctness_repeats, spec.qtype == 12)
     grouped_auto_error = _conditioned_error(
         grouped_auto, grouped_reference, grouped_denominator)
     grouped_explicit_error = _conditioned_error(
         grouped_explicit, grouped_reference, grouped_denominator)
     grouped_plant_error = _conditioned_error(
         grouped_plant, grouped_reference, grouped_denominator)
+    grouped_metadata_plant_error = (
+        _conditioned_error(
+            grouped_metadata_plant, grouped_reference, grouped_denominator)
+        if grouped_metadata_plant is not None else None)
     if not np.array_equal(
             grouped_auto.view(np.uint16), grouped_explicit.view(np.uint16)):
         raise GateError(
@@ -1255,6 +1445,14 @@ def _run_format_gate(
         raise GateError(
             f"{spec.name} grouped oracle missed expert0 artifact rebinding: "
             f"error={grouped_plant_error:.3e}")
+    if grouped_metadata_plant_error is not None and \
+            grouped_metadata_plant_error <= CORRECTNESS_BOUND:
+        raise GateError(
+            f"{spec.name} grouped oracle missed units-only metadata rebinding: "
+            f"error={grouped_metadata_plant_error:.3e}")
+    grouped_metadata_text = (
+        f"{grouped_metadata_plant_error:.3e}"
+        if grouped_metadata_plant_error is not None else "NOT_RUN")
 
     print(
         f"[prebuilt-box-gate] format={spec.name} "
@@ -1263,6 +1461,7 @@ def _run_format_gate(
         f"unit_plant={dense_plant_error:.3e} "
         f"grouped_null={grouped_auto_error:.3e} "
         f"grouped_explicit={grouped_explicit_error:.3e} "
+        f"grouped_metadata={grouped_metadata_text} "
         f"grouped_rebind={grouped_plant_error:.3e}",
         flush=True)
     return {
@@ -1272,6 +1471,7 @@ def _run_format_gate(
         "arrangement": list(got_arrangement),
         "any_m": any_m,
         "selected_config": selected,
+        "shipping_policy": shipping_policy,
         "host_prepare_recover": "BYTE_EXACT",
         "frozen_host_artifact": frozen_artifact,
         "bad_mapping": bad_mapping,
@@ -1280,6 +1480,7 @@ def _run_format_gate(
             "null_config_error": dense_auto_error,
             "explicit_config_error": dense_explicit_error,
             "zeroed_scale_unit_error": _error_evidence(dense_plant_error),
+            "raw_bit_stability": dense_stability,
             "workspace_bytes": dense_workspace,
             "launch_status": dense_launch_status,
         },
@@ -1289,6 +1490,10 @@ def _run_format_gate(
             "null_config_error": grouped_auto_error,
             "explicit_config_error": grouped_explicit_error,
             "expert0_rebind_error": _error_evidence(grouped_plant_error),
+            "units_only_metadata_error": (
+                _error_evidence(grouped_metadata_plant_error)
+                if grouped_metadata_plant_error is not None else None),
+            "raw_bit_stability": grouped_stability,
             "workspace_bytes": grouped_workspace,
             "launch_status": grouped_launch_status,
         },
@@ -1342,7 +1547,12 @@ def _sdk_evidence(
 
 def run_gate(
         bundle: pathlib.Path, sdk_root: pathlib.Path,
-        output: pathlib.Path) -> dict[str, object]:
+        output: pathlib.Path, *, q4_correctness_repeats: int = 1,
+        ) -> dict[str, object]:
+    if q4_correctness_repeats <= 0:
+        raise GateError(
+            "Q4 correctness repeat count must be positive, got "
+            f"{q4_correctness_repeats}")
     bundle = bundle.resolve()
     sdk_root = sdk_root.resolve()
     output = _create_output(output)
@@ -1352,6 +1562,7 @@ def run_gate(
     manifest = ppu_bundle.verify_bundle(
         bundle, sdk_root=sdk_root, inspect_binaries=True)
     source_authority = _assert_source_authority(manifest)
+    q4_policy_source = _assert_q4_product_source_contract()
     versions = _dependency_versions()
     paths = _format_library_paths(bundle, manifest)
     runtime = HggcRuntime(sdk_root)
@@ -1362,7 +1573,9 @@ def run_gate(
     for spec in FORMATS:
         print(f"[prebuilt-box-gate] phase=numeric format={spec.name}", flush=True)
         library = _bind_format_library(paths[spec.role])
-        format_results[spec.name] = _run_format_gate(runtime, library, spec)
+        format_repeats = q4_correctness_repeats if spec.qtype == 12 else 1
+        format_results[spec.name] = _run_format_gate(
+            runtime, library, spec, format_repeats)
 
     bundle_record = {
         "manifest_sha256": _sha256(bundle / "manifest.json"),
@@ -1400,6 +1613,10 @@ def run_gate(
             "bad_mapping_workspace_queries": "EXPECTED_MINUS_ONE",
             "zeroed_scale_unit_fault": "EXPECTED_NUMERIC_RED",
             "grouped_expert0_rebind_fault": "EXPECTED_NUMERIC_RED",
+            "grouped_units_only_metadata_fault": "FMT0_EXPECTED_NUMERIC_RED",
+            "q4_correctness_repeats": q4_correctness_repeats,
+            "q4_product_policy": Q4_PRODUCT_POLICY,
+            "q4_product_policy_source": q4_policy_source,
             "numeric_reference": "official gguf 0.19.0 dequantize plus NumPy float64",
             "host_prepare_recover_scope": "self-inverse plus independent frozen artifact hashes",
         },
@@ -1429,6 +1646,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         help="admitted SDK root with hgobjdump and libhggc_wrapper")
     parser.add_argument("--output", required=True, type=pathlib.Path,
                         help="new directory for bundle.json and result.json")
+    parser.add_argument(
+        "--q4-correctness-repeats", type=_positive_int, default=1,
+        help=("raw-bit-stable explicit launches for fmt0 dense and grouped; "
+              "use 8192 or 32768 for device admission (default: 1)"))
     return parser.parse_args(argv)
 
 
@@ -1436,7 +1657,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     output = args.output.resolve()
     try:
-        run_gate(args.bundle, args.ppu_sdk, output)
+        run_gate(
+            args.bundle, args.ppu_sdk, output,
+            q4_correctness_repeats=args.q4_correctness_repeats)
     except (GateError, ppu_bundle.BundleError) as exc:
         if output.is_dir():
             try:
