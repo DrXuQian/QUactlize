@@ -131,7 +131,10 @@ def test_bundle_builder_owns_the_exact_six_role_recipe():
     assert 'assert_role_source "$work/$role" "$role" "$source_sha"' in script
     assert 'done <"$roles"' in script
     assert 'python3 -m quactlize.ppu_bundle "$stage" --ppu-sdk "$sdk"' in script
-    assert 'python3 "$root/tools/verify_kquant_selected_config.py" "$stage"' in script
+    assert 'host_loader="${PPU_HOST_LOADER:-}"' in script
+    assert 'host_python="${PPU_HOST_PYTHON:-}"' in script
+    assert 'host_library_path="${PPU_HOST_LIBRARY_PATH:-}"' in script
+    assert '"${selected_config_oracle[@]}" "$stage"' in script
     assert "mv -- \"$stage\" \"$out\"" in script
     result = subprocess.run(["bash", "-n", str(ROOT / "tools" / "build_ppu_runtime_bundle.sh")])
     assert result.returncode == 0

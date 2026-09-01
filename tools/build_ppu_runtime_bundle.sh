@@ -102,8 +102,8 @@ main() {
   local root out parent sdk sdk_archive sdk_archive_sha sdk_release release_file jobs bundle_jobs
   local work stage records roles logs submodules_file
   local role packed_scale packed_format qtype filename defs build_dir log bin count
-  local source_sha compiler
-  local -a bins batch
+  local source_sha compiler host_loader host_python host_library_path
+  local -a bins batch selected_config_oracle
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   [[ $# -eq 1 ]] || fail "usage: $0 OUT_DIR"
   out="$1"
@@ -144,6 +144,27 @@ main() {
   [[ "$compiler" == *"Release version $sdk_release"* ]] ||
     fail 'hgcc release identity disagrees with the installed SDK receipt'
   compiler="$(printf '%s\n' "$compiler" | tr '\n' ';' | sed 's/;$//')"
+
+  host_loader="${PPU_HOST_LOADER:-}"
+  host_python="${PPU_HOST_PYTHON:-}"
+  host_library_path="${PPU_HOST_LIBRARY_PATH:-}"
+  if [[ -n "$host_loader" ]]; then
+    [[ "$host_loader" = /* && -x "$host_loader" && ! -L "$host_loader" ]] ||
+      fail 'PPU_HOST_LOADER must be an absolute executable non-symlink file'
+    [[ -n "$host_python" && "$host_python" = /* && -x "$host_python" && ! -L "$host_python" ]] ||
+      fail 'PPU_HOST_PYTHON must be an absolute executable non-symlink file when PPU_HOST_LOADER is set'
+    [[ -n "$host_library_path" ]] ||
+      fail 'PPU_HOST_LIBRARY_PATH is required when PPU_HOST_LOADER is set'
+    selected_config_oracle=(
+      "$host_loader" --library-path "$host_library_path" "$host_python"
+      "$root/tools/verify_kquant_selected_config.py")
+    printf '[ppu-runtime-bundle-build] selected-config host runtime=explicit-loader\n'
+  else
+    [[ -z "$host_python" && -z "$host_library_path" ]] ||
+      fail 'PPU_HOST_PYTHON/PPU_HOST_LIBRARY_PATH require PPU_HOST_LOADER'
+    selected_config_oracle=(python3 "$root/tools/verify_kquant_selected_config.py")
+    printf '[ppu-runtime-bundle-build] selected-config host runtime=native\n'
+  fi
 
   work="$(mktemp -d "$parent/.quactlize-ppu-build.XXXXXX")"
   stage="$(mktemp -d "$parent/.quactlize-ppu-bundle.XXXXXX")"
@@ -275,7 +296,7 @@ PY
     python3 -m quactlize.ppu_bundle "$stage" --ppu-sdk "$sdk" ||
     fail "bundle verification failed; work preserved at $work and stage at $stage"
   PYTHONPATH="$root${PYTHONPATH:+:$PYTHONPATH}" \
-    python3 "$root/tools/verify_kquant_selected_config.py" "$stage" ||
+    "${selected_config_oracle[@]}" "$stage" ||
     fail "selected-config ABI verification failed; work preserved at $work and stage at $stage"
   while read -r role packed_scale packed_format qtype filename; do
     assert_role_source "$work/$role" "$role" "$source_sha"
