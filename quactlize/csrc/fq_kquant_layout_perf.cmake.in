@@ -26,6 +26,14 @@ if(DEFINED FQ_KQUANT_PERF_QTYPE AND
   target_link_libraries(test_fq_kquant_layout_perf PRIVATE quactlize_ppu)
   add_dependencies(test_fq_kquant_layout_perf quactlize_ppu)
   target_compile_options(test_fq_kquant_layout_perf PRIVATE -w)
+  # SDK 2.1.1 is published for Ubuntu 24.04.  A build-only host may use an
+  # older glibc/libstdc++, so its linker cannot resolve the wrapper library's
+  # versioned runtime references even though the PPU object and device library
+  # are already complete.  Keep those references owned by the SDK wrapper;
+  # the prebuilt runner still requires the Ubuntu-24 target runtime and a
+  # successful device launch before admitting correctness or timing evidence.
+  target_link_options(test_fq_kquant_layout_perf BEFORE PRIVATE
+    "-Wl,--allow-shlib-undefined")
   message(STATUS
     "FullyQuantized K-quant layout perf: qtype=${FQ_KQUANT_PERF_QTYPE} "
     "carrier=production-C-ABI")
