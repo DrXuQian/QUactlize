@@ -522,7 +522,7 @@ def validate_fully_quantized_resident_geometry(qtype, n: int, k: int) -> None:
             f"{q.name} fully-quantized resident artifact requires K multiple of {k_quantum}, got K={k}")
 
 
-def placed_arrangement(qtype, tile_k: int | None = None) -> PlacedArrangement:
+def placed_arrangement(qtype, tile_k: Optional[int] = None) -> PlacedArrangement:
     """The descriptor a dense producer must attach to its bytes.
 
     `tile_k=None` means the old/fixed producer. Its C++ placement uses the minimum K span that gives the narrowest

@@ -130,8 +130,9 @@ format present in a model. The Python extension resolves the matching
 built for another format.
 
 Set the default handle as well when running Q4 prefill. The packed FMT0 library
-derives its metadata workspace; the non-packed library consumes that workspace
-through the persistent ScaleFirst v2 reader:
+owns K-pack4 placement and fully-quantized compute. The default non-packed
+library derives the hoisted metadata workspace and consumes it through the
+persistent ScaleFirst v2 reader:
 
 ```bash
 export QUACTLIZE_PPU_LIB=/path/to/q4-scalefirst/libquactlize_ppu.so

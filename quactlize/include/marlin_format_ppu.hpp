@@ -2,10 +2,6 @@
 
 // Host-only helpers for the classic Marlin W4A16 physical representation.
 //
-// Independent source anchors:
-//   /root/marlin_ppu/test_marlin_classic_group.cu
-//   /root/marlin_ppu/ref/awesome-cute/gemm/marlin_gemm/marlin.py
-//
 // Logical weights are biased int4 codes in row-major [K, N] order.  Packed
 // bytes are explicitly little-endian; the uint32 API therefore describes
 // words, not host-native byte serialization.  The production shape contract

@@ -273,10 +273,10 @@ class PlacedArtifact(tuple):
     """
     # NO __slots__: a tuple subclass cannot have a nonempty one (TypeError at class creation).
 
-    def __new__(cls, tensors, arrangement, version: int | None = None):
+    def __new__(cls, tensors, arrangement, version: Optional[int] = None):
         return super().__new__(cls, tuple(tensors))
 
-    def __init__(self, tensors, arrangement, version: int | None = None):
+    def __init__(self, tensors, arrangement, version: Optional[int] = None):
         super().__init__()
         if not isinstance(arrangement, (PlacedArrangement, PlacedArrangementV2)):
             raise TypeError(
@@ -547,7 +547,7 @@ def dequantize_fully_quantized(artifact, qtype: int, grouped: bool = False) -> t
 
 
 def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: int,
-                                  tile_k: int | None = None, layout: str = "auto"):
+                                  tile_k: Optional[int] = None, layout: str = "auto"):
     """Offline artifact for FULLY_QUANTIZED/DENSE: the code plane plus the PACKED SCALE UNIT.
 
     Unlike prepare_scale_first_dense, the scale is NOT expanded to fp16 planes -- it stays in the format's own

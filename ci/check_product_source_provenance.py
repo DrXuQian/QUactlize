@@ -18,6 +18,9 @@ SOURCE_SUFFIXES = {
     ".inl", ".json", ".md", ".py", ".pyi", ".sh", ".toml", ".txt", ".yaml", ".yml",
 }
 BANNED = re.compile(r"\b(?:codex|claude)\b", re.IGNORECASE)
+LOCAL_PATH = re.compile(
+    r"(?<![A-Za-z0-9_])/(?:root|home/[^/\s]+|sim/eec/shared/[^/\s]+)/"
+)
 
 
 def violations(product_root: Path) -> list[str]:
@@ -38,6 +41,8 @@ def violations(product_root: Path) -> list[str]:
         for lineno, line in enumerate(lines, 1):
             if BANNED.search(line):
                 hits.append(f"{rel}:{lineno}: {line.strip()}")
+            if LOCAL_PATH.search(line):
+                hits.append(f"{rel}:{lineno}: local absolute path: {line.strip()}")
     return hits
 
 
