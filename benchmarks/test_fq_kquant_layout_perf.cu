@@ -78,6 +78,7 @@ struct Cli {
   int round = 1;
   bool kpack_first = false;
   bool all_configs = false;
+  bool policy_v2 = false;
   std::vector<DenseCase> dense;
   std::vector<GroupedCase> grouped;
 };
@@ -134,6 +135,9 @@ bool parse_cli(int argc, char** argv, Cli& cli) {
       if (!std::strcmp(v, "0")) cli.all_configs = false;
       else if (!std::strcmp(v, "1")) cli.all_configs = true;
       else return false;
+    } else if (char const* v = value("--profile=")) {
+      if (!std::strcmp(v, "kpack-policy-v2")) cli.policy_v2 = true;
+      else return false;
     } else if (char const* v = value("--dense=")) {
       DenseCase row;
       if (!parse_tuple(v, 3, row)) return false;
@@ -152,6 +156,11 @@ bool parse_cli(int argc, char** argv, Cli& cli) {
   if (!cli.grouped.empty())
     for (auto const& row : cli.grouped)
       if (row.experts != cli.grouped.front().experts) return false;
+  if (cli.policy_v2 &&
+      (kQtype != 12 || !cli.kpack_first || !cli.all_configs ||
+       !cli.grouped.empty() ||
+       cli.dense.empty()))
+    return false;
   return true;
 }
 
@@ -495,7 +504,7 @@ struct ConfigName {
 
 std::vector<ConfigName> dense_configs(
     int m, int n, int k, quactlize_ppu_placed_arrangement_v2 const& desc,
-    bool all) {
+    bool all, bool allow_split_k = false) {
   if (!all) return {{dense_default_name(m), nullptr}};
   int count = quactlize_ppu_list_valid_dense_fully_quantized_configs_for_arrangement_v2_v4(
       nullptr, 0, m, n, k, F::Group, kQtype, &desc);
@@ -506,7 +515,8 @@ std::vector<ConfigName> dense_configs(
     return {};
   std::vector<ConfigName> result;
   for (auto const& row : rows)
-    if (!row.enable_cuda_kernel && row.split_k_slices == 1 && row.name)
+    if (!row.enable_cuda_kernel &&
+        (allow_split_k || row.split_k_slices == 1) && row.name)
       result.push_back({row.name, row.name});
   return result;
 }
@@ -554,7 +564,8 @@ bool run_dense_cell(DenseCase shape, bool kpack, DeviceWeights& weights,
   cutlass::DeviceAllocation<uint8_t> workspace{std::size_t(ws_bytes)};
   cutlass::DeviceAllocation<unsigned int> counter(1);
   auto configs = dense_configs(shape.m, shape.n, shape.k,
-                               weights.descriptor, cli.all_configs);
+                               weights.descriptor, cli.all_configs,
+                               cli.policy_v2);
   if (configs.empty()) return fail("CONFIG_QUERY", 0, "NONE");
   for (auto const& config : configs) {
     int last_launch_rc = 0;
@@ -721,6 +732,25 @@ bool run_families(Cases const& cases, int experts, Cli const& cli, Run&& run) {
   for (auto const& row : cases) families[{row.n, row.k}].push_back(row);
   for (auto const& family : families) {
     int const n = family.first.first, k = family.first.second;
+    if (cli.policy_v2) {
+      HostWeights hk = make_weights(n, k, experts, true);
+      if (!hk.exact) return false;
+      DeviceWeights dk(hk);
+      std::printf(
+          "FQ_KQUANT_POLICY_WEIGHT schema=kpack-policy-v2 q=%d n=%d k=%d "
+          "experts=%d mapping_id=0x%016llx low_bytes=%zu high_bytes=%zu "
+          "unit_bytes=%zu low_hash=0x%016llx high_hash=0x%016llx "
+          "unit_hash=0x%016llx roundtrip=PASS\n",
+          kQtype, n, k, experts,
+          static_cast<unsigned long long>(hk.descriptor.mapping_id),
+          hk.low.size(), hk.high.size(), hk.units.size(),
+          static_cast<unsigned long long>(hk.low_hash),
+          static_cast<unsigned long long>(hk.high_hash),
+          static_cast<unsigned long long>(hk.unit_hash));
+      for (auto const& row : family.second)
+        if (!run(row, true, dk, cli)) return false;
+      continue;
+    }
     HostWeights hx = make_weights(n, k, experts, false);
     HostWeights hk = make_weights(n, k, experts, true);
     if (!hx.exact || !hk.exact) return false;
@@ -760,7 +790,8 @@ int main(int argc, char** argv) {
     std::fprintf(stderr,
         "usage: %s [--dense=M,N,K ...] [--grouped=tokens,N,K,experts,topk ...] "
         "[--iterations=N] [--warmups=N] [--round=N] "
-        "[--order=xplane-first|kpack-first] [--all-configs=0|1]\n",
+        "[--order=xplane-first|kpack-first] [--all-configs=0|1] "
+        "[--profile=kpack-policy-v2]\n",
         argv[0]);
     return 2;
   }
@@ -777,11 +808,20 @@ int main(int argc, char** argv) {
                       run_grouped_cell);
   if (ok && !cli.dense.empty())
     ok = run_families(cli.dense, 1, cli, run_dense_cell);
-  std::printf(
-      "FQ_KQUANT_LAYOUT_RUN q=%d round=%d order=%s iterations=%d warmups=%d "
-      "all_configs=%d dense_cases=%zu grouped_cases=%zu status=%s\n",
-      kQtype, cli.round, cli.kpack_first ? "kpack-first" : "xplane-first",
-      cli.iterations, cli.warmups, int(cli.all_configs), cli.dense.size(),
-      cli.grouped.size(), ok ? "PASS" : "FAIL");
+  if (cli.policy_v2)
+    std::printf(
+        "FQ_KQUANT_POLICY_RUN schema=kpack-policy-v2 q=%d round=%d "
+        "layout=kpack order=kpack-first iterations=%d warmups=%d all_configs=%d "
+        "dense_cases=%zu grouped_cases=%zu status=%s\n",
+        kQtype, cli.round, cli.iterations, cli.warmups,
+        int(cli.all_configs), cli.dense.size(), cli.grouped.size(),
+        ok ? "PASS" : "FAIL");
+  else
+    std::printf(
+        "FQ_KQUANT_LAYOUT_RUN q=%d round=%d order=%s iterations=%d warmups=%d "
+        "all_configs=%d dense_cases=%zu grouped_cases=%zu status=%s\n",
+        kQtype, cli.round, cli.kpack_first ? "kpack-first" : "xplane-first",
+        cli.iterations, cli.warmups, int(cli.all_configs), cli.dense.size(),
+        cli.grouped.size(), ok ? "PASS" : "FAIL");
   return ok ? 0 : 1;
 }

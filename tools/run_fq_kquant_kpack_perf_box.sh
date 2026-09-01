@@ -65,7 +65,13 @@ main() {
   all_configs="${SWEEP_CONFIGS:-0}"
   profile="${SWEEP_PROFILE:-layout-ab}"
   case "$resume:$all_configs" in 0:0|0:1|1:0|1:1) ;; *) fail 'RESUME/SWEEP_CONFIGS must be 0 or 1'; return 2;; esac
-  case "$profile" in layout-ab|heuristic) ;; *) fail 'SWEEP_PROFILE must be layout-ab or heuristic'; return 2;; esac
+  case "$profile" in
+    layout-ab|heuristic) ;;
+    kpack-policy-v2)
+      exec "$root/tools/run_fq_kquant_policy_v2_box.sh"
+      ;;
+    *) fail 'SWEEP_PROFILE must be layout-ab, heuristic, or kpack-policy-v2'; return 2;;
+  esac
   if [ "$profile" = heuristic ] && [ "$all_configs" != 1 ]; then
     fail 'SWEEP_PROFILE=heuristic requires SWEEP_CONFIGS=1'; return 2
   fi
