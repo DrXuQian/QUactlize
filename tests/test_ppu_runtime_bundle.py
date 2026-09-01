@@ -97,6 +97,14 @@ def test_bundle_builder_owns_the_exact_six_role_recipe():
     assert "PPU_SDK_ARCHIVE" in script
     assert "sha256sum \"$sdk_archive\"" in script
     assert "Release version $sdk_release" in script
+    assert 'bundle_jobs="${PPU_BUNDLE_JOBS:-1}"' in script
+    assert 'setsid env PPU_SDK="$sdk"' in script
+    assert "trap 'on_build_signal INT 130' INT" in script
+    assert "trap on_build_exit EXIT" in script
+    assert "assert_source_state \"$root\" \"$source_sha\" \"$submodules_file\" 'after builds'" in script
+    assert "assert_source_state \"$root\" \"$source_sha\" \"$submodules_file\" 'before publish'" in script
+    assert 'assert_role_source "$work/$role" "$role" "$source_sha"' in script
+    assert 'done <"$roles"' in script
     assert 'python3 -m quactlize.ppu_bundle "$stage" --ppu-sdk "$sdk"' in script
     assert "mv -- \"$stage\" \"$out\"" in script
     result = subprocess.run(["bash", "-n", str(ROOT / "tools" / "build_ppu_runtime_bundle.sh")])
@@ -111,3 +119,79 @@ def test_bundle_builder_rejects_a_dangling_output_symlink(tmp_path):
         text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     assert result.returncode != 0
     assert "refusing to overwrite" in result.stdout
+
+
+def _git(repo, *args):
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], check=True, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    ).stdout.strip()
+
+
+def _source_builder_call(function, *args):
+    command = 'source "$1"; shift; ' + function + ' "$@"'
+    return subprocess.run(
+        ["bash", "-c", command, "bash", str(ROOT / "tools" / "build_ppu_runtime_bundle.sh"),
+         *(str(arg) for arg in args)],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    )
+
+
+def test_bundle_builder_source_authority_rejects_clean_cross_head_drift(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    _git(repo, "config", "user.name", "Bundle Test")
+    (repo / "tracked").write_text("same tree\n")
+    _git(repo, "add", "tracked")
+    _git(repo, "commit", "-m", "A")
+    source_sha = _git(repo, "rev-parse", "HEAD")
+    submodules = tmp_path / "submodules.status"
+    submodules.write_text("")
+
+    clean = _source_builder_call(
+        "assert_source_state", repo, source_sha, submodules, "test-clean",
+    )
+    assert clean.returncode == 0, clean.stdout
+
+    (repo / "tests").mkdir()
+    untracked_input = repo / "tests" / "untracked.cu"
+    untracked_input.write_text("build input\n")
+    untracked = _source_builder_call(
+        "assert_source_state", repo, source_sha, submodules, "test-untracked",
+    )
+    assert untracked.returncode != 0
+    assert "untracked build input" in untracked.stdout
+    untracked_input.unlink()
+
+    _git(repo, "commit", "--allow-empty", "-m", "B")
+    drift = _source_builder_call(
+        "assert_source_state", repo, source_sha, submodules, "test-final",
+    )
+    assert drift.returncode != 0
+    assert "source HEAD changed" in drift.stdout
+
+
+@pytest.mark.parametrize("plant", ["wrong", "missing", "symlink", "dirty"])
+def test_bundle_builder_rejects_role_source_authority_plants(tmp_path, plant):
+    build = tmp_path / "fmt2"
+    build.mkdir()
+    marker = build / ".quactlize-source-head"
+    source_sha = "a" * 40
+    marker.write_text(source_sha + "\n")
+    if plant == "wrong":
+        marker.write_text("b" * 40 + "\n")
+    elif plant == "missing":
+        marker.unlink()
+    elif plant == "symlink":
+        marker.unlink()
+        target = tmp_path / "authority"
+        target.write_text(source_sha + "\n")
+        marker.symlink_to(target)
+    elif plant == "dirty":
+        (build / ".quactlize-source-dirty").write_text("M tracked\n")
+
+    result = _source_builder_call("assert_role_source", build, "fmt2", source_sha)
+    assert result.returncode != 0
+    assert "fmt2" in result.stdout

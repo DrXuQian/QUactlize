@@ -123,6 +123,14 @@ size and SHA-256 for all six libraries. A format-selected library also exports
 its compiled FMT identity; the runtime rejects a misplaced library before it
 exposes any operator entry point.
 
+`JOBS` is the compiler concurrency inside one role. `PPU_BUNDLE_JOBS` is the
+number of isolated library roles built concurrently and defaults to one; it is
+limited to six. Budget their product against the machine. For example, a
+24-core local builder can use `JOBS=4 PPU_BUNDLE_JOBS=6` to compile all six
+roles together. Parallel workers never write the shared stage or manifest;
+the parent installs them in canonical role order after every build and source
+authority check succeeds.
+
 `build.sh` configures this repository directly and prints the exact output
 binary. `PPU_BUILD_DIR` selects an out-of-tree build directory;
 `PPU_BUILD_RESUME=1` resumes only when the recorded source identity is still
