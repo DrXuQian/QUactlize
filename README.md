@@ -77,6 +77,27 @@ python benchmarks/decode_routes_bench.py --reps 9 --experts 8
 It reports Gelem/s and percentage of the RTX 5090's 1.792 TB/s peak; exact results and the L2 caveat are in
 `docs/DECODE_GEMV_RESULTS.md`.
 
+## Standalone K-pack reference
+
+The portable PyTorch reference needs no extension, PPU SDK, CuTe, or device.
+Its file mode reads a real GGUF and writes a spec-valid augmented GGUF
+containing every original tensor plus I8 `low`/`high`/`units` companions and
+their arrangement-v2 manifest:
+
+```bash
+python reference/gguf_kpack.py pack MODEL.gguf MODEL.kpack-reference.gguf
+python reference/gguf_kpack.py verify MODEL.kpack-reference.gguf --source MODEL.gguf
+```
+
+`--tensor NAME` may be repeated to convert a small subset while porting. The
+augmented output is a byte-exact verification container, not a stock llama.cpp
+runtime model: a consumer must first implement the manifest and companion
+tensor contract. The verifier reconstructs official GGUF blocks from every
+K-pack artifact and binds all original tensor and metadata bytes. The scalar
+implementation is intended for small fixtures and mapping review; it
+deliberately rejects split or big-endian GGUF inputs and metadata arrays whose
+empty value has lost its element type.
+
 ## Status
 
 See `docs/CHECKPOINT.md`. In short: the formats above are validated against real weights on `ppu001`; the
