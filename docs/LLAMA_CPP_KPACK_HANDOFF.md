@@ -5,81 +5,104 @@ artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
 Last updated: 2026-09-02. Persistent sidecar schema v3 is current. The
-published `0f330cb` runtime bundle has passed strict binary inspection and all
-26 host ABI cases for its frozen loader contract, but it is now a **legacy
-config-selection bundle**: it predates the host-visible selected-config ABI and
-the measured dense K-pack policy. PPU device execution remains a separate
-box-admission step.
+published `8f9fa07` measured-policy runtime bundle has passed strict binary
+inspection, its selected-config oracle, and all 26 host ABI cases in a fresh
+LFS checkout. Its PPU device gate is still **PENDING**. Host/ELF admission is
+not device admission and does not authorize deployment by itself.
 
 ## Runtime libraries
 
-The currently published PPU0010 six-library bundle was built from clean source
-commit `0f330cbed40cff57e88679081b5ed00676301471`. Its immutable artifact commit
-is `8580346e244945a4a384091dfb054944913ae1a2`, whose only parent is that
-source commit. The durable Git authority is:
+The published PPU0010 six-library bundle was built from clean source commit
+`8f9fa07de9694901a5db91d546d6c994720f86b1`. Its immutable artifact commit is
+`f7f55d61ee1a58657f99df24876aa3bbb13d1a45`, whose only parent is that source
+commit. The durable Git authority is:
 
 ```text
-origin/artifacts/ppu0010/0f330cb-runtime6-051b7204a08d
-prebuilt/ppu0010/0f330cb/runtime6-051b7204a08d/bundle
+origin/artifacts/ppu0010/8f9fa07-runtime6-b3eb070bc65f
+prebuilt/ppu0010/8f9fa07/runtime6-b3eb070bc65f/bundle
 ```
 
-A hydrated local copy currently lives under the requested large workspace at:
-
-```text
-/root/autodl-tmp/quactlize-runtime-artifact-0f330cb-051b7204a08d/prebuilt/ppu0010/0f330cb/runtime6-051b7204a08d/bundle
-```
-
-That local path is a cache, not authority. The bundle manifest SHA-256 is
-`051b7204a08d490007aea11be8d13dbb588748d50c24cf133862afce08a0577e`.
+The bundle manifest SHA-256 is
+`b3eb070bc65f42d5443626aa82baac468863657d5f479021caccba2d36f75097`.
 Its manifest uses the separate `quactlize.ppu-runtime-bundle` schema v1; never
-parse it as the persistent sidecar schema v3.
+parse it as the persistent sidecar schema v3. No workstation cache path is an
+authority.
 
-The artifact also carries the strict verifier that was used for admission.
-After fetching the branch and hydrating its six LFS objects, run:
+Use two independent worktrees: a detached artifact worktree owns only bundle
+hydration, while a clean develop worktree owns the verifier/oracle/gate
+runners. First create the artifact worktree and hydrate its six LFS objects:
 
 ```bash
-set -euo pipefail
-
-BRANCH=artifacts/ppu0010/0f330cb-runtime6-051b7204a08d
-ARTIFACT=prebuilt/ppu0010/0f330cb/runtime6-051b7204a08d
+SOURCE_COMMIT=8f9fa07de9694901a5db91d546d6c994720f86b1
+ARTIFACT_COMMIT=f7f55d61ee1a58657f99df24876aa3bbb13d1a45
+ARTIFACT_BRANCH=artifacts/ppu0010/8f9fa07-runtime6-b3eb070bc65f
+ARTIFACT_REL=prebuilt/ppu0010/8f9fa07/runtime6-b3eb070bc65f
+ARTIFACT_WORKTREE=/workspace/quactlize-runtime-artifact-8f9fa07-b3eb070bc65f
+RUNNER_WORKTREE=/workspace/quactlize-develop-runner-8f9fa07
 
 git fetch origin \
-  "refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
-git switch --detach "origin/$BRANCH"
-test "$(git rev-parse HEAD)" = \
-  8580346e244945a4a384091dfb054944913ae1a2
-git lfs pull --include="$ARTIFACT/bundle/*.so" --exclude=""
+  "refs/heads/${ARTIFACT_BRANCH}:refs/remotes/origin/${ARTIFACT_BRANCH}"
+git fetch origin \
+  refs/heads/develop:refs/remotes/origin/develop
+test "$(git rev-parse "origin/${ARTIFACT_BRANCH}")" = "${ARTIFACT_COMMIT}"
+test "$(git rev-list --parents -n 1 "${ARTIFACT_COMMIT}")" = \
+  "${ARTIFACT_COMMIT} ${SOURCE_COMMIT}"
+git worktree add --detach "${ARTIFACT_WORKTREE}" "${ARTIFACT_COMMIT}"
+git -C "${ARTIFACT_WORKTREE}" lfs pull \
+  --include="${ARTIFACT_REL}/bundle/*.so" \
+  --exclude=""
+git worktree add --detach "${RUNNER_WORKTREE}" origin/develop
+git -C "${RUNNER_WORKTREE}" submodule update --init --recursive
 
-BUNDLE="$PWD/$ARTIFACT/bundle"
+BUNDLE="${ARTIFACT_WORKTREE}/${ARTIFACT_REL}/bundle"
+test "$(sha256sum "${BUNDLE}/manifest.json" | awk '{print $1}')" = \
+  b3eb070bc65f42d5443626aa82baac468863657d5f479021caccba2d36f75097
+```
 
-test "$(sha256sum "$ARTIFACT/verify_bundle.py" | awk '{print $1}')" = \
-  8ef252f2e984a306c99e645ccc27de6d680938306dc17d82c8c3deb71daaa3ef
-test "$(sha256sum "$BUNDLE/manifest.json" | awk '{print $1}')" = \
-  051b7204a08d490007aea11be8d13dbb588748d50c24cf133862afce08a0577e
-python3 "$ARTIFACT/verify_bundle.py" "$BUNDLE" \
+The artifact carries the strict verifier used for admission. It is pinned by
+both content and Git identity:
+
+```text
+SHA-256  43266a59b0676f19a34740d46fecbbdb2fd1ab80d88ee3911765f4f2ca5a21e7
+Git blob be9006407cd37ac21a861cdb9fc658f597a5188d
+```
+
+Run it from the artifact worktree, then run the source-pinned selected-config
+oracle from the clean develop checkout:
+
+```bash
+ARTIFACT_REL=prebuilt/ppu0010/8f9fa07/runtime6-b3eb070bc65f
+ARTIFACT_WORKTREE=/workspace/quactlize-runtime-artifact-8f9fa07-b3eb070bc65f
+RUNNER_WORKTREE=/workspace/quactlize-develop-runner-8f9fa07
+BUNDLE="${ARTIFACT_WORKTREE}/${ARTIFACT_REL}/bundle"
+cd "${RUNNER_WORKTREE}"
+source "${PPU_SDK:?set PPU_SDK to the admitted SDK root}/envsetup.sh"
+
+test "$(sha256sum "${ARTIFACT_WORKTREE}/${ARTIFACT_REL}/verify_bundle.py" | awk '{print $1}')" = \
+  43266a59b0676f19a34740d46fecbbdb2fd1ab80d88ee3911765f4f2ca5a21e7
+test "$(git -C "${ARTIFACT_WORKTREE}" hash-object "${ARTIFACT_REL}/verify_bundle.py")" = \
+  be9006407cd37ac21a861cdb9fc658f597a5188d
+python3 "${ARTIFACT_WORKTREE}/${ARTIFACT_REL}/verify_bundle.py" "${BUNDLE}" \
   --ppu-sdk "${PPU_SDK:?set PPU_SDK to the admitted SDK root}"
+
+test "$(sha256sum tools/verify_kquant_selected_config.py | awk '{print $1}')" = \
+  43d5c0fb1ce07020489ff9e85e0528116e5a5cc920aef54ce388330bed209eea
+test "$(git hash-object tools/verify_kquant_selected_config.py)" = \
+  a0d355d351a579a46959ad03cdce52fb22df15e7
+python3 tools/verify_kquant_selected_config.py "${BUNDLE}"
 ```
 
 Do not use `--manifest-only`: it omits exported-symbol and embedded-image
 inspection. Setting `QUACTLIZE_PPU_BUNDLE` only selects a directory and does
 not perform this verification automatically.
 
-The verifier stored on that artifact branch checks the exact legacy contract
-that was current at source commit `0f330cb`. The current develop verifier also
-requires these two successor exports:
+The published libraries and the pinned headers include these host-only
+selected-config exports:
 
 ```text
 quactlize_ppu_dense_fully_quantized_selected_config_for_arrangement_v2
 quactlize_ppu_grouped_fully_quantized_selected_config_for_arrangement_v2
 ```
-
-Consequently, running current `quactlize.ppu_bundle` or
-`tools/verify_kquant_selected_config.py` against `0f330cb` must reject it as a
-legacy selected-config bundle. That rejection does not invalidate its frozen
-loader/packing ABI; it prevents the old library from being presented as a new
-measured-policy release. The llama.cpp integration may use `0f330cb` now for
-loader, sidecar, conversion and explicit/default launch plumbing, then replace
-all six libraries together after the successor bundle is published.
 
 Format selection is mandatory:
 
@@ -103,11 +126,23 @@ Q4 dispatcher uses ScaleFirst at M>=64, but its packed-units-to-FP16 metadata
 expansion is not yet a public loader ABI; do not resolve an undocumented
 prepass symbol to reproduce that route.
 
-The six libraries intentionally export the same C symbol names. Load every
-library with `RTLD_NOW | RTLD_LOCAL` and resolve every function with `dlsym` on
-that library's returned handle. A process-global lookup can let the first
-loaded format answer for all later formats. The default library reports build
-identity `-1`; the five format-selected libraries report FMT0 through FMT4.
+The product host floor is Ubuntu 24.04 with the bundle's admitted PPU SDK
+2.1.1-a5c56e runtime. Load the SDK wrapper first with
+`RTLD_NOW | RTLD_GLOBAL`, then load every Quactlize DSO with
+`RTLD_NOW | RTLD_LOCAL`:
+
+```text
+${PPU_SDK}/lib/libhggc_wrapper.so -> RTLD_NOW | RTLD_GLOBAL
+absolute path to selected FMT DSO -> RTLD_NOW | RTLD_LOCAL
+```
+
+Resolve every Quactlize function with `dlsym` on that format library's returned
+handle. The six libraries intentionally export the same C symbol names, so a
+process-global lookup can let the first loaded format answer for all later
+formats. The default library reports build identity `-1`; the five
+format-selected libraries report FMT0 through FMT4. A private host-loader shim
+or a developer-only loader environment variable is not part of the deployment
+contract.
 
 Before converting or uploading a tensor, obtain the descriptor from the
 selected library rather than reconstructing it in llama.cpp:
@@ -125,15 +160,18 @@ returned by another library.
 
 The published bundle exports the arrangement-v2 dense/grouped device APIs, the
 canonical descriptor query, complete host producer/inverse, packed-units ABI,
-and ScaleFirst validity seam required by the strict verifier. The host-only ABI
-suite passed 26 cases over all five formats, including dense/grouped exact
-round trips and fail-closed negatives. This is not a claim that PPU numerical
-execution or performance has passed the pending box run.
+selected-config ABI, and ScaleFirst validity seam required by the strict
+verifier. In a fresh LFS clone, the host-only ABI suite passed 26 cases over all
+five formats, including dense/grouped exact round trips and fail-closed
+negatives. The frozen strict verifier and selected-config oracle also passed.
+PPU numerical execution remains `PENDING`; no performance claim is attached to
+this bundle until its device gate passes.
 
-PPU runtime setup:
+PPU runtime setup uses the SDK's public environment script. The exact install
+root is deployment-owned:
 
 ```bash
-source /root/ppu-sdk/2.1.1/envsetup.sh
+source "${PPU_SDK:?set PPU_SDK to the admitted SDK root}/envsetup.sh"
 ```
 
 ## Public headers
@@ -150,10 +188,11 @@ quactlize/include/quactlize_ppu_packed.h
 ```
 
 They are included in both Python package manifests at source commit
-`0f330cbed40cff57e88679081b5ed00676301471`. Pin those exact headers when using
-the legacy bundle. Current develop has added selected-config declarations and
-must be paired with a newly built bundle exporting them; do not mix current
-headers with the legacy libraries and infer that the new symbols exist.
+`8f9fa07de9694901a5db91d546d6c994720f86b1`. Pin those exact three headers to
+the six published libraries. Do not substitute headers from another source
+revision, even when a structure name or export name appears unchanged.
+`quactlize_ppu_config.h` at this commit contains config v3/v4 and both
+selected-config declarations.
 
 `quactlize_ppu_placed_arrangement_v2` is 40 bytes on the target ABI:
 
@@ -182,7 +221,7 @@ Q2/Q3/Q5/Q6:     layout=2 mapping_id=0x514b504b54000001
 
 ### Selected-config observability
 
-The successor bundle exposes the exact tactic chosen by the same host policy
+The published bundle exposes the exact tactic chosen by the same host policy
 used by workspace queries and launches. These calls are host-only: they create
 no PPU context and enqueue no work.
 
@@ -193,28 +232,58 @@ quactlize_ppu_grouped_fully_quantized_selected_config_for_arrangement_v2
 
 For dense K-pack Q2/Q3/Q5/Q6, a null or empty requested name selects an exact
 measured `(qtype,M,N,K)` point when present, then falls back to the established
-compiled M-dependent default. A known nonempty name is an explicit override.
-An unknown nonempty name fails and clears the output record. Grouped currently
-exposes only explicit/compiled-default selection because its measured sweep
-depends on the full per-expert row distribution, which is not represented by
-the public aggregate arguments.
+compiled M-dependent default. Q4 layout 1 has its own shape policy over
+`(M,N,K)` and returns its fixed Split-K value explicitly in the v4 record. A
+known nonempty name is an explicit override. An unknown nonempty name fails and
+clears the output record. Grouped currently exposes only
+explicit/compiled-default selection because its measured sweep depends on the
+full per-expert row distribution, which is not represented by the public
+aggregate arguments.
 
-Before publishing a successor six-library bundle, run both gates:
+The strict verifier and selected-config oracle for this bundle are the two
+host-only gates shown in the runtime acquisition section. The dense result is
+`quactlize_ppu_config_v4`, including `split_k_slices`; the grouped result is
+`quactlize_ppu_config_v3`. Success is exactly `1`. Failure is `0` and clears
+the complete output record. Do not bind the dense export to the older v3
+record or infer split-K from the config name.
+On success, `name` points to storage owned by the loaded DSO. Keep that DSO
+loaded while using the pointer, or copy the string into loader-owned storage.
+
+Device admission uses the already-hydrated artifact worktree and a separate,
+clean develop checkout. The runner must be tracked and have SHA-256
+`01ee28df26d8cc6c5cfe66ec94b99a9198794f390fb8e032cdfff5014c53ac0f`.
+Its source-authority checks require the runtime implementation and submodule
+commits to remain identical to bundle source `8f9fa07`; documentation-only
+develop commits are allowed. On an Ubuntu 24.04 PPU box:
 
 ```bash
-python3 -m quactlize.ppu_bundle /path/to/bundle \
-  --ppu-sdk "${PPU_SDK:?set PPU_SDK to the admitted SDK root}"
-python3 tools/verify_kquant_selected_config.py /path/to/bundle
+RUNNER_WORKTREE=/workspace/quactlize-develop-runner-8f9fa07
+ARTIFACT_REL=prebuilt/ppu0010/8f9fa07/runtime6-b3eb070bc65f
+ARTIFACT_WORKTREE=/workspace/quactlize-runtime-artifact-8f9fa07-b3eb070bc65f
+BUNDLE="${ARTIFACT_WORKTREE}/${ARTIFACT_REL}/bundle"
+cd "${RUNNER_WORKTREE}"
+
+source "${PPU_SDK:?set PPU_SDK to the admitted SDK root}/envsetup.sh"
+python3 -c 'import importlib.metadata as m; assert m.version("gguf") == "0.19.0"'
+test "$(sha256sum tools/run_prebuilt_ppu_box_gate.py | awk '{print $1}')" = \
+  01ee28df26d8cc6c5cfe66ec94b99a9198794f390fb8e032cdfff5014c53ac0f
+CUDA_VISIBLE_DEVICES=0 \
+  python3 tools/run_prebuilt_ppu_box_gate.py "${BUNDLE}" \
+    --ppu-sdk "${PPU_SDK:?set PPU_SDK to the admitted SDK root}" \
+    --output /workspace/quactlize-prebuilt-gate-8f9fa07
 ```
 
-The second command validates all six build identities and selected-config
-exports, then calls the FMT2 host ABI at an exact measured dense point, an
-unmeasured compiled-default point, an explicit override, a stale-name
-fail-closed control, and a grouped-default point. It does not need a visible
-PPU device. The successor bundle is not admitted until that command reports
-`[kquant-selected-config] PASS` on the exact published files.
+`CUDA_VISIBLE_DEVICES` must be one numeric ordinal and the runtime must expose
+exactly one device. This gate compiles and links nothing: it loads the SDK
+wrapper globally, the six prebuilt Quactlize DSOs locally, and executes the
+public ctypes ABI. It covers all five formats at dense measured shape
+`M=1,N=1024,K=5120` and grouped empty-expert shape
+`rows=[2,0,3,1],N=256,K=512`, with official `gguf==0.19.0` plus independent
+NumPy FP64 oracles and planted faults. It writes a new evidence directory and
+refuses to overwrite one. Device status remains `PENDING` until this exact gate
+reports `PASS` for the published files.
 
-Dense decode/prefill fallback:
+Dense fully-quantized decode/prefill:
 
 ```c
 quactlize_ppu_dense_fully_quantized_workspace_bytes_for_arrangement_v2
@@ -490,8 +559,8 @@ QUACTLIZE_PPU_BUNDLE=/path/to/six-library/bundle \
 Subsequent loads validate and upload the saved regions; they do not repeat
 placement. Do not overwrite or relabel the source GGUF.
 
-The source tree now declares and implements the loader-facing complete host
-producer/inverse:
+The manifest-pinned `8f9fa07` source declares and implements the loader-facing
+complete host producer/inverse:
 
 ```c
 quactlize_ppu_prepare_fully_quantized_for_arrangement_v2
@@ -517,7 +586,7 @@ The complete producer shares the resident geometry above and requires positive
 `experts` (use 1 for dense). Every nonempty input and output byte range must be
 pairwise disjoint; in-place and partial aliasing are rejected before any write.
 A format-selected library accepts only its own qtype. Any decline must leave the
-tensor on its non-K-pack route; never label partial, legacy, or unchanged bytes
+tensor on its non-K-pack route; never label partial, Xplane, or unchanged bytes
 as K-pack.
 
 Use checked arithmetic for every allocation. Let E=1 for dense and
@@ -528,19 +597,30 @@ return a nonnegative value.
 
 ## Integration order
 
-1. Parse and structurally/source-validate the schema-v3 sidecar against the
-   source GGUF inventory.
-2. For each distinct qtype, select its exact FMT library, verify the build
-   identity, query the canonical arrangement, and finish semantic tensor
-   validation by exact comparison.
-3. Upload one complete tensor region and retain span offsets plus full
+1. Pin all six DSOs to artifact commit
+   `f7f55d61ee1a58657f99df24876aa3bbb13d1a45` and all three public headers to
+   source commit `8f9fa07de9694901a5db91d546d6c994720f86b1`. Require the strict verifier,
+   selected-config oracle, and prebuilt single-device numeric gate to pass on
+   those exact files before deployment.
+2. On Ubuntu 24.04, load the admitted SDK wrapper globally first. Load each
+   qtype-selected FMT DSO locally, resolve symbols from its own handle, and
+   require its exact build identity.
+3. Parse and structurally/source-validate the schema-v3 sidecar against the
+   source GGUF inventory. Query the selected FMT DSO for the canonical
+   arrangement and finish semantic tensor validation by exact comparison.
+4. Upload one complete tensor region and retain its span offsets plus complete
    arrangement-v2 in tensor metadata.
-4. Route dense and grouped operations exclusively through the arrangement-v2
-   device APIs.
-5. For optional first-load conversion, query the canonical descriptor. Allocate
-   the three spans with the checked formulas above. Q2_K/Q4_K must pass a null
-   high pointer to both producer and inverse. Call the complete v2 producer,
-   require the inverse to reproduce the exact source tensor bytes, and only
-   then admit the result.
-6. Persist the admitted result atomically as the sidecar above; later loads
+5. Query the selected-config ABI with a null requested name and retain the
+   complete returned record. Dense uses v4 and its explicit
+   `split_k_slices`; grouped uses v3. Pass either null for automatic selection
+   or an exact previously validated returned name to workspace/launch APIs.
+6. Route dense and grouped operations exclusively through the arrangement-v2
+   device APIs. A declined K-pack route must not fall back to a raw GGUF or
+   Xplane reader for the same resident bytes.
+7. For optional first-load conversion, query the canonical descriptor and
+   allocate the three spans with the checked formulas above. Q2_K/Q4_K must
+   pass a null high pointer to both producer and inverse. Call the complete v2
+   producer, require the inverse to reproduce the exact source tensor bytes,
+   and only then admit the result.
+8. Persist the admitted result atomically as the sidecar above; later loads
    validate and reuse it without repacking.
