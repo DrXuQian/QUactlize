@@ -76,6 +76,30 @@ def test_runtime_bundle_requires_complete_units_producer_exports():
     } <= ppu_bundle.REQUIRED_EXPORTS
 
 
+def test_runtime_bundle_requires_scalefirst_prepass_exports():
+    assert ppu_bundle.SCALEFIRST_PREPASS_REQUIRED_EXPORTS <= ppu_bundle.REQUIRED_EXPORTS
+
+
+@pytest.mark.parametrize("missing", sorted(ppu_bundle.SCALEFIRST_PREPASS_REQUIRED_EXPORTS))
+def test_runtime_bundle_binary_inspection_requires_each_scalefirst_prepass_export(
+        tmp_path, monkeypatch, missing):
+    _bundle(tmp_path)
+    sdk = tmp_path.with_name(tmp_path.name + "-sdk")
+    (sdk / "bin").mkdir(parents=True)
+    (sdk / "release.yaml").write_text(
+        f"version: {ppu_bundle.SDK_RELEASE}\n", encoding="utf-8")
+    inspector = sdk / "bin" / "hgobjdump"
+    inspector.write_text("#!/bin/sh\n", encoding="utf-8")
+    inspector.chmod(0o755)
+    exports = ppu_bundle.REQUIRED_EXPORTS - {missing}
+    monkeypatch.setattr(
+        ppu_bundle, "_run",
+        lambda command: "\n".join(
+            f"00000000 T {symbol}" for symbol in sorted(exports)))
+    with pytest.raises(ppu_bundle.BundleError, match=missing):
+        ppu_bundle.verify_bundle(tmp_path, sdk_root=sdk, inspect_binaries=True)
+
+
 @pytest.mark.parametrize("missing", sorted(ppu_bundle.ANY_M_REQUIRED_EXPORTS))
 def test_runtime_bundle_binary_inspection_requires_each_any_m_export(
         tmp_path, monkeypatch, missing):

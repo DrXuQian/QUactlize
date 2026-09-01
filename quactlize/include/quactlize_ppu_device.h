@@ -75,6 +75,37 @@ int quactlize_ppu_dense_lowbit_dev_for_arrangement_v2(
     int m, int n, int k, int group_size, int qtype, void* stream,
     quactlize_ppu_placed_arrangement_v2 const* arrangement, char const* config_name);
 
+// Host-only sizing/capability query and asynchronous metadata producer for the
+// fixed dense Q4_K K-pack4 ScaleFirst path. The query returns the required
+// byte capacity of each independent fp16 plane, or -1 for an invalid shape or
+// descriptor, overflow, or a DSO without the ScaleFirst consumer (FMT0..4).
+// n and k must be positive multiples of 256. The packed-unit input requires
+// n*k/16 bytes; each output plane requires the queried n*k/16 bytes.
+#define QUACTLIZE_PPU_Q4_KPACK4_SCALEFIRST_PLANE_ALIGNMENT_V1 16
+int64_t quactlize_ppu_q4_kpack4_scalefirst_metadata_plane_bytes_for_arrangement_v2(
+    int n, int k,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement);
+
+// units, scale and zero are caller-owned device allocations. All three
+// pointers must be 16-byte aligned, their required byte spans must be pairwise
+// disjoint, and the supplied capacities must cover those spans. Extra bytes
+// are untouched. stream is the caller's native stream cast to void*; null
+// selects the default stream. The host arrangement is read only during this
+// call. Success (0) means only that Q4_K/ZMul8 conversion was enqueued.
+// The caller keeps every allocation alive through completion and orders cache
+// readers after this producer on the same stream or with an event. Concurrent
+// access to a cache being written, or overlapping cache writes, is unsupported.
+// Prevalidation failures enqueue nothing: 30 means malformed arguments,
+// alignment or aliasing; 34 means this DSO lacks the capability; 37 means an
+// insufficient capacity; 38 means a descriptor mismatch. 41 means the
+// runtime rejected the launch and the output cache contents are unspecified.
+int quactlize_ppu_q4_kpack4_scalefirst_prepass_dev_for_arrangement_v2(
+    uint8_t const* units, int64_t units_capacity_bytes,
+    uint16_t* scale, int64_t scale_capacity_bytes,
+    uint16_t* zero, int64_t zero_capacity_bytes,
+    int n, int k, void* stream,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement);
+
 // Dense symmetric W4A16 tensor-core route over the resident int4 xplane-TK64
 // artifact and native fp16 gs128 scales.  It is deliberately separate from
 // dense_lowbit's GGUF Q4_K ScaleZero/gs32 contract and from the packed-unit
