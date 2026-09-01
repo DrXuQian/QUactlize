@@ -109,7 +109,11 @@ def test_format_selected_canonical_arrangement_query_fails_closed(role):
     # public malformed-output status rather than selecting a descriptor.
     assert query(int(role.qtype), None) == 23
 
-    known = tuple(formats.BLOCKS)
+    # The canonical-arrangement ABI owns the five fully-quantized K formats,
+    # not every quantization block layout known by formats.py. A recognized
+    # K-quant owned by another FMT is rc=29; a non-K qtype is unknown here and
+    # correctly returns rc=22.
+    known = tuple(sorted(formats.FUSED_NATIVE_SCALE, key=int))
     if role.packed_format is None:
         for qtype in known:
             out = ArrangementV2(*([0x5A5A5A5A] * 8), 0x5A5A5A5A5A5A5A5A)
@@ -132,9 +136,10 @@ def test_format_selected_canonical_arrangement_query_fails_closed(role):
         assert query(int(qtype), ctypes.byref(out)) == 29
         assert cleared(out)
 
-    out = ArrangementV2(*([0x5A5A5A5A] * 8), 0x5A5A5A5A5A5A5A5A)
-    assert query(99, ctypes.byref(out)) == 22
-    assert cleared(out)
+    for qtype in (formats.QuantType.Q4_0, 99):
+        out = ArrangementV2(*([0x5A5A5A5A] * 8), 0x5A5A5A5A5A5A5A5A)
+        assert query(int(qtype), ctypes.byref(out)) == 22
+        assert cleared(out)
 
 
 def test_unknown_qtype_error_does_not_depend_on_high_pointer():
