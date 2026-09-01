@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from quactlize.formats import (BLOCKS, DENSE_CROSSOVER_ROWS, DEQUANT_THEN_DENSE, FUSED_FP16_SCALE,
+from quactlize.formats import (BLOCKS, PACKED_UNITS, DENSE_CROSSOVER_ROWS, DEQUANT_THEN_DENSE, FUSED_FP16_SCALE,
                                FUSED_NATIVE_SCALE, GEMV, QuantType,
-                               needs_native_scale, report, select_path, storage_growth)
+                               needs_native_scale, packed_unit_layout, report, select_path, storage_growth)
 
 # block size in bytes, from ggml-common.h. These are the numbers the format is DEFINED by -- a GGUF file's tensor
 # size divides by them exactly -- so they are the right thing to check the field sums against.
@@ -42,6 +42,22 @@ def test_ggml_type_numbers_are_ggmls():
     back here."""
     assert (QuantType.Q4_0, QuantType.Q4_1, QuantType.Q5_0, QuantType.Q5_1, QuantType.Q8_0) == (2, 3, 6, 7, 8)
     assert (QuantType.Q2_K, QuantType.Q3_K, QuantType.Q4_K, QuantType.Q5_K, QuantType.Q6_K) == (10, 11, 12, 13, 14)
+
+
+def test_packed_unit_geometry_is_explicit_and_byte_neutral():
+    expected = {
+        QuantType.Q2_K: (1, 20), QuantType.Q3_K: (2, 28),
+        QuantType.Q4_K: (1, 16), QuantType.Q5_K: (1, 16),
+        QuantType.Q6_K: (2, 36),
+    }
+    assert set(PACKED_UNITS) == set(expected)
+    for qtype, (superblocks, unit_bytes) in expected.items():
+        unit = packed_unit_layout(qtype)
+        assert unit.superblocks_per_unit == superblocks
+        assert unit.unit_bytes == unit_bytes
+        assert unit.bytes_per_superblock == BLOCKS[qtype].scale_meta_bytes
+    with pytest.raises(ValueError, match="no packed metadata unit"):
+        packed_unit_layout(QuantType.Q8_0)
 
 
 def test_legacy_formats_cost_nothing_on_the_fp16_scale_path():

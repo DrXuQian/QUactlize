@@ -28,7 +28,12 @@ quactlize-verify-ppu-bundle = "quactlize.ppu_bundle:main"
 packages = ["quactlize"]
 
 [tool.setuptools.package-data]
-quactlize = ["include/ppu_format_config.inc"]
+quactlize = [
+  "include/ppu_format_config.inc",
+  "include/quactlize_ppu_config.h",
+  "include/quactlize_ppu_device.h",
+  "include/quactlize_ppu_packed.h",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

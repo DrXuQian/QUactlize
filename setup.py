@@ -75,7 +75,12 @@ setup(
     name="quactlize",
     version="0.1.0",
     packages=["quactlize"],
-    package_data={"quactlize": ["include/ppu_format_config.inc"]},
+    package_data={"quactlize": [
+        "include/ppu_format_config.inc",
+        "include/quactlize_ppu_config.h",
+        "include/quactlize_ppu_device.h",
+        "include/quactlize_ppu_packed.h",
+    ]},
     ext_modules=[ext],
     cmdclass={"build_ext": BuildExtension},
     python_requires=">=3.9",

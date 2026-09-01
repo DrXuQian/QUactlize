@@ -265,8 +265,12 @@ Whole-model driver: `quactlize-pack-gguf MODEL.gguf OUT_DIR [--dry-run]`. `--dry
 rank-2 GGML `MUL_MAT` tensors use the dense producer. Recognised rank-3 fast-first `[K,N,E]` K-quant tensors use the
 grouped producer and retain `route_class=grouped`, `experts=E`, and the v2 descriptor in the manifest; they are not
 silently flattened into a dense matrix. Unknown and non-matrix roles fail closed instead of being guessed from rank.
-The output directory is a persistent sidecar, not a rewritten GGUF. Bundle schema v2 records the source GGUF byte
-size and SHA-256; a cache consumer calls `load_kpack_bundle(OUT_DIR, source=MODEL.gguf)` before reuse. The `model`
+The output directory is a persistent sidecar, not a rewritten GGUF. Bundle schema v3 stores a single headerless
+`weights.bin`; each tensor owns one 128-byte-aligned, byte-neutral region with explicit low/high/units spans. It
+also records the source GGUF byte size and SHA-256 plus each tensor's source ordinal, absolute data range and raw
+SHA-256. A native loader cross-checks those fields against its parsed GGUF inventory; the manifest binding catches a
+record-name/range reassociation before upload. A cache consumer calls
+`load_kpack_bundle(OUT_DIR, source=MODEL.gguf)` before reuse. The `model`
 path is diagnostic, so an identical model may move, while a different model at the same path is rejected. Omitting
 `source=` validates only the sidecar's internal bytes and cannot authorize a cache hit.
 
@@ -276,6 +280,19 @@ The default Q4 pack command names the format-selected library explicitly:
 QUACTLIZE_PPU_LIB_FMT0=/path/to/libquactlize_ppu.so \
   quactlize-pack-gguf MODEL.gguf OUT_DIR
 ```
+
+Online loaders use the same producer rather than reimplementing GGUF field extraction:
+
+```c
+quactlize_ppu_prepare_fully_quantized_for_arrangement_v2(
+    raw_gguf_blocks, low, high, units, n, k, experts, qtype, &arrangement);
+```
+
+The inverse `quactlize_ppu_recover_fully_quantized_for_arrangement_v2` restores official GGUF blocks for a
+byte-exact admission check. Both are host-only and fail closed on a null or mismatched complete arrangement-v2;
+single-plane formats require `high == nullptr`, while multi-plane formats require a real high buffer. All ranges
+must be distinct. The older `_v1` complete seam remains a TileK/Xplane compatibility entry and must not produce the
+K-pack cache or feed an arrangement-v2 device consumer.
 
 `quactlize.gguf_backend_for_qtype(12)` reports that exact handle. `gguf_backend()` continues to report the
 legacy/default handle used by Xplane and by ScaleFirst execution; the two queries are intentionally not aliases.

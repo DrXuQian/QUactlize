@@ -8,12 +8,20 @@ import subprocess
 import sys
 import types
 
+import numpy as np
+import pytest
+
 from quactlize import formats
 from quactlize import gguf_roles
 from quactlize import pack_gguf
 
 
 ROOT = pathlib.Path(__file__).parents[1]
+
+
+class _FakeGGUFEndian:
+    LITTLE = "little"
+    BIG = "big"
 
 
 def test_console_entry_targets_the_installed_module_and_tool_is_only_a_wrapper():
@@ -63,6 +71,9 @@ def test_distribution_metadata_installs_entry_module_registry_and_packer_extra(t
         "quactlize/ppu_bundle.py",
         "quactlize/gguf_roles.py",
         "quactlize/include/ppu_format_config.inc",
+        "quactlize/include/quactlize_ppu_config.h",
+        "quactlize/include/quactlize_ppu_device.h",
+        "quactlize/include/quactlize_ppu_packed.h",
     } <= sources
     assert "[packer]\ngguf\n" in (info / "requires.txt").read_text()
 
@@ -72,6 +83,7 @@ def test_dry_run_plans_dense_and_authorised_grouped_without_device(
     class FakeReader:
         def __init__(self, model):
             assert model == "model.gguf"
+            self.endianess = _FakeGGUFEndian.LITTLE
             self.tensors = [
                 types.SimpleNamespace(
                     name="blk.0.attn_q.weight",
@@ -99,7 +111,9 @@ def test_dry_run_plans_dense_and_authorised_grouped_without_device(
                     shape=(512,)),
             ]
 
-    monkeypatch.setitem(sys.modules, "gguf", types.SimpleNamespace(GGUFReader=FakeReader))
+    monkeypatch.setitem(
+        sys.modules, "gguf",
+        types.SimpleNamespace(GGUFReader=FakeReader, GGUFEndian=_FakeGGUFEndian))
     out = tmp_path / "artifacts"
     assert pack_gguf.main(["model.gguf", str(out), "--dry-run"]) == 0
     stdout = capsys.readouterr().out
@@ -108,3 +122,23 @@ def test_dry_run_plans_dense_and_authorised_grouped_without_device(
     assert "layout     canonical K-pack" in stdout
     assert "--dry-run: nothing written, no device touched" in stdout
     assert not out.exists()
+
+
+def test_dry_run_rejects_a_real_big_endian_gguf(tmp_path, capsys):
+    gguf = pytest.importorskip("gguf")
+    source = tmp_path / "big-endian.gguf"
+    writer = gguf.GGUFWriter(source, "llama", endianess=gguf.GGUFEndian.BIG)
+    raw = np.arange(256 * 144, dtype=np.uint8).reshape(256, 144)
+    writer.add_tensor(
+        "blk.0.attn_q.weight", raw, raw_shape=raw.shape,
+        raw_dtype=gguf.GGMLQuantizationType.Q4_K,
+        tensor_endianess=gguf.GGUFEndian.BIG)
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+
+    output = tmp_path / "bundle"
+    assert pack_gguf.main([str(source), str(output), "--dry-run"]) == 4
+    assert "requires a little-endian source GGUF" in capsys.readouterr().err
+    assert not output.exists()

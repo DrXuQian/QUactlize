@@ -2,11 +2,11 @@
 """GGUF -> production K-pack bundle, with one placed artifact per tensor.
 
 The directory container is a named, versioned interchange boundary. It is not
-a rewritten GGUF file: each tensor directory contains the three resident arrays
-``low.npy``, ``high.npy`` and ``units.npy``, while ``manifest.json`` binds those
-bytes to their exact arrangement descriptor and the source GGUF's size and
-SHA-256. ``load_kpack_bundle(..., source=MODEL)`` validates both authorities
-before returning any artifact suitable for cache reuse.
+a rewritten GGUF file: one headerless ``weights.bin`` stores a 128-byte-aligned
+resident region per tensor, while ``manifest.json`` binds every low/high/units
+span to its exact arrangement descriptor and the source GGUF's size and SHA-256.
+``load_kpack_bundle(..., source=MODEL)`` validates both authorities before
+returning any artifact suitable for cache reuse.
 
 IT IS ALSO USEFUL BEFORE llama.cpp EXISTS AS A CONSUMER. Every artifact this repo has measured so far came from a
 SYNTHESISED fixture -- random code bytes with sane fp16 headers, chosen because the official gguf package has no
@@ -56,18 +56,26 @@ from typing import NamedTuple
 
 
 KPACK_BUNDLE_SCHEMA = "quactlize.kquant-kpack.bundle"
-KPACK_BUNDLE_VERSION = 2
+KPACK_BUNDLE_VERSION = 3
 KPACK_BUNDLE_MANIFEST = "manifest.json"
+KPACK_BUNDLE_WEIGHTS = "weights.bin"
+KPACK_BUNDLE_ALIGNMENT = 128
 _BUNDLE_TOP_LEVEL_FIELDS = {
     "schema", "schema_version", "arrangement_version", "model", "selection",
-    "source", "tensors", "skipped",
+    "source", "storage", "tensors", "skipped",
 }
 _BUNDLE_SOURCE_FIELDS = {"format", "size_bytes", "sha256"}
+_BUNDLE_STORAGE_FIELDS = {"file", "size_bytes", "alignment_bytes", "sha256"}
 _BUNDLE_TENSOR_FIELDS = {
-    "name", "dir", "ggml_type", "type_name", "route_class", "layout_name",
+    "name", "ggml_type", "type_name", "route_class", "layout_name",
     "plane_packs", "rank", "n", "k", "experts", "arrangement_version",
-    "arrangement", "shapes", "sha256",
+    "arrangement", "source_tensor", "region", "spans",
 }
+_BUNDLE_SOURCE_TENSOR_FIELDS = {
+    "index", "data_offset", "size_bytes", "sha256", "binding_sha256",
+}
+_BUNDLE_REGION_FIELDS = {"offset_bytes", "size_bytes"}
+_BUNDLE_SPAN_FIELDS = {"offset_bytes", "size_bytes", "shape", "sha256"}
 _BUNDLE_ARRAYS = ("low", "high", "units")
 
 
@@ -76,6 +84,39 @@ class KPackBundle(NamedTuple):
 
     manifest: dict
     artifacts: dict
+
+
+def _strict_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key {key!r}")
+        result[key] = value
+    return result
+
+
+def _read_regular_file_nofollow(path: pathlib.Path, label: str) -> bytes:
+    flags = (os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) |
+             getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError(f"{label} must be one readable regular file: {exc}") from exc
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError(f"{label} must be a real regular file")
+        with os.fdopen(descriptor, "rb", closefd=False) as source:
+            payload = source.read()
+        after = os.fstat(descriptor)
+        stable = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(before, field) != getattr(after, field) for field in stable):
+            raise ValueError(f"{label} changed while it was being read")
+        if len(payload) != before.st_size:
+            raise ValueError(f"{label} was truncated while it was being read")
+        return payload
+    finally:
+        os.close(descriptor)
 
 
 def main(argv=None) -> int:
@@ -87,7 +128,7 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
 
     try:
-        from gguf import GGUFReader
+        from gguf import GGUFEndian, GGUFReader
     except ImportError:
         print("needs the official gguf package: pip install gguf", file=sys.stderr)
         return 2
@@ -96,6 +137,9 @@ def main(argv=None) -> int:
 
     source_identity = None if a.dry_run else _source_file_identity(a.model)
     reader = GGUFReader(a.model)
+    if reader.endianess != GGUFEndian.LITTLE:
+        print("K-pack b16 storage requires a little-endian source GGUF", file=sys.stderr)
+        return 4
     # THE SUPPORTED SET COMES FROM THE FORMAT TABLE, not from a list here. A second list is a second place to
     # forget a format, and this file would forget it silently -- the tensor would land in "skipped" looking like
     # an unsupported type rather than like an omission.
@@ -104,7 +148,7 @@ def main(argv=None) -> int:
 
     seen, packable, skipped = Counter(), [], []
     route_mix = Counter()
-    for t in reader.tensors:
+    for tensor_index, t in enumerate(reader.tensors):
         tt = int(t.tensor_type)
         seen[t.tensor_type.name] += 1
         rank = len(t.shape)
@@ -117,7 +161,7 @@ def main(argv=None) -> int:
             except ValueError as exc:
                 skipped.append((t.name, t.tensor_type.name, str(exc)))
             else:
-                packable.append((t, route))
+                packable.append((tensor_index, t, route))
                 route_mix[route] += 1
         else:
             skipped.append((t.name, t.tensor_type.name, why))
@@ -152,7 +196,7 @@ def main(argv=None) -> int:
     # one makes a mixed-format model fail late at its first tensor of another
     # physical layout.
     v2_qtypes = {
-        int(t.tensor_type) for t, _route in todo
+        int(t.tensor_type) for _index, t, _route in todo
         if _target_layout(int(t.tensor_type)) in ("q4-kpack4", "kquant-kpack")
     }
     required_backends = {}
@@ -179,70 +223,97 @@ def main(argv=None) -> int:
         print(str(exc), file=sys.stderr)
         return 4
     manifest, t0 = [], time.time()
-    for i, (t, route) in enumerate(todo):
-        qtype = int(t.tensor_type)
-        n, k, experts = _tensor_geometry(t.shape, qtype)
-        # GGUF dimensions are fast-first [K,N,(E)].  Flattening therefore leaves one expert's N rows
-        # contiguous and experts adjacent, exactly the grouped producer's [E*N*(K/256), type_size] ABI.
-        block_rows = (experts or 1) * n * (k // 256)
-        blocks = torch.from_numpy(t.data.reshape(block_rows, -1).copy())
-        layout, artifact = _prepare_artifact(
-            routes, blocks, n, k, qtype, experts, route)
-        low, high, units = artifact
+    weights_path = out / KPACK_BUNDLE_WEIGHTS
+    with weights_path.open("xb") as weights:
+        for i, (tensor_index, t, route) in enumerate(todo):
+            qtype = int(t.tensor_type)
+            n, k, experts = _tensor_geometry(t.shape, qtype)
+            # GGUF dimensions are fast-first [K,N,(E)].  Flattening therefore leaves one expert's N rows
+            # contiguous and experts adjacent, exactly the grouped producer's [E*N*(K/256), type_size] ABI.
+            block_rows = (experts or 1) * n * (k // 256)
+            blocks = torch.from_numpy(t.data.reshape(block_rows, -1).copy())
+            layout, artifact = _prepare_artifact(
+                routes, blocks, n, k, qtype, experts, route)
 
-        stem = _tensor_dir_name(i, t.name)
-        tmp = out / (stem + ".partial")
-        tmp.mkdir(exist_ok=True)
-        _write(tmp, low, high, units)
-        tmp.rename(out / stem)                          # a directory that exists is a directory that finished
-
-        # THE ARRANGEMENT IS NOT INFERRED FROM THE OUTPUT. The selected policy
-        # names one producer, that producer returns the descriptor for the bytes
-        # it built, and this exact expected value prevents a manifest from
-        # relabelling Xplane as K-pack (or one K-pack mapping as another).
-        arr = artifact.arrangement
-        expected = (F.q4_kpack4_arrangement() if layout == "q4-kpack4"
-                    else F.kquant_kpack_arrangement(qtype))
-        if arr != expected:
-            raise RuntimeError(
-                f"{t.name}: producer returned arrangement {arr}, pack plan expected {expected}; refusing to write "
-                f"a manifest that describes different bytes from the ones just produced")
-        low_bits, high_bits = F.placed_code_planes(qtype)
-        manifest.append({"name": t.name, "dir": stem, "ggml_type": qtype, "type_name": t.tensor_type.name,
-                         "route_class": route, "layout_name": layout,
-                         "plane_packs": {"low": 16 // low_bits,
-                                         "high": 16 // high_bits if high_bits else 0},
-                         "rank": len(t.shape), "n": n, "k": k, "experts": experts,
-                         "arrangement_version": artifact.arrangement_version,
-                         "arrangement": arr._asdict(),
-                         "shapes": {"low": list(low.shape), "high": list(high.shape), "units": list(units.shape)},
-                         "sha256": _bundle_file_hashes(out / stem)})
-        if (i + 1) % 25 == 0 or i + 1 == len(todo):
-            print(f"  packed {i+1}/{len(todo)}  ({time.time()-t0:.1f}s)")
+            # THE ARRANGEMENT IS NOT INFERRED FROM THE OUTPUT. The selected policy
+            # names one producer, that producer returns the descriptor for the bytes
+            # it built, and this exact expected value prevents a manifest from
+            # relabelling Xplane as K-pack (or one K-pack mapping as another).
+            arr = artifact.arrangement
+            expected = (F.q4_kpack4_arrangement() if layout == "q4-kpack4"
+                        else F.kquant_kpack_arrangement(qtype))
+            if arr != expected:
+                raise RuntimeError(
+                    f"{t.name}: producer returned arrangement {arr}, pack plan expected {expected}; refusing to "
+                    f"write a manifest that describes different bytes from the ones just produced")
+            region, spans = _append_bundle_artifact(weights, artifact)
+            low_bits, high_bits = F.placed_code_planes(qtype)
+            block = F.BLOCKS[F.QuantType(qtype)]
+            raw_bytes = (experts or 1) * n * (k // block.weights) * block.block_bytes
+            if region["size_bytes"] != raw_bytes:
+                raise RuntimeError(
+                    f"{t.name}: resident region is {region['size_bytes']} bytes but GGUF owns {raw_bytes}; "
+                    "the K-pack cache must remain byte-neutral")
+            # Bind the manifest to the exact immutable snapshot consumed by
+            # the producer, not to a second read through GGUFReader's mmap.
+            source_tensor = _source_tensor_identity(tensor_index, t, blocks.numpy())
+            record = {"name": t.name, "ggml_type": qtype, "type_name": t.tensor_type.name,
+                      "route_class": route, "layout_name": layout,
+                      "plane_packs": {"low": 16 // low_bits,
+                                      "high": 16 // high_bits if high_bits else 0},
+                      "rank": len(t.shape), "n": n, "k": k, "experts": experts,
+                      "arrangement_version": artifact.arrangement_version,
+                      "arrangement": arr._asdict(), "source_tensor": source_tensor,
+                      "region": region, "spans": spans}
+            source_tensor["binding_sha256"] = _source_tensor_binding(record)
+            manifest.append(record)
+            if (i + 1) % 25 == 0 or i + 1 == len(todo):
+                print(f"  packed {i+1}/{len(todo)}  ({time.time()-t0:.1f}s)")
+        weights.flush()
+        os.fsync(weights.fileno())
 
     skipped_manifest = [
         {"name": name, "type_name": type_name, "reason": reason}
         for name, type_name, reason in skipped
     ]
-    final_source_identity = _source_file_identity(a.model)
+    final_source_identity, final_tensor_hashes = _source_file_identity_and_ranges(
+        a.model, [(record["source_tensor"]["data_offset"],
+                   record["source_tensor"]["size_bytes"], record["name"])
+                  for record in manifest])
     if final_source_identity != source_identity:
         raise RuntimeError(
             f"source GGUF changed while K-pack artifacts were being produced: {a.model}; "
             "refusing to publish a bundle whose source authority is ambiguous")
-    (out / KPACK_BUNDLE_MANIFEST).write_text(json.dumps({
+    for record in manifest:
+        observed = final_tensor_hashes[record["name"]]
+        if observed != record["source_tensor"]["sha256"]:
+            raise RuntimeError(
+                f"source tensor {record['name']} changed while K-pack artifacts were being produced: "
+                f"expected={record['source_tensor']['sha256']} observed={observed}")
+    bundle_manifest = {
         "schema": KPACK_BUNDLE_SCHEMA,
         "schema_version": KPACK_BUNDLE_VERSION,
         "arrangement_version": 2,
         "model": a.model,
         "source": source_identity,
+        "storage": _bundle_storage_identity(weights_path),
         "selection": {"layout_policy": "production-kpack-only",
                       "packable_total": len(packable), "packed": len(manifest),
                       "skipped": len(skipped_manifest)},
         "tensors": manifest,
         "skipped": skipped_manifest,
-    }, indent=2) + "\n")
-    out.rename(final_out)
-    print(f"\nwrote {len(manifest)} artifact(s) + manifest.json to {final_out}")
+    }
+    _validate_bundle_manifest(bundle_manifest)
+    manifest_path = out / KPACK_BUNDLE_MANIFEST
+    with manifest_path.open("xb") as manifest_file:
+        manifest_file.write((json.dumps(bundle_manifest, indent=2) + "\n").encode("utf-8"))
+        manifest_file.flush()
+        os.fsync(manifest_file.fileno())
+    _read_bundle_blob_nofollow(weights_path, bundle_manifest, capture_payloads=False)
+    _fsync_directory(out)
+    _publish_bundle_noreplace(out, final_out)
+    _fsync_directory(final_out.parent)
+    print(f"\nwrote {len(manifest)} artifact(s) in {KPACK_BUNDLE_WEIGHTS} + manifest.json to {final_out}")
     print("The manifest carries the ARRANGEMENT and route class per tensor, not per format: dense and grouped\n"
           "readers must consume the exact bytes their producer built; a reader that infers either will infer wrongly.")
     return 0
@@ -290,6 +361,43 @@ def _create_bundle_staging_root(final_out: pathlib.Path) -> pathlib.Path:
         raise FileExistsError(f"refusing to reuse partial output {out}")
     out.mkdir()
     return out
+
+
+def _publish_bundle_noreplace(staging: pathlib.Path, final_out: pathlib.Path) -> None:
+    """Atomically publish one complete bundle without replacing any entry.
+
+    ``os.rename``/``Path.rename`` may replace an empty target directory on
+    Linux, so a preflight existence check alone is racy.  Product publication
+    requires the kernel's NOREPLACE operation; lack of that operation is an
+    error rather than permission to weaken the contract.
+    """
+    import ctypes
+    import errno
+
+    staging = pathlib.Path(staging)
+    final_out = pathlib.Path(final_out)
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise OSError(errno.ENOSYS, "atomic no-replace bundle publication is unavailable")
+    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    renameat2.restype = ctypes.c_int
+    at_fdcwd = -100
+    rename_noreplace = 1
+    if renameat2(at_fdcwd, os.fsencode(staging), at_fdcwd, os.fsencode(final_out), rename_noreplace) != 0:
+        error = ctypes.get_errno()
+        if error in (errno.EEXIST, errno.ENOTEMPTY):
+            raise FileExistsError(error, f"refusing to overwrite existing output {final_out}", final_out)
+        raise OSError(error, os.strerror(error), final_out)
+
+
+def _fsync_directory(path: pathlib.Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _prepare_artifact(routes, blocks, n: int, k: int, qtype: int,
@@ -426,8 +534,63 @@ def _tile_k(qtype: int) -> int:
     return format_registry()[int(qtype)]["fully_quantized_tile_k"]
 
 
+def _align_up(value: int, alignment: int = KPACK_BUNDLE_ALIGNMENT) -> int:
+    if (not isinstance(value, int) or isinstance(value, bool) or value < 0 or
+            not isinstance(alignment, int) or isinstance(alignment, bool) or alignment <= 0 or
+            alignment & (alignment - 1)):
+        raise ValueError(f"invalid alignment request value={value!r} alignment={alignment!r}")
+    return (value + alignment - 1) & -alignment
+
+
+def _write_zero_padding(stream, target: int) -> None:
+    current = stream.tell()
+    if target < current:
+        raise ValueError(f"cannot pad backwards from {current} to {target}")
+    remaining = target - current
+    while remaining:
+        chunk = min(remaining, 4096)
+        stream.write(b"\0" * chunk)
+        remaining -= chunk
+
+
+def _append_bundle_artifact(weights, artifact) -> tuple[dict, dict]:
+    """Append one contiguous resident region and return its manifest spans."""
+    import torch
+
+    region_offset = _align_up(weights.tell())
+    _write_zero_padding(weights, region_offset)
+    spans = {}
+    for name, tensor in zip(_BUNDLE_ARRAYS, artifact):
+        if tensor.dtype != torch.uint8 or tensor.device.type != "cpu":
+            raise ValueError(f"K-pack {name} must be a CPU uint8 tensor")
+        tensor = tensor.contiguous()
+        span_offset = _align_up(weights.tell() - region_offset)
+        _write_zero_padding(weights, region_offset + span_offset)
+        payload = memoryview(tensor.numpy()).cast("B")
+        weights.write(payload)
+        spans[name] = {
+            "offset_bytes": span_offset,
+            "size_bytes": len(payload),
+            "shape": list(tensor.shape),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+    region_size = _align_up(weights.tell() - region_offset)
+    _write_zero_padding(weights, region_offset + region_size)
+    return ({"offset_bytes": region_offset, "size_bytes": region_size}, spans)
+
+
+def _bundle_storage_identity(path: pathlib.Path) -> dict:
+    identity = _source_file_identity(path)
+    return {
+        "file": KPACK_BUNDLE_WEIGHTS,
+        "size_bytes": identity["size_bytes"],
+        "alignment_bytes": KPACK_BUNDLE_ALIGNMENT,
+        "sha256": identity["sha256"],
+    }
+
+
 def _write(d: pathlib.Path, low, high, units) -> None:
-    """Write one tensor's arrays inside the versioned directory container."""
+    """Development compatibility writer for pre-blob artifact fixtures."""
     import numpy as np
     for name, t in (("low", low), ("high", high), ("units", units)):
         np.save(d / f"{name}.npy", t.numpy())
@@ -513,54 +676,147 @@ def load_kpack_bundle(root: pathlib.Path, *, source=None) -> KPackBundle:
     manifest_path = root / KPACK_BUNDLE_MANIFEST
     if not root.is_dir() or root.is_symlink():
         raise ValueError(f"K-pack bundle root must be a real directory: {root}")
-    if not manifest_path.is_file() or manifest_path.is_symlink():
-        raise ValueError(f"K-pack bundle is missing a regular {KPACK_BUNDLE_MANIFEST}")
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        manifest = json.loads(
+            _read_regular_file_nofollow(
+                manifest_path, f"K-pack bundle {KPACK_BUNDLE_MANIFEST}").decode("utf-8"),
+            object_pairs_hook=_strict_json_object)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"invalid K-pack bundle manifest: {exc}") from exc
     _validate_bundle_manifest(manifest)
     if source is not None:
         validate_kpack_bundle_source(manifest, source)
 
     records = manifest["tensors"]
-    expected_root = {KPACK_BUNDLE_MANIFEST, *(record["dir"] for record in records)}
+    expected_root = {KPACK_BUNDLE_MANIFEST, KPACK_BUNDLE_WEIGHTS}
     actual_root = {entry.name for entry in root.iterdir()}
     if actual_root != expected_root:
         raise ValueError(
             "K-pack bundle root entries disagree with the manifest: "
             f"missing={sorted(expected_root - actual_root)} extra={sorted(actual_root - expected_root)}")
 
+    weights_path = root / KPACK_BUNDLE_WEIGHTS
+    payloads = _read_bundle_blob_nofollow(weights_path, manifest, capture_payloads=True)
+
+    import numpy as np
+    import torch
+    from quactlize import formats as F
+    from quactlize import routes
+
     artifacts = {}
     for record in records:
-        name = record["name"]
-        directory = root / record["dir"]
-        if not directory.is_dir() or directory.is_symlink():
-            raise ValueError(f"artifact {name}: tensor entry must be a real directory")
-        expected_files = {f"{array}.npy" for array in _BUNDLE_ARRAYS}
-        entries = list(directory.iterdir())
-        actual_files = {entry.name for entry in entries}
-        if actual_files != expected_files or any(entry.is_symlink() for entry in entries):
-            raise ValueError(
-                f"artifact {name}: tensor files disagree with the schema: "
-                f"missing={sorted(expected_files - actual_files)} extra={sorted(actual_files - expected_files)}")
-        observed_hashes = _bundle_file_hashes(directory)
-        if observed_hashes != record["sha256"]:
-            raise ValueError(
-                f"artifact {name}: array checksum mismatch: expected={record['sha256']} "
-                f"observed={observed_hashes}")
-        artifact = restore_artifact(root, record)
+        tensors = []
+        for array in _BUNDLE_ARRAYS:
+            span = record["spans"][array]
+            payload = payloads[record["name"]][array]
+            value = np.frombuffer(payload, dtype=np.uint8).reshape(span["shape"])
+            tensors.append(torch.from_numpy(value))
+        raw = record["arrangement"]
+        arrangement = F.PlacedArrangementV2(
+            *(raw[field] for field in F.PlacedArrangementV2._fields))
+        artifact = routes.PlacedArtifact(tuple(tensors), arrangement, record["arrangement_version"])
         _validate_loaded_artifact(record, artifact)
-        artifacts[name] = artifact
+        artifacts[record["name"]] = artifact
     return KPackBundle(manifest, artifacts)
+
+
+def _read_bundle_blob_nofollow(path: pathlib.Path, manifest: dict, *, capture_payloads: bool) -> dict:
+    flags = (os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) |
+             getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError(
+            f"K-pack bundle {KPACK_BUNDLE_WEIGHTS} must be one readable regular file: {exc}") from exc
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError(f"K-pack bundle {KPACK_BUNDLE_WEIGHTS} must be a real regular file")
+        with os.fdopen(descriptor, "rb", closefd=False) as weights:
+            payloads = _validate_bundle_blob(
+                weights, before.st_size, manifest, capture_payloads=capture_payloads)
+        after = os.fstat(descriptor)
+        stable = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(before, field) != getattr(after, field) for field in stable):
+            raise ValueError(f"K-pack bundle {KPACK_BUNDLE_WEIGHTS} changed while it was being read")
+        return payloads
+    finally:
+        os.close(descriptor)
+
+
+def _read_blob_segment(
+        stream, length: int, whole, *, expected_hash=None, padding_label=None,
+        capture_payload=False):
+    digest = hashlib.sha256() if expected_hash is not None else None
+    payload = bytearray() if digest is not None and capture_payload else None
+    remaining = length
+    while remaining:
+        chunk = stream.read(min(4 * 1024 * 1024, remaining))
+        if not chunk:
+            raise ValueError(f"K-pack {KPACK_BUNDLE_WEIGHTS} is truncated")
+        whole.update(chunk)
+        if digest is not None:
+            digest.update(chunk)
+            if payload is not None:
+                payload.extend(chunk)
+        elif padding_label is not None and any(chunk):
+            raise ValueError(f"K-pack {padding_label} padding must be zero")
+        remaining -= len(chunk)
+    if digest is not None and digest.hexdigest() != expected_hash:
+        raise ValueError(f"K-pack {padding_label} span checksum mismatch")
+    return payload
+
+
+def _validate_bundle_blob(
+        stream, observed_size: int, manifest: dict, *, capture_payloads: bool) -> dict:
+    storage = manifest["storage"]
+    if observed_size != storage["size_bytes"]:
+        raise ValueError(
+            f"K-pack storage size mismatch: expected={storage['size_bytes']} observed={observed_size}")
+    whole = hashlib.sha256()
+    position = 0
+    payloads = {}
+    stream.seek(0)
+    for record in manifest["tensors"]:
+        region = record["region"]
+        if region["offset_bytes"] != position:
+            raise ValueError(f"artifact {record['name']}: region is not in canonical file order")
+        region_end = region["offset_bytes"] + region["size_bytes"]
+        record_payloads = {}
+        for array in _BUNDLE_ARRAYS:
+            span = record["spans"][array]
+            span_start = region["offset_bytes"] + span["offset_bytes"]
+            _read_blob_segment(
+                stream, span_start - position, whole,
+                padding_label=f"artifact {record['name']} before {array}")
+            position = span_start
+            record_payloads[array] = _read_blob_segment(
+                stream, span["size_bytes"], whole,
+                expected_hash=span["sha256"],
+                padding_label=f"artifact {record['name']} {array}",
+                capture_payload=capture_payloads)
+            position += span["size_bytes"]
+        _read_blob_segment(
+            stream, region_end - position, whole,
+            padding_label=f"artifact {record['name']} trailing")
+        position = region_end
+        if capture_payloads:
+            payloads[record["name"]] = record_payloads
+    if position != storage["size_bytes"] or stream.read(1):
+        raise ValueError("K-pack storage has an unlisted tail")
+    if whole.hexdigest() != storage["sha256"]:
+        raise ValueError("K-pack storage checksum mismatch")
+    return payloads
 
 
 def _validate_bundle_manifest(manifest: dict) -> None:
     from quactlize import routes
 
-    if (isinstance(manifest, dict) and manifest.get("schema") == KPACK_BUNDLE_SCHEMA and
-            manifest.get("schema_version") == 1):
-        raise ValueError("K-pack bundle schema v1 is source-unbound; repack it from the source GGUF")
+    if isinstance(manifest, dict) and manifest.get("schema") == KPACK_BUNDLE_SCHEMA:
+        if manifest.get("schema_version") == 1:
+            raise ValueError("K-pack bundle schema v1 is source-unbound; repack it from the source GGUF")
+        if manifest.get("schema_version") == 2:
+            raise ValueError("K-pack bundle schema v2 uses the retired NPY carrier; repack it as an aligned blob")
     if not isinstance(manifest, dict) or set(manifest) != _BUNDLE_TOP_LEVEL_FIELDS:
         got = sorted(manifest) if isinstance(manifest, dict) else type(manifest).__name__
         raise ValueError(
@@ -583,6 +839,18 @@ def _validate_bundle_manifest(manifest: dict) -> None:
     if (not isinstance(source["sha256"], str) or
             not re.fullmatch(r"[0-9a-f]{64}", source["sha256"])):
         raise ValueError("source.sha256 must be an exact lowercase SHA-256 digest")
+    storage = manifest["storage"]
+    if not isinstance(storage, dict) or set(storage) != _BUNDLE_STORAGE_FIELDS:
+        raise ValueError(
+            f"K-pack storage must contain exactly {sorted(_BUNDLE_STORAGE_FIELDS)}")
+    if storage["file"] != KPACK_BUNDLE_WEIGHTS:
+        raise ValueError(f"K-pack storage.file must be {KPACK_BUNDLE_WEIGHTS}")
+    _require_positive_int(storage["size_bytes"], "storage.size_bytes")
+    if storage["alignment_bytes"] != KPACK_BUNDLE_ALIGNMENT:
+        raise ValueError(f"K-pack storage alignment must be {KPACK_BUNDLE_ALIGNMENT} bytes")
+    if (not isinstance(storage["sha256"], str) or
+            not re.fullmatch(r"[0-9a-f]{64}", storage["sha256"])):
+        raise ValueError("storage.sha256 must be an exact lowercase SHA-256 digest")
     selection = manifest["selection"]
     selection_fields = {"layout_policy", "packable_total", "packed", "skipped"}
     if not isinstance(selection, dict) or set(selection) != selection_fields:
@@ -601,17 +869,32 @@ def _validate_bundle_manifest(manifest: dict) -> None:
         raise ValueError("selection.skipped disagrees with skipped length")
     if selection["packable_total"] != selection["packed"]:
         raise ValueError("selection.packable_total must equal packed for a complete product bundle")
-    _validate_omission_records(manifest["skipped"], "skipped")
+    skipped_names = _validate_omission_records(manifest["skipped"], "skipped")
 
-    names, directories = set(), set()
+    names = set()
+    expected_region_offset = 0
+    previous_source_index = -1
+    previous_source_end = 0
     for index, record in enumerate(manifest["tensors"]):
         _validate_bundle_record(record, index)
         if record["name"] in names:
             raise ValueError(f"duplicate tensor name in K-pack manifest: {record['name']}")
-        if record["dir"] in directories:
-            raise ValueError(f"duplicate tensor directory in K-pack manifest: {record['dir']}")
+        if record["region"]["offset_bytes"] != expected_region_offset:
+            raise ValueError(f"artifact {record['name']}: region is not in canonical manifest order")
+        source_tensor = record["source_tensor"]
+        if source_tensor["index"] <= previous_source_index:
+            raise ValueError("K-pack source tensor indices must be strictly increasing")
+        if source_tensor["data_offset"] < previous_source_end:
+            raise ValueError("K-pack source tensor byte ranges must be ordered and disjoint")
+        expected_region_offset += record["region"]["size_bytes"]
+        previous_source_index = source_tensor["index"]
+        previous_source_end = source_tensor["data_offset"] + source_tensor["size_bytes"]
         names.add(record["name"])
-        directories.add(record["dir"])
+    overlap = names & skipped_names
+    if overlap:
+        raise ValueError(f"K-pack tensors and skipped inventory overlap: {sorted(overlap)}")
+    if expected_region_offset != storage["size_bytes"]:
+        raise ValueError("K-pack tensor regions do not cover storage.size_bytes exactly")
 
 
 def _validate_bundle_record(record: dict, index: int) -> None:
@@ -624,8 +907,6 @@ def _validate_bundle_record(record: dict, index: int) -> None:
     name = record["name"]
     if not isinstance(name, str) or not name:
         raise ValueError(f"tensor record {index} has an invalid name")
-    if record["dir"] != _tensor_dir_name(index, name):
-        raise ValueError(f"artifact {name}: directory is not the canonical collision-safe name")
     try:
         qtype = F.QuantType(_require_nonnegative_int(record["ggml_type"], f"artifact {name}.ggml_type"))
     except (ValueError, TypeError) as exc:
@@ -674,24 +955,67 @@ def _validate_bundle_record(record: dict, index: int) -> None:
         raise ValueError(f"artifact {name}: invalid production arrangement: {exc}") from exc
     if arrangement != expected:
         raise ValueError(f"artifact {name}: arrangement is not canonical for {qtype.name}")
-    shapes = record["shapes"]
-    if not isinstance(shapes, dict) or set(shapes) != set(_BUNDLE_ARRAYS):
-        raise ValueError(f"artifact {name}: shapes must name low/high/units exactly")
-    for array, shape in shapes.items():
+    raw_bytes = expert_count * n * (k // F.BLOCKS[qtype].weights) * F.BLOCKS[qtype].block_bytes
+    source_tensor = record["source_tensor"]
+    if not isinstance(source_tensor, dict) or set(source_tensor) != _BUNDLE_SOURCE_TENSOR_FIELDS:
+        raise ValueError(f"artifact {name}: source_tensor has the wrong fields")
+    _require_nonnegative_int(source_tensor["index"], f"artifact {name}.source_tensor.index")
+    _require_nonnegative_int(source_tensor["data_offset"], f"artifact {name}.source_tensor.data_offset")
+    source_size = _require_positive_int(
+        source_tensor["size_bytes"], f"artifact {name}.source_tensor.size_bytes")
+    if source_size != raw_bytes:
+        raise ValueError(
+            f"artifact {name}: source tensor has {source_size} bytes, expected canonical GGUF size {raw_bytes}")
+    for field in ("sha256", "binding_sha256"):
+        if (not isinstance(source_tensor[field], str) or
+                not re.fullmatch(r"[0-9a-f]{64}", source_tensor[field])):
+            raise ValueError(f"artifact {name}: source_tensor.{field} must be exact lowercase hex")
+    if source_tensor["binding_sha256"] != _source_tensor_binding(record):
+        raise ValueError(f"artifact {name}: source tensor binding disagrees with its tensor identity")
+    region = record["region"]
+    if not isinstance(region, dict) or set(region) != _BUNDLE_REGION_FIELDS:
+        raise ValueError(f"artifact {name}: region has the wrong fields")
+    region_offset = _require_nonnegative_int(region["offset_bytes"], f"artifact {name}.region.offset_bytes")
+    region_size = _require_positive_int(region["size_bytes"], f"artifact {name}.region.size_bytes")
+    if region_offset % KPACK_BUNDLE_ALIGNMENT or region_size % KPACK_BUNDLE_ALIGNMENT:
+        raise ValueError(f"artifact {name}: region must be {KPACK_BUNDLE_ALIGNMENT}-byte aligned")
+    spans = record["spans"]
+    if not isinstance(spans, dict) or set(spans) != set(_BUNDLE_ARRAYS):
+        raise ValueError(f"artifact {name}: spans must name low/high/units exactly")
+    expected_shapes = _canonical_bundle_shapes(qtype, route, expert_count, n, k)
+    cursor = 0
+    for array, expected_shape in expected_shapes.items():
+        span = spans[array]
+        if not isinstance(span, dict) or set(span) != _BUNDLE_SPAN_FIELDS:
+            raise ValueError(f"artifact {name}: {array} span has the wrong fields")
+        offset = _require_nonnegative_int(
+            span["offset_bytes"], f"artifact {name}.{array}.offset_bytes")
+        size = _require_nonnegative_int(span["size_bytes"], f"artifact {name}.{array}.size_bytes")
+        if offset != _align_up(cursor):
+            raise ValueError(f"artifact {name}: {array} span offset is not canonical")
+        shape = span["shape"]
         if (not isinstance(shape, list) or
                 any(not isinstance(x, int) or isinstance(x, bool) or x < 0 for x in shape)):
             raise ValueError(f"artifact {name}: invalid {array} shape {shape!r}")
-    expected_shapes = _canonical_bundle_shapes(qtype, route, expert_count, n, k)
-    for array, expected_shape in expected_shapes.items():
-        if shapes[array] != expected_shape:
+        if shape != expected_shape:
             raise ValueError(
                 f"artifact {name}: {array} shape must be canonical {expected_shape}, "
-                f"got {shapes[array]}")
-    hashes = record["sha256"]
-    if (not isinstance(hashes, dict) or set(hashes) != set(_BUNDLE_ARRAYS) or
-            any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
-                for value in hashes.values())):
-        raise ValueError(f"artifact {name}: sha256 must contain exact lowercase low/high/units digests")
+                f"got {shape}")
+        expected_size = 1
+        for extent in shape:
+            expected_size *= extent
+        if size != expected_size:
+            raise ValueError(
+                f"artifact {name}: {array} size must be canonical {expected_size}, got {size}")
+        if (not isinstance(span["sha256"], str) or
+                not re.fullmatch(r"[0-9a-f]{64}", span["sha256"])):
+            raise ValueError(f"artifact {name}: {array} sha256 must be exact lowercase hex")
+        cursor = offset + size
+    if region_size != _align_up(cursor):
+        raise ValueError(f"artifact {name}: region size does not exactly cover its canonical spans")
+    if region_size != raw_bytes:
+        raise ValueError(
+            f"artifact {name}: region must remain byte-neutral with its {raw_bytes}-byte GGUF tensor")
 
 
 def _validate_loaded_artifact(record: dict, artifact) -> None:
@@ -700,10 +1024,10 @@ def _validate_loaded_artifact(record: dict, artifact) -> None:
     for array, tensor in zip(_BUNDLE_ARRAYS, artifact):
         if tensor.dtype != torch.uint8:
             raise ValueError(f"artifact {record['name']}: {array} dtype must be uint8, got {tensor.dtype}")
-        if list(tensor.shape) != record["shapes"][array]:
+        if list(tensor.shape) != record["spans"][array]["shape"]:
             raise ValueError(
                 f"artifact {record['name']}: {array} shape {list(tensor.shape)} disagrees with manifest "
-                f"{record['shapes'][array]}")
+                f"{record['spans'][array]['shape']}")
 
 
 def _canonical_bundle_shapes(qtype, route: str, experts: int, n: int, k: int) -> dict:
@@ -715,10 +1039,9 @@ def _canonical_bundle_shapes(qtype, route: str, experts: int, n: int, k: int) ->
     prefix = [experts, n]
     low = prefix + [k * low_bits // 8]
     high = prefix + [k * high_bits // 8] if high_bits else [0]
-    metadata_bytes = F.BLOCKS[qtype].scale_meta_bytes
-    superblocks_per_unit = 1 if metadata_bytes % 4 == 0 else 2
-    unit_shape = [k // (256 * superblocks_per_unit), n,
-                  metadata_bytes * superblocks_per_unit]
+    packed_unit = F.packed_unit_layout(qtype)
+    unit_shape = [k // (256 * packed_unit.superblocks_per_unit), n,
+                  packed_unit.unit_bytes]
     units = unit_shape if route == "dense" else [experts] + unit_shape
     return {"low": low, "high": high, "units": units}
 
@@ -734,15 +1057,63 @@ def _bundle_file_hashes(directory: pathlib.Path) -> dict:
     return hashes
 
 
-def _source_file_identity(path) -> dict:
+def _source_tensor_identity(index: int, tensor, payload=None) -> dict:
+    index = _require_nonnegative_int(index, "source tensor index")
+    try:
+        offset = int(tensor.data_offset)
+        size = int(tensor.n_bytes)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError(f"source tensor {getattr(tensor, 'name', index)!r} lacks GGUF offset/size authority") from exc
+    _require_nonnegative_int(offset, "source tensor data_offset")
+    _require_positive_int(size, "source tensor size_bytes")
+    payload = memoryview(tensor.data if payload is None else payload).cast("B")
+    if len(payload) != size:
+        raise ValueError(
+            f"source tensor {tensor.name}: reader n_bytes={size} but mapped payload has {len(payload)} bytes")
+    return {
+        "index": index,
+        "data_offset": offset,
+        "size_bytes": size,
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
+
+
+def _source_tensor_binding(record: dict) -> str:
+    source = record["source_tensor"]
+    payload = [
+        record["name"], record["ggml_type"], record["rank"], record["n"], record["k"], record["experts"],
+        source["index"], source["data_offset"], source["size_bytes"], source["sha256"],
+    ]
+    return hashlib.sha256(json.dumps(payload, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _source_file_identity_and_ranges(path, ranges) -> tuple[dict, dict]:
     """Hash one stable regular-file snapshot for persistent-cache authority.
 
     Symlinks are accepted because the target bytes, rather than a path or inode,
     are the authority. Opening nonblocking and checking the opened descriptor
     avoids a path-check/open race accepting or blocking on a FIFO or device.
+    Named byte ranges are hashed during the same sequential pass, so tensor
+    records are bound without rereading the model.
     """
     path = pathlib.Path(path)
     digest = hashlib.sha256()
+    canonical_ranges = []
+    keys = set()
+    for offset, length, key in ranges:
+        offset = _require_nonnegative_int(offset, f"source range {key}.offset")
+        length = _require_positive_int(length, f"source range {key}.size")
+        if not isinstance(key, str) or not key or key in keys:
+            raise ValueError(f"source range keys must be unique nonempty strings: {key!r}")
+        keys.add(key)
+        canonical_ranges.append((offset, offset + length, key))
+    canonical_ranges.sort()
+    for previous, current in zip(canonical_ranges, canonical_ranges[1:]):
+        if current[0] < previous[1]:
+            raise ValueError(f"source tensor ranges overlap: {previous[2]} and {current[2]}")
+    range_digests = {key: hashlib.sha256() for _start, _end, key in canonical_ranges}
+    range_counts = {key: 0 for _start, _end, key in canonical_ranges}
+    range_cursor = 0
     size = 0
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
@@ -755,8 +1126,26 @@ def _source_file_identity(path) -> dict:
             raise ValueError(f"source GGUF must resolve to a regular file: {path}")
         with os.fdopen(descriptor, "rb", closefd=False) as source:
             for chunk in iter(lambda: source.read(4 * 1024 * 1024), b""):
+                chunk_start = size
+                chunk_end = chunk_start + len(chunk)
                 digest.update(chunk)
-                size += len(chunk)
+                while (range_cursor < len(canonical_ranges) and
+                       canonical_ranges[range_cursor][1] <= chunk_start):
+                    range_cursor += 1
+                current = range_cursor
+                while current < len(canonical_ranges):
+                    start, end, key = canonical_ranges[current]
+                    if start >= chunk_end:
+                        break
+                    lo = max(start, chunk_start) - chunk_start
+                    hi = min(end, chunk_end) - chunk_start
+                    range_digests[key].update(chunk[lo:hi])
+                    range_counts[key] += hi - lo
+                    current += 1
+                while (range_cursor < len(canonical_ranges) and
+                       canonical_ranges[range_cursor][1] <= chunk_end):
+                    range_cursor += 1
+                size = chunk_end
         after = os.fstat(descriptor)
     except OSError as exc:
         raise ValueError(f"cannot read source GGUF {path}: {exc}") from exc
@@ -767,7 +1156,16 @@ def _source_file_identity(path) -> dict:
         raise ValueError(f"source GGUF changed while it was being hashed: {path}")
     if size == 0:
         raise ValueError(f"source GGUF must not be empty: {path}")
-    return {"format": "gguf", "size_bytes": size, "sha256": digest.hexdigest()}
+    for start, end, key in canonical_ranges:
+        if end > size or range_counts[key] != end - start:
+            raise ValueError(f"source tensor range {key} is outside {size}-byte GGUF")
+    return ({"format": "gguf", "size_bytes": size, "sha256": digest.hexdigest()},
+            {key: value.hexdigest() for key, value in range_digests.items()})
+
+
+def _source_file_identity(path) -> dict:
+    identity, _ranges = _source_file_identity_and_ranges(path, [])
+    return identity
 
 
 def validate_kpack_bundle_source(manifest: dict, source) -> dict:
@@ -778,20 +1176,33 @@ def validate_kpack_bundle_source(manifest: dict, source) -> dict:
     when another model replaces the source at the same path.
     """
     _validate_bundle_manifest(manifest)
-    observed = _source_file_identity(source)
+    ranges = [(record["source_tensor"]["data_offset"], record["source_tensor"]["size_bytes"], record["name"])
+              for record in manifest["tensors"]]
+    observed, tensor_hashes = _source_file_identity_and_ranges(source, ranges)
     if observed != manifest["source"]:
         raise ValueError(
             f"K-pack bundle source mismatch for {source}: "
             f"expected={manifest['source']} observed={observed}")
+    for record in manifest["tensors"]:
+        expected = record["source_tensor"]["sha256"]
+        got = tensor_hashes[record["name"]]
+        if got != expected:
+            raise ValueError(
+                f"K-pack source tensor mismatch for {record['name']}: expected={expected} observed={got}")
     return observed
 
 
-def _validate_omission_records(records: list, field: str) -> None:
+def _validate_omission_records(records: list, field: str) -> set[str]:
     required = {"name", "type_name", "reason"}
+    names = set()
     for index, record in enumerate(records):
         if (not isinstance(record, dict) or set(record) != required or
                 any(not isinstance(record[key], str) or not record[key] for key in required)):
             raise ValueError(f"{field}[{index}] must contain nonempty name/type_name/reason strings")
+        if record["name"] in names:
+            raise ValueError(f"duplicate tensor name in {field}: {record['name']}")
+        names.add(record["name"])
+    return names
 
 
 def _require_nonnegative_int(value, field: str) -> int:
@@ -816,6 +1227,8 @@ __all__ = [
     "KPACK_BUNDLE_SCHEMA",
     "KPACK_BUNDLE_VERSION",
     "KPACK_BUNDLE_MANIFEST",
+    "KPACK_BUNDLE_WEIGHTS",
+    "KPACK_BUNDLE_ALIGNMENT",
     "KPackBundle",
     "load_kpack_bundle",
     "validate_kpack_bundle_source",
@@ -831,5 +1244,6 @@ __all__ = [
     "format_registry",
     "_tile_k",
     "_write",
+    "_append_bundle_artifact",
     "restore_artifact",
 ]

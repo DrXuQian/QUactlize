@@ -142,9 +142,11 @@ not reach that target's HGCC command.
 ## Offline conversion
 
 The format-unified producer is explicit and writes the named
-`quactlize.kquant-kpack.bundle` schema. Each tensor has collision-safe storage,
-an arrangement-v2 descriptor and per-array hashes. Schema v2 also binds the
-bundle to `source={format,size_bytes,sha256}`, so replacing a model at
+`quactlize.kquant-kpack.bundle` schema. Schema v3 stores one 128-byte-aligned,
+byte-neutral resident region per tensor in a headerless `weights.bin`; the
+manifest records its arrangement-v2 descriptor and low/high/units span hashes.
+It also binds the bundle to `source={format,size_bytes,sha256}` and binds every record to its source GGUF tensor
+ordinal, byte range and raw digest, so replacing a model at
 the same path cannot silently reuse stale K-pack bytes. The strict bundle reader
 rejects partial, extra or noncanonical contents. Installation provides one
 packer entry point. The normal deployment form needs only the bundle root:
@@ -167,7 +169,7 @@ bundle = load_kpack_bundle("OUT_DIR", source="MODEL.gguf")
 
 The `model` path in the manifest is a diagnostic hint; identical contents at a
 different path still validate. A content mismatch is fatal. Validation hashes
-the current GGUF and then uploads the saved arrays, but does not redo placement.
+the current GGUF and then uploads each saved resident region, but does not redo placement.
 The original GGUF is never overwritten, and K-pack bytes are never labelled as
 ordinary GGUF `Q*_K` tensors. Calling `load_kpack_bundle` without `source=` only
 checks the sidecar itself and is insufficient to authorize a cache hit.

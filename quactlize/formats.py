@@ -77,6 +77,21 @@ class BlockLayout(NamedTuple):
         return self.bytes_on_fp16_scale_path / self.block_bytes - 1.0
 
 
+class PackedUnitLayout(NamedTuple):
+    """Resident packed-metadata ABI for one K-quant format.
+
+    Q3_K and Q6_K pair two adjacent K superblocks so their 14/18-byte
+    metadata shares form whole 4-byte transport units.  This is an explicit
+    format contract, not something consumers may infer from byte divisibility.
+    """
+    superblocks_per_unit: int
+    bytes_per_superblock: int
+
+    @property
+    def unit_bytes(self) -> int:
+        return self.superblocks_per_unit * self.bytes_per_superblock
+
+
 # The k-quant block layouts, from ggml-common.h. Written as the FIELDS of each struct so they can be checked against
 # the format's documented block size rather than trusted.
 #
@@ -106,6 +121,23 @@ BLOCKS: Dict[QuantType, BlockLayout] = {
     QuantType.Q5_K: BlockLayout(256, 2 + 2 + 12 + 32 + 128, 2 + 2 + 12, 32, True),
     QuantType.Q6_K: BlockLayout(256, 128 + 64 + 16 + 2, 16 + 2, 16, False),
 }
+
+
+PACKED_UNITS: Dict[QuantType, PackedUnitLayout] = {
+    QuantType.Q2_K: PackedUnitLayout(1, 20),
+    QuantType.Q3_K: PackedUnitLayout(2, 14),
+    QuantType.Q4_K: PackedUnitLayout(1, 16),
+    QuantType.Q5_K: PackedUnitLayout(1, 16),
+    QuantType.Q6_K: PackedUnitLayout(2, 18),
+}
+
+
+def packed_unit_layout(qtype: QuantType) -> PackedUnitLayout:
+    """Return the named packed-unit ABI; unsupported formats fail closed."""
+    try:
+        return PACKED_UNITS[QuantType(qtype)]
+    except (KeyError, ValueError) as exc:
+        raise ValueError(f"{qtype!r} has no packed metadata unit") from exc
 
 # GPTQ and AWQ are not block formats: scales are separate tensors. GPTQ's are ALREADY fp16, so the fp16-scale path
 # costs nothing extra -- which is the whole reason GPTQ symmetric is the first format that can ship. AWQ's zeros are
