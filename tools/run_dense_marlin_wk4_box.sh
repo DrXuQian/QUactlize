@@ -135,7 +135,7 @@ if [ -n "$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all)" ]; then
   fail 'source tree is dirty; commit/stash every root and submodule change'
 fi
 git -C "$ROOT" submodule status --recursive >"$SUBMODULE_STATUS_FILE"
-if grep -Eq '^[+\-U]' "$SUBMODULE_STATUS_FILE"; then
+if grep -Eq '^[+U-]' "$SUBMODULE_STATUS_FILE"; then
   cat "$SUBMODULE_STATUS_FILE" >&2
   fail 'recursive submodule checkout differs from the recorded gitlink'
 fi

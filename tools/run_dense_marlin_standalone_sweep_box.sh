@@ -37,7 +37,7 @@ mkdir -p "$OUT/build"
 git -C "$ROOT" status --porcelain=v1 --untracked-files=all >"$OUT/root-status.txt"
 [ ! -s "$OUT/root-status.txt" ] || fail 'source tree is not clean; a sweep must name one exact SHA'
 git -C "$ROOT" submodule status --recursive >"$OUT/submodule-status.txt"
-if grep -Eq '^[+\-U]' "$OUT/submodule-status.txt"; then
+if grep -Eq '^[+U-]' "$OUT/submodule-status.txt"; then
   fail 'a submodule checkout differs from its recorded gitlink'
 fi
 

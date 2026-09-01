@@ -43,7 +43,7 @@ main() {
 
   git -C "$root" diff --quiet --ignore-submodules=none HEAD -- ||
     fail 'tracked source or submodule state is dirty; commit the exact candidate first'
-  if git -C "$root" submodule status --recursive | grep -Eq '^[+\-U]'; then
+  if git -C "$root" submodule status --recursive | grep -Eq '^[+U-]'; then
     fail 'submodules are not at the exact recorded commits'
   fi
   while IFS= read -r line; do

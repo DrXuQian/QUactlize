@@ -67,7 +67,7 @@ acu_identity="$($acu_real --version 2>&1 | head -n 1 || true)"
 ROOT_SHA="$(git -C "$ROOT" rev-parse HEAD)"
 ACTLIZE_SHA="$(git -C "$ROOT/third_party/actlize" rev-parse HEAD)"
 git -C "$ROOT" submodule status --recursive >"$OUT/submodule-status.txt"
-grep -Eq '^[+\-U]' "$OUT/submodule-status.txt" && \
+grep -Eq '^[+U-]' "$OUT/submodule-status.txt" && \
   fail 'a submodule checkout differs from its recorded gitlink'
 sha256sum "$hgcc" "$hgobjdump" >"$OUT/sdk-tools.sha256"
 sha256sum "$acu_real" >"$OUT/acu.sha256"

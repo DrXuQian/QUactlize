@@ -23,7 +23,7 @@ mkdir -p "$OUT/build"
 ROOT_SHA="$(git -C "$ROOT" rev-parse HEAD)"
 ACTLIZE_SHA="$(git -C "$ROOT/third_party/actlize" rev-parse HEAD)"
 git -C "$ROOT" submodule status --recursive >"$OUT/submodule-status.txt"
-grep -Eq '^[+\-U]' "$OUT/submodule-status.txt" && \
+grep -Eq '^[+U-]' "$OUT/submodule-status.txt" && \
   fail 'a submodule checkout differs from its recorded gitlink'
 
 BUILD=(env PPU_BUILD_DIR="$OUT/build" PPU_ARCHS=ppu0010 TARGET="$TARGET"
