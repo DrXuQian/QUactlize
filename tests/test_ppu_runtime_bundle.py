@@ -54,6 +54,7 @@ def test_runtime_bundle_requires_loader_facing_arrangement_v2_exports():
         "quactlize_ppu_canonical_arrangement_v2",
         "quactlize_ppu_prepare_fully_quantized_for_arrangement_v2",
         "quactlize_ppu_recover_fully_quantized_for_arrangement_v2",
+        "quactlize_ppu_dense_lowbit_config_valid_for_arrangement_v2",
         "quactlize_ppu_dense_fully_quantized_workspace_bytes_for_arrangement_v2",
         "quactlize_ppu_dense_fully_quantized_dev_for_arrangement_v2",
         "quactlize_ppu_grouped_fully_quantized_workspace_bytes_for_arrangement_v2",
