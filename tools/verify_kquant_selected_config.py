@@ -3,15 +3,14 @@
 
 This oracle creates no PPU context and launches no kernel.  It first binds the
 six manifest-owned libraries, requires the selected-config and dense/grouped
-any-M exports in each one, and then exercises the FMT2/Q2 library at the policy
-boundaries below:
+any-M exports in each one, verifies five format owners plus the rejecting
+default library, and then exercises the FMT2/Q2 selected policy boundaries:
 
 * an exact measured dense point;
 * an unmeasured dense point falling back to the compiled shipping default;
 * an explicit config overriding the measured point;
 * an unknown explicit config failing closed and clearing its output;
 * the grouped compiled default (grouped measured routing is not public yet).
-* loader-time dense/grouped any-M admission and descriptor-negative controls.
 
 The exact measured row is deliberately fixed.  A regenerated policy that
 changes it must update this admission oracle in the same reviewed change.
@@ -89,6 +88,16 @@ COMPILED_DECODE_DEFAULT = ExpectedConfig(
     "8x128:8x32:s3", 8, 128, 256, 0, 8, 32, 3, 1)
 GROUPED_DEFAULT = ExpectedConfig(
     "16x128:16x16:s2", 16, 128, 256, 0, 16, 16, 2)
+
+ANY_M_FORMATS = (
+    ("fmt0", 12, (2, 1, 4, 0, 0, 64, 32, 0, 0x51344B5034540001)),
+    ("fmt1", 13, (2, 2, 4, 1, 0, 256, 32, 0, 0x514B504B54000001)),
+    ("fmt2", 10, (2, 2, 2, 0, 0, 128, 16, 0, 0x514B504B54000001)),
+    ("fmt3", 11, (2, 2, 2, 1, 0, 256, 16, 0, 0x514B504B54000001)),
+    ("fmt4", 14, (2, 2, 4, 2, 0, 128, 16, 0, 0x514B504B54000001)),
+)
+ANY_M_DENSE_SHAPE = (1024, 5120)
+ANY_M_GROUPED_SHAPE = (256, 512, 4)
 
 
 class OracleError(RuntimeError):
@@ -195,65 +204,112 @@ def _expect_config(
     return expected.name
 
 
+def _arrangement_tuple(value: ArrangementV2) -> tuple[int, ...]:
+    return tuple(int(getattr(value, name)) for name, _ in value._fields_)
+
+
+def _bind_any_m(library: ctypes.CDLL):
+    dense = _symbol(
+        library,
+        "quactlize_ppu_dense_fully_quantized_any_m_valid_for_arrangement_v2")
+    dense.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ARRP]
+    dense.restype = ctypes.c_int32
+    grouped = _symbol(
+        library,
+        "quactlize_ppu_grouped_fully_quantized_any_m_valid_for_arrangement_v2")
+    grouped.argtypes = [
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ARRP,
+    ]
+    grouped.restype = ctypes.c_int32
+    return dense, grouped
+
+
+def _descriptor_plants(
+        arrangement: ArrangementV2) -> tuple[tuple[str, ArrangementV2], ...]:
+    plants = []
+    for name, value in (
+            ("version", arrangement.version + 1),
+            ("artifact_tile_k", 256),
+            ("mapping_id", arrangement.mapping_id ^ 1)):
+        planted = ArrangementV2.from_buffer_copy(bytes(arrangement))
+        setattr(planted, name, value)
+        plants.append((name, planted))
+    return tuple(plants)
+
+
+def _verify_any_m_contracts(
+        libraries: dict[str, ctypes.CDLL],
+) -> tuple[dict[str, ArrangementV2], dict[str, str]]:
+    arrangements: dict[str, ArrangementV2] = {}
+    dense_n, dense_k = ANY_M_DENSE_SHAPE
+    grouped_n, grouped_k, experts = ANY_M_GROUPED_SHAPE
+    for role, qtype, expected in ANY_M_FORMATS:
+        library = libraries[role]
+        canonical = _symbol(library, "quactlize_ppu_canonical_arrangement_v2")
+        canonical.argtypes = [ctypes.c_int, ARRP]
+        canonical.restype = ctypes.c_int
+        arrangement = ArrangementV2()
+        rc = int(canonical(qtype, ctypes.byref(arrangement)))
+        got = _arrangement_tuple(arrangement)
+        if rc != 0 or got != expected:
+            raise OracleError(
+                f"{role} canonical arrangement differs: rc={rc} "
+                f"got={got!r} expected={expected!r}")
+        arrangements[role] = arrangement
+
+        dense, grouped = _bind_any_m(library)
+        dense_rc = int(dense(dense_n, dense_k, qtype, ctypes.byref(arrangement)))
+        grouped_rc = int(grouped(
+            grouped_n, grouped_k, experts, qtype, ctypes.byref(arrangement)))
+        if dense_rc != 1 or grouped_rc != 1:
+            raise OracleError(
+                f"{role} any-M positive differs: dense={dense_rc} "
+                f"grouped={grouped_rc}")
+        foreign_qtype = 10 if qtype != 10 else 11
+        negatives = {
+            "dense_null": int(dense(dense_n, dense_k, qtype, None)),
+            "grouped_null": int(grouped(
+                grouped_n, grouped_k, experts, qtype, None)),
+            "dense_foreign": int(dense(
+                dense_n, dense_k, foreign_qtype, ctypes.byref(arrangement))),
+            "grouped_foreign": int(grouped(
+                grouped_n, grouped_k, experts, foreign_qtype,
+                ctypes.byref(arrangement))),
+        }
+        for plant_name, planted in _descriptor_plants(arrangement):
+            negatives[f"dense_{plant_name}"] = int(dense(
+                dense_n, dense_k, qtype, ctypes.byref(planted)))
+            negatives[f"grouped_{plant_name}"] = int(grouped(
+                grouped_n, grouped_k, experts, qtype, ctypes.byref(planted)))
+        dirty = {name: value for name, value in negatives.items() if value != 0}
+        if dirty:
+            raise OracleError(
+                f"{role} any-M admission did not fail closed: {dirty!r}")
+
+    default_dense, default_grouped = _bind_any_m(libraries["default"])
+    for role, qtype, _expected in ANY_M_FORMATS:
+        arrangement = arrangements[role]
+        dense_rc = int(default_dense(
+            dense_n, dense_k, qtype, ctypes.byref(arrangement)))
+        grouped_rc = int(default_grouped(
+            grouped_n, grouped_k, experts, qtype, ctypes.byref(arrangement)))
+        if dense_rc != 0 or grouped_rc != 0:
+            raise OracleError(
+                "default library admitted a K-pack descriptor: "
+                f"role={role} dense={dense_rc} grouped={grouped_rc}")
+    return arrangements, {
+        "any_m_formats": "FMT0..FMT4_VALID",
+        "any_m_default": "REJECTS_ALL",
+    }
+
+
 def verify_selected_config(bundle: pathlib.Path) -> dict[str, str]:
     bundle = bundle.resolve()
     _require_layouts()
     libraries = _load_libraries(bundle)
+    arrangements, any_m_evidence = _verify_any_m_contracts(libraries)
     library = libraries["fmt2"]
-
-    canonical = _symbol(library, "quactlize_ppu_canonical_arrangement_v2")
-    canonical.argtypes = [ctypes.c_int, ARRP]
-    canonical.restype = ctypes.c_int
-    arrangement = ArrangementV2()
-    rc = int(canonical(10, ctypes.byref(arrangement)))
-    expected_arrangement = (2, 2, 2, 0, 0, 128, 16, 0,
-                            0x514B504B54000001)
-    got_arrangement = tuple(
-        int(getattr(arrangement, name)) for name, _ in ArrangementV2._fields_)
-    if rc != 0 or got_arrangement != expected_arrangement:
-        raise OracleError(
-            f"FMT2 canonical Q2 arrangement differs: rc={rc} "
-            f"got={got_arrangement!r} expected={expected_arrangement!r}")
-
-    dense_any_m = _symbol(
-        library,
-        "quactlize_ppu_dense_fully_quantized_any_m_valid_for_arrangement_v2")
-    dense_any_m.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ARRP]
-    dense_any_m.restype = ctypes.c_int32
-    dense_any_m_rc = int(dense_any_m(
-        256, 3072, 10, ctypes.byref(arrangement)))
-    if dense_any_m_rc != 1:
-        raise OracleError(
-            f"dense any-M admission returned {dense_any_m_rc}, expected 1")
-
-    grouped_any_m = _symbol(
-        library,
-        "quactlize_ppu_grouped_fully_quantized_any_m_valid_for_arrangement_v2")
-    grouped_any_m.argtypes = [
-        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ARRP,
-    ]
-    grouped_any_m.restype = ctypes.c_int32
-    any_m_rc = int(grouped_any_m(
-        512, 2048, 256, 10, ctypes.byref(arrangement)))
-    if any_m_rc != 1:
-        raise OracleError(
-            f"grouped any-M admission returned {any_m_rc}, expected 1")
-    bad_arrangement = ArrangementV2.from_buffer_copy(bytes(arrangement))
-    bad_arrangement.mapping_id ^= 1
-    dense_bad_mapping_rc = int(dense_any_m(
-        256, 3072, 10, ctypes.byref(bad_arrangement)))
-    dense_null_rc = int(dense_any_m(256, 3072, 10, None))
-    grouped_bad_mapping_rc = int(grouped_any_m(
-        512, 2048, 256, 10, ctypes.byref(bad_arrangement)))
-    grouped_null_rc = int(grouped_any_m(512, 2048, 256, 10, None))
-    if (dense_bad_mapping_rc != 0 or dense_null_rc != 0 or
-            grouped_bad_mapping_rc != 0 or grouped_null_rc != 0):
-        raise OracleError(
-            "any-M admission did not fail closed: "
-            f"dense_bad_mapping={dense_bad_mapping_rc} "
-            f"dense_null={dense_null_rc} "
-            f"grouped_bad_mapping={grouped_bad_mapping_rc} "
-            f"grouped_null={grouped_null_rc}")
+    arrangement = arrangements["fmt2"]
 
     dense = _symbol(
         library,
@@ -324,6 +380,7 @@ def verify_selected_config(bundle: pathlib.Path) -> dict[str, str]:
         "dense_any_m": "ALL_M_VALID",
         "grouped_default": grouped_name,
         "grouped_any_m": "ALL_M_VALID",
+        **any_m_evidence,
     }
 
 

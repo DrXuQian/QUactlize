@@ -118,11 +118,12 @@ int quactlize_ppu_bc_gemv_for_arrangement_dev_v1(
 // Fully-quantized tensor-core GEMM uses caller-owned device workspace. The size queries return -1 when the
 // dimensions or qtype do not match this format-selected library. A successful device entry only enqueues work.
 //
-// Every fully-quantized arrangement-v2 device consumer uses the exact expert-major artifact produced by
+// Every canonical K-pack arrangement-v2 device consumer uses the exact expert-major artifact produced by
 // quactlize_ppu_prepare_fully_quantized_for_arrangement_v2.  Dense low/high/units each name the one experts=1 slice.
 // Grouped low/high/units each name experts independent contiguous slices, with the same expert index and byte offsets
-// documented by quactlize_ppu_packed.h; no plane interleaves experts.  In both device entries, high must be null
-// exactly when arrangement->high_bits==0 and non-null otherwise.
+// documented by quactlize_ppu_packed.h; no plane interleaves experts.  For canonical K-pack, high must be null exactly
+// when arrangement->high_bits==0 and non-null otherwise.  Xplane v2 compatibility retains its legacy pointer contract
+// and is not a product of the arrangement-v2 complete producer.
 int64_t quactlize_ppu_dense_fully_quantized_workspace_bytes_v1(
     int m, int n, int k, int qtype);
 // Arrangement-aware query. It validates the exact v2 byte map before returning a bound shared by every compiled

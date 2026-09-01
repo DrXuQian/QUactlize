@@ -51,8 +51,9 @@ int quactlize_ppu_recover_fully_quantized_v1(uint8_t const* low, uint8_t const* 
 // Thus low has experts*N*K*bits/8 bytes, high has experts*N*K*high_bits/8 bytes, units has
 // experts*quactlize_ppu_units_bytes(N,K,qtype) bytes, and blocks/recovered have
 // experts*N*(K/256)*GGUF-block-bytes bytes.  Experts are not interleaved inside any allocation.  Preparing or
-// recovering one such slice with experts=1 is byte-for-byte equivalent to that slice of one experts>1 call; calls on
-// mutually disjoint slices may execute concurrently.
+// recovering one such slice with experts=1 is byte-for-byte equivalent to that slice of one experts>1 call.  Calls on
+// mutually disjoint slices may execute concurrently when each call's immutable arrangement descriptor is stored
+// outside every participating tensor range.
 //
 // high must be null exactly when arrangement->high_bits==0 and non-null otherwise.  N and K must be positive
 // multiples of 256; because their byte-neutral metadata transport pairs adjacent K superblocks, Q3_K and Q6_K

@@ -69,8 +69,9 @@ def test_any_m_exports_validate_the_null_selected_path_not_inventory_presence():
 
     assert "quactlize_ppu_dense_fully_quantized_selected_config_for_arrangement_v2" in dense
     assert "ppu_kquant_measured_policy::kMeasuredDynamicValues" in dense
-    assert "valid_at(3)" in dense and "valid_at(9)" in dense
-    assert "valid_at(1) && valid_at(8) && valid_at(9)" in dense
+    assert "ppu_dense_shipping::kDecodeDefault" in dense
+    assert "ppu_dense_shipping::kLegacyDefault" in dense
+    assert "ppu_q4_kpack4_shipping::kDecodeMaxM + 1" in dense
     assert "list_valid" not in dense
 
     assert "experts <= 0" in grouped
@@ -114,16 +115,17 @@ int main() {
   assert(!measured::measured_dynamic_value(3));
   assert(!measured::measured_dynamic_value(9));
 
-  // Fixed N/K leaves precisely M<8, M==8 and M>8 policy classes.
-  for (int m = 2; m < 8; ++m) {
+  // Fixed N/K leaves decode values through the shared boundary and one
+  // prefill region beyond it.
+  for (int m = 2; m < q4::kDecodeMaxM; ++m) {
     assert(q4::default_config(m, 8192, 16384) ==
            q4::default_config(1, 8192, 16384));
   }
-  assert(q4::default_config(8, 8192, 16384) !=
+  assert(q4::default_config(q4::kDecodeMaxM, 8192, 16384) !=
          q4::default_config(1, 8192, 16384));
-  for (int m : {10, 64, 512, 4096}) {
+  for (int m : {q4::kDecodeMaxM + 2, 64, 512, 4096}) {
     assert(q4::default_config(m, 8192, 16384) ==
-           q4::default_config(9, 8192, 16384));
+           q4::default_config(q4::kDecodeMaxM + 1, 8192, 16384));
   }
 
   static_assert(ppu_grouped_shipping::default_config() ==

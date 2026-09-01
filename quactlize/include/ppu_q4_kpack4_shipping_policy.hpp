@@ -48,12 +48,14 @@ inline constexpr Config kConfigs[] = {
 
 static_assert(sizeof(kConfigs) / sizeof(kConfigs[0]) == size_t(ConfigId::Count));
 
+inline constexpr int kDecodeMaxM = 8;
+
 constexpr ConfigId default_config(int m, int n, int k) {
   // Decode policy is the compact form of the 20-shape closure.  It is deliberately shape-only: the one resident
   // K-pack4 byte class never changes with M.  Explicit config names remain available for a deployment registry.
-  if (m <= 8) {
+  if (m <= kDecodeMaxM) {
     if (n <= 2048) return ConfigId::DecodeN32S4;
-    if (n >= 16384 || (m == 8 && k >= 16384)) return ConfigId::DecodeN64S1;
+    if (n >= 16384 || (m == kDecodeMaxM && k >= 16384)) return ConfigId::DecodeN64S1;
     if (n >= 7168) return ConfigId::DecodeN128S4;
     return ConfigId::DecodeN64S4;
   }

@@ -1823,14 +1823,28 @@ extern "C" int32_t quactlize_ppu_dense_fully_quantized_any_m_valid_for_arrangeme
 
   if (arrangement->layout ==
       QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1) {
-    // For fixed N/K the Q4 policy has three M equivalence classes: M<8,
-    // the M==8 boundary, and prefill M>8.
-    return valid_at(1) && valid_at(8) && valid_at(9);
+    // Check every decode M and one prefill witness.  The shared policy owns
+    // the boundary, so widening the decode domain cannot leave this query's
+    // representatives stale.
+    for (int m = 1; m <= ppu_q4_kpack4_shipping::kDecodeMaxM + 1; ++m) {
+      if (!valid_at(m)) return 0;
+    }
+    return 1;
   }
 
   // Generic K-pack has finite exact measured points.  Every other positive M
-  // falls into one of the existing decode/prefill compiled-default regions.
-  if (!valid_at(3) || !valid_at(9)) return 0;
+  // uses one of two universal compiled defaults; validate those rows directly
+  // so adding a new exact measured point cannot hide a broken fallback.
+  int const group_size = qtype_group_size(qtype);
+  if (!dense_fully_quantized_config_valid(
+          ppu_dense_shipping::kDecodeDefault, 1, n, k, group_size, qtype,
+          arrangement) ||
+      !dense_fully_quantized_config_valid(
+          ppu_dense_shipping::kLegacyDefault,
+          ppu_dense_shipping::kDecodeDefaultExclusiveM, n, k, group_size,
+          qtype, arrangement)) {
+    return 0;
+  }
   for (int m : ppu_kquant_measured_policy::kMeasuredDynamicValues) {
     if (!valid_at(m)) return 0;
   }

@@ -313,7 +313,32 @@ def _assert_default_library_identity(path: pathlib.Path) -> dict[str, object]:
     got = int(identity())
     if got != -1:
         raise GateError(f"default library reports packed format {got}, expected -1")
-    return {"path": str(path), "packed_format": got}
+    i32 = ctypes.c_int
+    dense_any_m = _bind(
+        handle,
+        "quactlize_ppu_dense_fully_quantized_any_m_valid_for_arrangement_v2",
+        [i32, i32, i32, ARRP], i32)
+    grouped_any_m = _bind(
+        handle,
+        "quactlize_ppu_grouped_fully_quantized_any_m_valid_for_arrangement_v2",
+        [i32, i32, i32, i32, ARRP], i32)
+    _m, dense_n, dense_k = DENSE_SHAPE
+    _total, grouped_n, grouped_k, experts = GROUPED_SHAPE
+    for spec in FORMATS:
+        arrangement = ArrangementV2(*spec.expected_arrangement)
+        dense_rc = int(dense_any_m(
+            dense_n, dense_k, spec.qtype, ctypes.byref(arrangement)))
+        grouped_rc = int(grouped_any_m(
+            grouped_n, grouped_k, experts, spec.qtype,
+            ctypes.byref(arrangement)))
+        if dense_rc != 0 or grouped_rc != 0:
+            raise GateError(
+                "default library admitted a K-pack descriptor: "
+                f"format={spec.name} dense={dense_rc} grouped={grouped_rc}")
+    return {
+        "path": str(path), "packed_format": got,
+        "any_m": "REJECTS_ALL_CANONICAL_DESCRIPTORS",
+    }
 
 
 def _sha256(path: pathlib.Path) -> str:
@@ -826,14 +851,26 @@ def _assert_any_m_contract(
             f"{spec.name} grouped any-M admission returned {grouped_admitted}, "
             "expected 1")
 
-    bad = _copy_arrangement(arrangement)
-    bad.mapping_id ^= 1
-    dense_bad_mapping = int(library.dense_any_m(
-        dense_n, dense_k, spec.qtype, ctypes.byref(bad)))
+    plants = {}
+    for name, value in (
+            ("version", arrangement.version + 1),
+            ("artifact_tile_k", 256),
+            ("mapping", arrangement.mapping_id ^ 1)):
+        planted = _copy_arrangement(arrangement)
+        setattr(planted, "mapping_id" if name == "mapping" else name, value)
+        plants[name] = planted
+    dense_plants = {
+        name: int(library.dense_any_m(
+            dense_n, dense_k, spec.qtype, ctypes.byref(planted)))
+        for name, planted in plants.items()
+    }
+    grouped_plants = {
+        name: int(library.grouped_any_m(
+            n, k, experts, spec.qtype, ctypes.byref(planted)))
+        for name, planted in plants.items()
+    }
     dense_null_arrangement = int(library.dense_any_m(
         dense_n, dense_k, spec.qtype, None))
-    grouped_bad_mapping = int(library.grouped_any_m(
-        n, k, experts, spec.qtype, ctypes.byref(bad)))
     grouped_null_arrangement = int(library.grouped_any_m(
         n, k, experts, spec.qtype, None))
     foreign_qtype = 10 if spec.qtype != 10 else 11
@@ -841,26 +878,30 @@ def _assert_any_m_contract(
         dense_n, dense_k, foreign_qtype, ctypes.byref(arrangement)))
     grouped_foreign_format = int(library.grouped_any_m(
         n, k, experts, foreign_qtype, ctypes.byref(arrangement)))
-    failures = (
-        dense_bad_mapping, dense_null_arrangement, dense_foreign_format,
-        grouped_bad_mapping, grouped_null_arrangement, grouped_foreign_format,
-    )
-    if any(failures):
+    dirty = {
+        **{f"dense_{name}": value for name, value in dense_plants.items()
+           if value != 0},
+        **{f"grouped_{name}": value for name, value in grouped_plants.items()
+           if value != 0},
+    }
+    if (dense_null_arrangement != 0 or grouped_null_arrangement != 0 or
+            dense_foreign_format != 0 or grouped_foreign_format != 0 or dirty):
         raise GateError(
             f"{spec.name} any-M admission did not fail closed: "
-            f"dense=[{dense_bad_mapping},{dense_null_arrangement},"
-            f"{dense_foreign_format}] grouped=[{grouped_bad_mapping},"
-            f"{grouped_null_arrangement},{grouped_foreign_format}]")
+            f"plants={dirty!r} dense_null={dense_null_arrangement} "
+            f"grouped_null={grouped_null_arrangement} "
+            f"dense_foreign={dense_foreign_format} "
+            f"grouped_foreign={grouped_foreign_format}")
     return {
         "dense": {
             "valid": dense_admitted,
-            "bad_mapping": dense_bad_mapping,
+            **{f"bad_{name}": value for name, value in dense_plants.items()},
             "null_arrangement": dense_null_arrangement,
             "foreign_format": dense_foreign_format,
         },
         "grouped": {
             "valid": grouped_admitted,
-            "bad_mapping": grouped_bad_mapping,
+            **{f"bad_{name}": value for name, value in grouped_plants.items()},
             "null_arrangement": grouped_null_arrangement,
             "foreign_format": grouped_foreign_format,
         },

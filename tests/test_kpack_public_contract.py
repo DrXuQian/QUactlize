@@ -25,7 +25,8 @@ def test_host_abi_documents_independent_expert_major_slices():
             "same e names the same expert in every allocation",
             "Experts are not interleaved inside any allocation",
             "experts=1 is byte-for-byte equivalent",
-            "mutually disjoint slices may execute concurrently",
+            "mutually disjoint slices may execute concurrently when each call's immutable arrangement descriptor",
+            "stored outside every participating tensor range",
             "high must be null exactly when arrangement->high_bits==0"):
         assert contract in header
 
@@ -33,8 +34,9 @@ def test_host_abi_documents_independent_expert_major_slices():
 def test_device_abi_documents_pointer_and_library_selected_config_contracts():
     header = _normalized_header("quactlize_ppu_device.h")
     for contract in (
-            "Every fully-quantized arrangement-v2 device consumer uses the exact expert-major artifact",
-            "high must be null exactly when arrangement->high_bits==0",
+            "Every canonical K-pack arrangement-v2 device consumer uses the exact expert-major artifact",
+            "For canonical K-pack, high must be null exactly when arrangement->high_bits==0",
+            "Xplane v2 compatibility retains its legacy pointer contract",
             "a null or empty config_name delegates tactic selection to the loaded library",
             "canonical K-quant K-pack v2 first uses an exact measured (qtype,m,n,k) selection",
             "a null or empty config_name selects the one compiled grouped default",

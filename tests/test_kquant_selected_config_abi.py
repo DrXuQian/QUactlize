@@ -46,8 +46,13 @@ def _write_config(pointer, ctype, values):
 class _Fmt2PolicyLibrary:
     _name = "libquactlize_ppu_fmt2.so"
 
-    def __init__(self, *, exact_name=b"32x32:16x16:s3"):
+    def __init__(
+            self, *, exact_name=b"32x32:16x16:s3", qtype=10,
+            arrangement=(2, 2, 2, 0, 0, 128, 16, 0,
+                         0x514B504B54000001)):
         self._exact_name = exact_name
+        self._qtype = qtype
+        self._arrangement = arrangement
         self.quactlize_ppu_canonical_arrangement_v2 = _Function(self._canonical)
         self.quactlize_ppu_dense_fully_quantized_any_m_valid_for_arrangement_v2 = (
             _Function(self._dense_any_m))
@@ -58,13 +63,12 @@ class _Fmt2PolicyLibrary:
         self.quactlize_ppu_grouped_fully_quantized_any_m_valid_for_arrangement_v2 = (
             _Function(self._grouped_any_m))
 
-    @staticmethod
-    def _canonical(qtype, output):
-        if qtype != 10:
+    def _canonical(self, qtype, output):
+        if self._qtype is None or qtype != self._qtype:
             return 29
         out = ctypes.cast(output, ctypes.POINTER(oracle.ArrangementV2)).contents
-        values = (2, 2, 2, 0, 0, 128, 16, 0, 0x514B504B54000001)
-        for (name, _ctype), value in zip(oracle.ArrangementV2._fields_, values):
+        for (name, _ctype), value in zip(
+                oracle.ArrangementV2._fields_, self._arrangement):
             setattr(out, name, value)
         return 0
 
@@ -114,21 +118,34 @@ class _Fmt2PolicyLibrary:
         })
         return 1
 
-    @staticmethod
-    def _grouped_any_m(n, k, experts, qtype, arrangement):
-        if not arrangement or n <= 0 or k <= 0 or experts <= 0 or qtype != 10:
-            return 0
+    def _matches(self, qtype, arrangement):
+        if not arrangement or self._qtype is None or qtype != self._qtype:
+            return False
         value = ctypes.cast(
             arrangement, ctypes.POINTER(oracle.ArrangementV2)).contents
-        return int(value.mapping_id == 0x514B504B54000001)
+        return oracle._arrangement_tuple(value) == self._arrangement
 
-    @staticmethod
-    def _dense_any_m(n, k, qtype, arrangement):
-        if not arrangement or n <= 0 or k <= 0 or qtype != 10:
+    def _grouped_any_m(self, n, k, experts, qtype, arrangement):
+        if n <= 0 or k <= 0 or experts <= 0:
             return 0
-        value = ctypes.cast(
-            arrangement, ctypes.POINTER(oracle.ArrangementV2)).contents
-        return int(value.mapping_id == 0x514B504B54000001)
+        return int(self._matches(qtype, arrangement))
+
+    def _dense_any_m(self, n, k, qtype, arrangement):
+        if n <= 0 or k <= 0:
+            return 0
+        return int(self._matches(qtype, arrangement))
+
+
+def _policy_libraries(fmt2=None):
+    libraries = {
+        "default": _Fmt2PolicyLibrary(qtype=None, arrangement=None),
+    }
+    for role, qtype, arrangement in oracle.ANY_M_FORMATS:
+        libraries[role] = _Fmt2PolicyLibrary(
+            qtype=qtype, arrangement=arrangement)
+    if fmt2 is not None:
+        libraries["fmt2"] = fmt2
+    return libraries
 
 
 def test_current_runtime_bundle_contract_requires_selected_config_exports():
@@ -153,7 +170,8 @@ def test_ctypes_records_match_public_x86_64_abi():
 def test_selected_config_oracle_covers_exact_default_override_stale_and_grouped(
         monkeypatch, tmp_path):
     library = _Fmt2PolicyLibrary()
-    monkeypatch.setattr(oracle, "_load_libraries", lambda _bundle: {"fmt2": library})
+    monkeypatch.setattr(
+        oracle, "_load_libraries", lambda _bundle: _policy_libraries(library))
     assert oracle.verify_selected_config(tmp_path) == {
         "dense_exact": "32x32:16x16:s3",
         "dense_unmeasured": "8x128:8x32:s3",
@@ -162,12 +180,15 @@ def test_selected_config_oracle_covers_exact_default_override_stale_and_grouped(
         "dense_any_m": "ALL_M_VALID",
         "grouped_default": "16x128:16x16:s2",
         "grouped_any_m": "ALL_M_VALID",
+        "any_m_formats": "FMT0..FMT4_VALID",
+        "any_m_default": "REJECTS_ALL",
     }
 
 
 def test_selected_config_oracle_rejects_policy_drift(monkeypatch, tmp_path):
     library = _Fmt2PolicyLibrary(exact_name=b"8x128:8x32:s3")
-    monkeypatch.setattr(oracle, "_load_libraries", lambda _bundle: {"fmt2": library})
+    monkeypatch.setattr(
+        oracle, "_load_libraries", lambda _bundle: _policy_libraries(library))
     with pytest.raises(oracle.OracleError, match="exact measured dense differs"):
         oracle.verify_selected_config(tmp_path)
 
@@ -176,12 +197,17 @@ def test_selected_config_oracle_rejects_policy_drift(monkeypatch, tmp_path):
     "quactlize_ppu_dense_fully_quantized_any_m_valid_for_arrangement_v2",
     "quactlize_ppu_grouped_fully_quantized_any_m_valid_for_arrangement_v2",
 ])
+@pytest.mark.parametrize("role", [
+    "default", "fmt0", "fmt1", "fmt2", "fmt3", "fmt4",
+])
 def test_selected_config_oracle_rejects_permissive_any_m(
-        monkeypatch, tmp_path, field):
-    library = _Fmt2PolicyLibrary()
-    setattr(library, field, _Function(lambda *_arguments: 1))
-    monkeypatch.setattr(oracle, "_load_libraries", lambda _bundle: {"fmt2": library})
-    with pytest.raises(oracle.OracleError, match="did not fail closed"):
+        monkeypatch, tmp_path, field, role):
+    libraries = _policy_libraries()
+    setattr(libraries[role], field, _Function(lambda *_arguments: 1))
+    monkeypatch.setattr(oracle, "_load_libraries", lambda _bundle: libraries)
+    with pytest.raises(
+            oracle.OracleError,
+            match="did not fail closed|default library admitted"):
         oracle.verify_selected_config(tmp_path)
 
 

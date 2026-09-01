@@ -121,13 +121,13 @@ def _selected_library(spec):
         if not arrangement or qtype != spec.qtype:
             return 0
         value = ctypes.cast(arrangement, gate.ARRP).contents
-        return int(value.mapping_id == spec.mapping_id)
+        return int(gate._arrangement_tuple(value) == spec.expected_arrangement)
 
     def dense_any_m(_n, _k, qtype, arrangement):
         if not arrangement or qtype != spec.qtype:
             return 0
         value = ctypes.cast(arrangement, gate.ARRP).contents
-        return int(value.mapping_id == spec.mapping_id)
+        return int(gate._arrangement_tuple(value) == spec.expected_arrangement)
 
     return SimpleNamespace(
         dense_selected=_Function(dense), grouped_selected=_Function(grouped),
@@ -183,22 +183,35 @@ def test_format_table_is_exactly_the_five_canonical_kpack_roles():
     assert {spec.expected_arrangement[1] for spec in gate.FORMATS} == {1, 2}
 
 
-def test_default_sixth_library_runtime_identity_must_be_minus_one(
+def test_default_sixth_library_identity_and_any_m_rejection(
         tmp_path, monkeypatch):
     path = tmp_path / "libquactlize_ppu.so"
     path.write_bytes(b"fake")
 
-    def library(identity):
+    def library(identity, dense_any_m=0, grouped_any_m=0):
         return SimpleNamespace(
             _name=str(path),
-            quactlize_ppu_build_packed_format_v1=_Function(lambda: identity))
+            quactlize_ppu_build_packed_format_v1=_Function(lambda: identity),
+            quactlize_ppu_dense_fully_quantized_any_m_valid_for_arrangement_v2=(
+                _Function(lambda *_arguments: dense_any_m)),
+            quactlize_ppu_grouped_fully_quantized_any_m_valid_for_arrangement_v2=(
+                _Function(lambda *_arguments: grouped_any_m)))
 
     monkeypatch.setattr(gate.ctypes, "CDLL", lambda *_args, **_kwargs: library(-1))
     assert gate._assert_default_library_identity(path) == {
-        "path": str(path), "packed_format": -1}
+        "path": str(path), "packed_format": -1,
+        "any_m": "REJECTS_ALL_CANONICAL_DESCRIPTORS"}
     monkeypatch.setattr(gate.ctypes, "CDLL", lambda *_args, **_kwargs: library(0))
     with pytest.raises(gate.GateError, match="expected -1"):
         gate._assert_default_library_identity(path)
+
+    for field in ("dense_any_m", "grouped_any_m"):
+        kwargs = {field: 1}
+        monkeypatch.setattr(
+            gate.ctypes, "CDLL",
+            lambda *_args, kwargs=kwargs, **_kwargs: library(-1, **kwargs))
+        with pytest.raises(gate.GateError, match="admitted a K-pack descriptor"):
+            gate._assert_default_library_identity(path)
 
 
 @pytest.mark.parametrize("spec", gate.FORMATS, ids=lambda spec: spec.name)
@@ -272,12 +285,16 @@ def test_any_m_contract_admits_shapes_and_rejects_identity_plants(spec):
         _selected_library(spec), spec, arrangement) == {
             "dense": {
                 "valid": 1,
+                "bad_version": 0,
+                "bad_artifact_tile_k": 0,
                 "bad_mapping": 0,
                 "null_arrangement": 0,
                 "foreign_format": 0,
             },
             "grouped": {
                 "valid": 1,
+                "bad_version": 0,
+                "bad_artifact_tile_k": 0,
                 "bad_mapping": 0,
                 "null_arrangement": 0,
                 "foreign_format": 0,
@@ -286,8 +303,8 @@ def test_any_m_contract_admits_shapes_and_rejects_identity_plants(spec):
 
 
 @pytest.mark.parametrize("field", ["dense_any_m", "grouped_any_m"])
-def test_any_m_contract_rejects_a_permissive_export(field):
-    spec = gate.FORMATS[0]
+@pytest.mark.parametrize("spec", gate.FORMATS, ids=lambda spec: spec.name)
+def test_any_m_contract_rejects_a_permissive_export(field, spec):
     library = _selected_library(spec)
     setattr(library, field, _Function(lambda *_arguments: 1))
     arrangement = gate.ArrangementV2(*spec.expected_arrangement)
