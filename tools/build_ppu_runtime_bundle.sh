@@ -274,6 +274,9 @@ PY
   PYTHONPATH="$root${PYTHONPATH:+:$PYTHONPATH}" \
     python3 -m quactlize.ppu_bundle "$stage" --ppu-sdk "$sdk" ||
     fail "bundle verification failed; work preserved at $work and stage at $stage"
+  PYTHONPATH="$root${PYTHONPATH:+:$PYTHONPATH}" \
+    python3 "$root/tools/verify_kquant_selected_config.py" "$stage" ||
+    fail "selected-config ABI verification failed; work preserved at $work and stage at $stage"
   while read -r role packed_scale packed_format qtype filename; do
     assert_role_source "$work/$role" "$role" "$source_sha"
   done <"$roles"
