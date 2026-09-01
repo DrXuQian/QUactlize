@@ -37,7 +37,8 @@ from .formats import (PLACED_ARRANGEMENT_VERSION_V1, PLACED_ARRANGEMENT_VERSION_
                       PlacedArrangementV2, QuantType,
                       canonical_fully_quantized_layout, placed_arrangement,
                       kquant_kpack_arrangement, placed_code_planes,
-                      q4_kpack4_arrangement, q4_n16k64_direct_arrangement)
+                      q4_kpack4_arrangement, q4_n16k64_direct_arrangement,
+                      validate_fully_quantized_resident_geometry)
 
 
 def _check_shape(blocks: torch.Tensor, n: int, k: int, qtype: int) -> None:
@@ -385,6 +386,30 @@ def _require_placed_artifact(artifact, qtype: int, where: str):
     return low, high, units, arrangement
 
 
+def _require_shipping_kpack_artifact(artifact, qtype: int, where: str):
+    """Admit only the two versioned K-pack byte classes used by product compute.
+
+    Legacy Xplane descriptors and the experimental direct layout remain
+    available to development producers and inverse tests, but a shipping GEMM
+    must never infer or reinterpret them.  Exact mapping validation happens in
+    ``_require_placed_artifact`` before this layout/qtype admission check.
+    """
+    low, high, units, arrangement = _require_placed_artifact(
+        artifact, qtype, where)
+    if not isinstance(arrangement, PlacedArrangementV2):
+        raise ValueError(
+            f"{where}: shipping compute requires a version-2 K-pack artifact; "
+            "Xplane-v1 is development compatibility only")
+    q = QuantType(qtype)
+    expected = (q4_kpack4_arrangement() if q == QuantType.Q4_K
+                else kquant_kpack_arrangement(q))
+    if arrangement != expected:
+        raise ValueError(
+            f"{where}: {q.name} shipping compute requires K-pack descriptor "
+            f"{expected}, got {arrangement}")
+    return low, high, units, arrangement
+
+
 def _unpack_fq(artifact, where: str):
     """(low, high, units), with a message about the CONTRACT instead of a bare unpacking error.
 
@@ -533,11 +558,11 @@ def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: i
     uint8[1, n, k/8] for Q5_K's 1-bit plane -- so the tuple's shape does not change with the format and `units`
     is always the LAST element. That is the property both oracles plant their fault on.
 
-    ``layout="auto"`` selects the canonical K-pack4 bytes for Q4_K and Xplane for every other format.  Explicit
+    ``layout="auto"`` selects the canonical K-pack bytes for every supported format.  Explicit
     ``layout="q4-n16k64-direct"`` builds the non-default Q4 direct-reader ABI, while
     ``layout="kquant-kpack"`` selects the per-plane b16 map for Q2/Q3/Q5/Q6; each plane uses Pack=16/bits and the
-    exact pack factors travel in the canonical descriptor.  An explicit ``tile_k`` is itself a low-level Xplane
-    compatibility request; none of the K-pack layouts has an artifact TileK axis.
+    exact pack factors travel in the canonical descriptor.  ``tile_k`` is accepted only together with an explicit
+    ``layout="xplane"`` development request; automatic production selection never falls back to Xplane.
 
     tile_k SELECTS AN XPLANE PLACEMENT, and F follows from it -- see formats.fold_for. Passing None keeps the
     Xplane format's default placement when Xplane was explicitly selected.
@@ -545,10 +570,14 @@ def prepare_fully_quantized_dense(blocks: torch.Tensor, n: int, k: int, qtype: i
     default producer pins the fold at 1, so before this existed, `PlacedArrangement` could record arrangements
     nothing could build.
     """
+    validate_fully_quantized_resident_geometry(qtype, n, k)
     _check_shape(blocks, n, k, int(qtype))
     if layout == "auto":
-        layout = (canonical_fully_quantized_layout(qtype)
-                  if tile_k is None else "xplane")
+        if tile_k is not None:
+            raise ValueError(
+                "tile_k is an explicit Xplane compatibility setting; use layout='xplane' for a development "
+                "artifact instead of changing the canonical automatic layout")
+        layout = canonical_fully_quantized_layout(qtype)
     if layout == "q4-kpack4":
         if QuantType(qtype) != QuantType.Q4_K:
             raise ValueError(f"q4-kpack4 is defined only for Q4_K, got {QuantType(qtype).name}")
@@ -605,18 +634,10 @@ def matmul_fully_quantized_dense(a: torch.Tensor, artifact, qtype: int):
     always exists and the launch returns rc=34, which surfaces here as an error naming the macro. A silent
     fallback would make a build that cannot run this cell indistinguishable from one that can.
     """
-    low, high, units, arrangement = _require_placed_artifact(
+    low, high, units, arrangement = _require_shipping_kpack_artifact(
         artifact, qtype, "matmul_fully_quantized_dense")
-    if isinstance(arrangement, PlacedArrangementV2):
-        if arrangement.layout == PLACED_LAYOUT_Q4_N16K64_DIRECT_V1:
-            raise NotImplementedError(
-                "matmul_fully_quantized_dense: q4-n16k64-direct is an explicit offline ABI whose production "
-                "reader is not routed; refusing to send layout 3 through a shipping layout-1/2 compute op")
-        return _op("gguf_dense_fully_quantized_for_arrangement_v2")(
-            a, low, high, units, int(qtype), *_arrangement_v2_wire(arrangement))
-    return _op("gguf_dense_fully_quantized_for_arrangement")(
-        a, low, high, units, int(qtype), PLACED_ARTIFACT_VERSION,
-        arrangement.bits, arrangement.tile_k, arrangement.high_bits)
+    return _op("gguf_dense_fully_quantized_for_arrangement_v2")(
+        a, low, high, units, int(qtype), *_arrangement_v2_wire(arrangement))
 
 
 def prepare_fully_quantized_grouped(blocks: torch.Tensor, n: int, k: int,
@@ -625,11 +646,12 @@ def prepare_fully_quantized_grouped(blocks: torch.Tensor, n: int, k: int,
     """The MoE artifact: one (low, units) pair per expert, nothing expanded.
 
     blocks is [E*n*(k/256), type_size] -- expert-major, so expert e's weight is a contiguous slice. ``auto``
-    selects the canonical K-pack4 artifact for Q4_K and the compatibility Xplane tuple for other formats.  Use
+    selects the canonical K-pack artifact for every supported format.  Use
     ``layout="q4-n16k64-direct"`` to build the explicit non-default Q4 direct-reader ABI, or
     ``layout="kquant-kpack"`` to build the descriptor-carrying Q2/Q3/Q5/Q6 artifact.
     Returns (low, high, units), with `high` empty for single-plane formats and uint8[E, n, k/8] for Q5_K.
     """
+    validate_fully_quantized_resident_geometry(qtype, n, k)
     want = experts * n * (k // 256)
     if blocks.dim() != 2 or blocks.shape[0] != want:
         raise ValueError(f"blocks should be [{want}, type_size] for {experts} experts of an ({n}, {k}) weight, "
@@ -678,23 +700,11 @@ def matmul_fully_quantized_grouped(a: torch.Tensor, artifact, qtype: int, rows_p
     the C++ op takes (a, low, units, rows, qtype) and the reorder happens here rather than in the kernel. One
     convention per layer -- the alternative is a caller that has to remember which side it is on.
     """
-    if isinstance(artifact, PlacedArtifact):
-        low, high, units, arrangement = _require_placed_artifact(
-            artifact, qtype, "matmul_fully_quantized_grouped")
-        if not isinstance(arrangement, PlacedArrangementV2):
-            raise ValueError(
-                "matmul_fully_quantized_grouped: grouped Xplane-v1 has no descriptor-aware production ABI; "
-                "refusing to erase its arrangement")
-        if arrangement.layout == PLACED_LAYOUT_Q4_N16K64_DIRECT_V1:
-            raise NotImplementedError(
-                "matmul_fully_quantized_grouped: q4-n16k64-direct is an explicit offline ABI whose production "
-                "reader is not routed; refusing to send layout 3 through a shipping layout-1/2 compute op")
-        return _op("gguf_grouped_fully_quantized_for_arrangement_v2")(
-            a, low, high, units, rows_per_expert.to(torch.int32), int(qtype),
-            *_arrangement_v2_wire(arrangement))
-    low, high, units = _unpack_fq(
-        artifact, "matmul_fully_quantized_grouped")
-    return _op("gguf_grouped_fully_quantized")(a, low, high, units, rows_per_expert.to(torch.int32), int(qtype))
+    low, high, units, arrangement = _require_shipping_kpack_artifact(
+        artifact, qtype, "matmul_fully_quantized_grouped")
+    return _op("gguf_grouped_fully_quantized_for_arrangement_v2")(
+        a, low, high, units, rows_per_expert.to(torch.int32), int(qtype),
+        *_arrangement_v2_wire(arrangement))
 
 
 def matmul_scale_first_dense(a: torch.Tensor, artifact, qtype: int, scale_zero=None) -> torch.Tensor:
@@ -706,16 +716,12 @@ def matmul_scale_first_dense(a: torch.Tensor, artifact, qtype: int, scale_zero=N
     fully-quantized decode share one offline weight format without forcing metadata expansion into the checkpoint.
     """
     if isinstance(artifact, PlacedArtifact):
-        low, high, units, arrangement = _require_placed_artifact(
+        low, high, units, arrangement = _require_shipping_kpack_artifact(
             artifact, qtype, "matmul_scale_first_dense")
-        if not isinstance(arrangement, PlacedArrangementV2):
-            raise ValueError(
-                "matmul_scale_first_dense: a placed fully-quantized Xplane artifact is not the legacy four-plane "
-                "ScaleFirst artifact; refusing to infer a different offline placement")
-        if arrangement.layout == PLACED_LAYOUT_Q4_N16K64_DIRECT_V1:
+        if QuantType(qtype) != QuantType.Q4_K:
             raise NotImplementedError(
-                "matmul_scale_first_dense: q4-n16k64-direct has no routed ScaleFirst reader; refusing to "
-                "reinterpret layout 3 as the shipping K-pack4 byte map")
+                "matmul_scale_first_dense: non-Q4 K-pack artifacts have no ScaleFirst reader; use "
+                "matmul_kpack_dense, which routes them through fully-quantized compute")
         if scale_zero is None:
             scale_zero = dequantize_scale_from_units(units, qtype)
         if not isinstance(scale_zero, (tuple, list)) or len(scale_zero) != 2:
@@ -727,7 +733,7 @@ def matmul_scale_first_dense(a: torch.Tensor, artifact, qtype: int, scale_zero=N
     return gguf_dense_scale_first(a, low, high, scale, zero, int(qtype))
 
 
-KPACK4_DECODE_MAX_ROWS = 8
+KPACK4_SCALEFIRST_MIN_ROWS = 64
 
 
 def prepare_q4_kpack4_scale_workspace(artifact, qtype: int = QuantType.Q4_K):
@@ -736,33 +742,56 @@ def prepare_q4_kpack4_scale_workspace(artifact, qtype: int = QuantType.Q4_K):
     The returned tensors are runtime workspace, not a second checkpoint artifact. Keeping this operation explicit
     prevents the dispatcher below from rebuilding scale/zero inside every timed prefill call.
     """
-    _low, _high, units, arrangement = _require_placed_artifact(
+    _low, _high, units, _arrangement = _require_shipping_kpack_artifact(
         artifact, qtype, "prepare_q4_kpack4_scale_workspace")
-    if not isinstance(arrangement, PlacedArrangementV2):
-        raise ValueError("prepare_q4_kpack4_scale_workspace requires the canonical K-pack4 v2 artifact")
+    if QuantType(qtype) != QuantType.Q4_K:
+        raise NotImplementedError(
+            "prepare_q4_kpack4_scale_workspace is Q4_K-only; non-Q4 K-pack compute does not use a "
+            "ScaleFirst workspace")
     return dequantize_scale_from_units(units, qtype)
 
 
-def matmul_q4_kpack4_dense(a: torch.Tensor, artifact, qtype: int = QuantType.Q4_K,
-                            scale_workspace=None) -> torch.Tensor:
-    """Production dense dispatcher over one Q4 K-pack4 artifact.
+def matmul_kpack_dense(a: torch.Tensor, artifact, qtype: int,
+                       scale_workspace=None) -> torch.Tensor:
+    """Production dense dispatcher over the canonical K-pack artifact.
 
-    Decode ``M<=8`` uses fully-quantized K-pack4. Larger M uses persistent ScaleFirst over the same code bytes and
-    requires a workspace returned by :func:`prepare_q4_kpack4_scale_workspace`.
+    Q4 uses fully-quantized K-pack4 below the persistent kernel's admitted
+    ``M>=64`` boundary.  The measured decode band is ``M<=8``; ``M=9..63``
+    stays on the same fully-quantized reader instead of being sent to a
+    ScaleFirst kernel that explicitly rejects it.  At ``M>=64`` Q4 uses
+    persistent ScaleFirst over the same code bytes and requires a workspace
+    returned by :func:`prepare_q4_kpack4_scale_workspace`. Q2/Q3/Q5/Q6 use
+    their fully-quantized K-pack readers for every M.
     """
     if a.dim() != 2:
         raise ValueError(f"activation must be [M,K], got {tuple(a.shape)}")
-    _low, _high, _units, arrangement = _require_placed_artifact(
-        artifact, qtype, "matmul_q4_kpack4_dense")
-    if not isinstance(arrangement, PlacedArrangementV2):
-        raise ValueError("matmul_q4_kpack4_dense requires the canonical K-pack4 v2 artifact")
-    if a.shape[0] <= KPACK4_DECODE_MAX_ROWS:
+    _require_shipping_kpack_artifact(artifact, qtype, "matmul_kpack_dense")
+    if QuantType(qtype) != QuantType.Q4_K:
+        if scale_workspace is not None:
+            raise ValueError(
+                "non-Q4 K-pack compute is fully quantized for every M and does not accept a ScaleFirst workspace")
+        return matmul_fully_quantized_dense(a, artifact, qtype)
+    if a.shape[0] < KPACK4_SCALEFIRST_MIN_ROWS:
+        if scale_workspace is not None:
+            raise ValueError(
+                "Q4 scale_workspace is accepted only by the M>=64 persistent ScaleFirst route")
         return matmul_fully_quantized_dense(a, artifact, qtype)
     if scale_workspace is None:
         raise ValueError(
             "K-pack4 prefill requires a hoisted scale_workspace; call "
             "prepare_q4_kpack4_scale_workspace(artifact) once outside the hot path")
     return matmul_scale_first_dense(a, artifact, qtype, scale_zero=scale_workspace)
+
+
+def matmul_q4_kpack4_dense(a: torch.Tensor, artifact, qtype: int = QuantType.Q4_K,
+                           scale_workspace=None) -> torch.Tensor:
+    """Backward-compatible Q4 name for :func:`matmul_kpack_dense`."""
+    if QuantType(qtype) != QuantType.Q4_K:
+        _require_shipping_kpack_artifact(
+            artifact, qtype, "matmul_q4_kpack4_dense")
+        raise ValueError("matmul_q4_kpack4_dense accepts only Q4_K; use matmul_kpack_dense for other K-quants")
+    return matmul_kpack_dense(
+        a, artifact, qtype, scale_workspace=scale_workspace)
 
 
 ROUTES = {
@@ -772,5 +801,6 @@ ROUTES = {
     "scale_first_gemv": matmul_scale_first_gemv,
     "scale_first_gemv_moe": matmul_scale_first_gemv_moe,
     "scale_first_dense": matmul_scale_first_dense,
+    "kpack_dense": matmul_kpack_dense,
     "q4_kpack4_dense": matmul_q4_kpack4_dense,
 }

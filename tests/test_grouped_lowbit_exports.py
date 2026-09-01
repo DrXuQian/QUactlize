@@ -165,7 +165,7 @@ def test_grouped_kpack4_selects_the_expert_axis_exactly_once():
     must-red control for every nonzero expert.
     """
     source = MIXED.read_text()
-    begin = source.index("if constexpr (kQ4KPack4Transpose) {", source.index("auto load_init_B"))
+    begin = source.index("if constexpr (kKPackTranspose) {", source.index("auto load_init_B"))
     end = source.index("} else {", begin)
     body = source[begin:end]
     assert "mixed_packed_byte_expert_base" not in body

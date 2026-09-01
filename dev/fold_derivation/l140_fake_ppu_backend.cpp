@@ -67,12 +67,15 @@ int quactlize_ppu_dense_fully_quantized_for_arrangement_v1(
 #endif
 
 #if defined(L140_ACCEPT_V2)
+#if !defined(L140_ACCEPT_V2_LAYOUT)
+#define L140_ACCEPT_V2_LAYOUT QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1
+#endif
 int32_t quactlize_ppu_dense_fully_quantized_config_valid_for_arrangement_v2(
     int m, int n, int k, int group_size, int qtype,
     quactlize_ppu_placed_arrangement_v2 const* arrangement, char const*) {
   if (!arrangement || m <= 0 || n <= 0 || k <= 0 || group_size <= 0) return 0;
   return qtype == 12 && arrangement->version == QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V2 &&
-         arrangement->layout == QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1 &&
+         arrangement->layout == L140_ACCEPT_V2_LAYOUT &&
          arrangement->bits == 4 && arrangement->high_bits == 0 &&
          arrangement->artifact_tile_k == 0 && arrangement->transport_tile_k == 64 &&
          arrangement->group_size == 32 && arrangement->reserved == 0 &&

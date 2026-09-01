@@ -77,7 +77,8 @@ if __name__ == "__main__":
         print(f"{row['name']} (low_bits={bits}):")
         for tk in TILEKS:
             try:
-                packed[tk] = routes.prepare_fully_quantized_dense(blocks, n, k, qtype, tile_k=tk)
+                packed[tk] = routes.prepare_fully_quantized_dense(
+                    blocks, n, k, qtype, tile_k=tk, layout="xplane")
             except Exception as e:                                # noqa: BLE001
                 print(f"  tk {tk:>3}   REFUSED: {type(e).__name__}: {e}")
         for a, b in itertools.combinations(TILEKS, 2):

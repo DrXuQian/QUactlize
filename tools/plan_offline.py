@@ -261,38 +261,47 @@ def invariants() -> list:
                 "PlacedArtifact(" in grouped_producer,
                 "grouped five-format producers attach an exact physical-layout-v2 descriptor"))
     reader_contracts = {
-        "matmul_fully_quantized_dense": "gguf_dense_fully_quantized_for_arrangement",
-        "matmul_bc_gemv": "gguf_gemv_bc_for_arrangement",
-        "dequantize_fully_quantized": "artifact_dequantize_for_tile",
+        "matmul_fully_quantized_dense": (
+            "gguf_dense_fully_quantized_for_arrangement_v2",
+            "_require_shipping_kpack_artifact("),
+        "matmul_bc_gemv": (
+            "gguf_gemv_bc_for_arrangement", "_require_placed_artifact("),
+        "dequantize_fully_quantized": (
+            "artifact_dequantize_for_tile", "_require_placed_artifact("),
     }
-    for name, seam in reader_contracts.items():
+    for name, (seam, admission) in reader_contracts.items():
         src = body(name)
-        ok = "_require_placed_artifact(" in src and seam in src
+        ok = admission in src and seam in src
         out.append((ok, f"{name} consumes versioned artifact descriptor through {seam}"))
     grouped_reader = body("matmul_fully_quantized_grouped")
-    out.append(("_require_placed_artifact(" in grouped_reader and
+    out.append(("_require_shipping_kpack_artifact(" in grouped_reader and
                 "gguf_grouped_fully_quantized_for_arrangement_v2" in grouped_reader,
                 "grouped reader consumes the Q4/generic K-pack v2 descriptor"))
     inverse = body("dequantize_fully_quantized")
     out.append(("gguf_grouped_artifact_dequantize_for_arrangement_v2" in inverse,
                 "grouped inverse recovers through the selected K-pack v2 map"))
-    runtime = body("matmul_q4_kpack4_dense")
-    out.append(("KPACK4_DECODE_MAX_ROWS" in runtime and
+    runtime = body("matmul_kpack_dense")
+    out.append(("KPACK4_SCALEFIRST_MIN_ROWS" in runtime and
+                "QuantType(qtype) != QuantType.Q4_K" in runtime and
                 "matmul_fully_quantized_dense(" in runtime and
                 "matmul_scale_first_dense(" in runtime and
                 "hoisted scale_workspace" in runtime,
-                "one K-pack4 dense route selects FQ decode or persistent ScaleFirst without a hidden prepass"))
+                "one K-pack dense route keeps non-Q4 fully quantized and selects Q4 decode/persistent "
+                "ScaleFirst without a hidden prepass"))
     packer = (ROOT / "tools" / "pack_gguf.py").read_text()
-    out.append(("all-kpack" in packer and
+    out.append(("all-kpack" not in packer and
+                "--layout-policy" not in packer and
                 "_target_layout" in packer and
                 '"kquant-kpack"' in packer and
                 "route == \"grouped\"" in packer and
                 "prepare_fully_quantized_grouped(" in packer and
                 '"route_class": route' in packer and
                 '"plane_packs"' in packer and
-                "_tensor_geometry(t.shape)" in packer and
+                "_tensor_geometry(t.shape, tt)" in packer and
+                "validate_fully_quantized_resident_geometry" in packer and
                 "classify_role(name, 3)" in packer,
-                "whole-model all-Kpack producer covers dense/grouped Q2-Q6 and proves rank-3 role authority"))
+                "whole-model canonical K-pack producer covers dense/grouped Q2-Q6, exact resident geometry, "
+                "and rank-3 role authority"))
     host = (ROOT / "quactlize" / "csrc" / "preprocess" / "thop" / "gguf_prepass_ops.cpp").read_text()
     out.append(("gguf_backend_for_qtype" in host and
                 "arrangement_v2\n          ? ppu_backend::load_format" in host,

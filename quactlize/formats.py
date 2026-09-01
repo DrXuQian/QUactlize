@@ -339,25 +339,22 @@ Q4_KPACK4_GROUP_SIZE = 32
 Q4_N16K64_DIRECT_TRANSPORT_TILE_K = 64
 Q4_N16K64_DIRECT_GROUP_SIZE = 32
 
-# One production offline-layout decision per k-quant format.  K-pack4 is a
-# Q4-specific byte map: four K-adjacent nibbles form the b16 transport used by
-# the transpose reader.  Applying its name to Q2/Q3/Q5/Q6 would hide different
-# plane widths behind one descriptor, not unify those formats.  They retain
-# Xplane until each gets its own correctness/performance adjudication.
+# One production offline-layout decision per k-quant format.  K-pack4 is the
+# Q4-specific byte map; the other formats use the generic descriptor whose
+# per-plane pack factors are derived from their exact code widths.  Xplane is
+# retained only for explicit development comparisons and is never automatic.
 CANONICAL_FULLY_QUANTIZED_LAYOUT: Dict[QuantType, str] = {
-    QuantType.Q2_K: "xplane",
-    QuantType.Q3_K: "xplane",
+    QuantType.Q2_K: "kquant-kpack",
+    QuantType.Q3_K: "kquant-kpack",
     QuantType.Q4_K: "q4-kpack4",
-    QuantType.Q5_K: "xplane",
-    QuantType.Q6_K: "xplane",
+    QuantType.Q5_K: "kquant-kpack",
+    QuantType.Q6_K: "kquant-kpack",
 }
 
 # Archived means absent from automatic/whole-model production selection.  The
-# low-level explicit reader remains available as diagnostic compatibility and,
-# more importantly, the shared Xplane implementation remains live for the four
-# formats above.
+# low-level explicit Xplane path remains available for development A/B runs.
 ARCHIVED_FULLY_QUANTIZED_LAYOUTS: Dict[QuantType, FrozenSet[str]] = {
-    QuantType.Q4_K: frozenset({"xplane"}),
+    qtype: frozenset({"xplane"}) for qtype in CANONICAL_FULLY_QUANTIZED_LAYOUT
 }
 
 
@@ -497,6 +494,32 @@ def placed_code_planes(qtype) -> tuple[int, int]:
             f"{q.name} has no placed fully-quantized artifact; accepting it would manufacture a descriptor for "
             f"bytes no producer in this tree can build")
     return PLACED_CODE_PLANES[q]
+
+
+def validate_fully_quantized_resident_geometry(qtype, n: int, k: int) -> None:
+    """Validate the tensor-core resident boundary shared by packers and producers.
+
+    This is deliberately stricter than an offline plane map's smallest physical
+    quantum.  Product kernels consume 256-column N tiles and complete GGUF
+    superblocks; Q3_K and Q6_K pair two superblocks in one packed metadata unit.
+    Keeping this policy in one host-side function makes unsupported tails fail
+    before a placement op or device library is called.
+    """
+    q = QuantType(qtype)
+    if q not in PLACED_CODE_PLANES:
+        raise NotImplementedError(
+            f"{q.name} has no fully-quantized resident artifact")
+    n, k = int(n), int(k)
+    if n <= 0 or k <= 0:
+        raise ValueError(
+            f"fully-quantized resident dimensions must be positive, got N={n} K={k}")
+    if n % 256:
+        raise ValueError(
+            f"fully-quantized resident artifact requires N multiple of 256, got N={n}")
+    k_quantum = 512 if q in (QuantType.Q3_K, QuantType.Q6_K) else 256
+    if k % k_quantum:
+        raise ValueError(
+            f"{q.name} fully-quantized resident artifact requires K multiple of {k_quantum}, got K={k}")
 
 
 def placed_arrangement(qtype, tile_k: int | None = None) -> PlacedArrangement:
