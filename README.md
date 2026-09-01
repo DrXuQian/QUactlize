@@ -278,6 +278,37 @@ The box is required for:
 - resource counters and ACU reports;
 - latency and performance admission.
 
+### Prebuilt bundle device gate
+
+The release correctness gate consumes an already-built six-library bundle. It
+does not configure CMake, compile, or link anything on the box:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+  python3 tools/run_prebuilt_ppu_box_gate.py /path/to/bundle \
+    --ppu-sdk /path/to/ppu-sdk-2.1.1 \
+    --output /workspace/quactlize-prebuilt-gate-result
+```
+
+The positional argument is the bundle directory containing `manifest.json`
+and the six manifest-owned shared libraries. `--ppu-sdk` names the admitted SDK
+root containing `hgobjdump` and `lib/libhggc_wrapper.so`. `--output` must name a
+new directory whose parent already exists; the runner never overwrites prior
+evidence. `CUDA_VISIBLE_DEVICES` must contain exactly one numeric device
+ordinal; `0` above is an example, not a device-name or multi-device selector.
+The box environment also needs NumPy and the official
+`gguf==0.19.0` oracle required by the runner.
+
+Before launching a kernel, the runner verifies the manifest, every library
+digest and embedded PPU image, the source/submodule authority, all six format
+identities, and the selected-config ABI. It then checks host prepare/recover
+and device dense/grouped correctness for Q2_K, Q3_K, Q4_K, Q5_K and Q6_K,
+including an empty expert, null and explicit config selection, a wrong-mapping
+negative, and a zeroed packed-unit fault. Successful evidence records
+`device_library_builds=0` and `host_compilations=0`. This is a correctness and
+ABI admission gate; it does not measure latency or replace a performance/ACU
+board.
+
 Representative real-shape entry points are:
 
 ```bash

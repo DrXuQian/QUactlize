@@ -2415,14 +2415,14 @@ but does not erase the measured K-pack versus Xplane debt or change a technical
 
 | ID | Status | Debt at `40c0875` | Completion boundary / current result |
 |---|---|---|---|
-| D01 | DEVICE | Layout 3 AIU-plain + UniversalCopy had offline/CuTe evidence only | A runnable raw-bit kernel now builds locally and lowers to exactly four AIU-plain writes plus sixteen UniversalCopy loads. It remains fail-closed until exact-binary box execution and decode/prefill/grouped performance pass; otherwise delete the layout-3 slice |
+| D01 | DEVICE | Layout 3 AIU-plain + UniversalCopy had offline/CuTe evidence only | A runnable kernel builds locally and lowers to exactly four AIU-plain writes plus sixteen UniversalCopy loads, but it has no device numeric or performance admission. It remains fail-closed and outside the K-pack-only product until exact-binary decode/prefill/grouped closure passes; otherwise delete the layout-3 slice |
 | D02 | CLOSED | Q2/Q3/Q5/Q6 were canonically Xplane | Canonical policy, whole-model packer and automatic routes emit only Q4 K-pack4 or the exact per-plane K-pack descriptor |
 | D03 | MAIN-PORT | BC GEMV, non-Q4 ScaleFirst and legacy restore remain develop-only Xplane consumers | Selective main staging omits those consumers; the main-admission inventory and retired-layout deny rule make accidental inclusion fail |
 | D04 | CLOSED | K-pack decode could reach a BC route that rejects arrangement v2 | One descriptor-aware fully-quantized dense/grouped route owns every K-pack decode case |
 | D05 | CLOSED | Non-Q4 K-pack had no ScaleFirst reader | Non-Q4 prefill deliberately uses the measured fully-quantized reader; no unproven second reader is required |
-| D06 | DEVICE | K-pack is raw-bit exact but slower in parts of the complete A/B board | Preserve the denominator and improve after shipment; current maxima remain Q2 `1.96/5.41%`, Q3 `3.78/4.82%`, Q4 grouped `3.05%`, Q5 `4.57/5.31%`, and Q6 `6.62/7.20%` for dense/grouped |
+| D06 | DEVICE-NONBLOCKING | K-pack is raw-bit exact but slower in parts of the complete A/B board | Preserve the denominator and improve after the K-pack-only release; current maxima remain Q2 `1.96/5.41%`, Q3 `3.78/4.82%`, Q4 grouped `3.05%`, Q5 `4.57/5.31%`, and Q6 `6.62/7.20%` for dense/grouped. The maintenance waiver removes Xplane from the product search space but does not convert these regressions into wins |
 | D07 | CLOSED | The placed-artifact route primarily admitted N and K divisible by 256 | One shared producer/route geometry validator fails unsupported tails explicitly |
-| D08 | CLOSED | Prepass ladder, launch audit, poison state and deliberately wrong timing NOPs lived in production source | Production paths are clean; useful negatives remain in separate development tests |
+| D08 | CLOSED | Prepass ladder, launch audit, poison state and deliberately wrong timing NOPs lived in production source | Those retired controls no longer occur on production call paths; useful negatives remain in development tests. The distinct, benchmark-reachable Split-K counterfactual is tracked by D18 rather than hidden under this closure |
 | D09 | CLOSED | Historical-negative, print, bisect, pad/swizzle and scheduler experiment macros remained in collective code | Selected behavior is typed policy; a product-source deny gate rejects all retired names |
 | D10 | CLOSED | Fused Q4 metadata was a global build switch | Dense Q4 selects `InterleavedHalf2`; grouped Q4, generic and non-Q4 select `SeparateHalfPlanes`. The global switch and dedicated A/B runner are gone |
 | D11 | CLOSED | `ForwardCoordIterator` and `SplitkCoordIterator` stored `Shape const&` | Both own shape by value and pass scalar, nested, temporary-expression and lvalue-equivalence tests |
@@ -2431,13 +2431,19 @@ but does not erase the measured K-pack versus Xplane debt or change a technical
 | D14 | MAIN-PORT | Non-PPU validation adapters still exist in develop | Selective main staging admits only the PPU dependency closure and preserves license notices; the exact gate rejects non-PPU runtime/compiler seams |
 | D15 | CLOSED | README, Python exports, packer and device-library installation exposed different boundaries | One packer CLI writes a versioned complete K-pack bundle; README and Python exports describe the same product surface |
 | D16 | CLOSED | Format selection required an undocumented set of libraries | One verified six-library runtime bundle owns exact FMT identities, hashes, SDK receipt and loader precedence; missing/misplaced identities fail before operator exposure |
+| D17 | FUTURE-ABI | The public grouped selector exposes only `(total_rows,max_rows,experts)` even though the measurements own the full row distribution | Automatic grouped selection is not admitted: different per-expert row histograms alias those aggregates and may prefer different tactics. Null keeps the compiled default and explicit names remain available until a versioned ABI carries the complete histogram or another measured route identity |
+| D18 | MAIN-PORT | Split-K headers still contain measured actual-last/fused and reducer-only benchmark seams | These methods are truly referenced by the develop sweep, and the fused adapters are members of `PreparedOnePlaneLauncher` and participate in its `initialize()` template instantiation. Do not delete individual methods in develop. Main must port a shipping-only Prepared without the fused members/initialization, retain the counterfactual handle only in develop, then repeat HGCC/ELF and exact-binary box admission |
 
 Resolve locally provable debt before requesting device time: D13 wording and
-source guards, D08/D09 dead diagnostics, D11 iterator lifetime, local ABI and
+source guards, D08/D09 retired controls, D11 iterator lifetime, local ABI and
 policy tests, and the main admission checklist.  Reserve box runs for actual
-PPU lowering, raw-bit results, resource usage, scheduling and performance:
-D01, any consumer kernel added for D03--D05, and D06.  Each box admission is
-bound to the exact candidate SHA and binary/config identity.
+PPU lowering, raw-bit results, resource usage, scheduling and performance.
+D01 is a separate experimental admission and D06 remains a measured
+optimization debt; neither blocks the canonical K-pack-only release. D17 needs
+a future ABI before more measurements can make it safe. D18 is resolved while
+building the selective main dependency closure, not by breaking the develop
+benchmark contract. Each box admission is bound to the exact candidate SHA and
+binary/config identity.
 
 #### 2026-09-01 local closure
 
@@ -2458,8 +2464,10 @@ closed without consuming a device run:
   both producers and the packer.
 - D08/D09: prepass ladders, timing NOPs, historical must-red branches, print
   probes, padding/swizzle/prefetch experiments, global A-pack selection and
-  grouped environment diagnostics were removed from product source. A deny
-  gate rejects all 22 retired names. Real strategy axes remain explicit.
+  grouped environment diagnostics were removed from the production call
+  paths. A deny gate rejects all 22 retired names. Real strategy axes remain
+  explicit. This closure does not cover the referenced Split-K actual-last
+  benchmark handle recorded separately as D18.
 - D11: both coordinate iterators own their shape lifetime by value in the
   pinned actlize submodule.
 - D12: the global A-pack and BChunk switches are gone. Exact M=1 packing and
@@ -2476,9 +2484,11 @@ writer, commit/wait/barrier edge and UniversalCopy reader to four exact AIU
 loads plus sixteen `tsm.ld.b32x4` loads. It is still not admitted: raw-bit
 execution and decode/prefill/grouped performance remain box work. D03 and D14
 are selective-main-port tasks rather than reasons to delete develop's archived
-A/B evidence. D06 is the remaining measured product-performance debt. Fresh
-device confirmation of the typed D10/D12 source identity is an admission gate,
-not an unresolved implementation choice.
+A/B evidence. D06 is a preserved, nonblocking product-performance debt. D17
+keeps grouped automatic selection off until its route identity is expressible,
+and D18 prevents an unsafe local deletion of benchmark-reachable fused code.
+Fresh device confirmation of the typed D10/D12 source identity is an admission
+gate, not an unresolved implementation choice.
 
 The complete loader-facing six-library candidate is now durable at artifact
 commit `8580346e244945a4a384091dfb054944913ae1a2` on branch
