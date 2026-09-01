@@ -176,6 +176,26 @@ The placement operation is host code exported by the format-selected PPU
 library. A real conversion therefore requires that library and its shared
 library dependencies to be loadable, but it does not launch a PPU kernel.
 
+For a portable mapping oracle that needs no extension or PPU SDK, use the
+standalone PyTorch reference. Its file mode reads a real GGUF and writes a
+spec-valid augmented GGUF containing every original tensor plus I8
+`low`/`high`/`units` companions and their arrangement-v2 manifest:
+
+```bash
+python reference/gguf_kpack.py pack MODEL.gguf MODEL.kpack-reference.gguf
+python reference/gguf_kpack.py verify MODEL.kpack-reference.gguf --source MODEL.gguf
+```
+
+`--tensor NAME` may be repeated to convert a small subset while porting. The
+augmented output is a byte-exact verification container, not a stock llama.cpp
+runtime model: a consumer must first implement the manifest and companion
+tensor contract. The verifier reconstructs official GGUF blocks from every
+K-pack artifact, checks all original tensor hashes, and optionally proves that
+all source tensors and metadata were preserved. The scalar implementation is
+intended for small fixtures and mapping review, not full-model throughput; it
+also deliberately rejects split or big-endian GGUF inputs and metadata arrays
+whose empty value has lost its element type.
+
 The supported Python compute surface is `quactlize.routes`:
 
 - `prepare_fully_quantized_dense` and
