@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "source_sha": "992ef0f28b061ad2110784252bf0406a7b91647a",
+  "submodules": {
+    "third_party/actlize": "8d46b758c8931807df840a6ed87d272d74a8fdf4",
+    "third_party/cutlass": "f94ec46f4f63f96003d6cfdf2014731e7672c281"
+  },
+  "sdk": "PPU_SDK_cuda-13.0.0-ubuntu2404-2.1.1-a5c56e sha256=63ca196b152f2fec667fce8b18c04f1d6d0fa9e7bc7f72e18f017c96d11731dd",
+  "compiler": "hgcc Release version 2.1.1-a5c56e built=2026-07-25T09:15:42 sha256=fa62c590c67411c23fa4028f15fa562b39ce0cf830830d038a1ec04c59d8c76e",
+  "arch": "ppu0010",
+  "artifacts": [
+    {
+      "role": "fully-quantized",
+      "qtype": 12,
+      "path": "bin/libquactlize_ppu.so",
+      "size": 31771640,
+      "sha256": "6a6b96c44b9f2fecc95cf2214a3c6719af72828bd575c32889c5553b6ead5ab4",
+      "target": "quactlize_ppu",
+      "ppu_defs": [
+        "PPU_PACKED_SCALE=1",
+        "PPU_PACKED_FORMAT=0",
+        "QUACTLIZE_DENSE_ONLY=12"
+      ]
+    },
+    {
+      "role": "build-log",
+      "qtype": 12,
+      "path": "logs/make.log",
+      "size": 11741,
+      "sha256": "c479771047ff561e87d336546f2ea6ddcea5f3e9624e422adbbf535a1447fe17",
+      "target": "quactlize_ppu-build-log",
+      "ppu_defs": [
+        "PPU_PACKED_SCALE=1",
+        "PPU_PACKED_FORMAT=0",
+        "QUACTLIZE_DENSE_ONLY=12"
+      ]
+    }
+  ]
+}
