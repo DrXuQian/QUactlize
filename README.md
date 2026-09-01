@@ -25,7 +25,7 @@ unknown or incompatible descriptor instead of guessing a layout.
 |---|---|
 | `quactlize/include/` | PPU collectives, launchers, format policy, and offline-layout contracts |
 | `quactlize/csrc/` | Python bindings, preprocessing, and the PPU device-library entry points |
-| `tools/pack_gguf.py` | GGUF-to-K-pack artifact conversion |
+| `quactlize-pack-gguf` | Installed GGUF-to-K-pack artifact converter |
 | `tests/` | Correctness tests against independent host or format oracles |
 | `benchmarks/` | Device correctness and timing harnesses |
 | `tools/` | Real-shape plans, generated tactic sweeps, and result adjudication |
@@ -74,7 +74,7 @@ Install the PyTorch build used by the target environment first. Python and
 host-side format code can then be installed without a PPU device:
 
 ```bash
-python3 -m pip install --no-build-isolation -e .
+python3 -m pip install --no-build-isolation -e '.[packer]'
 ```
 
 Build one PPU target after sourcing the SDK environment:
@@ -111,8 +111,7 @@ not reach that target's HGCC command.
 ## Offline conversion
 
 The format-unified producer is explicit and records the selected arrangement
-in `manifest.json`. Run this command from a source checkout; installing a
-dedicated packer console entry is still part of the selective main rebuild.
+in `manifest.json`. Installation provides one packer entry point:
 
 ```bash
 QUACTLIZE_PPU_LIB_FMT0=/path/to/q4/libquactlize_ppu.so \
@@ -120,7 +119,7 @@ QUACTLIZE_PPU_LIB_FMT1=/path/to/q5/libquactlize_ppu.so \
 QUACTLIZE_PPU_LIB_FMT2=/path/to/q2/libquactlize_ppu.so \
 QUACTLIZE_PPU_LIB_FMT3=/path/to/q3/libquactlize_ppu.so \
 QUACTLIZE_PPU_LIB_FMT4=/path/to/q6/libquactlize_ppu.so \
-python3 tools/pack_gguf.py MODEL.gguf OUT_DIR
+quactlize-pack-gguf MODEL.gguf OUT_DIR
 ```
 
 The compile-time format IDs are `0=Q4_K`, `1=Q5_K`, `2=Q2_K`,
@@ -140,8 +139,9 @@ export QUACTLIZE_PPU_LIB_FMT0=/path/to/q4-packed/libquactlize_ppu.so
 ```
 
 Use `--dry-run` to inspect tensor eligibility without writing an artifact.
-The current placement operation is provided by the format-selected PPU device
-library, so a real conversion run requires the device runtime.
+The placement operation is host code exported by the format-selected PPU
+library. A real conversion therefore requires that library and its shared
+library dependencies to be loadable, but it does not launch a PPU kernel.
 
 The supported Python compute surface is `quactlize.routes`:
 

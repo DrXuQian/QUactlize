@@ -74,7 +74,7 @@ The offline packer already writes a per-tensor manifest carrying `PlacedArrangem
 
 | moment | what belongs there | today |
 |---|---|---|
-| offline pack (`tools/pack_gguf.py`) | the ARRANGEMENT: which bytes are resident | done |
+| offline pack (`quactlize-pack-gguf`) | the ARRANGEMENT: which bytes are resident | done |
 | build / pack time | the TACTIC TABLE: `(n, k, gs, M-bucket) -> config` | **missing** |
 | first inference | nothing | -- |
 | every call | a lookup | a cache that usually misses |

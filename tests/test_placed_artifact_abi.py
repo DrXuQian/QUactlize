@@ -4,7 +4,6 @@ These deliberately replace the torch ops with recording callables. They test the
 ownership, validation and forwarding -- without pretending a host mock proves a PPU kernel accepts an arrangement.
 The device-side descriptor x tactic predicate has its own compiled controls.
 """
-import importlib.util
 import copy
 import pickle
 import pathlib
@@ -17,11 +16,7 @@ import pytest
 import torch
 
 from quactlize import formats, routes
-
-_PACK_SPEC = importlib.util.spec_from_file_location(
-    "pack_gguf_artifact_abi_test", pathlib.Path(__file__).parents[1] / "tools" / "pack_gguf.py")
-pack_gguf = importlib.util.module_from_spec(_PACK_SPEC)
-_PACK_SPEC.loader.exec_module(pack_gguf)
+from quactlize import pack_gguf
 
 
 def _planes(arrangement, n=2, k=256):
@@ -952,8 +947,10 @@ def test_whole_model_packer_canonical_policy_covers_every_plane_and_grouped_rout
     with pytest.raises(ValueError, match="Q3_K.*K multiple of 512"):
         pack_gguf._tensor_geometry((256, 256, 64), q3)
 
-    assert pack_gguf._grouped_role_authority("blk.12.ffn_down_exps.weight") == (True, None)
-    ok, why = pack_gguf._grouped_role_authority("blk.12.unknown_rank3.weight")
+    assert pack_gguf._route_role_authority(
+        "blk.12.ffn_down_exps.weight", 3, "grouped") == (True, None)
+    ok, why = pack_gguf._route_role_authority(
+        "blk.12.unknown_rank3.weight", 3, "grouped")
     assert not ok and "no grouped role authority" in why
 
 

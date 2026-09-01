@@ -229,7 +229,7 @@ def fold_for(bits: int, tile_k: int) -> int:
 
 def load_registry() -> dict[int, dict]:
     # Parse the shipping X-macro instead of mirroring qtype semantics here.
-    from tools.pack_gguf import format_registry
+    from quactlize.pack_gguf import format_registry
     return format_registry()
 
 

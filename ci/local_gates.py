@@ -984,7 +984,7 @@ def lint_tactic_cannot_change_offline_layout():
     import ast as _ast, re as _re
     inc = ROOT / "quactlize" / "include" / "ppu_format_config.inc"
     bench = ROOT / "benchmarks" / "test_lowbit_dense_bench.cu"
-    pk = ROOT / "tools" / "pack_gguf.py"
+    pk = ROOT / "quactlize" / "pack_gguf.py"
     for f in (inc, bench, pk):
         if not f.is_file():
             return "FAIL", f"{f.name} is missing", 0.0
@@ -1039,7 +1039,7 @@ def lint_tactic_cannot_change_offline_layout():
     for fn_name in ("_tile_k", "_low_bits", "_high_bits"):
         fn = next((n for n in tree.body if isinstance(n, _ast.FunctionDef) and n.name == fn_name), None)
         if fn is None:
-            return "FAIL", f"tools/pack_gguf.py has no {fn_name}; the packer's arrangement source moved", 0.0
+            return "FAIL", f"quactlize.pack_gguf has no {fn_name}; the packer's arrangement source moved", 0.0
         literals = [n.value for n in _ast.walk(fn) if isinstance(n, _ast.Constant) and isinstance(n.value, int)]
         if literals:
             return "FAIL", (f"{fn_name} contains integer literal(s) {literals} -- it should READ "

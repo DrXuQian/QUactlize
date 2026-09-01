@@ -229,7 +229,8 @@ a zero return means enqueued rather than completed. Arrangement-v2 workspace que
 
 ## 6. The Python path
 
-This is the higher-level wrapper over the §3 producer, and how `tools/pack_gguf.py` works.
+This is the higher-level wrapper over the §3 producer, and how the installed
+`quactlize-pack-gguf` command works.
 
 ```python
 from quactlize import routes, formats
@@ -259,27 +260,26 @@ to remember a parallel `tile_k` argument.
 policy, while larger M selects persistent ScaleFirst over the same code bytes. It refuses a missing prefill
 workspace rather than hiding scale expansion inside the hot call.
 
-Whole-model driver: `python3 tools/pack_gguf.py MODEL.gguf OUT_DIR [--dry-run]`. `--dry-run` reports the type mix
-— i.e. how many format-specific libraries a deployment of that file needs — without touching the device. Rank-2
-GGUF tensors use the dense producer. Rank-3 fast-first `[K,N,E]` Q4_K tensors use the grouped producer and retain
-`route_class=grouped`, `experts=E`, and the v2 descriptor in the manifest; they are not silently flattened into a
-dense matrix. Rank-3 non-Q4 formats remain visibly held back until their grouped descriptor-aware reader exists.
+Whole-model driver: `quactlize-pack-gguf MODEL.gguf OUT_DIR [--dry-run]`. `--dry-run` reports the type mix
+— i.e. how many format-specific libraries a deployment of that file needs — without touching the device. Recognised
+rank-2 GGML `MUL_MAT` tensors use the dense producer. Recognised rank-3 fast-first `[K,N,E]` K-quant tensors use the
+grouped producer and retain `route_class=grouped`, `experts=E`, and the v2 descriptor in the manifest; they are not
+silently flattened into a dense matrix. Unknown and non-matrix roles fail closed instead of being guessed from rank.
 
 The default Q4 pack command names the format-selected library explicitly:
 
 ```bash
 QUACTLIZE_PPU_LIB_FMT0=/path/to/libquactlize_ppu.so \
-  python3 tools/pack_gguf.py MODEL.gguf OUT_DIR
+  quactlize-pack-gguf MODEL.gguf OUT_DIR
 ```
 
 `quactlize.gguf_backend_for_qtype(12)` reports that exact handle. `gguf_backend()` continues to report the
 legacy/default handle used by Xplane and by ScaleFirst execution; the two queries are intentionally not aliases.
 
-The arrangement is recorded **per tensor**. Xplane uses `PlacedArrangement(bits,tile_k,high_bits)`; Q4 K-pack4
-uses the complete `PlacedArrangementV2`. `tools/pack_gguf.py` has no Q4 layout switch: whole-model production
-packing always emits K-pack4 for Q4_K and Xplane for Q2_K/Q3_K/Q5_K/Q6_K. The low-level explicit Q4 Xplane
-producer remains only for diagnostic compatibility. Different layers may use different arrangements; every
-batch/M for one stored layer must use that layer's one descriptor.
+The arrangement is recorded **per tensor** as a complete `PlacedArrangementV2`. `quactlize.pack_gguf` has no layout
+switch: whole-model production packing emits K-pack4 for Q4_K and the canonical per-plane K-pack mapping for
+Q2_K/Q3_K/Q5_K/Q6_K. Explicit Xplane producers remain development compatibility paths only. Different layers may
+use different arrangements; every batch/M for one stored layer must use that layer's one descriptor.
 
 ---
 

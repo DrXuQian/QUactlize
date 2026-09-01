@@ -17,8 +17,17 @@ license = {text = "Apache-2.0"}
 requires-python = ">=3.9"
 dependencies = []
 
+[project.optional-dependencies]
+packer = ["gguf"]
+
+[project.scripts]
+quactlize-pack-gguf = "quactlize.pack_gguf:main"
+
 [tool.setuptools]
 packages = ["quactlize"]
+
+[tool.setuptools.package-data]
+quactlize = ["include/ppu_format_config.inc"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

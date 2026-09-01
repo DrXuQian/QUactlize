@@ -36,13 +36,8 @@ TILEKS = (64, 128, 256)
 
 
 if __name__ == "__main__":
-    # The registry parser lives in tools/pack_gguf.py; importing it by path keeps ONE reader of the .inc rather
-    # than a second parse here. This is the same rule the packer's own docstring states.
-    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-    import importlib.util
-    _spec = importlib.util.spec_from_file_location("pack_gguf", pathlib.Path(__file__).resolve().parent / "pack_gguf.py")
-    _pg = importlib.util.module_from_spec(_spec)
-    _spec.loader.exec_module(_pg)
+    # The installed packer owns the one parser of the shipping X-macro.
+    from quactlize import pack_gguf as _pg
 
     try:
         import torch

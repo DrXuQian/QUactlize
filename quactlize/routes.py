@@ -257,7 +257,7 @@ PLACED_ARTIFACT_VERSION_V2 = PLACED_ARRANGEMENT_VERSION_V2
 class PlacedArtifact(tuple):
     """(low, high, units) AND the versioned placement it was produced for.
 
-    WHY IT IS A tuple SUBCLASS. Every existing consumer treats the artifact as a 3-tuple -- tools/pack_gguf.py
+    WHY IT IS A tuple SUBCLASS. Every existing consumer treats the artifact as a 3-tuple -- quactlize.pack_gguf
     does `low, high, units = prepare_fully_quantized_dense(...)`, _unpack_fq does `list(artifact)`, and the
     tests index it. Subclassing tuple keeps all of that byte-identical while giving the object somewhere to
     carry what the tensors cannot say about themselves.

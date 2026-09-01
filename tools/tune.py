@@ -7,7 +7,7 @@ there is tuning that is off by default in practice while the code still says it 
 3-5 s search mid-conversation pollutes the first measurement of whatever it interrupts, and under CUDA graphs a
 cold search during capture is the exact undefined behaviour we already had to decline once.
 
-The reason this costs no new friction is that our weights ALREADY require an offline pass -- tools/pack_gguf.py
+The reason this costs no new friction is that our weights ALREADY require an offline pass -- quactlize-pack-gguf
 shuffles them. TRT-LLM needs `trtllm-build` because it has a build; llama.cpp has none, which is why the answer
 looked homeless. We have the step already; this rides along.
 

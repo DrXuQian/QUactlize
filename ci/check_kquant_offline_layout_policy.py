@@ -45,7 +45,7 @@ def main() -> int:
             formats.validate_fully_quantized_resident_geometry(qtype, 256, k)
 
         routes = (ROOT / "quactlize/routes.py").read_text()
-        packer = (ROOT / "tools/pack_gguf.py").read_text()
+        packer = (ROOT / "quactlize/pack_gguf.py").read_text()
         runner = (ROOT / "tools/run_nonq4_xplane_correctness_box.sh").read_text()
         placed = (ROOT / "quactlize/include/ppu_placed_arrangement.hpp").read_text()
         require(routes, (

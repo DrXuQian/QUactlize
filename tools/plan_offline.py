@@ -36,7 +36,7 @@ and reports owner_diff, of which 0 is the "one resident artifact serves a larger
 2026-08-11 it is 0 on every cross-T row, INCLUDING the two-plane Q6_K A=128 -> T=256 F=1/1 row that this tool's
 Q3/Q5/Q6 lines depend on. It builds in ~15 s and needs no device; prefer running it to trusting this paragraph.
 
-WHAT THIS TOOL WILL NOT DO. It will not name an arrangement nobody can build. tools/pack_gguf.py refuses for the
+WHAT THIS TOOL WILL NOT DO. It will not name an arrangement nobody can build. quactlize-pack-gguf refuses for the
 same reason and the reason is the same sentence: a manifest naming an unbuildable arrangement reads as a
 capability. Every cell here is taken from quactlize/schemes.py's status matrix, the shipping registry, or the
 shipped config tables -- never from this file's own opinion.
@@ -56,7 +56,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from quactlize import formats as F                      # noqa: E402
 from quactlize import schemes as S                      # noqa: E402
-from tools.pack_gguf import format_registry             # noqa: E402  -- PARSED, not mirrored
+from quactlize.pack_gguf import format_registry         # noqa: E402  -- PARSED, not mirrored
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -288,7 +288,7 @@ def invariants() -> list:
                 "hoisted scale_workspace" in runtime,
                 "one K-pack dense route keeps non-Q4 fully quantized and selects Q4 decode/persistent "
                 "ScaleFirst without a hidden prepass"))
-    packer = (ROOT / "tools" / "pack_gguf.py").read_text()
+    packer = (ROOT / "quactlize" / "pack_gguf.py").read_text()
     out.append(("all-kpack" not in packer and
                 "--layout-policy" not in packer and
                 "_target_layout" in packer and
@@ -299,9 +299,12 @@ def invariants() -> list:
                 '"plane_packs"' in packer and
                 "_tensor_geometry(t.shape, tt)" in packer and
                 "validate_fully_quantized_resident_geometry" in packer and
-                "classify_role(name, 3)" in packer,
+                "_route_role_authority(t.name, rank, route)" in packer and
+                "classify_role(name, rank)" in packer and
+                '"dense": ("dense", "MUL_MAT")' in packer and
+                '"grouped": ("grouped", "MUL_MAT_ID")' in packer,
                 "whole-model canonical K-pack producer covers dense/grouped Q2-Q6, exact resident geometry, "
-                "and rank-3 role authority"))
+                "and exact dense/grouped operation authority"))
     host = (ROOT / "quactlize" / "csrc" / "preprocess" / "thop" / "gguf_prepass_ops.cpp").read_text()
     out.append(("gguf_backend_for_qtype" in host and
                 "arrangement_v2\n          ? ppu_backend::load_format" in host,
