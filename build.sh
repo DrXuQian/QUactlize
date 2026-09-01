@@ -450,7 +450,10 @@ esac
 # not printing it at all.
 if [ -n "${PPU_DEFS:-}" ]; then
   echo "PPU_DEFS applied: $PPU_DEFS"
-  grep -F "PPU_EXTRA_DEFS ->" cmake.log || echo "  WARNING: cmake did not report PPU_EXTRA_DEFS -- the defines did NOT reach the build"
+  if ! grep -F "PPU_EXTRA_DEFS ->" cmake.log; then
+    echo "  ERROR: cmake did not report PPU_EXTRA_DEFS -- the requested defines did NOT reach the build" >&2
+    exit 1
+  fi
 fi
 # #13: NO SHIPPING TARGET MAY REACH THE LEGACY PACKERS. fold_derivation/legacy_pipeline.hpp still holds
 # nfold_regroup_gmem and nfold_place_bits_int1_tk64, on purpose -- they are the INDEPENDENT reference the l58/l61/l64
@@ -502,15 +505,17 @@ _BIN_PATH=$(find "$BUILD" -type f -name "$TARGET" -perm -u+x -print -quit 2>/dev
 if [ -n "${PPU_DEFS:-}" ]; then
   _bm=$(find . -path "*${TARGET}.dir/build.make" | head -1)
   if [ -z "$_bm" ]; then
-    echo "  WARNING: no build.make found for $TARGET -- cannot verify the defines reached it."
+    echo "  ERROR: no build.make found for $TARGET -- cannot prove the requested defines reached it." >&2
+    exit 1
   else
     for _d in $PPU_DEFS; do
       # A WHOLE ARGUMENT, not a substring: -DSK_QUANT=2 must not be satisfied by -DSK_QUANT=20.
       if grep -qE -- "(^|[[:space:]])-D$(printf '%s' "$_d" | sed 's/[][\.^$*+?(){}|]/\\&/g')([[:space:]]|$)" "$_bm"; then
         echo "PPU_DEFS verified on $TARGET's compile command: -D$_d"
       else
-        echo "  WARNING: -D$_d is NOT on $TARGET's compile command -- THIS BUILD DOES NOT HAVE IT."
-        echo "           Any A/B against it is a binary compared with itself. (checked $_bm)"
+        echo "  ERROR: -D$_d is NOT on $TARGET's compile command -- THIS BUILD DOES NOT HAVE IT." >&2
+        echo "         Any result would compare the wrong binary. (checked $_bm)" >&2
+        exit 1
       fi
     done
   fi
@@ -518,6 +523,16 @@ fi
 
 if [ "$TARGET" = quactlize_ppu ]; then
   BIN="$(find "$BUILD" -name 'libquactlize_ppu.so' -type f | head -1)"
+elif [ "$TARGET" = test_q4_n16k64_delivery_codegen ]; then
+  mapfile -t _Q4_N16K64_CODEGEN_OBJECTS < <(
+    find "$BUILD" -type f \
+      -name 'test_q4_n16k64_delivery_codegen_*.o' -print | sort
+  )
+  if [ "${#_Q4_N16K64_CODEGEN_OBJECTS[@]}" -ne 1 ]; then
+    echo "ERROR: compile-only target produced ${#_Q4_N16K64_CODEGEN_OBJECTS[@]} matching objects; expected exactly one." >&2
+    exit 1
+  fi
+  BIN="${_Q4_N16K64_CODEGEN_OBJECTS[0]}"
 else
   BIN="$(find "$BUILD" -name "$TARGET" -type f -perm -u+x | head -1)"
 fi
@@ -529,10 +544,15 @@ echo "built: $BIN"
 case "$TARGET" in
   quactlize_ppu)
     echo "load:  QUACTLIZE_PPU_LIB=$BIN python -c 'import quactlize; print(quactlize.gguf_backend())'" ;;
+  test_q4_n16k64_delivery_codegen)
+    echo "object: $BIN"
+    echo "inspect only; this target has no host link and must not be launched:"
+    echo "       $PPU_SDK_ROOT/bin/hgobjdump --list-elf $BIN"
+    echo "       $PPU_SDK_ROOT/bin/hgobjdump --dump-isa $BIN" ;;
   test_moe_grouped_verify)
     echo "run:   $BIN [L] [Mb] [ragged?] [gs]      # POSITIONAL, no --flags"
     echo "       $BIN 8 1                          # Mmax==1, required by PPU_A_CUBE_H=1"
-    echo "       MOEG_SMEM=1 MOEG_DUMP=/tmp/d.bin $BIN 8 1     # then MOEG_CHECK=/tmp/d.bin on the other build" ;;
+    echo "       MOEG_DUMP=/tmp/d.bin $BIN 8 1     # then MOEG_CHECK=/tmp/d.bin on the other build" ;;
   test_moe_grouped_streamk)
     echo "run:   timeout 180s $BIN                  # fixed S068 + ragged q/fixup/numeric gate"
     echo "       expected: TK256 split_tiles=0; TK64 split_tiles=16 peer_excess=48" ;;
@@ -552,4 +572,7 @@ if [ -n "${_BIN_PATH:-}" ]; then
   echo "[build.sh] BINARY: $_BIN_PATH"
   echo "           BIN=\$($0 --print-bin) is not a thing; copy the line above, or:"
   echo "           BIN=$_BIN_PATH"
+elif [ "$TARGET" = test_q4_n16k64_delivery_codegen ]; then
+  echo ""
+  echo "[build.sh] OBJECT: $BIN"
 fi

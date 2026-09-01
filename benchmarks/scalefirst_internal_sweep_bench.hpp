@@ -191,6 +191,14 @@ template <class T> struct ElementBits {
 };
 template <> struct ElementBits<void> { static constexpr int value = 0; };
 
+template <class Mainloop, class = void>
+struct MainloopUsesQ4KPack4Transpose : std::false_type {};
+
+template <class Mainloop>
+struct MainloopUsesQ4KPack4Transpose<
+    Mainloop, std::void_t<decltype(Mainloop::kQ4KPack4Transpose)>>
+    : std::bool_constant<Mainloop::kQ4KPack4Transpose> {};
+
 // Keep the established Xplane/ScaleFirst type completely independent of the
 // canonical K-pack4 experiment.  A specialization, rather than a
 // conditional_t over two eagerly named aliases, prevents every legacy format
@@ -282,7 +290,7 @@ struct RowTypes {
   static_assert(!use_kpack4 ||
                     (MainloopDescriptor::q4_kpack4_transpose &&
                      MainloopDescriptor::transport_tile_k == 64 &&
-                     Mainloop::kQ4KPack4Transpose),
+                     MainloopUsesQ4KPack4Transpose<Mainloop>::value),
                 "K-pack4 ScaleFirst must retain the canonical physical reader");
   static_assert(std::is_same_v<typename SplitKernel::CollectiveMainloop,
                                typename Shipping::CollectiveMainloop>,

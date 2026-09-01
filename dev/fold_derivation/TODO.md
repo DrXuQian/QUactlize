@@ -2438,3 +2438,41 @@ policy tests, and the main admission checklist.  Reserve box runs for actual
 PPU lowering, raw-bit results, resource usage, scheduling and performance:
 D01, any consumer kernel added for D03--D05, and D06.  Each box admission is
 bound to the exact candidate SHA and binary/config identity.
+
+#### 2026-09-01 local closure
+
+The official PPU SDK now runs the device compiler and image tools locally.
+Local proof therefore includes HGCC compilation and ISA/resource/ABI
+inspection, but still excludes execution semantics. The following debt was
+closed without consuming a device run:
+
+- D02: automatic dense/grouped production and the whole-model packer select
+  only Q4 K-pack4 or the exact per-plane K-pack descriptor for Q2/Q3/Q5/Q6.
+- D04/D05: one descriptor-aware `matmul_kpack_dense` route owns dense dispatch;
+  non-Q4 uses its measured fully-quantized implementation for every M. Q4
+  stays fully quantized below the persistent reader's exact M>=64 boundary
+  (including the otherwise uncovered M=9..63 band), then uses the explicit
+  hoisted-workspace ScaleFirst path. Legacy and mismatched descriptors fail
+  before a device op.
+- D07: one shared resident-geometry validator fails unsupported N/K tails in
+  both producers and the packer.
+- D08/D09: prepass ladders, timing NOPs, historical must-red branches, print
+  probes, padding/swizzle/prefetch experiments, global A-pack selection and
+  grouped environment diagnostics were removed from product source. A deny
+  gate rejects all 22 retired names. Real strategy axes remain explicit.
+- D11: both coordinate iterators own their shape lifetime by value in the
+  pinned actlize submodule.
+- D12: the global A-pack half is gone; exact M=1 packing is a typed schedule.
+  `PPU_B_CHUNK` remains open because it changes code generation and resources.
+- D13: product-source provenance and main-port policy have executable guards.
+- D15/D16, partial: README and routes now document the one K-pack API, five
+  format-selected packed library IDs/handles, and the separate default Q4
+  ScaleFirst library required for persistent prefill. Installing a dedicated
+  packer console entry remains part of the selective main rebuild.
+
+D01 now has stronger local evidence: a real PPU kernel lowers the AIU-plain
+writer, commit/wait/barrier edge and UniversalCopy reader to four exact AIU
+loads plus sixteen `tsm.ld.b32x4` loads. It is still not admitted: raw-bit
+execution and decode/prefill/grouped performance remain box work. D03 and D14
+are selective-main-port tasks rather than reasons to delete develop's archived
+A/B evidence. D06, D10 and the B-chunk half of D12 also remain box-bound.

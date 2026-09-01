@@ -281,6 +281,7 @@ int launch_grouped_q4_kpack4_config(
               workspace_bytes, stream);
     QUACTLIZE_PPU_GROUPED_CONFIGS(QUACTLIZE_PPU_GROUPED_KPACK4_CONFIG_CASE)
 #undef QUACTLIZE_PPU_GROUPED_KPACK4_CONFIG_CASE
+    case GroupedConfigId::Count: break;
   }
   return 31;
 }
@@ -338,6 +339,7 @@ int launch_grouped_kpack_config(
               workspace_bytes, stream);
     QUACTLIZE_PPU_GROUPED_CONFIGS(QUACTLIZE_PPU_GROUPED_KPACK_CONFIG_CASE)
 #undef QUACTLIZE_PPU_GROUPED_KPACK_CONFIG_CASE
+    case GroupedConfigId::Count: break;
   }
   return 31;
 }
@@ -362,6 +364,7 @@ int launch_grouped_config(
           shapes, shapes_host, offsets, workspace, workspace_bytes, stream);
     QUACTLIZE_PPU_GROUPED_CONFIGS(QUACTLIZE_PPU_GROUPED_CONFIG_CASE)
 #undef QUACTLIZE_PPU_GROUPED_CONFIG_CASE
+    case GroupedConfigId::Count: break;
   }
   return 31;
 }
@@ -408,10 +411,13 @@ int launch_dense_tactic(uint16_t const* act, uint8_t const* low, uint8_t const* 
       using PackedKernelTypes = fpa_intb_ppu::DensePackedAKernelTypes<1,
           QM::FinegrainedScaleZero, ppu_group_schedule::FinegrainedSchedule<GroupSize>,
           Tile, ScaleTile, Warp, Stages, true, Low, ArtifactTileK>;
+      // This branch is an exact M==1 route, even when its containing config is
+      // also the ordinary universal fallback. Keep the Rows1 type exact and
+      // let the Rows0 call below carry that fallback proof.
       bool const launched = fpa_intb_ppu::generic_launcher<QM::FinegrainedScaleZero,
           ppu_group_schedule::FinegrainedSchedule<GroupSize>,
           Tile, ScaleTile, Warp, Stages, true,
-          Low, High, PackedScale, QueryOnly, RequireUniversalFallback, ArtifactTileK,
+          Low, High, PackedScale, QueryOnly, false, ArtifactTileK,
           PackedKernelTypes>(
               reinterpret_cast<half_t const*>(act), reinterpret_cast<Low const*>(low),
               reinterpret_cast<half_t const*>(scale), reinterpret_cast<half_t const*>(zero),
@@ -454,6 +460,7 @@ int launch_dense_config(DenseConfigId config, uint16_t const* act, uint8_t const
           act, low, high, scale, zero, out, m, n, k, workspace, workspace_bytes, stream);
     QUACTLIZE_PPU_DENSE_CONFIGS(QUACTLIZE_PPU_DENSE_CONFIG_CASE)
 #undef QUACTLIZE_PPU_DENSE_CONFIG_CASE
+    case DenseConfigId::Count: break;
   }
   return 31;
 }
@@ -532,6 +539,7 @@ int launch_dense_kpack_config(
                   workspace_bytes, stream);
     QUACTLIZE_PPU_DENSE_CONFIGS(QUACTLIZE_PPU_DENSE_KPACK_CONFIG_CASE)
 #undef QUACTLIZE_PPU_DENSE_KPACK_CONFIG_CASE
+    case DenseConfigId::Count: break;
   }
   return 31;
 }
@@ -688,6 +696,7 @@ int launch_dense_q4_kpack4_config(
           act, low, units, out, m, n, k, workspace, workspace_bytes, stream, SPLIT);
     QUACTLIZE_PPU_Q4_KPACK4_CONFIGS(QUACTLIZE_PPU_KPACK4_CONFIG_CASE)
 #undef QUACTLIZE_PPU_KPACK4_CONFIG_CASE
+    case Kpack4ConfigId::Count: break;
   }
   return 31;
 }

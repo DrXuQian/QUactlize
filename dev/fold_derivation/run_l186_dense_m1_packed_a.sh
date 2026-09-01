@@ -12,7 +12,7 @@ common=(-std=c++17 -arch=sm_80 -w
         -I "${repo}/third_party/actlize/include"
         -I "${repo}/third_party/actlize/tools/util/include"
         -I "${repo}/quactlize/include")
-type_flags=("${common[@]}" --expt-relaxed-constexpr -D__HGGCCC__ -DPPU_FORCE_INSTANTIATE=1
+type_flags=("${common[@]}" --expt-relaxed-constexpr -D__HGGCCC__
             -I "${repo}/tests" -I "${repo}/benchmarks")
 
 nvcc "${type_flags[@]}" -o "${out}/types" "${type_src}"
@@ -78,7 +78,8 @@ if [[ ${rows0_rc} -eq 0 || ${m16_rc} -eq 0 ||
 fi
 
 python3 "${repo}/ci/check_dense_m1_packed_a.py"
-for plant in missing-m1-guard default-type-wrapped query-launch-diverged coverage-denominator physical-stage-pitch; do
+for plant in missing-m1-guard default-type-wrapped query-launch-diverged coverage-denominator physical-stage-pitch \
+             packed-route-marked-universal; do
   if python3 "${repo}/ci/check_dense_m1_packed_a.py" --plant "${plant}" \
       >"${out}/plant-${plant}.log" 2>&1; then
     echo "[l186] FAIL source plant escaped: ${plant}" >&2
@@ -88,4 +89,4 @@ done
 
 echo "[l186] PASS: 7 production Q2/Q4 cells + writer/independent-reader geometry; " \
      "logical-x2 scalar map exact; rows0/m16/destination/slice-swap/x2-word " \
-     "and 5 source plants RED; output=${out}"
+     "and 6 source plants RED; output=${out}"

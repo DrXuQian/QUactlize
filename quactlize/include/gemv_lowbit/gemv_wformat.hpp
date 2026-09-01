@@ -157,9 +157,16 @@ struct WeightFormatRecord {
 };
 
 static constexpr int32_t kWeightFormatVersion = 1;
+static constexpr char kWeightFormatMagic[8] = {
+    'P', 'P', 'U', 'W', 'F', 'M', 'T', '\0'};
+static_assert(sizeof(kWeightFormatMagic) == sizeof(WeightFormatRecord{}.magic));
 
-inline void wfmt_set_magic(WeightFormatRecord& r) { std::memcpy(r.magic, "PPUWFMT", 8); }
-inline bool wfmt_magic_ok(WeightFormatRecord const& r) { return std::memcmp(r.magic, "PPUWFMT", 8) == 0; }
+inline void wfmt_set_magic(WeightFormatRecord& r) {
+  for (size_t i = 0; i < sizeof(r.magic); ++i) r.magic[i] = kWeightFormatMagic[i];
+}
+inline bool wfmt_magic_ok(WeightFormatRecord const& r) {
+  return std::memcmp(r.magic, kWeightFormatMagic, sizeof(r.magic)) == 0;
+}
 
 // Print a cute Layout into a fixed buffer. The record's description is therefore READ OFF the object rather
 // than written down beside it -- the distinction this project keeps paying for.

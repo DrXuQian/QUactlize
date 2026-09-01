@@ -27,7 +27,8 @@ endif()
 # which build.sh overlays when it exists and a main-branch checkout does not have at all. Anything NOT on this list
 # that is missing a source is a mistake, and gets the loud CMake error it deserves.
 set(_PPU_OPTIONAL_TARGETS
-  swzl_ldmatrix_probe test_fold_int2 test_int1_sweep test_moe_grouped_dataslice
+  swzl_ldmatrix_probe test_q4_n16k64_delivery_codegen
+  test_fold_int2 test_int1_sweep test_moe_grouped_dataslice
   test_moe_grouped_probe test_q3_bconcat_ablate test_q3_bconcat_probe test_width_acu)
 
 # Resolve a bare source name across QZ_SRC_DIRS. Needed by BOTH wrappers: quactlize_ppu_executable below and the
@@ -2516,6 +2517,42 @@ quactlize_ppu_executable(
 )
 if(TARGET swzl_ldmatrix_probe)
   target_compile_options(swzl_ldmatrix_probe PRIVATE -w)
+endif()
+
+# Compile-only lowering gate for the unselected Q4 N16xK64 delivery provider.
+# Deliberately stop at hgcc's relocatable object: linking an executable adds a
+# host-runtime dependency that says nothing about device code generation and
+# is unsupported on non-Ubuntu-24 development hosts.  The L247 runner finds
+# and disassembles this object; it never launches device code.
+qz_resolve_sources(_Q4_N16K64_CODEGEN_SOURCE
+  test_q4_n16k64_delivery_codegen.cu)
+list(GET _Q4_N16K64_CODEGEN_SOURCE 0 _Q4_N16K64_CODEGEN_SOURCE)
+get_filename_component(_Q4_N16K64_CODEGEN_SOURCE
+  "${_Q4_N16K64_CODEGEN_SOURCE}" ABSOLUTE
+  BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+if(EXISTS "${_Q4_N16K64_CODEGEN_SOURCE}")
+  if(COMMAND cutlass_build_dev_kernels)
+    set(_Q4_N16K64_CODEGEN_SOURCES "${_Q4_N16K64_CODEGEN_SOURCE}")
+    set(_Q4_N16K64_CODEGEN_OBJECTS)
+    cutlass_build_dev_kernels(
+      _Q4_N16K64_CODEGEN_SOURCES _Q4_N16K64_CODEGEN_OBJECTS
+      ${_PPU_EXTRA_DEV})
+    add_custom_target(test_q4_n16k64_delivery_codegen
+      DEPENDS ${_Q4_N16K64_CODEGEN_OBJECTS})
+  elseif(DEFINED PPU_DEVICE_HGCC_REAL)
+    message(FATAL_ERROR
+      "PPU toolchain is active but has no cutlass_build_dev_kernels helper; refusing to turn the compile-only gate into a host-linked executable")
+  else()
+    # SDK-free source-graph evaluators replace the ordinary project helper to
+    # record PPU translation units.  Route through it only in that evaluator
+    # environment so portability and overlay coverage include this source.
+    quactlize_ppu_executable(
+      test_q4_n16k64_delivery_codegen
+      "${_Q4_N16K64_CODEGEN_SOURCE}")
+  endif()
+else()
+  message(STATUS
+    "ppu_w4a16: skipping optional test_q4_n16k64_delivery_codegen -- dev source absent")
 endif()
 
 # INT4 REFERENCE diag: same params as test_w2a16_diag but int4b_t, so the W2DBG cute-layout print for the

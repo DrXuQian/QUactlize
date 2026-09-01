@@ -13,6 +13,7 @@ BUILDER = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/b
 COLLECTIVE = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp"
 PACK_DETAIL = ROOT / "quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/ppu_a_pack.hpp"
 LAUNCHER = ROOT / "quactlize/include/fpA_intB_ppu.cuh"
+GROUPED_LAUNCHER = ROOT / "quactlize/include/moe_grouped_ppu.cuh"
 BACKEND = ROOT / "quactlize/csrc/device/ppu_dense_backend.cu"
 TYPE_ORACLE = ROOT / "dev/fold_derivation/l186_dense_m1_packed_a.cu"
 GEOMETRY_ORACLE = ROOT / "dev/fold_derivation/l186_dense_m1_packed_a_geometry.cu"
@@ -30,6 +31,7 @@ def source_errors(text: dict[str, str]) -> list[str]:
         ),
         "policy": (
             "struct PackedAMainloopPolicy", "static_assert(APackRows == 1",
+            "static constexpr int PackedARows = 0;",
             "ordinary unfolded one-plane only", "using KernelSchedule = cutlass::gemm::KernelAiuPackedA<",
         ),
         "builder": (
@@ -55,11 +57,18 @@ def source_errors(text: dict[str, str]) -> list[str]:
         "launcher": (
             "struct DensePackedAKernelTypes", "using KernelTypes = DenseKernelTypes<",
             "using SelectedKernelTypes = std::conditional_t<",
-            "if constexpr (!std::is_void_v<KernelTypesOverride>)",
+            "if constexpr (MainloopPolicy::PackedARows > 0)",
+            "a bounded packed-A provider cannot be the universal dense fallback",
+        ),
+        "grouped_launcher": (
+            "if constexpr (MainloopPolicy::PackedARows > 0)",
+            "a bounded packed-A provider cannot be the universal grouped fallback",
         ),
         "backend": (
             "bool UseM1PackedA = false", "if constexpr (UseM1PackedA && kOrdinaryOnePlane)",
             "if (m == 1)", "using PackedKernelTypes = fpa_intb_ppu::DensePackedAKernelTypes<1",
+            "Low, High, PackedScale, QueryOnly, false, ArtifactTileK,",
+            "Low, High, PackedScale, QueryOnly, RequireUniversalFallback, ArtifactTileK>(",
             "(DenseConfigId::ID == kDecodeDefaultDenseConfig), QueryOnly",
             "return launch_dense_config<Low, High, GroupSize, TacticTileK, ArtifactTileK, PackedScale, true>",
         ),
@@ -93,6 +102,10 @@ def source_errors(text: dict[str, str]) -> list[str]:
             if token not in text[name]:
                 errors.append(f"{name} missing {token}")
 
+    for name in ("policy", "builder", "collective", "launcher", "grouped_launcher"):
+        if "PPU_A_PACK" in text[name]:
+            errors.append(f"{name} retains the retired global PPU_A_PACK path")
+
     # The old authority must remain an independently named type. Replacing it globally with the packed type would
     # make M=2..7 silently pay for/consume the M==1 provider while all positive packed checks still passed.
     if text["launcher"].count("struct DenseKernelTypes {") != 1:
@@ -103,6 +116,17 @@ def source_errors(text: dict[str, str]) -> list[str]:
         errors.append("dense config registry no longer has one compile-time tactic selection seam")
     if "if (m == 1)" not in text["backend"] or "M=2..7 falls through" not in text["backend"]:
         errors.append("runtime M==1 guard or explicit M>1 fallthrough disappeared")
+    packed_begin = text["backend"].find("using PackedKernelTypes = fpa_intb_ppu::DensePackedAKernelTypes<1")
+    packed_end = text["backend"].find("return launched ? 0 : 31;", packed_begin)
+    packed_body = text["backend"][packed_begin:packed_end]
+    if "QueryOnly, false, ArtifactTileK," not in packed_body or \
+            "QueryOnly, RequireUniversalFallback, ArtifactTileK," in packed_body:
+        errors.append("exact M1 Rows1 route is still marked as the universal fallback")
+    ordinary_begin = text["backend"].find("bool const launched = fpa_intb_ppu::generic_launcher", packed_end)
+    ordinary_end = text["backend"].find("return launched ? 0 : 31;", ordinary_begin)
+    ordinary_body = text["backend"][ordinary_begin:ordinary_end]
+    if "QueryOnly, RequireUniversalFallback, ArtifactTileK>(" not in ordinary_body:
+        errors.append("ordinary Rows0 route no longer carries the universal fallback proof")
     if text["collective"].count("detail::aPackRunOffsetHalfs(kACubeH") != 3 or \
             "aPackRunOff(" in text["collective"]:
         errors.append("collision proof and writer no longer share exactly one detail run-offset authority")
@@ -130,6 +154,10 @@ def plant(name: str, text: dict[str, str]) -> None:
         text["collective"] = text["collective"].replace(
             "kAPackPitch * c + kAPackStagePitch * pipe",
             "kAPackPitch * (c + kACubes * pipe)", 1)
+    elif name == "packed-route-marked-universal":
+        text["backend"] = text["backend"].replace(
+            "Low, High, PackedScale, QueryOnly, false, ArtifactTileK,",
+            "Low, High, PackedScale, QueryOnly, RequireUniversalFallback, ArtifactTileK,", 1)
     elif name != "none":
         raise ValueError(f"unknown plant {name}")
 
@@ -141,7 +169,8 @@ def main() -> int:
     paths = {
         "dispatch": DISPATCH, "policy": POLICY, "builder": BUILDER,
         "collective": COLLECTIVE, "pack_detail": PACK_DETAIL,
-        "launcher": LAUNCHER, "backend": BACKEND,
+        "launcher": LAUNCHER, "grouped_launcher": GROUPED_LAUNCHER,
+        "backend": BACKEND,
         "type_oracle": TYPE_ORACLE, "geometry_oracle": GEOMETRY_ORACLE,
         "actlize_copy": ACTLIZE_COPY, "actlize_traits": ACTLIZE_TRAITS,
     }
