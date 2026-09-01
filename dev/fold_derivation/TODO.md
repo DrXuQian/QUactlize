@@ -2479,3 +2479,14 @@ are selective-main-port tasks rather than reasons to delete develop's archived
 A/B evidence. D06 is the remaining measured product-performance debt. Fresh
 device confirmation of the typed D10/D12 source identity is an admission gate,
 not an unresolved implementation choice.
+
+The complete loader-facing six-library candidate is now durable at artifact
+commit `8580346e244945a4a384091dfb054944913ae1a2` on branch
+`artifacts/ppu0010/0f330cb-runtime6-051b7204a08d`. Its manifest SHA-256 is
+`051b7204a08d490007aea11be8d13dbb588748d50c24cf133862afce08a0577e`,
+binding clean source `0f330cbed40cff57e88679081b5ed00676301471`, the admitted
+SDK receipt, and exactly default plus FMT0--4. The strict current verifier,
+Ubuntu-24 dependency floor, six LFS payloads, complete export/image inventory,
+and all 26 host ABI cases passed. This closes D16's packaging/loader-identity
+boundary; it does not close D01/D06 or replace the required PPU raw-bit and
+performance execution.
