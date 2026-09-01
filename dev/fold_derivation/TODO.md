@@ -2501,3 +2501,27 @@ dependency floor, `git lfs fsck`, and all 26 host ABI cases. This closes D16's
 packaging/loader-identity boundary. The prebuilt five-format dense/grouped
 device gate is still pending; it does not close D01/D06 or replace the required
 PPU raw-bit and performance execution.
+
+#### Active device-test and policy queue (2026-09-02)
+
+`CLOSED` above means that the implementation choice and its local proof are
+closed. It does not silently stand in for a fresh device admission. The
+following queue records every remaining execution or performance proof and is
+ordered by dependency. An older runtime bundle, a successful HGCC build, or a
+local layout oracle cannot close one of these rows.
+
+| Order | Related debt | Status | Required result before closure |
+|---:|---|---|---|
+| A01 | D16 | BUILDING | Publish the six-library runtime from source `2826cf12451e02ca4590f7a44682b57d2098bfb9`, verify all required ELF exports and manifest/LFS identity, then run the canonical Q2/Q3/Q4/Q5/Q6 dense and grouped prebuilt device gate. The older `f7f55d6` bundle has no device conclusion for this gate |
+| A02 | D10, D12 | PENDING-DEVICE | On the exact admitted binaries, repeat raw-bit/numeric closure for typed Q4 metadata ownership, Packed-A identity, and canonical bc0/BChunk identity. Local type tests do not replace this execution proof |
+| A03 | D01 | PENDING-EXPERIMENT | Run layout-3 AIU-plain + UniversalCopy as a separate candidate: first raw-bit closure, then matched decode, prefill, and grouped-MoE performance/resource comparisons. Keep it outside every product bundle; admit only if all three workloads pass without losing the WN16/32 tactic space, otherwise delete the experimental layout-3 slice |
+| A04 | D06 | PENDING-SWEEP | Sweep dense intermediate M values and add Q4 dense to the same all-config authority as Q2/Q3/Q5/Q6. A config name is categorical: use measured intervals or bounded-regret leaves, never numeric interpolation, and do not silently fall back to an unmeasured compiled default |
+| A05 | D17 | PENDING-ABI+SWEEP | Measure grouped balanced, hot/skewed, sparse/empty, and worst-case expert-row distributions. Either prove one minimax tactic over that envelope or version the selector ABI with sufficient route features, for example active experts and per-TileM work counts, before enabling automatic grouped selection |
+| A06 | D05 | PENDING-PUBLIC-ABI | If Q4 ScaleFirst remains a public route, expose and test a public packed-units-to-FP16 metadata prepass/cache contract. Consumers must not call an internal symbol or infer the workspace layout |
+| A07 | D06, D16, D17 | PENDING-FINAL-GATE | Rebuild the six-library bundle with the unified measured policy, repeat host ABI/negative controls and all canonical device correctness gates, then run the selected-config performance sanity board |
+| A08 | D03, D14, D18 | PENDING-MAIN-PORT | Selectively port only the admitted PPU/K-pack dependency closure to main, remove develop-only benchmark members from the shipping `Prepared` type, and pass the exact main inventory, clean-source, HGCC/ELF, host ABI, and box admission gates |
+
+Rows are closed one at a time with the exact source SHA, binary hash, config or
+route identity, artifact path, and decisive output recorded here. Performance
+debt may receive an explicit product waiver, but a waiver is recorded as such
+and is never rewritten as a technical win.
