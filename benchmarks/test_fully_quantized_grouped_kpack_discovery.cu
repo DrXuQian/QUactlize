@@ -36,7 +36,7 @@ static_assert(FQ_GROUPED_KPACK_WEIGHT_LAYOUT ==
                   FQ_GROUPED_KPACK_GENERATED_WEIGHT_LAYOUT);
 
 namespace fully_quantized_grouped_kpack_generated {
-#define FQ_GROUPED_DECLARE(FN,Q,L,TM,TN,TK,WM,WN,ST,PERSIST)          \
+#define FQ_GROUPED_DECLARE(FN,Q,L,TM,TN,TK,WM,WN,ST,DN,PERSIST)       \
   bool FN(fully_quantized_grouped_kpack::Inputs const&,               \
           fully_quantized_grouped_kpack::Options const&,              \
           fully_quantized_grouped_kpack::Result&);
@@ -119,8 +119,8 @@ bool parse_cli(int argc, char** argv, Cli& cli) {
 
 std::vector<RegistryRow> registry() {
   return {
-#define FQ_GROUPED_REGISTER(FN,Q,L,TM,TN,TK,WM,WN,ST,PERSIST)         \
-    {#FN,Q,L,TM,TN,TK,WM,WN,ST,(PERSIST != 0),                       \
+#define FQ_GROUPED_REGISTER(FN,Q,L,TM,TN,TK,WM,WN,ST,DN,PERSIST)      \
+    {#FN,Q,L,TM,TN,TK,WM,WN,ST,DN,(PERSIST != 0),                    \
      &fully_quantized_grouped_kpack_generated::FN},
     FQ_GROUPED_KPACK_REGISTRY_ROWS(FQ_GROUPED_REGISTER)
 #undef FQ_GROUPED_REGISTER

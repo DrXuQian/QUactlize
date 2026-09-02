@@ -103,6 +103,14 @@ def source_contract() -> None:
         raise ValueError("grouped raw-bit correctness does not precede timing")
     if "PERSIST != 0" not in grouped_unit:
         raise ValueError("generated grouped unit erased its algorithm axis")
+    for macro in (
+            "#define FQ_GROUPED_DECLARE(FN,Q,L,TM,TN,TK,WM,WN,ST,DN,PERSIST)",
+            "#define FQ_GROUPED_REGISTER(FN,Q,L,TM,TN,TK,WM,WN,ST,DN,PERSIST)"):
+        if macro not in grouped_driver:
+            raise ValueError(
+                "grouped driver does not consume the generated DeliveryN axis: " + macro)
+    if "{#FN,Q,L,TM,TN,TK,WM,WN,ST,DN,(PERSIST != 0)," not in grouped_driver:
+        raise ValueError("grouped registry row does not preserve DeliveryN before persistence")
     for needle in ("moe_router_fixture::route(", "out.empty < 0",
                    "kpack_grouped_fixture_rows::load(",
                    "kpack_grouped_fixture_rows::rows_fnv64(",
