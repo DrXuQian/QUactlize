@@ -622,32 +622,35 @@ bool run_row(DeviceInputs const& in, Options const& options, RowResult& row) {
   // Persistent full-output S1.  The exact final kernel supplies occupancy;
   // capacity/balanced grids are deduplicated by the shared policy.
   if (options.includes(Options::kPersistent)) {
-    int const occupancy = PersistentGemm::maximum_active_blocks();
-    if (occupancy < 0) {
+    if constexpr (PersistentKernel::SharedStorageSize >
+                  ppu_tactics::kBlockSmemBytes) {
       auto& cell = make_cell("PERSISTENT", "FULL_OUTPUT");
       cell.policy = "capacity+balanced";
-      cell.occupancy = occupancy;
-      cell.state = State::Initialize;
-      return false;
-    }
-    std::uint64_t const q = std::uint64_t((in.m + TM - 1) / TM) *
-                            std::uint64_t((in.n + TN - 1) / TN);
-    auto grids = quactlize::scalefirst_policy::grid_space(q, in.cu, occupancy);
-    if (occupancy <= 0 || grids.empty()) {
-      auto& cell = make_cell("PERSISTENT", "FULL_OUTPUT");
-      cell.policy = "capacity+balanced";
-      cell.occupancy = occupancy;
-      cell.state = State::Occupancy;
-    } else for (auto const& grid : grids) {
-      auto& cell = make_cell("PERSISTENT", "FULL_OUTPUT");
-      cell.policy = grid.capacity_b_mask && grid.balanced_b_mask ?
-          "capacity+balanced" : grid.capacity_b_mask ? "capacity" : "balanced";
-      cell.grid = grid.grid; cell.occupancy = occupancy;
-      cell.capacity_b_mask = grid.capacity_b_mask;
-      cell.balanced_b_mask = grid.balanced_b_mask;
-      if constexpr (PersistentKernel::SharedStorageSize > ppu_tactics::kBlockSmemBytes) {
-        cell.state = State::PersistentSharedStorage;
-      } else {
+      cell.state = State::PersistentSharedStorage;
+    } else {
+      int const occupancy = PersistentGemm::maximum_active_blocks();
+      if (occupancy < 0) {
+        auto& cell = make_cell("PERSISTENT", "FULL_OUTPUT");
+        cell.policy = "capacity+balanced";
+        cell.occupancy = occupancy;
+        cell.state = State::Initialize;
+        return false;
+      }
+      std::uint64_t const q = std::uint64_t((in.m + TM - 1) / TM) *
+                              std::uint64_t((in.n + TN - 1) / TN);
+      auto grids = quactlize::scalefirst_policy::grid_space(q, in.cu, occupancy);
+      if (occupancy <= 0 || grids.empty()) {
+        auto& cell = make_cell("PERSISTENT", "FULL_OUTPUT");
+        cell.policy = "capacity+balanced";
+        cell.occupancy = occupancy;
+        cell.state = State::Occupancy;
+      } else for (auto const& grid : grids) {
+        auto& cell = make_cell("PERSISTENT", "FULL_OUTPUT");
+        cell.policy = grid.capacity_b_mask && grid.balanced_b_mask ?
+            "capacity+balanced" : grid.capacity_b_mask ? "capacity" : "balanced";
+        cell.grid = grid.grid; cell.occupancy = occupancy;
+        cell.capacity_b_mask = grid.capacity_b_mask;
+        cell.balanced_b_mask = grid.balanced_b_mask;
         using PStrideC = typename PersistentKernel::StrideC;
         using PStrideD = typename PersistentKernel::StrideD;
         PStrideC pC = cutlass::make_cute_packed_stride(
