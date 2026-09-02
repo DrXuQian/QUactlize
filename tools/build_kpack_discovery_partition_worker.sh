@@ -4,16 +4,84 @@
 # Every machine uses the same immutable partition plan.  A deterministic
 # greedy-LPT assignment keeps whole partitions on one worker while balancing
 # their compiled-parent counts.  Builds use the machine-local fast disk; only
-# completed, revalidated partition bundles are atomically published.
+# completed, revalidated partition bundles are atomically published.  Set
+# KPACK_REMOVE_LOCAL_AFTER_PUBLISH=1 to remove each verified local partition
+# after its published manifest is proved byte-identical; the default is 0.
 
 set -uo pipefail
 
 fail() { printf '[kpack-build-worker] FAIL: %s\n' "$*" >&2; return 2; }
 
+verify_published_partition_and_maybe_remove_local() {
+  [ "$#" -eq 8 ] || {
+    fail "internal publish verification argument count differs"; return $?; }
+  local repo_root="$1" sdk_root="$2" local_root="$3" out="$4"
+  local publish_dir="$5" route="$6" partition="$7" remove_local="$8"
+  local partition_number partition_tag expected_out resolved_local resolved_out link_path
+
+  [ "$route" = scalefirst ] || [ "$route" = fully-quantized ] || {
+    fail "refusing cleanup for an unknown route"; return $?; }
+  case "$partition" in ''|*[!0-9]*)
+    fail "refusing cleanup for a malformed partition"; return $?;; esac
+  case "$remove_local" in 0|1) ;; *)
+    fail "KPACK_REMOVE_LOCAL_AFTER_PUBLISH must be 0 or 1"; return $?;; esac
+
+  [ -d "$publish_dir" ] && [ ! -L "$publish_dir" ] && \
+    [ -f "$publish_dir/partition-bundle.json" ] && \
+    [ ! -L "$publish_dir/partition-bundle.json" ] || {
+      fail "published partition is not one regular verified tree: $publish_dir"; return $?; }
+  PPU_SDK="$sdk_root" python3 -B \
+    "$repo_root/tools/kpack_discovery_build_partitions.py" verify \
+    --root "$publish_dir" --manifest "$publish_dir/partition-bundle.json" || return 2
+
+  [ -d "$local_root" ] && [ ! -L "$local_root" ] || {
+    fail "local partition root is not a regular directory"; return $?; }
+  resolved_local="$(realpath -e -- "$local_root")" || return 2
+  [ "$resolved_local" = "$local_root" ] || {
+    fail "local partition root is not canonical"; return $?; }
+  partition_number=$((10#$partition))
+  printf -v partition_tag '%02d' "$partition_number"
+  expected_out="$resolved_local/$route-p$partition_tag"
+  [ "$out" = "$expected_out" ] || {
+    fail "local partition output is not its exact expected child: $out"; return $?; }
+  [ -d "$out" ] && [ ! -L "$out" ] && \
+    [ -f "$out/partition-bundle.json" ] && \
+    [ ! -L "$out/partition-bundle.json" ] || {
+      fail "local partition output is not one regular tree: $out"; return $?; }
+  resolved_out="$(realpath -e -- "$out")" || return 2
+  [ "$resolved_out" = "$expected_out" ] || {
+    fail "local partition output escaped its exact expected child"; return $?; }
+  case "$resolved_out" in "$resolved_local"/*) ;; *)
+    fail "local partition output escaped its local root"; return $?;; esac
+
+  PPU_SDK="$sdk_root" python3 -B \
+    "$repo_root/tools/kpack_discovery_build_partitions.py" verify \
+    --root "$resolved_out" --manifest "$resolved_out/partition-bundle.json" || return 2
+  cmp -s "$resolved_out/partition-bundle.json" \
+    "$publish_dir/partition-bundle.json" || {
+      fail "published partition authority differs: $publish_dir"; return $?; }
+  [ "$remove_local" = 1 ] || return 0
+
+  link_path="$(find "$resolved_out" -xdev -type l -print -quit)" || {
+    fail "cannot audit local partition tree before cleanup"; return $?; }
+  [ -z "$link_path" ] || {
+    fail "refusing local cleanup because the tree contains a symlink: $link_path"; return $?; }
+  # Recheck the compared authority after the tree audit, immediately before
+  # the destructive operation.  The target is canonical, non-symlink, and an
+  # exact named child of the already-canonical local root.
+  cmp -s "$resolved_out/partition-bundle.json" \
+    "$publish_dir/partition-bundle.json" || {
+      fail "published partition authority changed before cleanup"; return $?; }
+  rm -r --one-file-system -- "${resolved_out:?}" || return 2
+  [ ! -e "$resolved_out" ] && [ ! -L "$resolved_out" ] || {
+    fail "local partition cleanup was incomplete: $resolved_out"; return $?; }
+  printf '[kpack-build-worker] REMOVED_LOCAL %s\n' "$resolved_out"
+}
+
 main() {
   [ "$#" -eq 0 ] || { fail "no positional arguments are accepted"; return $?; }
   local root local_parent local_root publish_root plan sdk worker_id worker_count jobs
-  local source_sha partition_count preflight route partition out resume
+  local source_sha partition_count preflight route partition out resume remove_local
   local publish_base publish_dir stage manifest list_path list_current
   local assigned_tasks
 
@@ -25,6 +93,7 @@ main() {
   local_root="${KPACK_PARTITION_LOCAL_ROOT:-}"
   jobs="${JOBS:-32}"
   sdk="${PPU_SDK:-${PPU_HOME:-}}"
+  remove_local="${KPACK_REMOVE_LOCAL_AFTER_PUBLISH:-0}"
 
   case "$worker_id:$worker_count:$jobs" in
     *[!0-9:]*) fail "WORKER_ID, WORKER_COUNT and JOBS must be integers"; return $?;;
@@ -33,6 +102,8 @@ main() {
   [ "$worker_count" -gt 0 ] && [ "$worker_id" -lt "$worker_count" ] && \
     [ "$jobs" -gt 0 ] || {
       fail "require 0 <= WORKER_ID < WORKER_COUNT and JOBS > 0"; return $?; }
+  case "$remove_local" in 0|1) ;; *)
+    fail "KPACK_REMOVE_LOCAL_AFTER_PUBLISH must be 0 or 1"; return $?;; esac
   [ -n "$plan" ] && [ -n "$publish_root" ] && [ -n "$local_root" ] && [ -n "$sdk" ] || {
     fail "set KPACK_BUILD_PARTITION_PLAN, KPACK_PARTITION_PUBLISH_ROOT, KPACK_PARTITION_LOCAL_ROOT and PPU_SDK"
     return $?
@@ -168,12 +239,9 @@ PY
 
       publish_dir="$publish_base/$route/p$(printf '%02d' "$partition")"
       if [ -e "$publish_dir" ]; then
-        [ -d "$publish_dir" ] && [ ! -L "$publish_dir" ] || {
-          fail "published partition path is not a regular directory: $publish_dir"; return $?; }
-        PPU_SDK="$sdk" python3 -B "$root/tools/kpack_discovery_build_partitions.py" verify \
-          --root "$publish_dir" --manifest "$publish_dir/partition-bundle.json" || return 2
-        cmp -s "$manifest" "$publish_dir/partition-bundle.json" || {
-          fail "published partition authority differs: $publish_dir"; return $?; }
+        verify_published_partition_and_maybe_remove_local \
+          "$root" "$sdk" "$local_root" "$out" "$publish_dir" \
+          "$route" "$partition" "$remove_local" || return $?
         continue
       fi
       stage="$publish_base/$route/.p$(printf '%02d' "$partition").worker-$worker_id.current.$$"
@@ -183,6 +251,9 @@ PY
         --root "$stage" --manifest "$stage/partition-bundle.json" || return 2
       mv "$stage" "$publish_dir" || return 2
       printf '[kpack-build-worker] PUBLISHED %s\n' "$publish_dir"
+      verify_published_partition_and_maybe_remove_local \
+        "$root" "$sdk" "$local_root" "$out" "$publish_dir" \
+        "$route" "$partition" "$remove_local" || return $?
   done <<<"$assigned_tasks"
 
   list_path="$publish_base/worker-$worker_id-of-$worker_count.manifests"
@@ -208,4 +279,6 @@ PY
     "$worker_id" "$worker_count" "$(wc -l <"$list_path")" "$list_path"
 }
 
-main "$@"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi

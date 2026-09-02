@@ -4,6 +4,8 @@ import copy
 import hashlib
 import json
 import pathlib
+import re
+import subprocess
 import sys
 
 import pytest
@@ -159,3 +161,20 @@ def test_builders_expose_only_explicit_partition_contract() -> None:
         assert "partition builds require an explicit unique OUT" in text
         assert f"--root \"$out\" --route {route}" in text
         assert "distributed partition builds require PILOT=0" in text
+
+
+def test_fully_quantized_scratch_setup_is_nounset_safe(
+        tmp_path: pathlib.Path) -> None:
+    source = (TOOLS / "build_fully_quantized_kpack_discovery_bundle.sh").read_text()
+    match = re.search(r"(?ms)^ensure_owned_scratch\(\) \{.*?^\}", source)
+    assert match is not None
+    bundle = tmp_path / "bundle"
+    result = subprocess.run(
+        ["bash", "-c",
+         "set -uo pipefail\n" + match.group(0) +
+         '\nensure_owned_scratch "$1" 0\n', "scratch-test", str(bundle)],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        check=False)
+    assert result.returncode == 0, result.stdout
+    assert (bundle / "scratch" / ".fq-kpack-owned-scratch").read_text() == \
+        "quactlize-fq-kpack-owned-v2\n"

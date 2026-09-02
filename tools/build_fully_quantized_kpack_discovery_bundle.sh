@@ -18,7 +18,8 @@ check_free_space() {
     fail "insufficient $root space before shard: free_kb=${free:-unknown} required_kb=$required"; return $?; }
 }
 ensure_owned_scratch() {
-  local bundle="$1" preexisting="$2" scratch="$bundle/scratch"
+  local bundle="$1" preexisting="$2" scratch
+  scratch="$bundle/scratch"
   mkdir -p "$scratch" || return 2
   if [ ! -f "$scratch/.fq-kpack-owned-scratch" ]; then
     [ "$preexisting" = 0 ] || {
