@@ -83,6 +83,36 @@ constexpr quactlize_ppu_placed_arrangement_v2 q4_n16k64_direct_v1() {
           q4_n16k64_direct::kMappingId};
 }
 
+constexpr bool same_descriptor(
+    quactlize_ppu_placed_arrangement_v2 const& lhs,
+    quactlize_ppu_placed_arrangement_v2 const& rhs) {
+  return lhs.version == rhs.version && lhs.layout == rhs.layout &&
+         lhs.bits == rhs.bits && lhs.high_bits == rhs.high_bits &&
+         lhs.artifact_tile_k == rhs.artifact_tile_k &&
+         lhs.transport_tile_k == rhs.transport_tile_k &&
+         lhs.group_size == rhs.group_size && lhs.reserved == rhs.reserved &&
+         lhs.mapping_id == rhs.mapping_id;
+}
+
+// Exact byte identity independent of any compute tactic.  Offline producers
+// and metadata prepasses need this predicate; routing them through
+// matches_compiled_tactic would incorrectly make a byte-map question depend on
+// the geometry of a particular consumer.
+constexpr bool matches_canonical_kpack(
+    quactlize_ppu_placed_arrangement_v2 const* arrangement, int qtype) {
+  if (!arrangement ||
+      arrangement->version != QUACTLIZE_PPU_PLACED_ARRANGEMENT_VERSION_V2 ||
+      arrangement->reserved != 0)
+    return false;
+  if (qtype == 12)
+    return same_descriptor(*arrangement, q4_kpack4_transpose_v1());
+  if (qtype != 10 && qtype != 11 && qtype != 13 && qtype != 14)
+    return false;
+  auto const& format = ppu_formats::for_qtype(qtype);
+  return format.qtype == qtype &&
+         same_descriptor(*arrangement, kquant_kpack_transpose_v1(qtype));
+}
+
 // Layout 3 has a proved offline byte geometry but no admitted production
 // reader.  Keep that fact separate from matches_compiled_tactic(): callers
 // preparing or recovering the explicit artifact may validate its shape here,
@@ -251,6 +281,7 @@ static_assert(packed_tensor_reader_supported(&kNativeFold2Q4Control, 12, 4096, 2
 static_assert(!packed_tensor_reader_supported(&kNativeFold2Q4Control, 12, 4096, 128),
               "Q4/A32 packed metadata requires the proved one-superblock tactic");
 inline constexpr auto kQ4KPack4Control = q4_kpack4_transpose_v1();
+static_assert(matches_canonical_kpack(&kQ4KPack4Control, 12));
 static_assert(matches_compiled_tactic(&kQ4KPack4Control, 12, 5120, 64));
 static_assert(matches_compiled_tactic(&kQ4KPack4Control, 12, 5120, 256));
 static_assert(!matches_compiled_tactic(&kQ4KPack4Control, 12, 5120, 32),
@@ -262,6 +293,11 @@ inline constexpr auto kQ2KPack8Control = kquant_kpack_transpose_v1(10);
 inline constexpr auto kQ3KPackControl = kquant_kpack_transpose_v1(11);
 inline constexpr auto kQ5KPackControl = kquant_kpack_transpose_v1(13);
 inline constexpr auto kQ6KPackControl = kquant_kpack_transpose_v1(14);
+static_assert(matches_canonical_kpack(&kQ2KPack8Control, 10));
+static_assert(matches_canonical_kpack(&kQ3KPackControl, 11));
+static_assert(matches_canonical_kpack(&kQ5KPackControl, 13));
+static_assert(matches_canonical_kpack(&kQ6KPackControl, 14));
+static_assert(!matches_canonical_kpack(&kQ2KPack8Control, 12));
 static_assert(matches_compiled_tactic(&kQ2KPack8Control, 10, 5120, 256));
 static_assert(matches_compiled_tactic(&kQ3KPackControl, 11, 5120, 256));
 static_assert(matches_compiled_tactic(&kQ5KPackControl, 13, 5120, 256));

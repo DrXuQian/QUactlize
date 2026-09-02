@@ -106,6 +106,26 @@ struct Unit {
   }
 };
 
+// Correction owned by the canonical placed-code reader.  It is not a caller
+// option: a wrong value produces finite but numerically wrong weights.  Keep
+// it beside unit_group, the one operation that applies it, so every public
+// prepass and packed consumer can name the same constant.
+template <KType T> struct CanonicalPlacedZMul;
+template <> struct CanonicalPlacedZMul<KType::Q2_K> { static constexpr int value = 0; };
+template <> struct CanonicalPlacedZMul<KType::Q3_K> { static constexpr int value = -4; };
+template <> struct CanonicalPlacedZMul<KType::Q4_K> { static constexpr int value = 8; };
+template <> struct CanonicalPlacedZMul<KType::Q5_K> { static constexpr int value = 8; };
+template <> struct CanonicalPlacedZMul<KType::Q6_K> { static constexpr int value = -24; };
+template <KType T>
+inline constexpr int kCanonicalPlacedZMul = CanonicalPlacedZMul<T>::value;
+
+static_assert(kCanonicalPlacedZMul<KType::Q2_K> == 0 &&
+              kCanonicalPlacedZMul<KType::Q3_K> == -4 &&
+              kCanonicalPlacedZMul<KType::Q4_K> == 8 &&
+              kCanonicalPlacedZMul<KType::Q5_K> == 8 &&
+              kCanonicalPlacedZMul<KType::Q6_K> == -24,
+              "canonical placed-code corrections must remain format exact");
+
 // A field may straddle a byte boundary (6-bit fields always do), so a 16-bit read and one shift. Stated once.
 // THE SECOND BYTE IS READ ONLY WHEN THE FIELD STRADDLES, and that is a bounds requirement rather than an
 // optimisation. Every field here is at most 8 bits, so two bytes always suffice -- but reading the second

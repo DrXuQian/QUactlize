@@ -101,6 +101,8 @@ ANY_M_REQUIRED_EXPORTS = {
 }
 
 SCALEFIRST_PREPASS_REQUIRED_EXPORTS = {
+    "quactlize_ppu_kquant_scalefirst_metadata_plane_bytes_for_arrangement_v2",
+    "quactlize_ppu_kquant_scalefirst_prepass_dev_for_arrangement_v2",
     "quactlize_ppu_q4_kpack4_scalefirst_metadata_plane_bytes_for_arrangement_v2",
     "quactlize_ppu_q4_kpack4_scalefirst_prepass_dev_for_arrangement_v2",
 }

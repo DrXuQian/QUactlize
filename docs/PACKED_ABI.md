@@ -24,8 +24,10 @@ Everything `extern "C"` in the library today. Grouped by what it is for, so a mi
 | `quactlize_ppu_units_bytes` | query | dense `units` allocation size |
 | `quactlize_ppu_prepare_units` | blocks → `units` | dense forward metadata producer |
 | `quactlize_ppu_prepare_units_grouped` | blocks → `units` | expert-major forward producer |
+| `quactlize_ppu_kquant_scalefirst_metadata_plane_bytes_for_arrangement_v2` | query | five-format ScaleFirst plane size/producer capability |
+| `quactlize_ppu_kquant_scalefirst_prepass_dev_for_arrangement_v2` | device `units` → FP16 scale/zero | five-format asynchronous ScaleFirst cache producer |
 | `quactlize_ppu_q4_kpack4_scalefirst_metadata_plane_bytes_for_arrangement_v2` | query | public Q4 ScaleFirst plane size/capability |
-| `quactlize_ppu_q4_kpack4_scalefirst_prepass_dev_for_arrangement_v2` | device `units` → FP16 scale/zero | public asynchronous Q4 ScaleFirst cache producer |
+| `quactlize_ppu_q4_kpack4_scalefirst_prepass_dev_for_arrangement_v2` | device `units` → FP16 scale/zero | compatible dense-Q4 wrapper over the generic producer |
 | `quactlize_ppu_dense_fully_quantized` | consume | packed dense GEMM |
 | `quactlize_ppu_dense_fully_quantized_for_arrangement_v1` | consume | versioned artifact descriptor; never guesses fold |
 | `quactlize_ppu_dense_fully_quantized_for_arrangement_v2` | consume | Xplane-v2 or canonical Q4 K-pack4 bytes |
@@ -84,21 +86,43 @@ when the format's superblocks cannot form a complete unit.
 The torch producer calls these same symbols. `gguf_unit_pack.hpp` owns the single expert-aware packing loop used by
 both dense and grouped, so the exported implementation is not a second reorder which can drift from Python.
 
-### Q4 ScaleFirst device cache
+### Five-format ScaleFirst device cache
 
 The legacy unversioned metadata inverse is an implementation/diagnostic seam,
 not a loader ABI. Native consumers use the arrangement-v2 entries declared in
-`quactlize_ppu_device.h`. The size query succeeds only on the default Q4
-ScaleFirst DSO and a canonical Q4 K-pack4 descriptor. It returns the required
-size of each FP16 plane; the packed-unit input has the same byte size.
+`quactlize_ppu_device.h`. The generic size query succeeds only on the default
+ScaleFirst DSO and an exact canonical Q2/Q3/Q4/Q5/Q6 K-pack descriptor. It
+returns the required size of each FP16 plane including all experts. FMT0--4
+decline this producer capability; they remain format-selected compute DSOs.
+The compute capability is queried separately, so a successful metadata query
+does not assert that a particular ScaleFirst GEMM is compiled.
 
 The asynchronous producer takes caller-owned device pointers for `units`,
 `scale`, and `zero`. Their required spans must be 16-byte aligned, pairwise
 disjoint, and covered by the supplied capacities. It allocates and copies
 nothing. A zero result means only that conversion was enqueued on the supplied
-stream; the caller owns lifetime and stream/event ordering. The format-selected
-FMT0--4 DSOs return capability-absent because their fully-quantized kernels
-consume packed units without expanding this cache.
+stream; the caller owns lifetime and stream/event ordering. Both output planes
+are contiguous `[experts,K/group_size,N]`. Q3_K and Q6_K have no GGUF min
+channel, but their zero plane is not optional: it carries respectively
+`-4*scale` and `-24*scale`, the correction for the canonical placed code.
+
+The exact byte counts are:
+
+| format | K quantum | packed `units` bytes | each FP16 plane | ZMul / zero semantics |
+|---|---:|---:|---:|---|
+| Q2_K | 256 | `E*N*(K/256)*20` | `E*N*K/8` | `0`; `-dmin*mn` |
+| Q3_K | 512 | `E*N*(K/512)*28` | `E*N*K/8` | `-4`; `-4*scale` |
+| Q4_K | 256 | `E*N*K/16` | `E*N*K/16` | `8`; `-dmin*mn + 8*scale` |
+| Q5_K | 256 | `E*N*K/16` | `E*N*K/16` | `8`; `-dmin*mn + 8*scale` |
+| Q6_K | 512 | `E*N*(K/512)*36` | `E*N*K/8` | `-24`; `-24*scale` |
+
+`E` is the positive expert count. The Q3/Q6 K quantum comes from pairing two
+adjacent superblocks in one byte-neutral transport unit. ZMul is derived from
+qtype inside the library and is deliberately not a public argument.
+
+The existing Q4-only symbols remain ABI compatible and are exactly the
+generic `experts=1,qtype=12` operation. They retain their historical role
+policy: the default Q4 ScaleFirst DSO succeeds and FMT0--4 decline.
 
 ---
 

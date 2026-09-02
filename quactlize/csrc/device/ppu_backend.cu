@@ -17,6 +17,7 @@
 
 #include "gguf_bc_vecdot.hpp"
 #include "gguf_scale_prepass.hpp"
+#include "gguf_unit_pack.hpp"
 #include "gguf_vecdot.hpp"
 #include "gemv_lowbit/gemv_launcher.hpp"
 #include "gemv_lowbit/gemv_rt.hpp"
@@ -38,13 +39,23 @@ constexpr int kPrepassCapabilityAbsent = 34;
 constexpr int kPrepassInsufficientCapacity = 37;
 constexpr int kPrepassDescriptorMismatch = 38;
 static_assert(
-    QUACTLIZE_PPU_Q4_KPACK4_SCALEFIRST_PLANE_ALIGNMENT_V1 > 0 &&
-    (QUACTLIZE_PPU_Q4_KPACK4_SCALEFIRST_PLANE_ALIGNMENT_V1 &
-     (QUACTLIZE_PPU_Q4_KPACK4_SCALEFIRST_PLANE_ALIGNMENT_V1 - 1)) == 0,
+    QUACTLIZE_PPU_KQUANT_SCALEFIRST_PLANE_ALIGNMENT_V1 > 0 &&
+    (QUACTLIZE_PPU_KQUANT_SCALEFIRST_PLANE_ALIGNMENT_V1 &
+     (QUACTLIZE_PPU_KQUANT_SCALEFIRST_PLANE_ALIGNMENT_V1 - 1)) == 0 &&
+    QUACTLIZE_PPU_Q4_KPACK4_SCALEFIRST_PLANE_ALIGNMENT_V1 ==
+        QUACTLIZE_PPU_KQUANT_SCALEFIRST_PLANE_ALIGNMENT_V1,
     "ScaleFirst metadata alignment must be a power of two");
 
+#if !defined(PPU_PACKED_SCALE) || PPU_PACKED_SCALE == 0
+#define QUACTLIZE_KQUANT_SCALEFIRST_PREPASS_AVAILABLE 1
+constexpr bool kKQuantScaleFirstPrepassAvailable = true;
+#else
+#define QUACTLIZE_KQUANT_SCALEFIRST_PREPASS_AVAILABLE 0
+constexpr bool kKQuantScaleFirstPrepassAvailable = false;
+#endif
+
 #if defined(QUACTLIZE_DENSE_ONLY) && QUACTLIZE_DENSE_ONLY == 12 && \
-    (!defined(PPU_PACKED_SCALE) || PPU_PACKED_SCALE == 0)
+    QUACTLIZE_KQUANT_SCALEFIRST_PREPASS_AVAILABLE
 #define QUACTLIZE_Q4_SCALEFIRST_PREPASS_AVAILABLE 1
 constexpr bool kQ4ScaleFirstPrepassAvailable = true;
 #else
@@ -52,28 +63,70 @@ constexpr bool kQ4ScaleFirstPrepassAvailable = true;
 constexpr bool kQ4ScaleFirstPrepassAvailable = false;
 #endif
 
-struct Q4ScaleFirstPrepassSizes {
+struct KQuantScaleFirstPrepassSizes {
   int64_t units_bytes;
   int64_t plane_bytes;
+  int64_t plane_elems_per_expert;
   int num_superblocks;
   int grid;
 };
 
-bool q4_scalefirst_prepass_sizes(int n, int k, Q4ScaleFirstPrepassSizes& sizes) {
-  if (n <= 0 || k <= 0 || n % 256 || k % 256) return false;
-  int64_t const elements = int64_t(n) * int64_t(k);
-  int64_t const bytes = elements / 16;
-  int64_t const warps = int64_t(k / 256) * ((int64_t(n) + 7) / 8);
-  int64_t const grid = (warps * 32 + 255) / 256;
-  if (bytes <= 0 || grid <= 0 || grid > std::numeric_limits<int>::max()) return false;
-  sizes = {bytes, bytes, k / 256, int(grid)};
+bool checked_positive_mul(int64_t lhs, int64_t rhs, int64_t& product) {
+  if (lhs <= 0 || rhs <= 0 ||
+      lhs > std::numeric_limits<int64_t>::max() / rhs)
+    return false;
+  product = lhs * rhs;
   return true;
 }
 
-bool q4_scalefirst_descriptor_matches(
-    int k, quactlize_ppu_placed_arrangement_v2 const* arrangement) {
-  return ppu_arrangements::matches_compiled_tactic(arrangement, 12, k, 64) &&
-         arrangement->layout == QUACTLIZE_PPU_LAYOUT_Q4_KPACK4_TRANSPOSE_V1;
+template <KType T>
+bool kquant_scalefirst_prepass_sizes(
+    int n, int k, int experts, KQuantScaleFirstPrepassSizes& sizes) {
+  using U = gguf_scale::packed_unit::Unit<T>;
+  using Tr = gguf_scale::Traits<T>;
+  if (n <= 0 || n % 256 || k <= 0 || k % 256 || experts <= 0)
+    return false;
+  int const num_superblocks = k / 256;
+  if (num_superblocks % U::kSbPerUnit) return false;
+
+  int64_t const dense_units = gguf_scale::unit_pack::bytes<T>(n, k);
+  int64_t units_bytes = 0, plane_elems_per_expert = 0;
+  int64_t plane_elems = 0, plane_bytes = 0;
+  if (dense_units <= 0 ||
+      !checked_positive_mul(dense_units, experts, units_bytes) ||
+      !checked_positive_mul(n, k / Tr::kGroupSize,
+                            plane_elems_per_expert) ||
+      !checked_positive_mul(plane_elems_per_expert, experts, plane_elems) ||
+      !checked_positive_mul(plane_elems, int64_t(sizeof(uint16_t)),
+                            plane_bytes))
+    return false;
+
+  int64_t warps = 0, threads = 0;
+  if (!checked_positive_mul(experts, num_superblocks, warps) ||
+      !checked_positive_mul(warps, (int64_t(n) + 7) / 8, warps) ||
+      !checked_positive_mul(warps, 32, threads))
+    return false;
+  int64_t const grid = threads / 256 + (threads % 256 != 0);
+  if (grid <= 0 || grid > std::numeric_limits<int>::max()) return false;
+  if (gguf_scale::prepass::prepass_unit_grid_size<T>(
+          experts, n, num_superblocks, 256) != grid)
+    return false;
+  sizes = {units_bytes, plane_bytes, plane_elems_per_expert,
+           num_superblocks, int(grid)};
+  return true;
+}
+
+bool kquant_scalefirst_prepass_sizes(
+    int n, int k, int experts, int qtype,
+    KQuantScaleFirstPrepassSizes& sizes) {
+  switch (qtype) {
+    case 10: return kquant_scalefirst_prepass_sizes<KType::Q2_K>(n, k, experts, sizes);
+    case 11: return kquant_scalefirst_prepass_sizes<KType::Q3_K>(n, k, experts, sizes);
+    case 12: return kquant_scalefirst_prepass_sizes<KType::Q4_K>(n, k, experts, sizes);
+    case 13: return kquant_scalefirst_prepass_sizes<KType::Q5_K>(n, k, experts, sizes);
+    case 14: return kquant_scalefirst_prepass_sizes<KType::Q6_K>(n, k, experts, sizes);
+    default: return false;
+  }
 }
 
 bool device_span(uintptr_t begin, int64_t bytes, uintptr_t& end) {
@@ -84,6 +137,95 @@ bool device_span(uintptr_t begin, int64_t bytes, uintptr_t& end) {
 
 bool spans_overlap(uintptr_t a0, uintptr_t a1, uintptr_t b0, uintptr_t b1) {
   return a0 < b1 && b0 < a1;
+}
+
+template <KType T>
+int launch_kquant_scalefirst_prepass(
+    uint8_t const* units, uint16_t* scale, uint16_t* zero,
+    int n, int experts, KQuantScaleFirstPrepassSizes const& sizes,
+    gemv_stream_t stream) {
+  constexpr int kZMul = gguf_scale::packed_unit::kCanonicalPlacedZMul<T>;
+  gguf_scale::prepass::UnitPlaneDesc dst{
+      reinterpret_cast<cutlass::half_t*>(scale),
+      reinterpret_cast<cutlass::half_t*>(zero),
+      sizes.plane_elems_per_expert, n, 1};
+  auto const args = gguf_scale::prepass::make_unit_prepass_kernel_args(
+      units, dst, experts, n, sizes.num_superblocks);
+  ppu_gemv::rt_clear_error();
+  gguf_scale::prepass::prepass_unit_kernel<T, kZMul>
+      <<<sizes.grid, 256, 0, stream>>>(args);
+  return ppu_gemv::rt_check_launch(
+             "K-quant ScaleFirst metadata prepass enqueue")
+             ? 0 : ppu_gemv::kRuntimeError;
+}
+
+template <bool Available>
+int64_t kquant_scalefirst_prepass_query(
+    int n, int k, int experts, int qtype,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement) {
+  KQuantScaleFirstPrepassSizes sizes{};
+  if (!kquant_scalefirst_prepass_sizes(n, k, experts, qtype, sizes) ||
+      !ppu_arrangements::matches_canonical_kpack(arrangement, qtype))
+    return -1;
+  if constexpr (!Available) return -1;
+  return sizes.plane_bytes;
+}
+
+template <bool Available>
+int kquant_scalefirst_prepass_launch(
+    uint8_t const* units, int64_t units_capacity_bytes,
+    uint16_t* scale, int64_t scale_capacity_bytes,
+    uint16_t* zero, int64_t zero_capacity_bytes,
+    int n, int k, int experts, int qtype, void* stream,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement) {
+  KQuantScaleFirstPrepassSizes sizes{};
+  if (!kquant_scalefirst_prepass_sizes(
+          n, k, experts, qtype, sizes) || !arrangement ||
+      units_capacity_bytes < 0 || scale_capacity_bytes < 0 ||
+      zero_capacity_bytes < 0)
+    return kPrepassInvalidArgument;
+  if (!ppu_arrangements::matches_canonical_kpack(arrangement, qtype))
+    return kPrepassDescriptorMismatch;
+  if constexpr (!Available) {
+    return kPrepassCapabilityAbsent;
+  } else {
+    if (!units || !scale || !zero) return kPrepassInvalidArgument;
+    if (units_capacity_bytes < sizes.units_bytes ||
+        scale_capacity_bytes < sizes.plane_bytes ||
+        zero_capacity_bytes < sizes.plane_bytes)
+      return kPrepassInsufficientCapacity;
+
+    uintptr_t const u0 = reinterpret_cast<uintptr_t>(units);
+    uintptr_t const s0 = reinterpret_cast<uintptr_t>(scale);
+    uintptr_t const z0 = reinterpret_cast<uintptr_t>(zero);
+    constexpr uintptr_t kAlignment =
+        QUACTLIZE_PPU_KQUANT_SCALEFIRST_PLANE_ALIGNMENT_V1;
+    if ((u0 | s0 | z0) & (kAlignment - 1))
+      return kPrepassInvalidArgument;
+    uintptr_t u1 = 0, s1 = 0, z1 = 0;
+    if (!device_span(u0, sizes.units_bytes, u1) ||
+        !device_span(s0, sizes.plane_bytes, s1) ||
+        !device_span(z0, sizes.plane_bytes, z1) ||
+        spans_overlap(u0, u1, s0, s1) ||
+        spans_overlap(u0, u1, z0, z1) ||
+        spans_overlap(s0, s1, z0, z1))
+      return kPrepassInvalidArgument;
+
+    gemv_stream_t const s = static_cast<gemv_stream_t>(stream);
+    switch (qtype) {
+      case 10: return launch_kquant_scalefirst_prepass<KType::Q2_K>(
+          units, scale, zero, n, experts, sizes, s);
+      case 11: return launch_kquant_scalefirst_prepass<KType::Q3_K>(
+          units, scale, zero, n, experts, sizes, s);
+      case 12: return launch_kquant_scalefirst_prepass<KType::Q4_K>(
+          units, scale, zero, n, experts, sizes, s);
+      case 13: return launch_kquant_scalefirst_prepass<KType::Q5_K>(
+          units, scale, zero, n, experts, sizes, s);
+      case 14: return launch_kquant_scalefirst_prepass<KType::Q6_K>(
+          units, scale, zero, n, experts, sizes, s);
+      default: return kPrepassInvalidArgument;
+    }
+  }
 }
 
 
@@ -635,13 +777,33 @@ extern "C" int quactlize_ppu_prepass_unit(uint8_t const* units, uint16_t* scale,
 }
 
 extern "C" int64_t
+quactlize_ppu_kquant_scalefirst_metadata_plane_bytes_for_arrangement_v2(
+    int n, int k, int experts, int qtype,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement) {
+  return kquant_scalefirst_prepass_query<
+      kKQuantScaleFirstPrepassAvailable>(
+          n, k, experts, qtype, arrangement);
+}
+
+extern "C" int
+quactlize_ppu_kquant_scalefirst_prepass_dev_for_arrangement_v2(
+    uint8_t const* units, int64_t units_capacity_bytes,
+    uint16_t* scale, int64_t scale_capacity_bytes,
+    uint16_t* zero, int64_t zero_capacity_bytes,
+    int n, int k, int experts, int qtype, void* stream,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement) {
+  return kquant_scalefirst_prepass_launch<
+      kKQuantScaleFirstPrepassAvailable>(
+          units, units_capacity_bytes, scale, scale_capacity_bytes,
+          zero, zero_capacity_bytes, n, k, experts, qtype, stream,
+          arrangement);
+}
+
+extern "C" int64_t
 quactlize_ppu_q4_kpack4_scalefirst_metadata_plane_bytes_for_arrangement_v2(
     int n, int k, quactlize_ppu_placed_arrangement_v2 const* arrangement) {
-  Q4ScaleFirstPrepassSizes sizes{};
-  if (!q4_scalefirst_prepass_sizes(n, k, sizes) ||
-      !q4_scalefirst_descriptor_matches(k, arrangement)) return -1;
-  if (!kQ4ScaleFirstPrepassAvailable) return -1;
-  return sizes.plane_bytes;
+  return kquant_scalefirst_prepass_query<kQ4ScaleFirstPrepassAvailable>(
+      n, k, 1, 12, arrangement);
 }
 
 extern "C" int
@@ -651,44 +813,9 @@ quactlize_ppu_q4_kpack4_scalefirst_prepass_dev_for_arrangement_v2(
     uint16_t* zero, int64_t zero_capacity_bytes,
     int n, int k, void* stream,
     quactlize_ppu_placed_arrangement_v2 const* arrangement) {
-  Q4ScaleFirstPrepassSizes sizes{};
-  if (!q4_scalefirst_prepass_sizes(n, k, sizes) || !arrangement ||
-      units_capacity_bytes < 0 || scale_capacity_bytes < 0 || zero_capacity_bytes < 0)
-    return kPrepassInvalidArgument;
-  if (!q4_scalefirst_descriptor_matches(k, arrangement)) return kPrepassDescriptorMismatch;
-#if !QUACTLIZE_Q4_SCALEFIRST_PREPASS_AVAILABLE
-  return kPrepassCapabilityAbsent;
-#else
-  if (!units || !scale || !zero) return kPrepassInvalidArgument;
-  if (units_capacity_bytes < sizes.units_bytes ||
-      scale_capacity_bytes < sizes.plane_bytes || zero_capacity_bytes < sizes.plane_bytes)
-    return kPrepassInsufficientCapacity;
-
-  uintptr_t const u0 = reinterpret_cast<uintptr_t>(units);
-  uintptr_t const s0 = reinterpret_cast<uintptr_t>(scale);
-  uintptr_t const z0 = reinterpret_cast<uintptr_t>(zero);
-  constexpr uintptr_t kAlignment = QUACTLIZE_PPU_Q4_KPACK4_SCALEFIRST_PLANE_ALIGNMENT_V1;
-  if ((u0 | s0 | z0) & (kAlignment - 1)) return kPrepassInvalidArgument;
-  uintptr_t u1 = 0, s1 = 0, z1 = 0;
-  if (!device_span(u0, sizes.units_bytes, u1) ||
-      !device_span(s0, sizes.plane_bytes, s1) ||
-      !device_span(z0, sizes.plane_bytes, z1) ||
-      spans_overlap(u0, u1, s0, s1) || spans_overlap(u0, u1, z0, z1) ||
-      spans_overlap(s0, s1, z0, z1)) return kPrepassInvalidArgument;
-
-  int64_t const plane_elems = sizes.plane_bytes / int64_t(sizeof(uint16_t));
-  gguf_scale::prepass::UnitPlaneDesc dst{
-      reinterpret_cast<cutlass::half_t*>(scale), reinterpret_cast<cutlass::half_t*>(zero),
-      plane_elems, n, 1};
-  auto const args = gguf_scale::prepass::make_unit_prepass_kernel_args(
-      units, dst, 1, n, sizes.num_superblocks);
-  ppu_gemv::rt_clear_error();
-  gemv_stream_t const s = static_cast<gemv_stream_t>(stream);
-  gguf_scale::prepass::prepass_unit_kernel<KType::Q4_K, 8>
-      <<<sizes.grid, 256, 0, s>>>(args);
-  return ppu_gemv::rt_check_launch("Q4 K-pack4 ScaleFirst metadata prepass enqueue")
-             ? 0 : ppu_gemv::kRuntimeError;
-#endif
+  return kquant_scalefirst_prepass_launch<kQ4ScaleFirstPrepassAvailable>(
+      units, units_capacity_bytes, scale, scale_capacity_bytes,
+      zero, zero_capacity_bytes, n, k, 1, 12, stream, arrangement);
 }
 
 extern "C" int quactlize_ppu_gemv_lowbit(uint16_t const* a, uint8_t const* low, uint8_t const* high,

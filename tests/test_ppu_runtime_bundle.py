@@ -77,6 +77,12 @@ def test_runtime_bundle_requires_complete_units_producer_exports():
 
 
 def test_runtime_bundle_requires_scalefirst_prepass_exports():
+    assert ppu_bundle.SCALEFIRST_PREPASS_REQUIRED_EXPORTS == {
+        "quactlize_ppu_kquant_scalefirst_metadata_plane_bytes_for_arrangement_v2",
+        "quactlize_ppu_kquant_scalefirst_prepass_dev_for_arrangement_v2",
+        "quactlize_ppu_q4_kpack4_scalefirst_metadata_plane_bytes_for_arrangement_v2",
+        "quactlize_ppu_q4_kpack4_scalefirst_prepass_dev_for_arrangement_v2",
+    }
     assert ppu_bundle.SCALEFIRST_PREPASS_REQUIRED_EXPORTS <= ppu_bundle.REQUIRED_EXPORTS
 
 
