@@ -1,0 +1,183 @@
+  [ok]   cmake_calls_check: every project helper called is defined (4 helper(s))
+  [ok]   ppu_portability: 2767 CMake-registered PPU TU(s), 2899 reachable owned source(s); fresh unregistered NVIDIA TU=N/A, the same PPU-live branch after registration and a live include=FAIL
+  [ok]   gen_gemv_units_check (full): 540 authority units, 10 group(s), exact declarations/calls/files
+  [ok]   gen_gemv_units_check (i4-native): 90 authority units, 1 group(s), exact declarations/calls/files
+  [ok]   gen_gemv_units_check (malformed): production rejected planted malformed authority
+  [ok]   gen_gemv_units_check (missing): production rejected planted missing authority
+  [ok]   gen_gemv_units_check (unknown-groups): production rejected planted unknown-group authority
+  [ok]   gen_gemv_units_check (duplicate-groups): production rejected planted duplicate-group authority
+  [ok]   gen_gemv_units_check: full=540/10, i4-native exclusive; authority/unknown/duplicate plants red
+  [ok]   overlay_targets: cmake configured 170 overlaid file(s) and created 53 target(s); all 4 required present, 0 optional skipped
+           -- PPU_EXTRA_DEFS -> device -DPPU_PACKED_SCALE=1;-DPPU_PACKED_FORMAT=0;-DQUACTLIZE_DENSE_ONLY=12 / host PPU_PACKED_SCALE=1;PPU_PACKED_FORMAT=0;QUACTLIZE_DENSE_ONLY=12
+           -- Narrow a MoE axis (MOE_FORMATS / MOE_TM_LIST / MOE_TN_LIST / MOE_WM_LIST / MOE_STAGES); MOE_CORES changes MoE TU batching and GEMV wave reporting only
+           -- MoE full sweep (table Mmax=0): 1881 shapes (bc0=1139, bc1=742) -> 189 TUs, up to 10 shapes/TU, 1 compile wave(s) at MOE_CORES=192 in /root/autodl-tmp/hgcc-tmp-425198f-a05/quactlize-moe-units-check.dKBAAG/moe_units
+           -- MoE decode sweep (table Mmax=3): 360 shapes (bc0=216, bc1=144) -> 180 TUs, up to 2 shapes/TU, 1 compile wave(s) at MOE_CORES=192 in /root/autodl-tmp/hgcc-tmp-425198f-a05/quactlize-moe-units-check.dKBAAG/moe_decode_units
+           -- OK full: 1881 shapes (bc0=1139, bc1=742) from 7272 rows -> 189 TUs at batch=10; dispatcher exact
+           -- OK decode: 360 shapes (bc0=216, bc1=144) from 1866 rows -> 180 TUs at batch=2; dispatcher exact
+           -- re-entrant generated TU compile: cross-format bc0 + bc1 OK
+[build.sh] CUTLASS_PPU_ARCHS=ppu0010
+[build.sh] TILE=32x32 WARP=16x16 STAGES=3 QUANT=int4 TSK= BENCH_GS=all DENSE_CONFIGS_PER_UNIT=4
+[build.sh] FQ_KQUANT_PERF_QTYPE=12
+PPU_DEFS applied: PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=0 QUACTLIZE_DENSE_ONLY=12
+-- PPU_EXTRA_DEFS -> device -DPPU_PACKED_SCALE=1;-DPPU_PACKED_FORMAT=0;-DQUACTLIZE_DENSE_ONLY=12 / host PPU_PACKED_SCALE=1;PPU_PACKED_FORMAT=0;QUACTLIZE_DENSE_ONLY=12
+[hgcc] /root/autodl-tmp/quactlize-build-425198f/quactlize/csrc/device/ppu_dense_layout.cu
+[hgcc] /root/autodl-tmp/quactlize-build-425198f/quactlize/csrc/device/ppu_dense_backend.cu
+[hgcc] /root/autodl-tmp/quactlize-build-425198f/quactlize/csrc/device/ppu_backend.cu
+In file included from /root/autodl-tmp/quactlize-build-425198f/quactlize/csrc/device/ppu_backend.cu:18:
+In file included from /root/autodl-tmp/quactlize-build-425198f/quactlize/include/gguf_bc_vecdot.hpp:23:
+In file included from /root/autodl-tmp/quactlize-build-425198f/quactlize/include/gguf_vecdot.hpp:33:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/numeric_types.h:86:
+/root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/uint128.h:113:3: warning: reference to __host__ function 'abort' in __host__ __device__ function [-Wcross-execution-space-call]
+  abort();
+  ^
+In file included from /root/autodl-tmp/quactlize-build-425198f/quactlize/csrc/device/ppu_backend.cu:18:
+In file included from /root/autodl-tmp/quactlize-build-425198f/quactlize/include/gguf_bc_vecdot.hpp:23:
+In file included from /root/autodl-tmp/quactlize-build-425198f/quactlize/include/gguf_vecdot.hpp:41:
+In file included from /root/autodl-tmp/quactlize-build-425198f/quactlize/include/actlize_extensions/cutlass/quactlize_mix_gemm_convert.h:54:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/fast_numeric_conversion_for_mix_gemm.h:41:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/array.h:2603:
+/root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/array_subbyte.h:132:32: warning: unknown warning group '-Wmaybe-uninitialized', ignored [-Wunknown-warning-option]
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+                               ^
+In file included from /root/autodl-tmp/quactlize-build-425198f/quactlize/csrc/device/ppu_dense_layout.cu:14:
+In file included from /root/autodl-tmp/quactlize-build-425198f/quactlize/include/xplane_offline.hpp:25:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/tensor.hpp:35:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/tensor_impl.hpp:47:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/layout.hpp:36:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/int_tuple.hpp:36:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/container/array.hpp:37:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/numeric/integral_constant.hpp:35:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/numeric/math.hpp:38:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/fast_math.h:44:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/array.h:40:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/functional.h:41:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/numeric_types.h:86:
+/root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/uint128.h:113:3: warning: reference to __host__ function 'abort' in __host__ __device__ function [-Wcross-execution-space-call]
+  abort();
+  ^
+In file included from /root/autodl-tmp/quactlize-build-425198f/quactlize/csrc/device/ppu_dense_layout.cu:14:
+In file included from /root/autodl-tmp/quactlize-build-425198f/quactlize/include/xplane_offline.hpp:25:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/tensor.hpp:35:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/tensor_impl.hpp:47:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/layout.hpp:36:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/int_tuple.hpp:36:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/container/array.hpp:37:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/numeric/integral_constant.hpp:35:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/numeric/math.hpp:38:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/fast_math.h:44:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/array.h:2603:
+/root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/array_subbyte.h:132:32: warning: unknown warning group '-Wmaybe-uninitialized', ignored [-Wunknown-warning-option]
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+                               ^
+2 warnings generated when compiling for ppu001.
+2 warnings generated when compiling for ppu001.
+In file included from /root/autodl-tmp/quactlize-build-425198f/quactlize/csrc/device/ppu_dense_backend.cu:25:
+In file included from /root/autodl-tmp/quactlize-build-425198f/quactlize/include/fpA_intB_ppu.cuh:31:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/tensor.hpp:35:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/tensor_impl.hpp:47:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/layout.hpp:36:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/int_tuple.hpp:36:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/container/array.hpp:37:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/numeric/integral_constant.hpp:35:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/numeric/math.hpp:38:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/fast_math.h:44:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/array.h:40:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/functional.h:41:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/numeric_types.h:86:
+/root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/uint128.h:113:3: warning: reference to __host__ function 'abort' in __host__ __device__ function [-Wcross-execution-space-call]
+  abort();
+  ^
+In file included from /root/autodl-tmp/quactlize-build-425198f/quactlize/csrc/device/ppu_dense_backend.cu:25:
+In file included from /root/autodl-tmp/quactlize-build-425198f/quactlize/include/fpA_intB_ppu.cuh:31:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/tensor.hpp:35:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/tensor_impl.hpp:47:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/layout.hpp:36:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/int_tuple.hpp:36:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/container/array.hpp:37:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/numeric/integral_constant.hpp:35:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/numeric/math.hpp:38:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/fast_math.h:44:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/array.h:2603:
+/root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/array_subbyte.h:132:32: warning: unknown warning group '-Wmaybe-uninitialized', ignored [-Wunknown-warning-option]
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+                               ^
+In file included from /root/autodl-tmp/quactlize-build-425198f/quactlize/csrc/device/ppu_dense_backend.cu:25:
+In file included from /root/autodl-tmp/quactlize-build-425198f/quactlize/include/fpA_intB_ppu.cuh:37:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/gemm/device/gemm_universal_adapter.h:55:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/gemm/device/gemm_universal_base.h:55:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/gemm/kernel/default_gemm_universal.h:53:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/gemm/kernel/default_gemm.h:50:
+/root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/epilogue/threadblock/epilogue.h:479:16: warning: argument to '#pragma unroll' should not be in parentheses [-Wcuda-compat]
+#pragma unroll(IterationsUnroll ? OutputTileIterator::kIterations : 1)
+               ^
+In file included from /root/autodl-tmp/quactlize-build-425198f/quactlize/csrc/device/ppu_dense_backend.cu:25:
+In file included from /root/autodl-tmp/quactlize-build-425198f/quactlize/include/fpA_intB_ppu.cuh:37:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/gemm/device/gemm_universal_adapter.h:58:
+/root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/epilogue/threadblock/epilogue_with_visitor_callbacks.h:308:16: warning: argument to '#pragma unroll' should not be in parentheses [-Wcuda-compat]
+#pragma unroll(IterationsUnroll ? kIterations : 1)
+               ^
+/root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/epilogue/threadblock/epilogue_with_visitor_callbacks.h:385:16: warning: argument to '#pragma unroll' should not be in parentheses [-Wcuda-compat]
+#pragma unroll(IterationsUnroll ? kIterations : 1)
+               ^
+5 warnings generated when compiling for ppu001.
+inline-ptx: warning: use of ignored ptx modifier '.LLC::128B' in function @_ZN4cute24PPU_CP_ASYNC_CACHEGLOBALIN7cutlass9uint128_tES2_E4copyERKS2_RS2_
+  ppu.cp.async.cg.shared.global.LLC::128B [$0], [$1], $2;
+                               ^
+inline-ptx: warning: use of ignored ptx modifier '.LLC::128B' in function @_ZN4cute30PPU_CP_ASYNC_CACHEGLOBAL_ZFILLIN7cutlass9uint128_tES2_E4copyERKS2_RS2_b
+  ppu.cp.async.cg.shared.global.LLC::128B [$0], [$1], $2, $3;
+                               ^
+Building CXX object ppu_targets/CMakeFiles/quactlize_ppu.dir/device/ppu_unit_pack.cpp.o
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/array.h:40,
+                 from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/fast_math.h:44,
+                 from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/numeric/math.hpp:38,
+                 from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/numeric/integral_constant.hpp:35,
+                 from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/container/array.hpp:37,
+                 from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/int_tuple.hpp:36,
+                 from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/layout.hpp:36,
+                 from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/tensor_impl.hpp:47,
+                 from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/tensor.hpp:35,
+                 from /root/autodl-tmp/quactlize-build-425198f/quactlize/include/gguf_packed_unit.hpp:27,
+                 from /root/autodl-tmp/quactlize-build-425198f/quactlize/include/gguf_unit_pack.hpp:10,
+                 from /root/autodl-tmp/quactlize-build-425198f/quactlize/csrc/device/ppu_unit_pack.cpp:3:
+/root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/functional.h: In member function ‘float cutlass::absolute_value_op<float>::operator()(float) const’:
+/root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/functional.h:67:50: warning: conversion from ‘double’ to ‘float’ may change value [-Wfloat-conversion]
+   67 |   float operator()(float lhs) const { return fabs(lhs); }
+      |                                              ~~~~^~~~~
+Linking CXX shared library libquactlize_ppu.so
+Built target quactlize_ppu
+[hgcc] /root/autodl-tmp/quactlize-build-425198f/benchmarks/test_fq_grouped_multi_router_perf.cu
+In file included from /root/autodl-tmp/quactlize-build-425198f/benchmarks/test_fq_grouped_multi_router_perf.cu:2:
+In file included from /root/autodl-tmp/quactlize-build-425198f/benchmarks/test_fq_kquant_layout_perf.cu:26:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/tools/util/include/cutlass/util/device_memory.h:44:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/numeric_types.h:86:
+/root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/uint128.h:113:3: warning: reference to __host__ function 'abort' in __host__ __device__ function [-Wcross-execution-space-call]
+  abort();
+  ^
+In file included from /root/autodl-tmp/quactlize-build-425198f/benchmarks/test_fq_grouped_multi_router_perf.cu:2:
+In file included from /root/autodl-tmp/quactlize-build-425198f/benchmarks/test_fq_kquant_layout_perf.cu:27:
+In file included from /root/autodl-tmp/quactlize-build-425198f/quactlize/include/gguf_packed_unit.hpp:27:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/tensor.hpp:35:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/tensor_impl.hpp:47:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/layout.hpp:36:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/int_tuple.hpp:36:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/container/array.hpp:37:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/numeric/integral_constant.hpp:35:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cute/numeric/math.hpp:38:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/fast_math.h:44:
+In file included from /root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/array.h:2603:
+/root/autodl-tmp/quactlize-build-425198f/third_party/actlize/include/cutlass/array_subbyte.h:132:32: warning: unknown warning group '-Wmaybe-uninitialized', ignored [-Wunknown-warning-option]
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+                               ^
+2 warnings generated when compiling for ppu001.
+Linking CXX executable test_fq_grouped_multi_router_perf
+Built target test_fq_grouped_multi_router_perf
+PPU_DEFS verified on test_fq_grouped_multi_router_perf's compile command: -DPPU_PACKED_SCALE=1
+PPU_DEFS verified on test_fq_grouped_multi_router_perf's compile command: -DPPU_PACKED_FORMAT=0
+PPU_DEFS verified on test_fq_grouped_multi_router_perf's compile command: -DQUACTLIZE_DENSE_ONLY=12
+
+built: /root/autodl-tmp/fq-grouped-multi-router-bundle-425198f5/build/q12/ppu_targets/test_fq_grouped_multi_router_perf
+run:   /root/autodl-tmp/fq-grouped-multi-router-bundle-425198f5/build/q12/ppu_targets/test_fq_grouped_multi_router_perf --m=2048 --n=4096 --k=4096 --g=128 --mode=1 --iterations=100
+
+[build.sh] BINARY: /root/autodl-tmp/fq-grouped-multi-router-bundle-425198f5/build/q12/ppu_targets/test_fq_grouped_multi_router_perf
+           BIN=$(/root/autodl-tmp/quactlize-build-425198f/build.sh --print-bin) is not a thing; copy the line above, or:
+           BIN=/root/autodl-tmp/fq-grouped-multi-router-bundle-425198f5/build/q12/ppu_targets/test_fq_grouped_multi_router_perf

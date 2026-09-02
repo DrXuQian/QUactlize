@@ -1,0 +1,77 @@
+{
+  "binaries": {
+    "10": {
+      "library_path": "bin/q10/libquactlize_ppu.so",
+      "library_sha256": "28a600b13c4f9f63109c8e9d5be5fb31e79c95b2932ae3f5ed421dc18e9522dc",
+      "path": "bin/q10/test_fq_grouped_multi_router_perf",
+      "sha256": "1add420c9d4d54ed732c347179f0fefb88fbb6f976c0a5fa4f5b6fe37b2daf30"
+    },
+    "11": {
+      "library_path": "bin/q11/libquactlize_ppu.so",
+      "library_sha256": "0dbd9e90d74c4634a2e2e3700ab1681e7ff3cedd727008611dce00e7385aadbf",
+      "path": "bin/q11/test_fq_grouped_multi_router_perf",
+      "sha256": "a7fca1060a237078832d6e49ae37e4f414c09a5adc5a32fa15aac528f37e149e"
+    },
+    "12": {
+      "library_path": "bin/q12/libquactlize_ppu.so",
+      "library_sha256": "433a1aab0d292034781ce55e9d8bef588777dda048cfbcb8b39cd4e3499d0558",
+      "path": "bin/q12/test_fq_grouped_multi_router_perf",
+      "sha256": "076baa3a120f6ba36d06a0c348c05c79059c8656d2c8b55aecaf9d9dde106e9c"
+    },
+    "13": {
+      "library_path": "bin/q13/libquactlize_ppu.so",
+      "library_sha256": "ceea67a434b917924eb03d7c6e6b928499ebadc990493256597f45809b95a321",
+      "path": "bin/q13/test_fq_grouped_multi_router_perf",
+      "sha256": "e51052054a0ece92875ae4f2a2527ad240d170a4c71612fdb620d23cecd8f51b"
+    },
+    "14": {
+      "library_path": "bin/q14/libquactlize_ppu.so",
+      "library_sha256": "767c53221ec1de404aa4c19ba379c0d37c07e8bbaac0fce20cbcbda7ba363998",
+      "path": "bin/q14/test_fq_grouped_multi_router_perf",
+      "sha256": "703f908c4868b2ebf3660dad1ae4b5c3db16c927f8ab3df827976226ad01f7f6"
+    }
+  },
+  "build": {
+    "arch": "ppu0010",
+    "qtypes": [
+      10,
+      11,
+      12,
+      13,
+      14
+    ],
+    "target": "test_fq_grouped_multi_router_perf"
+  },
+  "schema": "quactlize.fq-grouped-multi-router-prebuilt.v1",
+  "sdk": {
+    "compiler_sha256": "fa62c590c67411c23fa4028f15fa562b39ce0cf830830d038a1ec04c59d8c76e",
+    "inspector_sha256": "4176b21eb5b26e9f73acb5e17667a01fbb2808987b303d95cd8b31078221d16c",
+    "release_sha256": "7ba29b9d2e768c3edd1e165bceaf90e27880248f2327d44852de37833d0a2cf7",
+    "release_version": "2.1.1-a5c56e"
+  },
+  "source_files": {
+    "CMakeLists.txt": "e58ff801e48fd1583502346d944e6964a64806a09f764778f1c4019a0cba7d38",
+    "benchmarks/test_fq_grouped_multi_router_perf.cu": "9b61c4e59326a9147be9f3932a1acb4dfd772cba4874ca8512b718309a976470",
+    "benchmarks/test_fq_kquant_layout_perf.cu": "2aa24943161277645244115414c592b04945311c332dd89251229c2fa1eec431",
+    "build.sh": "c90148e6ebd9de09fc4d5e790a9fe07ce47794013473e97b242038b3398c13fe",
+    "ci/check_fq_grouped_multi_router.py": "5764195bade793e63f814e6ceeac2326756ac36f02275c215385b6826d93c4de",
+    "quactlize/csrc/CMakeLists.txt.in": "cab8516059aa4055f1e7709075909a46a9217e72d4d96b9696c8341afcca8de8",
+    "quactlize/csrc/device/ppu_dense_backend.cu": "f453a640ac9d8d6c2acc2e4fc690e194a2cdc260b5ed9a3fafa50824ad3435ae",
+    "quactlize/csrc/fq_grouped_multi_router_perf.cmake.in": "a7dff3befd6ec54c571043893e3adddd4d67e6d1d804b4527601249d5b24c233",
+    "quactlize/csrc/fq_kquant_layout_perf.cmake.in": "080043c788959b926334a40800999b005effc29a84076d6db372582906042f91",
+    "quactlize/include/ppu_grouped_configs.inc": "2744f4e19f0ba09386f9403a144789cb7169358b0e0edbd90208085689bca0da",
+    "quactlize/include/ppu_q4_kpack4_shipping_policy.hpp": "349f928b5e34ac31e193c594b853ff60ee5cb689a12bb5bbeb7c27cce0054381",
+    "tools/analyze_fq_grouped_multi_router.py": "0dc3f5bc6f12df417530ad79ea7312d074dbf863d400c53d20a1e9e32b86bee7",
+    "tools/build_fq_grouped_multi_router_bundle.sh": "4a5a467a1599258498ed992f7d5ffb5d81094872f0707e0f01affd0935118860",
+    "tools/fq_grouped_multi_router.py": "71dc0ac5eec9a904c6be087e4d46dd652fe2bb5935612f1cdffc12025acffa50",
+    "tools/fq_grouped_multi_router_manifest.py": "85322d4a7adb1cc56a999c22154600a5d4a43dc5cbed2d82f10056541768e04d",
+    "tools/plan_fq_grouped_multi_router.py": "3a28498b3b3dcbaa3df3d47d5c8248ad714983fe66f02d5e53db4ba561660fdb",
+    "tools/probe_box_identity.py": "d6ae6a7b5f15adb64f161b009e6c40daa205b24d6e43ebb79a280097b502f9e2",
+    "tools/run_fq_grouped_multi_router_prebuilt_box.sh": "f31f17cc0fc12c137658263c2a964f5791bf339b464a75a5ea572e83b6bb99e3"
+  },
+  "source_sha": "425198f5d52377faf85eae4160cd44826e7f4388",
+  "submodules": {
+    "third_party/actlize": "8d46b758c8931807df840a6ed87d272d74a8fdf4",
+    "third_party/cutlass": "f94ec46f4f63f96003d6cfdf2014731e7672c281"
+  }
+}
