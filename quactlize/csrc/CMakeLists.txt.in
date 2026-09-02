@@ -28,6 +28,7 @@ endif()
 # that is missing a source is a mistake, and gets the loud CMake error it deserves.
 set(_PPU_OPTIONAL_TARGETS
   swzl_ldmatrix_probe test_q4_n16k64_delivery_codegen
+  test_q4_n16k64_fragment_numeric
   test_fold_int2 test_int1_sweep test_moe_grouped_dataslice
   test_moe_grouped_probe test_q3_bconcat_ablate test_q3_bconcat_probe test_width_acu)
 
@@ -2556,6 +2557,33 @@ if(EXISTS "${_Q4_N16K64_RAWBIT_SOURCE}")
 else()
   message(STATUS
     "ppu_w4a16: skipping optional test_q4_n16k64_delivery_rawbit -- dev source absent")
+endif()
+
+# End-to-end fragment-value closure for the unselected layout-3 provider.
+# This is intentionally a dev-only executable: it proves the candidate's
+# offline bytes, physical delivery, fast converter and real MMA B ownership
+# without making the arrangement dispatchable by a shipping kernel.
+qz_resolve_sources(_Q4_N16K64_FRAGMENT_NUMERIC_SOURCE
+  test_q4_n16k64_fragment_numeric.cu)
+list(GET _Q4_N16K64_FRAGMENT_NUMERIC_SOURCE 0
+  _Q4_N16K64_FRAGMENT_NUMERIC_SOURCE)
+get_filename_component(_Q4_N16K64_FRAGMENT_NUMERIC_SOURCE
+  "${_Q4_N16K64_FRAGMENT_NUMERIC_SOURCE}" ABSOLUTE
+  BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+if(EXISTS "${_Q4_N16K64_FRAGMENT_NUMERIC_SOURCE}")
+  quactlize_ppu_executable(
+    test_q4_n16k64_fragment_numeric
+    "${_Q4_N16K64_FRAGMENT_NUMERIC_SOURCE}")
+  target_compile_options(test_q4_n16k64_fragment_numeric PRIVATE -w)
+  get_target_property(_Q4_N16K64_FRAGMENT_NUMERIC_TARGET_TYPE
+    test_q4_n16k64_fragment_numeric TYPE)
+  if(_Q4_N16K64_FRAGMENT_NUMERIC_TARGET_TYPE STREQUAL "EXECUTABLE")
+    target_link_options(test_q4_n16k64_fragment_numeric BEFORE PRIVATE
+      "-Wl,--allow-shlib-undefined")
+  endif()
+else()
+  message(STATUS
+    "ppu_w4a16: skipping optional test_q4_n16k64_fragment_numeric -- dev source absent")
 endif()
 
 # INT4 REFERENCE diag: same params as test_w2a16_diag but int4b_t, so the W2DBG cute-layout print for the
