@@ -1,5 +1,10 @@
 # Q4_K native scale: what is settled, what blocks the rest
 
+Active post-baseline K-pack implementation axes are tracked in
+[`TODO_KPACK_INCREMENTAL_OPTIMIZATIONS.md`](TODO_KPACK_INCREMENTAL_OPTIMIZATIONS.md).
+They are incremental candidates and do not alter the frozen canonical K-pack
+baseline denominator.
+
 **Settled by measurement (20-block ABBA, 95% CI, every interval excludes 1.0):** the native-format tax is +13.1%
 (1.111..1.150); transport+stores+barrier is +9.2%; the decode ARITHMETIC alone is +3.5% (1.025..1.045). acu confirms
 the NOP ablation is structurally sound -- every memory counter identical between pack and packnop -- so that split is
