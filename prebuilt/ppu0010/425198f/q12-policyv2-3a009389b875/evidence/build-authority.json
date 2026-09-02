@@ -1,0 +1,65 @@
+{
+  "build": {
+    "arch": "ppu0010",
+    "definitions": [
+      "PPU_PACKED_SCALE=1",
+      "PPU_PACKED_FORMAT=0",
+      "QUACTLIZE_DENSE_ONLY=12"
+    ],
+    "qtype": 12,
+    "target": "test_fq_kquant_layout_perf"
+  },
+  "schema": "quactlize.fq-kquant-policy-v2-prebuilt.v1.build-authority.v1",
+  "sdk": {
+    "compiler": {
+      "path": "bin/hgcc",
+      "sha256": "fa62c590c67411c23fa4028f15fa562b39ce0cf830830d038a1ec04c59d8c76e",
+      "size": 799488,
+      "version": "hgcc(HGGC C/C++ Compiler)"
+    },
+    "inspector": {
+      "path": "bin/hgobjdump",
+      "sha256": "4176b21eb5b26e9f73acb5e17667a01fbb2808987b303d95cd8b31078221d16c",
+      "size": 10432072
+    },
+    "release": {
+      "path": "release.yaml",
+      "sha256": "7ba29b9d2e768c3edd1e165bceaf90e27880248f2327d44852de37833d0a2cf7",
+      "size": 22,
+      "version": "2.1.1-a5c56e"
+    }
+  },
+  "source": {
+    "build_inputs": {
+      "CMakeLists.txt": "e58ff801e48fd1583502346d944e6964a64806a09f764778f1c4019a0cba7d38",
+      "benchmarks/test_fq_kquant_layout_perf.cu": "2aa24943161277645244115414c592b04945311c332dd89251229c2fa1eec431",
+      "build.sh": "c90148e6ebd9de09fc4d5e790a9fe07ce47794013473e97b242038b3398c13fe",
+      "quactlize/csrc/CMakeLists.txt.in": "cab8516059aa4055f1e7709075909a46a9217e72d4d96b9696c8341afcca8de8",
+      "quactlize/csrc/device/ppu_backend.cu": "4fc44fc6831edc4160bc3703328f543ee16cb0c9f08fd55c5203e68e49835809",
+      "quactlize/csrc/device/ppu_dense_backend.cu": "f453a640ac9d8d6c2acc2e4fc690e194a2cdc260b5ed9a3fafa50824ad3435ae",
+      "quactlize/csrc/fq_kquant_layout_perf.cmake.in": "080043c788959b926334a40800999b005effc29a84076d6db372582906042f91",
+      "quactlize/include/kquant_kpack_offline.hpp": "b43fcc5eb60d6a8509f0aca3fc6ddf7c076697974abc0cbc843cbe4d60167873",
+      "quactlize/include/ppu_dense_configs.inc": "575cfa9e4f0cc2dbe86737dbaa50641c549e66d283ec967361e1442c4b42297f",
+      "quactlize/include/ppu_grouped_configs.inc": "2744f4e19f0ba09386f9403a144789cb7169358b0e0edbd90208085689bca0da",
+      "quactlize/include/ppu_q4_kpack4_shipping_policy.hpp": "349f928b5e34ac31e193c594b853ff60ee5cb689a12bb5bbeb7c27cce0054381",
+      "tools/analyze_fq_kquant_policy_v2.py": "fed4dcbdcac25fa2b008d6f72cc56ff4551f48cdbeb412e8c0c40eecee52dce5",
+      "tools/build_fq_kquant_policy_v2_prebuilt.sh": "af33facea483d2bc2591a10495f6a83541b1652d1a81f297a329707ca6e3cf74",
+      "tools/fq_kquant_policy_v2_prebuilt.py": "ad0f3083a890907563c59e8177cfcf18bc53e4331f19539b832d55ebc12f4885",
+      "tools/plan_fq_kquant_policy_v2.py": "f0b61f910a18e0b4feca3e172fa5b7763101cb79b42eaca5ac5fa421602edde5",
+      "tools/probe_box_identity.py": "d6ae6a7b5f15adb64f161b009e6c40daa205b24d6e43ebb79a280097b502f9e2",
+      "tools/run_fq_kquant_kpack_perf_box.sh": "6aa9ab9767fadb43529fe99b0cc8b07bfc5d02822f4412eb41f343bbb864c305",
+      "tools/run_fq_kquant_policy_v2_box.sh": "c3ff64a71b63900fa47f20d9e47d840be9b44b095c0bebd8b77da18328988dac"
+    },
+    "commit": "425198f5d52377faf85eae4160cd44826e7f4388",
+    "submodules": [
+      {
+        "commit": "8d46b758c8931807df840a6ed87d272d74a8fdf4",
+        "path": "third_party/actlize"
+      },
+      {
+        "commit": "f94ec46f4f63f96003d6cfdf2014731e7672c281",
+        "path": "third_party/cutlass"
+      }
+    ]
+  }
+}

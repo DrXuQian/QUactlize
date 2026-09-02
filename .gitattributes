@@ -1,0 +1,3 @@
+prebuilt/ppu0010/425198f/q12-policyv2-3a009389b875/bundle/test_fq_kquant_layout_perf filter=lfs diff=lfs merge=lfs -text
+prebuilt/ppu0010/425198f/q12-policyv2-3a009389b875/bundle/libquactlize_ppu.so filter=lfs diff=lfs merge=lfs -text
+prebuilt/ppu0010/425198f/q12-policyv2-3a009389b875/evidence/* -text whitespace=-blank-at-eof
