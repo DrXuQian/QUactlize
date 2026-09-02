@@ -1,0 +1,115 @@
+{
+  "libraries": [
+    {
+      "definitions": [
+        "PPU_PACKED_SCALE=0",
+        "QUACTLIZE_DENSE_ONLY=12"
+      ],
+      "dense_only": 12,
+      "filename": "libquactlize_ppu.so",
+      "packed_format": null,
+      "packed_scale": 0,
+      "qtype": 12,
+      "role": "default",
+      "sha256": "b25e48e1e1926ada99d72acc75659511e85a4d8aa77ccacb7dd33bae33e46bfa",
+      "size": 23592008
+    },
+    {
+      "definitions": [
+        "PPU_PACKED_SCALE=1",
+        "QUACTLIZE_DENSE_ONLY=12",
+        "PPU_PACKED_FORMAT=0"
+      ],
+      "dense_only": 12,
+      "filename": "libquactlize_ppu_fmt0.so",
+      "packed_format": 0,
+      "packed_scale": 1,
+      "qtype": 12,
+      "role": "fmt0",
+      "sha256": "3aa5487f0b3d325db2c1dc3cb863d733157dc332236cea0f8c178d3f97c9ac24",
+      "size": 31818760
+    },
+    {
+      "definitions": [
+        "PPU_PACKED_SCALE=1",
+        "QUACTLIZE_DENSE_ONLY=13",
+        "PPU_PACKED_FORMAT=1"
+      ],
+      "dense_only": 13,
+      "filename": "libquactlize_ppu_fmt1.so",
+      "packed_format": 1,
+      "packed_scale": 1,
+      "qtype": 13,
+      "role": "fmt1",
+      "sha256": "70d009cdbd93ef6237647e1e22910af3ebe3943664734343cbcb00ec03f712a7",
+      "size": 28762352
+    },
+    {
+      "definitions": [
+        "PPU_PACKED_SCALE=1",
+        "QUACTLIZE_DENSE_ONLY=10",
+        "PPU_PACKED_FORMAT=2"
+      ],
+      "dense_only": 10,
+      "filename": "libquactlize_ppu_fmt2.so",
+      "packed_format": 2,
+      "packed_scale": 1,
+      "qtype": 10,
+      "role": "fmt2",
+      "sha256": "161ce1199c771940afde9d40cb8a2ed092a215a21a1a1afd4312bee9fd3decfa",
+      "size": 29232928
+    },
+    {
+      "definitions": [
+        "PPU_PACKED_SCALE=1",
+        "QUACTLIZE_DENSE_ONLY=11",
+        "PPU_PACKED_FORMAT=3"
+      ],
+      "dense_only": 11,
+      "filename": "libquactlize_ppu_fmt3.so",
+      "packed_format": 3,
+      "packed_scale": 1,
+      "qtype": 11,
+      "role": "fmt3",
+      "sha256": "295c3cef9c07d849afda44c552b2830db616023784942d8f42de229ec7aa830b",
+      "size": 30951480
+    },
+    {
+      "definitions": [
+        "PPU_PACKED_SCALE=1",
+        "QUACTLIZE_DENSE_ONLY=14",
+        "PPU_PACKED_FORMAT=4"
+      ],
+      "dense_only": 14,
+      "filename": "libquactlize_ppu_fmt4.so",
+      "packed_format": 4,
+      "packed_scale": 1,
+      "qtype": 14,
+      "role": "fmt4",
+      "sha256": "807a92cd5b9508a69bfc70b0be3b30f29f50329ecd0644b260c70cc5d27c8ba2",
+      "size": 29576504
+    }
+  ],
+  "schema": "quactlize.ppu-runtime-bundle",
+  "schema_version": 1,
+  "source": {
+    "commit": "2826cf12451e02ca4590f7a44682b57d2098bfb9",
+    "submodules": [
+      {
+        "commit": "8d46b758c8931807df840a6ed87d272d74a8fdf4",
+        "path": "third_party/actlize"
+      },
+      {
+        "commit": "f94ec46f4f63f96003d6cfdf2014731e7672c281",
+        "path": "third_party/cutlass"
+      }
+    ],
+    "tree_state": "clean"
+  },
+  "toolchain": {
+    "arch": "ppu0010",
+    "hgcc": "hgcc(HGGC C/C++ Compiler);Release version 2.1.1-a5c56e;Built on Jul 25 2026 at 09:15:42",
+    "sdk_archive_sha256": "63ca196b152f2fec667fce8b18c04f1d6d0fa9e7bc7f72e18f017c96d11731dd",
+    "sdk_release": "2.1.1-a5c56e"
+  }
+}
