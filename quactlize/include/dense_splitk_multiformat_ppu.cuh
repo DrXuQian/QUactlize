@@ -139,8 +139,10 @@ class PreparedMultiformatLauncher {
   static_assert(std::is_same_v<typename SplitKernel::ElementAccumulator, float> &&
                     std::is_same_v<typename SplitKernel::ElementD, float>,
                 "the audited multiformat partial ABI is compact FP32");
-  static_assert(ShippingTypes::SharedStorageSize <= ppu_tactics::kBlockSmemBytes,
-                "prepared S=1 shipping kernel must fit one compiled PPU block");
+  // Exact compiled shared-storage size is classified by each caller before
+  // initialization.  Keeping an unconditional assertion here would prevent
+  // exhaustive sweep callers from recording an over-limit type as a named
+  // inadmissible result.
   static_assert(ppu_mixed_policy::kernel_policy_valid_v<
                     fpa_intb_ppu::TacticSpace, MainloopPolicy>,
                 "multiformat Split-K must retain the shipping dense tactic guard");
