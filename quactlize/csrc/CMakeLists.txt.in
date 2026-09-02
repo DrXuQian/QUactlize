@@ -2611,7 +2611,7 @@ if(NOT IS_ABSOLUTE "${QZ_INTERNAL_SWEEP_CMAKE_AUTHORITY}")
 endif()
 foreach(_qz_internal_sweep_fragment IN ITEMS
     fq_internal_sweep.cmake.in scalefirst_internal_sweep.cmake.in
-    fq_kquant_layout_perf.cmake.in)
+    fq_kquant_layout_perf.cmake.in fq_grouped_multi_router_perf.cmake.in)
   if(NOT EXISTS
       "${QZ_INTERNAL_SWEEP_CMAKE_AUTHORITY}/${_qz_internal_sweep_fragment}")
     message(FATAL_ERROR
@@ -2633,6 +2633,7 @@ include("${QZ_INTERNAL_SWEEP_CMAKE_AUTHORITY}/scalefirst_internal_sweep.cmake.in
 # Production-C-ABI non-Q4 physical-layout A/B.  The target is inert unless
 # its runner supplies one exact Q2/Q3/Q5/Q6 qtype.
 include("${QZ_INTERNAL_SWEEP_CMAKE_AUTHORITY}/fq_kquant_layout_perf.cmake.in")
+include("${QZ_INTERNAL_SWEEP_CMAKE_AUTHORITY}/fq_grouped_multi_router_perf.cmake.in")
 
 # Final dense fixed Split-K performance search.  This is not a hand-written
 # winner table: parse the committed int4/ArtifactTK64 dense authority, retain

@@ -1,0 +1,18 @@
+if(DEFINED FQ_KQUANT_PERF_QTYPE AND
+   NOT "${FQ_KQUANT_PERF_QTYPE}" STREQUAL "")
+  qz_resolve_sources(_FQ_GROUPED_ROUTER_SOURCE
+    test_fq_grouped_multi_router_perf.cu)
+  list(GET _FQ_GROUPED_ROUTER_SOURCE 0 _FQ_GROUPED_ROUTER_SOURCE)
+  quactlize_ppu_executable(
+    test_fq_grouped_multi_router_perf
+    "${_FQ_GROUPED_ROUTER_SOURCE}"
+    DEV_COMPILE_FLAGS -DFQ_KQUANT_PERF_QTYPE=${FQ_KQUANT_PERF_QTYPE})
+  target_compile_definitions(test_fq_grouped_multi_router_perf PRIVATE
+    FQ_KQUANT_PERF_QTYPE=${FQ_KQUANT_PERF_QTYPE})
+  target_link_libraries(test_fq_grouped_multi_router_perf PRIVATE quactlize_ppu)
+  add_dependencies(test_fq_grouped_multi_router_perf quactlize_ppu)
+  target_compile_options(test_fq_grouped_multi_router_perf PRIVATE -w)
+  target_link_options(test_fq_grouped_multi_router_perf BEFORE PRIVATE
+    "-Wl,--allow-shlib-undefined")
+  message(STATUS "FullyQuantized grouped multi-router perf: qtype=${FQ_KQUANT_PERF_QTYPE} layout=K-pack-only")
+endif()
