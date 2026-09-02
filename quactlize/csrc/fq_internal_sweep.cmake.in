@@ -81,3 +81,45 @@ if(FQ_SWEEP_GENERATED_DIR)
     "format=${FQ_SWEEP_PACKED_FORMAT} layout=${FQ_SWEEP_WEIGHT_LAYOUT} "
     "units=${_FQ_SWEEP_UNIT_COUNT}")
 endif()
+
+# A02-only Q3 effective-BChunk diagnostic. This deliberately reuses the
+# benchmark harness but is a separate target and can never enter a shipping
+# library or registry. Its generated directory contains exactly bc0+bc1.
+if(FQ_A02_Q3_GENERATED_DIR)
+  if(FQ_SWEEP_GENERATED_DIR)
+    message(FATAL_ERROR "A02 Q3 aggregate and ordinary FQ sweep are mutually exclusive")
+  endif()
+  unset(FQ_TC_GENERATED_UNIT_SOURCES)
+  get_filename_component(_FQ_A02_Q3_DIR "${FQ_A02_Q3_GENERATED_DIR}" ABSOLUTE)
+  foreach(_required IN ITEMS units.cmake fq_tc_registry.inc manifest.json)
+    if(NOT EXISTS "${_FQ_A02_Q3_DIR}/${_required}")
+      message(FATAL_ERROR "A02 Q3 aggregate authority is incomplete: ${_required}")
+    endif()
+  endforeach()
+  include("${_FQ_A02_Q3_DIR}/units.cmake")
+  qz_resolve_sources(_FQ_A02_MAIN test_fully_quantized_internal_sweep.cu)
+  qz_resolve_sources(_FQ_A02_LAYOUT ppu_dense_layout.cu)
+  list(GET _FQ_A02_MAIN 0 _FQ_A02_MAIN)
+  list(GET _FQ_A02_LAYOUT 0 _FQ_A02_LAYOUT)
+  set(_FQ_A02_DEFS
+    "-I${_FQ_A02_Q3_DIR}" "-DFQ_SWEEP_QTYPE=11"
+    "-DFQ_SWEEP_ARTIFACT_TK=64" "-DFQ_SWEEP_BCHUNK=-1"
+    "-DFQ_SWEEP_WEIGHT_LAYOUT=0" "-DFQ_TC_WEIGHT_LAYOUT=0"
+    "-DFQ_SWEEP_MIXED_BCHUNK_DIAGNOSTIC=1"
+    "-DPPU_PACKED_SCALE=1" "-DPPU_PACKED_FORMAT=3")
+  quactlize_ppu_executable(test_fq_a02_q3_bchunk_aggregate
+    "${_FQ_A02_MAIN}" "${_FQ_A02_LAYOUT}" ${FQ_TC_GENERATED_UNIT_SOURCES}
+    DEV_COMPILE_FLAGS ${_FQ_A02_DEFS})
+  target_include_directories(test_fq_a02_q3_bchunk_aggregate PRIVATE
+    "${_FQ_A02_Q3_DIR}")
+  target_compile_definitions(test_fq_a02_q3_bchunk_aggregate PRIVATE
+    FQ_SWEEP_QTYPE=11 FQ_SWEEP_ARTIFACT_TK=64 FQ_SWEEP_BCHUNK=-1
+    FQ_SWEEP_WEIGHT_LAYOUT=0 FQ_TC_WEIGHT_LAYOUT=0
+    FQ_SWEEP_MIXED_BCHUNK_DIAGNOSTIC=1 PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=3)
+  target_compile_options(test_fq_a02_q3_bchunk_aggregate PRIVATE -w)
+  list(LENGTH FQ_TC_GENERATED_UNIT_SOURCES _FQ_A02_UNITS)
+  if(NOT _FQ_A02_UNITS EQUAL 2)
+    message(FATAL_ERROR "A02 Q3 aggregate must contain exactly two units")
+  endif()
+  message(STATUS "A02 Q3 aggregate: q=11 A=64 effective-bchunk=0+1 units=2 NONPRODUCT")
+endif()

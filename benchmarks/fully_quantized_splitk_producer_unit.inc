@@ -1,7 +1,10 @@
 // Generated units define FQ_TC_UNIT_ROWS(X), then include this file.
 #include "fully_quantized_splitk_producer_bench.hpp"
 
-namespace fq_internal_sweep_generated {
+#ifndef FQ_TC_GENERATED_NAMESPACE
+#define FQ_TC_GENERATED_NAMESPACE fq_internal_sweep_generated
+#endif
+namespace FQ_TC_GENERATED_NAMESPACE {
 
 #ifndef FQ_TC_WEIGHT_LAYOUT
 #define FQ_TC_WEIGHT_LAYOUT 0
@@ -26,4 +29,5 @@ namespace fq_internal_sweep_generated {
 FQ_TC_UNIT_ROWS(FQ_TC_DEFINE_WRAPPER)
 #undef FQ_TC_DEFINE_WRAPPER
 
-}  // namespace fq_internal_sweep_generated
+}  // namespace FQ_TC_GENERATED_NAMESPACE
+#undef FQ_TC_GENERATED_NAMESPACE

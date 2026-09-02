@@ -50,7 +50,14 @@ static_assert(FQ_SWEEP_WEIGHT_LAYOUT == 0 ||
               "the first K-pack4 closure is one Q4/ordinary-conversion shard");
 static_assert(FQ_SWEEP_QTYPE == FQ_TC_GENERATED_QTYPE);
 static_assert(FQ_SWEEP_ARTIFACT_TK == FQ_TC_GENERATED_ARTIFACT_TK);
+#if !defined(FQ_SWEEP_MIXED_BCHUNK_DIAGNOSTIC) || !FQ_SWEEP_MIXED_BCHUNK_DIAGNOSTIC
 static_assert(FQ_SWEEP_BCHUNK == FQ_TC_GENERATED_BCHUNK);
+#else
+static_assert(FQ_SWEEP_QTYPE == 11 && FQ_SWEEP_ARTIFACT_TK == 64,
+              "mixed-BChunk diagnostic is the isolated Q3/A64 A02 seam");
+static_assert(FQ_TC_GENERATED_BCHUNK == -1,
+              "mixed-BChunk registry must not claim one effective BChunk");
+#endif
 
 extern "C" int quactlize_ppu_prepare_dense_for_tile(
     uint8_t const*, uint8_t const*, uint8_t*, uint8_t*,
@@ -59,6 +66,18 @@ extern "C" int quactlize_ppu_recover_dense_for_tile(
     uint8_t const*, uint8_t const*, uint8_t*, uint8_t*,
     int, int, int, int);
 
+#if defined(FQ_SWEEP_MIXED_BCHUNK_DIAGNOSTIC) && FQ_SWEEP_MIXED_BCHUNK_DIAGNOSTIC
+#define FQ_TC_DECLARE_NS_0 fq_a02_q3_bc0_generated
+#define FQ_TC_DECLARE_NS_1 fq_a02_q3_bc1_generated
+#define FQ_TC_DECLARE(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP)                  \
+  namespace FQ_TC_DECLARE_NS_##BC {                                    \
+  bool FN(fq_internal_sweep::DeviceInputs const&,                      \
+          fq_internal_sweep::Options const&,                           \
+          fq_internal_sweep::RowResult&);                              \
+  }
+FQ_TC_REGISTRY_ROWS(FQ_TC_DECLARE)
+#undef FQ_TC_DECLARE
+#else
 namespace fq_internal_sweep_generated {
 #define FQ_TC_DECLARE(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP)                  \
   bool FN(fq_internal_sweep::DeviceInputs const&,                      \
@@ -67,6 +86,7 @@ namespace fq_internal_sweep_generated {
 FQ_TC_REGISTRY_ROWS(FQ_TC_DECLARE)
 #undef FQ_TC_DECLARE
 }
+#endif
 
 namespace {
 
@@ -74,13 +94,23 @@ using namespace fq_internal_sweep;
 
 std::vector<RegistryRow> registry() {
   return {
+#if defined(FQ_SWEEP_MIXED_BCHUNK_DIAGNOSTIC) && FQ_SWEEP_MIXED_BCHUNK_DIAGNOSTIC
+#define FQ_TC_REGISTER(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP)                 \
+    {#FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP,                                 \
+     &FQ_TC_DECLARE_NS_##BC::FN},
+#else
 #define FQ_TC_REGISTER(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP)                 \
     {#FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP,                                 \
      &fq_internal_sweep_generated::FN},
+#endif
     FQ_TC_REGISTRY_ROWS(FQ_TC_REGISTER)
 #undef FQ_TC_REGISTER
   };
 }
+#if defined(FQ_SWEEP_MIXED_BCHUNK_DIAGNOSTIC) && FQ_SWEEP_MIXED_BCHUNK_DIAGNOSTIC
+#undef FQ_TC_DECLARE_NS_0
+#undef FQ_TC_DECLARE_NS_1
+#endif
 
 template <int Q> struct KTypeFor;
 template <> struct KTypeFor<10> { static constexpr auto value = gguf_scale::KType::Q2_K; };
