@@ -32,6 +32,8 @@ SCHEMA = "quactlize.scalefirst_internal_sweep.v3"
 PLAN_SCHEMA = "quactlize.scalefirst_internal_plan.v1"
 RUN_CONTRACT_SCHEMA = "quactlize.scalefirst_internal_sweep.run_contract.v1"
 RUN_COMMIT_SCHEMA = "quactlize.scalefirst_internal_sweep.run_commit.v1"
+GENERATED_SHARD_V2 = "quactlize.scalefirst.generated_shard.v2"
+GENERATED_SHARD_V3 = "quactlize.scalefirst.generated_shard.v3"
 VALID_QTYPES = {fmt.qtype for fmt in matrix.FORMATS}
 FULL = "FULL_OUTPUT"
 PRODUCER = "PRODUCER_ONLY_REDUCER_EXCLUDED"
@@ -352,6 +354,91 @@ def generated_shards(plan_cells: list[dict[str, Any]]) -> set[str]:
             for bchunk in (0, 1)}
 
 
+def _compact_rows_sha256(rows: list[dict[str, Any]]) -> str:
+    encoded = json.dumps(
+        rows, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _validate_generated_manifest(
+        doc: dict[str, Any], shard: str, *,
+        expected_raw_rows: int = matrix.RAW_ROWS_PER_PAIR // 2
+        ) -> dict[str, Any]:
+    """Accept historical v2 or an exact full-authority Xplane v3 shard.
+
+    V3 also represents compact parent-range K-pack discovery shards. Those
+    are not interchangeable with the exhaustive historical internal sweep:
+    its shard key has no layout/range coordinate and its result layout is
+    Xplane. Therefore this compatibility path admits only v3 authority-full.
+    """
+    match = SHARD_RE.fullmatch(shard)
+    if match is None:
+        raise ValueError(f"{shard}: invalid generated shard key")
+    qtype, artifact, bchunk = map(int, match.groups())
+    schema = doc.get("schema")
+    if schema not in (GENERATED_SHARD_V2, GENERATED_SHARD_V3):
+        raise ValueError(f"{shard}: generated manifest schema mismatch")
+    identity = doc.get("identity")
+    expected_identity = {
+        "qtype": qtype,
+        "format": matrix.format_for(qtype).name,
+        "artifact_tile_k": artifact,
+        "bchunk": bchunk,
+    }
+    if identity != expected_identity:
+        raise ValueError(
+            f"{shard}: generated manifest identity/layout mismatch")
+    typed = doc.get("typed_rows")
+    rejected = doc.get("non_typed_rows")
+    if not isinstance(typed, list) or not isinstance(rejected, list):
+        raise ValueError(f"{shard}: generated rows are not arrays")
+    if not all(isinstance(row, dict) for row in typed + rejected):
+        raise ValueError(f"{shard}: generated row is not an object")
+    denominator = doc.get("denominator") or {}
+    if (denominator.get("raw_rows") != expected_raw_rows or
+            denominator.get("typed_rows") != len(typed) or
+            denominator.get("non_typed_rows") != len(rejected) or
+            len(typed) + len(rejected) != expected_raw_rows):
+        raise ValueError(f"{shard}: generated denominator drift")
+    symbols = [row.get("symbol") for row in typed + rejected]
+    if None in symbols or len(symbols) != len(set(symbols)):
+        raise ValueError(f"{shard}: generated symbol duplicate/missing")
+
+    if schema == GENERATED_SHARD_V3:
+        if denominator.get("authority_typed_rows") != len(typed):
+            raise ValueError(f"{shard}: v3 typed authority differs")
+        expected_range = {
+            "begin": 0, "end": len(typed), "count": len(typed),
+            "authority_count": len(typed),
+        }
+        if doc.get("parent_range") != expected_range:
+            raise ValueError(
+                f"{shard}: v3 is not one full-authority parent range")
+        expected_selection = {
+            "mode": "authority-full", "begin": 0, "end": len(typed),
+            "authority_typed_rows": len(typed),
+            "compiled_rows": len(typed),
+        }
+        if doc.get("selection") != expected_selection:
+            raise ValueError(f"{shard}: v3 selection authority differs")
+        expected_parents = [
+            {"parent_id": index, "symbol": row["symbol"]}
+            for index, row in enumerate(typed)
+        ]
+        if doc.get("compiled_parents") != expected_parents or any(
+                row.get("parent_id") != index
+                for index, row in enumerate(typed)):
+            raise ValueError(f"{shard}: v3 parent identity differs")
+        expected_rejected = {
+            "count": len(rejected),
+            "sha256": _compact_rows_sha256(rejected),
+            "encoding": "JSON_SORT_KEYS_COMPACT_V1",
+        }
+        if doc.get("non_typed_authority") != expected_rejected:
+            raise ValueError(f"{shard}: v3 non-typed authority differs")
+    return doc
+
+
 def load_manifests(generated_root: pathlib.Path, expected: set[str]
                    ) -> dict[str, dict[str, Any]]:
     observed = {path.parent.name for path in generated_root.glob("*/manifest.json")}
@@ -362,29 +449,7 @@ def load_manifests(generated_root: pathlib.Path, expected: set[str]
     manifests = {}
     for shard in sorted(expected):
         doc = json.loads((generated_root / shard / "manifest.json").read_text())
-        match = SHARD_RE.fullmatch(shard)
-        assert match is not None
-        qtype, artifact, bchunk = map(int, match.groups())
-        if doc.get("schema") != "quactlize.scalefirst.generated_shard.v2":
-            raise ValueError(f"{shard}: generated manifest schema mismatch")
-        identity = doc.get("identity") or {}
-        if (identity.get("qtype"), identity.get("artifact_tile_k"),
-                identity.get("bchunk")) != (qtype, artifact, bchunk):
-            raise ValueError(f"{shard}: generated manifest identity mismatch")
-        typed = doc.get("typed_rows")
-        rejected = doc.get("non_typed_rows")
-        if not isinstance(typed, list) or not isinstance(rejected, list):
-            raise ValueError(f"{shard}: generated rows are not arrays")
-        denominator = doc.get("denominator") or {}
-        if (denominator.get("raw_rows") != matrix.RAW_ROWS_PER_PAIR // 2 or
-                denominator.get("typed_rows") != len(typed) or
-                denominator.get("non_typed_rows") != len(rejected) or
-                len(typed) + len(rejected) != matrix.RAW_ROWS_PER_PAIR // 2):
-            raise ValueError(f"{shard}: generated denominator drift")
-        symbols = [row.get("symbol") for row in typed + rejected]
-        if None in symbols or len(symbols) != len(set(symbols)):
-            raise ValueError(f"{shard}: generated symbol duplicate/missing")
-        manifests[shard] = doc
+        manifests[shard] = _validate_generated_manifest(doc, shard)
     return manifests
 
 
@@ -885,7 +950,59 @@ def analyze(plan_path: pathlib.Path, generated_root: pathlib.Path,
     return 0 if status == "COMPLETE" else 1
 
 
+def _manifest_schema_self_test() -> None:
+    identity = {
+        "qtype": 12, "format": matrix.format_for(12).name,
+        "artifact_tile_k": 64, "bchunk": 0,
+    }
+    typed_v2 = [{"symbol": "typed"}]
+    rejected = [{"symbol": "rejected"}]
+    v2 = {
+        "schema": GENERATED_SHARD_V2, "identity": identity,
+        "denominator": {"raw_rows": 2, "typed_rows": 1,
+                        "non_typed_rows": 1},
+        "typed_rows": typed_v2, "non_typed_rows": rejected,
+    }
+    _validate_generated_manifest(v2, "q12-a64-bc0", expected_raw_rows=2)
+    typed_v3 = [{"symbol": "typed", "parent_id": 0}]
+    v3 = {
+        "schema": GENERATED_SHARD_V3, "identity": identity,
+        "denominator": {"raw_rows": 2, "typed_rows": 1,
+                        "authority_typed_rows": 1, "non_typed_rows": 1},
+        "parent_range": {"begin": 0, "end": 1, "count": 1,
+                         "authority_count": 1},
+        "selection": {"mode": "authority-full", "begin": 0, "end": 1,
+                      "authority_typed_rows": 1, "compiled_rows": 1},
+        "compiled_parents": [{"parent_id": 0, "symbol": "typed"}],
+        "typed_rows": typed_v3, "non_typed_rows": rejected,
+        "non_typed_authority": {
+            "count": 1, "sha256": _compact_rows_sha256(rejected),
+            "encoding": "JSON_SORT_KEYS_COMPACT_V1",
+        },
+    }
+    _validate_generated_manifest(v3, "q12-a64-bc0", expected_raw_rows=2)
+    plants = []
+    broken = dict(v3, schema="quactlize.scalefirst.generated_shard.v4")
+    plants.append(broken)
+    broken = dict(v3, parent_range={"begin": 0, "end": 1, "count": 1,
+                                    "authority_count": 2})
+    plants.append(broken)
+    broken = dict(v3, non_typed_authority={
+        "count": 1, "sha256": "0" * 64,
+        "encoding": "JSON_SORT_KEYS_COMPACT_V1"})
+    plants.append(broken)
+    for broken in plants:
+        try:
+            _validate_generated_manifest(
+                broken, "q12-a64-bc0", expected_raw_rows=2)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("generated manifest schema plant stayed green")
+
+
 def self_test() -> int:
+    _manifest_schema_self_test()
     # One typed row with a deduplicated capacity+balanced persistent cell.
     common = {
         "shape": "2048x4096x4096", "qtype": 12, "artifact_tile_k": 32,
@@ -996,6 +1113,7 @@ def self_test() -> int:
         raise AssertionError("wrong persistent grid stayed green")
     print("[scalefirst-internal:self-test] PASS exact NP/P(all-b)/S2/S4/S8; "
           "TM8-prefill=5xINADMISSIBLE_M8_DECODE_ONLY; "
+          "generated-manifest=v2-history+v3-full-authority; "
           "negative=unnamed-TM8+missing-S4+raw-bit+extra-algorithm+"
           "drop-P-grid+wrong-grid")
     return 0

@@ -4,6 +4,8 @@
 Production use has two commands::
 
     python3 tools/probe_box_identity.py resolve --output identity.json
+    python3 tools/probe_box_identity.py resolve --output identity.json \
+        --runtime-probe-binary bundle/box_identity_probe
     python3 tools/probe_box_identity.py get --file identity.json \
         --field device_model --part value
 
@@ -134,7 +136,14 @@ def _probe_compile_command(sdk_root: Path, output: Path,
     lib_dir = sdk_root / "lib"
     command += [
         str(CPP_SOURCE), "-o", str(output), "-L", str(lib_dir),
-        f"-Wl,-rpath,{lib_dir}", "-Wl,--no-as-needed", "-lhg_wrapper",
+        f"-Wl,-rpath,{lib_dir}", "-Wl,--no-as-needed",
+        # SDK 2.1.1's host libraries are built on Ubuntu 24.04.  A build-only
+        # Ubuntu 22.04 host may therefore lack their versioned glibc/libstdc++
+        # dependencies.  This option applies only to unresolved references
+        # originating inside shared libraries; references from this probe's
+        # own object still fail the link.  Execution remains gated by the
+        # bundle runner's Ubuntu-24 runtime/SDK identity checks.
+        "-Wl,--allow-shlib-undefined", "-lhg_wrapper",
         "-lhggc_wrapper", "-lhggcrt1", "-lhggc", "-ldl",
     ]
     return command
@@ -216,7 +225,47 @@ def _parse_runtime_wire(stdout: str) -> dict[str, object]:
     }
 
 
-def _run_runtime_probe(environ: dict[str, str]) -> dict[str, object]:
+def _run_prebuilt_runtime_probe(binary: Path,
+                                environ: dict[str, str]) -> dict[str, object]:
+    """Run one caller-supplied probe image without attempting a build.
+
+    A supplied image is an explicit prebuilt-artifact contract.  Missing,
+    non-executable, failed, or malformed images are therefore hard errors;
+    silently falling back to the historical local compile would make a box
+    run claim it consumed the bundle while actually executing new code.
+    """
+    try:
+        binary = binary.resolve(strict=True)
+    except OSError as exc:
+        raise ProbeError(
+            f"prebuilt runtime probe does not exist: {binary}") from exc
+    if not binary.is_file():
+        raise ProbeError(f"prebuilt runtime probe is not a file: {binary}")
+    if not os.access(binary, os.X_OK):
+        raise ProbeError(
+            f"prebuilt runtime probe is not executable: {binary}")
+    try:
+        ran = subprocess.run(
+            [str(binary)], env=environ, text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, check=False)
+    except OSError as exc:
+        raise ProbeError(
+            f"prebuilt runtime probe could not execute: {binary}: {exc}") from exc
+    if ran.returncode != 0:
+        raise ProbeError(
+            f"prebuilt runtime probe failed with rc={ran.returncode}: {binary}")
+    try:
+        return _parse_runtime_wire(ran.stdout)
+    except ProbeError as exc:
+        raise ProbeError(
+            f"invalid prebuilt runtime probe output: {exc}") from exc
+
+
+def _run_runtime_probe(
+        environ: dict[str, str],
+        runtime_probe_binary: Path | None = None) -> dict[str, object]:
+    if runtime_probe_binary is not None:
+        return _run_prebuilt_runtime_probe(runtime_probe_binary, environ)
     unavailable: dict[str, object] = {
         "status": "unavailable",
         "method": "hggcGetDeviceCount+hggcGetDeviceProperties",
@@ -503,7 +552,10 @@ def _atomic_write(path: Path, data: bytes) -> None:
 def resolve_command(args: argparse.Namespace) -> int:
     environ = dict(os.environ)
     sdk = _probe_sdk_compiler(environ)
-    runtime = _run_runtime_probe(environ)
+    runtime_probe_argument = getattr(args, "runtime_probe_binary", None)
+    runtime_binary = (Path(runtime_probe_argument)
+                      if runtime_probe_argument is not None else None)
+    runtime = _run_runtime_probe(environ, runtime_binary)
     try:
         document = _resolve_from_observations(runtime, sdk, environ)
         _atomic_write(Path(args.output), _canonical_output_bytes(document))
@@ -527,6 +579,11 @@ def make_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     resolve = subparsers.add_parser("resolve")
     resolve.add_argument("--output", required=True)
+    resolve.add_argument(
+        "--runtime-probe-binary",
+        help=("execute this prebuilt runtime identity probe; a missing, "
+              "non-executable, failed, or malformed binary is fatal and "
+              "never falls back to local compilation"))
     resolve.set_defaults(func=resolve_command)
     get = subparsers.add_parser("get")
     get.add_argument("--file", required=True)

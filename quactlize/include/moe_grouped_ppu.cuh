@@ -138,7 +138,8 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
             // padded by TileM rows, which buys a uniform fully-vectorised copy for every expert shape. That is a
             // change to the collective's copy, not to a stride, so it is not done here.
             bool /*unused, was a_row_broadcast*/ = false,
-            KernelSpanEvents* kernel_span = nullptr) {
+            KernelSpanEvents* kernel_span = nullptr,
+            uint32_t persistent_grid_ctas_override = 0) {
   if (kernel_span != nullptr) kernel_span->recorded = false;
   using DefaultMainloopPolicy = MixedMainloopPolicy<
       QuantOp, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
@@ -301,6 +302,7 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
       ++moeg_fail_count();
       return false;
     }
+    args.grid_ctas_override = persistent_grid_ctas_override;
     args.splitk = 1;
   } else {
     args.group_M = group_M;

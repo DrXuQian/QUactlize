@@ -35,16 +35,32 @@
 #ifndef SCALEFIRST_SWEEP_WEIGHT_LAYOUT
 #define SCALEFIRST_SWEEP_WEIGHT_LAYOUT 0
 #endif
+#ifndef SCALEFIRST_GENERATED_WEIGHT_LAYOUT
+// Older exact-selection fixtures predate the layout field in the generated
+// registry; their build-axis definition remains the authority.
+#define SCALEFIRST_GENERATED_WEIGHT_LAYOUT SCALEFIRST_SWEEP_WEIGHT_LAYOUT
+#endif
 static_assert(SCALEFIRST_SWEEP_WEIGHT_LAYOUT == 0 ||
-                  SCALEFIRST_SWEEP_WEIGHT_LAYOUT == 1);
-static_assert(SCALEFIRST_SWEEP_WEIGHT_LAYOUT == 0 ||
+                  SCALEFIRST_SWEEP_WEIGHT_LAYOUT == 1 ||
+                  SCALEFIRST_SWEEP_WEIGHT_LAYOUT == 2);
+static_assert(SCALEFIRST_SWEEP_WEIGHT_LAYOUT != 1 ||
                   (SCALEFIRST_SWEEP_QTYPE == 12 &&
                    SCALEFIRST_SWEEP_ARTIFACT_TK == 0 &&
                    SCALEFIRST_SWEEP_BCHUNK == 0),
               "K-pack4 ScaleFirst target is Q4/A0/bchunk0 only");
+static_assert(SCALEFIRST_SWEEP_WEIGHT_LAYOUT != 2 ||
+                  ((SCALEFIRST_SWEEP_QTYPE == 10 ||
+                    SCALEFIRST_SWEEP_QTYPE == 11 ||
+                    SCALEFIRST_SWEEP_QTYPE == 13 ||
+                    SCALEFIRST_SWEEP_QTYPE == 14) &&
+                   SCALEFIRST_SWEEP_ARTIFACT_TK == 0 &&
+                   SCALEFIRST_SWEEP_BCHUNK == 0),
+              "generic K-pack ScaleFirst target is Q2/Q3/Q5/Q6 A0/bchunk0 only");
 static_assert(SCALEFIRST_SWEEP_QTYPE == SCALEFIRST_GENERATED_QTYPE);
 static_assert(SCALEFIRST_SWEEP_ARTIFACT_TK == SCALEFIRST_GENERATED_ARTIFACT_TK);
 static_assert(SCALEFIRST_SWEEP_BCHUNK == SCALEFIRST_GENERATED_BCHUNK);
+static_assert(SCALEFIRST_SWEEP_WEIGHT_LAYOUT ==
+                  SCALEFIRST_GENERATED_WEIGHT_LAYOUT);
 static_assert(SCALEFIRST_SWEEP_QTYPE != 8 ||
                   SCALEFIRST_SWEEP_ARTIFACT_TK == 32,
               "Q8 has one canonical A32 artifact");
@@ -57,7 +73,7 @@ extern "C" int quactlize_ppu_recover_dense_for_tile(
     int, int, int, int);
 
 namespace scalefirst_internal_sweep_generated {
-#define SCALEFIRST_DECLARE(FN,Q,A,TM,TN,TK,WM,WN,ST,BC)               \
+#define SCALEFIRST_DECLARE(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP,DN)         \
   bool FN(scalefirst_internal_sweep::DeviceInputs const&,             \
           scalefirst_internal_sweep::Options const&,                  \
           scalefirst_internal_sweep::RowResult&);
@@ -71,8 +87,8 @@ using namespace scalefirst_internal_sweep;
 
 std::vector<RegistryRow> registry() {
   return {
-#define SCALEFIRST_REGISTER(FN,Q,A,TM,TN,TK,WM,WN,ST,BC)              \
-    {#FN,Q,A,TM,TN,TK,WM,WN,ST,BC,                                   \
+#define SCALEFIRST_REGISTER(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP,DN)        \
+    {#FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP,DN,                              \
      &scalefirst_internal_sweep_generated::FN},
     SCALEFIRST_REGISTRY_ROWS(SCALEFIRST_REGISTER)
 #undef SCALEFIRST_REGISTER
@@ -326,8 +342,11 @@ constexpr int group_size() {
          SCALEFIRST_SWEEP_QTYPE == 13 ? 32 : 16;
 }
 constexpr bool has_zero() {
-  return SCALEFIRST_SWEEP_QTYPE == 10 || SCALEFIRST_SWEEP_QTYPE == 12 ||
-         SCALEFIRST_SWEEP_QTYPE == 13;
+  return SCALEFIRST_SWEEP_QTYPE >= 10 && SCALEFIRST_SWEEP_QTYPE <= 14;
+}
+constexpr int converter_zero_multiplier() {
+  return SCALEFIRST_SWEEP_QTYPE == 11 ? -4 :
+         SCALEFIRST_SWEEP_QTYPE == 14 ? -24 : 0;
 }
 
 int code_value(int n, int k) {
@@ -420,6 +439,27 @@ void put_native(std::vector<std::uint8_t>& plane, int bits, int n, int k,
   plane[bit >> 3] |= std::uint8_t(value << (bit & 7));
 }
 
+template <bool Recover>
+int transform_generic_kpack(std::uint8_t const* low_in,
+                            std::uint8_t const* high_in,
+                            std::uint8_t* low_out,
+                            std::uint8_t* high_out,
+                            int n, int k) {
+  if constexpr (SCALEFIRST_SWEEP_QTYPE == 10)
+    return kquant_kpack::transform<2, 0, 16, Recover>(
+        low_in, high_in, low_out, high_out, n, k);
+  if constexpr (SCALEFIRST_SWEEP_QTYPE == 11)
+    return kquant_kpack::transform<2, 1, 16, Recover>(
+        low_in, high_in, low_out, high_out, n, k);
+  if constexpr (SCALEFIRST_SWEEP_QTYPE == 13)
+    return kquant_kpack::transform<4, 1, 32, Recover>(
+        low_in, high_in, low_out, high_out, n, k);
+  if constexpr (SCALEFIRST_SWEEP_QTYPE == 14)
+    return kquant_kpack::transform<4, 2, 16, Recover>(
+        low_in, high_in, low_out, high_out, n, k);
+  return 25;
+}
+
 struct Fixture {
   std::vector<half_t> a, scales, zeros, golden;
   std::vector<std::uint8_t> low_native, high_native, low, high;
@@ -508,11 +548,12 @@ Fixture make_fixture(Shape shape, FixtureMode mode, TagRound tag_round) {
       if (mode == FixtureMode::ScaleNTag) scale = float(n + 1);
       f.scales[std::size_t(g) * shape.n + n] = half_t(scale);
       if constexpr (has_zero()) {
-        float zero = !fixture_uses_varied_zero(mode) ? 0.f :
-                     float(((11 * g + 7 * n) % 3 - 1) * 3);
-        if (mode == FixtureMode::ZeroGroupTag) zero = float(g + 1);
-        if (mode == FixtureMode::ZeroNTag) zero = float(n + 1);
-        f.zeros[std::size_t(g) * shape.n + n] = half_t(zero);
+        float affine_zero = !fixture_uses_varied_zero(mode) ? 0.f :
+                            float(((11 * g + 7 * n) % 3 - 1) * 3);
+        if (mode == FixtureMode::ZeroGroupTag) affine_zero = float(g + 1);
+        if (mode == FixtureMode::ZeroNTag) affine_zero = float(n + 1);
+        f.zeros[std::size_t(g) * shape.n + n] = half_t(
+            affine_zero + converter_zero_multiplier() * scale);
       }
     }
 
@@ -541,14 +582,20 @@ Fixture make_fixture(Shape shape, FixtureMode mode, TagRound tag_round) {
       f.scales.begin(), f.scales.end(), [](half_t value) {
         return float(value) == 1.f;
       });
-  bool const zero_varied = !has_zero() || std::adjacent_find(
-      f.zeros.begin(), f.zeros.end(), [](half_t a, half_t b) {
-        return float(a) != float(b);
-      }) != f.zeros.end();
-  bool const zero_is_zero = !has_zero() || std::all_of(
-      f.zeros.begin(), f.zeros.end(), [](half_t value) {
-        return float(value) == 0.f;
-      });
+  bool zero_varied = !has_zero();
+  bool zero_is_zero = !has_zero();
+  if constexpr (has_zero()) {
+    std::vector<float> affine_zero(f.zeros.size());
+    for (std::size_t i = 0; i < f.zeros.size(); ++i)
+      affine_zero[i] = float(f.zeros[i]) -
+          converter_zero_multiplier() * float(f.scales[i]);
+    zero_varied = std::adjacent_find(
+        affine_zero.begin(), affine_zero.end(), std::not_equal_to<float>{}) !=
+        affine_zero.end();
+    zero_is_zero = std::all_of(
+        affine_zero.begin(), affine_zero.end(),
+        [](float value) { return value == 0.f; });
+  }
   if (is_tag_fixture(mode)) {
     bool const code_is_zero = std::all_of(
         kmajor.begin(), kmajor.end(), [](std::uint8_t code) {
@@ -594,6 +641,43 @@ Fixture make_fixture(Shape shape, FixtureMode mode, TagRound tag_round) {
         shape.n, shape.k, SCALEFIRST_SWEEP_QTYPE, &arrangement);
     f.roundtrip = direct_recover_rc == 0 && abi_recover_rc == 0 &&
                   direct_back == low_back && low_back == f.low_native;
+  }
+#elif SCALEFIRST_SWEEP_WEIGHT_LAYOUT == 2
+  {
+    auto const arrangement =
+        ppu_arrangements::kquant_kpack_transpose_v1(
+            SCALEFIRST_SWEEP_QTYPE);
+    std::vector<std::uint8_t> direct_low(f.low.size(), std::uint8_t(0xcd));
+    std::vector<std::uint8_t> direct_high(
+        f.high.size(), std::uint8_t(0xcd));
+    int const direct_rc = transform_generic_kpack<false>(
+        f.low_native.data(), HB ? f.high_native.data() : nullptr,
+        direct_low.data(), HB ? direct_high.data() : nullptr,
+        shape.n, shape.k);
+    int const abi_rc = quactlize_ppu_prepare_dense_for_arrangement_v2(
+        f.low_native.data(), HB ? f.high_native.data() : nullptr,
+        f.low.data(), HB ? f.high.data() : nullptr,
+        shape.n, shape.k, SCALEFIRST_SWEEP_QTYPE, &arrangement);
+    if (direct_rc != 0 || abi_rc != 0 || direct_low != f.low ||
+        direct_high != f.high) return f;
+    std::vector<std::uint8_t> direct_low_back(f.low_native.size(),
+                                              std::uint8_t(0xab));
+    std::vector<std::uint8_t> direct_high_back(f.high_native.size(),
+                                               std::uint8_t(0xab));
+    std::vector<std::uint8_t> low_back(f.low_native.size());
+    std::vector<std::uint8_t> high_back(f.high_native.size());
+    int const direct_recover_rc = transform_generic_kpack<true>(
+        f.low.data(), HB ? f.high.data() : nullptr,
+        direct_low_back.data(), HB ? direct_high_back.data() : nullptr,
+        shape.n, shape.k);
+    int const abi_recover_rc = quactlize_ppu_recover_dense_for_arrangement_v2(
+        f.low.data(), HB ? f.high.data() : nullptr,
+        low_back.data(), HB ? high_back.data() : nullptr,
+        shape.n, shape.k, SCALEFIRST_SWEEP_QTYPE, &arrangement);
+    f.roundtrip = direct_recover_rc == 0 && abi_recover_rc == 0 &&
+                  direct_low_back == low_back && low_back == f.low_native &&
+                  direct_high_back == high_back &&
+                  high_back == f.high_native;
   }
 #else
 #if SCALEFIRST_SWEEP_QTYPE == 8
@@ -645,7 +729,8 @@ Fixture make_fixture(Shape shape, FixtureMode mode, TagRound tag_round) {
         int const g = k / GS;
         float const scale = float(f.scales[std::size_t(g) * shape.n + n]);
         float const zero = has_zero() ?
-            float(f.zeros[std::size_t(g) * shape.n + n]) : 0.f;
+            float(f.zeros[std::size_t(g) * shape.n + n]) -
+                converter_zero_multiplier() * scale : 0.f;
         sum += float(f.a[std::size_t(m) * shape.k + k]) *
             (scale * decoded_value(fixture_code(mode, n, k)) + zero);
       }
@@ -830,7 +915,8 @@ int run_shape(Shape shape, Cli const& cli, int device, int cu,
         std::printf(
             "SF_CELL {\"shape\":\"%dx%dx%d\",\"qtype\":%d,"
             "\"artifact_tile_k\":%d,\"bchunk\":%d,\"symbol\":\"%s\","
-            "\"config\":\"%dx%dx%d_w%dx%d_s%d_bc%d\","
+            "\"a_provider\":%d,\"resolved_delivery_n\":%d,"
+            "\"config\":\"%dx%dx%d_w%dx%d_s%d_bc%d_ap%d_dn%d\","
             "\"algorithm\":\"%s\",\"metric_scope\":\"%s\","
             "\"policy\":\"%s\",\"split\":%d,\"grid\":%d,"
             "\"occupancy\":%d,\"capacity_b_mask\":\"0x%llx\","
@@ -843,9 +929,12 @@ int run_shape(Shape shape, Cli const& cli, int device, int cu,
             "\"split_smem\":%zu,\"execution_ordinal\":%zu}\n",
             shape.m, shape.n, shape.k, SCALEFIRST_SWEEP_QTYPE,
             SCALEFIRST_SWEEP_ARTIFACT_TK, SCALEFIRST_SWEEP_BCHUNK,
-            registry_row.symbol, registry_row.tm, registry_row.tn,
+            registry_row.symbol, registry_row.a_provider,
+            registry_row.resolved_delivery_n, registry_row.tm, registry_row.tn,
             registry_row.tk, registry_row.wm, registry_row.wn,
-            registry_row.stages, registry_row.bchunk, cell.algorithm,
+            registry_row.stages, registry_row.bchunk,
+            registry_row.a_provider, registry_row.resolved_delivery_n,
+            cell.algorithm,
             cell.metric_scope, cell.policy, cell.split, cell.grid,
             cell.occupancy,
             static_cast<unsigned long long>(cell.capacity_b_mask),
@@ -908,7 +997,8 @@ int main(int argc, char** argv) {
       SCALEFIRST_SWEEP_BCHUNK, SCALEFIRST_GENERATED_TYPED_ROWS,
       SCALEFIRST_SWEEP_WEIGHT_LAYOUT,
       static_cast<unsigned long long>(
-          SCALEFIRST_SWEEP_WEIGHT_LAYOUT == 1 ? q4_kpack4::kMappingId : 0),
+          SCALEFIRST_SWEEP_WEIGHT_LAYOUT == 1 ? q4_kpack4::kMappingId :
+          SCALEFIRST_SWEEP_WEIGHT_LAYOUT == 2 ? kquant_kpack::kMappingId : 0),
       rows.size(), cli.algorithm_mask, device, cu, cli.iterations, cli.repeats,
       static_cast<unsigned long long>(cli.schedule_seed));
   for (auto const& shape : cli.shapes) {

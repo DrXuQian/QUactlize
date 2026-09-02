@@ -122,7 +122,7 @@ using RunRow = bool (*)(DeviceInputs const&, Options const&, RowResult&);
 struct RegistryRow {
   char const* symbol;
   int qtype, artifact_tile_k;
-  int tm, tn, tk, wm, wn, stages, bchunk, a_provider;
+  int tm, tn, tk, wm, wn, stages, bchunk, a_provider, resolved_delivery_n;
   RunRow run;
 };
 
@@ -215,25 +215,36 @@ struct TcRowTypes {
                 "generated A provider is ordinary(0) or packed-row(1)");
   static constexpr bool use_packed_a = AProvider == 1;
   static_assert(!use_packed_a || (TM == 8 && WM == 8 &&
-      std::is_void_v<High> && ppu_tactics::artifact_low_fold(candidate) == 1),
-      "packed-row A is the exact TM8/WM8 unfolded one-plane provider");
+      std::is_void_v<High> &&
+      (WeightLayout != 0 ||
+       ppu_tactics::artifact_low_fold(candidate) == 1)),
+      "packed-row A is the exact TM8/WM8 one-plane provider");
   using PackedA = fpa_intb_ppu::DensePackedAKernelTypes<
       1, QuantMode::FinegrainedScaleZero, Schedule, Tile, ScaleTile, Warp,
       Stages, true, Low, ArtifactTileK>;
-  static_assert(WeightLayout == 0 || WeightLayout == 1,
-                "generated weight layout is xplane(0) or Q4 K-pack4(1)");
+  static_assert(WeightLayout == 0 || WeightLayout == 1 || WeightLayout == 2,
+                "generated weight layout is xplane(0), Q4 K-pack4(1), or generic K-pack(2)");
   static constexpr bool use_kpack4 = WeightLayout == 1;
+  static constexpr bool use_kpack = WeightLayout == 2;
   static_assert(!use_kpack4 ||
                     (QType == 12 && ArtifactTileK == 0 && BChunk == 0 &&
                      std::is_void_v<High>),
                 "K-pack4 denominator is Q4/one-plane/bchunk0 only");
-  static_assert(use_kpack4 || KPack4DeliveryN == 0,
-                "a K-pack4 delivery N cannot affect an xplane row");
+  static_assert(!use_kpack ||
+                    (QType != 12 && ArtifactTileK == 0 && BChunk == 0),
+                "generic K-pack denominator is Q2/Q3/Q5/Q6/A0/bchunk0 only");
+  static_assert(use_kpack4 || use_kpack || KPack4DeliveryN == 0,
+                "a K-pack delivery N cannot affect an xplane row");
   using LegacyShipping = std::conditional_t<use_packed_a, PackedA, Ordinary>;
   using KPack4 = fpa_intb_ppu::DenseQ4KPack4KernelTypes<
       QuantMode::FinegrainedScaleZero, Schedule, Tile, ScaleTile, Warp,
       Stages, true, use_packed_a ? 1 : 0, KPack4DeliveryN>;
-  using Shipping = std::conditional_t<use_kpack4, KPack4, LegacyShipping>;
+  using KPack = fpa_intb_ppu::DenseKPackKernelTypes<
+      QuantMode::FinegrainedScaleZero, Schedule, Tile, ScaleTile, Warp,
+      Stages, true, Low, High, use_packed_a ? 1 : 0, KPack4DeliveryN>;
+  using Shipping = std::conditional_t<
+      use_kpack4, KPack4,
+      std::conditional_t<use_kpack, KPack, LegacyShipping>>;
   using Split = dense_splitk_parallel_ppu::KernelTypes<Shipping, Tile, Warp>;
   using ShippingGemm = typename Shipping::Gemm;
   using ShippingKernel = typename Shipping::GemmKernel;
@@ -278,10 +289,24 @@ struct TcRowTypes {
                     (KPack4MainloopSelected<Mainloop>::value &&
                      KPack4MainloopDelivery<Mainloop>::value ==
                          KPack4DeliveryN &&
+                     Shipping::MainloopPolicy::Descriptor::
+                             kpack4_resolved_delivery_n == KPack4DeliveryN &&
                      std::is_same_v<
                          typename Shipping::MainloopPolicy::Descriptor::BProviderType,
                          ppu_mixed_policy::KPack4TransposedBProvider>),
                 "K-pack4 generated row must retain its named production provider");
+  static_assert(!use_kpack ||
+                    (Shipping::MainloopPolicy::Descriptor::kpack_transpose &&
+                     Shipping::MainloopPolicy::Descriptor::artifact_tile_k == 0 &&
+                     Shipping::MainloopPolicy::Descriptor::kpack_scheduled_delivery_n ==
+                         KPack4DeliveryN &&
+                     Shipping::MainloopPolicy::Descriptor::kpack_resolved_delivery_n ==
+                         KPack4DeliveryN &&
+                     Shipping::MainloopPolicy::Descriptor::low_bits ==
+                         ElementBits<Low>::value &&
+                     Shipping::MainloopPolicy::Descriptor::high_bits ==
+                         ElementBits<High>::value),
+                "generic K-pack row must retain its canonical transposed provider");
 };
 
 template <int QType, int ArtifactTileK, int TM, int TN, int TK,

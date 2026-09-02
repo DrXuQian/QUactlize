@@ -4,16 +4,16 @@
 namespace scalefirst_internal_sweep_generated {
 
 #if defined(SCALEFIRST_TYPE_ONLY)
-#define SCALEFIRST_DEFINE(FN,Q,A,TM,TN,TK,WM,WN,ST,BC)                 \
+#define SCALEFIRST_DEFINE(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP,DN)           \
   static_assert(scalefirst_internal_sweep::admit_row_type<            \
-      Q,A,TM,TN,TK,WM,WN,ST,BC>(), #FN " type admission failed");
+      Q,A,TM,TN,TK,WM,WN,ST,BC,SCALEFIRST_SWEEP_WEIGHT_LAYOUT,AP,DN>(), #FN " type admission failed");
 #else
-#define SCALEFIRST_DEFINE(FN,Q,A,TM,TN,TK,WM,WN,ST,BC)                 \
+#define SCALEFIRST_DEFINE(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP,DN)           \
   bool FN(scalefirst_internal_sweep::DeviceInputs const& inputs,      \
           scalefirst_internal_sweep::Options const& options,          \
           scalefirst_internal_sweep::RowResult& result) {             \
     return scalefirst_internal_sweep::run_row<                        \
-        Q,A,TM,TN,TK,WM,WN,ST,BC>(inputs, options, result);           \
+        Q,A,TM,TN,TK,WM,WN,ST,BC,SCALEFIRST_SWEEP_WEIGHT_LAYOUT,AP,DN>(inputs, options, result); \
   }
 #endif
 

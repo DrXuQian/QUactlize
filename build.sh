@@ -191,6 +191,12 @@ if [ "$TARGET" = "test_lowbit_dense_splitk_sweep" ]; then
   # failure or silently remove the eventual winner.
   python3 "$HERE/ci/check_dense_splitk_sweep_contract.py" || exit 1
 fi
+if [ "$TARGET" = "test_fq_splitk_reducer_lookup" ]; then
+  # This target's generated include is the workload denominator.  Prove its
+  # exact 1001-dense-cell -> 345-M/N -> 1035-M/N/S derivation before consulting
+  # the SDK or asking hgcc to compile the production reducer.
+  python3 "$HERE/tools/plan_fq_splitk_reducer_lookup.py" self-test || exit 1
+fi
 if [ "$TARGET" = "test_lowbit_dense_streamk_sweep" ]; then
   # This target is a filtered scheduler-specific registry rather than the
   # ordinary dense table.  Prove its independent denominator and direct
@@ -224,31 +230,46 @@ export QUACTLIZE_ROOT="$HERE"
 export QUACTLIZE_SRC_DIRS="${_src_dirs[*]}$([ -d "$HERE/dev" ] && echo " dev")"
 export QUACTLIZE_GEMV_DIR="$HERE/$_subdir_src"
 export QUACTLIZE_CMAKE="$HERE/quactlize/csrc/CMakeLists.txt.in"
-if [ -x "$HERE/dev/fold_derivation/cmake_calls_check.sh" ]; then
-  "$HERE/dev/fold_derivation/cmake_calls_check.sh" || exit 1
-fi
-# NVIDIA-only spellings in CMake-registered PPU sources.  The checker is SDK-free but evaluates the box's live
-# preprocessor branch; an unregistered NVIDIA benchmark is N/A, while registering that same TU is a planted FAIL.
-if [ -x "$HERE/dev/fold_derivation/ppu_portability_check.py" ]; then
-  "$HERE/dev/fold_derivation/ppu_portability_check.py" || exit 1
-fi
-# The unit generators, run against the axis lists rather than a written-down count. A malformed row once
-# produced the RIGHT unit count out of the wrong iterations, so the configure log looked correct.
-if [ -x "$HERE/dev/fold_derivation/gen_gemv_units_check.sh" ]; then
-  "$HERE/dev/fold_derivation/gen_gemv_units_check.sh" || exit 1
-fi
-# THE ONE THAT WOULD HAVE SAVED TWO BOX ROUND-TRIPS. CMakeLists.txt names sources and this script decides which
-# directories are copied; the two lists live in different files, in different languages, and nothing compared them
-# until cmake ran on the accelerator. A source CMake names but the overlay lacks is a CONFIGURE-time error, so it
-# fails for EVERY target at once and the message names only whichever file it tripped over first.
-if [ -x "$HERE/dev/fold_derivation/overlay_targets_check.py" ]; then
-  "$HERE/dev/fold_derivation/overlay_targets_check.py" || exit 1
-fi
-# The MoE sweep's generator, the sibling of gen_gemv_units_check above. It was called from nowhere and its path to
-# CMakeLists.txt had been stale since the reorganisation -- two facts that hid each other, since an uncalled check
-# cannot report a broken path.
-if [ -x "$HERE/dev/fold_derivation/gen_moe_units_check.sh" ]; then
-  "$HERE/dev/fold_derivation/gen_moe_units_check.sh" || exit 1
+_KPACK_GLOBAL_PREFLIGHT="${QUACTLIZE_KPACK_GLOBAL_PREFLIGHT_RECEIPT:-}"
+if [ -n "$_KPACK_GLOBAL_PREFLIGHT" ]; then
+  # Exhaustive K-pack bundles contain thousands of independent build.sh
+  # invocations. These five checks inspect only committed repository-global
+  # inputs, so the bundle builder may run them once and pass the immutable
+  # receipt. The verifier binds it to the live HEAD/tree, clean relevant
+  # worktree, recursive submodules and checker/input hashes. Nothing below
+  # this block (target/generated-dir/CMake/source/SDK validation) is cached.
+  [ -f "$HERE/tools/kpack_global_build_preflight.py" ] || {
+    echo "ERROR: K-pack global preflight verifier is missing." >&2; exit 1; }
+  python3 -B "$HERE/tools/kpack_global_build_preflight.py" verify \
+    --root "$HERE" --receipt "$_KPACK_GLOBAL_PREFLIGHT" || exit 1
+  echo "[build.sh] repository-global checks reused from $_KPACK_GLOBAL_PREFLIGHT"
+else
+  if [ -x "$HERE/dev/fold_derivation/cmake_calls_check.sh" ]; then
+    "$HERE/dev/fold_derivation/cmake_calls_check.sh" || exit 1
+  fi
+  # NVIDIA-only spellings in CMake-registered PPU sources.  The checker is SDK-free but evaluates the box's live
+  # preprocessor branch; an unregistered NVIDIA benchmark is N/A, while registering that same TU is a planted FAIL.
+  if [ -x "$HERE/dev/fold_derivation/ppu_portability_check.py" ]; then
+    "$HERE/dev/fold_derivation/ppu_portability_check.py" || exit 1
+  fi
+  # The unit generators, run against the axis lists rather than a written-down count. A malformed row once
+  # produced the RIGHT unit count out of the wrong iterations, so the configure log looked correct.
+  if [ -x "$HERE/dev/fold_derivation/gen_gemv_units_check.sh" ]; then
+    "$HERE/dev/fold_derivation/gen_gemv_units_check.sh" || exit 1
+  fi
+  # THE ONE THAT WOULD HAVE SAVED TWO BOX ROUND-TRIPS. CMakeLists.txt names sources and this script decides which
+  # directories are copied; the two lists live in different files, in different languages, and nothing compared them
+  # until cmake ran on the accelerator. A source CMake names but the overlay lacks is a CONFIGURE-time error, so it
+  # fails for EVERY target at once and the message names only whichever file it tripped over first.
+  if [ -x "$HERE/dev/fold_derivation/overlay_targets_check.py" ]; then
+    "$HERE/dev/fold_derivation/overlay_targets_check.py" || exit 1
+  fi
+  # The MoE sweep's generator, the sibling of gen_gemv_units_check above. It was called from nowhere and its path to
+  # CMakeLists.txt had been stale since the reorganisation -- two facts that hid each other, since an uncalled check
+  # cannot report a broken path.
+  if [ -x "$HERE/dev/fold_derivation/gen_moe_units_check.sh" ]; then
+    "$HERE/dev/fold_derivation/gen_moe_units_check.sh" || exit 1
+  fi
 fi
 
 # The checks above live under dev/fold_derivation and are absent from a main-branch checkout, where the `-x` test
@@ -315,13 +336,26 @@ BUILD_SOURCE_SHA="$(git -C "$HERE" rev-parse HEAD 2>/dev/null)" || {
 }
 BUILD_SOURCE_AUTHORITY="$BUILD/.quactlize-source-head"
 BUILD_SOURCE_DIRTY="$BUILD/.quactlize-source-dirty"
-# An old tree has products in the submodule. Say so rather than leaving two candidates for `find` to pick from.
-for _stale in "$ACTLIZE/build_w4a16_compare" "$HERE/build_w4a16_compare"; do
-  if [ -d "$_stale" ] && [ "$BUILD" != "$_stale" ]; then
-    echo "[build.sh] removing the stale build tree $_stale"
-    rm -rf "$_stale"
-  fi
-done
+# An ordinary interactive build keeps the historical cleanup.  Reproducible
+# bundle builders own one external scratch directory and must not mutate any
+# unrelated repository/submodule build tree, so they opt out explicitly.
+PRESERVE_STALE_BUILD_TREES="${PPU_PRESERVE_STALE_BUILD_TREES:-0}"
+case "$PRESERVE_STALE_BUILD_TREES" in
+  0|1) ;;
+  *) echo "ERROR: PPU_PRESERVE_STALE_BUILD_TREES must be 0 or 1 (got $PRESERVE_STALE_BUILD_TREES)." >&2; exit 2 ;;
+esac
+if [ "$PRESERVE_STALE_BUILD_TREES" = 0 ]; then
+  # An old tree has products in the submodule. Say so rather than leaving two
+  # candidates for `find` to pick from.
+  for _stale in "$ACTLIZE/build_w4a16_compare" "$HERE/build_w4a16_compare"; do
+    if [ -d "$_stale" ] && [ "$BUILD" != "$_stale" ]; then
+      echo "[build.sh] removing the stale build tree $_stale"
+      rm -rf "$_stale"
+    fi
+  done
+else
+  echo "[build.sh] preserving unrelated stale build trees"
+fi
 # EXPLICIT SOURCE DIRECTORY. `cmake ..` only meant "the actlize root" while $BUILD was inside it; once the build
 # directory became overridable, `..` resolved to wherever that happened to be. Naming the source is both correct and
 # independent of where the build lands.
@@ -381,9 +415,15 @@ _SWEEP_VARS=()
 for _v in MOE_FORMATS MOE_TM_LIST MOE_TN_LIST MOE_WM_LIST MOE_STAGES MOE_CORES GEMV_GROUPS \
           FQ_SWEEP_GENERATED_DIR FQ_A02_Q3_GENERATED_DIR FQ_SWEEP_QTYPE FQ_SWEEP_ARTIFACT_TK \
           FQ_SWEEP_BCHUNK FQ_SWEEP_PACKED_FORMAT FQ_SWEEP_WEIGHT_LAYOUT \
+          FQ_GROUPED_KPACK_GENERATED_DIR FQ_GROUPED_KPACK_QTYPE \
+          FQ_GROUPED_KPACK_WEIGHT_LAYOUT FQ_GROUPED_KPACK_PACKED_FORMAT \
           SCALEFIRST_SWEEP_GENERATED_DIR SCALEFIRST_SWEEP_QTYPE \
           SCALEFIRST_SWEEP_ARTIFACT_TK SCALEFIRST_SWEEP_BCHUNK \
-          SCALEFIRST_SWEEP_WEIGHT_LAYOUT FQ_KQUANT_PERF_QTYPE; do
+          SCALEFIRST_SWEEP_WEIGHT_LAYOUT \
+          SCALEFIRST_GROUPED_KPACK_GENERATED_DIR \
+          SCALEFIRST_GROUPED_KPACK_QTYPE \
+          SCALEFIRST_GROUPED_KPACK_WEIGHT_LAYOUT \
+          FQ_KQUANT_PERF_QTYPE; do
   if [ -n "${!_v:-}" ]; then _SWEEP_VARS+=("-D$_v=${!_v}"); echo "[build.sh] $_v=${!_v}"; fi
 done
 # NO GOOGLETEST CLONE. actlize's CMakeLists.txt:423 clones github.com/google/googletest when
@@ -430,6 +470,9 @@ done
 # Everything this build needs is a submodule. If something ever legitimately needs fetching, the loud error is the
 # correct first outcome -- it forces the choice to be vendored deliberately rather than acquired by a clone.
 _CMAKE_SRC="$HERE"; _CMAKE_EXTRA=(-DQUACTLIZE_PPU=ON)
+if [ "$TARGET" = "test_fq_splitk_reducer_lookup" ]; then
+  _CMAKE_EXTRA+=(-DFQ_SPLITK_REDUCER_LOOKUP_ENABLE=ON)
+fi
 cmake "$_CMAKE_SRC" "${_CMAKE_EXTRA[@]}" -DPPU_SDK_ROOT="$PPU_SDK_ROOT" -DCUTLASS_PPU_ARCHS="$ARCH" \
   -DCUTLASS_ENABLE_TESTS=OFF -DCUTLASS_ENABLE_GTEST_UNIT_TESTS=OFF \
   -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
@@ -549,6 +592,10 @@ case "$TARGET" in
     echo "inspect only; this target has no host link and must not be launched:"
     echo "       $PPU_SDK_ROOT/bin/hgobjdump --list-elf $BIN"
     echo "       $PPU_SDK_ROOT/bin/hgobjdump --dump-isa $BIN" ;;
+  test_fq_splitk_reducer_lookup)
+    echo "plan:  $BUILD/ppu_targets/fq_splitk_reducer_lookup/reducer-plan.json"
+    echo "run:   $BIN --round=1 --schedule-seed=0x6a09e667f3bcc909 --warmups=3 --samples=11"
+    echo "shard: add --case-begin=0 --case-end=64 (half-open exact ordinal range)" ;;
   test_moe_grouped_verify)
     echo "run:   $BIN [L] [Mb] [ragged?] [gs]      # POSITIONAL, no --flags"
     echo "       $BIN 8 1                          # Mmax==1, required by PPU_A_CUBE_H=1"

@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 
@@ -117,6 +118,73 @@ extern "C" int hggcDriverGetVersion(int* version) { *version=12010; return 0; }
                              text=True, stdout=subprocess.PIPE, check=True)
         parsed_two = PROBE._parse_runtime_wire(two.stdout)
         assert [row["ordinal"] for row in parsed_two["candidates"]] == [0, 1]
+
+        # The new bundle path must execute this already-built image without
+        # consulting the SDK headers or CXX.  Poisoning both inputs makes a
+        # hidden fallback to _probe_compile_command immediately visible.
+        no_build = {
+            **os.environ,
+            "QZ_MOCK_COUNT": "1",
+            "CXX": "/definitely/not/a/compiler",
+            "PPU_SDK": "/definitely/not/an/sdk",
+        }
+        original_compile = PROBE._probe_compile_command
+
+        def forbidden_compile(*_args, **_kwargs):
+            raise AssertionError(
+                "prebuilt runtime probe fell back to compilation")
+        PROBE._probe_compile_command = forbidden_compile
+        try:
+            parsed_prebuilt = PROBE._run_runtime_probe(no_build, binary)
+        finally:
+            PROBE._probe_compile_command = original_compile
+        assert parsed_prebuilt == parsed_one
+
+        parser = PROBE.make_parser()
+        parsed_cli = parser.parse_args([
+            "resolve", "--output", str(temp / "identity.json"),
+            "--runtime-probe-binary", str(binary),
+        ])
+        assert parsed_cli.runtime_probe_binary == str(binary)
+        cli_output = temp / "prebuilt-identity.json"
+        cli_run = subprocess.run([
+            sys.executable, str(ROOT / "tools" / "probe_box_identity.py"),
+            "resolve", "--output", str(cli_output),
+            "--runtime-probe-binary", str(binary),
+        ], env={**no_build, **ENV}, text=True, stdout=subprocess.PIPE,
+           stderr=subprocess.STDOUT)
+        assert cli_run.returncode == 0, cli_run.stdout
+        cli_document = json.loads(cli_output.read_text())
+        assert cli_document["device_probe"]["device_count"] == 1
+        assert cli_document["identity"]["device_model"] == {
+            "value": "Fixture-PPU-0", "source": "measured"}
+
+        missing = temp / "missing-probe"
+        expect_red(
+            "missing prebuilt probe",
+            lambda: PROBE._run_runtime_probe(no_build, missing),
+            "does not exist")
+        non_executable = temp / "non-executable-probe"
+        non_executable.write_text("#!/bin/sh\nexit 0\n")
+        non_executable.chmod(0o644)
+        expect_red(
+            "non-executable prebuilt probe",
+            lambda: PROBE._run_runtime_probe(no_build, non_executable),
+            "not executable")
+        failed = temp / "failed-probe"
+        failed.write_text("#!/bin/sh\nexit 23\n")
+        failed.chmod(0o755)
+        expect_red(
+            "failed prebuilt probe",
+            lambda: PROBE._run_runtime_probe(no_build, failed),
+            "rc=23")
+        malformed = temp / "malformed-probe"
+        malformed.write_text("#!/bin/sh\nprintf 'not-the-wire\\n'\n")
+        malformed.chmod(0o755)
+        expect_red(
+            "malformed prebuilt probe",
+            lambda: PROBE._run_runtime_probe(no_build, malformed),
+            "invalid prebuilt runtime probe output")
         return parsed_one, parsed_two
 
 
@@ -171,6 +239,11 @@ def main():
         sparse, sdk, no_pci_env), "is empty")
 
     compiled_one, compiled_two = compiled_runtime_probe()
+    link_command = PROBE._probe_compile_command(
+        Path("/fixture/sdk"), Path("/fixture/probe"), {"CXX": "c++"})
+    assert link_command.count("-Wl,--allow-shlib-undefined") == 1, (
+        "the build-only Ubuntu-22 path must tolerate the Ubuntu-24 SDK's "
+        "shared-library version references")
     compiled_doc = PROBE._resolve_from_observations(compiled_one, sdk, dict(ENV))
     assert compiled_doc["identity"]["pci_identity"] == {
         "value": "0000:02:00.0", "source": "measured"}
@@ -199,7 +272,7 @@ def main():
         assert writer_digest == hashlib.sha256(non_ascii_canonical).hexdigest(), (
             "probe producer and provenance writer disagree on canonical bytes")
 
-    print("box identity probe: PASS (compiled runtime, unique measured, 0/multi red, empty fallback, canonical schema)")
+    print("box identity probe: PASS (compiled+prebuilt runtime, no-build fallback, unique measured, 0/multi red, empty fallback, canonical schema)")
 
 
 if __name__ == "__main__":

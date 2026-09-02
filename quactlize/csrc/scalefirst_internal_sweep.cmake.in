@@ -13,9 +13,9 @@ if(SCALEFIRST_SWEEP_GENERATED_DIR)
       "${SCALEFIRST_SWEEP_WEIGHT_LAYOUT}" STREQUAL "")
     set(SCALEFIRST_SWEEP_WEIGHT_LAYOUT 0)
   endif()
-  if(NOT SCALEFIRST_SWEEP_WEIGHT_LAYOUT MATCHES "^[01]$")
+  if(NOT SCALEFIRST_SWEEP_WEIGHT_LAYOUT MATCHES "^[012]$")
     message(FATAL_ERROR
-      "ScaleFirst internal sweep: SCALEFIRST_SWEEP_WEIGHT_LAYOUT must be 0 or 1")
+      "ScaleFirst internal sweep: SCALEFIRST_SWEEP_WEIGHT_LAYOUT must be 0, 1 or 2")
   endif()
   if(SCALEFIRST_SWEEP_WEIGHT_LAYOUT EQUAL 1 AND NOT
       (SCALEFIRST_SWEEP_QTYPE EQUAL 12 AND
@@ -23,6 +23,16 @@ if(SCALEFIRST_SWEEP_GENERATED_DIR)
        SCALEFIRST_SWEEP_BCHUNK EQUAL 0))
     message(FATAL_ERROR
       "ScaleFirst internal sweep: K-pack4 requires q=12 A=0 bc=0")
+  endif()
+  if(SCALEFIRST_SWEEP_WEIGHT_LAYOUT EQUAL 2 AND NOT
+      ((SCALEFIRST_SWEEP_QTYPE EQUAL 10 OR
+        SCALEFIRST_SWEEP_QTYPE EQUAL 11 OR
+        SCALEFIRST_SWEEP_QTYPE EQUAL 13 OR
+        SCALEFIRST_SWEEP_QTYPE EQUAL 14) AND
+       SCALEFIRST_SWEEP_ARTIFACT_TK EQUAL 0 AND
+       SCALEFIRST_SWEEP_BCHUNK EQUAL 0))
+    message(FATAL_ERROR
+      "ScaleFirst internal sweep: generic K-pack requires q=10/11/13/14 A=0 bc=0")
   endif()
   get_filename_component(_SCALEFIRST_SWEEP_GENERATED_DIR
     "${SCALEFIRST_SWEEP_GENERATED_DIR}" ABSOLUTE)
@@ -63,10 +73,74 @@ if(SCALEFIRST_SWEEP_GENERATED_DIR)
     SCALEFIRST_SWEEP_WEIGHT_LAYOUT=${SCALEFIRST_SWEEP_WEIGHT_LAYOUT}
     PPU_PACKED_SCALE=0)
   target_compile_options(test_scalefirst_internal_sweep PRIVATE -w)
+  # SDK 2.1.1 is built on Ubuntu 24.04.  Build-only hosts may have an older
+  # glibc/libstdc++; keep those versioned references owned by the SDK wrapper.
+  # Device execution still requires the admitted Ubuntu-24 runtime.
+  target_link_options(test_scalefirst_internal_sweep BEFORE PRIVATE
+    "-Wl,--allow-shlib-undefined")
   list(LENGTH SCALEFIRST_GENERATED_UNIT_SOURCES _SCALEFIRST_UNIT_COUNT)
   message(STATUS
     "ScaleFirst internal sweep: q=${SCALEFIRST_SWEEP_QTYPE} "
     "A=${SCALEFIRST_SWEEP_ARTIFACT_TK} bc=${SCALEFIRST_SWEEP_BCHUNK} "
     "layout=${SCALEFIRST_SWEEP_WEIGHT_LAYOUT} "
     "units=${_SCALEFIRST_UNIT_COUNT}")
+endif()
+
+# Generated canonical K-pack grouped ScaleFirst discovery shard.  This target
+# is intentionally separate from every product/legacy grouped ABI and is inert
+# unless an exact generated source authority is supplied.
+if(SCALEFIRST_GROUPED_KPACK_GENERATED_DIR)
+  foreach(_required IN ITEMS SCALEFIRST_GROUPED_KPACK_QTYPE
+      SCALEFIRST_GROUPED_KPACK_WEIGHT_LAYOUT)
+    if(NOT DEFINED ${_required} OR "${${_required}}" STREQUAL "")
+      message(FATAL_ERROR
+        "grouped ScaleFirst K-pack discovery: ${_required} is required")
+    endif()
+  endforeach()
+  if(NOT "${SCALEFIRST_GROUPED_KPACK_QTYPE}" MATCHES "^(10|11|12|13|14)$" OR
+     NOT "${SCALEFIRST_GROUPED_KPACK_WEIGHT_LAYOUT}" MATCHES "^[12]$")
+    message(FATAL_ERROR
+      "grouped ScaleFirst K-pack discovery requires q12/layout1 or q10/11/13/14/layout2")
+  endif()
+  if((SCALEFIRST_GROUPED_KPACK_QTYPE EQUAL 12 AND NOT
+      SCALEFIRST_GROUPED_KPACK_WEIGHT_LAYOUT EQUAL 1) OR
+     (NOT SCALEFIRST_GROUPED_KPACK_QTYPE EQUAL 12 AND NOT
+      SCALEFIRST_GROUPED_KPACK_WEIGHT_LAYOUT EQUAL 2))
+    message(FATAL_ERROR
+      "grouped ScaleFirst K-pack discovery qtype/layout mapping differs")
+  endif()
+  get_filename_component(_SFG_GENERATED_DIR
+    "${SCALEFIRST_GROUPED_KPACK_GENERATED_DIR}" ABSOLUTE)
+  foreach(_file IN ITEMS units.cmake scalefirst_grouped_registry.inc manifest.json)
+    if(NOT EXISTS "${_SFG_GENERATED_DIR}/${_file}")
+      message(FATAL_ERROR
+        "grouped ScaleFirst K-pack authority lacks ${_file}: ${_SFG_GENERATED_DIR}")
+    endif()
+  endforeach()
+  include("${_SFG_GENERATED_DIR}/units.cmake")
+  qz_resolve_sources(_SFG_MAIN test_scalefirst_grouped_kpack_discovery.cu)
+  list(GET _SFG_MAIN 0 _SFG_MAIN)
+  set(_SFG_DEFS
+    "-I${_SFG_GENERATED_DIR}"
+    "-DSCALEFIRST_GROUPED_KPACK_QTYPE=${SCALEFIRST_GROUPED_KPACK_QTYPE}"
+    "-DSCALEFIRST_GROUPED_KPACK_WEIGHT_LAYOUT=${SCALEFIRST_GROUPED_KPACK_WEIGHT_LAYOUT}"
+    "-DPPU_PACKED_SCALE=0")
+  quactlize_ppu_executable(
+    test_scalefirst_grouped_kpack_discovery
+    "${_SFG_MAIN}"
+    ${SCALEFIRST_GROUPED_GENERATED_UNIT_SOURCES}
+    DEV_COMPILE_FLAGS ${_SFG_DEFS})
+  target_include_directories(test_scalefirst_grouped_kpack_discovery PRIVATE
+    "${_SFG_GENERATED_DIR}")
+  target_compile_definitions(test_scalefirst_grouped_kpack_discovery PRIVATE
+    SCALEFIRST_GROUPED_KPACK_QTYPE=${SCALEFIRST_GROUPED_KPACK_QTYPE}
+    SCALEFIRST_GROUPED_KPACK_WEIGHT_LAYOUT=${SCALEFIRST_GROUPED_KPACK_WEIGHT_LAYOUT}
+    PPU_PACKED_SCALE=0)
+  target_compile_options(test_scalefirst_grouped_kpack_discovery PRIVATE -w)
+  target_link_options(test_scalefirst_grouped_kpack_discovery BEFORE PRIVATE
+    "-Wl,--allow-shlib-undefined")
+  list(LENGTH SCALEFIRST_GROUPED_GENERATED_UNIT_SOURCES _SFG_UNIT_COUNT)
+  message(STATUS
+    "grouped ScaleFirst K-pack discovery: q=${SCALEFIRST_GROUPED_KPACK_QTYPE} "
+    "layout=${SCALEFIRST_GROUPED_KPACK_WEIGHT_LAYOUT} units=${_SFG_UNIT_COUNT}")
 endif()

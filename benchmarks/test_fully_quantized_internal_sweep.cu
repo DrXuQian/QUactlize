@@ -10,6 +10,7 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <random>
 #include <set>
 #include <string>
 #include <vector>
@@ -37,17 +38,20 @@
 #ifndef FQ_TC_KPACK4_DELIVERY_N
 #define FQ_TC_KPACK4_DELIVERY_N 0
 #endif
-static_assert(FQ_SWEEP_WEIGHT_LAYOUT == 0 || FQ_SWEEP_WEIGHT_LAYOUT == 1);
+static_assert(FQ_SWEEP_WEIGHT_LAYOUT == 0 || FQ_SWEEP_WEIGHT_LAYOUT == 1 ||
+                  FQ_SWEEP_WEIGHT_LAYOUT == 2);
 static_assert(FQ_TC_KPACK4_DELIVERY_N == 0 ||
                   FQ_TC_KPACK4_DELIVERY_N == 16 ||
                   FQ_TC_KPACK4_DELIVERY_N == 32 ||
                   FQ_TC_KPACK4_DELIVERY_N == 64);
-static_assert(FQ_SWEEP_WEIGHT_LAYOUT == 1 || FQ_TC_KPACK4_DELIVERY_N == 0,
-              "K-pack4 delivery N cannot affect an xplane sweep");
+static_assert(FQ_SWEEP_WEIGHT_LAYOUT != 0 || FQ_TC_KPACK4_DELIVERY_N == 0,
+              "K-pack delivery N cannot affect an xplane sweep");
 static_assert(FQ_SWEEP_WEIGHT_LAYOUT == 0 ||
-                  (FQ_SWEEP_QTYPE == 12 && FQ_SWEEP_ARTIFACT_TK == 0 &&
-                   FQ_SWEEP_BCHUNK == 0),
-              "the first K-pack4 closure is one Q4/ordinary-conversion shard");
+                  (FQ_SWEEP_ARTIFACT_TK == 0 && FQ_SWEEP_BCHUNK == 0 &&
+                   ((FQ_SWEEP_WEIGHT_LAYOUT == 1 && FQ_SWEEP_QTYPE == 12) ||
+                    (FQ_SWEEP_WEIGHT_LAYOUT == 2 &&
+                     FQ_SWEEP_QTYPE != 12))),
+              "canonical K-pack is Q4/layout1 or Q2/Q3/Q5/Q6/layout2 at A0/bc0");
 static_assert(FQ_SWEEP_QTYPE == FQ_TC_GENERATED_QTYPE);
 static_assert(FQ_SWEEP_ARTIFACT_TK == FQ_TC_GENERATED_ARTIFACT_TK);
 #if !defined(FQ_SWEEP_MIXED_BCHUNK_DIAGNOSTIC) || !FQ_SWEEP_MIXED_BCHUNK_DIAGNOSTIC
@@ -69,24 +73,37 @@ extern "C" int quactlize_ppu_recover_dense_for_tile(
 #if defined(FQ_SWEEP_MIXED_BCHUNK_DIAGNOSTIC) && FQ_SWEEP_MIXED_BCHUNK_DIAGNOSTIC
 #define FQ_TC_DECLARE_NS_0 fq_a02_q3_bc0_generated
 #define FQ_TC_DECLARE_NS_1 fq_a02_q3_bc1_generated
-#define FQ_TC_DECLARE(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP)                  \
+#define FQ_TC_DECLARE_12(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP,DN)            \
   namespace FQ_TC_DECLARE_NS_##BC {                                    \
   bool FN(fq_internal_sweep::DeviceInputs const&,                      \
           fq_internal_sweep::Options const&,                           \
           fq_internal_sweep::RowResult&);                              \
   }
+#define FQ_TC_DECLARE_11(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP) FQ_TC_DECLARE_12(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP,0)
+#define FQ_TC_PICK(_1,_2,_3,_4,_5,_6,_7,_8,_9,_10,_11,_12,NAME,...) NAME
+#define FQ_TC_DECLARE(...) FQ_TC_PICK(__VA_ARGS__,FQ_TC_DECLARE_12,FQ_TC_DECLARE_11)(__VA_ARGS__)
 FQ_TC_REGISTRY_ROWS(FQ_TC_DECLARE)
 #undef FQ_TC_DECLARE
 #else
 namespace fq_internal_sweep_generated {
-#define FQ_TC_DECLARE(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP)                  \
+#define FQ_TC_DECLARE_12(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP,DN)            \
   bool FN(fq_internal_sweep::DeviceInputs const&,                      \
           fq_internal_sweep::Options const&,                           \
           fq_internal_sweep::RowResult&);
+#define FQ_TC_DECLARE_11(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP) FQ_TC_DECLARE_12(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP,0)
+#define FQ_TC_PICK(_1,_2,_3,_4,_5,_6,_7,_8,_9,_10,_11,_12,NAME,...) NAME
+#define FQ_TC_DECLARE(...) FQ_TC_PICK(__VA_ARGS__,FQ_TC_DECLARE_12,FQ_TC_DECLARE_11)(__VA_ARGS__)
 FQ_TC_REGISTRY_ROWS(FQ_TC_DECLARE)
 #undef FQ_TC_DECLARE
+#undef FQ_TC_DECLARE_11
+#undef FQ_TC_DECLARE_12
+#undef FQ_TC_PICK
 }
 #endif
+#undef FQ_TC_DECLARE
+#undef FQ_TC_DECLARE_11
+#undef FQ_TC_DECLARE_12
+#undef FQ_TC_PICK
 
 namespace {
 
@@ -95,16 +112,22 @@ using namespace fq_internal_sweep;
 std::vector<RegistryRow> registry() {
   return {
 #if defined(FQ_SWEEP_MIXED_BCHUNK_DIAGNOSTIC) && FQ_SWEEP_MIXED_BCHUNK_DIAGNOSTIC
-#define FQ_TC_REGISTER(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP)                 \
-    {#FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP,                                 \
+#define FQ_TC_REGISTER_12(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP,DN)           \
+    {#FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP,DN,                              \
      &FQ_TC_DECLARE_NS_##BC::FN},
 #else
-#define FQ_TC_REGISTER(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP)                 \
-    {#FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP,                                 \
+#define FQ_TC_REGISTER_12(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP,DN)           \
+    {#FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP,DN,                              \
      &fq_internal_sweep_generated::FN},
 #endif
+#define FQ_TC_REGISTER_11(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP) FQ_TC_REGISTER_12(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP,0)
+#define FQ_TC_PICK(_1,_2,_3,_4,_5,_6,_7,_8,_9,_10,_11,_12,NAME,...) NAME
+#define FQ_TC_REGISTER(...) FQ_TC_PICK(__VA_ARGS__,FQ_TC_REGISTER_12,FQ_TC_REGISTER_11)(__VA_ARGS__)
     FQ_TC_REGISTRY_ROWS(FQ_TC_REGISTER)
 #undef FQ_TC_REGISTER
+#undef FQ_TC_REGISTER_11
+#undef FQ_TC_REGISTER_12
+#undef FQ_TC_PICK
   };
 }
 #if defined(FQ_SWEEP_MIXED_BCHUNK_DIAGNOSTIC) && FQ_SWEEP_MIXED_BCHUNK_DIAGNOSTIC
@@ -130,6 +153,7 @@ bool parse_shape(char const* text, Shape& out) {
 struct Cli {
   int iterations = 7;
   int repeats = 2;
+  std::uint64_t schedule_seed = UINT64_C(0x6a09e667f3bcc909);
   int only_split = 0;
   int tm8_max_m = ppu_dense_shipping::kDecodeDefaultExclusiveM - 1;
   enum class BcMode { All, Skip, Only } bc_mode = BcMode::All;
@@ -148,6 +172,10 @@ bool parse_cli(int argc, char** argv, Cli& cli) {
       cli.iterations = std::atoi(argv[i] + 13);
     } else if (!std::strncmp(argv[i], "--correctness-repeats=", 22)) {
       cli.repeats = std::atoi(argv[i] + 22);
+    } else if (!std::strncmp(argv[i], "--schedule-seed=", 16)) {
+      char* end = nullptr;
+      cli.schedule_seed = std::strtoull(argv[i] + 16, &end, 0);
+      if (!argv[i][16] || !end || *end) return false;
     } else if (!std::strncmp(argv[i], "--only-split=", 13)) {
       cli.only_split = std::atoi(argv[i] + 13);
     } else if (!std::strncmp(argv[i], "--tm8-max-m=", 12)) {
@@ -280,15 +308,22 @@ Fixture make_fixture(Shape shape) {
         put_native(f.high_native, high_bits, n, k, shape.n, shape.k,
                    code >> low_bits);
     }
-  if constexpr (FQ_SWEEP_WEIGHT_LAYOUT == 1) {
-    auto const arrangement = ppu_arrangements::q4_kpack4_transpose_v1();
+  if constexpr (FQ_SWEEP_WEIGHT_LAYOUT != 0) {
+    auto const arrangement = FQ_SWEEP_WEIGHT_LAYOUT == 1
+        ? ppu_arrangements::q4_kpack4_transpose_v1()
+        : ppu_arrangements::kquant_kpack_transpose_v1(qtype);
     std::vector<uint8_t> direct(f.low.size(), uint8_t(0xcd));
-    int const direct_rc = q4_kpack4::prepare(
-        f.low_native.data(), direct.data(), shape.n, shape.k);
+    int const direct_rc = FQ_SWEEP_WEIGHT_LAYOUT == 1
+        ? q4_kpack4::prepare(
+              f.low_native.data(), direct.data(), shape.n, shape.k)
+        : 0;
     int const abi_rc = quactlize_ppu_prepare_dense_for_arrangement_v2(
-        f.low_native.data(), nullptr, f.low.data(), nullptr,
+        f.low_native.data(),
+        high_bits ? f.high_native.data() : nullptr,
+        f.low.data(), high_bits ? f.high.data() : nullptr,
         shape.n, shape.k, qtype, &arrangement);
-    bool const direct_equal = direct == f.low;
+    bool const direct_equal = FQ_SWEEP_WEIGHT_LAYOUT == 1
+        ? direct == f.low : true;
     std::printf(
         "FQ_KPACK4_FIXTURE phase=prepare q=%d shape=%dx%dx%d "
         "version=%d layout=%d bits=%d high_bits=%d artifact_tile_k=%d "
@@ -308,16 +343,23 @@ Fixture make_fixture(Shape shape) {
             shape.n, shape.k, qtype, FQ_SWEEP_ARTIFACT_TK) != 0) return f;
   }
   std::vector<uint8_t> low_back(f.low_native.size()), high_back(f.high_native.size());
-  if constexpr (FQ_SWEEP_WEIGHT_LAYOUT == 1) {
-    auto const arrangement = ppu_arrangements::q4_kpack4_transpose_v1();
+  if constexpr (FQ_SWEEP_WEIGHT_LAYOUT != 0) {
+    auto const arrangement = FQ_SWEEP_WEIGHT_LAYOUT == 1
+        ? ppu_arrangements::q4_kpack4_transpose_v1()
+        : ppu_arrangements::kquant_kpack_transpose_v1(qtype);
     std::vector<uint8_t> direct_back(f.low_native.size(), uint8_t(0xab));
-    int const direct_rc = q4_kpack4::recover(
-        f.low.data(), direct_back.data(), shape.n, shape.k);
+    int const direct_rc = FQ_SWEEP_WEIGHT_LAYOUT == 1
+        ? q4_kpack4::recover(
+              f.low.data(), direct_back.data(), shape.n, shape.k)
+        : 0;
     int const abi_rc = quactlize_ppu_recover_dense_for_arrangement_v2(
-        f.low.data(), nullptr, low_back.data(), nullptr,
+        f.low.data(), high_bits ? f.high.data() : nullptr,
+        low_back.data(), high_bits ? high_back.data() : nullptr,
         shape.n, shape.k, qtype, &arrangement);
-    bool const direct_equal = direct_back == low_back;
-    bool const native_equal = low_back == f.low_native;
+    bool const direct_equal = FQ_SWEEP_WEIGHT_LAYOUT == 1
+        ? direct_back == low_back : true;
+    bool const native_equal = low_back == f.low_native &&
+        (FQ_SWEEP_WEIGHT_LAYOUT == 1 || high_back == f.high_native);
     std::printf(
         "FQ_KPACK4_FIXTURE phase=recover q=%d shape=%dx%dx%d "
         "mapping_id=0x%016llx direct_rc=%d abi_rc=%d "
@@ -465,24 +507,34 @@ int run_shape(Shape shape, Cli const& cli,
                   !cli.profile_subject_only, cli.tm8_max_m,
                   cli.profile_subject_only};
   bool all_runtime_ok = true;
-  constexpr std::uint64_t weight_mapping_id =
-      FQ_SWEEP_WEIGHT_LAYOUT == 1 ? q4_kpack4::kMappingId : 0;
+  std::vector<RegistryRow> execution_rows = rows;
+  std::mt19937_64 rng(cli.schedule_seed ^ std::uint64_t(shape.m) ^
+                      (std::uint64_t(shape.n) << 17) ^
+                      (std::uint64_t(shape.k) << 33));
+  std::shuffle(execution_rows.begin(), execution_rows.end(), rng);
+  std::uint64_t const weight_mapping_id = FQ_SWEEP_WEIGHT_LAYOUT == 1
+      ? q4_kpack4::kMappingId
+      : (FQ_SWEEP_WEIGHT_LAYOUT == 2
+             ? ppu_arrangements::kquant_kpack_transpose_v1(
+                   FQ_SWEEP_QTYPE).mapping_id
+             : 0);
   std::printf("FQ_SHARD q=%d A=%d bchunk=%d shape=%dx%dx%d "
               "weight_layout=%d weight_mapping_id=0x%016llx "
               "weight_delivery_n=%d "
               "typed_rows=%zu selected_rows=%zu only_split=%d bc_mode=%s "
               "bc_batch=native-grid-y-m-lt8 split_timing=ordered-close "
-              "iterations=%d correctness_repeats=%d\n",
+              "iterations=%d correctness_repeats=%d schedule_seed=0x%016llx\n",
               FQ_SWEEP_QTYPE, FQ_SWEEP_ARTIFACT_TK, FQ_SWEEP_BCHUNK,
               shape.m, shape.n, shape.k, FQ_SWEEP_WEIGHT_LAYOUT,
               static_cast<unsigned long long>(weight_mapping_id),
               FQ_TC_KPACK4_DELIVERY_N,
-              typed_rows, rows.size(),
+              typed_rows, execution_rows.size(),
               cli.only_split,
               cli.bc_mode == Cli::BcMode::All ? "all" :
               cli.bc_mode == Cli::BcMode::Skip ? "skip" : "only",
-              cli.iterations, cli.repeats);
-  if (cli.bc_mode != Cli::BcMode::Only) for (auto const& entry : rows) {
+              cli.iterations, cli.repeats,
+              static_cast<unsigned long long>(cli.schedule_seed));
+  if (cli.bc_mode != Cli::BcMode::Only) for (auto const& entry : execution_rows) {
     RowResult result;
     bool const ok = entry.run(inputs, options, result);
     all_runtime_ok = all_runtime_ok && ok;
@@ -493,6 +545,7 @@ int run_shape(Shape shape, Cli const& cli,
       std::printf(
           "FQ_TC_CELL q=%d A=%d bchunk=%d shape=%dx%dx%d symbol=%s "
           "tm=%d tn=%d tk=%d wm=%d wn=%d stages=%d provider=%s S=%d scope=%s "
+          "resolved_delivery_n=%d "
           "provider_capacity_rows=%d scalezero_fused=%d "
           "state=%s us=%.9f raw_bad=%llu reducer_untimed=%d "
           "failure_step=%s failure_repeat=%d first_bad=%zu "
@@ -502,7 +555,8 @@ int run_shape(Shape shape, Cli const& cli,
           shape.m, shape.n, shape.k, entry.symbol,
           entry.tm, entry.tn, entry.tk, entry.wm, entry.wn, entry.stages,
           entry.a_provider ? "packed-row" : "standard-aiu",
-          cell.split, scope, cell.a_provider_capacity_rows,
+          cell.split, scope, entry.resolved_delivery_n,
+          cell.a_provider_capacity_rows,
           int(cell.scalezero_fused),
           state_name(cell.state), cell.median_us,
           static_cast<unsigned long long>(cell.raw_bad),
@@ -541,7 +595,7 @@ int run_shape(Shape shape, Cli const& cli,
               shape.m, shape.n, shape.k, FQ_SWEEP_WEIGHT_LAYOUT,
               static_cast<unsigned long long>(weight_mapping_id),
               FQ_TC_KPACK4_DELIVERY_N,
-              typed_rows, rows.size(),
+              typed_rows, execution_rows.size(),
               cli.only_split,
               cli.bc_mode == Cli::BcMode::All ? "all" :
               cli.bc_mode == Cli::BcMode::Skip ? "skip" : "only",
@@ -557,7 +611,8 @@ int main(int argc, char** argv) {
   if (!parse_cli(argc, argv, cli)) {
     std::fprintf(stderr,
         "usage: %s [--shape=MxNxK ...] [--iterations=N] "
-        "[--correctness-repeats=N] [--only-split=0|1|2|4|8] "
+        "[--correctness-repeats=N] [--schedule-seed=N] "
+        "[--only-split=0|1|2|4|8] "
         "[--tm8-max-m=N] [--symbols-file=PATH] "
         "[--bc-mode=all|skip|only] [--profile-subject-only]\n", argv[0]);
     return 2;

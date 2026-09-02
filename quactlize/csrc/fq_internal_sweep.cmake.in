@@ -22,10 +22,11 @@ if(FQ_SWEEP_GENERATED_DIR)
     set(FQ_SWEEP_WEIGHT_LAYOUT 0)
   endif()
   if(NOT FQ_SWEEP_WEIGHT_LAYOUT STREQUAL "0" AND
-     NOT FQ_SWEEP_WEIGHT_LAYOUT STREQUAL "1")
+     NOT FQ_SWEEP_WEIGHT_LAYOUT STREQUAL "1" AND
+     NOT FQ_SWEEP_WEIGHT_LAYOUT STREQUAL "2")
     message(FATAL_ERROR
       "FullyQuantized internal sweep: FQ_SWEEP_WEIGHT_LAYOUT must be "
-      "xplane(0) or Q4 K-pack4(1)")
+      "xplane(0), Q4 K-pack4(1), or generic K-pack(2)")
   endif()
 
   get_filename_component(_FQ_SWEEP_GENERATED_DIR
@@ -73,6 +74,11 @@ if(FQ_SWEEP_GENERATED_DIR)
     PPU_PACKED_SCALE=1
     PPU_PACKED_FORMAT=${FQ_SWEEP_PACKED_FORMAT})
   target_compile_options(test_fully_quantized_internal_sweep PRIVATE -w)
+  # SDK 2.1.1 is built on Ubuntu 24.04.  Build-only hosts may have an older
+  # glibc/libstdc++; keep those versioned references owned by the SDK wrapper.
+  # Device execution still requires the admitted Ubuntu-24 runtime.
+  target_link_options(test_fully_quantized_internal_sweep BEFORE PRIVATE
+    "-Wl,--allow-shlib-undefined")
 
   list(LENGTH FQ_TC_GENERATED_UNIT_SOURCES _FQ_SWEEP_UNIT_COUNT)
   message(STATUS
@@ -80,6 +86,76 @@ if(FQ_SWEEP_GENERATED_DIR)
     "A=${FQ_SWEEP_ARTIFACT_TK} bc=${FQ_SWEEP_BCHUNK} "
     "format=${FQ_SWEEP_PACKED_FORMAT} layout=${FQ_SWEEP_WEIGHT_LAYOUT} "
     "units=${_FQ_SWEEP_UNIT_COUNT}")
+endif()
+
+# Generated canonical K-pack grouped FullyQuantized discovery shard.  It is
+# additive to the dense sweep and has no shipping selector or public ABI edge.
+if(FQ_GROUPED_KPACK_GENERATED_DIR)
+  foreach(_required IN ITEMS FQ_GROUPED_KPACK_QTYPE
+      FQ_GROUPED_KPACK_WEIGHT_LAYOUT FQ_GROUPED_KPACK_PACKED_FORMAT)
+    if(NOT DEFINED ${_required} OR "${${_required}}" STREQUAL "")
+      message(FATAL_ERROR
+        "grouped FullyQuantized K-pack discovery: ${_required} is required")
+    endif()
+  endforeach()
+  if(FQ_GROUPED_KPACK_QTYPE LESS 10 OR FQ_GROUPED_KPACK_QTYPE GREATER 14 OR
+     (FQ_GROUPED_KPACK_QTYPE EQUAL 12 AND NOT
+      FQ_GROUPED_KPACK_WEIGHT_LAYOUT EQUAL 1) OR
+     (NOT FQ_GROUPED_KPACK_QTYPE EQUAL 12 AND NOT
+      FQ_GROUPED_KPACK_WEIGHT_LAYOUT EQUAL 2) OR
+     (FQ_GROUPED_KPACK_QTYPE EQUAL 10 AND NOT
+      FQ_GROUPED_KPACK_PACKED_FORMAT EQUAL 2) OR
+     (FQ_GROUPED_KPACK_QTYPE EQUAL 11 AND NOT
+      FQ_GROUPED_KPACK_PACKED_FORMAT EQUAL 3) OR
+     (FQ_GROUPED_KPACK_QTYPE EQUAL 12 AND NOT
+      FQ_GROUPED_KPACK_PACKED_FORMAT EQUAL 0) OR
+     (FQ_GROUPED_KPACK_QTYPE EQUAL 13 AND NOT
+      FQ_GROUPED_KPACK_PACKED_FORMAT EQUAL 1) OR
+     (FQ_GROUPED_KPACK_QTYPE EQUAL 14 AND NOT
+      FQ_GROUPED_KPACK_PACKED_FORMAT EQUAL 4))
+    message(FATAL_ERROR
+      "grouped FullyQuantized K-pack qtype/layout/packed-format tuple differs")
+  endif()
+  get_filename_component(_FQG_GENERATED_DIR
+    "${FQ_GROUPED_KPACK_GENERATED_DIR}" ABSOLUTE)
+  foreach(_file IN ITEMS units.cmake fq_grouped_kpack_registry.inc manifest.json)
+    if(NOT EXISTS "${_FQG_GENERATED_DIR}/${_file}")
+      message(FATAL_ERROR
+        "grouped FullyQuantized K-pack authority lacks ${_file}: ${_FQG_GENERATED_DIR}")
+    endif()
+  endforeach()
+  include("${_FQG_GENERATED_DIR}/units.cmake")
+  qz_resolve_sources(_FQG_MAIN test_fully_quantized_grouped_kpack_discovery.cu)
+  list(GET _FQG_MAIN 0 _FQG_MAIN)
+  set(_FQG_DEFS
+    "-I${_FQG_GENERATED_DIR}"
+    "-DFQ_GROUPED_KPACK_QTYPE=${FQ_GROUPED_KPACK_QTYPE}"
+    "-DFQ_GROUPED_KPACK_WEIGHT_LAYOUT=${FQ_GROUPED_KPACK_WEIGHT_LAYOUT}"
+    "-DPPU_PACKED_SCALE=1"
+    "-DPPU_PACKED_FORMAT=${FQ_GROUPED_KPACK_PACKED_FORMAT}")
+  quactlize_ppu_executable(
+    test_fully_quantized_grouped_kpack_discovery
+    "${_FQG_MAIN}"
+    ${FQ_GROUPED_KPACK_GENERATED_UNIT_SOURCES}
+    DEV_COMPILE_FLAGS ${_FQG_DEFS})
+  target_include_directories(
+    test_fully_quantized_grouped_kpack_discovery PRIVATE
+    "${_FQG_GENERATED_DIR}")
+  target_compile_definitions(
+    test_fully_quantized_grouped_kpack_discovery PRIVATE
+    FQ_GROUPED_KPACK_QTYPE=${FQ_GROUPED_KPACK_QTYPE}
+    FQ_GROUPED_KPACK_WEIGHT_LAYOUT=${FQ_GROUPED_KPACK_WEIGHT_LAYOUT}
+    PPU_PACKED_SCALE=1
+    PPU_PACKED_FORMAT=${FQ_GROUPED_KPACK_PACKED_FORMAT})
+  target_compile_options(
+    test_fully_quantized_grouped_kpack_discovery PRIVATE -w)
+  target_link_options(test_fully_quantized_grouped_kpack_discovery
+    BEFORE PRIVATE "-Wl,--allow-shlib-undefined")
+  list(LENGTH FQ_GROUPED_KPACK_GENERATED_UNIT_SOURCES _FQG_UNIT_COUNT)
+  message(STATUS
+    "grouped FullyQuantized K-pack discovery: q=${FQ_GROUPED_KPACK_QTYPE} "
+    "layout=${FQ_GROUPED_KPACK_WEIGHT_LAYOUT} "
+    "format=${FQ_GROUPED_KPACK_PACKED_FORMAT} units=${_FQG_UNIT_COUNT}")
 endif()
 
 # A02-only Q3 effective-BChunk diagnostic. This deliberately reuses the
@@ -117,6 +193,8 @@ if(FQ_A02_Q3_GENERATED_DIR)
     FQ_SWEEP_WEIGHT_LAYOUT=0 FQ_TC_WEIGHT_LAYOUT=0
     FQ_SWEEP_MIXED_BCHUNK_DIAGNOSTIC=1 PPU_PACKED_SCALE=1 PPU_PACKED_FORMAT=3)
   target_compile_options(test_fq_a02_q3_bchunk_aggregate PRIVATE -w)
+  target_link_options(test_fq_a02_q3_bchunk_aggregate BEFORE PRIVATE
+    "-Wl,--allow-shlib-undefined")
   list(LENGTH FQ_TC_GENERATED_UNIT_SOURCES _FQ_A02_UNITS)
   if(NOT _FQ_A02_UNITS EQUAL 2)
     message(FATAL_ERROR "A02 Q3 aggregate must contain exactly two units")

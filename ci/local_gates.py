@@ -175,6 +175,12 @@ GATES = [
     ("l244_q4_n16k64_cross_semantic", []),
     ("l245_q4_n16k64_grouped_offline", []),
     ("l249_q4_n16k64_multim_warp_layout", []),
+    ("l250_kquant_kpack_scalefirst_types", []),
+    ("l251_scalefirst_grouped_kpack_types", []),
+    *[(f"l252_fully_quantized_kpack_discovery_types@q{q}", [])
+      for q in (10, 11, 12, 13, 14)],
+    *[(f"l253_fully_quantized_grouped_kpack_discovery_types@q{q}", [])
+      for q in (10, 11, 12, 13, 14)],
 ]
 
 # (source, extra defines). A macro that changes types needs its own entry: the point of the front-end check is that
@@ -485,6 +491,27 @@ GATE_FLAGS = {"l95_stub_vs_real": ["-D__HGGCCC__", "--expt-relaxed-constexpr"],
                   "-D__HGGCCC__", "--expt-relaxed-constexpr",
                   "-DPPU_PACKED_SCALE=0",
                   "-DSCALEFIRST_SWEEP_WEIGHT_LAYOUT=1"],
+              "l250_kquant_kpack_scalefirst_types": [
+                  "-D__HGGCCC__", "--expt-relaxed-constexpr",
+                  "-DPPU_PACKED_SCALE=0",
+                  "-DSCALEFIRST_SWEEP_WEIGHT_LAYOUT=2"],
+              "l251_scalefirst_grouped_kpack_types": [
+                  "-D__HGGCCC__", "--expt-relaxed-constexpr",
+                  "-DPPU_PACKED_SCALE=0"],
+              **{
+                  f"l252_fully_quantized_kpack_discovery_types@q{q}": [
+                      "-D__HGGCCC__", "--expt-relaxed-constexpr",
+                      "-DPPU_PACKED_SCALE=1", f"-DPPU_PACKED_FORMAT={fmt}",
+                      f"-DL252_QTYPE={q}"]
+                  for q, fmt in ((10, 2), (11, 3), (12, 0), (13, 1), (14, 4))
+              },
+              **{
+                  f"l253_fully_quantized_grouped_kpack_discovery_types@q{q}": [
+                      "-D__HGGCCC__", "--expt-relaxed-constexpr",
+                      "-DPPU_PACKED_SCALE=1", f"-DPPU_PACKED_FORMAT={fmt}",
+                      f"-DL253_QTYPE={q}"]
+                  for q, fmt in ((10, 2), (11, 3), (12, 0), (13, 1), (14, 4))
+              },
               **{
                   f"l237_kquant_kpack_production_type@q{q}": [
                       "-D__HGGCCC__", "--expt-relaxed-constexpr",

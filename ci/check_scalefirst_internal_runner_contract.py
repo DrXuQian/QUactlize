@@ -77,6 +77,12 @@ def check_contract(runner: str, analyzer: str, bench: str, driver: str) -> None:
         'ppu_dense_shipping::kDecodeDefault',
         'INADMISSIBLE_M8_DECODE_ONLY',
         'PRODUCER_ONLY_NOT_PRODUCT_E2E',
+        'DenseKPackKernelTypes<',
+        'ScaleFirstWeightLayoutSelector<',
+        'MainloopDescriptor::kpack_transpose',
+        'QType == 10 || QType == 11 || QType == 13',
+        'QuantMode::FinegrainedScaleZero',
+        'occupancy < 0',
     )
     missing = [token for token in bench_required if token not in bench]
     if missing:
@@ -84,6 +90,10 @@ def check_contract(runner: str, analyzer: str, bench: str, driver: str) -> None:
     driver_required = (
         'step=%s repeat=%d raw_bad=%llu first_bad=%zu',
         'want=0x%04x got=0x%04x',
+        'transform_generic_kpack<false>',
+        'kquant_kpack_transpose_v1(',
+        'converter_zero_multiplier()',
+        'SCALEFIRST_SWEEP_QTYPE == 14 ? -24',
     )
     missing = [token for token in driver_required if token not in driver]
     if missing:
@@ -144,6 +154,31 @@ def main() -> int:
             "--plant-drop-last"], expect=2)
         if "typed denominator" not in planted.stdout:
             raise AssertionError("drop-one negative did not name its denominator")
+
+        # Canonical ScaleFirst K-pack owns five complete format denominators:
+        # Q4 keeps layout1, while Q2/Q3/Q5/Q6 share generic layout2.  Generate
+        # every admitted source row (one large unit per format) rather than a
+        # selected sample, so a missing type coordinate is locally visible
+        # before any HGCC/device work.
+        for qtype, layout in ((10, 2), (11, 2), (12, 1), (13, 2), (14, 2)):
+            generated = scratch / f"canonical-kpack-q{qtype}"
+            run([
+                sys.executable, "-B",
+                str(TOOLS / "gen_scalefirst_internal_units.py"),
+                "--qtype", str(qtype), "--artifact-tk", "0",
+                "--bchunk", "0", "--weight-layout", str(layout),
+                "--per-unit", "100000", "--out-dir", str(generated),
+            ])
+            manifest = json.loads((generated / "manifest.json").read_text())
+            identity = manifest.get("identity", {})
+            denominator = manifest.get("denominator", {})
+            if identity.get("weight_layout") != layout or \
+                    identity.get("artifact_tile_k") != 0 or \
+                    denominator.get("raw_rows") != 11520 or \
+                    denominator.get("typed_rows", 0) <= 0 or \
+                    len(manifest.get("units", [])) != 1:
+                raise AssertionError(
+                    f"q{qtype} canonical K-pack denominator did not materialize")
 
         # Byte-level evidence negatives: a valid per-shard commit passes;
         # deleting the commit or substituting the log fails with the same
@@ -252,7 +287,8 @@ def main() -> int:
         shutil.rmtree(scratch)
     print("[scalefirst-internal-runner] PASS atomic attempt/resume/run-commit "
           "authority; negatives=drop-one-typed-row+delete-plan+delete-commit+"
-          "substitute-log+delete/symlink/substitute-binary")
+          "substitute-log+delete/symlink/substitute-binary; "
+          "canonical-kpack=Q2/Q3/Q4/Q5/Q6-complete")
     return 0
 
 
