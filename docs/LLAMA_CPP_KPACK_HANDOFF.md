@@ -5,7 +5,7 @@ artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
 Last updated: 2026-09-02. Persistent sidecar schema v3 is current. The
-published `8f9fa07` measured-policy runtime bundle has passed strict binary
+published `2826cf1` loader-safe runtime bundle has passed strict binary
 inspection, its selected-config oracle, and all 26 host ABI cases in a fresh
 LFS checkout. Its PPU device gate is still **PENDING**. Host/ELF admission is
 not device admission and does not authorize deployment by itself.
@@ -13,17 +13,17 @@ not device admission and does not authorize deployment by itself.
 ## Runtime libraries
 
 The published PPU0010 six-library bundle was built from clean source commit
-`8f9fa07de9694901a5db91d546d6c994720f86b1`. Its immutable artifact commit is
-`f7f55d61ee1a58657f99df24876aa3bbb13d1a45`, whose only parent is that source
+`2826cf12451e02ca4590f7a44682b57d2098bfb9`. Its immutable artifact commit is
+`d5bf726dddc8c685a4eb766e7ec6cc303427501b`, whose only parent is that source
 commit. The durable Git authority is:
 
 ```text
-origin/artifacts/ppu0010/8f9fa07-runtime6-b3eb070bc65f
-prebuilt/ppu0010/8f9fa07/runtime6-b3eb070bc65f/bundle
+origin/artifacts/ppu0010/2826cf1-runtime6-46fc3096e1a1
+prebuilt/ppu0010/2826cf1/runtime6-46fc3096e1a1/bundle
 ```
 
 The bundle manifest SHA-256 is
-`b3eb070bc65f42d5443626aa82baac468863657d5f479021caccba2d36f75097`.
+`46fc3096e1a14b712ad5d7a50de096d2a973ad5826aa3ffe6a6764d1fc12180d`.
 Its manifest uses the separate `quactlize.ppu-runtime-bundle` schema v1; never
 parse it as the persistent sidecar schema v3. No workstation cache path is an
 authority.
@@ -33,12 +33,13 @@ hydration, while a clean develop worktree owns the verifier/oracle/gate
 runners. First create the artifact worktree and hydrate its six LFS objects:
 
 ```bash
-SOURCE_COMMIT=8f9fa07de9694901a5db91d546d6c994720f86b1
-ARTIFACT_COMMIT=f7f55d61ee1a58657f99df24876aa3bbb13d1a45
-ARTIFACT_BRANCH=artifacts/ppu0010/8f9fa07-runtime6-b3eb070bc65f
-ARTIFACT_REL=prebuilt/ppu0010/8f9fa07/runtime6-b3eb070bc65f
-ARTIFACT_WORKTREE=/workspace/quactlize-runtime-artifact-8f9fa07-b3eb070bc65f
-RUNNER_WORKTREE=/workspace/quactlize-develop-runner-8f9fa07
+SOURCE_COMMIT=2826cf12451e02ca4590f7a44682b57d2098bfb9
+ARTIFACT_COMMIT=d5bf726dddc8c685a4eb766e7ec6cc303427501b
+ARTIFACT_BRANCH=artifacts/ppu0010/2826cf1-runtime6-46fc3096e1a1
+ARTIFACT_REL=prebuilt/ppu0010/2826cf1/runtime6-46fc3096e1a1
+ARTIFACT_WORKTREE=/workspace/quactlize-runtime-artifact-2826cf1-46fc3096e1a1
+RUNNER_COMMIT=1d579bc941828ce4b1788d2970f4b454dc3a81f8
+RUNNER_WORKTREE=/workspace/quactlize-runner-1d579bc
 
 git fetch origin \
   "refs/heads/${ARTIFACT_BRANCH}:refs/remotes/origin/${ARTIFACT_BRANCH}"
@@ -51,44 +52,44 @@ git worktree add --detach "${ARTIFACT_WORKTREE}" "${ARTIFACT_COMMIT}"
 git -C "${ARTIFACT_WORKTREE}" lfs pull \
   --include="${ARTIFACT_REL}/bundle/*.so" \
   --exclude=""
-git worktree add --detach "${RUNNER_WORKTREE}" origin/develop
+git worktree add --detach "${RUNNER_WORKTREE}" "${RUNNER_COMMIT}"
 git -C "${RUNNER_WORKTREE}" submodule update --init --recursive
 
 BUNDLE="${ARTIFACT_WORKTREE}/${ARTIFACT_REL}/bundle"
 test "$(sha256sum "${BUNDLE}/manifest.json" | awk '{print $1}')" = \
-  b3eb070bc65f42d5443626aa82baac468863657d5f479021caccba2d36f75097
+  46fc3096e1a14b712ad5d7a50de096d2a973ad5826aa3ffe6a6764d1fc12180d
 ```
 
 The artifact carries the strict verifier used for admission. It is pinned by
 both content and Git identity:
 
 ```text
-SHA-256  43266a59b0676f19a34740d46fecbbdb2fd1ab80d88ee3911765f4f2ca5a21e7
-Git blob be9006407cd37ac21a861cdb9fc658f597a5188d
+SHA-256  8b552c33a8b9b34e184f6410720ae7150d562b57f47c8e604719b82cb324ec47
+Git blob 22516983f4659e712fc04a0278e9e63bd1ef3b14
 ```
 
 Run it from the artifact worktree, then run the source-pinned selected-config
 oracle from the clean develop checkout:
 
 ```bash
-ARTIFACT_REL=prebuilt/ppu0010/8f9fa07/runtime6-b3eb070bc65f
-ARTIFACT_WORKTREE=/workspace/quactlize-runtime-artifact-8f9fa07-b3eb070bc65f
-RUNNER_WORKTREE=/workspace/quactlize-develop-runner-8f9fa07
+ARTIFACT_REL=prebuilt/ppu0010/2826cf1/runtime6-46fc3096e1a1
+ARTIFACT_WORKTREE=/workspace/quactlize-runtime-artifact-2826cf1-46fc3096e1a1
+RUNNER_WORKTREE=/workspace/quactlize-runner-1d579bc
 BUNDLE="${ARTIFACT_WORKTREE}/${ARTIFACT_REL}/bundle"
 cd "${RUNNER_WORKTREE}"
 source "${PPU_SDK:?set PPU_SDK to the admitted SDK root}/envsetup.sh"
 
 test "$(sha256sum "${ARTIFACT_WORKTREE}/${ARTIFACT_REL}/verify_bundle.py" | awk '{print $1}')" = \
-  43266a59b0676f19a34740d46fecbbdb2fd1ab80d88ee3911765f4f2ca5a21e7
+  8b552c33a8b9b34e184f6410720ae7150d562b57f47c8e604719b82cb324ec47
 test "$(git -C "${ARTIFACT_WORKTREE}" hash-object "${ARTIFACT_REL}/verify_bundle.py")" = \
-  be9006407cd37ac21a861cdb9fc658f597a5188d
+  22516983f4659e712fc04a0278e9e63bd1ef3b14
 python3 "${ARTIFACT_WORKTREE}/${ARTIFACT_REL}/verify_bundle.py" "${BUNDLE}" \
   --ppu-sdk "${PPU_SDK:?set PPU_SDK to the admitted SDK root}"
 
 test "$(sha256sum tools/verify_kquant_selected_config.py | awk '{print $1}')" = \
-  43d5c0fb1ce07020489ff9e85e0528116e5a5cc920aef54ce388330bed209eea
+  5bb69a089074d9c89541ebca7d6106688b7b4c3c56da5dcda387afd4b881ec44
 test "$(git hash-object tools/verify_kquant_selected_config.py)" = \
-  a0d355d351a579a46959ad03cdce52fb22df15e7
+  8774480440d67d31dca41175ba0667701989d381
 python3 tools/verify_kquant_selected_config.py "${BUNDLE}"
 ```
 
@@ -122,9 +123,10 @@ using any arrangement-aware entry.
 The minimal llama.cpp integration documented here uses the qtype-selected FMT
 fully-quantized path for every M, including Q4 prefill. The default ScaleFirst
 library is therefore not required by this first integration. Quactlize's tuned
-Q4 dispatcher uses ScaleFirst at M>=64, but its packed-units-to-FP16 metadata
-expansion is not yet a public loader ABI; do not resolve an undocumented
-prepass symbol to reproduce that route.
+Q4 dispatcher uses ScaleFirst at M>=64. Develop commit `d27fee0` added a public
+asynchronous packed-units-to-FP16 metadata prepass, but that commit is newer
+than this exact A01 bundle. Do not resolve it from these DSOs; A07 must rebuild
+and re-admit all six libraries before llama.cpp enables that optional route.
 
 The product host floor is Ubuntu 24.04 with the bundle's admitted PPU SDK
 2.1.1-a5c56e runtime. Load the SDK wrapper first with
@@ -188,7 +190,7 @@ quactlize/include/quactlize_ppu_packed.h
 ```
 
 They are included in both Python package manifests at source commit
-`8f9fa07de9694901a5db91d546d6c994720f86b1`. Pin those exact three headers to
+`2826cf12451e02ca4590f7a44682b57d2098bfb9`. Pin those exact three headers to
 the six published libraries. Do not substitute headers from another source
 revision, even when a structure name or export name appears unchanged.
 `quactlize_ppu_config.h` at this commit contains config v3/v4 and both
@@ -251,26 +253,32 @@ loaded while using the pointer, or copy the string into loader-owned storage.
 
 Device admission uses the already-hydrated artifact worktree and a separate,
 clean develop checkout. The runner must be tracked and have SHA-256
-`01ee28df26d8cc6c5cfe66ec94b99a9198794f390fb8e032cdfff5014c53ac0f`.
+`09110ba66b0d455ed91d44c3b2c0c648c84c923dacd38acbdf0b060412bf8297`.
+It is pinned at commit `1d579bc941828ce4b1788d2970f4b454dc3a81f8`
+and Git blob `56264dcc327ae5e20d2c5cd49e3f1592e92b929d`.
 Its source-authority checks require the runtime implementation and submodule
-commits to remain identical to bundle source `8f9fa07`; documentation-only
+commits to remain identical to bundle source `2826cf1`; documentation-only
 develop commits are allowed. On an Ubuntu 24.04 PPU box:
 
 ```bash
-RUNNER_WORKTREE=/workspace/quactlize-develop-runner-8f9fa07
-ARTIFACT_REL=prebuilt/ppu0010/8f9fa07/runtime6-b3eb070bc65f
-ARTIFACT_WORKTREE=/workspace/quactlize-runtime-artifact-8f9fa07-b3eb070bc65f
+RUNNER_WORKTREE=/workspace/quactlize-runner-1d579bc
+ARTIFACT_REL=prebuilt/ppu0010/2826cf1/runtime6-46fc3096e1a1
+ARTIFACT_WORKTREE=/workspace/quactlize-runtime-artifact-2826cf1-46fc3096e1a1
 BUNDLE="${ARTIFACT_WORKTREE}/${ARTIFACT_REL}/bundle"
 cd "${RUNNER_WORKTREE}"
 
 source "${PPU_SDK:?set PPU_SDK to the admitted SDK root}/envsetup.sh"
 python3 -c 'import importlib.metadata as m; assert m.version("gguf") == "0.19.0"'
+test "$(git rev-parse HEAD)" = 1d579bc941828ce4b1788d2970f4b454dc3a81f8
 test "$(sha256sum tools/run_prebuilt_ppu_box_gate.py | awk '{print $1}')" = \
-  01ee28df26d8cc6c5cfe66ec94b99a9198794f390fb8e032cdfff5014c53ac0f
+  09110ba66b0d455ed91d44c3b2c0c648c84c923dacd38acbdf0b060412bf8297
+test "$(git hash-object tools/run_prebuilt_ppu_box_gate.py)" = \
+  56264dcc327ae5e20d2c5cd49e3f1592e92b929d
 CUDA_VISIBLE_DEVICES=0 \
   python3 tools/run_prebuilt_ppu_box_gate.py "${BUNDLE}" \
     --ppu-sdk "${PPU_SDK:?set PPU_SDK to the admitted SDK root}" \
-    --output /workspace/quactlize-prebuilt-gate-8f9fa07
+    --q4-correctness-repeats 8192 \
+    --output /workspace/quactlize-a01-device-result-2826cf1
 ```
 
 `CUDA_VISIBLE_DEVICES` must be one numeric ordinal and the runtime must expose
@@ -559,7 +567,7 @@ QUACTLIZE_PPU_BUNDLE=/path/to/six-library/bundle \
 Subsequent loads validate and upload the saved regions; they do not repeat
 placement. Do not overwrite or relabel the source GGUF.
 
-The manifest-pinned `8f9fa07` source declares and implements the loader-facing
+The manifest-pinned `2826cf1` source declares and implements the loader-facing
 complete host producer/inverse:
 
 ```c
@@ -598,8 +606,8 @@ return a nonnegative value.
 ## Integration order
 
 1. Pin all six DSOs to artifact commit
-   `f7f55d61ee1a58657f99df24876aa3bbb13d1a45` and all three public headers to
-   source commit `8f9fa07de9694901a5db91d546d6c994720f86b1`. Require the strict verifier,
+   `d5bf726dddc8c685a4eb766e7ec6cc303427501b` and all three public headers to
+   source commit `2826cf12451e02ca4590f7a44682b57d2098bfb9`. Require the strict verifier,
    selected-config oracle, and prebuilt single-device numeric gate to pass on
    those exact files before deployment.
 2. On Ubuntu 24.04, load the admitted SDK wrapper globally first. Load each

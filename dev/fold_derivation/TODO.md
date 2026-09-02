@@ -2490,17 +2490,20 @@ and D18 prevents an unsafe local deletion of benchmark-reachable fused code.
 Fresh device confirmation of the typed D10/D12 source identity is an admission
 gate, not an unresolved implementation choice.
 
-The measured-policy loader-facing six-library candidate is durable at artifact
-commit `f7f55d61ee1a58657f99df24876aa3bbb13d1a45` on branch
-`artifacts/ppu0010/8f9fa07-runtime6-b3eb070bc65f`. Its manifest SHA-256 is
-`b3eb070bc65f42d5443626aa82baac468863657d5f479021caccba2d36f75097`,
-binding clean source `8f9fa07de9694901a5db91d546d6c994720f86b1`, the admitted
+The loader-facing six-library candidate is durable at artifact commit
+`d5bf726dddc8c685a4eb766e7ec6cc303427501b` on branch
+`artifacts/ppu0010/2826cf1-runtime6-46fc3096e1a1`. Its manifest SHA-256 is
+`46fc3096e1a14b712ad5d7a50de096d2a973ad5826aa3ffe6a6764d1fc12180d`,
+binding clean source `2826cf12451e02ca4590f7a44682b57d2098bfb9`, the admitted
 SDK receipt, and exactly default plus FMT0--4. A fresh independent LFS clone
-passed the strict export/image verifier, selected-config ABI oracle, Ubuntu-24
-dependency floor, `git lfs fsck`, and all 26 host ABI cases. This closes D16's
-packaging/loader-identity boundary. The prebuilt five-format dense/grouped
-device gate is still pending; it does not close D01/D06 or replace the required
-PPU raw-bit and performance execution.
+passed `git lfs fsck`, the strict export/image verifier, selected-config ABI
+oracle, Ubuntu-24 dependency floor, and all 26 host ABI cases. The device runner
+is pinned at commit `1d579bc941828ce4b1788d2970f4b454dc3a81f8`, SHA-256
+`09110ba66b0d455ed91d44c3b2c0c648c84c923dacd38acbdf0b060412bf8297`,
+and Git blob `56264dcc327ae5e20d2c5cd49e3f1592e92b929d`; its Q4 raw-bit
+cadence is 8192 repeats. This closes D16's packaging/loader-identity boundary.
+The prebuilt five-format dense/grouped device gate is still pending; it does
+not close D01/D06 or replace the required PPU raw-bit and performance execution.
 
 #### Active device-test and policy queue (2026-09-02)
 
@@ -2512,7 +2515,7 @@ local layout oracle cannot close one of these rows.
 
 | Order | Related debt | Status | Required result before closure |
 |---:|---|---|---|
-| A01 | D16 | BUILDING | Publish the six-library runtime from source `2826cf12451e02ca4590f7a44682b57d2098bfb9`, verify all required ELF exports and manifest/LFS identity, then run the canonical Q2/Q3/Q4/Q5/Q6 dense and grouped prebuilt device gate. The older `f7f55d6` bundle has no device conclusion for this gate |
+| A01 | D16 | ARTIFACT-PUBLISHED/PENDING-DEVICE | Artifact `d5bf726d` on `artifacts/ppu0010/2826cf1-runtime6-46fc3096e1a1` binds source `2826cf1`, manifest `46fc3096...`, six LFS libraries, the strict verifier, selected-config oracle, and the pinned runner. Fresh LFS/fsck and all 26 host ABI cases pass. Run the canonical Q2/Q3/Q4/Q5/Q6 dense/grouped gate with Q4 correctness repeats=8192; no device conclusion exists yet |
 | A02 | D10, D12 | LOCAL-PREBUILT-READY | Source `85439bd` provides a strict, resumable two-binary prebuilt gate for the exact Q4 AP0/AP1 and Q3 effective-bc0/bc1 rows. Build it locally, then run its high-cadence raw-bit gate against the strict A01 result; only Q4 AP0 is labelled product shipping |
 | A03 | D01 | ARTIFACT-PUBLISHED/PENDING-DEVICE | Experimental layout-3 artifact commit `09d4d0b` is a direct child of source `4814919`; manifest `26b679ed...` binds binary `6f4575c8...`. Run that compile-free raw-bit gate first, then matched decode, prefill, and grouped-MoE performance/resource comparisons. Keep it outside every product bundle unless all workloads pass without losing WN16/32 |
 | A04 | D06 | LOCAL-PREBUILT-READY/PENDING-SWEEP | The strict resumable Q4 dense policy-v2 builder and execute-only runner are committed through `b29d53d`. Build its one Q12 payload locally, then sweep all M=1..64 candidates on box. A config name is categorical: use measured intervals or bounded-regret leaves, never numeric interpolation or an unmeasured fallback |
