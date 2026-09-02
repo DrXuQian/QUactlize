@@ -32,7 +32,10 @@ def test_partition_worker_reuses_one_preflight_and_publishes_only_verified_bytes
     assert source.count("kpack_discovery_build_partitions.py\" verify") >= 3
     assert 'cp -a "$out" "$stage"' in source
     assert 'mv "$stage" "$publish_dir"' in source
-    assert source.count("verify_published_partition_and_maybe_remove_local") == 3
+    assert source.count("verify_published_partition_and_maybe_remove_local") == 4
+    assert source.index('REUSED_PUBLISHED %s') < source.index(
+        'bash "$root/tools/build_scalefirst_kpack_discovery_bundle.sh"')
+    assert 'if [ -e "$out" ] || [ -L "$out" ]; then' in source
     assert 'rm -r --one-file-system -- "${resolved_out:?}"' in source
     assert 'find "$resolved_out" -xdev -type l -print -quit' in source
 

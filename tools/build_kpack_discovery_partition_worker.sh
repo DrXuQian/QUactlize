@@ -12,6 +12,19 @@ set -uo pipefail
 
 fail() { printf '[kpack-build-worker] FAIL: %s\n' "$*" >&2; return 2; }
 
+verify_published_partition() {
+  [ "$#" -eq 3 ] || {
+    fail "internal published verification argument count differs"; return $?; }
+  local repo_root="$1" sdk_root="$2" publish_dir="$3"
+  [ -d "$publish_dir" ] && [ ! -L "$publish_dir" ] && \
+    [ -f "$publish_dir/partition-bundle.json" ] && \
+    [ ! -L "$publish_dir/partition-bundle.json" ] || {
+      fail "published partition is not one regular verified tree: $publish_dir"; return $?; }
+  PPU_SDK="$sdk_root" python3 -B \
+    "$repo_root/tools/kpack_discovery_build_partitions.py" verify \
+    --root "$publish_dir" --manifest "$publish_dir/partition-bundle.json"
+}
+
 verify_published_partition_and_maybe_remove_local() {
   [ "$#" -eq 8 ] || {
     fail "internal publish verification argument count differs"; return $?; }
@@ -26,13 +39,7 @@ verify_published_partition_and_maybe_remove_local() {
   case "$remove_local" in 0|1) ;; *)
     fail "KPACK_REMOVE_LOCAL_AFTER_PUBLISH must be 0 or 1"; return $?;; esac
 
-  [ -d "$publish_dir" ] && [ ! -L "$publish_dir" ] && \
-    [ -f "$publish_dir/partition-bundle.json" ] && \
-    [ ! -L "$publish_dir/partition-bundle.json" ] || {
-      fail "published partition is not one regular verified tree: $publish_dir"; return $?; }
-  PPU_SDK="$sdk_root" python3 -B \
-    "$repo_root/tools/kpack_discovery_build_partitions.py" verify \
-    --root "$publish_dir" --manifest "$publish_dir/partition-bundle.json" || return 2
+  verify_published_partition "$repo_root" "$sdk_root" "$publish_dir" || return 2
 
   [ -d "$local_root" ] && [ ! -L "$local_root" ] || {
     fail "local partition root is not a regular directory"; return $?; }
@@ -219,6 +226,17 @@ PY
       case "$partition" in ''|*[!0-9]*)
         fail "assignment contains a malformed partition"; return $?;; esac
       out="$local_root/$route-p$(printf '%02d' "$partition")"
+      publish_dir="$publish_base/$route/p$(printf '%02d' "$partition")"
+      if [ -e "$publish_dir" ] || [ -L "$publish_dir" ]; then
+        verify_published_partition "$root" "$sdk" "$publish_dir" || return 2
+        if [ -e "$out" ] || [ -L "$out" ]; then
+          verify_published_partition_and_maybe_remove_local \
+            "$root" "$sdk" "$local_root" "$out" "$publish_dir" \
+            "$route" "$partition" "$remove_local" || return $?
+        fi
+        printf '[kpack-build-worker] REUSED_PUBLISHED %s\n' "$publish_dir"
+        continue
+      fi
       resume=0; [ ! -e "$out" ] || resume=1
       printf '[kpack-build-worker] worker=%s/%s route=%s partition=%s/%s resume=%s\n' \
         "$worker_id" "$worker_count" "$route" "$partition" "$partition_count" "$resume"
@@ -237,8 +255,7 @@ PY
       PPU_SDK="$sdk" python3 -B "$root/tools/kpack_discovery_build_partitions.py" verify \
         --root "$out" --manifest "$manifest" || return 2
 
-      publish_dir="$publish_base/$route/p$(printf '%02d' "$partition")"
-      if [ -e "$publish_dir" ]; then
+      if [ -e "$publish_dir" ] || [ -L "$publish_dir" ]; then
         verify_published_partition_and_maybe_remove_local \
           "$root" "$sdk" "$local_root" "$out" "$publish_dir" \
           "$route" "$partition" "$remove_local" || return $?
