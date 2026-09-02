@@ -1,0 +1,150 @@
+{
+  "artifact": {
+    "isa_counts": {
+      "aiu_all": 4,
+      "aiu_plain_b32": 4,
+      "barrier": 1,
+      "commit": 1,
+      "swizzle": 0,
+      "tsm_load_all": 16,
+      "universal_tsm_b32x4": 16,
+      "wait": 1
+    },
+    "kernel_count": 1,
+    "path": "bin/test_q4_n16k64_delivery_rawbit",
+    "sha256": "6f4575c80d22ca3ef6f120e48aa170ce3238994de796b7fa86a9c0e4ee348f9e",
+    "size": 91272,
+    "symbol": "_Z32q4_n16k64_delivery_rawbit_kernelPKjPj"
+  },
+  "evidence": [
+    {
+      "path": "evidence/build-verdict.log",
+      "sha256": "5822052eff428c8151cbb4360c7c16199778c178c3f66b60d7ff2990421e903f",
+      "size": 273
+    },
+    {
+      "path": "evidence/build.log",
+      "sha256": "4abee738b1863bb7c0b17a06dbdca48927773a82b6edbeb8fc78a9ec9b56c8ac",
+      "size": 7437
+    },
+    {
+      "path": "evidence/handoff.env",
+      "sha256": "710b09f4c65a5142ddbbe85778233963da38766c3a9cad773ac779919a43e530",
+      "size": 761
+    },
+    {
+      "path": "evidence/isa.txt",
+      "sha256": "ae0c86e87b81b81318640a55255b8c341d4c05dca1cc5bf22733e8d2761a9fc7",
+      "size": 9995
+    },
+    {
+      "path": "evidence/l249.expected.txt",
+      "sha256": "245939128e965e4adc9a85f024f6490b1e84e53eb5312e9db11b9f8be0d3df02",
+      "size": 466
+    },
+    {
+      "path": "evidence/list-elf.txt",
+      "sha256": "b0d582fcd1d83261f45769c0f841bf3b01eecade9f25e3dbca73287f174594da",
+      "size": 137
+    }
+  ],
+  "runner": {
+    "path": "run_l248_q4_n16k64_prebuilt.py",
+    "sha256": "7c9ee72d0525f0aa740bf0d7a2603e2103abaf000fae4197d4cbf0c2aab72c13",
+    "size": 40620
+  },
+  "schema": "quactlize.l248-q4-n16k64-prebuilt",
+  "schema_version": 1,
+  "sdk": {
+    "archive_sha256": "63ca196b152f2fec667fce8b18c04f1d6d0fa9e7bc7f72e18f017c96d11731dd",
+    "compiler_identity": "hgcc(HGGC C/C++ Compiler) Release version 2.1.1-a5c56e Built on Jul 25 2026 at 09:15:42",
+    "files": {
+      "bin/hgcc": "fa62c590c67411c23fa4028f15fa562b39ce0cf830830d038a1ec04c59d8c76e",
+      "bin/hgobjdump": "4176b21eb5b26e9f73acb5e17667a01fbb2808987b303d95cd8b31078221d16c",
+      "lib/libhggc_wrapper.so": "71c32cb41191458503234324360fcd3f1fa890dd5a082d465bb07328630c775e"
+    },
+    "release": "2.1.1-a5c56e"
+  },
+  "source": {
+    "commit": "481491936a61e54f3c340fb60fed4953ac26f4b9",
+    "inputs": [
+      {
+        "blob": "f25c096c294f9f663311c8f9abf841c8b553a77a",
+        "path": "build.sh",
+        "sha256": "123f8a9280868a0978e23eadda8cda9b21432a60785fad66082152b5c72786d3"
+      },
+      {
+        "blob": "9937a5bbd2bd7a76b38221571df298f71f5b7a46",
+        "path": "quactlize/csrc/CMakeLists.txt.in",
+        "sha256": "2aa134a29852fdb425d1541b37100b80caafb12e90792f64c828f799a3916497"
+      },
+      {
+        "blob": "edffe5e6adf5698b4a5bb0b97a2b0c3ac15bb622",
+        "path": "dev/fold_derivation/run_l248_q4_n16k64_delivery_rawbit.sh",
+        "sha256": "675c2f94019a65cb207003da21216faaae4250389e433ec02ef05e2d55030fbf"
+      },
+      {
+        "blob": "e1a0c5216cc4dc7da9614a9c31c941774c618eb8",
+        "path": "dev/test_q4_n16k64_delivery_rawbit.cu",
+        "sha256": "e015d226221bea9780f054f28d8655f22fc0d9634bf303c94c42cc5e79026482"
+      },
+      {
+        "blob": "7ac857ef6e830748cf10f463b4e0c9b7d55872e4",
+        "path": "dev/fold_derivation/l249_q4_n16k64_multim_warp_layout.cu",
+        "sha256": "0c169b629320f7fd19bf5027134e223f0325862f46d7f2ed8d005fafcbb64cc5"
+      },
+      {
+        "blob": "468593c7d621bc395fdf82a7a906a666756d9644",
+        "path": "dev/fold_derivation/l249_q4_n16k64_multim_warp_layout.expected.txt",
+        "sha256": "245939128e965e4adc9a85f024f6490b1e84e53eb5312e9db11b9f8be0d3df02"
+      },
+      {
+        "blob": "dcc89052b87c26b9229c24243d53992d88d4cf2a",
+        "path": "quactlize/include/q4_n16k64_direct_offline.hpp",
+        "sha256": "edd373684b20c70292cd0dcf8b7b81e9c50919265e6046c8b70c16631d7c18b8"
+      },
+      {
+        "blob": "b29ec122217c66fc76ef020514071df3ab849eb6",
+        "path": "quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/quactlize_b_delivery_policy.hpp",
+        "sha256": "89dc064820b4fa80fef44cf63cb7319c67db6985d6f0579669db1fb2dcec8af6"
+      },
+      {
+        "blob": "441b56b7bd75d571d6f0c53da7f57abfa7d27b74",
+        "path": "quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/quactlize_b_s2r_adapter.hpp",
+        "sha256": "6d2f71a71b8cbb96223f2682329d448fad42e689d9ccf51d1d446710f042a684"
+      },
+      {
+        "blob": "b88ac8f28e77824ace3cf05d546c2f4397f4b7ab",
+        "path": "quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/quactlize_q4_n16k64_delivery.hpp",
+        "sha256": "91c456117aa186bc0f545d66095bc78eedc4c14a82bfb727f406c4f560d62f21"
+      }
+    ],
+    "required_ancestor": "481491936a61e54f3c340fb60fed4953ac26f4b9",
+    "submodules": [
+      {
+        "commit": "8d46b758c8931807df840a6ed87d272d74a8fdf4",
+        "path": "third_party/actlize",
+        "tree": "d477b071bf54ae99a3d40817f1061ad4b5eb1c31"
+      },
+      {
+        "commit": "f94ec46f4f63f96003d6cfdf2014731e7672c281",
+        "path": "third_party/cutlass",
+        "tree": "430272ec54cbc83968cc2f5639d3ea7898ecbd8e"
+      }
+    ],
+    "tree": "539b84314b080fc693211b52a5fde81ca6668348"
+  },
+  "target": {
+    "arch": "ppu0010",
+    "layout": 3,
+    "mapping_id": 5851387789131907073,
+    "name": "test_q4_n16k64_delivery_rawbit",
+    "ppu_defs": [
+      "PPU_PACKED_SCALE=1",
+      "PPU_PACKED_FORMAT=0",
+      "QUACTLIZE_DENSE_ONLY=12"
+    ],
+    "stage_bytes": 8192,
+    "words": 2048
+  }
+}
