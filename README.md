@@ -201,6 +201,29 @@ export QUACTLIZE_PPU_LIB=/path/to/q4-scalefirst/libquactlize_ppu.so
 export QUACTLIZE_PPU_LIB_FMT0=/path/to/q4-packed/libquactlize_ppu.so
 ```
 
+A native loader can create that Q4 ScaleFirst metadata cache without using a
+Python wrapper or an internal symbol. Resolve these versioned C entries from
+the default Q4 ScaleFirst library:
+
+```c
+int64_t quactlize_ppu_q4_kpack4_scalefirst_metadata_plane_bytes_for_arrangement_v2(
+    int n, int k, const quactlize_ppu_placed_arrangement_v2 *arrangement);
+
+int quactlize_ppu_q4_kpack4_scalefirst_prepass_dev_for_arrangement_v2(
+    const uint8_t *units, int64_t units_capacity_bytes,
+    uint16_t *scale, int64_t scale_capacity_bytes,
+    uint16_t *zero, int64_t zero_capacity_bytes,
+    int n, int k, void *stream,
+    const quactlize_ppu_placed_arrangement_v2 *arrangement);
+```
+
+The query returns the byte size of each independent FP16 plane. The input
+`units` span and each output plane are `N*K/16` bytes; all three device
+pointers are 16-byte aligned and pairwise disjoint. A zero launch result means
+the conversion was enqueued on the supplied stream, not completed. FMT0--4
+libraries deliberately report the capability as absent; they consume the
+packed units directly and do not own the ScaleFirst reader.
+
 Use `--dry-run` to inspect tensor eligibility without writing an artifact.
 The placement operation is host code exported by the format-selected PPU
 library. A real conversion therefore requires that library and its shared

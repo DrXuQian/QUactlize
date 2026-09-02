@@ -24,7 +24,8 @@ Everything `extern "C"` in the library today. Grouped by what it is for, so a mi
 | `quactlize_ppu_units_bytes` | query | dense `units` allocation size |
 | `quactlize_ppu_prepare_units` | blocks → `units` | dense forward metadata producer |
 | `quactlize_ppu_prepare_units_grouped` | blocks → `units` | expert-major forward producer |
-| `quactlize_ppu_prepass_unit` | `units` → (scale, zero) | metadata inverse |
+| `quactlize_ppu_q4_kpack4_scalefirst_metadata_plane_bytes_for_arrangement_v2` | query | public Q4 ScaleFirst plane size/capability |
+| `quactlize_ppu_q4_kpack4_scalefirst_prepass_dev_for_arrangement_v2` | device `units` → FP16 scale/zero | public asynchronous Q4 ScaleFirst cache producer |
 | `quactlize_ppu_dense_fully_quantized` | consume | packed dense GEMM |
 | `quactlize_ppu_dense_fully_quantized_for_arrangement_v1` | consume | versioned artifact descriptor; never guesses fold |
 | `quactlize_ppu_dense_fully_quantized_for_arrangement_v2` | consume | Xplane-v2 or canonical Q4 K-pack4 bytes |
@@ -82,6 +83,22 @@ when the format's superblocks cannot form a complete unit.
 
 The torch producer calls these same symbols. `gguf_unit_pack.hpp` owns the single expert-aware packing loop used by
 both dense and grouped, so the exported implementation is not a second reorder which can drift from Python.
+
+### Q4 ScaleFirst device cache
+
+The legacy unversioned metadata inverse is an implementation/diagnostic seam,
+not a loader ABI. Native consumers use the arrangement-v2 entries declared in
+`quactlize_ppu_device.h`. The size query succeeds only on the default Q4
+ScaleFirst DSO and a canonical Q4 K-pack4 descriptor. It returns the required
+size of each FP16 plane; the packed-unit input has the same byte size.
+
+The asynchronous producer takes caller-owned device pointers for `units`,
+`scale`, and `zero`. Their required spans must be 16-byte aligned, pairwise
+disjoint, and covered by the supplied capacities. It allocates and copies
+nothing. A zero result means only that conversion was enqueued on the supplied
+stream; the caller owns lifetime and stream/event ordering. The format-selected
+FMT0--4 DSOs return capability-absent because their fully-quantized kernels
+consume packed units without expanding this cache.
 
 ---
 
@@ -310,5 +327,7 @@ use different arrangements; every batch/M for one stored layer must use that lay
    closes the producer with no GEMM and no golden involved, and it is the check that separates a packing bug
    from a compute bug later.
 2. **Wire the §5 call site**, with `rc != 0` as an abort.
-3. **Produce `units` with §3** (or use the §6 wrapper), and run `prepass_unit` as its independent inverse.
+3. **Produce `units` with §3** (or use the §6 wrapper). For Q4 ScaleFirst,
+   query and enqueue the public arrangement-v2 cache producer above; do not
+   resolve the internal unversioned inverse.
 4. **Do not benchmark** until the device-pointer variants exist.
