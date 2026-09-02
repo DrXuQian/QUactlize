@@ -43,6 +43,18 @@ main() {
     --output "$out/inputs/box-identity.json" || {
       fail 'runtime one-device identity probe failed'; return 2;
     }
+  python3 -B - "$out/inputs/box-identity.json" <<'PY' || {
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    probe = json.load(stream)["device_probe"]
+assert probe["status"] in ("measured", "properties-unavailable")
+assert probe["device_count"] == 1
+PY
+    fail 'measured runtime one-device evidence is required'
+    return 2
+  }
   python3 -B "$root/tools/plan_fq_grouped_multi_router.py" self-test || return 2
   python3 -B "$root/tools/analyze_fq_grouped_multi_router.py" self-test || return 2
   python3 -B "$root/tools/plan_fq_grouped_multi_router.py" materialize \

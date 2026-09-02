@@ -24,6 +24,7 @@ DEFINITIONS = ["PPU_PACKED_SCALE=1", "PPU_PACKED_FORMAT=0",
                "QUACTLIZE_DENSE_ONLY=12"]
 BUILD_INPUTS = (
     "build.sh", "CMakeLists.txt", "quactlize/csrc/CMakeLists.txt.in",
+    "quactlize/csrc/fq_kquant_layout_perf.cmake.in",
     "benchmarks/test_fq_kquant_layout_perf.cu",
     "quactlize/csrc/device/ppu_backend.cu",
     "quactlize/csrc/device/ppu_dense_backend.cu",
@@ -37,6 +38,7 @@ BUILD_INPUTS = (
     "tools/build_fq_kquant_policy_v2_prebuilt.sh",
     "tools/run_fq_kquant_kpack_perf_box.sh",
     "tools/run_fq_kquant_policy_v2_box.sh",
+    "tools/probe_box_identity.py",
 )
 
 
@@ -109,6 +111,66 @@ def _unique_json(path: Path) -> object:
             value[key] = item
         return value
     return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=hook)
+
+
+def build_authority(source_root: Path, sdk: Path) -> dict[str, object]:
+    """Return the exact identity that makes an interrupted build resumable."""
+    source_root = source_root.resolve()
+    sdk = sdk.resolve()
+    source = run("git", "rev-parse", "HEAD", cwd=source_root)
+    if not HEX40.fullmatch(source):
+        raise ManifestError("source HEAD is malformed")
+    if run("git", "status", "--porcelain", "--", *BUILD_INPUTS,
+           cwd=source_root):
+        raise ManifestError("build inputs are dirty or untracked")
+
+    release = sdk / "release.yaml"
+    compiler = sdk / "bin/hgcc"
+    inspector = sdk / "bin/hgobjdump"
+    regular(release)
+    regular(compiler, True)
+    regular(inspector, True)
+    compiler_version = run(str(compiler), "--version").splitlines()[0]
+    if "stub" in compiler_version.lower():
+        raise ManifestError("SDK compiler is a stub")
+
+    return {
+        "schema": f"{SCHEMA}.build-authority.v1",
+        "source": {
+            "commit": source,
+            "submodules": submodules(source_root),
+            "build_inputs": {
+                name: sha256(source_root / name) for name in BUILD_INPUTS
+            },
+        },
+        "sdk": {
+            "release": dict(
+                file_record(release, "release.yaml"),
+                version=release_version(release),
+            ),
+            "compiler": dict(
+                file_record(compiler, "bin/hgcc", True),
+                version=compiler_version,
+            ),
+            "inspector": file_record(inspector, "bin/hgobjdump", True),
+        },
+        "build": {
+            "target": "test_fq_kquant_layout_perf",
+            "qtype": 12,
+            "arch": "ppu0010",
+            "definitions": DEFINITIONS,
+        },
+    }
+
+
+def write_build_authority(output: Path, source_root: Path, sdk: Path) -> None:
+    if output.exists() or output.is_symlink():
+        raise ManifestError(f"refusing to overwrite build authority: {output}")
+    output.write_text(
+        json.dumps(build_authority(source_root, sdk), indent=2, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def create(bundle: Path, build: Path, sdk: Path, build_log: Path,
@@ -219,7 +281,6 @@ def verify(bundle: Path, source_root: Path, sdk: Path,
     inspector = sdk / "bin/hgobjdump"
     if release_version(release) != sdk_rows["release"].get("version"):
         raise ManifestError("execution SDK release differs from the build SDK")
-    regular(inspector, True)
     if not execution_sdk_compatible:
         for name, path, executable in (("release", release, False),
                                        ("compiler", compiler, True),
@@ -270,14 +331,22 @@ def main() -> int:
     make = commands.add_parser("create")
     for name in ("bundle", "build", "sdk", "build-log", "cmake-log", "build-make"):
         make.add_argument(f"--{name}", type=Path, required=True)
+    authority = commands.add_parser("write-build-authority")
+    authority.add_argument("--output", type=Path, required=True)
+    authority.add_argument("--source-root", type=Path, default=ROOT)
+    authority.add_argument("--sdk", type=Path, required=True)
     args = parser.parse_args()
     try:
         if args.command == "self-test": self_test()
         elif args.command == "verify":
             verify(args.bundle, args.source_root, args.sdk,
                    execution_sdk_compatible=args.execution_sdk_compatible)
-        else: create(args.bundle, args.build, args.sdk, args.build_log,
-                     args.cmake_log, args.build_make)
+        elif args.command == "create":
+            create(args.bundle, args.build, args.sdk, args.build_log,
+                   args.cmake_log, args.build_make)
+        else:
+            write_build_authority(
+                args.output, args.source_root, args.sdk)
         return 0
     except (ManifestError, OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         print(f"[fq-kquant-policy-v2-prebuilt] FAIL: {error}", file=sys.stderr)

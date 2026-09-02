@@ -110,6 +110,13 @@ import sys
 root, sdk, release, output = map(pathlib.Path, sys.argv[1:5])
 source_paths = sys.argv[5:]
 digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+versions = [
+    line.split(":", 1)[1].strip()
+    for line in release.read_text(encoding="utf-8").splitlines()
+    if line.startswith("version:")
+]
+if len(versions) != 1 or not versions[0]:
+    raise SystemExit(f"malformed SDK release receipt: {release}")
 submodules = {}
 for line in subprocess.check_output(
         ["git", "-C", str(root), "submodule", "status", "--recursive"],
@@ -123,6 +130,7 @@ document = {
     "source_files": {path: digest(root / path) for path in source_paths},
     "submodules": submodules,
     "sdk": {
+        "release_version": versions[0],
         "release_sha256": digest(release),
         "compiler_sha256": digest(sdk / "bin/hgcc"),
         "inspector_sha256": digest(sdk / "bin/hgobjdump"),

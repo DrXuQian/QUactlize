@@ -80,6 +80,11 @@ def test_execution_sdk_may_change_tool_bytes_with_the_same_release(
     with pytest.raises(prebuilt.ManifestError):
         prebuilt.verify(bundle, source, sdk)
 
+    compiler.unlink()
+    inspector.unlink()
+    assert prebuilt.verify(
+        bundle, source, sdk, execution_sdk_compatible=True) == manifest
+
 
 def test_execution_sdk_still_requires_the_build_release(tmp_path, monkeypatch):
     source, bundle, sdk, _ = _fixture(tmp_path, monkeypatch)
@@ -126,5 +131,9 @@ def test_box_runner_is_execute_only_and_builder_has_exact_q12_identity():
     assert "TARGET=test_fq_kquant_layout_perf" in builder
     assert "FQ_KQUANT_PERF_QTYPE=12" in builder
     assert "PPU_PACKED_FORMAT=0" in builder and "QUACTLIZE_DENSE_ONLY=12" in builder
+    assert "RESUME" in builder and "PPU_BUILD_RESUME" in builder
+    assert "write-build-authority" in builder
+    assert "quactlize/csrc/fq_kquant_layout_perf.cmake.in" in prebuilt.BUILD_INPUTS
+    assert "tools/probe_box_identity.py" in prebuilt.BUILD_INPUTS
     subprocess.run(["bash", "-n", str(ROOT / "tools/build_fq_kquant_policy_v2_prebuilt.sh"),
                     str(ROOT / "tools/run_fq_kquant_policy_v2_box.sh")], check=True)

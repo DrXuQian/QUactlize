@@ -55,6 +55,17 @@ def load(path: pathlib.Path) -> dict:
     return value
 
 
+def release_version(path: pathlib.Path) -> str:
+    versions = [
+        line.split(":", 1)[1].strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.startswith("version:")
+    ]
+    if len(versions) != 1 or not versions[0]:
+        raise ManifestError(f"SDK release receipt is malformed: {path}")
+    return versions[0]
+
+
 def shape(value: dict) -> None:
     if set(value) != {
         "schema",
@@ -80,9 +91,19 @@ def shape(value: dict) -> None:
            not re.fullmatch(r"[0-9a-f]{40}", commit)
            for path, commit in value["submodules"].items()):
         raise ManifestError("submodule authority is malformed")
-    if set(value["sdk"]) != {"release_sha256", "compiler_sha256", "inspector_sha256"}:
+    if set(value["sdk"]) != {
+        "release_version",
+        "release_sha256",
+        "compiler_sha256",
+        "inspector_sha256",
+    }:
         raise ManifestError("SDK denominator differs")
-    if any(not re.fullmatch(r"[0-9a-f]{64}", item) for item in value["sdk"].values()):
+    if not isinstance(value["sdk"]["release_version"], str) or not value["sdk"]["release_version"]:
+        raise ManifestError("SDK release version is malformed")
+    if any(
+        not re.fullmatch(r"[0-9a-f]{64}", value["sdk"][name])
+        for name in ("release_sha256", "compiler_sha256", "inspector_sha256")
+    ):
         raise ManifestError("SDK digest differs")
     if value["build"] != {
         "target": "test_fq_grouped_multi_router_perf",
@@ -129,8 +150,8 @@ def verify(
     if value["submodules"] != submodules:
         raise ManifestError("submodule map differs")
     digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
-    if digest(release) != value["sdk"]["release_sha256"]:
-        raise ManifestError("box SDK release differs from build release")
+    if release_version(release) != value["sdk"]["release_version"]:
+        raise ManifestError("box SDK release version differs from build release")
     for path, expected in value["source_files"].items():
         source = (source_root / path).resolve()
         if (
@@ -165,8 +186,15 @@ def self_test() -> None:
         "source_files": {path: digest for path in SOURCE_PATHS},
         "submodules": {"third_party/example": "0" * 40},
         "sdk": {
-            key: digest
-            for key in ("release_sha256", "compiler_sha256", "inspector_sha256")
+            "release_version": "test-release",
+            **{
+                key: digest
+                for key in (
+                    "release_sha256",
+                    "compiler_sha256",
+                    "inspector_sha256",
+                )
+            },
         },
         "build": {
             "target": "test_fq_grouped_multi_router_perf",
