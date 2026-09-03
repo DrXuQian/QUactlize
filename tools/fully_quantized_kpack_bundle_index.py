@@ -24,6 +24,10 @@ import fully_quantized_kpack_discovery_matrix as matrix  # noqa: E402
 
 BUNDLE_SCHEMA = "quactlize.fully_quantized_kpack_prebuilt_bundle.v2"
 RECEIPT_SCHEMA = "quactlize.fully_quantized_kpack_binary_receipt.v2"
+STRUCTURAL_RECEIPT_SCHEMA = (
+    "quactlize.fully_quantized_kpack_structural_receipt.v1")
+DEVICE_PAYLOAD_KIND = "DEVICE_KERNEL"
+STRUCTURAL_PAYLOAD_KIND = "NO_DEVICE_KERNEL_STRUCTURAL"
 MAX_PARENTS_PER_BINARY = 32
 
 
@@ -105,10 +109,36 @@ def validate_index(document: dict) -> list[dict]:
     return expected
 
 
+def receipt_kind(receipt: dict) -> str:
+    """Return the payload class while preserving legacy v2 receipts.
+
+    A structural receipt is deliberately a separate schema.  It may only
+    describe a FullyQuantized dense shard whose generated host path proves
+    that every parent is rejected by the shipping shared-memory guard before
+    a device kernel can be referenced.
+    """
+    if not isinstance(receipt, dict):
+        raise ValueError("FQ K-pack binary receipt must be an object")
+    schema = receipt.get("schema")
+    if schema == RECEIPT_SCHEMA:
+        kind = receipt.get("payload_kind", DEVICE_PAYLOAD_KIND)
+        if kind != DEVICE_PAYLOAD_KIND:
+            raise ValueError("FQ K-pack device receipt payload kind differs")
+        return DEVICE_PAYLOAD_KIND
+    if schema == STRUCTURAL_RECEIPT_SCHEMA:
+        if receipt.get("payload_kind") != STRUCTURAL_PAYLOAD_KIND:
+            raise ValueError("FQ K-pack structural receipt payload kind differs")
+        if (receipt.get("route") != "fully-quantized" or
+                receipt.get("operator") != "dense" or
+                receipt.get("device_arch") != "NO_DEVICE_KERNEL"):
+            raise ValueError("FQ K-pack structural receipt scope differs")
+        return STRUCTURAL_PAYLOAD_KIND
+    raise ValueError("FQ K-pack binary receipt schema differs")
+
+
 def validate_receipt(receipt: dict, shard: dict,
-                     manifest_sha256: str, binary_sha256: str) -> None:
-    if not isinstance(receipt, dict) or receipt.get("schema") != RECEIPT_SCHEMA:
-        raise ValueError("FQ K-pack binary receipt schema differs")
+                     manifest_sha256: str, binary_sha256: str) -> str:
+    kind = receipt_kind(receipt)
     for field in ("shard_key", "qtype", "operator", "route",
                   "parent_begin", "parent_end", "parent_count",
                   "authority_count", "parent_ids"):
@@ -117,6 +147,16 @@ def validate_receipt(receipt: dict, shard: dict,
     if (receipt.get("manifest_sha256") != manifest_sha256 or
             receipt.get("binary_sha256") != binary_sha256):
         raise ValueError("binary receipt stale payload hash")
+    if kind == STRUCTURAL_PAYLOAD_KIND:
+        proof = receipt.get("structural_proof")
+        proof_sha = receipt.get("structural_proof_sha256")
+        expected = f"payloads/{shard['shard_key']}/structural-proof.json"
+        if proof != expected:
+            raise ValueError("structural receipt proof path differs")
+        if (not isinstance(proof_sha, str) or len(proof_sha) != 64 or
+                any(c not in "0123456789abcdef" for c in proof_sha)):
+            raise ValueError("structural receipt proof hash differs")
+    return kind
 
 
 def self_test() -> None:
@@ -153,7 +193,29 @@ def self_test() -> None:
     shard = {**full[0], "typed_rows": full[0]["parent_count"]}
     receipt = {"schema": RECEIPT_SCHEMA, **full[0],
                "manifest_sha256": "a" * 64, "binary_sha256": "b" * 64}
-    validate_receipt(receipt, shard, "a" * 64, "b" * 64)
+    if validate_receipt(receipt, shard, "a" * 64, "b" * 64) != \
+            DEVICE_PAYLOAD_KIND:
+        raise ValueError("device receipt kind differs")
+    structural = {
+        "schema": STRUCTURAL_RECEIPT_SCHEMA,
+        **{key: value for key, value in full[0].items() if key != "layout"},
+        "payload_kind": STRUCTURAL_PAYLOAD_KIND,
+        "device_arch": "NO_DEVICE_KERNEL",
+        "manifest_sha256": "a" * 64, "binary_sha256": "b" * 64,
+        "structural_proof":
+            f"payloads/{full[0]['shard_key']}/structural-proof.json",
+        "structural_proof_sha256": "c" * 64,
+    }
+    if validate_receipt(structural, shard, "a" * 64, "b" * 64) != \
+            STRUCTURAL_PAYLOAD_KIND:
+        raise ValueError("structural receipt kind differs")
+    wrong_scope = copy.deepcopy(structural); wrong_scope["operator"] = "grouped"
+    try:
+        validate_receipt(wrong_scope, shard, "a" * 64, "b" * 64)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("grouped structural receipt plant stayed green")
     stale = copy.deepcopy(receipt); stale["parent_end"] += 1
     try:
         validate_receipt(stale, shard, "a" * 64, "b" * 64)

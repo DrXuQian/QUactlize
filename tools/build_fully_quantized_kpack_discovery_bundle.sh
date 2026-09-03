@@ -2,6 +2,8 @@
 # Build parent-range FullyQuantized canonical K-pack discovery payloads locally.
 # Every linked device binary owns at most 32 generated parents.  The PPU box
 # runner consumes only these compact payloads and never compiles.
+# FQ_KPACK_PAYLOAD_SOURCE_ROOT separates an immutable payload source checkout
+# from a later, committed receipt/proof tool checkout during fail-closed resume.
 
 set -uo pipefail
 
@@ -54,16 +56,23 @@ PY
 shard_receipt() {
   local mode="$1" root="$2" out="$3" sdk="$4" authority="$5"
   local key="$6" q="$7" op="$8" manifest="$9" binary="${10}" receipt="${11}"
+  local build_dir="${12}" tool_root="${13}"
   python3 -B - "$mode" "$root" "$out" "$sdk" "$authority" "$key" \
-    "$q" "$op" "$manifest" "$binary" "$receipt" <<'PY'
-import hashlib,json,os,pathlib,re,subprocess,sys
-mode,root,out,sdk,authority,key,q,op,manifest,binary,receipt=sys.argv[1:]
-root,out,sdk,authority,manifest,binary,receipt=map(
- pathlib.Path,(root,out,sdk,authority,manifest,binary,receipt)); q=int(q)
-sys.path.insert(0,str(root/"tools"))
+    "$q" "$op" "$manifest" "$binary" "$receipt" "$build_dir" \
+    "$tool_root" <<'PY'
+import hashlib,importlib.util,json,os,pathlib,re,subprocess,sys
+mode,root,out,sdk,authority,key,q,op,manifest,binary,receipt,build_dir,tool_root=sys.argv[1:]
+root,out,sdk,authority,manifest,binary,receipt,build_dir,tool_root=map(
+ pathlib.Path,(root,out,sdk,authority,manifest,binary,receipt,build_dir,tool_root)); q=int(q)
+sys.path.insert(0,str(tool_root/"tools"))
 import fully_quantized_kpack_bundle_index as index
-import gen_fully_quantized_grouped_kpack_units as grouped
-import gen_fully_quantized_kpack_discovery_units as dense
+import fq_dense_structural_proof as structural
+def load_payload_module(name):
+ spec=importlib.util.spec_from_file_location(name,root/"tools"/f"{name}.py")
+ if spec is None or spec.loader is None: raise SystemExit(f"cannot load payload module {name}")
+ module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module); return module
+grouped=load_payload_module("gen_fully_quantized_grouped_kpack_units")
+dense=load_payload_module("gen_fully_quantized_kpack_discovery_units")
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 if not authority.is_file() or not manifest.is_file() or not binary.is_file():
  raise SystemExit("shard receipt input is incomplete")
@@ -83,20 +92,43 @@ published_binary=out/"payloads"/key/binary_name
 elf=subprocess.check_output([str(sdk/"bin/hgobjdump"),"-lelf",str(binary)],
  text=True,stderr=subprocess.STDOUT)
 match=re.search(r"ELF FILE \d+ \((PPU [^)]+)\)",elf)
-if not match: raise SystemExit("linked payload has no PPU image")
 build=json.loads(authority.read_text())
-doc={"schema":index.RECEIPT_SCHEMA,**shard,
+common={**shard,
  "build_input_authority_sha256":sha(authority),
  "source_sha":build["source_sha"],"source_tree":build["source_tree"],
  "submodules":build["submodules"],
  "sdk_compiler_sha256":build["sdk"]["compiler"]["sha256"],
  "sdk_inspector_sha256":build["sdk"]["inspector"]["sha256"],
  "manifest":str(manifest.relative_to(out)),"manifest_sha256":sha(manifest),
- "binary":str(published_binary.relative_to(out)),"binary_sha256":sha(binary),
- "device_arch":match.group(1),
- "inspector_output_sha256":hashlib.sha256(match.group(1).encode()).hexdigest()}
-index.validate_receipt(doc,{**shard,"typed_rows":selection["count"]},
-                       sha(manifest),sha(binary))
+ "binary":str(published_binary.relative_to(out)),"binary_sha256":sha(binary)}
+native={**shard,"typed_rows":selection["count"]}
+if match:
+ doc={"schema":index.RECEIPT_SCHEMA,**common,
+      "device_arch":match.group(1),
+      "inspector_output_sha256":hashlib.sha256(
+          match.group(1).encode()).hexdigest()}
+else:
+ if op != "dense":
+  raise SystemExit("non-dense linked payload has no PPU image")
+ proof=receipt.parent/"structural-proof.json"
+ if mode == "write":
+  structural.create_structural_proof(
+      source_root=root,sdk=sdk,build_authority_path=authority,
+      shard_key=key,manifest_path=manifest,binary_path=binary,
+      build_dir=build_dir,output_path=proof)
+ if not proof.is_file() or proof.is_symlink():
+  raise SystemExit("structural payload proof is missing")
+ proof_doc=json.loads(proof.read_text())
+ published_proof=out/"payloads"/key/"structural-proof.json"
+ doc={"schema":index.STRUCTURAL_RECEIPT_SCHEMA,**common,
+      "payload_kind":index.STRUCTURAL_PAYLOAD_KIND,
+      "device_arch":"NO_DEVICE_KERNEL",
+      "inspector_output_sha256":hashlib.sha256(elf.encode()).hexdigest(),
+      "structural_proof":str(published_proof.relative_to(out)),
+      "structural_proof_sha256":sha(proof)}
+ structural.validate_structural_proof(
+     proof_doc,native,sha(manifest),sha(binary),doc)
+index.validate_receipt(doc,native,sha(manifest),sha(binary))
 encoded=json.dumps(doc,indent=2,sort_keys=True)+"\n"
 if mode=="validate":
  if not receipt.is_file() or receipt.read_text()!=encoded:
@@ -134,12 +166,16 @@ PY
 
 main() {
   [ "$#" -eq 0 ] || { fail "no positional arguments are accepted"; return $?; }
-  local root autodl_root out resume pilot jobs per_unit max_parents sdk sdk_receipt preexisting
+  local tool_root root autodl_root out resume pilot jobs per_unit max_parents sdk sdk_receipt preexisting
   local min_free_kb dirty untracked build_authority global_preflight range_plan identity_bin identity_receipt
   local key q op begin end count total layout format gen payload binary receipt log rc
   local scratch_build built_binary build_resume stage staged_binary staged_receipt
   local partitioned partition_plan partition_id frozen_partition_plan
-  root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)" || return 2
+  tool_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)" || return 2
+  root="$(realpath -e -- "${FQ_KPACK_PAYLOAD_SOURCE_ROOT:-$tool_root}")" || {
+    fail "FQ_KPACK_PAYLOAD_SOURCE_ROOT must name the frozen payload source"; return $?; }
+  [ "$(git -C "$root" rev-parse --is-inside-work-tree 2>/dev/null)" = true ] || {
+    fail "payload source root is not a Git checkout"; return $?; }
   autodl_root="$(realpath -e /root/autodl-tmp)" || {
     fail "/root/autodl-tmp is required for large build outputs"; return $?; }
   out="$(realpath -m -- "${OUT:-$autodl_root/quactlize-fq-kpack-discovery-$(git -C "$root" rev-parse --short=8 HEAD)}")" || return 2
@@ -230,7 +266,7 @@ main() {
   if [ "$partitioned" = 1 ]; then
     frozen_partition_plan="$out/inputs/build-partition-plan.json"
     range_plan="$out/inputs/selected-shards.tsv"
-    python3 -B "$root/tools/kpack_discovery_build_partitions.py" select \
+    python3 -B "$tool_root/tools/kpack_discovery_build_partitions.py" select \
       --plan "$partition_plan" --partition "$partition_id" \
       --route fully-quantized --freeze-plan "$frozen_partition_plan" \
       --output "$range_plan" || return 2
@@ -300,7 +336,7 @@ PY
 
   if [ "$partitioned" = 0 ]; then
     range_plan="$out/inputs/shard-plan.tsv"
-    python3 -B - "$root" "$pilot" "$max_parents" "$range_plan" <<'PY' || return 2
+    python3 -B - "$tool_root" "$pilot" "$max_parents" "$range_plan" <<'PY' || return 2
 import os,pathlib,sys
 root=pathlib.Path(sys.argv[1]); pilot=bool(int(sys.argv[2])); maximum=int(sys.argv[3]); out=pathlib.Path(sys.argv[4])
 sys.path.insert(0,str(root/"tools")); import fully_quantized_kpack_bundle_index as index
@@ -310,7 +346,8 @@ if not out.exists():
  temporary=out.with_name(f".{out.name}.current.{os.getpid()}"); temporary.write_text(text); os.replace(temporary,out)
 PY
   fi
-  python3 -B "$root/tools/fully_quantized_kpack_bundle_index.py" || return 2
+  python3 -B "$tool_root/tools/fully_quantized_kpack_bundle_index.py" || return 2
+  python3 -B "$tool_root/tools/fq_dense_structural_proof.py" self-test || return 2
   python3 -B "$root/ci/check_fully_quantized_kpack_discovery.py" || return 2
 
   identity_bin="$out/payloads/box_identity_probe"
@@ -341,7 +378,8 @@ PY
     receipt="$payload/binary-receipt.json"
     if [ -e "$payload" ]; then
       shard_receipt validate "$root" "$out" "$sdk" "$build_authority" \
-        "$key" "$q" "$op" "$gen/manifest.json" "$binary" "$receipt" || {
+        "$key" "$q" "$op" "$gen/manifest.json" "$binary" "$receipt" \
+        "$out/scratch/$key" "$tool_root" || {
           fail "$key partial/stale resume state"; return $?; }
       clear_owned_shard_scratch "$out" "$out/scratch/$key" || return 2
       continue
@@ -419,34 +457,43 @@ PY
     install -m 0755 "$built_binary" "$staged_binary" || return 2
     shard_receipt write "$root" "$out" "$sdk" "$build_authority" \
       "$key" "$q" "$op" "$gen/manifest.json" \
-      "$staged_binary" "$staged_receipt" || return 2
+      "$staged_binary" "$staged_receipt" "$scratch_build" "$tool_root" || return 2
     shard_receipt validate "$root" "$out" "$sdk" "$build_authority" \
       "$key" "$q" "$op" "$gen/manifest.json" \
-      "$staged_binary" "$staged_receipt" || return 2
+      "$staged_binary" "$staged_receipt" "$scratch_build" "$tool_root" || return 2
     [ ! -e "$payload" ] || { fail "$key payload appeared during atomic publication"; return $?; }
     mv "$stage" "$payload" || return 2
     shard_receipt validate "$root" "$out" "$sdk" "$build_authority" \
-      "$key" "$q" "$op" "$gen/manifest.json" "$binary" "$receipt" || return 2
+      "$key" "$q" "$op" "$gen/manifest.json" "$binary" "$receipt" \
+      "$scratch_build" "$tool_root" || return 2
     clear_owned_shard_scratch "$out" "$scratch_build" || return 2
   done <"$range_plan"
 
   if [ "$partitioned" = 1 ]; then
     PPU_SDK="$sdk" python3 -B \
-      "$root/tools/kpack_discovery_build_partitions.py" record \
+      "$tool_root/tools/kpack_discovery_build_partitions.py" record \
       --root "$out" --route fully-quantized || return 2
     printf '[fq-kpack-bundle] PARTITION_COMPLETE id=%s shards=%s bundle=%s\n' \
       "$partition_id" "$(wc -l < "$range_plan")" "$out"
     return 0
   fi
 
-  python3 -B - "$root" "$out" "$sdk" "$sdk_receipt" "$build_authority" \
-    "$pilot" "$max_parents" <<'PY' || return 2
-import hashlib,json,os,pathlib,sys
-root,out,sdk,sdk_receipt,authority=map(pathlib.Path,sys.argv[1:6]); pilot=bool(int(sys.argv[6])); maximum=int(sys.argv[7])
+  python3 -B - "$root" "$tool_root" "$out" "$sdk" "$sdk_receipt" \
+    "$build_authority" "$pilot" "$max_parents" <<'PY' || return 2
+import hashlib,importlib.util,json,os,pathlib,sys
+root,tool_root,out,sdk,sdk_receipt,authority=map(pathlib.Path,sys.argv[1:7]); pilot=bool(int(sys.argv[7])); maximum=int(sys.argv[8])
 sys.path.insert(0,str(root/"tools"))
-import fully_quantized_kpack_bundle_index as index
 import gen_fully_quantized_grouped_kpack_units as grouped
 import gen_fully_quantized_kpack_discovery_units as dense
+spec=importlib.util.spec_from_file_location(
+ "fq_bundle_index_repair",tool_root/"tools/fully_quantized_kpack_bundle_index.py")
+if spec is None or spec.loader is None: raise SystemExit("cannot load repair bundle index")
+index=importlib.util.module_from_spec(spec); spec.loader.exec_module(index)
+sys.modules["fully_quantized_kpack_bundle_index"]=index
+proof_spec=importlib.util.spec_from_file_location(
+ "fq_dense_structural_repair",tool_root/"tools/fq_dense_structural_proof.py")
+if proof_spec is None or proof_spec.loader is None: raise SystemExit("cannot load structural proof validator")
+structural=importlib.util.module_from_spec(proof_spec); proof_spec.loader.exec_module(structural)
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 build=json.loads(authority.read_text()); shards={}
 for planned in index.plan(pilot,maximum):
@@ -457,15 +504,25 @@ for planned in index.plan(pilot,maximum):
  binary_name="test_fully_quantized_internal_sweep" if op=="dense" else "test_fully_quantized_grouped_kpack_discovery"
  binary=out/f"payloads/{key}/{binary_name}"; receipt=out/f"payloads/{key}/binary-receipt.json"
  receipt_doc=json.loads(receipt.read_text())
- index.validate_receipt(receipt_doc,{**planned,"typed_rows":len(rows)},sha(manifest),sha(binary))
+ native={**planned,"typed_rows":len(rows)}
+ kind=index.validate_receipt(receipt_doc,native,sha(manifest),sha(binary))
  if [row["static_candidate_id"] for row in rows]!=planned["parent_ids"]:
   raise SystemExit(f"{key}: manifest parent ids differ")
- shards[key]={**planned,"typed_rows":len(rows),
+ shard={**planned,"typed_rows":len(rows),
   "manifest":str(manifest.relative_to(out)),"manifest_sha256":sha(manifest),
   "binary":str(binary.relative_to(out)),"binary_sha256":sha(binary),
   "binary_receipt":str(receipt.relative_to(out)),"binary_receipt_sha256":sha(receipt),
   "device_arch":receipt_doc["device_arch"],
   "inspector_output_sha256":receipt_doc["inspector_output_sha256"]}
+ if kind==index.STRUCTURAL_PAYLOAD_KIND:
+  proof=out/f"payloads/{key}/structural-proof.json"
+  proof_doc=json.loads(proof.read_text())
+  structural.validate_structural_proof(
+      proof_doc,native,sha(manifest),sha(binary),receipt_doc)
+  shard.update({"payload_kind":kind,
+                "structural_proof":str(proof.relative_to(out)),
+                "structural_proof_sha256":sha(proof)})
+ shards[key]=shard
 probe=out/"payloads/box_identity_probe"; probe_receipt=out/"payloads/box_identity_probe.receipt.json"
 doc={"schema":index.BUNDLE_SCHEMA,"mode":"PILOT" if pilot else "FULL",
  "max_parents_per_binary":maximum,"source_sha":build["source_sha"],

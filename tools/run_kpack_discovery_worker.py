@@ -66,12 +66,16 @@ import kpack_discovery_worker_plan as worker_plan  # noqa: E402
 import materialize_kpack_discovery_workloads as workload_authority  # noqa: E402
 import probe_box_identity  # noqa: E402
 import analyze_scalefirst_kpack_discovery as sf_analyzer  # noqa: E402
+import fully_quantized_kpack_bundle_index as fq_index  # noqa: E402
+import fq_dense_structural_proof as fq_structural  # noqa: E402
 import kpack_discovery_build_partitions as partitions  # noqa: E402
 
 
 EXECUTION_SCHEMA = "quactlize.kpack-discovery-worker-execution.v2"
 EVIDENCE_SCHEMA = "quactlize.kpack-discovery-worker-evidence.v2"
 COMPLETION_SCHEMA = "quactlize.kpack-discovery-atom-completion.v1"
+DEVICE_KERNEL = "DEVICE_KERNEL"
+NO_DEVICE_KERNEL_STRUCTURAL = "NO_DEVICE_KERNEL_STRUCTURAL"
 SCHEDULE_SEED_SCHEMA = "quactlize.kpack-discovery-schedule-seed.v1"
 SAFE_TOKEN = re.compile(r"[^\s\0]+\Z")
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -459,6 +463,65 @@ class ResolvedShard:
     receipt: Path
     symbols: tuple[str, ...] = ()
     artifact_id: str | None = None
+    payload_kind: str = DEVICE_KERNEL
+    structural_proof: Path | None = None
+
+
+def _payload_kind(row: dict[str, Any], shard_key: str) -> str:
+    """Normalize the legacy device payload and the proved structural case."""
+    kind = row.get("payload_kind", DEVICE_KERNEL)
+    if kind not in (DEVICE_KERNEL, NO_DEVICE_KERNEL_STRUCTURAL):
+        raise ExecutionError(f"{shard_key}: payload kind differs")
+    if kind == NO_DEVICE_KERNEL_STRUCTURAL and not (
+            row.get("route") == "fully-quantized" and
+            row.get("operator") == "dense"):
+        raise ExecutionError(
+            f"{shard_key}: structural no-kernel payload is outside FQ dense")
+    return kind
+
+
+def _payload_file_fields(kind: str) -> tuple[str, ...]:
+    fields = ("manifest", "binary", "binary_receipt")
+    return (fields + ("structural_proof",)
+            if kind == NO_DEVICE_KERNEL_STRUCTURAL else fields)
+
+
+def _validate_structural_payload(
+        row: dict[str, Any], files: dict[str, Path],
+        symbols: tuple[str, ...], shard_key: str) -> None:
+    if _payload_kind(row, shard_key) != NO_DEVICE_KERNEL_STRUCTURAL:
+        if "structural_proof" in files:
+            raise ExecutionError(
+                f"{shard_key}: device payload has a structural proof")
+        return
+    try:
+        receipt = load_json(files["binary_receipt"],
+                            f"{shard_key} structural receipt")
+        proof = load_json(files["structural_proof"],
+                          f"{shard_key} structural proof")
+        native = {
+            "shard_key": row.get("native_shard_key", shard_key),
+            "qtype": row["qtype"], "operator": row["operator"],
+            "route": row["route"],
+            "parent_begin": row["parent_begin"],
+            "parent_end": row["parent_end"],
+            "parent_count": row["parent_count"],
+            "authority_count": row["authority_count"],
+            "parent_ids": row["parent_ids"],
+        }
+        fq_index.validate_receipt(
+            receipt, native, file_sha(files["manifest"]),
+            file_sha(files["binary"]))
+        fq_structural.validate_structural_proof(
+            proof, native, file_sha(files["manifest"]),
+            file_sha(files["binary"]), receipt)
+        proof_symbols = tuple(record.get("symbol") for record in proof["rows"])
+        if proof_symbols != symbols:
+            raise ExecutionError(
+                f"{shard_key}: structural proof/manifest symbols differ")
+    except (KeyError, TypeError, ValueError) as error:
+        raise ExecutionError(
+            f"{shard_key}: structural proof validation failed: {error}") from error
 
 
 def resolve_native_shard(bundle_path: Path, composite_doc: dict[str, Any],
@@ -493,8 +556,9 @@ def resolve_native_shard(bundle_path: Path, composite_doc: dict[str, Any],
                   "parent_ids"):
         if native.get(field) != row.get(field):
             raise ExecutionError(f"{shard_key}: native {field} differs")
+    kind = _payload_kind(row, shard_key)
     files: dict[str, Path] = {}
-    for field in ("manifest", "binary", "binary_receipt"):
+    for field in _payload_file_fields(kind):
         record = row.get("files", {}).get(field)
         if not isinstance(record, dict):
             raise ExecutionError(f"{shard_key}: composite {field} is malformed")
@@ -524,12 +588,14 @@ def resolve_native_shard(bundle_path: Path, composite_doc: dict[str, Any],
     if (route == "scalefirst" and
             native.get("parent_symbols") != list(symbols)):
         raise ExecutionError(f"{shard_key}: native parent symbols differ")
+    _validate_structural_payload(row, files, symbols, shard_key)
     return ResolvedShard(
         key=shard_key, route=str(route), operator=str(row["operator"]),
         qtype=int(row["qtype"]), parent_count=len(row["parent_ids"]),
         binary=files["binary"], manifest=files["manifest"],
         receipt=files["binary_receipt"], symbols=symbols,
-        artifact_id=None)
+        artifact_id=None, payload_kind=kind,
+        structural_proof=files.get("structural_proof"))
 
 
 def resolve_catalog_shard(catalog: dict[str, Any],
@@ -556,8 +622,9 @@ def resolve_catalog_shard(catalog: dict[str, Any],
             f"{shard_key}: partition shard metadata is malformed: {error}") from error
     if expected != row:
         raise ExecutionError(f"{shard_key}: catalog/partition metadata differs")
+    kind = _payload_kind(row, shard_key)
     files: dict[str, Path] = {}
-    for field in ("manifest", "binary", "binary_receipt"):
+    for field in _payload_file_fields(kind):
         record = row["files"][field]
         path = _under(context.root, record["path"],
                       f"{shard_key} {field}", executable=field == "binary")
@@ -580,12 +647,14 @@ def resolve_catalog_shard(catalog: dict[str, Any],
             any(not isinstance(symbol, str) or not SAFE_TOKEN.fullmatch(symbol)
                 for symbol in symbols)):
         raise ExecutionError(f"{shard_key}: manifest symbol census differs")
+    _validate_structural_payload(row, files, symbols, shard_key)
     return ResolvedShard(
         key=shard_key, route=route, operator=row["operator"],
         qtype=row["qtype"], parent_count=len(row["parent_ids"]),
         binary=files["binary"], manifest=files["manifest"],
         receipt=files["binary_receipt"], symbols=symbols,
-        artifact_id=artifact_id)
+        artifact_id=artifact_id, payload_kind=kind,
+        structural_proof=files.get("structural_proof"))
 
 
 @dataclass(frozen=True)
@@ -791,11 +860,34 @@ def validate_log(text: str, shard: ResolvedShard, workload: Workload,
                         set(attempts) != set(selected)):
                     raise ExecutionError("dense attempt symbol census differs")
             else:
-                observed = {
-                    _kv(line).get("symbol") for line in text.splitlines()
-                    if line.startswith("FQ_TC_CELL ")}
+                cells = [_kv(line) for line in text.splitlines()
+                         if line.startswith("FQ_TC_CELL ") and
+                         _kv(line).get("shape") == shape]
+                observed = {cell.get("symbol") for cell in cells}
                 if observed != set(selected):
                     raise ExecutionError("dense cell symbol census differs")
+                if shard.payload_kind == NO_DEVICE_KERNEL_STRUCTURAL:
+                    if (shard.structural_proof is None or
+                            len(cells) != len(selected) * 4):
+                        raise ExecutionError(
+                            "structural no-kernel cell denominator differs")
+                    by_symbol: dict[str, list[dict[str, str]]] = {}
+                    for cell in cells:
+                        symbol = cell.get("symbol", "")
+                        by_symbol.setdefault(symbol, []).append(cell)
+                    for symbol in selected:
+                        rows = by_symbol.get(symbol, [])
+                        if ({row.get("S") for row in rows} !=
+                                {"1", "2", "4", "8"} or
+                                any(row.get("state") !=
+                                    "SHIPPING_SHARED_STORAGE" or
+                                    row.get("raw_bad") != "0"
+                                    for row in rows)):
+                            raise ExecutionError(
+                                f"{symbol}: proved structural state differs")
+                elif shard.structural_proof is not None:
+                    raise ExecutionError(
+                        "device-kernel payload carries a structural proof")
         return
     if shard.route == "scalefirst":
         header = _one_line(text, "SF_GROUPED_SHARD ")
@@ -1209,10 +1301,15 @@ def _execution_authority(
 
 def _completion_document(
         item: dict[str, Any], out: Path, args: argparse.Namespace,
-        authority_sha: str, retention: Retention | None) -> dict[str, Any]:
+        authority_sha: str, retention: Retention | None,
+        shard: ResolvedShard) -> dict[str, Any]:
     item_id = item["work_item_id"]
+    execution_kind = (
+        "STRUCTURAL_CENSUS_NO_DEVICE_KERNEL"
+        if shard.payload_kind == NO_DEVICE_KERNEL_STRUCTURAL
+        else "DEVICE_EXECUTION")
     logs = [{"phase": "screen", "round": 0,
-             "evidence_kind": "DEVICE_EXECUTION",
+             "evidence_kind": execution_kind,
              "path": f"results/screen/{item_id}.log",
              "sha256": file_sha(out / f"results/screen/{item_id}.log")}]
     for round_index in range(1, args.confirm_rounds + 1):
@@ -1220,7 +1317,7 @@ def _completion_document(
         logs.append({"phase": "confirm", "round": round_index,
                      "evidence_kind": (
                          "EMPTY_STRUCTURAL_MARKER" if retention is not None and
-                         not retention.symbols else "DEVICE_EXECUTION"),
+                         not retention.symbols else execution_kind),
                      "path": relative, "sha256": file_sha(out / relative)})
     return {
         "schema": COMPLETION_SCHEMA,
@@ -1290,13 +1387,36 @@ def _execution_inputs(out: Path, shard: ResolvedShard, workload: Workload,
     if file_sha(manifest_snapshot) != file_sha(shard.manifest):
         raise ExecutionError(f"{shard.key}: manifest snapshot differs")
 
+    structural_proof = None
+    if shard.payload_kind == NO_DEVICE_KERNEL_STRUCTURAL:
+        if shard.structural_proof is None:
+            raise ExecutionError(f"{shard.key}: structural proof is absent")
+        proof_snapshot = (
+            out / "inputs/structural-proofs" / f"{digest(shard.key)[:24]}.json")
+        try:
+            proof_payload = shard.structural_proof.read_bytes()
+        except OSError as error:
+            raise ExecutionError(
+                f"{shard.key}: cannot snapshot structural proof: {error}") from error
+        atomic_bytes(proof_snapshot, proof_payload, frozen=True)
+        if file_sha(proof_snapshot) != file_sha(shard.structural_proof):
+            raise ExecutionError(f"{shard.key}: structural proof snapshot differs")
+        structural_proof = {
+            "size": shard.structural_proof.stat().st_size,
+            "sha256": file_sha(shard.structural_proof),
+            "snapshot": _relative_record(out, proof_snapshot),
+        }
+    elif shard.structural_proof is not None:
+        raise ExecutionError(
+            f"{shard.key}: device-kernel payload has a structural proof")
+
     rows_file = None
     if workload.rows_path is not None:
         rows_file = {
             "executed_path": str(workload.rows_path),
             "file": _relative_record(out, workload.rows_path),
         }
-    return {
+    result = {
         "artifact_id": shard.artifact_id,
         "shard_key": shard.key,
         "binary": {
@@ -1317,6 +1437,10 @@ def _execution_inputs(out: Path, shard: ResolvedShard, workload: Workload,
         "retention_symbols_executed_path": (
             None if retention is None else str(retention.symbols_path)),
     }
+    if shard.payload_kind == NO_DEVICE_KERNEL_STRUCTURAL:
+        result["payload_kind"] = shard.payload_kind
+        result["structural_proof"] = structural_proof
+    return result
 
 
 def _worker_evidence(
@@ -1584,7 +1708,8 @@ def run_worker(args: argparse.Namespace) -> int:
     for item in items:
         marker = _completion_document(
             item, out, args, authority_sha,
-            retentions.get(item["work_item_id"]))
+            retentions.get(item["work_item_id"]),
+            atoms[item["work_item_id"]][0])
         path = out / f"completion/{item['work_item_id']}.json"
         atomic_json(path, marker, frozen=True)
         expected_markers.add(path.name)

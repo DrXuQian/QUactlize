@@ -574,6 +574,75 @@ def test_self_test() -> None:
     aggregate.self_test()
 
 
+def test_execution_inputs_preserve_legacy_device_schema_and_bind_proof_hash(
+        tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.json"
+    _write_json(manifest, {"dense_tc_parents": []})
+    manifest_sha = aggregate.file_sha(manifest)
+    binary_sha, receipt_sha = "a" * 64, "b" * 64
+    shard = {
+        "shard_key": "fully-quantized:fixture", "artifact_id": None,
+        "files": {
+            "binary": {"size": 1, "sha256": binary_sha},
+            "manifest": {"size": manifest.stat().st_size,
+                         "sha256": manifest_sha},
+            "binary_receipt": {"size": 1, "sha256": receipt_sha},
+        },
+    }
+    legacy = {
+        "artifact_id": None, "shard_key": shard["shard_key"],
+        "binary": {"executed_path": str(tmp_path / "kernel"),
+                   "size": 1, "sha256": binary_sha},
+        "manifest": {"size": manifest.stat().st_size,
+                     "sha256": manifest_sha,
+                     "snapshot": _file(manifest, tmp_path)},
+        "binary_receipt": {"size": 1, "sha256": receipt_sha},
+        "rows_file": None, "retention_symbols_executed_path": None,
+    }
+    normalized = aggregate.validate_execution_inputs(
+        legacy, tmp_path, shard=shard,
+        workload={"source_class": "real-inventory"}, label="legacy")
+    assert normalized["payload_kind"] == worker_runner.DEVICE_KERNEL
+    assert normalized["structural_proof"] is None
+
+    proof = tmp_path / "structural-proof.json"
+    _write_json(proof, {})
+    structural_shard = {
+        **shard, "payload_kind": worker_runner.NO_DEVICE_KERNEL_STRUCTURAL,
+        "route": "fully-quantized", "operator": "dense", "qtype": 10,
+        "parent_begin": 0, "parent_end": 1, "parent_count": 1,
+        "authority_count": 1, "parent_ids": ["parent"],
+        "files": {
+            **shard["files"],
+            "structural_proof": {
+                "size": proof.stat().st_size,
+                "sha256": aggregate.file_sha(proof)},
+        },
+    }
+    missing = {
+        **legacy,
+        "payload_kind": worker_runner.NO_DEVICE_KERNEL_STRUCTURAL,
+        "structural_proof": None,
+    }
+    with pytest.raises(aggregate.AggregateError,
+                       match="structural proof metadata differs"):
+        aggregate.validate_execution_inputs(
+            missing, tmp_path, shard=structural_shard,
+            workload={"source_class": "real-inventory"}, label="structural")
+
+    wrong_hash = {
+        **missing,
+        "structural_proof": {
+            "size": proof.stat().st_size, "sha256": "0" * 64,
+            "snapshot": _file(proof, tmp_path)},
+    }
+    with pytest.raises(aggregate.AggregateError,
+                       match="structural proof snapshot differs"):
+        aggregate.validate_execution_inputs(
+            wrong_hash, tmp_path, shard=structural_shard,
+            workload={"source_class": "real-inventory"}, label="structural")
+
+
 def test_complete_authority_and_runtime_census(tmp_path: Path) -> None:
     paths = _make_fixture(tmp_path / "fixture")
     result = _aggregate(paths, tmp_path / "output")

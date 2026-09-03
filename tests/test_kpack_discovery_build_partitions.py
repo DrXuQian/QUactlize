@@ -123,6 +123,39 @@ def test_metadata_merge_needs_exact_two_route_union(tmp_path: pathlib.Path) -> N
     assert len(selected["artifact_ids"]) == 2
     assert not any(str(tmp_path) in value for value in selected["artifact_ids"])
 
+    # Legacy device-bearing rows deliberately have no payload_kind field.
+    fq_document = json.loads(
+        (tmp_path / "fully-quantized-0.json").read_text())
+    partitions.validate_partition_document(fq_document, plan)
+    assert all("payload_kind" not in row for row in fq_document["shards"])
+
+    fq_dense = next(row for row in fq_document["shards"]
+                    if row["operator"] == "dense")
+    missing_proof = copy.deepcopy(fq_document)
+    planted = next(row for row in missing_proof["shards"]
+                   if row["shard_key"] == fq_dense["shard_key"])
+    planted["payload_kind"] = partitions.NO_DEVICE_KERNEL_STRUCTURAL
+    planted["device_arch"] = "NO_DEVICE_KERNEL"
+    with pytest.raises(partitions.PartitionError, match="file set differs"):
+        partitions.validate_partition_document(missing_proof, plan)
+
+    malformed_hash = copy.deepcopy(missing_proof)
+    planted = next(row for row in malformed_hash["shards"]
+                   if row["shard_key"] == fq_dense["shard_key"])
+    planted["files"]["structural_proof"] = _file("structural-proof")
+    planted["files"]["structural_proof"]["sha256"] = "not-a-sha256"
+    with pytest.raises(partitions.PartitionError, match="lowercase SHA-256"):
+        partitions.validate_partition_document(malformed_hash, plan)
+
+    wrong_scope = copy.deepcopy(fq_document)
+    planted = next(row for row in wrong_scope["shards"]
+                   if row["operator"] == "grouped")
+    planted["payload_kind"] = partitions.NO_DEVICE_KERNEL_STRUCTURAL
+    planted["device_arch"] = "NO_DEVICE_KERNEL"
+    with pytest.raises(
+            partitions.PartitionError, match="outside FQ dense"):
+        partitions.validate_partition_document(wrong_scope, plan)
+
     with pytest.raises(partitions.PartitionError):
         partitions.make_catalog(plan_path, manifests[:-1])
     with pytest.raises(partitions.PartitionError):

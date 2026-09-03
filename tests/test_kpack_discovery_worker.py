@@ -556,6 +556,42 @@ def test_all_structural_scalefirst_screen_materializes_empty_retention(
     assert sidecar["timing_rank_used_for_elimination"] is False
 
 
+def test_fq_structural_log_rejects_measured_state_and_split_gap(
+        tmp_path: Path) -> None:
+    authority = tmp_path / "authority"
+    authority.write_text("authority\n")
+    symbol = "fqk_tc_q10_fixture"
+    shard = worker.ResolvedShard(
+        "fq", "fully-quantized", "dense", 10, 1,
+        authority, authority, authority, (symbol,),
+        payload_kind=worker.NO_DEVICE_KERNEL_STRUCTURAL,
+        structural_proof=authority)
+    workload = worker.Workload("dense", "dense", {
+        "workload_key": "dense", "source_class": "real-inventory",
+        "m": "1", "n": "16", "k": "128"})
+    cells = "".join(
+        "FQ_TC_CELL shape=1x16x128 "
+        f"symbol={symbol} S={split} "
+        "state=SHIPPING_SHARED_STORAGE raw_bad=0\n"
+        for split in (1, 2, 4, 8))
+    valid = (
+        "FQ_SHARD q=10 typed_rows=1 selected_rows=1\n" + cells +
+        "FQ_SHAPE_DONE q=10 shape=1x16x128 typed_rows=1 "
+        "selected_rows=1 status=PASS\n")
+    worker.validate_log(valid, shard, workload)
+
+    measured = valid.replace(
+        "state=SHIPPING_SHARED_STORAGE", "state=MEASURED", 1)
+    with pytest.raises(worker.ExecutionError,
+                       match="proved structural state differs"):
+        worker.validate_log(measured, shard, workload)
+
+    split_gap = valid.replace("S=8 ", "S=4 ", 1)
+    with pytest.raises(worker.ExecutionError,
+                       match="proved structural state differs"):
+        worker.validate_log(split_gap, shard, workload)
+
+
 def test_exact_rows_are_passed_by_path_and_bound_by_fnv(tmp_path: Path) -> None:
     rows = [0] * 256
     rows[0], rows[19], rows[255] = 2, 3, 1

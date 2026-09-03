@@ -104,6 +104,7 @@ from typing import Any, Iterable, NoReturn
 
 import kpack_discovery_worker_plan as worker_plan
 import kpack_discovery_build_partitions as partitions
+import fq_dense_structural_proof as fq_structural
 import run_kpack_discovery_worker as worker_runner
 
 
@@ -676,6 +677,23 @@ def parse_fq_dense(lines: list[str], workload: dict[str, Any],
         records.append(record)
     validate_candidate_runtime_denominator(
         "fully-quantized", "dense", candidates, records, label)
+    payload_kind = shard.get("payload_kind", worker_runner.DEVICE_KERNEL)
+    if payload_kind == worker_runner.NO_DEVICE_KERNEL_STRUCTURAL:
+        if (not records or len(records) != len(candidates) * 4 or
+                any(record["state"] != "SHIPPING_SHARED_STORAGE" or
+                    record["classification"] != "STRUCTURAL_UNAVAILABLE"
+                    for record in records)):
+            raise AggregateError(
+                f"{label} structural no-kernel runtime census differs")
+        by_symbol: dict[str, set[int]] = {}
+        for record in records:
+            by_symbol.setdefault(record["symbol"], set()).add(
+                record["runtime"]["split"])
+        if any(splits != {1, 2, 4, 8} for splits in by_symbol.values()):
+            raise AggregateError(
+                f"{label} structural no-kernel split census differs")
+    elif payload_kind != worker_runner.DEVICE_KERNEL:
+        raise AggregateError(f"{label} payload kind differs")
     done = one_kv(
         lines, "FQ_SHAPE_DONE ", f"{label} FQ_SHAPE_DONE",
         lambda row: row.get("shape") == shape)
@@ -874,16 +892,26 @@ def validate_execution_authority(
 def validate_execution_inputs(value: Any, root: Path, *, shard: dict[str, Any],
                               workload: dict[str, Any], label: str
                               ) -> dict[str, Any]:
-    required = {"artifact_id", "shard_key", "binary", "manifest",
-                "binary_receipt", "rows_file",
-                "retention_symbols_executed_path"}
+    base_required = {"artifact_id", "shard_key", "binary", "manifest",
+                     "binary_receipt", "rows_file",
+                     "retention_symbols_executed_path"}
+    expected_kind = shard.get("payload_kind", worker_runner.DEVICE_KERNEL)
+    required = (base_required | {"payload_kind", "structural_proof"}
+                if expected_kind == worker_runner.NO_DEVICE_KERNEL_STRUCTURAL
+                else base_required)
     if not isinstance(value, dict) or set(value) != required or \
             value.get("shard_key") != shard["shard_key"] or \
             value.get("artifact_id") != shard.get("artifact_id"):
         raise AggregateError(f"{label} execution input identity differs")
     expected_files = shard["files"]
+    payload_kind = value.get("payload_kind", worker_runner.DEVICE_KERNEL)
+    if payload_kind != expected_kind or payload_kind not in {
+            worker_runner.DEVICE_KERNEL,
+            worker_runner.NO_DEVICE_KERNEL_STRUCTURAL}:
+        raise AggregateError(f"{label} payload kind differs")
     normalized: dict[str, Any] = {
-        "artifact_id": value["artifact_id"], "shard_key": value["shard_key"]}
+        "artifact_id": value["artifact_id"], "shard_key": value["shard_key"],
+        "payload_kind": payload_kind}
     for field in ("binary", "binary_receipt"):
         record = value.get(field)
         keys = {"executed_path", "size", "sha256"} if field == "binary" else {
@@ -917,6 +945,57 @@ def validate_execution_inputs(value: Any, root: Path, *, shard: dict[str, Any],
              manifest_size != expected_manifest["size"])):
         raise AggregateError(f"{label} manifest catalog/snapshot differs")
     normalized["manifest"] = {**manifest, "snapshot_path": manifest_path}
+    proof = value.get("structural_proof")
+    if payload_kind == worker_runner.NO_DEVICE_KERNEL_STRUCTURAL:
+        if (not isinstance(proof, dict) or set(proof) != {
+                "size", "sha256", "snapshot"} or
+                "structural_proof" not in expected_files):
+            raise AggregateError(f"{label} structural proof metadata differs")
+        proof_path = resolve_file(
+            root, proof["snapshot"], f"{label} structural proof snapshot")
+        proof_size = integer(
+            proof["size"], f"{label}.structural_proof.size", minimum=1)
+        proof_sha = sha(
+            proof["sha256"], f"{label}.structural_proof.sha256")
+        expected_proof = expected_files["structural_proof"]
+        if (proof_path.stat().st_size != proof_size or
+                file_sha(proof_path) != proof_sha or
+                proof_sha != expected_proof["sha256"] or
+                ("size" in expected_proof and
+                 proof_size != expected_proof["size"])):
+            raise AggregateError(f"{label} structural proof snapshot differs")
+        try:
+            proof_doc = load_json(proof_path, f"{label} structural proof")
+            native = {
+                "shard_key": shard.get("native_shard_key", shard["shard_key"]),
+                "qtype": shard["qtype"], "operator": shard["operator"],
+                "route": shard["route"],
+                "parent_begin": shard["parent_begin"],
+                "parent_end": shard["parent_end"],
+                "parent_count": shard["parent_count"],
+                "authority_count": shard["authority_count"],
+                "parent_ids": shard["parent_ids"],
+            }
+            fq_structural.validate_structural_proof(
+                proof_doc, native, manifest_sha,
+                value["binary"]["sha256"])
+            manifest_doc = load_json(
+                manifest_path, f"{label} structural manifest")
+            manifest_symbols = [row.get("symbol") for row in
+                                manifest_doc.get("dense_tc_parents", [])]
+            proof_symbols = [row.get("symbol") for row in proof_doc["rows"]]
+            if proof_symbols != manifest_symbols:
+                raise AggregateError(
+                    f"{label} structural proof/manifest symbols differ")
+        except (KeyError, TypeError, ValueError) as error:
+            raise AggregateError(
+                f"{label} structural proof semantics differ: {error}") from error
+        normalized["structural_proof"] = {
+            **proof, "snapshot_path": proof_path}
+    elif proof is not None or "structural_proof" in expected_files:
+        raise AggregateError(f"{label} unexpected structural proof")
+    else:
+        normalized["structural_proof"] = None
     rows = value.get("rows_file")
     source_class = workload.get("source_class")
     if source_class == "router-control":
@@ -1344,9 +1423,13 @@ def load_evidence(
             record = {
                 "shard_key": item["shard_key"],
                 "artifact_id": inputs["artifact_id"],
+                "payload_kind": inputs["payload_kind"],
                 "binary_sha256": inputs["binary"]["sha256"],
                 "manifest_sha256": inputs["manifest"]["sha256"],
                 "binary_receipt_sha256": inputs["binary_receipt"]["sha256"],
+                "structural_proof_sha256": (
+                    None if inputs["structural_proof"] is None else
+                    inputs["structural_proof"]["sha256"]),
             }
             previous = shard_authorities.setdefault(item["shard_key"], record)
             if previous != record:
@@ -1694,11 +1777,18 @@ def aggregate(*, bundle_path: Path, plan_path: Path, master_path: Path,
                         "retained_for_confirmation": is_retained,
                         "raw_bad": 0, "timing": timing,
                         "authority": {
+                            "payload_kind":
+                                spec["execution_inputs"]["payload_kind"],
                             "manifest_sha256": manifest_sha256,
                             "binary_sha256":
                                 spec["execution_inputs"]["binary"]["sha256"],
                             "binary_receipt_sha256":
                                 spec["execution_inputs"]["binary_receipt"]["sha256"],
+                            "structural_proof_sha256": (
+                                None if spec["execution_inputs"][
+                                    "structural_proof"] is None else
+                                spec["execution_inputs"][
+                                    "structural_proof"]["sha256"]),
                             "artifact_id":
                                 spec["execution_inputs"]["artifact_id"],
                             "screen_log_sha256": spec["screen"]["log_sha256"],
@@ -2127,8 +2217,10 @@ def _validate_summary_authorities(summary: dict[str, Any], root: Path,
             raise AggregateError(f"worker {worker} work-item authority differs")
         shards = raw["shards"]
         shard_map: dict[str, dict[str, Any]] = {}
-        shard_keys = {"shard_key", "artifact_id", "binary_sha256",
-                      "manifest_sha256", "binary_receipt_sha256"}
+        shard_keys = {
+            "shard_key", "artifact_id", "payload_kind", "binary_sha256",
+            "manifest_sha256", "binary_receipt_sha256",
+            "structural_proof_sha256"}
         if not isinstance(shards, list) or not shards:
             raise AggregateError(f"worker {worker} shard authority is empty")
         for shard_row in shards:
@@ -2142,17 +2234,33 @@ def _validate_summary_authorities(summary: dict[str, Any], root: Path,
             for field in ("binary_sha256", "manifest_sha256",
                           "binary_receipt_sha256"):
                 sha(shard_row[field], f"summary shard.{field}")
+            kind = shard_row["payload_kind"]
+            proof_sha = shard_row["structural_proof_sha256"]
+            if kind == worker_runner.NO_DEVICE_KERNEL_STRUCTURAL:
+                sha(proof_sha, "summary shard structural proof SHA-256")
+            elif kind != worker_runner.DEVICE_KERNEL or proof_sha is not None:
+                raise AggregateError(
+                    f"worker {worker} shard payload kind differs")
             bundle_shard = bundle_shard_map.get(key)
             bundle_files = (bundle_shard.get("files")
                             if isinstance(bundle_shard, dict) else None)
-            if not isinstance(bundle_files, dict) or set(bundle_files) != {
-                    "binary", "manifest", "binary_receipt"} or any(
+            expected_bundle_files = {
+                "binary", "manifest", "binary_receipt"}
+            if kind == worker_runner.NO_DEVICE_KERNEL_STRUCTURAL:
+                expected_bundle_files.add("structural_proof")
+            if (not isinstance(bundle_files, dict) or
+                    set(bundle_files) != expected_bundle_files or any(
                     not isinstance(bundle_files[field], dict) or
                     not isinstance(bundle_files[field].get("sha256"), str)
-                    for field in ("binary", "manifest", "binary_receipt")):
+                    for field in expected_bundle_files)):
                 raise AggregateError(
                     f"worker {worker} shard/bundle authority differs")
-            if (shard_row["artifact_id"] != bundle_shard.get("artifact_id") or
+            if (kind != bundle_shard.get(
+                    "payload_kind", worker_runner.DEVICE_KERNEL) or
+                    proof_sha != (None if kind == worker_runner.DEVICE_KERNEL
+                                  else bundle_files[
+                                      "structural_proof"]["sha256"]) or
+                    shard_row["artifact_id"] != bundle_shard.get("artifact_id") or
                     any(shard_row[f"{field}_sha256"] !=
                         bundle_files[field]["sha256"]
                         for field in ("binary", "manifest",
@@ -2176,16 +2284,21 @@ def _validate_summary_authorities(summary: dict[str, Any], root: Path,
                 evidence_item["result_authority_sha256"],
                 f"worker {worker} item result-authority SHA-256")
             inputs = evidence_item.get("execution_inputs")
-            if not isinstance(inputs, dict) or set(inputs) != {
-                    "artifact_id", "shard_key", "binary", "manifest",
-                    "binary_receipt", "rows_file",
-                    "retention_symbols_executed_path"}:
+            base_input_keys = {
+                "artifact_id", "shard_key", "binary", "manifest",
+                "binary_receipt", "rows_file",
+                "retention_symbols_executed_path"}
+            if not isinstance(inputs, dict) or frozenset(inputs) not in {
+                    frozenset(base_input_keys),
+                    frozenset(base_input_keys | {
+                        "payload_kind", "structural_proof"})}:
                 raise AggregateError(
                     f"worker {worker} execution input schema differs")
             key = text(inputs.get("shard_key"), "evidence shard key")
             binary = inputs.get("binary")
             manifest = inputs.get("manifest")
             receipt = inputs.get("binary_receipt")
+            proof = inputs.get("structural_proof")
             if (not isinstance(binary, dict) or set(binary) != {
                     "executed_path", "size", "sha256"} or
                     not isinstance(manifest, dict) or set(manifest) != {
@@ -2194,14 +2307,29 @@ def _validate_summary_authorities(summary: dict[str, Any], root: Path,
                         "size", "sha256"}):
                 raise AggregateError(
                     f"worker {worker} execution input file schema differs")
+            kind = inputs.get("payload_kind", worker_runner.DEVICE_KERNEL)
+            if kind == worker_runner.NO_DEVICE_KERNEL_STRUCTURAL:
+                if not isinstance(proof, dict) or set(proof) != {
+                        "size", "sha256", "snapshot"}:
+                    raise AggregateError(
+                        f"worker {worker} structural proof input differs")
+                proof_sha = sha(
+                    proof.get("sha256"), "evidence structural proof SHA-256")
+            elif kind == worker_runner.DEVICE_KERNEL and proof is None:
+                proof_sha = None
+            else:
+                raise AggregateError(
+                    f"worker {worker} execution payload kind differs")
             candidate = {
                 "shard_key": key, "artifact_id": inputs.get("artifact_id"),
+                "payload_kind": kind,
                 "binary_sha256": sha(
                     binary.get("sha256"), "evidence binary SHA-256"),
                 "manifest_sha256": sha(
                     manifest.get("sha256"), "evidence manifest SHA-256"),
                 "binary_receipt_sha256": sha(
                     receipt.get("sha256"), "evidence receipt SHA-256"),
+                "structural_proof_sha256": proof_sha,
             }
             previous = item_shards.setdefault(key, candidate)
             if previous != candidate:
@@ -2393,6 +2521,7 @@ def validate_output(path: Path) -> dict[str, Any]:
                 raise AggregateError("census raw-bit authority differs")
             authority = row.get("authority")
             authority_keys = {
+                "payload_kind", "structural_proof_sha256",
                 "manifest_sha256", "binary_sha256", "binary_receipt_sha256",
                 "artifact_id", "screen_log_sha256", "confirm_log_sha256",
                 "result_authority_sha256", "execution_authority_sha256",
@@ -2402,8 +2531,20 @@ def validate_output(path: Path) -> dict[str, Any]:
             }
             if not isinstance(authority, dict) or set(authority) != authority_keys:
                 raise AggregateError("census measurement authority differs")
-            for field in authority_keys - {"artifact_id", "confirm_log_sha256"}:
+            for field in authority_keys - {
+                    "artifact_id", "confirm_log_sha256", "payload_kind",
+                    "structural_proof_sha256"}:
                 sha(authority[field], f"census authority.{field}")
+            payload_kind = authority["payload_kind"]
+            if payload_kind not in {
+                    worker_runner.DEVICE_KERNEL,
+                    worker_runner.NO_DEVICE_KERNEL_STRUCTURAL}:
+                raise AggregateError("census payload kind differs")
+            proof_sha = authority["structural_proof_sha256"]
+            if payload_kind == worker_runner.NO_DEVICE_KERNEL_STRUCTURAL:
+                sha(proof_sha, "census structural proof SHA-256")
+            elif proof_sha is not None:
+                raise AggregateError("device census carries structural proof")
             if authority["artifact_id"] is not None:
                 text(authority["artifact_id"], "census authority.artifact_id")
             confirm_logs = authority["confirm_log_sha256"]
@@ -2420,6 +2561,9 @@ def validate_output(path: Path) -> dict[str, Any]:
                         shard_authority["manifest_sha256"] or
                     authority["binary_receipt_sha256"] !=
                         shard_authority["binary_receipt_sha256"] or
+                    payload_kind != shard_authority["payload_kind"] or
+                    proof_sha != shard_authority[
+                        "structural_proof_sha256"] or
                     authority["worker_evidence_sha256"] !=
                         worker_authority["evidence_sha256"] or
                     authority["execution_authority_sha256"] !=
@@ -2438,6 +2582,10 @@ def validate_output(path: Path) -> dict[str, Any]:
 
             classification = row.get("classification")
             timing = row.get("timing")
+            if (payload_kind == worker_runner.NO_DEVICE_KERNEL_STRUCTURAL and
+                    classification != "STRUCTURAL_UNAVAILABLE"):
+                raise AggregateError(
+                    "structural no-kernel census contains a non-structural row")
             if classification == "MEASURED":
                 measured += 1
                 timing_keys = {

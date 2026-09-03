@@ -7,6 +7,9 @@
 # completed, revalidated partition bundles are atomically published.  Set
 # KPACK_REMOVE_LOCAL_AFTER_PUBLISH=1 to remove each verified local partition
 # after its published manifest is proved byte-identical; the default is 0.
+# KPACK_PAYLOAD_SOURCE_ROOT may point at the immutable source checkout named by
+# an existing build authority while this script and its validators come from a
+# later, clean repair checkout.
 
 set -uo pipefail
 
@@ -87,12 +90,16 @@ verify_published_partition_and_maybe_remove_local() {
 
 main() {
   [ "$#" -eq 0 ] || { fail "no positional arguments are accepted"; return $?; }
-  local root local_parent local_root publish_root plan sdk worker_id worker_count jobs
+  local tool_root root local_parent local_root publish_root plan sdk worker_id worker_count jobs
   local source_sha partition_count preflight route partition out resume remove_local
   local publish_base publish_dir stage manifest list_path list_current
   local assigned_tasks
 
-  root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)" || return 2
+  tool_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)" || return 2
+  root="$(realpath -e -- "${KPACK_PAYLOAD_SOURCE_ROOT:-$tool_root}")" || {
+    fail "KPACK_PAYLOAD_SOURCE_ROOT is not a readable source checkout"; return $?; }
+  [ -d "$root/.git" ] || [ -f "$root/.git" ] || {
+    fail "KPACK_PAYLOAD_SOURCE_ROOT is not a Git worktree"; return $?; }
   worker_id="${WORKER_ID:-}"
   worker_count="${WORKER_COUNT:-}"
   plan="${KPACK_BUILD_PARTITION_PLAN:-}"
@@ -228,10 +235,10 @@ PY
       out="$local_root/$route-p$(printf '%02d' "$partition")"
       publish_dir="$publish_base/$route/p$(printf '%02d' "$partition")"
       if [ -e "$publish_dir" ] || [ -L "$publish_dir" ]; then
-        verify_published_partition "$root" "$sdk" "$publish_dir" || return 2
+        verify_published_partition "$tool_root" "$sdk" "$publish_dir" || return 2
         if [ -e "$out" ] || [ -L "$out" ]; then
           verify_published_partition_and_maybe_remove_local \
-            "$root" "$sdk" "$local_root" "$out" "$publish_dir" \
+            "$tool_root" "$sdk" "$local_root" "$out" "$publish_dir" \
             "$route" "$partition" "$remove_local" || return $?
         fi
         printf '[kpack-build-worker] REUSED_PUBLISHED %s\n' "$publish_dir"
@@ -247,29 +254,30 @@ PY
           bash "$root/tools/build_scalefirst_kpack_discovery_bundle.sh" || return $?
       else
         OUT="$out" RESUME="$resume" JOBS="$jobs" PPU_SDK="$sdk" \
+          FQ_KPACK_PAYLOAD_SOURCE_ROOT="$root" \
           KPACK_BUILD_PARTITION_PLAN="$plan" KPACK_BUILD_PARTITION_ID="$partition" \
           KPACK_GLOBAL_PREFLIGHT_RECEIPT="$preflight" \
-          bash "$root/tools/build_fully_quantized_kpack_discovery_bundle.sh" || return $?
+          bash "$tool_root/tools/build_fully_quantized_kpack_discovery_bundle.sh" || return $?
       fi
       manifest="$out/partition-bundle.json"
-      PPU_SDK="$sdk" python3 -B "$root/tools/kpack_discovery_build_partitions.py" verify \
+      PPU_SDK="$sdk" python3 -B "$tool_root/tools/kpack_discovery_build_partitions.py" verify \
         --root "$out" --manifest "$manifest" || return 2
 
       if [ -e "$publish_dir" ] || [ -L "$publish_dir" ]; then
         verify_published_partition_and_maybe_remove_local \
-          "$root" "$sdk" "$local_root" "$out" "$publish_dir" \
+          "$tool_root" "$sdk" "$local_root" "$out" "$publish_dir" \
           "$route" "$partition" "$remove_local" || return $?
         continue
       fi
       stage="$publish_base/$route/.p$(printf '%02d' "$partition").worker-$worker_id.current.$$"
       [ ! -e "$stage" ] || { fail "publish staging path already exists: $stage"; return $?; }
       cp -a "$out" "$stage" || return 2
-      PPU_SDK="$sdk" python3 -B "$root/tools/kpack_discovery_build_partitions.py" verify \
+      PPU_SDK="$sdk" python3 -B "$tool_root/tools/kpack_discovery_build_partitions.py" verify \
         --root "$stage" --manifest "$stage/partition-bundle.json" || return 2
       mv "$stage" "$publish_dir" || return 2
       printf '[kpack-build-worker] PUBLISHED %s\n' "$publish_dir"
       verify_published_partition_and_maybe_remove_local \
-        "$root" "$sdk" "$local_root" "$out" "$publish_dir" \
+        "$tool_root" "$sdk" "$local_root" "$out" "$publish_dir" \
         "$route" "$partition" "$remove_local" || return $?
   done <<<"$assigned_tasks"
 

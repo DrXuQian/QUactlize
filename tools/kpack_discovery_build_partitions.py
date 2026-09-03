@@ -34,6 +34,7 @@ if str(TOOLS) not in sys.path:
 
 import analyze_scalefirst_kpack_discovery as sf_analyzer  # noqa: E402
 import fully_quantized_kpack_bundle_index as fq_index  # noqa: E402
+import fq_dense_structural_proof as fq_structural  # noqa: E402
 import gen_fully_quantized_grouped_kpack_units as fq_grouped  # noqa: E402
 import gen_fully_quantized_kpack_discovery_units as fq_dense  # noqa: E402
 import scalefirst_kpack_binary_shards as sf_index  # noqa: E402
@@ -46,6 +47,8 @@ ROUTES = ("scalefirst", "fully-quantized")
 OPERATORS = ("dense", "grouped")
 QTYPES = (10, 11, 12, 13, 14)
 MAX_PARTITIONS = 32
+DEVICE_KERNEL = "DEVICE_KERNEL"
+NO_DEVICE_KERNEL_STRUCTURAL = "NO_DEVICE_KERNEL_STRUCTURAL"
 SHA_RE = re.compile(r"[0-9a-f]{64}\Z")
 OID_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _PLAN_CACHE: dict[int, bytes] = {}
@@ -426,7 +429,7 @@ def _check_source(value: dict[str, Any], label: str) -> None:
         runtime_paths.add(record["path"])
 
 
-def _inspector_arch(sdk: Path, binary: Path) -> tuple[str, str, str]:
+def _inspector_output(sdk: Path, binary: Path) -> tuple[str, str]:
     inspector = sdk / "bin/hgobjdump"
     if not inspector.is_file() or not os.access(inspector, os.X_OK):
         raise PartitionError("build SDK inspector is unavailable")
@@ -436,11 +439,16 @@ def _inspector_arch(sdk: Path, binary: Path) -> tuple[str, str, str]:
             stderr=subprocess.STDOUT)
     except (OSError, subprocess.CalledProcessError) as exc:
         raise PartitionError(f"cannot inspect {binary}: {exc}") from exc
+    return output, hashlib.sha256(output.encode()).hexdigest()
+
+
+def _inspector_arch(sdk: Path, binary: Path) -> tuple[str, str, str]:
+    output, output_sha = _inspector_output(sdk, binary)
     match = re.search(r"ELF FILE \d+ \((PPU [^)]+)\)", output)
     if not match:
         raise PartitionError(f"{binary} contains no PPU image")
     arch = match.group(1)
-    return (arch, hashlib.sha256(output.encode()).hexdigest(),
+    return (arch, output_sha,
             hashlib.sha256(arch.encode()).hexdigest())
 
 
@@ -534,6 +542,9 @@ def _record_fq_shard(root: Path, sdk: Path, build: dict[str, Any],
         "typed_rows": len(compiled),
     }
     fq_index.validate_receipt(receipt_doc, native, manifest_sha, binary_sha)
+    payload_kind = fq_index.receipt_kind(receipt_doc)
+    if payload_kind not in (DEVICE_KERNEL, NO_DEVICE_KERNEL_STRUCTURAL):
+        raise PartitionError(f"{key} payload kind differs")
     expected_manifest_path = manifest.relative_to(root).as_posix()
     expected_binary_path = binary.relative_to(root).as_posix()
     if (receipt_doc.get("build_input_authority_sha256") != build_sha or
@@ -547,15 +558,46 @@ def _record_fq_shard(root: Path, sdk: Path, build: dict[str, Any],
             receipt_doc.get("manifest") != expected_manifest_path or
             receipt_doc.get("binary") != expected_binary_path):
         raise PartitionError(f"{key} source/SDK/path receipt chain differs")
-    arch, _full_inspector_sha, inspector_sha = _inspector_arch(sdk, binary)
-    if (receipt_doc.get("device_arch") != arch or
-            receipt_doc.get("inspector_output_sha256") != inspector_sha):
-        raise PartitionError(f"{key} device image receipt differs")
-    return {**row, "files": {
+    files = {
         "manifest": _file_record(root, manifest),
         "binary": _file_record(root, binary),
-        "binary_receipt": _file_record(root, receipt)},
-        "device_arch": arch, "inspector_output_sha256": inspector_sha}
+        "binary_receipt": _file_record(root, receipt),
+    }
+    if payload_kind == DEVICE_KERNEL:
+        arch, _full_inspector_sha, inspector_sha = _inspector_arch(sdk, binary)
+        if (receipt_doc.get("device_arch") != arch or
+                receipt_doc.get("inspector_output_sha256") != inspector_sha):
+            raise PartitionError(f"{key} device image receipt differs")
+        return {**row, "files": files, "device_arch": arch,
+                "inspector_output_sha256": inspector_sha}
+
+    if row["operator"] != "dense":
+        raise PartitionError(
+            f"{key} structural no-kernel payload is outside FQ dense")
+    proof = root / "payloads" / key / "structural-proof.json"
+    _inside(root, proof.relative_to(root).as_posix(),
+            f"{key} structural proof")
+    proof_doc = load_json(proof, f"{key} structural proof")
+    proof_sha = file_sha(proof)
+    if (receipt_doc.get("structural_proof") !=
+            proof.relative_to(root).as_posix() or
+            receipt_doc.get("structural_proof_sha256") != proof_sha):
+        raise PartitionError(f"{key} structural proof receipt chain differs")
+    try:
+        fq_structural.validate_structural_proof(
+            proof_doc, native, manifest_sha, binary_sha, receipt_doc)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PartitionError(f"{key} structural proof differs: {exc}") from exc
+    inspector_output, inspector_sha = _inspector_output(sdk, binary)
+    if re.search(r"ELF FILE \d+ \(PPU [^)]+\)", inspector_output):
+        raise PartitionError(f"{key} structural payload unexpectedly has a PPU image")
+    if (receipt_doc.get("device_arch") != "NO_DEVICE_KERNEL" or
+            receipt_doc.get("inspector_output_sha256") != inspector_sha):
+        raise PartitionError(f"{key} structural image receipt differs")
+    files["structural_proof"] = _file_record(root, proof)
+    return {**row, "payload_kind": payload_kind, "files": files,
+            "device_arch": "NO_DEVICE_KERNEL",
+            "inspector_output_sha256": inspector_sha}
 
 
 def record_partition(root: Path, route: str) -> dict[str, Any]:
@@ -660,6 +702,25 @@ def _validate_file_record(value: Any, label: str) -> None:
     _sha(value["sha256"], f"{label}.sha256")
 
 
+def _partition_payload_kind(item: dict[str, Any], key: str) -> str:
+    kind = item.get("payload_kind", DEVICE_KERNEL)
+    if kind not in (DEVICE_KERNEL, NO_DEVICE_KERNEL_STRUCTURAL):
+        raise PartitionError(f"{key} payload kind differs")
+    if kind == NO_DEVICE_KERNEL_STRUCTURAL and not (
+            item.get("route") == "fully-quantized" and
+            item.get("operator") == "dense"):
+        raise PartitionError(
+            f"{key} structural no-kernel payload is outside FQ dense")
+    return kind
+
+
+def _partition_file_fields(kind: str) -> set[str]:
+    fields = {"manifest", "binary", "binary_receipt"}
+    if kind == NO_DEVICE_KERNEL_STRUCTURAL:
+        fields.add("structural_proof")
+    return fields
+
+
 def validate_partition_document(document: dict[str, Any],
                                 plan: dict[str, Any]) -> None:
     validate_plan(plan)
@@ -712,22 +773,27 @@ def validate_partition_document(document: dict[str, Any],
             raise PartitionError("partition shard union is duplicate or foreign")
         seen.add(key)
         expected = expected_by_key[key]
-        if set(item) != set(expected) | {
-                "files", "device_arch", "inspector_output_sha256"}:
+        kind = _partition_payload_kind(item, key)
+        extra = {"files", "device_arch", "inspector_output_sha256"}
+        if kind == NO_DEVICE_KERNEL_STRUCTURAL:
+            extra.add("payload_kind")
+        if set(item) != set(expected) | extra:
             raise PartitionError(f"{key} shard fields differ")
         for field, value in expected.items():
             if item.get(field) != value:
                 raise PartitionError(f"{key} field {field} differs")
         files = item.get("files")
-        if not isinstance(files, dict) or set(files) != {
-                "manifest", "binary", "binary_receipt"}:
+        if not isinstance(files, dict) or set(files) != _partition_file_fields(kind):
             raise PartitionError(f"{key} file set differs")
         for label, value in files.items():
             _validate_file_record(value, f"{key}.{label}")
             if value["path"] in file_paths:
                 raise PartitionError(f"{key}.{label} aliases another file")
             file_paths.add(value["path"])
-        _string(item.get("device_arch"), f"{key}.device_arch")
+        arch = _string(item.get("device_arch"), f"{key}.device_arch")
+        if ((kind == NO_DEVICE_KERNEL_STRUCTURAL) !=
+                (arch == "NO_DEVICE_KERNEL")):
+            raise PartitionError(f"{key} payload kind/device arch differs")
         _sha(item.get("inspector_output_sha256"),
              f"{key}.inspector_output_sha256")
     if seen != set(expected_by_key):
@@ -774,6 +840,55 @@ def verify_partition(path: Path, root: Path) -> dict[str, Any]:
         if path_value.stat().st_size != record["size"] or \
                 file_sha(path_value) != record["sha256"]:
             raise PartitionError(f"{label} bytes differ")
+    for row in document["shards"]:
+        if _partition_payload_kind(row, row["shard_key"]) != \
+                NO_DEVICE_KERNEL_STRUCTURAL:
+            continue
+        files = row["files"]
+        receipt_path = _inside(
+            root, files["binary_receipt"]["path"],
+            f"{row['shard_key']} structural receipt")
+        proof_path = _inside(
+            root, files["structural_proof"]["path"],
+            f"{row['shard_key']} structural proof")
+        receipt_doc = load_json(receipt_path, "structural receipt")
+        proof_doc = load_json(proof_path, "structural proof")
+        native = {
+            "shard_key": row["native_shard_key"],
+            "qtype": row["qtype"], "operator": row["operator"],
+            "route": row["route"], "layout": row["layout"],
+            "parent_begin": row["parent_begin"],
+            "parent_end": row["parent_end"],
+            "parent_count": row["parent_count"],
+            "authority_count": row["authority_count"],
+            "parent_ids": row["parent_ids"],
+            "typed_rows": row["parent_count"],
+        }
+        try:
+            fq_index.validate_receipt(
+                receipt_doc, native, files["manifest"]["sha256"],
+                files["binary"]["sha256"])
+            fq_structural.validate_structural_proof(
+                proof_doc, native, files["manifest"]["sha256"],
+                files["binary"]["sha256"], receipt_doc)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PartitionError(
+                f"{row['shard_key']} fetched structural proof differs: {exc}") \
+                from exc
+        sdk_env = os.environ.get("PPU_SDK") or os.environ.get("PPU_HOME")
+        if not sdk_env:
+            raise PartitionError(
+                "set PPU_SDK to verify a structural partition payload")
+        binary_path = _inside(
+            root, files["binary"]["path"],
+            f"{row['shard_key']} structural binary", executable=True)
+        inspector_output, inspector_sha = _inspector_output(
+            Path(sdk_env).resolve(strict=True), binary_path)
+        if (re.search(r"ELF FILE \d+ \(PPU [^)]+\)", inspector_output) or
+                inspector_sha != row["inspector_output_sha256"] or
+                receipt_doc.get("inspector_output_sha256") != inspector_sha):
+            raise PartitionError(
+                f"{row['shard_key']} fetched structural image differs")
     return document
 
 
@@ -885,7 +1000,11 @@ def validate_catalog_document(document: dict[str, Any]) -> dict[str, Any]:
         if key in observed_by_key or key not in live_by_key:
             raise PartitionError("catalog shard union is duplicate or foreign")
         expected = live_by_key[key]
-        if set(row) != set(expected) | expected_extra:
+        kind = _partition_payload_kind(row, str(key))
+        row_extra = set(expected_extra)
+        if kind == NO_DEVICE_KERNEL_STRUCTURAL:
+            row_extra.add("payload_kind")
+        if set(row) != set(expected) | row_extra:
             raise PartitionError(f"catalog shard {key} fields differ")
         for field, value in expected.items():
             if row.get(field) != value:
@@ -901,8 +1020,7 @@ def validate_catalog_document(document: dict[str, Any]) -> dict[str, Any]:
         if row.get("mapping_id") != expected_mapping:
             raise PartitionError(f"catalog shard {key} mapping differs")
         files = row.get("files")
-        if not isinstance(files, dict) or set(files) != {
-                "manifest", "binary", "binary_receipt"}:
+        if not isinstance(files, dict) or set(files) != _partition_file_fields(kind):
             raise PartitionError(f"catalog shard {key} files differ")
         paths: set[str] = set()
         for label, value in files.items():
@@ -912,7 +1030,12 @@ def validate_catalog_document(document: dict[str, Any]) -> dict[str, Any]:
             paths.add(value["path"])
         if row.get("manifest_sha256") != files["manifest"]["sha256"]:
             raise PartitionError(f"catalog shard {key} manifest hash differs")
-        _string(row.get("device_arch"), f"catalog shard {key}.device_arch")
+        arch = _string(row.get("device_arch"),
+                       f"catalog shard {key}.device_arch")
+        if ((kind == NO_DEVICE_KERNEL_STRUCTURAL) !=
+                (arch == "NO_DEVICE_KERNEL")):
+            raise PartitionError(
+                f"catalog shard {key} payload kind/device arch differs")
         _sha(row.get("inspector_output_sha256"),
              f"catalog shard {key}.inspector_output_sha256")
         observed_by_key[key] = row
