@@ -1,0 +1,54 @@
+{
+  "schema": "quactlize.kpack-discovery-lfs-bundle.v1",
+  "source": {
+    "commit": "ec67811bd709eace941daf3c650d45df574b1a87",
+    "tree": "7ce67cae0a756d7fb013f6d52bd4ff629e54d9b3"
+  },
+  "runner_commit": "83fc3fc0fe0591c70cfb5d79cdfee133122c0f28",
+  "catalog": {
+    "sha256": "e6f7266e134965983d5809f7665c8bb204802f41a7c693915c71abe0adeb99b1",
+    "partitions": 64,
+    "shards": 2216,
+    "parents": 70618
+  },
+  "execution": {
+    "workers": 8,
+    "work_items": 340282,
+    "route_plan_sha256": "9d1d7d6aaac23b722d88f75f602d4aa9b8e928674feaccd3189994e6e7cb818a",
+    "master_sha256": "831e049bfba978dc78b6fa0b7923e57d64b430230c3740f903d2d26ebc90ac89",
+    "assignment_sha256": "65a1d2c6927d66ec637b03b2faf684ac66dcedf31e79fdccc2494a2039205d56",
+    "workload_index_sha256": "4d76b6da01b2ce2e8d58b13ff915d78d1ee3f9ceb7f9cd8398bac86a686649c4"
+  },
+  "archive": {
+    "compression": "zstd",
+    "size": 2257036035,
+    "uncompressed_size": 27009546240,
+    "sha256": "a1b61b7938542f2eaeec8394b23d3ced89727119701c261280475fe60478261f",
+    "parts": [
+      {
+        "path": "campaign.tar.zst.part-00",
+        "size": 943718400,
+        "sha256": "b7ff6ebdb649344da079fe9a0123a8af488d9ea9743fefc98af5780a2b03fce6"
+      },
+      {
+        "path": "campaign.tar.zst.part-01",
+        "size": 943718400,
+        "sha256": "456216a471a6466e7d20ee0abadfb0495d4049215658534b59d87e26d157810b"
+      },
+      {
+        "path": "campaign.tar.zst.part-02",
+        "size": 369599235,
+        "sha256": "e894df47b6da1d367ba81615fb2e344f2431e840e2ee70324c4e11967d730225"
+      }
+    ]
+  },
+  "launcher": {
+    "path": "run_box8.sh",
+    "sha256": "3a5360b42ed6fc15e002507aa18b7bedb6e971fc37ad25ba6a01bbda88e96786"
+  },
+  "sdk": {
+    "release_receipt_sha256": "7ba29b9d2e768c3edd1e165bceaf90e27880248f2327d44852de37833d0a2cf7",
+    "compiler_sha256": "fa62c590c67411c23fa4028f15fa562b39ce0cf830830d038a1ec04c59d8c76e",
+    "inspector_sha256": "4176b21eb5b26e9f73acb5e17667a01fbb2808987b303d95cd8b31078221d16c"
+  }
+}
