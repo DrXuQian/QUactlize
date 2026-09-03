@@ -16,10 +16,113 @@ run_atomic() {
   mv "$temporary" "$output"
 }
 
+validate_dense_evidence() {
+  local log="$1" manifest="$2" shapes="$3" kind="$4" proof="$5" key="$6" phase="$7"
+  local source_root="$8" frozen_bundle="$9" bundle_root="${10}" binary="${11}"
+  python3 -B - "$log" "$manifest" "$shapes" "$kind" "$proof" "$key" "$phase" \
+    "$source_root" "$frozen_bundle" "$bundle_root" "$binary" <<'PY'
+import hashlib,json,pathlib,sys
+log,manifest,shapes=map(pathlib.Path,sys.argv[1:4])
+kind,proof,key,phase=sys.argv[4:8]
+source_root,frozen_bundle,bundle_root,binary=map(pathlib.Path,sys.argv[8:12])
+if kind=="DEVICE_KERNEL":
+ if proof!="-": raise SystemExit(f"{key}: device payload has a structural proof")
+ raise SystemExit(0)
+if kind!="NO_DEVICE_KERNEL_STRUCTURAL" or proof=="-":
+ raise SystemExit(f"{key}: structural evidence identity differs")
+sys.path.insert(0,str(source_root/"tools"))
+import fully_quantized_kpack_bundle_index as index
+import fq_dense_structural_proof as structural
+sha=lambda path:hashlib.sha256(path.read_bytes()).hexdigest()
+bundle_doc=json.loads(frozen_bundle.read_text())
+row=bundle_doc.get("shards",{}).get(key)
+if not isinstance(row,dict) or row.get("payload_kind")!=kind or \
+    row.get("route")!="fully-quantized" or row.get("operator")!="dense":
+ raise SystemExit(f"{key}: structural bundle row changed before evidence validation")
+def live(relative,label):
+ try:
+  path=(bundle_root/relative).resolve(strict=True); path.relative_to(bundle_root)
+ except (OSError,ValueError,TypeError) as exc:
+  raise SystemExit(f"{key}: {label} path differs: {exc}")
+ if not path.is_file(): raise SystemExit(f"{key}: {label} is not a file")
+ return path
+live_manifest=live(row.get("manifest"),"manifest")
+live_binary=live(row.get("binary"),"binary")
+live_receipt=live(row.get("binary_receipt"),"receipt")
+live_proof=live(row.get("structural_proof"),"structural proof")
+if (live_manifest!=manifest.resolve(strict=True) or
+    live_binary!=binary.resolve(strict=True) or
+    live_proof!=pathlib.Path(proof).resolve(strict=True) or
+    sha(live_manifest)!=row.get("manifest_sha256") or
+    sha(live_binary)!=row.get("binary_sha256") or
+    sha(live_receipt)!=row.get("binary_receipt_sha256") or
+    sha(live_proof)!=row.get("structural_proof_sha256")):
+ raise SystemExit(f"{key}: structural payload changed after preflight")
+receipt_doc=json.loads(live_receipt.read_text())
+proof_doc=json.loads(live_proof.read_text())
+index.validate_receipt(
+    receipt_doc,row,row["manifest_sha256"],row["binary_sha256"])
+structural.validate_structural_proof(
+    proof_doc,row,row["manifest_sha256"],row["binary_sha256"],receipt_doc)
+if (receipt_doc.get("structural_proof")!=row.get("structural_proof") or
+    receipt_doc.get("structural_proof_sha256")!=sha(live_proof)):
+ raise SystemExit(f"{key}: structural receipt/proof binding changed")
+doc=json.loads(manifest.read_text())
+parents=doc.get("dense_tc_parents")
+if not isinstance(parents,list) or not parents:
+ raise SystemExit(f"{key}: structural manifest rows differ")
+symbols=[row.get("symbol") for row in parents if isinstance(row,dict)]
+if [record.get("symbol") for record in proof_doc["rows"]]!=symbols:
+ raise SystemExit(f"{key}: structural proof/manifest symbols differ")
+wanted_shapes=shapes.read_text().splitlines()
+if (len(symbols)!=len(parents) or len(set(symbols))!=len(symbols) or
+    not wanted_shapes or len(set(wanted_shapes))!=len(wanted_shapes)):
+ raise SystemExit(f"{key}: structural symbol/shape denominator differs")
+cells={}; done={}
+for line in log.read_text().splitlines():
+ if not (line.startswith("FQ_TC_CELL ") or
+         line.startswith("FQ_SHAPE_DONE ")): continue
+ row={}
+ for token in line.split()[1:]:
+  if "=" in token:
+   field,value=token.split("=",1); row[field]=value
+ shape=row.get("shape")
+ if shape not in wanted_shapes:
+  raise SystemExit(f"{key}: log contains unknown shape {shape}")
+ if line.startswith("FQ_SHAPE_DONE "):
+  if shape in done: raise SystemExit(f"{key}: duplicate completion for {shape}")
+  done[shape]=row; continue
+ symbol=row.get("symbol"); split=row.get("S")
+ identity=(shape,symbol,split)
+ if identity in cells: raise SystemExit(f"{key}: duplicate structural cell {identity}")
+ cells[identity]=row
+if set(done)!=set(wanted_shapes):
+ raise SystemExit(f"{key}: structural completion shape census differs")
+for shape,row in done.items():
+ if (row.get("q")!=str(doc["identity"]["qtype"]) or
+     row.get("typed_rows")!=str(len(symbols)) or
+     row.get("selected_rows")!=str(len(symbols)) or
+     row.get("status")!="PASS"):
+  raise SystemExit(f"{key}: {shape} completion authority differs")
+expected={(shape,symbol,split) for shape in wanted_shapes
+          for symbol in symbols for split in ("1","2","4","8")}
+if set(cells)!=expected:
+ missing=sorted(expected-set(cells))[:3]; extra=sorted(set(cells)-expected)[:3]
+ raise SystemExit(f"{key}: structural cell denominator differs missing={missing} extra={extra}")
+for identity,row in cells.items():
+ if row.get("state")!="SHIPPING_SHARED_STORAGE" or row.get("raw_bad")!="0":
+  raise SystemExit(f"{key}: {identity} is not SHIPPING_SHARED_STORAGE/raw_bad=0")
+print(f"FQ_KPACK_PREBUILT_EVIDENCE key={key} phase={phase} "
+      "payload_kind=NO_DEVICE_KERNEL_STRUCTURAL "
+      "evidence_kind=STRUCTURAL_CENSUS_NO_DEVICE_KERNEL "
+      f"symbols={len(symbols)} shapes={len(wanted_shapes)} cells={len(cells)}")
+PY
+}
+
 main() {
   [ "$#" -eq 0 ] || { fail "no positional arguments are accepted"; return $?; }
   local root workspace bundle out resume phase sdk runtime_sdk_receipt plan workloads screen_iterations confirm_iterations repeats
-  local shard_index mode shard_count key q op binary manifest begin end count authority log
+  local shard_index mode shard_count key q op binary manifest begin end count authority log payload_kind structural_proof
   local workload tokens n k experts topk identity_probe pilot_limit
   local -a dense_shapes dense_args grouped_args
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)" || return 2
@@ -58,6 +161,7 @@ import hashlib,json,os,pathlib,re,subprocess,sys
 root,bundle,frozen,sdk=map(pathlib.Path,sys.argv[1:]); doc=json.loads((bundle/"bundle.json").read_text())
 sys.path.insert(0,str(root/"tools"))
 import fully_quantized_kpack_bundle_index as index
+import fq_dense_structural_proof as structural
 import gen_fully_quantized_grouped_kpack_units as grouped
 import gen_fully_quantized_kpack_discovery_units as dense
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
@@ -131,7 +235,8 @@ for key,row in sorted(doc["shards"].items()):
  parents=parsed["dense_tc_parents"] if row["operator"]=="dense" else parsed["grouped_parents"]
  if [x["static_candidate_id"] for x in parents]!=row["parent_ids"]:
   raise SystemExit(f"{key}: manifest parent ids differ")
- receipt_doc=json.loads(receipt.read_text()); index.validate_receipt(receipt_doc,row,sha(manifest),sha(binary))
+ receipt_doc=json.loads(receipt.read_text())
+ kind=index.validate_receipt(receipt_doc,row,sha(manifest),sha(binary))
  expected_chain={
   "build_input_authority_sha256":sha(authority),
   "source_sha":build["source_sha"],"source_tree":build["source_tree"],
@@ -145,9 +250,38 @@ for key,row in sorted(doc["shards"].items()):
  if any(receipt_doc.get(field)!=value for field,value in expected_chain.items()):
   raise SystemExit(f"{key}: binary receipt authority chain differs")
  elf=subprocess.check_output([str(sdk/"bin/hgobjdump"),"-lelf",str(binary)],text=True,stderr=subprocess.STDOUT)
+ nonempty=[line for line in elf.splitlines() if line]
+ expected_host=f"{binary.name}:\tfile format elf64-x86-64"
+ if not nonempty or nonempty[0]!=expected_host:
+  raise SystemExit(f"{key}: inspector lacks the exact host ELF identity")
  match=re.search(r"ELF FILE \d+ \((PPU [^)]+)\)",elf)
- if not match or match.group(1)!=row["device_arch"]:
-  raise SystemExit(f"{key}: PPU image architecture differs")
+ if kind==index.DEVICE_PAYLOAD_KIND:
+  if row.get("payload_kind",index.DEVICE_PAYLOAD_KIND)!=index.DEVICE_PAYLOAD_KIND or \
+      "structural_proof" in row or "structural_proof_sha256" in row:
+   raise SystemExit(f"{key}: device payload carries structural metadata")
+  if not match or match.group(1)!=row["device_arch"]:
+   raise SystemExit(f"{key}: PPU image architecture differs")
+ elif kind==index.STRUCTURAL_PAYLOAD_KIND:
+  if row.get("payload_kind")!=index.STRUCTURAL_PAYLOAD_KIND or \
+      row.get("route")!="fully-quantized" or row.get("operator")!="dense":
+   raise SystemExit(f"{key}: structural payload is outside FQ dense")
+  proof=inside(row.get("structural_proof"),f"{key}:structural-proof")
+  if (not proof.is_file() or sha(proof)!=row.get("structural_proof_sha256") or
+      receipt_doc.get("structural_proof")!=row.get("structural_proof") or
+      receipt_doc.get("structural_proof_sha256")!=sha(proof)):
+   raise SystemExit(f"{key}: structural proof chain differs")
+  proof_doc=json.loads(proof.read_text())
+  structural.validate_structural_proof(
+      proof_doc,row,sha(manifest),sha(binary),receipt_doc)
+  inspector_sha=hashlib.sha256(elf.encode()).hexdigest()
+  if (match or row.get("device_arch")!="NO_DEVICE_KERNEL" or
+      row.get("inspector_output_sha256")!=inspector_sha or
+      receipt_doc.get("inspector_output_sha256")!=inspector_sha):
+   raise SystemExit(f"{key}: structural no-device image authority differs")
+  if nonempty!=[expected_host]:
+   raise SystemExit(f"{key}: structural inspector contains unexpected records")
+ else:
+  raise SystemExit(f"{key}: unsupported payload kind {kind}")
  if loaded_libhggc(binary)!=probe_loaded:
   raise SystemExit(f"{key}: payload/identity-probe loaded libhggc sets differ")
  payload_count+=1
@@ -293,6 +427,18 @@ doc={"schema":"quactlize.fq_kpack_discovery_result_authority.v1",
  "executed_qtypes":qtypes,"executed_per_qtype":executed,
  "timing":{"screen_iterations":screen,"confirm_iterations":confirm,
            "correctness_repeats":repeats}}
+structural_keys=sorted(
+ key for key,row in bundle["shards"].items()
+ if row.get("payload_kind")=="NO_DEVICE_KERNEL_STRUCTURAL")
+if structural_keys:
+ doc["structural_payload_evidence"]={
+  "payload_kind":"NO_DEVICE_KERNEL_STRUCTURAL",
+  "evidence_kind":"STRUCTURAL_CENSUS_NO_DEVICE_KERNEL",
+  "scope":"FULLY_QUANTIZED_DENSE_ONLY",
+  "shard_count":len(structural_keys),
+  "shard_keys_sha256":hashlib.sha256(json.dumps(
+      structural_keys,sort_keys=True,separators=(",",":")).encode()).hexdigest(),
+ }
 encoded=json.dumps(doc,indent=2,sort_keys=True)+"\n"
 if authority.exists() and authority.read_text()!=encoded: raise SystemExit("resumed result authority differs")
 if not authority.exists():
@@ -302,9 +448,22 @@ PY
   python3 -B - "$out/inputs/bundle.json" "$bundle" "$shard_index" <<'PY' || return 2
 import json,os,pathlib,sys
 doc=json.load(open(sys.argv[1])); bundle=pathlib.Path(sys.argv[2]); out=pathlib.Path(sys.argv[3])
-text="".join("\t".join(map(str,(key,row["qtype"],row["operator"],bundle/row["binary"],
- bundle/row["manifest"],row["parent_begin"],row["parent_end"],row["parent_count"],row["authority_count"])))+"\n"
- for key,row in sorted(doc["shards"].items(),key=lambda item:(item[1]["qtype"],item[1]["operator"],item[1]["parent_begin"])) )
+ordered=sorted(doc["shards"].items(),key=lambda item:(item[1]["qtype"],item[1]["operator"],item[1]["parent_begin"]))
+has_structural=any(row.get("payload_kind")=="NO_DEVICE_KERNEL_STRUCTURAL" for _,row in ordered)
+lines=[]
+for key,row in ordered:
+ fields=[key,row["qtype"],row["operator"],bundle/row["binary"],
+         bundle/row["manifest"],row["parent_begin"],row["parent_end"],
+         row["parent_count"],row["authority_count"]]
+ # Preserve the historical device-only shard index byte-for-byte.  The two
+ # discriminant columns exist only when this bundle actually needs them.
+ if has_structural:
+  fields.extend([row.get("payload_kind","DEVICE_KERNEL"),
+                 bundle/row["structural_proof"]
+                 if row.get("payload_kind")=="NO_DEVICE_KERNEL_STRUCTURAL"
+                 else "-"])
+ lines.append("\t".join(map(str,fields))+"\n")
+text="".join(lines)
 if out.exists() and out.read_text()!=text: raise SystemExit("resumed shard execution index differs")
 if not out.exists():
  temporary=out.with_name(f".{out.name}.current.{os.getpid()}"); temporary.write_text(text); os.replace(temporary,out)
@@ -312,7 +471,9 @@ PY
   shard_count="$(wc -l <"$shard_index")"
 
   if [ "$phase" = screen ] || [ "$phase" = all ]; then
-    while IFS=$'\t' read -r key q op binary manifest begin end count authority; do
+    while IFS=$'\t' read -r key q op binary manifest begin end count authority payload_kind structural_proof; do
+      payload_kind="${payload_kind:-DEVICE_KERNEL}"
+      structural_proof="${structural_proof:--}"
       if [ "$op" = dense ]; then
         mapfile -t dense_shapes <"$out/inputs/q$q.dense.shapes"
         [ "${#dense_shapes[@]}" -gt 0 ] || { fail "q$q dense workload denominator is empty"; return $?; }
@@ -325,6 +486,10 @@ PY
         fi
         [ "$(grep -c "^FQ_SHAPE_DONE .*typed_rows=$count selected_rows=$count .*status=PASS" "$log")" -eq "${#dense_shapes[@]}" ] || {
           fail "$key dense screen denominator incomplete"; return $?; }
+        validate_dense_evidence "$log" "$manifest" \
+          "$out/inputs/q$q.dense.shapes" "$payload_kind" \
+          "$structural_proof" "$key" screen "$root" \
+          "$out/inputs/bundle.json" "$bundle" "$binary" || return 2
       else
         while IFS=$'\t' read -r workload source_class tokens topk experts n k \
             profile rows_file total_rows max_rows rows_sha256; do
@@ -354,7 +519,9 @@ PY
     return 0
   fi
 
-  while IFS=$'\t' read -r key q op binary manifest begin end count authority; do
+  while IFS=$'\t' read -r key q op binary manifest begin end count authority payload_kind structural_proof; do
+    payload_kind="${payload_kind:-DEVICE_KERNEL}"
+    structural_proof="${structural_proof:--}"
     if [ "$op" = dense ]; then
       mapfile -t dense_shapes <"$out/inputs/q$q.dense.shapes"
       [ "${#dense_shapes[@]}" -gt 0 ] || { fail "q$q dense workload denominator is empty"; return $?; }
@@ -367,6 +534,10 @@ PY
       fi
       [ "$(grep -c "^FQ_SHAPE_DONE .*typed_rows=$count selected_rows=$count .*status=PASS" "$log")" -eq "${#dense_shapes[@]}" ] || {
         fail "$key dense confirmation incomplete"; return $?; }
+      validate_dense_evidence "$log" "$manifest" \
+        "$out/inputs/q$q.dense.shapes" "$payload_kind" \
+        "$structural_proof" "$key" confirm "$root" \
+        "$out/inputs/bundle.json" "$bundle" "$binary" || return 2
     else
       while IFS=$'\t' read -r workload source_class tokens topk experts n k \
           profile rows_file total_rows max_rows rows_sha256; do

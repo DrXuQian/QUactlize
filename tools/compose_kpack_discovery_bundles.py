@@ -29,12 +29,14 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from typing import Any, NoReturn
 
 import analyze_scalefirst_kpack_discovery as sf_analyzer
 import fully_quantized_kpack_bundle_index as fq_index
+import fq_dense_structural_proof as fq_structural
 import gen_fully_quantized_grouped_kpack_units as fq_grouped_generator
 import gen_fully_quantized_kpack_discovery_units as fq_dense_generator
 import gen_scalefirst_grouped_kpack_units as sf_grouped_generator
@@ -57,6 +59,8 @@ OPERATORS = {"dense", "grouped"}
 QTYPES = {10, 11, 12, 13, 14}
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 GIT_OID_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+DEVICE_KERNEL = fq_index.DEVICE_PAYLOAD_KIND
+NO_DEVICE_KERNEL_STRUCTURAL = fq_index.STRUCTURAL_PAYLOAD_KIND
 
 
 class BundleError(ValueError):
@@ -451,10 +455,18 @@ def _optional_shard_plan(document: dict[str, Any], route: str, root: Path,
 def _validate_binary_receipt(route: str, receipt: dict[str, Any],
                              row: dict[str, Any], manifest_sha: str,
                              binary_sha: str, build_authority_sha: str,
-                             source: dict[str, Any]) -> None:
-    schema = SF_RECEIPT_SCHEMA if route == "scalefirst" else FQ_RECEIPT_SCHEMA
-    if receipt.get("schema") != schema:
-        raise BundleError(f"{route} binary receipt schema differs")
+                             source: dict[str, Any]) -> str:
+    if route == "scalefirst":
+        if receipt.get("schema") != SF_RECEIPT_SCHEMA:
+            raise BundleError(f"{route} binary receipt schema differs")
+        kind = DEVICE_KERNEL
+    else:
+        try:
+            kind = fq_index.validate_receipt(
+                receipt, row, manifest_sha, binary_sha)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise BundleError(
+                f"{route} binary receipt schema differs: {exc}") from exc
     if (receipt.get("manifest_sha256") != manifest_sha or
             receipt.get("binary_sha256") != binary_sha or
             receipt.get("build_input_authority_sha256") !=
@@ -483,6 +495,46 @@ def _validate_binary_receipt(route: str, receipt: dict[str, Any],
                 row.get("inspector_output_sha256")):
             raise BundleError(
                 "FullyQuantized binary receipt path/image authority differs")
+    return kind
+
+
+def _inspect_structural_binary(binary: Path, source: dict[str, Any]
+                               ) -> tuple[str, str]:
+    """Return the full inspector output and hash for the narrow FQ exception."""
+    sdk_value = os.environ.get("PPU_SDK") or os.environ.get("PPU_HOME")
+    if not sdk_value:
+        raise BundleError(
+            "set PPU_SDK to validate an FQ dense structural payload")
+    sdk = _directory(Path(sdk_value), "structural validation SDK")
+    inspector_record = source["sdk"]["inspector"]
+    inspector_relative = _relative_path(
+        inspector_record.get("path"), "structural SDK inspector path")
+    inspector = _regular_file(
+        sdk.joinpath(*inspector_relative.parts), "structural SDK inspector")
+    _within(inspector, sdk, "structural SDK inspector")
+    if not os.access(inspector, os.X_OK):
+        raise BundleError("structural SDK inspector is not executable")
+    if _file_sha(inspector) != inspector_record.get("sha256"):
+        raise BundleError("structural SDK inspector differs from bundle authority")
+    try:
+        output = subprocess.check_output(
+            [str(inspector), "-lelf", str(binary)], text=True,
+            stderr=subprocess.STDOUT)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise BundleError(
+            f"cannot inspect structural payload {binary}: {exc}") from exc
+    nonempty = [line for line in output.splitlines() if line]
+    expected_host = f"{binary.name}:\tfile format elf64-x86-64"
+    if not nonempty or nonempty[0] != expected_host:
+        raise BundleError(
+            "FQ dense structural payload lacks the exact host ELF inspector "
+            "identity")
+    if re.search(r"ELF FILE \d+ \(PPU [^)]+\)", output):
+        raise BundleError("FQ dense structural payload unexpectedly has a PPU image")
+    if nonempty != [expected_host]:
+        raise BundleError(
+            "FQ dense structural payload has unexpected inspector records")
+    return output, hashlib.sha256(output.encode()).hexdigest()
 
 
 def _component(document: dict[str, Any], route: str, root: Path,
@@ -609,9 +661,55 @@ def _component(document: dict[str, Any], route: str, root: Path,
         except (KeyError, TypeError, ValueError) as exc:
             raise BundleError(
                 f"{shard_key} native manifest authority differs: {exc}") from exc
-        _validate_binary_receipt(
+        payload_kind = _validate_binary_receipt(
             route, receipt_doc, raw, manifest["sha256"], binary["sha256"],
             build["sha256"], source)
+        structural_proof: dict[str, str] | None = None
+        if payload_kind == NO_DEVICE_KERNEL_STRUCTURAL:
+            if route != "fully-quantized" or operator != "dense":
+                raise BundleError(
+                    f"{shard_key} structural no-kernel payload is outside FQ dense")
+            if raw.get("payload_kind") != NO_DEVICE_KERNEL_STRUCTURAL:
+                raise BundleError(f"{shard_key} structural payload kind differs")
+            structural_proof = _checked_file_record(
+                root, composite_root, raw.get("structural_proof"),
+                raw.get("structural_proof_sha256"),
+                f"{shard_key} structural proof")
+            proof_doc = _load_json(
+                composite_root / structural_proof["path"],
+                f"{shard_key} structural proof")
+            try:
+                fq_structural.validate_structural_proof(
+                    proof_doc, raw, manifest["sha256"], binary["sha256"],
+                    receipt_doc)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise BundleError(
+                    f"{shard_key} structural proof differs: {exc}") from exc
+            if (receipt_doc.get("structural_proof") !=
+                    raw.get("structural_proof") or
+                    receipt_doc.get("structural_proof_sha256") !=
+                    structural_proof["sha256"]):
+                raise BundleError(
+                    f"{shard_key} structural receipt/proof path/hash differs")
+            proof_symbols = [entry.get("symbol")
+                             for entry in proof_doc["rows"]]
+            manifest_symbols = [entry.get("symbol") for entry in compiled]
+            if proof_symbols != manifest_symbols:
+                raise BundleError(
+                    f"{shard_key} structural proof/manifest symbols differ")
+            _output, inspector_sha = _inspect_structural_binary(
+                composite_root / binary["path"], source)
+            if (raw.get("device_arch") != "NO_DEVICE_KERNEL" or
+                    raw.get("inspector_output_sha256") != inspector_sha or
+                    receipt_doc.get("inspector_output_sha256") != inspector_sha):
+                raise BundleError(
+                    f"{shard_key} structural inspector authority differs")
+        else:
+            if (raw.get("payload_kind", DEVICE_KERNEL) != DEVICE_KERNEL or
+                    "structural_proof" in raw or
+                    "structural_proof_sha256" in raw):
+                raise BundleError(
+                    f"{shard_key} device payload has structural metadata")
         row = {
             "shard_key": f"{route}:{shard_key}",
             "native_shard_key": shard_key,
@@ -632,6 +730,10 @@ def _component(document: dict[str, Any], route: str, root: Path,
                 "binary_receipt": receipt,
             },
         }
+        if structural_proof is not None:
+            row["payload_kind"] = NO_DEVICE_KERNEL_STRUCTURAL
+            row["parent_count"] = len(parents)
+            row["files"]["structural_proof"] = structural_proof
         rewritten.append(row)
 
     for identity, ranges in coverage.items():
