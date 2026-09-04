@@ -890,15 +890,45 @@ public:
 
     // A init
     using TilerA = typename GmemTiledCopyA::Tiler_MN;
+#if defined(PPU_M8_A_GMEM_TILE_REBASE) && \
+    (PPU_M8_A_GMEM_TILE_REBASE != 0)
+    // Diagnostic arm for the first logical TM8 tile beyond row 7.  The m8
+    // compute atom retains a physical 16-row AIU A cube.  The shipping path
+    // expresses tile 1 as coord_h=8 against the expert base; this arm instead
+    // advances the base by eight logical rows, resets coord_h to zero, and
+    // gives .padz the remaining row extent.  No shared-memory layout, B path,
+    // metadata path, pipeline cadence, MMA fragment, or epilogue changes.
+    // A positive baseline/rebased device pair therefore decides whether the
+    // physical AIU load accepts a logical-TM rather than physical-cube-aligned
+    // starting coordinate.
+    static constexpr bool kRebaseM8A =
+        !kPackedA && LogicalTileM == 8 && PhysicalATileM == 16;
+    int const a_tile_row = kRebaseM8A ? int(m_coord) * LogicalTileM : 0;
+    int const a_rows = kRebaseM8A ? int(M) - a_tile_row : int(M);
+    gmem_tiled_copy_A.desc_.template init<
+        RealInternalElementA, false, get<0>(TilerA{}), get<1>(TilerA{})>(
+            nullptr, a_rows, K, mainloop_params.dA);
+#else
     gmem_tiled_copy_A.desc_.template init<RealInternalElementA, false, get<0>(TilerA{}), get<1>(TilerA{})>(nullptr, M, K, mainloop_params.dA);
+#endif
     // RAGGED grouped: expert l_coord starts at group_row_offsets[l_coord] rows using dA's row pitch.
     // Uniform/batched: dA's L pitch owns the expert base. Reconstructing either base with logical K accepted a
     // caller stride and then silently substituted a compact layout (L128).
     auto a_expert_base = detail::mixed_a_expert_base(
         mainloop_params.ptr_A, mainloop_params.dA,
         mainloop_params.group_row_offsets, l_coord);
+#if defined(PPU_M8_A_GMEM_TILE_REBASE) && \
+    (PPU_M8_A_GMEM_TILE_REBASE != 0)
+    if constexpr (kRebaseM8A) {
+      a_expert_base += int64_t(a_tile_row) *
+                       int64_t(get<0>(mainloop_params.dA));
+    }
+    Tensor mA_mkl = make_tensor(make_gmem_ptr(a_expert_base),
+                                make_shape(a_rows,K,cute::Int<1>{}), mainloop_params.dA);                            // (m,k,1)
+#else
     Tensor mA_mkl = make_tensor(make_gmem_ptr(a_expert_base),
                                 make_shape(M,K,cute::Int<1>{}), mainloop_params.dA);                            // (m,k,1)
+#endif
     auto gA_logical = [&] {
       if constexpr (kPackedA) {
         // PLAIN, not make_mix_tensor_like: that wrapper carries (ptr, coordinate) for the AIU descriptor and has NO
@@ -907,7 +937,17 @@ public:
         return local_tile(mA_mkl(_,_,0), TileShape{}, take<0,3>(blk_coord_mnkl), Step<_1, X,_1>{});
       } else {
         auto mA_mk = make_mix_tensor_like(mA_mkl(_,_,0));
+#if defined(PPU_M8_A_GMEM_TILE_REBASE) && \
+    (PPU_M8_A_GMEM_TILE_REBASE != 0)
+        if constexpr (kRebaseM8A) {
+          return local_tile(mA_mk, TileShape{},
+                            make_coord(0, n_coord, _), Step<_1, X,_1>{});
+        } else {
+          return local_tile(mA_mk, TileShape{}, take<0,3>(blk_coord_mnkl), Step<_1, X,_1>{});
+        }
+#else
         return local_tile(mA_mk, TileShape{}, take<0,3>(blk_coord_mnkl), Step<_1, X,_1>{});
+#endif
       }
     }();                                                                                                      // (BLK_M,BLK_K,k)
     auto gA = [&] {
