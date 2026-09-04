@@ -2626,12 +2626,23 @@ incident; a later failure must not be relabelled as the same A/metadata cause.
 
 Three follow-ups deliberately remain separate from that numeric conclusion:
 
-1. Commit `5e5cb7c1d1765f8056193e73f920d5c914e5a111` supplies the
-   fresh-device common-builder scope gate: Q2/Q3/Q4/Q5/Q6 across
-   FullyQuantized/ScaleFirst and dense/grouped, 40 exact candidate cells with
-   seven correctness repeats.  It is pending one PPU run.  The historical RED
-   is owned by the exact topology gate rather than multiplied into redundant
-   legacy-format executions.
+1. The fresh-device common-builder scope gate is complete: Q2/Q3/Q4/Q5/Q6
+   across FullyQuantized/ScaleFirst and dense/grouped produced 40/40 measured
+   exact cells, zero affected structural cells, and seven correctness repeats
+   per cell.  The PASS is at
+   `/workspace/quactlize-m8n16-cross-format-419bbc37-20260904T132551Z-4076562`;
+   it records runner source
+   `36848171e086c3ea2911cee117366cb274acf293`, binary build source
+   `419bbc379edf27383a4128158f96215044060ea7`, and actlize source
+   `423253c00df333ead6fb72ea623d526f24f56b5a`.  The source split is deliberate:
+   the resume gate proved that the intervening commit range touched only its
+   runner and checker, verified all ten isolated FQ/ScaleFirst CMake trees and
+   all 20 manifests/binaries, and required identical artifact hashes before
+   and after execution.  The first attempt's five ScaleFirst-dense rc=2 rows
+   were a runner error (`N=64` violated that harness's `N % 256 == 0` host
+   guard), not device failures; the corrected legal shipping point is
+   `M=7,N=256,K=512`.  The historical RED remains owned by the exact topology
+   gate rather than multiplied into redundant legacy-format executions.
 2. Commit `92e9dcaca91b362019354e77ac21536bbc1b51ac` supplies a
    compile-free M=8 performance/resource A/B.  Its synthetic baseline is the
    same parent tree with only the actlize gitlink changed from `423253c0` to
@@ -2661,7 +2672,7 @@ Three follow-ups deliberately remain separate from that numeric conclusion:
    packed-A at M=1); grouped has no local-expert-M ceiling.  Do not widen the
    dense selector until measured results justify it.
 
-After the two pending TM8 device gates pass, rebuild only the 226 invalidated
+Both pending TM8 device gates now pass.  Rebuild only the 226 invalidated
 shards and rerun only the emitted semantic set.  The unrelated dense launch
 rejection and ScaleFirst initialization rejection recorded above remain A09
 blockers, but are not TM8 correctness debt and must be diagnosed independently.
