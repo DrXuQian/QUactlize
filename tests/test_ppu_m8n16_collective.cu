@@ -449,6 +449,14 @@ struct G4KpackEpilogueTypes
   using Mainloop = typename LaunchContract::Mainloop;
   using Epilogue = typename G4EpilogueTypesBase<LaunchContract>::Epilogue;
   using Descriptor = typename Policy::Descriptor;
+  // Match the real grouped kernel's union carrier rather than allocating only
+  // the epilogue member.  A malformed S2R map may address past that member yet
+  // remain inside the production union; allocating only the member turns the
+  // value/ownership failure under test into an unrelated TSM range exception.
+  union SharedCarrier {
+    typename Mainloop::SharedStorage mainloop;
+    typename Epilogue::SharedStorage epilogue;
+  };
 
   static_assert(TN == 32 || TN == 64);
   static_assert(TN % WN == 0 && (WN == 16 || WN == 32));
@@ -469,6 +477,7 @@ struct G4KpackEpilogueTypes
                         typename Mainloop::TiledMma::ThrLayoutVMNK{}));
   static_assert(int(cute::size(typename Mainloop::TiledMma{})) ==
                 32 * (TN / WN));
+  static_assert(sizeof(SharedCarrier) >= sizeof(typename Epilogue::SharedStorage));
 };
 
 constexpr int kG4TopologyN = 64;
@@ -488,6 +497,25 @@ __global__ void g4_epilogue_topology_kernel(
   int const tile_n = int(blockIdx.y);
   if (tile_m * TM >= M || tile_n * TN >= N ||
       tid >= int(cute::size(typename Mainloop::TiledMma{}))) return;
+
+  // Production aliases the epilogue storage with a larger mainloop storage
+  // union.  Give only the diagnostic tail outside the valid 8xTN epilogue
+  // member a stable, finite FP32 tag.  This does not alter the production
+  // epilogue mapping or its legal shared values; it only makes an invalid S2R
+  // read deterministic instead of trapping or inheriting unspecified prior
+  // mainloop bytes.
+  static_assert(sizeof(typename Epilogue::SharedStorage) % sizeof(uint32_t) == 0);
+  static_assert(sizeof(typename Types::SharedCarrier) % sizeof(uint32_t) == 0);
+  auto* carrier_words = reinterpret_cast<uint32_t*>(smem);
+  constexpr int kEpilogueWords =
+      int(sizeof(typename Epilogue::SharedStorage) / sizeof(uint32_t));
+  constexpr uint32_t kCarrierTagF32 = UINT32_C(0xc1500000);  // -13.0f
+  for (int i = kEpilogueWords + tid;
+       i < int(sizeof(typename Types::SharedCarrier) / sizeof(uint32_t));
+       i += int(blockDim.x)) {
+    carrier_words[i] = kCarrierTagF32;
+  }
+  __syncthreads();
 
   typename Mainloop::TiledMma tiled_mma;
   auto accum = cute::make_fragment_like<float>(cute::partition_fragment_C(
@@ -732,7 +760,7 @@ G4Result run_g4_epilogue_topology_arm(int M) {
                   (N + TN - 1) / TN, 1);
   g4_epilogue_topology_kernel<Types, ReplayFirstNWarp><<<
       grid, int(cute::size(typename Mainloop::TiledMma{})),
-      sizeof(typename Epilogue::SharedStorage)>>>(params, M, N);
+      sizeof(typename Types::SharedCarrier)>>>(params, M, N);
   CUTLASS_PPU_CHECK(hggcGetLastError());
   CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
   dStorage.copy_to_host(host.data());
@@ -790,9 +818,13 @@ int check_g4_first_tile_ownership(char const* arm) {
   int const errors = got.guard_errors + got.finite_errors + ownership_bad;
   std::printf("FQ_M8_EPILOGUE_FIRST_TILE_OWNERSHIP arm=%s M=9 "
               "TM=8 TN=%d WM=8 WN=%d ownership_bad=%d/%zu "
+              "epilogue_smem=%zu carrier_smem=%zu "
               "first8_bad=%d/512 guard_bad=%d finite_bad=%d "
               "row8_written=%d/64 cohort_written=[%d,%d,%d,%d] %s\n",
-              arm, TN, WN, ownership_bad, expected.size(), first8_bad,
+              arm, TN, WN, ownership_bad, expected.size(),
+              sizeof(typename G4KpackEpilogueTypes<TN, WN>::Epilogue::SharedStorage),
+              sizeof(typename G4KpackEpilogueTypes<TN, WN>::SharedCarrier),
+              first8_bad,
               got.guard_errors, got.finite_errors, row8_written,
               cohort_written[0], cohort_written[1], cohort_written[2],
               cohort_written[3], status);
