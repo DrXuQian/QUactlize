@@ -421,7 +421,7 @@ struct G4EpilogueTypes
 CUTLASS_HOST_DEVICE
 float g4_coordinate_tag(int m, int n);
 
-// Epilogue-only topology bisection for the exact grouped Q4 K-pack row that
+// Epilogue-only topology closure for the exact grouped Q4 K-pack row that
 // first failed at (local_m=8,n=32).  Both arms write the same logical Mx64
 // tensor.  TN32/WN32 uses two one-warp CTAs along N; TN64/WN16 uses one CTA
 // with the shipping row's four N warps.  Nothing below launches the mainloop
@@ -479,6 +479,66 @@ struct G4KpackEpilogueTypes
                 32 * (TN / WN));
   static_assert(sizeof(SharedCarrier) >= sizeof(typename Epilogue::SharedStorage));
 };
+
+// Test-only reconstruction of the historical output-copy contract.  Keep the
+// production Mainloop, TiledMma, shared layout and callbacks, and change only
+// the S2R/R2G vector width back to the requested eight values.  This preserves
+// the proved red without retaining a shipping workaround or legacy macro.
+template <class Epilogue>
+struct G4EpilogueScheduleOf;
+
+template <class StrideC, class StrideD, class Callbacks, class SmemLayout,
+          class CopyR2S, class CopyS2R, class CopyR2G, class Schedule,
+          class CopyG2R>
+struct G4EpilogueScheduleOf<cutlass::epilogue::collective::EpilogueEvt<
+    StrideC, StrideD, Callbacks, SmemLayout, CopyR2S, CopyS2R, CopyR2G,
+    Schedule, CopyG2R>> {
+  using Type = Schedule;
+};
+
+template <int TN, int WN>
+struct G4KpackLegacyEpilogueTypes : G4KpackEpilogueTypes<TN, WN> {
+  using Base = G4KpackEpilogueTypes<TN, WN>;
+  using Candidate = typename Base::Epilogue;
+  static constexpr int ThreadNum = 32 * (TN / WN);
+  static constexpr int Alignment = 8;
+  static constexpr int EpiThreadN =
+      ThreadNum < TN / Alignment ? ThreadNum : TN / Alignment;
+  static constexpr int EpiThreadM = ThreadNum / EpiThreadN;
+  using ThreadLayout = cute::Layout<
+      cute::Shape<cute::C<EpiThreadM>, cute::C<EpiThreadN>>,
+      cute::Stride<cute::C<EpiThreadN>, cute::_1>>;
+  using ValueLayout = cute::Layout<cute::Shape<cute::_1, cute::C<Alignment>>>;
+  using LegacyTiledCopyS2R = decltype(cute::make_tiled_copy(
+      cute::Copy_Atom<cute::AutoVectorizingCopyWithAssumedAlignment<128>, float>{},
+      ThreadLayout{}, ValueLayout{}));
+  using LegacyCopyAtomR2G = cute::Copy_Atom<
+      cute::AutoVectorizingCopyWithAssumedAlignment<sizeof(half_t) * Alignment * 8>,
+      half_t>;
+  using Epilogue = cutlass::epilogue::collective::EpilogueEvt<
+      typename Candidate::StrideC, typename Candidate::StrideD,
+      typename Candidate::FusionCallbacks, typename Candidate::SmemLayout,
+      typename Candidate::CopyAtomR2S, LegacyTiledCopyS2R,
+      LegacyCopyAtomR2G, typename G4EpilogueScheduleOf<Candidate>::Type>;
+  using Mainloop = typename Base::Mainloop;
+  union SharedCarrier {
+    typename Mainloop::SharedStorage mainloop;
+    typename Epilogue::SharedStorage epilogue;
+  };
+  static_assert(TN == 64 && WN == 16,
+                "the retained legacy red is the exact failing topology");
+  static_assert(cute::size(typename LegacyTiledCopyS2R::Tiler_MN{}) == 1024,
+                "historical copy must retain the virtual 16x64 tile");
+  static_assert(cute::size(typename Epilogue::SmemLayout{}) == 512,
+                "legacy red must retain the real 8x64 shared tile");
+};
+
+using G4KpackCandidateSubject = G4KpackEpilogueTypes<64, 16>;
+using G4KpackLegacySubject = G4KpackLegacyEpilogueTypes<64, 16>;
+static_assert(cute::size(
+                  typename G4KpackCandidateSubject::Epilogue::TiledCopyS2R::
+                      Tiler_MN{}) == 512,
+              "shipping TM8/TN64/WN16 copy must cover exactly 8x64");
 
 constexpr int kG4TopologyN = 64;
 
@@ -725,12 +785,11 @@ int half_n_cohort_bitdiff(std::vector<half_t> const& lhs,
   return bad;
 }
 
-template <int TN, int WN, bool ReplayFirstNWarp,
-          bool FirstMTileOnly = false>
+template <class Types, bool ReplayFirstNWarp, bool FirstMTileOnly = false>
 G4Result run_g4_epilogue_topology_arm(int M) {
-  using Types = G4KpackEpilogueTypes<TN, WN>;
   using Epilogue = typename Types::Epilogue;
   using Mainloop = typename Types::Mainloop;
+  constexpr int TN = int(cute::size<1>(typename Types::Tile{}));
   constexpr int N = kG4TopologyN;
   std::size_t const logical_count = std::size_t(M) * N;
   std::vector<half_t> host(kGuard + logical_count + kGuard);
@@ -783,10 +842,12 @@ G4Result run_g4_epilogue_topology_arm(int M) {
   return result;
 }
 
-template <int TN, int WN>
+template <class Types>
 int check_g4_first_tile_ownership(char const* arm) {
   constexpr int M = 9;
   constexpr int N = kG4TopologyN;
+  constexpr int TN = int(cute::size<1>(typename Types::Tile{}));
+  constexpr int WN = int(cute::size<1>(typename Types::Warp{}));
   std::vector<half_t> expected(std::size_t(M) * N, hbits(kOutputNaN));
   for (int m = 0; m < 8; ++m) {
     for (int n = 0; n < N; ++n) {
@@ -794,7 +855,7 @@ int check_g4_first_tile_ownership(char const* arm) {
           half_t(g4_coordinate_tag(m, n));
     }
   }
-  auto got = run_g4_epilogue_topology_arm<TN, WN, false, true>(M);
+  auto got = run_g4_epilogue_topology_arm<Types, false, true>(M);
   int first8_bad = 0;
   for (int m = 0; m < 8; ++m) {
     for (int n = 0; n < N; ++n) {
@@ -822,8 +883,8 @@ int check_g4_first_tile_ownership(char const* arm) {
               "first8_bad=%d/512 guard_bad=%d finite_bad=%d "
               "row8_written=%d/64 cohort_written=[%d,%d,%d,%d] %s\n",
               arm, TN, WN, ownership_bad, expected.size(),
-              sizeof(typename G4KpackEpilogueTypes<TN, WN>::Epilogue::SharedStorage),
-              sizeof(typename G4KpackEpilogueTypes<TN, WN>::SharedCarrier),
+              sizeof(typename Types::Epilogue::SharedStorage),
+              sizeof(typename Types::SharedCarrier),
               first8_bad,
               got.guard_errors, got.finite_errors, row8_written,
               cohort_written[0], cohort_written[1], cohort_written[2],
@@ -831,19 +892,30 @@ int check_g4_first_tile_ownership(char const* arm) {
   return errors;
 }
 
-template <int TN, int WN>
+template <class Types>
 int check_g4_epilogue_topology(char const* arm, int M) {
   constexpr int N = kG4TopologyN;
+  constexpr int TN = int(cute::size<1>(typename Types::Tile{}));
+  constexpr int WN = int(cute::size<1>(typename Types::Warp{}));
+  using TiledCopy = typename Types::Epilogue::TiledCopyS2R;
   constexpr int CtaThreads = 32 * (TN / WN);
   constexpr int FragmentSize = 8 * TN / CtaThreads;
-  constexpr int OutputAlignment = 8;
-  constexpr int EpiThreadN =
-      CtaThreads < TN / OutputAlignment ? CtaThreads : TN / OutputAlignment;
-  constexpr int EpiThreadM = CtaThreads / EpiThreadN;
+  constexpr int CopyThreads = int(typename TiledCopy::TiledNumThr{});
+  constexpr int OutputAlignment = int(typename TiledCopy::TiledNumVal{});
+  constexpr int CopyTileValues =
+      int(cute::size(typename TiledCopy::Tiler_MN{}));
+  static_assert(CopyThreads == CtaThreads);
+  static_assert(CopyTileValues == 8 * TN,
+                "candidate output copy must cover exactly the logical 8xTN tile");
+  static_assert(TN % OutputAlignment == 0);
+  constexpr int EpiThreadN = TN / OutputAlignment;
+  constexpr int EpiThreadM = CopyThreads / EpiThreadN;
   static_assert((TN == 32 && WN == 32 && FragmentSize == 8 &&
-                 EpiThreadM == 8) ||
+                 OutputAlignment == 8 && EpiThreadM == 8 &&
+                 EpiThreadN == 4) ||
                 (TN == 64 && WN == 16 && FragmentSize == 4 &&
-                 EpiThreadM == 16));
+                 OutputAlignment == 4 && EpiThreadM == 8 &&
+                 EpiThreadN == 16));
   std::vector<half_t> golden(std::size_t(M) * N);
   std::vector<half_t> replay_golden(std::size_t(M) * N);
   for (int m = 0; m < M; ++m) {
@@ -855,9 +927,9 @@ int check_g4_epilogue_topology(char const* arm, int M) {
     }
   }
 
-  auto positive = run_g4_epilogue_topology_arm<TN, WN, false>(M);
+  auto positive = run_g4_epilogue_topology_arm<Types, false>(M);
   int const positive_bad = half_bitdiff(positive.logical, golden);
-  auto replay = run_g4_epilogue_topology_arm<TN, WN, true>(M);
+  auto replay = run_g4_epilogue_topology_arm<Types, true>(M);
   int const replay_oracle_bad =
       half_bitdiff(replay.logical, replay_golden);
   int const observed_red = half_bitdiff(replay.logical, golden);
@@ -880,7 +952,7 @@ int check_g4_epilogue_topology(char const* arm, int M) {
               "expected_red=%d cohort_red=[%d,%d,%d,%d] %s\n",
               arm, M, TN, WN, CtaThreads, FragmentSize, OutputAlignment,
               EpiThreadM, EpiThreadN,
-              int(G4KpackEpilogueTypes<TN, WN>::Descriptor::packed_metadata),
+              int(Types::Descriptor::packed_metadata),
               positive_bad, golden.size(),
               replay_oracle_bad, replay_golden.size(), observed_red,
               expected_red, cohort_red[0], cohort_red[1], cohort_red[2],
@@ -889,14 +961,22 @@ int check_g4_epilogue_topology(char const* arm, int M) {
 }
 
 int run_g4_epilogue_topology() {
+  using Control = G4KpackEpilogueTypes<32, 32>;
+  using Candidate = G4KpackCandidateSubject;
+  using Legacy = G4KpackLegacySubject;
   int errors = 0;
-  errors += check_g4_first_tile_ownership<32, 32>("tn32-wn32-control");
-  errors += check_g4_first_tile_ownership<64, 16>("tn64-wn16-subject");
-  errors += check_g4_epilogue_topology<32, 32>("tn32-wn32-control", 9);
-  errors += check_g4_epilogue_topology<64, 16>("tn64-wn16-m8-control", 8);
-  errors += check_g4_epilogue_topology<64, 16>("tn64-wn16-subject", 9);
-  auto control = run_g4_epilogue_topology_arm<32, 32, false>(9);
-  auto subject = run_g4_epilogue_topology_arm<64, 16, false>(9);
+  errors += check_g4_first_tile_ownership<Control>("tn32-wn32-control");
+  int const legacy_red =
+      check_g4_first_tile_ownership<Legacy>("tn64-wn16-legacy");
+  errors += legacy_red == 64 ? 0 : 1;
+  errors += check_g4_first_tile_ownership<Candidate>("tn64-wn16-candidate");
+  errors += check_g4_epilogue_topology<Control>("tn32-wn32-control", 9);
+  errors += check_g4_epilogue_topology<Candidate>(
+      "tn64-wn16-candidate-m8-control", 8);
+  errors += check_g4_epilogue_topology<Candidate>(
+      "tn64-wn16-candidate", 9);
+  auto control = run_g4_epilogue_topology_arm<Control, false>(9);
+  auto subject = run_g4_epilogue_topology_arm<Candidate, false>(9);
   int const cross_bad = half_bitdiff(control.logical, subject.logical);
   errors += control.errors + subject.errors + cross_bad;
   std::printf("FQ_M8_EPILOGUE_TOPOLOGY_AB M=%d N=%d cross_bad=%d/%zu "
