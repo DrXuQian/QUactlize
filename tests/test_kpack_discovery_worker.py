@@ -390,6 +390,39 @@ def test_catalog_to_worker_live_artifact_closure_and_negative_plants(
             catalog, contexts, selection["shard_keys"][0])
 
 
+def test_catalog_artifact_union_is_exact_within_scoped_qtypes(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "artifact"
+    root.mkdir()
+    artifact_id = "artifact/mixed/0"
+    catalog = {
+        "shards": [
+            {"shard_key": "fq-q10", "artifact_id": artifact_id,
+             "qtype": 10},
+            {"shard_key": "fq-q12", "artifact_id": artifact_id,
+             "qtype": 12},
+        ],
+    }
+    selection = {
+        "artifact_ids": [artifact_id],
+        "shard_keys": ["fq-q12"],
+    }
+    monkeypatch.setattr(
+        partitions, "verify_catalog_artifact",
+        lambda _catalog, _artifact_id, _root: {"verified": True})
+    contexts = worker._catalog_artifacts(
+        catalog, selection, [f"{artifact_id}={root}"])
+    assert set(contexts) == {artifact_id}
+
+    catalog["shards"].append({
+        "shard_key": "fq-q12-extra", "artifact_id": artifact_id,
+        "qtype": 12,
+    })
+    with pytest.raises(worker.ExecutionError, match="qtype-shard union"):
+        worker._catalog_artifacts(
+            catalog, selection, [f"{artifact_id}={root}"])
+
+
 def test_atomic_log_reuses_only_a_structurally_complete_full_parent_run(
         tmp_path: Path) -> None:
     count = tmp_path / "count"

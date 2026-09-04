@@ -329,12 +329,25 @@ def _catalog_artifacts(document: dict[str, Any], selection: dict[str, Any],
         contexts[artifact_id] = ArtifactContext(
             artifact_id, root, partition)
     selected_shards = set(selection.get("shard_keys", []))
+    catalog_by_shard = {
+        row["shard_key"]: row for row in document["shards"]
+    }
+    try:
+        selected_qtypes = {
+            catalog_by_shard[key]["qtype"] for key in selected_shards
+        }
+    except KeyError as error:
+        raise ExecutionError(
+            "worker selection contains a shard absent from the catalog") from error
+    if not selected_qtypes:
+        raise ExecutionError("worker selection contains no qtype scope")
     catalog_shards = {
         row["shard_key"] for row in document["shards"]
-        if row["artifact_id"] in contexts}
+        if (row["artifact_id"] in contexts and
+            row["qtype"] in selected_qtypes)}
     if selected_shards != catalog_shards:
         raise ExecutionError(
-            "assigned artifact roots do not contain the exact selected shard union")
+            "assigned artifact roots do not contain the exact selected qtype-shard union")
     return contexts
 
 
