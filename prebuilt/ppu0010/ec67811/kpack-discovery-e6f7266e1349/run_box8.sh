@@ -6,7 +6,7 @@ fail() {
   exit 2
 }
 
-runner_root="$(realpath -e -- "${QUACTLIZE_ROOT:-/workspace/quactlize-runner-83fc3fc}")" ||
+runner_root="$(realpath -e -- "${QUACTLIZE_ROOT:-/workspace/quactlize-runner-5919afa}")" ||
   fail 'set QUACTLIZE_ROOT to the pinned runner checkout'
 campaign="$(realpath -e -- "${CAMPAIGN:-/workspace/campaign-ec67811}")" ||
   fail 'set CAMPAIGN to the extracted campaign directory'
@@ -16,7 +16,7 @@ sdk="$(realpath -e -- "${PPU_SDK:-/nonexistent}")" ||
   fail 'set PPU_SDK to the compatible SDK root'
 
 source_sha=ec67811bd709eace941daf3c650d45df574b1a87
-runner_sha=83fc3fc0fe0591c70cfb5d79cdfee133122c0f28
+runner_sha=5919afa07d57ecb21bc2a5c73ce5b78f5c929648
 catalog="$campaign/control/distributed-catalog.json"
 execution="$campaign/control/execution-8"
 plan="$execution/route-plan.json"
