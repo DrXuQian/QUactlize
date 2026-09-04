@@ -1,0 +1,70 @@
+{
+  "authority_sha256": {
+    "emitter": "0313c9b47da651377f4bffa9fb62532be1a22acc276525af90abc6190e677ec1",
+    "matrix": "92db764ef3c6871e8522f8c045c7b433ece7cdebfa4c013660ff9feaace6957a",
+    "topology_matrix": "967fe422999f89f22260a2b2f700ffe9e3c6ad55ae44f6745c7a887504e21156"
+  },
+  "confirmation": {
+    "all_raw_bit_clean_candidates": true,
+    "screen_elimination": "NONE",
+    "top_n": null
+  },
+  "denominator": {
+    "admitted_topologies": 2064,
+    "compiled_rows": 1,
+    "provider_expanded_rows": 6120,
+    "runtime_tc_cells": 4,
+    "source_raw_rows": 23040
+  },
+  "dense_bc": {
+    "algorithm": "DENSE_BC_FULL_OUTPUT",
+    "reason": "NO_CANONICAL_KPACK_BC_READER",
+    "status": "STRUCTURAL_UNAVAILABLE"
+  },
+  "dense_tc_parents": [
+    {
+      "a_provider": 0,
+      "a_provider_name": "standard-aiu",
+      "artifact_tile_k": 0,
+      "bchunk": 0,
+      "parent_ordinal": 4827,
+      "qtype": 12,
+      "resolved_delivery_n": 16,
+      "runtime_variants": [
+        "TC_S1",
+        "TC_S2",
+        "TC_S4",
+        "TC_S8"
+      ],
+      "stages": 2,
+      "static_candidate_id": "fqk_dense_q12_l1_tm8_tn64_tk256_wm8_wn16_s2_bc0_ap0_dn16",
+      "symbol": "fqk_tc_q12_l1_a0_tm8_tn64_tk256_wm8_wn16_s2_bc0_ap0_dn16",
+      "tactic_tile_k": 256,
+      "tile_m": 8,
+      "tile_n": 64,
+      "warp_m": 8,
+      "warp_n": 16,
+      "weight_layout": 1
+    }
+  ],
+  "identity": {
+    "artifact_tile_k": 0,
+    "bchunk": 0,
+    "format": "Q4_K",
+    "metadata": "PACKED_UNITS_SCALE_AND_ZERO",
+    "packed_scale": 1,
+    "qtype": 12,
+    "weight_layout": 1,
+    "weight_layout_name": "q4-kpack4-transpose-v1"
+  },
+  "parent_range": {
+    "authority_count": 6120,
+    "begin": 4827,
+    "count": 1,
+    "end": 4828
+  },
+  "schema": "quactlize.fully_quantized_kpack_dense_shard.v2",
+  "units": [
+    "/root/autodl-tmp/m8-epilogue-perf-ab-build-9d063e4-423253c/generated/row/units/fq_kpack_dense_unit_00000.cu"
+  ]
+}

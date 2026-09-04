@@ -1,0 +1,27 @@
+{
+  "schema": "quactlize.m8-epilogue-perf-ab-artifact.v1",
+  "source_parent": "92e9dcaca91b362019354e77ac21536bbc1b51ac",
+  "artifact_branch": "artifacts/ppu0010/92e9dca-m8-epilogue-perf-ab-eaf274676ac0",
+  "artifact_rel": "prebuilt/ppu0010/92e9dca/m8-epilogue-perf-ab-eaf274676ac0",
+  "bundle_manifest_sha256": "eaf274676ac0405cc1f3de663ab3d4da06049c730b2ac48a440c7a89c6e7ea8c",
+  "source_tools": {
+    "tools/analyze_m8_epilogue_perf_ab.py": {
+      "git_blob": "7bf9232d090b4e76041a384439d6332a69e9db46",
+      "sha256": "8fd53bf5cb61cc0bbe88c70392bfee1c90bad2cacfb362e46b62257889acd300"
+    },
+    "tools/run_m8_epilogue_perf_ab_prebuilt_box.sh": {
+      "git_blob": "cf9531671f7b2fa59fbfb8464f76423567535d5a",
+      "sha256": "1dbf1f17ccb5cdbfe8791dc0de357c7003828f5a9038a2e9d9703e97700f5660"
+    }
+  },
+  "payloads": {
+    "bundle/bin/baseline": {
+      "size": 4877888,
+      "sha256": "411e74f2bdf2728266f0dabebec69d9786159ecfa60aef553a534b1556ba5556"
+    },
+    "bundle/bin/candidate": {
+      "size": 4868640,
+      "sha256": "3d7e20e87a9edb564b6524e4a63b189235ab4ca8350d5b016d75f1cbfc1e11f4"
+    }
+  }
+}

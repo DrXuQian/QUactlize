@@ -1,0 +1,76 @@
+{
+  "arms": {
+    "baseline": {
+      "actlize_sha": "9d063e4c5fde5119d4d68bfbe124aacd8ed2ec88",
+      "cutlass_sha": "f94ec46f4f63f96003d6cfdf2014731e7672c281",
+      "path": "bin/baseline",
+      "sha256": "411e74f2bdf2728266f0dabebec69d9786159ecfa60aef553a534b1556ba5556",
+      "size": 4877888,
+      "source_sha": "a0fa8d03013d3cd0bc340e876cb0d646f3cfb72d",
+      "synthetic_source": {
+        "only_change": "third_party/actlize",
+        "parent_sha": "6ec447ac25477a40a29be8c2809a933c84d0b7ad",
+        "tree_sha": "1bdee8cc1386ca29e8116d893b63f705b118eecc"
+      }
+    },
+    "candidate": {
+      "actlize_sha": "423253c00df333ead6fb72ea623d526f24f56b5a",
+      "cutlass_sha": "f94ec46f4f63f96003d6cfdf2014731e7672c281",
+      "path": "bin/candidate",
+      "sha256": "3d7e20e87a9edb564b6524e4a63b189235ab4ca8350d5b016d75f1cbfc1e11f4",
+      "size": 4868640,
+      "source_sha": "6ec447ac25477a40a29be8c2809a933c84d0b7ad"
+    }
+  },
+  "build_sdk": {
+    "compiler_identity": "hgcc(HGGC C/C++ Compiler)",
+    "compiler_sha256": "fa62c590c67411c23fa4028f15fa562b39ce0cf830830d038a1ec04c59d8c76e",
+    "inspector_identity": "LLVM (http://llvm.org/):",
+    "inspector_sha256": "4176b21eb5b26e9f73acb5e17667a01fbb2808987b303d95cd8b31078221d16c",
+    "root": "/root/autodl-tmp/root-relocated/ppu-sdk/2.1.1"
+  },
+  "experiment": {
+    "artifact_tile_k": 0,
+    "bchunk": 0,
+    "canonical_symbol": "fqk_tc_q12_l1_a0_tm8_tn64_tk256_wm8_wn16_s2_bc0_ap0_dn16",
+    "correctness_repeats": 7,
+    "delivery_n": 16,
+    "iterations": 31,
+    "layout": 1,
+    "mapping_id": "0x51344b5034540001",
+    "provider": "standard-aiu",
+    "provider_id": 0,
+    "qtype": 12,
+    "rounds": 6,
+    "schedule_seed": "0x6a09e667f3bcc909",
+    "shape": [
+      8,
+      3072,
+      512
+    ],
+    "split": 1
+  },
+  "inputs": {
+    "fq_kpack_dense_unit_00000.cu": {
+      "path": "inputs/fq_kpack_dense_unit_00000.cu",
+      "sha256": "44ba42b7bf91982f9ab9b78ef42ae0b2e1c343fd842e594c3e3dcb62f05ad7ad",
+      "size": 342
+    },
+    "fq_tc_registry.inc": {
+      "path": "inputs/fq_tc_registry.inc",
+      "sha256": "2e9fcadbef9887ee9f1346de20ab1f72298f19d9c5ebfa36366162ce7c7c7b4a",
+      "size": 418
+    },
+    "generated-manifest.json": {
+      "path": "inputs/generated-manifest.json",
+      "sha256": "799a3c5169f2eaa4df17a393b4dba60eeb1a9e2770a0f51cc2919ad90407fb2e",
+      "size": 1926
+    },
+    "symbol.txt": {
+      "path": "inputs/symbol.txt",
+      "sha256": "77fb268329cc6561ac4588124294d80b9605f8dba4d680e3ee49918baaabca95",
+      "size": 57
+    }
+  },
+  "schema": "quactlize.m8-epilogue-perf-ab-bundle.v1"
+}
