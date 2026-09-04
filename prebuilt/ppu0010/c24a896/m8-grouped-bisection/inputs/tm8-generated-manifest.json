@@ -1,0 +1,94 @@
+{
+  "authority_sha256": {
+    "emitter": "0313c9b47da651377f4bffa9fb62532be1a22acc276525af90abc6190e677ec1",
+    "matrix": "92db764ef3c6871e8522f8c045c7b433ece7cdebfa4c013660ff9feaace6957a",
+    "topology_matrix": "967fe422999f89f22260a2b2f700ffe9e3c6ad55ae44f6745c7a887504e21156"
+  },
+  "confirmation": {
+    "all_raw_bit_clean_candidates": true,
+    "screen_elimination": "NONE",
+    "top_n": null
+  },
+  "denominator": {
+    "admitted_topologies": 2064,
+    "compiled_rows": 2,
+    "delivery_algorithm_expanded_type_rows": 10992,
+    "source_raw_rows": 23040
+  },
+  "fixture_contract": {
+    "active_experts": "REQUIRED_NONZERO_AND_MAY_EQUAL_EXPERTS",
+    "correctness": "FULL_RAW_FP16_BEFORE_ANY_TIMING",
+    "empty_experts": "ALLOWED_ZERO_AND_EXACT_COMPLEMENT",
+    "ragged_offsets": true
+  },
+  "grouped_parents": [
+    {
+      "a_provider": 0,
+      "algorithm": "GROUPED_NONPERSISTENT",
+      "artifact_tile_k": 0,
+      "bchunk": 0,
+      "correctness": "REAL_RAGGED_OFFSETS_EMPTY_EXPERT_RAW_FP16_BEFORE_TIMING",
+      "parent_ordinal": 60,
+      "persistent": false,
+      "qtype": 12,
+      "resolved_delivery_n": 16,
+      "runtime_variant_authority": "ONE_NONPERSISTENT_VARIANT_PER_CELL",
+      "stages": 2,
+      "static_candidate_id": "fqk_grouped_q12_l1_tm8_tn64_tk64_wm8_wn16_s2_bc0_ap0_dn16_grouped_nonpersistent",
+      "symbol": "fqg_q12_l1_tm8_tn64_tk64_wm8_wn16_s2_ap0_dn16_nonpersistent",
+      "tactic_tile_k": 64,
+      "tile_m": 8,
+      "tile_n": 64,
+      "warp_m": 8,
+      "warp_n": 16,
+      "weight_layout": 1
+    },
+    {
+      "a_provider": 0,
+      "algorithm": "GROUPED_PERSISTENT",
+      "artifact_tile_k": 0,
+      "bchunk": 0,
+      "correctness": "REAL_RAGGED_OFFSETS_EMPTY_EXPERT_RAW_FP16_BEFORE_TIMING",
+      "parent_ordinal": 61,
+      "persistent": true,
+      "qtype": 12,
+      "resolved_delivery_n": 16,
+      "runtime_variant_authority": "EXACT_RUNTIME_GRID_SPACE_FROM_COMPILED_KERNEL",
+      "stages": 2,
+      "static_candidate_id": "fqk_grouped_q12_l1_tm8_tn64_tk64_wm8_wn16_s2_bc0_ap0_dn16_grouped_persistent",
+      "symbol": "fqg_q12_l1_tm8_tn64_tk64_wm8_wn16_s2_ap0_dn16_persistent",
+      "tactic_tile_k": 64,
+      "tile_m": 8,
+      "tile_n": 64,
+      "warp_m": 8,
+      "warp_n": 16,
+      "weight_layout": 1
+    }
+  ],
+  "identity": {
+    "artifact_tile_k": 0,
+    "bchunk": 0,
+    "format": "Q4_K",
+    "metadata": "PACKED_UNITS_SCALE_AND_ZERO",
+    "packed_scale": 1,
+    "qtype": 12,
+    "weight_layout": 1,
+    "weight_layout_name": "q4-kpack4-transpose-v1"
+  },
+  "parent_range": {
+    "authority_count": 10992,
+    "begin": 60,
+    "count": 2,
+    "end": 62
+  },
+  "schema": "quactlize.fully_quantized_grouped_kpack_shard.v2",
+  "structural_algorithms": {
+    "GROUPED_BC_FULL_OUTPUT": "STRUCTURAL_UNAVAILABLE",
+    "GROUPED_SPLITK_S2": "STRUCTURAL_UNAVAILABLE",
+    "GROUPED_SPLITK_S4": "STRUCTURAL_UNAVAILABLE",
+    "GROUPED_SPLITK_S8": "STRUCTURAL_UNAVAILABLE"
+  },
+  "units": [
+    "/root/autodl-tmp/m8-kpack-next.Jac24J/tm8/units/fq_grouped_kpack_unit_00000.cu"
+  ]
+}

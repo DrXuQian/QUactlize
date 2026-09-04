@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "source_sha": "c24a896b3a5fd184a7f0d647a7b00e1e7812c670",
+  "submodules": {
+    "third_party/actlize": "8d46b758c8931807df840a6ed87d272d74a8fdf4",
+    "third_party/cutlass": "f94ec46f4f63f96003d6cfdf2014731e7672c281"
+  },
+  "sdk": "PPU_SDK_cuda-13.0.0-ubuntu2404-2.1.1-a5c56e sha256=63ca196b152f2fec667fce8b18c04f1d6d0fa9e7bc7f72e18f017c96d11731dd",
+  "compiler": "hgcc Release version 2.1.1-a5c56e built=2026-07-25T09:15:42 sha256=fa62c590c67411c23fa4028f15fa562b39ce0cf830830d038a1ec04c59d8c76e",
+  "arch": "ppu0010",
+  "artifacts": [
+    {
+      "role": "grouped-q4-kpack-tm8-np-p",
+      "qtype": 12,
+      "path": "bin/kpack-tm8-np-p",
+      "size": 790712,
+      "sha256": "931732d30c343328f2d6b40072105d9e5dcad1ad6c0b3488e03786c763a71a22",
+      "target": "test_fully_quantized_grouped_kpack_discovery",
+      "ppu_defs": []
+    },
+    {
+      "role": "grouped-q4-kpack-tm16-np-p",
+      "qtype": 12,
+      "path": "bin/kpack-tm16-np-p",
+      "size": 780488,
+      "sha256": "78d3c956f8b8d8e57e24a4f9af5af5a0a5d72a15debb96e8cc9b73df74e3b19a",
+      "target": "test_fully_quantized_grouped_kpack_discovery",
+      "ppu_defs": []
+    }
+  ]
+}
