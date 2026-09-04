@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import copy
 import hashlib
 import json
 import math
@@ -26,7 +27,8 @@ import gen_fully_quantized_kpack_discovery_units as generator  # noqa: E402
 
 
 SCHEMA = "quactlize.m8-epilogue-perf-ab-bundle.v1"
-RESULT_SCHEMA = "quactlize.m8-epilogue-perf-ab-result.v1"
+RESULT_SCHEMA = "quactlize.m8-epilogue-perf-ab-result.v2"
+INSPECTOR_SCHEMA = "quactlize.m8-epilogue-perf-ab-execution-inspector.v1"
 BASELINE_SOURCE = "a0fa8d03013d3cd0bc340e876cb0d646f3cfb72d"
 BASELINE_TREE = "1bdee8cc1386ca29e8116d893b63f705b118eecc"
 BASELINE_PARENT = "6ec447ac25477a40a29be8c2809a933c84d0b7ad"
@@ -83,6 +85,116 @@ def expected_order(round_index: int) -> tuple[str, str]:
 def regular_file(path: pathlib.Path) -> None:
     if not path.is_file() or path.is_symlink():
         raise AnalysisError(f"required regular file is missing or symlinked: {path}")
+
+
+def inspector_record(inspector: pathlib.Path) -> dict[str, Any]:
+    """Freeze the inspector used to interpret the already-frozen binaries."""
+    regular_file(inspector)
+    if not inspector.stat().st_mode & 0o111:
+        raise AnalysisError("execution inspector is not executable")
+    version = subprocess.check_output(
+        [str(inspector), "--version"], text=True,
+        stderr=subprocess.STDOUT).strip()
+    if not version:
+        raise AnalysisError("execution inspector exposed no version identity")
+    return {
+        "path": str(inspector.resolve()),
+        "size": inspector.stat().st_size,
+        "sha256": sha256(inspector),
+        "identity": version.splitlines()[0],
+        "version_output": version,
+        "version_output_sha256": hashlib.sha256(version.encode()).hexdigest(),
+    }
+
+
+def validate_inspector_record(record: dict[str, Any],
+                              inspector: pathlib.Path | None = None) -> None:
+    expected_keys = {
+        "path", "size", "sha256", "identity", "version_output",
+        "version_output_sha256",
+    }
+    if not isinstance(record, dict) or set(record) != expected_keys:
+        raise AnalysisError("execution inspector record shape differs")
+    if not isinstance(record["path"], str) or not pathlib.Path(record["path"]).is_absolute() or \
+            not isinstance(record["size"], int) or record["size"] <= 0 or \
+            not isinstance(record["sha256"], str) or \
+            re.fullmatch(r"[0-9a-f]{64}", record["sha256"]) is None or \
+            not isinstance(record["identity"], str) or not record["identity"] or \
+            not isinstance(record["version_output"], str) or not record["version_output"] or \
+            record["identity"] != record["version_output"].splitlines()[0] or \
+            not isinstance(record["version_output_sha256"], str) or \
+            record["version_output_sha256"] != hashlib.sha256(
+                record["version_output"].encode()).hexdigest():
+        raise AnalysisError("execution inspector record is malformed")
+    if inspector is not None:
+        current = inspector_record(inspector)
+        if current != record:
+            raise AnalysisError("execution inspector changed after inspection")
+
+
+def make_inspector_evidence(bundle: pathlib.Path, inspector: pathlib.Path,
+                            output: pathlib.Path) -> None:
+    manifest = load_bundle(bundle)
+    build_sdk = manifest.get("build_sdk") or {}
+    build_identity = build_sdk.get("inspector_identity")
+    build_sha = build_sdk.get("inspector_sha256")
+    if not isinstance(build_identity, str) or not build_identity or \
+            not isinstance(build_sha, str) or \
+            re.fullmatch(r"[0-9a-f]{64}", build_sha) is None:
+        raise AnalysisError("bundle build-inspector authority is malformed")
+    execution = inspector_record(inspector)
+    value = {
+        "schema": INSPECTOR_SCHEMA,
+        "build": {"identity": build_identity, "sha256": build_sha},
+        "execution": execution,
+        "same_binary_as_build": execution["sha256"] == build_sha,
+    }
+    output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+    print("FQ_M8_EPILOGUE_INSPECTOR "
+          f"build_sha256={build_sha} execution_sha256={execution['sha256']} "
+          f"same_binary={int(value['same_binary_as_build'])} "
+          f"version_sha256={execution['version_output_sha256']}")
+
+
+def load_inspector_evidence(path: pathlib.Path,
+                            bundle_manifest: dict[str, Any],
+                            inspector: pathlib.Path | None = None) -> dict[str, Any]:
+    value = json.loads(path.read_text())
+    if not isinstance(value, dict) or set(value) != {
+            "schema", "build", "execution", "same_binary_as_build"} or \
+            value.get("schema") != INSPECTOR_SCHEMA:
+        raise AnalysisError("execution inspector evidence shape differs")
+    build_sdk = bundle_manifest.get("build_sdk") or {}
+    expected_build = {
+        "identity": build_sdk.get("inspector_identity"),
+        "sha256": build_sdk.get("inspector_sha256"),
+    }
+    if not isinstance(expected_build["identity"], str) or \
+            not expected_build["identity"] or \
+            not isinstance(expected_build["sha256"], str) or \
+            re.fullmatch(r"[0-9a-f]{64}", expected_build["sha256"]) is None:
+        raise AnalysisError("bundle build-inspector authority is malformed")
+    if value.get("build") != expected_build:
+        raise AnalysisError("execution evidence build-inspector binding differs")
+    execution = value.get("execution")
+    validate_inspector_record(execution, inspector)
+    if value.get("same_binary_as_build") is not (
+            execution["sha256"] == expected_build["sha256"]):
+        raise AnalysisError("execution inspector equality marker differs")
+    return value
+
+
+def validate_inspection_outputs(arm: str, codegen: dict[str, Any],
+                                codegen_root: pathlib.Path) -> None:
+    outputs = {
+        "list_elf_sha256": codegen_root / arm / "list-elf.txt",
+        "line_sha256": codegen_root / arm / "kernel-line.txt",
+        "resource_sha256": codegen_root / arm / "resource-usage.txt",
+    }
+    for field, path in outputs.items():
+        regular_file(path)
+        if codegen.get(field) != sha256(path):
+            raise AnalysisError(f"{arm} inspected output changed: {field}")
 
 
 def validate_generated(path: pathlib.Path) -> dict[str, Any]:
@@ -291,8 +403,9 @@ def count_like(counter: collections.Counter[str], needle: str) -> int:
     return sum(count for opcode, count in counter.items() if needle in opcode)
 
 
-def codegen(arm: str, line_path: pathlib.Path, resource_path: pathlib.Path,
-            symbol_path: pathlib.Path, binary: pathlib.Path,
+def codegen(arm: str, list_elf_path: pathlib.Path, line_path: pathlib.Path,
+            resource_path: pathlib.Path, symbol_path: pathlib.Path,
+            binary: pathlib.Path, inspector_evidence_path: pathlib.Path,
             output: pathlib.Path) -> None:
     if arm not in ARMS:
         raise AnalysisError(f"unknown arm {arm}")
@@ -306,6 +419,13 @@ def codegen(arm: str, line_path: pathlib.Path, resource_path: pathlib.Path,
     if widths != [4] or alignments != [128]:
         raise AnalysisError(
             f"{arm} epilogue type differs: values={widths}, alignments={alignments}")
+    evidence = json.loads(inspector_evidence_path.read_text())
+    if not isinstance(evidence, dict) or evidence.get("schema") != INSPECTOR_SCHEMA:
+        raise AnalysisError("execution inspector evidence is missing from codegen")
+    validate_inspector_record(evidence.get("execution"))
+    list_symbols = parse_list_elf(list_elf_path.read_text(errors="replace"))
+    if choose_s1(list_symbols) != symbol:
+        raise AnalysisError(f"{arm} selected symbol is not bound to list-elf output")
     instructions = parse_instructions(line_path.read_text(errors="replace"))
     counts = collections.Counter(opcode for opcode, _ in instructions)
     wait_tsm = sum(1 for opcode, operands in instructions
@@ -351,6 +471,10 @@ def codegen(arm: str, line_path: pathlib.Path, resource_path: pathlib.Path,
         "spill_status": "UNKNOWN_NO_AUTHORITATIVE_RESOURCE_FIELD",
         "focus": focus,
         "opcode_counts": dict(sorted(counts.items())),
+        "inspector_sha256": evidence["execution"]["sha256"],
+        "inspector_version_output_sha256":
+            evidence["execution"]["version_output_sha256"],
+        "list_elf_sha256": sha256(list_elf_path),
         "line_sha256": sha256(line_path),
         "resource_sha256": sha256(resource_path),
     }
@@ -478,9 +602,13 @@ def validate_execution(path: pathlib.Path) -> None:
 
 
 def analyze(bundle: pathlib.Path, runs: pathlib.Path, codegen_root: pathlib.Path,
-            execution: pathlib.Path, threshold: float,
+            execution: pathlib.Path, inspector_evidence_path: pathlib.Path,
+            inspector: pathlib.Path, threshold: float,
             output_json: pathlib.Path, output_tsv: pathlib.Path) -> bool:
     bundle_manifest = load_bundle(bundle)
+    inspector_evidence = load_inspector_evidence(
+        inspector_evidence_path, bundle_manifest, inspector)
+    execution_inspector = inspector_evidence["execution"]
     validate_execution(execution)
     if not 0 < threshold < 0.2:
         raise AnalysisError("regression threshold is outside (0,0.2)")
@@ -492,6 +620,13 @@ def analyze(bundle: pathlib.Path, runs: pathlib.Path, codegen_root: pathlib.Path
         expected_binary_hash = bundle_manifest["arms"][arm]["sha256"]
         if cg.get("arm") != arm or cg.get("binary_sha256") != expected_binary_hash:
             raise AnalysisError(f"{arm} codegen identity differs")
+        if cg.get("inspector_sha256") != execution_inspector["sha256"] or \
+                cg.get("inspector_version_output_sha256") != \
+                execution_inspector["version_output_sha256"] or \
+                not isinstance(cg.get("list_elf_sha256"), str) or \
+                re.fullmatch(r"[0-9a-f]{64}", cg["list_elf_sha256"]) is None:
+            raise AnalysisError(f"{arm} codegen inspector/output binding differs")
+        validate_inspection_outputs(arm, cg, codegen_root)
         symbol = cg.get("symbol")
         if not isinstance(symbol, str) or choose_s1([symbol]) != symbol:
             raise AnalysisError(f"{arm} codegen S1 symbol differs")
@@ -567,6 +702,7 @@ def analyze(bundle: pathlib.Path, runs: pathlib.Path, codegen_root: pathlib.Path
         "baseline": baseline, "candidate": candidate,
         "delta": delta, "paired_round_deltas": paired,
         "codegen": codegens, "runtime_linkage": linkages,
+        "execution_inspector": inspector_evidence,
     }
     output_json.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     header = (
@@ -649,6 +785,9 @@ def audit_scripts() -> list[str]:
         "--schedule-seed=0x6a09e667f3bcc909", "--only-split=1",
         "--tm8-max-m=8", "--bc-mode=skip", "forroundin123456",
         'order=(baselinecandidate)', 'order=(candidatebaseline)',
+        'inspector-evidence--bundle"$bundle"--inspector"$hgobjdump"',
+        'codegen--arm"$arm"--line"$line"--list-elf"$list_elf"',
+        '--inspector-evidence"$inspector_evidence"--inspector"$hgobjdump"',
         "FQ_M8_EPILOGUE_PERF_AB_GATEverdict=PASS",
     )
     for token in builder_tokens:
@@ -660,6 +799,8 @@ def audit_scripts() -> list[str]:
     for forbidden in ("--shape=9x", "--tm8-max-m=9", "--only-split=4"):
         if forbidden in RUNNER.read_text():
             bad.append(f"runner contains invalid timing path {forbidden}")
+    if "inspector_identity_differs" in RUNNER.read_text():
+        bad.append("runner still requires execution/build inspector byte identity")
     return bad
 
 
@@ -741,6 +882,84 @@ def self_test() -> None:
         else:
             raise AnalysisError("missing runtime library stayed green")
 
+        inspector = pathlib.Path(temp) / "hgobjdump"
+        inspector.write_text(
+            "#!/bin/sh\nprintf 'HGGC inspector compatible-test\\nrevision 2\\n'\n")
+        inspector.chmod(0o755)
+        execution = inspector_record(inspector)
+        manifest = {"build_sdk": {
+            "inspector_identity": "different build inspector",
+            "inspector_sha256": "f" * 64,
+        }}
+        evidence = {
+            "schema": INSPECTOR_SCHEMA,
+            "build": {
+                "identity": manifest["build_sdk"]["inspector_identity"],
+                "sha256": manifest["build_sdk"]["inspector_sha256"],
+            },
+            "execution": execution,
+            "same_binary_as_build": False,
+        }
+        evidence_path = pathlib.Path(temp) / "inspector.json"
+        evidence_path.write_text(json.dumps(evidence))
+        loaded = load_inspector_evidence(evidence_path, manifest, inspector)
+        if loaded["execution"]["sha256"] == loaded["build"]["sha256"]:
+            raise AnalysisError("portable inspector positive did not differ")
+
+        inspector_plants: tuple[tuple[str, Any], ...] = (
+            ("build-binding", lambda value: value["build"].update(
+                sha256="e" * 64)),
+            ("same-binary-marker", lambda value: value.update(
+                same_binary_as_build=True)),
+            ("execution-hash", lambda value: value["execution"].update(
+                sha256="0" * 64)),
+            ("empty-version", lambda value: value["execution"].update(
+                version_output="", identity="")),
+            ("version-digest", lambda value: value["execution"].update(
+                version_output_sha256="1" * 64)),
+        )
+        for label, plant in inspector_plants:
+            broken = copy.deepcopy(evidence)
+            plant(broken)
+            evidence_path.write_text(json.dumps(broken))
+            try:
+                load_inspector_evidence(evidence_path, manifest, inspector)
+            except AnalysisError:
+                pass
+            else:
+                raise AnalysisError(f"execution-inspector plant stayed green: {label}")
+        evidence_path.write_text(json.dumps(evidence))
+        inspector.write_text("#!/bin/sh\nprintf 'changed inspector\\n'\n")
+        inspector.chmod(0o755)
+        try:
+            load_inspector_evidence(evidence_path, manifest, inspector)
+        except AnalysisError:
+            pass
+        else:
+            raise AnalysisError("mutated execution inspector stayed green")
+
+        inspected_root = pathlib.Path(temp) / "codegen"
+        inspected_arm = inspected_root / "baseline"
+        inspected_arm.mkdir(parents=True)
+        inspected_codegen: dict[str, Any] = {}
+        for field, name in (
+                ("list_elf_sha256", "list-elf.txt"),
+                ("line_sha256", "kernel-line.txt"),
+                ("resource_sha256", "resource-usage.txt")):
+            path = inspected_arm / name
+            path.write_text(field + "\n")
+            inspected_codegen[field] = sha256(path)
+        validate_inspection_outputs("baseline", inspected_codegen,
+                                    inspected_root)
+        (inspected_arm / "kernel-line.txt").write_text("tampered\n")
+        try:
+            validate_inspection_outputs("baseline", inspected_codegen,
+                                        inspected_root)
+        except AnalysisError:
+            pass
+        else:
+            raise AnalysisError("mutated inspector output stayed green")
+
     pairs = [
         "_ZN_device_kernel_gemm6kernel13GemmUniversal_"
         "KernelAiuQ4KPack4Transpose_PPU0010_8x16x16_F32F16F16F32_TN_"
@@ -757,8 +976,9 @@ def self_test() -> None:
     else:
         raise AnalysisError("S1 selector accepted Split-K")
     print("[m8-epilogue-perf-ab:self-test] PASS exact M8/AP0/S1 row, "
-          "ABBA 6x31 finite samples, exact fixture/S1/resource/ISA parsers; "
-          "eleven negatives RED")
+          "ABBA 6x31 finite samples, portable inspector evidence, exact "
+          "fixture/S1/resource/ISA parsers; inspector/output mutation and "
+          "seventeen other negatives RED")
 
 
 def main() -> int:
@@ -772,16 +992,22 @@ def main() -> int:
     create.add_argument("--candidate", type=pathlib.Path, required=True)
     verify = sub.add_parser("verify-bundle")
     verify.add_argument("--bundle", type=pathlib.Path, required=True)
+    inspector_identity = sub.add_parser("inspector-evidence")
+    inspector_identity.add_argument("--bundle", type=pathlib.Path, required=True)
+    inspector_identity.add_argument("--inspector", type=pathlib.Path, required=True)
+    inspector_identity.add_argument("--output", type=pathlib.Path, required=True)
     select = sub.add_parser("select-symbol")
     select.add_argument("--list-elf", type=pathlib.Path, required=True)
     select.add_argument("--symbol-output", type=pathlib.Path, required=True)
     select.add_argument("--demangled-output", type=pathlib.Path, required=True)
     cg = sub.add_parser("codegen")
     cg.add_argument("--arm", choices=ARMS, required=True)
+    cg.add_argument("--list-elf", type=pathlib.Path, required=True)
     cg.add_argument("--line", type=pathlib.Path, required=True)
     cg.add_argument("--resource", type=pathlib.Path, required=True)
     cg.add_argument("--symbol", type=pathlib.Path, required=True)
     cg.add_argument("--binary", type=pathlib.Path, required=True)
+    cg.add_argument("--inspector-evidence", type=pathlib.Path, required=True)
     cg.add_argument("--output", type=pathlib.Path, required=True)
     linkage = sub.add_parser("runtime-linkage")
     linkage.add_argument("--arm", choices=ARMS, required=True)
@@ -792,6 +1018,8 @@ def main() -> int:
     run.add_argument("--runs", type=pathlib.Path, required=True)
     run.add_argument("--codegen", type=pathlib.Path, required=True)
     run.add_argument("--execution", type=pathlib.Path, required=True)
+    run.add_argument("--inspector-evidence", type=pathlib.Path, required=True)
+    run.add_argument("--inspector", type=pathlib.Path, required=True)
     run.add_argument("--threshold", type=float, default=0.03)
     run.add_argument("--output-json", type=pathlib.Path, required=True)
     run.add_argument("--output-tsv", type=pathlib.Path, required=True)
@@ -806,16 +1034,21 @@ def main() -> int:
             value = load_bundle(args.bundle.resolve())
             print("[m8-epilogue-perf-ab-bundle] VERIFIED "
                   f"arms={','.join(value['arms'])} shape={SHAPE_TEXT}")
+        elif args.command == "inspector-evidence":
+            make_inspector_evidence(args.bundle.resolve(), args.inspector,
+                                    args.output)
         elif args.command == "select-symbol":
             select_symbol(args.list_elf, args.symbol_output, args.demangled_output)
         elif args.command == "codegen":
-            codegen(args.arm, args.line, args.resource, args.symbol,
-                    args.binary, args.output)
+            codegen(args.arm, args.list_elf, args.line, args.resource,
+                    args.symbol, args.binary, args.inspector_evidence,
+                    args.output)
         elif args.command == "runtime-linkage":
             runtime_linkage(args.arm, args.ldd, args.output)
         else:
             clean = analyze(args.bundle.resolve(), args.runs.resolve(),
                             args.codegen.resolve(), args.execution.resolve(),
+                            args.inspector_evidence, args.inspector,
                             args.threshold, args.output_json, args.output_tsv)
             return 0 if clean else 1
         return 0

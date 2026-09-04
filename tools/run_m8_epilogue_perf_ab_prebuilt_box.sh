@@ -13,7 +13,7 @@ fail() {
 }
 
 main() {
-  local workspace bundle sdk_root hgobjdump runtime_path manifest_inspector_hash
+  local workspace bundle sdk_root hgobjdump runtime_path inspector_evidence
   local arm binary list_elf symbol demangled line resource round slot rc
   local threshold=${PERF_REGRESSION_THRESHOLD:-0.03}
   local -a order runtime_dirs
@@ -72,14 +72,10 @@ PY
   python3 -B "$ANALYZER" verify-bundle --bundle "$bundle" || {
     fail bundle_verification; return 2;
   }
-  manifest_inspector_hash="$(python3 -B - "$bundle/manifest.json" <<'PY'
-import json
-import sys
-print(json.load(open(sys.argv[1], encoding="utf-8"))["build_sdk"]["inspector_sha256"])
-PY
-  )" || { fail read_inspector_authority; return 2; }
-  [ "$(sha256sum "$hgobjdump" | awk '{print $1}')" = "$manifest_inspector_hash" ] || {
-    fail inspector_identity_differs; return 2;
+  inspector_evidence="$RUN_DIR/inputs/execution-inspector.json"
+  python3 -B "$ANALYZER" inspector-evidence --bundle "$bundle" \
+    --inspector "$hgobjdump" --output "$inspector_evidence" || {
+    fail inspector_evidence; return 2;
   }
 
   runtime_dirs=(
@@ -154,7 +150,8 @@ PY
       fail "${arm}_resource_usage"; return 2;
     }
     python3 -B "$ANALYZER" codegen --arm "$arm" --line "$line" \
-      --resource "$resource" --symbol "$symbol" --binary "$binary" \
+      --list-elf "$list_elf" --resource "$resource" --symbol "$symbol" \
+      --binary "$binary" --inspector-evidence "$inspector_evidence" \
       --output "$RUN_DIR/codegen/$arm.json" || {
       fail "${arm}_codegen_analysis"; return 2;
     }
@@ -193,13 +190,16 @@ PY
 
   if ! python3 -B "$ANALYZER" analyze --bundle "$bundle" \
       --runs "$RUN_DIR/runs" --codegen "$RUN_DIR/codegen" \
-      --execution "$RUN_DIR/inputs/execution.tsv" --threshold "$threshold" \
+      --execution "$RUN_DIR/inputs/execution.tsv" \
+      --inspector-evidence "$inspector_evidence" --inspector "$hgobjdump" \
+      --threshold "$threshold" \
       --output-json "$RUN_DIR/results/summary.json" \
       --output-tsv "$RUN_DIR/results/summary.tsv"; then
     fail comparison; return 2
   fi
   sha256sum "$RUN_DIR/results/summary.json" "$RUN_DIR/results/summary.tsv" \
-    "$RUN_DIR/inputs/execution.tsv" >"$RUN_DIR/results/result.sha256" || {
+    "$RUN_DIR/inputs/execution.tsv" "$inspector_evidence" \
+    >"$RUN_DIR/results/result.sha256" || {
     fail result_hash; return 2;
   }
   printf 'FQ_M8_EPILOGUE_PERF_AB_GATE verdict=PASS shape=8x3072x512 arms=2 rounds=6 samples_per_arm=186 repeats=7 artifacts=%s\n' \
