@@ -452,6 +452,77 @@ def test_loaded_runtime_symlink_records_alias_and_hashes_target(
     assert sha == hashlib.sha256(b"runtime-identity").hexdigest()
 
 
+def _runtime_link(
+        soname: str, *, reported: str | None = None,
+        resolved: str | None = None, size: int = 4096,
+        sha: str = "a" * 64) -> tuple[str, str, str, int, str]:
+    stem = soname.replace("/", "_")
+    return (
+        soname,
+        reported or f"/sdk/alias/{stem}",
+        resolved or f"/sdk/runtime/{stem}",
+        size,
+        sha,
+    )
+
+
+@pytest.mark.parametrize("payload_kind", ["equal", "strict-subset"])
+def test_payload_runtime_linkage_accepts_the_probe_closure_or_its_exact_subset(
+        payload_kind: str) -> None:
+    wrapper = _runtime_link("libhggc_wrapper.so", sha="1" * 64)
+    runtime = _runtime_link("libhggcrt.13.0.so", sha="2" * 64)
+    compiler = _runtime_link("libhggc.so", sha="3" * 64)
+    probe = tuple(sorted((wrapper, runtime, compiler)))
+    payload = probe if payload_kind == "equal" else (wrapper,)
+
+    worker._validate_payload_linkage(payload, probe, "fixture-shard")
+
+
+@pytest.mark.parametrize(("payload", "failure"), [
+    ((), "payload runtime linkage is empty"),
+    (tuple(sorted((
+        _runtime_link("libhggc_wrapper.so", sha="1" * 64),
+        _runtime_link("libhggc_foreign.so", sha="4" * 64),
+    ))), "payload runtime linkage differs"),
+    ((_runtime_link("libhggc_wrapper.so", sha="5" * 64),),
+     "payload runtime linkage differs"),
+    ((_runtime_link("libhggcrt.13.0.so", sha="2" * 64),),
+     "payload runtime linkage lacks libhggc_wrapper.so"),
+], ids=("empty", "foreign-record", "same-soname-changed-hash",
+        "missing-wrapper-anchor"))
+def test_payload_runtime_linkage_rejects_empty_foreign_changed_or_unanchored(
+        payload: tuple[tuple[str, str, str, int, str], ...],
+        failure: str) -> None:
+    probe = tuple(sorted((
+        _runtime_link("libhggc_wrapper.so", sha="1" * 64),
+        _runtime_link("libhggcrt.13.0.so", sha="2" * 64),
+        _runtime_link("libhggc.so", sha="3" * 64),
+    )))
+
+    with pytest.raises(worker.ExecutionError, match=failure):
+        worker._validate_payload_linkage(payload, probe, "fixture-shard")
+
+
+def test_runtime_linkage_rejects_duplicate_sonames(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    binary = tmp_path / "payload"
+    binary.write_bytes(b"ELF fixture")
+    output = (
+        "libhggc_wrapper.so => /sdk/one/libhggc_wrapper.so (0x1)\n"
+        "libhggc_wrapper.so => /sdk/two/libhggc_wrapper.so (0x2)\n"
+    )
+    monkeypatch.setattr(
+        worker.subprocess, "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=output))
+    monkeypatch.setattr(
+        worker, "_loaded_library_record",
+        lambda path: (path, path, 4096, hashlib.sha256(path.encode()).hexdigest()))
+    worker._linkage.cache_clear()
+
+    with pytest.raises(worker.ExecutionError, match="duplicate.*SONAME"):
+        worker._linkage(binary)
+
+
 def test_distinct_prebuilt_probes_produce_byte_identical_device_identity(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     wire = (
@@ -744,8 +815,19 @@ def test_worker_runs_only_selected_four_route_operator_atoms_and_resumes(
     monkeypatch.setattr(worker, "materialize_sf_retention", retain)
     probes = [tmp_path / "probe-a", tmp_path / "probe-b"]
     monkeypatch.setattr(worker, "_probe_binaries", lambda *_args: probes)
-    linkage = (("libhggc.so", "/alias", "/target", 1, "f" * 64),)
-    monkeypatch.setattr(worker, "_linkage", lambda _binary: linkage)
+    payload_linkage = (
+        ("libhggc_wrapper.so", "/alias/wrapper", "/target/wrapper", 1,
+         "d" * 64),)
+    linkage = tuple(sorted((
+        *payload_linkage,
+        ("libhggcrt.13.0.so", "/alias/runtime", "/target/runtime", 2,
+         "e" * 64),
+        ("libhggc.so", "/alias/compiler", "/target/compiler", 3,
+         "f" * 64),
+    )))
+    monkeypatch.setattr(
+        worker, "_linkage",
+        lambda binary: linkage if binary in probes else payload_linkage)
 
     args = SimpleNamespace(
         bundle=authorities["bundle"], plan=authorities["plan"],
@@ -788,7 +870,7 @@ def test_worker_runs_only_selected_four_route_operator_atoms_and_resumes(
         "outer_round_order": "ASSIGNMENT_REVERSE_THEN_HASHED_V1",
         "inner_candidate_order": "ROUND_SEED_VARIED_ALL_ROUTES_OPERATORS",
     }
-    assert execution["runtime_linkage"] == [list(linkage[0])]
+    assert execution["runtime_linkage"] == [list(row) for row in linkage]
     assert [row["work_item_id"] for row in evidence["work_items"]] == \
         assignment["workers"][0]["work_item_ids"]
     assert all(len(row["confirm"]) == 3 for row in evidence["work_items"])

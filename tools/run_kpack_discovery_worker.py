@@ -80,6 +80,7 @@ SCHEDULE_SEED_SCHEMA = "quactlize.kpack-discovery-schedule-seed.v1"
 SAFE_TOKEN = re.compile(r"[^\s\0]+\Z")
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 VISIBLE_DEVICE = re.compile(r"[0-9]+\Z")
+RUNTIME_LINKAGE_ANCHOR = "libhggc_wrapper.so"
 
 
 class ExecutionError(RuntimeError):
@@ -1067,7 +1068,48 @@ def _linkage(binary: Path) -> tuple[tuple[str, str, str, int, str], ...]:
         result.append((match.group(1), reported, resolved, size, sha))
     if not result:
         raise ExecutionError(f"cannot identify loaded libhggc runtime for {binary}")
-    return tuple(sorted(result))
+    linkage = tuple(sorted(result))
+    sonames = [row[0] for row in linkage]
+    if len(set(sonames)) != len(sonames):
+        raise ExecutionError(f"runtime linkage has duplicate SONAMEs for {binary}")
+    if RUNTIME_LINKAGE_ANCHOR not in sonames:
+        raise ExecutionError(
+            f"runtime linkage lacks {RUNTIME_LINKAGE_ANCHOR} for {binary}")
+    return linkage
+
+
+def _validate_payload_linkage(
+        payload: tuple[tuple[str, str, str, int, str], ...],
+        probe: tuple[tuple[str, str, str, int, str], ...],
+        shard_key: str) -> None:
+    """Bind a payload's required PPU runtime subset to the probe closure.
+
+    The identity probe deliberately links the complete SDK query stack, while
+    kernel payloads link only the libraries they actually call.  Requiring the
+    two closures to be equal therefore rejects valid payloads.  Each payload
+    must instead have a non-empty, canonical, SONAME-unique subset of the
+    probe's exact ``(SONAME, reported path, realpath, size, SHA-256)`` records.
+    Comparing complete records keeps a same-name library at a different path
+    or with different bytes fail-closed.
+    """
+    for label, linkage in (("payload", payload), ("probe", probe)):
+        if not linkage:
+            raise ExecutionError(f"{shard_key}: {label} runtime linkage is empty")
+        if linkage != tuple(sorted(linkage)):
+            raise ExecutionError(
+                f"{shard_key}: {label} runtime linkage order differs")
+        sonames = [row[0] for row in linkage]
+        if len(set(sonames)) != len(sonames):
+            raise ExecutionError(
+                f"{shard_key}: {label} runtime linkage has duplicate SONAMEs")
+        if RUNTIME_LINKAGE_ANCHOR not in sonames:
+            raise ExecutionError(
+                f"{shard_key}: {label} runtime linkage lacks "
+                f"{RUNTIME_LINKAGE_ANCHOR}")
+    unexpected = sorted(set(payload) - set(probe))
+    if unexpected:
+        raise ExecutionError(
+            f"{shard_key}: payload runtime linkage differs from probe closure")
 
 
 def _round_order(items: list[dict[str, Any]], round_index: int
@@ -1605,8 +1647,8 @@ def run_worker(args: argparse.Namespace) -> int:
     if any(_linkage(probe) != probe_linkage for probe in probes[1:]):
         raise ExecutionError("component identity probes load different runtimes")
     for shard in shards.values():
-        if _linkage(shard.binary) != probe_linkage:
-            raise ExecutionError(f"{shard.key}: payload runtime linkage differs")
+        _validate_payload_linkage(
+            _linkage(shard.binary), probe_linkage, shard.key)
 
     authority = _execution_authority(
         args, selection, identity_sha, probe_linkage,
