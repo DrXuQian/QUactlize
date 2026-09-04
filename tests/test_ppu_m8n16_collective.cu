@@ -392,9 +392,9 @@ int run_g3_a_tag(
   return errors;
 }
 
-template <int TM, int WM>
-struct G4EpilogueTypes {
-  using LaunchContract = m8n16_g5_contract::Launch<TM, WM>;
+template <class LaunchContract_>
+struct G4EpilogueTypesBase {
+  using LaunchContract = LaunchContract_;
   using Tile = typename LaunchContract::Tile;
   using Warp = typename LaunchContract::Warp;
   using Mainloop = typename LaunchContract::Mainloop;
@@ -413,6 +413,107 @@ struct G4EpilogueTypes {
                     cute::size<1>(
                         typename Mainloop::TiledMma::ThrLayoutVMNK{}));
 };
+
+template <int TM, int WM>
+struct G4EpilogueTypes
+    : G4EpilogueTypesBase<m8n16_g5_contract::Launch<TM, WM>> {};
+
+CUTLASS_HOST_DEVICE
+float g4_coordinate_tag(int m, int n);
+
+// Epilogue-only topology bisection for the exact grouped Q4 K-pack row that
+// first failed at (local_m=8,n=32).  Both arms write the same logical Mx64
+// tensor.  TN32/WN32 uses two one-warp CTAs along N; TN64/WN16 uses one CTA
+// with the shipping row's four N warps.  Nothing below launches the mainloop
+// or constructs A/B/metadata/scheduler state: its TiledMma is used solely as
+// the production accumulator-coordinate contract consumed by the ptr-array
+// epilogue.
+template <int TN, int WN>
+struct G4KpackEpilogueLaunchContract {
+  using Schedule = ppu_group_schedule::FinegrainedSchedule<32>;
+  using Tile = cute::Shape<cute::_8, cute::C<TN>, cute::_64>;
+  using Scale = cute::Shape<cute::C<TN>, cute::_2>;
+  using Warp = cute::Shape<cute::_8, cute::C<WN>, cute::_64>;
+  using Policy = ppu_mixed_policy::Q4KPack4MainloopPolicy<
+      ppu_mixed_policy::QuantMode::FinegrainedScaleZero,
+      Schedule, Tile, Scale, Warp, 2, true, 0, 16,
+      cutlass::gemm::SeparateHalfPlanes>;
+  using Mainloop = typename Policy::CollectiveOp;
+};
+
+template <int TN, int WN>
+struct G4KpackEpilogueTypes
+    : G4EpilogueTypesBase<G4KpackEpilogueLaunchContract<TN, WN>> {
+  using LaunchContract = G4KpackEpilogueLaunchContract<TN, WN>;
+  using Policy = typename LaunchContract::Policy;
+  using Mainloop = typename LaunchContract::Mainloop;
+  using Epilogue = typename G4EpilogueTypesBase<LaunchContract>::Epilogue;
+  using Descriptor = typename Policy::Descriptor;
+
+  static_assert(TN == 32 || TN == 64);
+  static_assert(TN % WN == 0 && (WN == 16 || WN == 32));
+  static_assert(Descriptor::q4_kpack4_transpose &&
+                Descriptor::kpack4_scheduled_delivery_n == 16 &&
+                Descriptor::kpack4_resolved_delivery_n == 16 &&
+                !Descriptor::interleaved_metadata);
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
+  static_assert(Descriptor::packed_metadata,
+                "the exact FQ topology runner must retain packed metadata");
+#endif
+  static_assert(std::is_same_v<typename Epilogue::StrideD,
+                               moe_grouped_ppu::DStride*>);
+  static_assert(cute::size<0>(typename Epilogue::SmemLayout{}) == 8);
+  static_assert(cute::size<0>(typename Epilogue::SmemLayout{}) ==
+                cute::size<0>(typename Mainloop::TiledMma::AtomShape_MNK{}) *
+                    cute::size<1>(
+                        typename Mainloop::TiledMma::ThrLayoutVMNK{}));
+  static_assert(int(cute::size(typename Mainloop::TiledMma{})) ==
+                32 * (TN / WN));
+};
+
+constexpr int kG4TopologyN = 64;
+
+template <class Types, bool ReplayFirstNWarp>
+__global__ void g4_epilogue_topology_kernel(
+    typename Types::Epilogue::Params params, int M, int N) {
+  extern __shared__ char smem[];
+  using Tile = typename Types::Tile;
+  using Mainloop = typename Types::Mainloop;
+  using Epilogue = typename Types::Epilogue;
+  constexpr int TM = int(cute::size<0>(Tile{}));
+  constexpr int TN = int(cute::size<1>(Tile{}));
+  constexpr int WN = int(cute::size<1>(typename Types::Warp{}));
+  int const tid = int(threadIdx.x);
+  int const tile_m = int(blockIdx.x);
+  int const tile_n = int(blockIdx.y);
+  if (tile_m * TM >= M || tile_n * TN >= N ||
+      tid >= int(cute::size(typename Mainloop::TiledMma{}))) return;
+
+  typename Mainloop::TiledMma tiled_mma;
+  auto accum = cute::make_fragment_like<float>(cute::partition_fragment_C(
+      tiled_mma, cute::take<0, 2>(Tile{})));
+  auto cC = cute::make_identity_tensor(cute::take<0, 2>(Tile{}));
+  auto tCcC = tiled_mma.get_thread_slice(tid).partition_C(cC);
+  CUTE_STATIC_ASSERT_V(cute::size(tCcC) == cute::size(accum));
+  CUTLASS_PRAGMA_UNROLL
+  for (int i = 0; i < int(cute::size(accum)); ++i) {
+    auto coord = tCcC(i);
+    int const global_m = tile_m * TM + int(cute::get<0>(coord));
+    int const global_n = tile_n * TN + int(cute::get<1>(coord));
+    int const tagged_n = ReplayFirstNWarp ? global_n % WN : global_n;
+    accum(i) = g4_coordinate_tag(global_m, tagged_n);
+  }
+
+  auto problem = cute::make_shape(M, N, kK, 1);
+  auto block = cute::make_coord(tile_m, tile_n, cute::_, 0);
+  auto residue = cute::make_tuple(M - tile_m * TM,
+                                  N - tile_n * TN, 0);
+  auto& storage = *reinterpret_cast<typename Epilogue::SharedStorage*>(smem);
+  Epilogue epilogue{params, storage};
+  auto& topology_store = epilogue;
+  topology_store(problem, Tile{}, block, accum, tiled_mma, residue, tid,
+                 reinterpret_cast<char*>(&storage));
+}
 
 CUTLASS_HOST_DEVICE
 float g4_coordinate_tag(int m, int n) {
@@ -504,6 +605,8 @@ bool launch_g4(
 struct G4Result {
   std::vector<half_t> logical;
   int errors = 0;
+  int guard_errors = 0;
+  int finite_errors = 0;
 };
 
 template <bool ReplayFirstTile>
@@ -545,14 +648,17 @@ G4Result run_g4_epilogue_tag_arm(int M) {
 
   G4Result result;
   for (int i = 0; i < kGuard; ++i) {
-    result.errors += host[i].raw() != kLeftCanary;
-    result.errors += host[kGuard + logical_count + i].raw() != kRightCanary;
+    result.guard_errors += host[i].raw() != kLeftCanary;
+    result.guard_errors +=
+        host[kGuard + logical_count + i].raw() != kRightCanary;
   }
+  result.errors += result.guard_errors;
   result.logical.assign(host.begin() + kGuard,
                         host.begin() + kGuard + logical_count);
   for (half_t value : result.logical) {
-    result.errors += !std::isfinite(float(value));
+    result.finite_errors += !std::isfinite(float(value));
   }
+  result.errors += result.finite_errors;
   return result;
 }
 
@@ -574,6 +680,197 @@ int half_row_bitdiff(std::vector<half_t> const& lhs,
     bad += lhs[i].raw() != rhs[i].raw();
   }
   return bad;
+}
+
+int half_n_cohort_bitdiff(std::vector<half_t> const& lhs,
+                          std::vector<half_t> const& rhs,
+                          int M, int N, int cohort) {
+  int bad = 0;
+  int const begin = cohort * 16;
+  int const end = std::min(begin + 16, N);
+  for (int m = 0; m < M; ++m) {
+    for (int n = begin; n < end; ++n) {
+      std::size_t const i = std::size_t(m) * N + n;
+      bad += lhs[i].raw() != rhs[i].raw();
+    }
+  }
+  return bad;
+}
+
+template <int TN, int WN, bool ReplayFirstNWarp,
+          bool FirstMTileOnly = false>
+G4Result run_g4_epilogue_topology_arm(int M) {
+  using Types = G4KpackEpilogueTypes<TN, WN>;
+  using Epilogue = typename Types::Epilogue;
+  using Mainloop = typename Types::Mainloop;
+  constexpr int N = kG4TopologyN;
+  std::size_t const logical_count = std::size_t(M) * N;
+  std::vector<half_t> host(kGuard + logical_count + kGuard);
+  std::fill(host.begin(), host.begin() + kGuard, hbits(kLeftCanary));
+  std::fill(host.begin() + kGuard, host.begin() + kGuard + logical_count,
+            hbits(kOutputNaN));
+  std::fill(host.begin() + kGuard + logical_count, host.end(),
+            hbits(kRightCanary));
+
+  cutlass::DeviceAllocation<half_t> dStorage(host.size());
+  dStorage.copy_from_host(host.data());
+  auto stride = cutlass::make_cute_packed_stride(
+      DStride{}, cute::make_shape(M, N, 1));
+  std::vector<half_t*> ptrs{dStorage.get() + kGuard};
+  std::vector<DStride> strides{stride};
+  cutlass::DeviceAllocation<half_t*> dPtrs(1);
+  cutlass::DeviceAllocation<DStride> dStrides(1);
+  dPtrs.copy_from_host(ptrs.data());
+  dStrides.copy_from_host(strides.data());
+
+  typename Epilogue::Arguments args{};
+  args.ptr_D = static_cast<half_t**>(dPtrs.get());
+  args.dD = static_cast<DStride*>(dStrides.get());
+  auto problem = cute::make_shape(M, N, kK, 1);
+  auto params = Epilogue::to_underlying_arguments(problem, args, nullptr);
+  dim3 const grid(FirstMTileOnly ? 1 : (M + 7) / 8,
+                  (N + TN - 1) / TN, 1);
+  g4_epilogue_topology_kernel<Types, ReplayFirstNWarp><<<
+      grid, int(cute::size(typename Mainloop::TiledMma{})),
+      sizeof(typename Epilogue::SharedStorage)>>>(params, M, N);
+  CUTLASS_PPU_CHECK(hggcGetLastError());
+  CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
+  dStorage.copy_to_host(host.data());
+
+  G4Result result;
+  for (int i = 0; i < kGuard; ++i) {
+    result.guard_errors += host[i].raw() != kLeftCanary;
+    result.guard_errors +=
+        host[kGuard + logical_count + i].raw() != kRightCanary;
+  }
+  result.errors += result.guard_errors;
+  result.logical.assign(host.begin() + kGuard,
+                        host.begin() + kGuard + logical_count);
+  std::size_t const written_count = FirstMTileOnly
+      ? std::size_t(std::min(M, 8)) * N : logical_count;
+  for (std::size_t i = 0; i < written_count; ++i) {
+    result.finite_errors += !std::isfinite(float(result.logical[i]));
+  }
+  result.errors += result.finite_errors;
+  return result;
+}
+
+template <int TN, int WN>
+int check_g4_first_tile_ownership(char const* arm) {
+  constexpr int M = 9;
+  constexpr int N = kG4TopologyN;
+  std::vector<half_t> expected(std::size_t(M) * N, hbits(kOutputNaN));
+  for (int m = 0; m < 8; ++m) {
+    for (int n = 0; n < N; ++n) {
+      expected[std::size_t(m) * N + n] =
+          half_t(g4_coordinate_tag(m, n));
+    }
+  }
+  auto got = run_g4_epilogue_topology_arm<TN, WN, false, true>(M);
+  int first8_bad = 0;
+  for (int m = 0; m < 8; ++m) {
+    for (int n = 0; n < N; ++n) {
+      std::size_t const i = std::size_t(m) * N + n;
+      first8_bad += got.logical[i].raw() != expected[i].raw();
+    }
+  }
+  int row8_written = 0;
+  int cohort_written[4]{};
+  for (int n = 0; n < N; ++n) {
+    bool const written = got.logical[std::size_t(8) * N + n].raw() !=
+                         kOutputNaN;
+    row8_written += written;
+    cohort_written[n / 16] += written;
+  }
+  int const ownership_bad = first8_bad + row8_written;
+  bool const supporting_paths_clean =
+      got.guard_errors == 0 && got.finite_errors == 0 && first8_bad == 0;
+  char const* status = !supporting_paths_clean ? "VALUE_OR_GUARD_DIRTY" :
+      (row8_written ? "ILLEGAL_ROW8_WRITE" : "EXACT_OWNER");
+  int const errors = got.guard_errors + got.finite_errors + ownership_bad;
+  std::printf("FQ_M8_EPILOGUE_FIRST_TILE_OWNERSHIP arm=%s M=9 "
+              "TM=8 TN=%d WM=8 WN=%d ownership_bad=%d/%zu "
+              "first8_bad=%d/512 guard_bad=%d finite_bad=%d "
+              "row8_written=%d/64 cohort_written=[%d,%d,%d,%d] %s\n",
+              arm, TN, WN, ownership_bad, expected.size(), first8_bad,
+              got.guard_errors, got.finite_errors, row8_written,
+              cohort_written[0], cohort_written[1], cohort_written[2],
+              cohort_written[3], status);
+  return errors;
+}
+
+template <int TN, int WN>
+int check_g4_epilogue_topology(char const* arm, int M) {
+  constexpr int N = kG4TopologyN;
+  constexpr int CtaThreads = 32 * (TN / WN);
+  constexpr int FragmentSize = 8 * TN / CtaThreads;
+  constexpr int OutputAlignment = 8;
+  constexpr int EpiThreadN =
+      CtaThreads < TN / OutputAlignment ? CtaThreads : TN / OutputAlignment;
+  constexpr int EpiThreadM = CtaThreads / EpiThreadN;
+  static_assert((TN == 32 && WN == 32 && FragmentSize == 8 &&
+                 EpiThreadM == 8) ||
+                (TN == 64 && WN == 16 && FragmentSize == 4 &&
+                 EpiThreadM == 16));
+  std::vector<half_t> golden(std::size_t(M) * N);
+  std::vector<half_t> replay_golden(std::size_t(M) * N);
+  for (int m = 0; m < M; ++m) {
+    for (int n = 0; n < N; ++n) {
+      golden[std::size_t(m) * N + n] =
+          half_t(g4_coordinate_tag(m, n));
+      replay_golden[std::size_t(m) * N + n] =
+          half_t(g4_coordinate_tag(m, n % WN));
+    }
+  }
+
+  auto positive = run_g4_epilogue_topology_arm<TN, WN, false>(M);
+  int const positive_bad = half_bitdiff(positive.logical, golden);
+  auto replay = run_g4_epilogue_topology_arm<TN, WN, true>(M);
+  int const replay_oracle_bad =
+      half_bitdiff(replay.logical, replay_golden);
+  int const observed_red = half_bitdiff(replay.logical, golden);
+  int const expected_red = M * (N - WN);
+  int cohort_red[4]{};
+  for (int c = 0; c < 4; ++c) {
+    cohort_red[c] = half_n_cohort_bitdiff(replay.logical, golden, M, N, c);
+  }
+  int const expected_cohort[4] = {
+      0, WN == 16 ? M * 16 : 0, M * 16, M * 16};
+  int errors = positive.errors + positive_bad + replay.errors +
+      replay_oracle_bad + (observed_red != expected_red);
+  for (int c = 0; c < 4; ++c) {
+    errors += cohort_red[c] != expected_cohort[c];
+  }
+  std::printf("FQ_M8_EPILOGUE_TOPOLOGY arm=%s M=%d TM=8 TN=%d WM=8 WN=%d "
+              "cta_threads=%d fragment=%d output_alignment=%d "
+              "epi_thread_map=%dx%d packed_metadata=%d positive_bad=%d/%zu "
+              "negative_oracle_bad=%d/%zu observed_red=%d "
+              "expected_red=%d cohort_red=[%d,%d,%d,%d] %s\n",
+              arm, M, TN, WN, CtaThreads, FragmentSize, OutputAlignment,
+              EpiThreadM, EpiThreadN,
+              int(G4KpackEpilogueTypes<TN, WN>::Descriptor::packed_metadata),
+              positive_bad, golden.size(),
+              replay_oracle_bad, replay_golden.size(), observed_red,
+              expected_red, cohort_red[0], cohort_red[1], cohort_red[2],
+              cohort_red[3], errors ? "FAIL" : "EXPECTED_RED");
+  return errors;
+}
+
+int run_g4_epilogue_topology() {
+  int errors = 0;
+  errors += check_g4_first_tile_ownership<32, 32>("tn32-wn32-control");
+  errors += check_g4_first_tile_ownership<64, 16>("tn64-wn16-subject");
+  errors += check_g4_epilogue_topology<32, 32>("tn32-wn32-control", 9);
+  errors += check_g4_epilogue_topology<64, 16>("tn64-wn16-m8-control", 8);
+  errors += check_g4_epilogue_topology<64, 16>("tn64-wn16-subject", 9);
+  auto control = run_g4_epilogue_topology_arm<32, 32, false>(9);
+  auto subject = run_g4_epilogue_topology_arm<64, 16, false>(9);
+  int const cross_bad = half_bitdiff(control.logical, subject.logical);
+  errors += control.errors + subject.errors + cross_bad;
+  std::printf("FQ_M8_EPILOGUE_TOPOLOGY_AB M=%d N=%d cross_bad=%d/%zu "
+              "verdict=%s\n", 9, kG4TopologyN, cross_bad,
+              control.logical.size(), errors ? "DIRTY" : "EPILOGUE_EXCLUDED");
+  return errors;
 }
 
 int run_g4_epilogue_tag(int M) {
@@ -1195,10 +1492,24 @@ int main(int argc, char** argv) {
   bool const idprobe_only = argc == 2 && std::strcmp(argv[1], "--idprobe-only") == 0;
   bool const second_tile_only =
       argc == 2 && std::strcmp(argv[1], "--second-tile-only") == 0;
-  if (argc != 1 && !idprobe_only && !second_tile_only) {
-    std::fprintf(stderr, "usage: %s [--idprobe-only|--second-tile-only]\n",
-                 argv[0]);
+  bool const epilogue_topology_only =
+      argc == 2 && std::strcmp(argv[1], "--epilogue-topology-only") == 0;
+  if (argc != 1 && !idprobe_only && !second_tile_only &&
+      !epilogue_topology_only) {
+    std::fprintf(stderr,
+                 "usage: %s [--idprobe-only|--second-tile-only|"
+                 "--epilogue-topology-only]\n", argv[0]);
     return 2;
+  }
+
+  if (epilogue_topology_only) {
+    std::printf("== [112:EPILOGUE-TOPOLOGY] exact grouped ptr-array "
+                "coordinate tags ==\n");
+    int const errors = run_g4_epilogue_topology();
+    std::printf("== [112:EPILOGUE-TOPOLOGY] %s errors=%d "
+                "control=TN32/WN32 subject=TN64/WN16 ==\n",
+                errors ? "FAIL" : "PASS", errors);
+    return errors ? 1 : 0;
   }
 
   if (idprobe_only) {
