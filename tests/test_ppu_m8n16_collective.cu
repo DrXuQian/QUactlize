@@ -981,7 +981,8 @@ int run_g4_epilogue_topology() {
   errors += control.errors + subject.errors + cross_bad;
   std::printf("FQ_M8_EPILOGUE_TOPOLOGY_AB M=%d N=%d cross_bad=%d/%zu "
               "verdict=%s\n", 9, kG4TopologyN, cross_bad,
-              control.logical.size(), errors ? "DIRTY" : "EPILOGUE_EXCLUDED");
+              control.logical.size(),
+              errors ? "DIRTY" : "CANDIDATE_MATCHES_CONTROL");
   return errors;
 }
 

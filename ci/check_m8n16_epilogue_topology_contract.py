@@ -80,7 +80,7 @@ def audit(harness: str, runner: str, builder: str) -> list[str]:
         ("negative_oracle_bad=0/576", 2),
         ("cta_threads=32fragment=8output_alignment=8epi_thread_map=8x4", 1),
         ("cta_threads=128fragment=4output_alignment=4epi_thread_map=8x16", 2),
-        ("cross_bad=0/576verdict=EPILOGUE_EXCLUDED", 1),
+        ("cross_bad=0/576verdict=CANDIDATE_MATCHES_CONTROL", 1),
         ("verdict=LEGACY_RED_CANDIDATE_GREEN", 1),
         ('["$verdict"=LEGACY_RED_CANDIDATE_GREEN]', 1),
     )

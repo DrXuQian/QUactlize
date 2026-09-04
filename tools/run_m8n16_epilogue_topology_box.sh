@@ -97,7 +97,7 @@ main() {
        [[ "$subject" != *' negative_oracle_bad=0/576 '* ]] || \
        [[ "$subject" != *' observed_red=432 expected_red=432 '* ]] || \
        [[ "$subject" != *' cohort_red=[0,144,144,144] EXPECTED_RED' ]] || \
-       [[ "$ab" != *' cross_bad=0/576 verdict=EPILOGUE_EXCLUDED' ]] || \
+       [[ "$ab" != *' cross_bad=0/576 verdict=CANDIDATE_MATCHES_CONTROL' ]] || \
        [ "$run_rc" -ne 0 ]; then
     verdict=CANDIDATE_DIRTY
   else
