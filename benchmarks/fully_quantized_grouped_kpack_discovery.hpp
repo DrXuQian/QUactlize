@@ -3,6 +3,7 @@
 // It owns no public ABI and does not participate in product dispatch.
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
@@ -68,6 +69,14 @@ struct Inputs {
 };
 
 struct CellResult {
+  struct BadCoordinate {
+    int expert = -1;
+    int local_m = -1;
+    int n = -1;
+    std::uint16_t want = 0;
+    std::uint16_t got = 0;
+  };
+
   char const* algorithm = nullptr;
   char const* policy = nullptr;
   int grid = 0, occupancy = 0;
@@ -76,6 +85,13 @@ struct CellResult {
   std::uint64_t raw_bad = 0;
   std::size_t first_bad = std::size_t(-1);
   std::uint16_t first_want = 0, first_got = 0;
+  int first_bad_expert = -1, first_bad_local_m = -1, first_bad_n = -1;
+  std::uint64_t bad_first_m_tile = 0, bad_later_m_tiles = 0;
+  std::uint64_t bad_got_zero = 0, bad_got_poison = 0;
+  std::array<std::uint64_t, 16> bad_by_local_m_mod16{};
+  std::array<std::uint64_t, 4> bad_by_n_mod64_n16{};
+  std::array<BadCoordinate, 8> bad_coordinates{};
+  int bad_coordinate_count = 0;
   int failure_repeat = -1;
   double median_us = 0, min_us = 0, max_us = 0;
   std::vector<double> samples_us;
@@ -217,24 +233,45 @@ class EventPair {
   bool valid() const { return start != nullptr && stop != nullptr; }
 };
 
-inline bool inspect(Inputs const& in, CellResult& result) {
+inline bool inspect(Inputs const& in, int tile_m, CellResult& result) {
   std::vector<half_t> got(std::size_t(in.total_rows) * in.n);
   if (hggcMemcpy(got.data(), in.output, got.size() * sizeof(half_t),
                  hggcMemcpyDeviceToHost) != hggcSuccess)
     return false;
   result.raw_bad = 0;
   result.first_bad = std::size_t(-1);
-  for (std::size_t index = 0; index < got.size(); ++index) {
-    if (got[index].raw() != in.golden[index].raw()) {
-      if (result.raw_bad == 0) {
-        result.first_bad = index;
-        result.first_want = in.golden[index].raw();
-        result.first_got = got[index].raw();
+  int global_row = 0;
+  for (int expert = 0; expert < in.experts; ++expert) {
+    int const rows = int(cute::get<0>(in.host_shapes[expert]));
+    for (int local_m = 0; local_m < rows; ++local_m, ++global_row) {
+      for (int n = 0; n < in.n; ++n) {
+        std::size_t const index = std::size_t(global_row) * in.n + n;
+        std::uint16_t const want = in.golden[index].raw();
+        std::uint16_t const actual = got[index].raw();
+        if (actual == want) continue;
+        if (result.raw_bad == 0) {
+          result.first_bad = index;
+          result.first_want = want;
+          result.first_got = actual;
+          result.first_bad_expert = expert;
+          result.first_bad_local_m = local_m;
+          result.first_bad_n = n;
+        }
+        if (local_m < tile_m) ++result.bad_first_m_tile;
+        else ++result.bad_later_m_tiles;
+        result.bad_got_zero += actual == 0;
+        result.bad_got_poison += actual == UINT16_C(0x7b7b);
+        ++result.bad_by_local_m_mod16[std::size_t(local_m & 15)];
+        ++result.bad_by_n_mod64_n16[std::size_t((n & 63) >> 4)];
+        if (result.bad_coordinate_count < int(result.bad_coordinates.size())) {
+          result.bad_coordinates[std::size_t(result.bad_coordinate_count++)] =
+              {expert, local_m, n, want, actual};
+        }
+        ++result.raw_bad;
       }
-      ++result.raw_bad;
     }
   }
-  return true;
+  return global_row == in.total_rows;
 }
 
 template <bool Persistent, class T>
@@ -278,7 +315,8 @@ void execute_cell(Inputs const& in, Options const& options,
       result.state = State::Launch;
       return;
     }
-    if (hggcDeviceSynchronize() != hggcSuccess || !inspect(in, result)) {
+    if (hggcDeviceSynchronize() != hggcSuccess ||
+        !inspect(in, int(cute::size<0>(typename T::Tile{})), result)) {
       result.state = State::Synchronize;
       return;
     }

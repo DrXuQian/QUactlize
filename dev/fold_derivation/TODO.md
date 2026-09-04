@@ -2579,3 +2579,26 @@ Only after the dense one-cell launch replay, grouped second-tile bisection,
 and ScaleFirst initialization replay are green or structurally excluded may
 A09 resume.  A later sticky-context row is never accepted as evidence about a
 kernel specialization.
+
+The first grouped follow-up rejected the proposed A-descriptor rebase.  Both
+the historical and rebased Xplane `M=9/15/16/17` arms passed, while the exact
+Q4 K-pack `8x64x64_w8x16_s2_dn16` persistent arm remained raw-bit dirty in
+both binaries.  Its first mismatch is flat index 24608, exactly expert 0
+`local_m=8,n=32`.  That coordinate is simultaneously the second logical TM8
+tile and the first column owned by the third WN16 warp.  The Xplane control is
+`TN32/WN32` and therefore proves only the one-N-warp A/epilogue composition;
+it does not cover the four-N-warp K-pack topology.  The rebase experiment must
+be removed, not carried as a workaround.
+
+Two further boundaries are now explicit.  First, the grouped K-pack fixture's
+Q4 code pattern repeats every eight K coordinates; row 0 and row 8 select K
+coordinates separated by 296, so a pure first-TM8 A replay can be invisible
+to that fixture.  A row-tagged second-tile oracle is required before this
+fixture can independently adjudicate A.  Second, the production fragment
+composition was evaluated at the failing `TN64/TK64/WN16/DN16` geometry as
+well as TK128/TK256: every logical destination was a one-to-one match, with no
+hole or alias.  The remaining device bisection is therefore the exact four-arm
+cross of TM8/TM16 and nonpersistent/persistent, followed only if necessary by
+TN16/TN32/TN64 (one/two/four N-warps).  Failure reports must retain expert,
+local-M, N-cohort, zero/poison and first-coordinate histograms; aggregate
+`raw_bad` alone is no longer sufficient evidence.

@@ -490,6 +490,36 @@ int main(int argc, char** argv) {
           ordinal);
       print_samples(cell.samples_us);
       std::printf("\n");
+      if (cell.state == State::RawMismatch) {
+        std::printf(
+            "FQ_GROUPED_KPACK_MISMATCH_MAP symbol=%s algorithm=%s "
+            "first=[expert:%d,local_m:%d,n:%d] "
+            "m_tile=[first:%llu,later:%llu] got=[zero:%llu,poison:%llu] "
+            "local_m_mod16=[",
+            row.symbol, cell.algorithm,
+            cell.first_bad_expert, cell.first_bad_local_m, cell.first_bad_n,
+            static_cast<unsigned long long>(cell.bad_first_m_tile),
+            static_cast<unsigned long long>(cell.bad_later_m_tiles),
+            static_cast<unsigned long long>(cell.bad_got_zero),
+            static_cast<unsigned long long>(cell.bad_got_poison));
+        for (std::size_t i = 0; i < cell.bad_by_local_m_mod16.size(); ++i)
+          std::printf("%s%llu", i ? "," : "",
+                      static_cast<unsigned long long>(
+                          cell.bad_by_local_m_mod16[i]));
+        std::printf("] n_mod64_n16=[");
+        for (std::size_t i = 0; i < cell.bad_by_n_mod64_n16.size(); ++i)
+          std::printf("%s%llu", i ? "," : "",
+                      static_cast<unsigned long long>(
+                          cell.bad_by_n_mod64_n16[i]));
+        std::printf("] samples=[");
+        for (int i = 0; i < cell.bad_coordinate_count; ++i) {
+          auto const& bad = cell.bad_coordinates[std::size_t(i)];
+          std::printf("%se%d:m%d:n%d:0x%04x->0x%04x",
+                      i ? "," : "", bad.expert, bad.local_m, bad.n,
+                      unsigned(bad.want), unsigned(bad.got));
+        }
+        std::printf("]\n");
+      }
       ++records;
       if (!is_measured && !is_structural) return 1;
     }

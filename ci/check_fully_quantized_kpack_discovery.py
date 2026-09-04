@@ -103,6 +103,14 @@ def source_contract() -> None:
         raise ValueError("grouped raw-bit correctness does not precede timing")
     if "PERSIST != 0" not in grouped_unit:
         raise ValueError("generated grouped unit erased its algorithm axis")
+    for needle in (
+            "first_bad_expert", "bad_first_m_tile", "bad_later_m_tiles",
+            "bad_got_zero", "bad_got_poison", "bad_by_local_m_mod16",
+            "bad_by_n_mod64_n16",
+            "inspect(in, int(cute::size<0>(typename T::Tile{})), result)"):
+        if needle not in grouped:
+            raise ValueError(
+                "grouped raw-bit failure lost its exact coordinate map: " + needle)
     for macro in (
             "#define FQ_GROUPED_DECLARE(FN,Q,L,TM,TN,TK,WM,WN,ST,DN,PERSIST)",
             "#define FQ_GROUPED_REGISTER(FN,Q,L,TM,TN,TK,WM,WN,ST,DN,PERSIST)"):
@@ -121,6 +129,11 @@ def source_contract() -> None:
                    "correctness=RAW_FP16", "top_n=NONE"):
         if needle not in grouped_driver:
             raise ValueError("grouped driver lost fixture/confirmation contract: " + needle)
+    for needle in ("FQ_GROUPED_KPACK_MISMATCH_MAP", "m_tile=[first:%llu,later:%llu]",
+                   "local_m_mod16=[", "n_mod64_n16=["):
+        if needle not in grouped_driver:
+            raise ValueError(
+                "grouped raw-bit failure report lost its coordinate evidence: " + needle)
     for needle in ("--schedule-seed=", "std::shuffle(execution_rows.begin()",
                    "cli.schedule_seed"):
         if needle not in dense_driver:
