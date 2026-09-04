@@ -10,6 +10,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -170,7 +171,7 @@ def audit_runner(text: str) -> list[str]:
     bad = authority_errors()
     tokens = (
         ("set-u-opipefail", 1),
-        ("check_m8n16_cross_format_correctness.py", 2),
+        ("check_m8n16_cross_format_correctness.py", 3),
         ("gen_fully_quantized_kpack_discovery_units.py", 1),
         ("gen_fully_quantized_grouped_kpack_units.py", 1),
         ("gen_scalefirst_internal_units.py", 1),
@@ -179,7 +180,17 @@ def audit_runner(text: str) -> list[str]:
         ("--parent-begin60--parent-count2", 1),
         ("--select-symbol\"$sf_symbol\"", 1),
         ("--select-symbol\"$sfg_symbol\"", 1),
-        ("build_format\"$q\"&", 1),
+        ("forfamilyinfqsf", 1),
+        ("build_family\"$q\"\"$family\"&", 1),
+        ("localbuild=\"$RUN_DIR/build/q$q/$family\"", 1),
+        ("PPU_BUILD_DIR=\"$build\"PPU_BUILD_RESUME=\"$resume\"", 1),
+        ("PPU_PRESERVE_STALE_BUILD_TREES=1", 1),
+        ("-uFQ_A02_Q3_GENERATED_DIR-uFQ_KQUANT_PERF_QTYPE", 1),
+        ("build_target\"$q\"fq0test_fully_quantized_internal_sweepfq-dense", 1),
+        ("build_target\"$q\"fq1test_fully_quantized_grouped_kpack_discoveryfq-grouped", 1),
+        ("build_target\"$q\"sf0test_scalefirst_internal_sweepsf-dense", 1),
+        ("build_target\"$q\"sf1test_scalefirst_grouped_kpack_discoverysf-grouped", 1),
+        ("--validate-generated-dir\"$RUN_DIR\"", 1),
         ("--shape=7x64x512--shape=9x64x512", 1),
         ("--only-split=1--tm8-max-m=9--bc-mode=skip", 1),
         ("--shape=7x64x512--algorithm=full-output--fixture=exact", 1),
@@ -205,6 +216,7 @@ def audit_runner(text: str) -> list[str]:
         "--only-split=0", "--only-split=2", "--only-split=4",
         "--only-split=8", "--algorithm=all", "--algorithm=split",
         "FQ_SWEEP_WEIGHT_LAYOUT=0", "SCALEFIRST_SWEEP_WEIGHT_LAYOUT=0",
+        'build/q$q/ppu_targets',
     )
     for token in forbidden:
         if token in text:
@@ -690,40 +702,68 @@ SYNTHETIC = {
 
 def validate_build(fmt: Format, run_dir: Path, source: str) -> list[str]:
     bad: list[str] = []
-    build = run_dir / "build" / f"q{fmt.qtype}"
-    try:
-        if (build / ".quactlize-source-head").read_text().strip() != source:
-            bad.append(f"{fmt.name}: build source authority differs")
-    except OSError as error:
-        bad.append(f"{fmt.name}: cannot read build authority: {error}")
-    for target in (
-            "test_fully_quantized_internal_sweep",
-            "test_fully_quantized_grouped_kpack_discovery",
-            "test_scalefirst_internal_sweep",
-            "test_scalefirst_grouped_kpack_discovery"):
-        binary = build / "ppu_targets" / target
-        if not binary.is_file():
-            bad.append(f"{fmt.name}: missing binary {target}")
-    try:
-        cache = (build / "CMakeCache.txt").read_text()
-    except OSError as error:
-        bad.append(f"{fmt.name}: cannot read CMake cache: {error}")
-        return bad
-    expected_cache = {
-        "FQ_SWEEP_QTYPE": fmt.qtype,
-        "FQ_SWEEP_PACKED_FORMAT": fmt.packed_format,
-        "FQ_SWEEP_WEIGHT_LAYOUT": fmt.layout,
-        "FQ_GROUPED_KPACK_QTYPE": fmt.qtype,
-        "FQ_GROUPED_KPACK_PACKED_FORMAT": fmt.packed_format,
-        "FQ_GROUPED_KPACK_WEIGHT_LAYOUT": fmt.layout,
-        "SCALEFIRST_SWEEP_QTYPE": fmt.qtype,
-        "SCALEFIRST_SWEEP_WEIGHT_LAYOUT": fmt.layout,
-        "SCALEFIRST_GROUPED_KPACK_QTYPE": fmt.qtype,
-        "SCALEFIRST_GROUPED_KPACK_WEIGHT_LAYOUT": fmt.layout,
+    generated = run_dir / "generated" / f"q{fmt.qtype}"
+    families = {
+        "fq": {
+            "targets": (
+                "test_fully_quantized_internal_sweep",
+                "test_fully_quantized_grouped_kpack_discovery",
+            ),
+            "expected": {
+                "FQ_SWEEP_GENERATED_DIR": generated / "fq-dense",
+                "FQ_SWEEP_QTYPE": fmt.qtype,
+                "FQ_SWEEP_PACKED_FORMAT": fmt.packed_format,
+                "FQ_SWEEP_WEIGHT_LAYOUT": fmt.layout,
+                "FQ_GROUPED_KPACK_GENERATED_DIR": generated / "fq-grouped",
+                "FQ_GROUPED_KPACK_QTYPE": fmt.qtype,
+                "FQ_GROUPED_KPACK_PACKED_FORMAT": fmt.packed_format,
+                "FQ_GROUPED_KPACK_WEIGHT_LAYOUT": fmt.layout,
+            },
+            "forbidden": ("SCALEFIRST_SWEEP_GENERATED_DIR",
+                          "SCALEFIRST_GROUPED_KPACK_GENERATED_DIR",
+                          "FQ_A02_Q3_GENERATED_DIR", "FQ_KQUANT_PERF_QTYPE"),
+        },
+        "sf": {
+            "targets": (
+                "test_scalefirst_internal_sweep",
+                "test_scalefirst_grouped_kpack_discovery",
+            ),
+            "expected": {
+                "SCALEFIRST_SWEEP_GENERATED_DIR": generated / "sf-dense",
+                "SCALEFIRST_SWEEP_QTYPE": fmt.qtype,
+                "SCALEFIRST_SWEEP_WEIGHT_LAYOUT": fmt.layout,
+                "SCALEFIRST_GROUPED_KPACK_GENERATED_DIR": generated / "sf-grouped",
+                "SCALEFIRST_GROUPED_KPACK_QTYPE": fmt.qtype,
+                "SCALEFIRST_GROUPED_KPACK_WEIGHT_LAYOUT": fmt.layout,
+            },
+            "forbidden": ("FQ_SWEEP_GENERATED_DIR",
+                          "FQ_GROUPED_KPACK_GENERATED_DIR",
+                          "FQ_A02_Q3_GENERATED_DIR", "FQ_KQUANT_PERF_QTYPE"),
+        },
     }
-    for key, value in expected_cache.items():
-        if not re.search(rf"^{re.escape(key)}(?::[^=]+)?={value}$", cache, re.M):
-            bad.append(f"{fmt.name}: CMake cache lacks {key}={value}")
+    for family, contract in families.items():
+        build = run_dir / "build" / f"q{fmt.qtype}" / family
+        try:
+            if (build / ".quactlize-source-head").read_text().strip() != source:
+                bad.append(f"{fmt.name}/{family}: build source authority differs")
+        except OSError as error:
+            bad.append(f"{fmt.name}/{family}: cannot read build authority: {error}")
+        for target in contract["targets"]:
+            binary = build / "ppu_targets" / target
+            if not binary.is_file() or binary.is_symlink():
+                bad.append(f"{fmt.name}/{family}: missing regular binary {target}")
+        try:
+            cache = (build / "CMakeCache.txt").read_text()
+        except OSError as error:
+            bad.append(f"{fmt.name}/{family}: cannot read CMake cache: {error}")
+            continue
+        for key, value in contract["expected"].items():
+            expected = re.escape(str(value))
+            if not re.search(rf"^{re.escape(key)}(?::[^=]+)?={expected}$", cache, re.M):
+                bad.append(f"{fmt.name}/{family}: CMake cache lacks {key}={value}")
+        for key in contract["forbidden"]:
+            if re.search(rf"^{re.escape(key)}(?::[^=]+)?=.+$", cache, re.M):
+                bad.append(f"{fmt.name}/{family}: foreign family cache key {key}")
     return bad
 
 
@@ -828,7 +868,10 @@ def self_test() -> None:
         ("broad split", "--only-split=1", "--only-split=4"),
         ("layout", "12) FORMAT_NAME=Q4_K; PACKED_FORMAT=0; WEIGHT_LAYOUT=1;",
          "12) FORMAT_NAME=Q4_K; PACKED_FORMAT=0; WEIGHT_LAYOUT=2;"),
-        ("parallel build", 'build_format "$q" &', 'build_format "$q"'),
+        ("parallel build", 'build_family "$q" "$family" &',
+         'build_family "$q" "$family"'),
+        ("family isolation", 'local build="$RUN_DIR/build/q$q/$family"',
+         'local build="$RUN_DIR/build/q$q"'),
         ("denominator", "cells=40 measured=40", "cells=39 measured=39"),
     )
     for name, old, new in runner_plants:
@@ -837,17 +880,98 @@ def self_test() -> None:
         if not audit_runner(runner.replace(old, new, 1)):
             raise AssertionError(f"runner checker accepted planted {name}")
         rejected += 1
+
+    # The runtime checker must bind each format to two independent CMake
+    # caches.  A single-tree synthetic positive and runner text auditing are
+    # not enough: either could drift while still accepting the duplicate-rule
+    # topology that this gate is meant to exclude.
+    with tempfile.TemporaryDirectory(prefix="m8n16-cross-format-") as tmp:
+        run_dir = Path(tmp)
+        source = "0123456789abcdef"
+        cache_rows = {
+            "fq": (
+                f"FQ_SWEEP_GENERATED_DIR:UNINITIALIZED={run_dir}/generated/q{fmt.qtype}/fq-dense",
+                f"FQ_SWEEP_QTYPE:UNINITIALIZED={fmt.qtype}",
+                f"FQ_SWEEP_PACKED_FORMAT:UNINITIALIZED={fmt.packed_format}",
+                f"FQ_SWEEP_WEIGHT_LAYOUT:UNINITIALIZED={fmt.layout}",
+                f"FQ_GROUPED_KPACK_GENERATED_DIR:UNINITIALIZED={run_dir}/generated/q{fmt.qtype}/fq-grouped",
+                f"FQ_GROUPED_KPACK_QTYPE:UNINITIALIZED={fmt.qtype}",
+                f"FQ_GROUPED_KPACK_PACKED_FORMAT:UNINITIALIZED={fmt.packed_format}",
+                f"FQ_GROUPED_KPACK_WEIGHT_LAYOUT:UNINITIALIZED={fmt.layout}",
+            ),
+            "sf": (
+                f"SCALEFIRST_SWEEP_GENERATED_DIR:UNINITIALIZED={run_dir}/generated/q{fmt.qtype}/sf-dense",
+                f"SCALEFIRST_SWEEP_QTYPE:UNINITIALIZED={fmt.qtype}",
+                f"SCALEFIRST_SWEEP_WEIGHT_LAYOUT:UNINITIALIZED={fmt.layout}",
+                f"SCALEFIRST_GROUPED_KPACK_GENERATED_DIR:UNINITIALIZED={run_dir}/generated/q{fmt.qtype}/sf-grouped",
+                f"SCALEFIRST_GROUPED_KPACK_QTYPE:UNINITIALIZED={fmt.qtype}",
+                f"SCALEFIRST_GROUPED_KPACK_WEIGHT_LAYOUT:UNINITIALIZED={fmt.layout}",
+            ),
+        }
+        targets = {
+            "fq": ("test_fully_quantized_internal_sweep",
+                   "test_fully_quantized_grouped_kpack_discovery"),
+            "sf": ("test_scalefirst_internal_sweep",
+                   "test_scalefirst_grouped_kpack_discovery"),
+        }
+        for family in ("fq", "sf"):
+            build = run_dir / "build" / f"q{fmt.qtype}" / family
+            (build / "ppu_targets").mkdir(parents=True)
+            (build / ".quactlize-source-head").write_text(source + "\n")
+            (build / "CMakeCache.txt").write_text(
+                "\n".join(cache_rows[family]) + "\n")
+            for target in targets[family]:
+                (build / "ppu_targets" / target).write_bytes(b"binary")
+        errors = validate_build(fmt, run_dir, source)
+        if errors:
+            raise AssertionError(f"isolated build-tree positive failed: {errors}")
+
+        sf_cache = run_dir / "build" / f"q{fmt.qtype}" / "sf" / "CMakeCache.txt"
+        sf_cache.write_text(sf_cache.read_text().replace(
+            f"{run_dir}/generated/q{fmt.qtype}/sf-dense", "/wrong/sf-dense"))
+        if not any("CMake cache lacks SCALEFIRST_SWEEP_GENERATED_DIR" in error
+                   for error in validate_build(fmt, run_dir, source)):
+            raise AssertionError("build checker accepted a wrong generated directory")
+        rejected += 1
+
+        fq_cache = run_dir / "build" / f"q{fmt.qtype}" / "fq" / "CMakeCache.txt"
+        fq_cache.write_text(fq_cache.read_text() +
+                            "SCALEFIRST_SWEEP_GENERATED_DIR:UNINITIALIZED=/wrong\n")
+        if not any("foreign family cache key" in error
+                   for error in validate_build(fmt, run_dir, source)):
+            raise AssertionError("build checker accepted a foreign family cache key")
+        rejected += 1
+
+        missing = (run_dir / "build" / f"q{fmt.qtype}" / "sf" /
+                   "ppu_targets" / "test_scalefirst_internal_sweep")
+        missing.unlink()
+        if not any("missing regular binary" in error
+                   for error in validate_build(fmt, run_dir, source)):
+            raise AssertionError("build checker accepted a missing family binary")
+        rejected += 1
     print("[m8n16-cross-format:self-test] PASS formats=5 routes=20 "
           f"cells=40 exact-TM8/WN16; structural fail-close; {rejected} negatives RED")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--validate-run-dir", type=Path)
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--validate-run-dir", type=Path)
+    modes.add_argument("--validate-generated-dir", type=Path)
     args = parser.parse_args()
     try:
-        if args.validate_run_dir is None:
+        if args.validate_run_dir is None and args.validate_generated_dir is None:
             self_test()
+            return 0
+        if args.validate_generated_dir is not None:
+            root = args.validate_generated_dir.resolve()
+            bad = [error for fmt in FORMATS
+                   for error in validate_manifest_set(fmt, root)]
+            if bad:
+                print("[m8n16-cross-format] FAIL: " + "; ".join(bad))
+                return 1
+            print("[m8n16-cross-format] validated 5 formats / 20 generated "
+                  "manifests before isolated-family builds")
             return 0
         bad = validate_run_dir(args.validate_run_dir.resolve())
         if bad:

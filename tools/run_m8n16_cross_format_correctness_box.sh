@@ -63,48 +63,76 @@ generate_format() {
 }
 
 build_target() {
-  local q=$1 resume=$2 target=$3 label=$4
+  local q=$1 family=$2 resume=$3 target=$4 label=$5
   format_axes "$q" || return 1
   local generated="$RUN_DIR/generated/q$q"
-  local build="$RUN_DIR/build/q$q"
+  local build="$RUN_DIR/build/q$q/$family"
   local log="$RUN_DIR/results/q$q-$label.build.log"
+  local -a family_env=()
+  case "$family" in
+    fq)
+      family_env=(
+        "FQ_SWEEP_GENERATED_DIR=$generated/fq-dense"
+        "FQ_SWEEP_QTYPE=$q" FQ_SWEEP_ARTIFACT_TK=0 FQ_SWEEP_BCHUNK=0
+        "FQ_SWEEP_PACKED_FORMAT=$PACKED_FORMAT"
+        "FQ_SWEEP_WEIGHT_LAYOUT=$WEIGHT_LAYOUT"
+        "FQ_GROUPED_KPACK_GENERATED_DIR=$generated/fq-grouped"
+        "FQ_GROUPED_KPACK_QTYPE=$q"
+        "FQ_GROUPED_KPACK_WEIGHT_LAYOUT=$WEIGHT_LAYOUT"
+        "FQ_GROUPED_KPACK_PACKED_FORMAT=$PACKED_FORMAT")
+      ;;
+    sf)
+      family_env=(
+        "SCALEFIRST_SWEEP_GENERATED_DIR=$generated/sf-dense"
+        "SCALEFIRST_SWEEP_QTYPE=$q" SCALEFIRST_SWEEP_ARTIFACT_TK=0
+        SCALEFIRST_SWEEP_BCHUNK=0
+        "SCALEFIRST_SWEEP_WEIGHT_LAYOUT=$WEIGHT_LAYOUT"
+        "SCALEFIRST_GROUPED_KPACK_GENERATED_DIR=$generated/sf-grouped"
+        "SCALEFIRST_GROUPED_KPACK_QTYPE=$q"
+        "SCALEFIRST_GROUPED_KPACK_WEIGHT_LAYOUT=$WEIGHT_LAYOUT")
+      ;;
+    *) return 1 ;;
+  esac
+
+  # FullyQuantized and ScaleFirst dense generators intentionally emit the
+  # same ppu_dense_layout source basename with different compile definitions.
+  # PPUToolchain keys custom outputs by basename rather than flags, so those
+  # two families must never share one CMake tree.  A family's grouped target
+  # has disjoint object names and safely shares its dense configuration.
   env -u CC -u CXX -u CMAKE_GENERATOR -u CMAKE_TOOLCHAIN_FILE \
+    -u FQ_SWEEP_GENERATED_DIR -u FQ_GROUPED_KPACK_GENERATED_DIR \
+    -u FQ_A02_Q3_GENERATED_DIR -u FQ_KQUANT_PERF_QTYPE \
+    -u SCALEFIRST_SWEEP_GENERATED_DIR \
+    -u SCALEFIRST_GROUPED_KPACK_GENERATED_DIR \
     PPU_BUILD_DIR="$build" PPU_BUILD_RESUME="$resume" \
-    PPU_ARCHS=ppu0010 PPU_SDK="$PPU_SDK_ROOT" JOBS="$JOBS_COUNT" \
+    PPU_PRESERVE_STALE_BUILD_TREES=1 \
+    PPU_ARCHS=ppu0010 PPU_SDK="$PPU_SDK_ROOT" JOBS="$JOBS_PER_BUILD" \
     QUACTLIZE_KPACK_GLOBAL_PREFLIGHT_RECEIPT="$PREFLIGHT" \
-    FQ_SWEEP_GENERATED_DIR="$generated/fq-dense" \
-    FQ_SWEEP_QTYPE="$q" FQ_SWEEP_ARTIFACT_TK=0 FQ_SWEEP_BCHUNK=0 \
-    FQ_SWEEP_PACKED_FORMAT="$PACKED_FORMAT" \
-    FQ_SWEEP_WEIGHT_LAYOUT="$WEIGHT_LAYOUT" \
-    FQ_GROUPED_KPACK_GENERATED_DIR="$generated/fq-grouped" \
-    FQ_GROUPED_KPACK_QTYPE="$q" \
-    FQ_GROUPED_KPACK_WEIGHT_LAYOUT="$WEIGHT_LAYOUT" \
-    FQ_GROUPED_KPACK_PACKED_FORMAT="$PACKED_FORMAT" \
-    SCALEFIRST_SWEEP_GENERATED_DIR="$generated/sf-dense" \
-    SCALEFIRST_SWEEP_QTYPE="$q" SCALEFIRST_SWEEP_ARTIFACT_TK=0 \
-    SCALEFIRST_SWEEP_BCHUNK=0 \
-    SCALEFIRST_SWEEP_WEIGHT_LAYOUT="$WEIGHT_LAYOUT" \
-    SCALEFIRST_GROUPED_KPACK_GENERATED_DIR="$generated/sf-grouped" \
-    SCALEFIRST_GROUPED_KPACK_QTYPE="$q" \
-    SCALEFIRST_GROUPED_KPACK_WEIGHT_LAYOUT="$WEIGHT_LAYOUT" \
-    TARGET="$target" "$ROOT/build.sh" >"$log" 2>&1
+    "${family_env[@]}" TARGET="$target" "$ROOT/build.sh" >"$log" 2>&1
   local rc=$?
   if [ "$rc" -ne 0 ]; then
-    printf '[m8n16-cross-format] build failed q=%s target=%s rc=%s log=%s\n' \
-      "$q" "$target" "$rc" "$log" >&2
+    printf '[m8n16-cross-format] build failed q=%s family=%s target=%s rc=%s log=%s\n' \
+      "$q" "$family" "$target" "$rc" "$log" >&2
     tail -120 "$log" >&2
   fi
   return "$rc"
 }
 
-build_format() {
-  local q=$1
-  printf '[m8n16-cross-format] build q=%s routes=4\n' "$q"
-  build_target "$q" 0 test_fully_quantized_internal_sweep fq-dense || return 1
-  build_target "$q" 1 test_fully_quantized_grouped_kpack_discovery fq-grouped || return 1
-  build_target "$q" 1 test_scalefirst_internal_sweep sf-dense || return 1
-  build_target "$q" 1 test_scalefirst_grouped_kpack_discovery sf-grouped || return 1
-  printf '[m8n16-cross-format] build complete q=%s\n' "$q"
+build_family() {
+  local q=$1 family=$2
+  printf '[m8n16-cross-format] build q=%s family=%s targets=2\n' "$q" "$family"
+  case "$family" in
+    fq)
+      build_target "$q" fq 0 test_fully_quantized_internal_sweep fq-dense || return 1
+      build_target "$q" fq 1 test_fully_quantized_grouped_kpack_discovery fq-grouped || return 1
+      ;;
+    sf)
+      build_target "$q" sf 0 test_scalefirst_internal_sweep sf-dense || return 1
+      build_target "$q" sf 1 test_scalefirst_grouped_kpack_discovery sf-grouped || return 1
+      ;;
+    *) return 1 ;;
+  esac
+  printf '[m8n16-cross-format] build complete q=%s family=%s\n' "$q" "$family"
 }
 
 run_route() {
@@ -121,26 +149,26 @@ run_route() {
 
 run_format() {
   local q=$1
-  local bins="$RUN_DIR/build/q$q/ppu_targets"
+  local build="$RUN_DIR/build/q$q"
   local seed
   seed="$(printf '0x%016x' "$((0x243f6a88 + q * 0x10001))")"
   run_route "$q" fq-dense \
-    "$bins/test_fully_quantized_internal_sweep" \
+    "$build/fq/ppu_targets/test_fully_quantized_internal_sweep" \
     --shape=7x64x512 --shape=9x64x512 \
     --iterations=1 --correctness-repeats=7 --only-split=1 \
     --tm8-max-m=9 --bc-mode=skip --schedule-seed="$seed"
   run_route "$q" fq-grouped \
-    "$bins/test_fully_quantized_grouped_kpack_discovery" \
+    "$build/fq/ppu_targets/test_fully_quantized_grouped_kpack_discovery" \
     --rows-file="$ROWS9" --experts=2 --n=64 --k=512 \
     --iterations=1 --warmups=1 --correctness-repeats=7 \
     --schedule-seed="$seed" --workload-key="q${q}-fq-grouped-m9" \
     --router-profile=e0-9
   run_route "$q" sf-dense \
-    "$bins/test_scalefirst_internal_sweep" \
+    "$build/sf/ppu_targets/test_scalefirst_internal_sweep" \
     --shape=7x64x512 --algorithm=full-output --fixture=exact \
     --iterations=1 --correctness-repeats=7 --schedule-seed="$seed"
   run_route "$q" sf-grouped \
-    "$bins/test_scalefirst_grouped_kpack_discovery" \
+    "$build/sf/ppu_targets/test_scalefirst_grouped_kpack_discovery" \
     --rows-file="$ROWS9" --experts=2 --n=64 --k=512 \
     --iterations=1 --warmups=1 --correctness-repeats=7 \
     --schedule-seed="$seed" --workload-key="q${q}-sf-grouped-m9" \
@@ -158,10 +186,13 @@ main() {
   case "${CUDA_VISIBLE_DEVICES:-}" in
     ''|*,*|*[!0-9]*) fail one_numeric_CUDA_VISIBLE_DEVICES_required; return 1 ;;
   esac
-  case "${JOBS:-4}" in
+  case "${JOBS:-16}" in
     ''|*[!0-9]*|0) fail invalid_JOBS; return 1 ;;
   esac
-  JOBS_COUNT=${JOBS:-4}
+  JOBS_PER_BUILD=${JOBS:-16}
+  if [ "$JOBS_PER_BUILD" -gt 18 ]; then
+    fail JOBS_exceeds_18_per_family_build; return 1
+  fi
   if [ -n "${PPU_DEFS:-}" ] || [ -n "${PPU_EXTRA_DEFS:-}" ]; then
     fail ambient_ppu_defs; return 1
   fi
@@ -175,6 +206,9 @@ main() {
   ROWS9="$RUN_DIR/inputs/e0-9.rows"
   printf '9\n0\n' >"$ROWS9"
 
+  bash -n "$ROOT/tools/run_m8n16_cross_format_correctness_box.sh" || {
+    fail runner_syntax; return 1;
+  }
   python3 -B "$ROOT/ci/check_m8n16_cross_format_correctness.py" || {
     fail static_contract; return 1;
   }
@@ -192,19 +226,27 @@ main() {
     fi
   done
 
-  local -a pids=() qtypes=()
+  python3 -B "$ROOT/ci/check_m8n16_cross_format_correctness.py" \
+    --validate-generated-dir "$RUN_DIR" || {
+      fail generated_manifest_set; return 1;
+    }
+
+  local -a pids=() labels=()
   for q in 10 11 12 13 14; do
-    build_format "$q" &
-    pids+=("$!")
-    qtypes+=("$q")
+    local family
+    for family in fq sf; do
+      build_family "$q" "$family" &
+      pids+=("$!")
+      labels+=("q$q/$family")
+    done
   done
   local index rc build_bad=0
   for index in "${!pids[@]}"; do
     rc=0
     wait "${pids[$index]}" || rc=$?
     if [ "$rc" -ne 0 ]; then
-      printf '[m8n16-cross-format] build worker failed q=%s rc=%s\n' \
-        "${qtypes[$index]}" "$rc" >&2
+      printf '[m8n16-cross-format] build worker failed route=%s rc=%s\n' \
+        "${labels[$index]}" "$rc" >&2
       build_bad=1
     fi
   done
@@ -227,10 +269,10 @@ main() {
       "$RUN_DIR/generated/q$q/fq-grouped/manifest.json"
       "$RUN_DIR/generated/q$q/sf-dense/manifest.json"
       "$RUN_DIR/generated/q$q/sf-grouped/manifest.json"
-      "$RUN_DIR/build/q$q/ppu_targets/test_fully_quantized_internal_sweep"
-      "$RUN_DIR/build/q$q/ppu_targets/test_fully_quantized_grouped_kpack_discovery"
-      "$RUN_DIR/build/q$q/ppu_targets/test_scalefirst_internal_sweep"
-      "$RUN_DIR/build/q$q/ppu_targets/test_scalefirst_grouped_kpack_discovery")
+      "$RUN_DIR/build/q$q/fq/ppu_targets/test_fully_quantized_internal_sweep"
+      "$RUN_DIR/build/q$q/fq/ppu_targets/test_fully_quantized_grouped_kpack_discovery"
+      "$RUN_DIR/build/q$q/sf/ppu_targets/test_scalefirst_internal_sweep"
+      "$RUN_DIR/build/q$q/sf/ppu_targets/test_scalefirst_grouped_kpack_discovery")
   done
   sha256sum "${authority[@]}" "$RUN_DIR"/results/*.run.log \
     >"$RUN_DIR/results/authority.sha256" || {
