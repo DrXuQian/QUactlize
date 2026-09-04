@@ -32,6 +32,14 @@ REPEATS = 7
 MAPPING_Q4 = "0x51344b5034540001"
 MAPPING_GENERIC = "0x514b504b54000001"
 ROUTES = ("fq-dense", "fq-grouped", "sf-dense", "sf-grouped")
+ORCHESTRATION_PATHS = {
+    "ci/check_m8n16_cross_format_correctness.py",
+    "tools/run_m8n16_cross_format_correctness_box.sh",
+}
+RELEVANT_SOURCE_PATHS = (
+    ".gitmodules", "CMakeLists.txt", "build.sh", "benchmarks", "ci", "dev",
+    "quactlize", "tests", "third_party", "tools",
+)
 
 
 @dataclass(frozen=True)
@@ -171,7 +179,7 @@ def audit_runner(text: str) -> list[str]:
     bad = authority_errors()
     tokens = (
         ("set-u-opipefail", 1),
-        ("check_m8n16_cross_format_correctness.py", 3),
+        ("check_m8n16_cross_format_correctness.py", 5),
         ("gen_fully_quantized_kpack_discovery_units.py", 1),
         ("gen_fully_quantized_grouped_kpack_units.py", 1),
         ("gen_scalefirst_internal_units.py", 1),
@@ -191,9 +199,15 @@ def audit_runner(text: str) -> list[str]:
         ("build_target\"$q\"sf0test_scalefirst_internal_sweepsf-dense", 1),
         ("build_target\"$q\"sf1test_scalefirst_grouped_kpack_discoverysf-grouped", 1),
         ("--validate-generated-dir\"$RUN_DIR\"", 1),
+        ("--validate-build-dir\"$RUN_DIR\"", 1),
+        ("RESUME=1reusingbuilds;rerunningall20routes", 1),
+        ("case\"${RESUME:-0}\"in", 1),
+        ("RESUME_requires_explicit_OUT", 1),
+        ("mv\"$RUN_DIR/results\"\"$archived_results\"", 1),
+        ("cmp-s\"$resume_snapshot\"", 1),
         ("--shape=7x64x512--shape=9x64x512", 1),
         ("--only-split=1--tm8-max-m=9--bc-mode=skip", 1),
-        ("--shape=7x64x512--algorithm=full-output--fixture=exact", 1),
+        ("--shape=7x256x512--algorithm=full-output--fixture=exact", 1),
         ("--rows-file=\"$ROWS9\"--experts=2--n=64--k=512", 2),
         ("--correctness-repeats=7", 4),
         ("M8N16_CROSS_FORMAT_CORRECTNESSverdict=PASSformats=5routes=20"
@@ -230,6 +244,9 @@ def validate_manifest_set(fmt: Format, run_dir: Path) -> list[str]:
     paths = {route: root / route / "manifest.json" for route in ROUTES}
     docs: dict[str, dict] = {}
     for route, path in paths.items():
+        if not path.is_file() or path.is_symlink():
+            bad.append(f"{fmt.name}/{route}: manifest is not a regular file")
+            continue
         try:
             docs[route] = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError) as error:
@@ -481,7 +498,7 @@ def validate_sf_dense(fmt: Format, text: str) -> tuple[list[str], int, int]:
     for record in records:
         algorithm = str(record.get("algorithm", "NONE"))
         expected = {
-            "shape": "7x64x512", "qtype": fmt.qtype,
+            "shape": "7x256x512", "qtype": fmt.qtype,
             "artifact_tile_k": 0, "bchunk": 0, "symbol": fmt.sfd_symbol,
             "a_provider": 0, "resolved_delivery_n": 16,
             "config": f"8x64x{fmt.tile_k}_w8x16_s2_bc0_ap0_dn16",
@@ -496,6 +513,24 @@ def validate_sf_dense(fmt: Format, text: str) -> tuple[list[str], int, int]:
         if not isinstance(record.get("sample_us"), (int, float)) or \
                 float(record.get("sample_us", 0)) <= 0:
             bad.append(f"{label}/{algorithm}: completion sample missing")
+        if algorithm == "NONPERSISTENT":
+            for key, value in {
+                    "policy": "ordinary", "grid": 4, "occupancy": 0,
+                    "capacity_b_mask": "0x0", "balanced_b_mask": "0x0"}.items():
+                if record.get(key) != value:
+                    bad.append(f"{label}/{algorithm}: {key} differs")
+        elif algorithm == "PERSISTENT":
+            occupancy = record.get("occupancy")
+            if not isinstance(occupancy, int) or not 1 <= occupancy <= 63:
+                bad.append(f"{label}/{algorithm}: occupancy differs")
+            else:
+                mask = hex((1 << (occupancy + 1)) - 2)
+                for key, value in {
+                        "policy": "capacity+balanced", "grid": 4,
+                        "capacity_b_mask": mask,
+                        "balanced_b_mask": mask}.items():
+                    if record.get(key) != value:
+                        bad.append(f"{label}/{algorithm}: {key} differs")
     shard = fields(shard_line) if shard_line else {}
     for key, value in {
             "qtype": str(fmt.qtype), "artifact_tile_k": "0", "bchunk": "0",
@@ -506,7 +541,7 @@ def validate_sf_dense(fmt: Format, text: str) -> tuple[list[str], int, int]:
         if shard.get(key) != value:
             bad.append(f"{label}: shard {key} differs")
     complete = fields(complete_line) if complete_line else {}
-    for key, value in {"status": "COMPLETE", "shape": "7x64x512",
+    for key, value in {"status": "COMPLETE", "shape": "7x256x512",
                        "typed_rows": "1", "runtime_cells": "2",
                        "measured_cells": "2", "records": "2",
                        "iterations": "1", "fixture_mode": "exact",
@@ -651,18 +686,24 @@ def synthetic_sf_dense(fmt: Format) -> str:
         "selected_rows=1 algorithm_mask=0x3 iterations=1 correctness_repeats=7",
     ]
     for algorithm in ("NONPERSISTENT", "PERSISTENT"):
+        occupancy = 0 if algorithm == "NONPERSISTENT" else 10
+        mask = "0x0" if occupancy == 0 else hex((1 << (occupancy + 1)) - 2)
         record = {
-            "shape": "7x64x512", "qtype": fmt.qtype, "artifact_tile_k": 0,
+            "shape": "7x256x512", "qtype": fmt.qtype, "artifact_tile_k": 0,
             "bchunk": 0, "symbol": fmt.sfd_symbol, "a_provider": 0,
             "resolved_delivery_n": 16,
             "config": f"8x64x{fmt.tile_k}_w8x16_s2_bc0_ap0_dn16",
             "algorithm": algorithm, "metric_scope": "FULL_OUTPUT", "split": 1,
+            "policy": ("ordinary" if algorithm == "NONPERSISTENT" else
+                       "capacity+balanced"),
+            "grid": 4, "occupancy": occupancy,
+            "capacity_b_mask": mask, "balanced_b_mask": mask,
             "status": "MEASURED", "reason": "MEASURED", "sample": 0,
             "sample_us": 1.0, "raw_bad": 0,
             "reducer_correctness_untimed": 0, "execution_ordinal": 0,
         }
         rows.append("SF_CELL " + json.dumps(record, separators=(",", ":")))
-    rows.append("SF_COMPLETE status=COMPLETE shape=7x64x512 typed_rows=1 "
+    rows.append("SF_COMPLETE status=COMPLETE shape=7x256x512 typed_rows=1 "
                 "runtime_cells=2 measured_cells=2 records=2 iterations=1 "
                 "fixture_mode=exact roundtrip=PASS")
     return "\n".join(rows) + "\n"
@@ -743,14 +784,21 @@ def validate_build(fmt: Format, run_dir: Path, source: str) -> list[str]:
     }
     for family, contract in families.items():
         build = run_dir / "build" / f"q{fmt.qtype}" / family
+        marker = build / ".quactlize-source-head"
         try:
-            if (build / ".quactlize-source-head").read_text().strip() != source:
+            if not marker.is_file() or marker.is_symlink():
+                bad.append(f"{fmt.name}/{family}: source authority is not regular")
+            elif marker.read_text() != source + "\n":
                 bad.append(f"{fmt.name}/{family}: build source authority differs")
         except OSError as error:
             bad.append(f"{fmt.name}/{family}: cannot read build authority: {error}")
+        if (build / ".quactlize-source-dirty").exists():
+            bad.append(f"{fmt.name}/{family}: build records tracked source dirt")
         for target in contract["targets"]:
             binary = build / "ppu_targets" / target
-            if not binary.is_file() or binary.is_symlink():
+            if (not binary.is_file() or binary.is_symlink() or
+                    binary.stat().st_size == 0 or
+                    not binary.stat().st_mode & 0o111):
                 bad.append(f"{fmt.name}/{family}: missing regular binary {target}")
         try:
             cache = (build / "CMakeCache.txt").read_text()
@@ -767,14 +815,114 @@ def validate_build(fmt: Format, run_dir: Path, source: str) -> list[str]:
     return bad
 
 
-def validate_run_dir(run_dir: Path) -> list[str]:
+def build_source_authority(run_dir: Path) -> tuple[str, list[str]]:
+    bad: list[str] = []
+    values: dict[str, list[str]] = {}
+    for fmt in FORMATS:
+        for family in ("fq", "sf"):
+            path = (run_dir / "build" / f"q{fmt.qtype}" / family /
+                    ".quactlize-source-head")
+            try:
+                if not path.is_file() or path.is_symlink():
+                    bad.append(
+                        f"{fmt.name}/{family} source authority is not regular")
+                    continue
+                raw = path.read_text()
+            except OSError as error:
+                bad.append(f"cannot read {fmt.name}/{family} source authority: {error}")
+                continue
+            if not re.fullmatch(r"[0-9a-f]{40}\n", raw):
+                bad.append(f"{fmt.name}/{family} source authority is malformed")
+                continue
+            value = raw[:-1]
+            values.setdefault(value, []).append(f"{fmt.name}/{family}")
+    if len(values) != 1:
+        bad.append(f"build source authority set differs: {sorted(values)}")
+        return "", bad
+    source = next(iter(values))
+    if not re.fullmatch(r"[0-9a-f]{40}", source):
+        bad.append(f"malformed build source authority: {source!r}")
+        return "", bad
+    return source, bad
+
+
+def source_reuse_errors(build_source: str) -> list[str]:
     bad: list[str] = []
     try:
-        source = subprocess.check_output(
-            ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
-    except subprocess.CalledProcessError as error:
-        bad.append(f"cannot resolve source HEAD: {error}")
-        source = ""
+        current = subprocess.check_output(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+            text=True).strip()
+        dirty = subprocess.check_output(
+            ["git", "-C", str(ROOT), "status", "--porcelain",
+             "--untracked-files=no", "--", *RELEVANT_SOURCE_PATHS],
+            text=True).strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        return [f"cannot resolve runner source authority: {error}"]
+    if dirty:
+        bad.append(f"orchestration source is dirty: {dirty!r}")
+    try:
+        build_actlize = subprocess.check_output(
+            ["git", "-C", str(ROOT), "rev-parse",
+             f"{build_source}:third_party/actlize"], text=True).strip()
+        current_actlize = subprocess.check_output(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD:third_party/actlize"],
+            text=True).strip()
+        checkout_actlize = subprocess.check_output(
+            ["git", "-C", str(ROOT / "third_party/actlize"),
+             "rev-parse", "HEAD"], text=True).strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        bad.append(f"cannot resolve actlize source authority: {error}")
+        return bad
+    if len({build_actlize, current_actlize, checkout_actlize}) != 1:
+        bad.append("actlize build/current/checkout authorities differ")
+    if build_source == current:
+        return bad
+    ancestor = subprocess.run(
+        ["git", "-C", str(ROOT), "merge-base", "--is-ancestor",
+         build_source, current], stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, check=False)
+    if ancestor.returncode != 0:
+        bad.append("build source is not an ancestor of runner source")
+        return bad
+    try:
+        changed = set(filter(None, subprocess.check_output(
+            ["git", "-C", str(ROOT), "diff", "--name-only",
+             f"{build_source}..{current}"], text=True).splitlines()))
+        touched = set(filter(None, subprocess.check_output(
+            ["git", "-C", str(ROOT), "log", "--format=", "--name-only",
+             f"{build_source}..{current}"], text=True).splitlines()))
+    except (OSError, subprocess.CalledProcessError) as error:
+        bad.append(f"cannot resolve build-to-runner source delta: {error}")
+        return bad
+    bad += transition_path_errors(changed, touched)
+    return bad
+
+
+def transition_path_errors(changed: set[str], touched: set[str]) -> list[str]:
+    bad: list[str] = []
+    unexpected = touched - ORCHESTRATION_PATHS
+    if unexpected:
+        bad.append("build-to-runner commit range touched compiled inputs: " +
+                   ",".join(sorted(unexpected)))
+    if changed != ORCHESTRATION_PATHS:
+        bad.append("build-to-runner final delta is not the exact orchestration pair: " +
+                   ",".join(sorted(changed)))
+    return bad
+
+
+def validate_build_set(run_dir: Path) -> tuple[list[str], str]:
+    source, bad = build_source_authority(run_dir)
+    if not source:
+        return bad, source
+    bad += source_reuse_errors(source)
+    for fmt in FORMATS:
+        bad += validate_manifest_set(fmt, run_dir)
+        bad += validate_build(fmt, run_dir, source)
+    return bad, source
+
+
+def validate_run_dir(run_dir: Path) -> list[str]:
+    bad, _ = validate_build_set(run_dir)
     actual_logs = {path.name for path in (run_dir / "results").glob("q*-*.run.log")}
     expected_logs = {f"q{fmt.qtype}-{route}.run.log"
                      for fmt in FORMATS for route in ROUTES}
@@ -785,8 +933,6 @@ def validate_run_dir(run_dir: Path) -> list[str]:
     total_structural = 0
     declared_out_of_scope = 0
     for fmt in FORMATS:
-        bad += validate_manifest_set(fmt, run_dir)
-        bad += validate_build(fmt, run_dir, source)
         for route in ROUTES:
             rc_path = run_dir / "results" / f"q{fmt.qtype}-{route}.rc"
             log_path = run_dir / "results" / f"q{fmt.qtype}-{route}.run.log"
@@ -843,6 +989,8 @@ def self_test() -> None:
          '"status":"INADMISSIBLE"'),
         ("sf dense algorithm", "sf-dense", '"algorithm":"NONPERSISTENT"',
          '"algorithm":"PERSISTENT"'),
+        ("sf dense policy", "sf-dense", '"policy":"capacity+balanced"',
+         '"policy":"capacity"'),
         ("sf dense symbol", "sf-dense", fmt.sfd_symbol, fmt.sfd_symbol + "_bad"),
         ("sf grouped state", "sf-grouped", "state=MEASURED", "state=OCCUPANCY"),
         ("sf grouped structural", "sf-grouped", "status=STRUCTURAL_UNAVAILABLE",
@@ -872,6 +1020,12 @@ def self_test() -> None:
          'build_family "$q" "$family"'),
         ("family isolation", 'local build="$RUN_DIR/build/q$q/$family"',
          'local build="$RUN_DIR/build/q$q"'),
+        ("ScaleFirst aligned shipping shape", "--shape=7x256x512",
+         "--shape=7x64x512"),
+        ("resume build authority", '--validate-build-dir "$RUN_DIR"',
+         '--validate-generated-dir "$RUN_DIR"'),
+        ("resume artifact snapshot", 'cmp -s "$resume_snapshot"',
+         'test -s "$resume_snapshot"'),
         ("denominator", "cells=40 measured=40", "cells=39 measured=39"),
     )
     for name, old, new in runner_plants:
@@ -879,6 +1033,19 @@ def self_test() -> None:
             raise AssertionError(f"cannot plant runner {name}")
         if not audit_runner(runner.replace(old, new, 1)):
             raise AssertionError(f"runner checker accepted planted {name}")
+        rejected += 1
+
+    if transition_path_errors(set(ORCHESTRATION_PATHS),
+                              set(ORCHESTRATION_PATHS)):
+        raise AssertionError("exact orchestration-only transition was rejected")
+    for name, changed, touched in (
+            ("compiled-history", set(ORCHESTRATION_PATHS),
+             set(ORCHESTRATION_PATHS) | {"quactlize/include/kernel.cuh"}),
+            ("incomplete-final-delta",
+             {"tools/run_m8n16_cross_format_correctness_box.sh"},
+             set(ORCHESTRATION_PATHS))):
+        if not transition_path_errors(changed, touched):
+            raise AssertionError(f"transition checker accepted {name}")
         rejected += 1
 
     # The runtime checker must bind each format to two independent CMake
@@ -921,7 +1088,9 @@ def self_test() -> None:
             (build / "CMakeCache.txt").write_text(
                 "\n".join(cache_rows[family]) + "\n")
             for target in targets[family]:
-                (build / "ppu_targets" / target).write_bytes(b"binary")
+                binary = build / "ppu_targets" / target
+                binary.write_bytes(b"binary")
+                binary.chmod(0o755)
         errors = validate_build(fmt, run_dir, source)
         if errors:
             raise AssertionError(f"isolated build-tree positive failed: {errors}")
@@ -949,6 +1118,13 @@ def self_test() -> None:
                    for error in validate_build(fmt, run_dir, source)):
             raise AssertionError("build checker accepted a missing family binary")
         rejected += 1
+
+        dirty = run_dir / "build" / f"q{fmt.qtype}" / "fq" / ".quactlize-source-dirty"
+        dirty.write_text("tracked change\n")
+        if not any("tracked source dirt" in error
+                   for error in validate_build(fmt, run_dir, source)):
+            raise AssertionError("build checker accepted a dirty build authority")
+        rejected += 1
     print("[m8n16-cross-format:self-test] PASS formats=5 routes=20 "
           f"cells=40 exact-TM8/WN16; structural fail-close; {rejected} negatives RED")
 
@@ -958,9 +1134,12 @@ def main() -> int:
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--validate-run-dir", type=Path)
     modes.add_argument("--validate-generated-dir", type=Path)
+    modes.add_argument("--validate-build-dir", type=Path)
     args = parser.parse_args()
     try:
-        if args.validate_run_dir is None and args.validate_generated_dir is None:
+        if (args.validate_run_dir is None and
+                args.validate_generated_dir is None and
+                args.validate_build_dir is None):
             self_test()
             return 0
         if args.validate_generated_dir is not None:
@@ -972,6 +1151,19 @@ def main() -> int:
                 return 1
             print("[m8n16-cross-format] validated 5 formats / 20 generated "
                   "manifests before isolated-family builds")
+            return 0
+        if args.validate_build_dir is not None:
+            root = args.validate_build_dir.resolve()
+            bad, source = validate_build_set(root)
+            if bad:
+                print("[m8n16-cross-format] FAIL: " + "; ".join(bad))
+                return 1
+            current = subprocess.check_output(
+                ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+                text=True).strip()
+            print("[m8n16-cross-format] reusable builds validated "
+                  f"formats=5 trees=10 build_source={source} "
+                  f"runner_source={current}")
             return 0
         bad = validate_run_dir(args.validate_run_dir.resolve())
         if bad:

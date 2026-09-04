@@ -135,6 +135,26 @@ build_family() {
   printf '[m8n16-cross-format] build complete q=%s family=%s\n' "$q" "$family"
 }
 
+set_authority_files() {
+  AUTHORITY_FILES=()
+  local q
+  for q in 10 11 12 13 14; do
+    AUTHORITY_FILES+=(
+      "$RUN_DIR/generated/q$q/fq-dense/manifest.json"
+      "$RUN_DIR/generated/q$q/fq-grouped/manifest.json"
+      "$RUN_DIR/generated/q$q/sf-dense/manifest.json"
+      "$RUN_DIR/generated/q$q/sf-grouped/manifest.json"
+      "$RUN_DIR/build/q$q/fq/.quactlize-source-head"
+      "$RUN_DIR/build/q$q/fq/CMakeCache.txt"
+      "$RUN_DIR/build/q$q/fq/ppu_targets/test_fully_quantized_internal_sweep"
+      "$RUN_DIR/build/q$q/fq/ppu_targets/test_fully_quantized_grouped_kpack_discovery"
+      "$RUN_DIR/build/q$q/sf/.quactlize-source-head"
+      "$RUN_DIR/build/q$q/sf/CMakeCache.txt"
+      "$RUN_DIR/build/q$q/sf/ppu_targets/test_scalefirst_internal_sweep"
+      "$RUN_DIR/build/q$q/sf/ppu_targets/test_scalefirst_grouped_kpack_discovery")
+  done
+}
+
 run_route() {
   local q=$1 route=$2
   shift 2
@@ -165,7 +185,7 @@ run_format() {
     --router-profile=e0-9
   run_route "$q" sf-dense \
     "$build/sf/ppu_targets/test_scalefirst_internal_sweep" \
-    --shape=7x64x512 --algorithm=full-output --fixture=exact \
+    --shape=7x256x512 --algorithm=full-output --fixture=exact \
     --iterations=1 --correctness-repeats=7 --schedule-seed="$seed"
   run_route "$q" sf-grouped \
     "$build/sf/ppu_targets/test_scalefirst_grouped_kpack_discovery" \
@@ -196,15 +216,26 @@ main() {
   if [ -n "${PPU_DEFS:-}" ] || [ -n "${PPU_EXTRA_DEFS:-}" ]; then
     fail ambient_ppu_defs; return 1
   fi
-  if [ -e "$RUN_DIR" ]; then
-    fail output_already_exists; return 1
+  case "${RESUME:-0}" in
+    0|1) RESUME_MODE=${RESUME:-0} ;;
+    *) fail invalid_RESUME; return 1 ;;
+  esac
+  if [ "$RESUME_MODE" = 1 ]; then
+    [ -n "${OUT:-}" ] || { fail RESUME_requires_explicit_OUT; return 1; }
+    [ -d "$RUN_DIR/generated" ] && [ -d "$RUN_DIR/build" ] &&
+        [ -d "$RUN_DIR/inputs" ] && [ -d "$RUN_DIR/results" ] || {
+      fail RESUME_artifact_incomplete; return 1;
+    }
+  else
+    if [ -e "$RUN_DIR" ]; then
+      fail output_already_exists; return 1
+    fi
+    mkdir -p "$RUN_DIR"/{generated,build,inputs,results} || {
+      fail create_output; return 1;
+    }
   fi
-  mkdir -p "$RUN_DIR"/{generated,build,inputs,results} || {
-    fail create_output; return 1;
-  }
   PREFLIGHT="$RUN_DIR/inputs/kpack-global-preflight.json"
   ROWS9="$RUN_DIR/inputs/e0-9.rows"
-  printf '9\n0\n' >"$ROWS9"
 
   bash -n "$ROOT/tools/run_m8n16_cross_format_correctness_box.sh" || {
     fail runner_syntax; return 1;
@@ -212,45 +243,78 @@ main() {
   python3 -B "$ROOT/ci/check_m8n16_cross_format_correctness.py" || {
     fail static_contract; return 1;
   }
-  if ! python3 -B "$ROOT/tools/kpack_global_build_preflight.py" create \
-      --root "$ROOT" --output "$PREFLIGHT" \
-      >"$RUN_DIR/results/global-preflight.log" 2>&1; then
-    tail -120 "$RUN_DIR/results/global-preflight.log" >&2
-    fail global_preflight; return 1
-  fi
-
   local q
-  for q in 10 11 12 13 14; do
-    if ! generate_format "$q"; then
-      fail "generate_q$q"; return 1
-    fi
-  done
-
-  python3 -B "$ROOT/ci/check_m8n16_cross_format_correctness.py" \
-    --validate-generated-dir "$RUN_DIR" || {
-      fail generated_manifest_set; return 1;
+  local resume_snapshot=''
+  if [ "$RESUME_MODE" = 1 ]; then
+    [ "$(tr '\n' ',' <"$ROWS9" 2>/dev/null)" = '9,0,' ] || {
+      fail RESUME_rows_authority_differs; return 1;
     }
-
-  local -a pids=() labels=()
-  for q in 10 11 12 13 14; do
-    local family
-    for family in fq sf; do
-      build_family "$q" "$family" &
-      pids+=("$!")
-      labels+=("q$q/$family")
-    done
-  done
-  local index rc build_bad=0
-  for index in "${!pids[@]}"; do
-    rc=0
-    wait "${pids[$index]}" || rc=$?
-    if [ "$rc" -ne 0 ]; then
-      printf '[m8n16-cross-format] build worker failed route=%s rc=%s\n' \
-        "${labels[$index]}" "$rc" >&2
-      build_bad=1
+    local resume_check="$RUN_DIR/.resume-build-check-${SOURCE_SHORT}-$$.log"
+    if ! python3 -B "$ROOT/ci/check_m8n16_cross_format_correctness.py" \
+        --validate-build-dir "$RUN_DIR" \
+        >"$resume_check" 2>&1; then
+      cat "$resume_check" >&2
+      fail RESUME_build_authority; return 1
     fi
-  done
-  [ "$build_bad" -eq 0 ] || { fail parallel_builds; return 1; }
+    cat "$resume_check"
+    set_authority_files
+    resume_snapshot="$RUN_DIR/.resume-authority-${SOURCE_SHORT}-$(date -u +%Y%m%dT%H%M%SZ)-$$.sha256"
+    sha256sum "${AUTHORITY_FILES[@]}" >"$resume_snapshot" || {
+      fail RESUME_authority_snapshot; return 1;
+    }
+    local archived_results="$RUN_DIR/results.before-${SOURCE_SHORT}-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    mv "$RUN_DIR/results" "$archived_results" || {
+      fail RESUME_archive_results; return 1;
+    }
+    mkdir -p "$RUN_DIR/results" || { fail RESUME_create_results; return 1; }
+    mv "$resume_check" "$RUN_DIR/results/resume-build-check.log" || {
+      fail RESUME_record_build_check; return 1;
+    }
+    printf 'runner_source=%s\narchived_results=%s\n' \
+      "$SOURCE_SHA" "$archived_results" \
+      >"$RUN_DIR/results/resume-receipt.txt"
+    printf '[m8n16-cross-format] RESUME=1 reusing builds; rerunning all 20 routes\n'
+  else
+    printf '9\n0\n' >"$ROWS9"
+    if ! python3 -B "$ROOT/tools/kpack_global_build_preflight.py" create \
+        --root "$ROOT" --output "$PREFLIGHT" \
+        >"$RUN_DIR/results/global-preflight.log" 2>&1; then
+      tail -120 "$RUN_DIR/results/global-preflight.log" >&2
+      fail global_preflight; return 1
+    fi
+
+    for q in 10 11 12 13 14; do
+      if ! generate_format "$q"; then
+        fail "generate_q$q"; return 1
+      fi
+    done
+
+    python3 -B "$ROOT/ci/check_m8n16_cross_format_correctness.py" \
+      --validate-generated-dir "$RUN_DIR" || {
+        fail generated_manifest_set; return 1;
+      }
+
+    local -a pids=() labels=()
+    for q in 10 11 12 13 14; do
+      local family
+      for family in fq sf; do
+        build_family "$q" "$family" &
+        pids+=("$!")
+        labels+=("q$q/$family")
+      done
+    done
+    local index rc build_bad=0
+    for index in "${!pids[@]}"; do
+      rc=0
+      wait "${pids[$index]}" || rc=$?
+      if [ "$rc" -ne 0 ]; then
+        printf '[m8n16-cross-format] build worker failed route=%s rc=%s\n' \
+          "${labels[$index]}" "$rc" >&2
+        build_bad=1
+      fi
+    done
+    [ "$build_bad" -eq 0 ] || { fail parallel_builds; return 1; }
+  fi
 
   for q in 10 11 12 13 14; do
     run_format "$q"
@@ -262,25 +326,30 @@ main() {
     check_rc=${PIPESTATUS[0]}
   [ "$check_rc" -eq 0 ] || { fail device_results; return 1; }
 
-  local -a authority=()
-  for q in 10 11 12 13 14; do
-    authority+=(
-      "$RUN_DIR/generated/q$q/fq-dense/manifest.json"
-      "$RUN_DIR/generated/q$q/fq-grouped/manifest.json"
-      "$RUN_DIR/generated/q$q/sf-dense/manifest.json"
-      "$RUN_DIR/generated/q$q/sf-grouped/manifest.json"
-      "$RUN_DIR/build/q$q/fq/ppu_targets/test_fully_quantized_internal_sweep"
-      "$RUN_DIR/build/q$q/fq/ppu_targets/test_fully_quantized_grouped_kpack_discovery"
-      "$RUN_DIR/build/q$q/sf/ppu_targets/test_scalefirst_internal_sweep"
-      "$RUN_DIR/build/q$q/sf/ppu_targets/test_scalefirst_grouped_kpack_discovery")
-  done
-  sha256sum "${authority[@]}" "$RUN_DIR"/results/*.run.log \
+  set_authority_files
+  if [ "$RESUME_MODE" = 1 ]; then
+    sha256sum "${AUTHORITY_FILES[@]}" \
+      >"$RUN_DIR/results/resume-authority.after.sha256" || {
+        fail RESUME_postrun_authority; return 1;
+      }
+    cmp -s "$resume_snapshot" \
+      "$RUN_DIR/results/resume-authority.after.sha256" || {
+        fail RESUME_authority_changed; return 1;
+      }
+  fi
+  sha256sum "${AUTHORITY_FILES[@]}" "$RUN_DIR"/results/*.run.log \
+    "$ROOT/tools/run_m8n16_cross_format_correctness_box.sh" \
+    "$ROOT/ci/check_m8n16_cross_format_correctness.py" \
     >"$RUN_DIR/results/authority.sha256" || {
       fail authority_hash; return 1;
     }
-  printf 'M8N16_CROSS_FORMAT_CORRECTNESS verdict=PASS formats=5 routes=20 cells=40 measured=40 structural=0 repeats=7 out_of_scope_structural=35 source=%s actlize=%s artifacts=%s\n' \
-    "$SOURCE_SHA" "$(git -C "$ROOT/third_party/actlize" rev-parse HEAD)" \
-    "$RUN_DIR"
+  local build_source
+  build_source="$(tr -d '\n' < \
+    "$RUN_DIR/build/q10/fq/.quactlize-source-head")"
+  printf 'M8N16_CROSS_FORMAT_CORRECTNESS verdict=PASS formats=5 routes=20 cells=40 measured=40 structural=0 repeats=7 out_of_scope_structural=35 source=%s build_source=%s resume=%s actlize=%s artifacts=%s\n' \
+    "$SOURCE_SHA" "$build_source" \
+    "$([ "$RESUME_MODE" = 1 ] && printf orchestration-only || printf fresh)" \
+    "$(git -C "$ROOT/third_party/actlize" rev-parse HEAD)" "$RUN_DIR"
 }
 
 main "$@"
