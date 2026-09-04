@@ -272,12 +272,13 @@ bool generic_launcher(const cutlass::half_t* A, const ElementB* B,
   // layouts. The host arithmetic in ppu_tactic_space.hpp deliberately remains useful for emitting a broad finite
   // domain, but the runtime answer must not guess sizeof(SharedStorage) from tile coordinates. QueryOnly returns
   // before pointer/stride construction and requires no PPU context; the ordinary launch takes the same guard.
-  static_assert(!RequireUniversalFallback ||
-                    GemmKernel::SharedStorageSize <= ppu_tactics::kBlockSmemBytes,
+  static_assert(!RequireUniversalFallback || ppu_tactics::fits_block_smem(
+                    GemmKernel::SharedStorageSize),
                 "the compiled dense default must fit one ppu001 block for every admitted shape");
   static_assert(!RequireUniversalFallback || MainloopPolicy::PackedARows == 0,
                 "a bounded packed-A provider cannot be the universal dense fallback");
-  if constexpr (ActiveGemmKernel::SharedStorageSize > ppu_tactics::kBlockSmemBytes) {
+  if constexpr (!ppu_tactics::fits_block_smem(
+                    ActiveGemmKernel::SharedStorageSize)) {
     return false;
   } else {
   if constexpr (MainloopPolicy::PackedARows > 0) {

@@ -191,12 +191,13 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
   // Query the exact instantiated type rather than reconstructing its storage from the public tile coordinates.
   // Packed-unit staging and optional A/scale layouts all contribute to this value. The normal launch shares the
   // same guard, so a caller that forgot to query still cannot poison the context with an oversized block.
-  static_assert(!RequireUniversalFallback ||
-                    GemmKernel::SharedStorageSize <= ppu_tactics::kBlockSmemBytes,
+  static_assert(!RequireUniversalFallback || ppu_tactics::fits_block_smem(
+                    GemmKernel::SharedStorageSize),
                 "the compiled grouped default must fit one ppu001 block for every admitted shape");
   static_assert(!RequireUniversalFallback || MainloopPolicy::PackedARows == 0,
                 "a bounded packed-A provider cannot be the universal grouped fallback");
-  if constexpr (GemmKernel::SharedStorageSize > ppu_tactics::kBlockSmemBytes) return false;
+  if constexpr (!ppu_tactics::fits_block_smem(
+                    GemmKernel::SharedStorageSize)) return false;
 
   using StrideA = typename GemmKernel::StrideA;  using StrideB = typename GemmKernel::StrideB;
   using StrideC = typename CollectiveEpilogue::StrideC;  using StrideD = typename CollectiveEpilogue::StrideD;

@@ -168,7 +168,7 @@ def validate_receipt(receipt: dict, shard: dict,
 def self_test() -> None:
     full = plan(False, 32)
     pilot = plan(True, 32)
-    if len(full) != 1323 or len(pilot) != 2:
+    if len(full) != 1319 or len(pilot) != 2:
         raise ValueError(f"range count differs full={len(full)} pilot={len(pilot)}")
     if any(not 1 <= row["parent_count"] <= 32 for row in full + pilot):
         raise ValueError("one binary exceeds the 32-parent cap")
@@ -229,7 +229,7 @@ def self_test() -> None:
         pass
     else:
         raise ValueError("stale range receipt plant stayed green")
-    print("[fq-kpack-bundle-index:self-test] PASS full=1323 pilot=2 "
+    print("[fq-kpack-bundle-index:self-test] PASS full=1319 pilot=2 "
           "parents-per-binary<=32 gap+overlap+out-of-range+stale=RED")
 
 

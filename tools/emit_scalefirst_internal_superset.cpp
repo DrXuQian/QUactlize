@@ -59,6 +59,8 @@ char const* exclusion_name(Exclusion exclusion) {
     case Exclusion::LowDelivery: return "LOW_DELIVERY";
     case Exclusion::HighDelivery: return "HIGH_DELIVERY";
     case Exclusion::MinimumStageSmem: return "MINIMUM_STAGE_SMEM";
+    case Exclusion::EpilogueSharedStorage:
+      return "EPILOGUE_SHARED_STORAGE";
     case Exclusion::ProducerWarpN: return "PRODUCER_WARP_N";
     case Exclusion::ProducerMap: return "PRODUCER_MAP";
     case Exclusion::ProducerConsumerLayout:

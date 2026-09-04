@@ -88,14 +88,14 @@ main() {
 
   if ! python3 -B "$ROOT/tools/gen_fully_quantized_kpack_discovery_units.py" \
       --qtype 12 --out-dir "$RUN_DIR/generated/tm8" --per-unit 1 \
-      --parent-begin 4827 --parent-count 1 \
+      --parent-begin 4809 --parent-count 1 \
       >"$RUN_DIR/results/generate-tm8.log" 2>&1; then
     cat "$RUN_DIR/results/generate-tm8.log" >&2
     fail generate_tm8; return 1
   fi
   if ! python3 -B "$ROOT/tools/gen_fully_quantized_kpack_discovery_units.py" \
       --qtype 12 --out-dir "$RUN_DIR/generated/tm16" --per-unit 1 \
-      --parent-begin 5157 --parent-count 1 \
+      --parent-begin 5139 --parent-count 1 \
       >"$RUN_DIR/results/generate-tm16.log" 2>&1; then
     cat "$RUN_DIR/results/generate-tm16.log" >&2
     fail generate_tm16; return 1

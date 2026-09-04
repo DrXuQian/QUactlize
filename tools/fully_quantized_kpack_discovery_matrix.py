@@ -361,9 +361,9 @@ def self_test() -> None:
     den = manifest["denominator"]
     if den != {
             "formats": 5, "source_raw_rows": 115200,
-            "admitted_topologies": 5182, "dense_provider_parents": 14750,
-            "dense_runtime_tc_cells": 59000, "dense_bc_structural_cells": 5,
-            "grouped_type_parents": 27412,
+            "admitted_topologies": 5173, "dense_provider_parents": 14723,
+            "dense_runtime_tc_cells": 58892, "dense_bc_structural_cells": 5,
+            "grouped_type_parents": 27358,
             "grouped_splitk_structural_cells": 15,
             "grouped_bc_structural_cells": 5}:
         raise ValueError(f"canonical FQ denominator drifted: {den}")
@@ -433,8 +433,8 @@ def self_test() -> None:
             continue
         raise ValueError("FQ K-pack negative plant stayed green")
     print("[fq-kpack-discovery-matrix:self-test] PASS "
-          "formats=5 raw=115200 topology=5182 dense-parents=14750 "
-          "dense-cells=59000 grouped-parents=27412 "
+          "formats=5 raw=115200 topology=5173 dense-parents=14723 "
+          "dense-cells=58892 grouped-parents=27358 "
           "BC=5+5xSTRUCTURAL_UNAVAILABLE grouped-split=15xSTRUCTURAL_UNAVAILABLE "
           "historical-dense/grouped/Q4-policy-anchors=INCLUDED "
           "negatives=missing+layout+fake-bc+fake-split+illegal-ap+top-n")

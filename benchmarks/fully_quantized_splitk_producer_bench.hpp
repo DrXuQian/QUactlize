@@ -455,10 +455,10 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
       !in.golden || in.m <= 0 || in.n <= 0 || in.k <= 0 ||
       in.k % TK || (!std::is_void_v<High> && !in.high)) return false;
 
-  constexpr bool shipping_fits =
-      Shipping::SharedStorageSize <= ppu_tactics::kBlockSmemBytes;
-  constexpr bool split_fits =
-      SplitKernel::SharedStorageSize <= ppu_tactics::kBlockSmemBytes;
+  constexpr bool shipping_fits = ppu_tactics::fits_block_smem(
+      Shipping::SharedStorageSize);
+  constexpr bool split_fits = ppu_tactics::fits_block_smem(
+      SplitKernel::SharedStorageSize);
   for (std::size_t index = 0; index < kSplits.size(); ++index) {
     CellResult& result = row.cells[index];
     result = CellResult{};

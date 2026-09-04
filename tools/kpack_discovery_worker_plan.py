@@ -445,6 +445,19 @@ def _bundle_shards(bundle: dict[str, Any]) -> list[dict[str, Any]]:
                 raise PlanError(f"{shard_key}.partition_id must be nonnegative")
             artifact_id = _nonempty_string(
                 artifact_id, f"{shard_key}.artifact_id")
+        raw_runtime_workloads = row.get("runtime_workload_keys")
+        runtime_workloads = None
+        if raw_runtime_workloads is not None:
+            if not isinstance(raw_runtime_workloads, list) or not raw_runtime_workloads:
+                raise PlanError(
+                    f"{shard_key}.runtime_workload_keys are empty/malformed")
+            runtime_workloads = [
+                _nonempty_string(value, f"{shard_key}.runtime_workload_keys")
+                for value in raw_runtime_workloads]
+            if (runtime_workloads != sorted(runtime_workloads) or
+                    len(runtime_workloads) != len(set(runtime_workloads))):
+                raise PlanError(
+                    f"{shard_key}.runtime_workload_keys are not a sorted set")
         parsed.append({
             "shard_key": shard_key,
             "route": route,
@@ -455,6 +468,7 @@ def _bundle_shards(bundle: dict[str, Any]) -> list[dict[str, Any]]:
             "parent_id_set_sha256": parent_set_sha,
             "partition_id": partition_id,
             "artifact_id": artifact_id,
+            "runtime_workload_keys": runtime_workloads,
         })
     return parsed
 
@@ -465,14 +479,45 @@ def make_master(bundle_path: Path, plan_path: Path,
     plan = load_json(plan_path, "workload plan")
     workloads, workload_schema = _workloads(plan)
     explicit_scope = _qtype_scope(qtypes)
-    selected_qtypes = set(QTYPES if explicit_scope is None else explicit_scope)
+    selective = bundle.get("selective_scope") is not None
+    if selective:
+        if bundle.get("schema") != CATALOG_SCHEMA:
+            raise PlanError(
+                "runtime workload allowlists require a validated catalog")
+        selective_record = bundle.get("selective_scope")
+        if not isinstance(selective_record, dict):
+            raise PlanError("selective catalog scope is malformed")
+        catalog_qtypes = _qtype_scope(
+            selective_record.get("qtypes"), "selective catalog qtype scope")
+        if catalog_qtypes is None:
+            raise PlanError("selective catalog qtype scope is absent")
+        if explicit_scope is not None and not set(explicit_scope).issubset(
+                catalog_qtypes):
+            raise PlanError("execution qtype scope exceeds selective catalog")
+        selected_qtypes = set(
+            catalog_qtypes if explicit_scope is None else explicit_scope)
+    else:
+        selected_qtypes = set(
+            QTYPES if explicit_scope is None else explicit_scope)
     shards = [shard for shard in _bundle_shards(bundle)
               if shard["qtype"] in selected_qtypes]
     if not shards:
         raise PlanError("execution scope selects no binary shards")
+    if selective != all(
+            shard["runtime_workload_keys"] is not None for shard in shards):
+        raise PlanError(
+            "selective catalog/runtime workload allowlist contract differs")
     items: list[dict[str, Any]] = []
     for shard in shards:
-        for workload_key in workloads[(shard["qtype"], shard["operator"])]:
+        canonical_workloads = workloads[(shard["qtype"], shard["operator"])]
+        selected_workloads = (shard["runtime_workload_keys"]
+                              if selective else canonical_workloads)
+        if (not set(selected_workloads).issubset(canonical_workloads) or
+                not selected_workloads):
+            raise PlanError(
+                f"{shard['shard_key']} runtime workload allowlist differs "
+                "from the canonical plan")
+        for workload_key in selected_workloads:
             components = [
                 shard["route"], shard["operator"], shard["qtype"],
                 shard["shard_key"], shard["manifest_sha256"],
@@ -500,10 +545,23 @@ def make_master(bundle_path: Path, plan_path: Path,
         operator: sum(row["operator"] == operator for row in items)
         for operator in sorted(OPERATORS)
     }
-    workload_counts = {
-        f"q{qtype}/{operator}": len(workloads[(qtype, operator)])
-        for qtype in sorted(selected_qtypes) for operator in sorted(OPERATORS)
-    }
+    if not selective:
+        workload_counts = {
+            f"q{qtype}/{operator}": len(workloads[(qtype, operator)])
+            for qtype in sorted(selected_qtypes)
+            for operator in sorted(OPERATORS)
+        }
+    else:
+        workload_counts = {}
+        for qtype in sorted(selected_qtypes):
+            for operator in sorted(OPERATORS):
+                selected_for_pair = {
+                    key for shard in shards
+                    if shard["qtype"] == qtype and shard["operator"] == operator
+                    for key in shard["runtime_workload_keys"]}
+                if not selected_for_pair:
+                    raise PlanError(f"q{qtype}/{operator} selects no workloads")
+                workload_counts[f"q{qtype}/{operator}"] = len(selected_for_pair)
     result = {
         "schema": MASTER_SCHEMA,
         "bundle_sha256": file_sha(bundle_path),

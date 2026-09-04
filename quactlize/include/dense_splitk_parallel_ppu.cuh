@@ -286,12 +286,12 @@ class PreparedOnePlaneLauncher {
                 "the first prepared fixed Split-K handle is one-plane only");
   static_assert(MainloopPolicy::PackedARows == 1,
                 "the first prepared fixed Split-K handle is the M1 packed-A provider");
-  static_assert(ShippingTypes::SharedStorageSize <=
-                    ppu_tactics::kBlockSmemBytes &&
-                    SplitKernel::SharedStorageSize <=
-                    ppu_tactics::kBlockSmemBytes &&
-                    FusedKernel::SharedStorageSize <=
-                    ppu_tactics::kBlockSmemBytes,
+  static_assert(ppu_tactics::fits_block_smem(
+                    ShippingTypes::SharedStorageSize) &&
+                    ppu_tactics::fits_block_smem(
+                        SplitKernel::SharedStorageSize) &&
+                    ppu_tactics::fits_block_smem(
+                        FusedKernel::SharedStorageSize),
                 "prepared shipping/partial/completion kernels must fit the compiled PPU smem limit");
   static_assert(ppu_mixed_policy::kernel_policy_valid_v<
                     fpa_intb_ppu::TacticSpace, MainloopPolicy>,

@@ -252,7 +252,7 @@ def generated_contract() -> None:
                 raise ValueError(f"{shard['shard_key']} parent range differs")
             seen.setdefault((qtype, operator), []).extend(
                 row["parent_ordinal"] for row in rows)
-        if total_dense != 14750 or total_grouped != 27412:
+        if total_dense != 14723 or total_grouped != 27358:
             raise ValueError(
                 f"compiled denominator differs dense={total_dense} grouped={total_grouped}")
         for (qtype, operator), ordinals in seen.items():
@@ -334,7 +334,7 @@ def main() -> int:
         negative_contract()
         run_type_gate(args.type_gate_command)
         print("[fq-kpack-discovery-check] PASS formats=5 raw=115200 "
-              "dense=14750/59000 grouped=27412 APxDN binaries=1323<=32-parents "
+              "dense=14723/58892 grouped=27358 APxDN binaries=1319<=32-parents "
               "workloads=143-dense+52-grouped/q "
               "packed-metadata=1 raw-bit-before-timing "
               "BC+grouped-splitk=STRUCTURAL_UNAVAILABLE "

@@ -244,8 +244,8 @@ static int emit(FormatSpec const& spec, int bits, int artifact_tk, std::vector<i
       bool admitted = TacticSpace::topology_exclusion(c, st) == Exclusion::None;
       if (admitted && g_plant_q8_legacy_metadata &&
           c.spec.format == Format::I8 &&
-          legacy_two_plane_per_stage_smem(c, physical_a_rows(c)) * st >
-              kBlockSmemBytes) {
+          legacy_two_plane_per_stage_smem(
+              c, physical_a_rows(c)) * st > kBlockSmemBytes) {
         admitted = false;
       }
       if (admitted)

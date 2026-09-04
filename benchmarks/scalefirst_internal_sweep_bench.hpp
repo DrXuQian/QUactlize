@@ -663,7 +663,8 @@ bool run_row(DeviceInputs const& in, Options const& options, RowResult& row) {
     auto& cell = make_cell("NONPERSISTENT", "FULL_OUTPUT");
     cell.policy = "ordinary";
     cell.grid = ((in.m + TM - 1) / TM) * ((in.n + TN - 1) / TN);
-    if constexpr (T::Shipping::SharedStorageSize > ppu_tactics::kBlockSmemBytes) {
+    if constexpr (!ppu_tactics::fits_block_smem(
+                      T::Shipping::SharedStorageSize)) {
       cell.state = State::ShippingSharedStorage;
     } else {
       typename ShippingGemm::Arguments args{
@@ -689,8 +690,8 @@ bool run_row(DeviceInputs const& in, Options const& options, RowResult& row) {
   // Persistent full-output S1.  The exact final kernel supplies occupancy;
   // capacity/balanced grids are deduplicated by the shared policy.
   if (options.includes(Options::kPersistent)) {
-    if constexpr (PersistentKernel::SharedStorageSize >
-                  ppu_tactics::kBlockSmemBytes) {
+    if constexpr (!ppu_tactics::fits_block_smem(
+                      PersistentKernel::SharedStorageSize)) {
       auto& cell = make_cell("PERSISTENT", "FULL_OUTPUT");
       cell.policy = "capacity+balanced";
       cell.state = State::PersistentSharedStorage;
@@ -759,7 +760,8 @@ bool run_row(DeviceInputs const& in, Options const& options, RowResult& row) {
     auto const partition = cutlass::gemm::kernel::fixed_splitk::make_params(
         ((in.m + TM - 1) / TM) * ((in.n + TN - 1) / TN), k_tiles, splits);
     cell.grid = partition.is_valid() ? int(partition.work_units) : 0;
-    if constexpr (SplitKernel::SharedStorageSize > ppu_tactics::kBlockSmemBytes) {
+    if constexpr (!ppu_tactics::fits_block_smem(
+                      SplitKernel::SharedStorageSize)) {
       cell.state = State::SplitSharedStorage;
       continue;
     }

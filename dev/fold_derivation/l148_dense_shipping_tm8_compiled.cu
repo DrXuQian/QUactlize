@@ -31,7 +31,7 @@ bool query(size_t& shared_bytes) {
                   "fully-quantized census must instantiate the production packed-scale collective");
   }
   shared_bytes = Kernel::SharedStorageSize;
-  return Kernel::SharedStorageSize <= ppu_tactics::kBlockSmemBytes;
+  return ppu_tactics::fits_block_smem(Kernel::SharedStorageSize);
 }
 
 template <int QType, class Low, class High, int GroupSize, int TacticTileK, int ArtifactTileK, bool Packed>

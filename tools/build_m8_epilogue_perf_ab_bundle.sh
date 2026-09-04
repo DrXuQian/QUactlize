@@ -139,7 +139,7 @@ main() {
   GENERATED="$OUT_DIR/generated/row"
   if ! python3 -B "$CANDIDATE_ROOT/tools/gen_fully_quantized_kpack_discovery_units.py" \
       --qtype 12 --out-dir "$GENERATED" \
-      --parent-begin 4827 --parent-count 1 --per-unit 1 \
+      --parent-begin 4809 --parent-count 1 --per-unit 1 \
       >"$OUT_DIR/logs/generate.log" 2>&1; then
     cat "$OUT_DIR/logs/generate.log" >&2
     fail generate; return 1

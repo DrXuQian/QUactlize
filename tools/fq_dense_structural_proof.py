@@ -54,7 +54,7 @@ void fq_emit(char const* symbol) {
   using T = fq_internal_sweep::TcRowTypes<
       Q,A,TM,TN,TK,WM,WN,ST,BC,AP,FQ_TC_WEIGHT_LAYOUT,DN>;
   static_assert(
-      T::Shipping::SharedStorageSize > ppu_tactics::kBlockSmemBytes,
+      !ppu_tactics::fits_block_smem(T::Shipping::SharedStorageSize),
       "structural census admitted a device-bearing FQ dense parent");
   std::printf(
       "FQ_STRUCTURAL_ROW symbol=%s q=%d A=%d tm=%d tn=%d tk=%d "
@@ -230,7 +230,7 @@ def validate_structural_proof(
                 row["runtime_variants"] !=
                 ["TC_S1", "TC_S2", "TC_S4", "TC_S8"] or
                 _integer(row["shipping_smem"], "shipping_smem", minimum=1)
-                <= SMEM_LIMIT or
+                < SMEM_LIMIT or
                 _integer(row["split_smem"], "split_smem", minimum=1) <= 0):
             raise ProofError(f"row {ordinal} is not shipping-structural")
     if (observed_ids != expected_ids or
@@ -475,7 +475,7 @@ def _parse_census(stdout: str, manifest: dict[str, Any]) -> list[dict[str, Any]]
         if (observed["symbol"] != wanted["symbol"] or
                 any(values[field] != value
                     for field, value in expected_values.items()) or
-                values["shipping_smem"] <= SMEM_LIMIT or
+                values["shipping_smem"] < SMEM_LIMIT or
                 values["split_smem"] <= 0):
             raise ProofError(f"structural census row {ordinal} is not exact")
         result.append({
@@ -768,7 +768,8 @@ def self_test() -> None:
     plants.append(grouped)
     missing = copy.deepcopy(proof); missing["rows"].pop()
     plants.append(missing)
-    fits = copy.deepcopy(proof); fits["rows"][0]["shipping_smem"] = SMEM_LIMIT
+    fits = copy.deepcopy(proof)
+    fits["rows"][0]["shipping_smem"] = SMEM_LIMIT - 1
     plants.append(fits)
     stale = copy.deepcopy(proof); stale["binary_sha256"] = "9" * 64
     plants.append(stale)
@@ -792,12 +793,13 @@ def self_test() -> None:
         (root / "fully_quantized_splitk_producer_bench.hpp").write_text(
             "#include <cstddef>\n"
             "namespace ppu_tactics { inline constexpr std::size_t "
-            "kBlockSmemBytes=262144; }\n"
+            "kBlockSmemBytes=262144; constexpr bool fits_block_smem("
+            "std::size_t bytes) { return bytes < kBlockSmemBytes; } }\n"
             "namespace fq_internal_sweep {\n"
             "template<int Q,int A,int TM,int TN,int TK,int WM,int WN,"
             "int ST,int BC,int AP,int L,int DN> struct TcRowTypes {\n"
             " struct Shipping { static constexpr std::size_t "
-            "SharedStorageSize=TM==128?280576:262144; };\n"
+            "SharedStorageSize=TM==128?280576:262143; };\n"
             " struct SplitKernel { static constexpr std::size_t "
             "SharedStorageSize=Shipping::SharedStorageSize; }; }; }\n",
             encoding="utf-8")

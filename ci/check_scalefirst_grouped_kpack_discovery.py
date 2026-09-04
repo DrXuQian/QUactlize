@@ -308,7 +308,7 @@ def main() -> int:
             if "symlink" not in escaped:
                 raise AssertionError("scratch symlink negative did not fire")
         print("[sf-grouped-kpack-discovery:self-test] PASS formats=5 "
-              "full-generated-denominator=13706 delivery=16/32/64 ragged-empty-router=BOUND "
+              "full-generated-denominator=13679 delivery=16/32/64 ragged-empty-router=BOUND "
               "correctness-before-timing=BOUND persistent=EXACT-OCCUPANCY "
               "splitk=STRUCTURAL_UNAVAILABLE resume-mtime=STABLE "
               "binary-shards=DISJOINT-EXACT compact-reject-authority=BOUND "

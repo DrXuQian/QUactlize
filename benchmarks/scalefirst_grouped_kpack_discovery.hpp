@@ -364,7 +364,8 @@ bool run_row(Inputs const& in, Options const& options, Result& result) {
     result.cells.push_back(std::move(invalid));
     return true;
   }
-  if constexpr (T::Kernel::SharedStorageSize > ppu_tactics::kBlockSmemBytes) {
+  if constexpr (!ppu_tactics::fits_block_smem(
+                    T::Kernel::SharedStorageSize)) {
     auto append_unavailable = [&](char const* algorithm, char const* policy) {
       CellResult cell;
       cell.algorithm = algorithm;

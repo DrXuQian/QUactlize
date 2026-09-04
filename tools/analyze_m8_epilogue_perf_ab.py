@@ -200,15 +200,15 @@ def validate_inspection_outputs(arm: str, codegen: dict[str, Any],
 def validate_generated(path: pathlib.Path) -> dict[str, Any]:
     document = json.loads(path.read_text())
     generator.validate_manifest(document)
-    expected_range = {"begin": 4827, "end": 4828, "count": 1,
-                      "authority_count": 6120}
+    expected_range = {"begin": 4809, "end": 4810, "count": 1,
+                      "authority_count": 6102}
     rows = document.get("dense_tc_parents") or []
     if document.get("schema") != "quactlize.fully_quantized_kpack_dense_shard.v2" or \
             document.get("parent_range") != expected_range or len(rows) != 1:
         raise AnalysisError("generated one-parent authority differs")
     row = rows[0]
     expected = {
-        "parent_ordinal": 4827, "symbol": SYMBOL, "qtype": 12,
+        "parent_ordinal": 4809, "symbol": SYMBOL, "qtype": 12,
         "weight_layout": 1, "artifact_tile_k": 0, "bchunk": 0,
         "tile_m": 8, "tile_n": 64, "tactic_tile_k": 256,
         "warp_m": 8, "warp_n": 16, "stages": 2,
@@ -776,7 +776,7 @@ def audit_scripts() -> list[str]:
     runner = compact(RUNNER.read_text())
     builder_tokens = (
         BASELINE_SOURCE, CANDIDATE_SOURCE, BASELINE_ACTLIZE,
-        CANDIDATE_ACTLIZE, "--parent-begin4827--parent-count1--per-unit1",
+        CANDIDATE_ACTLIZE, "--parent-begin4809--parent-count1--per-unit1",
         "FQ_SWEEP_QTYPE=12", "FQ_SWEEP_WEIGHT_LAYOUT=1",
         "FQ_SWEEP_ARTIFACT_TK=0", "FQ_SWEEP_BCHUNK=0",
     )

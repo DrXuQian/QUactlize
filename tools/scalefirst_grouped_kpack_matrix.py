@@ -186,8 +186,8 @@ def validate_manifest(document: dict) -> None:
 def self_test() -> None:
     manifest = make_manifest(True)
     validate_manifest(manifest)
-    if manifest["denominator"]["delivery_expanded_rows"] != 13706:
-        raise ValueError("canonical grouped delivery denominator drifted from 13706")
+    if manifest["denominator"]["delivery_expanded_rows"] != 13679:
+        raise ValueError("canonical grouped delivery denominator drifted from 13679")
     negatives = []
     missing = copy.deepcopy(manifest)
     missing["formats"][0]["rows"].pop()
@@ -218,7 +218,7 @@ def self_test() -> None:
             continue
         raise ValueError("grouped K-pack negative plant stayed green")
     print("[sf-grouped-kpack-matrix:self-test] PASS formats=5 "
-          "admitted=5182 delivery-expanded=13706 full-output=NP+P persistent-grid=EXACT-OCCUPANCY "
+          "admitted=5173 delivery-expanded=13679 full-output=NP+P persistent-grid=EXACT-OCCUPANCY "
           "cuda=STRUCTURAL_UNAVAILABLE splitk=15xSTRUCTURAL_UNAVAILABLE "
           "negatives=missing-row+fake-cuda+fake-persistent+fake-reducer+"
           "layout+Q6-scaleonly")

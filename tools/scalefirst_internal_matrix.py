@@ -362,7 +362,7 @@ def self_test() -> None:
         KPACK_LAYOUT_BY_QTYPE
     kpack_candidates = {q: kpack_dense_candidates(q)
                         for q in KPACK_LAYOUT_BY_QTYPE}
-    assert sum(map(len, kpack_candidates.values())) == 14750
+    assert sum(map(len, kpack_candidates.values())) == 14723
     assert all(dn in resolved_delivery_ns(row.tile_n) and provider in (0, 1)
                for rows in kpack_candidates.values()
                for row, provider, dn in rows)
@@ -417,7 +417,7 @@ def self_test() -> None:
           f"typed={manifest['denominator']['typed_tactic_rows']} "
           f"canonical-kpack=5/{manifest['denominator']['canonical_kpack_typed_tactic_rows']} "
           "q8=2501 Q4-gs-negative=RED Q3/Q6-zero-negative=RED "
-          "delivery-expanded=14750 missing-DN=RED illegal-AP1=RED "
+          "delivery-expanded=14723 missing-DN=RED illegal-AP1=RED "
           "omit-one=RED extra-algorithm=RED "
           "grouped=30xEXPLICIT_UNSUPPORTED")
 

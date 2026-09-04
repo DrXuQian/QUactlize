@@ -94,11 +94,11 @@ def test_metadata_merge_needs_exact_two_route_union(tmp_path: pathlib.Path) -> N
             manifests.append(path)
     catalog = partitions.make_catalog(plan_path, manifests)
     assert str(tmp_path) not in json.dumps(catalog)
-    assert catalog["denominator"]["parents"] == 70618
-    assert catalog["denominator"]["shards"] == 2216
+    assert catalog["denominator"]["parents"] == 70483
+    assert catalog["denominator"]["shards"] == 2211
     assert catalog["payload_residency"] == \
         "PER_WORKER_PARTITION_FETCH_AND_VERIFY"
-    assert len(catalog["shards"]) == 2216
+    assert len(catalog["shards"]) == 2211
     assert all(row["artifact_id"] and row["parent_ids"] and
                row["parent_id_set_sha256"] and row["manifest_sha256"] ==
                row["files"]["manifest"]["sha256"]
@@ -112,7 +112,7 @@ def test_metadata_merge_needs_exact_two_route_union(tmp_path: pathlib.Path) -> N
         "grouped": [{"key": "grouped"}],
     })
     master = worker_plan.make_master(catalog_path, workload_path)
-    assert master["denominator"]["binary_shards"] == 2216
+    assert master["denominator"]["binary_shards"] == 2211
     assignment = worker_plan.make_assignment(master, "a" * 64, 2)
     assert all(len(row["partition_ids"]) == 1
                for row in assignment["workers"])

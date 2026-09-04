@@ -86,7 +86,7 @@ struct ProductionTypes {
   static_assert(ppu_mixed_policy::kernel_policy_valid_v<
                 ppu_tactics::GroupedSpace, Policy>);
   static_assert(Dense::SharedStorageSize > 0 &&
-                Dense::SharedStorageSize <= ppu_tactics::kBlockSmemBytes);
+                ppu_tactics::fits_block_smem(Dense::SharedStorageSize));
   static_assert(std::is_same_v<typename Mainloop::BDeliveryPolicy,
                                b_delivery::ProductionBDelivery>);
   static_assert(std::is_same_v<typename DefaultOperandB::BDeliveryTags,
@@ -184,7 +184,7 @@ static_assert(cute::size<0>(typename GroupedEpilogue::SmemLayout{}) ==
                       cute::size<1>(typename Mainloop::TiledMma::ThrLayoutVMNK{}),
               "grouped ptr-array epilogue must bind the same K-pack mainloop");
 static_assert(GroupedKernel::SharedStorageSize > 0 &&
-              GroupedKernel::SharedStorageSize <= ppu_tactics::kBlockSmemBytes);
+              ppu_tactics::fits_block_smem(GroupedKernel::SharedStorageSize));
 
 int main() {
   std::printf("L237 KQUANT_KPACK production-type PASS qtype=%d "

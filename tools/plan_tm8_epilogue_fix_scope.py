@@ -487,9 +487,11 @@ def self_test() -> None:
     denominator = plan["denominator"]
     wanted = {
         "routes": 2, "formats": 5, "qtype_operator_route_pairs": 20,
-        "authority_parents": 70618, "binary_shards": 2216,
-        "affected_parents": 3537, "affected_shards": 226,
-        "recompiled_parents": 7232,
+        "authority_parents": 70483, "binary_shards": 2211,
+        "affected_parents": 3537, "affected_shards": 227,
+        "recompiled_parents": 7264,
+        "runtime_candidate_work_items": 13144,
+        "whole_shard_evidence_rebind_work_items": 37608,
     }
     if any(denominator.get(key) != value for key, value in wanted.items()):
         raise ScopeError(f"selective denominator drifted: {denominator}")

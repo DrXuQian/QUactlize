@@ -67,11 +67,12 @@ def exact_source_errors(launcher: str, oracle: str) -> list[str]:
         "struct DenseKernelTypes",
         "using KernelTypes = DenseKernelTypes<",
         "using GemmKernel = typename KernelTypes::GemmKernel;",
-        "GemmKernel::SharedStorageSize <= ppu_tactics::kBlockSmemBytes",
+        "ppu_tactics::fits_block_smem(",
     )
     required_oracle = (
         "using Kernel = fpa_intb_ppu::DenseKernelTypes<",
         "shared_bytes = Kernel::SharedStorageSize;",
+        "ppu_tactics::fits_block_smem(Kernel::SharedStorageSize)",
         "Kernel::CollectiveMainloop::is_packed_scale",
     )
     for token in required_launcher:

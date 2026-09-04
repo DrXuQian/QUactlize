@@ -35,10 +35,10 @@ class Family:
 
 
 FAMILIES = (
-    Family("tm8", 4827,
+    Family("tm8", 4809,
            "fqk_tc_q12_l1_a0_tm8_tn64_tk256_wm8_wn16_s2_bc0_ap0_dn16",
            8, 8),
-    Family("tm16", 5157,
+    Family("tm16", 5139,
            "fqk_tc_q12_l1_a0_tm16_tn64_tk256_wm16_wn16_s2_bc0_ap0_dn16",
            16, 16),
 )
@@ -51,8 +51,8 @@ def compact(text: str) -> str:
 def authority_errors() -> list[str]:
     rows = list(matrix.provider_rows(12))
     bad: list[str] = []
-    if len(rows) != 6120:
-        bad.append(f"Q4 dense provider denominator is {len(rows)}/6120")
+    if len(rows) != 6102:
+        bad.append(f"Q4 dense provider denominator is {len(rows)}/6102")
         return bad
     for family in FAMILIES:
         row, provider, delivery_n = rows[family.ordinal]
@@ -74,8 +74,8 @@ def audit_runner(text: str) -> list[str]:
         ("set-u-opipefail", 1),
         ("check_m8_dense_epilogue_postfix.py", 2),
         ("gen_fully_quantized_kpack_discovery_units.py", 2),
-        ("--parent-begin4827--parent-count1", 1),
-        ("--parent-begin5157--parent-count1", 1),
+        ("--parent-begin4809--parent-count1", 1),
+        ("--parent-begin5139--parent-count1", 1),
         ("--per-unit1", 2),
         ("PPU_BUILD_RESUME=0", 1),
         ("FQ_SWEEP_QTYPE=12", 1),
@@ -259,7 +259,7 @@ def validate_generated(run_dir: Path) -> list[str]:
             continue
         rows = document.get("dense_tc_parents") or []
         expected_range = {"begin": family.ordinal, "end": family.ordinal + 1,
-                          "count": 1, "authority_count": 6120}
+                          "count": 1, "authority_count": 6102}
         if document.get("parent_range") != expected_range:
             bad.append(f"{family.name}: parent range differs")
         if len(rows) != 1 or rows[0].get("symbol") != family.symbol:
@@ -328,13 +328,13 @@ def self_test() -> None:
     runner_plants = (
         runner.replace("--tm8-max-m=17", "--tm8-max-m=8", 1),
         runner.replace("--only-split=1", "--only-split=0", 1),
-        runner.replace("--parent-begin 4827", "--parent-begin 4828", 1),
+        runner.replace("--parent-begin 4809", "--parent-begin 4810", 1),
         runner.replace("PPU_BUILD_RESUME=0", "PPU_BUILD_RESUME=1", 1),
     )
     for planted in runner_plants:
         if not audit_runner(planted):
             raise AssertionError("runner plant stayed green")
-    print("[m8-dense-epilogue-postfix:self-test] PASS canonical parents=4827/5157 "
+    print("[m8-dense-epilogue-postfix:self-test] PASS canonical parents=4809/5139 "
           "fresh two-binary S1-only M=1/8/9/15/16/17; 22 plants RED")
 
 

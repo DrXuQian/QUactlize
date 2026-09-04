@@ -17,6 +17,14 @@ namespace ppu_tactics {
 // same named limit; a literal in either place is exactly how an emitted "legal" tactic can become an unlaunchable
 // compiled tactic.
 inline constexpr int64_t kBlockSmemBytes = 262144;
+// The runtime rejects a dynamic-shared attribute request equal to the nominal
+// 256-KiB block capacity.  Treat the boundary as exclusive everywhere so a
+// host-emitted row cannot disagree with its compiled launch guard.
+constexpr bool fits_block_smem(int64_t bytes) {
+  return bytes >= 0 && bytes < kBlockSmemBytes;
+}
+static_assert(fits_block_smem(kBlockSmemBytes - 1));
+static_assert(!fits_block_smem(kBlockSmemBytes));
 // Every emitted kernel must serve every runtime group size in the shared dispatch ladder. Sixteen is the smallest
 // supported group and therefore the worst case for metadata footprint.
 inline constexpr int kMinimumRuntimeGroupSize = 16;
@@ -96,6 +104,7 @@ enum class Exclusion {
   LowDelivery,
   HighDelivery,
   MinimumStageSmem,
+  EpilogueSharedStorage,
   ProducerWarpN,
   ProducerMap,
   ProducerConsumerLayout,
@@ -118,6 +127,8 @@ constexpr char const* exclusion_clause(Exclusion e) {
     case Exclusion::LowDelivery: return "the low plane over-delivers the warp fragment";
     case Exclusion::HighDelivery: return "the high plane over-delivers the warp fragment";
     case Exclusion::MinimumStageSmem: return "the conservative gs16 scale+zero footprint exceeds the 256KB block limit";
+    case Exclusion::EpilogueSharedStorage:
+      return "the fp32 epilogue shared tile reaches or exceeds the usable 256KB dynamic-shared limit";
     case Exclusion::ProducerWarpN: return "the offline producer exposes only consumer-validated WarpN values through 64";
     case Exclusion::ProducerMap: return "the Q6 offline producer inverse at ArtifactTileK=256 is incomplete";
     case Exclusion::ProducerConsumerLayout:
@@ -234,17 +245,60 @@ constexpr int64_t common_per_stage_smem(Candidate c, int a_rows) {
              2 * c.spec.metadata_planes;
 }
 
+// The PPU vectorized epilogue stages one fp32 accumulator for every element
+// in its exact shared output tile.  Its M extent is one MMA instruction per
+// M-warp, not necessarily the logical CTA TileM.  This mirrors
+// CollectiveBuilder's SmemM/SmemLayoutO derivation without importing CUTLASS
+// into this host-readable tactic authority.
+constexpr int64_t epilogue_smem(Candidate c) {
+  int const warp_on_m = c.tm / c.wm;
+  return int64_t(warp_on_m) * instruction_m(c) * c.tn * 4;
+}
+
 constexpr Exclusion common_topology_exclusion(Candidate c, int stages = 2) {
   if (auto const e = common_non_smem_exclusion(c); e != Exclusion::None) return e;
+
+  // A request of exactly 256 KiB is not launchable: the adapter must publish
+  // it through hggcFuncAttributeMaxDynamicSharedMemorySize, and the PPU0010
+  // runtime rejects that exact-cap request.  The Q4 TM256/TN256/WM16/WN128
+  // device witness returned kErrorInternal from that sole initialize path;
+  // its otherwise-isomorphic WM32 control used 172048 B and ran correctly.
+  if (!fits_block_smem(epilogue_smem(c)))
+    return Exclusion::EpilogueSharedStorage;
 
   // Fold cancels from B bytes.  Metadata uses the format-owned contract:
   // historical families retain the conservative gs16 scale+zero ladder,
   // while fixed-gs32 Q8_0 charges its one ScaleOnly fp16 plane.  Applying the
   // historical two-plane assumption to Q8 would silently delete legal rows.
-  if (common_per_stage_smem(c, physical_a_rows(c)) * stages > kBlockSmemBytes)
+  // This is deliberately a broad conservative model: it charges every
+  // format at the minimum runtime group size and can therefore equal the
+  // limit even when the compiled format-owned layout is smaller.  Preserve
+  // equality here and let the exact compiled SharedStorageSize guard make
+  // the strict boundary decision.
+  if (common_per_stage_smem(c, physical_a_rows(c)) * stages >
+      kBlockSmemBytes)
     return Exclusion::MinimumStageSmem;
   return Exclusion::None;
 }
+
+// Exact device closure for the boundary that motivated the epilogue term.
+// Both rows have the same TM/TN/TK/stages and differ only in M-warp shape:
+// WM16 constructs a 256x256 fp32 shared epilogue and is rejected at the
+// 256-KiB attribute boundary; WM32 constructs 128x256 and remains admitted.
+inline constexpr FormatSpec kEpilogueSmemQ4{
+    Format::I4, "epilogue-smem-q4", 4, 0, 32, 2};
+inline constexpr Candidate kEpilogueSmemExactCap{
+    kEpilogueSmemQ4, 256, 256, 128, 16, 128, 0, 0};
+inline constexpr Candidate kEpilogueSmemControl{
+    kEpilogueSmemQ4, 256, 256, 128, 32, 128, 0, 0};
+static_assert(epilogue_smem(kEpilogueSmemExactCap) == 262144 &&
+              common_topology_exclusion(kEpilogueSmemExactCap, 2) ==
+                  Exclusion::EpilogueSharedStorage,
+              "the exact-cap PPU epilogue must be rejected before build/run");
+static_assert(epilogue_smem(kEpilogueSmemControl) == 131072 &&
+              common_topology_exclusion(kEpilogueSmemControl, 2) ==
+                  Exclusion::None,
+              "the measured WM32 epilogue control must remain admitted");
 
 // Denominator negative for Q8 metadata ownership.  This row fits only under
 // the real fixed-gs32/one-plane contract; planting the historical

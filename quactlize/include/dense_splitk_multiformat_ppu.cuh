@@ -273,7 +273,8 @@ class PreparedMultiformatLauncher {
       return true;
     }
 
-    if constexpr (SplitKernel::SharedStorageSize > ppu_tactics::kBlockSmemBytes) {
+    if constexpr (!ppu_tactics::fits_block_smem(
+                      SplitKernel::SharedStorageSize)) {
       // S==1 above remains the exact independently admitted shipping type.  A
       // partial epilogue may change the union maximum, so S>1 must check its
       // own compiled kernel size rather than inherit S==1's verdict.

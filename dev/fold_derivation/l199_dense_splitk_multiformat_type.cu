@@ -413,10 +413,10 @@ void typed_config(Census& census, char const* config_name) {
         ppu_mixed_policy::AtomAtATimeConversion<
             typename Shipping::CollectiveMainloop>::value;
 
-    constexpr bool shipping_fits =
-        Shipping::SharedStorageSize <= ppu_tactics::kBlockSmemBytes;
-    constexpr bool split_fits =
-        Split::GemmKernel::SharedStorageSize <= ppu_tactics::kBlockSmemBytes;
+    constexpr bool shipping_fits = ppu_tactics::fits_block_smem(
+        Shipping::SharedStorageSize);
+    constexpr bool split_fits = ppu_tactics::fits_block_smem(
+        Split::GemmKernel::SharedStorageSize);
 
     if constexpr (!shipping_fits) {
       for (int split : kSplits) {

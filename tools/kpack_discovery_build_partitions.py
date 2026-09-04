@@ -253,7 +253,20 @@ def make_plan(partition_count: int) -> dict[str, Any]:
 
 def validate_plan(document: dict[str, Any]) -> None:
     if document.get("schema") != PLAN_SCHEMA:
-        raise PartitionError("partition plan schema differs")
+        # The TM8 epilogue repair uses the same native shard/receipt/catalog
+        # machinery with a strict subset plan.  Import lazily because that
+        # adapter in turn uses this module's canonical native rows.
+        try:
+            import tm8_epilogue_selective_campaign as selective
+        except ImportError as exc:
+            raise PartitionError("partition plan schema differs") from exc
+        if document.get("schema") != selective.PLAN_SCHEMA:
+            raise PartitionError("partition plan schema differs")
+        try:
+            selective.validate_plan(document)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PartitionError(f"selective partition plan differs: {exc}") from exc
+        return
     count = _integer(document.get("partition_count"), "partition_count")
     if not 1 <= count <= MAX_PARTITIONS:
         raise PartitionError("partition_count is out of range")
@@ -373,7 +386,7 @@ def authority_partition_record(plan_path: Path, document: dict[str, Any],
     rows = selection(document, partition_id, route)
     keys = [row["shard_key"] for row in rows]
     return {
-        "schema": PLAN_SCHEMA,
+        "schema": document["schema"],
         "plan_sha256": file_sha(plan_path),
         "partition_id": partition_id,
         "partition_count": document["partition_count"],
@@ -933,13 +946,45 @@ def validate_catalog_document(document: dict[str, Any]) -> dict[str, Any]:
         "partition_plan_sha256", "partition_count", "partition_assignment",
         "payload_residency", "denominator", "partitions", "shards",
     }
+    selective_record = document.get("selective_scope")
+    if selective_record is not None:
+        expected_top.add("selective_scope")
     if set(document) != expected_top or document.get("schema") != CATALOG_SCHEMA:
         raise PartitionError("distributed catalog schema/fields differ")
     count = _integer(document.get("partition_count"), "catalog partition_count")
-    plan = make_plan(count)
+    if selective_record is None:
+        plan = make_plan(count)
+    else:
+        try:
+            import tm8_epilogue_selective_campaign as selective
+            if not isinstance(selective_record, dict):
+                raise PartitionError("catalog selective scope record is malformed")
+            live_scope = selective.tm8_scope.make_plan()
+            plan = selective.make_plan(
+                live_scope, count,
+                selective_record.get("qtypes"))
+            if plan["selective_scope"] != selective_record:
+                raise PartitionError("catalog selective scope differs")
+        except (KeyError, TypeError, ValueError) as exc:
+            if isinstance(exc, PartitionError):
+                raise
+            raise PartitionError(f"catalog selective scope differs: {exc}") from exc
     _check_source(document, "distributed catalog")
+    if selective_record is not None:
+        source = live_scope["source"]
+        actlize = [row for row in document["submodules"]
+                   if row["path"] == "third_party/actlize"]
+        if (document["source_sha"] != source["repository_git_commit"] or
+                len(actlize) != 1 or
+                actlize[0]["gitlink"] != source["actlize_git_commit"]):
+            raise PartitionError("catalog source/TM8 scope identity differs")
     plan_sha = _sha(document.get("partition_plan_sha256"),
                     "catalog partition plan SHA-256")
+    if selective_record is not None:
+        encoded_plan = (json.dumps(
+            plan, indent=2, sort_keys=True, allow_nan=False) + "\n").encode()
+        if hashlib.sha256(encoded_plan).hexdigest() != plan_sha:
+            raise PartitionError("catalog selective partition plan hash differs")
     if document.get("partition_assignment") != plan["assignment"]:
         raise PartitionError("catalog partition assignment differs")
     if document.get("payload_residency") != "PER_WORKER_PARTITION_FETCH_AND_VERIFY":
@@ -1164,17 +1209,19 @@ def make_catalog(plan_path: Path,
         "partitions": partition_rows,
         "shards": sorted(catalog_shards, key=lambda row: row["shard_key"]),
     }
+    if plan.get("schema") != PLAN_SCHEMA:
+        result["selective_scope"] = plan["selective_scope"]
     return validate_catalog_document(result)
 
 
 def self_test() -> None:
     plan = make_plan(16)
-    if (plan["denominator"]["shards"] != 2216 or
-            plan["denominator"]["parents"] != 70618 or
+    if (plan["denominator"]["shards"] != 2211 or
+            plan["denominator"]["parents"] != 70483 or
             plan["denominator"]["shards_by_route"] != {
-                "scalefirst": 893, "fully-quantized": 1323} or
+                "scalefirst": 892, "fully-quantized": 1319} or
             plan["denominator"]["parents_by_route"] != {
-                "scalefirst": 28456, "fully-quantized": 42162}):
+                "scalefirst": 28402, "fully-quantized": 42081}):
         raise PartitionError("live exhaustive denominator differs")
     shard_counts = [row["shards"] for row in plan["partitions"]]
     parent_counts = [row["parents"] for row in plan["partitions"]]
@@ -1207,7 +1254,7 @@ def self_test() -> None:
             continue
         raise PartitionError("partition authority negative stayed green")
     print("[kpack-build-partitions:self-test] PASS "
-          "parents=70618 shards=2216 sf=28456/893 fq=42162/1323 "
+          "parents=70483 shards=2211 sf=28402/892 fq=42081/1319 "
           "partitions=16 exact-disjoint balance=BOUNDED negatives=4-RED")
 
 

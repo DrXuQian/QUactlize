@@ -39,12 +39,12 @@ static_assert(!Mainloop::is_packed_scale,
 static_assert(std::is_same_v<Mainloop, PersistentMainloop>,
               "K-pack4 prefill must reuse the exact ScaleFirst persistent mainloop");
 static_assert(Types::PersistentKernel::SharedStorageSize > 0);
-static_assert(Types::PersistentKernel::SharedStorageSize <=
-                  ppu_tactics::kBlockSmemBytes);
-static_assert(LargeK64Types::PersistentKernel::SharedStorageSize <=
-                  ppu_tactics::kBlockSmemBytes);
-static_assert(LargeK256Types::PersistentKernel::SharedStorageSize <=
-                  ppu_tactics::kBlockSmemBytes);
+static_assert(ppu_tactics::fits_block_smem(
+                  Types::PersistentKernel::SharedStorageSize));
+static_assert(ppu_tactics::fits_block_smem(
+                  LargeK64Types::PersistentKernel::SharedStorageSize));
+static_assert(ppu_tactics::fits_block_smem(
+                  LargeK256Types::PersistentKernel::SharedStorageSize));
 static_assert(PackedA1Types::MainloopPolicy::PackedARows == 1,
               "the AP1 control must bind the real Rows=1 policy");
 static_assert(scalefirst_internal_sweep::packed_a_shape_admissible<

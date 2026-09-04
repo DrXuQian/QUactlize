@@ -600,10 +600,12 @@ int launch_dense_q4_kpack4_exact(
       std::is_same_v<typename Shipping::MainloopPolicy::Descriptor::BProviderType,
                      ppu_mixed_policy::KPack4TransposedBProvider>,
       "arrangement-v2 layout=K-pack4 must select the transposed provider");
-  if constexpr (GemmKernel::SharedStorageSize > ppu_tactics::kBlockSmemBytes) {
+  if constexpr (!ppu_tactics::fits_block_smem(
+                    GemmKernel::SharedStorageSize)) {
     return 31;
   }
-  if constexpr (SplitKernel::SharedStorageSize > ppu_tactics::kBlockSmemBytes) {
+  if constexpr (!ppu_tactics::fits_block_smem(
+                    SplitKernel::SharedStorageSize)) {
     return 31;
   }
   if constexpr (APackRows == 1) {
@@ -738,8 +740,8 @@ int launch_scalefirst_q4_kpack4_persistent(
       PersistentKernel>;
   static_assert(!Mainloop::is_packed_scale,
                 "ScaleFirst K-pack4 must consume fp16 scale/zero planes, not packed units");
-  static_assert(PersistentKernel::SharedStorageSize <=
-                    ppu_tactics::kBlockSmemBytes,
+  static_assert(ppu_tactics::fits_block_smem(
+                    PersistentKernel::SharedStorageSize),
                 "shipping ScaleFirst K-pack4 persistent kernel must fit one block");
   if (m < 64 || n <= 0 || k <= 0 || n % 256 || k % 256) return 31;
   if constexpr (QueryOnly) return 0;

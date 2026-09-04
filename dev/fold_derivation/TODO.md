@@ -2526,7 +2526,7 @@ local layout oracle cannot close one of these rows.
 | A04 | D06 | SUPERSEDED-BY-A09 | The Q4 dense policy-v2 M=1..64 pilot remains useful historical evidence, but it is not the final selector denominator and must not be fitted separately |
 | A05 | D17 | SUPERSEDED-BY-A09 | The five-format grouped multi-router pilot remains a router-control source, but the final grouped policy is fitted only from A09's complete K-pack campaign |
 | A06 | D05 | LOCAL-CLOSED/PENDING-FINAL-BUNDLE | Public Q4 ScaleFirst packed-units-to-FP16 metadata sizing and asynchronous device prepass APIs were added in `d27fee0` and documented in `665d2b6`; non-Q4 format DSOs report the capability absent. Reconfirm the symbols and numeric contract in A07's final six-library gate |
-| A09 | D06, D17 | DEVICE-EXECUTION-BLOCKED/FIRST-FAILURES-TRIAGED | The final production-space campaign is K-pack-only Q2/Q3/Q4/Q5/Q6 across ScaleFirst/FullyQuantized and dense/grouped. Its immutable denominator contains 70,618 compiled parent types (28,456 SF and 42,162 FQ), 59,000 FQ dense split cells, 1,381 format/workload cells, and every recorded historical winner. It forbids top-N and point-estimate pruning. The 2,216 binary shards are partitioned into 32 logical partitions per route (64 independently publishable artifacts); the distributed catalog binds every parent, manifest, binary and receipt hash, and assigns whole partitions to workers. The first Q4 device execution exposed the bounded incident recorded below; do not resume the mass campaign until its three device gates close. No measured selector may be claimed from the partial run |
+| A09 | D06, D17 | SELECTIVE-REBUILD-READY/PENDING-DEVICE | The final production-space campaign is K-pack-only Q2/Q3/Q4/Q5/Q6 across ScaleFirst/FullyQuantized and dense/grouped. Its live denominator contains 70,483 compiled parent types (28,402 SF and 42,081 FQ), 58,892 FQ dense split cells, 1,381 format/workload cells, and every recorded historical winner. It forbids top-N and point-estimate pruning. The 2,211 binary shards are partitioned into independently publishable artifacts; the distributed catalog binds every parent, manifest, binary and receipt hash. All three first-Q4 blockers below are now closed or structurally excluded. Rebuild/resweep the exact invalidated subset before resuming the unaffected full campaign; no measured selector may be claimed from the partial run |
 | A10 | D06 | LOCAL-IMPLEMENTATION-IN-PROGRESS | Turn A09's complete steady census into the final end-to-end policy without inventing a reducer estimate: retain all 3x11 raw samples with seed/order/device/binary provenance; measure one versioned reducer lookup for every unique `(M,N,S,dtype,implementation)` tuple; derive an interval confidence set without a numeric cap; measure cold/prepass/first-use only for that set; and require high-cadence real-reducer shipping replay before emitting a K-pack-only heuristic. A missing authority or overlapping public grouped feature leaf yields `NO_MEASURED_POLICY`, never a compiled-default fallback |
 | A07 | D06, D16, D17 | PENDING-FINAL-GATE | After A09/A10 produce the unified measured policy, rebuild the six-library bundle, repeat host ABI/negative controls and all canonical device correctness gates, then run the selected-config performance sanity board |
 | A08 | D03, D14, D18 | PENDING-MAIN-PORT | Selectively port only the admitted PPU/K-pack dependency closure to main after A07, remove develop-only benchmark members from the shipping `Prepared` type, and pass the exact main inventory, clean-source, HGCC/ELF, host ABI, and box admission gates |
@@ -2558,8 +2558,10 @@ separate closure boundary:
   CUTLASS and runtime status domains separately and stops only after printing
   the first causal cell.  The exact first executed witness is
   `fqk_tc_q12_l1_a0_tm64_tn128_tk64_wm16_wn32_s4_bc0_ap0_dn32`, S1, seed
-  `0x740e23673ecf70c7`.  A fresh one-cell device replay must identify the real
-  launch rejection before this shard is resumed.
+  `0x740e23673ecf70c7`.  The fresh-process replay at source `0cb6772` measured
+  that exact 512-thread parent with `raw_bad=0` and no CUTLASS/runtime error.
+  The earlier cascade was therefore sticky-process contamination, not a
+  rejected specialization; this blocker is closed.
 - Five grouped numerical failures span FullyQuantized and ScaleFirst and both
   persistent and nonpersistent schedulers.  In every case the first bad
   element is exactly an expert's `local_m=8`, the first row of the second TM8
@@ -2572,8 +2574,14 @@ separate closure boundary:
   M=3 even though its typed provider capacity is one row; that admission is
   now rejected structurally before mainloop construction.  The remaining
   `tm256,tn256,tk128,wm16,wn128` nonpersistent failure occurs during
-  initialization, not arithmetic.  Its replay now prints exact CUTLASS status,
-  CTA thread count, and shipping/persistent/split shared-storage sizes.
+  initialization, not arithmetic.  The fresh replay isolated CUTLASS status 7
+  to `hggcFuncSetAttribute(MaxDynamicSharedMemorySize)`: WM16 constructs a
+  `256x256` fp32 epilogue scratch tile, exactly 262,144 bytes, whereas the
+  otherwise-isomorphic WM32/512-thread control uses 172,048 kernel bytes and
+  measures correctly.  The common host tactic authority now models the exact
+  epilogue tile and treats the 256-KiB dynamic-shared boundary as exclusive;
+  compiled dense/grouped guards use the same predicate.  This row is therefore
+  structurally excluded before generation rather than failing on the box.
 
 Only after the dense one-cell launch replay, grouped second-tile bisection,
 and ScaleFirst initialization replay are green or structurally excluded may
@@ -2663,16 +2671,18 @@ Three follow-ups deliberately remain separate from that numeric conclusion:
    `artifacts/ppu0010/3eb5e7a-m8-epilogue-perf-ab-eaf274676ac0`; both binary
    hashes and its inner manifest remain unchanged.  The manifest SHA-256 is
    `eaf274676ac0405cc1f3de663ab3d4da06049c730b2ac48a440c7a89c6e7ea8c`.
-3. Commit `1ff8ac1f97f89810d32c5f819021ac709eb4fb75` derives the
+3. Commit `1ff8ac1f97f89810d32c5f819021ac709eb4fb75` introduced the
    selective rebuild/resweep set from the live builder formula and the two
-   canonical shard authorities.  It finds 3,537 affected parents and 226 of
-   2,216 binary shards; existing 32-parent packing recompiles 7,232 parents.
-   The semantic runtime set is 13,068 shard/workload items, not the complete
-   203,952-item campaign.  Dense admission remains policy-bound (`M < 8`, with
+   canonical shard authorities.  After excluding the exact-cap epilogue rows,
+   the live plan finds 3,537 affected parents and 227 of 2,211 binary shards;
+   existing 32-parent packing recompiles 7,264 parents.  The semantic runtime
+   set is 13,144 shard/workload items, not the complete 339,196-item five-format
+   campaign (203,018 for Q4 alone).  Dense admission remains policy-bound (`M < 8`, with
    packed-A at M=1); grouped has no local-expert-M ceiling.  Do not widen the
    dense selector until measured results justify it.
 
-Both pending TM8 device gates now pass.  Rebuild only the 226 invalidated
-shards and rerun only the emitted semantic set.  The unrelated dense launch
-rejection and ScaleFirst initialization rejection recorded above remain A09
-blockers, but are not TM8 correctness debt and must be diagnosed independently.
+Both pending TM8 device gates pass, the dense fresh-process control is green,
+and the ScaleFirst exact-cap row is structurally excluded.  Rebuild only the
+227 invalidated shards and rerun only the emitted 13,144-item semantic set.
+The Q4-first slice is 83 shards, 2,656 compiled parents, and 5,296 runtime
+items; its result is the admission gate before expanding to all five formats.
