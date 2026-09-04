@@ -2602,3 +2602,55 @@ cross of TM8/TM16 and nonpersistent/persistent, followed only if necessary by
 TN16/TN32/TN64 (one/two/four N-warps).  Failure reports must retain expert,
 local-M, N-cohort, zero/poison and first-coordinate histograms; aggregate
 `raw_bad` alone is no longer sufficient evidence.
+
+#### 2026-09-04 TM8 second-tile root cause and closure
+
+The grouped failure was not an A replay, metadata defect, K-pack fragment
+mapping error, or scheduler lifetime bug.  The PPU epilogue builder requested
+an eight-value output copy for the exact `TM8/WM8/WN16` family.  At `TN64` this
+made 128 physical threads describe a virtual `16x64`/1024-value output map,
+while the real MMA and shared-output tile contains only `8x64`/512 values.
+The first CTA therefore owned the first eight rows correctly but wrote all 64
+columns of logical row eight into the next real M tile once `M > 8`.
+
+Actlize commit `423253c00df333ead6fb72ea623d526f24f56b5a` caps the
+epilogue copy width by both the thread fragment and shared-fragment capacity.
+The affected family now uses four values per thread and an exact `8x16` thread
+map.  The Q4 device topology gate reproduced the historical 64/64 illegal row
+eight writes and proved 0/64 with the candidate; its M=8 and M=9 output tags,
+TN32 control, and replay negatives were all exact.  The strict Q4 production
+closures then returned zero for all six grouped arms (persistent and
+nonpersistent, including local-M 9 and the skewed 256-expert boundary) and all
+12 dense cells at M=1/8/9/15/16/17.  These results close the original numeric
+incident; a later failure must not be relabelled as the same A/metadata cause.
+
+Three follow-ups deliberately remain separate from that numeric conclusion:
+
+1. Commit `5e5cb7c1d1765f8056193e73f920d5c914e5a111` supplies the
+   fresh-device common-builder scope gate: Q2/Q3/Q4/Q5/Q6 across
+   FullyQuantized/ScaleFirst and dense/grouped, 40 exact candidate cells with
+   seven correctness repeats.  It is pending one PPU run.  The historical RED
+   is owned by the exact topology gate rather than multiplied into redundant
+   legacy-format executions.
+2. Commit `92e9dcaca91b362019354e77ac21536bbc1b51ac` supplies a
+   compile-free M=8 performance/resource A/B.  Its synthetic baseline is the
+   same parent tree with only the actlize gitlink changed from `423253c0` to
+   immediate predecessor `9d063e4c`; the two binaries therefore differ only by
+   the epilogue fix.  Local ELF evidence has identical MMA/AIU/swizzle counts,
+   90 vector registers, 128 scalar registers, and 104-byte stack.  R2G changes
+   from two `vmem.st.b32x4` to two `vmem.st.b32x2`, and total instructions fall
+   from 2129 to 2043.  Device timing remains pending and alone decides whether
+   the valid M<=8 path regressed.
+3. Commit `1ff8ac1f97f89810d32c5f819021ac709eb4fb75` derives the
+   selective rebuild/resweep set from the live builder formula and the two
+   canonical shard authorities.  It finds 3,537 affected parents and 226 of
+   2,216 binary shards; existing 32-parent packing recompiles 7,232 parents.
+   The semantic runtime set is 13,068 shard/workload items, not the complete
+   203,952-item campaign.  Dense admission remains policy-bound (`M < 8`, with
+   packed-A at M=1); grouped has no local-expert-M ceiling.  Do not widen the
+   dense selector until measured results justify it.
+
+After the two pending TM8 device gates pass, rebuild only the 226 invalidated
+shards and rerun only the emitted semantic set.  The unrelated dense launch
+rejection and ScaleFirst initialization rejection recorded above remain A09
+blockers, but are not TM8 correctness debt and must be diagnosed independently.
