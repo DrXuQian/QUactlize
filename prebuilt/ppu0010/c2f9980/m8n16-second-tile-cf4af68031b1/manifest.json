@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "source_sha": "c2f9980d52c6b32c955ed75b9bebba302f619aec",
+  "submodules": {
+    "third_party/actlize": "8d46b758c8931807df840a6ed87d272d74a8fdf4",
+    "third_party/cutlass": "f94ec46f4f63f96003d6cfdf2014731e7672c281"
+  },
+  "sdk": "PPU_SDK_cuda-13.0.0-ubuntu2404-2.1.1-a5c56e sha256=63ca196b152f2fec667fce8b18c04f1d6d0fa9e7bc7f72e18f017c96d11731dd",
+  "compiler": "hgcc Release version 2.1.1-a5c56e built=2026-07-25T09:15:42 sha256=fa62c590c67411c23fa4028f15fa562b39ce0cf830830d038a1ec04c59d8c76e",
+  "arch": "ppu0010",
+  "artifacts": [
+    {
+      "role": "m8n16-prerequisite",
+      "qtype": 12,
+      "path": "bin/test_ppu_m8n16_gates",
+      "size": 131368,
+      "sha256": "465ddbac3b6d86af6b9eaa09e06bae1d8ea825d3ec086eeccd04494b3a789a34",
+      "target": "test_ppu_m8n16_gates",
+      "ppu_defs": []
+    },
+    {
+      "role": "m8n16-second-tile",
+      "qtype": 12,
+      "path": "bin/test_ppu_m8n16_collective",
+      "size": 1842984,
+      "sha256": "9906e92fa2403d598f537db7625d0b34a64bae1ae13ccc0bbc70d5c78afa9d85",
+      "target": "test_ppu_m8n16_collective",
+      "ppu_defs": []
+    }
+  ]
+}
