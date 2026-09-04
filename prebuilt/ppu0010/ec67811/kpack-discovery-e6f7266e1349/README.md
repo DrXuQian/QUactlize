@@ -10,7 +10,7 @@ The three `campaign.tar.zst.part-*` files are Git LFS objects. The archive
 expands to `campaign-ec67811/` and includes the distributed catalog and all
 payloads. It does not contain a compiler and the launcher never invokes one.
 
-Use runner commit `5919afa07d57ecb21bc2a5c73ce5b78f5c929648` or reject the
+Use runner commit `944785d9b8d7068e5c954d421cd27f751e91df9c` or reject the
 artifact. That runner is required for the proved structural-only FQ shard and
 binds each payload's exact runtime-library subset to the full probe closure.
 
@@ -27,7 +27,7 @@ zstd -dc /workspace/campaign-ec67811-box8.tar.zst | tar -xf - -C /workspace
 Then set `PPU_SDK` to the compatible SDK root and run:
 
 ```bash
-QUACTLIZE_ROOT=/workspace/quactlize-runner-5919afa \
+QUACTLIZE_ROOT=/workspace/quactlize-runner-944785d \
 CAMPAIGN=/workspace/campaign-ec67811 \
 RUN=/workspace/kpack-discovery-ec67811 \
 bash run_box8.sh
@@ -37,6 +37,11 @@ For the exhaustive timing census, set `CORRECTNESS_REPEATS=1`; run the
 256-repeat finalist and 8,192-repeat shipping stability gates only after the
 timing census has selected their much smaller denominators. The default stays
 at 256 so an omitted variable cannot silently weaken an established run.
+
+Set `QTYPE_SCOPE=12` to derive and execute a fail-closed Q4_K-only master,
+assignment, and eight worker selections from the same complete catalog and
+route plan. The scoped authorities are written below `RUN/control/`; no payload
+is rebuilt or copied.
 
 The launcher validates the catalog and assignment, hashes every assigned
 payload, probes and proves eight homogeneous devices, and starts one resumable

@@ -6,7 +6,7 @@ fail() {
   exit 2
 }
 
-runner_root="$(realpath -e -- "${QUACTLIZE_ROOT:-/workspace/quactlize-runner-5919afa}")" ||
+runner_root="$(realpath -e -- "${QUACTLIZE_ROOT:-/workspace/quactlize-runner-944785d}")" ||
   fail 'set QUACTLIZE_ROOT to the pinned runner checkout'
 campaign="$(realpath -e -- "${CAMPAIGN:-/workspace/campaign-ec67811}")" ||
   fail 'set CAMPAIGN to the extracted campaign directory'
@@ -20,21 +20,32 @@ case "$correctness_repeats" in
 esac
 test "$correctness_repeats" -ge 1 ||
   fail 'CORRECTNESS_REPEATS must be a positive integer'
+qtype_scope="${QTYPE_SCOPE:-ALL}"
+case "$qtype_scope" in
+  ALL|10|11|12|13|14) ;;
+  *) fail 'QTYPE_SCOPE must be ALL or one of 10,11,12,13,14' ;;
+esac
 
 source_sha=ec67811bd709eace941daf3c650d45df574b1a87
-runner_sha=5919afa07d57ecb21bc2a5c73ce5b78f5c929648
+runner_sha=944785d9b8d7068e5c954d421cd27f751e91df9c
 catalog="$campaign/control/distributed-catalog.json"
-execution="$campaign/control/execution-8"
-plan="$execution/route-plan.json"
+canonical_execution="$campaign/control/execution-8"
+plan="$canonical_execution/route-plan.json"
+if test "$qtype_scope" = ALL; then
+  execution="$canonical_execution"
+else
+  execution="$run/control/q$qtype_scope-execution-8"
+fi
 master="$execution/master.json"
 assignment="$execution/assignment.json"
+selection_root="$execution/selections"
 published="$campaign/published/$source_sha"
 
 test "$(git -C "$runner_root" rev-parse HEAD)" = "$runner_sha" ||
   fail "runner checkout must be exactly $runner_sha"
 test -x "$sdk/bin/hgobjdump" || fail 'PPU_SDK lacks bin/hgobjdump'
 test -s "$catalog" || fail 'distributed catalog is missing'
-test -s "$assignment" || fail '8-worker assignment is missing'
+test -s "$plan" || fail 'route plan is missing'
 test -d "$published" || fail 'published payload tree is missing'
 case "$run" in /workspace/*) ;; *) fail 'RUN must be below /workspace';; esac
 
@@ -49,6 +60,13 @@ mkdir -p "$run"/{devices,logs,workers}
 
 python3 -B tools/kpack_discovery_build_partitions.py validate-catalog \
   --catalog "$catalog"
+if test "$qtype_scope" != ALL; then
+  python3 -B tools/kpack_discovery_worker_plan.py create \
+    --bundle "$catalog" --plan "$plan" --workers 8 \
+    --qtype "$qtype_scope" --master "$master" --assignment "$assignment" \
+    --selection-dir "$selection_root"
+fi
+test -s "$assignment" || fail '8-worker assignment is missing'
 python3 -B tools/kpack_discovery_worker_plan.py validate-assignment \
   --bundle "$catalog" --plan "$plan" --master "$master" \
   --assignment "$assignment"
@@ -80,7 +98,7 @@ PY
 
 probe_pids=()
 for worker in $(seq 0 7); do
-  selection="$execution/selections/worker-$worker.json"
+  selection="$selection_root/worker-$worker.json"
   (
     load_artifact_args "$selection"
     CUDA_VISIBLE_DEVICES="$worker" \
@@ -163,7 +181,7 @@ else:
 PY
 
 for worker in $(seq 0 7); do
-  selection="$execution/selections/worker-$worker.json"
+  selection="$selection_root/worker-$worker.json"
   output="$run/workers/worker-$worker"
   pid_file="$run/worker-$worker.pid"
   if test -s "$pid_file" && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
@@ -199,5 +217,5 @@ for worker in $(seq 0 7); do
     fail "worker $worker exited during startup"
   }
 done
-printf '[ec67811-box8] STARTED workers=8 correctness_repeats=%s run=%s\n' \
-  "$correctness_repeats" "$run"
+printf '[ec67811-box8] STARTED workers=8 qtype_scope=%s correctness_repeats=%s run=%s\n' \
+  "$qtype_scope" "$correctness_repeats" "$run"
