@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -133,6 +134,8 @@ def validate_family_text(family: Family, text: str) -> list[str]:
         bad.append(f"{family.name}: cell rows={len(cells)}/6")
     if len(done) != 6:
         bad.append(f"{family.name}: done rows={len(done)}/6")
+    if bad:
+        return bad
 
     fixture_by_key: dict[tuple[str, str], dict[str, str]] = {}
     for line in fixtures:
@@ -266,9 +269,26 @@ def validate_generated(run_dir: Path) -> list[str]:
 
 def validate_run_dir(run_dir: Path) -> list[str]:
     bad = validate_generated(run_dir)
+    try:
+        source = subprocess.check_output(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+            text=True).strip()
+    except subprocess.CalledProcessError as error:
+        bad.append(f"cannot resolve source HEAD: {error}")
+        source = ""
     for family in FAMILIES:
         rc_path = run_dir / "results" / f"{family.name}.rc"
         log_path = run_dir / "results" / f"{family.name}.run.log"
+        authority = run_dir / "build" / family.name / ".quactlize-source-head"
+        binary = (run_dir / "build" / family.name / "ppu_targets" /
+                  "test_fully_quantized_internal_sweep")
+        try:
+            if authority.read_text().strip() != source:
+                bad.append(f"{family.name}: build source authority differs")
+        except OSError as error:
+            bad.append(f"{family.name}: cannot read build authority: {error}")
+        if not binary.is_file():
+            bad.append(f"{family.name}: built binary is missing")
         try:
             rc = rc_path.read_text().strip()
             text = log_path.read_text()
