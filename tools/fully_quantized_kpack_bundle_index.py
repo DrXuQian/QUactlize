@@ -62,12 +62,18 @@ def plan(pilot: bool = False,
     rows: list[dict] = []
     for qtype in ((10,) if pilot else matrix.QTYPES):
         for operator in ("dense", "grouped"):
-            total = authority_count(qtype, operator)
+            # Freeze the ordered authority once per pair.  Rebuilding it for
+            # every 32-parent slice is quadratic bookkeeping on the full
+            # discovery denominator and makes static invalidation planners
+            # needlessly expensive; slicing this one list preserves exactly
+            # the same parent/shard identity.
+            authority_ids = authority_parent_ids(qtype, operator)
+            total = len(authority_ids)
             stops = (min(total, max_parents),) if pilot else tuple(
                 range(max_parents, total, max_parents)) + (total,)
             begin = 0
             for end in stops:
-                parent_ids = authority_parent_ids(qtype, operator)[begin:end]
+                parent_ids = authority_ids[begin:end]
                 rows.append({
                     "shard_key": shard_key(qtype, operator, begin, end),
                     "qtype": qtype,
