@@ -14,6 +14,12 @@ run="$(realpath -m -- "${RUN:-/workspace/kpack-discovery-ec67811}")" ||
   fail 'cannot resolve RUN'
 sdk="$(realpath -e -- "${PPU_SDK:-/nonexistent}")" ||
   fail 'set PPU_SDK to the compatible SDK root'
+correctness_repeats="${CORRECTNESS_REPEATS:-256}"
+case "$correctness_repeats" in
+  ''|*[!0-9]*) fail 'CORRECTNESS_REPEATS must be a positive integer' ;;
+esac
+test "$correctness_repeats" -ge 1 ||
+  fail 'CORRECTNESS_REPEATS must be a positive integer'
 
 source_sha=ec67811bd709eace941daf3c650d45df574b1a87
 runner_sha=5919afa07d57ecb21bc2a5c73ce5b78f5c929648
@@ -177,7 +183,7 @@ for worker in $(seq 0 7); do
       --device-homogeneity "$run/device-homogeneity.json" \
       --output "$output" --phase all --screen-iterations 5 \
       --confirm-iterations 11 --confirm-rounds 3 \
-      --correctness-repeats 256 --warmups 3 \
+      --correctness-repeats "$correctness_repeats" --warmups 3 \
       "${resume[@]}" "${artifact_root_args[@]}" \
       >>"$run/logs/worker-$worker.log" 2>&1 &
   pid=$!
@@ -193,4 +199,5 @@ for worker in $(seq 0 7); do
     fail "worker $worker exited during startup"
   }
 done
-printf '[ec67811-box8] STARTED workers=8 run=%s\n' "$run"
+printf '[ec67811-box8] STARTED workers=8 correctness_repeats=%s run=%s\n' \
+  "$correctness_repeats" "$run"

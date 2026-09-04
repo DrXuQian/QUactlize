@@ -33,6 +33,11 @@ RUN=/workspace/kpack-discovery-ec67811 \
 bash run_box8.sh
 ```
 
+For the exhaustive timing census, set `CORRECTNESS_REPEATS=1`; run the
+256-repeat finalist and 8,192-repeat shipping stability gates only after the
+timing census has selected their much smaller denominators. The default stays
+at 256 so an omitted variable cannot silently weaken an established run.
+
 The launcher validates the catalog and assignment, hashes every assigned
 payload, probes and proves eight homogeneous devices, and starts one resumable
 prebuilt worker per device with `nohup`.

@@ -44,7 +44,7 @@
   },
   "launcher": {
     "path": "run_box8.sh",
-    "sha256": "e67abcd2ec106befc6ccf7215966b6308b505ba98ac37d9e19b62d978f3247b9"
+    "sha256": "9e75852f51cf421972f829dcdec1f594fb688d4f47227fdeb847cd1668da8174"
   },
   "sdk": {
     "release_receipt_sha256": "7ba29b9d2e768c3edd1e165bceaf90e27880248f2327d44852de37833d0a2cf7",
