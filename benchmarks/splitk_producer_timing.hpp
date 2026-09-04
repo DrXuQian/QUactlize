@@ -67,6 +67,8 @@ class EventPair {
 
 struct Result {
   Failure failure = Failure::None;
+  int failure_cutlass_status = 0;
+  int failure_runtime_status = 0;
   int failure_repeat = -1;
   double median_us = 0;
   double min_us = 0;
@@ -82,40 +84,54 @@ Result measure(ProducerLaunch&& producer, ConsumerLaunch&& consumer,
   EventPair events;
   for (int i = 0; i < iterations; ++i) {
     result.failure_repeat = i;
-    if (hggcEventRecord(events.start, nullptr) != hggcSuccess) {
+    auto const start_status = hggcEventRecord(events.start, nullptr);
+    if (start_status != hggcSuccess) {
       result.failure = Failure::StartEvent;
+      result.failure_runtime_status = int(start_status);
       return result;
     }
-    if (producer() != cutlass::Status::kSuccess) {
+    auto const producer_status = producer();
+    if (producer_status != cutlass::Status::kSuccess) {
       result.failure = Failure::ProducerLaunch;
+      result.failure_cutlass_status = int(producer_status);
       return result;
     }
-    if (hggcEventRecord(events.stop, nullptr) != hggcSuccess) {
+    auto const stop_status = hggcEventRecord(events.stop, nullptr);
+    if (stop_status != hggcSuccess) {
       result.failure = Failure::StopEvent;
+      result.failure_runtime_status = int(stop_status);
       return result;
     }
     // This ordering is the semantic seam: submit the consumer before any
     // host-side stop-event wait.  Its work is outside the event span above.
-    if (consumer() != cutlass::Status::kSuccess) {
+    auto const consumer_status = consumer();
+    if (consumer_status != cutlass::Status::kSuccess) {
       result.failure = Failure::ConsumerLaunch;
+      result.failure_cutlass_status = int(consumer_status);
       return result;
     }
-    if (hggcEventSynchronize(events.stop) != hggcSuccess) {
+    auto const stop_sync_status = hggcEventSynchronize(events.stop);
+    if (stop_sync_status != hggcSuccess) {
       result.failure = Failure::StopSynchronize;
+      result.failure_runtime_status = int(stop_sync_status);
       return result;
     }
     float ms = 0;
-    if (hggcEventElapsedTime(&ms, events.start, events.stop) != hggcSuccess ||
-        !(ms > 0) || !std::isfinite(ms)) {
+    auto const elapsed_status =
+        hggcEventElapsedTime(&ms, events.start, events.stop);
+    if (elapsed_status != hggcSuccess || !(ms > 0) || !std::isfinite(ms)) {
       result.failure = Failure::ElapsedTime;
+      result.failure_runtime_status = int(elapsed_status);
       return result;
     }
     result.samples_us.push_back(double(ms) * 1000.0);
   }
   // The final reducer must complete before its output is inspected and before
   // the caller can release/reuse the partial workspace.
-  if (hggcDeviceSynchronize() != hggcSuccess) {
+  auto const consumer_sync_status = hggcDeviceSynchronize();
+  if (consumer_sync_status != hggcSuccess) {
     result.failure = Failure::ConsumerSynchronize;
+    result.failure_runtime_status = int(consumer_sync_status);
     return result;
   }
   std::sort(result.samples_us.begin(), result.samples_us.end());

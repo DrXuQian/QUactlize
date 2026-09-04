@@ -376,7 +376,13 @@ bool launch(const cutlass::half_t* A, const ElementB* B, const cutlass::half_t* 
       return false;
     }
   }
-  gemm.run(stream);
+  auto const run_status = gemm.run(stream);
+  if (run_status != cutlass::Status::kSuccess) {
+    std::printf("[moe_grouped] run failed: %s\n",
+                cutlassGetStatusString(run_status));
+    ++moeg_fail_count();
+    return false;
+  }
   if (kernel_span != nullptr) {
     hggcError_t const err = hggcEventRecord(kernel_span->stop, stream);
     if (err != hggcSuccess) {

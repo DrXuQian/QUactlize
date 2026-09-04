@@ -407,17 +407,42 @@ bool run_bc(Shape shape, uint8_t const* low, uint8_t const* high,
         low, high, units,
         reinterpret_cast<gguf_scale::vecdot::VecdotActivation const*>(a),
         nullptr, output, shape.n, bpr, 1, shape.m, nullptr);
+    auto const status = hggcGetLastError();
+    if (status != hggcSuccess) {
+      result.failure_runtime_status = int(status);
+      return cutlass::Status::kErrorInternal;
+    }
     return cutlass::Status::kSuccess;
   };
-  if (launch() != cutlass::Status::kSuccess ||
-      hggcDeviceSynchronize() != hggcSuccess) return false;
+  auto const launch_status = launch();
+  if (launch_status != cutlass::Status::kSuccess) {
+    result.failure_step = "BC_CORRECTNESS_LAUNCH";
+    result.failure_cutlass_status = int(launch_status);
+    return false;
+  }
+  auto const sync_status = hggcDeviceSynchronize();
+  if (sync_status != hggcSuccess) {
+    result.failure_step = "BC_CORRECTNESS_SYNCHRONIZE";
+    result.failure_runtime_status = int(sync_status);
+    return false;
+  }
   std::vector<float> host(std::size_t(shape.m) * shape.n);
-  if (hggcMemcpy(host.data(), output, host.size() * sizeof(float),
-                 hggcMemcpyDeviceToHost) != hggcSuccess) return false;
+  auto const copy_status = hggcMemcpy(
+      host.data(), output, host.size() * sizeof(float),
+      hggcMemcpyDeviceToHost);
+  if (copy_status != hggcSuccess) {
+    result.failure_step = "BC_CORRECTNESS_OUTPUT_COPY";
+    result.failure_runtime_status = int(copy_status);
+    return false;
+  }
   bad = 0;
   for (std::size_t index = 0; index < host.size(); ++index)
     bad += host[index] != float(golden[index]);
-  if (bad || !fq_internal_sweep::measure(launch, iterations, result)) return false;
+  if (bad) {
+    result.failure_step = "BC_RAW_FP32_MISMATCH";
+    return false;
+  }
+  if (!fq_internal_sweep::measure(launch, iterations, result)) return false;
   return true;
 }
 
@@ -452,14 +477,18 @@ bool run_bc_family(Shape shape, uint8_t const* low, uint8_t const* high,
     std::printf(                                                       \
         "FQ_BC_CELL q=%d A=%d shape=%dx%dx%d rpw=%d threads=%d "      \
         "scope=FULL_OUTPUT launches=%d batch_policy=%s "               \
-        "state=%s us=%.9f raw_bad=%llu samples=",                     \
+        "state=%s us=%.9f raw_bad=%llu failure_step=%s "              \
+        "failure_cutlass_status=%d failure_runtime_status=%d samples=", \
         QType, ArtifactTileK, shape.m, shape.n, shape.k, RPW, threads, \
         supported ? 1 : 0, "native-grid-y-m-lt8",                     \
         !supported ? "UNSUPPORTED_M_GE_8" : ok ? "MEASURED" : "FAILED", \
-        bc_result.median_us, static_cast<unsigned long long>(bad));     \
+        bc_result.median_us, static_cast<unsigned long long>(bad),      \
+        bc_result.failure_step, bc_result.failure_cutlass_status,       \
+        bc_result.failure_runtime_status);                              \
     print_samples(bc_result.samples_us);                               \
     std::printf("\n");                                                \
     family_ok = family_ok && (!supported || ok);                       \
+    if (supported && !ok) return false;                                \
   } while (false)
     FQ_RUN_BC_RPW(1);
     FQ_RUN_BC_RPW(2);
@@ -548,7 +577,8 @@ int run_shape(Shape shape, Cli const& cli,
           "resolved_delivery_n=%d "
           "provider_capacity_rows=%d scalezero_fused=%d "
           "state=%s us=%.9f raw_bad=%llu reducer_untimed=%d "
-          "failure_step=%s failure_repeat=%d first_bad=%zu "
+          "failure_step=%s failure_cutlass_status=%d "
+          "failure_runtime_status=%d failure_repeat=%d first_bad=%zu "
           "first_want=0x%04x first_got=0x%04x "
           "shipping_smem=%zu split_smem=%zu partial_bytes=%zu samples=",
           entry.qtype, entry.artifact_tile_k, entry.bchunk,
@@ -561,6 +591,7 @@ int run_shape(Shape shape, Cli const& cli,
           state_name(cell.state), cell.median_us,
           static_cast<unsigned long long>(cell.raw_bad),
           int(cell.reducer_correctness_untimed), cell.failure_step,
+          cell.failure_cutlass_status, cell.failure_runtime_status,
           cell.failure_repeat, cell.first_bad_index,
           unsigned(cell.first_bad_want), unsigned(cell.first_bad_got),
           cell.shipping_smem,
@@ -575,6 +606,10 @@ int run_shape(Shape shape, Cli const& cli,
                     cell.split);
       }
     }
+    // Device launch errors are sticky.  Stop at the first hard row so its
+    // symbol remains the causal replay target instead of attributing the same
+    // context error to every later row in the shuffled registry.
+    if (!ok) return 1;
   }
   if constexpr (FQ_SWEEP_BCHUNK == 0 && FQ_SWEEP_WEIGHT_LAYOUT == 0) {
     if (cli.bc_mode != Cli::BcMode::Skip) {
@@ -625,8 +660,12 @@ int main(int argc, char** argv) {
     return 2;
   }
   if (cli.bc_mode == Cli::BcMode::Only) selected_rows.clear();
-  int rc = 0;
-  for (auto shape : cli.shapes)
-    rc |= run_shape(shape, cli, selected_rows, all_rows.size());
-  return rc;
+  for (auto shape : cli.shapes) {
+    int const rc = run_shape(shape, cli, selected_rows, all_rows.size());
+    // A failed launch poisons later work in the same context.  Preserve the
+    // first shape as the only causal witness instead of producing a cascade
+    // across the remaining CLI shape list.
+    if (rc != 0) return rc;
+  }
+  return 0;
 }

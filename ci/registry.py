@@ -114,8 +114,10 @@ HARNESSES = {
     "test_moe_grouped_ppu":     ([],                  "none",      None,
         "superseded perf-only grouped sweep; no output comparison"),
     "test_ppu_m8n16_collective":(["int4"],            "synthetic", None,
-        "ppu001 m8 collective gate: raw FP32 mainloop plus grouped ptr-array epilogue at M=1/2/3/7/8, "
-        "each against an independent CPU golden and an exact same-input m16 control; G5 remains blocked on #108"),
+        "ppu001 m8 collective gate: composed results at M=1/2/3/7/8/9/15/16/17 against an independent CPU "
+        "golden and exact m16 control; M=9/15/16/17 additionally carry absolute-row A and ptr-array epilogue "
+        "tags plus a persistent/nonpersistent control; also covers the E=256 non-contiguous ragged route with "
+        "expert/row-offset negatives"),
     # Component probes only: these establish the ppu001 m8 atom ABI and the
     # AIU/x4-swzl delivery contract.  Empty format lists are deliberate; a
     # register/layout probe is not evidence for any quantized launch path.

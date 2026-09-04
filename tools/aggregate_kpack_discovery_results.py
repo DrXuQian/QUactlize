@@ -123,6 +123,7 @@ SAFE_STRUCTURAL = {
     "INADMISSIBLE_PIPELINE_DEPTH", "M8_DECODE_ONLY_M_GE_8",
     "PACKED_A_DECODE_ONLY_M_NOT_1", "REAL_CAN_IMPLEMENT",
 }
+SF_DENSE_STRUCTURAL = frozenset({"INADMISSIBLE_PACKED_A_PROVIDER_CAPACITY"})
 
 
 class AggregateError(ValueError):
@@ -337,7 +338,8 @@ def runtime_identity(row: dict[str, Any]) -> tuple[Any, ...]:
 
 
 def check_state(state: str, raw_bad: int, samples: list[float], expected: int,
-                label: str) -> str:
+                label: str,
+                extra_structural: frozenset[str] = frozenset()) -> str:
     if raw_bad != 0:
         raise AggregateError(f"{label} raw-bit mismatch: raw_bad={raw_bad}")
     if state == "MEASURED":
@@ -345,11 +347,41 @@ def check_state(state: str, raw_bad: int, samples: list[float], expected: int,
             raise AggregateError(
                 f"{label} timing denominator differs: {len(samples)} != {expected}")
         return "MEASURED"
-    if state not in SAFE_STRUCTURAL:
+    if state not in SAFE_STRUCTURAL and state not in extra_structural:
         raise AggregateError(f"{label} non-admissible runtime state {state}")
     if samples:
         raise AggregateError(f"{label} structural runtime carries timing samples")
     return "STRUCTURAL_UNAVAILABLE"
+
+
+def validate_sf_dense_provider_states(
+        rows: list[dict[str, Any]], candidates: list[dict[str, Any]],
+        m: int, label: str) -> None:
+    """Bind the AP1-only capacity terminal to its static and shape owners."""
+    by_symbol = {candidate["symbol"]: candidate for candidate in candidates}
+    for index, row in enumerate(rows):
+        symbol = text(row.get("symbol"), f"{label}.row[{index}].symbol")
+        candidate = by_symbol.get(symbol)
+        if candidate is None:
+            raise AggregateError(f"{label}/{symbol} is absent from the manifest")
+        row_provider = integer(
+            row.get("a_provider"), f"{label}/{symbol}.a_provider", minimum=0)
+        manifest_provider = integer(
+            candidate["manifest_row"].get("a_provider", 0),
+            f"{label}/{symbol}.manifest.a_provider", minimum=0)
+        if row_provider != manifest_provider:
+            raise AggregateError(
+                f"{label}/{symbol} runtime/manifest A provider differs")
+        if row.get("reason") == "INADMISSIBLE_PACKED_A_PROVIDER_CAPACITY":
+            if row.get("status") != "INADMISSIBLE":
+                raise AggregateError(
+                    f"{label}/{symbol} packed-A capacity state is not structural")
+            if manifest_provider != 1:
+                raise AggregateError(
+                    f"{label}/{symbol} packed-A capacity state belongs only to AP1")
+            if m <= 1:
+                raise AggregateError(
+                    f"{label}/{symbol} AP1 capacity state is invalid for M={m}")
 
 
 def _group_sf_dense_rows(rows: list[dict[str, Any]], expected_samples: int,
@@ -399,7 +431,8 @@ def _group_sf_dense_rows(rows: list[dict[str, Any]], expected_samples: int,
                 raise AggregateError(f"{label}/{symbol} structural row denominator differs")
             samples = []
         classification = check_state(
-            state, raw_bad, samples, expected_samples, f"{label}/{symbol}")
+            state, raw_bad, samples, expected_samples, f"{label}/{symbol}",
+            SF_DENSE_STRUCTURAL)
         out.append({"symbol": symbol, "runtime": runtime, "state": state,
                     "classification": classification, "raw_bad": raw_bad,
                     "samples": samples})
@@ -541,6 +574,7 @@ def parse_sf_dense(lines: list[str], workload: dict[str, Any],
             if row.get("metric_scope") != "FULL_OUTPUT":
                 raise AggregateError(f"{label} non-product ScaleFirst cell leaked")
             raw_rows.append(row)
+    validate_sf_dense_provider_states(raw_rows, candidates, m, label)
     records = _group_sf_dense_rows(raw_rows, samples, label)
     completion = one_kv(
         lines, "SF_COMPLETE ", f"{label} SF_COMPLETE",
@@ -1971,6 +2005,7 @@ def self_test() -> None:
         for sample in range(5):
             sf_lines.append("SF_CELL " + json.dumps({
                 "shape": "1x16x128", "symbol": "candidate",
+                "a_provider": 0,
                 "algorithm": algorithm, "metric_scope": "FULL_OUTPUT",
                 "policy": policy, "grid": grid, "occupancy": 1, "split": 1,
                 "capacity_b_mask": "0x1", "balanced_b_mask": "0x0",

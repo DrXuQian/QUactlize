@@ -50,7 +50,10 @@ def _sf_dense(candidates: list[dict], count: int, repeats: int,
             for sample in range(count):
                 lines.append("SF_CELL " + json.dumps({
                     "shape": "1x16x128", "qtype": 10,
-                    "symbol": candidate["symbol"], "algorithm": algorithm,
+                    "symbol": candidate["symbol"],
+                    "a_provider": candidate["manifest_row"].get(
+                        "a_provider", 0),
+                    "algorithm": algorithm,
                     "metric_scope": "FULL_OUTPUT", "policy": policy,
                     "grid": grid, "occupancy": 1, "split": 1,
                     "capacity_b_mask": "0x1",
@@ -711,6 +714,68 @@ def test_raw_bit_mismatch_fails_even_with_rehashed_receipt(tmp_path: Path) -> No
     _write_json(evidence_path, evidence)
     with pytest.raises(aggregate.AggregateError, match="raw-bit mismatch"):
         _aggregate(paths, tmp_path / "output")
+
+
+def test_scalefirst_packed_a_shape_rejection_is_structural() -> None:
+    reason = "INADMISSIBLE_PACKED_A_PROVIDER_CAPACITY"
+    candidate = {
+        "symbol": "packed-a",
+        "manifest_row": {"a_provider": 1},
+    }
+    row = {
+        "symbol": "packed-a", "a_provider": 1,
+        "status": "INADMISSIBLE", "reason": reason,
+    }
+    aggregate.validate_sf_dense_provider_states(
+        [row], [candidate], 3, "packed-a")
+    assert aggregate.check_state(
+        reason, 0, [], 11, "packed-a",
+        aggregate.SF_DENSE_STRUCTURAL) == \
+        "STRUCTURAL_UNAVAILABLE"
+    with pytest.raises(aggregate.AggregateError,
+                       match="non-admissible runtime state"):
+        aggregate.check_state(reason, 0, [], 11, "non-SF")
+    with pytest.raises(aggregate.AggregateError,
+                       match="structural runtime carries timing samples"):
+        aggregate.check_state(
+            reason, 0, [1.0], 11, "packed-a",
+            aggregate.SF_DENSE_STRUCTURAL)
+
+
+@pytest.mark.parametrize(
+    ("provider", "m", "message"),
+    ((0, 3, "belongs only to AP1"),
+     (1, 1, "invalid for M=1")),
+)
+def test_scalefirst_packed_a_shape_rejection_checks_owner(
+        provider: int, m: int, message: str) -> None:
+    reason = "INADMISSIBLE_PACKED_A_PROVIDER_CAPACITY"
+    candidate = {
+        "symbol": "packed-a",
+        "manifest_row": {"a_provider": provider},
+    }
+    row = {
+        "symbol": "packed-a", "a_provider": provider,
+        "status": "INADMISSIBLE", "reason": reason,
+    }
+    with pytest.raises(aggregate.AggregateError, match=message):
+        aggregate.validate_sf_dense_provider_states(
+            [row], [candidate], m, "packed-a")
+
+
+def test_scalefirst_runtime_provider_must_match_manifest() -> None:
+    candidate = {
+        "symbol": "packed-a",
+        "manifest_row": {"a_provider": 1},
+    }
+    row = {
+        "symbol": "packed-a", "a_provider": 0,
+        "status": "MEASURED", "reason": "NONE",
+    }
+    with pytest.raises(aggregate.AggregateError,
+                       match="runtime/manifest A provider differs"):
+        aggregate.validate_sf_dense_provider_states(
+            [row], [candidate], 1, "packed-a")
 
 
 def test_top_n_and_missing_round_fail_before_logs(tmp_path: Path) -> None:

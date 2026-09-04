@@ -34,9 +34,10 @@ class Site:
     path: str
     m_coord: str
     n_coord: str
+    block_shape: str = "blk_shape"
 
 
-# Exactly the nine production kernels whose mainloops consume the mixed-input
+# Exactly the ten production kernels whose mainloops consume the mixed-input
 # load_init() contract.  Adding another such kernel without adding it here is a
 # coverage failure (see discover_sites()).
 SITES = (
@@ -67,6 +68,10 @@ SITES = (
     Site(
         "quactlize/include/ppu_aiu_gemm_mixed_input_group.hpp",
         "m_idx", "n_idx"),
+    Site(
+        "quactlize/include/actlize_extensions/cutlass/gemm/kernel/"
+        "ppu_aiu_gemm_mixed_input_group_persistent.hpp",
+        "work.m_tile", "work.n_tile", "block_shape"),
 )
 
 
@@ -79,8 +84,8 @@ def code_only(text: str) -> str:
 
 def expected_tokens(site: Site) -> tuple[str, str, str]:
     return (
-        f"M-size<0>(blk_shape)*{site.m_coord}",
-        f"N-size<1>(blk_shape)*{site.n_coord}",
+        f"M-size<0>({site.block_shape})*{site.m_coord}",
+        f"N-size<1>({site.block_shape})*{site.n_coord}",
         "K-size<1>(gA)*size<2>(gA)",
     )
 
@@ -88,7 +93,7 @@ def expected_tokens(site: Site) -> tuple[str, str, str]:
 def check_site(site: Site, text: str) -> list[str]:
     compact = code_only(text)
     errors: list[str] = []
-    logical_binding = "blk_shape=TileShape{}"
+    logical_binding = f"{site.block_shape}=TileShape{{}}"
     binding_count = compact.count(logical_binding)
     if binding_count != 1:
         errors.append(
@@ -142,10 +147,11 @@ def mutation_controls(site: Site, text: str) -> list[str]:
     compact = code_only(text)
     m_token, n_token, k_token = expected_tokens(site)
     mutations = (
-        ("physical-shape-binding", "blk_shape=TileShape{}", "blk_shape=shape(gA)"),
+        ("physical-shape-binding", f"{site.block_shape}=TileShape{{}}",
+         f"{site.block_shape}=shape(gA)"),
         ("physical-M", m_token, f"M-size<0>(gA)*{site.m_coord}"),
         ("physical-N", n_token, f"N-size<0>(gB)*{site.n_coord}"),
-        ("logical-K", k_token, "K-size<2>(blk_shape)"),
+        ("logical-K", k_token, f"K-size<2>({site.block_shape})"),
     )
     errors: list[str] = []
     for label, old, new in mutations:
@@ -229,9 +235,9 @@ def main() -> int:
         return 1
 
     print(
-        "[mixed-logical-residue] PASS: 9/9 production kernels use logical M/N "
+        "[mixed-logical-residue] PASS: 10/10 production kernels use logical M/N "
         "and loaded-A K; TM8 anchor=4194304 all/4161536 DP; "
-        "36/36 planted binding/residue drifts EXPECTED-RED")
+        "40/40 planted binding/residue drifts EXPECTED-RED")
     return 0
 
 

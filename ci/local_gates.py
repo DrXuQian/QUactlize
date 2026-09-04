@@ -2029,6 +2029,13 @@ def lint_m8n16_g2_contract():
         "m8n16 G2 maps one 16-row x4 payload with get_i/get_j and the historical NVIDIA provider index")
 
 
+def lint_m8n16_second_tile_contract():
+    """TM8 grouped failures must be bisected at the first later logical tile."""
+    return _run_ci_script(
+        "check_m8n16_second_tile_contract.py",
+        "m8n16 M9/15/16/17 isolates A delivery, ptr-array epilogue, and both grouped schedulers")
+
+
 def lint_grouped_metadata_layout():
     """L125 exhausts the exact G5 zero-plane layout without asking a device."""
     script = DEV / "run_l125_grouped_metadata_layout.sh"
@@ -2663,6 +2670,7 @@ def main():
                 ("lint", "K-pack compares production readers including Q4 ragged grouped shapes", lint_fq_kquant_kpack_perf),
                 ("lint", "syntax baselines and live SYNTAX sources match", lint_syntax_inventory),
                 ("lint", "m8n16 G2 replays the historical bad index on the production x4 payload", lint_m8n16_g2_contract),
+                ("lint", "m8n16 second-tile tags isolate A, epilogue, and both grouped schedulers", lint_m8n16_second_tile_contract),
                 ("lint", "l125 exhausts all 256 G5 zero-plane addresses through the production CuTe map", lint_grouped_metadata_layout),
                 ("lint", "G5 production and l125 share one exact typed metadata-layout seam", lint_grouped_metadata_layout_contract),
                 ("lint", "l130 exhausts all 256 G5 B experts with independent byte-map anchors", lint_grouped_b_idprobe_contract),

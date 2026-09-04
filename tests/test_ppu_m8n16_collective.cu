@@ -10,8 +10,9 @@
 //       failure is in A delivery, B delivery/dequant, metadata selection, or
 //       the m8 atom -- not in the output epilogue.
 //
-//   G4  runs the production grouped kernel and formal ptr-array epilogue for
-//       M={1,2,3,7,8}.  Every logical D element starts as a qNaN and the D
+//   G4  runs the production nonpersistent and persistent grouped kernels and
+//       formal ptr-array epilogue for
+//       M={1,2,3,7,8,9,15,16,17}.  Every logical D element starts as a qNaN and the D
 //       allocation has distinct bit-exact canaries on both sides.  Each m8
 //       result is checked against an independent host dequant/GEMM oracle and
 //       against an exact m16-control launch on the same canonical A/Q/S/Z.
@@ -71,6 +72,7 @@ constexpr std::size_t kHarnessBBytes = std::size_t(kN) * kK * kBits / 8;
 constexpr std::size_t kPlacedBBytes =
     std::size_t(kN) * ((kK + kStoredRowK - 1) / kStoredRowK) * kStoredRowK * kBits / 8;
 constexpr int kStages = m8n16_g5_contract::kStages;
+constexpr int kMaxG4M = 17;
 constexpr int kGuard = 64;
 constexpr std::uint16_t kLeftCanary = 0x3555u;
 constexpr std::uint16_t kRightCanary = 0xb555u;
@@ -142,8 +144,8 @@ std::vector<half_t> make_zeros(std::vector<half_t> const& scales) {
 }
 
 std::vector<half_t> make_dense_a() {
-  std::vector<half_t> a(std::size_t(8) * kK);
-  for (int m = 0; m < 8; ++m) {
+  std::vector<half_t> a(std::size_t(kMaxG4M) * kK);
+  for (int m = 0; m < kMaxG4M; ++m) {
     for (int k = 0; k < kK; ++k) {
       a[std::size_t(m) * kK + k] =
           half_t(float(((17 * m + 9 * k + (m ^ k)) % 15) - 7) / 16.0f);
@@ -160,6 +162,20 @@ std::vector<half_t> make_onehot_a() {
   std::vector<half_t> a(std::size_t(8) * kK, half_t(0.0f));
   for (int m = 0; m < 8; ++m) {
     a[std::size_t(m) * kK + selected[m]] = half_t(float(m + 1) / 8.0f);
+  }
+  return a;
+}
+
+std::vector<half_t> make_row_tag_a(int M, bool replay_first_tile = false) {
+  // K=33 has a nonzero dequantized value in every one of the 32 columns for
+  // this fixture.  One nonzero half per row makes the FP32 MMA result one
+  // exactly-representable half*half product.  The amplitude is the absolute
+  // row coordinate, so rows 8 and 16 cannot alias rows 0 and 8 silently.
+  constexpr int kTagK = 33;
+  std::vector<half_t> a(std::size_t(M) * kK, half_t(0.0f));
+  for (int m = 0; m < M; ++m) {
+    int const tagged_m = replay_first_tile && m >= 8 ? m % 8 : m;
+    a[std::size_t(m) * kK + kTagK] = half_t(float(tagged_m + 1));
   }
   return a;
 }
@@ -197,14 +213,15 @@ std::vector<float> golden_fp32(
 
 template <class Mainloop>
 __global__ void g3_mainloop_only(
-    typename Mainloop::Params params, float* output) {
+    typename Mainloop::Params params, float* output, int M) {
   extern __shared__ char smem[];
   int const tid = int(threadIdx.x);
-  if (blockIdx.x != 0 || blockIdx.y != 0 || blockIdx.z != 0 ||
+  int const tile_m = int(blockIdx.x);
+  if (blockIdx.y != 0 || blockIdx.z != 0 || tile_m * 8 >= M ||
       tid >= int(cute::size(typename Mainloop::TiledMma{}))) return;
 
-  auto problem = cute::make_shape(8, kN, kK, 1);
-  auto block = cute::make_coord(0, 0, cute::_, 0);
+  auto problem = cute::make_shape(M, kN, kK, 1);
+  auto block = cute::make_coord(tile_m, 0, cute::_, 0);
   Mainloop mainloop;
   auto inputs = mainloop.load_init(problem, block, params);
 
@@ -225,7 +242,10 @@ __global__ void g3_mainloop_only(
   CUTLASS_PRAGMA_UNROLL
   for (int i = 0; i < int(cute::size(accum)); ++i) {
     auto coord = tCcC(i);
-    output[int(cute::get<0>(coord)) * kN + int(cute::get<1>(coord))] = accum(i);
+    int const global_m = tile_m * 8 + int(cute::get<0>(coord));
+    if (global_m < M) {
+      output[global_m * kN + int(cute::get<1>(coord))] = accum(i);
+    }
   }
 }
 
@@ -246,6 +266,23 @@ int check_float_output(char const* tag, std::vector<float> const& got,
   }
   std::printf("  %-24s bad=%d/%zu max_abs=%.3e %s\n",
               tag, bad, got.size(), double(max_abs), bad ? "MISMATCH" : "MATCH");
+  return bad;
+}
+
+std::uint32_t float_bits(float value) {
+  std::uint32_t bits = 0;
+  static_assert(sizeof(bits) == sizeof(value));
+  std::memcpy(&bits, &value, sizeof(bits));
+  return bits;
+}
+
+int float_bitdiff(std::vector<float> const& lhs,
+                  std::vector<float> const& rhs) {
+  if (lhs.size() != rhs.size()) return int(std::max(lhs.size(), rhs.size()));
+  int bad = 0;
+  for (std::size_t i = 0; i < lhs.size(); ++i) {
+    bad += float_bits(lhs[i]) != float_bits(rhs[i]);
+  }
   return bad;
 }
 
@@ -281,7 +318,7 @@ int run_g3(
 
   g3_mainloop_only<M8Mainloop><<<
       1, int(cute::size(typename M8Mainloop::TiledMma{})),
-      sizeof(typename M8Mainloop::SharedStorage)>>>(params, dOut.get());
+      sizeof(typename M8Mainloop::SharedStorage)>>>(params, dOut.get(), 8);
   CUTLASS_PPU_CHECK(hggcGetLastError());
   CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
   std::vector<float> got(golden.size());
@@ -289,7 +326,142 @@ int run_g3(
   return check_float_output("G3 raw FP32 accum", got, golden, 1.0e-5f);
 }
 
+int run_g3_a_tag(
+    int M, cutlass::DeviceAllocation<int4_t>& dB,
+    cutlass::DeviceAllocation<half_t>& dScale,
+    cutlass::DeviceAllocation<half_t>& dZero,
+    std::vector<std::uint8_t> const& q,
+    std::vector<half_t> const& scales,
+    std::vector<half_t> const& zeros) {
+  auto run = [&](std::vector<half_t> const& a) {
+    cutlass::DeviceAllocation<half_t> dA(a.size());
+    cutlass::DeviceAllocation<float> dOut(std::size_t(M) * kN);
+    dA.copy_from_host(a.data());
+    std::vector<float> init(std::size_t(M) * kN,
+                            std::numeric_limits<float>::quiet_NaN());
+    dOut.copy_from_host(init.data());
+
+    using StrideA = typename M8Mainloop::StrideA;
+    using StrideB = typename M8Mainloop::StrideB;
+    using StrideS = typename M8Mainloop::StrideScale;
+    StrideA dA_stride = cutlass::make_cute_packed_stride(
+        StrideA{}, cute::make_shape(M, kK, 1));
+    StrideB dB_stride = cutlass::make_cute_packed_stride(
+        StrideB{}, cute::make_shape(kN, kK, 1));
+    StrideS dS_stride = cutlass::make_cute_packed_stride(
+        StrideS{}, cute::make_shape(kN, kScaleK, 1));
+    typename M8Mainloop::Arguments args{
+        dA.get(), dA_stride, dB.get(), dB_stride,
+        dScale.get(), dS_stride, kGs, dZero.get(), nullptr};
+    auto params = M8Mainloop::to_underlying_arguments(
+        cute::make_shape(M, kN, kK, 1), args, nullptr);
+    int const tiles_m = (M + 7) / 8;
+    g3_mainloop_only<M8Mainloop><<<
+        tiles_m, int(cute::size(typename M8Mainloop::TiledMma{})),
+        sizeof(typename M8Mainloop::SharedStorage)>>>(params, dOut.get(), M);
+    CUTLASS_PPU_CHECK(hggcGetLastError());
+    CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
+    std::vector<float> got(std::size_t(M) * kN);
+    dOut.copy_to_host(got.data());
+    return got;
+  };
+
+  auto const tagged_a = make_row_tag_a(M);
+  auto const golden = golden_fp32(tagged_a, M, q, scales, zeros);
+  auto const got = run(tagged_a);
+  int const positive_bad = float_bitdiff(got, golden);
+  std::printf("  G3 A-TAG M=%d raw-bitdiff=%d/%zu %s\n", M,
+              positive_bad, golden.size(), positive_bad ? "MISMATCH" : "MATCH");
+
+  // Exact negative: replay every later tile's local row 0..7.  The dedicated
+  // K=33 fixture guarantees all N outputs differ, so the expected denominator
+  // is known without consulting the device result.
+  auto const replay_a = make_row_tag_a(M, true);
+  auto const replay_golden = golden_fp32(replay_a, M, q, scales, zeros);
+  int const fixture_red = float_bitdiff(replay_golden, golden);
+  int const expected_red = (M - 8) * kN;
+  auto const replay_got = run(replay_a);
+  int const replay_oracle_bad = float_bitdiff(replay_got, replay_golden);
+  int const observed_red = float_bitdiff(replay_got, golden);
+  int const errors = positive_bad + replay_oracle_bad +
+      (fixture_red != expected_red) + (observed_red != expected_red);
+  std::printf("  G3 A-TAG-NEGATIVE M=%d replay-oracle-bitdiff=%d/%zu "
+              "observed-red=%d expected-red=%d %s\n",
+              M, replay_oracle_bad, replay_golden.size(), observed_red,
+              expected_red, errors ? "FAIL" : "EXPECTED_RED");
+  return errors;
+}
+
 template <int TM, int WM>
+struct G4EpilogueTypes {
+  using LaunchContract = m8n16_g5_contract::Launch<TM, WM>;
+  using Tile = typename LaunchContract::Tile;
+  using Warp = typename LaunchContract::Warp;
+  using Mainloop = typename LaunchContract::Mainloop;
+  using Epilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
+      cutlass::arch::PPU0010, cutlass::arch::OpClassTensorOp,
+      Tile, Warp, cutlass::epilogue::collective::EpilogueTileAuto,
+      float, float,
+      half_t, cutlass::layout::RowMajor*, 8,
+      half_t, cutlass::layout::RowMajor*, 8,
+      cutlass::epilogue::EpiloguePtrArraySimtVectorized,
+      cutlass::epilogue::fusion::LinearCombination<half_t, float>>::CollectiveOp;
+  static_assert(std::is_same_v<typename Epilogue::StrideD,
+                               moe_grouped_ppu::DStride*>);
+  static_assert(cute::size<0>(typename Epilogue::SmemLayout{}) ==
+                cute::size<0>(typename Mainloop::TiledMma::AtomShape_MNK{}) *
+                    cute::size<1>(
+                        typename Mainloop::TiledMma::ThrLayoutVMNK{}));
+};
+
+CUTLASS_HOST_DEVICE
+float g4_coordinate_tag(int m, int n) {
+  // Integers stay exact through FP32 accumulator -> FP16 epilogue conversion.
+  return float(1 + 64 * m + n);
+}
+
+template <class Types, bool ReplayFirstTile>
+__global__ void g4_epilogue_tag_kernel(
+    typename Types::Epilogue::Params params, int M) {
+  extern __shared__ char smem[];
+  using Tile = typename Types::Tile;
+  using Mainloop = typename Types::Mainloop;
+  using Epilogue = typename Types::Epilogue;
+  constexpr int TM = int(cute::size<0>(Tile{}));
+  constexpr int TN = int(cute::size<1>(Tile{}));
+  int const tid = int(threadIdx.x);
+  int const tile_m = int(blockIdx.x);
+  int const tile_n = int(blockIdx.y);
+  if (tile_m * TM >= M || tile_n * TN >= kN ||
+      tid >= int(cute::size(typename Mainloop::TiledMma{}))) return;
+
+  typename Mainloop::TiledMma tiled_mma;
+  auto accum = cute::make_fragment_like<float>(cute::partition_fragment_C(
+      tiled_mma, cute::take<0, 2>(Tile{})));
+  auto cC = cute::make_identity_tensor(cute::take<0, 2>(Tile{}));
+  auto tCcC = tiled_mma.get_thread_slice(tid).partition_C(cC);
+  CUTE_STATIC_ASSERT_V(cute::size(tCcC) == cute::size(accum));
+  CUTLASS_PRAGMA_UNROLL
+  for (int i = 0; i < int(cute::size(accum)); ++i) {
+    auto coord = tCcC(i);
+    int const local_m = int(cute::get<0>(coord));
+    int const global_m = tile_m * TM + local_m;
+    int const global_n = tile_n * TN + int(cute::get<1>(coord));
+    int const tagged_m = ReplayFirstTile && tile_m > 0 ? local_m : global_m;
+    accum(i) = g4_coordinate_tag(tagged_m, global_n);
+  }
+
+  auto problem = cute::make_shape(M, kN, kK, 1);
+  auto block = cute::make_coord(tile_m, tile_n, cute::_, 0);
+  auto residue = cute::make_tuple(M - tile_m * TM,
+                                  kN - tile_n * TN, 0);
+  auto& storage = *reinterpret_cast<typename Epilogue::SharedStorage*>(smem);
+  Epilogue epilogue{params, storage};
+  epilogue(problem, Tile{}, block, accum, tiled_mma, residue, tid,
+           reinterpret_cast<char*>(&storage));
+}
+
+template <int TM, int WM, bool UsePersistent = false>
 bool launch_g4(
     half_t const* A, int4_t const* B, half_t const* scales, half_t const* zeros,
     half_t* D, int M, char* workspace, std::size_t workspace_bytes) {
@@ -317,7 +489,8 @@ bool launch_g4(
       Contract::QuantMode,
       typename Contract::BaseSchedule, Tile, Scale, Warp,
       Contract::Stages, Contract::AiuInterleaved,
-      typename Contract::ElementB>(
+      typename Contract::ElementB, void, false, false, false, 0,
+      UsePersistent>(
           A, B, scales, zeros, dPtrs.get(), dStrides.get(), dGroupM.get(),
           M, kN, kK, 1, kGs, dShapes.get(), shapes.data(), nullptr,
           workspace, workspace_bytes, nullptr);
@@ -333,7 +506,106 @@ struct G4Result {
   int errors = 0;
 };
 
-template <int TM, int WM>
+template <bool ReplayFirstTile>
+G4Result run_g4_epilogue_tag_arm(int M) {
+  using Types = G4EpilogueTypes<8, 8>;
+  using Epilogue = typename Types::Epilogue;
+  using Mainloop = typename Types::Mainloop;
+  std::size_t const logical_count = std::size_t(M) * kN;
+  std::vector<half_t> host(kGuard + logical_count + kGuard);
+  std::fill(host.begin(), host.begin() + kGuard, hbits(kLeftCanary));
+  std::fill(host.begin() + kGuard, host.begin() + kGuard + logical_count,
+            hbits(kOutputNaN));
+  std::fill(host.begin() + kGuard + logical_count, host.end(),
+            hbits(kRightCanary));
+
+  cutlass::DeviceAllocation<half_t> dStorage(host.size());
+  dStorage.copy_from_host(host.data());
+  auto stride = cutlass::make_cute_packed_stride(
+      DStride{}, cute::make_shape(M, kN, 1));
+  std::vector<half_t*> ptrs{dStorage.get() + kGuard};
+  std::vector<DStride> strides{stride};
+  cutlass::DeviceAllocation<half_t*> dPtrs(1);
+  cutlass::DeviceAllocation<DStride> dStrides(1);
+  dPtrs.copy_from_host(ptrs.data());
+  dStrides.copy_from_host(strides.data());
+
+  typename Epilogue::Arguments args{};
+  args.ptr_D = dPtrs.get();
+  args.dD = dStrides.get();
+  auto problem = cute::make_shape(M, kN, kK, 1);
+  auto params = Epilogue::to_underlying_arguments(problem, args, nullptr);
+  dim3 const grid((M + 7) / 8, (kN + 31) / 32, 1);
+  g4_epilogue_tag_kernel<Types, ReplayFirstTile><<<
+      grid, int(cute::size(typename Mainloop::TiledMma{})),
+      sizeof(typename Epilogue::SharedStorage)>>>(params, M);
+  CUTLASS_PPU_CHECK(hggcGetLastError());
+  CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
+  dStorage.copy_to_host(host.data());
+
+  G4Result result;
+  for (int i = 0; i < kGuard; ++i) {
+    result.errors += host[i].raw() != kLeftCanary;
+    result.errors += host[kGuard + logical_count + i].raw() != kRightCanary;
+  }
+  result.logical.assign(host.begin() + kGuard,
+                        host.begin() + kGuard + logical_count);
+  for (half_t value : result.logical) {
+    result.errors += !std::isfinite(float(value));
+  }
+  return result;
+}
+
+int half_bitdiff(std::vector<half_t> const& lhs,
+                 std::vector<half_t> const& rhs) {
+  if (lhs.size() != rhs.size()) return int(std::max(lhs.size(), rhs.size()));
+  int bad = 0;
+  for (std::size_t i = 0; i < lhs.size(); ++i) {
+    bad += lhs[i].raw() != rhs[i].raw();
+  }
+  return bad;
+}
+
+int half_row_bitdiff(std::vector<half_t> const& lhs,
+                     std::vector<half_t> const& rhs, int row) {
+  int bad = 0;
+  for (int n = 0; n < kN; ++n) {
+    std::size_t const i = std::size_t(row) * kN + n;
+    bad += lhs[i].raw() != rhs[i].raw();
+  }
+  return bad;
+}
+
+int run_g4_epilogue_tag(int M) {
+  std::vector<half_t> golden(std::size_t(M) * kN);
+  for (int m = 0; m < M; ++m) {
+    for (int n = 0; n < kN; ++n) {
+      golden[std::size_t(m) * kN + n] = half_t(g4_coordinate_tag(m, n));
+    }
+  }
+  auto positive = run_g4_epilogue_tag_arm<false>(M);
+  int const positive_bad = half_bitdiff(positive.logical, golden);
+  std::printf("  G4 EPILOGUE-TAG M=%d raw-bitdiff=%d/%zu %s\n", M,
+              positive_bad, golden.size(),
+              (positive.errors || positive_bad) ? "MISMATCH" : "MATCH");
+
+  auto replay = run_g4_epilogue_tag_arm<true>(M);
+  int const observed_red = half_bitdiff(replay.logical, golden);
+  int const expected_red = (M - 8) * kN;
+  int const row8_red = half_row_bitdiff(replay.logical, golden, 8);
+  int const row16_red = M > 16 ?
+      half_row_bitdiff(replay.logical, golden, 16) : -1;
+  int const errors = positive.errors + positive_bad + replay.errors +
+      (observed_red != expected_red) + (row8_red != kN) +
+      (M > 16 && row16_red != kN);
+  std::printf("  G4 EPILOGUE-TAG-NEGATIVE M=%d observed-red=%d "
+              "expected-red=%d row8-red=%d row16-red=%d %s\n",
+              M, observed_red, expected_red, row8_red, row16_red,
+              errors ? "FAIL" : "EXPECTED_RED");
+  return errors;
+}
+
+template <int TM, int WM, bool UsePersistent = false>
 G4Result run_g4_arm(
     char const* family, int M, half_t const* dA, int4_t const* dB,
     half_t const* dScale, half_t const* dZero) {
@@ -351,7 +623,7 @@ G4Result run_g4_arm(
   cutlass::DeviceAllocation<char> workspace(4096);
   dStorage.copy_from_host(host.data());
   int const fail_before = moe_grouped_ppu::moeg_fail_count();
-  bool const launched = launch_g4<TM, WM>(
+  bool const launched = launch_g4<TM, WM, UsePersistent>(
       dA, dB, dScale, dZero, dStorage.get() + kGuard, M,
       workspace.get(), workspace.capacity);
   CUTLASS_PPU_CHECK(hggcDeviceSynchronize());
@@ -921,8 +1193,11 @@ int run_g5_b_idprobe(int const* ids, int n_active) {
 
 int main(int argc, char** argv) {
   bool const idprobe_only = argc == 2 && std::strcmp(argv[1], "--idprobe-only") == 0;
-  if (argc != 1 && !idprobe_only) {
-    std::fprintf(stderr, "usage: %s [--idprobe-only]\n", argv[0]);
+  bool const second_tile_only =
+      argc == 2 && std::strcmp(argv[1], "--second-tile-only") == 0;
+  if (argc != 1 && !idprobe_only && !second_tile_only) {
+    std::fprintf(stderr, "usage: %s [--idprobe-only|--second-tile-only]\n",
+                 argv[0]);
     return 2;
   }
 
@@ -1010,8 +1285,12 @@ int main(int argc, char** argv) {
 
   errors += run_g3(dB, dScale, dZero, q, scales, zeros);
 
-  constexpr int Ms[] = {1, 2, 3, 7, 8};
+  constexpr int Ms[] = {1, 2, 3, 7, 8, 9, 15, 16, 17};
   for (int M : Ms) {
+    if (M > 8) {
+      errors += run_g3_a_tag(M, dB, dScale, dZero, q, scales, zeros);
+      errors += run_g4_epilogue_tag(M);
+    }
     auto golden = golden_fp32(dense_a, M, q, scales, zeros);
     auto m16 = run_g4_arm<16, 16>(
         "m16", M, dDenseA.get(), dB.get(), dScale.get(), dZero.get());
@@ -1021,6 +1300,25 @@ int main(int argc, char** argv) {
     errors += check_g4_values("m8", M, m8.logical, golden);
     errors += check_g4_values("m16", M, m16.logical, golden);
     errors += check_m8_m16(M, m8.logical, m16.logical);
+    if (M > 8) {
+      auto m8p = run_g4_arm<8, 8, true>(
+          "m8p", M, dDenseA.get(), dB.get(), dScale.get(), dZero.get());
+      errors += m8p.errors;
+      errors += check_g4_values("m8p", M, m8p.logical, golden);
+      int const persistent_diff = half_bitdiff(m8p.logical, m8.logical);
+      std::printf("  G4 m8p-vs-m8 M=%d bitdiff=%d/%zu %s\n", M,
+                  persistent_diff, m8.logical.size(),
+                  persistent_diff ? "MISMATCH" : "MATCH");
+      errors += persistent_diff;
+    }
+  }
+
+  if (second_tile_only) {
+    std::printf("== [112:SECOND-TILE] %s: errors=%d "
+                "M=9/15/16/17 seams=mainloop-A+ptr-array-epilogue+"
+                "nonpersistent+persistent ==\n",
+                errors ? "FAIL" : "PASS", errors);
+    return errors ? 1 : 0;
   }
 
   // G5 runs at the two row counts that separate the m8 family from its control: one row is the decode

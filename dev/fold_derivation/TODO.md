@@ -2526,7 +2526,7 @@ local layout oracle cannot close one of these rows.
 | A04 | D06 | SUPERSEDED-BY-A09 | The Q4 dense policy-v2 M=1..64 pilot remains useful historical evidence, but it is not the final selector denominator and must not be fitted separately |
 | A05 | D17 | SUPERSEDED-BY-A09 | The five-format grouped multi-router pilot remains a router-control source, but the final grouped policy is fitted only from A09's complete K-pack campaign |
 | A06 | D05 | LOCAL-CLOSED/PENDING-FINAL-BUNDLE | Public Q4 ScaleFirst packed-units-to-FP16 metadata sizing and asynchronous device prepass APIs were added in `d27fee0` and documented in `665d2b6`; non-Q4 format DSOs report the capability absent. Reconfirm the symbols and numeric contract in A07's final six-library gate |
-| A09 | D06, D17 | LOCAL-DISCOVERY-CLOSED/PENDING-PREBUILD | The final production-space campaign is K-pack-only Q2/Q3/Q4/Q5/Q6 across ScaleFirst/FullyQuantized and dense/grouped. Its immutable denominator contains 70,618 compiled parent types (28,456 SF and 42,162 FQ), 59,000 FQ dense split cells, 1,381 format/workload cells, and every recorded historical winner. It forbids top-N and point-estimate pruning. The 2,216 binary shards are partitioned into 32 logical partitions per route (64 independently publishable artifacts); the distributed catalog binds every parent, manifest, binary and receipt hash, and assigns whole partitions to workers. Build and execute the artifacts before claiming a measured selector |
+| A09 | D06, D17 | DEVICE-EXECUTION-BLOCKED/FIRST-FAILURES-TRIAGED | The final production-space campaign is K-pack-only Q2/Q3/Q4/Q5/Q6 across ScaleFirst/FullyQuantized and dense/grouped. Its immutable denominator contains 70,618 compiled parent types (28,456 SF and 42,162 FQ), 59,000 FQ dense split cells, 1,381 format/workload cells, and every recorded historical winner. It forbids top-N and point-estimate pruning. The 2,216 binary shards are partitioned into 32 logical partitions per route (64 independently publishable artifacts); the distributed catalog binds every parent, manifest, binary and receipt hash, and assigns whole partitions to workers. The first Q4 device execution exposed the bounded incident recorded below; do not resume the mass campaign until its three device gates close. No measured selector may be claimed from the partial run |
 | A10 | D06 | LOCAL-IMPLEMENTATION-IN-PROGRESS | Turn A09's complete steady census into the final end-to-end policy without inventing a reducer estimate: retain all 3x11 raw samples with seed/order/device/binary provenance; measure one versioned reducer lookup for every unique `(M,N,S,dtype,implementation)` tuple; derive an interval confidence set without a numeric cap; measure cold/prepass/first-use only for that set; and require high-cadence real-reducer shipping replay before emitting a K-pack-only heuristic. A missing authority or overlapping public grouped feature leaf yields `NO_MEASURED_POLICY`, never a compiled-default fallback |
 | A07 | D06, D16, D17 | PENDING-FINAL-GATE | After A09/A10 produce the unified measured policy, rebuild the six-library bundle, repeat host ABI/negative controls and all canonical device correctness gates, then run the selected-config performance sanity board |
 | A08 | D03, D14, D18 | PENDING-MAIN-PORT | Selectively port only the admitted PPU/K-pack dependency closure to main after A07, remove develop-only benchmark members from the shipping `Prepared` type, and pass the exact main inventory, clean-source, HGCC/ELF, host ABI, and box admission gates |
@@ -2544,3 +2544,38 @@ reader into a silent product candidate.  If A03 passes, regenerate A09 with a
 versioned B-delivery identity; otherwise delete the experimental layout-3
 slice.  The current A09 denominator is exhaustive for the admitted production
 K-pack schedules, not for that pending counterfactual.
+
+#### 2026-09-04 A09 first-failure triage
+
+The first Q4 execution did not produce 130 independent numerical failures.
+The deduplicated evidence has three disjoint classes, and each class has a
+separate closure boundary:
+
+- 123 dense records came from one process and one `M=7,N=8192,K=5120`
+  atom after a launch failure.  Every record has `raw_bad=0` and no first bad
+  element.  The old runner labelled the launch state as `RAW_FP16_MISMATCH`
+  and continued through a sticky device context.  The runner now reports
+  CUTLASS and runtime status domains separately and stops only after printing
+  the first causal cell.  The exact first executed witness is
+  `fqk_tc_q12_l1_a0_tm64_tn128_tk64_wm16_wn32_s4_bc0_ap0_dn32`, S1, seed
+  `0x740e23673ecf70c7`.  A fresh one-cell device replay must identify the real
+  launch rejection before this shard is resumed.
+- Five grouped numerical failures span FullyQuantized and ScaleFirst and both
+  persistent and nonpersistent schedulers.  In every case the first bad
+  element is exactly an expert's `local_m=8`, the first row of the second TM8
+  tile.  A focused raw-FP32 A-row tag and an independent ptr-array epilogue
+  coordinate tag now cover M=9/15/16/17 with exact replay negatives.  Their
+  device result decides among A delivery, epilogue placement, and the composed
+  grouped handoff through both nonpersistent and persistent drivers; no
+  production collective change is admissible beforehand.
+- The two ScaleFirst failures are not one mechanism.  AP1 was admitted at
+  M=3 even though its typed provider capacity is one row; that admission is
+  now rejected structurally before mainloop construction.  The remaining
+  `tm256,tn256,tk128,wm16,wn128` nonpersistent failure occurs during
+  initialization, not arithmetic.  Its replay now prints exact CUTLASS status,
+  CTA thread count, and shipping/persistent/split shared-storage sizes.
+
+Only after the dense one-cell launch replay, grouped second-tile bisection,
+and ScaleFirst initialization replay are green or structurally excluded may
+A09 resume.  A later sticky-context row is never accepted as evidence about a
+kernel specialization.

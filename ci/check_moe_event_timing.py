@@ -38,7 +38,7 @@ def audit(launcher: str, harness: str, main: str) -> list[str]:
         "hggcMemcpy(workspace, pfx.data()",
         "hggcEventRecord(kernel_span->start, stream)",
         "moe_directory::launch_build",
-        "gemm.run(stream)",
+        "auto const run_status = gemm.run(stream)",
         "hggcEventRecord(kernel_span->stop, stream)",
     ]
     if any(launch.count(x) != 1 for x in ordered):
@@ -53,6 +53,9 @@ def audit(launcher: str, harness: str, main: str) -> list[str]:
         bad.append("device directory build is not guarded by the persistent scheduler type")
     if "kernel_span->recorded = true" not in launch:
         bad.append("successful stop event does not mark the pair queryable")
+    if ("if (run_status != cutlass::Status::kSuccess)" not in launch or
+            'cutlassGetStatusString(run_status)' not in launch):
+        bad.append("GEMM launch status can be discarded before the stop event")
     if launcher.count("false,kernel_span)") != 1:
         bad.append("filter_and_run does not forward its event pair through the one MOEG_CALL seam")
 
@@ -196,8 +199,9 @@ def main() -> int:
         print("[moe-event-timing] FAIL: report gate accepted wall-derived MFU/MBU")
         return 1
 
+    run_line = "  auto const run_status = gemm.run(stream);"
     planted_interval_sync = launcher.replace(
-        "  gemm.run(stream);", "  gemm.run(stream);\n  hggcStreamSynchronize(stream);  // planted", 1)
+        run_line, run_line + "\n  hggcStreamSynchronize(stream);  // planted", 1)
     if not audit(planted_interval_sync, harness, main_src):
         print("[moe-event-timing] FAIL: interval gate accepted a synchronization inside start/run/stop")
         return 1
@@ -206,7 +210,7 @@ def main() -> int:
     # appear faster without changing one output bit.  That is a distinct
     # regression from moving the old blocking host prefix into the interval.
     persistent_begin = launcher.find("  if constexpr (UsePersistent) {", launcher.find("THE MEASURED INTERVAL"))
-    run_begin = launcher.find("  gemm.run(stream);", persistent_begin)
+    run_begin = launcher.find(run_line, persistent_begin)
     if persistent_begin < 0 or run_begin < 0:
         print("[moe-event-timing] FAIL: cannot plant directory-boundary negative")
         return 1
@@ -215,6 +219,13 @@ def main() -> int:
     planted_directory = planted_directory.replace(start_block, persistent_block + start_block, 1)
     if not audit(planted_directory, harness, main_src):
         print("[moe-event-timing] FAIL: interval gate accepted directory construction outside the subject span")
+        return 1
+
+    planted_ignored_status = launcher.replace(
+        "if (run_status != cutlass::Status::kSuccess)",
+        "if (false && run_status != cutlass::Status::kSuccess)", 1)
+    if not audit(planted_ignored_status, harness, main_src):
+        print("[moe-event-timing] FAIL: launch gate accepted a discarded GEMM status")
         return 1
 
     planted_zero = harness.replace(
@@ -233,7 +244,7 @@ def main() -> int:
 
     print("[moe-event-timing] PASS -- setup < start < run < stop, one warmup + batched events, "
           "device-directory cost retained for persistent arm, event us primary, wall audit retained; "
-          "ten planted regressions rejected")
+          "eleven planted regressions rejected")
     return 0
 
 

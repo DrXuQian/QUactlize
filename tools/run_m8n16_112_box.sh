@@ -4,10 +4,12 @@
 # this script runs that prerequisite first instead of trusting a remembered
 # result from another checkout.
 #
-# G3 checks the real ScaleZero mainloop's raw FP32 accumulator.  G4 checks the
-# production grouped ptr-array epilogue at M={1,2,3,7,8}, including the exact
-# same-input m16 control.  G5 is deliberately absent until #108 supplies the
-# E=256/active=8 non-contiguous ragged harness.
+# G3 checks the real ScaleZero mainloop's raw FP32 accumulator, including an
+# absolute-row A tag across the second and third TM8 tiles.  G4 checks both the
+# production nonpersistent and persistent grouped kernels, plus an
+# accumulator-coordinate tag through the
+# same ptr-array epilogue at M={1,2,3,7,8,9,15,16,17}.  The latter's exact
+# first-tile replay negative separates epilogue placement from A delivery.
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -41,6 +43,9 @@ printf '[112] root-sha=%s\n' "$(git -C "$ROOT" rev-parse HEAD)"
 printf '[112] actlize-sha=%s\n' "$(git -C "$ROOT/third_party/actlize" rev-parse HEAD)"
 printf '[112] artifacts=%s\n' "$ARTIFACT_ROOT"
 
+python3 -B "$ROOT/ci/check_m8n16_second_tile_contract.py" \
+  || fail 'second-tile source contract failed before device work'
+
 printf '\n== prerequisite: #111 G0/G1/G2 must pass on this checkout ==\n'
 if ! "$ROOT/tools/run_m8n16_111_box.sh" 2>&1 | tee "$PREREQ_LOG"; then
   fail '#111 prerequisite failed; G3/G4 are not admissible'
@@ -48,7 +53,7 @@ fi
 grep -q '^\[111\] PASS: positive arch + G1 + G2 green/red + negative arch all proved$' "$PREREQ_LOG" \
   || fail '#111 returned zero without its aggregate PASS marker'
 
-printf '\n== G3/G4 collective build and run: ppu001 ==\n'
+printf '\n== G3/G4 second-tile collective build and run: ppu001 ==\n'
 if ! env PPU_BUILD_DIR="$BUILD_ROOT" PPU_ARCHS=ppu0010 TARGET="$TARGET" \
     "$ROOT/build.sh" 2>&1 | tee "$BUILD_LOG"; then
   fail 'ppu001 collective build failed'
@@ -70,18 +75,16 @@ fi
 
 BIN="$(find_one 'collective gate binary' "$BUILD_ROOT" -type f \
     -name "$TARGET" -perm -u+x)"
-if ! "$BIN" 2>&1 | tee "$RUN_LOG"; then
-  fail 'G3/G4 numerical gate returned nonzero'
+if ! "$BIN" --second-tile-only 2>&1 | tee "$RUN_LOG"; then
+  fail 'G3/G4 second-tile numerical gate returned nonzero'
 fi
 
-grep -q '^\[G5\] BLOCKED on #108 real E=256/active=8 ragged harness; L=1 is not substituted$' "$RUN_LOG" \
-  || fail 'G5 blocker marker is absent or an L=1 substitute was presented'
 grep -q '^\[offline\] m8/m16 B artifacts byte-identical: 4096 physical bytes (4096 logical); roundtrip=0/8192$' "$RUN_LOG" \
   || fail 'offline m8/m16 physical artifact identity or round-trip gate did not pass exactly'
 grep -Eq '^  G3 raw FP32 accum +bad=0/256 max_abs=[^ ]+ MATCH$' "$RUN_LOG" \
   || fail 'G3 raw FP32 accumulator did not match all 256 values'
 
-for m in 1 2 3 7 8; do
+for m in 1 2 3 7 8 9 15 16 17; do
   count=$((m * 32))
   grep -Eq "^  G4 m8 +M=${m} golden bad=0/${count} max_abs=[^ ]+ MATCH$" "$RUN_LOG" \
     || fail "G4 m8 M=${m} did not match the independent golden"
@@ -91,9 +94,27 @@ for m in 1 2 3 7 8; do
     || fail "G4 m8/m16 same-input control M=${m} was not bit-exact"
 done
 
-grep -q '^== \[112\] PASS: errors=0 (G3/G4; G5 blocked on #108) ==$' "$RUN_LOG" \
-  || fail 'aggregate G3/G4 PASS marker is absent'
+for m in 9 15 16 17; do
+  count=$((m * 32))
+  red=$(((m - 8) * 32))
+  grep -q "^  G3 A-TAG M=${m} raw-bitdiff=0/${count} MATCH$" "$RUN_LOG" \
+    || fail "G3 A-tag M=${m} did not preserve every raw FP32 bit"
+  grep -q "^  G3 A-TAG-NEGATIVE M=${m} replay-oracle-bitdiff=0/${count} observed-red=${red} expected-red=${red} EXPECTED_RED$" "$RUN_LOG" \
+    || fail "G3 A-tag M=${m} replay negative did not turn exactly red"
+  grep -q "^  G4 EPILOGUE-TAG M=${m} raw-bitdiff=0/${count} MATCH$" "$RUN_LOG" \
+    || fail "G4 ptr-array epilogue tag M=${m} was not raw-bit exact"
+  row16=-1
+  if [ "$m" -gt 16 ]; then row16=32; fi
+  grep -q "^  G4 EPILOGUE-TAG-NEGATIVE M=${m} observed-red=${red} expected-red=${red} row8-red=32 row16-red=${row16} EXPECTED_RED$" "$RUN_LOG" \
+    || fail "G4 ptr-array epilogue M=${m} replay negative did not turn exactly red"
+  grep -Eq "^  G4 m8p +M=${m} golden bad=0/${count} max_abs=[^ ]+ MATCH$" "$RUN_LOG" \
+    || fail "G4 persistent m8 M=${m} did not match the independent golden"
+  grep -q "^  G4 m8p-vs-m8 M=${m} bitdiff=0/${count} MATCH$" "$RUN_LOG" \
+    || fail "G4 persistent/nonpersistent m8 M=${m} differed"
+done
 
-printf '\n[112] PASS: #111 prerequisite + G3 raw mainloop + G4 grouped epilogue all proved\n'
-printf '[112] G5 remains BLOCKED on #108; no L=1 result was counted\n'
+grep -q '^== \[112:SECOND-TILE\] PASS: errors=0 M=9/15/16/17 seams=mainloop-A+ptr-array-epilogue+nonpersistent+persistent ==$' "$RUN_LOG" \
+  || fail 'aggregate second-tile bisection PASS marker is absent'
+
+printf '\n[112] PASS: #111 prerequisite + second/third-tile A delivery + ptr-array epilogue + both grouped schedulers proved\n'
 printf '[112] artifacts preserved at %s\n' "$ARTIFACT_ROOT"

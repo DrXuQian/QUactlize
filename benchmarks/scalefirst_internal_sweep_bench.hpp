@@ -49,6 +49,7 @@ enum class State : int {
   PipelineDepth,
   KTileDoesNotDivide,
   M8DecodeOnly,
+  PackedAProviderCapacity,
   Occupancy,
   CanImplement,
   Initialize,
@@ -68,6 +69,8 @@ inline char const* state_name(State state) {
     case State::KTileDoesNotDivide:
       return "INADMISSIBLE_K_TILE_DOES_NOT_DIVIDE";
     case State::M8DecodeOnly: return "INADMISSIBLE_M8_DECODE_ONLY";
+    case State::PackedAProviderCapacity:
+      return "INADMISSIBLE_PACKED_A_PROVIDER_CAPACITY";
     case State::Occupancy: return "INADMISSIBLE_OCCUPANCY";
     case State::CanImplement: return "INADMISSIBLE_CAN_IMPLEMENT";
     case State::Initialize: return "INITIALIZE_FAIL";
@@ -129,6 +132,9 @@ struct CellResult {
   std::uint16_t first_bad_want = 0;
   std::uint16_t first_bad_got = 0;
   char const* failure_step = "NONE";
+  int failure_cutlass_status = 0;
+  int failure_runtime_status = 0;
+  int cta_threads = 0;
   int failure_repeat = -1;
   std::size_t shipping_smem = 0;
   std::size_t persistent_smem = 0;
@@ -148,6 +154,17 @@ struct RegistryRow {
   int a_provider, resolved_delivery_n;
   RunRow run;
 };
+
+// PackedARows is a provider capacity, not the compute tile's M extent.  The
+// current AP1 path has capacity one; spelling the check generically keeps a
+// future multi-row provider from acquiring a second, inconsistent admission
+// rule.  Keep it host-constexpr so a local type gate can exercise the exact
+// compiled policy without launching a device kernel.
+template <int PackedARows>
+constexpr bool packed_a_shape_admissible(int m) {
+  static_assert(PackedARows >= 0, "packed-A row capacity cannot be negative");
+  return PackedARows == 0 || m <= PackedARows;
+}
 
 template <int QType> struct Format;
 template <> struct Format<8> {
@@ -417,8 +434,13 @@ class EventPair {
 
 inline bool inspect(DeviceInputs const& in, CellResult& result) {
   std::vector<half_t> host(std::size_t(in.m) * in.n);
-  if (hggcMemcpy(host.data(), in.output, host.size() * sizeof(half_t),
-                 hggcMemcpyDeviceToHost) != hggcSuccess) return false;
+  auto const status = hggcMemcpy(host.data(), in.output,
+                                 host.size() * sizeof(half_t),
+                                 hggcMemcpyDeviceToHost);
+  if (status != hggcSuccess) {
+    result.failure_runtime_status = int(status);
+    return false;
+  }
   std::uint64_t hash = UINT64_C(1469598103934665603), bad = 0;
   result.first_bad_index = std::size_t(-1);
   result.first_bad_want = result.first_bad_got = 0;
@@ -445,14 +467,40 @@ template <class Launch>
 bool measure(Launch&& launch, int iterations, CellResult& result) {
   result.samples_us.clear();
   for (int i = 0; i < iterations; ++i) {
+    result.failure_repeat = i;
     EventPair events;
-    if (hggcEventRecord(events.start, nullptr) != hggcSuccess ||
-        launch() != cutlass::Status::kSuccess ||
-        hggcEventRecord(events.stop, nullptr) != hggcSuccess ||
-        hggcEventSynchronize(events.stop) != hggcSuccess) return false;
+    auto const start_status = hggcEventRecord(events.start, nullptr);
+    if (start_status != hggcSuccess) {
+      result.failure_step = "TIMING_START_EVENT";
+      result.failure_runtime_status = int(start_status);
+      return false;
+    }
+    auto const launch_status = launch();
+    if (launch_status != cutlass::Status::kSuccess) {
+      result.failure_step = "TIMING_LAUNCH";
+      result.failure_cutlass_status = int(launch_status);
+      return false;
+    }
+    auto const stop_status = hggcEventRecord(events.stop, nullptr);
+    if (stop_status != hggcSuccess) {
+      result.failure_step = "TIMING_STOP_EVENT";
+      result.failure_runtime_status = int(stop_status);
+      return false;
+    }
+    auto const sync_status = hggcEventSynchronize(events.stop);
+    if (sync_status != hggcSuccess) {
+      result.failure_step = "TIMING_STOP_SYNCHRONIZE";
+      result.failure_runtime_status = int(sync_status);
+      return false;
+    }
     float ms = 0;
-    if (hggcEventElapsedTime(&ms, events.start, events.stop) != hggcSuccess ||
-        !(ms > 0) || !std::isfinite(ms)) return false;
+    auto const elapsed_status =
+        hggcEventElapsedTime(&ms, events.start, events.stop);
+    if (elapsed_status != hggcSuccess || !(ms > 0) || !std::isfinite(ms)) {
+      result.failure_step = "TIMING_ELAPSED_TIME";
+      result.failure_runtime_status = int(elapsed_status);
+      return false;
+    }
     result.samples_us.push_back(double(ms) * 1000.0);
   }
   std::sort(result.samples_us.begin(), result.samples_us.end());
@@ -470,13 +518,17 @@ bool validate_and_measure(DeviceInputs const& in, Options const& options,
   std::uint64_t first = 0;
   for (int repeat = 0; repeat < options.correctness_repeats; ++repeat) {
     result.failure_repeat = repeat;
-    if (launch() != cutlass::Status::kSuccess) {
+    auto const launch_status = launch();
+    if (launch_status != cutlass::Status::kSuccess) {
       result.failure_step = "CORRECTNESS_LAUNCH";
+      result.failure_cutlass_status = int(launch_status);
       result.state = State::Launch;
       return false;
     }
-    if (hggcDeviceSynchronize() != hggcSuccess) {
+    auto const sync_status = hggcDeviceSynchronize();
+    if (sync_status != hggcSuccess) {
       result.failure_step = "CORRECTNESS_SYNCHRONIZE";
+      result.failure_runtime_status = int(sync_status);
       result.state = State::Launch;
       return false;
     }
@@ -494,8 +546,9 @@ bool validate_and_measure(DeviceInputs const& in, Options const& options,
     first = result.fingerprint;
   }
   if (options.measure && !measure(launch, options.iterations, result)) {
-    result.failure_step = "TIMING";
-    result.state = State::Timing;
+    result.state = result.failure_cutlass_status ||
+                           result.failure_runtime_status
+        ? State::Launch : State::Timing;
     return false;
   }
   result.failure_step = "NONE";
@@ -537,6 +590,7 @@ bool run_row(DeviceInputs const& in, Options const& options, RowResult& row) {
     cell.shipping_smem = T::Shipping::SharedStorageSize;
     cell.persistent_smem = PersistentKernel::SharedStorageSize;
     cell.split_smem = SplitKernel::SharedStorageSize;
+    cell.cta_threads = int(ShippingKernel::MaxThreadsPerBlock);
     return cell;
   };
 
@@ -569,6 +623,16 @@ bool run_row(DeviceInputs const& in, Options const& options, RowResult& row) {
   if (in.k % TK) {
     add_shape_terminals(State::KTileDoesNotDivide);
     return true;
+  }
+
+  // Match the production packed-A launch contract before constructing any
+  // mainloop arguments.  AP1 physically publishes one A row; TM8 is only its
+  // compute tile and does not extend that provider's input capacity.
+  if constexpr (T::MainloopPolicy::PackedARows > 0) {
+    if (!packed_a_shape_admissible<T::MainloopPolicy::PackedARows>(in.m)) {
+      add_shape_terminals(State::PackedAProviderCapacity);
+      return true;
+    }
   }
 
   // The shipping shape authority selects the native m8 family only below M=8.
@@ -609,8 +673,11 @@ bool run_row(DeviceInputs const& in, Options const& options, RowResult& row) {
       ShippingGemm gemm;
       if (ShippingGemm::can_implement(args) != cutlass::Status::kSuccess) {
         cell.state = State::CanImplement;
-      } else if (gemm.initialize(args, nullptr, nullptr) != cutlass::Status::kSuccess) {
+      } else if (auto const status = gemm.initialize(args, nullptr, nullptr);
+                 status != cutlass::Status::kSuccess) {
         cell.state = State::Initialize;
+        cell.failure_step = "NONPERSISTENT_INITIALIZE";
+        cell.failure_cutlass_status = int(status);
         return false;
       } else if (!validate_and_measure(in, options,
                                        [&] { return gemm.run(nullptr); }, cell)) {
@@ -666,8 +733,11 @@ bool run_row(DeviceInputs const& in, Options const& options, RowResult& row) {
         PersistentGemm gemm;
         if (PersistentGemm::can_implement(args) != cutlass::Status::kSuccess) {
           cell.state = State::CanImplement;
-        } else if (gemm.initialize(args, nullptr, nullptr) != cutlass::Status::kSuccess) {
+        } else if (auto const status = gemm.initialize(args, nullptr, nullptr);
+                   status != cutlass::Status::kSuccess) {
           cell.state = State::Initialize;
+          cell.failure_step = "PERSISTENT_INITIALIZE";
+          cell.failure_cutlass_status = int(status);
           return false;
         } else if (!validate_and_measure(
                        in, options, [&] { return gemm.run(nullptr); }, cell)) {
@@ -720,20 +790,53 @@ bool run_row(DeviceInputs const& in, Options const& options, RowResult& row) {
       cell.state = State::CanImplement;
       continue;
     }
-    if (producer.initialize(producer_args, nullptr, nullptr) != cutlass::Status::kSuccess ||
-        reducer.initialize(reducer_args) != cutlass::Status::kSuccess) {
+    auto const producer_init = producer.initialize(
+        producer_args, nullptr, nullptr);
+    if (producer_init != cutlass::Status::kSuccess) {
       cell.state = State::Initialize;
+      cell.failure_step = "SPLIT_PRODUCER_INITIALIZE";
+      cell.failure_cutlass_status = int(producer_init);
       return false;
     }
-    auto full = [&] {
-      auto status = producer.run(nullptr);
-      return status == cutlass::Status::kSuccess ? reducer.run(nullptr) : status;
-    };
+    auto const reducer_init = reducer.initialize(reducer_args);
+    if (reducer_init != cutlass::Status::kSuccess) {
+      cell.state = State::Initialize;
+      cell.failure_step = "SPLIT_REDUCER_INITIALIZE";
+      cell.failure_cutlass_status = int(reducer_init);
+      return false;
+    }
     std::uint64_t first = 0;
     for (int repeat = 0; repeat < options.correctness_repeats; ++repeat) {
-      if (full() != cutlass::Status::kSuccess ||
-          hggcDeviceSynchronize() != hggcSuccess || !inspect(in, cell) ||
-          cell.raw_bad || (repeat && cell.fingerprint != first)) {
+      cell.failure_repeat = repeat;
+      auto const producer_status = producer.run(nullptr);
+      if (producer_status != cutlass::Status::kSuccess) {
+        cell.failure_step = "CORRECTNESS_PRODUCER_LAUNCH";
+        cell.failure_cutlass_status = int(producer_status);
+        cell.state = State::Launch;
+        return false;
+      }
+      auto const reducer_status = reducer.run(nullptr);
+      if (reducer_status != cutlass::Status::kSuccess) {
+        cell.failure_step = "CORRECTNESS_REDUCER_LAUNCH";
+        cell.failure_cutlass_status = int(reducer_status);
+        cell.state = State::Launch;
+        return false;
+      }
+      auto const sync_status = hggcDeviceSynchronize();
+      if (sync_status != hggcSuccess) {
+        cell.failure_step = "CORRECTNESS_SYNCHRONIZE";
+        cell.failure_runtime_status = int(sync_status);
+        cell.state = State::Launch;
+        return false;
+      }
+      if (!inspect(in, cell)) {
+        cell.failure_step = "CORRECTNESS_OUTPUT_COPY";
+        cell.state = State::Launch;
+        return false;
+      }
+      if (cell.raw_bad || (repeat && cell.fingerprint != first)) {
+        cell.failure_step = cell.raw_bad ? "RAW_FP16_MISMATCH" :
+                                           "FINGERPRINT_MISMATCH";
         cell.state = State::Correctness;
         return false;
       }
@@ -746,6 +849,8 @@ bool run_row(DeviceInputs const& in, Options const& options, RowResult& row) {
           [&] { return reducer.run(nullptr); }, options.iterations);
       cell.failure_repeat = timing.failure_repeat;
       cell.failure_step = splitk_producer_timing::failure_name(timing.failure);
+      cell.failure_cutlass_status = timing.failure_cutlass_status;
+      cell.failure_runtime_status = timing.failure_runtime_status;
       if (timing.failure != splitk_producer_timing::Failure::None) {
         cell.state = splitk_producer_timing::is_launch_failure(timing.failure)
             ? State::Launch : State::Timing;
@@ -755,10 +860,15 @@ bool run_row(DeviceInputs const& in, Options const& options, RowResult& row) {
       cell.min_us = timing.min_us;
       cell.max_us = timing.max_us;
       cell.median_us = timing.median_us;
-      if (!inspect(in, cell) || cell.raw_bad || cell.fingerprint != first) {
-        cell.failure_step = cell.raw_bad
-            ? "ORDERED_CLOSE_RAW_FP16_MISMATCH"
-            : "ORDERED_CLOSE_REDUCER_OR_COPY";
+      if (!inspect(in, cell)) {
+        cell.failure_step = "ORDERED_CLOSE_OUTPUT_COPY";
+        cell.state = State::Launch;
+        return false;
+      }
+      if (cell.raw_bad || cell.fingerprint != first) {
+        cell.failure_step = cell.raw_bad ?
+            "ORDERED_CLOSE_RAW_FP16_MISMATCH" :
+            "ORDERED_CLOSE_FINGERPRINT_MISMATCH";
         cell.state = State::Correctness;
         return false;
       }

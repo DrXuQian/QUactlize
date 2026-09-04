@@ -12,6 +12,8 @@ using LargeK64Types = scalefirst_internal_sweep::RowTypes<
     12, 0, 64, 128, 64, 64, 16, 6, 0, 1>;
 using LargeK256Types = scalefirst_internal_sweep::RowTypes<
     12, 0, 64, 128, 256, 64, 16, 2, 0, 1>;
+using PackedA1Types = scalefirst_internal_sweep::RowTypes<
+    12, 0, 8, 64, 64, 8, 16, 2, 0, 1, 1, 16>;
 using XplaneTypes = scalefirst_internal_sweep::RowTypes<
     12, 64, 64, 64, 64, 64, 32, 3, 0, 0>;
 using XplaneExpected = fpa_intb_ppu::DenseKernelTypes<
@@ -43,8 +45,18 @@ static_assert(LargeK64Types::PersistentKernel::SharedStorageSize <=
                   ppu_tactics::kBlockSmemBytes);
 static_assert(LargeK256Types::PersistentKernel::SharedStorageSize <=
                   ppu_tactics::kBlockSmemBytes);
+static_assert(PackedA1Types::MainloopPolicy::PackedARows == 1,
+              "the AP1 control must bind the real Rows=1 policy");
+static_assert(scalefirst_internal_sweep::packed_a_shape_admissible<
+                  PackedA1Types::MainloopPolicy::PackedARows>(1));
+static_assert(!scalefirst_internal_sweep::packed_a_shape_admissible<
+                  PackedA1Types::MainloopPolicy::PackedARows>(2));
+static_assert(scalefirst_internal_sweep::packed_a_shape_admissible<
+                  Types::MainloopPolicy::PackedARows>(2),
+              "ordinary AP0 remains admissible above M=1");
 
 int main() {
   std::printf("L234 Q4 KPACK4 ScaleFirst persistent type PASS "
-              "metadata=FP16 layout=transpose-v1 tactics=3\n");
+              "metadata=FP16 layout=transpose-v1 tactics=3 "
+              "packed_a=Rows1-only\n");
 }

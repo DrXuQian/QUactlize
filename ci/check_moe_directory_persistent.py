@@ -133,9 +133,10 @@ def violations(src: dict[str, str]) -> list[str]:
             "using NonPersistentKernel" in launcher and
             "GemmUniversal<GroupProblemShape" in launcher,
         "generated filter selects only through the build switch":
-            "ArtifactTileK, kPersistentBuild>" in launcher,
+            "ArtifactTileK, kPersistentBuild, void, BChunk>" in launcher,
         "device ABI selects through the same build switch":
-            "moe_grouped_ppu::kPersistentBuild>(" in backend,
+            "QueryOnly, RequireUniversalFallback, ArtifactTileK,\n"
+            "                          moe_grouped_ppu::kPersistentBuild," in backend,
         "persistent kernel reuses the existing mainloop type":
             "using CollectiveMainloop = CollectiveMainloop_;" in kernel and
             "collective_mainloop.load_init" in kernel,
@@ -210,7 +211,8 @@ def violations(src: dict[str, str]) -> list[str]:
 def self_test(src: dict[str, str]) -> list[str]:
     failures: list[str] = []
     plants = [
-        ("drop build switch", "ArtifactTileK, kPersistentBuild>", "ArtifactTileK>"),
+        ("drop build switch", "ArtifactTileK, kPersistentBuild, void, BChunk>",
+         "ArtifactTileK, false, void, BChunk>"),
         ("change record ABI", "sizeof(BlockEntry) == 16", "sizeof(BlockEntry) == 32"),
         ("drop scheduler identity", "scheduler=%s timing=%s", "timing=%s"),
         ("collapse span label", "event-scheduler-span-upper-v1", "event-kernel-span-upper-v1"),
@@ -220,7 +222,8 @@ def self_test(src: dict[str, str]) -> list[str]:
         ("drift multiformat layout", "Q4_K|i4|12|0|ScaleZero|32|4+0|1|64|",
          "Q4_K|i4|12|0|ScaleZero|32|4+0|1|128|"),
         ("drop shipping format", "struct L216Format<14>", "struct L216Format<15>"),
-        ("move build after GEMM", "gemm.run(stream);", "gemm.run(stream);\n  // plant\n"),
+        ("move build after GEMM", "auto const run_status = gemm.run(stream);",
+         "auto const run_status = gemm.run(stream);\n  // plant\n"),
         ("add format logic", "namespace cutlass::gemm::kernel {",
          "namespace cutlass::gemm::kernel {\n// xplane converter plant"),
     ]
@@ -249,12 +252,14 @@ def self_test(src: dict[str, str]) -> list[str]:
             # Invert the two calls, rather than merely adding a comment.
             text = planted[target]
             build_pos = text.find("  if constexpr (UsePersistent) {", text.find("THE MEASURED INTERVAL"))
-            run_pos = text.find("  gemm.run(stream);", build_pos)
+            run_line = "  auto const run_status = gemm.run(stream);\n"
+            run_pos = text.find(run_line, build_pos)
             if build_pos < 0 or run_pos < 0:
                 failures.append(f"self-test plant seam missing: {name}")
                 continue
             block = text[build_pos:run_pos]
-            planted[target] = text[:build_pos] + text[run_pos:run_pos + len("  gemm.run(stream);\n")] + block + text[run_pos + len("  gemm.run(stream);\n"):]
+            planted[target] = (text[:build_pos] + text[run_pos:run_pos + len(run_line)] +
+                               block + text[run_pos + len(run_line):])
         elif name == "drop source bundle":
             planted[target] = planted[target].replace(old, new)
         else:

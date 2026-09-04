@@ -879,10 +879,15 @@ int run_shape(Shape shape, Cli const& cli, int device, int cu,
         std::fprintf(
             stderr,
             "SF_FATAL symbol=%s shape=%dx%dx%d algorithm=%s state=%s "
-            "step=%s repeat=%d raw_bad=%llu first_bad=%zu "
+            "step=%s cutlass_status=%d runtime_status=%d cta_threads=%d "
+            "shipping_smem=%zu persistent_smem=%zu split_smem=%zu "
+            "repeat=%d raw_bad=%llu first_bad=%zu "
             "want=0x%04x got=0x%04x\n",
             registry_row.symbol, shape.m, shape.n, shape.k,
             failed.algorithm, state_name(failed.state), failed.failure_step,
+            failed.failure_cutlass_status, failed.failure_runtime_status,
+            failed.cta_threads, failed.shipping_smem,
+            failed.persistent_smem, failed.split_smem,
             failed.failure_repeat,
             static_cast<unsigned long long>(failed.raw_bad),
             failed.first_bad_index, unsigned(failed.first_bad_want),

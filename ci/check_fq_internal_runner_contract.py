@@ -46,6 +46,48 @@ def check_m8_shape_admission(bench: str, analyzer: str) -> None:
             raise ValueError(f"FQ benchmark lost exact failure witness: {token}")
 
 
+def check_failure_attribution(bench: str, driver: str) -> None:
+    """Keep launch failures out of the numeric-mismatch population.
+
+    A device launch error is sticky.  Continuing through a shuffled shard after
+    the first error made one invalid launch look like every later specialization
+    had returned wrong FP16 values.  The runner must publish the first status and
+    stop only after printing that exact cell.
+    """
+    required = (
+        "int failure_cutlass_status = 0;",
+        "int failure_runtime_status = 0;",
+        "result.failure_cutlass_status = int(launch_status);",
+        "result.failure_runtime_status = int(sync_status);",
+        'result.failure_step = "CORRECTNESS_LAUNCH";',
+        'result.failure_step = "CORRECTNESS_PRODUCER_LAUNCH";',
+        'result.failure_step = "CORRECTNESS_REDUCER_LAUNCH";',
+        'result.failure_step = "PROFILE_SUBJECT_LAUNCH";',
+        'result.failure_step = "PROFILE_SUBJECT_SYNCHRONIZE";',
+        'result.failure_step = "TIMING_LAUNCH";',
+        'result.failure_step = "ORDERED_CLOSE_OUTPUT_COPY";',
+        "result.failure_cutlass_status = timing.failure_cutlass_status;",
+        "result.failure_runtime_status = timing.failure_runtime_status;",
+        "result.state = State::Launch;",
+        'result.failure_step = "BC_CORRECTNESS_LAUNCH";',
+        'result.failure_step = "BC_CORRECTNESS_SYNCHRONIZE";',
+        "if (supported && !ok) return false;",
+        "failure_cutlass_status=%d",
+        "failure_runtime_status=%d",
+        "if (!ok) return 1;",
+        "if (rc != 0) return rc;",
+    )
+    combined = bench + "\n" + driver
+    missing = [token for token in required if token not in combined]
+    if missing:
+        raise ValueError(
+            f"FQ benchmark lost first-launch attribution: {missing}")
+    printed = driver.index("failure_cutlass_status=%d")
+    stopped = driver.index("if (!ok) return 1;")
+    if printed >= stopped:
+        raise ValueError("FQ shard stops before publishing its causal cell")
+
+
 def resume_validator_source(runner: str) -> str:
     """Extract the exact Python decision used before a resumed shard can run."""
     command = runner.find('existing_rc="$(python3 -B - "$run_log"')
@@ -352,7 +394,9 @@ def main() -> int:
     texts = {name: path.read_text() for name, path in paths.items()}
     check(**texts)
     bench = (ROOT / "benchmarks/fully_quantized_splitk_producer_bench.hpp").read_text()
+    driver = (ROOT / "benchmarks/test_fully_quantized_internal_sweep.cu").read_text()
     check_m8_shape_admission(bench, texts["analyzer"])
+    check_failure_attribution(bench, driver)
 
     # Same compiled row, same analyzer: changing only the shape-admission
     # terminal must be caught.  Different fixture files would not isolate the
@@ -365,6 +409,17 @@ def main() -> int:
             raise
     else:
         raise AssertionError("TM8 prefill admission plant stayed green")
+
+    # Removing only the shard stop recreates the exact error.txt failure mode:
+    # one sticky runtime error is attributed to every later shuffled row.
+    planted_failure_attribution = driver.replace("if (!ok) return 1;", "", 1)
+    try:
+        check_failure_attribution(bench, planted_failure_attribution)
+    except ValueError as error:
+        if "first-launch" not in str(error):
+            raise
+    else:
+        raise AssertionError("post-launch cascade plant stayed green")
 
     # Negative 1 changes only the accepted generator flag.  This is the exact
     # seam that previously let a runner survive local review yet fail before

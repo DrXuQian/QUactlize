@@ -76,6 +76,10 @@ def check_contract(runner: str, analyzer: str, bench: str, driver: str) -> None:
         'ppu_dense_shipping::default_config_for_m(in.m)',
         'ppu_dense_shipping::kDecodeDefault',
         'INADMISSIBLE_M8_DECODE_ONLY',
+        'INADMISSIBLE_PACKED_A_PROVIDER_CAPACITY',
+        'T::MainloopPolicy::PackedARows > 0',
+        'packed_a_shape_admissible<T::MainloopPolicy::PackedARows>(in.m)',
+        'add_shape_terminals(State::PackedAProviderCapacity)',
         'PRODUCER_ONLY_NOT_PRODUCT_E2E',
         'DenseKPackKernelTypes<',
         'ScaleFirstWeightLayoutSelector<',
@@ -83,12 +87,35 @@ def check_contract(runner: str, analyzer: str, bench: str, driver: str) -> None:
         'QType == 10 || QType == 11 || QType == 13',
         'QuantMode::FinegrainedScaleZero',
         'occupancy < 0',
+        'int failure_cutlass_status = 0;',
+        'int failure_runtime_status = 0;',
+        'cell.failure_step = "NONPERSISTENT_INITIALIZE";',
+        'cell.failure_step = "PERSISTENT_INITIALIZE";',
+        'cell.failure_step = "SPLIT_PRODUCER_INITIALIZE";',
+        'cell.failure_step = "SPLIT_REDUCER_INITIALIZE";',
+        'cell.failure_step = "CORRECTNESS_PRODUCER_LAUNCH";',
+        'cell.failure_step = "CORRECTNESS_REDUCER_LAUNCH";',
+        'result.failure_step = "TIMING_LAUNCH";',
+        'cell.failure_step = "ORDERED_CLOSE_OUTPUT_COPY";',
+        'cell.failure_cutlass_status = timing.failure_cutlass_status;',
+        'cell.failure_runtime_status = timing.failure_runtime_status;',
     )
     missing = [token for token in bench_required if token not in bench]
     if missing:
-        raise AssertionError(f"benchmark lost TM8 shape admission: {missing}")
+        raise AssertionError(f"benchmark lost shape admission: {missing}")
+    packed_a_guard = bench.index(
+        'if constexpr (T::MainloopPolicy::PackedARows > 0)')
+    packed_a_terminal = bench.index(
+        'add_shape_terminals(State::PackedAProviderCapacity)', packed_a_guard)
+    mainloop_construction = bench.index(
+        'auto mainloop = T::Prepared::make_mainloop_arguments')
+    if not packed_a_guard < packed_a_terminal < mainloop_construction:
+        raise AssertionError(
+            "packed-A shape admission no longer precedes mainloop construction")
     driver_required = (
-        'step=%s repeat=%d raw_bad=%llu first_bad=%zu',
+        'step=%s cutlass_status=%d runtime_status=%d cta_threads=%d',
+        'shipping_smem=%zu persistent_smem=%zu split_smem=%zu',
+        'repeat=%d raw_bad=%llu first_bad=%zu',
         'want=0x%04x got=0x%04x',
         'transform_generic_kpack<false>',
         'kquant_kpack_transpose_v1(',
@@ -138,6 +165,12 @@ def main() -> int:
         bench_text.replace('INADMISSIBLE_M8_DECODE_ONLY',
                            'INADMISSIBLE_TILE_M', 1),
         driver_text, "INADMISSIBLE_M8_DECODE_ONLY")
+    expect_contract_red(
+        text, analyzer_text,
+        bench_text.replace(
+            'add_shape_terminals(State::PackedAProviderCapacity)',
+            'add_shape_terminals(State::M8DecodeOnly)', 1),
+        driver_text, "PackedAProviderCapacity")
 
     # Generator denominator negative: removing one typed row must fail before
     # any compiler/device work.  The explicit /workspace child obeys the same
@@ -287,7 +320,7 @@ def main() -> int:
         shutil.rmtree(scratch)
     print("[scalefirst-internal-runner] PASS atomic attempt/resume/run-commit "
           "authority; negatives=drop-one-typed-row+delete-plan+delete-commit+"
-          "substitute-log+delete/symlink/substitute-binary; "
+          "substitute-log+delete/symlink/substitute-binary+packed-A-shape; "
           "canonical-kpack=Q2/Q3/Q4/Q5/Q6-complete")
     return 0
 
