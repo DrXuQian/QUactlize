@@ -2640,7 +2640,11 @@ Three follow-ups deliberately remain separate from that numeric conclusion:
    90 vector registers, 128 scalar registers, and 104-byte stack.  R2G changes
    from two `vmem.st.b32x4` to two `vmem.st.b32x2`, and total instructions fall
    from 2129 to 2043.  Device timing remains pending and alone decides whether
-   the valid M<=8 path regressed.
+   the valid M<=8 path regressed.  The compile-free payload is LFS artifact
+   commit `945f52619ea54aea1355f93ba66f964a6eede7e3` on branch
+   `artifacts/ppu0010/92e9dca-m8-epilogue-perf-ab-eaf274676ac0`; its inner
+   manifest SHA-256 is
+   `eaf274676ac0405cc1f3de663ab3d4da06049c730b2ac48a440c7a89c6e7ea8c`.
 3. Commit `1ff8ac1f97f89810d32c5f819021ac709eb4fb75` derives the
    selective rebuild/resweep set from the live builder formula and the two
    canonical shard authorities.  It finds 3,537 affected parents and 226 of
