@@ -6,7 +6,7 @@ fail() {
   exit 2
 }
 
-runner_root="$(realpath -e -- "${QUACTLIZE_ROOT:-/workspace/quactlize-runner-944785d}")" ||
+runner_root="$(realpath -e -- "${QUACTLIZE_ROOT:-/workspace/quactlize-runner-790605d}")" ||
   fail 'set QUACTLIZE_ROOT to the pinned runner checkout'
 campaign="$(realpath -e -- "${CAMPAIGN:-/workspace/campaign-ec67811}")" ||
   fail 'set CAMPAIGN to the extracted campaign directory'
@@ -27,7 +27,7 @@ case "$qtype_scope" in
 esac
 
 source_sha=ec67811bd709eace941daf3c650d45df574b1a87
-runner_sha=944785d9b8d7068e5c954d421cd27f751e91df9c
+runner_sha=790605db2b9491d3aedf5fecf09c42696e0bfc67
 catalog="$campaign/control/distributed-catalog.json"
 canonical_execution="$campaign/control/execution-8"
 plan="$canonical_execution/route-plan.json"
@@ -116,7 +116,7 @@ for pid in "${probe_pids[@]}"; do
   wait "$pid" || probe_rc=1
 done
 if test "$probe_rc" -ne 0; then
-  tail -80 "$run"/logs/probe-*.log >&2
+  tail -n 80 "$run"/logs/probe-*.log >&2
   fail 'one or more device probes failed'
 fi
 
@@ -213,7 +213,7 @@ sleep 3
 for worker in $(seq 0 7); do
   pid="$(cat "$run/worker-$worker.pid")"
   kill -0 "$pid" 2>/dev/null || {
-    tail -80 "$run/logs/worker-$worker.log" >&2
+    tail -n 80 "$run/logs/worker-$worker.log" >&2
     fail "worker $worker exited during startup"
   }
 done

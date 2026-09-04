@@ -4,7 +4,7 @@
     "commit": "ec67811bd709eace941daf3c650d45df574b1a87",
     "tree": "7ce67cae0a756d7fb013f6d52bd4ff629e54d9b3"
   },
-  "runner_commit": "944785d9b8d7068e5c954d421cd27f751e91df9c",
+  "runner_commit": "790605db2b9491d3aedf5fecf09c42696e0bfc67",
   "catalog": {
     "sha256": "e6f7266e134965983d5809f7665c8bb204802f41a7c693915c71abe0adeb99b1",
     "partitions": 64,
@@ -44,7 +44,7 @@
   },
   "launcher": {
     "path": "run_box8.sh",
-    "sha256": "f18e9d723f892d0fb7c391e9f5eb51868e74f37f0463e3dbaa42224830da31d2"
+    "sha256": "bc2cf412b158db377c37cf97c5bf0dce5800f56e015f848ea3147613b86bcf08"
   },
   "sdk": {
     "release_receipt_sha256": "7ba29b9d2e768c3edd1e165bceaf90e27880248f2327d44852de37833d0a2cf7",

@@ -10,7 +10,7 @@ The three `campaign.tar.zst.part-*` files are Git LFS objects. The archive
 expands to `campaign-ec67811/` and includes the distributed catalog and all
 payloads. It does not contain a compiler and the launcher never invokes one.
 
-Use runner commit `944785d9b8d7068e5c954d421cd27f751e91df9c` or reject the
+Use runner commit `790605db2b9491d3aedf5fecf09c42696e0bfc67` or reject the
 artifact. That runner is required for the proved structural-only FQ shard and
 binds each payload's exact runtime-library subset to the full probe closure.
 
@@ -27,7 +27,7 @@ zstd -dc /workspace/campaign-ec67811-box8.tar.zst | tar -xf - -C /workspace
 Then set `PPU_SDK` to the compatible SDK root and run:
 
 ```bash
-QUACTLIZE_ROOT=/workspace/quactlize-runner-944785d \
+QUACTLIZE_ROOT=/workspace/quactlize-runner-790605d \
 CAMPAIGN=/workspace/campaign-ec67811 \
 RUN=/workspace/kpack-discovery-ec67811 \
 bash run_box8.sh
