@@ -2639,8 +2639,11 @@ Three follow-ups deliberately remain separate from that numeric conclusion:
    the epilogue fix.  Local ELF evidence has identical MMA/AIU/swizzle counts,
    90 vector registers, 128 scalar registers, and 104-byte stack.  R2G changes
    from two `vmem.st.b32x4` to two `vmem.st.b32x2`, and total instructions fall
-   from 2129 to 2043.  Device timing remains pending and alone decides whether
-   the valid M<=8 path regressed.  The portable execution-inspector fix is
+   from 2129 to 2043.  The strict six-round/186-sample-per-arm device gate
+   returned zero at
+   `/workspace/quactlize-m8-epilogue-perf-result-20260904T130044Z-4076562`;
+   therefore the valid M<=8 path has no material regression under the gate's
+   three-percent threshold.  The portable execution-inspector fix is
    `3eb5e7ad6d8b244ca59972c10909345d4a4cdcd6`; it records the execution
    inspector's complete identity and requires its exact ELF/resource/ISA
    outputs instead of requiring its file hash to equal the build machine's.
