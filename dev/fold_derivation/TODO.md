@@ -2640,10 +2640,14 @@ Three follow-ups deliberately remain separate from that numeric conclusion:
    90 vector registers, 128 scalar registers, and 104-byte stack.  R2G changes
    from two `vmem.st.b32x4` to two `vmem.st.b32x2`, and total instructions fall
    from 2129 to 2043.  Device timing remains pending and alone decides whether
-   the valid M<=8 path regressed.  The compile-free payload is LFS artifact
-   commit `945f52619ea54aea1355f93ba66f964a6eede7e3` on branch
-   `artifacts/ppu0010/92e9dca-m8-epilogue-perf-ab-eaf274676ac0`; its inner
-   manifest SHA-256 is
+   the valid M<=8 path regressed.  The portable execution-inspector fix is
+   `3eb5e7ad6d8b244ca59972c10909345d4a4cdcd6`; it records the execution
+   inspector's complete identity and requires its exact ELF/resource/ISA
+   outputs instead of requiring its file hash to equal the build machine's.
+   The compile-free payload is LFS artifact commit
+   `2e0fb8ed9c8b82fce8c3b058d9946de625e72961` on branch
+   `artifacts/ppu0010/3eb5e7a-m8-epilogue-perf-ab-eaf274676ac0`; both binary
+   hashes and its inner manifest remain unchanged.  The manifest SHA-256 is
    `eaf274676ac0405cc1f3de663ab3d4da06049c730b2ac48a440c7a89c6e7ea8c`.
 3. Commit `1ff8ac1f97f89810d32c5f819021ac709eb4fb75` derives the
    selective rebuild/resweep set from the live builder formula and the two
