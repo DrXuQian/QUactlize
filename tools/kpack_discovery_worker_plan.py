@@ -19,6 +19,12 @@ Typical use::
       --bundle bundle.json --plan plan.json --workers 8 \
       --master master.json --assignment assignment.json
 
+  # Reuse the same complete catalog and route plan, but execute Q4_K only.
+  python3 tools/kpack_discovery_worker_plan.py create \
+      --bundle catalog.json --plan route-plan.json --workers 8 --qtype 12 \
+      --master q4/master.json --assignment q4/assignment.json \
+      --selection-dir q4/selections
+
   python3 tools/kpack_discovery_worker_plan.py validate-assignment \
       --bundle bundle.json --plan plan.json \
       --master master.json --assignment assignment.json
@@ -67,6 +73,7 @@ from typing import Any, NoReturn
 
 
 MASTER_SCHEMA = "quactlize.kpack-discovery-work-master.v1"
+MASTER_SCOPE_SCHEMA = "quactlize.kpack-discovery-work-scope.v1"
 ASSIGNMENT_SCHEMA = "quactlize.kpack-discovery-worker-assignment.v1"
 RESULT_SCHEMA = "quactlize.kpack-discovery-worker-result.v1"
 DEVICE_SCHEMA = "quactlize.kpack-discovery-device-homogeneity.v1"
@@ -185,6 +192,37 @@ def _integer(value: Any, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise PlanError(f"{label} must be an integer")
     return value
+
+
+def _qtype_scope(values: Any, label: str = "qtype scope"
+                 ) -> tuple[int, ...] | None:
+    """Normalize an optional execution scope without weakening source authority.
+
+    ``None`` preserves the historical full-product master byte-for-byte.  An
+    explicit scope is sorted and recorded in the master, while the bundle and
+    workload-plan hashes continue to bind the complete catalog and route plan.
+    """
+    if values is None:
+        return None
+    if not isinstance(values, (list, tuple, set, frozenset)) or not values:
+        raise PlanError(f"{label} must be a nonempty qtype collection")
+    qtypes = tuple(sorted(_integer(value, label) for value in values))
+    if len(qtypes) != len(set(qtypes)):
+        raise PlanError(f"{label} contains duplicate qtypes")
+    unsupported = sorted(set(qtypes) - QTYPES)
+    if unsupported:
+        raise PlanError(f"{label} contains unsupported qtypes {unsupported}")
+    return qtypes
+
+
+def _scope_from_master(document: dict[str, Any]) -> tuple[int, ...] | None:
+    scope = document.get("execution_scope")
+    if scope is None:
+        return None
+    if not isinstance(scope, dict) or set(scope) != {"schema", "qtypes"} or \
+            scope.get("schema") != MASTER_SCOPE_SCHEMA:
+        raise PlanError("master execution scope schema differs")
+    return _qtype_scope(scope.get("qtypes"), "master execution qtype scope")
 
 
 def _workloads(plan: dict[str, Any]
@@ -421,11 +459,17 @@ def _bundle_shards(bundle: dict[str, Any]) -> list[dict[str, Any]]:
     return parsed
 
 
-def make_master(bundle_path: Path, plan_path: Path) -> dict[str, Any]:
+def make_master(bundle_path: Path, plan_path: Path,
+                qtypes: Any = None) -> dict[str, Any]:
     bundle = load_bundle_authority(bundle_path)
     plan = load_json(plan_path, "workload plan")
     workloads, workload_schema = _workloads(plan)
-    shards = _bundle_shards(bundle)
+    explicit_scope = _qtype_scope(qtypes)
+    selected_qtypes = set(QTYPES if explicit_scope is None else explicit_scope)
+    shards = [shard for shard in _bundle_shards(bundle)
+              if shard["qtype"] in selected_qtypes]
+    if not shards:
+        raise PlanError("execution scope selects no binary shards")
     items: list[dict[str, Any]] = []
     for shard in shards:
         for workload_key in workloads[(shard["qtype"], shard["operator"])]:
@@ -458,9 +502,9 @@ def make_master(bundle_path: Path, plan_path: Path) -> dict[str, Any]:
     }
     workload_counts = {
         f"q{qtype}/{operator}": len(workloads[(qtype, operator)])
-        for qtype in sorted(QTYPES) for operator in sorted(OPERATORS)
+        for qtype in sorted(selected_qtypes) for operator in sorted(OPERATORS)
     }
-    return {
+    result = {
         "schema": MASTER_SCHEMA,
         "bundle_sha256": file_sha(bundle_path),
         "workload_plan_sha256": file_sha(plan_path),
@@ -479,11 +523,18 @@ def make_master(bundle_path: Path, plan_path: Path) -> dict[str, Any]:
         },
         "work_items": items,
     }
+    if explicit_scope is not None:
+        result["execution_scope"] = {
+            "schema": MASTER_SCOPE_SCHEMA,
+            "qtypes": list(explicit_scope),
+        }
+    return result
 
 
 def validate_master(document: dict[str, Any], bundle_path: Path,
                     plan_path: Path) -> dict[str, Any]:
-    expected = make_master(bundle_path, plan_path)
+    expected = make_master(
+        bundle_path, plan_path, qtypes=_scope_from_master(document))
     if document != expected:
         raise PlanError("master ledger differs from bundle/workload-plan authority")
     return document
@@ -629,6 +680,38 @@ def make_worker_selection(
     }
 
 
+def write_worker_selections(directory: Path, master: dict[str, Any],
+                            assignment: dict[str, Any], *,
+                            master_sha256: str,
+                            assignment_sha256: str) -> None:
+    """Materialize the complete deterministic selection set.
+
+    The directory is resumable but fail-closed: existing expected files must
+    be byte-identical and unrelated entries are rejected.  No selection is
+    accepted as an input to this operation.
+    """
+    expected_names = {
+        f"worker-{worker_id}.json"
+        for worker_id in range(assignment["worker_count"])
+    }
+    if directory.exists():
+        if directory.is_symlink() or not directory.is_dir():
+            raise PlanError(f"selection output is not a directory: {directory}")
+        observed_names = {entry.name for entry in directory.iterdir()}
+        unexpected = sorted(observed_names - expected_names)
+        if unexpected:
+            raise PlanError(
+                f"selection output contains unexpected entries {unexpected[:3]}")
+    else:
+        directory.mkdir(parents=True)
+    for worker_id in range(assignment["worker_count"]):
+        selection = make_worker_selection(
+            master, assignment, worker_id,
+            master_sha256=master_sha256,
+            assignment_sha256=assignment_sha256)
+        write_frozen_json(directory / f"worker-{worker_id}.json", selection)
+
+
 def worker_selection_tsv(selection: dict[str, Any]) -> str:
     required = ("work_item_id", "route", "operator", "qtype",
                 "shard_key", "workload_key")
@@ -751,17 +834,27 @@ def _load_authorities(bundle: Path, plan: Path, master_path: Path,
 
 
 def create_command(args: argparse.Namespace) -> int:
-    master = make_master(args.bundle, args.plan)
+    qtypes = getattr(args, "qtype", None)
+    master = make_master(args.bundle, args.plan, qtypes=qtypes)
     write_frozen_json(args.master, master)
     # Hash the exact persisted bytes, not an in-memory approximation.
     assignment = make_assignment(master, file_sha(args.master), args.workers)
     write_frozen_json(args.assignment, assignment)
     validate_assignment(assignment, master, file_sha(args.master))
+    selection_dir = getattr(args, "selection_dir", None)
+    if selection_dir is not None:
+        write_worker_selections(
+            selection_dir, master, assignment,
+            master_sha256=file_sha(args.master),
+            assignment_sha256=file_sha(args.assignment))
+    scope = _scope_from_master(master)
     print(
         "KPACK_DISCOVERY_WORK_PLAN "
         f"shards={master['denominator']['binary_shards']} "
         f"items={master['denominator']['work_items']} "
         f"workers={args.workers} "
+        f"qtypes={'ALL' if scope is None else ','.join(map(str, scope))} "
+        f"selections={0 if selection_dir is None else args.workers} "
         "policy=PARTITION_OR_SHARD_AFFINE_GREEDY_LPT_V1")
     return 0
 
@@ -932,6 +1025,72 @@ def self_test() -> None:
         if formal_master["denominator"]["work_items"] != 340:
             raise PlanError("self-test canonical cell work-product differs")
 
+        # A qtype-scoped master is derived from, and remains bound to, the
+        # complete catalog and workload plan.  Its item IDs are an exact
+        # subset of the full master, so no payload or runner schema changes.
+        scoped_bundle_doc = copy.deepcopy(bundle_doc)
+        scoped_bundle_doc["shards"].append({
+            "shard_key": "fq-q12-grouped-000",
+            "route": "fully-quantized", "operator": "grouped",
+            "qtype": 12, "manifest_sha256": "6" * 64,
+            "parent_ids": ["fq-q12-grouped-a"],
+        })
+        scoped_bundle = root / "scoped-bundle.json"
+        write_frozen_json(scoped_bundle, scoped_bundle_doc)
+        full_for_scope = make_master(scoped_bundle, cell_plan)
+        q4_master = make_master(scoped_bundle, cell_plan, qtypes=[12])
+        if q4_master.get("execution_scope") != {
+                "schema": MASTER_SCOPE_SCHEMA, "qtypes": [12]}:
+            raise PlanError("self-test qtype scope authority differs")
+        if (q4_master["denominator"]["work_items"] != 197 or
+                q4_master["denominator"]["workloads_by_qtype_operator"] != {
+                    "q12/dense": 144, "q12/grouped": 53} or
+                {row["qtype"] for row in q4_master["work_items"]} != {12}):
+            raise PlanError("self-test Q4 work-product differs")
+        full_ids = {row["work_item_id"] for row in full_for_scope["work_items"]}
+        if not {row["work_item_id"] for row in q4_master["work_items"]} < full_ids:
+            raise PlanError("self-test scoped item IDs are not a strict subset")
+        validate_master(q4_master, scoped_bundle, cell_plan)
+        q4_master_path = root / "q4-master.json"
+        q4_assignment_path = root / "q4-assignment.json"
+        write_frozen_json(q4_master_path, q4_master)
+        q4_assignment = make_assignment(
+            q4_master, file_sha(q4_master_path), 1)
+        write_frozen_json(q4_assignment_path, q4_assignment)
+        q4_selections = root / "q4-selections"
+        write_worker_selections(
+            q4_selections, q4_master, q4_assignment,
+            master_sha256=file_sha(q4_master_path),
+            assignment_sha256=file_sha(q4_assignment_path))
+        q4_selection = load_json(
+            q4_selections / "worker-0.json", "Q4 worker selection")
+        if {row["qtype"] for row in q4_selection["work_items"]} != {12}:
+            raise PlanError("self-test Q4 selection escaped its scope")
+
+        _expect_red(
+            "empty qtype scope", lambda: make_master(
+                scoped_bundle, cell_plan, qtypes=[]), "nonempty")
+        _expect_red(
+            "duplicate qtype scope", lambda: make_master(
+                scoped_bundle, cell_plan, qtypes=[12, 12]), "duplicate")
+        _expect_red(
+            "unsupported qtype scope", lambda: make_master(
+                scoped_bundle, cell_plan, qtypes=[9]), "unsupported")
+        planted_scope = copy.deepcopy(q4_master)
+        planted_scope["execution_scope"]["qtypes"] = [10]
+        _expect_red(
+            "planted qtype scope",
+            lambda: validate_master(planted_scope, scoped_bundle, cell_plan),
+            "differs")
+        (q4_selections / "manual.json").write_text("{}\n", encoding="utf-8")
+        _expect_red(
+            "manual selection entry",
+            lambda: write_worker_selections(
+                q4_selections, q4_master, q4_assignment,
+                master_sha256=file_sha(q4_master_path),
+                assignment_sha256=file_sha(q4_assignment_path)),
+            "unexpected entries")
+
         device_path = root / "devices.json"
         device_doc = {
             "schema": DEVICE_SCHEMA,
@@ -1044,9 +1203,10 @@ def self_test() -> None:
     print(
         "[kpack-discovery-worker-plan:self-test] PASS "
         "master=5 workers=3 exactly-once list+mapping-bundles "
-        "shared+cells-plans complete-controls+anchors; "
+        "shared+cells-plans complete-controls+anchors Q4-scope=197; "
         "gap+overlap+duplicate+stale-plan+stale-bundle+stale-device+"
-        "heterogeneous-device+missing-control+missing-anchor negatives=RED")
+        "heterogeneous-device+missing-control+missing-anchor+scope-plants "
+        "negatives=RED")
 
 
 def self_test_command(_args: argparse.Namespace) -> int:
@@ -1064,6 +1224,12 @@ def make_parser() -> argparse.ArgumentParser:
     create.add_argument("--workers", type=int, required=True)
     create.add_argument("--master", type=Path, required=True)
     create.add_argument("--assignment", type=Path, required=True)
+    create.add_argument(
+        "--qtype", type=int, action="append", choices=sorted(QTYPES),
+        help="limit execution to this qtype; repeat to select more than one")
+    create.add_argument(
+        "--selection-dir", type=Path,
+        help="also write one deterministic JSON selection per worker")
     create.set_defaults(func=create_command)
 
     assignment = commands.add_parser("validate-assignment")

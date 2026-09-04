@@ -207,6 +207,84 @@ def test_assignment_is_partition_affine_and_balanced_for_32_by_8(
         worker_plan.validate_assignment(planted, master, "a" * 64)
 
 
+def test_qtype_scoped_master_is_derived_and_selections_cannot_escape(
+        tmp_path: Path) -> None:
+    bundle_path = tmp_path / "bundle.json"
+    plan_path = tmp_path / "plan.json"
+    master_path = tmp_path / "master.json"
+    assignment_path = tmp_path / "assignment.json"
+    selections = tmp_path / "selections"
+    _write_json(bundle_path, {
+        "schema": "fixture-bundle",
+        "shards": [{
+            "shard_key": "fq-q10-dense", "route": "fully-quantized",
+            "operator": "dense", "qtype": 10,
+            "manifest_sha256": "1" * 64, "parent_ids": ["q10-d"],
+            "partition_id": 0, "artifact_id": "fq/p00",
+        }, {
+            "shard_key": "fq-q12-dense", "route": "fully-quantized",
+            "operator": "dense", "qtype": 12,
+            "manifest_sha256": "2" * 64, "parent_ids": ["q12-d"],
+            "partition_id": 0, "artifact_id": "fq/p00",
+        }, {
+            "shard_key": "fq-q12-grouped", "route": "fully-quantized",
+            "operator": "grouped", "qtype": 12,
+            "manifest_sha256": "3" * 64, "parent_ids": ["q12-g"],
+            "partition_id": 1, "artifact_id": "fq/p01",
+        }],
+    })
+    _write_json(plan_path, {
+        "schema": "fixture-plan",
+        "dense": [{"key": "dense"}],
+        "grouped": [{"key": "grouped"}],
+    })
+
+    full = worker_plan.make_master(bundle_path, plan_path)
+    assert "execution_scope" not in full
+    scoped = worker_plan.make_master(bundle_path, plan_path, qtypes=[12])
+    assert scoped["execution_scope"] == {
+        "schema": worker_plan.MASTER_SCOPE_SCHEMA, "qtypes": [12]}
+    assert scoped["denominator"]["binary_shards"] == 2
+    assert scoped["denominator"]["workloads_by_qtype_operator"] == {
+        "q12/dense": 1, "q12/grouped": 1}
+    assert {row["qtype"] for row in scoped["work_items"]} == {12}
+    assert {row["work_item_id"] for row in scoped["work_items"]} < {
+        row["work_item_id"] for row in full["work_items"]}
+    worker_plan.validate_master(scoped, bundle_path, plan_path)
+
+    _write_json(master_path, scoped)
+    assignment = worker_plan.make_assignment(
+        scoped, worker_plan.file_sha(master_path), 2)
+    _write_json(assignment_path, assignment)
+    worker_plan.write_worker_selections(
+        selections, scoped, assignment,
+        master_sha256=worker_plan.file_sha(master_path),
+        assignment_sha256=worker_plan.file_sha(assignment_path))
+    observed = []
+    for worker_id in range(2):
+        selection = json.loads(
+            (selections / f"worker-{worker_id}.json").read_text())
+        observed.extend(selection["work_items"])
+        assert {row["qtype"] for row in selection["work_items"]} == {12}
+    assert {row["work_item_id"] for row in observed} == {
+        row["work_item_id"] for row in scoped["work_items"]}
+
+    planted = copy.deepcopy(scoped)
+    planted["execution_scope"]["qtypes"] = [10]
+    with pytest.raises(worker_plan.PlanError, match="differs"):
+        worker_plan.validate_master(planted, bundle_path, plan_path)
+    with pytest.raises(worker_plan.PlanError, match="duplicate"):
+        worker_plan.make_master(bundle_path, plan_path, qtypes=[12, 12])
+    with pytest.raises(worker_plan.PlanError, match="unsupported"):
+        worker_plan.make_master(bundle_path, plan_path, qtypes=[9])
+    (selections / "manual.json").write_text("{}\n")
+    with pytest.raises(worker_plan.PlanError, match="unexpected entries"):
+        worker_plan.write_worker_selections(
+            selections, scoped, assignment,
+            master_sha256=worker_plan.file_sha(master_path),
+            assignment_sha256=worker_plan.file_sha(assignment_path))
+
+
 def _catalog_fixture(tmp_path: Path) -> tuple[dict, dict, Path, Path]:
     root = tmp_path / "artifact"
     root.mkdir()

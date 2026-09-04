@@ -54,6 +54,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Any, Iterable, NoReturn
 
 
@@ -1642,6 +1643,10 @@ def run_worker(args: argparse.Namespace) -> int:
                 f"{item['work_item_id']}: canonical workload is absent")
         atoms[item["work_item_id"]] = (shard, workload)
 
+    print("KPACK_DISCOVERY_WORKER_PROGRESS "
+          f"worker={args.worker_id} phase=PREFLIGHT_LINKAGE_BEGIN "
+          f"items={len(selection['work_items'])} shards={len(shards)}",
+          flush=True)
     probes = _probe_binaries(args.bundle, bundle_doc, artifacts)
     probe_linkage = _linkage(probes[0])
     if any(_linkage(probe) != probe_linkage for probe in probes[1:]):
@@ -1649,6 +1654,10 @@ def run_worker(args: argparse.Namespace) -> int:
     for shard in shards.values():
         _validate_payload_linkage(
             _linkage(shard.binary), probe_linkage, shard.key)
+    print("KPACK_DISCOVERY_WORKER_PROGRESS "
+          f"worker={args.worker_id} phase=PREFLIGHT_LINKAGE_PASS "
+          f"items={len(selection['work_items'])} shards={len(shards)}",
+          flush=True)
 
     authority = _execution_authority(
         args, selection, identity_sha, probe_linkage,
@@ -1659,7 +1668,15 @@ def run_worker(args: argparse.Namespace) -> int:
 
     items = selection["work_items"]
     if args.phase in ("screen", "all"):
-        for item in items:
+        last_progress = 0.0
+        for position, item in enumerate(items, 1):
+            now = time.monotonic()
+            if position == 1 or now - last_progress >= 30.0:
+                print("KPACK_DISCOVERY_WORKER_PROGRESS "
+                      f"worker={args.worker_id} phase=SCREEN "
+                      f"completed={position - 1} total={len(items)} "
+                      f"current={item['work_item_id'][:16]}", flush=True)
+                last_progress = now
             shard, workload = atoms[item["work_item_id"]]
             seed = schedule_seed(item["work_item_id"], "screen", 0)
             command = command_for(
@@ -1674,6 +1691,9 @@ def run_worker(args: argparse.Namespace) -> int:
                  "schedule_seed": schedule_seed_hex(seed),
                  "grouped_warmups": (args.warmups if shard.operator == "grouped"
                                      else "NONE")})
+        print("KPACK_DISCOVERY_WORKER_PROGRESS "
+              f"worker={args.worker_id} phase=SCREEN_PASS "
+              f"completed={len(items)} total={len(items)}", flush=True)
         _write_id_file(out / "screen-completed.ids",
                        (item["work_item_id"] for item in items))
     else:
@@ -1715,7 +1735,17 @@ def run_worker(args: argparse.Namespace) -> int:
     for round_index in range(1, args.confirm_rounds + 1):
         directory = out / f"results/confirm-r{round_index}"
         directory.mkdir(parents=True, exist_ok=True)
-        for item in _round_order(items, round_index):
+        ordered_items = _round_order(items, round_index)
+        last_progress = 0.0
+        for position, item in enumerate(ordered_items, 1):
+            now = time.monotonic()
+            if position == 1 or now - last_progress >= 30.0:
+                print("KPACK_DISCOVERY_WORKER_PROGRESS "
+                      f"worker={args.worker_id} phase=CONFIRM "
+                      f"round={round_index} completed={position - 1} "
+                      f"total={len(ordered_items)} "
+                      f"current={item['work_item_id'][:16]}", flush=True)
+                last_progress = now
             shard, workload = atoms[item["work_item_id"]]
             retention = retentions.get(item["work_item_id"])
             if retention is not None and not retention.symbols:
@@ -1745,6 +1775,10 @@ def run_worker(args: argparse.Namespace) -> int:
                  "grouped_warmups": (args.warmups if shard.operator == "grouped"
                                      else "NONE")},
                 retention.symbols if retention is not None else None)
+        print("KPACK_DISCOVERY_WORKER_PROGRESS "
+              f"worker={args.worker_id} phase=CONFIRM_PASS "
+              f"round={round_index} completed={len(ordered_items)} "
+              f"total={len(ordered_items)}", flush=True)
 
     expected_markers: set[str] = set()
     for item in items:
