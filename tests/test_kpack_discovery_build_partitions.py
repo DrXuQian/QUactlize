@@ -191,6 +191,9 @@ def test_builders_expose_only_explicit_partition_contract() -> None:
         text = (TOOLS / name).read_text()
         assert "KPACK_BUILD_PARTITION_PLAN" in text
         assert "KPACK_BUILD_PARTITION_ID" in text
+        assert "KPACK_LOCAL_SCRATCH_ROOT:-/root/autodl-tmp" in text
+        assert "KPACK_LOCAL_SCRATCH_ROOT is too broad" in text
+        assert "regular non-symlink directory" in text
         assert "partition builds require an explicit unique OUT" in text
         assert f"--root \"$out\" --route {route}" in text
         assert "distributed partition builds require PILOT=0" in text

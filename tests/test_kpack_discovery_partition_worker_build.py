@@ -5,6 +5,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "tools/build_kpack_discovery_partition_worker.sh"
+RUNNER = ROOT / "tools/run_tm8_epilogue_selective_q4_box.sh"
 
 
 def test_partition_worker_shell_is_valid() -> None:
@@ -43,9 +44,22 @@ def test_partition_worker_reuses_one_preflight_and_publishes_only_verified_bytes
 def test_partition_worker_requires_local_fast_disk_and_explicit_publish_root() -> None:
     source = SCRIPT.read_text()
     assert "KPACK_PARTITION_LOCAL_ROOT" in source
-    assert "/root/autodl-tmp" in source
+    assert "KPACK_LOCAL_SCRATCH_ROOT:-/root/autodl-tmp" in source
+    assert "strict configured scratch child" in source
+    assert "KPACK_LOCAL_SCRATCH_ROOT is too broad" in source
+    assert "regular non-symlink directory" in source
     assert "KPACK_PARTITION_PUBLISH_ROOT" in source
     assert 'refusing broad publish root' in source
+
+
+def test_q4_runner_binds_one_disjoint_configurable_scratch_root() -> None:
+    source = RUNNER.read_text()
+    assert "KPACK_LOCAL_SCRATCH_ROOT:-/root/autodl-tmp" in source
+    assert 'KPACK_LOCAL_SCRATCH_ROOT="$local_parent"' in source
+    assert "KPACK_LOCAL_SCRATCH_ROOT is too broad" in source
+    assert "OUT may not be inside KPACK_LOCAL_SCRATCH_ROOT" in source
+    assert "KPACK_LOCAL_SCRATCH_ROOT may not be inside OUT" in source
+    assert 'sha256sum | cut -c1-12' in source
 
 
 def _tree(root: Path, manifest: bytes = b'{"authority": 1}\n') -> None:

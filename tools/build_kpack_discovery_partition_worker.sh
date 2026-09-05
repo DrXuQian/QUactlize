@@ -91,6 +91,7 @@ verify_published_partition_and_maybe_remove_local() {
 main() {
   [ "$#" -eq 0 ] || { fail "no positional arguments are accepted"; return $?; }
   local tool_root root local_parent local_root publish_root plan sdk worker_id worker_count jobs
+  local requested_local_parent
   local source_sha partition_count preflight route partition out resume remove_local
   local publish_base publish_dir stage manifest list_path list_current
   local assigned_tasks
@@ -127,21 +128,26 @@ main() {
   [ -x "$sdk/bin/hgcc" ] && [ -x "$sdk/bin/hgobjdump" ] || {
     fail "PPU_SDK lacks hgcc/hgobjdump"; return $?; }
 
-  local_parent="$(realpath -e /root/autodl-tmp)" || {
-    fail "/root/autodl-tmp is required for machine-local build output"; return $?; }
+  requested_local_parent="${KPACK_LOCAL_SCRATCH_ROOT:-/root/autodl-tmp}"
+  [ -d "$requested_local_parent" ] && [ ! -L "$requested_local_parent" ] || {
+    fail "KPACK_LOCAL_SCRATCH_ROOT must be a regular non-symlink directory"; return $?; }
+  local_parent="$(realpath -e -- "$requested_local_parent")" || {
+    fail "KPACK_LOCAL_SCRATCH_ROOT is not a readable directory"; return $?; }
+  case "$local_parent" in /|/root|/workspace)
+    fail "KPACK_LOCAL_SCRATCH_ROOT is too broad"; return $?;; esac
   if [ -e "$local_root" ]; then
     [ -d "$local_root" ] && [ ! -L "$local_root" ] || {
       fail "KPACK_PARTITION_LOCAL_ROOT is not a regular directory"; return $?; }
     local_root="$(realpath -e -- "$local_root")" || return 2
   else
     case "$local_root" in "$local_parent"/*) ;; *)
-      fail "KPACK_PARTITION_LOCAL_ROOT must be a strict /root/autodl-tmp child"; return $?;;
+      fail "KPACK_PARTITION_LOCAL_ROOT must be a strict configured scratch child"; return $?;;
     esac
     mkdir -p "$local_root" || return 2
     local_root="$(realpath -e -- "$local_root")" || return 2
   fi
   case "$local_root" in "$local_parent"/*) ;; *)
-    fail "KPACK_PARTITION_LOCAL_ROOT escaped /root/autodl-tmp"; return $?;;
+    fail "KPACK_PARTITION_LOCAL_ROOT escaped the configured scratch root"; return $?;;
   esac
 
   if [ -e "$publish_root" ]; then
@@ -249,11 +255,13 @@ PY
         "$worker_id" "$worker_count" "$route" "$partition" "$partition_count" "$resume"
       if [ "$route" = scalefirst ]; then
         OUT="$out" RESUME="$resume" JOBS="$jobs" PPU_SDK="$sdk" \
+          KPACK_LOCAL_SCRATCH_ROOT="$local_parent" \
           KPACK_BUILD_PARTITION_PLAN="$plan" KPACK_BUILD_PARTITION_ID="$partition" \
           KPACK_GLOBAL_PREFLIGHT_RECEIPT="$preflight" \
           bash "$root/tools/build_scalefirst_kpack_discovery_bundle.sh" || return $?
       else
         OUT="$out" RESUME="$resume" JOBS="$jobs" PPU_SDK="$sdk" \
+          KPACK_LOCAL_SCRATCH_ROOT="$local_parent" \
           FQ_KPACK_PAYLOAD_SOURCE_ROOT="$root" \
           KPACK_BUILD_PARTITION_PLAN="$plan" KPACK_BUILD_PARTITION_ID="$partition" \
           KPACK_GLOBAL_PREFLIGHT_RECEIPT="$preflight" \

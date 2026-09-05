@@ -216,20 +216,25 @@ PY
 
 main() {
   if [ "$#" -ne 0 ]; then fail "no positional arguments are accepted"; return $?; fi
-  local root out out_root resume jobs per_unit sdk receipt host_cxx dirty untracked
+  local root out out_root requested_out_root resume jobs per_unit sdk receipt host_cxx dirty untracked
   local preexisting input_authority global_preflight pilot scope parents_per_binary plan plan_current
   local shard_rows shard_id q operator layout begin end
   local partitioned partition_plan partition_id frozen_partition_plan
   local min_free_gib min_free_kib available_kib
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)" || return 2
-  out_root="$(realpath -e /root/autodl-tmp)" || {
-    fail "/root/autodl-tmp is required for build/output storage"; return $?; }
+  requested_out_root="${KPACK_LOCAL_SCRATCH_ROOT:-/root/autodl-tmp}"
+  [ -d "$requested_out_root" ] && [ ! -L "$requested_out_root" ] || {
+    fail "KPACK_LOCAL_SCRATCH_ROOT must be a regular non-symlink directory"; return $?; }
+  out_root="$(realpath -e -- "$requested_out_root")" || {
+    fail "KPACK_LOCAL_SCRATCH_ROOT is not a readable directory"; return $?; }
+  case "$out_root" in /|/root|/workspace)
+    fail "KPACK_LOCAL_SCRATCH_ROOT is too broad"; return $?;; esac
   pilot="${PILOT:-0}"
   case "$pilot" in 0) scope=full ;; 1) scope=pilot ;; *)
     fail "PILOT must be 0 or 1"; return $?;; esac
-  out="$(realpath -m -- "${OUT:-/root/autodl-tmp/quactlize-sf-kpack-$scope-$(git -C "$root" rev-parse --short=8 HEAD)}")" || return 2
+  out="$(realpath -m -- "${OUT:-$out_root/quactlize-sf-kpack-$scope-$(git -C "$root" rev-parse --short=8 HEAD)}")" || return 2
   case "$out" in "$out_root"/*) ;; *)
-    fail "OUT must be a strict /root/autodl-tmp child"; return $?;; esac
+    fail "OUT must be a strict configured scratch child"; return $?;; esac
   resume="${RESUME:-0}"; jobs="${JOBS:-16}"
   per_unit="${SCALEFIRST_KPACK_CONFIGS_PER_UNIT:-4}"
   parents_per_binary="${SCALEFIRST_KPACK_PARENTS_PER_BINARY:-32}"

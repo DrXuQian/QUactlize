@@ -138,7 +138,9 @@ def source_contract() -> None:
                    "cli.schedule_seed"):
         if needle not in dense_driver:
             raise ValueError("dense driver lost round-order control: " + needle)
-    if ("/root/autodl-tmp" not in builder or "ensure_owned_scratch" not in builder or
+    if ("KPACK_LOCAL_SCRATCH_ROOT:-/root/autodl-tmp" not in builder or
+            "strict configured scratch child" not in builder or
+            "ensure_owned_scratch" not in builder or
             "clear_owned_shard_scratch" not in builder or
             "shard_receipt validate" not in builder or
             "FQ_KPACK_MAX_PARENTS_PER_BINARY" not in builder or

@@ -166,7 +166,7 @@ PY
 
 main() {
   [ "$#" -eq 0 ] || { fail "no positional arguments are accepted"; return $?; }
-  local tool_root root autodl_root out resume pilot jobs per_unit max_parents sdk sdk_receipt preexisting
+  local tool_root root autodl_root requested_autodl_root out resume pilot jobs per_unit max_parents sdk sdk_receipt preexisting
   local min_free_kb dirty untracked build_authority global_preflight range_plan identity_bin identity_receipt
   local key q op begin end count total layout format gen payload binary receipt log rc
   local scratch_build built_binary build_resume stage staged_binary staged_receipt
@@ -176,10 +176,16 @@ main() {
     fail "FQ_KPACK_PAYLOAD_SOURCE_ROOT must name the frozen payload source"; return $?; }
   [ "$(git -C "$root" rev-parse --is-inside-work-tree 2>/dev/null)" = true ] || {
     fail "payload source root is not a Git checkout"; return $?; }
-  autodl_root="$(realpath -e /root/autodl-tmp)" || {
-    fail "/root/autodl-tmp is required for large build outputs"; return $?; }
+  requested_autodl_root="${KPACK_LOCAL_SCRATCH_ROOT:-/root/autodl-tmp}"
+  [ -d "$requested_autodl_root" ] && [ ! -L "$requested_autodl_root" ] || {
+    fail "KPACK_LOCAL_SCRATCH_ROOT must be a regular non-symlink directory"; return $?; }
+  autodl_root="$(realpath -e -- "$requested_autodl_root")" || {
+    fail "KPACK_LOCAL_SCRATCH_ROOT is not a readable directory"; return $?; }
+  case "$autodl_root" in /|/root|/workspace)
+    fail "KPACK_LOCAL_SCRATCH_ROOT is too broad"; return $?;; esac
   out="$(realpath -m -- "${OUT:-$autodl_root/quactlize-fq-kpack-discovery-$(git -C "$root" rev-parse --short=8 HEAD)}")" || return 2
-  case "$out" in "$autodl_root"/*) ;; *) fail "OUT must be a strict /root/autodl-tmp child"; return $?;; esac
+  case "$out" in "$autodl_root"/*) ;; *)
+    fail "OUT must be a strict configured scratch child"; return $?;; esac
   resume="${RESUME:-0}"; pilot="${PILOT:-0}"; jobs="${JOBS:-16}"
   per_unit="${FQ_KPACK_CONFIGS_PER_UNIT:-4}"
   max_parents="${FQ_KPACK_MAX_PARENTS_PER_BINARY:-32}"

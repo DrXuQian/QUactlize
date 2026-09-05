@@ -23,7 +23,7 @@ artifact_args() {
 
 main() {
   [ "$#" -eq 0 ] || { fail 'no positional arguments are accepted'; return $?; }
-  local root sdk output_parent out local_parent local_base source_sha short resume jobs
+  local root sdk output_parent out local_parent requested_local_parent local_base out_tag source_sha short resume jobs
   local scope plan campaign publish logs results expected_manifests expected_items
   local worker pid alive failures manifests completed marker log
   local -a pids run_pids result_args resume_arg
@@ -35,20 +35,28 @@ main() {
     fail 'PPU_SDK lacks hgcc/hgobjdump'; return $?; }
   output_parent="$(realpath -e -- "${KPACK_SELECTIVE_OUTPUT_ROOT:-/workspace}")" || {
     fail 'KPACK_SELECTIVE_OUTPUT_ROOT is missing'; return $?; }
-  local_parent="$(realpath -e -- /root/autodl-tmp)" || {
-    fail '/root/autodl-tmp is required for build scratch'; return $?; }
+  requested_local_parent="${KPACK_LOCAL_SCRATCH_ROOT:-/root/autodl-tmp}"
+  [ -d "$requested_local_parent" ] && [ ! -L "$requested_local_parent" ] || {
+    fail 'KPACK_LOCAL_SCRATCH_ROOT must be a regular non-symlink directory'; return $?; }
+  local_parent="$(realpath -e -- "$requested_local_parent")" || {
+    fail 'KPACK_LOCAL_SCRATCH_ROOT is not a readable directory'; return $?; }
   [ -d "$output_parent" ] && [ ! -L "$output_parent" ] || {
     fail 'output root must be a regular directory'; return $?; }
-  [ -d "$local_parent" ] && [ ! -L "$local_parent" ] || {
-    fail '/root/autodl-tmp must be a regular directory'; return $?; }
+  case "$local_parent" in /|/root|/workspace)
+    fail 'KPACK_LOCAL_SCRATCH_ROOT is too broad'; return $?;; esac
   source_sha="$(git -C "$root" rev-parse HEAD)" || return 2
   short="${source_sha:0:8}"
   out="$(realpath -m -- "${OUT:-$output_parent/quactlize-tm8-selective-q4-$short}")" || return 2
   case "$out" in "$output_parent"/*) ;; *)
     fail 'OUT must be a strict KPACK_SELECTIVE_OUTPUT_ROOT child'; return $?;; esac
-  local_base="$local_parent/quactlize-tm8-selective-q4-$short"
+  case "$out" in "$local_parent"|"$local_parent"/*)
+    fail 'OUT may not be inside KPACK_LOCAL_SCRATCH_ROOT'; return $?;; esac
+  case "$local_parent" in "$out"|"$out"/*)
+    fail 'KPACK_LOCAL_SCRATCH_ROOT may not be inside OUT'; return $?;; esac
+  out_tag="$(printf '%s' "$out" | sha256sum | cut -c1-12)" || return 2
+  local_base="$local_parent/quactlize-tm8-selective-q4-$short-$out_tag"
   case "$local_base" in "$local_parent"/*) ;; *)
-    fail 'local build path escaped /root/autodl-tmp'; return $?;; esac
+    fail 'local build path escaped KPACK_LOCAL_SCRATCH_ROOT'; return $?;; esac
   resume="${RESUME:-0}"; jobs="${JOBS:-24}"
   case "$resume" in 0|1) ;; *) fail 'RESUME must be 0 or 1'; return $?;; esac
   case "$jobs" in ''|*[!0-9]*|0) fail 'JOBS must be positive'; return $?;; esac
@@ -111,6 +119,7 @@ PY
     printf '\n[tm8-selective-q4] build-attempt worker=%s resume=%s utc=%s\n' \
       "$worker" "$resume" "$(date -u +%Y%m%dT%H%M%SZ)" >>"$log"
     WORKER_ID="$worker" WORKER_COUNT=8 JOBS="$jobs" PPU_SDK="$sdk" \
+      KPACK_LOCAL_SCRATCH_ROOT="$local_parent" \
       KPACK_PAYLOAD_SOURCE_ROOT="$root" \
       KPACK_BUILD_PARTITION_PLAN="$plan" \
       KPACK_PARTITION_LOCAL_ROOT="$local_base/worker-$worker" \
