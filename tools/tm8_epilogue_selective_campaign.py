@@ -13,10 +13,10 @@ Typical flow::
 
   python3 tools/plan_tm8_epilogue_fix_scope.py emit --out scope.json
   python3 tools/tm8_epilogue_selective_campaign.py emit \
-      --scope scope.json --partitions 8 --output build-plan.json
+      --scope scope.json --partitions 21 --output build-plan.json
 
 Run ``build_kpack_discovery_partition_worker.sh`` once for each build worker,
-all against that same immutable plan.  Once its 16 route/partition artifacts
+all against that same immutable plan.  Once its 42 route/partition artifacts
 are published, freeze the exact 8-device execution ledger::
 
   python3 tools/tm8_epilogue_selective_campaign.py finalize \
@@ -53,7 +53,7 @@ import plan_tm8_epilogue_fix_scope as tm8_scope  # noqa: E402
 PLAN_SCHEMA = "quactlize.tm8-epilogue-selective-build-partitions.v1"
 SCOPE_RECORD_SCHEMA = "quactlize.tm8-epilogue-selective-scope-record.v1"
 ASSIGNMENT = "SELECTIVE_PAIR_LOCAL_ROUND_ROBIN_V1"
-DEFAULT_PARTITIONS = 8
+DEFAULT_PARTITIONS = 21
 QTYPES = (10, 11, 12, 13, 14)
 ROUTES = ("scalefirst", "fully-quantized")
 OPERATORS = ("dense", "grouped")
@@ -611,6 +611,12 @@ def self_test() -> None:
                len(set(row["runtime_workload_keys"]))
                for row in plan["shards"]):
             raise CampaignError("runtime allowlist is empty or duplicated")
+    if (q4["partition_count"] != 21 or
+            len(q4["partitions"]) != 21 or
+            any(row["shards_by_route"][route] <= 0
+                for row in q4["partitions"] for route in ROUTES)):
+        raise CampaignError(
+            "Q4 build partition authority is not 21 nonempty route pairs")
     plants = []
     missing = copy.deepcopy(q4)
     missing["shards"].pop()
@@ -677,7 +683,7 @@ def self_test() -> None:
     print(
         "[tm8-epilogue-selective-campaign:self-test] PASS "
         "all=227-shards/7264-parents/13144-atoms "
-        "q4=83-shards/2656-parents/5296-atoms partitions=8 "
+        "q4=83-shards/2656-parents/5296-atoms partitions=21 "
         "master=13144/q4-5296-exact "
         "negatives=missing+workload+foreign+scope+catalog+rogue-RED")
 

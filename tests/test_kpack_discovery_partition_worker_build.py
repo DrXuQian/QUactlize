@@ -52,6 +52,19 @@ def test_partition_worker_requires_local_fast_disk_and_explicit_publish_root() -
     assert 'refusing broad publish root' in source
 
 
+def test_partition_worker_can_collect_partition_failures_for_exact_resume() -> None:
+    source = SCRIPT.read_text()
+    full_runner = (
+        ROOT / "tools/run_kpack_postfix_full_campaign_box.sh").read_text()
+    assert 'KPACK_CONTINUE_ON_PARTITION_ERROR:-0' in source
+    assert 'KPACK_CONTINUE_ON_PARTITION_ERROR must be 0 or 1' in source
+    assert 'PARTITION_FAIL worker=%s/%s route=%s partition=%s/%s' in source
+    assert 'failures.attempt-$$.tsv' in source
+    assert 'PARTIAL worker=%s/%s failure_ledger=%s' in source
+    assert 'return 3' in source
+    assert 'KPACK_CONTINUE_ON_PARTITION_ERROR=1' in full_runner
+
+
 def test_q4_runner_binds_one_disjoint_configurable_scratch_root() -> None:
     source = RUNNER.read_text()
     assert "KPACK_LOCAL_SCRATCH_ROOT:-/root/autodl-tmp" in source

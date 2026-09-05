@@ -32,8 +32,11 @@ catalog and pass only this worker's assigned roots, once per artifact::
 ``probe-device`` executes both component bundles' immutable runtime probes and
 requires byte-identical identity documents.  ``run`` repeats that live check,
 validates every authority and native shard path, then writes successful logs
-and completion records with atomic renames.  An interrupted run is resumed by
-passing ``--resume``; stale successful files are rejected rather than
+and completion records with atomic renames.  With
+``--continue-on-atom-error``, independent device failures are collected while
+the worker continues; no partial completion authority is published, and a
+later ``--resume`` executes only missing/failed atoms after strictly validating
+the successful logs.  Stale successful files are rejected rather than
 overwritten.  Evidence snapshots the assigned candidate manifests and exact
 router-row files, while recording (not copying) binary/receipt hashes and the
 executed path strings.  Aggregation therefore does not require the partition
@@ -86,6 +89,10 @@ RUNTIME_LINKAGE_ANCHOR = "libhggc_wrapper.so"
 
 class ExecutionError(RuntimeError):
     """The worker cannot make a trustworthy progress claim."""
+
+
+class AtomExecutionFailure(ExecutionError):
+    """One independent shard/workload execution failed on the device."""
 
 
 def schedule_seed_contract() -> dict[str, str]:
@@ -1035,15 +1042,17 @@ def run_atomic_log(target: Path, command: list[str], shard: ResolvedShard,
         if completed.returncode != 0:
             failed = _failure_path(target)
             os.replace(temporary, failed)
-            raise ExecutionError(
+            raise AtomExecutionFailure(
                 f"prebuilt atom failed rc={completed.returncode}; log={failed}")
         try:
             validate_atom_log(
                 text, command, shard, workload, metadata, selected_symbols)
-        except ExecutionError:
+        except ExecutionError as error:
             failed = _failure_path(target)
             os.replace(temporary, failed)
-            raise
+            raise AtomExecutionFailure(
+                f"prebuilt atom evidence failed validation; log={failed}; "
+                f"reason={error}") from error
         os.replace(temporary, target)
     except ExecutionError:
         raise
@@ -1600,6 +1609,42 @@ def _write_id_file(path: Path, ids: Iterable[str]) -> None:
     atomic_bytes(path, payload, frozen=True)
 
 
+def _publish_atom_failure_attempt(
+        out: Path, args: argparse.Namespace, selection: dict[str, Any],
+        failures: list[dict[str, Any]]) -> Path:
+    """Publish one immutable retry ledger without blessing partial evidence.
+
+    Successful atom logs remain immutable and are revalidated by ``--resume``.
+    A failed attempt deliberately does not publish ``worker-result.json``.
+    Atom completion records may exist only for items whose screen and all
+    confirmation rounds are already exact; the global exact-once gate still
+    cannot mistake partial progress for a complete worker result.
+    """
+    failed_ids = sorted({row["work_item_id"] for row in failures})
+    assigned_ids = [row["work_item_id"] for row in selection["work_items"]]
+    if not failed_ids or any(item not in assigned_ids for item in failed_ids):
+        raise ExecutionError("atom failure retry set differs from assignment")
+    attempt = f"{time.time_ns()}-{os.getpid()}"
+    directory = out / "results/failure-attempts"
+    path = directory / f"attempt-{attempt}.json"
+    document = {
+        "schema": "quactlize.kpack-discovery-atom-failure-attempt.v1",
+        "worker_id": args.worker_id,
+        "worker_count": selection["worker_count"],
+        "bundle_sha256": selection["bundle_sha256"],
+        "workload_plan_sha256": selection["workload_plan_sha256"],
+        "master_sha256": selection["master_sha256"],
+        "assignment_sha256": selection["assignment_sha256"],
+        "assigned_work_items": len(assigned_ids),
+        "failed_work_item_ids": failed_ids,
+        "failures": failures,
+        "retry_contract": (
+            "RERUN_SAME_SELECTION_WITH_RESUME;VALID_LOGS_REVALIDATED_AND_SKIPPED"),
+    }
+    atomic_json(path, document, frozen=True)
+    return path
+
+
 def run_worker(args: argparse.Namespace) -> int:
     if args.confirm_iterations != 11 or args.confirm_rounds != 3:
         raise ExecutionError(
@@ -1680,6 +1725,33 @@ def run_worker(args: argparse.Namespace) -> int:
     authority_sha = file_sha(authority_path)
 
     items = selection["work_items"]
+    atom_failures: list[dict[str, Any]] = []
+    failed_item_ids: set[str] = set()
+
+    def record_atom_failure(item: dict[str, Any], phase: str,
+                            round_index: int,
+                            error: AtomExecutionFailure) -> None:
+        if not args.continue_on_atom_error:
+            raise error
+        item_id = item["work_item_id"]
+        failed_item_ids.add(item_id)
+        atom_failures.append({
+            "work_item_id": item_id,
+            "shard_key": item["shard_key"],
+            "workload_key": item["workload_key"],
+            "route": item["route"],
+            "operator": item["operator"],
+            "qtype": item["qtype"],
+            "phase": phase,
+            "round": round_index,
+            "error": str(error),
+        })
+        print(
+            "KPACK_DISCOVERY_ATOM_FAILURE "
+            f"worker={args.worker_id} work_item_id={item_id} "
+            f"phase={phase} round={round_index} error={error}",
+            flush=True)
+
     if args.phase in ("screen", "all"):
         last_progress = 0.0
         for position, item in enumerate(items, 1):
@@ -1696,19 +1768,29 @@ def run_worker(args: argparse.Namespace) -> int:
                 shard, workload, iterations=args.screen_iterations,
                 correctness_repeats=args.correctness_repeats,
                 warmups=args.warmups, schedule_seed=seed)
-            run_atomic_log(
-                out / f"results/screen/{item['work_item_id']}.log",
-                command, shard, workload,
-                {"work_item_id": item["work_item_id"], "phase": "screen",
-                 "round": 0, "order": "SCREEN", "worker": args.worker_id,
-                 "schedule_seed": schedule_seed_hex(seed),
-                 "grouped_warmups": (args.warmups if shard.operator == "grouped"
-                                     else "NONE")})
-        print("KPACK_DISCOVERY_WORKER_PROGRESS "
-              f"worker={args.worker_id} phase=SCREEN_PASS "
-              f"completed={len(items)} total={len(items)}", flush=True)
-        _write_id_file(out / "screen-completed.ids",
-                       (item["work_item_id"] for item in items))
+            try:
+                run_atomic_log(
+                    out / f"results/screen/{item['work_item_id']}.log",
+                    command, shard, workload,
+                    {"work_item_id": item["work_item_id"], "phase": "screen",
+                     "round": 0, "order": "SCREEN", "worker": args.worker_id,
+                     "schedule_seed": schedule_seed_hex(seed),
+                     "grouped_warmups": (
+                         args.warmups if shard.operator == "grouped" else "NONE")})
+            except AtomExecutionFailure as error:
+                record_atom_failure(item, "screen", 0, error)
+        if failed_item_ids:
+            print("KPACK_DISCOVERY_WORKER_PROGRESS "
+                  f"worker={args.worker_id} phase=SCREEN_PARTIAL "
+                  f"passed={len(items) - len(failed_item_ids)} "
+                  f"failed={len(failed_item_ids)} total={len(items)}",
+                  flush=True)
+        else:
+            print("KPACK_DISCOVERY_WORKER_PROGRESS "
+                  f"worker={args.worker_id} phase=SCREEN_PASS "
+                  f"completed={len(items)} total={len(items)}", flush=True)
+            _write_id_file(out / "screen-completed.ids",
+                           (item["work_item_id"] for item in items))
     else:
         for item in items:
             path = out / f"results/screen/{item['work_item_id']}.log"
@@ -1733,6 +1815,8 @@ def run_worker(args: argparse.Namespace) -> int:
 
     retentions: dict[str, Retention] = {}
     for item in items:
+        if item["work_item_id"] in failed_item_ids:
+            continue
         shard, _workload = atoms[item["work_item_id"]]
         if shard.route == "scalefirst":
             retentions[item["work_item_id"]] = materialize_sf_retention(
@@ -1740,6 +1824,15 @@ def run_worker(args: argparse.Namespace) -> int:
                 out / f"results/screen/{item['work_item_id']}.log")
 
     if args.phase == "screen":
+        if atom_failures:
+            failure_path = _publish_atom_failure_attempt(
+                out, args, selection, atom_failures)
+            print("KPACK_DISCOVERY_WORKER_PARTIAL "
+                  f"worker={args.worker_id} passed="
+                  f"{len(items) - len(failed_item_ids)} "
+                  f"failed={len(failed_item_ids)} retry={failure_path}",
+                  flush=True)
+            return 3
         print("KPACK_DISCOVERY_WORKER_SCREEN_COMPLETE "
               f"worker={args.worker_id} items={len(items)} top_n=NONE "
               f"output={out}")
@@ -1751,6 +1844,8 @@ def run_worker(args: argparse.Namespace) -> int:
         ordered_items = _round_order(items, round_index)
         last_progress = 0.0
         for position, item in enumerate(ordered_items, 1):
+            if item["work_item_id"] in failed_item_ids:
+                continue
             now = time.monotonic()
             if position == 1 or now - last_progress >= 30.0:
                 print("KPACK_DISCOVERY_WORKER_PROGRESS "
@@ -1769,6 +1864,12 @@ def run_worker(args: argparse.Namespace) -> int:
                     out / f"results/screen/{item['work_item_id']}.log",
                     retention.symbols_path,
                     schedule_seed(item["work_item_id"], "confirm", round_index))
+                if round_index == args.confirm_rounds:
+                    marker = _completion_document(
+                        item, out, args, authority_sha, retention, shard)
+                    atomic_json(
+                        out / f"completion/{item['work_item_id']}.json",
+                        marker, frozen=True)
                 continue
             seed = schedule_seed(
                 item["work_item_id"], "confirm", round_index)
@@ -1778,20 +1879,42 @@ def run_worker(args: argparse.Namespace) -> int:
                 warmups=args.warmups, schedule_seed=seed,
                 symbol_file=(retention.symbols_path
                              if retention is not None else None))
-            run_atomic_log(
-                directory / f"{item['work_item_id']}.log", command,
-                shard, workload,
-                {"work_item_id": item["work_item_id"], "phase": "confirm",
-                 "round": round_index, "order": _round_label(round_index),
-                 "worker": args.worker_id,
-                 "schedule_seed": schedule_seed_hex(seed),
-                 "grouped_warmups": (args.warmups if shard.operator == "grouped"
-                                     else "NONE")},
-                retention.symbols if retention is not None else None)
+            try:
+                run_atomic_log(
+                    directory / f"{item['work_item_id']}.log", command,
+                    shard, workload,
+                    {"work_item_id": item["work_item_id"], "phase": "confirm",
+                     "round": round_index, "order": _round_label(round_index),
+                     "worker": args.worker_id,
+                     "schedule_seed": schedule_seed_hex(seed),
+                     "grouped_warmups": (
+                         args.warmups if shard.operator == "grouped" else "NONE")},
+                    retention.symbols if retention is not None else None)
+            except AtomExecutionFailure as error:
+                record_atom_failure(item, "confirm", round_index, error)
+            else:
+                if round_index == args.confirm_rounds:
+                    marker = _completion_document(
+                        item, out, args, authority_sha, retention, shard)
+                    atomic_json(
+                        out / f"completion/{item['work_item_id']}.json",
+                        marker, frozen=True)
         print("KPACK_DISCOVERY_WORKER_PROGRESS "
-              f"worker={args.worker_id} phase=CONFIRM_PASS "
-              f"round={round_index} completed={len(ordered_items)} "
-              f"total={len(ordered_items)}", flush=True)
+              f"worker={args.worker_id} phase=CONFIRM_"
+              f"{'PARTIAL' if failed_item_ids else 'PASS'} "
+              f"round={round_index} passed="
+              f"{len(items) - len(failed_item_ids)} "
+              f"failed={len(failed_item_ids)} total={len(items)}", flush=True)
+
+    if atom_failures:
+        failure_path = _publish_atom_failure_attempt(
+            out, args, selection, atom_failures)
+        print("KPACK_DISCOVERY_WORKER_PARTIAL "
+              f"worker={args.worker_id} passed="
+              f"{len(items) - len(failed_item_ids)} "
+              f"failed={len(failed_item_ids)} retry={failure_path}",
+              flush=True)
+        return 3
 
     expected_markers: set[str] = set()
     for item in items:
@@ -1893,13 +2016,54 @@ def self_test() -> None:
             pass
         else:
             raise ExecutionError("stale selected-row negative stayed green")
+
+        failing = root / "failing-kernel"
+        failing.write_text("#!/bin/sh\nexit 7\n", encoding="utf-8")
+        failing.chmod(0o755)
+        failed_id = "a" * 64
+        failed_target = root / f"results/screen/{failed_id}.log"
+        failed_shard = ResolvedShard(
+            "fq-fail", "fully-quantized", "dense", 10, 3,
+            failing, manifest, receipt)
+        try:
+            run_atomic_log(
+                failed_target, [str(failing)], failed_shard, dense,
+                {"work_item_id": failed_id, "phase": "screen", "round": 0,
+                 "order": "SCREEN", "worker": 0,
+                 "schedule_seed": schedule_seed_hex(
+                     schedule_seed(failed_id, "screen", 0)),
+                 "grouped_warmups": "NONE"})
+        except AtomExecutionFailure:
+            pass
+        else:
+            raise ExecutionError("atom subprocess failure did not stay local")
+        failed_logs = list((root / "results/failures").glob("*.failed.*"))
+        if failed_target.exists() or len(failed_logs) != 1:
+            raise ExecutionError("atom failure log publication differs")
+        failure_selection = {
+            "worker_count": 1,
+            "bundle_sha256": "1" * 64,
+            "workload_plan_sha256": "2" * 64,
+            "master_sha256": "3" * 64,
+            "assignment_sha256": "4" * 64,
+            "work_items": [{"work_item_id": failed_id}],
+        }
+        failure_path = _publish_atom_failure_attempt(
+            root, argparse.Namespace(worker_id=0), failure_selection,
+            [{"work_item_id": failed_id, "phase": "screen", "round": 0,
+              "error": "planted"}])
+        failure_doc = load_json(failure_path, "planted atom failure ledger")
+        if (failure_doc["failed_work_item_ids"] != [failed_id] or
+                (root / "worker-result.json").exists()):
+            raise ExecutionError("partial attempt acquired completion authority")
         ids = [{"work_item_id": f"{index:064x}"} for index in range(4)]
         if (_round_order(ids, 1) != ids or _round_order(ids, 2) != ids[::-1] or
                 set(row["work_item_id"] for row in _round_order(ids, 3)) !=
                 set(row["work_item_id"] for row in ids)):
             raise ExecutionError("confirmation round schedule differs")
     print("[kpack-discovery-worker:self-test] PASS four route/operator CLIs "
-          "full-parent screen+confirm validation, atomic/fail-closed model, "
+          "full-parent screen+confirm validation, atom-local failure ledger, "
+          "resume-only-missing contract, no partial worker authority, "
           "no-top-N and three-round ordering; stale-row negative=RED")
 
 
@@ -1947,6 +2111,7 @@ def parser() -> argparse.ArgumentParser:
                      default=3)
     run.add_argument("--correctness-repeats", type=positive, default=256)
     run.add_argument("--warmups", type=positive, default=3)
+    run.add_argument("--continue-on-atom-error", action="store_true")
     return root
 
 

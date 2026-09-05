@@ -93,6 +93,7 @@ main() {
   local tool_root root local_parent local_root publish_root plan sdk worker_id worker_count jobs
   local requested_local_parent
   local source_sha partition_count preflight route partition out resume remove_local
+  local continue_on_partition_error partition_rc failed_partitions failure_attempt
   local publish_base publish_dir stage manifest list_path list_current
   local assigned_tasks
 
@@ -109,6 +110,7 @@ main() {
   jobs="${JOBS:-32}"
   sdk="${PPU_SDK:-${PPU_HOME:-}}"
   remove_local="${KPACK_REMOVE_LOCAL_AFTER_PUBLISH:-0}"
+  continue_on_partition_error="${KPACK_CONTINUE_ON_PARTITION_ERROR:-0}"
 
   case "$worker_id:$worker_count:$jobs" in
     *[!0-9:]*) fail "WORKER_ID, WORKER_COUNT and JOBS must be integers"; return $?;;
@@ -119,6 +121,8 @@ main() {
       fail "require 0 <= WORKER_ID < WORKER_COUNT and JOBS > 0"; return $?; }
   case "$remove_local" in 0|1) ;; *)
     fail "KPACK_REMOVE_LOCAL_AFTER_PUBLISH must be 0 or 1"; return $?;; esac
+  case "$continue_on_partition_error" in 0|1) ;; *)
+    fail "KPACK_CONTINUE_ON_PARTITION_ERROR must be 0 or 1"; return $?;; esac
   [ -n "$plan" ] && [ -n "$publish_root" ] && [ -n "$local_root" ] && [ -n "$sdk" ] || {
     fail "set KPACK_BUILD_PARTITION_PLAN, KPACK_PARTITION_PUBLISH_ROOT, KPACK_PARTITION_LOCAL_ROOT and PPU_SDK"
     return $?
@@ -232,6 +236,7 @@ PY
 
   publish_base="$publish_root/$source_sha"
   mkdir -p "$publish_base/scalefirst" "$publish_base/fully-quantized" || return 2
+  failed_partitions=""
 
   while IFS=$'\t' read -r route partition; do
       [ "$route" = scalefirst ] || [ "$route" = fully-quantized ] || {
@@ -253,19 +258,30 @@ PY
       resume=0; [ ! -e "$out" ] || resume=1
       printf '[kpack-build-worker] worker=%s/%s route=%s partition=%s/%s resume=%s\n' \
         "$worker_id" "$worker_count" "$route" "$partition" "$partition_count" "$resume"
+      partition_rc=0
       if [ "$route" = scalefirst ]; then
         OUT="$out" RESUME="$resume" JOBS="$jobs" PPU_SDK="$sdk" \
           KPACK_LOCAL_SCRATCH_ROOT="$local_parent" \
           KPACK_BUILD_PARTITION_PLAN="$plan" KPACK_BUILD_PARTITION_ID="$partition" \
           KPACK_GLOBAL_PREFLIGHT_RECEIPT="$preflight" \
-          bash "$root/tools/build_scalefirst_kpack_discovery_bundle.sh" || return $?
+          bash "$root/tools/build_scalefirst_kpack_discovery_bundle.sh" || \
+            partition_rc=$?
       else
         OUT="$out" RESUME="$resume" JOBS="$jobs" PPU_SDK="$sdk" \
           KPACK_LOCAL_SCRATCH_ROOT="$local_parent" \
           FQ_KPACK_PAYLOAD_SOURCE_ROOT="$root" \
           KPACK_BUILD_PARTITION_PLAN="$plan" KPACK_BUILD_PARTITION_ID="$partition" \
           KPACK_GLOBAL_PREFLIGHT_RECEIPT="$preflight" \
-          bash "$tool_root/tools/build_fully_quantized_kpack_discovery_bundle.sh" || return $?
+          bash "$tool_root/tools/build_fully_quantized_kpack_discovery_bundle.sh" || \
+            partition_rc=$?
+      fi
+      if [ "$partition_rc" -ne 0 ]; then
+        printf '[kpack-build-worker] PARTITION_FAIL worker=%s/%s route=%s partition=%s/%s rc=%s local=%s\n' \
+          "$worker_id" "$worker_count" "$route" "$partition" \
+          "$partition_count" "$partition_rc" "$out" >&2
+        [ "$continue_on_partition_error" = 1 ] || return "$partition_rc"
+        failed_partitions="${failed_partitions}${route}"$'\t'"${partition}"$'\t'"${partition_rc}"$'\n'
+        continue
       fi
       manifest="$out/partition-bundle.json"
       PPU_SDK="$sdk" python3 -B "$tool_root/tools/kpack_discovery_build_partitions.py" verify \
@@ -288,6 +304,16 @@ PY
         "$tool_root" "$sdk" "$local_root" "$out" "$publish_dir" \
         "$route" "$partition" "$remove_local" || return $?
   done <<<"$assigned_tasks"
+
+  if [ -n "$failed_partitions" ]; then
+    failure_attempt="$publish_base/worker-$worker_id-of-$worker_count.failures.attempt-$$.tsv"
+    [ ! -e "$failure_attempt" ] && [ ! -L "$failure_attempt" ] || {
+      fail "build failure ledger already exists: $failure_attempt"; return $?; }
+    printf 'route\tpartition\trc\n%s' "$failed_partitions" >"$failure_attempt" || return 2
+    printf '[kpack-build-worker] PARTIAL worker=%s/%s failure_ledger=%s\n' \
+      "$worker_id" "$worker_count" "$failure_attempt" >&2
+    return 3
+  fi
 
   list_path="$publish_base/worker-$worker_id-of-$worker_count.manifests"
   list_current="$publish_base/.worker-$worker_id-of-$worker_count.manifests.current.$$"
