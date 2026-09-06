@@ -43,7 +43,8 @@ def test_box_entry_is_one_full_authority_not_an_overlay() -> None:
     assert "--phase all" in source
     assert "--screen-iterations 5" in source
     assert "--confirm-iterations 11 --confirm-rounds 3" in source
-    assert "--correctness-repeats 256" in source
+    assert "--correctness-repeats 1" in source
+    assert "--correctness-repeats 256" not in source
     assert "--continue-on-atom-error" in source
     assert 'KPACK_BUILD_PARTITIONS:-32' in source
     assert 'KPACK_BUILD_WORKERS:-32' in source

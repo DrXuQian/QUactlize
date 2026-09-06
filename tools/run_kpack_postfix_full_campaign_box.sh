@@ -299,6 +299,8 @@ PY
     [ ! -d "$results/worker-$worker" ] || resume_arg=(--resume)
     (
       artifact_args "$campaign/artifact-roots/worker-$worker.tsv" || return 2
+      # The exhaustive census proves every candidate once.  Higher-repeat
+      # finalist and shipping gates are separate, smaller campaigns.
       CUDA_VISIBLE_DEVICES="$worker" PPU_SDK="$sdk" \
         python3 -B "$root/tools/run_kpack_discovery_worker.py" run \
         --bundle "$campaign/catalog.json" --plan "$campaign/workload-plan.json" \
@@ -309,7 +311,7 @@ PY
         --device-homogeneity "$campaign/device-homogeneity.json" \
         --output "$results/worker-$worker" --phase all \
         --screen-iterations 5 --confirm-iterations 11 --confirm-rounds 3 \
-        --correctness-repeats 256 --warmups 3 --continue-on-atom-error \
+        --correctness-repeats 1 --warmups 3 --continue-on-atom-error \
         "${resume_arg[@]}"
     ) >>"$logs/run-worker-$worker.log" 2>&1 &
     run_pids[$worker]="$!"
