@@ -84,6 +84,14 @@ requests; it is not an extrapolation from Q4 alone. Before the full build,
 confirmation time, with a 2x safety multiplier. Predicted over-budget work is
 rejected before starting the full campaign. An estimate is not a runtime proof.
 
+To explicitly run without a total time limit, add `--no-budget-limit` and use a
+fresh `--output` with the same `--build-cache`. This bypasses the cost estimator,
+budget admission, and all campaign phase deadlines (`--hours` is not enforced).
+The log reports `verdict=BYPASS_USER_REQUEST` and `remaining_minutes=UNLIMITED`.
+Search bounds, numerical checks, device identity, per-request timeouts, failure
+isolation, resumption, and the final 3x11 confirmation remain unchanged. This
+mode may run longer than one night; it does not assert an overnight ETA.
+
 The admitted sequence is: all-workload screen (default 32-parent soft budget,
 three samples), measured-winner neighbors plus far challenges, wider boundary
 audits, family propagation of audit gains, then three independent 11-sample

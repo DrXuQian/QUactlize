@@ -1,5 +1,6 @@
 import copy
 import json
+import math
 from pathlib import Path
 import sys
 import time
@@ -214,3 +215,72 @@ def test_campaign_pipeline_or_admission_rejection(base, tmp_path, monkeypatch, a
     else:
         assert rc == 2 and called == ["calibration"]
         assert report["confirmed_requests"] == 0
+
+
+@pytest.mark.parametrize("calibration_clean", (True, False))
+def test_unlimited_skips_estimator_not_correctness_or_confirmation(
+    base, tmp_path, monkeypatch, calibration_clean
+):
+    a = SimpleNamespace(
+        output=tmp_path,
+        build_cache=None,
+        sdk=tmp_path,
+        hours=0.1,
+        jobs=192,
+        devices="0,1",
+        new_parents=0,
+        no_budget_limit=True,
+    )
+    monkeypatch.setattr(night.build, "source_identity", lambda: "source")
+    monkeypatch.setattr(night.build, "sdk_identity", lambda _: {})
+
+    def forbidden(*args):
+        pytest.fail("explicit unlimited mode must not depend on cost estimates")
+
+    monkeypatch.setattr(night, "CostModel", forbidden)
+    monkeypatch.setattr(night, "calibration_build_seconds", forbidden)
+    (tmp_path / "base-plan.json").write_text(json.dumps(base))
+    campaign = night.Campaign(a)
+    # An expired nominal --hours window must not stop any unlimited phase.
+    campaign.start -= 24 * 3600
+    assert campaign.end == math.inf
+    called = []
+
+    def phase(name, plan, cutoff, iterations=3):
+        assert cutoff == math.inf
+        called.append((name, iterations))
+        campaign.phases.append({"name": name})
+        if name == "calibration" and not calibration_clean:
+            return {}
+        return dataset(plan, iterations)
+
+    monkeypatch.setattr(campaign, "phase", phase)
+    rc = campaign.execute()
+    report = json.loads((tmp_path / "results/summary.json").read_text())
+    assert report["budget_hours"] is None
+    assert report["budget_enforced"] is False
+    assert report["global_5pct_bound_proven"] is False
+    if calibration_clean:
+        assert rc == 0 and report["confirmed_requests"] == len(base["requests"])
+        assert called[-3:] == [(f"confirm-{n}", 11) for n in (1, 2, 3)]
+        admission = json.loads((tmp_path / "budget-admission.json").read_text())
+        assert admission["verdict"] == "BYPASS_USER_REQUEST"
+        assert admission["candidate_bounds_preserved"]
+        assert admission["correctness_checks_preserved"]
+    else:
+        assert rc == 2 and called == [("calibration", 3)]
+        assert report["confirmed_requests"] == 0
+
+
+def test_unlimited_still_honors_user_interruption(tmp_path):
+    campaign = object.__new__(night.Campaign)
+    campaign.interrupted = True
+    campaign.active = None
+    campaign.end = math.inf
+    rc, elapsed = campaign.command(
+        [sys.executable, "-c", "raise RuntimeError('must not launch')"],
+        tmp_path / "command.log",
+        math.inf,
+    )
+    assert rc == 124 and elapsed == 0
+    assert not (tmp_path / "command.log").exists()

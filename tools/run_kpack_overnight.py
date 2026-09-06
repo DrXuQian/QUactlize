@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Budget-admitted overnight K-pack tuning; compile time is inside the budget.
 
-No exhaustive fallback. Calibration must predict full coverage plus 3x11
-confirmation within the available window before the main build is admitted.
-Deadlines preserve completed work; incomplete work never becomes a PASS.
+No exhaustive fallback. By default calibration must predict full coverage plus
+3x11 confirmation within the available window before the main build is admitted.
+--no-budget-limit explicitly disables wall-clock admission and the campaign
+deadline, not candidate bounds, correctness checks or per-request timeouts.
+Incomplete work never becomes a PASS.
 """
 
 from __future__ import annotations
@@ -225,7 +227,8 @@ class Campaign:
         self.a = args
         self.output, self.cache = args.output, args.build_cache or args.output / "build"
         self.start = time.monotonic()
-        self.end = self.start + args.hours * 3600
+        self.unlimited = getattr(args, "no_budget_limit", False)
+        self.end = math.inf if self.unlimited else self.start + args.hours * 3600
         self.active = None
         self.interrupted = False
         self.phases = []
@@ -296,8 +299,18 @@ class Campaign:
                         stream.flush()
                         print(line, end="", flush=True)
                     if now - last >= 30:
+                        remaining = (
+                            f"{max(0, (self.end-now)/60):.1f}"
+                            if math.isfinite(self.end)
+                            else "UNLIMITED"
+                        )
+                        phase_remaining = (
+                            f"{max(0, (cutoff-now)/60):.1f}"
+                            if math.isfinite(cutoff)
+                            else "UNLIMITED"
+                        )
                         print(
-                            f"KPACK_OVERNIGHT_BUDGET remaining_minutes={max(0,(self.end-now)/60):.1f} phase_remaining_minutes={max(0,(cutoff-now)/60):.1f}",
+                            f"KPACK_OVERNIGHT_BUDGET remaining_minutes={remaining} phase_remaining_minutes={phase_remaining}",
                             flush=True,
                         )
                         last = now
@@ -412,7 +425,8 @@ class Campaign:
             "schema": "quactlize.kpack-overnight.v1",
             "status": "CONFIRMED_SELECTED_SET" if complete else "INCOMPLETE",
             "reason": reason,
-            "budget_hours": self.a.hours,
+            "budget_hours": None if self.unlimited else self.a.hours,
+            "budget_enforced": not self.unlimited,
             "elapsed_hours": (time.monotonic() - self.start) / 3600,
             "requests": len(rows),
             "confirmed_requests": sum(
@@ -442,6 +456,66 @@ class Campaign:
             flush=True,
         )
         return 0 if complete else 2
+
+    def search_deadline(self, base, calibration):
+        if self.unlimited:
+            admission = {
+                "source": "EXPLICIT_NO_BUDGET_LIMIT",
+                "verdict": "BYPASS_USER_REQUEST",
+                "budget_enforced": False,
+                "candidate_bounds_preserved": True,
+                "correctness_checks_preserved": True,
+                "confirmation_rounds": 3,
+                "confirmation_iterations": 11,
+            }
+            deadline = math.inf
+        else:
+            build_cost = calibration_build_seconds(
+                self.output / "phases/calibration", self.a.jobs
+            )
+            model = CostModel(
+                calibration,
+                self.output / "phases/calibration/run",
+                build_cost,
+                len(self.a.devices.split(",")),
+            )
+            # Reserve for up to 9 parents: top 4 + 4 near ties + initial incumbent.
+            reservation = copy.deepcopy(base)
+            for r in reservation["requests"]:
+                r["symbols"] = (r["symbols"] * 9)[:9]
+            confirm_seconds = 3 * model.run_seconds(reservation, 11)
+            compiled = {c["symbol"] for c in calibration["candidates"]}
+            missing = len({c["symbol"] for c in base["candidates"]} - compiled)
+            estimate = (
+                model.compile_seconds(missing)
+                + model.run_seconds(base, 3)
+                + confirm_seconds
+                + 300
+            )
+            admission = {
+                "source": "MEASURED_WALL_FIXTURE_AND_KERNEL_SCALING",
+                "budget_enforced": True,
+                "safety_factor": model.safety,
+                "remaining_seconds": self.end - time.monotonic(),
+                "mandatory_estimate_seconds": estimate,
+                "compile_estimate_seconds": model.compile_seconds(missing),
+                "screen_estimate_seconds": model.run_seconds(base, 3),
+                "confirmation_reserve_seconds": confirm_seconds,
+                "verdict": (
+                    "ADMIT" if estimate <= self.end - time.monotonic() else "REJECT"
+                ),
+            }
+            deadline = (
+                self.end - confirm_seconds - 300
+                if admission["verdict"] == "ADMIT"
+                else None
+            )
+        runner.atomic_json(self.output / "budget-admission.json", admission)
+        print(
+            "KPACK_OVERNIGHT_ADMISSION " + json.dumps(admission, sort_keys=True),
+            flush=True,
+        )
+        return deadline
 
     def execute(self):
         a = self.a
@@ -480,50 +554,17 @@ class Campaign:
             "calibration", lambda: search.calibration_plan(base)
         )
         probe = self.phase(
-            "calibration", calibration, min(self.end, self.start + a.hours * 720)
+            "calibration",
+            calibration,
+            self.end if self.unlimited else min(self.end, self.start + a.hours * 720),
         )
         if measured_count(probe) != len(calibration["requests"]):
             return self.finish(
                 base, empty, [], {}, "CALIBRATION_INCOMPLETE_NO_FULL_CAMPAIGN_STARTED"
             )
-        build_cost = calibration_build_seconds(
-            self.output / "phases/calibration", a.jobs
-        )
-        model = CostModel(
-            calibration,
-            self.output / "phases/calibration/run",
-            build_cost,
-            len(a.devices.split(",")),
-        )
-        # Reserve for up to 9 parents: top 4 + 4 near ties + initial incumbent.
-        reservation = copy.deepcopy(base)
-        for r in reservation["requests"]:
-            r["symbols"] = (r["symbols"] * 9)[:9]
-        confirm_seconds = 3 * model.run_seconds(reservation, 11)
         compiled = {c["symbol"] for c in calibration["candidates"]}
-        missing = len({c["symbol"] for c in base["candidates"]} - compiled)
-        estimate = (
-            model.compile_seconds(missing)
-            + model.run_seconds(base, 3)
-            + confirm_seconds
-            + 300
-        )
-        admission = {
-            "source": "MEASURED_WALL_FIXTURE_AND_KERNEL_SCALING",
-            "safety_factor": model.safety,
-            "remaining_seconds": self.end - time.monotonic(),
-            "mandatory_estimate_seconds": estimate,
-            "compile_estimate_seconds": model.compile_seconds(missing),
-            "screen_estimate_seconds": model.run_seconds(base, 3),
-            "confirmation_reserve_seconds": confirm_seconds,
-            "verdict": "ADMIT" if estimate <= self.end - time.monotonic() else "REJECT",
-        }
-        runner.atomic_json(self.output / "budget-admission.json", admission)
-        print(
-            "KPACK_OVERNIGHT_ADMISSION " + json.dumps(admission, sort_keys=True),
-            flush=True,
-        )
-        if admission["verdict"] != "ADMIT":
+        search_end = self.search_deadline(base, calibration)
+        if search_end is None:
             return self.finish(
                 base,
                 empty,
@@ -531,7 +572,6 @@ class Campaign:
                 {},
                 "PREDICTED_BUDGET_EXCEEDED_NO_FULL_CAMPAIGN_STARTED",
             )
-        search_end = self.end - confirm_seconds - 300
         initial = self.phase("screen", base, search_end)
         if measured_count(initial) != len(base["requests"]):
             return self.finish(
@@ -626,6 +666,11 @@ def main():
     p.add_argument("--sdk", type=Path, required=True)
     p.add_argument("--build-cache", type=Path)
     p.add_argument("--hours", type=float, default=10)
+    p.add_argument(
+        "--no-budget-limit",
+        action="store_true",
+        help="skip time-budget admission and campaign deadline; retain bounded search and 3x11 confirmation",
+    )
     p.add_argument("--jobs", type=int, default=192)
     p.add_argument("--devices", default="0,1,2,3,4,5,6,7")
     p.add_argument("--qtypes", default="10,11,12,13,14")
@@ -697,6 +742,7 @@ def main():
             "qtypes": a.qtypes,
             "budget": a.budget,
             "new_parents": a.new_parents,
+            "no_budget_limit": a.no_budget_limit,
         }
         freeze(a.output / "campaign-identity.json", identity)
         campaign = Campaign(a)
