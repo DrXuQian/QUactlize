@@ -37,6 +37,7 @@ def test_box_entry_reuses_build_but_never_historical_timings() -> None:
     assert "--confirm-iterations 11 --confirm-rounds 3" in source
     assert "SCREEN_COMPLETE_CONFIRM_PENDING" in source
     assert "full_confirm_fallback=0" in source
+    assert "screen_logs=%s/%s" in source
     assert "KPACK_GLOBAL_SHORTLIST_COMMAND" not in source
     assert "eval " not in source
 

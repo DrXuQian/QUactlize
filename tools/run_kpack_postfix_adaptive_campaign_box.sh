@@ -46,7 +46,7 @@ artifact_args() {
 main() {
   [ "$#" -eq 0 ] || { fail 'no positional arguments are accepted'; return $?; }
   local root sdk output_parent source out inputs results logs resume
-  local runtime_workers worker pid alive completed failures interrupted_status
+  local runtime_workers worker pid alive completed screen_logs failures interrupted_status
   local marker log expected_items
   local -a probe_pids run_pids child_pids probe_args resume_arg
 
@@ -188,8 +188,11 @@ PY
       [ -f "$results/worker-$worker/screen-completed.ids" ] && \
         completed=$((completed + 1))
     done
-    printf '[kpack-postfix-adaptive] SCREEN_PROGRESS alive=%s/%s barrier_workers=%s/%s work_items=%s\n' \
-      "$alive" "$runtime_workers" "$completed" "$runtime_workers" "$expected_items"
+    screen_logs="$(find "$results" -type f -path \
+      '*/results/screen/*.log' 2>/dev/null | wc -l)" || return 2
+    printf '[kpack-postfix-adaptive] SCREEN_PROGRESS alive=%s/%s barrier_workers=%s/%s screen_logs=%s/%s\n' \
+      "$alive" "$runtime_workers" "$completed" "$runtime_workers" \
+      "$screen_logs" "$expected_items"
     [ "$alive" -gt 0 ] || break
     sleep 30
     [ "$interrupted_status" -eq 0 ] || return "$interrupted_status"
