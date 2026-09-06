@@ -24,10 +24,12 @@ import statistics
 import subprocess
 import threading
 import time
+import tempfile
 from typing import Any
 
 from kpack_tuning_plan import SCHEMA, digest
 from build_kpack_tuner import sha, sdk_identity
+import probe_box_identity as box_identity
 
 STRUCTURAL = {
     "SHIPPING_SHARED_STORAGE",
@@ -273,13 +275,7 @@ def atomic_json(path: Path, value: Any) -> None:
 
 class Driver:
     def __init__(self, binary: str, device: int, sdk: Path):
-        env = os.environ.copy()
-        env["CUDA_VISIBLE_DEVICES"] = str(device)
-        env["LD_LIBRARY_PATH"] = (
-            ":".join(str(sdk / p) for p in ("lib", "lib64", "targets/x86_64-linux/lib"))
-            + ":"
-            + env.get("LD_LIBRARY_PATH", "")
-        )
+        env = device_environment(device, sdk)
         self.process = subprocess.Popen(
             [binary],
             stdin=subprocess.PIPE,
@@ -353,17 +349,61 @@ class Driver:
             DRIVERS.discard(self)
 
 
+def device_environment(device: int, sdk: Path) -> dict:
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = str(device)
+    env["LD_LIBRARY_PATH"] = (
+        ":".join(str(sdk / p) for p in ("lib", "lib64", "targets/x86_64-linux/lib"))
+        + ":"
+        + env.get("LD_LIBRARY_PATH", "")
+    )
+    return env
+
+
+def build_identity_probe(binary: Path, sdk: Path) -> None:
+    # Existing host-only SDK probe; no GPU kernel is added or recompiled.
+    result = subprocess.run(
+        box_identity._probe_compile_command(sdk, binary, dict(os.environ)),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=60,
+    )
+    if result.returncode:
+        raise ValueError(f"host identity probe build failed: {result.stdout[-3000:]}")
+
+
+def query_identity_probe(binary: Path, env: dict) -> dict:
+    result = subprocess.run(
+        [str(binary)],
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=60,
+    )
+    if result.returncode:
+        raise ValueError(f"SDK identity query failed: {result.stdout[-3000:]}")
+    observation = box_identity._parse_runtime_wire(result.stdout)
+    candidates = observation["candidates"]
+    if (
+        observation["device_count"] != 1
+        or observation["property_errors"]
+        or len(candidates) != 1
+        or candidates[0]["ordinal"] != 0
+        or not candidates[0]["pci_identity"]
+        or observation["pci_measurement"] == "unavailable"
+    ):
+        raise ValueError(f"SDK identity is not one measured PCI device: {observation}")
+    return {**candidates[0], "pci_method": observation["pci_measurement"]}
+
+
 def probe_devices(bundle: dict, devices: list[int], sdk: Path) -> list[dict]:
     binary = next(iter(bundle["pairs"].values()))["driver"]
 
-    def probe(device):
-        env = os.environ.copy()
-        env["CUDA_VISIBLE_DEVICES"] = str(device)
-        env["LD_LIBRARY_PATH"] = (
-            ":".join(str(sdk / p) for p in ("lib", "lib64", "targets/x86_64-linux/lib"))
-            + ":"
-            + env.get("LD_LIBRARY_PATH", "")
-        )
+    def probe(device, identity_binary):
+        env = device_environment(device, sdk)
+        physical = query_identity_probe(identity_binary, env)
         result = subprocess.run(
             [binary],
             input="",
@@ -380,12 +420,34 @@ def probe_devices(bundle: dict, devices: list[int], sdk: Path) -> list[dict]:
         ]
         if result.returncode or len(rows) != 1 or rows[0].get("visible") != "1":
             raise ValueError(f"device {device} probe failed: {result.stdout[-3000:]}")
-        return {"ordinal": device, **rows[0]}
+        row = rows[0]
+        if row.get("device") != "0" or row.get("name") != physical["name"]:
+            raise ValueError(
+                f"device {device} driver/runtime identity disagrees: {row}, {physical}"
+            )
+        # Legacy driver output is an incomplete property-based BDF. Keep it
+        # as diagnostics, never use it as the physical uniqueness authority.
+        row["property_pci"] = row["pci"]
+        row["pci"] = physical["pci_identity"]
+        row["pci_method"] = physical["pci_method"]
+        print(
+            f"KPACK_TUNER_DEVICE_ID ordinal={device} pci={row['pci']} "
+            f"property_pci={row['property_pci']} visible=1 device=0 "
+            f"name={row['name']} cu={row['cu']} method={row['pci_method']}",
+            flush=True,
+        )
+        return {"ordinal": device, **row}
 
-    with ThreadPoolExecutor(max_workers=len(devices)) as pool:
-        rows = list(pool.map(probe, devices))
+    with tempfile.TemporaryDirectory(prefix="kpack-runtime-identity-") as temp:
+        identity_binary = Path(temp) / "probe"
+        build_identity_probe(identity_binary, sdk)
+        with ThreadPoolExecutor(max_workers=len(devices)) as pool:
+            rows = list(pool.map(lambda d: probe(d, identity_binary), devices))
     if len({r["pci"] for r in rows}) != len(devices):
-        raise ValueError("workers refer to the same physical device")
+        mapping = ", ".join(f"{r['ordinal']}->{r['pci']}" for r in rows)
+        raise ValueError(
+            f"workers refer to the same physical device via SDK PCI query: {mapping}"
+        )
     if len({(r["name"], r["cu"]) for r in rows}) != 1:
         raise ValueError("heterogeneous device pool")
     return rows

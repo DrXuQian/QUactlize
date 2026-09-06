@@ -140,6 +140,19 @@ def test_cost_model_separates_decode_from_prefill(base, tmp_path):
         model.run_seconds(other, 11)
 
 
+def test_cached_calibration_does_not_predict_free_compilation(tmp_path):
+    module = tmp_path / "kernel.so"
+    module.with_suffix(".receipt.json").write_text(json.dumps({"seconds": 45.0}))
+    (tmp_path / "bundle.json").write_text(
+        json.dumps({"pairs": {"q12": {"modules": [{"path": str(module)}]}}})
+    )
+    assert night.calibration_build_seconds(tmp_path, 192) == 45.0
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(ValueError, match="zero cost"):
+        night.calibration_build_seconds(empty, 192)
+
+
 def test_command_deadline_preserves_log(tmp_path):
     campaign = object.__new__(night.Campaign)
     campaign.interrupted = False
@@ -167,6 +180,7 @@ def test_campaign_pipeline_or_admission_rejection(base, tmp_path, monkeypatch, a
     )
     monkeypatch.setattr(night.build, "source_identity", lambda: "source")
     monkeypatch.setattr(night.build, "sdk_identity", lambda _: {})
+    monkeypatch.setattr(night, "calibration_build_seconds", lambda *_: 45.0)
 
     class Model:
         safety = 2

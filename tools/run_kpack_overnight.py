@@ -111,6 +111,35 @@ def merged(*datasets):
     return result
 
 
+def calibration_build_seconds(folder: Path, jobs: int) -> float:
+    """A cached calibration still owes compilation time for unseen parents."""
+    cost_path = folder / "build-cost.json"
+    elapsed = (
+        float(json.loads(cost_path.read_text())["seconds"])
+        if cost_path.exists()
+        else 0.0
+    )
+    bundle_path = folder / "bundle.json"
+    durations = []
+    if bundle_path.exists():
+        bundle = json.loads(bundle_path.read_text())
+        for pair in bundle["pairs"].values():
+            for module in pair["modules"]:
+                receipt = Path(module["path"]).with_suffix(".receipt.json")
+                if receipt.exists():
+                    value = float(json.loads(receipt.read_text())["seconds"])
+                    if not math.isfinite(value) or value <= 0:
+                        raise ValueError("invalid cached compile duration")
+                    durations.append(value)
+    if durations:
+        elapsed = max(elapsed, max(durations), sum(durations) / jobs)
+    if not math.isfinite(elapsed) or elapsed <= 0:
+        raise ValueError(
+            "cold compile costs unavailable; cannot admit unseen builds at zero cost"
+        )
+    return elapsed
+
+
 class CostModel:
     """Conservative measured wall-time scaling, not kernel-count-only scaling."""
 
@@ -457,9 +486,8 @@ class Campaign:
             return self.finish(
                 base, empty, [], {}, "CALIBRATION_INCOMPLETE_NO_FULL_CAMPAIGN_STARTED"
             )
-        cost_path = self.output / "phases/calibration/build-cost.json"
-        build_cost = (
-            json.loads(cost_path.read_text())["seconds"] if cost_path.exists() else 0.0
+        build_cost = calibration_build_seconds(
+            self.output / "phases/calibration", a.jobs
         )
         model = CostModel(
             calibration,
@@ -660,6 +688,9 @@ def main():
                     "kpack_overnight_search.py",
                     "run_kpack_tuner.py",
                     "kpack_tuning_plan.py",
+                    "probe_box_identity.py",
+                    "box_identity_probe.cpp",
+                    "box_identity_schema.py",
                 )
             ],
             "devices": a.devices,

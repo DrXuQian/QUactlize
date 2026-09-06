@@ -106,6 +106,15 @@ command resumes immutable phase inputs/results with a new time window. Source,
 SDK, phase inputs and physical device identity must match. Change OUT for a new
 measurement epoch. No production selector is updated automatically.
 
+Physical-device uniqueness uses the existing host-only SDK probe and its
+`hggcDeviceGetPCIBusId` result, including the PCI function. The driver's older
+property-based PCI string is diagnostic only. `KPACK_TUNER_DEVICE_ID` prints
+both values for each worker; an actual duplicate API identity still rejects
+execution. The identity fix needs no kernel/module rebuild. Use a fresh OUT
+with the previous build cache when changing orchestration identity. Cached
+calibration builds retain their original compile-cost receipts, so new kernels
+are not budgeted at zero compilation cost after a restart.
+
 The prior Q4 minimal box probe reported a cold build of 45.023 seconds for nine
 compile units and 8.325 seconds for eight route/workloads on one card. This
 validates the module path, not the duration of the all-format overnight search.
