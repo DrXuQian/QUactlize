@@ -814,6 +814,66 @@ def test_exact_rows_are_passed_by_path_and_bound_by_fnv(tmp_path: Path) -> None:
                             shard, workload)
 
 
+@pytest.mark.parametrize(
+    ("route", "operator", "expected_option"), [
+        ("scalefirst", "dense", "--symbol-file="),
+        ("fully-quantized", "dense", "--symbols-file="),
+        ("scalefirst", "grouped", "--symbol-file="),
+        ("fully-quantized", "grouped", "--symbol-file="),
+    ])
+def test_exact_symbol_file_dispatches_to_all_four_prebuilt_runners(
+        tmp_path: Path, route: str, operator: str,
+        expected_option: str) -> None:
+    authority = tmp_path / "authority"
+    authority.write_text("authority\n")
+    symbols = tmp_path / "symbols"
+    symbols.write_text("s1\n")
+    shard = worker.ResolvedShard(
+        "shard", route, operator, 10, 2,
+        authority, authority, authority, ("s0", "s1"))
+    if operator == "dense":
+        workload = worker.Workload("dense", "dense", {
+            "workload_key": "dense", "source_class": "real-inventory",
+            "m": "8", "n": "256", "k": "512"})
+    else:
+        workload = worker.Workload("grouped", "grouped", {
+            "workload_key": "grouped", "source_class": "real-inventory",
+            "tokens": "4", "topk": "2", "experts": "16",
+            "n": "256", "k": "512", "profile": "uniform",
+            "rows_file": "-", "total_rows": "8", "max_rows": "1",
+            "rows_sha256": "-"})
+    command = worker.command_for(
+        shard, workload, iterations=5, correctness_repeats=1, warmups=3,
+        schedule_seed=19, symbol_file=symbols)
+    assert f"{expected_option}{symbols}" in command
+    unexpected = ("--symbol-file=" if expected_option == "--symbols-file="
+                  else "--symbols-file=")
+    assert not any(arg.startswith(unexpected) for arg in command)
+
+
+def test_fq_dense_exact_symbol_validation_preserves_full_default() -> None:
+    authority = Path("authority")
+    shard = worker.ResolvedShard(
+        "fq", "fully-quantized", "dense", 10, 3,
+        authority, authority, authority, ("s0", "s1", "s2"))
+    workload = worker.Workload("dense", "dense", {
+        "workload_key": "dense", "source_class": "real-inventory",
+        "m": "8", "n": "256", "k": "512"})
+    selected_log = (
+        "FQ_SHARD q=10 typed_rows=3 selected_rows=1\n"
+        "FQ_TC_CELL shape=8x256x512 symbol=s1\n"
+        "FQ_SHAPE_DONE q=10 shape=8x256x512 typed_rows=3 "
+        "selected_rows=1 status=PASS\n")
+    worker.validate_log(
+        selected_log, shard, workload, selected_symbols=("s1",))
+
+    # Omitting an explicit selection retains the original full-shard
+    # contract; a filtered log must not masquerade as a default run.
+    with pytest.raises(worker.ExecutionError,
+                       match="dense shard header authority differs"):
+        worker.validate_log(selected_log, shard, workload)
+
+
 def test_no_builder_or_timing_prune_is_present() -> None:
     source = (TOOLS / "run_kpack_discovery_worker.py").read_text()
     assert "build.sh" not in source

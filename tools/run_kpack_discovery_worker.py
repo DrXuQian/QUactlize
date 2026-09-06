@@ -779,9 +779,13 @@ def command_for(shard: ResolvedShard, workload: Workload, *, iterations: int,
         if schedule_seed is not None:
             command += [f"--schedule-seed={schedule_seed}"]
         if symbol_file is not None:
-            if shard.route != "scalefirst":
-                raise ExecutionError("FullyQuantized may not use SF retention")
-            command += [f"--symbol-file={symbol_file}"]
+            # The dense FullyQuantized benchmark predates the other three
+            # runners and exposes the plural spelling.  Keep this dispatch at
+            # the binary seam so callers can use one route-independent exact
+            # symbol selection input.
+            option = ("--symbols-file=" if shard.route == "fully-quantized"
+                      else "--symbol-file=")
+            command += [f"{option}{symbol_file}"]
         return command
     command += [f"--experts={row['experts']}", f"--n={row['n']}",
                 f"--k={row['k']}", f"--workload-key={workload.key}",
@@ -791,8 +795,6 @@ def command_for(shard: ResolvedShard, workload: Workload, *, iterations: int,
     if schedule_seed is not None:
         command += [f"--schedule-seed={schedule_seed}"]
     if symbol_file is not None:
-        if shard.route != "scalefirst":
-            raise ExecutionError("FullyQuantized may not use SF retention")
         command += [f"--symbol-file={symbol_file}"]
     if workload.rows_path is None:
         command += [f"--tokens={row['tokens']}", f"--topk={row['topk']}"]
@@ -854,10 +856,10 @@ def validate_log(text: str, shard: ResolvedShard, workload: Workload,
             done = _one_line(text, "FQ_SHAPE_DONE ")
             wanted_header = {"q": str(shard.qtype),
                              "typed_rows": str(shard.parent_count),
-                             "selected_rows": str(shard.parent_count)}
+                             "selected_rows": str(selected_count)}
             wanted_done = {"q": str(shard.qtype), "shape": shape,
                            "typed_rows": str(shard.parent_count),
-                           "selected_rows": str(shard.parent_count),
+                           "selected_rows": str(selected_count),
                            "status": "PASS"}
         if any(header.get(key) != value for key, value in wanted_header.items()):
             raise ExecutionError("dense shard header authority differs")
