@@ -14,8 +14,8 @@ its timings are not imported into a new measurement epoch.
 | FQ Split-K ranking cost | LOCAL IMPLEMENTED; PPU DEVICE PENDING | Measure producer + real reducer within events; old producer-only benchmark remains its default |
 | Incremental build and failed-candidate replay | LOCAL IMPLEMENTED; PPU DEVICE PENDING | Objects/modules keyed by source/SDK; success records rederived from hashed logs; sticky-context failures restart only pending work |
 | Uploaded FQ winner-geometry replay | LOCAL PASS 832/832 | 572 dense + 260 grouped measured rows; non-default grouped winners explicitly retained; geometry coverage does not certify exact provider/grid performance |
-| Minimal compile/runtime wall-time probe | BOX PENDING | Q4 four parents/nine compile units/eight route-workloads; separate wall timers and cache-state receipt; no automatic full sweep |
-| Overnight staged tuning and budget admission | IN PROGRESS; NOT RELEASED | Include compilation in the deadline; calibrate fixture/launch/kernel costs, reserve full-shape 3x11 confirmation, and expose incomplete coverage |
+| Minimal compile/runtime wall-time probe | BOX PASS | User-reported cold build 45.023 s / nine units; device 8.325 s / eight Q4 route-workloads; not a whole-campaign duration proof |
+| Overnight staged tuning and budget admission | LOCAL TESTED; BOX PENDING | Compilation inside deadline; per-format/route wall-cost admission, bounded neighbors/audits, matched three-round confirmation, explicit incomplete/noisy coverage |
 | Historical result calibration, winner neighborhoods and wide holdouts | NEXT AFTER SCREEN | Fit against actual measured winners; expose pre-injection recall, per-shape regret and uncovered shapes; expand cases missing >5% gains |
 | Selective 3x11 confirmation and runtime/llama.cpp policy admission | PENDING | Refine the provisional screen policy without re-entering the full Cartesian product; no production policy update from two-sample screen alone |
 

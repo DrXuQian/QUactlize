@@ -67,6 +67,51 @@ modules. A source/SDK change intentionally invalidates the affected cache epoch.
 
 ## Run on the PPU box
 
+### Overnight staged search
+
+```bash
+python3 -u tools/run_kpack_overnight.py \
+  --output /workspace/kpack-overnight-v1 \
+  --sdk /workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
+  --build-cache /workspace/kpack-minimal-95e0659/build \
+  --jobs 192 --devices 0,1,2,3,4,5,6,7 --hours 10
+```
+
+Compilation is inside the ten-hour scheduling budget. The initial measured
+calibration covers every qtype/route with small-M, large-work and large-weight
+requests; it is not an extrapolation from Q4 alone. Before the full build,
+`budget-admission.json` separates estimated compilation, screen and reserved
+confirmation time, with a 2x safety multiplier. Predicted over-budget work is
+rejected before starting the full campaign. An estimate is not a runtime proof.
+
+The admitted sequence is: all-workload screen (default 32-parent soft budget,
+three samples), measured-winner neighbors plus far challenges, wider boundary
+audits, family propagation of audit gains, then three independent 11-sample
+confirmation rounds. Confirmation retains the top four parents, up to four
+near ties, and the initial incumbent. Rounds use different deterministic shuffle
+seeds on the same assigned GPU. Matched runtime variants, not just parent
+names, own the 33-sample denominator. Raw correctness repeats remain one.
+
+Optional exploration may add at most 256 new compiled parents per stage;
+compile-capped and deadline-skipped coverage is reported, not labelled slow.
+Exploration cannot consume the estimated confirmation reserve. Deadline handling
+terminates owned child work, allows up to 60 seconds of graceful shutdown, and
+keeps completed artifacts. Missing rounds, missing variants and noisy winners
+are explicit non-complete statuses. There is no exhaustive fallback or claim
+that all shapes are globally within 5% merely because the timer expired.
+
+Results are under `results/summary.tsv`, `results/summary.json`, and
+`results/heuristic-input.json`; raw stage evidence is under `phases/`. The same
+command resumes immutable phase inputs/results with a new time window. Source,
+SDK, phase inputs and physical device identity must match. Change OUT for a new
+measurement epoch. No production selector is updated automatically.
+
+The prior Q4 minimal box probe reported a cold build of 45.023 seconds for nine
+compile units and 8.325 seconds for eight route/workloads on one card. This
+validates the module path, not the duration of the all-format overnight search.
+
+### Minimal probe and initial screen
+
 For a **minimal compile + runtime wall-time probe**, use the separate entry:
 
 ```bash

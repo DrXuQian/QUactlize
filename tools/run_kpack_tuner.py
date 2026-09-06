@@ -461,7 +461,9 @@ def run_group(
                     symbol_file,
                     output / "inputs",
                     iterations,
-                    int(request["id"][:16], 16) ^ attempt,
+                    int(request["id"][:16], 16)
+                    ^ attempt
+                    ^ int(request.get("schedule_salt", 0)),
                 )
                 if driver is None:
                     driver = Driver(pair["driver"], device, sdk)
@@ -630,7 +632,17 @@ def run(
         return weight + flops / 128
 
     for group in sorted(groups.values(), key=lambda g: (-cost(g), g[0]["id"])):
-        owner = min(range(len(devices)), key=lambda i: (costs[i], i))
+        owners = {r.get("worker_index") for r in group}
+        if owners == {None}:
+            owner = min(range(len(devices)), key=lambda i: (costs[i], i))
+        elif len(owners) == 1 and all(
+            type(i) is int and 0 <= i < len(devices) for i in owners
+        ):
+            owner = next(iter(owners))
+        else:
+            raise ValueError(
+                "weight group has inconsistent/faulty fixed worker assignment"
+            )
         assigned[owner].append(group)
         costs[owner] += cost(group)
     output.mkdir(parents=True, exist_ok=True)
