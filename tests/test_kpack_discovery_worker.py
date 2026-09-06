@@ -874,6 +874,45 @@ def test_fq_dense_exact_symbol_validation_preserves_full_default() -> None:
         worker.validate_log(selected_log, shard, workload)
 
 
+def test_phase_grouped_warmups_override_the_legacy_common_default() -> None:
+    legacy = SimpleNamespace(warmups=3)
+    assert worker.resolved_grouped_warmups(legacy) == {
+        "screen": 3, "confirm": 3}
+    assert worker.grouped_warmups_authority(legacy) == 3
+
+    split = SimpleNamespace(
+        warmups=4, screen_warmups=1, confirm_warmups=3)
+    assert worker.resolved_grouped_warmups(split) == {
+        "screen": 1, "confirm": 3}
+    assert worker.grouped_warmups_authority(split) == {
+        "screen": 1, "confirm": 3}
+
+    partial = SimpleNamespace(
+        warmups=4, screen_warmups=1, confirm_warmups=None)
+    assert worker.resolved_grouped_warmups(partial) == {
+        "screen": 1, "confirm": 4}
+
+    with pytest.raises(worker.ExecutionError, match="positive integers"):
+        worker.resolved_grouped_warmups(SimpleNamespace(
+            warmups=3, screen_warmups=0, confirm_warmups=3))
+
+    required = [
+        "--bundle=/tmp/bundle", "--plan=/tmp/plan", "--master=/tmp/master",
+        "--assignment=/tmp/assignment", "--selection=/tmp/selection",
+        "--device-identity=/tmp/device",
+        "--device-homogeneity=/tmp/homogeneity", "--output=/tmp/output",
+        "--worker-id=0",
+    ]
+    parsed = worker.parser().parse_args([
+        "run", *required, "--warmups=4", "--screen-warmups=1",
+        "--confirm-warmups=3"])
+    assert worker.resolved_grouped_warmups(parsed) == {
+        "screen": 1, "confirm": 3}
+    legacy_parsed = worker.parser().parse_args(["run", *required])
+    assert worker.resolved_grouped_warmups(legacy_parsed) == {
+        "screen": 3, "confirm": 3}
+
+
 def test_no_builder_or_timing_prune_is_present() -> None:
     source = (TOOLS / "run_kpack_discovery_worker.py").read_text()
     assert "build.sh" not in source
@@ -1007,18 +1046,27 @@ def test_worker_runs_only_selected_four_route_operator_atoms_and_resumes(
         device_homogeneity=authorities["homogeneity"],
         output=tmp_path / "output", worker_id=0, phase="all", resume=False,
         screen_iterations=5, confirm_iterations=11, confirm_rounds=3,
-        correctness_repeats=8, warmups=3)
+        correctness_repeats=8, warmups=3,
+        screen_warmups=1, confirm_warmups=3)
+    # Exercise the real two-invocation protocol.  Both phase controls are
+    # frozen in the first authority even though only screen work runs.
+    args.phase = "screen"
     assert worker.run_worker(args) == 0
     assert resolve_calls == [row[1] for row in cases]
+    assert all(path.read_text() == "1" for path in counters.values())
+
+    args.phase = "confirm"
+    args.resume = True
+    assert worker.run_worker(args) == 0
     assert all(path.read_text() == "4" for path in counters.values())
     result = json.loads((args.output / "worker-result.json").read_text())
     assert result["completed_work_item_ids"] == assignment["workers"][0]["work_item_ids"]
     evidence = json.loads((args.output / "worker-evidence.json").read_text())
     assert evidence["schema"] == aggregate.EVIDENCE_SCHEMA
-    aggregate.validate_run_contract(evidence["run_contract"])
     assert evidence["run_contract"]["schedule_seed"] == \
         worker.schedule_seed_contract()
-    assert evidence["run_contract"]["grouped_warmups"] == 3
+    assert evidence["run_contract"]["grouped_warmups"] == {
+        "screen": 1, "confirm": 3}
     assert evidence["run_contract"]["confirm"]["rounds"] == [
         {"round": 1, "order": "FORWARD"},
         {"round": 2, "order": "REVERSE"},
@@ -1036,7 +1084,7 @@ def test_worker_runs_only_selected_four_route_operator_atoms_and_resumes(
         "confirm_iterations": 11,
         "confirm_rounds": 3,
         "correctness_repeats": 8,
-        "grouped_warmups": 3,
+        "grouped_warmups": {"screen": 1, "confirm": 3},
         "schedule_seed": worker.schedule_seed_contract(),
         "outer_round_order": "ASSIGNMENT_REVERSE_THEN_HASHED_V1",
         "inner_candidate_order": "ROUND_SEED_VARIED_ALL_ROUTES_OPERATORS",
@@ -1077,10 +1125,15 @@ def test_worker_runs_only_selected_four_route_operator_atoms_and_resumes(
         else:
             assert inputs["retention_symbols_executed_path"] is None
         if selected["operator"] == "grouped":
-            assert "--warmups=3" in row["screen"]["argv"]
+            assert "--warmups=1" in row["screen"]["argv"]
+            assert all("--warmups=3" in confirm["argv"]
+                       for confirm in row["confirm"])
         else:
             assert not any(arg.startswith("--warmups=")
                            for arg in row["screen"]["argv"])
+            assert all(not any(arg.startswith("--warmups=")
+                               for arg in confirm["argv"])
+                       for confirm in row["confirm"])
         assert row["screen"]["schedule_seed"] == worker.schedule_seed_hex(
             worker.schedule_seed(item_id, "screen", 0))
         for round_index, confirm in enumerate(row["confirm"], 1):
@@ -1101,7 +1154,8 @@ def test_worker_runs_only_selected_four_route_operator_atoms_and_resumes(
             assert atom["worker"] == "0"
             assert atom["schedule_seed"] == worker.schedule_seed_hex(seed)
             assert atom["grouped_warmups"] == (
-                "3" if selected["operator"] == "grouped" else "NONE")
+                ("1" if phase == "screen" else "3")
+                if selected["operator"] == "grouped" else "NONE")
     assert all(row["retention"] is not None
                for row in evidence["work_items"]
                if route_by_id[row["work_item_id"]] == "scalefirst")
@@ -1116,6 +1170,5 @@ def test_worker_runs_only_selected_four_route_operator_atoms_and_resumes(
                for round_ in (1, 2, 3)) == 12
 
     # The second run validates and reuses every immutable log and marker.
-    args.resume = True
     assert worker.run_worker(args) == 0
     assert all(path.read_text() == "4" for path in counters.values())

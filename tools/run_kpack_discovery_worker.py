@@ -803,6 +803,30 @@ def command_for(shard: ResolvedShard, workload: Workload, *, iterations: int,
     return command
 
 
+def resolved_grouped_warmups(args: argparse.Namespace) -> dict[str, int]:
+    """Resolve the common legacy warmup count and optional phase overrides."""
+    common = getattr(args, "warmups", None)
+    screen = getattr(args, "screen_warmups", None)
+    confirm = getattr(args, "confirm_warmups", None)
+    values = {
+        "screen": common if screen is None else screen,
+        "confirm": common if confirm is None else confirm,
+    }
+    if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0
+           for value in values.values()):
+        raise ExecutionError("grouped warmup controls must be positive integers")
+    return values
+
+
+def grouped_warmups_authority(args: argparse.Namespace) -> int | dict[str, int]:
+    """Keep legacy evidence byte-compatible unless a phase override is used."""
+    values = resolved_grouped_warmups(args)
+    if (getattr(args, "screen_warmups", None) is None and
+            getattr(args, "confirm_warmups", None) is None):
+        return values["screen"]
+    return values
+
+
 def _kv(line: str) -> dict[str, str]:
     result: dict[str, str] = {}
     for token in line.split()[1:]:
@@ -1328,6 +1352,7 @@ def _execution_authority(
         visible: str, shard_keys: Iterable[str],
         artifacts: dict[str, ArtifactContext] | None = None) -> dict[str, Any]:
     validated_shards = sorted(shard_keys)
+    grouped_warmups = grouped_warmups_authority(args)
     return {
         "schema": EXECUTION_SCHEMA,
         "worker_id": args.worker_id,
@@ -1357,7 +1382,7 @@ def _execution_authority(
             "confirm_iterations": args.confirm_iterations,
             "confirm_rounds": args.confirm_rounds,
             "correctness_repeats": args.correctness_repeats,
-            "grouped_warmups": args.warmups,
+            "grouped_warmups": grouped_warmups,
             "schedule_seed": schedule_seed_contract(),
             "outer_round_order": "ASSIGNMENT_REVERSE_THEN_HASHED_V1",
             "inner_candidate_order": "ROUND_SEED_VARIED_ALL_ROUTES_OPERATORS",
@@ -1417,6 +1442,7 @@ def _route_result_authorities(
         out: Path, items: list[dict[str, Any]], args: argparse.Namespace,
         execution_authority_sha: str) -> dict[str, Path]:
     routes = sorted({item["route"] for item in items})
+    grouped_warmups = grouped_warmups_authority(args)
     result: dict[str, Path] = {}
     for route in routes:
         path = out / f"inputs/{route}-result-authority.json"
@@ -1432,7 +1458,7 @@ def _route_result_authorities(
             "confirm_iterations": args.confirm_iterations,
             "confirm_rounds": args.confirm_rounds,
             "correctness_repeats": args.correctness_repeats,
-            "grouped_warmups": args.warmups,
+            "grouped_warmups": grouped_warmups,
             "schedule_seed": schedule_seed_contract(),
         }
         atomic_json(path, document, frozen=True)
@@ -1515,6 +1541,8 @@ def _worker_evidence(
         atoms: dict[str, tuple[ResolvedShard, Workload]],
         retentions: dict[str, Retention], route_authorities: dict[str, Path],
         identity_sha: str, execution_authority_path: Path) -> dict[str, Any]:
+    grouped_warmups = resolved_grouped_warmups(args)
+    grouped_warmups_contract = grouped_warmups_authority(args)
     rounds = [{"round": index, "order": _round_label(index)}
               for index in range(1, args.confirm_rounds + 1)]
     item_rows = []
@@ -1525,7 +1553,7 @@ def _worker_evidence(
         screen_argv = command_for(
             shard, workload, iterations=args.screen_iterations,
             correctness_repeats=args.correctness_repeats,
-            warmups=args.warmups,
+            warmups=grouped_warmups["screen"],
             schedule_seed=screen_seed)
         retention = retentions.get(item_id)
         confirm = []
@@ -1544,7 +1572,7 @@ def _worker_evidence(
             argv = command_for(
                 shard, workload, iterations=args.confirm_iterations,
                 correctness_repeats=args.correctness_repeats,
-                warmups=args.warmups,
+                warmups=grouped_warmups["confirm"],
                 schedule_seed=confirm_seed,
                 symbol_file=(retention.symbols_path if retention else None))
             confirm.append({
@@ -1589,7 +1617,7 @@ def _worker_evidence(
             for route, path in sorted(route_authorities.items())],
         "run_contract": {
             "schedule_seed": schedule_seed_contract(),
-            "grouped_warmups": args.warmups,
+            "grouped_warmups": grouped_warmups_contract,
             "screen": {
                 "timing_samples_per_runtime": args.screen_iterations,
                 "correctness_repeats": args.correctness_repeats,
@@ -1651,6 +1679,7 @@ def run_worker(args: argparse.Namespace) -> int:
     if args.confirm_iterations != 11 or args.confirm_rounds != 3:
         raise ExecutionError(
             "final worker contract requires exactly three 11-sample confirm rounds")
+    grouped_warmups = resolved_grouped_warmups(args)
     visible = _visible_device(dict(os.environ))
     bundle_doc = _bundle_document(args.bundle)
     master, assignment, selection = _selection(
@@ -1769,7 +1798,7 @@ def run_worker(args: argparse.Namespace) -> int:
             command = command_for(
                 shard, workload, iterations=args.screen_iterations,
                 correctness_repeats=args.correctness_repeats,
-                warmups=args.warmups, schedule_seed=seed)
+                warmups=grouped_warmups["screen"], schedule_seed=seed)
             try:
                 run_atomic_log(
                     out / f"results/screen/{item['work_item_id']}.log",
@@ -1778,7 +1807,8 @@ def run_worker(args: argparse.Namespace) -> int:
                      "round": 0, "order": "SCREEN", "worker": args.worker_id,
                      "schedule_seed": schedule_seed_hex(seed),
                      "grouped_warmups": (
-                         args.warmups if shard.operator == "grouped" else "NONE")})
+                         grouped_warmups["screen"]
+                         if shard.operator == "grouped" else "NONE")})
             except AtomExecutionFailure as error:
                 record_atom_failure(item, "screen", 0, error)
         if failed_item_ids:
@@ -1803,7 +1833,7 @@ def run_worker(args: argparse.Namespace) -> int:
             command = command_for(
                 shard, workload, iterations=args.screen_iterations,
                 correctness_repeats=args.correctness_repeats,
-                warmups=args.warmups,
+                warmups=grouped_warmups["screen"],
                 schedule_seed=schedule_seed(
                     item["work_item_id"], "screen", 0))
             validate_atom_log(
@@ -1812,8 +1842,9 @@ def run_worker(args: argparse.Namespace) -> int:
                  "round": 0, "order": "SCREEN", "worker": args.worker_id,
                  "schedule_seed": schedule_seed_hex(schedule_seed(
                      item["work_item_id"], "screen", 0)),
-                 "grouped_warmups": (args.warmups if shard.operator == "grouped"
-                                     else "NONE")})
+                 "grouped_warmups": (
+                     grouped_warmups["screen"]
+                     if shard.operator == "grouped" else "NONE")})
 
     retentions: dict[str, Retention] = {}
     for item in items:
@@ -1878,7 +1909,7 @@ def run_worker(args: argparse.Namespace) -> int:
             command = command_for(
                 shard, workload, iterations=args.confirm_iterations,
                 correctness_repeats=args.correctness_repeats,
-                warmups=args.warmups, schedule_seed=seed,
+                warmups=grouped_warmups["confirm"], schedule_seed=seed,
                 symbol_file=(retention.symbols_path
                              if retention is not None else None))
             try:
@@ -1890,7 +1921,8 @@ def run_worker(args: argparse.Namespace) -> int:
                      "worker": args.worker_id,
                      "schedule_seed": schedule_seed_hex(seed),
                      "grouped_warmups": (
-                         args.warmups if shard.operator == "grouped" else "NONE")},
+                         grouped_warmups["confirm"]
+                         if shard.operator == "grouped" else "NONE")},
                     retention.symbols if retention is not None else None)
             except AtomExecutionFailure as error:
                 record_atom_failure(item, "confirm", round_index, error)
@@ -2112,7 +2144,15 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--confirm-rounds", type=positive, choices=(3,),
                      default=3)
     run.add_argument("--correctness-repeats", type=positive, default=256)
-    run.add_argument("--warmups", type=positive, default=3)
+    run.add_argument(
+        "--warmups", type=positive, default=3,
+        help="common grouped warmup default for both phases")
+    run.add_argument(
+        "--screen-warmups", type=positive,
+        help="override grouped warmups for screen executions")
+    run.add_argument(
+        "--confirm-warmups", type=positive,
+        help="override grouped warmups for confirmation executions")
     run.add_argument("--continue-on-atom-error", action="store_true")
     return root
 
