@@ -699,9 +699,21 @@ bool run_tc_row(DeviceInputs const& in, Options const& options,
         }
         result.reducer_correctness_untimed = true;
         if (options.measure) {
+#if defined(KPACK_TUNER_E2E) && KPACK_TUNER_E2E
+          // Compare complete outputs, including the real reducer event span.
+          auto timing = splitk_producer_timing::measure(
+              [&] {
+                auto status = producer_launch();
+                return status == cutlass::Status::kSuccess
+                    ? reducer.run(nullptr) : status;
+              }, [] { return cutlass::Status::kSuccess; }, options.iterations);
+          result.full_output = true;
+          result.reducer_correctness_untimed = false;
+#else
           auto timing = splitk_producer_timing::measure(
               producer_launch, [&] { return reducer.run(nullptr); },
               options.iterations);
+#endif
           result.failure_repeat = timing.failure_repeat;
           result.failure_step =
               splitk_producer_timing::failure_name(timing.failure);

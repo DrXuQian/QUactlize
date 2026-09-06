@@ -24,6 +24,9 @@
 #include "moe_router_fixture.hpp"
 #include "q4_kpack4_offline.hpp"
 #include "fq_grouped_kpack_registry.inc"
+#ifdef KPACK_TUNER_CONTRACT
+#include "kpack_tuner_registry.hpp"
+#endif
 
 #ifndef FQ_GROUPED_KPACK_QTYPE
 #error "FQ_GROUPED_KPACK_QTYPE must select Q2/Q3/Q4/Q5/Q6"
@@ -118,6 +121,9 @@ bool parse_cli(int argc, char** argv, Cli& cli) {
 }
 
 std::vector<RegistryRow> registry() {
+#ifdef KPACK_TUNER_CONTRACT
+  return kpack_tuner::load_registry<RegistryRow>(KPACK_TUNER_CONTRACT);
+#else
   return {
 #define FQ_GROUPED_REGISTER(FN,Q,L,TM,TN,TK,WM,WN,ST,DN,PERSIST)      \
     {#FN,Q,L,TM,TN,TK,WM,WN,ST,DN,(PERSIST != 0),                    \
@@ -125,6 +131,7 @@ std::vector<RegistryRow> registry() {
     FQ_GROUPED_KPACK_REGISTRY_ROWS(FQ_GROUPED_REGISTER)
 #undef FQ_GROUPED_REGISTER
   };
+#endif
 }
 
 bool select_registry(Cli const& cli, std::vector<RegistryRow>& rows,
@@ -264,6 +271,10 @@ struct HostFixture {
 };
 
 HostFixture make_fixture(Cli const& cli) {
+#ifdef KPACK_TUNER_CONTRACT
+  kpack_tuner::PhaseTimer timer("fixture");
+  static kpack_tuner::HostWeightCache<half_t> cache;
+#endif
   HostFixture out;
   char why[128]{};
   if (cli.rows_file.empty()) {
@@ -297,12 +308,17 @@ HostFixture make_fixture(Cli const& cli) {
     out.shapes.push_back(cute::make_shape(
         out.rows[std::size_t(expert)], cli.n, cli.k));
 
+  bool exact = true;
+#ifdef KPACK_TUNER_CONTRACT
+  if (cache.matches(cli.n,cli.k,cli.experts)) {
+    out.low=cache.low; out.high=cache.high; out.units=cache.units;
+  } else {
+#endif
   std::size_t const low_bytes = std::size_t(cli.n) * cli.k * low_bits() / 8;
   std::size_t const high_bytes =
       std::size_t(cli.n) * cli.k * high_bits() / 8;
   out.low.resize(std::size_t(cli.experts) * low_bytes);
   out.high.resize(std::size_t(cli.experts) * high_bytes);
-  bool exact = true;
   for (int expert = 0; expert < cli.experts; ++expert) {
     std::vector<std::uint8_t> native_low(low_bytes), back_low(low_bytes);
     std::vector<std::uint8_t> native_high(high_bytes), back_high(high_bytes);
@@ -340,6 +356,13 @@ HostFixture make_fixture(Cli const& cli) {
   for (int expert = 0; expert < cli.experts; ++expert)
     std::copy(unit.begin(), unit.end(),
               out.units.begin() + std::size_t(expert) * unit.size());
+#ifdef KPACK_TUNER_CONTRACT
+    if (exact) {
+      cache.low=out.low; cache.high=out.high; cache.units=out.units;
+      cache.bind(cli.n,cli.k,cli.experts);
+    }
+  }
+#endif
 
   out.a.assign(std::size_t(out.total) * cli.k, half_t(0.f));
   out.golden.resize(std::size_t(out.total) * cli.n);
@@ -464,6 +487,10 @@ int main(int argc, char** argv) {
   for (std::size_t ordinal = 0; ordinal < rows.size(); ++ordinal) {
     auto const& row = rows[ordinal];
     Result result;
+#ifdef KPACK_TUNER_CONTRACT
+    std::printf("KPACK_TUNER_ROW_BEGIN symbol=%s\n", row.symbol);
+    std::fflush(stdout);
+#endif
     if (!row.run(inputs, cli.options, result) || result.cells.empty()) return 2;
     for (auto const& cell : result.cells) {
       bool const is_structural = cell.state == State::SharedStorage ||

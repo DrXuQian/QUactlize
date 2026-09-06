@@ -22,6 +22,9 @@
 #include "scalefirst_internal_sweep_bench.hpp"
 #include "xplane_offline.hpp"
 #include "scalefirst_registry.inc"
+#ifdef KPACK_TUNER_CONTRACT
+#include "kpack_tuner_registry.hpp"
+#endif
 
 #ifndef SCALEFIRST_SWEEP_QTYPE
 #error "SCALEFIRST_SWEEP_QTYPE must match the generated registry"
@@ -86,6 +89,9 @@ namespace {
 using namespace scalefirst_internal_sweep;
 
 std::vector<RegistryRow> registry() {
+#ifdef KPACK_TUNER_CONTRACT
+  return kpack_tuner::load_registry<RegistryRow>(KPACK_TUNER_CONTRACT);
+#else
   return {
 #define SCALEFIRST_REGISTER(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP,DN)        \
     {#FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP,DN,                              \
@@ -93,6 +99,7 @@ std::vector<RegistryRow> registry() {
     SCALEFIRST_REGISTRY_ROWS(SCALEFIRST_REGISTER)
 #undef SCALEFIRST_REGISTER
   };
+#endif
 }
 
 struct Shape { int m = 1, n = 4096, k = 4096; };
@@ -484,6 +491,10 @@ std::uint64_t fixture_hash(std::vector<T> const& values) {
 }
 
 Fixture make_fixture(Shape shape, FixtureMode mode, TagRound tag_round) {
+#ifdef KPACK_TUNER_CONTRACT
+  kpack_tuner::PhaseTimer timer("fixture");
+  static kpack_tuner::HostWeightCache<half_t> cache;
+#endif
   Fixture f;
   int constexpr LB = low_bits(), HB = high_bits(), GS = group_size();
   if (is_tag_fixture(mode) &&
@@ -540,6 +551,13 @@ Fixture make_fixture(Shape shape, FixtureMode mode, TagRound tag_round) {
       }
     }
   }
+#ifdef KPACK_TUNER_CONTRACT
+  if (!is_tag_fixture(mode) && cache.matches(shape.n,shape.k,1,int(mode))) {
+    f.low=cache.low; f.high=cache.high; f.scales=cache.scale; f.zeros=cache.zero;
+    f.roundtrip=true; f.isolation_covered=cache.isolation;
+    f.high_plane_covered=cache.high_covered;
+  } else {
+#endif
   for (int g = 0; g < shape.k / GS; ++g)
     for (int n = 0; n < shape.n; ++n) {
       float scale = !fixture_uses_varied_scale(mode) ? 1.f :
@@ -721,6 +739,14 @@ Fixture make_fixture(Shape shape, FixtureMode mode, TagRound tag_round) {
         [](std::uint8_t value) { return value != 0; });
   }
 
+#ifdef KPACK_TUNER_CONTRACT
+    if (f.roundtrip && !is_tag_fixture(mode)) {
+      cache.low=f.low; cache.high=f.high; cache.scale=f.scales; cache.zero=f.zeros;
+      cache.isolation=f.isolation_covered; cache.high_covered=f.high_plane_covered;
+      cache.bind(shape.n,shape.k,1,int(mode));
+    }
+  }
+#endif
   bool exact = true;
   for (int m = 0; m < shape.m; ++m)
     for (int n = 0; n < shape.n; ++n) {
@@ -857,6 +883,9 @@ int run_shape(Shape shape, Cli const& cli, int device, int cu,
                 shape.m, shape.n, shape.k, ordinal + 1, order.size(),
                 registry_row.symbol);
     std::fflush(stdout);
+#ifdef KPACK_TUNER_CONTRACT
+    std::printf("KPACK_TUNER_ROW_BEGIN symbol=%s\n", registry_row.symbol);
+#endif
     bool const row_ok = registry_row.run(inputs, options, result);
     if (is_tag_fixture(cli.fixture_mode) && !result.cells.empty() &&
         (row_ok || result.cells.back().raw_bad != 0) &&

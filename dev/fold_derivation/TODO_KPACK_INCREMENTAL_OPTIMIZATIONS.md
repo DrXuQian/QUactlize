@@ -1,5 +1,27 @@
 # K-pack incremental optimization backlog
 
+## Budgeted tuning delivery (2026-09-06)
+
+The user-approved tuning objective is now a practical near-optimal policy with
+a 5% performance-regret target, not mandatory runtime enumeration of the full
+Cartesian product. The old exhaustive catalog remains an available reference;
+its timings are not imported into a new measurement epoch.
+
+| item | state | acceptance |
+|---|---|---|
+| Per-shape bounded candidates, library-style proposals and historical challenge recall | LOCAL IMPLEMENTED | All real/control/historical workloads retained; imported missing winners reject planning; no unmeasured parent labelled slow or illegal |
+| Small module registry and one-process/weight-geometry profiler | LOCAL IMPLEMENTED; PPU DEVICE PENDING | Same existing row functions and exact fixtures across four routes; host weight cache; request input upload shared across modules; one active process per card |
+| FQ Split-K ranking cost | LOCAL IMPLEMENTED; PPU DEVICE PENDING | Measure producer + real reducer within events; old producer-only benchmark remains its default |
+| Incremental build and failed-candidate replay | LOCAL IMPLEMENTED; PPU DEVICE PENDING | Objects/modules keyed by source/SDK; success records rederived from hashed logs; sticky-context failures restart only pending work |
+| Uploaded FQ winner-geometry replay | LOCAL PASS 832/832 | 572 dense + 260 grouped measured rows; non-default grouped winners explicitly retained; geometry coverage does not certify exact provider/grid performance |
+| Historical result calibration, winner neighborhoods and wide holdouts | NEXT AFTER SCREEN | Fit against actual measured winners; expose pre-injection recall, per-shape regret and uncovered shapes; expand cases missing >5% gains |
+| Selective 3x11 confirmation and runtime/llama.cpp policy admission | PENDING | Refine the provisional screen policy without re-entering the full Cartesian product; no production policy update from two-sample screen alone |
+
+Execution entry and exact limitations: [KPACK_TUNING.md](../../docs/KPACK_TUNING.md).
+
+The older paragraph below describes the archived exhaustive reference, not a
+requirement to execute all of it before fitting the new budgeted policy.
+
 This backlog starts after the exhaustive canonical K-pack denominator frozen
 at `adbd5f8`.  Its executable build campaign was restarted at `754130e` after
 repairing the grouped `DeliveryN` registry macro; the repair changes registry

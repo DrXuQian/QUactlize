@@ -23,6 +23,9 @@
 #include "q4_kpack4_offline.hpp"
 #include "scalefirst_grouped_kpack_discovery.hpp"
 #include "scalefirst_grouped_registry.inc"
+#ifdef KPACK_TUNER_CONTRACT
+#include "kpack_tuner_registry.hpp"
+#endif
 
 #ifndef SCALEFIRST_GROUPED_KPACK_QTYPE
 #error "SCALEFIRST_GROUPED_KPACK_QTYPE must select Q2/Q3/Q4/Q5/Q6"
@@ -122,6 +125,9 @@ bool parse_cli(int argc, char** argv, Cli& cli) {
 }
 
 std::vector<RegistryRow> registry() {
+#ifdef KPACK_TUNER_CONTRACT
+  return kpack_tuner::load_registry<RegistryRow>(KPACK_TUNER_CONTRACT);
+#else
   return {
 #define SCALEFIRST_GROUPED_REGISTER(FN,Q,L,TM,TN,TK,WM,WN,ST,DN)     \
     {#FN,Q,L,TM,TN,TK,WM,WN,ST,DN,                                  \
@@ -129,6 +135,7 @@ std::vector<RegistryRow> registry() {
     SCALEFIRST_GROUPED_REGISTRY_ROWS(SCALEFIRST_GROUPED_REGISTER)
 #undef SCALEFIRST_GROUPED_REGISTER
   };
+#endif
 }
 
 bool select_registry(Cli const& cli, std::vector<RegistryRow>& rows,
@@ -252,6 +259,10 @@ struct HostFixture {
 };
 
 HostFixture make_fixture(Cli const& cli) {
+#ifdef KPACK_TUNER_CONTRACT
+  kpack_tuner::PhaseTimer timer("fixture");
+  static kpack_tuner::HostWeightCache<half_t> cache;
+#endif
   HostFixture fixture;
   char why[128]{};
   if (cli.rows_file.empty()) {
@@ -291,6 +302,13 @@ HostFixture make_fixture(Cli const& cli) {
   fixture.a.assign(std::size_t(fixture.total) * cli.k, half_t(0.f));
   fixture.golden.resize(std::size_t(fixture.total) * cli.n);
   int const groups = cli.k / group_size();
+  bool exact = true;
+#ifdef KPACK_TUNER_CONTRACT
+  if (cache.matches(cli.n,cli.k,cli.experts)) {
+    fixture.low=cache.low; fixture.high=cache.high;
+    fixture.scale=cache.scale; fixture.zero=cache.zero;
+  } else {
+#endif
   fixture.scale.resize(std::size_t(cli.experts) * groups * cli.n);
   fixture.zero.resize(fixture.scale.size());
 
@@ -311,7 +329,6 @@ HostFixture make_fixture(Cli const& cli) {
       std::size_t(cli.n) * cli.k * high_bits() / 8;
   fixture.low.resize(std::size_t(cli.experts) * low_bytes);
   fixture.high.resize(std::size_t(cli.experts) * high_bytes);
-  bool exact = true;
   for (int expert = 0; expert < cli.experts; ++expert) {
     std::vector<std::uint8_t> native_low(low_bytes, 0), back_low(low_bytes, 0);
     std::vector<std::uint8_t> native_high(high_bytes, 0), back_high(high_bytes, 0);
@@ -345,6 +362,14 @@ HostFixture make_fixture(Cli const& cli) {
             native_low == back_low && native_high == back_high;
   }
 
+#ifdef KPACK_TUNER_CONTRACT
+    if (exact) {
+      cache.low=fixture.low; cache.high=fixture.high;
+      cache.scale=fixture.scale; cache.zero=fixture.zero;
+      cache.bind(cli.n,cli.k,cli.experts);
+    }
+  }
+#endif
   for (int expert = 0; expert < cli.experts; ++expert)
     for (int local = 0; local < fixture.rows[std::size_t(expert)]; ++local) {
       int const row = fixture.offsets[std::size_t(expert)] + local;
@@ -471,6 +496,10 @@ int main(int argc, char** argv) {
   for (std::size_t ordinal = 0; ordinal < rows.size(); ++ordinal) {
     RegistryRow const& row = rows[ordinal];
     Result result;
+#ifdef KPACK_TUNER_CONTRACT
+    std::printf("KPACK_TUNER_ROW_BEGIN symbol=%s\n", row.symbol);
+    std::fflush(stdout);
+#endif
     if (!row.run(inputs, cli.options, result)) return 2;
     if (result.cells.empty()) return 2;
     for (CellResult const& cell : result.cells) {

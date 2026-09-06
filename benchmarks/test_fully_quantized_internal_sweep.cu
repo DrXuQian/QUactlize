@@ -22,6 +22,9 @@
 #include "ppu_placed_arrangement.hpp"
 
 #include "fq_tc_registry.inc"
+#ifdef KPACK_TUNER_CONTRACT
+#include "kpack_tuner_registry.hpp"
+#endif
 
 #ifndef FQ_SWEEP_QTYPE
 #error "FQ_SWEEP_QTYPE must match the generated registry"
@@ -110,6 +113,9 @@ namespace {
 using namespace fq_internal_sweep;
 
 std::vector<RegistryRow> registry() {
+#ifdef KPACK_TUNER_CONTRACT
+  return kpack_tuner::load_registry<RegistryRow>(KPACK_TUNER_CONTRACT);
+#else
   return {
 #if defined(FQ_SWEEP_MIXED_BCHUNK_DIAGNOSTIC) && FQ_SWEEP_MIXED_BCHUNK_DIAGNOSTIC
 #define FQ_TC_REGISTER_12(FN,Q,A,TM,TN,TK,WM,WN,ST,BC,AP,DN)           \
@@ -129,6 +135,7 @@ std::vector<RegistryRow> registry() {
 #undef FQ_TC_REGISTER_12
 #undef FQ_TC_PICK
   };
+#endif
 }
 #if defined(FQ_SWEEP_MIXED_BCHUNK_DIAGNOSTIC) && FQ_SWEEP_MIXED_BCHUNK_DIAGNOSTIC
 #undef FQ_TC_DECLARE_NS_0
@@ -275,6 +282,10 @@ struct Fixture {
 };
 
 Fixture make_fixture(Shape shape) {
+#ifdef KPACK_TUNER_CONTRACT
+  kpack_tuner::PhaseTimer timer("fixture");
+  static kpack_tuner::HostWeightCache<half_t> cache;
+#endif
   constexpr int qtype = FQ_SWEEP_QTYPE;
   constexpr int low_bits = qtype == 10 || qtype == 11 ? 2 : 4;
   constexpr int high_bits = qtype == 11 || qtype == 13 ? 1 : qtype == 14 ? 2 : 0;
@@ -299,6 +310,11 @@ Fixture make_fixture(Shape shape) {
     for (int m = 0; m < shape.m; ++m)
       f.a[std::size_t(m) * shape.k + k] = half_t((m + sb) & 1 ? -1.f : 1.f);
   }
+#ifdef KPACK_TUNER_CONTRACT
+  if (cache.matches(shape.n,shape.k)) {
+    f.low=cache.low; f.high=cache.high; f.units=cache.units; f.roundtrip=true;
+  } else {
+#endif
   for (int n = 0; n < shape.n; ++n)
     for (int k = 0; k < shape.k; ++k) {
       int const code = code_value(qtype, n, k);
@@ -381,6 +397,13 @@ Fixture make_fixture(Shape shape) {
   if constexpr (qtype == 12) f.units = make_units<gguf_scale::KType::Q4_K>(shape.n, shape.k);
   if constexpr (qtype == 13) f.units = make_units<gguf_scale::KType::Q5_K>(shape.n, shape.k);
   if constexpr (qtype == 14) f.units = make_units<gguf_scale::KType::Q6_K>(shape.n, shape.k);
+#ifdef KPACK_TUNER_CONTRACT
+    if (f.roundtrip) {
+      cache.low=f.low; cache.high=f.high; cache.units=f.units;
+      cache.bind(shape.n,shape.k);
+    }
+  }
+#endif
   int max_abs = 0;
   for (int m = 0; m < shape.m; ++m)
     for (int n = 0; n < shape.n; ++n) {
@@ -565,11 +588,15 @@ int run_shape(Shape shape, Cli const& cli,
               static_cast<unsigned long long>(cli.schedule_seed));
   if (cli.bc_mode != Cli::BcMode::Only) for (auto const& entry : execution_rows) {
     RowResult result;
+#ifdef KPACK_TUNER_CONTRACT
+    std::printf("KPACK_TUNER_ROW_BEGIN symbol=%s\n", entry.symbol);
+    std::fflush(stdout);
+#endif
     bool const ok = entry.run(inputs, options, result);
     all_runtime_ok = all_runtime_ok && ok;
     for (auto const& cell : result.cells) {
       if (cell.split == 0) continue;
-      char const* scope = cell.split == 1 ? "FULL_OUTPUT" :
+      char const* scope = cell.full_output ? "FULL_OUTPUT" :
           "PRODUCER_ONLY_REDUCER_UNTIMED_CORRECTNESS";
       std::printf(
           "FQ_TC_CELL q=%d A=%d bchunk=%d shape=%dx%dx%d symbol=%s "
