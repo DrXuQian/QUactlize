@@ -67,6 +67,24 @@ modules. A source/SDK change intentionally invalidates the affected cache epoch.
 
 ## Run on the PPU box
 
+For a **minimal compile + runtime wall-time probe**, use the separate entry:
+
+```bash
+python3 -u tools/run_kpack_minimal_probe.py \
+  --output /workspace/kpack-minimal-probe-v1 \
+  --sdk /workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK --jobs 192 --device 0
+```
+
+This only builds four Q4 modules/four drivers plus one layout object (nine
+compile units), then runs eight route/workload pairs: FQ/SF dense M=1/2048,
+N=1024 K=5120; FQ/SF grouped tokens=1/2048, N=512 K=2048, E=256. Each route uses
+one `16x64x64_w16x16_s2_ap0_dn16` parent. It emits `KPACK_MINIMAL_BUILD`,
+`KPACK_MINIMAL_RUN`, and `timing.json`. There is no full-campaign continuation.
+The default watchdog is 30 minutes per build/run phase, with up to 60 seconds
+for graceful termination. Use a fresh OUT for cold-build timing. Nine compile
+units cannot saturate 192 cores; do not scale wall time solely by parent count.
+This proves neither whole-night duration nor global performance coverage.
+
 Use an idle device pool. Do not run the old sweep or another GPU benchmark at
 the same time. All commands below run scripts as child processes; they do not
 exit the interactive container shell.
