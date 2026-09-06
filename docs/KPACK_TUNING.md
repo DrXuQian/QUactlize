@@ -92,6 +92,25 @@ Search bounds, numerical checks, device identity, per-request timeouts, failure
 isolation, resumption, and the final 3x11 confirmation remain unchanged. This
 mode may run longer than one night; it does not assert an overnight ETA.
 
+To show remaining-time estimates for an already running campaign, open a second
+terminal. This read-only monitor requires no restart or recompilation:
+
+```bash
+python3 -u tools/watch_kpack_tuner.py \
+  --output /workspace/kpack-overnight-c0c1361 --interval 30
+```
+
+`remaining_minutes` is a rolling estimate for the **current compile/test phase**,
+not time left until a forced deadline. Test ETA follows the slowest unfinished
+worker. The initial interval excludes the burst of cached completions; allow
+at least a minute for a rate. Missing samples, stalled workers, and link time
+are explicitly unknown rather than zero. Workload/config costs vary, so the
+estimate can move. `observed_minutes` starts when the monitor attaches;
+`phase_age_minutes` starts at phase-plan creation and includes resume downtime.
+The whole-campaign ETA remains `UNKNOWN_ADAPTIVE_STAGES` because later neighbor
+and audit selections depend on results not yet available. The monitor neither
+loads the SDK nor changes any campaign receipts; Ctrl-C stops only the monitor.
+
 The admitted sequence is: all-workload screen (default 32-parent soft budget,
 three samples), measured-winner neighbors plus far challenges, wider boundary
 audits, family propagation of audit gains, then three independent 11-sample
