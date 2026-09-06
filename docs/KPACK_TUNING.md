@@ -111,6 +111,24 @@ The whole-campaign ETA remains `UNKNOWN_ADAPTIVE_STAGES` because later neighbor
 and audit selections depend on results not yet available. The monitor neither
 loads the SDK nor changes any campaign receipts; Ctrl-C stops only the monitor.
 
+After the campaign stops, export a small review file without uploading all raw:
+
+```bash
+python3 -u tools/export_kpack_tuner_compact.py \
+  --source /workspace/kpack-overnight-c0c1361 \
+  --output /workspace/kpack-overnight-c0c1361-compact.json.gz
+```
+
+This retains exact workload/router metadata, final decisions (including noisy
+and incomplete ones), configuration definitions, per-stage top three distinct
+parents, the final winner's exact split/grid, coverage counts, failure references
+and source receipt hashes. It excludes raw logs, binaries and individual timing
+samples. The compressed size is printed and capped at 10 MiB; an oversized file
+is not written (`--top 1` can reduce it further). Existing files are never
+overwritten. Keep the full results on the box for targeted follow-up requests.
+The compact file is for initial heuristic review, not a full cost matrix or a
+replacement for replaying raw measurements before a final performance claim.
+
 The admitted sequence is: all-workload screen (default 32-parent soft budget,
 three samples), measured-winner neighbors plus far challenges, wider boundary
 audits, family propagation of audit gains, then three independent 11-sample
