@@ -34,6 +34,29 @@ unchanged.** Bind full AP/delivery/S/scheduler/grid identity and perform final
 device admission before enabling it in llama.cpp. Do not reuse old config v3/v4
 names as if they encoded these fields. See [the v1 contract](KPACK_RUNTIME_V1.md).
 
+## Opt-in warmup module path (2026-09-07)
+
+An initialization-time alternative is implemented in `quactlize/runtime/`:
+bounded measured-family candidates, CPU-only JIT image cache, explicit timing
+cache and device-pointer C modules for all five formats and four FQ/SF
+dense/grouped routes. This is **not enabled in the six-library bundle or in
+llama.cpp**. See [K-pack warmup](KPACK_WARMUP.md) for the small box gate and
+application sequence.
+
+`quactlize/runtime/abi.h` carries the full compiled parent and algorithm/S/grid
+identity. Prepared handles launch existing collectives; no GGUF conversion,
+hidden compilation or profiling occurs in `run`. Grouped queries need actual
+expert rows and recompute the grid. A reused workload bucket is a performance
+hint, not an any-M promise. The caller still owns allocation, stream, SF
+metadata preparation and an admitted miss path. This interface is separate
+from the old `config_name` exports; do not reinterpret their names.
+
+Integration order: pass the 50-context PPU module/cache gate, admit the exact
+selected parent modules and deployment loader, then bind llama.cpp startup
+warmup and cached execution. Offline sidecar bytes and canonical arrangement
+exports remain unchanged. No new full sweep or whole-six-library rebuild is
+required for this first module gate.
+
 ## Earlier host policy experiments
 
 [K-pack measured policy](KPACK_POLICY.md) supplies an SDK-free C++17 selector
