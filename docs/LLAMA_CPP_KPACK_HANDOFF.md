@@ -20,13 +20,32 @@ The existing tuner remains an opt-in development tool, not the default policy.
 This matches the inspected DeepGEMM-for-sail W4A16 grouped callers: `space=()`
 selects one generated configuration and bypasses the multi-candidate benchmark.
 
-The simple heuristic is still to be calibrated and bound; it is **not** the
-old blind Top-1 ranker renamed. Reuse existing measurements to constrain a
-small set of complete parent tuples and runtime recipes. Keep format facts in
-traits, kernel legality in the inventory, and grouped grid calculation tied to
-actual expert tiles. Unsupported requests require an admitted K-pack fallback
-or an explicit decline, never an arbitrary compiled default. Only residual
-unmeasured decisions need new tests; do not restart the full sweep.
+The single-choice host implementation is now available as
+`policies/kpack_zw810_heuristic_v1.{hpp,json}` plus
+`runtime/dispatch.py::prepare_selected`. It is **not** the old blind Top-1
+ranker renamed. Recent exact measurement overrides historical tactics;
+otherwise a shared nearest-profile formula proposes one eligible tactic in
+the same qtype/route/N/K/expert-count family. Predictions are opt-in and
+explicitly unvalidated; unknown families decline. There is no rule tree or
+online timing. Keep format facts in traits, legality in the inventory, and
+grouped grid calculation tied to actual expert tiles.
+
+Post-hoc calibration corrects nine historical choices that exceed the new
+same-run pool's 5% band: all 90 recent choices are now within both 5% limits,
+worst median regret 4.153523%, using 55 of the previously compiled 173 parents.
+The full data still has 2,987 exact contexts / 247 parents; this does not prove
+global compression to 55 or shrink the existing DSOs. See
+[the selector contract and query](KPACK_HEURISTIC_V1.md).
+
+The new query binds `kernel_source`/`sdk_digest` to the resident-module hash
+scope (`record.identity.kernel/sdk`). Do not pass the older sweep hash scope.
+Check the full compiler receipt (`kModuleContract`) and complete parent tuple
+at module binding, then call its query/can_implement. Nonpersistent recipe
+grid is zero; persistent grids use actual rows. Python `prepare_selected`
+performs these guards and never profiles, JITs, or falls back internally.
+Selected-dispatch/device and llama.cpp loader admission are still pending.
+Unsupported requests need an admitted K-pack fallback or explicit decline;
+only residual decisions need tests, not another full sweep.
 
 The 90-context real-shape gate is complete: all numeric/cache checks pass;
 89 selected medians are within 5% of that run's bounded pool and one Q6 SF
@@ -38,9 +57,9 @@ module coverage can be reused; deployment selection/binding remains pending.
 
 ## Frozen host runtime policy (2026-09-07)
 
-Use `policies/kpack_zw810_runtime_v1.hpp` (namespace
-`quactlize_kpack_runtime_v1`) and its matching JSON as the **first frozen
-selection policy**, superseding the experimental selectors described below.
+`policies/kpack_zw810_runtime_v1.hpp` (namespace
+`quactlize_kpack_runtime_v1`) and its matching JSON are the **historical frozen
+selection policy**, now consumed by the deterministic selector above.
 The runtime is an exact table lookup with binding/shape checks and source-owned
 grid resolution; no scorer, learned coefficients or profiling runs on this path.
 
@@ -86,8 +105,8 @@ hint, not an any-M promise. The caller still owns allocation, stream, SF
 metadata preparation and an admitted miss path. This interface is separate
 from the old `config_name` exports; do not reinterpret their names.
 
-Next: calibrate the deterministic single-choice heuristic against the existing
-measurements, admit its selected modules and loader, then bind llama.cpp cached
+Next: admit the deterministic selector's selected-dispatch path and loader,
+then bind llama.cpp cached
 execution and on-demand compilation. Offline sidecar bytes and
 canonical arrangement exports remain unchanged. The completed small gate
 does not need repeating; no new full Cartesian sweep is requested.
