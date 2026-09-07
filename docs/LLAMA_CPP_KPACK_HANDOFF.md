@@ -10,6 +10,32 @@ inspection, its selected-config oracle, and all 26 host ABI cases in a fresh
 LFS checkout. Its PPU device gate is still **PENDING**. Host/ELF admission is
 not device admission and does not authorize deployment by itself.
 
+## Current deployment direction: heuristic plus cached JIT
+
+Decision updated after the real-shape review on 2026-09-07: default inference
+uses a deterministic heuristic to select **one complete tactic**, then loads
+its admitted prebuilt/cached module or compiles that missing parent. Do not
+call the multi-candidate `Tuner.warmup` during normal model loading/inference.
+The existing tuner remains an opt-in development tool, not the default policy.
+This matches the inspected DeepGEMM-for-sail W4A16 grouped callers: `space=()`
+selects one generated configuration and bypasses the multi-candidate benchmark.
+
+The simple heuristic is still to be calibrated and bound; it is **not** the
+old blind Top-1 ranker renamed. Reuse existing measurements to constrain a
+small set of complete parent tuples and runtime recipes. Keep format facts in
+traits, kernel legality in the inventory, and grouped grid calculation tied to
+actual expert tiles. Unsupported requests require an admitted K-pack fallback
+or an explicit decline, never an arbitrary compiled default. Only residual
+unmeasured decisions need new tests; do not restart the full sweep.
+
+The 90-context real-shape gate is complete: all numeric/cache checks pass;
+89 selected medians are within 5% of that run's bounded pool and one Q6 SF
+grouped choice missed the faster fourth candidate after exhausting its soft
+budget. This does not certify a universal heuristic or all unseen shapes.
+See [the reviewed results](KPACK_WARMUP.md#reviewed-real-shape-result).
+Neither the six-library bundle nor llama.cpp wiring has changed. Compiled
+module coverage can be reused; deployment selection/binding remains pending.
+
 ## Frozen host runtime policy (2026-09-07)
 
 Use `policies/kpack_zw810_runtime_v1.hpp` (namespace
@@ -60,22 +86,24 @@ hint, not an any-M promise. The caller still owns allocation, stream, SF
 metadata preparation and an admitted miss path. This interface is separate
 from the old `config_name` exports; do not reinterpret their names.
 
-Next: validate bounded candidate selection on representative real shapes,
-admit the exact selected parent modules and deployment loader, then bind
-llama.cpp startup warmup and cached execution. Offline sidecar bytes and
+Next: calibrate the deterministic single-choice heuristic against the existing
+measurements, admit its selected modules and loader, then bind llama.cpp cached
+execution and on-demand compilation. Offline sidecar bytes and
 canonical arrangement exports remain unchanged. The completed small gate
 does not need repeating; no new full Cartesian sweep is requested.
 
-The next gate is now implemented: `tools/run_kpack_warmup_real.py`, 90 real-shape
+The completed gate is `tools/run_kpack_warmup_real.py`, 90 real-shape
 contexts / 173 distinct parents / at most fifteen candidates per context, across
 all five formats and four routes. It compares the budgeted choice with the
 historical incumbent and bounded-pool best **in the same run**, and reports
 warmup cost plus changed-M/router cache behavior. Eighty-five incumbents have
 exact historical evidence; five M=3072 controls are labelled transfers. This
-gate is host-tested and ready for box, **not yet device-admitted**. See
+gate has passed its numerical checks on box; selection has the explicit
+performance exceptions above, and does not admit deployment by itself. See
 [the command and scope](KPACK_WARMUP.md#next-gate-bounded-real-shape-selection).
 No `.so` ABI, sidecar format, mainloop or six-library bundle changes are part
-of this step. Wait for the gate review before binding a deployment loader.
+of this step. The next deployment work uses the heuristic direction above,
+not automatic online tuning or precompilation of the entire candidate union.
 
 ## Earlier host policy experiments
 

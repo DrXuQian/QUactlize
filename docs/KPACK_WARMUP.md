@@ -1,8 +1,14 @@
 # K-pack initialization-time tuning
 
-Opt-in development runtime. The small device gate below passed on 2026-09-07.
-The published six libraries and llama.cpp are unchanged; real-shape performance
-and deployment admission remain pending.
+Opt-in development runtime. The small and real-shape numerical gates below
+passed on 2026-09-07. The published six libraries and llama.cpp are unchanged;
+deployment admission remains pending.
+
+**Deployment direction:** deterministic heuristic -> one complete tactic ->
+prebuilt/image-cache hit or on-demand JIT -> execution. Multi-candidate timing
+and independent CPU oracles stay in development tools, not default model
+startup. The measured exact table is calibration evidence/a known-point
+reference; the new general heuristic is not implemented or admitted yet.
 
 The runtime follows the separation in DeepGEMM-for-sail: select a small
 configuration set, compile/cache its images, optionally time candidates during
@@ -43,7 +49,8 @@ meet a wall-clock deadline. First-use compilation can take minutes and belongs
 in a separate startup/precompile phase. Tuning is forbidden during graph
 capture. Keep the incumbent if it is within 5% of the best measured candidate;
 this is noise tolerance, **not a global-optimality or 5%-accuracy guarantee**.
-The 100-ms policy has host tests but its device cost is not yet admitted.
+The real-shape experiment exceeded this soft budget on 47/90 contexts. It is
+not an admitted 100-ms startup guarantee and is not the default deployment path.
 
 Numerical or runtime failure aborts that tuning context. Only a pre-launch
 unsupported tactic is skipped. There is no default chosen because a library
@@ -204,8 +211,9 @@ the named parent `build.log`; do not recompile all old bundles.
 ## Next gate: bounded real-shape selection
 
 `tools/run_kpack_warmup_real.py` extends the completed small gate, using
-`tools/kpack_warmup_real_plan.py` as its fixed denominator. It is ready for
-device execution; no real-shape result is claimed yet.
+`tools/kpack_warmup_real_plan.py` as its fixed denominator. This run is now
+complete; the commands below are reproduction instructions, not another test
+request. See the reviewed result below.
 
 | Route | Contexts across Q2–Q6 | Coverage |
 |---|---:|---|
@@ -249,7 +257,59 @@ The bounded-pool verdict is `WITHIN_BOUNDED_POOL_5PCT`, `BOUNDED_POOL_GAP`, or
 not certify a global optimum or authorize deployment. Performance gaps remain
 results, not reasons to discard other measurements.
 
-### Run on box
+### Reviewed real-shape result
+
+Archive `kpack-warmup-real-results.LJGzK2.tgz`, SHA-256
+`10a00ae918f719eee980eabff0b6006370142c1f9ad1be24a4d032a13a044440`,
+replays against `ef392a4`. All 90 case digests, the exact plan, source/kernel
+hashes, SDK/compiler contracts, 173 generated module keys and runtime catalog
+identities agree. Binary payloads were not uploaded; their bytes/sizes were
+not independently checked locally.
+
+- Numerical closure: 2,322 positive checks, 90 detected zero-low negatives,
+  90 exact cache replays and 15 changed-M/router bucket checks. Maximum
+  condition-scaled error `2.7683903911088925e-4`, minimum planted error
+  `2.0179433535854226e-2`; bound remains `5e-3`.
+- Warmup timed 571 candidate-contexts; independent confirmation covered all
+  868, with no rejected or missing candidate. Original verdicts remain
+  80 `WITHIN_BOUNDED_POOL_5PCT`, one `BOUNDED_POOL_GAP`, nine
+  `TIMING_NOISE_REVIEW`.
+- Selected medians are within 5% of the same-run pool in 89/90 cases. The nine
+  noise flags originate from pool-wide spread; each of their selected
+  candidates remains within 5% even comparing its slower sample with the
+  fastest sample in the whole pool. This is a two-round observation, not a
+  universal performance bound or grounds to erase the original flags.
+- No selected median is slower than its same-run historical incumbent;
+  80 choices retained the incumbent and ten changed. This is not an Xplane
+  comparison or proof of unseen-shape heuristic quality.
+- Total wall time 740.597 s; all 173 cold builds took 353.733 s. The 90 warmup
+  calls together took 7.494 s, not 740 s. Warmup includes preparation, checks
+  and synchronization; fixture/confirmation work is separate.
+
+| Route | Median warmup ms | Maximum ms | Soft-budget exhaustion |
+|---|---:|---:|---:|
+| FQ dense | 21.957 | 46.689 | 0/30 |
+| SF dense | 142.857 | 256.564 | 20/20 |
+| FQ grouped | 103.295 | 148.179 | 12/20 |
+| SF grouped | 107.949 | 171.606 | 15/20 |
+
+The clear miss is Q6 SF grouped, N3072/K512/E256, 528 rows, max 129 and nine
+active experts. The tuner measured only candidates 1–2 before its soft budget
+expired at 107.697 ms. Selected persistent geometry `16x64x128_w16x16_s3_dn32`
+took 34.156 us; candidate 4, nonpersistent `16x128x128_w16x32_s2_dn64`, took
+29.704 us (14.988% selected overhead). The selected choice is still 4.964%
+faster than the remeasured incumbent. Recorded profiling batches account for
+1.126 ms; the log does not separately attribute the remaining preparation,
+correctness, synchronization and host overhead. Do not invent that attribution.
+
+The final choices use 52 distinct parents across all formats/routes. Within
+this suite, Q4 dense FQ/SF uses four. These are useful reduction targets, not
+proof that those parents cover every workload or that library bytes shrink in
+the same proportion. No libraries have been trimmed. Single-parent cold-JIT
+latency still requires a separate measurement; dividing parallel build wall
+time by 173 would not measure it.
+
+### Run on box (reproduction only)
 
 Use one otherwise idle PPU. This first compiles **small cached modules**, not
 the old sweep bundle; existing matching cache entries are reused. The default
@@ -315,9 +375,10 @@ have summary files; resume it or send the console and completed `cases/` receipt
 - [x] Add host/ABI/cache tests and a five-format, four-route device gate.
 - [x] Small PPU gate: numerical closure, router/cache behavior and measured costs
   on the 50 fixed small contexts (2026-09-07).
-- [ ] Real-shape bounded tuning: compare selected candidates with recorded
-  incumbents and measure startup/cache behavior on representative model shapes.
-  The 90-context runner above is implemented and host-tested; device pending.
+- [x] Real-shape bounded experiment: 90 numeric contexts complete, full bounded
+  pool confirmed; retain the one selection gap and timing/budget observations.
+- [ ] Calibrate a small deterministic heuristic from existing evidence; return
+  one complete tactic, with no default online tuning or Cartesian compilation.
 - [ ] Bind/admit full tactic identity in the deployment loader; retain existing
   any-M admission until its runtime misses have a verified path.
 - [ ] Integrate the admitted runtime into llama.cpp and update the single
