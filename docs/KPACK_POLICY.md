@@ -1,8 +1,23 @@
 # K-pack measured policy
 
+## Frozen first runtime policy
+
+**Current first-version deliverable:** `policies/kpack_zw810_runtime_v1.{hpp,json}`.
+It is a simple exact measured-tactic lookup, not the earlier 788-leaf tree or
+848-coefficient shortlist model. The final planned 212-request run completed
+without numerical/launch failures; no additional sweep is requested.
+
+The table contains 2,982 exact inputs: 2,889 within both 5% bounds across all
+recorded epochs and 93 explicit timing/evidence exceptions using the newest
+measured choice. It uses 247 parents / 509 runtime recipes. Unknown inputs
+require a caller-admitted K-pack fallback; no universal interpolation or
+new production `.so` is claimed. See [the frozen result, C++ contract and
+reproduction steps](KPACK_RUNTIME_V1.md). The sections below retain the
+development history and completed box commands, not new run requests.
+
 ## Tactic shortlist prototype and next box run
 
-The next host prototype is `policies/kpack_zw810_tactics.json`, queried by
+This earlier host prototype is `policies/kpack_zw810_tactics.json`, queried by
 `tools/kpack_tactic_model.py`. It uses exact measured tactics, nearby-family
 parent hints and separate parent/runtime scores. It does not replace the
 compact JSON/C++ selector below or change any `.so`. Read the
@@ -21,7 +36,10 @@ shortlist instead. Grouped queries additionally require `--rows-file` with
 one actual expert row count per line; total/max counts alone are insufficient.
 Runtime binding must check the returned device/source/SDK/mapping requirements.
 
-The next box run has **212 requests / 285 existing parents**, no compilation.
+**Completed 2026-09-07:** this box run had 212 requests / 285 existing parents,
+no compilation, 636 raw logs and 307.515 seconds total. New-M shortlist
+coverage was 107/110 within both bounds; blind Top-1 was not adopted.
+The command below is retained for reproduction only.
 Keep the original completed campaign and its compiled cache on the box. Once
 the current development checkout contains the new suite, run:
 

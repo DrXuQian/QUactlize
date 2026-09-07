@@ -10,7 +10,31 @@ inspection, its selected-config oracle, and all 26 host ABI cases in a fresh
 LFS checkout. Its PPU device gate is still **PENDING**. Host/ELF admission is
 not device admission and does not authorize deployment by itself.
 
-## New host policy status (2026-09-07)
+## Frozen host runtime policy (2026-09-07)
+
+Use `policies/kpack_zw810_runtime_v1.hpp` (namespace
+`quactlize_kpack_runtime_v1`) and its matching JSON as the **first frozen
+selection policy**, superseding the experimental selectors described below.
+The runtime is an exact table lookup with binding/shape checks and source-owned
+grid resolution; no scorer, learned coefficients or profiling runs on this path.
+
+It covers 2,982 measured exact inputs across Q2–Q6 and FQ/SF dense/grouped.
+2,889 entries satisfy both 5% limits in all recorded epochs. The other 93 are
+explicit measured exceptions, not numerical failures and not certified 5%
+choices. Latest-epoch evidence meets both limits for 2,968 entries. Unknown
+M/N/K or grouped row vectors return `FallbackRequired`; the consumer retains
+responsibility for an admitted K-pack fallback. Actual grouped row vectors,
+device/CUs, mapping and kernel/SDK identity are required.
+
+The last planned 212-request box challenge is complete: all 636 raw logs replay,
+no numerical/launch failures, 307.515 seconds. SDK-free Python/C++ parity covers
+11,928 queries. The policy references 247 parents / 509 runtime recipes; those
+are identities, not newly linked function pointers. **The six DSOs remain
+unchanged.** Bind full AP/delivery/S/scheduler/grid identity and perform final
+device admission before enabling it in llama.cpp. Do not reuse old config v3/v4
+names as if they encoded these fields. See [the v1 contract](KPACK_RUNTIME_V1.md).
+
+## Earlier host policy experiments
 
 [K-pack measured policy](KPACK_POLICY.md) supplies an SDK-free C++17 selector
 and matching JSON for all five formats and FQ/SF dense/grouped. It serves 2,717
@@ -33,9 +57,8 @@ The subsequent host tactic prototype is now implemented and locally calibrated:
 five parents / three runtime proposals per parent. Grouped queries require
 the **actual expert row vector**, and grid policies resolve its exact CTA
 count. Do not pass total/max-row aggregates as an equivalent router.
-The blind Top-1 model is not performance-admitted; 212 targeted device
-requests are prepared for the remaining cache misses and new M boundaries,
-reusing old compiled modules. The model returns required device/source/SDK/
+The blind Top-1 model was not performance-admitted; the 212 targeted device
+requests have completed and fed the frozen table above. The model returns required device/source/SDK/
 mapping bindings, not a launchable old config string. This is not a new C ABI,
 any-M support promise or replacement six-library bundle. See the current
 [box command and query entry](KPACK_POLICY.md#tactic-shortlist-prototype-and-next-box-run).

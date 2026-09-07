@@ -7,6 +7,12 @@ Its reusable idea is a measured fast path plus a small ranked candidate set.
 Its descriptions of other libraries are not proof that their constants,
 resource limits or exact configuration choices transfer to these kernels.
 
+**Final planned challenge is complete.** The first runtime policy is now
+frozen as a measured-tactic table, with explicit exceptions and no runtime
+score model. See [KPACK_RUNTIME_V1.md](KPACK_RUNTIME_V1.md). The proposal and
+calibration sections below are development history, not a request for another
+sweep or an instruction to deploy the blind Top-1 scorer.
+
 ## Evidence from the new run
 
 Archive: `kpack-policy-compact-v1-results.tgz`, SHA-256
