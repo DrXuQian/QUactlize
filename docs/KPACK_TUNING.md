@@ -4,6 +4,12 @@ The budgeted tuner searches the real workload inventory, not its Cartesian
 product with every compiled configuration. It is independent of the older
 exhaustive campaign and never reuses its timing samples.
 
+The completed `c0c1361` results now have a locally replayed, K-pack-only host
+selector for all five formats and all four routes. See
+[K-pack measured policy v1](KPACK_POLICY.md) for queries, fit results, the
+unvalidated interpolation boundary and targeted rechecks. This is not an
+updated production `.so`.
+
 ## Selection and historical results
 
 The design combines the strategies in `GEMM 配置选择方法综述与对比.md`:

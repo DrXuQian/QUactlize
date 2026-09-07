@@ -266,13 +266,19 @@ and qtype before calling a device operation.
 
 ## Validation and tuning
 
+The current develop search and first five-format/four-route K-pack rule fit
+are documented in [K-pack tuning](docs/KPACK_TUNING.md) and
+[measured policy v1](docs/KPACK_POLICY.md). The new host selector has no
+compiled-default fallback; unmeasured interpolation is explicitly a proposal.
+It has not yet replaced the released library selector described below.
+
 Local validation covers source policy, host round trips, CuTe layout algebra,
 template instantiation, HGCC device compilation, embedded-image inspection,
 ABI checks, and planted negative controls. These checks do not establish a
 device result; development-only probes and negative controls are intentionally
 not part of the installed product.
 
-The production fully-quantized config policy is generated only from an
+The older production fully-quantized config table was generated from an
 all-config K-pack measurement result and its authority file. Reproduce or
 audit the checked-in table with:
 

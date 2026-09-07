@@ -1,0 +1,33 @@
+{
+  "alias_points": 40,
+  "blocked_reasons": {
+    "NOISY_OR_INCOMPLETE_CONFIRMATION": 43,
+    "PUBLIC_FEATURE_CONFLICT": 2
+  },
+  "families": 152,
+  "holdout_scope": "LEAVE_ONE_PUBLIC_POINT_OUT; sparse missing costs are UNKNOWN, not PASS",
+  "holdout_status": {
+    "ABSTAINED": 365,
+    "OUTSIDE_BUDGET": 229,
+    "UNMEASURED_CANDIDATE": 622,
+    "WITHIN_BUDGET": 1463
+  },
+  "measurement_status": {
+    "CONFIRMED_SELECTED_SET": 2720,
+    "NOISY_CONFIRMATION": 42
+  },
+  "parent_symbols": 311,
+  "production_policy_updated": false,
+  "public_points": 2722,
+  "requests": 2762,
+  "rules": 999,
+  "runtime_variants": 484,
+  "schema": "quactlize.kpack-policy-fit-report.v1",
+  "selection_status": {
+    "MEASURED_POLICY": 2717,
+    "NO_MEASURED_POLICY": 45
+  },
+  "training_bound_scope": "MEASURED_CONFIRMATION_SET_ONLY; not global optimum or interpolation proof",
+  "training_max_round_regret_pct": 4.959289277962409,
+  "training_mean_median_delta_pct": 0.39167891168709645
+}

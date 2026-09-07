@@ -2510,7 +2510,28 @@ cadence is 8192 repeats. This closes D16's packaging/loader-identity boundary.
 The prebuilt five-format dense/grouped device gate is still pending; it does
 not close D01/D06 or replace the required PPU raw-bit and performance execution.
 
-#### Active device-test and policy queue (2026-09-02)
+#### Active policy update (2026-09-07)
+
+The user superseded A09's exhaustive Cartesian campaign with the bounded
+overnight search. Do not restart the old all-parent sweep or require
+`all_configs=1` to consume the new sparse measurements. The older table below
+is historical context; these statuses take precedence for A09/A10:
+
+| Item | Status | Remaining work |
+|---|---|---|
+| A09 bounded campaign | MEASUREMENT-COMPLETE / RAW-REPLAYED | `c0c1361`: all 2,762 requests ran in all three 11-sample rounds, no numeric/launch failures; 42 timing-noise rows remain explicit. Recorded total wall time 2h52m. |
+| A10 measured host rules | LOCAL-PASS / NOT-IN-DSO | `policies/kpack_zw810_v1.json` and SDK-free C++ header: 999 rules, 311 parents / 484 runtime variants, 2,717 served requests; max training round regret 4.9593%, mean median delta 0.3917%. Python/C++ parity 7,984 queries. See `docs/KPACK_POLICY.md`. |
+| A10 noisy/public-key recheck | PLAN-READY / PENDING-BOX | 45 requests: 42 noisy, one stable alias of a noisy key, two Q6 SF-grouped public-key conflicts. `recheck-plan.json` uses 235 parent/workload pairs / 149 previously compiled parents, no new types. Preserve the original timing epoch. |
+| A10 interpolation | NOT-ADMITTED | Leave-one-public-point-out: 1,463 within budget, 229 outside, 622 candidate costs missing, 365 abstentions. Refine around tile/wave/grid transitions and validate proposals. Do not claim a global 5% bound or use compiled defaults as measured evidence. |
+| A10 runtime binding | PENDING | Bind full AP/delivery/algorithm/S/grid identity to a versioned production inventory; current config v3/v4 is insufficient. Preserve existing any-M admission until all runtime misses are handled. |
+| A07 selected-parent shipping build/gate | PENDING | Build the selected kernel closure, verify SF/FQ dense/grouped outputs and real E2E timing in the final six-library bundle. The host rule fit does not update existing DSOs. |
+
+Kernel source identity is unchanged (`f00789d4...`); the existing tuner DSO/object
+cache remains reusable. A03 AIU+UniversalCopy and A08 main port remain separate,
+pending tasks. No Xplane reintroduction, kernel fix, or main admission occurred
+in this fit. The single llama.cpp integration handoff has been updated.
+
+#### Historical device-test and policy queue (2026-09-02)
 
 `CLOSED` above means that the implementation choice and its local proof are
 closed. It does not silently stand in for a fresh device admission. The

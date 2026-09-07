@@ -4,11 +4,27 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
-Last updated: 2026-09-02. Persistent sidecar schema v3 is current. The
+Last updated: 2026-09-07. Persistent sidecar schema v3 is current. The
 published `2826cf1` loader-safe runtime bundle has passed strict binary
 inspection, its selected-config oracle, and all 26 host ABI cases in a fresh
 LFS checkout. Its PPU device gate is still **PENDING**. Host/ELF admission is
 not device admission and does not authorize deployment by itself.
+
+## New host policy status (2026-09-07)
+
+[K-pack measured policy v1](KPACK_POLICY.md) supplies an SDK-free C++17 selector
+and matching JSON for all five formats and FQ/SF dense/grouped. It serves 2,717
+observed requests with a maximum 4.96% training round regret. Forty-five
+requests remain explicitly blocked; unmeasured M/router queries are proposals,
+not admission. The selector is under `policies/`, not wired into the six DSOs.
+
+**No new `.so` is delivered by this policy fit.** The bundle below still has
+its previous selector/inventory. Its config v3/v4 names cannot fully represent
+AP, delivery-N, scheduler/grid and Split-K. Do not translate a returned benchmark
+symbol into an old `config_name`, or use this partial policy to replace the
+existing any-M buffer admission promise. Full-identity runtime binding,
+selected-parent builds and device replay remain pending. Sidecar bytes,
+canonical mapping IDs and the existing C exports are unchanged.
 
 ## Runtime libraries
 
