@@ -1,5 +1,67 @@
 # K-pack measured policy
 
+## Tactic shortlist prototype and next box run
+
+The next host prototype is `policies/kpack_zw810_tactics.json`, queried by
+`tools/kpack_tactic_model.py`. It uses exact measured tactics, nearby-family
+parent hints and separate parent/runtime scores. It does not replace the
+compact JSON/C++ selector below or change any `.so`. Read the
+[calibration results and limitations](KPACK_HEURISTIC_REVIEW.md#implemented-host-prototype-and-calibration)
+before using its suggestions. A cache miss is a shortlist requiring admission
+and measurement, not a 5%-guaranteed default.
+
+```bash
+python3 tools/kpack_tactic_model.py policies/kpack_zw810_tactics.json \
+  --route fq-dense --qtype 11 --m 48 --n 256 --k 3072
+```
+
+This exact measured query returns the same `32x32x256_w16x16_s2` parent with
+**S4**, not the stale S1 choice. Add `--no-cache` to inspect the proposed
+shortlist instead. Grouped queries additionally require `--rows-file` with
+one actual expert row count per line; total/max counts alone are insufficient.
+Runtime binding must check the returned device/source/SDK/mapping requirements.
+
+The next box run has **212 requests / 285 existing parents**, no compilation.
+Keep the original completed campaign and its compiled cache on the box. Once
+the current development checkout contains the new suite, run:
+
+```bash
+python3 -u tools/run_kpack_policy_validation.py \
+  --suite policies/kpack_zw810_tactics.validation.json \
+  --campaign /workspace/kpack-overnight-c0c1361 \
+  --output /workspace/kpack-tactics-validation-v1 \
+  --sdk /workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
+  --devices 0,1,2,3,4,5,6,7
+```
+
+It runs 3x11 fresh timing rounds, correctness_repeats=1, with source/SDK/payload
+checks and progress/ETA. No new full sweep starts. Failures are isolated;
+repeat the command with `--retry-failures` to retry just rejected requests.
+Return `results/summary.json` under the new output and keep `phases/` for audit.
+Do not reuse the previous validation's output directory or overwrite its timings.
+
+Reproduce the host calibration from extracted archives (new output paths):
+
+```bash
+python3 tools/kpack_tactic_evidence.py /path/to/overnight \
+  --epoch overnight --output /path/to/evidence/overnight.json
+python3 tools/kpack_tactic_evidence.py /path/to/followup \
+  --epoch validation --output /path/to/evidence/validation.json
+python3 tools/fit_kpack_tactic_model.py \
+  --evidence /path/to/evidence/overnight.json \
+  --evidence /path/to/evidence/validation.json --output /path/to/new-fit
+python3 tools/plan_kpack_tactic_validation.py \
+  --campaign /path/to/overnight --validation /path/to/followup \
+  --evidence /path/to/evidence/overnight.json \
+  --evidence /path/to/evidence/validation.json \
+  --model /path/to/new-fit/model.json --output /path/to/new-suite.json
+```
+
+The query tool needs only the Python standard library; fitting additionally
+uses NumPy. No new Python package, PPU SDK, kernel build or device is needed
+for this local calibration. Generated cache rows are measured data, not a
+promise that the production ABI can already express these full identities.
+
 ## Current compact selection
 
 The current host prototype merges near-equal measured choices. It still
@@ -53,6 +115,14 @@ Grid recipes alone changed those counts to 1,503 within / 214 outside / 597
 missing / 365 abstained; the new pooled tree has no all-point holdout claim.
 
 ## Targeted box validation: no compilation
+
+**2026-09-07 result:** the run below completed and all 945 raw logs were
+replayed. No numerical/launch failures occurred. Only 85/110 new-M predictions
+met both performance limits; 76 grouped merge targets had stale fixed grids.
+The conservative cross-epoch refit did not reduce the 788 leaves and lost
+coverage, so it was not adopted. See [the review and proposed hybrid
+heuristic](KPACK_HEURISTIC_REVIEW.md). The command remains a reproducibility
+entry, not a request to rerun the same experiment.
 
 The frozen suite contains **315 requests**: 45 original blockers, 160
 adjacent-choice merge requests, and 110 previously unmeasured M boundaries.

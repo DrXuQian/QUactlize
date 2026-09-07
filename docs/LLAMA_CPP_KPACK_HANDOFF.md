@@ -18,10 +18,27 @@ observed requests with a maximum 4.983% training round regret. The compact
 selection merges near-equal choices: 788 rule leaves / 219 parents instead of
 999 / 311, with a mean median-time increase of 0.7012% against the original
 selected winners. Current files are `policies/kpack_zw810_compact.{json,hpp}`.
-The 315-request merge/boundary validation reuses existing tuner modules with
-no compilation; its device results are still pending. Forty-five
-requests remain explicitly blocked; unmeasured M/router queries are proposals,
+The 315-request merge/boundary run is now raw-replayed: all three rounds
+completed without numerical or launch failures. New-M predictions meet both
+5% limits in 85/110 cases; grouped proposals exposed 76 stale fixed-grid
+identities. This does not admit universal interpolation or a new selector.
+See [validation and hybrid-heuristic review](KPACK_HEURISTIC_REVIEW.md).
+The original model still has forty-five
+requests explicitly blocked; unmeasured M/router queries are proposals,
 not admission. The selector is under `policies/`, not wired into the six DSOs.
+
+The subsequent host tactic prototype is now implemented and locally calibrated:
+`policies/kpack_zw810_tactics.json` plus `tools/kpack_tactic_model.py`. It has
+2,770 exact-context measured cache entries and a shortlist path with at most
+five parents / three runtime proposals per parent. Grouped queries require
+the **actual expert row vector**, and grid policies resolve its exact CTA
+count. Do not pass total/max-row aggregates as an equivalent router.
+The blind Top-1 model is not performance-admitted; 212 targeted device
+requests are prepared for the remaining cache misses and new M boundaries,
+reusing old compiled modules. The model returns required device/source/SDK/
+mapping bindings, not a launchable old config string. This is not a new C ABI,
+any-M support promise or replacement six-library bundle. See the current
+[box command and query entry](KPACK_POLICY.md#tactic-shortlist-prototype-and-next-box-run).
 
 **No new `.so` is delivered by this policy fit.** The bundle below still has
 its previous selector/inventory. Its config v3/v4 names cannot fully represent
