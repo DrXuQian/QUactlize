@@ -266,9 +266,11 @@ and qtype before calling a device operation.
 
 ## Validation and tuning
 
-The current develop search and first five-format/four-route K-pack rule fit
+The current develop search and compact five-format/four-route K-pack rule fit
 are documented in [K-pack tuning](docs/KPACK_TUNING.md) and
-[measured policy v1](docs/KPACK_POLICY.md). The new host selector has no
+[measured policy](docs/KPACK_POLICY.md). Near-equal measured choices share
+rules, reducing the selected parent inventory from 311 to 219 within the 5%
+training regret budget. The new host selector has no
 compiled-default fallback; unmeasured interpolation is explicitly a proposal.
 It has not yet replaced the released library selector described below.
 

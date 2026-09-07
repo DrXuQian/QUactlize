@@ -6,8 +6,9 @@ exhaustive campaign and never reuses its timing samples.
 
 The completed `c0c1361` results now have a locally replayed, K-pack-only host
 selector for all five formats and all four routes. See
-[K-pack measured policy v1](KPACK_POLICY.md) for queries, fit results, the
-unvalidated interpolation boundary and targeted rechecks. This is not an
+[K-pack measured policy](KPACK_POLICY.md) for merged choices, queries, and the
+315-request targeted validation command that reuses existing modules without
+compilation. Unmeasured interpolation remains a proposal; this is not an
 updated production `.so`.
 
 ## Selection and historical results

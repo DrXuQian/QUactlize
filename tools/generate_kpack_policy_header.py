@@ -14,11 +14,35 @@ import kpack_policy as policy
 
 
 def generate(model):
-    if model.get("schema") != policy.SCHEMA or model["device"] != {
+    if model.get("schema") not in (
+        policy.SCHEMA,
+        policy.GRID_SCHEMA,
+        policy.POOLED_SCHEMA,
+    ) or model["device"] != {
         "name": "PPU-ZW810",
         "compute_units": 72,
     }:
         raise ValueError("unsupported policy schema/device")
+    recipes = model["schema"] in (policy.GRID_SCHEMA, policy.POOLED_SCHEMA)
+    pooled = model["schema"] == policy.POOLED_SCHEMA
+    axis_value = (
+        "node.axis == 0 ? x : node.axis == 1 ? y : node.axis == 2 ? q.n : q.k"
+        if pooled
+        else "node.axis == 0 ? x : y"
+    )
+    extra_fields = ", grid_b, occupancy" if recipes else ""
+    recipe_code = (
+        """    if (c.grid_mode >= 3) {
+      if (route != 1 || c.grid_b < 1 || c.grid_b > c.occupancy) return {};
+      std::int64_t tiles = ((std::int64_t(q.m) + c.tm - 1) / c.tm) * ((std::int64_t(q.n) + c.tn - 1) / c.tn);
+      std::int64_t capacity = std::int64_t(q.compute_units) * c.grid_b;
+      std::int64_t waves = (tiles + capacity - 1) / capacity;
+      grid = c.grid_mode == 3 ? (tiles < capacity ? tiles : capacity) : (tiles + waves - 1) / waves;
+    }
+"""
+        if recipes
+        else ""
+    )
     configs = sorted(model["configurations"])
     config_index = {c: i for i, c in enumerate(configs)}
     nodes, points, families = [], [], []
@@ -33,13 +57,20 @@ def generate(model):
         else:
             nodes[index] = (
                 -1,
-                node["axis"],
+                (
+                    {"m": 0, "total_rows": 0, "max_rows": 1, "n": 2, "k": 3}[
+                        node["feature"]
+                    ]
+                    if "feature" in node
+                    else node["axis"]
+                ),
                 node["le"],
                 tree(node["left"]),
                 tree(node["right"]),
             )
         return index
 
+    group_roots = [tree(g["tree"]) for g in model.get("rule_groups", [])]
     for family in model["families"]:
         q, route, n, k, gs, experts = family["key"]
         start = len(points)
@@ -62,7 +93,7 @@ def generate(model):
                 *second,
                 start,
                 len(points) - start,
-                tree(family["tree"]),
+                group_roots[family["rule_group"]] if pooled else tree(family["tree"]),
             )
         )
     quote = json.dumps
@@ -92,7 +123,12 @@ def generate(model):
                     "layout",
                 )
             ),
-            str(("implicit", "fixed", "ordinary").index(c["grid_mode"])),
+            str(
+                ("implicit", "fixed", "ordinary", "capacity", "balanced").index(
+                    c["grid_mode"]
+                )
+            ),
+            *([str(c.get("grid_b", 0)), str(c.get("occupancy", 0))] if recipes else []),
             c["mapping_id"] + "ULL",
         ]
         config_rows.append("  {" + ", ".join(fields) + "},")
@@ -125,7 +161,7 @@ struct Query {{
 }};
 struct Config {{
   char const *id, *symbol, *algorithm;
-  int qtype, route, tm, tn, tk, wm, wn, stages, ap, dn, parent_persistent, split, grid, layout, grid_mode;
+  int qtype, route, tm, tn, tk, wm, wn, stages, ap, dn, parent_persistent, split, grid, layout, grid_mode{extra_fields};
   std::uint64_t mapping_id;
 }};
 struct Selection {{
@@ -171,7 +207,7 @@ inline Selection select(Query const& q) {{
     int index = f.root;
     while (kNodes[index].config < 0) {{
       auto const& node = kNodes[index];
-      index = (node.axis == 0 ? x : y) <= node.le ? node.left : node.right;
+      index = ({axis_value}) <= node.le ? node.left : node.right;
     }}
     auto const& c = kConfigs[kNodes[index].config];
     if (q.k % (c.tk * c.split) || (c.ap && (grouped || q.m != 1)) ||
@@ -179,7 +215,7 @@ inline Selection select(Query const& q) {{
         (route == 0 && ((c.tm == 8 && q.m > 64) || (c.split != 1 && q.m >= 64)))) return {{}};
     std::int64_t grid = c.grid;
     if (c.grid_mode == 2) grid = ((std::int64_t(q.m) + c.tm - 1) / c.tm) * ((std::int64_t(q.n) + c.tn - 1) / c.tn);
-    if (grid > INT32_MAX) return {{}};
+{recipe_code}    if (grid > INT32_MAX) return {{}};
     return {{observed ? Status::MeasuredPolicy : Status::InterpolatedProposal, &c, int(grid)}};
   }}
   return {{}};

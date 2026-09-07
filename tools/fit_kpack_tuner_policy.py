@@ -212,7 +212,8 @@ def evaluate(families, configurations, threshold):
     """Training replay and leave-one-PUBLIC-feature-point-out diagnostics."""
     models, replay, holdout = [], [], []
     for key, points in sorted(families.items()):
-        model = policy.fit_family(key, points)
+        fit_tree = policy.tree_fitter([p for p in points if not p["blocked"]])
+        model = policy.fit_family(key, points, fit=fit_tree)
         models.append(model)
         for point in points:
             first = point["rows"][0]
@@ -247,7 +248,9 @@ def evaluate(families, configurations, threshold):
                 continue
             # Remove the entire alias class: otherwise permutation-a would
             # leak the held-out permutation-b public feature into training.
-            reduced = policy.fit_family(key, [p for p in points if p is not point])
+            reduced = policy.fit_family(
+                key, [p for p in points if p is not point], fit=fit_tree
+            )
             guess = policy.select_family(reduced, configurations, first["problem"])
             cid = guess.get("config_id")
             costs = [o["costs"].get(cid) for o in point["rows"]]
@@ -311,7 +314,14 @@ def make_policy(observations, configurations, authority, threshold=5.0):
         "production_policy_updated": False,
     }
     model = {
-        "schema": policy.SCHEMA,
+        "schema": (
+            policy.GRID_SCHEMA
+            if any(
+                c["grid_mode"] in ("capacity", "balanced")
+                for c in configurations.values()
+            )
+            else policy.SCHEMA
+        ),
         "regret_budget_pct": threshold,
         "device": {"name": "PPU-ZW810", "compute_units": 72},
         "authority": authority,

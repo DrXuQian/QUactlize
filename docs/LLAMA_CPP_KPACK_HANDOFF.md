@@ -12,9 +12,14 @@ not device admission and does not authorize deployment by itself.
 
 ## New host policy status (2026-09-07)
 
-[K-pack measured policy v1](KPACK_POLICY.md) supplies an SDK-free C++17 selector
+[K-pack measured policy](KPACK_POLICY.md) supplies an SDK-free C++17 selector
 and matching JSON for all five formats and FQ/SF dense/grouped. It serves 2,717
-observed requests with a maximum 4.96% training round regret. Forty-five
+observed requests with a maximum 4.983% training round regret. The compact
+selection merges near-equal choices: 788 rule leaves / 219 parents instead of
+999 / 311, with a mean median-time increase of 0.7012% against the original
+selected winners. Current files are `policies/kpack_zw810_compact.{json,hpp}`.
+The 315-request merge/boundary validation reuses existing tuner modules with
+no compilation; its device results are still pending. Forty-five
 requests remain explicitly blocked; unmeasured M/router queries are proposals,
 not admission. The selector is under `policies/`, not wired into the six DSOs.
 

@@ -1,0 +1,1 @@
+{"compaction":"POOLED_PUBLIC_FEATURES_PARENT_COVER","interpolation_admitted":false,"max_round_regret_pct":4.982931686564851,"mean_median_delta_pct":0.7011568593031221,"measured_requests":2717,"parent_symbols":219,"production_policy_updated":false,"regret_budget_pct":5,"rule_groups":20,"rules":788,"runtime_variants":312,"shape_guards":152}

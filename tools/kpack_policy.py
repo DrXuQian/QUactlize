@@ -17,6 +17,8 @@ import math
 from pathlib import Path
 
 SCHEMA = "quactlize.kpack-policy.v1"
+GRID_SCHEMA = "quactlize.kpack-policy.v2"
+POOLED_SCHEMA = "quactlize.kpack-policy.v3"
 ROUTES = ("fq-dense", "sf-dense", "fq-grouped", "sf-grouped")
 GROUP_SIZE = {10: 16, 11: 16, 12: 32, 13: 32, 14: 16}
 
@@ -79,6 +81,30 @@ def admissible(config, p):
         if config["split"] != 1 and p["m"] >= 64:
             return False
     return True
+
+
+def resolve_grid(config, problem, compute_units=72):
+    """Resolve the source-owned grid recipe, never interpolate a grid integer."""
+    mode = config["grid_mode"]
+    if mode in ("ordinary", "capacity", "balanced"):
+        if config["route"] != "sf-dense":
+            raise ValueError("shape-derived grid requires exact dense tile count")
+        tiles = ((problem["m"] + config["tm"] - 1) // config["tm"]) * (
+            (problem["n"] + config["tn"] - 1) // config["tn"]
+        )
+        if mode == "ordinary":
+            return tiles
+        b = config["grid_b"]
+        if type(b) is not int or not 1 <= b <= config["occupancy"]:
+            raise ValueError("grid recipe exceeds measured kernel occupancy")
+        wave = compute_units * b
+        if mode == "capacity":
+            return min(tiles, wave)
+        waves = (tiles + wave - 1) // wave
+        return (tiles + waves - 1) // waves
+    if mode not in ("fixed", "implicit"):
+        raise ValueError("unknown grid mode")
+    return config["grid"]
 
 
 def runtime_config(candidate, cell, problem):
@@ -166,7 +192,7 @@ def public_points(observations, threshold):
     return families
 
 
-def fit_tree(points):
+def tree_fitter(points):
     """Minimum-leaf axis-aligned partition, then minimum summed regret.
 
     One axis is an interval dynamic program. Two axes enumerate guillotine
@@ -209,7 +235,21 @@ def fit_tree(points):
             {"axis": best[2], "le": best[3], "left": best[4], "right": best[5]},
         )
 
-    return solve(tuple(range(len(points))))[2] if points else None
+    by_feature = {p["features"]: i for i, p in enumerate(points)}
+
+    def fit(subset):
+        indices = tuple(sorted(by_feature[p["features"]] for p in subset))
+        if any(
+            points[by_feature[p["features"]]]["costs"] != p["costs"] for p in subset
+        ):
+            raise ValueError("tree cache cannot be reused with different costs")
+        return solve(indices)[2] if indices else None
+
+    return fit
+
+
+def fit_tree(points):
+    return tree_fitter(points)(points)
 
 
 def tree_configs(tree):
@@ -228,7 +268,7 @@ def leaf_count(tree):
     )
 
 
-def fit_family(key, points):
+def fit_family(key, points, *, fit=None):
     admitted = [p for p in points if not p["blocked"]]
     return {
         "key": list(key),
@@ -250,27 +290,37 @@ def fit_family(key, points):
             if admitted
             else []
         ),
-        "tree": fit_tree(admitted),
+        "tree": (fit or fit_tree)(admitted),
     }
 
 
-def select_family(family, configs, problem):
+def select_family(family, configs, problem, rule_groups=None):
     point = features(family["key"][1], problem)
     blocked = next(
         (p for p in family["blocked"] if tuple(p["features"]) == point), None
     )
     if blocked:
         return {"status": "NO_MEASURED_POLICY", "reason": blocked["reason"]}
-    if family["tree"] is None or any(
+    tree = family.get("tree")
+    if "rule_group" in family:
+        if rule_groups is None:
+            raise ValueError("pooled family requires its shared rule groups")
+        group = rule_groups[family["rule_group"]]
+        key = family["key"]
+        if group["key"] != [key[0], key[1], key[4], key[5]]:
+            raise ValueError("pooled rule group does not belong to the family")
+        tree = group["tree"]
+    if tree is None or any(
         not lo <= x <= hi for x, (lo, hi) in zip(point, family["bounds"])
     ):
         return {
             "status": "NO_MEASURED_POLICY",
             "reason": "OUTSIDE_MEASURED_FAMILY_RANGE",
         }
-    node = family["tree"]
+    node = tree
     while "config" not in node:
-        node = node["left"] if point[node["axis"]] <= node["le"] else node["right"]
+        value = problem[node["feature"]] if "feature" in node else point[node["axis"]]
+        node = node["left"] if value <= node["le"] else node["right"]
     cid = node["config"]
     config = configs[cid]
     if not admissible(config, problem):
@@ -280,10 +330,7 @@ def select_family(family, configs, problem):
         }
     observed = list(point) in family["observed"]
     resolved = dict(config)
-    if config["grid_mode"] == "ordinary":
-        resolved["grid"] = math.ceil(problem["m"] / config["tm"]) * math.ceil(
-            problem["n"] / config["tn"]
-        )
+    resolved["grid"] = resolve_grid(config, problem)
     return {
         "status": "MEASURED_POLICY" if observed else "INTERPOLATED_PROPOSAL",
         "config_id": cid,
@@ -299,7 +346,7 @@ def select_family(family, configs, problem):
 
 
 def select(policy, route, problem, *, device_name, compute_units, mapping_id):
-    if policy.get("schema") != SCHEMA:
+    if policy.get("schema") not in (SCHEMA, GRID_SCHEMA, POOLED_SCHEMA):
         raise ValueError("unsupported policy schema")
     validate_problem(route, problem)
     if (
@@ -313,7 +360,9 @@ def select(policy, route, problem, *, device_name, compute_units, mapping_id):
     family = next((f for f in policy["families"] if f["key"] == key), None)
     if family is None:
         return {"status": "NO_MEASURED_POLICY", "reason": "UNMEASURED_FAMILY"}
-    return select_family(family, policy["configurations"], problem)
+    return select_family(
+        family, policy["configurations"], problem, policy.get("rule_groups")
+    )
 
 
 def main():

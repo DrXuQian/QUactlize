@@ -1,4 +1,117 @@
-# K-pack measured policy v1
+# K-pack measured policy
+
+## Current compact selection
+
+The current host prototype merges near-equal measured choices. It still
+requires both per-round regret and cross-round spread to stay within **5% at
+every served observation**. Missing costs are not treated as acceptable choices.
+
+| Fit | Rule leaves | Runtime variants | Compiled parents | Mean median-time increase |
+|---|---:|---:|---:|---:|
+| Initial independent-family fit | 999 | 484 | 311 | 0.3917% |
+| Source-owned dense grid recipes | 938 | 422 | 303 | 0.4066% |
+| Pooled, favor fewer branches | 738 | 331 | 261 | 0.6352% |
+| Selected: pooled, favor fewer parents | **788** | **312** | **219** | **0.7012%** |
+
+The selected model serves the same **2,717 requests**, with maximum training
+round regret **4.982932%**; 45 requests remain blocked. It has 20 shared rule
+trees and 152 exact family guards, **not just 20 rules**. A parent is one
+independently compiled specialization; runtime variants add schedule/grid/Split-K.
+The greedy tree and parent cover are a maintenance tradeoff, not a claim of
+globally minimal rule count or globally optimal kernel performance.
+
+Why are hundreds of rules still necessary? Confirmation costs are sparse:
+a neighboring shape's choice often was never timed at this shape. A common
+choice must satisfy every observation, including grouped aliases. Missing
+measurements do not prove a performance gap, but cannot justify a safe merge.
+The next run fills prioritized holes instead of scanning the Cartesian product.
+
+Current files:
+
+- [Compact policy JSON](../policies/kpack_zw810_compact.json).
+- [SDK-free C++17 header](../policies/kpack_zw810_compact.hpp).
+- [Fit report](../policies/kpack_zw810_compact.report.json).
+- [Targeted validation suite](../policies/kpack_zw810_compact.validation.json).
+
+Use the query examples below with `policies/kpack_zw810_compact.json` and
+include `policies/kpack_zw810_compact.hpp` for the current selection. The two
+example choices remain the same. Dense persistent grid integers now resolve
+from source-owned recipes in `scalefirst_persistent_policy.hpp`:
+
+```text
+Q = ceil(M / TM) * ceil(N / TN)
+capacity(Q, CU, b) = min(Q, CU * b)
+balanced(Q, CU, b) = ceil(Q / ceil(Q / (CU * b)))
+```
+
+Every recipe is verified against raw grid, occupancy and capacity/balanced
+masks across all three rounds. Grouped grids remain fixed measured choices:
+total_rows/max_rows do not determine the exact per-expert tile sum. Unknown
+M/router queries remain proposals, not admission. The original fixed-grid
+leave-one-point-out counts below are **not validation of this pooled model**.
+Grid recipes alone changed those counts to 1,503 within / 214 outside / 597
+missing / 365 abstained; the new pooled tree has no all-point holdout claim.
+
+## Targeted box validation: no compilation
+
+The frozen suite contains **315 requests**: 45 original blockers, 160
+adjacent-choice merge requests, and 110 previously unmeasured M boundaries.
+It selects 909 parent/workload pairs and reuses **306 existing parents** from
+the original confirmation bundle. This is the first prioritized merge wave,
+not all 1,703 available opportunities or a universal interpolation proof.
+Merge candidates retain a same-run incumbent; new M proposals are challenged
+by both neighboring measured-rule parents where admissible.
+
+On the original box, retain the completed campaign and its compiled cache:
+
+```bash
+git pull --ff-only origin develop &&
+python3 -u tools/run_kpack_policy_validation.py \
+  --campaign /workspace/kpack-overnight-c0c1361 \
+  --output /workspace/kpack-policy-compact-v1 \
+  --sdk /workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
+  --devices 0,1,2,3,4,5,6,7
+```
+
+Source/SDK and payload hashes are checked before running. Missing payloads
+fail explicitly; **there is no compilation fallback**. The runner uses three
+fresh 11-sample rounds, correctness_repeats=1, isolated failures and resumable
+receipts. Rerun the same command with `--retry-failures` to retry rejected
+requests while retaining valid measurements. Original overnight timings are
+never overwritten. Progress prints every 30 seconds; remaining time is advisory,
+with future-round estimates based on completed fresh rounds, not launch counts.
+
+Return `/workspace/kpack-policy-compact-v1/results/summary.json` first and
+retain the new `phases/` logs/receipts for verified refitting. A complete run
+can report slow or unavailable proposals; it cannot silently substitute a
+different winner and call the frozen proposal a pass. No policy is updated
+automatically, and **no new production `.so` is delivered by this host fit**.
+
+To reproduce the compact fit locally, use new output paths:
+
+```bash
+python3 tools/refine_kpack_grid_policy.py \
+  --source /path/to/extracted/kpack-overnight-c0c1361 \
+  --out /path/to/new-grid-evidence
+python3 tools/compact_kpack_policy.py \
+  --evidence /path/to/new-grid-evidence --out /path/to/new-compact-fit
+python3 tools/plan_kpack_policy_validation.py \
+  --campaign /path/to/extracted/kpack-overnight-c0c1361 \
+  --evidence /path/to/new-grid-evidence \
+  --policy /path/to/new-compact-fit/covered-policy.json \
+  --output /path/to/new-validation-suite.json
+python3 tools/check_kpack_policy.py policies/kpack_zw810_compact.json
+```
+
+`covered-policy.json` is the selected parent-cover alternative;
+`pooled-policy.json` favors fewer branches. Python/C++ parity covers 7,984
+queries. This is host validation, not PPU execution. Kernel source identity
+and the compiled module cache remain unchanged.
+
+## Initial v1 baseline and evidence
+
+The remainder documents the reproducible initial fit. Its files and holdout
+results are retained as a baseline, not the current compact selection.
 
 This is a **host selector prototype on develop**, fitted from the completed
 `c0c1361` overnight search. It covers Q2/Q3/Q4/Q5/Q6 and all four routes:
