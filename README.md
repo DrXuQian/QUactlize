@@ -25,7 +25,7 @@ unknown or incompatible descriptor instead of guessing a layout.
 |---|---|
 | `quactlize/include/` | PPU collectives, launchers, format policy, and offline-layout contracts |
 | `quactlize/csrc/` | Python bindings, preprocessing, and the PPU device-library entry points |
-| `quactlize/runtime/` | Opt-in compile-only cache, initialization-time tuning, and resident-pointer modules (device admission pending) |
+| `quactlize/runtime/` | Opt-in compile-only cache, initialization-time tuning, and resident-pointer modules (small device gate passed; deployment pending) |
 | `quactlize-pack-gguf` | Installed GGUF-to-K-pack artifact converter |
 | `tests/` | Correctness tests against independent host or format oracles |
 | `benchmarks/` | Device correctness and timing harnesses |

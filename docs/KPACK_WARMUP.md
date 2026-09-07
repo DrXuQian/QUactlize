@@ -1,7 +1,8 @@
 # K-pack initialization-time tuning
 
-Opt-in development runtime. The published six libraries and llama.cpp are
-unchanged; the device gate below must pass before integration.
+Opt-in development runtime. The small device gate below passed on 2026-09-07.
+The published six libraries and llama.cpp are unchanged; real-shape performance
+and deployment admission remain pending.
 
 The runtime follows the separation in DeepGEMM-for-sail: select a small
 configuration set, compile/cache its images, optionally time candidates during
@@ -120,6 +121,42 @@ the final warmup choice.
 
 ## Small PPU gate
 
+### Reviewed box result (2026-09-07)
+
+Archive `kpack-warmup-results.EpuIw8.tgz` closes this small module gate:
+50 parent modules, 50 exact contexts across 20 format/route pairs, 190 measured
+candidate-contexts, 250 positive checks and 50 detected zero-low negatives.
+All ten changed-router bucket replays pass. The ten rejected tactics are the
+expected SF-dense TM8/M=9 domain exclusions, not numerical or launch failures.
+Maximum condition-scaled error is `1.734967e-4` against the unchanged `5e-3`
+bound; the smallest planted error is `9.335464e-2`.
+
+| Route | Contexts | Median warmup ms | Maximum warmup ms |
+|---|---:|---:|---:|
+| FQ dense | 10 | 1.581 | 13.490 |
+| SF dense | 10 | 1.265 | 1.469 |
+| FQ grouped | 15 | 1.838 | 2.427 |
+| SF grouped | 15 | 1.530 | 2.024 |
+
+Total wall time was 254.751 seconds, including 190.906 seconds of compilation
+with 16 jobs. The 50 warmup calls together used 89.476 ms. The remaining
+63.845 seconds outside compilation also includes oracle/fixture construction,
+module loading and other harness work; it is not all tuning time.
+
+Source/kernel, compile flags, generator and runtime-cache identities replay
+against `e47613f`. The box SDK/GCC differs from the local compile workstation;
+each result is bound to the box's own SDK and module receipts. The upload
+contains no ELF payloads, so their hashes were checked by the device runner,
+not independently rehashed from this archive. Exact hashes and counts are in
+[the review receipt](KPACK_WARMUP_GATE_RESULT.json).
+
+This closes only `N=256,K=512` small-M/router coverage. It neither certifies
+large-shape 100-ms warmup nor proves a within-5% choice on real model shapes.
+Do not rerun this completed suite unchanged; the next device work is the
+bounded real-shape/selected-parent check.
+
+### Reproduction
+
 Local validation: 100 host tests passed; HGCC compiled all 50 small parent
 modules in 473.749 seconds with eight jobs, followed by 50 cache hits. Each
 module exports all seven C entry points. Ten format/metadata-mode builds of
@@ -171,7 +208,10 @@ the named parent `build.log`; do not recompile all old bundles.
 - [x] Implement bounded warmup, grouped-aware timing cache and compile-only cache.
 - [x] Implement resident-pointer modules using existing collective types.
 - [x] Add host/ABI/cache tests and a five-format, four-route device gate.
-- [ ] PPU gate: numerical closure, router/cache behavior and actual warmup costs.
+- [x] Small PPU gate: numerical closure, router/cache behavior and measured costs
+  on the 50 fixed small contexts (2026-09-07).
+- [ ] Real-shape bounded tuning: compare selected candidates with recorded
+  incumbents and measure startup/cache behavior on representative model shapes.
 - [ ] Bind/admit full tactic identity in the deployment loader; retain existing
   any-M admission until its runtime misses have a verified path.
 - [ ] Integrate the admitted runtime into llama.cpp and update the single

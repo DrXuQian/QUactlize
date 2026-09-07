@@ -43,6 +43,15 @@ dense/grouped routes. This is **not enabled in the six-library bundle or in
 llama.cpp**. See [K-pack warmup](KPACK_WARMUP.md) for the small box gate and
 application sequence.
 
+The small gate is now **PASS**: uploaded archive `30a86507...` replays against
+the `e47613f` source contract, with 50 contexts, 190 measured candidates, 250
+positive checks, 50 detected zero-low negatives and ten changed-router cache
+replays. Warmup medians are 1.265–1.838 ms by route, maximum 13.490 ms;
+compile-plus-harness wall time is 254.751 seconds. The ten safe exclusions
+are SF-dense TM8 at M=9. This is `N=256,K=512` small-context evidence, not
+real-shape performance admission or permission to replace the old six DSOs.
+See [the exact receipt](KPACK_WARMUP_GATE_RESULT.json).
+
 `quactlize/runtime/abi.h` carries the full compiled parent and algorithm/S/grid
 identity. Prepared handles launch existing collectives; no GGUF conversion,
 hidden compilation or profiling occurs in `run`. Grouped queries need actual
@@ -51,11 +60,11 @@ hint, not an any-M promise. The caller still owns allocation, stream, SF
 metadata preparation and an admitted miss path. This interface is separate
 from the old `config_name` exports; do not reinterpret their names.
 
-Integration order: pass the 50-context PPU module/cache gate, admit the exact
-selected parent modules and deployment loader, then bind llama.cpp startup
-warmup and cached execution. Offline sidecar bytes and canonical arrangement
-exports remain unchanged. No new full sweep or whole-six-library rebuild is
-required for this first module gate.
+Next: validate bounded candidate selection on representative real shapes,
+admit the exact selected parent modules and deployment loader, then bind
+llama.cpp startup warmup and cached execution. Offline sidecar bytes and
+canonical arrangement exports remain unchanged. The completed small gate
+does not need repeating; no new full Cartesian sweep is requested.
 
 ## Earlier host policy experiments
 

@@ -1,0 +1,68 @@
+{
+  "schema": "quactlize.kpack-warmup-review.v1",
+  "verdict": "SMALL_MODULE_GATE_PASS",
+  "archive": "kpack-warmup-results.EpuIw8.tgz",
+  "archive_sha256": "30a8650710601f6b93eef5cc621687beadf6943b2fc792f94ebda1394e3d50a2",
+  "source_contract": "e47613f",
+  "artifact_root": "/workspace/kpack-warmup-20260907T065856Z",
+  "kernel_identity": "2a9791f23a252fbb1fc5d6692f7bc7e3238d8cd7ff318ac427513e3d68e2eeb4",
+  "sdk_identity": "6c5793ff7cef71d3c2554c3564922708883dfab9a44222d2284a7a3b098cccf7",
+  "box_host_compiler": "g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+  "local_sdk_identical": false,
+  "local_host_compiler_identical": false,
+  "modules": 50,
+  "contexts": 50,
+  "format_route_pairs": 20,
+  "measured_candidate_contexts": 190,
+  "positive_checks": 250,
+  "zero_low_negatives": 50,
+  "expected_structural_rejections": 10,
+  "changed_router_bucket_replays": 10,
+  "max_condition_scaled_error": 0.00017349670294320541,
+  "min_planted_error": 0.09335464330735388,
+  "build_seconds": 190.90566613711417,
+  "wall_seconds": 254.7506769131869,
+  "non_compile_harness_seconds": 63.84501077607274,
+  "sum_tuning_ms": 89.47626780718565,
+  "route_stats": [
+    {
+      "route": "fq-dense",
+      "contexts": 10,
+      "measured_candidates": 40,
+      "median_tuning_ms": 1.5811901539564133,
+      "max_tuning_ms": 13.489751145243645,
+      "max_error": 0.00017349670294320541
+    },
+    {
+      "route": "sf-dense",
+      "contexts": 10,
+      "measured_candidates": 30,
+      "median_tuning_ms": 1.2650233693420887,
+      "max_tuning_ms": 1.4694640412926674,
+      "max_error": 0.00017349670294320541
+    },
+    {
+      "route": "fq-grouped",
+      "contexts": 15,
+      "measured_candidates": 60,
+      "median_tuning_ms": 1.8384456634521484,
+      "max_tuning_ms": 2.426507882773876,
+      "max_error": 0.0001706520342424533
+    },
+    {
+      "route": "sf-grouped",
+      "contexts": 15,
+      "measured_candidates": 60,
+      "median_tuning_ms": 1.5299273654818535,
+      "max_tuning_ms": 2.0240945741534233,
+      "max_error": 0.0001706520342424533
+    }
+  ],
+  "limitations": [
+    "Only N=256 K=512 with small M/router fixtures; no real-shape performance admission.",
+    "Gate budget was 5000 ms; observed costs do not certify 100 ms for larger shapes.",
+    "Archive contains receipts, not ELF payloads; module hashes were checked by the device runner, not rehashed locally.",
+    "Box SDK and host compiler differ from workstation; source/flags/generator and box-bound runtime identities match.",
+    "Published six DSOs, deployment loader and llama.cpp are not updated by this result."
+  ]
+}
