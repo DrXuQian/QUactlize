@@ -142,14 +142,102 @@ prediction disabled/enabled and bad bindings). Negative tests cover changed
 source, missing results, invalid samples, numerical failures and dispatch
 contract/capture errors. These are host checks, not new GPU results.
 
-Next is a short **selected-dispatch** device/loader gate, not another full
-sweep or 173-parent tuning run. The 55 selected parent identities are already
-in the real-shape module cache; kernel headers and the compiler generator have
-not changed. Unknown-profile transfers need separate targeted checks or an
-admitted K-pack fallback. Do not admit an any-M loader solely from this table.
-The six-library selector and llama.cpp binding have not been changed here.
+The selected-dispatch gate is now ready; see the command below. It is not a
+full sweep or 173-parent tuning run. The 55 selected parent identities are
+already in the real-shape module cache; kernel headers and the compiler
+generator have not changed. Unknown-profile transfers need separate targeted
+checks or an admitted K-pack fallback. Do not admit an any-M loader solely from
+this table. The six-library selector and llama.cpp binding remain unchanged.
 
 Choosing one module reduces compilation/loading of unused candidates; it does
 not by itself reduce the bytes of the published DSOs. AOT packaging must prune
 its actual emitted kernel closure before claiming a size reduction. This
 90-context subset is not proof that the full 247-parent closure can shrink to 55.
+
+## Run the selected-dispatch gate on box
+
+`tools/run_kpack_selected_gate.py` fixes the denominator at 90 real-shape inputs:
+Q2–Q6, FQ dense (30), SF dense (20), FQ grouped (20), SF grouped (20). Each input
+has **one** selected configuration. Default execution only reads the 55 existing
+cached modules; it does not construct a compiler, profile a shortlist, or update
+the selector. A cache miss names the missing parents and stops before device
+work. Restoring the original cache is preferable to rebuilding it.
+
+For each input the gate:
+
+- Reselects using the loaded module's actual device/SDK/kernel identity, then
+  calls the real `prepare_selected` helper and checks the actual resolved grid.
+- Checks every output against official GGUF dequantization, replays the same
+  handle, and compares with direct preparation of the **same parent/tactic**
+  bit-for-bit. The unchanged condition-scaled bound is `5e-3`.
+- Detects a zero-low-plane fault. A launch failure, NaN, or unwritten poisoned
+  output cannot count as a detected numerical negative.
+- Takes three five-repeat samples of that fixed configuration, after two
+  warmups. These are validation timings, never inputs to an online choice.
+
+This reuses the previously tested fixture: random finite GGUF blocks at real
+dimensions, dense FP16-exact row-tagged A with four K categories, and an
+independent factorized official-GGUF oracle. It is not a checkpoint-weight test
+or exhaustive input-value validation. Expected closure is 270 positive checks,
+90 detected negatives, 90 raw replay/direct matches and 25 clean worker exits.
+
+Run from the **develop checkout root**, on one otherwise idle PPU:
+
+```bash
+(
+  set -eo pipefail
+  test "$(git branch --show-current)" = develop
+  git pull --ff-only
+  SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK
+  OUT=/workspace/kpack-selected-dispatch-v1
+  source "$SDK/envsetup.sh"
+  export CUDA_VISIBLE_DEVICES=0
+  export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+  python3 tools/run_kpack_selected_gate.py \
+    --sdk "$SDK" --cache /workspace/kpack-warmup-v1-jit \
+    --output "$OUT" --resume \
+    2>&1 | tee -a "$OUT.console.log"
+)
+```
+
+The subshell prevents a failed command from exiting the calling Docker shell.
+Do not point `--cache` at the old sweep bundle: this is the cache used by the
+completed real-shape module gate. Only if modules really are missing, explicitly
+add `--compile-missing --jobs 32`; this rebuilds missing selected parents only,
+and rejects a different compiler/kernel contract. It is not the default path.
+
+`PLAN`, `CACHE`, `FIXTURE`, `CASE`, `PROGRESS`, and `DONE` records show progress.
+Twenty-five weight groups run in fresh processes. A failed group does not stop
+other groups. Results are saved per case, and `--resume` retains them when
+plan, source, module payload, SDK and physical device identity agree. A clean
+worker-exit receipt is required as well: if cleanup or the coordinator died
+after case results were saved, one case is rechecked to close that group.
+Changed source/authority requires a fresh output directory, not deleting prior
+results. A directory lock prevents two runners sharing one output.
+
+`setup-timing.json` separates cache verification and optional compilation.
+Per-case results separate module loading, fixture preparation, host selection,
+handle preparation and resident-kernel timings. `wall_seconds` is the current
+invocation's wall time, not a sum across resumed runs. Historical calibration
+times are labelled separately; no cross-run ratio is called a same-run 5% pass.
+The principal success record is:
+
+```text
+KPACK_SELECTED_DONE { ... "status": "PASS", "completed": 90, "clean_workers": 25 ... }
+```
+
+Return the output directory (receipts and logs only, no cached `.so` files):
+
+```bash
+(
+  set -e
+  OUT=/workspace/kpack-selected-dispatch-v1
+  test -s "$OUT/summary.json"
+  tar -czf /workspace/kpack-selected-dispatch-v1-results.tgz -C "$OUT" .
+)
+```
+
+`--plan-only --output /a/fresh/directory` needs no SDK/device. Local tests cover
+the actual driver with a host backend, forbidden tuner/compiler calls,
+four routes, wrong output/NaN/missed-store/launch-error plants, cache corruption,
+and fail-closed resume/worker completion. **Device execution remains pending.**

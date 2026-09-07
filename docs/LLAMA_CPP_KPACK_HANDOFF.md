@@ -47,6 +47,17 @@ Selected-dispatch/device and llama.cpp loader admission are still pending.
 Unsupported requests need an admitted K-pack fallback or explicit decline;
 only residual decisions need tests, not another full sweep.
 
+The selected-dispatch device gate is now ready:
+`tools/run_kpack_selected_gate.py`, [box command and return bundle](KPACK_HEURISTIC_V1.md#run-the-selected-dispatch-gate-on-box).
+It executes the 90 calibrated real-shape inputs with one selected tactic each,
+using the existing 55-module cache. Default behavior cannot compile or tune.
+It checks live selection/binding, the module's actual grid, official-GGUF
+numerics, prepared-handle replay, direct same-kernel raw equality and a
+zero-low negative. Three five-repeat validation timings do not modify choices.
+Completed cases and clean per-weight exit receipts resume independently;
+one failed weight does not stop the remaining weights. This gate is host-tested
+but has **not** run on PPU yet, and is not the llama.cpp buffer/loader gate.
+
 The 90-context real-shape gate is complete: all numeric/cache checks pass;
 89 selected medians are within 5% of that run's bounded pool and one Q6 SF
 grouped choice missed the faster fourth candidate after exhausting its soft

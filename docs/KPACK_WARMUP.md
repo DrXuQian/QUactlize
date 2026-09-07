@@ -377,8 +377,12 @@ have summary files; resume it or send the console and completed `cases/` receipt
   on the 50 fixed small contexts (2026-09-07).
 - [x] Real-shape bounded experiment: 90 numeric contexts complete, full bounded
   pool confirmed; retain the one selection gap and timing/budget observations.
-- [ ] Calibrate a small deterministic heuristic from existing evidence; return
-  one complete tactic, with no default online tuning or Cartesian compilation.
+- [x] Calibrate deterministic single-choice selection from existing evidence;
+  recent/historical exact tactics plus opt-in same-family profile transfers,
+  with no default online tuning or Cartesian compilation. See
+  [the current selector](KPACK_HEURISTIC_V1.md).
+- [ ] Execute the [selected-dispatch gate](KPACK_HEURISTIC_V1.md#run-the-selected-dispatch-gate-on-box):
+  90 fixed inputs using the existing 55-module cache, not the old candidate pool.
 - [ ] Bind/admit full tactic identity in the deployment loader; retain existing
   any-M admission until its runtime misses have a verified path.
 - [ ] Integrate the admitted runtime into llama.cpp and update the single
