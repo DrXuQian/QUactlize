@@ -77,6 +77,10 @@ def test_warmup_then_query_is_not_reprofiling():
     t = Tuner(TuningCache(IDENTITY))
     result = t.warmup(request(), [A, B], b)
     assert result["tactic"] == B and result["candidates"] == 2
+    assert [o["us"] for o in result["observations"]] == [10, 8]
+    assert all(len(o["samples_us"]) == 3 for o in result["observations"])
+    assert result["best_observed_us"] == 8
+    assert "observations" not in t.cache.get(request())
     counts = b.counts.copy()
     assert t.select(request(), b)["tactic"] == B
     assert t.warmup(request(), [A, B], b)["tactic"] == B

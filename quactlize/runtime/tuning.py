@@ -251,7 +251,7 @@ class Tuner:
             if not candidates or len(candidates) > self.max_candidates:
                 raise ValueError("candidate list must be nonempty and bounded")
             start = time.monotonic()
-            measured, rejected = [], []
+            measured, rejected, observations = [], [], []
             for tactic in candidates:
                 if measured and (time.monotonic() - start) * 1000 >= self.budget_ms:
                     break
@@ -272,7 +272,17 @@ class Tuner:
                     ]
                     if any(not math.isfinite(t) or t <= 0 for t in times):
                         raise RuntimeError("nonfinite/zero candidate timing")
-                    measured.append((statistics.median(times), tactic))
+                    median = statistics.median(times)
+                    measured.append((median, tactic))
+                    observations.append(
+                        dict(
+                            tactic=asdict(tactic),
+                            us=median,
+                            samples_us=times,
+                            repeats=repeats,
+                            probe_us=probe,
+                        )
+                    )
                 except UnsupportedTactic:
                     rejected.append(tactic.key)
                 finally:
@@ -288,6 +298,7 @@ class Tuner:
             # First candidate is the caller's incumbent. A small measured gain
             # does not justify a noisy tactic change.
             best = min(measured, key=lambda x: x[0])
+            observed_best = best[0]
             incumbent = measured[0]
             if incumbent[0] <= best[0] * (1 + self.improve_pct / 100):
                 best = incumbent
@@ -299,4 +310,6 @@ class Tuner:
                 rejected=rejected,
                 budget_exhausted=elapsed >= self.budget_ms,
                 timing_scope="RESIDENT_FULL_OUTPUT_SELECTED_CANDIDATES",
+                observations=observations,
+                best_observed_us=observed_best,
             )

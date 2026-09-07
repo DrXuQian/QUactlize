@@ -48,6 +48,27 @@ class MeasuredCandidates:
         for p in self.parents.values():
             validate_parent(p)
 
+    def exact_entry(self, request):
+        """Historical measurement identity, not a loaded-module admission."""
+        for entry in self.data["entries"]:
+            key = entry["key"]
+            if key[:4] != [
+                request.qtype,
+                ROUTES.index(request.route),
+                request.n,
+                request.k,
+            ]:
+                continue
+            if key[5] != request.m:
+                continue
+            if request.grouped:
+                if tuple(self.data["row_vectors"][entry["row_vector"]]) != request.rows:
+                    continue
+            elif key[4] != 1:
+                continue
+            return entry
+        return None
+
     @staticmethod
     def usable(c, request):
         if (

@@ -66,6 +66,17 @@ llama.cpp startup warmup and cached execution. Offline sidecar bytes and
 canonical arrangement exports remain unchanged. The completed small gate
 does not need repeating; no new full Cartesian sweep is requested.
 
+The next gate is now implemented: `tools/run_kpack_warmup_real.py`, 90 real-shape
+contexts / 173 distinct parents / at most fifteen candidates per context, across
+all five formats and four routes. It compares the budgeted choice with the
+historical incumbent and bounded-pool best **in the same run**, and reports
+warmup cost plus changed-M/router cache behavior. Eighty-five incumbents have
+exact historical evidence; five M=3072 controls are labelled transfers. This
+gate is host-tested and ready for box, **not yet device-admitted**. See
+[the command and scope](KPACK_WARMUP.md#next-gate-bounded-real-shape-selection).
+No `.so` ABI, sidecar format, mainloop or six-library bundle changes are part
+of this step. Wait for the gate review before binding a deployment loader.
+
 ## Earlier host policy experiments
 
 [K-pack measured policy](KPACK_POLICY.md) supplies an SDK-free C++17 selector

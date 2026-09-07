@@ -201,6 +201,111 @@ new name for a rerun while preserving the compiled cache.
 Return `summary.json` and `results.json`. If it fails, return the console and
 the named parent `build.log`; do not recompile all old bundles.
 
+## Next gate: bounded real-shape selection
+
+`tools/run_kpack_warmup_real.py` extends the completed small gate, using
+`tools/kpack_warmup_real_plan.py` as its fixed denominator. It is ready for
+device execution; no real-shape result is claimed yet.
+
+| Route | Contexts across Q2–Q6 | Coverage |
+|---|---:|---|
+| FQ dense | 30 | M=1/4, N/K=1024/5120, 8192/5120, 5120/25600 |
+| SF dense | 20 | M=2048 on those three families, plus M=3072 at N1024/K5120 |
+| FQ grouped | 20 | E=256, decode/prefill at N512/K3072; boundary/changed routers at N3072/K512 |
+| SF grouped | 20 | Same actual expert-row vectors as FQ grouped |
+
+The plan contains **90 contexts, 173 distinct compiled parents and 868
+candidate-contexts**, never more than five parents / fifteen recipes per
+context. Grouped decode/prefill have total rows 8/16384; boundary/changed
+routers have 528/534 rows, max 129, and 9/12 active experts. Empty experts
+remain explicit. Eighty-five incumbents are exact measured policy entries.
+The five new-M controls explicitly borrow the M=2048 incumbent; they are
+not labelled as measured M=3072 evidence.
+
+Each context first runs the actual 100-ms soft-budget tuner and tests cache
+replay. A **separate validation phase** measures the entire bounded pool in
+forward then reverse order, with two warmups and at most five repeats per
+sample. It includes the historical incumbent in the same run; historical
+microseconds are not used as a cross-machine baseline. A previous bucket hint
+may add one confirmation-only recipe. This phase tests what the budgeted tuner
+missed, not a new Cartesian sweep. Candidate observations, full recipe identity,
+resolved grid, shared/workspace bytes and occupancy are recorded. Per-context
+`tuning_ms`, fixture time and total case time remain separate.
+
+All output elements are checked against official GGUF dequantization with
+the unchanged condition-scaled error bound `5e-3`. Weights are random, finite
+GGUF blocks at real dimensions; these are not actual model checkpoint values.
+The benchmark A is dense, FP16-exact, row-tagged and rank two, with four random
+K categories. This gives an exact factorized CPU oracle for the **same A used
+in timing**, avoiding a huge CPU GEMM for every candidate. Host tests compare
+this oracle to a full independent FP64 GEMM. The vectorized fixture packer is
+test-only: its low/high/units bytes and half metadata are checked against the
+existing scalar reference for all five formats. It does not replace the
+offline format or production converter. Every context also detects a zeroed
+low-plane fault.
+
+The bounded-pool verdict is `WITHIN_BOUNDED_POOL_5PCT`, `BOUNDED_POOL_GAP`, or
+`TIMING_NOISE_REVIEW` (either round differs by over 5%). A numerical pass does
+not certify a global optimum or authorize deployment. Performance gaps remain
+results, not reasons to discard other measurements.
+
+### Run on box
+
+Use one otherwise idle PPU. This first compiles **small cached modules**, not
+the old sweep bundle; existing matching cache entries are reused. The default
+run covers all five formats. The host needs the same NumPy/gguf/PyTorch and SDK
+as the completed small gate.
+
+```bash
+(
+  set -eo pipefail
+  export CUDA_VISIBLE_DEVICES=0
+  export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+  SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK
+  OUT=/workspace/kpack-warmup-real-v1
+  source "$SDK/envsetup.sh"
+  python3 tools/run_kpack_warmup_real.py \
+    --sdk "$SDK" --cache /workspace/kpack-warmup-v1-jit \
+    --output "$OUT" --jobs 32 \
+    2>&1 | tee "$OUT.console.log"
+)
+```
+
+`KPACK_REAL_COMPILE`, `KPACK_REAL_FIXTURE`, `KPACK_REAL_CASE` and
+`KPACK_REAL_PROGRESS` show progress. The 25 weight families run sequentially
+in fresh processes; a failed family does not stop the others. A completed
+context is atomically saved only after numeric, negative, cache and confirmation
+checks. Use the **same output and `--resume`** after interruption; only unfinished
+contexts run again. Source/plan/SDK must match the prior authority. A source fix
+needs a new result directory, but unchanged compiled parents still hit the
+image cache. No results are silently invalidated or deleted.
+
+`--plan-only` needs no SDK/device. `--compile-only` builds the declared union
+without launching a kernel; use `--resume` to continue into device execution.
+Local verification compiled twenty representative parents (five formats ×
+four routes, including large tiles and Q4 packed-A) with eight jobs in 276.6 s.
+All twenty expose the seven declared C symbols and hit the compiled cache on
+replay. The 116 host tests cover fixture-byte/metadata parity, the independent
+oracle, actual driver orchestration, cache/resume and existing policy behavior.
+These are host/ELF checks, not device launches; the local Conda/SDK dynamic-load
+environment is not admitted, and no system libraries were changed to mask it.
+This is a compile-only measurement, **not a box campaign duration estimate**.
+
+Return the small evidence files, not the JIT `.so` cache:
+
+```bash
+(
+  set -eo pipefail
+  OUT=/workspace/kpack-warmup-real-v1
+  tar -czf /workspace/kpack-warmup-real-v1-results.tgz \
+    -C "$OUT" plan.json authority.json modules.json summary.json results.json
+)
+```
+
+If the final status is `INCOMPLETE`, also send the console and `failures/*.json`;
+they name the exact request and active tactic. An interrupted run may not yet
+have summary files; resume it or send the console and completed `cases/` receipts.
+
 ## Tracked sequence
 
 - [x] Freeze the measured policy and retain explicit timing exceptions.
@@ -212,6 +317,7 @@ the named parent `build.log`; do not recompile all old bundles.
   on the 50 fixed small contexts (2026-09-07).
 - [ ] Real-shape bounded tuning: compare selected candidates with recorded
   incumbents and measure startup/cache behavior on representative model shapes.
+  The 90-context runner above is implemented and host-tested; device pending.
 - [ ] Bind/admit full tactic identity in the deployment loader; retain existing
   any-M admission until its runtime misses have a verified path.
 - [ ] Integrate the admitted runtime into llama.cpp and update the single
