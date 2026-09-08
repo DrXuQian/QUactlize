@@ -142,10 +142,11 @@ prediction disabled/enabled and bad bindings). Negative tests cover changed
 source, missing results, invalid samples, numerical failures and dispatch
 contract/capture errors. These are host checks, not new GPU results.
 
-The selected-dispatch gate is now ready; see the command below. It is not a
-full sweep or 173-parent tuning run. The 55 selected parent identities are
-already in the real-shape module cache; kernel headers and the compiler
-generator have not changed. Unknown-profile transfers need separate targeted
+The selected-dispatch gate is now **device-PASS and locally replayed**; see
+the result below and the retained reproduction command. It is not a full
+sweep or 173-parent tuning run. All 55 selected parent identities reused the
+real-shape module cache; kernel headers and the compiler generator have not
+changed. Unknown-profile transfers need separate targeted
 checks or an admitted K-pack fallback. Do not admit an any-M loader solely from
 this table. The six-library selector and llama.cpp binding remain unchanged.
 
@@ -153,6 +154,46 @@ Choosing one module reduces compilation/loading of unused candidates; it does
 not by itself reduce the bytes of the published DSOs. AOT packaging must prune
 its actual emitted kernel closure before claiming a size reduction. This
 90-context subset is not proof that the full 247-parent closure can shrink to 55.
+
+## Reviewed selected-dispatch device result
+
+Uploaded `kpack-selected-dispatch-v1-results.tgz`, SHA-256
+`174c58a6aad8046e33f7e87a831abef6f6db092d2de9777dd7a0848f81fd8b4f`,
+matches the `05de781` source hashes and exact generated plan. Local review
+replayed all case digests, live-selection/grid receipts, worker logs and clean
+exit receipts, recomputed the summary, and matched all 55 module keys and
+payload fingerprints against the previously uploaded module cache receipts.
+The archive contains no ELF payloads; local review does not rerun the PPU.
+
+| Route | Contexts passed | Maximum condition-scaled error |
+|---|---:|---:|
+| FQ dense | 30 / 30 | 5.75025e-5 |
+| SF dense | 20 / 20 | 8.49015e-5 |
+| FQ grouped | 20 / 20 | 2.76839e-4 |
+| SF grouped | 20 / 20 | 2.76839e-4 |
+
+All five formats pass all four routes: **270 positive checks, 90 detected
+zero-low negatives, 90 reused-handle raw matches, 90 direct same-tactic raw
+matches and 25 clean worker exits**. The error bound remains `5e-3`.
+Both poison patterns produce identical negative outputs in all 90 cases.
+Compilation is zero, online tuning is disabled, and no calibrated choice
+changed. Recorded harness wall time is **301.958 seconds**, including fixture
+construction and fresh processes; it is not per-request initialization cost.
+See [the machine-readable review](KPACK_SELECTED_GATE_RESULT.json).
+
+This closes the selected-dispatch numerical/binding gate, not a performance
+search: only the selected tactic is timed, and 13 contexts have more than 5%
+spread across the three validation samples. No new global 5% performance
+claim is made and the timings do not refit the policy. The real-dimension
+synthetic fixtures are not a llama.cpp checkpoint/loader test.
+
+Next is C++ full-identity module binding and loader admission, including an
+admitted miss path before adopting K-pack-only buffers. Keep the Python
+reference selector off the inference hot path: its measured selection medians
+are about 39–41 us for dense and 233–259 us for grouped; these are not C++
+latencies. Prepare and reuse handles, and invalidate them when their request,
+router, buffer pointers or owning module changes. The final deployment package and
+model-level validation remain pending; this gate needs no repeated full run.
 
 ## Run the selected-dispatch gate on box
 
@@ -240,4 +281,6 @@ Return the output directory (receipts and logs only, no cached `.so` files):
 `--plan-only --output /a/fresh/directory` needs no SDK/device. Local tests cover
 the actual driver with a host backend, forbidden tuner/compiler calls,
 four routes, wrong output/NaN/missed-store/launch-error plants, cache corruption,
-and fail-closed resume/worker completion. **Device execution remains pending.**
+and fail-closed resume/worker completion. **Device execution passed in the
+reviewed archive above**; this command is retained for reproduction, not a
+request to repeat the completed gate.

@@ -1,0 +1,82 @@
+{
+  "schema": "quactlize.kpack-selected-gate-review.v1",
+  "verdict": "SELECTED_DISPATCH_DEVICE_PASS",
+  "archive": "kpack-selected-dispatch-v1-results.tgz",
+  "archive_sha256": "174c58a6aad8046e33f7e87a831abef6f6db092d2de9777dd7a0848f81fd8b4f",
+  "reviewed_source_commit": "05de78121c3abc5a612d4c870137e1b26aab711c",
+  "artifact_root": "/workspace/kpack-selected-dispatch-v1",
+  "plan_digest": "2a24e49e43f002e592cbee64834872be0ce27a9361964015ad57b2b883880c59",
+  "authority_digest": "05eb735f59691b254645623a64444df79c80a79ab8e98fcd1430f112ef0c8ad6",
+  "module_receipts_digest": "13b4a7a95cf47767a3d7cd783e87496b9676d8d78182ab93bd7c11b572213344",
+  "kernel_identity": "2a9791f23a252fbb1fc5d6692f7bc7e3238d8cd7ff318ac427513e3d68e2eeb4",
+  "sdk_identity": "6c5793ff7cef71d3c2554c3564922708883dfab9a44222d2284a7a3b098cccf7",
+  "device_host": "aiswu95.eng.t-head.cn",
+  "device_pci": "0000:08:00.0",
+  "formats": [10, 11, 12, 13, 14],
+  "contexts": 90,
+  "format_route_pairs": 20,
+  "cached_parents": 55,
+  "positive_checks": 270,
+  "zero_low_negatives": 90,
+  "negative_poison_independence": 90,
+  "reused_handle_raw_matches": 90,
+  "direct_same_tactic_raw_matches": 90,
+  "clean_worker_exits": 25,
+  "max_condition_scaled_error": 0.00027683903911088925,
+  "condition_scaled_error_bound": 0.005,
+  "min_planted_error": 0.020179433535854226,
+  "compiler_invoked": false,
+  "compile_seconds": 0.0,
+  "online_tuning": false,
+  "calibration_choices_changed": false,
+  "cache_verify_seconds": 0.013252997770905495,
+  "wall_seconds": 301.9575690245256,
+  "validation_samples_per_context": 3,
+  "validation_repeats_per_sample": 5,
+  "contexts_with_sample_spread_above_5pct": 13,
+  "route_stats": [
+    {
+      "route": "fq-dense",
+      "contexts": 30,
+      "max_error": 0.000057502461334926674,
+      "python_selection_us_median": 41.37074574828148,
+      "handle_prepare_us_median": 262.9486843943596
+    },
+    {
+      "route": "sf-dense",
+      "contexts": 20,
+      "max_error": 0.00008490153322811178,
+      "python_selection_us_median": 39.17748108506203,
+      "handle_prepare_us_median": 363.54921758174896
+    },
+    {
+      "route": "fq-grouped",
+      "contexts": 20,
+      "max_error": 0.00027683903911088925,
+      "python_selection_us_median": 258.79498571157455,
+      "handle_prepare_us_median": 476.74262896180153
+    },
+    {
+      "route": "sf-grouped",
+      "contexts": 20,
+      "max_error": 0.00027683903911088925,
+      "python_selection_us_median": 232.95637220144272,
+      "handle_prepare_us_median": 398.3890637755394
+    }
+  ],
+  "local_replay": {
+    "exact_plan_and_source_hashes": "MATCH",
+    "case_receipts_and_worker_logs": 90,
+    "clean_weight_receipts": 25,
+    "module_keys_and_payload_fingerprints_match_previous_cache": 55,
+    "summary_recomputed_from_case_receipts": true,
+    "archive_extracted_or_device_executed_locally": false
+  },
+  "limitations": [
+    "Archive contains receipts and logs, not ELF payloads; payload fingerprints match prior module receipts but were not independently rehashed locally.",
+    "One selected tactic per context; no same-run alternative comparison or global 5% performance bound. Thirteen contexts have validation sample spread above 5%.",
+    "Real dimensions with synthetic finite GGUF fixtures and the independent official-GGUF oracle; not checkpoint-weight or llama.cpp loader validation.",
+    "Python selection and prepare timings are setup measurements, not C++ hot-path latency. Reused handles are validated; C++ loader binding remains pending.",
+    "No any-M admission or unknown-router/family guarantee. The six-library bundle, public ABI, offline format and llama.cpp wiring remain unchanged."
+  ]
+}

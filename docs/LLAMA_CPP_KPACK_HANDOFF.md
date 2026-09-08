@@ -4,11 +4,43 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
-Last updated: 2026-09-07. Persistent sidecar schema v3 is current. The
+Last updated: 2026-09-08. Persistent sidecar schema v3 is current. The
 published `2826cf1` loader-safe runtime bundle has passed strict binary
 inspection, its selected-config oracle, and all 26 host ABI cases in a fresh
 LFS checkout. Its PPU device gate is still **PENDING**. Host/ELF admission is
 not device admission and does not authorize deployment by itself.
+
+## Local loader audit and GPU conversion
+
+The local llama.cpp `26955be8a` wiring has been reviewed. Keep its Kpack
+buffer ownership, per-format loader and dense/MoE boundary transforms.
+It still calls the old FQ DSOs; the sidecar reader/writer exist but are not
+called by the model loader. Conversion currently runs on the CPU with a full
+inverse check and synchronous uploads. The new grouped module ABI also
+requires host rows, whereas llama.cpp currently keeps routing entirely on
+device; do not add a per-token synchronization merely to reuse that ABI.
+
+A separate five-format GPU producer is now implemented in
+`quactlize/packing/`. It writes the same canonical low/high/units bytes
+directly to caller-owned device spans, asynchronously, without changing the
+GEMM kernel identity or recompiling its cached parents. Local compilation and
+host byte proofs pass; **PPU byte correctness and throughput remain pending**.
+It is not yet called from llama.cpp. The asynchronous sidecar queue/model
+loader and complete-identity C++ dispatcher remain separate pending work.
+See [the audit, local fixes and bounded copy/persistence plan](LLAMA_CPP_KPACK_INTEGRATION_AUDIT.md).
+
+Precompiled producer: `prebuilt/ppu0010/kpack-pack-v1/libquactlize_ppu_pack.so`
+(Git LFS, 126,504 bytes), with adjacent `manifest.json`. The box command in
+the audit runs 15 byte-exact cases and separated transfer/pack timings with
+no compilation. This producer remains device-pending and is not yet the
+llama.cpp loader integration.
+
+Final packaging follows the JIT direction: a small selector/module-loader
+binding, the small conversion DSO, and individually cached compute modules.
+Build the small libraries locally; do not require a new monolithic six-DSO
+all-config build. The measured module cache stays valid unless its own
+ABI/body/build contract changes. A missing parent still needs a one-time
+target-SDK compilation. The C++ binding and model-level gate remain pending.
 
 ## Current deployment direction: heuristic plus cached JIT
 
@@ -43,11 +75,12 @@ Check the full compiler receipt (`kModuleContract`) and complete parent tuple
 at module binding, then call its query/can_implement. Nonpersistent recipe
 grid is zero; persistent grids use actual rows. Python `prepare_selected`
 performs these guards and never profiles, JITs, or falls back internally.
-Selected-dispatch/device and llama.cpp loader admission are still pending.
+The 90-context Python selected-dispatch device gate has passed; C++ module
+binding and llama.cpp loader admission are still pending.
 Unsupported requests need an admitted K-pack fallback or explicit decline;
 only residual decisions need tests, not another full sweep.
 
-The selected-dispatch device gate is now ready:
+The selected-dispatch device gate is now **PASS and locally replayed**:
 `tools/run_kpack_selected_gate.py`, [box command and return bundle](KPACK_HEURISTIC_V1.md#run-the-selected-dispatch-gate-on-box).
 It executes the 90 calibrated real-shape inputs with one selected tactic each,
 using the existing 55-module cache. Default behavior cannot compile or tune.
@@ -55,16 +88,27 @@ It checks live selection/binding, the module's actual grid, official-GGUF
 numerics, prepared-handle replay, direct same-kernel raw equality and a
 zero-low negative. Three five-repeat validation timings do not modify choices.
 Completed cases and clean per-weight exit receipts resume independently;
-one failed weight does not stop the remaining weights. This gate is host-tested
-but has **not** run on PPU yet, and is not the llama.cpp buffer/loader gate.
+one failed weight does not stop the remaining weights. Uploaded archive
+`174c58a6...` matches `05de781`: 90/90 cases, 270 positive checks, 90 finite
+zero-low negatives, 90 replay/direct raw matches and 25 clean exits.
+Maximum condition-scaled error is `2.76839e-4` against the unchanged `5e-3`
+bound. All 55 parents came from cache; compilation and online tuning are zero.
+Harness wall time is 301.958 seconds, not per-request JIT time. See
+[the reviewed result](KPACK_HEURISTIC_V1.md#reviewed-selected-dispatch-device-result)
+and [receipt](KPACK_SELECTED_GATE_RESULT.json). This is not the llama.cpp
+buffer/loader gate or an any-M promise. Thirteen validation sample sets have
+more than 5% spread; there is no same-run alternative-tactic comparison or
+new global performance bound.
 
-The 90-context real-shape gate is complete: all numeric/cache checks pass;
+The earlier 90-context tuning experiment is complete: all numeric/cache checks pass;
 89 selected medians are within 5% of that run's bounded pool and one Q6 SF
 grouped choice missed the faster fourth candidate after exhausting its soft
 budget. This does not certify a universal heuristic or all unseen shapes.
 See [the reviewed results](KPACK_WARMUP.md#reviewed-real-shape-result).
 Neither the six-library bundle nor llama.cpp wiring has changed. Compiled
-module coverage can be reused; deployment selection/binding remains pending.
+module coverage can be reused; C++ deployment binding remains pending. Use
+the SDK-free C++ selector and reusable module handles, not the Python query on
+the hot path. Its measured setup overhead is not a C++ latency measurement.
 
 ## Frozen host runtime policy (2026-09-07)
 
@@ -116,9 +160,9 @@ hint, not an any-M promise. The caller still owns allocation, stream, SF
 metadata preparation and an admitted miss path. This interface is separate
 from the old `config_name` exports; do not reinterpret their names.
 
-Next: admit the deterministic selector's selected-dispatch path and loader,
-then bind llama.cpp cached
-execution and on-demand compilation. Offline sidecar bytes and
+Next: bind the admitted selected-dispatch module path in C++, close loader
+any-M/miss handling, then validate llama.cpp cached execution and any explicit
+initialization-time compilation. Offline sidecar bytes and
 canonical arrangement exports remain unchanged. The completed small gate
 does not need repeating; no new full Cartesian sweep is requested.
 
