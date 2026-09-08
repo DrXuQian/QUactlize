@@ -4,19 +4,698 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
-Last updated: 2026-09-08. Persistent sidecar schema v3 is current. The
+Last updated: 2026-09-08. Verified offline bundles retain schema v3; the local
+runtime cache now has a separate hash-free contract, described below. The
 published `2826cf1` loader-safe runtime bundle has passed strict binary
 inspection, its selected-config oracle, and all 26 host ABI cases in a fresh
 LFS checkout. Its PPU device gate is still **PENDING**. Host/ELF admission is
 not device admission and does not authorize deployment by itself.
 
+## Current work: decode GEMV and ScaleFirst prefill
+
+The GSM8K pilot is now reviewed. Archive `llama-kpack-gsm8k.EEZKMu.results.tgz`
+(`cb8b7906...`) has 128/128 matched requests, both arms 122 correct, and no
+paired correctness flips. It also shows an observed decode regression:
+8.0932 -> 10.4625 ms/token (+29.27%), including +29.17% median on the 43
+identical-output pairs. This is ordinary llama.cpp GPU versus current FQ
+K-pack GEMM, not a standalone Xplane comparison. No new kernel trace was
+collected. The full raw-result review, caveats and delivery checklist are in
+[KPACK_EXECUTION_FOLLOWUP.md](KPACK_EXECUTION_FOLLOWUP.md).
+
+The additive execution package is now locally compiled: five-format GEMV and
+metadata prepass plus ten grouped parents with device-only query/prepare.
+The eight GEMV recipes are candidates, not measured defaults. All eleven DSOs
+total about 2.08 MiB; they do not replace the existing six-library bundle.
+75 local reader/metadata/fixture/policy tests pass. ELF exports/format-specific
+kernel inventory are checked. No PPU correctness/performance admission yet.
+The C++ selector and final llama.cpp wiring/metadata lifetime remain pending;
+the model branch and its current default computation route are unchanged.
+
+Next box entry (execute only, no compilation):
+
+```bash
+git pull --ff-only
+git lfs pull --include='prebuilt/ppu0010/kpack-execution-v1/**' --exclude=''
+PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
+QUACTLIZE_PPU_BUNDLE=/workspace/quactlize-runtime-artifact-2826cf1-46fc3096e1a1/prebuilt/ppu0010/2826cf1/runtime6-46fc3096e1a1/bundle \
+CUDA_VISIBLE_DEVICES=0 bash tools/run_kpack_execution_box.sh
+```
+
+Run from the Quactlize develop checkout. The shell script has a child-shell
+boundary, runs both independent gates even if one fails, and archives the
+printed `kpack-execution.*.results.tgz`. GEMV timing includes direct indexed
+access/reduction; its legacy GEMM comparator is explicitly pre-gathered
+core-only. The grouped gate additionally measures SF preparation and verifies
+device-only metadata under changed routing/graph replay. See the follow-up
+document for denominators and limits; this is not a model throughput gate.
+
+SF timing must include first-use metadata preparation separately from resident
+GEMM. This model needs an additional 3.75 GiB for FP16 scale+zero over all 120
+MoE weights; ideal one-time traffic is 5.625 GiB. Cache that preparation with
+the weight, not per token/request, and retain packed units for GEMV/FQ. The
+checklist explicitly includes the memory budget and first-use break-even.
+
+## Completed box entry: single-request GSM8K generated answers
+
+llama.cpp `a39917a66acd742ae02b2034549fded8ce9506bb` is pushed to
+`DrXuQian/llama.cpp`, `feat/kpack-gpu-cache`; remote SHA verified.
+Run `bash tests/run-quactlize-gsm8k.sh` with the existing SDK, model,
+runtime bundle, pack library, cache and configured PPU build, plus the local
+GSM8K **test** file in `GSM8K_FILE`. No new Quactlize library is required.
+Only llama-server and its changed dependencies are incrementally built;
+the UI build/download is disabled. Main and develop are unchanged.
+
+This evaluates actual answers, not the earlier question/answer-text PPL.
+Default: 128 sampled questions without replacement, seed 20260908, greedy,
+thinking off, context 4096 and at most 1024 generated tokens per answer.
+The ordinary GPU server runs first, then a cached K-pack server, with one
+model load per arm, one server slot and one request at a time. Business
+batch is **1**; the default 128-token batch is only a prefill chunk.
+Gold reasoning/answers never enter the model prompt. The runner compares
+the exact token-array/request hashes across arms and validates effective
+sampling, prompt counts, no KV-prompt reuse and the same model/template.
+Final numeric answers must follow `####`; truncations and failed parses
+remain in the denominator, with separate counts and paired changes.
+
+This suite does not run a profiler. It checks GPU/K-pack buffer placement
+and complete disk-cache hits, while retaining the earlier numerical
+gate's independent device execution evidence. Its own records explicitly
+say `kernel_execution=NOT_COLLECTED`; neither route placement nor generated
+text is mislabeled as a new activity trace. Response timings are diagnostic,
+not a controlled throughput comparison when answer lengths differ.
+
+Local validation: 16 answer-protocol/lifecycle tests and 32 existing numerical
+tests pass. Two real subprocesses/local fake HTTP servers exercise the actual
+client, including the full shell wrapper, injected second-answer HTTP failure,
+preserved partial answers, process shutdown and result archiving. These are
+not model or device oracles. The existing local PPU llama-server target was
+incrementally built, and four actual-binary CLI-only argument sets pass with
+CPU buffer names. The box pilot is reviewed above; wider accuracy remains
+separate from this 128-question result.
+
+Upload the printed `llama-kpack-gsm8k.*.results.tgz`: raw generated responses,
+selected IDs/prompts, token receipts, `summary.json`, logs and binary receipts
+are included; model/cache contents are not. Every answer prints progress and
+an observed ETA for the current arm only. `GSM8K_CASES`, `GSM8K_MAX_TOKENS`
+and `GSM8K_TOKEN_BATCH` are documented in `tests/quactlize-gsm8k.md`.
+The 128-question default is a pilot, not full benchmark/accuracy admission.
+
+## First model numerical gate with device execution evidence
+
+### QuHHHY partial result and performance-log fix
+
+Archive `llama-kpack-numerical.QuHHHY.results.tgz`, SHA-256
+`acba469b94ff2effd2712a32266fac4ef3dc1f2914ad5ca9edcbd584ad9f5005`,
+records source `d45f8fec2`. The token-batch-128 short proof passes (480
+grouped GEMMs, all 120 tensor routes). The three extended numerical phases
+complete with model rc=0 and matching raw metrics/JSON. Context 1024 x eight
+chunks scores 4,088 positions; token SHA-256 is
+`64219112ff53b2147c1ed520fbb111b332c0b8da971ca05a984ff68d8f40a6e4`.
+Ordinary/K-pack paired PPL is 1.739846 / 1.741794, ratio 1.001120, mean KLD
+0.002658, max KLD 0.588895 and top-token agreement 98.875% (46/4,088 changes).
+Ordinary self-replay has 100% top-token agreement and max KLD 0.000004.
+These results are preserved; they are not a generated-answer accuracy score.
+
+The first performance process also exits 0 and completes all eight chunks,
+but its log has zero model timer records. `--verbosity 3` hid library INFO:
+`common_log_default_callback` maps that severity to TRACE threshold 4,
+whereas application INFO uses 3. Thus application PPL remains visible but
+library timers/placement do not. No timer can be recovered from that log,
+and process wall must not replace a model timer. Token-batch-1 did not start.
+
+Fix `d25b88a18b9e1a449c54b3bfa06d9ec1202e2bbc` is pushed to the same fork
+feature branch. Performance now uses threshold 4, with DEBUG (5) and the
+profiler still disabled. The actual `common/log.cpp` callback is compiled
+and tested locally: old threshold 3 drops timers, 4 retains them without
+DEBUG, 5 admits DEBUG. The corrected host orchestration fixture reproduces
+the old stop; all 32 tests pass after the fix, plus four actual-binary CLI
+checks. No kernel, DSO or computation change.
+
+`--performance-only` is a scoped fresh rerun of ABBA timings, not automatic
+resume. Selecting `EVAL_BATCHES=128` repeats only the four missing prefill
+timings. `EVAL_BATCHES=1 --extended` can run the as-yet-unstarted single-token
+arm. Preserve this archive alongside later results; no rerun of completed
+token-batch-128 numerical phases is needed.
+
+Terminology: both token batches use one sequence (`n_seq=1`), hence business
+request batch size is always one. `-b 128 -ub 128` is a token submission chunk
+for single-request prefill, not 128 concurrent requests or total sequence
+length 128. `-b 1 -ub 1` exercises the single-token path. Those numerical runs
+used GSM8K as fixed likelihood text only. The later 128-question generated-
+answer pilot is reviewed above; it is separate evidence, not a PPL score.
+
+### Next box entry: extended coverage and separate model timings
+
+llama.cpp `d45f8fec232930c47632ecbe48ae201c7dee99e1` is pushed to
+`DrXuQian/llama.cpp`, `feat/kpack-gpu-cache`; remote SHA verified. Use the
+same environment/build/cache with `bash tests/run-quactlize-numerical.sh --extended`.
+Only test scripts/parsers/documentation changed. No GEMM/pack DSO, buffer
+ABI, loader or compute dispatcher change; develop/main are untouched.
+
+Each batch/ubatch (128 and 1) runs one short cached device proof, then
+ordinary GPU reference-save/self-replay and cached K-pack/reference
+comparison at context 1024, eight chunks: 8,192 input tokens and 4,088 scored
+positions. Only the short proof is traced; large comparisons explicitly
+report `kernel_execution=NOT_COLLECTED`. No repeat of GPU packing or cache
+publication, and no CPU reference. GSM8K rendering uses the first 256 records
+to provide enough text, not generated-answer evaluation of those questions.
+
+Separate performance processes run reference/cache/cache/reference for
+each batch: normal warmup, library INFO logging (threshold 4 after the fix), no profiler, no saved probabilities
+or KL comparison. The summary uses model-evaluation timers, not load time or
+process wall. It retains both samples per arm and spread; this is an initial
+model-throughput comparison, not an isolated GEMM or 5%-confidence claim.
+The existing `llama-bench` does not expose this branch's cache option, so this
+entry reuses `llama-perplexity` without expanding benchmark/production code.
+
+Local checks: 31 tests pass, including synthetic full shell orchestration
+of both modes; 12 phase/batch argument sets pass the actual PPU executable's
+host-only `--help` parsing with CPU buffer names. The ten `CigOEn` raw logs
+reparse with unchanged routes/metrics. These are not new GPU numerical runs.
+The partial `QuHHHY` result and remaining work are recorded above.
+At least 8 GiB free is required in `RESULT_ROOT`; two reference probability
+files use about 3.8 GiB with this model. Upload the printed `.results.tgz`
+(including `performance-summary.json`); large files stay on the box.
+
+### Latest result: CigOEn, execution and cache replay verified
+
+Uploaded `llama-kpack-numerical.CigOEn.results.tgz`, SHA-256
+`7511cc22ad4c4fe044439418b07068072e0451f80a6365b6a2d5d453411d8460`,
+records llama.cpp source `35b74114f806a4581daff9b916390f7b0ee8996d`.
+All ten processes exit 0; raw application metrics/routes, phase JSON and
+summary TSV agree. No reported CUDA/PPU launch or decode errors. The five
+inventory DSO hashes match the supplied `2826cf1` bundle manifest; the GPU
+pack DSO is unchanged (`611ec98c...`). FA/MOE/GDN are OFF, Quactlize and
+CUDA graphs are ON. This still uses the transitional FQ format DSOs,
+not the new C++ heuristic/JIT dispatcher.
+
+| Mode | Ordinary GPU PPL | Uncached K-pack PPL | Cached/reference PPL increase | Mean KLD | Max KLD | Top-token agreement |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Batch/ubatch 128 | 1.4282 | 1.4325 | 0.2995% | 0.003950 | 0.268156 | 98.819% |
+| Batch/ubatch 1 | 1.4239 | 1.4244 | 0.0370% | 0.008010 | 0.503132 | 98.425% |
+
+The PPL increases use the paired `cache-reference` ratio, not rounded PPL
+division. Each mode scores the same 254 positions in two 256-token chunks;
+all four probability-file receipts have identical token SHA-256
+`ecbff63226d90a7498d0ac8a9d09f851aac5331c9450a907eeb4c63bf8fa5bdc`.
+The model has 120 routed grouped tensors (80 Q4_K, 40 Q5_K, E256). Each
+K-pack phase reports exactly 480 grouped GEMMs at batch 128 (320 fmt0,
+160 fmt1), or 61,440 at batch 1 (40,960 fmt0, 20,480 fmt1). Post-start
+route records cover all 120 tensors. Ordinary GPU phases have nonempty
+activity and zero matching grouped GEMMs. Submitted activity records match
+the exact inventory names and positive durations; raw SQLite/asysrep and
+probability payloads remain on the box and were not replayed locally.
+
+All four cached processes report 120 uploads, zero resident misses and no
+GPU repack. Cached-versus-uncached top-token agreement is 100% in both modes;
+max KLD is 0.000004 / 0.000043, versus ordinary GPU self-replay maxima
+0.000004 / 0.000046. No additional cache-induced numeric loss is observed
+on this sample. This does not assert bitwise equality of compressed logits.
+
+Review outcome: execution coverage and model cache replay pass for this
+sample. Cross-route differences are above self-replay noise: 3/254 and
+4/254 top-token changes, with KLD tails shown above. Do not label them a
+proven kernel bug or proven harmless rounding from these results alone.
+Broader model accuracy remains pending; this is neither GSM8K answer
+accuracy nor a full-corpus/long-context or Q2/Q3/Q6 model qualification.
+Next: expand numerical coverage and collect separate unprofiled performance
+measurements. Traced runtimes are not performance admission. No production
+kernel, DSO, packing format or runner change was made during this review.
+
+### Historical runner bring-up
+
+The operator has returned the `F56TMR` recheck using `35b74114f`:
+batch 128 / `reference-save` has `route_verdict=PASS`, PPL 1.4282,
+12,594 GPU kernel calls and zero matching Quactlize grouped GEMMs. The
+saved probability payload passes its header/size check: context 256,
+two chunks, vocabulary 248,320, 254 scored tokens, token SHA-256
+`ecbff63226d90a7498d0ac8a9d09f851aac5331c9450a907eeb4c63bf8fa5bdc`.
+These are operator-pasted checker results; the underlying archive has not
+been reviewed locally. This admits only the ordinary GPU reference arm,
+not K-pack arithmetic. K-pack/cached comparisons and batch 1 were pending
+until the later `CigOEn` run above.
+The current runner creates a fresh result directory and has no resume mode;
+The complete `CigOEn` run repeated this reference arm. No Quactlize DSO rebuild.
+
+Checker follow-up `35b74114f806a4581daff9b916390f7b0ee8996d` fixes a
+save-phase log mismatch exposed by `llama-kpack-numerical.F56TMR`:
+the producer prints `perplexity: calculating perplexity over ...`, while
+the checker omitted the second `perplexity`. Correct executions would be
+rejected at the start-record check. The fixed checker uses phase-specific
+messages and reports observed headers when the requested shape is absent.
+Source-derived save-message tests reproduce four old failures (ordinary GPU
+and K-pack, batches 1/128); all 22 tests pass after the fix. Wrong chunk,
+context, batch, sequence count and message-kind cases still reject.
+The preserved reference-save log/SQLite and probability payload were
+rechecked without a model rerun or DSO rebuild, as reported above.
+This is not evidence of a kernel fix or K-pack accuracy admission.
+
+CLI follow-up `c7fcaea17210c68a073aa923f04f5fe06f621343` fixes the next
+box-side pre-evaluation error: `--color` is completion-specific and was
+incorrectly used in perplexity arguments. Both numerical entries now use
+`--log-colors off`. The exact phase argv is parsed with `--help` before
+profiling/loading the model. Actual local PPU executable rejects old
+`--color` and accepts the replacement; six batch/mode parser checks pass
+(CPU buffer name for host-only parsing, no model or kernel execution).
+All 18 evidence/corpus tests still pass. No Quactlize DSO or profiler-scope
+change; PPL/KLD/device-execution results were pending at that point. Asight here is
+kernel-activity tracing for execution evidence, not ACU full metrics or a
+requirement of perplexity arithmetic itself. Traced times are not performance.
+
+The first box attempt stopped at corpus download (`stage=corpus`, line 84,
+rc=4), before inventory/build/evaluation. This is not a numerical/kernel
+failure. llama.cpp `ced89fc7560bc6075160357b0a5e0fe78a128a5b` adds
+`GSM8K_FILE` for a local JSONL/JSON/Parquet file, exclusive with `EVAL_FILE`.
+It renders the first 32 question/answer records as a fixed corpus, bypasses
+network download, and saves source/text hash receipts. Parquet needs existing
+`pyarrow`; the runner installs nothing. The original file is unchanged.
+All 18 local checks pass, including JSONL sampling, schema negatives and
+Parquet. The box uses the existing `gsm8k/main/test-00000-of-000001.parquet`.
+This is likelihood
+comparison, not GSM8K generated-answer accuracy; device trace requirements
+and the two-chunk evaluation budget are unchanged.
+
+llama.cpp `50079485e57ea7894c5aa76ce74c3836a5250375` adds
+`tests/run-quactlize-numerical.sh` on `feat/kpack-gpu-cache`. It reuses the
+existing configured PPU build, published format libraries and complete
+`Lwpxya` cache. Only the perplexity tool needs an incremental build; there is
+no Quactlize kernel/DSO or cache-format change.
+
+The initial scope is two 256-token chunks / 254 scored tokens at batch/ubatch
+128 and 1. Five fresh processes per mode compare ordinary GPU self-replay,
+uncached K-pack, cached K-pack against uncached K-pack, and cached K-pack
+against ordinary GPU. The standard WikiText-2 test corpus is downloaded if
+`EVAL_FILE` is unset. This is not a CPU reference or full-corpus admission.
+
+All numerical processes collect Asight kernel-activity traces. Executed
+grouped GEMM symbols must match the actual delivered format-library device
+inventory, with positive duration and enough calls for the workload. Model
+warmup is disabled; post-evaluation-start route records must cover all cached
+grouped tensors at the requested batch. Ordinary GPU baseline must have
+nonempty GPU activity and zero Quactlize grouped GEMMs. Loading a DSO or
+running a pack/gather/metadata kernel does not pass this gate.
+
+Local checks: 15 evidence-parser tests pass, actual five-library inventory
+contains 55 unique grouped GEMM entries, and the existing PPU perplexity
+target builds/links. The subsequent `CigOEn` result is reviewed above.
+Upload the printed `llama-kpack-numerical.*.results.tgz`;
+large traces/SQLite/log-probability payloads stay on the box. Trace timing is
+not a performance benchmark. PPL/KLD admission remains review-based; the
+reference self-replay measures serialization/replay noise.
+
+## Latest PPU result: Lwpxya, source prefetch and H2D pipeline pass
+
+Archive `llama-kpack-smoke.Lwpxya.results.tgz` reports source
+`ced6f241e28c344fef895fa95d6931855c73c4cb` and
+`KPACK_MODEL_CACHE_SMOKE PASS`. Library receipts pass. Raw model/time logs
+agree with the timing summary; all three processes exit 0 with no reported
+CUDA/PPU launch errors and 62 graph reuses each. Same model and PPU-ZW810
+PCI `0000:08:00.0` as before.
+
+| Phase | Reported load (s) | Process wall (s) | Peak host RSS (GiB) | Decode (tokens/s) |
+| --- | ---: | ---: | ---: | ---: |
+| baseline, GPU pack without cache | 4.35924 | 8.38 | 21.17 | 92.05 |
+| cold, create cache | 4.38746 | 22.24 | 21.19 | 91.98 |
+| hit, upload cache | 3.90882 | 8.54 | 20.53 | 91.94 |
+
+Hit confirms `source_mmap=on-demand`, one two-slot/16 MiB H2D pipeline,
+120 uploads, zero misses and zero GPU packs. Its host peak falls from the
+previous run's 39.14 GiB to 20.53 GiB (18.61 GiB / 47.56% less). Reported
+load is 10.33% below the same-run GPU-pack baseline; total process wall is
+still 0.16 s higher. Old hit load/wall were 5.32570/9.98 s, but baseline also
+changed between runs, so cross-run timing changes are not isolated speedups.
+Hit filesystem-input counter and major faults are both zero: this is a
+new-process warm-filesystem-cache result, not a cold-disk benchmark.
+
+Actual-buffer upload preflight passes all ten expected cases (five formats,
+E1/E257), 20 eager reads and 60 graph replays with immediate source reuse.
+The separate readiness preflight passes 18 eager checks, 18 replays, six
+transitions and two missing-wait negatives. These establish byte-transfer
+and synchronization coverage, not K-quant model arithmetic accuracy.
+
+The cache remains `llama.kpack-cache` v1 / arrangement v2 with no hashes:
+80 Q4_K + 40 Q5_K grouped E256 tensors, 18.125 GiB, 613 skipped records.
+Region sizes sum to storage size. Cold publication takes 15.26 s (12.45 s
+copy/write and 2.81 s flush); context teardown at 6.097940 s precedes
+publication at 19.834908 s by 13.737 s. First-write process-exit latency
+therefore remains. Neither physical overlap nor the individual contribution
+of each optimization is isolated by this combined single-sample run.
+
+**Both loader optimizations pass this model/transport smoke.** Model PPL/KLD
+is still `NOT_RUN reason=EVAL_FILE_NOT_SET`; provide a corpus for the existing
+numerical entry. Quactlize libraries/compute route are unchanged; this does
+not admit the new C++ dispatcher, broad routes or main.
+
+Archive SHA-256:
+`e89a779275566a3e0e7711d662fc6f0f09602a2efe3d9e98b131ab48acdfaa7e`.
+
+## Bounded cache H2D pipeline (2026-09-08, device smoke passed)
+
+The user approved the second optimization. llama.cpp commit
+`ced6f241e28c344fef895fa95d6931855c73c4cb` includes the preceding source
+prefetch fix and changes cached-plane installation to two reusable 8 MiB
+pinned slots per K-pack buffer (16 MiB for the tested single-buffer model).
+CPU staging can overlap the other slot's H2D transfer. Chunks can cross
+low/high/unit boundaries; an absent high plane is skipped. A slot waits only
+before reuse, and the final queued chunks are not drained per tensor.
+
+`set_planes` still consumes all borrowed CPU inputs before return. Remaining
+DMA reads buffer-owned pinned memory, not the mmap or caller's temporary
+allocation. Immutable per-tensor ready events still order eager and captured
+consumers; no change to their flag handling. Teardown drains the upload stream
+before freeing slots. GPU packing on a cache miss and the background D2H/file
+writer are unchanged. There is no new dependency from compute onto D2H or disk.
+This is a bounded loading-thread pipeline, not an unbounded background upload
+queue or a claim that all host waits are eliminated.
+
+Pushed only to `DrXuQian/llama.cpp`, branch `feat/kpack-gpu-cache`; the remote
+SHA was verified. No upstream push or PR.
+
+Host loader/buffer/cache tests pass five repetitions each. Delayed queues
+exercise five formats, E1/E257, discontiguous planes, absent/present high planes,
+partial chunks, immediate source overwrite, reuse across tensors, a pending
+tail, and teardown with pending DMA. Injected synchronous upload and early
+slot reuse both fail; the existing blocking-D2H negative still fails. PPU SDK
+compile/link passes for completion, perplexity, readiness and the new upload
+device test. These local checks do not establish real transfer speed or model
+numerical accuracy.
+
+Use `tests/run-quactlize-cache-smoke.sh` after updating the fork branch. It
+incrementally rebuilds llama.cpp/libggml-cuda and the small test, reusing the
+unchanged Quactlize compute/pack libraries. A new preflight runs actual buffer
+uploads with synthetic bytes: five formats, ten cases, 20 eager reads and
+60 graph replays; no CPU quantization reference or GEMM oracle. Then the script
+runs independent baseline/cold/hit model processes, asserting both mapping
+modes and the pinned pipeline, and reports load/wall/RSS/cache results. The
+existing optional `EVAL_FILE` PPL/KLD path is unchanged. The subsequent
+combined PPU result is recorded above; isolated A/B timing is not available.
+
+## Cache-hit source prefetch (2026-09-08, combined device smoke passed)
+
+llama.cpp commit `bf2877307f1bcb0d9b264ccf350a2329d2fe03a8` moves the
+existing cache metadata probe before `init_mappings`. A valid, nonempty
+cache disables whole-source GGUF prefetch; the original file remains mapped
+and uncached/CPU/descriptor-declined tensors still load on demand. Missing
+or invalid cache keeps the previous prefetch behavior. Metadata-only
+`no_alloc` probes do not open/create a cache. `--mlock` semantics are unchanged
+and may still fault source ranges when explicitly requested.
+
+Pushed only to `DrXuQian/llama.cpp`, branch `feat/kpack-gpu-cache`; remote
+SHA verified. No upstream push or PR.
+
+This commit implements only the first optimization. Its H2D uploads, source
+lifetime waits, ready events, D2H writer, plane layout and Quactlize DSOs are
+unchanged. The subsequently approved H2D implementation is described above;
+it cannot remove upload bytes and has no isolated PPU speedup measurement yet.
+
+Host cache/loader suites pass five repetitions, including partial caches,
+CPU tensors, descriptor mismatch, truncation and changed source/inventory.
+PPU completion/perplexity compile-link and the disabled-backend host build
+pass. A Linux check using the actual `llama_mmap` implementation maps a
+32 MiB file: prefetch RSS is 32768 KiB, on-demand RSS before access is 0 KiB,
+and subsequent endpoint reads agree in five repetitions. This proves the
+mapping mechanism, not model memory or latency savings on PPU.
+
+The existing box smoke explicitly selects mmap and requires
+`source_mmap=prefetch` on cold and `source_mmap=on-demand` on hit. Its timing
+summary now includes maximum host RSS and filesystem-input counters. Run
+the same script after the incremental llama.cpp rebuild; do not rebuild or
+replace the Quactlize bundle. Earlier `lx3ae2` timings below predate this fix.
+Disk-cache creation is tied to the first model load, not first prefill.
+Subsequent processes still upload weights; same-process resident reuse does
+neither repacking nor uploading again.
+
+## Prior PPU rerun: cache latency improved, numerical comparison not run
+
+`llama-kpack-smoke.lx3ae2.results.tgz`, source
+`2fdd7bc4c25af90f603dc5fb35fe5ee77083c6b8`, reports
+`KPACK_MODEL_CACHE_SMOKE PASS`. Raw logs agree with the timing summary;
+all three processes exit 0, each reuses 62 graphs, and readiness passes
+18 eager checks / 18 replays / six transitions / two missing-wait negatives.
+Same model and PPU-ZW810 PCI `0000:08:00.0` as the prior run.
+
+| Phase | Previous wall (s) | New wall (s) | New load (s) | New decode (tokens/s) |
+| --- | ---: | ---: | ---: | ---: |
+| baseline, GPU pack without cache | 9.64 | 9.58 | 4.92031 | 92.05 |
+| cold, GPU pack and create cache | 89.27 | 22.04 | 4.35985 | 91.72 |
+| hit, upload cache | 43.41 | 9.98 | 5.32570 | 91.66 |
+
+Cold/hit wall time fell 75.31%/77.01% relative to the earlier run. Cold
+user CPU fell 69.78 to 4.15 s; hit user CPU fell 69.94 to 3.89 s. The old
+34.303-second hit verification interval is gone: allocation-to-cache-ready
+is now 7.743 ms. The hit's subsequent ready-to-uploads-complete interval is
+3.901168 s, including other tensor load work, not an isolated H2D duration.
+
+The new hash-free manifest has no checksum fields, uses
+`llama.kpack-cache` v1 / arrangement v2, and lists the same 120 grouped E256
+tensors (80 Q4_K + 40 Q5_K), totaling 18.125 GiB. Cold uses 16 MiB pinned
+staging, takes 11.17 s for copying/writing the planes and 3.90 s for flush/
+publication, 15.07 s total background work. Context teardown at 6.081444 s
+precedes publication at 19.633112 s by 13.551668 s; persistence still leaves
+a process-exit tail, but generation does not wait for publication. Physical
+copy/write/compute overlap is not established by these aggregate timestamps.
+
+Hit uploads all 120 tensors with zero misses and zero GPU packs. However,
+9.98 s is not faster than the same-run no-cache baseline's 9.58 s; caching
+has not shown a startup win over the fast GPU producer. Maximum host RSS is
+39.14 GiB on hit versus 21.17 GiB baseline; this is not device or pinned-memory
+usage and remains a follow-up measurement, not a diagnosed leak. These are
+single samples with ordered/warm filesystem state, not a controlled throughput
+benchmark. Prompt timing covers only 11 tokens; decode covers 63 runs.
+
+**Numerical comparison is explicitly NOT_RUN: EVAL_FILE_NOT_SET.** Neither
+this operational PASS nor stable decode timing establishes PPL/KLD/logit
+accuracy. Next: provide an evaluation corpus and run the existing numerical
+entry. The compute route still uses the old FQ libraries; no new C++ heuristic/
+JIT binding or broad-format/main admission is implied.
+
+Archive SHA-256:
+`2cfa240fc20c808ab42fb45b54f755056b7a0e96f150de1bac8d584f4e6b19e6`.
+The uploaded archive contains logs/metadata only, not weight payloads.
+
+## Cache latency change (2026-09-08, fork branch pushed)
+
+Published commit: `35d625eb97503e814663c3d0b55f927d249a4ac7` on
+`DrXuQian/llama.cpp`, branch `feat/kpack-gpu-cache`; the remote branch SHA
+was verified after push. No upstream push or PR. Existing Quactlize libraries
+remain unchanged; incrementally rebuild the llama.cpp targets on the box.
+
+Follow-up runner failure on this revision: `check-cache line=151 rc=1` is the
+timing-summary grep, not a model/cache gate. Completion emits
+`common_perf_print:`, while the original filter only accepted
+`llama_perf_context_print:` or cache messages. Baseline has no cache messages,
+so grep returns 1 under errexit. The two-prefix filter is corrected and
+published as `2fdd7bc4c25af90f603dc5fb35fe5ee77083c6b8` on the same fork
+branch, with remote SHA verified. Regression reproduces the old failure and
+executes the corrected full timing-summary block on the three existing logs,
+plus the legacy prefix control; all pass. Only two script lines changed.
+Reaching line 151 implies the preceding model/cache checks completed; it does
+not provide new latency values, and the optional PPL/KLD stage has not run.
+The exit trap already archives the raw logs and cache manifest; retain/upload
+that archive. The user subsequently chose a fresh rerun; reuse the existing
+build and libraries and let the script allocate a new results/cache directory.
+
+The user explicitly requested removal of runtime content verification and a
+pipelined writer. llama.cpp `feat/kpack-gpu-cache` now implements:
+
+- Runtime hits use metadata/size/layout/bounds checks and direct uploads,
+  with no whole-file or per-plane content hashing. Existing v3 bundles are
+  readable on this unchecked path as well.
+- Background writes use `llama.kpack-cache` v1 metadata and the unchanged
+  K-pack planes. No checksums are emitted and no original GGUF payload is
+  reread. The cache records source device/inode/mtime/ctime plus size and
+  tensor identity. Copying/modifying that source can invalidate a local cache.
+- Two 8 MiB pinned slots per device are allocated before inference. The
+  writer prefetches the next D2H range before consuming the current slot,
+  allowing copy to overlap CPU writes. At most two ranges are outstanding;
+  prefetched ranges are drained on errors before their storage is released.
+- No compute submission waits for D2H or disk. Teardown still joins the
+  writer before freeing weights. fsync and no-replace publication remain.
+  Progress reports bytes/tensors, total background seconds and flush seconds.
+
+**Payload corruption is deliberately not detected by runtime cache loading.**
+This is trusted local storage, not a replacement for the verified v3 offline
+interchange format. The explicit v3 verifier remains available and rejects
+corrupted payloads; it refuses to label a hash-free cache as verified.
+
+Three host suites pass five repetitions each, including two submissions
+before the first D2H completion, partial chunks, Q4/Q5 low/high/unit boundaries,
+cross-tensor slot reuse, unchanged cached bytes, bounded staging, copy/async
+completion/partial-write failures, cleanup, and no D2H on cache hit. Existing
+background cancellation tests still pass. PPU SDK compile/link also passes for
+`llama-completion`, `llama-perplexity` and the existing readiness target; the
+box script passes shell syntax/help checks. These are host/mock ordering tests,
+not a physical PPU overlap or model accuracy proof. GEMM and producer libraries
+and the C ABI/plane layouts are unchanged. The subsequent PPU latency result
+is recorded above; physical overlap profiling remains separate.
+
+The box smoke entry additionally writes `timing-summary.log`. With `EVAL_FILE`
+(a text corpus of at least 512 tokens), it uses the existing `llama-perplexity`
+PPL/KLD tools for uncached K-pack vs cached K-pack and ordinary GPU weights vs
+K-pack. `EVAL_BATCH=128` and `EVAL_BATCH=1` select separate prefill and
+teacher-forced decode runs. Results go to `numerical-summary.log`; saved log
+probabilities stay on the box. This is a compressed-probability comparison,
+not a bitwise logits oracle or automatic numerical admission. Without a
+corpus the script explicitly reports numerical comparison NOT_RUN. No CPU
+model/packing reference or full kernel sweep is added. The old FQ DSOs still
+own inference; selected-module C++ heuristic/JIT binding remains separate.
+
+## Latest PPU model/cache result (2026-09-08, before latency change)
+
+`llama-kpack-smoke.PmwxP9.results.tgz` passes the readiness preflight and all
+three model/cache phases on source `5e632dc04`. This closes the scheduler
+and ready-event blockers for this workload, not the broad final-runtime gate
+above. The old FQ DSOs remain the compute route; the new C++ heuristic/JIT
+binding has not been enabled by this test.
+
+| Phase | Process wall (s) | Reported load (s) | Decode (tokens/s) |
+| --- | ---: | ---: | ---: |
+| baseline, no sidecar | 9.64 | 5.23037 | 90.64 |
+| cold, create sidecar | 89.27 | 4.64655 | 91.58 |
+| hit, reuse sidecar | 43.41 | 38.87221 | 92.38 |
+
+All processes exit 0 and reuse 62 CUDA graphs. Baseline/cold each enqueue
+120 GPU packs; hit uploads all 120 cached tensors, has zero resident misses,
+and enqueues no GPU pack. Actual cached coverage is **80 Q4_K + 40 Q5_K
+grouped expert tensors**, all E256, not all five formats or dense K-pack.
+The cache is 19,461,570,560 bytes (18.125 GiB); the source is 22,016,023,168
+bytes. The uploaded manifest is metadata only; no weights were uploaded.
+
+The two long silent intervals are now identified from the log timestamps:
+cold reaches context teardown at 6.326153 s and publishes at 86.887108 s
+(80.560955 s later); hit prints allocation at 1.589105 s, verifies the cache
+at 35.892575 s (34.303470 s later), and finishes uploads at 39.024970 s.
+Cold's interval includes the remaining background snapshot/hash/write/fsync
+work and teardown, not a measured 80-second D2H transfer. Hit performs
+synchronous full-source/full-storage and per-record hash verification before
+uploading. Per-component hash, copy and I/O times were not logged separately.
+
+**Integration smoke PASS; cache startup/publication latency remains debt.**
+This is one run per phase, with verbose logging and ordered file-cache state;
+it is not a numerical/logit oracle or a controlled performance comparison.
+Do not infer a decoding speedup or full shipping admission from it. The
+subsequent user-approved change drops runtime payload checks and pipelines
+the writer; its new latency must be measured. No GEMM DSO rebuild is needed.
+
+Archive SHA-256:
+`a4848fd25ebfc9858b1f7daa10c7a7f80d5dce2e678c04d0c3405cac87f2ef79`.
+Detailed timeline and scope are in the integration audit. Earlier pending
+statements below record the historical blocker sequence.
+
 ## Local loader audit and GPU conversion
 
-The local llama.cpp `26955be8a` wiring has been reviewed. Keep its Kpack
-buffer ownership, per-format loader and dense/MoE boundary transforms.
-It still calls the old FQ DSOs; the sidecar reader/writer exist but are not
-called by the model loader. Conversion currently runs on the CPU with a full
-inverse check and synchronous uploads. The new grouped module ABI also
+### Scheduler buffer admission fix (2026-09-08)
+
+The first model smoke run on `9f86a1340` aborts in `sched_reserve()` at
+`ggml-backend.cpp:898`, assigning the preallocated `CUDA0_KPACK` weight leaf
+whose op is `NONE`. `supports_op(NONE)` already succeeds; the CUDA device's
+`supports_buft()` omitted the K-pack buffer type. The local fix adds that
+type to the existing same-device predicate. It does not broaden permitted
+operators, change artifact bytes, or touch any Quactlize DSO.
+
+This is now reproduced on a separately built RTX 5090/CUDA 12.8 backend:
+the old source aborts at the exact same scheduler line (rc=134); the fixed
+source passes 21 reserve/allocation cases across Q2-Q6, dense/grouped,
+tokens 1/16 and Q4 with 256 experts. Wrong-device and same-name impostor
+buffer types, CPU consumption, DUP/VIEW and non-weight-position operands
+remain rejected. The test uses the actual backend callback, K-pack buffer
+factory/allocation and GGML scheduler. Only the external library inventory
+is stubbed: neither pack nor GEMM is run, so this is not a PPU numeric or
+performance gate. Four suites (scheduler, loader, buffer, sidecar) each pass
+10 repetitions on that machine; the PPU build also compiles/links locally.
+
+Regression: llama.cpp `tests/test-quactlize-scheduler.cpp`. Local evidence:
+`/root/autodl-tmp/llama-kpack-scheduler-20260908.3z6rSg/`.
+The fix and regression are published as `89e5b254dd39356bb9fc19ff0f8e46d19ec7f295`
+on `DrXuQian/llama.cpp` branch `feat/kpack-gpu-cache`. Rebuild only llama.cpp's
+affected backend/executable targets and resume the model smoke test. Keep
+the existing producer and GEMM libraries. Full PPU/model validation remains
+pending; do not treat the NVIDIA scheduler regression as model admission.
+`tests/run-quactlize-cache-smoke.sh` now owns the box entry: pass `MODEL`,
+`PPU_SDK`, `QUACTLIZE_PPU_BUNDLE`, `QUACTLIZE_PPU_PACK_LIBRARY`, and the
+existing `BUILD_DIR=build-kpack-9f86a1340`. It verifies the unchanged library
+hashes, incrementally builds `llama-completion`, runs baseline/cold/hit,
+and archives only logs plus the cache manifest. Its syntax, missing-input
+failure and refusal to be sourced were checked locally. Run it in a guarded
+child bash so failure cannot exit the interactive Docker shell.
+
+### Captured readiness dependency fix (2026-09-08)
+
+PPU smoke `llama-kpack-smoke.TXBaN9` passed scheduler reserve, then aborted
+in baseline (rc=134). The preceding log identifies `ggml_quactlize_wait_ready`
+at `quactlize-buft.cuh:51`: `cudaStreamWaitEvent(stream, art.ready, 0)` reports
+`dependency created on uncaptured work in another stream`, immediately after
+CUDA graph warmup. Pack/upload records the immutable event outside inference
+capture. Waiting with the default flag tries to import uncaptured work as a
+graph dependency. This is not a GEMM numerical error, a D2H wait, or the
+debugger's separate Python `math` import problem. Cold/hit have not run.
+
+The helper now uses `cudaEventWaitExternal`, as defined by the
+[CUDA stream API](https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__STREAM.html).
+The PPU SDK declares the matching flag and wait-event node type. The graph
+gets an explicit external-event wait node; eager execution still waits on
+the GPU. No CPU event synchronization/query, graph disabling, D2H wait or
+format change is introduced. Each ready event is recorded once and retained
+with the weights for all graph replays.
+
+`tests/test-quactlize-ready.cu` executes the actual helper with CUDA streams
+and synthetic device bytes, without any pack/GEMM test double. The old
+helper reproduces the exact error on RTX 5090 even after ready completes.
+The candidate captures/replays with ready complete, pack deliberately held,
+and D2H deliberately held. All nine replays read the expected bytes; capture
+and submission return while pack remains pending, and compute completes
+while D2H is still pending. Omitting the wait reads 4096 wrong bytes as an
+expected negative. PPU compilation also passes; PPU execution/model/cache
+admission remains pending. The fix and regression are published as
+`6e3e4a7dcb38cb9957204d2162dad4d2a9a40298` on the same fork branch.
+Final regression: readiness, scheduler, loader, delayed-buffer and sidecar
+suites each pass ten consecutive NVIDIA runs (50 suite executions, including
+90 readiness graph replays); three existing host suites also pass locally.
+Evidence: `/root/autodl-tmp/llama-kpack-ready-20260908.7lXOMl/`.
+
+### PPU eager-warmup flag rejection (2026-09-08)
+
+Model artifact `llama-kpack-smoke.o0ghMa` still aborts on `6e3e4a7dc`, now
+during initial eager warmup: flags=1 returns illegal state. This is a
+separate state restriction, not evidence that PPU lacks external graph waits.
+Local SDK 2.1.1 `hgapiStreamWaitEvent` explicitly rejects a nonzero flag on
+a non-capturing stream with error 401 and diagnostic
+`Illegal external flags for non-capturing stream`. Its capture-state query
+reads the same stream field. The earlier regression exercised only capture
+and missed this eager path.
+
+The fix queries `cudaStreamIsCapturing` and uses flags=0 outside
+capture, external wait inside capture. It queries capture state, not GPU
+completion; no CPU completion wait, D2H dependency, graph disabling or GEMM
+change is added. The real CUDA regression now covers eager-to-capture and
+capture-to-eager, completed/pending pack and held D2H. Each run validates
+18 eager checks and 18 graph replays. A test-only flag assertion enforces
+PPU's stricter contract on NVIDIA before forwarding to the real runtime;
+it rejects the old helper, but is not PPU execution emulation.
+Five suites pass ten repetitions on NVIDIA; the modified PPU backend/test
+compile and link, and three existing host suites pass locally.
+
+The fix is published as `5e632dc04509ae5923168b0898e34a3a328ba6de` on the
+same fork branch. The smoke runner now builds and runs
+`test-quactlize-ready` before model loading, with a 60-second timeout. It
+still reuses the existing build directory and unchanged Quactlize DSOs.
+PPU readiness and this model/cache smoke are now passed by `PmwxP9`; broader
+format/route numerical and final-runtime admission remain separate.
+Evidence: `/root/autodl-tmp/llama-kpack-ready-state-20260908.Z23Xg7/`.
+
+### Published integration
+
+The llama.cpp integration is published to `DrXuQian/llama.cpp` on `feat/kpack-gpu-cache` at
+`5e632dc04509ae5923168b0898e34a3a328ba6de`, based on develop `26955be8a`.
+GPU intake/cache wiring was introduced by `9f86a1340`, scheduler admission
+by `89e5b254d`, captured readiness by `6e3e4a7dc`, and capture-state flag
+selection by `5e632dc04`.
+The remote branch SHA was verified after push; no PR was created and develop is unchanged. It preserves Kpack buffer
+ownership, per-format loading and dense/MoE boundary transforms.
+It still calls the old FQ DSOs. This branch now connects the sidecar
+reader/writer through `--kpack-cache DIR` and calls the separate
+GPU producer during buffer intake, with no CPU conversion or inverse. A
+missing/incompatible producer declines intake before adopting K-pack. The new grouped module ABI also
 requires host rows, whereas llama.cpp currently keeps routing entirely on
 device; do not add a per-token synchronization merely to reuse that ABI.
 
@@ -24,16 +703,124 @@ A separate five-format GPU producer is now implemented in
 `quactlize/packing/`. It writes the same canonical low/high/units bytes
 directly to caller-owned device spans, asynchronously, without changing the
 GEMM kernel identity or recompiling its cached parents. Local compilation and
-host byte proofs pass; **PPU byte correctness and throughput remain pending**.
-It is not yet called from llama.cpp. The asynchronous sidecar queue/model
-loader and complete-identity C++ dispatcher remain separate pending work.
+host byte proofs pass. The uploaded producer gate now passes **15/15 PPU
+byte-exact cases**, including output guards, repeated calls and invalid
+overlap/descriptor rejection. Reported payload hash matches the delivered
+DSO. See the reviewed timing and scope in the audit below.
+The llama.cpp buffer wiring now calls it; `PmwxP9` passes the bounded PPU
+model/cache smoke above, with unresolved cache latency. The asynchronous sidecar queue/model loader now
+have local host tests; the complete-identity C++ dispatcher remains pending.
 See [the audit, local fixes and bounded copy/persistence plan](LLAMA_CPP_KPACK_INTEGRATION_AUDIT.md).
 
 Precompiled producer: `prebuilt/ppu0010/kpack-pack-v1/libquactlize_ppu_pack.so`
 (Git LFS, 126,504 bytes), with adjacent `manifest.json`. The box command in
 the audit runs 15 byte-exact cases and separated transfer/pack timings with
-no compilation. This producer remains device-pending and is not yet the
-llama.cpp loader integration.
+no compilation. Archive `556e61f5...` completes this gate: 50.431 s wall time,
+49.813 s CPU reference construction. At N=1024,K=5120, repeated pack medians
+are 55.600-121.960 us; first-call intervals are 196.920-430.560 us. These are
+Python/event-harness intervals, not a C++ model-load benchmark. Event-ordered
+pinned backcopy passes; overlap with GEMM, disk writeback and llama.cpp are
+still unvalidated. Do not repeat this completed conversion gate.
+
+Local intake uses a reusable raw scratch buffer and whole-expert batches
+(64 MiB target, at least one complete expert). It records `upload_done`
+before the final pack and waits for that input event solely to release the
+borrowed CPU source safely. The artifact has a distinct `ready` event after
+the final pack. Dense and grouped consumers enqueue a GPU-side wait on
+`ready`; neither waits for D2H or a disk writer.
+
+`ggml_quactlize_copy_range_async` replaces the unused global synchronous
+sink proc. It requires caller-owned pinned storage and a same-device completion event,
+queues ready-wait/D2H/event-record on a separate nonblocking stream, and
+returns without a CPU wait, allocation, inverse or file I/O. The writer must
+own pinned storage through completion; device-buffer teardown drains pending
+copies. There is no copy-to-compute dependency. Whole-tensor copies, when
+needed by tests, use the same range API; there is no separate whole-tensor
+backcopy path. Its declarations live in SDK-free `quactlize-sidecar.h`.
+
+`src/llama-kpack-cache.{h,cpp}` is owned by the model and destroyed before its
+tensor contexts/device buffers. Capture during loading queues metadata only;
+one 8 MiB pinned slot and one completion event are allocated per participating
+device before inference starts. After successful model loading, one worker
+sorts jobs by GGUF index and streams packed device bytes to disk. It does not
+borrow the loader's raw pointer, retain raw tensor data or run CPU conversion.
+Compute depends only on packed-ready. Normal model teardown joins the writer
+before releasing weights; cancellation drains the in-flight read and removes
+only that writer's owned staging directory.
+
+Source verification remains a separate **publication** stage required by
+schema v3: one sequential GGUF read fills whole-file and tensor SHA-256s
+together, with a 1 MiB buffer and before/after file-identity checks. The bound
+file must also match the loader's already-open descriptor. Thus the
+copy stage needs no original GGUF bytes; final cache publication still needs
+the unchanged source file. This source read/hash and disk I/O run off the
+compute submission path. Cache hits still verify source and stored hashes at
+load time; they are not a hash-free fast path.
+
+First integration scope: a single named GGUF file, including dense and grouped
+resident tensors. Multi-file GGUF, FILE*/custom-data loading and nonresident
+weights do not use this cache path; unsupported inputs retain ordinary loading.
+Only the active backend's admitted resident tensors are captured, with other
+source tensors explicitly listed as skipped. This is not a complete offline
+export of every mathematically packable tensor. An existing invalid cache is
+ignored for loading, never overwritten. Valid hits upload the verified planes
+without GPU repacking. The public `llama_model_params` gained
+`kpack_cache_path`: rebuild llama.cpp callers with the matching header.
+
+The local PPU backend incrementally compiles; host loader, delayed-buffer
+and sidecar tests pass. The buffer test keeps D2H pending while second intake
+and the actual compute-ready helper proceed, covers source-buffer release,
+all five formats and 1000-expert chunking, and rejects an injected synchronous
+copy. The sidecar suite additionally tests delayed worker completion, bounded
+chunks, sorting, duplicate capture, copy rejection, replaced source, cancellation,
+direct cache-hit upload and descriptor mismatch. Streamed output matches the
+original writer and passes the Python schema-v3 validator. This is host queue
+simulation, not PPU overlap evidence. The llama.cpp source branch is published;
+no new backend bundle is published.
+
+Final local regression: loader, delayed-buffer and sidecar/model-cache suites
+each pass 20 consecutive runs (60 successful suite executions). The injected
+foreground-copy wait is rejected. Python interoperability also passes separately.
+
+Local `llama` and PPU `llama-cli` compile/link with the target SDK; a CPU-only
+`llama` build also passes. Final PPU executable linking needs both the SDK's
+CUDA compatibility and native runtime library directories in the build
+environment. This workstation cannot start that PPU runtime because its glibc
+lacks `GLIBC_2.38`; model execution belongs on the supported Ubuntu 24.04 box.
+
+The next box check uses `llama-completion` for a finite noninteractive run.
+Build only that llama.cpp target, with the PPU SDK native and CUDA-compatible
+runtime directories in `LD_LIBRARY_PATH`; do not rebuild the GEMM bundle.
+For the existing Qwen3.5-35B-A3B Q4_K_M checkpoint, explicitly select
+`-ot 'ffn_.*_exps=CUDA0_KPACK'`. The default CUDA buffer precedes extra buffers;
+`--kpack-cache` alone does not select K-pack. Run the same prompt without a
+cache, with a fresh cache path, then with that published cache. Require
+`so-quactlize-kpack` route logs, a nonempty cache manifest, a positive cache
+upload count with zero resident misses, and no `GPU pack queued` in the hit
+run. Keep the generated text and timings for review. These are grouped
+loader/cache smoke checks, not a numerical oracle, overlap proof, or admission
+of the new C++ heuristic/JIT route. No full CPU conversion/reference is needed.
+Normal process teardown waits for background publication; that wall time is
+not kernel-launch latency. Return logs only, not the GGUF or cache weights.
+Run the box command in a new `bash` process with a guarded caller, not an
+unguarded subshell in a possibly `set -e` Docker shell. Install failure/exit
+reporting before prerequisite checks and print every missing input. Check
+the feature-branch commit before its files; reuse the per-commit llama.cpp
+build directory after a failed preflight. Only result logs enter the archive.
+
+The adjacent prebuilt manifest is a development build/verification receipt,
+not a required llama.cpp runtime input. Keep it in development/CI archives;
+model-sidecar format metadata and JIT cache compatibility identity have
+separate runtime purposes.
+
+After this completed gate, normal loading and subsequent performance gates
+must not construct a full CPU reference or run a per-tensor CPU inverse
+round-trip. Keep `reference/gguf_kpack.py` for independent format regression
+and external integration work, not the loader or timing path. Preserve
+descriptor/size checks, runtime error handling and sidecar/cache hashes;
+these are not full CPU reference computation. CPU hash/disk work belongs to
+the bounded persistence queue. GPU producer changes still need a separate
+correctness regression, not an implicit oracle in every model load.
 
 Final packaging follows the JIT direction: a small selector/module-loader
 binding, the small conversion DSO, and individually cached compute modules.

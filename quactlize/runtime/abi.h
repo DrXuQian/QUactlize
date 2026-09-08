@@ -42,6 +42,18 @@ typedef struct {
   void* stream;
 } qk_call_v1;
 
+// Additive device-only grouped successor. The embedded call keeps its v1
+// layout/version; rows_host and rows_device must be NULL. offsets_device is
+// a nondecreasing device array [experts+1], from 0 to call.m. Every expert's
+// row count must be <= max_rows. Host query sizes from that bound only.
+// prepare owns no asynchronous host copies. run rebuilds device metadata
+// from the current offsets, so graph replay can change expert routing.
+typedef struct {
+  uint32_t version, size;
+  qk_call_v1 call;
+  int32_t max_rows, reserved;
+} qk_device_call_v2;
+
 typedef struct {
   uint32_t version, size;
   int32_t algorithm, split, grid;
@@ -65,6 +77,11 @@ int quactlize_kpack_run_v1(void*, void* stream);
 // Caller must complete work using the handle before destroy/reusing workspace.
 void quactlize_kpack_destroy_v1(void*);
 int quactlize_kpack_measure_v1(void*, void* stream, int repeats, double* microseconds);
+
+int quactlize_kpack_grouped_query_v2(qk_device_call_v2 const*, qk_recipe_v1 const*, qk_resources_v1*);
+int quactlize_kpack_grouped_prepare_v2(qk_device_call_v2 const*, qk_recipe_v1 const*, void**);
+// v2 handles use the existing run_v1/destroy_v1 lifecycle. This does not
+// grant unmeasured any-M or performance admission to a particular parent.
 
 #ifdef __cplusplus
 }

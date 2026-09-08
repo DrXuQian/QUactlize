@@ -1,0 +1,113 @@
+#include <hggc_runtime.h>
+#include "api.h"
+#include "reader.hpp"
+
+#define QKG_CONCAT_IMPL(A,B) A##B
+#define QKG_CONCAT(A,B) QKG_CONCAT_IMPL(A,B)
+// Each format is a separate translation unit. Explicit namespaces prevent
+// same-source host stubs/device registrations from aliasing across objects.
+namespace QKG_CONCAT(kpack_q,QKG_QTYPE) {
+using namespace quactlize::execution;
+constexpr KType type = KType(QKG_QTYPE - 10);
+using R = Reader<type>;
+
+__device__ int expert_for(qkg_call_v1 const& c, int row) {
+    if (c.mode == QKG_DENSE) return 0;
+    if (c.mode == QKG_INDEXED) return c.ids[int64_t(row / c.topk) * c.ids_stride + row % c.topk];
+    int lo = 0, hi = c.experts;
+    while (lo < hi) {
+        int const mid = lo + (hi - lo) / 2;
+        if (c.offsets[mid + 1] <= row) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
+template<int Columns, int Warps>
+__global__ void kpack_gemv(qkg_call_v1 c, int split) {
+    constexpr int Workers = Warps * 32 / Columns;
+    int const tiles = c.n / Columns;
+    int const tile = int(blockIdx.x) % tiles;
+    int const outer = int(blockIdx.x) / tiles;
+    int const partition = outer % split, row = outer / split;
+    int const col = tile * Columns + threadIdx.x % Columns;
+    int const worker = threadIdx.x / Columns;
+    int const expert = expert_for(c, row);
+    if (expert < 0 || expert >= c.experts) {
+        if (threadIdx.x < Columns) {
+            if (split == 1) c.output[int64_t(row) * c.out_row_stride + col] = __int_as_float(0x7fc00000);
+            else static_cast<float*>(c.workspace)[(int64_t(row) * split + partition) * c.n + col]
+                = __int_as_float(0x7fc00000);
+        }
+        return;
+    }
+    int64_t const a_base = c.mode == QKG_INDEXED
+        ? int64_t(row / c.topk) * c.a_token_stride + (row % c.topk % c.channels) * c.a_row_stride
+        : int64_t(row) * c.a_row_stride;
+    int64_t const nk = int64_t(c.n) * c.k;
+    auto low = reinterpret_cast<uint16_t const*>(c.low + expert * (nk / 8 * R::lo_bits));
+    uint16_t const* high = nullptr;
+    if constexpr (R::hi_bits != 0)
+        high = reinterpret_cast<uint16_t const*>(c.high + expert * (nk / 8 * R::hi_bits));
+    auto units = c.units + expert * (nk / 256 * R::U::kSbBytes);
+    float accum = 0.f;
+    for (int g = partition * Workers + worker; g < c.k / R::group; g += split * Workers) {
+        auto const s = R::scale(units, col, g, c.n);
+        // Eight b16 word addresses per group. Slots are K8-spaced in each
+        // word, so the compiler reuses them across the short slot loop.
+        #pragma unroll
+        for (int r = 0; r < 8; ++r) {
+            #pragma unroll
+            for (int slot = 0; slot < R::group / 8; ++slot) {
+                int const kk = g * R::group + r + 8 * slot;
+                float a = c.input_type == QKG_F32
+                    ? static_cast<float const*>(c.a)[a_base + kk]
+                    : float(static_cast<Half const*>(c.a)[a_base + kk]);
+                // The mixed-input GEMM boundary converts activations to FP16.
+                a = float(Half(a));
+                accum = fmaf(a, float(R::weight(R::code(low, high, col, kk, c.n), s)), accum);
+            }
+        }
+    }
+    __shared__ float partial[Warps * 32];
+    partial[threadIdx.x] = accum;
+    __syncthreads();
+    if (threadIdx.x < Columns) {
+        float value = 0.f;
+        #pragma unroll
+        for (int w = 0; w < Workers; ++w) value += partial[w * Columns + threadIdx.x];
+        if (split == 1) c.output[int64_t(row) * c.out_row_stride + col] = value;
+        else static_cast<float*>(c.workspace)[(int64_t(row) * split + partition) * c.n + col] = value;
+    }
+}
+
+__global__ void kpack_gemv_reduce(qkg_call_v1 c, int split) {
+    for (int64_t i = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+         i < int64_t(c.rows) * c.n; i += int64_t(gridDim.x) * blockDim.x) {
+        int64_t const row = i / c.n, col = i % c.n;
+        float value = 0.f;
+        for (int s = 0; s < split; ++s)
+            value += static_cast<float const*>(c.workspace)[(row * split + s) * c.n + col];
+        c.output[row * c.out_row_stride + col] = value;
+    }
+}
+
+template<int Columns, int Warps> int launch(qkg_call_v1 const& c, int split) {
+    auto stream = static_cast<hggcStream_t>(c.stream);
+    unsigned const grid = unsigned(uint64_t(c.rows) * split * (c.n / Columns));
+    kpack_gemv<Columns,Warps><<<grid,Warps*32,0,stream>>>(c,split);
+    if (hggcGetLastError() != hggcSuccess) return QKG_RUNTIME;
+    if (split > 1) {
+        uint64_t const count = (uint64_t(c.rows)*c.n+255)/256;
+        kpack_gemv_reduce<<<unsigned(count < 65535 ? count : 65535),256,0,stream>>>(c,split);
+    }
+    return hggcGetLastError() == hggcSuccess ? QKG_OK : QKG_RUNTIME;
+}
+}
+
+extern "C" int QKG_CONCAT(qkg_launch_,QKG_QTYPE)(qkg_call_v1 const& c, qkg_config_v1 const& f) {
+    using namespace QKG_CONCAT(kpack_q,QKG_QTYPE);
+    if (hggcGetLastError() != hggcSuccess) return QKG_RUNTIME;
+    if (f.columns == 16) return f.warps == 4 ? launch<16,4>(c,f.split) : launch<16,8>(c,f.split);
+    return f.warps == 4 ? launch<32,4>(c,f.split) : launch<32,8>(c,f.split);
+}
