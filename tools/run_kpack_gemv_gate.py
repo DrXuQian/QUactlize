@@ -33,6 +33,9 @@ from quactlize.runtime.native import SDK, checked
 from tools.kpack_warmup_fixture import activation_values
 from tools.kpack_execution_fixture import IndexedWeights
 from tools.run_kpack_pack_gate import device_identity
+from quactlize.dispatch.native import Dispatch, receipt as dispatch_receipt
+from quactlize.runtime.native import Call as GemmCall
+from tools.verify_kpack_dispatch import verify as verify_dispatch
 
 CONFIGS = [(c, w, s) for c in (16, 32) for w in (4, 8) for s in (1, 4)]
 
@@ -62,7 +65,9 @@ def plan(real, dense_real=False):
                 k=k,
                 e=256,
                 cases=[
-                    dict(mode=2, rows=t * 8, channels=1, topk=8) for t in (1, 4, 16)
+                    dict(mode=2, rows=t * 8, channels=ch, topk=8)
+                    for t in (1, 4, 16)
+                    for ch in (1, 8)
                 ],
             )
             for q, n, k in ((12, 512, 2048), (13, 2048, 512))
@@ -257,6 +262,50 @@ def legacy(lib, r, weights, data, case, planes, arr):
     return launch, error
 
 
+def selected_gemm(dispatch, r, weights, data, case, planes, arr):
+    dense = case["mode"] == 0
+    m, n, k = case["rows"], weights.n, weights.k
+    e = 1 if dense else weights.experts
+    bound = m if dense else m // case["topk"]
+    choice = dispatch.query(
+        weights.q, 0 if dense else 2, m, n, k, e, bound, arr.mapping_id
+    )
+    if choice is None:
+        return None
+    order = np.argsort(data["expert"], kind="stable")
+    rows = np.bincount(data["expert"], minlength=e).astype("i4")
+    bounds = r.upload(np.r_[0, rows.cumsum()].astype("i4")) if not dense else None
+    out = r.alloc(m * n * 2)
+    c = GemmCall(
+        version=1,
+        size=C.sizeof(GemmCall),
+        m=m,
+        n=n,
+        k=k,
+        experts=e,
+        group_size=arr.group_size,
+        device=choice.device,
+        compute_units=choice.compute_units,
+        mapping_id=arr.mapping_id,
+        a=r.upload(data["a"][data["arows"][order]]),
+        low=planes["low"],
+        high=planes["high"],
+        metadata=planes["units"],
+        output=out,
+        offsets_device=bounds,
+        workspace=r.alloc(max(1, choice.workspace_bytes)),
+        workspace_bytes=choice.workspace_bytes,
+        stream=r.stream.value,
+    )
+    launch = dispatch.prepare(choice, c)
+    r.sdk.fill(out, 0xA5, m * n * 2)
+    checked(launch(), "selected FQ correctness")
+    r.sdk.synchronize(r.stream)
+    got = np.frombuffer(r.sdk.download(out, m * n * 2), dtype="<f2").reshape(m, n)
+    error = compare(got[np.argsort(order)], data)
+    return launch, error, dispatch_receipt(choice)
+
+
 def run_weight(args, sdk, functions, item):
     query, run, sf = functions
     q, n, k, e = (item[x] for x in ("q", "n", "k", "e"))
@@ -274,6 +323,7 @@ def run_weight(args, sdk, functions, item):
     r = Resources(sdk)
     records = []
     arr = arrangement(q)
+    dispatch = Dispatch(args.native_bundle) if args.native_bundle else None
     try:
         planes = {
             name: r.upload(w.planes[name]) if w.planes[name].size else None
@@ -330,7 +380,7 @@ def run_weight(args, sdk, functions, item):
         for ci, case in enumerate(item["cases"]):
             data = fixture(w, case)
             m = case["rows"]
-            ap = r.upload(data["a"].astype("f4") if case["mode"] == 2 else data["a"])
+            ap = r.upload(data["a"].astype("f4"))
             output = r.alloc(m * n * 4 + 32)
             workspace = r.alloc(m * n * 4 * 4)
             c = Call(
@@ -342,7 +392,7 @@ def run_weight(args, sdk, functions, item):
                 experts=1 if case["mode"] == 0 else e,
                 rows=m,
                 mode=case["mode"],
-                input_type=1 if case["mode"] == 2 else 0,
+                input_type=1,
                 channels=case["channels"],
                 topk=case["topk"],
                 a_row_stride=k,
@@ -362,7 +412,17 @@ def run_weight(args, sdk, functions, item):
                 workspace_bytes=m * n * 16,
                 stream=r.stream.value,
             )
-            incumbent, inc_error = legacy(lib, r, w, data, case, planes, arr)
+            native = (
+                selected_gemm(dispatch, r, w, data, case, planes, arr)
+                if dispatch
+                else None
+            )
+            if native:
+                incumbent, inc_error, inc_selection = native
+                inc_selection["source"] = "NATIVE_HEURISTIC"
+            else:
+                incumbent, inc_error = legacy(lib, r, w, data, case, planes, arr)
+                inc_selection = dict(source="LEGACY_FQ_POLICY_FALLBACK")
             configs = []
             errors = []
             samples = {f"{col}-{warp}-{split}": [] for col, warp, split in CONFIGS}
@@ -428,17 +488,21 @@ def run_weight(args, sdk, functions, item):
                 oracle="OFFICIAL_GGUF_CONDITION_SCALED",
                 errors=errors,
                 incumbent_error=inc_error,
+                incumbent_selection=inc_selection,
                 gemv_samples_us=samples,
                 gemm_samples_us=bsamples,
                 incumbent_scope="CORE_PRE_GATHERED_GEMM_INCLUDING_DEVICE_DIRECTORY_NO_ADAPTERS",
                 gemv_scope="FULL_OUTPUT_INCLUDING_IDS_AND_SPLIT_REDUCER",
                 heuristic_admitted=False,
+                input_type=c.input_type,
+                correctness="PASS",
+                zero_low_negative="DETECTED_FINITE",
             )
             medians = {
                 key: statistics.median([v for row in values for v in row])
                 for key, values in samples.items()
             }
-            winner = min(medians, key=medians.get)
+            winner = min(medians, key=lambda key: (medians[key], key))
             baseline = statistics.median([v for row in bsamples for v in row])
             result.update(
                 winner=winner,
@@ -466,6 +530,9 @@ def run_weight(args, sdk, functions, item):
             records=records,
         )
     finally:
+        if dispatch:
+            sdk.synchronize(r.stream)
+            dispatch.close()
         r.close()
 
 
@@ -522,8 +589,18 @@ def main():
     p.add_argument("--sdk", type=Path, required=True)
     p.add_argument("--bundle", type=Path, required=True)
     p.add_argument("--gemm-bundle", type=Path, required=True)
+    p.add_argument(
+        "--native-bundle",
+        type=Path,
+        help="compare GEMV with the native heuristic-selected FQ recipe when covered",
+    )
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--real-model-shapes", action="store_true")
+    p.add_argument(
+        "--model-decode-only",
+        action="store_true",
+        help="Q4/Q5 E256 experts plus the model's Q6 248320x2048 output head",
+    )
     p.add_argument("--samples", type=int, default=11)
     p.add_argument(
         "--dense-real-shapes",
@@ -536,6 +613,8 @@ def main():
         help="comma-separated format subset for a focused rerun",
     )
     args = p.parse_args()
+    if args.native_bundle:
+        verify_dispatch(args.native_bundle)
     if args.samples < 3:
         p.error("--samples must be at least 3")
     manifest = json.loads((args.bundle / "manifest.json").read_text())
@@ -564,6 +643,18 @@ def main():
         for x in plan(args.real_model_shapes, args.dense_real_shapes)
         if x["q"] in selected
     ]
+    if args.model_decode_only:
+        requested = [x for x in plan(True) if x["e"] == 256]
+        requested.append(
+            dict(
+                q=14,
+                n=248320,
+                k=2048,
+                e=1,
+                cases=[dict(mode=0, rows=m, channels=1, topk=1) for m in (1, 4)],
+            )
+        )
+        requested = [x for x in requested if x["q"] in selected]
     summary = dict(
         status="INCOMPLETE",
         device=identity,
@@ -575,6 +666,9 @@ def main():
         heuristic_admitted=False,
         source=subprocess_source(),
         baseline_libraries={},
+        native_manifest_sha256=(
+            sha(args.native_bundle / "manifest.json") if args.native_bundle else None
+        ),
     )
     for q in selected:
         name = f"libquactlize_ppu_fmt{ {10:2,11:3,12:0,13:1,14:4}[q] }.so"

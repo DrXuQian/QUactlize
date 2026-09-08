@@ -1,17 +1,72 @@
 # K-pack execution follow-up
 
-Updated: 2026-09-08. Development work; no new device admission or runtime
-bundle is implied by this plan. Keep the canonical offline planes unchanged.
+Updated: 2026-09-09. Native binding and both llama.cpp execution hooks are
+implemented and locally compiled. New PPU execution/performance admission
+still requires the box gate. Canonical offline planes are unchanged.
 
 ## Tracked delivery
 
 | Item | State | Completion condition |
 | --- | --- | --- |
-| 3. Native selected-module binding | Pending | Full parent/build identity, cached handles, no Python or online timing in inference; explicit K-pack-capable miss path |
-| 4. Device-only grouped metadata | Locally compiled / box pending | Additive `qk_device_call_v2` and query/prepare exports; GPU bounds -> shape/directory on each run, no rows_host or per-token D2H; ten existing FQ/SF parents compiled. Box checks empty experts and mutable graph replay against same-parent v1 |
-| 5. ScaleFirst prefill | Prepass compiled / loader lifetime pending | Five production prepass specializations compiled; paired prepass+SF and resident measurements added. Weight-owned reuse, memory-budget admission and final model wiring remain pending |
-| Decode GEMV | Locally compiled / box pending | Five canonical formats, dense/compact-grouped/indexed-grouped, eight explicit column/warp/split recipes. Direct indexed path has no gather/scatter. Existing GEMM comparison is explicitly pre-gathered core-only; model adapter/selector admission remains pending |
+| 3. Native selected-module binding | Implemented, host tests pass / box pending | SDK-free C++ selector binds full parent/build identity; context/stream-owned handles are prepared before capture. Both `MUL_MAT` and `MUL_MAT_ID` call it. No Python, JIT or online timing in inference |
+| 4. Device-only grouped metadata | Wired, PPU compilation passes / box pending | Actual expert IDs produce GPU bounds; v2 prepares GPU shapes/directory on each run. No host rows, fabricated router or per-token D2H. Tests include changing IDs with the same captured graph |
+| 5. ScaleFirst prefill | Wired, lifetime tests pass / box pending | Weight-owned scale/zero, one GPU prepass outside capture, independent ready event, memory reserve, reuse and teardown. Prepass GPU event timing is collected at teardown, not by blocking inference |
+| Decode GEMV | Wired / measured recipes pending | Eight candidates, F32 indexed input and output, no gather/scatter. Offline gate compares with native selected FQ where available; slower GEMV is not exported. Exact request keys, no initial-recipe default |
 | Model decode regression | Open performance debt | Isolate the measured per-token gap with matched work; retain the old GEMM incumbent and do not attribute the whole gap to one missing algorithm |
+
+## Native model gate
+
+Entry: `bash tools/run_kpack_native_box.sh` (see `--help`). This consumes
+`prebuilt/ppu0010/kpack-native-v1`: 214 selected parent modules plus the native
+host dispatcher and execution DSO. It does not replace the old six libraries,
+which still provide intake/admission and explicitly logged K-pack FQ misses.
+The box rebuilds llama.cpp for the changed context layout, not Quactlize.
+
+1. Twenty dense and eight grouped contexts use the actual C++ selector and
+   prepared module, independent GGUF arithmetic, output guards and changed
+   router graph replay. ScaleFirst prepass is checked and timed separately.
+   These paired measurements produce the FQ/SF route table before the model
+   starts. SF must improve resident core time by more than 2%; otherwise FQ
+   is retained. Reports include first prepass time and reuse break-even.
+2. Fourteen model-shaped GEMV contexts (Q4/Q5 experts, both broadcast/per-slot
+   A, and Q6 N248320/K2048 dense output) compare all eight recipes in 3x11
+   samples. The comparison uses selected FQ when covered, explicitly tagged
+   legacy FQ otherwise. GEMV includes indexed access and reduction; FQ here
+   excludes adapter casts/gather/scatter. This conservative gate is not a
+   proof of global cross-algorithm optimality.
+3. Production adapter tests use device tags to verify pointer/stride/routing,
+   cached preparation, eager/capture/replay and mutable IDs. Arithmetic is
+   intentionally stubbed in this seam test, not in the separate numeric gate.
+4. Real model ABBA: reference/native/native/reference, one business request
+   at a time, 128/512 input tokens, 128 generated tokens, chunk=128. First-use
+   samples are separate; steady timings include the whole model adapters.
+5. A separate short Asight run must observe native dense and grouped compute.
+   Its timings are never performance samples. It proves that short request,
+   not every parent in all ABBA requests.
+
+Reports retain parent/build ID, split, grid, policy class, explicit fallback,
+prepass time and raw per-request timers. `fully_selected=false` is not admitted
+as complete optimized wiring. A nearest-family grouped proposal uses the
+caller-known token bound, not an unobserved exact router; it remains labelled
+`DEVICE_BOUNDS`. FQ/SF route measurements cover exact gate contexts, not every
+router distribution. Missing prefill entries retain selected FQ. The model
+timings test whether those measured core choices win with actual adapters.
+First-use allocations may have runtime synchronization cost; the explicit
+ready-event protocol does not prove allocator calls nonblocking. That cost
+belongs in first-use wall timing, not the prepass kernel timer.
+
+### Dense coverage correction
+
+The old +29% GSM8K command overrode only `ffn_.*_exps`. Its 120 K-pack weights
+were grouped; it did not measure dense K-pack integration. The old grouped
+null config selected `16x128:16x16:s2`, Split-K=1. Historical dense Q4 selection
+was different and already contained S1/S4 choices; it must not be described as
+the same fixed grouped default.
+
+The new command also selects Q6 `output.weight`. The model's 311 Q8_0 tensors
+remain on ordinary GPU kernels: Q8_0 support is a separate task, not silently
+covered by Q2_K..Q6_K. A model-wide speedup cannot be inferred from K-quant
+microbenchmarks or from the grouped route alone.
 
 ## Reviewed GSM8K pilot
 

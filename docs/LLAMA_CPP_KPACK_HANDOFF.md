@@ -4,7 +4,7 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
-Last updated: 2026-09-08. Verified offline bundles retain schema v3; the local
+Last updated: 2026-09-09. Verified offline bundles retain schema v3; the local
 runtime cache now has a separate hash-free contract, described below. The
 published `2826cf1` loader-safe runtime bundle has passed strict binary
 inspection, its selected-config oracle, and all 26 host ABI cases in a fresh
@@ -22,32 +22,52 @@ K-pack GEMM, not a standalone Xplane comparison. No new kernel trace was
 collected. The full raw-result review, caveats and delivery checklist are in
 [KPACK_EXECUTION_FOLLOWUP.md](KPACK_EXECUTION_FOLLOWUP.md).
 
-The additive execution package is now locally compiled: five-format GEMV and
-metadata prepass plus ten grouped parents with device-only query/prepare.
-The eight GEMV recipes are candidates, not measured defaults. All eleven DSOs
-total about 2.08 MiB; they do not replace the existing six-library bundle.
-75 local reader/metadata/fixture/policy tests pass. ELF exports/format-specific
-kernel inventory are checked. No PPU correctness/performance admission yet.
-The C++ selector and final llama.cpp wiring/metadata lifetime remain pending;
-the model branch and its current default computation route are unchanged.
+Native C++ selection is now wired to both dense `MUL_MAT` and grouped
+`MUL_MAT_ID` on `feat/kpack-gpu-cache`. `QUACTLIZE_KPACK_EXECUTION` opts into
+the additive `prebuilt/ppu0010/kpack-native-v1` package: 214 selected PPU
+parents, one SDK-free host dispatcher and the five-format GEMV/prepass DSO.
+The old six-library bundle remains required for intake and labelled policy
+misses. It is not rebuilt or silently replaced. No new device admission yet.
 
-Next box entry (execute only, no compilation):
+Handles and complete recipes (including Split-K and persistent grid) are
+prepared and cached before graph capture. Grouped bounds stay on the GPU;
+ScaleFirst is prepared once with the immutable weight and a separate ready
+event, subject to a memory reserve. Compute has no explicit wait on D2H/cache
+publication; first-use allocator synchronization remains a timing caveat.
+`QUACTLIZE_KPACK_GEMV_POLICY` is an exact measured TSV generated
+by the offline gate; an unmeasured initial recipe is never substituted.
+
+The default behavior without `QUACTLIZE_KPACK_EXECUTION` is unchanged. With it,
+decode tries the measured GEMV recipe or selected FQ. Prefill reads the paired
+FQ/SF measurements in `QUACTLIZE_KPACK_PREFILL_POLICY`; SF must beat FQ by more
+than 2% in resident core time. Missing entries or resource declines retain
+selected FQ. Unknown families retain the
+old canonical K-pack FQ path with an explicit log. Grouped bound-based choices
+and route-level SF decisions are not globally optimal measurements.
+
+Next box entry (no Quactlize compilation; llama.cpp must rebuild):
 
 ```bash
 git pull --ff-only
-git lfs pull --include='prebuilt/ppu0010/kpack-execution-v1/**' --exclude=''
-PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
-QUACTLIZE_PPU_BUNDLE=/workspace/quactlize-runtime-artifact-2826cf1-46fc3096e1a1/prebuilt/ppu0010/2826cf1/runtime6-46fc3096e1a1/bundle \
-CUDA_VISIBLE_DEVICES=0 bash tools/run_kpack_execution_box.sh
+git lfs pull --include='prebuilt/ppu0010/kpack-native-v1/**,prebuilt/ppu0010/kpack-execution-v1/**' --exclude=''
+bash tools/run_kpack_native_box.sh --help
+# Set LLAMA_DIR, BUILD_DIR, MODEL, CACHE_DIR and the existing SDK/legacy bundle/pack library.
+CUDA_VISIBLE_DEVICES=0 JOBS=192 bash tools/run_kpack_native_box.sh
 ```
 
-Run from the Quactlize develop checkout. The shell script has a child-shell
-boundary, runs both independent gates even if one fails, and archives the
-printed `kpack-execution.*.results.tgz`. GEMV timing includes direct indexed
-access/reduction; its legacy GEMM comparator is explicitly pre-gathered
-core-only. The grouped gate additionally measures SF preparation and verifies
-device-only metadata under changed routing/graph replay. See the follow-up
-document for denominators and limits; this is not a model throughput gate.
+Run from Quactlize develop and update the private llama branch first. The
+script stops before model measurement on a numeric/binding failure, preserving
+the Docker shell. Return its printed `kpack-native-model.*.results.tgz`.
+The workflow includes 28 selected numeric contexts, 14 model-shaped GEMV
+contexts, adapter graph tests, real-model ABBA and a separate short device
+trace. Exact counts, scopes and remaining caveats are in the follow-up document.
+
+The old model override covered grouped experts only. The new performance
+runner overrides `(ffn_.*_exps|output\.weight)`, adding the Q6 dense head.
+Q8_0 dense weights remain ordinary GPU; they are outside the K-quant ABI.
+Each model log includes `[quactlize-plan]` (parent/build/split/grid or measured
+GEMV recipe). `[quactlize-prepass]` GPU event intervals are read at teardown.
+Neither host plan receipts nor library loading alone are device execution proof.
 
 SF timing must include first-use metadata preparation separately from resident
 GEMM. This model needs an additional 3.75 GiB for FP16 scale+zero over all 120

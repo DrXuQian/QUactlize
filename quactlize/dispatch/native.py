@@ -1,0 +1,108 @@
+"""Offline device-gate bindings for the production C++ selector."""
+
+import ctypes as C
+from pathlib import Path
+
+from quactlize.runtime.native import Call, checked
+
+
+class Request(C.Structure):
+    _fields_ = (
+        [("version", C.c_uint32), ("size", C.c_uint32)]
+        + [
+            (x, C.c_int32)
+            for x in ("qtype", "route", "m", "n", "k", "experts", "max_rows")
+        ]
+        + [("mapping_id", C.c_uint64)]
+    )
+
+
+class Choice(C.Structure):
+    _fields_ = (
+        [("version", C.c_uint32), ("size", C.c_uint32)]
+        + [(x, C.c_uint64) for x in ("ticket", "workspace_bytes", "shared_bytes")]
+        + [
+            (x, C.c_int32)
+            for x in ("policy", "algorithm", "split", "grid", "device", "compute_units")
+        ]
+        + [("parent", C.c_char * 192), ("build_key", C.c_char * 65)]
+    )
+
+
+class Dispatch:
+    def __init__(self, root):
+        self.lib = C.CDLL(
+            str(Path(root).resolve() / "libquactlize_kpack_dispatch.so"),
+            mode=C.RTLD_LOCAL,
+        )
+        types = {
+            "open": ([C.c_char_p, C.POINTER(C.c_void_p)], C.c_int),
+            "query": ([C.c_void_p, C.POINTER(Request), C.POINTER(Choice)], C.c_int),
+            "prepare": (
+                [C.c_void_p, C.POINTER(Choice), C.POINTER(Call), C.POINTER(C.c_void_p)],
+                C.c_int,
+            ),
+            "run": ([C.c_void_p, C.c_void_p], C.c_int),
+            "destroy": ([C.c_void_p], None),
+            "close": ([C.c_void_p], None),
+            "error": ([], C.c_char_p),
+        }
+        self.fn = {}
+        for name, (args, result) in types.items():
+            f = getattr(self.lib, "quactlize_kpack_dispatch_" + name + "_v1")
+            f.argtypes, f.restype = args, result
+            self.fn[name] = f
+        self.runtime = C.c_void_p()
+        self.handles = []
+        checked(
+            self.fn["open"](str(Path(root).resolve()).encode(), C.byref(self.runtime)),
+            "dispatch open",
+        )
+
+    def query(self, q, route, m, n, k, experts, max_rows, mapping):
+        r = Request(1, C.sizeof(Request), q, route, m, n, k, experts, max_rows, mapping)
+        choice = Choice()
+        rc = self.fn["query"](self.runtime, C.byref(r), C.byref(choice))
+        if rc == 1:
+            return None
+        if rc:
+            raise ValueError("native query: " + self.fn["error"]().decode())
+        return choice
+
+    def prepare(self, choice, call):
+        h = C.c_void_p()
+        rc = self.fn["prepare"](
+            self.runtime, C.byref(choice), C.byref(call), C.byref(h)
+        )
+        if rc:
+            raise ValueError("native prepare: " + self.fn["error"]().decode())
+        self.handles.append(h)
+        return lambda: self.fn["run"](h, call.stream)
+
+    def close(self):
+        for h in self.handles:
+            self.fn["destroy"](h)
+        self.handles.clear()
+        if self.runtime:
+            self.fn["close"](self.runtime)
+            self.runtime = None
+
+
+def receipt(choice):
+    return {
+        k: (
+            getattr(choice, k).decode()
+            if k in ("parent", "build_key")
+            else getattr(choice, k)
+        )
+        for k in (
+            "parent",
+            "build_key",
+            "policy",
+            "algorithm",
+            "split",
+            "grid",
+            "shared_bytes",
+            "workspace_bytes",
+        )
+    }

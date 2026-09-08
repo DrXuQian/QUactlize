@@ -217,7 +217,7 @@ def test_bounded_gate_inventory_and_routing():
 
     assert len(CONFIGS) == len(set(CONFIGS)) == 8
     assert len(plan(False)) == 5 and len(plan(True)) == 7
-    assert sum(len(x["cases"]) for x in plan(True)) == 31
+    assert sum(len(x["cases"]) for x in plan(True)) == 37
     w = IndexedWeights(13, 256, 512, 4)
     assert np.all(w.categories == w.categories[0])
     for case in plan(False)[3]["cases"]:

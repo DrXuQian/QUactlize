@@ -1,5 +1,21 @@
 # Q4_K native scale: what is settled, what blocks the rest
 
+## Active model integration closure (2026-09-09)
+
+| Item | Implementation | Remaining admission |
+| --- | --- | --- |
+| Native heuristic binding, dense and grouped | Complete; full parent/build/config/S/grid, cached before capture, 214 selected PPU modules compiled | `run_kpack_native_box.sh`: 28 selected numeric contexts + actual model receipt |
+| GPU-only grouped router | Connected to v2 bounds ABI; no rows_host/per-token D2H | Mutable-ID eager/graph replay and real model latency |
+| Weight-owned ScaleFirst | One GPU prepass, separate event, reserve and teardown; host lifetime tests pass | Prepass kernel interval, first-use and resident prefill time |
+| Decode GEMV | Dense/indexed paths connected, exact measured-recipe importer; no unmeasured default | 14 model-shaped contexts, 8 recipes, 3x11; compare native selected FQ and export only non-losing GEMV |
+| Real model performance | ABBA runner covers experts and Q6 dense output; trace kept separate | Box execution, +29% decode regression review; do not reuse the old grouped-only timing as dense evidence |
+| Model accuracy after route change | Independent numeric gate prepared | Repeat model accuracy with GEMV/SF enabled; the old GSM8K result is not admission for new compute routes |
+| Remaining dtype/route policy | Explicitly open | Q8_0 dense support; unknown-family FQ policy misses; short-MoE SF versus FQ route calibration; grouped bound heuristic versus actual skew |
+
+See [KPACK_EXECUTION_FOLLOWUP.md](../../docs/KPACK_EXECUTION_FOLLOWUP.md) and the
+single [llama.cpp handoff](../../docs/LLAMA_CPP_KPACK_HANDOFF.md). These code
+closures do not close device correctness or performance debt.
+
 Active post-baseline K-pack implementation axes are tracked in
 [`TODO_KPACK_INCREMENTAL_OPTIMIZATIONS.md`](TODO_KPACK_INCREMENTAL_OPTIMIZATIONS.md).
 They are incremental candidates and do not alter the frozen canonical K-pack
