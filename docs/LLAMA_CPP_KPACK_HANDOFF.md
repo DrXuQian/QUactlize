@@ -16,11 +16,14 @@ not device admission and does not authorize deployment by itself.
 The reviewed `kpack-decode.XZM60u` experiment passed 260/260 cells. A follow-up
 [GPU compact/persistent package](KPACK_GPU_COMPACT.md) now implements the
 missing device-only compact schedule and persistent S1/S2/S4/S8 inside parent
-modules, without changing the external grouped ABI. Sixteen new modules and
-109 local tests pass; the 204-cell PPU gate remains pending. It reuses the
+modules, without changing the external grouped ABI. Sixteen new modules compile;
+the uploaded `kpack-compact.yAQMNP` gate passes 204/204 cells. Same-parent Q4
+compact S2 improves 7.23%, and Q5 compact S1 improves 45.15%. It reuses the
 existing GPU directory and includes its build cost plus Split-K reduction in
 timing. No CPU router is introduced. The deployed native bundle and llama.cpp
 selection have not been switched to these experimental modules yet.
+Standalone profiling now defaults to ACU; the experiment guide provides a
+four-report old/new capture. It does not claim a new llama.cpp model trace.
 
 An additive [decode experiment](KPACK_DECODE_SWEEP.md) now supplies ordinary
 grouped Split-K and an explicit SIMT word-pair/FMA reader. The experimental

@@ -7,6 +7,7 @@ parent's result. --resume retries only failed/missing jobs with identical inputs
 
 import argparse
 import ctypes as C
+from contextlib import nullcontext
 import hashlib
 import json
 import os
@@ -134,7 +135,17 @@ def bind_group(module):
 
 
 def gemm_cell(
-    args, sdk, module, w, profiles, split, arm, *, grid_b=0, gpu_directory=False
+    args,
+    sdk,
+    module,
+    w,
+    profiles,
+    split,
+    arm,
+    *,
+    grid_b=0,
+    gpu_directory=False,
+    profile_context=None,
 ):
     data = profiles[0]
     order = np.argsort(data["expert"], kind="stable")
@@ -337,7 +348,32 @@ def gemm_cell(
         for _ in range(args.warmups):
             checked(graph(), "warmup")
         sdk.synchronize(r.stream)
-        timing = [r.samples(graph, args.samples) for _ in range(args.rounds)]
+        with profile_context if profile_context is not None else nullcontext():
+            timing = [r.samples(graph, args.samples) for _ in range(args.rounds)]
+        if profile_context is not None:
+            sdk.synchronize(r.stream)
+            raw = sdk.download(output, outbytes + 32)
+            if (
+                raw[:16] != b"\xa5" * 16
+                or raw[-16:] != b"\xa5" * 16
+                or sdk.download(workspace, 16) != b"\xa5" * 16
+                or sdk.download(c.workspace + query.workspace_bytes, 16) != b"\xa5" * 16
+            ):
+                raise ValueError("profile replay changed output/workspace guards")
+            got = np.frombuffer(raw[16:-16], dtype="<f2").reshape(m, w.n)
+            result["profiled_output_error"] = admit(
+                got[np.argsort(order)], data, "profiled output [row,N]"
+            )
+            if partialbytes:
+                result["profiled_partial_error"] = check_partials(
+                    sdk.download(partialptr, partialbytes),
+                    got,
+                    w,
+                    data,
+                    rec["tk"],
+                    split,
+                    order,
+                )
         weights = sum(w.planes[k].nbytes for k in ("low", "high"))
         weights += scale.nbytes + zero.nbytes if sf else w.planes["units"].nbytes
         weights = weights // w.experts * int((rows > 0).sum())

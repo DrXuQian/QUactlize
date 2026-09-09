@@ -1,9 +1,30 @@
 # GPU compact grouped execution
 
-Status: implementation and local admission complete; PPU device admission is
-pending. Sixteen new modules compile with SDK 2.1.1 and 109 local tests pass.
-Production policy and the deployed native bundle are unchanged pending device
-results. This package is not yet a model-performance claim.
+Status: the bounded PPU gate passed 204/204 cells. Sixteen new modules compile
+with SDK 2.1.1. Production policy and the deployed native bundle are unchanged;
+this package is not yet a model-performance claim.
+
+Reviewed archive: `kpack-compact.yAQMNP.results.tgz`, SHA-256
+`621cf9ed0f7f956768be0e7938f408517383df9b4f0691960a8d2ebe7318996b`.
+The source/kernel manifest and raw per-job JSON logs agree. Eleven jobs took
+99.14 seconds; each cell has 3x11 timing samples, 16 calls per graph. There are
+200 GEMM cells (145 with FP32 partials), 3,472 GEMM correctness checks, and four
+unchanged SIMT controls. Maximum conditioned output/partial errors are
+0.000153743 / 0.000236041 against the 0.005 bound. Reducer identity and guards
+are exact checks; general GEMM equality with official GGUF is tolerance-based.
+
+Same-parent TM16 model anchors, E256/top8/one token:
+
+| Case | Old device S1 | GPU compact choice | Delta |
+| --- | ---: | ---: | ---: |
+| Q4 N512/K2048 | 19.3375 us | S2, 17.9400 us | -7.23% |
+| Q5 N2048/K512 | 26.8000 us | S1, 14.7000 us | -45.15% |
+
+Q4 compact S1 is 20.0600 us, so compact alone is not a universal improvement.
+Persistent passes but does not beat ordinary compact on these two anchors.
+Q5 TM8 reaches 14.6500 us, only 0.34% below TM16. The remaining same-split
+host-compact differences are 3.635/3.550 us; these do not isolate metadata
+cost from the changed producer schedule. No automatic production promotion.
 
 The `kpack-decode.XZM60u` run passed 260/260 cells in 178.8 seconds. The same
 Q4 TM16/TN64/TK256 parent measured 19.410 us on device-only S1 versus 16.035 us
@@ -68,6 +89,30 @@ not discard other jobs. On the same source/SDK/device and parameters, set
 `RESUME_RUN` to that run directory to reuse validated jobs and retry failures.
 The expected final marker is `GPU_COMPACT_DONE status=PASS cells=204/204`.
 Numerical admission is separate from reviewing the timing deltas.
+
+## Single-operator profiling: ACU by default
+
+Use ACU for a standalone operator's instruction, cache, shared-bank and warp
+metrics. Use Asys for model/stream timelines and host-launch bubbles. The
+following entry writes four native reports without compiling any DSO:
+
+```bash
+PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK CUDA_VISIBLE_DEVICES=0 \
+  bash tools/run_kpack_gpu_compact_acu_box.sh
+```
+
+Open the reported directory's `q4-up-compact-s2.acurep` and
+`q5-down-compact-s1.acurep`; matching `*-baseline-s1.acurep` files contain the
+old device-only path. `acu-index.tsv` records actual filenames. ACU starts only
+after numerical checks and warmup, profiles one graph's individual nodes, and
+does not kill the target before its post-profile output/partial check. The Q4
+compact report contains metadata, directory, GEMM producer and reducer; Q5
+compact has no reducer. These are standalone .so calls, not llama.cpp traces.
+
+SDK 2.1.1 ACU cache control `all` clears L1/L2/LLC. Even its `none` mode clears
+L1/L2. Therefore ACU replay timings are not the warm resident benchmark above;
+use these reports to diagnose, not to replace the unprofiled performance board.
+Return the printed `kpack-compact-acu.*.results.tgz`, including native reports.
 
 ## Remaining GEMV question
 

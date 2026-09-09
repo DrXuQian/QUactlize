@@ -244,6 +244,7 @@ def test_gemm_driver_mutable_router_and_fp32_partial_boundary(
             pass
 
         def samples(self, fn, count):
+            assert events == ["start"]
             for _ in range(count):
                 assert fn() == 0
             return [160.0] * count
@@ -331,6 +332,19 @@ def test_gemm_driver_mutable_router_and_fp32_partial_boundary(
 
     monkeypatch.setattr(sweep, "Resources", Resources)
     monkeypatch.setattr(sweep, "Replay", Replay)
+    events = []
+
+    class ProfileRange:
+        def __enter__(self):
+            # The fake launch above must already have completed correctness
+            # and warmup before the capture range opens.
+            assert "call" in captured
+            events.append("start")
+
+        def __exit__(self, exc_type, exc, tb):
+            events.append("stop")
+            return False
+
     args = SimpleNamespace(
         graph_repeats=16, correctness_repeats=3, warmups=1, samples=3, rounds=2
     )
@@ -344,8 +358,13 @@ def test_gemm_driver_mutable_router_and_fp32_partial_boundary(
         arm,
         gpu_directory=gpu_directory,
         grid_b=grid_b,
+        profile_context=ProfileRange(),
     )
+    assert events == ["start", "stop"]
     assert result["status"] == "PASS" and result["median_us"] == 10.0
+    assert result["profiled_output_error"] < 0.005
+    if split > 1:
+        assert result["profiled_partial_error"] < 0.005
     assert result["profiles_checked"] == (2 if arm == "device-only" else 1)
     assert result["partial_bytes"] == (2 * 13 * 256 * 4 if split == 2 else 0)
     if gpu_directory:

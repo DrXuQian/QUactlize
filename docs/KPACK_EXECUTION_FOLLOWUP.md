@@ -15,8 +15,12 @@ closure. Canonical offline planes are unchanged.
 | Decode GEMV | 14 contexts x 8 recipes pass; zero recipes admitted | Current FQ comparison excludes casts/gather/scatter while GEMV includes indexed I/O. Revisit equal-work timing; this is not proof GEMV cannot win |
 | Model decode regression | Open performance debt | Isolate the measured per-token gap with matched work; retain the old GEMM incumbent and do not attribute the whole gap to one missing algorithm |
 | Grouped Split-K / SIMT pair reader | 260/260 PPU cells pass; performance reviewed | Q4 compact S2 improves on compact S1; Q5 compact S1 remains best. Pair reader improves both SIMT anchors. Host compact excludes CPU preparation and is not a production replacement |
-| GPU compact / persistent Split-K | Implemented; 16 new modules compile, 109 local tests pass; PPU pending | [204-cell device gate](KPACK_GPU_COMPACT.md) includes directory cost, mutable GPU routing, FP32 partials and ordinary/persistent comparison. External ABI unchanged; deployed native bundle not switched |
+| GPU compact / persistent Split-K | PPU 204/204 pass; Q4 compact S2 -7.23%, Q5 compact S1 -45.15% | [Reviewed gate and ACU capture](KPACK_GPU_COMPACT.md) include directory cost, mutable GPU routing and FP32 partials. Persistent is not the anchor winner. External ABI unchanged; deployed native bundle not switched |
 | SIMT NVIDIA diagnosis | Real CUDA/half probe passes on RTX 5090; kernel port in progress | Development-only bridge, independent GGUF oracle, then memory/instruction counters. No NVIDIA result substitutes for PPU admission |
+
+Profiling default: standalone operators use ACU native reports; model/stream
+timelines and launch bubbles use Asys. The compact ACU entry selects only the
+two measured anchors and their old-module controls, not the entire gate.
 
 The Q4 N512/K2048/E256/top8 single-token case was not omitted: overnight
 screen/neighbor/confirmation evidence includes TM8, and the runtime selects
