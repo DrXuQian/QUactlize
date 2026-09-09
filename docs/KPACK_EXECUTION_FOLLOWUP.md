@@ -17,6 +17,8 @@ closure. Canonical offline planes are unchanged.
 | Grouped Split-K / SIMT pair reader | 260/260 PPU cells pass; performance reviewed | Q4 compact S2 improves on compact S1; Q5 compact S1 remains best. Pair reader improves both SIMT anchors. Host compact excludes CPU preparation and is not a production replacement |
 | GPU compact / persistent Split-K | PPU 204/204 pass; Q4 compact S2 -7.23%, Q5 compact S1 -45.15% | [Reviewed gate and ACU capture](KPACK_GPU_COMPACT.md) include directory cost, mutable GPU routing and FP32 partials. Persistent is not the anchor winner. External ABI unchanged; deployed native bundle not switched |
 | SIMT NVIDIA diagnosis | Real CUDA/half probe passes on RTX 5090; kernel port in progress | Development-only bridge, independent GGUF oracle, then memory/instruction counters. No NVIDIA result substitutes for PPU admission |
+| Equal-weight dense/grouped reproduction | [Five-arm prebuilt runner](KPACK_DENSE_GROUPED_AB.md) ready for PPU measurements | Q4 N4096/K2048 dense versus eight N512/K2048 experts, identical logical weights/A; historical winner plus matched tile controls. SF excluded |
+| Split-K reducer optimization | Source inspection / RTX 5090 experiment in progress | Distinguish generic grouped reducer, M1 fast reducer and launch overhead; retain ordered FP32 summation and single FP16 conversion. No new reducer admitted yet |
 
 Profiling default: standalone operators use ACU native reports; model/stream
 timelines and launch bubbles use Asys. The compact ACU entry selects only the

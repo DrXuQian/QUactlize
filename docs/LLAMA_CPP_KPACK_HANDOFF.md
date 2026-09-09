@@ -30,6 +30,13 @@ control for this single-token profiling task; the profiled modules already
 passed the uploaded gate and need no rebuild. This does not claim a new
 llama.cpp model trace or change the production selector.
 
+An [equal-weight dense/grouped comparison](KPACK_DENSE_GROUPED_AB.md) reuses
+three published modules: dense Q4 N4096/K2048 versus eight active N512/K2048
+experts with a shared activation. Five FQ timing arms and three ACU captures
+separate the historical AP1/TN128/S8 configuration from matched AP0/TN64
+S2/S4 controls. It is a diagnostic, not a new llama.cpp dispatch policy;
+ScaleFirst is excluded and PPU reproduction results are pending.
+
 An additive [decode experiment](KPACK_DECODE_SWEEP.md) now supplies ordinary
 grouped Split-K and an explicit SIMT word-pair/FMA reader. The experimental
 package is not a replacement for `kpack-native-v1` and must not be selected

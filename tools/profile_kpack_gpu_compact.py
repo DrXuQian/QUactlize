@@ -108,10 +108,10 @@ class AcuRange:
         return False
 
 
-def acu_command(acu, report, python, sdk, bundle, output, case, arm, split=None):
+def acu_launch_command(acu, report, child):
     # These flags are from SDK 2.1.1 acu --help. 'none' cache control still
     # clears L1/L2 in this SDK; use explicit 'all' and do not call it warm timing.
-    command = [
+    return [
         str(acu),
         "--set",
         "full",
@@ -129,6 +129,12 @@ def acu_command(acu, report, python, sdk, bundle, output, case, arm, split=None)
         "yes",
         "--export",
         str(report),
+        *child,
+    ]
+
+
+def acu_command(acu, report, python, sdk, bundle, output, case, arm, split=None):
+    command = [
         str(python),
         "-u",
         str(Path(__file__).resolve()),
@@ -145,7 +151,7 @@ def acu_command(acu, report, python, sdk, bundle, output, case, arm, split=None)
     ]
     if split is not None:
         command += ["--split", str(split)]
-    return command
+    return acu_launch_command(acu, report, command)
 
 
 def collect(args):

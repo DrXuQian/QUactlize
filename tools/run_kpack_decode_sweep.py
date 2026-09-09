@@ -146,6 +146,7 @@ def gemm_cell(
     grid_b=0,
     gpu_directory=False,
     profile_context=None,
+    capture_output=False,
 ):
     data = profiles[0]
     order = np.argsort(data["expert"], kind="stable")
@@ -153,6 +154,18 @@ def gemm_cell(
     offsets = np.r_[0, rows.cumsum()].astype("i4")
     m = len(order)
     rec = module.record["parent"]
+    dense = arm == "dense"
+    if dense and (
+        rec.get("route") != "fq-dense"
+        or w.experts != 1
+        or len(profiles) != 1
+        or gpu_directory
+        or grid_b
+        or np.any(data["expert"] != 0)
+    ):
+        raise ValueError(
+            "dense comparison requires one FQ expert without grouped metadata"
+        )
     maximum = max(
         int(np.bincount(x["expert"], minlength=w.experts).max()) for x in profiles
     )
@@ -214,12 +227,13 @@ def gemm_cell(
             metadata=planes["scale"] if sf else planes["units"],
             zero=planes["zero"] if sf else None,
             output=output + 16,
-            offsets_device=r.upload(offsets),
+            offsets_device=None if dense else r.upload(offsets),
             stream=r.stream.value,
         )
         recipe = Recipe(1, C.sizeof(Recipe), int(grid_b > 0), split, 1 if grid_b else 0)
         query = Query()
-        v2query, v2prepare = bind_group(module)
+        if not dense:
+            v2query, v2prepare = bind_group(module)
         if arm == "device-only":
             d = DeviceCall(
                 2,
@@ -233,7 +247,8 @@ def gemm_cell(
                 "Split-K device query",
             )
         else:
-            c.rows_host, c.rows_device = rows.ctypes.data, r.upload(rows)
+            if not dense:
+                c.rows_host, c.rows_device = rows.ctypes.data, r.upload(rows)
             checked(
                 module.query(C.byref(c), C.byref(recipe), C.byref(query)),
                 "Split-K compact query",
@@ -252,9 +267,15 @@ def gemm_cell(
                 ),
                 "persistent grid query",
             )
-        workspace = r.alloc(query.workspace_bytes + 32)
-        sdk.fill(workspace, 0xA5, query.workspace_bytes + 32)
-        c.workspace, c.workspace_bytes = workspace + 16, query.workspace_bytes
+        # Dense's shipped M1 reducer requires a 128-byte-aligned workspace.
+        # A 16-byte prefix would silently force its generic fallback.
+        workspace_guard = 128 if dense else 16
+        workspace = r.alloc(query.workspace_bytes + workspace_guard + 16)
+        sdk.fill(workspace, 0xA5, query.workspace_bytes + workspace_guard + 16)
+        c.workspace, c.workspace_bytes = (
+            workspace + workspace_guard,
+            query.workspace_bytes,
+        )
         if arm == "device-only":
             d.call = c
             checked(
@@ -271,6 +292,8 @@ def gemm_cell(
         graph = Replay(sdk, r.stream, launch, args.graph_repeats)
         errors = []
         partialbytes = split * m * w.n * 4 if split > 1 else 0
+        if dense and query.workspace_bytes != partialbytes:
+            raise ValueError("dense FP32 partial workspace ABI differs")
         partialptr = c.workspace + query.workspace_bytes - partialbytes
         for index, profile in enumerate(
             profiles if arm == "device-only" else profiles[:1]
@@ -278,7 +301,8 @@ def gemm_cell(
             permutation = np.argsort(profile["expert"], kind="stable")
             rowcounts = np.bincount(profile["expert"], minlength=w.experts).astype("i4")
             bounds = np.r_[0, rowcounts.cumsum()].astype("i4")
-            upload_into(sdk, c.offsets_device, bounds)
+            if not dense:
+                upload_into(sdk, c.offsets_device, bounds)
             upload_into(sdk, c.a, profile["a"][profile["arows"][permutation]])
             for repeat in range(args.correctness_repeats):
                 sdk.fill(output, 0xA5, outbytes + 32)
@@ -292,7 +316,8 @@ def gemm_cell(
                 if (
                     raw[:16] != b"\xa5" * 16
                     or raw[-16:] != b"\xa5" * 16
-                    or sdk.download(workspace, 16) != b"\xa5" * 16
+                    or sdk.download(workspace, workspace_guard)
+                    != b"\xa5" * workspace_guard
                     or sdk.download(c.workspace + query.workspace_bytes, 16)
                     != b"\xa5" * 16
                 ):
@@ -343,20 +368,21 @@ def gemm_cell(
                     result["partial_error"] = max(result["partial_error"], error)
         # Restore the timed router/input. Timings include metadata, producer,
         # and (S>1) reducer, but no fixture H2D/D2H or Python per-kernel gap.
-        upload_into(sdk, c.offsets_device, offsets)
+        if not dense:
+            upload_into(sdk, c.offsets_device, offsets)
         upload_into(sdk, c.a, data["a"][data["arows"][order]])
         for _ in range(args.warmups):
             checked(graph(), "warmup")
         sdk.synchronize(r.stream)
         with profile_context if profile_context is not None else nullcontext():
             timing = [r.samples(graph, args.samples) for _ in range(args.rounds)]
-        if profile_context is not None:
+        if profile_context is not None or capture_output:
             sdk.synchronize(r.stream)
             raw = sdk.download(output, outbytes + 32)
             if (
                 raw[:16] != b"\xa5" * 16
                 or raw[-16:] != b"\xa5" * 16
-                or sdk.download(workspace, 16) != b"\xa5" * 16
+                or sdk.download(workspace, workspace_guard) != b"\xa5" * workspace_guard
                 or sdk.download(c.workspace + query.workspace_bytes, 16) != b"\xa5" * 16
             ):
                 raise ValueError("profile replay changed output/workspace guards")
@@ -374,6 +400,10 @@ def gemm_cell(
                     split,
                     order,
                 )
+            if capture_output:
+                result["output_fp16_bits"] = (
+                    got[np.argsort(order)].view("u2").reshape(-1).tolist()
+                )
         weights = sum(w.planes[k].nbytes for k in ("low", "high"))
         weights += scale.nbytes + zero.nbytes if sf else w.planes["units"].nbytes
         weights = weights // w.experts * int((rows > 0).sum())
@@ -388,7 +418,9 @@ def gemm_cell(
             correctness_checks=len(errors),
             profiles_checked=len(profiles) if arm == "device-only" else 1,
             timing_scope=(
-                "METADATA_PLUS_" if arm == "device-only" else "HOST_PREPARED_"
+                "METADATA_PLUS_"
+                if arm == "device-only"
+                else "" if dense else "HOST_PREPARED_"
             )
             + ("DIRECTORY_PLUS_" if gpu_directory else "")
             + "GEMM_PLUS_REDUCER",
