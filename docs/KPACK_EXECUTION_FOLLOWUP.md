@@ -55,6 +55,36 @@ First-use allocations may have runtime synchronization cost; the explicit
 ready-event protocol does not prove allocator calls nonblocking. That cost
 belongs in first-use wall timing, not the prepass kernel timer.
 
+### Native SF metadata oracle correction
+
+The partial box log from `/workspace/kpack-native-model.q40qV3` reports all
+four Q2_K contexts and both Q3_K FQ contexts passing; the Q3_K SF contexts
+stop at the zero-plane byte comparison, before GEMM. That gate incorrectly
+used the historical timing fixture's resident zero plane. For scale-only
+Q3/Q6, that fixture starts zero at `-0`, whereas production `unit_group`
+starts it at `+0` and applies the canonical correction in float before
+rounding to FP16. Do not change the production kernel to match that fixture.
+
+With the exact deterministic N1024/K5120/E1 fixture, the production C++ host
+decoder differs from the historical zero plane only at 5,152 signed zeros
+for Q3_K (first index 170, historical `0x8000`, canonical `0x0000`) and 1,180
+for Q6_K (first index 29). Nonzero values and scale bits agree. This proves
+an oracle defect locally; the partial box log did not include device bits,
+so it cannot by itself prove that every device difference is signed zero.
+
+The native gate now uses the independent packed-unit decoder already checked
+against production C++ in the GEMV gate. Comparison remains raw-bit exact,
+including zero signs. First-launch output is poisoned, and
+`KPACK_NATIVE_METADATA` records unit SHA, both plane denominators, mismatch
+counts, nonfinite/signed-zero counts and the first expert/group/N coordinate
+and bits. A failed metadata check cannot produce admitted timing or policy.
+Historical fixtures/calibration hashes, offline bytes, selected recipes and
+all prebuilt DSOs remain unchanged. Local coverage includes all five formats,
+multi-expert placement, the exact Q3/Q6 geometry and eight negative plants.
+Pull and rerun the native box entry; no Quactlize binary rebuild or LFS update
+is required for this correction. PPU closure and model performance remain
+pending, as does the original llama.cpp adapter rebuild in that entry.
+
 ### Dense coverage correction
 
 The old +29% GSM8K command overrode only `ffn_.*_exps`. Its 120 K-pack weights

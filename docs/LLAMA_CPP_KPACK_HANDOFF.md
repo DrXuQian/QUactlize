@@ -62,6 +62,14 @@ The workflow includes 28 selected numeric contexts, 14 model-shaped GEMV
 contexts, adapter graph tests, real-model ABBA and a separate short device
 trace. Exact counts, scopes and remaining caveats are in the follow-up document.
 
+The partial `kpack-native-model.q40qV3` run stopped on a Q3_K SF metadata
+comparison. The native gate's oracle has been corrected: the historical
+timing fixture encodes some Q3/Q6 zeros as `-0`, unlike canonical `unit_group`.
+It now decodes the actual packed units independently, retaining strict bit
+equality and reporting first-difference coordinates/bits. This is a test-only
+change; no kernel, selected recipe, offline format or DSO changes. See the
+follow-up's metadata-oracle section for local proof and pending box closure.
+
 The old model override covered grouped experts only. The new performance
 runner overrides `(ffn_.*_exps|output\.weight)`, adding the Q6 dense head.
 Q8_0 dense weights remain ordinary GPU; they are outside the K-quant ABI.

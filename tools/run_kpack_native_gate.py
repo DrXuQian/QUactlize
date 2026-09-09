@@ -3,6 +3,7 @@
 
 import argparse
 import ctypes as C
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -17,11 +18,67 @@ from quactlize.execution.native import arrangement, bind
 from quactlize.runtime.native import SDK, Call, checked
 from quactlize.runtime.compiler import sha
 from quactlize.runtime.tuning import Request
-from tools.run_kpack_gemv_gate import Resources, compare
+from tools.run_kpack_gemv_gate import Resources, compare, metadata_oracle
 from tools.run_kpack_grouped_device_gate import graph_bind, profiles
 from tools.run_kpack_pack_gate import device_identity
 from tools.kpack_warmup_fixture import Weights
 from tools.verify_kpack_dispatch import verify
+
+
+def check_prepass(sdk, w, scale, zero):
+    # The historical timing fixture is not the canonical metadata oracle:
+    # for Q3/Q6 it starts the zero channel at -0, whereas unit_group starts
+    # at +0. Keep that fixture (and its calibration hashes) unchanged. Decode
+    # the actual units with the same independent oracle as the GEMV gate.
+    expected = metadata_oracle(w.planes["units"], w.q, w.n, w.k, w.experts)
+    proof = dict(
+        q=w.q,
+        n=w.n,
+        k=w.k,
+        experts=w.experts,
+        oracle="PACKED_UNIT_FP16_V1",
+        units_sha256=hashlib.sha256(w.planes["units"].tobytes()).hexdigest(),
+        planes=[],
+    )
+    for name, ptr, want in zip(("scale", "zero"), (scale, zero), expected):
+        if not np.isfinite(want).all():
+            raise ValueError(f"nonfinite packed-unit oracle: q={w.q} plane={name}")
+        raw = sdk.download(ptr, want.nbytes)
+        if len(raw) != want.nbytes:
+            raise ValueError(f"prepass readback size differs: q={w.q} plane={name}")
+        got = np.frombuffer(raw, dtype="<f2").reshape(want.shape)
+        got_bits, want_bits = got.view("<u2"), want.view("<u2")
+        bad = got_bits != want_bits
+        indices = np.flatnonzero(bad)
+        first = None
+        if indices.size:
+            index = int(indices[0])
+            expert, group, col = map(int, np.unravel_index(index, want.shape))
+            first = dict(
+                index=index,
+                expert=expert,
+                group=group,
+                n=col,
+                want=f"0x{want_bits.flat[index]:04x}",
+                got=f"0x{got_bits.flat[index]:04x}",
+            )
+        proof["planes"].append(
+            dict(
+                plane=name,
+                cells=want.size,
+                bad=int(indices.size),
+                signed_zero_bad=int(np.count_nonzero(bad & (got == 0) & (want == 0))),
+                nonfinite=int(np.count_nonzero(~np.isfinite(got))),
+                first=first,
+            )
+        )
+    proof["status"] = "FAIL" if any(p["bad"] for p in proof["planes"]) else "PASS"
+    print("KPACK_NATIVE_METADATA " + json.dumps(proof), flush=True)
+    if proof["status"] != "PASS":
+        raise ValueError(
+            "native SF prepass differs from packed-unit oracle: " + json.dumps(proof)
+        )
+    return proof
 
 
 def run(sdk, bundle, w, route, tokens, samples):
@@ -54,6 +111,7 @@ def run(sdk, bundle, w, route, tokens, samples):
         }
         sf = route in (1, 3)
         prepass_samples = []
+        prepass_proof = None
         scale = zero = None
         if sf:
             _, _, prepare = bind(
@@ -61,6 +119,9 @@ def run(sdk, bundle, w, route, tokens, samples):
             )
             size = e * (w.k // arr.group_size) * w.n * 2
             scale, zero = r.alloc(size), r.alloc(size)
+            # A skipped/partial store must not inherit valid allocator bytes.
+            sdk.fill(scale, 0x7E, size)
+            sdk.fill(zero, 0x7E, size)
             prepass = lambda: prepare(
                 w.q,
                 w.n,
@@ -74,12 +135,9 @@ def run(sdk, bundle, w, route, tokens, samples):
                 C.byref(arr),
                 r.stream,
             )
-            prepass_samples = r.samples(prepass, 3)
-            for ptr, name in ((scale, "scale"), (zero, "zero")):
-                if sdk.download(ptr, size) != w.planes[name].tobytes():
-                    raise ValueError(
-                        "native SF prepass differs from packed-unit oracle: " + name
-                    )
+            prepass_samples = r.samples(prepass, 1)
+            prepass_proof = check_prepass(sdk, w, scale, zero)
+            prepass_samples += r.samples(prepass, 2)
         ap = r.alloc(m * w.k * 2)
         output = r.alloc(m * w.n * 2 + 32)
         bounds = r.alloc((e + 1) * 4) if grouped else None
@@ -166,6 +224,7 @@ def run(sdk, bundle, w, route, tokens, samples):
             selection=receipt(choice),
             profiles=records,
             prepass_samples_us=prepass_samples,
+            prepass_oracle=prepass_proof,
             graph_replays=3,
             rows_host=False,
             rows_device=False,

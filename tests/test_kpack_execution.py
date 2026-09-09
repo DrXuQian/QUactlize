@@ -125,6 +125,115 @@ def test_independent_offline_bytes_and_affine_reader(host, q):
     assert np.count_nonzero(w != old) > w.size // 2
 
 
+def warmup_metadata_host(host, q, n, k, e):
+    """Decode the gate's exact bytes through production unit_group on the CPU."""
+    from tools.kpack_warmup_fixture import Weights
+
+    fixture = Weights(q, n, k, e)
+    weights = np.empty((e, n, k), dtype="<u2")
+    shape = (e, k // ref.SPECS[q].group_size, n)
+    scale = np.full(shape, 0x7E7E, dtype="<u2")
+    zero = np.full_like(scale, 0x7E7E)
+    planes = [fixture.planes[name] for name in ("low", "high", "units")]
+    assert (
+        host.qkg_host_read(
+            q,
+            *(p.ctypes.data if p.size else None for p in planes),
+            n,
+            k,
+            e,
+            weights.ctypes.data,
+            scale.ctypes.data,
+            zero.ctypes.data,
+        )
+        == 0
+    )
+    return fixture, scale.view("<f2"), zero.view("<f2")
+
+
+def metadata_readback(scale, zero):
+    from types import SimpleNamespace
+
+    planes = {"scale": scale, "zero": zero}
+    return SimpleNamespace(download=lambda ptr, size: planes[ptr].tobytes()[:size])
+
+
+@pytest.mark.parametrize(
+    "q,n,k,e",
+    [(q, 256, 512, 3) for q in range(10, 15)]
+    + [(11, 1024, 5120, 1), (14, 1024, 5120, 1)],
+)
+def test_native_prepass_checks_production_metadata_not_timing_fixture(host, q, n, k, e):
+    from tools.run_kpack_native_gate import check_prepass
+
+    w, scale, zero = warmup_metadata_host(host, q, n, k, e)
+    if q in (11, 14):
+        old = w.planes["zero"]
+        bad = old.view("<u2") != zero.view("<u2")
+        assert bad.any()
+        assert np.all((old[bad] == 0) & (zero[bad] == 0))
+        assert np.all(old.view("<u2")[bad] == 0x8000)
+        assert np.all(zero.view("<u2")[bad] == 0x0000)
+        if (n, k, e) == (1024, 5120, 1):
+            # Freeze the actual reported geometry and deterministic seed.
+            assert np.count_nonzero(bad) == {11: 5152, 14: 1180}[q]
+            assert np.flatnonzero(bad)[0] == {11: 170, 14: 29}[q]
+    # Prove the checker does not silently reuse either historical fp16 plane.
+    w.planes["scale"].fill(np.nan)
+    w.planes["zero"].fill(np.nan)
+    proof = check_prepass(metadata_readback(scale, zero), w, "scale", "zero")
+    assert proof["status"] == "PASS"
+    assert proof["oracle"] == "PACKED_UNIT_FP16_V1"
+    assert [(p["plane"], p["cells"], p["bad"]) for p in proof["planes"]] == [
+        (name, e * n * k // ref.SPECS[q].group_size, 0) for name in ("scale", "zero")
+    ]
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "historical-zero",
+        "scale-ulp",
+        "zero-ulp",
+        "nan",
+        "partial-store",
+        "zeroed-plane",
+        "expert-swap",
+        "short-readback",
+    ],
+)
+def test_native_prepass_rejects_bit_and_coordinate_faults(host, fault, capsys):
+    from tools.run_kpack_native_gate import check_prepass
+
+    w, scale, zero = warmup_metadata_host(host, 11, 256, 512, 3)
+    if fault == "historical-zero":
+        zero[:] = w.planes["zero"]
+    elif fault in ("scale-ulp", "zero-ulp"):
+        plane = scale if fault == "scale-ulp" else zero
+        index = int(np.flatnonzero(plane != 0)[0])
+        plane.view("<u2").flat[index] ^= 1
+    elif fault in ("nan", "partial-store"):
+        zero.view("<u2").flat[17 if fault == "nan" else -1] = 0x7E7E
+    elif fault == "zeroed-plane":
+        zero.fill(0)
+    elif fault == "expert-swap":
+        zero[:] = zero[::-1].copy()
+    elif fault == "short-readback":
+        zero = zero.reshape(-1)[:-1]
+    with pytest.raises(ValueError, match="prepass.*differs"):
+        check_prepass(metadata_readback(scale, zero), w, "scale", "zero")
+    if fault != "short-readback":
+        import json
+
+        line = capsys.readouterr().out.strip().splitlines()[-1]
+        proof = json.loads(line.removeprefix("KPACK_NATIVE_METADATA "))
+        bad = [p for p in proof["planes"] if p["bad"]]
+        assert proof["q"] == 11 and proof["status"] == "FAIL" and bad
+        assert all(p["first"]["want"] != p["first"]["got"] for p in bad)
+        if fault == "historical-zero":
+            assert bad[0]["signed_zero_bad"] == bad[0]["bad"]
+
+
 def call(q=12, mode=0, e=1):
     return Call(
         version=1,
