@@ -121,7 +121,7 @@ grep -E '^GGML_(USE_PPU|NCP_|CUDA_GRAPH)' "$BUILD_DIR/CMakeCache.txt" > "$RUN/re
 stage=adapter-contract
 "$PYTHON" "$LLAMA_DIR/tests/test-quactlize-native.py" 2>&1 | tee "$RUN/results/parser-tests.log"
 ctest --test-dir "$BUILD_DIR" --output-on-failure \
-    -R '^(test-quactlize-(execution-(fq|sf|gemv)|buffer|loader(-env)?)|test-kpack-sidecar)$' \
+    -R '^(test-quactlize-(execution-(auto|fq|sf|gemv)|buffer|loader(-env)?)|test-kpack-sidecar)$' \
     2>&1 | tee "$RUN/results/adapter-tests.log"
 stage=real-model
 "$PYTHON" -u "$LLAMA_DIR/tests/quactlize_native.py" --binary "$BUILD_DIR/bin/llama-server" \

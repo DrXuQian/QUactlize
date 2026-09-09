@@ -23,6 +23,7 @@ Model admission with this new selection remains open; see
 | 4. Device-only grouped metadata | Correctness and changing-router replay pass; performance open | No per-token D2H; isolate the cost of rectangular device-only scheduling against the same-parent compact diagnostic |
 | 5. ScaleFirst prefill | Native metadata/GEMM gates pass; model prefill improves | Immutable-weight prepass is reused. Full-model first-use and resident timing remain separate; no inference wait on cache D2H |
 | Decode GEMV | Equal-F32-endpoint gate now passes; no production promotion | Affine GEMV gains 1.12–6.37% over pair, only 3.55% ahead of full FQ on Q4-up; Q5 and dense still favor FQ. Large-case ACU shows low DRAM utilization despite high occupancy and zero SIMT bank conflicts; investigate instruction/KVD traffic |
+| Uniform FQ decode | Automatic dense/grouped single-token routing changed in llama.cpp; deployment requires adapter rebuild | Ignore GEMV policy in `auto`; preserve measured FQ parent/Split-K/compact selection and prefill FQ/SF policy. Forced GEMV/SF stay diagnostic. No Quactlize kernel DSO rebuild; this does not by itself close model performance debt |
 | Model decode regression | Open performance debt | Isolate the measured per-token gap with matched work; retain the old GEMM incumbent and do not attribute the whole gap to one missing algorithm |
 | Grouped Split-K / SIMT pair reader | 260/260 PPU cells pass; performance reviewed | Q4 compact S2 improves on compact S1; Q5 compact S1 remains best. Pair reader improves both SIMT anchors. Host compact excludes CPU preparation and is not a production replacement |
 | GPU compact / persistent Split-K | PPU 204/204 pass; newer postops choices integrated below | [Reviewed gate and ACU capture](KPACK_GPU_COMPACT.md) include directory cost, mutable GPU routing and FP32 partials. Persistent is not the anchor winner. External ABI unchanged |
@@ -64,7 +65,9 @@ The box rebuilds llama.cpp for the changed context layout, not Quactlize.
    excludes adapter casts/gather/scatter. This conservative gate is not a
    proof of global cross-algorithm optimality.
 3. Production adapter tests use device tags to verify pointer/stride/routing,
-   cached preparation, eager/capture/replay and mutable IDs. Arithmetic is
+   cached preparation, eager/capture/replay and mutable IDs. The `auto` case
+   offers a GEMV recipe but requires FQ for single-token dense/grouped and
+   retains the SF-preferring policy for prefill. Arithmetic is
    intentionally stubbed in this seam test, not in the separate numeric gate.
 4. Real model ABBA: reference/native/native/reference, one business request
    at a time, 128/512 input tokens, 128 generated tokens, chunk=128. First-use

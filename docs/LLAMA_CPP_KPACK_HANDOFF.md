@@ -11,7 +11,27 @@ inspection, its selected-config oracle, and all 26 host ABI cases in a fresh
 LFS checkout. Its PPU device gate is still **PENDING**. Host/ELF admission is
 not device admission and does not authorize deployment by itself.
 
-## Current work: decode GEMV and ScaleFirst prefill
+## Current routing: FQ decode and measured ScaleFirst prefill
+
+Following the matched PPU comparison below, automatic single-token decode
+uses selected FQ for both dense and grouped K-pack weights (Q2_K through
+Q6_K). It does not consult the GEMV policy, even if an older policy file
+contains a matching recipe. The existing selected parent, compact schedule
+and Split-K settings are retained. This is a llama.cpp adapter change;
+the 216-module native package, kernel DSOs and offline format are unchanged.
+Incrementally rebuild llama.cpp and restart the process to apply it.
+
+Consumer commit: `135d7edcf` on the private `feat/kpack-gpu-cache` branch.
+The changed production and adapter-test translation units compile with the
+local PPU SDK; 49 host policy/parser tests pass. The new `auto` device test
+is included in the box runner, but has not yet been run on PPU after this
+change. No new model speedup is claimed.
+
+Prefill still uses its measured FQ/SF policy. Explicit `sf` and `gemv` route
+overrides remain diagnostic options; keep `QUACTLIZE_KPACK_ROUTE=auto` for
+normal inference. Do not set global `fq` just to enforce decode, since that
+also overrides prefill. Requests already falling through an empty GEMV
+policy to FQ do not acquire a different kernel from this change.
 
 The reviewed `kpack-decode.XZM60u` experiment passed 260/260 cells. A follow-up
 [GPU compact/persistent package](KPACK_GPU_COMPACT.md) now implements the
@@ -67,7 +87,7 @@ collected. The full raw-result review, caveats and delivery checklist are in
 
 Native C++ selection is now wired to both dense `MUL_MAT` and grouped
 `MUL_MAT_ID` on `feat/kpack-gpu-cache`. `QUACTLIZE_KPACK_EXECUTION` opts into
-the additive `prebuilt/ppu0010/kpack-native-v1` package: 214 selected PPU
+the additive `prebuilt/ppu0010/kpack-native-v1` package: 216 selected PPU
 parents, one SDK-free host dispatcher and the five-format GEMV/prepass DSO.
 The old six-library bundle remains required for intake and labelled policy
 misses. It is not rebuilt or silently replaced. No new device admission yet.
@@ -78,10 +98,11 @@ ScaleFirst is prepared once with the immutable weight and a separate ready
 event, subject to a memory reserve. Compute has no explicit wait on D2H/cache
 publication; first-use allocator synchronization remains a timing caveat.
 `QUACTLIZE_KPACK_GEMV_POLICY` is an exact measured TSV generated
-by the offline gate; an unmeasured initial recipe is never substituted.
+by the offline gate, used only for explicitly forced GEMV diagnostics;
+an unmeasured initial recipe is never substituted.
 
 The default behavior without `QUACTLIZE_KPACK_EXECUTION` is unchanged. With it,
-decode tries the measured GEMV recipe or selected FQ. Prefill reads the paired
+automatic single-token decode uses selected FQ. Prefill reads the paired
 FQ/SF measurements in `QUACTLIZE_KPACK_PREFILL_POLICY`; SF must beat FQ by more
 than 2% in resident core time. Missing entries or resource declines retain
 selected FQ. Unknown families retain the
