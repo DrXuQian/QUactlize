@@ -8,3 +8,4 @@ prebuilt/ppu0010/kpack-decode-sweep-v1/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/kpack-gpu-compact-v1/**/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/kpack-gpu-compact-v1/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/kpack-grouped-postops-v1/**/*.so filter=lfs diff=lfs merge=lfs -text
+prebuilt/ppu0010/kpack-gemv-affine-v1/*.so filter=lfs diff=lfs merge=lfs -text

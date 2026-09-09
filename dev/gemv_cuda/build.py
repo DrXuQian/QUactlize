@@ -58,6 +58,22 @@ def grid_schedule(source):
     )
 
 
+def affine_source(original):
+    start = "template<class Reader>\n__device__ __forceinline__ float pair_dot("
+    end = "template<int Columns, int Warps, bool Pair = false>\n__global__ void kpack_gemv("
+    if original.count(start) != 1 or original.count(end) != 1:
+        raise ValueError("production dot boundaries changed")
+    first, last = original.index(start), original.index(end)
+    if first >= last:
+        raise ValueError("reversed dot boundaries")
+    return (
+        original[:first]
+        + (HERE / "affine_dot.cuh").read_text()
+        + "\n"
+        + original[last:]
+    )
+
+
 def build(cuda, output, jobs, reader="production", schedule="production"):
     if reader == "cuda-half2" and schedule != "production":
         raise ValueError("the half2 include wrapper requires the production schedule")
@@ -121,20 +137,7 @@ def build(cuda, output, jobs, reader="production", schedule="production"):
     )
     original = gemv_source.read_text()
     if reader == "cuda-affine":
-        original = (ROOT / "quactlize/execution/gemv.cu").read_text()
-        start = "template<class Reader>\n__device__ __forceinline__ float pair_dot("
-        end = "template<int Columns, int Warps, bool Pair = false>\n__global__ void kpack_gemv("
-        if original.count(start) != 1 or original.count(end) != 1:
-            raise ValueError("production dot boundaries changed")
-        first, last = original.index(start), original.index(end)
-        if first >= last:
-            raise ValueError("reversed dot boundaries")
-        original = (
-            original[:first]
-            + (HERE / "affine_dot.cuh").read_text()
-            + "\n"
-            + original[last:]
-        )
+        original = affine_source((ROOT / "quactlize/execution/gemv.cu").read_text())
     if schedule == "cuda-grid":
         original = grid_schedule(original)
     if reader == "cuda-affine" or schedule != "production":

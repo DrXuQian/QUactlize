@@ -15,7 +15,9 @@ sys.path.insert(0, str(ROOT))
 from quactlize.runtime.compiler import FLAGS, LIBRARIES, sha
 
 
-def build(sdk, output, jobs):
+def build(sdk, output, jobs, variant="production"):
+    if variant not in ("production", "fp32-affine"):
+        raise ValueError("unknown GEMV variant")
     sdk, output = sdk.resolve(), output.resolve()
     if jobs < 1:
         raise ValueError("jobs must be positive")
@@ -24,6 +26,22 @@ def build(sdk, output, jobs):
             raise ValueError(f"missing SDK input: {path}")
     output.mkdir(parents=True, exist_ok=False)
     source = ROOT / "quactlize/execution"
+    gemv_source = source / "gemv.cu"
+    extra_sources = []
+    if variant == "fp32-affine":
+        # Reuse only the device-independent arithmetic/source transformation
+        # that was tested on CUDA. No CUDA runtime/compiler compatibility
+        # header enters this hgcc build, and production gemv.cu is unchanged.
+        from dev.gemv_cuda.build import affine_source, grid_schedule
+
+        generated = grid_schedule(affine_source(gemv_source.read_text()))
+        tag = "QKG_CONCAT(kpack_q,QKG_QTYPE)"
+        if generated.count(tag) != 3:
+            raise ValueError("GEMV namespace seams changed")
+        generated = generated.replace(tag, "QKG_CONCAT(kpack_affine_q,QKG_QTYPE)")
+        gemv_source = output / "gemv_affine.cu"
+        gemv_source.write_text(generated)
+        extra_sources = [ROOT / "dev/gemv_fq_sf/adapters.cu"]
     includes = [
         source,
         ROOT / "quactlize/include",
@@ -43,17 +61,29 @@ def build(sdk, output, jobs):
         }
     )
     hashes = {str(p.relative_to(ROOT)): sha(p) for p in inputs}
+    if variant == "fp32-affine":
+        for p in [
+            ROOT / "dev/gemv_cuda/build.py",
+            ROOT / "dev/gemv_cuda/affine_dot.cuh",
+            *extra_sources,
+        ]:
+            hashes[str(p.relative_to(ROOT))] = sha(p)
     commands = []
-    for name, filename, defines in [
-        (f"q{q}", "gemv.cu", [f"-DQKG_QTYPE={q}"]) for q in range(10, 15)
-    ] + [("metadata", "metadata.cu", []), ("dispatch", "dispatch.cpp", [])]:
+    for name, filename, defines in (
+        [(f"q{q}", gemv_source, [f"-DQKG_QTYPE={q}"]) for q in range(10, 15)]
+        + [
+            ("metadata", source / "metadata.cu", []),
+            ("dispatch", source / "dispatch.cpp", []),
+        ]
+        + [("adapters", p, []) for p in extra_sources]
+    ):
         command = [
             str(sdk / "bin/hgcc"),
             *FLAGS,
             *defines,
             *[f"-I{d}" for d in includes],
             "-c",
-            str(source / filename),
+            str(filename),
             "-o",
             str(output / f"{name}.o"),
         ]
@@ -116,7 +146,13 @@ def build(sdk, output, jobs):
             for s in (1, 2, 4, 8)
         ],
         gemv_pair_affine="FP16_FMA_ONE_ROUNDING",
+        variant=variant,
+        generated_source_sha256=sha(gemv_source),
+        comparison_adapters=bool(extra_sources),
     )
+    if variant == "fp32-affine":
+        manifest["gemv_pair_affine"] = "FP32_GROUP_AFFINE_NO_INTERMEDIATE_FP16_ROUNDING"
+        manifest["grid"] = "GRID_X_N_TILE_Y_SPLIT_Z_ROW_ROWS_LE65535"
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(
         f"KPACK_EXECUTION_BUILD status=COMPILED device_validated=0 seconds={manifest['compile_seconds']:.3f} library={library}"
@@ -129,5 +165,8 @@ if __name__ == "__main__":
     parser.add_argument("--sdk", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--jobs", type=int, default=8)
+    parser.add_argument(
+        "--variant", choices=("production", "fp32-affine"), default="production"
+    )
     args = parser.parse_args()
-    build(args.sdk, args.output, args.jobs)
+    build(args.sdk, args.output, args.jobs, args.variant)

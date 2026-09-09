@@ -1754,3 +1754,16 @@ group-affine/vector-load reader reaches Q5/DMMV parity within ~1%, but Q4
 remains 35–49% slower; current MMVQ is faster on both anchors. All five-format
 CUDA regression cells pass, but that experiment is not PPU-admitted and is
 not in this native package. See [exact scopes and reproduction](../dev/gemv_cuda/README.md#matched-llamacpp-comparison).
+
+## PPU GEMV/FQ/SF comparison gate (2026-09-09)
+
+`prebuilt/ppu0010/kpack-gemv-affine-v1` adds only a 1.02 MiB diagnostic DSO,
+locally hgcc-compiled. It is not installed into llama.cpp and does not replace
+native-v1. The existing FQ/SF modules and selected splits are reused.
+`tools/run_kpack_gemv_fq_sf_box.sh` compares five decode shapes (three small
+anchors, two larger-weight M1 controls), then produces separate ACU reports.
+FQ/SF core timing is distinguished from the common F32 endpoint pipeline;
+the SF GPU prepass is separately checked/timed and included in an explicit
+recompute scenario. GPU routing arrays are ready inputs to all arms; this is
+not a full-model timing claim. PPU numeric/performance admission remains
+pending. [Box command, scopes and selective resume](KPACK_GEMV_FQ_SF.md).
