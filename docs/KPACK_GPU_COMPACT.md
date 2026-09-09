@@ -29,8 +29,11 @@ cost from the changed producer schedule. No automatic production promotion.
 For the requested single-token decode profiling, use **TM8/WM8**, not TM16.
 The TM16 numbers above remain historical controls. The already-admitted TM8
 module measures Q4 S2 at 18.1300 us and Q5 S1 at 14.6500 us. TM8 Q4 S4 measures
-18.0475 us, within 0.5% of S2; the focused capture retains S2 with less partial
-workspace. This is a bounded profiling choice, not a global selector update.
+18.0475 us, within 0.5% of S2; the focused capture includes both S2 and S4.
+They use the same module, with a runtime split selection. Q4 S4 doubles the
+producer grid from 128 to 256 CTAs (128 threads each) and doubles the partial
+workspace; a stable speedup is not established by this near tie. This is a
+bounded profiling choice, not a global selector update.
 Each active expert has M=1, so TM8 and TM16 both need one M tile per expert:
 changing TM alone does not increase the 128/256 CTA counts in these calls.
 
@@ -102,16 +105,17 @@ Numerical admission is separate from reviewing the timing deltas.
 
 Use ACU for a standalone operator's instruction, cache, shared-bank and warp
 metrics. Use Asys for model/stream timelines and host-launch bubbles. The
-following entry writes four native reports without compiling any DSO:
+following entry writes five native reports without compiling any DSO:
 
 ```bash
 PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK CUDA_VISIBLE_DEVICES=0 \
   bash tools/run_kpack_gpu_compact_acu_box.sh
 ```
 
-Open the reported directory's `q4-up-tm8-compact-s2.acurep` and
-`q5-down-tm8-compact-s1.acurep`; matching `*-tm8-baseline-s1.acurep` files contain
-the old device-only TM8 path. All four captures require TM8/WM8; a missing TM8
+Open the reported directory's `q4-up-tm8-compact-s2.acurep`,
+`q4-up-tm8-compact-s4.acurep` and `q5-down-tm8-compact-s1.acurep`; matching
+`*-tm8-baseline-s1.acurep` files contain the old device-only TM8 path.
+All five captures require TM8/WM8; a missing TM8
 module is an error, not a fallback to TM16. `acu-index.tsv` records TileM and
 actual filenames. The old TM16 captures remain valid historical evidence and
 are not overwritten. ACU starts only
@@ -119,6 +123,16 @@ after numerical checks and warmup, profiles one graph's individual nodes, and
 does not kill the target before its post-profile output/partial check. The Q4
 compact report contains metadata, directory, GEMM producer and reducer; Q5
 compact has no reducer. These are standalone .so calls, not llama.cpp traces.
+
+To add only Q4 S4 while preserving previously collected reports:
+
+```bash
+PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK CUDA_VISIBLE_DEVICES=0 \
+  bash tools/run_kpack_gpu_compact_acu_box.sh --case q4-up --arm compact --split 4
+```
+
+The runner creates a fresh results directory and reports `reports=1/1` for
+this filter. Omit `--split 4` to collect the paired Q4 compact S2/S4 reports.
 
 SDK 2.1.1 ACU cache control `all` clears L1/L2/LLC. Even its `none` mode clears
 L1/L2. Therefore ACU replay timings are not the warm resident benchmark above;

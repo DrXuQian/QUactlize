@@ -23,7 +23,9 @@ existing GPU directory and includes its build cost plus Split-K reduction in
 timing. No CPU router is introduced. The deployed native bundle and llama.cpp
 selection have not been switched to these experimental modules yet.
 Standalone profiling now defaults to ACU; the experiment guide provides a
-four-report **TM8/WM8** old/new capture. TM16 is retained only as a historical
+five-report **TM8/WM8** old/new capture, including Q4 compact S2 and S4.
+Use `--case q4-up --arm compact --split 4` on its box runner to capture only
+the added S4 arm. TM16 is retained only as a historical
 control for this single-token profiling task; the profiled modules already
 passed the uploaded gate and need no rebuild. This does not claim a new
 llama.cpp model trace or change the production selector.

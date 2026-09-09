@@ -28,9 +28,33 @@ from tools.run_kpack_pack_gate import device_identity
 CASES = {"q4-up": (12, 512, 2048), "q5-down": (13, 2048, 512)}
 ARMS = {"baseline": "baseline-rect", "compact": "gpu-compact"}
 TILE_M = 8
+CAPTURES = (
+    ("q4-up", "baseline", 1),
+    ("q4-up", "compact", 2),
+    ("q4-up", "compact", 4),
+    ("q5-down", "baseline", 1),
+    ("q5-down", "compact", 1),
+)
 
 
-def selection(manifest, case, arm):
+def capture_plan(case=None, arm=None, split=None):
+    selected = [
+        row
+        for row in CAPTURES
+        if all(
+            value is None or value == field
+            for value, field in zip((case, arm, split), row)
+        )
+    ]
+    if not selected:
+        raise ValueError("requested case/arm/split is outside the focused capture plan")
+    return selected
+
+
+def selection(manifest, case, arm, split=None):
+    if split is None:
+        split = 2 if case == "q4-up" and arm == "compact" else 1
+    capture_plan(case, arm, split)
     q, n, k = CASES[case]
     groups = [g for g in manifest["groups"] if g["job"] == f"fq-q{q}-tm{TILE_M}"]
     if len(groups) != 1:
@@ -41,7 +65,6 @@ def selection(manifest, case, arm):
     module = next(r for r in manifest["modules"] if r["key"] == key)
     if module["parent"]["tm"] != TILE_M or module["parent"]["wm"] != TILE_M:
         raise ValueError("single-token decode profiling requires TM8/WM8")
-    split = 2 if case == "q4-up" and arm == "compact" else 1
     return dict(
         case=case,
         arm=arm,
@@ -85,10 +108,10 @@ class AcuRange:
         return False
 
 
-def acu_command(acu, report, python, sdk, bundle, output, case, arm):
+def acu_command(acu, report, python, sdk, bundle, output, case, arm, split=None):
     # These flags are from SDK 2.1.1 acu --help. 'none' cache control still
     # clears L1/L2 in this SDK; use explicit 'all' and do not call it warm timing.
-    return [
+    command = [
         str(acu),
         "--set",
         "full",
@@ -120,17 +143,27 @@ def acu_command(acu, report, python, sdk, bundle, output, case, arm):
         "--arm",
         arm,
     ]
+    if split is not None:
+        command += ["--split", str(split)]
+    return command
 
 
 def collect(args):
+    planned = capture_plan(
+        getattr(args, "case", None),
+        getattr(args, "arm", None),
+        getattr(args, "split", None),
+    )
+    total = len(planned)
     manifest = verify(args.bundle)
     args.output.mkdir(parents=True, exist_ok=False)
     if not args.acu.is_file():
         raise ValueError(f"missing ACU executable: {args.acu}")
     records = []
+    print(f"GPU_COMPACT_ACU_PLAN reports={total} selections={planned}", flush=True)
     for case in CASES:
-        for arm in ARMS:
-            choice = selection(manifest, case, arm)
+        for arm, split in [(a, s) for c, a, s in planned if c == case]:
+            choice = selection(manifest, case, arm, split)
             name = report_name(choice)
             report = args.output / name
             receipt = args.output / f"{name}.json"
@@ -144,9 +177,10 @@ def collect(args):
                 receipt,
                 case,
                 arm,
+                split,
             )
             print(
-                f"GPU_COMPACT_ACU_CAPTURE start={name} completed={len(records)}/4 log={log}",
+                f"GPU_COMPACT_ACU_CAPTURE start={name} completed={len(records)}/{total} log={log}",
                 flush=True,
             )
             started = time.monotonic()
@@ -208,7 +242,7 @@ def collect(args):
                 )
             records.append(row)
             print(
-                f"GPU_COMPACT_ACU_CAPTURE completed={len(records)}/4 status={row['status']} report={row['report']}",
+                f"GPU_COMPACT_ACU_CAPTURE completed={len(records)}/{total} status={row['status']} report={row['report']}",
                 flush=True,
             )
     summary = dict(
@@ -216,6 +250,7 @@ def collect(args):
             "CAPTURED" if all(r["status"] == "CAPTURED" for r in records) else "FAIL"
         ),
         captures=records,
+        expected_reports=total,
         scope="STANDALONE_NOT_LLAMA_CPP",
         performance_admission=False,
     )
@@ -231,7 +266,7 @@ def collect(args):
                 + "\n"
             )
     print(
-        f"GPU_COMPACT_ACU_DONE status={summary['status']} reports={sum(r['status']=='CAPTURED' for r in records)}/4 output={args.output}",
+        f"GPU_COMPACT_ACU_DONE status={summary['status']} reports={sum(r['status']=='CAPTURED' for r in records)}/{total} output={args.output}",
         flush=True,
     )
     return int(summary["status"] != "CAPTURED")
@@ -246,10 +281,11 @@ def main():
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--case", choices=CASES)
     p.add_argument("--arm", choices=ARMS)
+    p.add_argument("--split", type=int, choices=(1, 2, 4))
     p.add_argument(
         "--collect",
         action="store_true",
-        help="Collect the four bounded old/new ACU reports",
+        help="Collect the focused ACU reports, optionally filtered by case/arm/split",
     )
     p.add_argument("--acu", type=Path)
     args = p.parse_args()
@@ -259,14 +295,16 @@ def main():
     args.sdk = args.sdk.resolve(strict=True)
     args.output = args.output.resolve()
     if args.collect:
-        if args.case or args.arm:
-            p.error("--collect selects the four fixed arms; do not pass --case/--arm")
+        try:
+            capture_plan(args.case, args.arm, args.split)
+        except ValueError as error:
+            p.error(str(error))
         args.acu = (args.acu or args.sdk / "asight/bin/acu").resolve(strict=True)
         return collect(args)
     if not args.case or not args.arm:
         p.error("a profiled child requires both --case and --arm")
     manifest = verify(args.bundle)
-    choice = selection(manifest, args.case, args.arm)
+    choice = selection(manifest, args.case, args.arm, args.split)
     sdk = SDK(args.sdk)
     graph_bind(sdk)
     record = choice["module"]

@@ -11,7 +11,7 @@ from tools import profile_kpack_gpu_compact as profile
 from quactlize.runtime.compiler import sha
 
 
-def test_four_exact_arms_keep_old_payload_and_select_measured_split(tmp_path):
+def test_exact_arms_keep_old_payload_and_select_measured_split(tmp_path):
     manifest = fake_bundle(tmp_path)
     for case in profile.CASES:
         old = profile.selection(manifest, case, "baseline")
@@ -31,6 +31,25 @@ def test_four_exact_arms_keep_old_payload_and_select_measured_split(tmp_path):
             ["reducer"] if case == "q4-up" else []
         )
         assert new["mode"] == "device-only" and new["grid_b"] == 0
+
+
+def test_q4_s4_reuses_the_same_tm8_module_and_keeps_s2_in_the_plan(tmp_path):
+    manifest = fake_bundle(tmp_path)
+    s2 = profile.selection(manifest, "q4-up", "compact", 2)
+    s4 = profile.selection(manifest, "q4-up", "compact", 4)
+    assert s2["module"] == s4["module"]
+    assert s4["tile_m"] == 8 and s4["split"] == 4
+    assert s4["expected_components"] == ["metadata", "directory", "gemm", "reducer"]
+    assert profile.report_name(s4) == "q4-up-tm8-compact-s4"
+    assert len(profile.capture_plan()) == 5
+    assert profile.capture_plan("q4-up", "compact", 4) == [("q4-up", "compact", 4)]
+    assert profile.capture_plan("q4-up", "compact") == [
+        ("q4-up", "compact", 2),
+        ("q4-up", "compact", 4),
+    ]
+    for args in (("q5-down", "compact", 4), ("q4-up", "baseline", 2)):
+        with pytest.raises(ValueError, match="focused capture plan"):
+            profile.selection(manifest, *args)
 
 
 def test_profile_does_not_fall_back_to_tm16(tmp_path):
@@ -65,6 +84,10 @@ def test_acu_command_profiles_nodes_only_inside_api_range():
         assert command[command.index(name) + 1] == value
     assert "--launch-count" not in command and "--collect" not in command
     assert "--force-overwrite" not in command and "asys" not in command
+    s4 = profile.acu_command(
+        "acu", "report", "python", "sdk", "bundle", "receipt", "q4-up", "compact", 4
+    )
+    assert s4[-2:] == ["--split", "4"]
 
 
 @pytest.mark.parametrize("failure", [None, "body", "start", "stop"])
@@ -104,8 +127,9 @@ def test_profile_range_lifetime_and_failure_propagation(failure):
         "bad-exit",
     ],
 )
+@pytest.mark.parametrize("only_s4", [False, True])
 def test_collection_preserves_other_arms_and_does_not_accept_empty_reports(
-    tmp_path, monkeypatch, plant
+    tmp_path, monkeypatch, plant, only_s4
 ):
     bundle = tmp_path / "bundle"
     bundle.mkdir()
@@ -114,7 +138,13 @@ def test_collection_preserves_other_arms_and_does_not_accept_empty_reports(
     acu = tmp_path / "acu"
     acu.write_text("test tool")
     args = SimpleNamespace(
-        bundle=bundle, sdk=tmp_path, output=tmp_path / "results", acu=acu
+        bundle=bundle,
+        sdk=tmp_path,
+        output=tmp_path / "results",
+        acu=acu,
+        case="q4-up" if only_s4 else None,
+        arm="compact" if only_s4 else None,
+        split=4 if only_s4 else None,
     )
     calls = []
 
@@ -122,11 +152,12 @@ def test_collection_preserves_other_arms_and_does_not_accept_empty_reports(
         def __init__(self, command, stdout, stderr):
             case = command[command.index("--case") + 1]
             arm = command[command.index("--arm") + 1]
+            split = int(command[command.index("--split") + 1])
             receipt = Path(command[command.index("--output") + 1])
             report = Path(command[command.index("--export") + 1] + ".acurep")
             self.bad = not calls
-            calls.append((case, arm))
-            choice = profile.selection(manifest, case, arm)
+            calls.append((case, arm, split))
+            choice = profile.selection(manifest, case, arm, split)
             data = dict(
                 status="PASS",
                 selection=choice,
@@ -149,12 +180,14 @@ def test_collection_preserves_other_arms_and_does_not_accept_empty_reports(
     monkeypatch.setattr(profile.subprocess, "Popen", Process)
     assert profile.collect(args) == int(plant is not None)
     result = json.loads((args.output / "summary.json").read_text())
-    assert len(calls) == len(result["captures"]) == 4
+    count = 1 if only_s4 else 5
+    assert calls == profile.capture_plan(args.case, args.arm, args.split)
+    assert len(calls) == len(result["captures"]) == result["expected_reports"] == count
     assert sum(c["status"] == "CAPTURED" for c in result["captures"]) == (
-        4 if plant is None else 3
+        count if plant is None else count - 1
     )
     assert result["performance_admission"] is False
-    assert len((args.output / "acu-index.tsv").read_text().splitlines()) == 5
+    assert len((args.output / "acu-index.tsv").read_text().splitlines()) == count + 1
     for row in result["captures"]:
         assert row["tile_m"] == 8
         if row["report"]:
