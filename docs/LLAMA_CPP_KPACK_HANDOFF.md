@@ -70,6 +70,15 @@ equality and reporting first-difference coordinates/bits. This is a test-only
 change; no kernel, selected recipe, offline format or DSO changes. See the
 follow-up's metadata-oracle section for local proof and pending box closure.
 
+For a later loader-stub failure, update the private llama branch to
+`908248271` or later as well:
+production bundle/pack overrides must not leak into stub negative tests.
+`RESUME_RUN=/workspace/kpack-native-model.<previous>` on the native box entry
+reuses complete, identity-checked 28-context native and 14-context GEMV gates.
+It creates a fresh result directory, regenerates policies, rebuilds/tests the
+adapter, then runs new model ABBA/trace measurements. Old results and all
+Quactlize DSOs are preserved; incomplete or changed gates are not reusable.
+
 The old model override covered grouped experts only. The new performance
 runner overrides `(ffn_.*_exps|output\.weight)`, adding the Q6 dense head.
 Q8_0 dense weights remain ordinary GPU; they are outside the K-quant ABI.

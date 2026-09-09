@@ -85,6 +85,31 @@ Pull and rerun the native box entry; no Quactlize binary rebuild or LFS update
 is required for this correction. PPU closure and model performance remain
 pending, as does the original llama.cpp adapter rebuild in that entry.
 
+### Loader test environment isolation and adapter resume
+
+The box subsequently reports 17/31 stub-loader cases failing. The test driver
+overrode only `LD_LIBRARY_PATH`; the model runner's absolute
+`QUACTLIZE_PPU_BUNDLE` and `QUACTLIZE_PPU_PACK_LIBRARY` overrides won, so the
+stub fault switches were ignored by real libraries. `rc=256` is a `system()`
+wait status for exit code 1, not a device error code. This failure does not
+establish a kernel numerical failure.
+
+The private llama branch clears production library/SDK overrides only for
+stub child cases, leaving `--real`, `--bench`, and inference unchanged.
+Buffer/sidecar CTests explicitly select their stub libraries. A separate
+hostile-environment loader test prevents recurrence; both 31-case loader
+runs plus buffer and sidecar pass locally with real library paths exported.
+
+Set `RESUME_RUN` to the failed model run directory when calling the native box
+entry. It validates all 28 native and 14 GEMV contexts, the saved numerical
+and timing evidence, current native/execution/legacy binary identities, SDK,
+recorded device identity, and unchanged measurement source. It copies only
+the prior microbenchmark results into a fresh run, records their origin and
+hashes, then regenerates the policies and rebuilds/tests the llama adapter.
+Model timings and traces are always fresh. The old run is not overwritten;
+partial/changed inputs are rejected rather than silently reused. No Quactlize
+DSO rebuild is needed. Local resume/export coverage: 27 tests pass.
+
 ### Dense coverage correction
 
 The old +29% GSM8K command overrode only `ffn_.*_exps`. Its 120 K-pack weights

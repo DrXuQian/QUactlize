@@ -8,6 +8,7 @@ if [[ ${1:-} == --help ]]; then
     printf '%s\n' \
       'Required: LLAMA_DIR MODEL PPU_SDK QUACTLIZE_PPU_BUNDLE QUACTLIZE_PPU_PACK_LIBRARY CACHE_DIR BUILD_DIR' \
       'Optional: JOBS=192 CUDA_VISIBLE_DEVICES=0 RESULT_ROOT=/workspace PYTHON=python3' \
+      'RESUME_RUN=/workspace/kpack-native-model.XXXXXX reuses complete, identity-checked native/GEMV gates only.' \
       'Prebuilt native gate -> GEMV comparison/export -> adapter build/tests -> real-model ABBA -> short trace.' \
       'No Quactlize device compilation. Existing llama PPU build is rebuilt for the changed context ABI.' \
       'Only Q2_K..Q6_K weights are supported; this model test includes experts and Q6 output.weight.'
@@ -74,19 +75,30 @@ cp "$QUACTLIZE_PPU_BUNDLE/manifest.json" "$RUN/results/legacy-manifest.json"
 cp "$CACHE_DIR/manifest.json" "$RUN/results/cache-before.json"
 "$PYTHON" "$REPO/tools/verify_kpack_dispatch.py" "$QUACTLIZE_KPACK_EXECUTION" \
     | tee "$RUN/results/verify.log"
+if [[ -n ${RESUME_RUN:-} ]]; then
+    stage=resume-measurements
+    "$PYTHON" "$REPO/tools/reuse_kpack_native_gates.py" --source "$RESUME_RUN/results" \
+        --output "$RUN/results" --bundle "$QUACTLIZE_KPACK_EXECUTION" \
+        --legacy "$QUACTLIZE_PPU_BUNDLE" --execution "$REPO/prebuilt/ppu0010/kpack-execution-v1" \
+        --sdk "$PPU_SDK" | tee "$RUN/results/resume.log"
+fi
 stage=native-selected-device-gate
-"$PYTHON" -u "$REPO/tools/run_kpack_native_gate.py" --sdk "$PPU_SDK" \
-    --bundle "$QUACTLIZE_KPACK_EXECUTION" --output "$RUN/results/native-gate" \
-    2>&1 | tee "$RUN/results/native-gate.log"
+if [[ -z ${RESUME_RUN:-} ]]; then
+    "$PYTHON" -u "$REPO/tools/run_kpack_native_gate.py" --sdk "$PPU_SDK" \
+        --bundle "$QUACTLIZE_KPACK_EXECUTION" --output "$RUN/results/native-gate" \
+        2>&1 | tee "$RUN/results/native-gate.log"
+fi
 export QUACTLIZE_KPACK_PREFILL_POLICY="$RUN/results/prefill-policy.tsv"
 "$PYTHON" "$REPO/tools/export_kpack_prefill_policy.py" --results "$RUN/results/native-gate/summary.json" \
     --native-bundle "$QUACTLIZE_KPACK_EXECUTION" --output "$QUACTLIZE_KPACK_PREFILL_POLICY" \
     | tee "$RUN/results/prefill-policy.log"
 stage=gemv-selection
-"$PYTHON" -u "$REPO/tools/run_kpack_gemv_gate.py" --sdk "$PPU_SDK" \
-    --bundle "$REPO/prebuilt/ppu0010/kpack-execution-v1" --gemm-bundle "$QUACTLIZE_PPU_BUNDLE" \
-    --native-bundle "$QUACTLIZE_KPACK_EXECUTION" --model-decode-only --samples 11 \
-    --output "$RUN/results/gemv-gate" 2>&1 | tee "$RUN/results/gemv-gate.log"
+if [[ -z ${RESUME_RUN:-} ]]; then
+    "$PYTHON" -u "$REPO/tools/run_kpack_gemv_gate.py" --sdk "$PPU_SDK" \
+        --bundle "$REPO/prebuilt/ppu0010/kpack-execution-v1" --gemm-bundle "$QUACTLIZE_PPU_BUNDLE" \
+        --native-bundle "$QUACTLIZE_KPACK_EXECUTION" --model-decode-only --samples 11 \
+        --output "$RUN/results/gemv-gate" 2>&1 | tee "$RUN/results/gemv-gate.log"
+fi
 export QUACTLIZE_KPACK_GEMV_POLICY="$RUN/results/gemv-policy.tsv"
 "$PYTHON" "$REPO/tools/export_kpack_gemv_policy.py" --results "$RUN/results/gemv-gate/summary.json" \
     --native-bundle "$QUACTLIZE_KPACK_EXECUTION" \
@@ -109,7 +121,7 @@ grep -E '^GGML_(USE_PPU|NCP_|CUDA_GRAPH)' "$BUILD_DIR/CMakeCache.txt" > "$RUN/re
 stage=adapter-contract
 "$PYTHON" "$LLAMA_DIR/tests/test-quactlize-native.py" 2>&1 | tee "$RUN/results/parser-tests.log"
 ctest --test-dir "$BUILD_DIR" --output-on-failure \
-    -R '^(test-quactlize-(execution-(fq|sf|gemv)|buffer|loader)|test-kpack-sidecar)$' \
+    -R '^(test-quactlize-(execution-(fq|sf|gemv)|buffer|loader(-env)?)|test-kpack-sidecar)$' \
     2>&1 | tee "$RUN/results/adapter-tests.log"
 stage=real-model
 "$PYTHON" -u "$LLAMA_DIR/tests/quactlize_native.py" --binary "$BUILD_DIR/bin/llama-server" \
