@@ -79,8 +79,16 @@ It creates a fresh result directory, regenerates policies, rebuilds/tests the
 adapter, then runs new model ABBA/trace measurements. Old results and all
 Quactlize DSOs are preserved; incomplete or changed gates are not reusable.
 
-The old model override covered grouped experts only. The new performance
-runner overrides `(ffn_.*_exps|output\.weight)`, adding the Q6 dense head.
+The old model override covered grouped experts only. The current performance
+runner uses `^(blk\.[0-9]+\.ffn_[a-z0-9_]+_exps\.weight|output\.weight)$`,
+adding only the root Q6 dense head to the expert weights. Use private llama
+commit `5837b4d86` or later: the prior unanchored `output\.weight` also matched
+`blk.3.attn_output.weight` under the loader's `regex_search`. An explicit
+buffer override bypasses automatic buffer admission, so this selected Q8_0
+for K-pack and aborted model loading; the client's connection reset was a
+consequence. Python and C++ regex regression checks cover 367 tensor names.
+No kernel, format or DSO changed. Completed identity-checked micro gates can
+still be resumed; model performance and device trace must run again.
 Q8_0 dense weights remain ordinary GPU; they are outside the K-quant ABI.
 Each model log includes `[quactlize-plan]` (parent/build/split/grid or measured
 GEMV recipe). `[quactlize-prepass]` GPU event intervals are read at teardown.

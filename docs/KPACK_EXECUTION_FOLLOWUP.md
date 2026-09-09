@@ -110,6 +110,33 @@ Model timings and traces are always fresh. The old run is not overwritten;
 partial/changed inputs are rejected rather than silently reused. No Quactlize
 DSO rebuild is needed. Local resume/export coverage: 27 tests pass.
 
+### Model tensor override scope
+
+After the reference performance arm, the native server aborted in
+`qz_buffer_set_tensor`: `blk.3.attn_output.weight` is Q8_0 but had received a
+K-pack buffer. This explains the client's `Connection reset by peer`; it is
+not evidence of a GEMM numerical failure or a valid native timing sample.
+
+The model runner used `(ffn_.*_exps|output\.weight)`. The loader applies
+`std::regex_search`, so the second alternative also matches the suffix of
+`attn_output.weight`. A non-CPU explicit buffer override directly chooses
+the requested buffer instead of calling automatic `weight_buft_supported`.
+The K-pack setter's unsupported-format rejection was correct and remains.
+
+Private llama commit `5837b4d86` anchors both alternatives to complete tensor
+names: `^(blk\.[0-9]+\.ffn_[a-z0-9_]+_exps\.weight|output\.weight)$`.
+The ABBA runner and separate trace share this rule. Regression tests check
+161 intended names and 206 excluded names with both Python and the loader's
+C++ regex semantics; the old expression demonstrably admits the failing
+Q8_0 tensor name. Five local tests pass, including immediate startup abort
+and connection-reset reporting with the arm, phase, process status and log
+path. The runner records the exact override in its protocol receipt.
+
+No production kernel, library or heuristic changed. All Quactlize DSOs and
+complete micro gates remain reusable through the validated resume entry.
+New model ABBA timings and the separate device trace are still required;
+the failed native arm cannot establish performance or accuracy admission.
+
 ### Dense coverage correction
 
 The old +29% GSM8K command overrode only `ffn_.*_exps`. Its 120 K-pack weights
