@@ -1,8 +1,10 @@
 # Grouped Split-K post-operations
 
-Status: implemented on develop; nine exact PPU parents compile locally.
-PPU correctness/performance admission and production bundle selection remain
-pending. This is not a new offline format, routing rule or large sweep.
+Status: the bounded PPU gate covers nine exact parents / 384 passing cells
+across two preserved result archives. Q4 compact S4 improves 17.58→14.59 µs;
+the ACU capture confirms the reducer improvement. Production bundle selection
+and model-level performance remain pending. This is not a new offline format,
+routing rule or large sweep.
 
 ## Two changes
 
@@ -51,7 +53,89 @@ The final RTX 5090 run passed 256 SIMT GEMV configurations and the 216
 direct-store cells. At M=8/N=512/S4 the actual compact reducer measured
 0.874 µs versus 1.681 µs for the generic body. Full scope, reproduction steps
 and evidence hashes are in [the CUDA experiment](../dev/gemv_cuda/README.md).
-PPU numerical/performance admission is still pending.
+The PPU evidence below is separate from those CUDA measurements.
+
+## Reviewed PPU closure
+
+The ordered-fixture replay `kpack-grouped-postops.YH4lgS.results.tgz` (SHA256
+`4de29b6febf8e547108e673787ba5c7bf6661860eab3330cd253387a6d722492`)
+passes Q6/TM16 ordinary 32/32 and Q4/TM8 ordinary 64/64 cells. Measurement
+source hashes match `6d0bac6`; all candidate and baseline DSOs are unchanged.
+Its manifest SHA256 is
+`9bb4ba8645fa49de63bc50163d6e1387093520d6eb78cb3902b879155aacb4b9`.
+Both archives have the same SDK/device receipt, four alternating-order rounds,
+11 samples per round and seven correctness repeats. Each sample comprises
+16 full calls.
+
+Together with the seven complete jobs / 288 cells from the original
+`NNT8ZP` archive, this closes the planned nine-job / 384-cell coverage.
+This is a cross-run evidence union, **not** a fresh 384-cell run on the new
+driver. The two old incomplete jobs are excluded; their partial timings are
+not pooled into the replay. Every complete job retains its original source
+receipt. Output/FP32-partial oracles, fixed-order reduction, A/B output bits,
+guards and changing-router checks pass. The largest replay conditioned errors
+are 9.00e-5 for output and 2.37e-4 for partials (bound 5e-3).
+
+The original directory-poison failures did not recur with the fixture
+ordering correction. Combined with the controlled stream-order experiment,
+this supports the fixture diagnosis without a production kernel workaround;
+it is not a claim of exhaustive correctness for untested configurations.
+
+### Full-call timing
+
+Q4 model-shaped compact case: total M=8, N=512, K=2048, E=256, eight active
+experts with one row each. Same TM8/TN64/TK256 parent in both arms:
+
+| Split | Baseline µs | Candidate µs | Change |
+| --- | ---: | ---: | ---: |
+| S1 | 19.674 | 19.795 | +0.62% |
+| S2 | 17.691 | 16.048 | -9.29% |
+| S4 | 17.584 | 14.589 | -17.03% |
+| S8 | 23.970 | 18.176 | -24.17% |
+
+S4 is the fastest measured candidate here, not S8. These are warm graph
+measurements of metadata + GPU directory + producer + reducer. They exclude
+llama.cpp gather/scatter, F32/FP16 adapter casts and loading; they are neither
+standalone GEMM times nor a matched comparison against llama.cpp MMVQ.
+
+For Q5 compact N2048/K512/E256/top8, the earlier complete job still selects
+S1 within this A/B set: 14.341 µs, versus 20.805 µs for S2. Do not apply the
+Q4 S4 choice to Q5. On the new ragged controls, Q4 S2/S4/S8 improve
+10.12/18.92/29.61%; Q6 improves 9.35/18.26/30.47%. Their S1 controls differ
+by +0.13% and -0.01%, respectively.
+
+### ACU: where the change appears
+
+Both Q4 S4 native reports and their independent numeric receipts pass:
+`results/q4-up-s4-baseline.acurep` and
+`results/q4-up-s4-candidate.acurep` inside `YH4lgS`.
+
+| Component | Baseline µs | Candidate µs | Change |
+| --- | ---: | ---: | ---: |
+| Metadata | 1.826 | 1.832 | +0.32% |
+| GPU directory | 2.885 | 2.791 | -3.28% |
+| GEMM producer | 13.677 | 13.125 | -4.04% |
+| Reducer | 5.770 | 2.161 | -62.55% |
+
+These durations are ACU multi-pass replay measurements, not the warm graph
+measurements above. Do not add or subtract them to account for the 2.995 µs
+warm full-call gain. The larger profiled component change is in the reducer:
+4 CTAs × 128 threads become 64 CTAs × 32 threads, with no shared accesses.
+
+The producer retains 256 CTAs × 128 threads and 38,912 bytes of shared memory.
+Its register count is 92→90, executed instructions 2,067,456→1,993,216, shared
+load transactions 536,576→528,384 and store transactions 59,392→57,344.
+Shared-load bank conflicts remain 110,592; shared-store conflicts fall
+28,672→24,576. Total producer conflicts fall only 2.94%, not 62.55%.
+Tensor FP16 instructions remain 32,768 and global-to-shared transactions
+208,896. This matches a partial-store/reduction optimization, not a change to
+the MMA mainloop or a solution to all remaining bank conflicts.
+
+Next admission step: integrate only the measured grouped modules/choices
+(Q4 compact S4, Q5 compact S1) and test the complete llama.cpp adapter path
+against matched reference work. No new full sweep is required for this gate.
+SIMT GEMV performance and its production recipe coverage remain separate open
+items; this result does not close them.
 
 ## Box: no compilation
 
@@ -105,13 +189,14 @@ that header with poison on the default stream, but computes on a nonblocking
 stream without an explicit edge from that fill. CUDA documents both the
 [device-memset host-asynchronous behavior](https://docs.nvidia.com/cuda/cuda-runtime-api/api-sync-behavior.html)
 and [nonblocking-stream exclusion from legacy synchronization](https://docs.nvidia.com/cuda/cuda-runtime-api/stream-sync-behavior.html).
-That is a concrete test-ordering gap, not yet proof of the PPU failure's cause.
+At that stage this was a concrete test-ordering gap, not proof of the PPU
+failure's cause; the ordered-fixture replay is reviewed above.
 
 The real CUDA `dev/gemv_cuda/stream_poison.cu` experiment reproduces exactly
 four poison header words under a deliberately delayed default stream, with
 both eager and graph consumers. Same-stream poison and an explicit
 default-stream drain both turn green (six cases total). This proves the
-ordering mechanism on CUDA, not that the PPU kernels are already admitted.
+ordering mechanism on CUDA; the separate PPU replay supplies the device gate.
 
 The fixture now enqueues all poison fills on its consumer stream. Pageable
 H2D setup is completed before use on that nonblocking stream. Neither fill nor

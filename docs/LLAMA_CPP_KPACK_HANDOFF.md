@@ -1719,12 +1719,20 @@ return a nonnegative value.
 `prebuilt/ppu0010/kpack-grouped-postops-v1` is a diagnostic same-parent A/B
 package, not a replacement for the deployed native bundle. It adds direct
 FP32 partial stores and a compact fixed-S reducer for grouped S>1. Offline
-arrangements, public C APIs, S1 and llama.cpp wiring are unchanged. Do not
-switch production selection until the [PPU gate](KPACK_GROUPED_POSTOPS.md)
-passes correctness and measures end-to-end benefit.
+arrangements, public C APIs, S1 and llama.cpp wiring are unchanged. The
+[bounded PPU gate](KPACK_GROUPED_POSTOPS.md#reviewed-ppu-closure) now passes
+nine jobs / 384 cells across two preserved runs. The two directory-poison
+failures pass their 96-cell replay with corrected fixture stream ordering,
+without changing any packaged DSO or introducing an inference wait.
 
-The first PPU postops run admits seven complete jobs, but Q4/TM8 baseline and
-Q6/TM16 candidate both stop on a poisoned GPU-directory header. The corrected
-test queues fixture poison on the compute stream and drains setup uploads;
-only two failed jobs need the initial replay. No DSO, inference wait, ABI or
-llama.cpp hook changes. See the [result review](KPACK_GROUPED_POSTOPS.md#first-ppu-result-and-fixture-ordering).
+For the Q4 N512/K2048/E256/top8 model shape, compact S4 is fastest in the
+measured candidate set: 14.589 µs versus 17.584 µs for the same-parent S4
+baseline (-17.03%). Q5 N2048/K512/E256/top8 still favors compact S1 at
+14.341 µs. Timing includes GPU metadata/directory/producer/reducer, but excludes
+llama.cpp adapter casts/gather/scatter. The separate Q4 S4 ACU replay measures
+the reducer at 5.770→2.161 µs; do not mix replay and warm full-call durations.
+
+The deployed native bundle and selector have not been replaced. Next: bind
+the measured modules/choices and run full-adapter, equal-work model/reference
+checks. This requires no offline-format or public-ABI change. SIMT GEMV recipe
+admission and performance remain open; this postops gate does not close them.

@@ -9,8 +9,11 @@ closure. Canonical offline planes are unchanged.
 
 Grouped direct FP32 partial publication and the compact fixed-S reducer are
 implemented and packaged separately. Nine PPU parents compile; actual PPU
-admission is pending. S1, mainloop, offline bytes, workspace and current native
-bundle selection are unchanged. See [the bounded A/B gate](KPACK_GROUPED_POSTOPS.md).
+coverage now passes nine jobs / 384 cells across two preserved runs. Q4 compact
+S4 measures 14.59 µs versus 17.58 µs for its same-parent baseline; Q5 compact
+still favors S1. S1, mainloop, offline bytes, workspace and current native
+bundle selection are unchanged. Model admission remains open; see
+[the bounded A/B gate](KPACK_GROUPED_POSTOPS.md#reviewed-ppu-closure).
 
 | Item | State | Completion condition |
 | --- | --- | --- |
@@ -23,7 +26,7 @@ bundle selection are unchanged. See [the bounded A/B gate](KPACK_GROUPED_POSTOPS
 | GPU compact / persistent Split-K | PPU 204/204 pass; Q4 compact S2 -7.23%, Q5 compact S1 -45.15% | [Reviewed gate and ACU capture](KPACK_GPU_COMPACT.md) include directory cost, mutable GPU routing and FP32 partials. Persistent is not the anchor winner. External ABI unchanged; deployed native bundle not switched |
 | SIMT NVIDIA diagnosis | RTX 5090: 256 GEMV configurations and 216 direct-store cells pass; counters permission denied | Development-only native-half2 experiment gives modest gains; low efficiency is not resolved. No NVIDIA result substitutes for PPU admission |
 | Equal-weight dense/grouped reproduction | [Five-arm prebuilt runner](KPACK_DENSE_GROUPED_AB.md) ready for PPU measurements | Q4 N4096/K2048 dense versus eight N512/K2048 experts, identical logical weights/A; historical winner plus matched tile controls. SF excluded |
-| Split-K reducer optimization | New PPU postops package: 7/9 jobs pass; two directory-poison failures need ordered-fixture replay | Same-stream fixture correction does not rebuild or change kernels. Preserve the original results; see [postops review](KPACK_GROUPED_POSTOPS.md#first-ppu-result-and-fixture-ordering) |
+| Split-K reducer optimization | Bounded PPU gate: 9/9 jobs, 384 cells across two runs; Q4 compact S4 -17.03% full-call time | Two failed jobs now pass 96/96 with the ordered fixture and unchanged DSOs. ACU reducer 5.77→2.16 µs is separate from warm timing. Integrate measured modules/choices and test full adapters; [review](KPACK_GROUPED_POSTOPS.md#reviewed-ppu-closure) |
 
 Profiling default: standalone operators use ACU native reports; model/stream
 timelines and launch bubbles use Asys. The compact ACU entry selects only the
