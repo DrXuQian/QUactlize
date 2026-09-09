@@ -49,10 +49,63 @@ CASES = {
 READERS = ("pair", "affine")
 PROFILES = (*READERS, "fq", "sf", "prepass")
 COUNTS = dict(rounds=4, samples=11, graph_calls=16, correctness_repeats=3)
+EXECUTION_LIBRARY = "libquactlize_ppu_execution.so"
+EXECUTION_EXPORTS = {
+    "quactlize_kpack_gemv_query_v1",
+    "quactlize_kpack_gemv_run_v1",
+    "quactlize_kpack_gemv_pair_query_v1",
+    "quactlize_kpack_gemv_pair_run_v1",
+    "quactlize_kpack_sf_prepare_v1",
+}
 
 
 def configs():
     return [(c, w, s) for c in (16, 32) for w in (2, 4, 8) for s in (1, 2, 4, 8)]
+
+
+def require_exports(library, required):
+    # Dynamic exports are a host ELF property: reject a scalar-only DSO
+    # before creating any stream, allocating fixtures or launching kernels.
+    result = subprocess.run(
+        ["nm", "-D", "--defined-only", "--format=posix", str(library)],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    exports = {line.split()[0] for line in result.stdout.splitlines() if line.split()}
+    missing = sorted(set(required) - exports)
+    if missing:
+        raise ValueError(
+            f"execution exports missing from {library}: {', '.join(missing)}"
+        )
+
+
+def verify_execution(bundle, m, extra_exports=()):
+    if (
+        m.get("schema") != "quactlize.kpack-execution-build.v1"
+        or m.get("library") != EXECUTION_LIBRARY
+        or sha(bundle / EXECUTION_LIBRARY) != m["sha256"]
+    ):
+        raise ValueError("execution package differs or is not materialized by Git LFS")
+    recipes = m.get("gemv_pair_configs", [])
+    if len(recipes) != len(configs()) or {
+        tuple(r.get(x) for x in ("columns", "warps", "split")) for r in recipes
+    } != set(configs()):
+        raise ValueError("execution pair recipe inventory differs")
+    require_exports(bundle / EXECUTION_LIBRARY, EXECUTION_EXPORTS | set(extra_exports))
+    return m
+
+
+def verify_pair(bundle):
+    m = json.loads((bundle / "manifest.json").read_text())
+    if m.get("schema") != "quactlize.kpack-decode-sweep.v1":
+        raise ValueError(
+            "pair reader requires the decode-sweep package, not native's scalar DSO"
+        )
+    execution = verify_execution(bundle, m["execution"])
+    if execution.get("gemv_pair_affine") != "FP16_FMA_ONE_ROUNDING":
+        raise ValueError("baseline pair arithmetic differs")
+    return execution
 
 
 def verify_affine(bundle):
@@ -61,19 +114,46 @@ def verify_affine(bundle):
         m.get("schema") != "quactlize.kpack-execution-build.v1"
         or m.get("variant") != "fp32-affine"
         or m.get("comparison_adapters") is not True
-        or m.get("library") != "libquactlize_ppu_execution.so"
-        or sha(bundle / m["library"]) != m["sha256"]
     ):
-        raise ValueError("affine PPU package differs or is not materialized by Git LFS")
-    return m
+        raise ValueError("affine PPU package variant differs")
+    return verify_execution(bundle, m, {"qkg_comparison_adapter_v1"})
+
+
+def load_readers(args):
+    old = C.CDLL(str(args.pair_bundle / EXECUTION_LIBRARY), mode=C.RTLD_LOCAL)
+    new = C.CDLL(str(args.affine_bundle / EXECUTION_LIBRARY), mode=C.RTLD_LOCAL)
+    return old, new, {"pair": pair_bind(old)["pair"], "affine": pair_bind(new)["pair"]}
+
+
+def simt_call(case):
+    q, n, k, experts, rows, channels = CASES[case]
+    return VecCall(
+        version=1,
+        size=C.sizeof(VecCall),
+        qtype=q,
+        n=n,
+        k=k,
+        experts=experts,
+        rows=rows,
+        mode=2 if experts > 1 else 0,
+        input_type=1,
+        channels=channels,
+        topk=rows,
+        a_row_stride=k,
+        a_token_stride=channels * k,
+        ids_stride=rows,
+        out_row_stride=n,
+    )
 
 
 def authority(args, sdk):
+    pair = verify_pair(args.pair_bundle)
     affine = verify_affine(args.affine_bundle)
     verify_native(args.native_bundle)
-    for name, digest in affine["runtime"].items():
-        if sha(args.sdk / "lib" / name) != digest:
-            raise ValueError("SDK runtime differs: " + name)
+    for package in (pair, affine):
+        for name, digest in package["runtime"].items():
+            if sha(args.sdk / "lib" / name) != digest:
+                raise ValueError("SDK runtime differs: " + name)
     paths = [
         Path(__file__),
         ROOT / "tools/kpack_execution_fixture.py",
@@ -90,6 +170,8 @@ def authority(args, sdk):
     ]
     return dict(
         native_manifest=sha(args.native_bundle / "manifest.json"),
+        pair_manifest=sha(args.pair_bundle / "manifest.json"),
+        pair_execution_sha256=pair["sha256"],
         affine_manifest=sha(args.affine_bundle / "manifest.json"),
         device=device_identity(sdk),
         counts=COUNTS,
@@ -109,6 +191,7 @@ class Comparison:
         self.q, self.n, self.k, self.e, self.m, self.channels = CASES[case]
         self.grouped = self.e > 1
         self.arr = arrangement(self.q)
+        self.old, self.new, self.functions = load_readers(args)
         self.r = Resources(sdk)
         self.dispatch = Dispatch(args.native_bundle)
         self.graphs = []
@@ -116,16 +199,6 @@ class Comparison:
         self.choices = {}
         manifest = verify_native(args.native_bundle)
         self.parents = {r["key"]: r["parent"] for r in manifest["modules"]}
-        self.old = C.CDLL(
-            str(args.native_bundle / "libquactlize_ppu_execution.so"), mode=C.RTLD_LOCAL
-        )
-        self.new = C.CDLL(
-            str(args.affine_bundle / "libquactlize_ppu_execution.so"), mode=C.RTLD_LOCAL
-        )
-        self.functions = {
-            "pair": pair_bind(self.old)["pair"],
-            "affine": pair_bind(self.new)["pair"],
-        }
         self.adapter = self.new.qkg_comparison_adapter_v1
         self.adapter.argtypes = [
             C.c_int,
@@ -266,22 +339,8 @@ class Comparison:
         query, run = self.functions[reader]
         cfg = Config(*config)
         out = self.allocate(self.m * self.n * 4)
-        c = VecCall(
-            version=1,
-            size=C.sizeof(VecCall),
-            qtype=self.q,
-            n=self.n,
-            k=self.k,
-            experts=self.e,
-            rows=self.m,
-            mode=2 if self.grouped else 0,
-            input_type=1,
-            channels=self.channels,
-            topk=self.m,
-            a_row_stride=self.k,
-            a_token_stride=self.channels * self.k,
-            ids_stride=self.m,
-            out_row_stride=self.n,
+        c = simt_call(self.case)
+        for name, value in dict(
             a=self.a,
             low=self.planes["low"],
             high=self.planes["high"],
@@ -289,7 +348,8 @@ class Comparison:
             ids=self.ids,
             output=out,
             stream=self.r.stream.value,
-        )
+        ).items():
+            setattr(c, name, value)
         sizes = Sizes()
         checked(
             query(C.byref(c), C.byref(cfg), C.byref(self.arr), C.byref(sizes)),
@@ -717,6 +777,8 @@ def child_command(args, case, output):
         str(args.sdk),
         "--native-bundle",
         str(args.native_bundle),
+        "--pair-bundle",
+        str(args.pair_bundle),
         "--affine-bundle",
         str(args.affine_bundle),
         "--case",
@@ -769,6 +831,13 @@ def collect(args):
             timing_status="PASS" if valid else "FAIL",
             reports=[],
         )
+        if not valid:
+            row["error"] = old.get("error", "missing or incomplete timing receipt")
+            print(
+                f"GEMV_FQ_SF_FAILURE case={case} phase=timing rc={rc} "
+                f"error={json.dumps(row['error'])} log={log}",
+                flush=True,
+            )
         if valid:
             for arm, w in old["winners"].items():
                 print(
@@ -839,12 +908,19 @@ def collect(args):
                     dict(
                         arm=arm,
                         status="PASS" if good else "FAIL",
+                        process_rc=rc,
+                        log=str(log),
                         report=str(captures[0]) if captures else None,
                         sha256=sha(captures[0]) if captures else None,
                     )
                 )
                 if not good:
                     row["status"] = "FAIL"
+                    print(
+                        f"GEMV_FQ_SF_FAILURE case={case} phase=acu arm={arm} rc={rc} "
+                        f"error={json.dumps(proof.get('error', 'ACU report/capture incomplete'))} log={log}",
+                        flush=True,
+                    )
                 else:
                     stamp.write_text(
                         json.dumps(
@@ -911,6 +987,11 @@ def main():
         "--native-bundle", type=Path, default=ROOT / "prebuilt/ppu0010/kpack-native-v1"
     )
     p.add_argument(
+        "--pair-bundle",
+        type=Path,
+        default=ROOT / "prebuilt/ppu0010/kpack-decode-sweep-v1",
+    )
+    p.add_argument(
         "--affine-bundle",
         type=Path,
         default=ROOT / "prebuilt/ppu0010/kpack-gemv-affine-v1",
@@ -925,7 +1006,7 @@ def main():
     p.add_argument("--skip-acu", action="store_true")
     p.add_argument("--resume", action="store_true")
     a = p.parse_args()
-    for field in ("sdk", "native_bundle", "affine_bundle", "output"):
+    for field in ("sdk", "native_bundle", "pair_bundle", "affine_bundle", "output"):
         setattr(a, field, getattr(a, field).resolve())
     if a.profile and (a.collect or not a.measured):
         p.error("profile requires measured case result, not collect")

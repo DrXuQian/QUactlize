@@ -8,8 +8,9 @@ the old pair reader in ACU and avoid identical kernel registration names.
 
 `manifest.json` binds source/generated-code hashes, compiler, SDK runtime,
 and the Git LFS DSO. `device_validated=false` is intentional until box results
-are reviewed. The old SIMT/prepass and selected FQ/SF modules are reused from
-`../kpack-native-v1`. Neither its production selection nor its DSOs change.
+are reviewed. The old pair SIMT/prepass is reused from the execution DSO in
+`../kpack-decode-sweep-v1`; the selected FQ/SF modules are reused from
+`../kpack-native-v1`. Neither production selection nor existing DSOs change.
 
 Entry: `bash tools/run_kpack_gemv_fq_sf_box.sh`. See
 `docs/KPACK_GEMV_FQ_SF.md` for shapes, timing boundaries and report names.

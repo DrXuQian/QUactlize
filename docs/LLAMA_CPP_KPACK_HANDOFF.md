@@ -1767,3 +1767,11 @@ the SF GPU prepass is separately checked/timed and included in an explicit
 recompute scenario. GPU routing arrays are ready inputs to all arms; this is
 not a full-model timing claim. PPU numeric/performance admission remains
 pending. [Box command, scopes and selective resume](KPACK_GEMV_FQ_SF.md).
+
+The initial `25YktY` box run stopped before any fixture or kernel: its runner
+looked up the pair-reader API in native-v1's scalar-only execution DSO. The
+runner now takes the already-published pair execution DSO from
+`kpack-decode-sweep-v1`, with actual ELF-export and 240 host-query coverage.
+No runtime6/native GEMM module, production selection, or llama.cpp adapter
+is changed by this repair. Repeat the five-case gate in a fresh directory;
+there are no valid timing samples to resume from that failed run.

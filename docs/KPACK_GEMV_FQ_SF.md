@@ -6,8 +6,11 @@ No production kernel or heuristic is changed by this gate.
 
 Local checks: the eight small compilation units plus link take 10.61 seconds;
 the DSO is 1,070,896 bytes. The exact Q4 C16/W4 SIMT specialization has
-`mma_en=0`, 60 vector registers and zero stack bytes in hgobjdump. Seventy-one
-host checks pass. The common-endpoint adapter bodies also pass six actual
+`mma_en=0`, 60 vector registers and zero stack bytes in hgobjdump. Package
+checks inspect the actual dynamic exports. Both real execution DSOs also
+pass 240 host-only shape/config queries (plus ten invalid-config rejections)
+under a compatible Ubuntu 24 runtime, without GPU initialization or launches.
+The common-endpoint adapter bodies also pass six actual
 RTX 5090 cases / eighteen mutable-permutation graph replays, including
 broadcast/per-slot inputs, extent25,600 and a tail. That adapter test does
 not execute or admit the PPU GEMM modules.
@@ -29,7 +32,10 @@ GGUF fixture; it is not a concatenation-bit-identity claim.
 
 The old pair reader and new FP32-affine/vector-load reader each scan 24 small
 SIMT recipes (columns16/32, warps2/4/8, split1/2/4/8). This is an offline
-diagnostic, not runtime model tuning. FQ/SF use the **actual native C++
+diagnostic, not runtime model tuning. The pair baseline and SF prepass come
+from `kpack-decode-sweep-v1/libquactlize_ppu_execution.so`; native-v1's older
+execution DSO has only the scalar reader and cannot supply the pair API.
+Only that small decode-sweep DSO is required, not its GEMM modules. FQ/SF use the **actual native C++
 selector** and recorded parent/build key/split/grid, without a manual default
 or silent fallback. The ten selected parents already exist in native-v1;
 no GEMM module is compiled. The Q4/Q5 grouped FQ choices are TM8/S4 and TM8/S1.
@@ -80,7 +86,7 @@ times and ACU replay times must not be mixed.
 ```bash
 (
   git pull --ff-only &&
-  git lfs pull --include='prebuilt/ppu0010/kpack-native-v1/**,prebuilt/ppu0010/kpack-gemv-affine-v1/**' &&
+  git lfs pull --include='prebuilt/ppu0010/kpack-native-v1/**,prebuilt/ppu0010/kpack-gemv-affine-v1/**,prebuilt/ppu0010/kpack-decode-sweep-v1/libquactlize_ppu_execution.so' &&
   PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK CUDA_VISIBLE_DEVICES=0 \
     bash tools/run_kpack_gemv_fq_sf_box.sh
 )
@@ -115,3 +121,19 @@ Resume requires identical payload/source/device/count receipts. Complete
 timing cases and hash-verified reports are reused; failed files are renamed
 and preserved before retry. No old successful evidence is silently relabelled
 as a measurement of a changed binary. The caller's Docker shell is preserved.
+
+## Initial box launch failure and repair
+
+`kpack-gemv-fq-sf.25YktY.results.tgz` contains five failures with empty
+screen/winner lists: the runner requested `quactlize_kpack_gemv_pair_query_v1`
+from native-v1's scalar-only execution library. No fixture, numeric test,
+timing sample or ACU capture was reached. This was a runner package-selection
+error, not evidence about PPU correctness or performance.
+
+The repair selects the already-published decode-sweep pair DSO
+(`07a7bbc02c8fbbe9a2fcb9e902dc85f8e2daba3b961976b16545b312b77b242e`),
+checks the actual ELF exports and recipe inventory before GPU allocation,
+and records both readers in result authority. It changes no binary or
+production selection. All five cases must be run in a new results directory;
+the failed archive remains preserved. Future failures print the case, phase,
+exception and log path to the console instead of only an aggregate return code.

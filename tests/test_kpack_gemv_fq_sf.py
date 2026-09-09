@@ -3,6 +3,7 @@
 import copy
 import ctypes as C
 import json
+import os
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -50,6 +51,66 @@ def test_exact_small_and_large_shapes():
     assert len(set(gate.configs())) == 24
     assert (16, 4, 4) in gate.configs() and (16, 4, 8) in gate.configs()
     assert set(gate.PROFILES) == {"pair", "affine", "fq", "sf", "prepass"}
+
+
+def test_materialized_readers_have_actual_required_exports():
+    pair = gate.verify_pair(gate.ROOT / "prebuilt/ppu0010/kpack-decode-sweep-v1")
+    affine = gate.verify_affine(gate.ROOT / "prebuilt/ppu0010/kpack-gemv-affine-v1")
+    assert pair["sha256"] != affine["sha256"]
+    assert pair["runtime"] == affine["runtime"]
+
+
+def test_actual_native_scalar_dso_is_not_a_pair_reader():
+    path = gate.ROOT / "prebuilt/ppu0010/kpack-native-v1"
+    with pytest.raises(ValueError, match="quactlize_kpack_gemv_pair_query_v1"):
+        gate.require_exports(path / gate.EXECUTION_LIBRARY, gate.EXECUTION_EXPORTS)
+    with pytest.raises(ValueError, match="decode-sweep package"):
+        gate.verify_pair(path)
+
+
+def test_actual_pair_and_affine_host_queries():
+    # Real hgcc-built DSOs, not a compiled host stub. Needs their SDK/host
+    # runtime ABI but does not allocate device memory or launch any kernel.
+    if not os.environ.get("PPU_SDK"):
+        pytest.skip("set PPU_SDK and its runtime loader paths for real DSO queries")
+    args = SimpleNamespace(
+        pair_bundle=gate.ROOT / "prebuilt/ppu0010/kpack-decode-sweep-v1",
+        affine_bundle=gate.ROOT / "prebuilt/ppu0010/kpack-gemv-affine-v1",
+    )
+    old, new, functions = gate.load_readers(args)
+    assert getattr(new, "qkg_comparison_adapter_v1")
+    assert getattr(old, "quactlize_kpack_sf_prepare_v1")
+    count = 0
+    for case, (q, n, k, experts, rows, channels) in gate.CASES.items():
+        call = gate.simt_call(case)
+        arr = gate.arrangement(q)
+        for recipe in gate.configs():
+            cfg = gate.Config(*recipe)
+            sizes = []
+            for reader in gate.READERS:
+                query, _ = functions[reader]
+                result = gate.Sizes()
+                assert (
+                    query(C.byref(call), C.byref(cfg), C.byref(arr), C.byref(result))
+                    == 0
+                )
+                sizes.append(
+                    tuple(getattr(result, name) for name, _ in result._fields_)
+                )
+                assert result.workspace_bytes == (
+                    0 if cfg.split == 1 else rows * n * cfg.split * 4
+                )
+                count += 1
+            assert sizes[0] == sizes[1]
+        invalid = gate.Config(16, 3, 1)
+        for reader in gate.READERS:
+            assert (
+                functions[reader][0](
+                    C.byref(call), C.byref(invalid), C.byref(arr), C.byref(gate.Sizes())
+                )
+                != 0
+            )
+    assert count == 240
 
 
 def test_complete_receipt_is_reusable():
@@ -185,6 +246,7 @@ def test_failed_case_does_not_discard_other_cases_and_resume_is_selective(
     args = SimpleNamespace(
         sdk=tmp_path,
         native_bundle=tmp_path,
+        pair_bundle=tmp_path / "pair",
         affine_bundle=tmp_path,
         output=tmp_path / "results",
         resume=False,
