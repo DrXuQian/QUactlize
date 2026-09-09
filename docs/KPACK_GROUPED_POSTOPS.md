@@ -77,6 +77,10 @@ results. After all numerical checks pass, Q4 compact S4 baseline and candidate
 get separate ACU reports. Those replay times are not mixed into warm timing.
 Return the printed `kpack-grouped-postops.*.results.tgz`.
 
+ACU is resolved before measurements: `SDK/asight/bin/acu` first, then
+`SDK/bin/acu`. An explicit `--acu /absolute/path/to/acu` overrides discovery
+and must be executable. With `--skip-acu`, no profiler installation is needed.
+
 To retry only missing/failed jobs with unchanged source, device, SDK, payloads
 and timing options, invoke `run_kpack_grouped_postops.py --resume` with the same
 `--output` results directory and SDK. Successful complete jobs are reused;

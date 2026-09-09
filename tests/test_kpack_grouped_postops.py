@@ -96,6 +96,26 @@ def test_failed_job_selection_keeps_original_parents_and_denominator():
             runner.select_jobs(builder.plan(), wrong)
 
 
+def test_acu_uses_asight_install_and_checks_explicit_override(tmp_path):
+    sdk = tmp_path / "sdk"
+    paths = [sdk / "asight/bin/acu", sdk / "bin/acu", tmp_path / "explicit-acu"]
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#!/bin/sh\n")
+        path.chmod(0o755)
+    assert runner.resolve_acu(sdk) == paths[0]
+    assert runner.resolve_acu(sdk, paths[2]) == paths[2]
+    paths[0].chmod(0o644)
+    assert runner.resolve_acu(sdk) == paths[1]
+    paths[1].chmod(0o644)
+    with pytest.raises(ValueError, match="ACU executable not found"):
+        runner.resolve_acu(sdk)
+    # An explicit typo must not silently use another profiler installation.
+    paths[0].chmod(0o755)
+    with pytest.raises(ValueError, match="ACU executable not found"):
+        runner.resolve_acu(sdk, tmp_path / "missing")
+
+
 def test_cuda_projection_matches_actual_hgcc_five_format_types(tmp_path):
     sdk = Path("/root/ppu-sdk/2.1.1")
     if not (sdk / "bin/hgcc").is_file():

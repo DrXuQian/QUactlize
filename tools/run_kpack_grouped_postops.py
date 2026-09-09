@@ -4,6 +4,7 @@
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -88,6 +89,14 @@ def select_jobs(groups, names):
     if len(names) != len(set(names)) or set(names) - {g["job"] for g in groups}:
         raise ValueError("unknown/duplicate selected job")
     return [g for g in groups if g["job"] in names]
+
+
+def resolve_acu(sdk, override=None):
+    candidates = [override] if override else [sdk / "asight/bin/acu", sdk / "bin/acu"]
+    for path in candidates:
+        if path.is_file() and os.access(path, os.X_OK):
+            return path.resolve(strict=True)
+    raise ValueError("ACU executable not found: " + ", ".join(map(str, candidates)))
 
 
 def expected_keys(group, rounds):
@@ -337,6 +346,7 @@ def main():
     p.add_argument("--samples", type=int, default=11)
     p.add_argument("--correctness-repeats", type=int, default=7)
     p.add_argument("--skip-acu", action="store_true")
+    p.add_argument("--acu", type=Path, help="ACU executable; defaults to SDK/asight/bin/acu")
     p.add_argument("--resume", action="store_true")
     args = p.parse_args()
     if min(args.rounds, args.samples, args.correctness_repeats) < 1:
@@ -355,6 +365,9 @@ def main():
         ):
             p.error("profile is Q4 model only")
         return 0 if run_job(args, manifest, records, matches[0]) else 1
+    groups = select_jobs(manifest["groups"], args.only_jobs)
+    profile_ready = any(g["job"] == "fq-q12-tm8-ordinary" for g in groups)
+    acu = resolve_acu(args.sdk, args.acu) if profile_ready and not args.skip_acu else None
     args.output.mkdir(parents=True, exist_ok=args.resume)
     authority = authority_for(args, SDK(args.sdk))
     receipt = args.output / "authority.json"
@@ -363,7 +376,6 @@ def main():
             raise ValueError("resume authority changed: do not reuse old timings")
     else:
         receipt.write_text(json.dumps(authority, indent=2) + "\n")
-    groups = select_jobs(manifest["groups"], args.only_jobs)
     results = []
     for group in groups:
         output = args.output / (group["job"] + ".json")
@@ -429,7 +441,6 @@ def main():
     for row in rows:
         print("GROUPED_POSTOPS_RESULT " + json.dumps(row), flush=True)
     passed = all(r["status"] == "PASS" for r in results)
-    profile_ready = any(g["job"] == "fq-q12-tm8-ordinary" for g in groups)
     if passed and not args.skip_acu and profile_ready:
         for arm in ("baseline", "candidate"):
             stem = args.output / ("q4-up-s4-" + arm)
@@ -459,7 +470,7 @@ def main():
             ]
             with Path(str(stem) + ".log").open("w") as log:
                 process = subprocess.Popen(
-                    acu_launch_command(args.sdk / "bin/acu", stem, command),
+                    acu_launch_command(acu, stem, command),
                     stdout=log,
                     stderr=subprocess.STDOUT,
                 )
