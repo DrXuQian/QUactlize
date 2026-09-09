@@ -26,6 +26,14 @@ Q5 TM8 reaches 14.6500 us, only 0.34% below TM16. The remaining same-split
 host-compact differences are 3.635/3.550 us; these do not isolate metadata
 cost from the changed producer schedule. No automatic production promotion.
 
+For the requested single-token decode profiling, use **TM8/WM8**, not TM16.
+The TM16 numbers above remain historical controls. The already-admitted TM8
+module measures Q4 S2 at 18.1300 us and Q5 S1 at 14.6500 us. TM8 Q4 S4 measures
+18.0475 us, within 0.5% of S2; the focused capture retains S2 with less partial
+workspace. This is a bounded profiling choice, not a global selector update.
+Each active expert has M=1, so TM8 and TM16 both need one M tile per expert:
+changing TM alone does not increase the 128/256 CTA counts in these calls.
+
 The `kpack-decode.XZM60u` run passed 260/260 cells in 178.8 seconds. The same
 Q4 TM16/TN64/TK256 parent measured 19.410 us on device-only S1 versus 16.035 us
 on host-compact S1 and 14.2425 us on host-compact S2. Q5 measured 26.7925 us,
@@ -101,9 +109,12 @@ PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK CUDA_VISIBLE_DEVICES=0 \
   bash tools/run_kpack_gpu_compact_acu_box.sh
 ```
 
-Open the reported directory's `q4-up-compact-s2.acurep` and
-`q5-down-compact-s1.acurep`; matching `*-baseline-s1.acurep` files contain the
-old device-only path. `acu-index.tsv` records actual filenames. ACU starts only
+Open the reported directory's `q4-up-tm8-compact-s2.acurep` and
+`q5-down-tm8-compact-s1.acurep`; matching `*-tm8-baseline-s1.acurep` files contain
+the old device-only TM8 path. All four captures require TM8/WM8; a missing TM8
+module is an error, not a fallback to TM16. `acu-index.tsv` records TileM and
+actual filenames. The old TM16 captures remain valid historical evidence and
+are not overwritten. ACU starts only
 after numerical checks and warmup, profiles one graph's individual nodes, and
 does not kill the target before its post-profile output/partial check. The Q4
 compact report contains metadata, directory, GEMM producer and reducer; Q5

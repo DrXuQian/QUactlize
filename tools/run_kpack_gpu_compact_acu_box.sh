@@ -21,7 +21,7 @@ if [[ ! "$CUDA_VISIBLE_DEVICES" =~ ^[0-9]+$ ]]; then
 fi
 RUN=$(mktemp -d /workspace/kpack-compact-acu.XXXXXX)
 test -n "$RUN" && test -d "$RUN"
-printf 'GPU_COMPACT_ACU_BOX PREBUILT_ONLY reports=4 device=%s run=%s\n' "$CUDA_VISIBLE_DEVICES" "$RUN"
+printf 'GPU_COMPACT_ACU_BOX PREBUILT_ONLY tile_m=8 reports=4 device=%s run=%s\n' "$CUDA_VISIBLE_DEVICES" "$RUN"
 rc=0
 python3 -u tools/profile_kpack_gpu_compact.py --collect --sdk "$SDK" --acu "$ACU" \
     --output "$RUN/results" 2>&1 | tee "$RUN/console.log" || rc=$?

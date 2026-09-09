@@ -18,6 +18,12 @@ def test_four_exact_arms_keep_old_payload_and_select_measured_split(tmp_path):
         new = profile.selection(manifest, case, "compact")
         assert old["module"]["parent"] == new["module"]["parent"]
         assert old["module"]["key"] != new["module"]["key"]
+        assert old["tile_m"] == new["tile_m"] == 8
+        for choice in (old, new):
+            assert choice["module"]["parent"]["tm"] == 8
+            assert choice["module"]["parent"]["wm"] == 8
+            assert "_tm8_" in choice["module"]["parent"]["symbol"]
+            assert "-tm8-" in profile.report_name(choice)
         assert old["split"] == 1 and not old["directory"]
         assert new["split"] == (2 if case == "q4-up" else 1) and new["directory"]
         assert old["expected_components"] == ["metadata", "gemm"]
@@ -25,6 +31,22 @@ def test_four_exact_arms_keep_old_payload_and_select_measured_split(tmp_path):
             ["reducer"] if case == "q4-up" else []
         )
         assert new["mode"] == "device-only" and new["grid_b"] == 0
+
+
+def test_profile_does_not_fall_back_to_tm16(tmp_path):
+    manifest = fake_bundle(tmp_path)
+    manifest["groups"] = [g for g in manifest["groups"] if not g["job"].endswith("tm8")]
+    with pytest.raises(ValueError, match="TM8"):
+        profile.selection(manifest, "q4-up", "compact")
+
+
+@pytest.mark.parametrize("case", profile.CASES)
+def test_profile_rejects_a_tm16_body_behind_a_tm8_group_label(tmp_path, case):
+    manifest = fake_bundle(tmp_path)
+    choice = profile.selection(manifest, case, "compact")
+    choice["module"]["parent"]["tm"] = 16
+    with pytest.raises(ValueError, match="TM8/WM8"):
+        profile.selection(manifest, case, "compact")
 
 
 def test_acu_command_profiles_nodes_only_inside_api_range():
@@ -133,3 +155,7 @@ def test_collection_preserves_other_arms_and_does_not_accept_empty_reports(
     )
     assert result["performance_admission"] is False
     assert len((args.output / "acu-index.tsv").read_text().splitlines()) == 5
+    for row in result["captures"]:
+        assert row["tile_m"] == 8
+        if row["report"]:
+            assert "-tm8-" in row["report"]

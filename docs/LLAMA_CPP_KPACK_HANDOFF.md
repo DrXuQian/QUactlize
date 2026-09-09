@@ -23,7 +23,10 @@ existing GPU directory and includes its build cost plus Split-K reduction in
 timing. No CPU router is introduced. The deployed native bundle and llama.cpp
 selection have not been switched to these experimental modules yet.
 Standalone profiling now defaults to ACU; the experiment guide provides a
-four-report old/new capture. It does not claim a new llama.cpp model trace.
+four-report **TM8/WM8** old/new capture. TM16 is retained only as a historical
+control for this single-token profiling task; the profiled modules already
+passed the uploaded gate and need no rebuild. This does not claim a new
+llama.cpp model trace or change the production selector.
 
 An additive [decode experiment](KPACK_DECODE_SWEEP.md) now supplies ordinary
 grouped Split-K and an explicit SIMT word-pair/FMA reader. The experimental

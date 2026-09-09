@@ -27,18 +27,25 @@ from tools.run_kpack_pack_gate import device_identity
 
 CASES = {"q4-up": (12, 512, 2048), "q5-down": (13, 2048, 512)}
 ARMS = {"baseline": "baseline-rect", "compact": "gpu-compact"}
+TILE_M = 8
 
 
 def selection(manifest, case, arm):
     q, n, k = CASES[case]
-    group = next(g for g in manifest["groups"] if g["job"] == f"fq-q{q}-tm16")
+    groups = [g for g in manifest["groups"] if g["job"] == f"fq-q{q}-tm{TILE_M}"]
+    if len(groups) != 1:
+        raise ValueError("missing/duplicate TM8 profile parent; no TM16 fallback")
+    group = groups[0]
     variant = next(v for v in variants(group) if v[0] == ARMS[arm])
     name, key, mode, grid_b, directory = variant
     module = next(r for r in manifest["modules"] if r["key"] == key)
+    if module["parent"]["tm"] != TILE_M or module["parent"]["wm"] != TILE_M:
+        raise ValueError("single-token decode profiling requires TM8/WM8")
     split = 2 if case == "q4-up" and arm == "compact" else 1
     return dict(
         case=case,
         arm=arm,
+        tile_m=TILE_M,
         q=q,
         n=n,
         k=k,
@@ -53,6 +60,10 @@ def selection(manifest, case, arm):
         + ["gemm"]
         + (["reducer"] if split > 1 else []),
     )
+
+
+def report_name(choice):
+    return f"{choice['case']}-tm{choice['tile_m']}-{choice['arm']}-s{choice['split']}"
 
 
 class AcuRange:
@@ -120,7 +131,7 @@ def collect(args):
     for case in CASES:
         for arm in ARMS:
             choice = selection(manifest, case, arm)
-            name = f"{case}-{arm}-s{choice['split']}"
+            name = report_name(choice)
             report = args.output / name
             receipt = args.output / f"{name}.json"
             log = args.output / f"{name}.log"
@@ -155,6 +166,7 @@ def collect(args):
             row = dict(
                 case=case,
                 arm=arm,
+                tile_m=choice["tile_m"],
                 split=choice["split"],
                 command=command,
                 status="FAIL",
@@ -209,11 +221,12 @@ def collect(args):
     )
     (args.output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     with (args.output / "acu-index.tsv").open("w") as f:
-        f.write("case\tarm\tsplit\tstatus\treport\n")
+        f.write("case\ttile_m\tarm\tsplit\tstatus\treport\n")
         for r in records:
             f.write(
                 "\t".join(
-                    str(r[k]) for k in ("case", "arm", "split", "status", "report")
+                    str(r[k])
+                    for k in ("case", "tile_m", "arm", "split", "status", "report")
                 )
                 + "\n"
             )
