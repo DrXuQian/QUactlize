@@ -1775,3 +1775,26 @@ runner now takes the already-published pair execution DSO from
 No runtime6/native GEMM module, production selection, or llama.cpp adapter
 is changed by this repair. Repeat the five-case gate in a fresh directory;
 there are no valid timing samples to resume from that failed run.
+
+### Reviewed k5Tp2m result (2026-09-09)
+
+The repaired PPU gate passes all five Q4/Q5 cases: 240 screened SIMT recipes,
+25 confirmed endpoint arms and 25 hash-verified ACU captures. This closes
+this bounded operator test, not all-format or model performance admission.
+See [times, scope and counter evidence](KPACK_GEMV_FQ_SF.md#reviewed-ppu-results-k5tp2m-2026-09-09).
+
+With common F32 endpoints, affine GEMV/FQ takes 17.385/18.025 us on Q4-up
+and 21.299/17.748 us on Q5-down. The larger dense Q4 controls favor FQ by
+2.99x and 3.48x. Production selections are unchanged. The first small Q4
+lead is only 3.55%, not a global GEMV promotion or proof of beating llama's
+MMVQ on PPU; this run contains no llama reference arm.
+
+The all-256-expert SF prepass costs ~55 us warm and emits 32 MiB of scale/zero
+planes. Keep immutable-weight reuse: recomputing per decode would dominate
+these ~18 us endpoint calls. First-event initialization and steady-state
+kernel times are separate. The current Q5 grouped SF fallback is still
+rectangular, so it is not a measured optimum against compact FQ.
+
+No library, native selection, llama adapter or cache synchronization contract
+is changed by this result review. Remaining work targets SIMT instruction/
+on-chip traffic, grouped scheduling, and a matched same-PPU llama reference.

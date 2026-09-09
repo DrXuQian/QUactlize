@@ -1,8 +1,10 @@
 # GEMV / FQ / ScaleFirst operator comparison
 
-Status: the FP32-affine SIMT experiment compiles locally with hgcc. Its
-numerics and speed on PPU are pending; RTX 5090 results are not PPU admission.
-No production kernel or heuristic is changed by this gate.
+Status: the five-case Q4/Q5 PPU gate passes in `k5Tp2m`; 240 SIMT recipes,
+25 confirmed endpoint arms and 25 ACU reports were reviewed. The FP32-affine
+experiment improves on the old pair reader but does not generally beat FQ.
+This is bounded operator evidence, not all-format or model admission. No
+production kernel or heuristic is changed by this gate.
 
 Local checks: the eight small compilation units plus link take 10.61 seconds;
 the DSO is 1,070,896 bytes. The exact Q4 C16/W4 SIMT specialization has
@@ -137,3 +139,119 @@ and records both readers in result authority. It changes no binary or
 production selection. All five cases must be run in a new results directory;
 the failed archive remains preserved. Future failures print the case, phase,
 exception and log path to the console instead of only an aggregate return code.
+
+## Reviewed PPU results: k5Tp2m (2026-09-09)
+
+Archive: `kpack-gemv-fq-sf.k5Tp2m.results.tgz`, SHA256
+`4575ee6f969ceb31cf3b67504c048c67e0facc234378e5427f38a466a9f1ef8e`.
+Its driver hashes match `ff1e488`; native/pair/affine manifest hashes match
+the published packages. All 25 report and capture-receipt hashes verify.
+The screen contains 48 distinct recipes per shape; confirmation contains
+four rounds of eleven samples, each with sixteen calls. All metadata planes
+match bitwise; the maximum confirmed conditioned dot error is 1.40e-4
+(bound 5e-3), and the affine reader's maximum is 4.01e-8.
+
+### Warm times, common F32 endpoints
+
+Microseconds per call. FQ/SF include GPU input gather/cast and output
+cast/scatter, as well as their selected directory/producer/reducer. Resident
+SF excludes prepass. Expert IDs/order/offsets are ready GPU inputs for all
+arms. No llama.cpp MMVQ/DMMV reference was executed in this gate.
+
+| Case | Old pair | FP32 affine | Selected FQ | Resident SF |
+| --- | ---: | ---: | ---: | ---: |
+| q4-up | 18.419 | 17.385 | 18.025 | 17.602 |
+| q5-down | 22.551 | 21.299 | 17.748 | 25.946 |
+| q4-dense-matched | 18.262 | 17.099 | 13.001 | 12.907 |
+| q4-dense-wide | 70.435 | 67.284 | 22.514 | 25.426 |
+| q4-dense-long-k | 214.244 | 211.841 | 60.860 | 100.910 |
+
+The affine reader gains 1.12–6.37% over the old pair reader. Its q4-up lead
+over the full FQ endpoint pipeline is only 3.55%; it is 20.01% slower on
+q5-down, 31.52% slower on the matched dense control, and 2.99x/3.48x the FQ
+time on the larger dense controls. Small-input launch overhead therefore
+cannot explain the entire SIMT gap.
+
+The selected pair/affine recipes respectively are C16/W8/S1 for q4-up,
+C16/W2/S1 and C32/W4/S1 for q5-down, C16/W8/S1 for both smaller dense cases,
+and C16/W8/S8 for long-K. Split1/2/4/8 were all screened: the long-K S8
+winner is not evidence that Split-K was omitted from SIMT selection.
+
+### Resident core versus SF expansion
+
+| Case | FQ core | SF core | Warm prepass alone | SF endpoint + prepass |
+| --- | ---: | ---: | ---: | ---: |
+| q4-up | 14.535 | 14.112 | 55.395 | 72.819 |
+| q5-down | 14.265 | 22.460 | 55.402 | 82.101 |
+| q4-dense-matched | 9.620 | 9.457 | 3.880 | 16.575 |
+| q4-dense-wide | 18.997 | 21.943 | 11.173 | 36.268 |
+| q4-dense-long-k | 56.500 | 94.888 | 28.417 | 130.609 |
+
+Core times exclude endpoint adapters but include native scheduling and
+reduction. For the equal-weight Q4 calls, the grouped/dense FQ core gap is
+14.535 versus 9.620 us; this is an actual remaining scheduling/configuration
+difference, not a weight-size mismatch. The fixtures have equal weight
+counts, not identical source bytes, and their selected parents/splits differ.
+The affine GEMVs are much closer: 17.385 versus 17.099 us.
+
+Each grouped prepass expands **all 256 experts**, even though compute uses
+eight: it reads 16 MiB of units and writes 32 MiB of scale/zero planes.
+The measured ~55 us is not a negligible per-call cost. Immutable-weight
+reuse amortizes it; `sf_with_prepass` explicitly measures recomputation,
+not production cache behavior. First-event intervals range from 0.58 to
+2.66 ms and can include first-launch initialization; they are not the warm
+kernel latency. Independently profiled prepass kernels are ~59 us for the
+two grouped cases. Do not multiply cold initialization by every token.
+
+### ACU: SIMT producer, not bank conflicts
+
+The following counters come from individual kernels under cache-cleared,
+27-pass ACU replay. They are not warm graph endpoint times.
+
+For q4-dense-wide:
+
+| Main-kernel metric | Affine SIMT | FQ producer |
+| --- | ---: | ---: |
+| Duration (us) | 69.078 | 25.730 |
+| DRAM throughput (% peak, `ppu__dram_throughput...elapsed`) | 12.33 | 32.31 |
+| DRAM bytes | 23,661,888 | 23,753,856 |
+| Executed instructions (`pu__inst_executed.sum`) | 36,368,896 | 5,717,760 |
+| KVD bytes (`derived__kvd_bytes_total`) | 335,642,624 | 40,435,712 |
+| Achieved occupancy (% active) | 86.86 | 21.32 |
+| Shared bank conflicts | 0 | 221,184 |
+
+The larger long-K control agrees: affine/FQ producer DRAM utilization is
+12.71%/46.80%, while actual DRAM bytes are 74.03/74.37 MB. The affine
+producer occupies 93.0% of active warp capacity yet executes 115.12 million
+instructions versus FQ's 17.74 million. These counters argue against HBM
+saturation, shared bank conflicts, or low occupancy as the primary large-
+shape explanation. They support investigating scalar unpack/index arithmetic
+and on-chip load/reuse cost. They do not by themselves prove one source
+instruction is causal. KVD byte counts are not DRAM byte counts.
+
+The long-K affine report separates a 211.508 us producer from a 3.222 us
+reducer. The wide control's selected SIMT recipe is S1, with no reducer at
+all. Producer work, not just Split-K postprocessing, must therefore be
+addressed to close the large-shape gap.
+
+The affine experiment does reduce q4-dense-wide global-memory instruction
+count from 1,970,688 to 987,648 and KVD bytes from 503.41 to 335.64 MB, but
+total executed instructions fall only 6.61%. A successful vector-load change
+alone has not removed the much larger overall SIMT instruction workload.
+
+The q5-down SF/FQ comparison also differs in scheduling: SF still launches
+a rectangular `(1,32,256)` grid (8,192 CTAs), while FQ uses a compact 256-CTA
+directory. Its current SF choice is `DEVICE_BOUNDS`, not a measured global
+winner. SF's slower time here cannot be attributed solely to metadata format.
+
+### Decision and remaining work
+
+- Retain current production selections. The small q4-up gain is a candidate
+  for model-level validation, not a reason for a global GEMV switch.
+- Investigate SIMT instruction and KVD traffic first, with a bounded change
+  and matched PPU comparison. Preserve the canonical offline format while
+  testing metadata/index hoisting and A/word reuse.
+- Track the remaining equal-weight grouped/dense FQ gap, and the rectangular
+  SF grouped fallback, separately from SIMT reader work.
+- The same-device llama.cpp comparison remains open on PPU. RTX 5090 and
+  historical model traces are not interchangeable baselines for these times.
