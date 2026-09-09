@@ -1,18 +1,25 @@
 # K-pack execution follow-up
 
-Updated: 2026-09-09. Native binding and both llama.cpp execution hooks are
-implemented and locally compiled. New PPU execution/performance admission
-still requires the box gate. Canonical offline planes are unchanged.
+Updated: 2026-09-09. The O0ki3q native micro gates and adapter tests pass;
+model prefill improves, but decode remains about 31% slower and the short
+trace lacks selected native dense compute. This is not optimized-routing
+closure. Canonical offline planes are unchanged.
 
 ## Tracked delivery
 
 | Item | State | Completion condition |
 | --- | --- | --- |
-| 3. Native selected-module binding | Implemented, host tests pass / box pending | SDK-free C++ selector binds full parent/build identity; context/stream-owned handles are prepared before capture. Both `MUL_MAT` and `MUL_MAT_ID` call it. No Python, JIT or online timing in inference |
-| 4. Device-only grouped metadata | Wired, PPU compilation passes / box pending | Actual expert IDs produce GPU bounds; v2 prepares GPU shapes/directory on each run. No host rows, fabricated router or per-token D2H. Tests include changing IDs with the same captured graph |
-| 5. ScaleFirst prefill | Wired, lifetime tests pass / box pending | Weight-owned scale/zero, one GPU prepass outside capture, independent ready event, memory reserve, reuse and teardown. Prepass GPU event timing is collected at teardown, not by blocking inference |
-| Decode GEMV | Wired / measured recipes pending | Eight candidates, F32 indexed input and output, no gather/scatter. Offline gate compares with native selected FQ where available; slower GEMV is not exported. Exact request keys, no initial-recipe default |
+| 3. Native selected-module binding | Micro gates pass; Q6 output-head policy coverage remains open | Both hooks are wired, but N248320/K2048 dense head misses the native policy and retains labelled legacy K-pack FQ. No Python/JIT/online timing in inference |
+| 4. Device-only grouped metadata | Correctness and changing-router replay pass; performance open | No per-token D2H; isolate the cost of rectangular device-only scheduling against the same-parent compact diagnostic |
+| 5. ScaleFirst prefill | Native metadata/GEMM gates pass; model prefill improves | Immutable-weight prepass is reused. Full-model first-use and resident timing remain separate; no inference wait on cache D2H |
+| Decode GEMV | 14 contexts x 8 recipes pass; zero recipes admitted | Current FQ comparison excludes casts/gather/scatter while GEMV includes indexed I/O. Revisit equal-work timing; this is not proof GEMV cannot win |
 | Model decode regression | Open performance debt | Isolate the measured per-token gap with matched work; retain the old GEMM incumbent and do not attribute the whole gap to one missing algorithm |
+
+The Q4 N512/K2048/E256/top8 single-token case was not omitted: overnight
+screen/neighbor/confirmation evidence includes TM8, and the runtime selects
+the confirmed TM16/TN64/TK256 winner. Its historical 18.44 us is itself only
+about 9.25% effective weight bandwidth; replaying that number is not closure.
+See [the coverage audit and no-recompile single-op probe](KPACK_GROUPED_DECODE_REVIEW.md).
 
 ## Native model gate
 

@@ -13,6 +13,18 @@ not device admission and does not authorize deployment by itself.
 
 ## Current work: decode GEMV and ScaleFirst prefill
 
+Latest update: `kpack-native-model.O0ki3q.results.tgz` has passing 28 native
+contexts, 14 GEMV contexts and adapter tests. Model prefill improves, but
+decode remains about 31% slower; the selected-native dense trace admission
+is still incomplete because the Q6 output head uses the labelled legacy FQ
+fallback. No new production optimization or DSO is published in this update.
+The Q4 grouped decode geometry was measured previously, including TM8; the
+18.44-us historical winner is the same parent selected now. Its low effective
+bandwidth remains a kernel performance debt, independently of adapter cost.
+[Single-op coverage audit and replay](KPACK_GROUPED_DECODE_REVIEW.md) provides
+a no-recompile same-parent device-only/host-compact diagnostic. Do not use the
+host-compact control as a dynamic-router production replacement.
+
 The GSM8K pilot is now reviewed. Archive `llama-kpack-gsm8k.EEZKMu.results.tgz`
 (`cb8b7906...`) has 128/128 matched requests, both arms 122 correct, and no
 paired correctness flips. It also shows an observed decode regression:
