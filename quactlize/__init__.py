@@ -19,20 +19,17 @@ import glob
 import os
 from typing import Literal
 
-try:
-    import torch
-except ImportError as e:                                   # a host without torch can still use quactlize.formats
-    torch = None
-    _TORCH_ERR = e
-
 _LOADED = False
 
 
 def _ops():
     """Load the operator library on first use, with a message that says what to do rather than an ImportError trace."""
     global _LOADED
-    if torch is None:
-        raise ImportError(f"quactlize needs torch for the kernel ops: {_TORCH_ERR}")
+    # Compile-only/JIT tools must not import torch or initialise a device.
+    try:
+        import torch
+    except ImportError as e:
+        raise ImportError(f"quactlize needs torch for the kernel ops: {e}") from e
     if not _LOADED:
         here = os.path.dirname(os.path.abspath(__file__))
         found = sorted(glob.glob(os.path.join(here, "_C*.so")))

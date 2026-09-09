@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export measured resident FQ/SF route comparisons for exact gate contexts."""
+"""Export per-call FQ versus (GPU metadata prepass + SF) comparisons."""
 
 import argparse
 import hashlib
@@ -36,6 +36,8 @@ def export(summary):
             r["route"] // 2 * 2,
         )
         sf = r["route"] % 2
+        if r.get("sf_metadata_mode") != ("PER_CALL_GPU_PREPASS" if sf else "PACKED_UNITS"):
+            raise ValueError("resident-only timings cannot select a per-call SF route; rerun native gate")
         if sf in grouped.setdefault(key, {}):
             raise ValueError("duplicate native context")
         times = []
@@ -60,7 +62,7 @@ def export(summary):
     )
     if set(grouped) != expected:
         raise ValueError("native workload coverage differs")
-    lines = ["KPACK_PREFILL_POLICY_V1"]
+    lines = ["KPACK_PREFILL_POLICY_V2_PER_CALL"]
     records = []
     for key, pair in sorted(grouped.items()):
         if set(pair) != {0, 1}:
@@ -80,12 +82,9 @@ def export(summary):
                 sf_us=sf,
                 prepass_us=preparation,
                 prepass_first_us=sfr["prepass_samples_us"][0],
-                kernel_break_even_calls=(
-                    math.ceil(preparation / (fq - sf)) if sf < fq else None
-                ),
                 fq_selection=fqr["selection"],
                 sf_selection=sfr["selection"],
-                scope="RESIDENT_CORE_COMPARISON_2PCT_MARGIN_FIRST_USE_ALLOCATION_EXCLUDED",
+                scope="PER_CALL_PREPASS_PLUS_GEMM_2PCT_MARGIN_ALLOCATION_EXCLUDED",
             )
         )
     if len(records) != 14:

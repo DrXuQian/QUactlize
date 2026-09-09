@@ -29,8 +29,13 @@ class Choice(C.Structure):
     )
 
 
+class JitOptions(C.Structure):
+    _fields_ = [("version", C.c_uint32), ("size", C.c_uint32)] + [
+        (name, C.c_char_p) for name in ("python", "helper", "sdk", "cache")]
+
+
 class Dispatch:
-    def __init__(self, root):
+    def __init__(self, root, jit=None):
         self.lib = C.CDLL(
             str(Path(root).resolve() / "libquactlize_kpack_dispatch.so"),
             mode=C.RTLD_LOCAL,
@@ -58,6 +63,15 @@ class Dispatch:
             self.fn["open"](str(Path(root).resolve()).encode(), C.byref(self.runtime)),
             "dispatch open",
         )
+        if jit:
+            enable = self.lib.quactlize_kpack_dispatch_enable_jit_v1
+            enable.argtypes = [C.c_void_p, C.POINTER(JitOptions)]
+            enable.restype = C.c_int
+            options = JitOptions(1, C.sizeof(JitOptions), *[
+                str(Path(jit[name]).resolve()).encode() for name in ("python", "helper", "sdk", "cache")])
+            if enable(self.runtime, C.byref(options)):
+                self.close()
+                raise ValueError("JIT setup: " + self.fn["error"]().decode())
 
     def query(self, q, route, m, n, k, experts, max_rows, mapping):
         r = Request(1, C.sizeof(Request), q, route, m, n, k, experts, max_rows, mapping)

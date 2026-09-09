@@ -11,7 +11,7 @@ inspection, its selected-config oracle, and all 26 host ABI cases in a fresh
 LFS checkout. Its PPU device gate is still **PENDING**. Host/ELF admission is
 not device admission and does not authorize deployment by itself.
 
-## Current routing: FQ decode; ScaleFirst per-call correction pending
+## Current routing: FQ decode; per-call SF and JIT locally implemented
 
 The [complete delivery backlog](KPACK_EXECUTION_FOLLOWUP.md#complete-delivery-backlog)
 is the current task authority, including production JIT, model-load
@@ -20,12 +20,11 @@ provider work and main admission. SIMT GEMV is provisionally accepted by
 the user for this milestone; further optimization is parked, not a blocker.
 
 ScaleFirst is required to expand scale/zero on the GPU for every SF call.
-The current adapter does not yet meet that requirement:
-`ggml_quactlize_prepare_scales` returns early when `art.scale_ready` exists
-and retains expanded planes with the weight. That is custom Quactlize wiring,
-not a requirement imposed by llama.cpp. T01 removes cross-call value caching
-and changes FQ/SF selection to include every expansion. Scratch allocation
-may be reused. The K-pack weight disk cache is independent and remains valid.
+The updated adapter removes `ggml_quactlize_prepare_scales` and
+`art.scale_ready`, using per-stream scratch and a prepass node before each
+SF GEMM/replay. The native gate and V2 route exporter include every expansion.
+The SDK build and CPU contracts pass; new PPU execution evidence is pending.
+The K-pack weight disk cache is independent and remains valid.
 
 Following the matched PPU comparison below, automatic single-token decode
 uses selected FQ for both dense and grouped K-pack weights (Q2_K through
@@ -35,14 +34,16 @@ and Split-K settings are retained. This is a llama.cpp adapter change;
 the 216-module native package, kernel DSOs and offline format are unchanged.
 Incrementally rebuild llama.cpp and restart the process to apply it.
 
-Consumer commit: `135d7edcf` on the private `feat/kpack-gpu-cache` branch.
+The earlier FQ decode switch is consumer commit `135d7edcf` on the private
+`feat/kpack-gpu-cache` branch; the per-call SF/JIT update follows it.
 The changed production and adapter-test translation units compile with the
 local PPU SDK; 49 host policy/parser tests pass. The new `auto` device test
 is included in the box runner, but has not yet been run on PPU after this
 change. No new model speedup is claimed.
 
-The deployed prefill path still uses the historical resident FQ/SF policy;
-it needs T01 before claiming the required per-call SF behavior. Explicit `sf`
+The old deployed prefill measurements used a resident FQ/SF policy; they
+cannot admit the new per-call behavior. The updated adapter rejects that V1
+table; produce V2 from new native-gate results. Explicit `sf`
 and `gemv` route overrides remain diagnostic options. Automatic FQ decode
 is already separate; setting global `fq` would also override prefill.
 Requests already falling through an empty GEMV policy to FQ do not acquire
@@ -966,13 +967,35 @@ target-SDK compilation. The C++ binding and model-level gate remain pending.
 
 ## Deployment target: heuristic plus cached JIT
 
-Current source audit (2026-09-09): C++ prebuilt-module binding and llama.cpp
-selected execution are implemented. Production JIT is not connected.
-`runtime/compiler.py` provides single-parent generation/compilation and an
-atomic locked cache, but C++ `binding.cpp` still resolves only static
-`kImages`; an unlisted selected parent returns `QKS_MISS`. T02-T05 track the
-remaining startup compiler hook, cache/relocation integration and removal of
-the old six-library dependency. The dated gate descriptions below retain
+Latest local delivery: [KPACK_JIT.md](KPACK_JIT.md). The additive
+`quactlize_kpack_dispatch_enable_jit_v1` entry accepts copied absolute
+Python/helper/SDK/cache paths before query. A selected module miss resolves
+exactly that parent; prepared run performs no JIT/CPU search. The new
+`kpack-jit-v1` package is about 1.1 MiB (dispatcher plus the unchanged tested
+execution DSO), not a replacement for the remaining six intake libraries.
+The existing 216-parent package remains intact.
+
+The llama branch also removes per-weight `scale/zero/scale_ready` storage.
+SF now expands on the compute stream on each invocation/replay using reusable
+scratch. No wait on the background model-cache D2H queue is added. The
+adapter test poisons metadata and changes its source each replay. The policy
+exporter now emits `KPACK_PREFILL_POLICY_V2_PER_CALL` using measured
+prepass+GEMM calls, and rejects V1 resident-only data. Both FQ and SF use the
+same existing selected-parent owner; no manual default config is introduced.
+
+Do not claim a new PPU/model result yet. The changed code has CPU contract
+tests and SDK compilation; PPU JIT/replay/full-call gates are next. Automatic
+decode stays FQ, Q8 remains on llama's own route, and Q6 output-head unknown
+native coverage still uses the labelled existing FQ fallback. No original
+GGUF disk-cache format or conversion bytes changed.
+
+Current local implementation (2026-09-09): C++ selected-parent JIT and the
+llama startup hook are connected, with source-bound cache receipts and a
+new small `prebuilt/ppu0010/kpack-jit-v1` candidate. It is opt-in, not yet
+PPU-admitted. [Commands and measured compilation cost](KPACK_JIT.md).
+T01-T04's bounded local implementation/compilation is complete; device
+replay/numerics, cold-JIT latency and removal of the six-library dependency
+remain separate work. The dated gate descriptions below retain
 their original scopes; their earlier "binding pending" notes are not a
 statement that the present prebuilt binding is missing.
 
@@ -1847,8 +1870,9 @@ lead is only 3.55%, not a global GEMV promotion or proof of beating llama's
 MMVQ on PPU; this run contains no llama reference arm.
 
 The all-256-expert SF prepass costs ~55 us warm and emits 32 MiB of scale/zero
-planes. Keep immutable-weight reuse: recomputing per decode would dominate
-these ~18 us endpoint calls. First-event initialization and steady-state
+planes. Under the requested per-call execution contract this cost must be
+charged on every SF call; it cannot be amortized by keeping expanded values.
+Automatic decode therefore stays FQ. First-event initialization and steady-state
 kernel times are separate. The current Q5 grouped SF fallback is still
 rectangular, so it is not a measured optimum against compact FQ.
 
@@ -1861,8 +1885,10 @@ on-chip traffic, grouped scheduling, and a matched same-PPU llama reference.
 Use an idle PPU. These paths come from the last uploaded successful model
 setup; edit MODEL/CACHE/BUILD if they were moved. This incrementally rebuilds
 llama.cpp and runs its adapter tests, not the Quactlize module sweep.
-Until T01 is implemented, this captures the existing cached-SF prefill path
-and the updated FQ decode path; it must not be labelled per-call-SF admission.
+The command below is the historical cached-SF capture setup. Its V1 prefill
+policy is intentionally rejected by the new adapter. Generate a V2 policy
+with the updated native gate, or omit the policy and retain FQ; do not rename
+the old table. See the current JIT/per-call-SF handoff below.
 One request contains prompt evaluation followed by 64 generated tokens;
 `-b 128` is the prompt microbatch limit, not 128 concurrent requests.
 `default-set` records GPU API, kernel and memory activity together; graphs

@@ -66,8 +66,9 @@ int quactlize_kpack_gemv_pair_run_v1(qkg_call_v1 const *, qkg_config_v1 const *,
     quactlize_ppu_placed_arrangement_v2 const *);
 
 // Output planes are [E,K/group_size,N], FP16, independently 16-byte aligned.
-// Prepare once per immutable weight, not once per prefill/token. The caller
-// owns allocation, readiness events and lifetime; this API only enqueues.
+// Enqueue before EACH ScaleFirst GEMM on its stream (including graph replay).
+// Reuse scratch allocation, not expanded values across calls. The caller owns
+// allocation and lifetime; this API only enqueues and performs no host wait.
 int quactlize_kpack_sf_prepare_v1(int qtype, int n, int k, int experts,
     uint8_t const * units, uint64_t units_bytes,
     uint16_t * scale, uint16_t * zero, uint64_t plane_bytes,

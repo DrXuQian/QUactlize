@@ -81,7 +81,7 @@ def check_prepass(sdk, w, scale, zero):
     return proof
 
 
-def run(sdk, bundle, w, route, tokens, samples):
+def run(sdk, bundle, w, route, tokens, samples, jit=None):
     grouped = route >= 2
     e = w.experts
     if grouped:
@@ -95,7 +95,7 @@ def run(sdk, bundle, w, route, tokens, samples):
         vectors = [(tokens,)] * 3
     m = sum(vectors[0])
     arr = arrangement(w.q)
-    d = Dispatch(bundle)
+    d = Dispatch(bundle, jit=jit)
     r = Resources(sdk)
     graph, instance = C.c_void_p(), C.c_void_p()
     try:
@@ -163,7 +163,11 @@ def run(sdk, bundle, w, route, tokens, samples):
             workspace_bytes=choice.workspace_bytes,
             stream=r.stream.value,
         )
-        launch = d.prepare(choice, c)
+        gemm = d.prepare(choice, c)
+        def launch():
+            if sf:
+                checked(prepass(), "per-call SF prepass")
+            return gemm()
         records = []
         for index, rows in enumerate(vectors):
             req = Request(
@@ -185,6 +189,11 @@ def run(sdk, bundle, w, route, tokens, samples):
                     "GPU router fixture upload",
                 )
             sdk.fill(output, 0xA5, m * w.n * 2 + 32)
+            if sf:
+                # Every replay must rebuild both planes; prior valid values
+                # must not make a missing prepass look correct.
+                sdk.fill(scale, 0x7E, size)
+                sdk.fill(zero, 0x7E, size)
             if index == 0:
                 checked(launch(), "selected eager run")
                 sdk.synchronize(r.stream)
@@ -228,7 +237,8 @@ def run(sdk, bundle, w, route, tokens, samples):
             graph_replays=3,
             rows_host=False,
             rows_device=False,
-            scope="RESIDENT_SELECTED_GEMM_INCLUDING_GPU_DIRECTORY_NOT_LLAMA_ADAPTERS",
+            sf_metadata_mode="PER_CALL_GPU_PREPASS" if sf else "PACKED_UNITS",
+            scope="SELECTED_CALL_INCLUDING_PREPASS_AND_GPU_DIRECTORY_NOT_LLAMA_ADAPTERS",
         )
         print(
             "KPACK_NATIVE_CONTEXT "
@@ -252,11 +262,15 @@ def main():
     p.add_argument("--bundle", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--samples", type=int, default=5)
+    p.add_argument("--jit-cache", type=Path, help="opt in to selected-parent compilation before capture")
     a = p.parse_args()
     if a.samples < 3:
         p.error("at least three samples required")
     a.bundle = a.bundle.resolve(strict=True)
-    verify(a.bundle)
+    manifest = verify(a.bundle)
+    if manifest.get("jit_required") and not a.jit_cache:
+        p.error("this small package requires --jit-cache")
+    jit = dict(python=sys.executable, helper=ROOT / "tools/kpack_jit.py", sdk=a.sdk, cache=a.jit_cache) if a.jit_cache else None
     a.output.mkdir(parents=True, exist_ok=False)
     sdk = SDK(a.sdk)
     graph_bind(sdk)
@@ -280,7 +294,7 @@ def main():
                 for tokens in (1, 128):
                     try:
                         summary["results"].append(
-                            run(sdk, a.bundle, w, route, tokens, a.samples)
+                            run(sdk, a.bundle, w, route, tokens, a.samples, jit=jit)
                         )
                     except Exception as error:
                         traceback.print_exc()

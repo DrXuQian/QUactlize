@@ -1,4 +1,5 @@
 #include "policy.hpp"
+#include "jit.hpp"
 #include <dlfcn.h>
 #include <cstring>
 #include <filesystem>
@@ -13,8 +14,9 @@
 namespace {
 using namespace quactlize::dispatch;
 struct Image {
-    char const *parent, *key, *contract;
+    std::string parent, key, contract;
     int qtype, route, tm, tn, tk, wm, wn, stages, ap, dn;
+    std::filesystem::path path;
 };
 // Generated from full compiler receipts, not geometry-only config names.
 #include "catalog.inc"
@@ -50,6 +52,8 @@ struct Runtime {
     std::map<std::string,std::shared_ptr<Module>> modules;
     std::map<Key,uint64_t> requests;
     std::vector<Plan> plans;
+    Jit jit;
+    std::map<std::string,Image> jit_images;
 };
 struct Handle {
     std::shared_ptr<Module> module;
@@ -62,16 +66,16 @@ std::shared_ptr<Module> load(Runtime& r,Image const& image,Config const& c) {
     if (found!=r.modules.end()) return found->second;
     if (image.qtype!=c.qtype || image.route!=c.route || image.tm!=c.tm || image.tn!=c.tn ||
         image.tk!=c.tk || image.wm!=c.wm || image.wn!=c.wn || image.stages!=c.stages ||
-        image.ap!=c.ap || image.dn!=c.dn || !image.contract || std::strlen(image.contract)!=64)
+        image.ap!=c.ap || image.dn!=c.dn || !hex_digest(image.contract) || !hex_digest(image.key))
         throw std::runtime_error("catalog parent/compiler contract differs");
-    auto path=r.root/"modules"/image.key/"kernel.so";
+    auto path=image.path.empty() ? r.root/"modules"/image.key/"kernel.so" : image.path;
     auto module=std::make_shared<Module>();
     module->library=dlopen(path.c_str(),RTLD_NOW|RTLD_LOCAL);
     if (!module->library) throw std::runtime_error(dlerror());
     auto identity=symbol<decltype(&quactlize_kpack_identity_v1)>(module->library,"quactlize_kpack_identity_v1")();
     if (!identity || identity->version!=1 || identity->size!=sizeof(*identity) ||
-        !identity->parent || !identity->build_key || std::strcmp(identity->parent,image.parent) ||
-        std::strcmp(identity->build_key,image.key) || identity->qtype!=c.qtype || identity->route!=c.route ||
+        !identity->parent || !identity->build_key || identity->parent!=image.parent ||
+        identity->build_key!=image.key || identity->qtype!=c.qtype || identity->route!=c.route ||
         identity->tm!=c.tm || identity->tn!=c.tn || identity->tk!=c.tk || identity->wm!=c.wm ||
         identity->wn!=c.wn || identity->stages!=c.stages || identity->ap!=c.ap ||
         identity->delivery_n!=c.dn || identity->mapping_id!=c.mapping_id)
@@ -121,6 +125,27 @@ extern "C" int quactlize_kpack_dispatch_open_v1(char const* root,void** out) {
 }
 extern "C" void quactlize_kpack_dispatch_close_v1(void* runtime) { delete static_cast<Runtime*>(runtime); }
 
+extern "C" int quactlize_kpack_dispatch_enable_jit_v1(void* runtime,qks_jit_options_v1 const* o) {
+    if (!runtime || !o || o->version!=1 || o->size!=sizeof(*o) ||
+        !o->python || !o->helper || !o->sdk || !o->cache) return QKS_INVALID;
+    try {
+        auto& r=*static_cast<Runtime*>(runtime);
+        std::lock_guard<std::mutex> lock(r.mutex);
+        if (r.jit.enabled() || !r.modules.empty() || !r.plans.empty() || !hex_digest(kJitSource)) return QKS_INVALID;
+        for (auto path : {o->python,o->helper,o->sdk,o->cache})
+            if (!std::filesystem::path(path).is_absolute()) return QKS_INVALID;
+        Jit j{std::filesystem::canonical(o->python).string(),
+              std::filesystem::canonical(o->helper).string(),
+              std::filesystem::canonical(o->sdk).string(),{},kJitSource};
+        if (access(j.python.c_str(),X_OK) || !std::filesystem::is_regular_file(j.helper) ||
+            !std::filesystem::is_directory(j.sdk)) return QKS_INVALID;
+        std::filesystem::create_directories(o->cache);
+        j.cache=std::filesystem::canonical(o->cache).string();
+        r.jit=std::move(j);
+        return QKS_OK;
+    } catch (std::exception const& e) { last_error=e.what(); return QKS_BINDING; }
+}
+
 extern "C" int quactlize_kpack_dispatch_query_v1(void* runtime,qks_request_v1 const* req,qks_choice_v1* out) {
     if (!runtime || !req || !out || !valid(*req)) return QKS_INVALID;
     *out={};
@@ -133,7 +158,26 @@ extern "C" int quactlize_kpack_dispatch_query_v1(void* runtime,qks_request_v1 co
         if (!selected.config) { last_error="no same-family policy choice"; return QKS_MISS; }
         auto const& config=*selected.config;
         Image const* image=nullptr;
-        for (auto const& candidate : kImages) if (!std::strcmp(candidate.parent,config.symbol)) { image=&candidate; break; }
+        for (auto const& candidate : kImages) if (candidate.parent==config.symbol) { image=&candidate; break; }
+        if (!image && r.jit.enabled()) {
+            auto found=r.jit_images.find(config.symbol);
+            if (found==r.jit_images.end()) {
+                auto receipt=compile_parent(r.jit,config);
+                std::istringstream in(receipt);
+                std::string tag,build,contract,source,extra;
+                if (!(in>>tag>>build>>contract>>source) || tag!="QK_JIT_V1" ||
+                    !hex_digest(build) || !hex_digest(contract) || source!=kJitSource || (in>>extra))
+                    throw std::runtime_error("JIT receipt identity differs");
+                auto path=std::filesystem::canonical(std::filesystem::path(r.jit.cache)/build/"kernel.so");
+                if (path.parent_path().parent_path()!=r.jit.cache || path.parent_path().filename()!=build ||
+                    path.filename()!="kernel.so" || !std::filesystem::is_regular_file(path))
+                    throw std::runtime_error("JIT module escapes its cache entry");
+                Image resolved{config.symbol,build,contract,config.qtype,config.route,config.tm,config.tn,
+                    config.tk,config.wm,config.wn,config.stages,config.ap,config.dn,path};
+                found=r.jit_images.emplace(config.symbol,std::move(resolved)).first;
+            }
+            image=&found->second;
+        }
         if (!image) { last_error=std::string("selected parent not packaged: ")+config.symbol; return QKS_MISS; }
         auto module=load(r,*image,config);
         auto call=call_for(*req,r);
@@ -152,8 +196,8 @@ extern "C" int quactlize_kpack_dispatch_query_v1(void* runtime,qks_request_v1 co
         choice.workspace_bytes=resources.workspace_bytes; choice.shared_bytes=resources.shared_bytes;
         choice.policy=selected.policy; choice.algorithm=rec.algorithm; choice.split=rec.split; choice.grid=rec.grid;
         choice.device=r.device; choice.compute_units=r.cu;
-        if (std::strlen(image->parent)>=sizeof(choice.parent)) return QKS_BINDING;
-        std::strcpy(choice.parent,image->parent); std::strcpy(choice.build_key,image->key);
+        if (image->parent.size()>=sizeof(choice.parent)) return QKS_BINDING;
+        std::strcpy(choice.parent,image->parent.c_str()); std::strcpy(choice.build_key,image->key.c_str());
         r.plans.push_back({*req,choice,rec,module}); r.requests.emplace(key(*req),choice.ticket);
         *out=choice; return QKS_OK;
     } catch (std::exception const& e) { last_error=e.what(); return QKS_BINDING; }

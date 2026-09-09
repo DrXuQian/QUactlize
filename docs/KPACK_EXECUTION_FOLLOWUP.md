@@ -20,11 +20,11 @@ across calls or amortized across requests in the selector.
 
 | ID | Workstream | Actual status / remaining work | PPU box boundary |
 | --- | --- | --- | --- |
-| T01 | Per-call ScaleFirst execution and selection | TODO. Current llama adapter caches `scale_ready`; change to per-call GPU expansion, stream-safe scratch and capture/replay ordering. Replace resident-only FQ/SF comparison with matching full-call expansion+GEMM+adapter timing | Expansion executes on every replay; independent numerics, memory and full-call timing |
-| T02 | Production single-parent JIT | Partial: `runtime/compiler.py` generates/builds/caches one parent; C++ dispatch still uses compiled `kImages` and returns `QKS_MISS` when the selected parent is absent. Connect selected-parent generation/compilation/loading without a multi-candidate online search | Cold-generated module executes correctly and matches the equivalent prebuilt parent |
-| T03 | Model-load preparation and JIT misses | TODO. Discover the model's required formats/shapes, select complete tactics, deduplicate parent compilation and prepare handles before capture. Define behavior for unseen M/router requests; no compiler, timing search or Python on steady token execution | Cold startup, disk-cache hit, process restart, new-M/router and graph replay |
-| T04 | Production module-cache lifecycle | Partial: locking, atomic receipts and content hashes exist in Python. Add C++ consumption of new cache entries, relocation/SDK/ABI contracts, interrupted/corrupt build handling and bounded concurrent compilation. A cache hit must not rebuild a module | Validate moved prebuilt/cache images and real SDK/device compatibility; host negatives run locally |
-| T05 | Small-library delivery and legacy dependency removal | TODO. Extract only required intake/conversion/admission/loader exports; deliver small libraries plus selected module cache/JIT support. The model still needs the old six libraries for intake and explicit FQ fallback; do not remove them before replacement coverage | Load and execute with legacy libraries deliberately absent; compare cold/hot startup and model results |
+| T01 | Per-call ScaleFirst execution and selection | Implemented/SDK-compiled locally: per-call compute-stream expansion, reusable scratch, no scale-ready cache; V2 exporter requires timed expansion+GEMM. Adapter replay test poisons both planes. Device execution pending | Expansion executes on every replay; independent numerics, memory and full-call timing |
+| T02 | Production single-parent JIT | Implemented locally: additive C ABI, exact selected-parent compiler/load seam, source contract, no online search. Small `kpack-jit-v1` candidate built. Cold compilation is still expensive; prewarm is recommended | Cold-generated module executes correctly and matches the equivalent prebuilt parent |
+| T03 | Model-load preparation and JIT misses | Implemented bounded prewarm: unsplit GGUF header inventory or explicit requests, actual C++ heuristic, deduplicated parallel compilation; llama enables JIT before graph preparation. Unknown families still explicitly miss; sharded/TP discovery remains explicit-request mode | Cold startup, disk-cache hit, process restart, new-M/router and graph replay |
+| T04 | Production module-cache lifecycle | Host-tested: C++ resolver, content/source/ABI contracts, locking/atomic publish, relocation, corruption/escape rejection and bounded prewarm. Real 20-parent cache-hit compile pass performs no rebuild. SDK/device admission remains pending | Validate moved prebuilt/cache images and real SDK/device compatibility; host negatives run locally |
+| T05 | Small-library delivery and legacy dependency removal | Small JIT dispatcher/execution candidate built (about 1.1 MiB); intake/conversion/admission extraction remains. The model still needs the old six libraries for intake and explicit FQ fallback; do not remove them before replacement coverage | Load and execute with legacy libraries deliberately absent; compare cold/hot startup and model results |
 | T06 | Complete heuristic/recipe contract | Partial: measured/heuristic C++ selection is wired, not globally optimal coverage. Keep one owner for parent, AP, delivery, Split-K, scheduler/grid and legal optimization axes; cover misses without compiled-default guesses or restoring a Cartesian sweep | Bounded challenge around coverage gaps and historical winners, not universal 5% claims |
 | T07 | Q8_0 production integration | Partial: controlled ScaleFirst/I8 collective and sweep exist. Reuse them; add the production GGUF/device producer, arrangement, ABI, selector and dense llama admission. Do not feed the historical Xplane fixture through the K-pack API | Producer bytes, decode/prefill numerics and matched Q8 native-reference timings |
 | T08 | Q6 output-head native coverage | TODO: N248320/K2048 still takes labelled legacy FQ. Inventory/build a bounded candidate set and provide a measured selected-native route | Same-shape correctness/performance and actual dense compute trace |
@@ -35,13 +35,12 @@ across calls or amortized across requests in the selector.
 | T13 | Product main cleanup and documentation | Pending: minimal public entry points, reproducible config/JIT scripts, README/ABI/handoff, unused flag/debug removal; enforce the recorded main-admission skill, PPU-only code and required production formats | Final release regression after selective cleanup; no Xplane/NVIDIA diagnostic path admitted implicitly |
 | T14 | SIMT GEMV further optimization | PARKED: user accepts the current comparable level for this milestone. Preserve code and evidence; not a blocker and not selected by automatic decode | No new gate solely for this parked item; reopen only for a new regression/target |
 
-The JIT source generator and compile cache do not by themselves implement
-production JIT: [`compiler.py`](../quactlize/runtime/compiler.py) is currently
-a development-side CPU tool, whereas
-[`binding.cpp`](../quactlize/dispatch/binding.cpp) looks up a static catalog.
-The desired path is heuristic -> one complete tactic -> prebuilt/disk-cache
-hit or startup-time single-parent compilation -> prepared execution. Keep
-online multi-candidate tuning opt-in and outside the default model path.
+The locally implemented path is heuristic -> one complete tactic ->
+prebuilt/disk-cache hit or explicitly enabled single-parent compilation ->
+prepared execution. See [JIT package, commands, timing and boundaries](KPACK_JIT.md).
+No PPU device admission is implied. Keep online multi-candidate tuning opt-in
+and outside the default model path; the old six-library dependency is not
+removed by shrinking the dispatcher.
 
 Implement/compile T01-T08 and their host tests locally where bounded; actual
 PPU admission follows the last column. T02-T04 can be developed alongside
@@ -65,7 +64,7 @@ Model admission with this new selection remains open; see
 | --- | --- | --- |
 | 3. Native selected-module binding | Micro gates pass; Q6 output-head policy coverage remains open | Both hooks are wired, but N248320/K2048 dense head misses the native policy and retains labelled legacy K-pack FQ. No Python/JIT/online timing in inference |
 | 4. Device-only grouped metadata | Correctness and changing-router replay pass; performance open | No per-token D2H; isolate the cost of rectangular device-only scheduling against the same-parent compact diagnostic |
-| 5. ScaleFirst prefill | Per-call expansion required; current cached adapter differs | T01 must remove cross-call expanded-value reuse and include expansion in every SF timing/selection. Existing resident-core measurements remain diagnostic components; no inference wait on cache D2H |
+| 5. ScaleFirst prefill | Per-call adapter implemented/SDK-compiled; PPU gate pending | Cross-call expanded-value reuse removed. V2 timing/selection includes every expansion. Existing resident-core measurements remain diagnostic components; no inference wait on cache D2H |
 | Decode GEMV | Provisionally accepted for this milestone; optimization parked | User accepts the current comparable level. Preserve the matched evidence and its scope; automatic decode remains FQ |
 | Uniform FQ decode | Automatic dense/grouped single-token routing changed in llama.cpp; deployment requires adapter rebuild | Ignore GEMV policy in `auto`; preserve measured FQ parent/Split-K/compact selection and prefill FQ/SF policy. Forced GEMV/SF stay diagnostic. No Quactlize kernel DSO rebuild; this does not by itself close model performance debt |
 | Model decode regression | Open performance debt | Isolate the measured per-token gap with matched work; retain the old GEMM incumbent and do not attribute the whole gap to one missing algorithm |
@@ -106,7 +105,7 @@ SF kernel work, not a claim that Quactlize has no Q8 implementation at all.
 | L4 | Adapter and evidence tooling | TODO: strengthen route/parent/Split-K receipts and graph/lifetime tests; inspect uploaded traces for CPU waits, allocations and routing/cast/scatter cost. Trace capture is B1; fixes can be implemented/compiled locally, with device replay still required |
 | L5 | SIMT optimization backlog | PARKED by user decision; retain current implementation and evidence, no additional optimization required for this milestone |
 | L6 | Packaging and maintainability | TODO: inventory required exports/modules and unused flags, keep the single integration handoff current, clarify reader/provider boundaries and prepare cleanup. AIU+UniversalCopy/provider extensions remain separate experiments; product main admission is not authorized by static cleanup alone |
-| L7 | Per-call SF and production JIT | TODO: T01-T04 above can be implemented, compiled and host-tested without PPU. The current cached SF adapter and static C++ module catalog are not completion of these requirements |
+| L7 | Per-call SF and production JIT | Local implementation, SDK compilation and host tests completed for T01-T04's bounded scope; new candidate package and gate ready. PPU numerical/replay/performance admission remains separate |
 
 ### Must execute on a PPU box
 
@@ -144,10 +143,9 @@ The box rebuilds llama.cpp for the changed context layout, not Quactlize.
 1. Twenty dense and eight grouped contexts use the actual C++ selector and
    prepared module, independent GGUF arithmetic, output guards and changed
    router graph replay. ScaleFirst prepass is checked and timed separately.
-   The existing exporter compares resident core time with a 2% margin and
-   reports prepass separately. T01 must change this to per-call expansion
-   plus GEMM before its route table can admit the requested SF execution
-   model; existing resident tables are not that admission.
+   The updated exporter compares per-call expansion plus GEMM with a 2%
+   margin. Existing resident-only tables are rejected; rerun this gate before
+   choosing SF under the new execution contract.
 2. Fourteen model-shaped GEMV contexts (Q4/Q5 experts, both broadcast/per-slot
    A, and Q6 N248320/K2048 dense output) compare all eight recipes in 3x11
    samples. The comparison uses selected FQ when covered, explicitly tagged
@@ -372,7 +370,8 @@ Implementation and measurement requirements (corrected per-call contract):
 5. For serial expansion and GEMM, compare `T_expand + T_gemm` plus matching
    adapters against the FQ full call. For R calls, charge every expansion:
    `sum(T_expand_i + T_gemm_i)`, not one expansion plus R GEMMs. Existing
-   `scale_ready` cross-call caching and resident-only policy export need T01.
+   T01 now removes `scale_ready` caching and rejects resident-only policy data;
+   the new per-call device gate still must be executed.
 
 ## Locally compiled box package
 

@@ -1,7 +1,8 @@
 """Content-addressed, compile-only PPU parent cache. No device is needed.
 
 Only declared parent tuples are generated. There is no shell interpolation,
-unchecked source-code field, runtime eval or compilation on an inference miss.
+unchecked source-code field or runtime eval. Compilation belongs to explicit
+prewarm or a selected-module miss outside graph capture, never prepared run.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -45,6 +46,15 @@ FLAGS = [
     "-fPIC",
 ]
 LIBRARIES = ("hggc_wrapper", "hggcrt1", "hggc", "hg_wrapper")
+
+
+def source_contract(identity):
+    """Bind generated body/ABI/flags to the dispatcher, not install paths.
+
+    SDK/host changes still get distinct full cache keys. Identical sources do
+    not prove device compatibility; numerical admission remains separate.
+    """
+    return digest({k: identity[k] for k in ("kernel", "flags", "generator")})
 
 
 def sha(path):
@@ -159,13 +169,19 @@ class Compiler:
         )
         path = self.cache / key
         path.mkdir(parents=True, exist_ok=True)
+        if path.is_symlink() or path.resolve().parent != self.cache:
+            raise ValueError("compiled cache entry escapes cache root")
         with (path / "build.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             receipt = path / "manifest.json"
             if receipt.exists():
                 value = json.loads(receipt.read_text())
                 if (
-                    value.get("key") != key
+                    (path / "kernel.so").is_symlink()
+                    or receipt.is_symlink()
+                    or path.resolve().parent != self.cache
+                    or path.resolve().name != key
+                    or value.get("key") != key
                     or value.get("parent") != parent
                     or value.get("identity") != self.identity
                     or value.get("sha256") != sha(path / "kernel.so")
@@ -202,7 +218,8 @@ class Compiler:
                         str(so),
                         f"-L{self.sdk / 'lib'}",
                         *[f"-l{name}" for name in LIBRARIES],
-                        f"-Wl,-rpath,{self.sdk / 'lib'}",
+                        # SDK setup/LD_LIBRARY_PATH resolves the runtime on
+                        # the target host; never bake a builder's SDK path.
                     ],
                 ]
                 with (path / "build.log").open("w") as log:

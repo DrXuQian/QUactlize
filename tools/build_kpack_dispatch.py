@@ -11,7 +11,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from quactlize.runtime.compiler import Compiler, sha, validate_parent
+from quactlize.runtime.compiler import Compiler, sha, validate_parent, source_contract
 from quactlize.runtime.tuning import ROUTES, digest
 from quactlize.runtime.native import sdk_identity
 from tools.verify_kpack_dispatch import verify as verify_native
@@ -42,7 +42,7 @@ def requests():
     return result
 
 
-def plan(output):
+def plan(output, inputs=None):
     executable = output / "policy-query"
     subprocess.run(
         [
@@ -56,7 +56,7 @@ def plan(output):
         ],
         check=True,
     )
-    inputs = requests()
+    inputs = requests() if inputs is None else inputs
     lines = subprocess.check_output(
         [str(executable)],
         text=True,
@@ -121,7 +121,7 @@ def plan(output):
     return sorted(parents.values(), key=lambda p: p["symbol"]), selected
 
 
-def catalog(records):
+def catalog(records, jit_source=""):
     if len({r["parent"]["symbol"] for r in records}) != len(records):
         raise ValueError("catalog has multiple builds of one parent")
     rows = []
@@ -136,7 +136,8 @@ def catalog(records):
             + ",".join([json.dumps(s) for s in strings] + list(map(str, values)))
             + "},"
         )
-    return "static Image const kImages[] = {\n" + "\n".join(rows) + "\n};\n"
+    return ("static std::vector<Image> const kImages = {\n" + "\n".join(rows) + "\n};\n"
+            + "static char const kJitSource[] = " + json.dumps(jit_source) + ";\n")
 
 
 def reuse_records(base, postops, parents, sdk):
@@ -178,6 +179,7 @@ def main():
     p.add_argument("--cache", type=Path)
     p.add_argument("--jobs", type=int, default=8)
     p.add_argument("--plan-only", action="store_true")
+    p.add_argument("--jit-only", action="store_true", help="small dispatcher, no precompiled GEMM modules")
     p.add_argument(
         "--reuse-bundle",
         type=Path,
@@ -194,6 +196,8 @@ def main():
         default=ROOT / "prebuilt/ppu0010/kpack-execution-v1",
     )
     args = p.parse_args()
+    if args.jit_only and args.reuse_bundle:
+        p.error("--jit-only and --reuse-bundle are mutually exclusive")
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     parents, selected = plan(output)
@@ -209,7 +213,9 @@ def main():
         return
     compiler = None
     reused = []
-    if args.reuse_bundle:
+    if args.jit_only:
+        records = []
+    elif args.reuse_bundle:
         base, postops = args.reuse_bundle.resolve(), args.postops_bundle.resolve()
         records = reuse_records(base, postops, parents, args.sdk)
         reused = [
@@ -231,7 +237,9 @@ def main():
         if Path(r["path"]).resolve() != target:
             shutil.copy2(r["path"], target)
         r["path"] = str(target.relative_to(output))
-    (output / "catalog.inc").write_text(catalog(records))
+    jit_compiler = compiler or Compiler(args.sdk, args.cache or output / "modules", args.jobs)
+    jit_source = source_contract(jit_compiler.identity)
+    (output / "catalog.inc").write_text(catalog(records, jit_source))
     host = output / "libquactlize_kpack_dispatch.so"
     command = [
         "g++",
@@ -281,7 +289,11 @@ def main():
         device_validated=False,
         heuristic_admitted=False,
         grouped_profile="measured-q4-q5-single-token-otherwise-device-bounds-no-router-readback",
+        jit_source_contract=jit_source,
+        jit_source_identity={k: jit_compiler.identity[k] for k in ("kernel", "flags", "generator")},
     )
+    if args.jit_only:
+        manifest["jit_required"] = True
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(
         f"KPACK_DISPATCH_BUILD COMPILED modules={len(records)} root={output} device_validated=0",

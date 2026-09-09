@@ -8,14 +8,16 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from quactlize.runtime.compiler import Compiler, sha
+from quactlize.runtime.compiler import Compiler, sha, source_contract
 from quactlize.runtime.tuning import digest
 
 
 def verify(root):
     root = Path(root).resolve(strict=True)
     m = json.loads((root / "manifest.json").read_text())
-    if m.get("schema") != "quactlize.kpack-native-dispatch.v1" or not m.get("modules"):
+    if (m.get("schema") != "quactlize.kpack-native-dispatch.v1" or
+        not isinstance(m.get("modules"), list) or
+        (not m["modules"] and m.get("jit_required") is not True)):
         raise ValueError("native package schema or module set differs")
     for name, field in (
         ("libquactlize_kpack_dispatch.so", "dispatch_sha256"),
@@ -23,6 +25,9 @@ def verify(root):
     ):
         if sha(root / name) != m[field]:
             raise ValueError("native payload differs: " + name)
+    if m.get("jit_required") or "jit_source_contract" in m:
+        if source_contract(m.get("jit_source_identity", {})) != m.get("jit_source_contract"):
+            raise ValueError("JIT source contract differs")
     seen = set()
     for r in m["modules"]:
         if (

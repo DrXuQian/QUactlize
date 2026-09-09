@@ -148,7 +148,7 @@ def test_grouped_decode_does_not_expand_scope(probe, q, n, k):
 
 
 def build_stub(
-    tmp, probe, *, wrong_key=False, values=(12, 2, 528, 3072, 512, 256, 129)
+    tmp, probe, *, wrong_key=False, values=(12, 2, 528, 3072, 512, 256, 129), jit=False
 ):
     parts = query(probe, [values])[0].split()
     assert parts[0] != "MISS"
@@ -164,9 +164,11 @@ def build_stub(
             [json.dumps(symbol), json.dumps(key), json.dumps("b" * 64)]
             + list(map(str, [q, route, tm, tn, tk, wm, wn, stages, ap, dn]))
         )
-        + "}};\n"
+        + '}};\nstatic char const kJitSource[] = "' + "d"*64 + '";\n'
     )
     actual_key = "c" * 64 if wrong_key else key
+    if jit:
+        (tmp / "catalog.inc").write_text('static std::vector<Image> const kImages{};\nstatic char const kJitSource[] = "' + "d"*64 + '";\n')
     (tmp / "stub_identity.inc").write_text(
         "static qk_identity_v1 const stub_identity{1,sizeof(qk_identity_v1),"
         + ",".join(map(str, [q, route, tm, tn, tk, wm, wn, stages, ap, dn]))
@@ -210,6 +212,8 @@ def build_stub(
     )
     lib = C.CDLL(str(library), mode=C.RTLD_LOCAL)
     specifications = {
+        "enable_jit": ([C.c_void_p, C.c_void_p], C.c_int),
+        "error": ([], C.c_char_p),
         "open": ([C.c_char_p, C.POINTER(C.c_void_p)], C.c_int),
         "close": ([C.c_void_p], None),
         "query": ([C.c_void_p, C.POINTER(Request), C.POINTER(Choice)], C.c_int),
