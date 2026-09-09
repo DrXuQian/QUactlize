@@ -7,6 +7,11 @@ closure. Canonical offline planes are unchanged.
 
 ## Tracked delivery
 
+Grouped direct FP32 partial publication and the compact fixed-S reducer are
+implemented and packaged separately. Nine PPU parents compile; actual PPU
+admission is pending. S1, mainloop, offline bytes, workspace and current native
+bundle selection are unchanged. See [the bounded A/B gate](KPACK_GROUPED_POSTOPS.md).
+
 | Item | State | Completion condition |
 | --- | --- | --- |
 | 3. Native selected-module binding | Micro gates pass; Q6 output-head policy coverage remains open | Both hooks are wired, but N248320/K2048 dense head misses the native policy and retains labelled legacy K-pack FQ. No Python/JIT/online timing in inference |

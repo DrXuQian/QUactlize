@@ -165,7 +165,7 @@ template<bool Persistent, bool Split = false, bool Compact = false> struct Group
   using Shape = moe_grouped_ppu::GroupShape;
   using DStride = moe_grouped_ppu::DStride;
   G gemm;
-  using Reduction = cutlass::gemm::device::splitk_parallel::PpuMixedInputSplitKParallelReduction<8>;
+  using Reduction = cutlass::gemm::device::splitk_parallel::PpuMixedInputSplitKParallelCompactReduction<2>;
   Reduction reduction;
   int splits = 1;
   float* partials = nullptr;

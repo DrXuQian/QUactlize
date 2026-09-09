@@ -6,6 +6,7 @@
 #include "ppu_format_config.hpp"
 #include "ppu_group_schedule.hpp"
 #include "actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_persistent.hpp"
+#include "actlize_extensions/cutlass/gemm/kernel/detail/ppu_grouped_splitk_direct_epilogue.hpp"
 
 namespace quactlize::runtime {
 using Half = cutlass::half_t;
@@ -58,13 +59,18 @@ struct GroupedTypes {
       ppu_mixed_policy::Q4KPack4MainloopPolicy<mode, Schedule, Tile, ScaleTile, Warp, ST, true, 0, DN, Publication>,
       ppu_mixed_policy::KPackMainloopPolicy<mode, Schedule, Tile, ScaleTile, Warp, ST, true, Low, High, 0, DN>>;
   using Mainloop = typename Policy::CollectiveOp;
-  using Epilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
+  using OutputEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
       cutlass::arch::PPU0010, cutlass::arch::OpClassTensorOp, Tile, Warp,
       cutlass::epilogue::collective::EpilogueTileAuto, float, float,
       Output, cutlass::layout::RowMajor*, 16 / sizeof(Output),
       Output, cutlass::layout::RowMajor*, 16 / sizeof(Output),
       cutlass::epilogue::EpiloguePtrArraySimtVectorized,
       cutlass::epilogue::fusion::LinearCombination<Output, float>>::CollectiveOp;
+  // FP32 is an internal Split-K workspace, never the final fused output.
+  // S1 retains the original FP16 epilogue type and all of its semantics.
+  using Epilogue = std::conditional_t<std::is_same_v<Output,float>,
+      cutlass::gemm::kernel::detail::GroupedSplitKDirectEpilogue<OutputEpilogue>,
+      OutputEpilogue>;
   using Kernel = std::conditional_t<Persistent,
       cutlass::gemm::kernel::GroupPersistentMixedInputKernel<moe_grouped_ppu::GroupProblemShape, Mainloop, Epilogue>,
       std::conditional_t<Compact,

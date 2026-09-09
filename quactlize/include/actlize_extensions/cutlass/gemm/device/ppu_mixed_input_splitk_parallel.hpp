@@ -467,7 +467,7 @@ class PpuMixedInputSplitKParallelM1FastReductionKernel {
 // Checked dispatcher for the M=1 specialization.  It deliberately retains the
 // old reducer as a complete fallback: tails, wider M, weaker alignment, custom
 // D stride and HostAdapter builds preserve their previous admitted behavior.
-template <int ElementsPerAccess = 2>
+template <int ElementsPerAccess = 2, bool FlattenContiguousRows = false>
 class PpuMixedInputSplitKParallelM1FastReduction {
  public:
   using Fallback = PpuMixedInputSplitKParallelReduction<8>;
@@ -490,16 +490,23 @@ class PpuMixedInputSplitKParallelM1FastReduction {
 
   static bool fast_admissible(Arguments const& args) {
     constexpr int ColumnsPerCta = KernelS2::kColumnsPerCta;
-    uint64_t const ctas = args.columns > 0
-        ? uint64_t(args.columns) / uint64_t(ColumnsPerCta)
+    // initialize() first validates the complete byte span with Fallback.
+    // Contiguous [S][M][N] has the identical fixed-order reduction to
+    // [S][M*N]; the row/expert boundaries need no work in the reducer.
+    int64_t const columns = FlattenContiguousRows ? args.rows * args.columns : args.columns;
+    constexpr size_t WorkspaceAlignment = FlattenContiguousRows
+        ? alignof(AlignedArray<float, ElementsPerAccess>) : 128;
+    uint64_t const ctas = columns > 0
+        ? uint64_t(columns) / uint64_t(ColumnsPerCta)
         : 0;
-    return args.rows == 1 && args.destination_stride == args.columns &&
-        args.columns > 0 && args.columns % ColumnsPerCta == 0 &&
+    return (FlattenContiguousRows || args.rows == 1) &&
+        args.destination_stride == args.columns &&
+        columns > 0 && columns % ColumnsPerCta == 0 &&
         ctas > 0 &&
         ctas <= uint64_t((std::numeric_limits<unsigned>::max)()) &&
         (args.split_k_slices == 2 || args.split_k_slices == 4 ||
          args.split_k_slices == 8) &&
-        reinterpret_cast<uintptr_t>(args.workspace) % 128 == 0 &&
+        reinterpret_cast<uintptr_t>(args.workspace) % WorkspaceAlignment == 0 &&
         reinterpret_cast<uintptr_t>(args.destination) % 16 == 0;
   }
 
@@ -531,7 +538,7 @@ class PpuMixedInputSplitKParallelM1FastReduction {
     Status const status = fallback_.initialize(args);
     if (status != Status::kSuccess) return status;
     params_ = Params{args.workspace, args.destination, args.rows * args.columns};
-    columns_ = args.columns;
+    columns_ = FlattenContiguousRows ? args.rows * args.columns : args.columns;
     partitions_ = args.split_k_slices;
 #if !CUTLASS_ENABLE_HOST_ADAPTER
     fast_ = fast_admissible(args);
@@ -572,6 +579,14 @@ class PpuMixedInputSplitKParallelM1FastReduction {
     return installed_ && fast_;
   }
 };
+
+// The grouped workspace is only guaranteed 16-byte alignment (directory and
+// descriptor arrays precede it). Use the actual vector alignment instead of
+// the dense M1 dispatcher's stronger 128-byte policy. Fixed S addition order,
+// output conversion and the generic tail/strided/HostAdapter fallback are shared.
+template <int ElementsPerAccess = 2>
+using PpuMixedInputSplitKParallelCompactReduction =
+    PpuMixedInputSplitKParallelM1FastReduction<ElementsPerAccess, true>;
 
 // Explicit same-stream two-launch seam.  MainLaunch must enqueue the mixed-input GEMM on the stream
 // it receives and return cutlass::Status.  No event or host synchronization is inserted here: stream

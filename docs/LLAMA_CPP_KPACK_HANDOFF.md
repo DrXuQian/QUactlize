@@ -1713,3 +1713,12 @@ return a nonnegative value.
    and only then admit the result.
 8. Persist the admitted result atomically as the sidecar above; later loads
    validate and reuse it without repacking.
+
+## Grouped post-operation candidate (2026-09-09)
+
+`prebuilt/ppu0010/kpack-grouped-postops-v1` is a diagnostic same-parent A/B
+package, not a replacement for the deployed native bundle. It adds direct
+FP32 partial stores and a compact fixed-S reducer for grouped S>1. Offline
+arrangements, public C APIs, S1 and llama.cpp wiring are unchanged. Do not
+switch production selection until the [PPU gate](KPACK_GROUPED_POSTOPS.md)
+passes correctness and measures end-to-end benefit.
