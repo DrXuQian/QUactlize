@@ -85,6 +85,17 @@ def test_summary_divides_graph_repeats_once():
     ]
 
 
+def test_failed_job_selection_keeps_original_parents_and_denominator():
+    names = ["fq-q14-tm16-ordinary", "fq-q12-tm8-ordinary"]
+    selected = runner.select_jobs(builder.plan(), names)
+    assert [g["job"] for g in selected] == names
+    assert sum(len(runner.expected_keys(g, 4)) for g in selected) == 96
+    assert runner.select_jobs(builder.plan(), None) == builder.plan()
+    for wrong in (["missing"], names + names[:1]):
+        with pytest.raises(ValueError, match="unknown/duplicate"):
+            runner.select_jobs(builder.plan(), wrong)
+
+
 def test_cuda_projection_matches_actual_hgcc_five_format_types(tmp_path):
     sdk = Path("/root/ppu-sdk/2.1.1")
     if not (sdk / "bin/hgcc").is_file():

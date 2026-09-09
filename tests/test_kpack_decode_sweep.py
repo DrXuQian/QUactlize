@@ -243,6 +243,9 @@ def test_gemm_driver_mutable_router_and_fp32_partial_boundary(
         def close(self):
             pass
 
+        def fill(self, p, value, count):
+            C.memset(p, value, count)
+
         def samples(self, fn, count):
             assert events == ["start"]
             for _ in range(count):

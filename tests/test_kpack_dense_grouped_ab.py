@@ -213,6 +213,9 @@ def test_dense_shared_driver_keeps_alignment_and_checks_partials(monkeypatch, pl
         def __init__(self, sdk):
             self.stream = C.c_void_p(1)
 
+        def fill(self, p, value, count):
+            C.memset(p, value, count)
+
         def alloc(self, count):
             buf = C.create_string_buffer(count + 256)
             memory.append(buf)

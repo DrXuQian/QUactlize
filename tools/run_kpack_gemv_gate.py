@@ -100,6 +100,7 @@ class Resources:
         self.events = []
         self.stream = C.c_void_p()
         bindings = {
+            "hggcMemsetAsync": [C.c_void_p, C.c_int, C.c_size_t, C.c_void_p],
             "hggcStreamCreateWithFlags": [C.POINTER(C.c_void_p), C.c_uint],
             "hggcStreamDestroy": [C.c_void_p],
             "hggcEventCreate": [C.POINTER(C.c_void_p)],
@@ -128,6 +129,14 @@ class Resources:
         p = self.sdk.upload(a.tobytes())
         self.allocations.append(p)
         return p
+
+    def fill(self, pointer, byte, size):
+        # Device memset need not finish before its host call returns. Queue
+        # poison on the consumer's nonblocking stream, outside timed graphs.
+        checked(
+            self.sdk.lib.hggcMemsetAsync(pointer, byte, size, self.stream),
+            "same-stream fixture poison",
+        )
 
     def samples(self, fn, count):
         samples = []

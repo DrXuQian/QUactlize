@@ -116,6 +116,9 @@ def admit(got, data, seam):
 def upload_into(sdk, p, a):
     a = np.ascontiguousarray(a)
     checked(sdk.lib.hggcMemcpy(p, a.ctypes.data, a.nbytes, 1), "fixture H2D")
+    # Pageable H2D may return after staging, before device DMA completes.
+    # Drain that default-stream setup before the nonblocking consumer runs.
+    sdk.synchronize(None)
 
 
 def bind_group(module):
@@ -213,7 +216,7 @@ def gemm_cell(
             planes["scale"], planes["zero"] = r.upload(scale), r.upload(zero)
         outbytes = m * w.n * 2
         output = r.alloc(outbytes + 32)
-        sdk.fill(output, 0xA5, outbytes + 32)
+        r.fill(output, 0xA5, outbytes + 32)
         c = Call(
             version=1,
             size=C.sizeof(Call),
@@ -275,11 +278,12 @@ def gemm_cell(
         # A 16-byte prefix would silently force its generic fallback.
         workspace_guard = 128 if dense else 16
         workspace = r.alloc(query.workspace_bytes + workspace_guard + 16)
-        sdk.fill(workspace, 0xA5, query.workspace_bytes + workspace_guard + 16)
+        r.fill(workspace, 0xA5, query.workspace_bytes + workspace_guard + 16)
         c.workspace, c.workspace_bytes = (
             workspace + workspace_guard,
             query.workspace_bytes,
         )
+        sdk.synchronize(None)  # initial weight/input uploads; outside timing
         if arm == "device-only":
             d.call = c
             checked(
@@ -309,11 +313,11 @@ def gemm_cell(
                 upload_into(sdk, c.offsets_device, bounds)
             upload_into(sdk, c.a, profile["a"][profile["arows"][permutation]])
             for repeat in range(args.correctness_repeats):
-                sdk.fill(output, 0xA5, outbytes + 32)
+                r.fill(output, 0xA5, outbytes + 32)
                 if partialbytes:
-                    sdk.fill(partialptr, 0xFF, partialbytes)
+                    r.fill(partialptr, 0xFF, partialbytes)
                 if gpu_directory:
-                    sdk.fill(c.workspace, 0xA5, 16 + 16 * directory_capacity)
+                    r.fill(c.workspace, 0xA5, 16 + 16 * directory_capacity)
                 checked(launch() if repeat == 0 else graph(), "Split-K correctness")
                 sdk.synchronize(r.stream)
                 raw = sdk.download(output, outbytes + 32)
@@ -332,7 +336,10 @@ def gemm_cell(
                     header = np.frombuffer(sdk.download(c.workspace, 16), dtype="<i4")
                     if not np.array_equal(header, [prefix[-1], 0, tile_m, w.experts]):
                         raise ValueError(
-                            f"device directory header differs: {header.tolist()}"
+                            f"device directory header differs: {header.tolist()} "
+                            f"profile={index} repeat={repeat} "
+                            f"launch={'eager' if repeat == 0 else 'graph'} "
+                            f"expected={[int(prefix[-1]), 0, tile_m, w.experts]}"
                         )
                     entries = np.frombuffer(
                         sdk.download(c.workspace + 16, int(prefix[-1]) * 16),
@@ -568,15 +575,16 @@ def simt_cell(args, sdk, functions, w, case, config, variant):
             "SIMT query",
         )
         workspace = r.alloc(sizes.workspace_bytes + 32)
-        sdk.fill(workspace, 0xA5, sizes.workspace_bytes + 32)
+        r.fill(workspace, 0xA5, sizes.workspace_bytes + 32)
         c.workspace, c.workspace_bytes = workspace + 16, sizes.workspace_bytes
         launch = lambda: run(C.byref(c), C.byref(config), C.byref(arr))
+        sdk.synchronize(None)  # initial fixture uploads; outside timing
         graph = Replay(sdk, r.stream, launch, args.graph_repeats)
         errors = []
         for repeat in range(args.correctness_repeats):
-            sdk.fill(output, 0xA5, outbytes + 32)
+            r.fill(output, 0xA5, outbytes + 32)
             if sizes.workspace_bytes:
-                sdk.fill(c.workspace, 0xFF, sizes.workspace_bytes)
+                r.fill(c.workspace, 0xFF, sizes.workspace_bytes)
             checked(launch() if repeat == 0 else graph(), "SIMT correctness")
             sdk.synchronize(r.stream)
             raw = sdk.download(output, outbytes + 32)

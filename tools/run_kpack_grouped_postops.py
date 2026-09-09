@@ -82,6 +82,14 @@ def cases_for(group):
     return cases
 
 
+def select_jobs(groups, names):
+    if not names:
+        return groups
+    if len(names) != len(set(names)) or set(names) - {g["job"] for g in groups}:
+        raise ValueError("unknown/duplicate selected job")
+    return [g for g in groups if g["job"] in names]
+
+
 def expected_keys(group, rounds):
     return {
         (case, s, r, a)
@@ -208,6 +216,10 @@ def run_job(args, manifest, records, group):
                     )
                     outputs, resources = {}, {}
                     for arm in arms:
+                        result["failure_context"] = dict(
+                            case=case, split=s, round=round_ + 1, variant=arm,
+                            parent=group["parent"]["symbol"], build_key=group[arm],
+                        )
                         print(
                             f'GROUPED_POSTOPS_PROGRESS job={group["job"]} case={case} S={s} round={round_+1} arm={arm}',
                             flush=True,
@@ -277,6 +289,7 @@ def run_job(args, manifest, records, group):
         )
         if len(result["cells"]) != expected:
             raise ValueError("cell denominator differs")
+        result.pop("failure_context", None)
         result.update(status="PASS", seconds=time.monotonic() - started)
     except Exception as error:
         result["error"] = str(error)
@@ -317,6 +330,7 @@ def main():
     )
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--job")
+    p.add_argument("--only-jobs", nargs="+", help="run named jobs in fresh processes; do not relabel older results")
     p.add_argument("--profile", choices=("baseline", "candidate"))
     p.add_argument("--split", type=int, choices=(2, 4, 8), default=4)
     p.add_argument("--rounds", type=int, default=4)
@@ -330,6 +344,8 @@ def main():
     manifest, records = verify(args.bundle)
     if args.profile and not args.job:
         p.error("--profile requires --job")
+    if args.only_jobs and args.job:
+        p.error("--only-jobs cannot be combined with --job")
     if args.job:
         matches = [g for g in manifest["groups"] if g["job"] == args.job]
         if len(matches) != 1:
@@ -347,8 +363,9 @@ def main():
             raise ValueError("resume authority changed: do not reuse old timings")
     else:
         receipt.write_text(json.dumps(authority, indent=2) + "\n")
+    groups = select_jobs(manifest["groups"], args.only_jobs)
     results = []
-    for group in manifest["groups"]:
+    for group in groups:
         output = args.output / (group["job"] + ".json")
         if args.resume and output.is_file():
             try:
@@ -402,7 +419,9 @@ def main():
             result["status"] = "FAIL"
         results.append(result)
         print(
-            f'GROUPED_POSTOPS_JOB job={group["job"]} status={result["status"]} cells={len(result["cells"])}',
+            f'GROUPED_POSTOPS_JOB job={group["job"]} status={result["status"]} cells={len(result["cells"])}'
+            + (" error=" + str(result.get("error", "incomplete/authority mismatch"))
+               if result["status"] != "PASS" else ""),
             flush=True,
         )
     rows = summarize(results)
@@ -410,7 +429,8 @@ def main():
     for row in rows:
         print("GROUPED_POSTOPS_RESULT " + json.dumps(row), flush=True)
     passed = all(r["status"] == "PASS" for r in results)
-    if passed and not args.skip_acu:
+    profile_ready = any(g["job"] == "fq-q12-tm8-ordinary" for g in groups)
+    if passed and not args.skip_acu and profile_ready:
         for arm in ("baseline", "candidate"):
             stem = args.output / ("q4-up-s4-" + arm)
             if args.resume:
@@ -455,7 +475,10 @@ def main():
                 and report.stat().st_size > 0
             )
     print(
-        "GROUPED_POSTOPS_COMPLETE status=" + ("PASS" if passed else "FAIL"), flush=True
+        "GROUPED_POSTOPS_COMPLETE status=" + ("PASS" if passed else "FAIL")
+        + f" jobs={len(groups)}/{len(manifest['groups'])}"
+        + (" scope=SELECTED_JOBS" if args.only_jobs else " scope=ALL_JOBS"),
+        flush=True,
     )
     return 0 if passed else 1
 

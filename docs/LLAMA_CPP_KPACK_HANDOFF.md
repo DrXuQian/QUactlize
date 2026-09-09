@@ -1722,3 +1722,9 @@ FP32 partial stores and a compact fixed-S reducer for grouped S>1. Offline
 arrangements, public C APIs, S1 and llama.cpp wiring are unchanged. Do not
 switch production selection until the [PPU gate](KPACK_GROUPED_POSTOPS.md)
 passes correctness and measures end-to-end benefit.
+
+The first PPU postops run admits seven complete jobs, but Q4/TM8 baseline and
+Q6/TM16 candidate both stop on a poisoned GPU-directory header. The corrected
+test queues fixture poison on the compute stream and drains setup uploads;
+only two failed jobs need the initial replay. No DSO, inference wait, ABI or
+llama.cpp hook changes. See the [result review](KPACK_GROUPED_POSTOPS.md#first-ppu-result-and-fixture-ordering).

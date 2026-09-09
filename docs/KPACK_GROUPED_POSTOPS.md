@@ -83,6 +83,64 @@ and timing options, invoke `run_kpack_grouped_postops.py --resume` with the same
 failed JSON/logs are preserved under timestamped names. Changed authority is
 rejected. Any ACU captures are fresh.
 
+## First PPU result and fixture ordering
+
+Reviewed `kpack-grouped-postops.NNT8ZP.results.tgz` (SHA256
+`26435d94ebfe991dd49372763a078225e90a9fb75feebfc4e4c989693c478171`).
+Its manifest and all measurement-source hashes match the delivered 1b4323c
+revision. Seven complete jobs / 288 cells pass; two jobs are incomplete:
+
+| Job | Completed cells | First failing call | Failure |
+| --- | ---: | --- | --- |
+| Q4 TM8 ordinary | 15/64 | ragged S2, round 4, baseline | four directory-header words equal `0xa5a5a5a5` |
+| Q6 TM16 ordinary | 26/32 | ragged S8, round 2, candidate | same poison header |
+
+These are not reported dot-product mismatches. The directory header builder
+writes all four words before its error/empty-expert return. The test fills
+that header with poison on the default stream, but computes on a nonblocking
+stream without an explicit edge from that fill. CUDA documents both the
+[device-memset host-asynchronous behavior](https://docs.nvidia.com/cuda/cuda-runtime-api/api-sync-behavior.html)
+and [nonblocking-stream exclusion from legacy synchronization](https://docs.nvidia.com/cuda/cuda-runtime-api/stream-sync-behavior.html).
+That is a concrete test-ordering gap, not yet proof of the PPU failure's cause.
+
+The real CUDA `dev/gemv_cuda/stream_poison.cu` experiment reproduces exactly
+four poison header words under a deliberately delayed default stream, with
+both eager and graph consumers. Same-stream poison and an explicit
+default-stream drain both turn green (six cases total). This proves the
+ordering mechanism on CUDA, not that the PPU kernels are already admitted.
+
+The fixture now enqueues all poison fills on its consumer stream. Pageable
+H2D setup is completed before use on that nonblocking stream. Neither fill nor
+host setup waits enter the timed graph, module run(), or llama.cpp production
+path. Kernels and every packaged DSO remain unchanged. Failure logs now name
+the arm, profile, repeat and eager/graph path.
+
+The complete-job timing evidence is encouraging: ragged S2 improves 8.36–10.07%,
+S4 16.06–19.99%, S8 23.81–30.65%; ragged S1 stays within 0.22%. On the model
+shapes, Q5 compact S2 improves 22.58→20.80 µs, but S1 remains faster at
+14.34 µs. Q4 persistent S2/4/8 improve, yet S1 remains its winner. Q4 compact's
+model case was not reached. This is combined direct-store + reducer evidence,
+not isolated reducer timing or a new default-selection verdict.
+
+Keep that archive unchanged. To diagnose only the two incomplete jobs under
+the corrected driver, without rebuilding or rerunning the seven others:
+
+```bash
+(
+  git pull --ff-only &&
+  PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK CUDA_VISIBLE_DEVICES=0 \
+    bash tools/run_kpack_grouped_postops_box.sh \
+      --only-jobs fq-q14-tm16-ordinary fq-q12-tm8-ordinary
+)
+```
+
+This writes a fresh result directory: 96 cells plus two Q4 ACU captures if
+numerical checks pass. Completion says `jobs=2/9 scope=SELECTED_JOBS`, not a
+fresh all-nine run. Earlier successful receipts are retained as earlier
+evidence, not rewritten to claim they ran the new source. Cross-source
+`--resume` remains rejected. A fresh full nine-job run remains available by
+omitting `--only-jobs`.
+
 ## Local rebuild
 
 ```bash

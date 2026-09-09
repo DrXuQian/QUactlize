@@ -88,3 +88,18 @@ Raw results remain in the development artifact directory
 `/root/autodl-tmp/kpack-postops-cuda-evidence-v11/`. NVIDIA hardware-counter
 profiling was denied with `ERR_NVGPUCTRPERM`; no counter-based bandwidth or
 stall diagnosis is claimed. Driver permissions were not changed.
+
+## Fixture stream-order check
+
+`stream_poison.cu` is a separate six-cell CUDA diagnostic, not part of GEMV
+timing. It delays the default stream and then compares an unordered device
+memset with same-stream memset and an explicit default-stream drain, for
+both eager and graph consumers. On the same RTX 5090 both unordered cells
+returned four `0xa5a5a5a5` words (`EXPECTED_RED`); all four ordered cells
+passed. This demonstrates a test-harness race mechanism, not PPU admission.
+
+```bash
+/usr/local/cuda-12.8/bin/nvcc -std=c++17 -arch=sm_120 -O2 \
+  dev/gemv_cuda/stream_poison.cu -o /workspace/kpack-stream-poison
+/workspace/kpack-stream-poison
+```

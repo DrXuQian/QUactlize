@@ -21,9 +21,9 @@ bundle selection are unchanged. See [the bounded A/B gate](KPACK_GROUPED_POSTOPS
 | Model decode regression | Open performance debt | Isolate the measured per-token gap with matched work; retain the old GEMM incumbent and do not attribute the whole gap to one missing algorithm |
 | Grouped Split-K / SIMT pair reader | 260/260 PPU cells pass; performance reviewed | Q4 compact S2 improves on compact S1; Q5 compact S1 remains best. Pair reader improves both SIMT anchors. Host compact excludes CPU preparation and is not a production replacement |
 | GPU compact / persistent Split-K | PPU 204/204 pass; Q4 compact S2 -7.23%, Q5 compact S1 -45.15% | [Reviewed gate and ACU capture](KPACK_GPU_COMPACT.md) include directory cost, mutable GPU routing and FP32 partials. Persistent is not the anchor winner. External ABI unchanged; deployed native bundle not switched |
-| SIMT NVIDIA diagnosis | Real CUDA/half probe passes on RTX 5090; kernel port in progress | Development-only bridge, independent GGUF oracle, then memory/instruction counters. No NVIDIA result substitutes for PPU admission |
+| SIMT NVIDIA diagnosis | RTX 5090: 256 GEMV configurations and 216 direct-store cells pass; counters permission denied | Development-only native-half2 experiment gives modest gains; low efficiency is not resolved. No NVIDIA result substitutes for PPU admission |
 | Equal-weight dense/grouped reproduction | [Five-arm prebuilt runner](KPACK_DENSE_GROUPED_AB.md) ready for PPU measurements | Q4 N4096/K2048 dense versus eight N512/K2048 experts, identical logical weights/A; historical winner plus matched tile controls. SF excluded |
-| Split-K reducer optimization | Source inspection / RTX 5090 experiment in progress | Distinguish generic grouped reducer, M1 fast reducer and launch overhead; retain ordered FP32 summation and single FP16 conversion. No new reducer admitted yet |
+| Split-K reducer optimization | New PPU postops package: 7/9 jobs pass; two directory-poison failures need ordered-fixture replay | Same-stream fixture correction does not rebuild or change kernels. Preserve the original results; see [postops review](KPACK_GROUPED_POSTOPS.md#first-ppu-result-and-fixture-ordering) |
 
 Profiling default: standalone operators use ACU native reports; model/stream
 timelines and launch bubbles use Asys. The compact ACU entry selects only the
