@@ -84,6 +84,32 @@ geometry. Old timing mode, metadata representation, tiles and source epoch
 differ; this must not be called a measured same-kernel regression or used
 to subtract an invented fixed overhead.
 
+### Fully-quantized-only bandwidth cross-check
+
+Recomputing necessary code/unit/A/output bytes over the confirmed overnight
+time (nominal 2766 GB/s; not actual DRAM counters) gives:
+
+| Q4 FQ route | N/K | Rows | us | Effective MBU |
+| --- | --- | --- | ---: | ---: |
+| Dense S1 | 25600/5120 | M1 | 49.159999937 | 54.27% |
+| Dense S4 | 8192/5120 | M1 | 20.400000736 | 41.86% |
+| Grouped S1 | 3072/512 | E256, 8 active x M1 | 13.679999858 | 18.86% |
+| Grouped S1 | 512/2048 | E256, 8 active x M1 | 18.440000713 | 9.33% |
+
+The S4 numerator counts necessary operands, not extra partial/reduction
+traffic. The grouped denominator counts only active experts' weights, not
+all 256. The 9.33% includes A/output; weight-only is 9.25%. High FQ bandwidth
+is therefore present in the archive, but these high rows are dense, not the
+current grouped geometry. In the earlier `fq-kquant-heuristic-handoff.tgz`
+layout comparison, the same grouped geometry was FQ K-pack 23.96 us versus
+FQ Xplane 24.36 us. It was not previously a demonstrated 40%-MBU FQ case.
+
+The same O0ki3q native gate has pooled medians FQ 24.48 us and SF 19.48 us
+for N512/K2048/E256/rows8, each including its GPU metadata/directory. SF is
+20.42% faster in that paired gate, not the cross-epoch ratio of old 11.02 us
+against FQ 18.44 us. Different selected configurations still prevent
+attributing this entire difference to metadata decoding alone.
+
 ## Isolated same-parent test (no compilation)
 
 `tools/run_kpack_grouped_decode_probe.py` consumes the existing native bundle.
