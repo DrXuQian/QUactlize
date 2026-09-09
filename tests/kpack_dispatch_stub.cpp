@@ -10,7 +10,7 @@ extern "C" int quactlize_kpack_device_v1(char* name,int capacity,int32_t* ordina
 }
 extern "C" int quactlize_kpack_query_v1(qk_call_v1 const* c,qk_recipe_v1 const* r,qk_resources_v1* out) {
     if (!c || !r || !out || c->rows_host || c->rows_device) return QK_INVALID;
-    if (c->device!=0 || c->compute_units!=72 || r->split<1) return QK_INVALID;
+    if (c->device!=0 || c->compute_units!=72 || r->split!=stub_expected_split) return QK_INVALID;
     *out={1,sizeof(*out),256,4096,6,0,0}; return QK_OK;
 }
 extern "C" int quactlize_kpack_grouped_query_v2(qk_device_call_v2 const* d,qk_recipe_v1 const* r,qk_resources_v1* out) {

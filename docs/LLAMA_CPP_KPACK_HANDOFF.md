@@ -1732,7 +1732,25 @@ baseline (-17.03%). Q5 N2048/K512/E256/top8 still favors compact S1 at
 llama.cpp adapter casts/gather/scatter. The separate Q4 S4 ACU replay measures
 the reducer at 5.770→2.161 µs; do not mix replay and warm full-call durations.
 
-The deployed native bundle and selector have not been replaced. Next: bind
-the measured modules/choices and run full-adapter, equal-work model/reference
-checks. This requires no offline-format or public-ABI change. SIMT GEMV recipe
-admission and performance remain open; this postops gate does not close them.
+The native bundle now adds only the two measured candidate modules and
+selects them for grouped FQ total M8/E256/max_rows1: Q4 N512/K2048 TM8/S4,
+Q5 N2048/K512 TM8/S1. The host selector returns `QKS_MEASURED_GROUPED=5`;
+the selection record's ABI size is unchanged. All 214 previous module DSOs,
+the execution DSO, offline format and other shape choices remain unchanged.
+The package contains 216 parent modules and 35,866,304 DSO bytes. Only the host
+dispatcher was rebuilt; the two new modules reuse byte-identical PPU-tested
+postops payloads. This update changes no ABI layout, so it requires no
+llama.cpp source rebuild; restart the process to load the new package.
+
+Next: run full-adapter, equal-work model/reference checks. Earlier native-gate
+results cannot be resumed as though the changed manifest had already passed.
+SIMT GEMV recipe admission and performance remain open; this postops gate
+does not close them. Q8_0 also remains on llama.cpp's ordinary path. It needs
+a separate format/reader/admission implementation, not a K-quant qtype alias.
+
+The same-RTX-5090 SIMT comparison now includes historical DMMV without A
+quantization and current MMVQ with Q8_1 quantization. The experimental FP32
+group-affine/vector-load reader reaches Q5/DMMV parity within ~1%, but Q4
+remains 35–49% slower; current MMVQ is faster on both anchors. All five-format
+CUDA regression cells pass, but that experiment is not PPU-admitted and is
+not in this native package. See [exact scopes and reproduction](../dev/gemv_cuda/README.md#matched-llamacpp-comparison).

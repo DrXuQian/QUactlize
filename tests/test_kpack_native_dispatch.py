@@ -112,12 +112,49 @@ def test_invalid_query(probe, field, value):
     assert query(probe, [row]) == ["MISS"]
 
 
-def build_stub(tmp, probe, *, wrong_key=False):
-    values = (12, 2, 528, 3072, 512, 256, 129)
+@pytest.mark.parametrize("q,n,k,split", [(12, 512, 2048, 4), (13, 2048, 512, 1)])
+def test_measured_grouped_decode(probe, q, n, k, split):
+    row = (q, 2, 8, n, k, 256, 1)
+    parts = query(probe, [row])[0].split()
+    layout = 1 if q == 12 else 2
+    assert (
+        parts[0]
+        == f"fqg_q{q}_l{layout}_tm8_tn64_tk256_wm8_wn16_s2_ap0_dn64_nonpersistent"
+    )
+    assert int(parts[12]) == split
+    assert int(parts[13]) == 0  # Ordinary compact, not persistent.
+    assert int(parts[-1]) == 5  # Measured full GPU path, not a router-bound prediction.
+
+
+@pytest.mark.parametrize("q,n,k", [(12, 512, 2048), (13, 2048, 512)])
+def test_grouped_decode_does_not_expand_scope(probe, q, n, k):
+    anchor = [q, 2, 8, n, k, 256, 1]
+    rows = []
+    for field, value in [
+        (0, 14),
+        (1, 3),
+        (2, 7),
+        (2, 16),
+        (3, n * 2),
+        (4, k * 2),
+        (5, 128),
+        (6, 2),
+    ]:
+        changed = anchor.copy()
+        changed[field] = value
+        rows.append(changed)
+    for line in query(probe, rows):
+        assert line == "MISS" or int(line.split()[-1]) != 5
+
+
+def build_stub(
+    tmp, probe, *, wrong_key=False, values=(12, 2, 528, 3072, 512, 256, 129)
+):
     parts = query(probe, [values])[0].split()
     assert parts[0] != "MISS"
     symbol = parts[0]
     q, route, tm, tn, tk, wm, wn, stages, ap, dn = map(int, parts[1:11])
+    mapping = 0x51344B5034540001 if q == 12 else 0x514B504B54000001
     key = "a" * 64
     module = tmp / "modules" / key
     module.mkdir(parents=True)
@@ -133,11 +170,12 @@ def build_stub(tmp, probe, *, wrong_key=False):
     (tmp / "stub_identity.inc").write_text(
         "static qk_identity_v1 const stub_identity{1,sizeof(qk_identity_v1),"
         + ",".join(map(str, [q, route, tm, tn, tk, wm, wn, stages, ap, dn]))
-        + ",0x51344b5034540001ULL,"
+        + f",{mapping}ULL,"
         + json.dumps(symbol)
         + ","
         + json.dumps(actual_key)
         + "};\n"
+        + f"static constexpr int stub_expected_split = {int(parts[12])};\n"
     )
     subprocess.run(
         [
@@ -190,8 +228,48 @@ def build_stub(tmp, probe, *, wrong_key=False):
         functions[name] = f
     runtime = C.c_void_p()
     assert functions["open"](str(tmp).encode(), C.byref(runtime)) == 0
-    req = Request(1, C.sizeof(Request), *values, 0x51344B5034540001)
+    req = Request(1, C.sizeof(Request), *values, mapping)
     return functions, runtime, req
+
+
+@pytest.mark.parametrize(
+    "values,split",
+    [((12, 2, 8, 512, 2048, 256, 1), 4), ((13, 2, 8, 2048, 512, 256, 1), 1)],
+)
+def test_measured_decode_binding_keeps_selected_split(tmp_path, probe, values, split):
+    f, r, req = build_stub(tmp_path, probe, values=values)
+    choice = Choice()
+    assert f["query"](r, C.byref(req), C.byref(choice)) == 0
+    assert (
+        choice.policy == 5
+        and choice.split == split
+        and choice.algorithm == 0
+        and choice.grid == 0
+    )
+    call = Call(
+        version=1,
+        size=C.sizeof(Call),
+        m=8,
+        n=values[3],
+        k=values[4],
+        experts=256,
+        group_size=32,
+        device=0,
+        compute_units=72,
+        mapping_id=req.mapping_id,
+        a=0x1000,
+        low=0x2000,
+        metadata=0x3000,
+        output=0x4000,
+        offsets_device=0x5000,
+        workspace=0x6000,
+        workspace_bytes=256,
+    )
+    handle = C.c_void_p()
+    assert f["prepare"](r, C.byref(choice), C.byref(call), C.byref(handle)) == 0
+    assert f["run"](handle, None) == 0
+    f["destroy"](handle)
+    f["close"](r)
 
 
 def test_full_binding_and_reuse(tmp_path, probe):

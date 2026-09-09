@@ -8,7 +8,7 @@ extern "C" {
 enum { QKS_OK = 0, QKS_MISS = 1, QKS_INVALID = 2, QKS_BINDING = 3,
        QKS_RUNTIME = 4 };
 enum { QKS_RECENT = 1, QKS_HISTORICAL = 2, QKS_PREDICTED = 3,
-       QKS_DEVICE_BOUNDS = 4 };
+       QKS_DEVICE_BOUNDS = 4, QKS_MEASURED_GROUPED = 5 };
 
 typedef struct {
     uint32_t version, size;

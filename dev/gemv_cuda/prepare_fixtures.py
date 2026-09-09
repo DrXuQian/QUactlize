@@ -22,7 +22,7 @@ def export(output, q, n, k, experts, selected, channels):
     category = np.random.default_rng(81811 + k).integers(0, 4, k, dtype=np.uint8)
     coefficients = activation_values(np.arange(channels))
     a = coefficients[:, category].astype("<f4")
-    planes, golden, denom = {}, [], []
+    planes, golden, denom, raw_experts = {}, [], [], []
     for slot, e in enumerate(selected):
         rng = np.random.default_rng(np.random.SeedSequence([81923, q, n, k, e]))
         raw = rng.integers(0, 256, (n * (k // 256), spec.raw_bytes), dtype=np.uint8)
@@ -31,6 +31,7 @@ def export(output, q, n, k, experts, selected, channels):
                 h = rng.uniform(0.005, 0.03, len(raw)).astype("<f2")
                 raw[:, offset : offset + 2] = h.view("u1").reshape(-1, 2)
         placed = prepare_expert(raw, q, n, k)
+        raw_experts.append(raw)
         for name in ("low", "high", "units"):
             planes.setdefault(name, []).append(placed[name])
         official = dequantize(raw.reshape(-1), GGMLQuantizationType(q)).reshape(n, k)
@@ -41,6 +42,7 @@ def export(output, q, n, k, experts, selected, channels):
     np.savez_compressed(
         path,
         **{name: np.stack(value) for name, value in planes.items()},
+        raw=np.stack(raw_experts),
         a=a,
         golden=np.array(golden),
         denom=np.array(denom),

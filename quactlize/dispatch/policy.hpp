@@ -9,6 +9,19 @@ namespace policy = quactlize_kpack_heuristic_v1;
 using Config = policy::Config;
 struct Selected { Config const* config = nullptr; int policy = 0; };
 
+// Full GPU metadata/directory/producer/reducer measurements. These choices
+// apply only to the tested single-token, eight-distinct-expert workload.
+inline constexpr Config kGroupedDecode[] = {
+    {"grouped-postops-q4-s4",
+     "fqg_q12_l1_tm8_tn64_tk256_wm8_wn16_s2_ap0_dn64_nonpersistent",
+     "GROUPED_COMPACT",12,2,8,64,256,8,16,2,0,64,0,4,0,0,0,
+     UINT64_C(0x51344b5034540001)},
+    {"grouped-postops-q5-s1",
+     "fqg_q13_l2_tm8_tn64_tk256_wm8_wn16_s2_ap0_dn64_nonpersistent",
+     "GROUPED_COMPACT",13,2,8,64,256,8,16,2,0,64,0,1,0,0,0,
+     UINT64_C(0x514b504b54000001)},
+};
+
 inline bool valid(qks_request_v1 const& r) {
     return r.version == 1 && r.size == sizeof(r) && r.qtype >= 10 && r.qtype <= 14 &&
         r.route >= 0 && r.route <= 3 && r.m > 0 && r.m <= INT32_MAX-256 &&
@@ -22,6 +35,12 @@ inline bool valid(qks_request_v1 const& r) {
 
 inline Selected select(qks_request_v1 const& r) {
     if (!valid(r)) return {};
+    if (r.route == QK_GROUPED_FQ && r.m == 8 && r.max_rows == 1 && r.experts == 256) {
+        if (r.qtype == 12 && r.n == 512 && r.k == 2048)
+            return {&kGroupedDecode[0],QKS_MEASURED_GROUPED};
+        if (r.qtype == 13 && r.n == 2048 && r.k == 512)
+            return {&kGroupedDecode[1],QKS_MEASURED_GROUPED};
+    }
     policy::Query q;
     q.qtype=r.qtype; q.n=r.n; q.k=r.k; q.m=r.m; q.total_rows=r.m;
     q.experts=r.experts; q.max_rows=r.max_rows;

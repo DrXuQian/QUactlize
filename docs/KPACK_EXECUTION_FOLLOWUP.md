@@ -11,8 +11,10 @@ Grouped direct FP32 partial publication and the compact fixed-S reducer are
 implemented and packaged separately. Nine PPU parents compile; actual PPU
 coverage now passes nine jobs / 384 cells across two preserved runs. Q4 compact
 S4 measures 14.59 µs versus 17.58 µs for its same-parent baseline; Q5 compact
-still favors S1. S1, mainloop, offline bytes, workspace and current native
-bundle selection are unchanged. Model admission remains open; see
+still favors S1. S1, mainloop, offline bytes and workspace are unchanged. The
+native selector now adopts Q4 compact TM8/S4 and Q5 compact TM8/S1 only on
+their exact M8/E256/max_rows1 anchors; all other choices remain unchanged.
+Model admission with this new selection remains open; see
 [the bounded A/B gate](KPACK_GROUPED_POSTOPS.md#reviewed-ppu-closure).
 
 | Item | State | Completion condition |
@@ -23,17 +25,18 @@ bundle selection are unchanged. Model admission remains open; see
 | Decode GEMV | 14 contexts x 8 recipes pass; zero recipes admitted | Current FQ comparison excludes casts/gather/scatter while GEMV includes indexed I/O. Revisit equal-work timing; this is not proof GEMV cannot win |
 | Model decode regression | Open performance debt | Isolate the measured per-token gap with matched work; retain the old GEMM incumbent and do not attribute the whole gap to one missing algorithm |
 | Grouped Split-K / SIMT pair reader | 260/260 PPU cells pass; performance reviewed | Q4 compact S2 improves on compact S1; Q5 compact S1 remains best. Pair reader improves both SIMT anchors. Host compact excludes CPU preparation and is not a production replacement |
-| GPU compact / persistent Split-K | PPU 204/204 pass; Q4 compact S2 -7.23%, Q5 compact S1 -45.15% | [Reviewed gate and ACU capture](KPACK_GPU_COMPACT.md) include directory cost, mutable GPU routing and FP32 partials. Persistent is not the anchor winner. External ABI unchanged; deployed native bundle not switched |
-| SIMT NVIDIA diagnosis | RTX 5090: 256 GEMV configurations and 216 direct-store cells pass; counters permission denied | Development-only native-half2 experiment gives modest gains; low efficiency is not resolved. No NVIDIA result substitutes for PPU admission |
+| GPU compact / persistent Split-K | PPU 204/204 pass; newer postops choices integrated below | [Reviewed gate and ACU capture](KPACK_GPU_COMPACT.md) include directory cost, mutable GPU routing and FP32 partials. Persistent is not the anchor winner. External ABI unchanged |
+| SIMT NVIDIA diagnosis | Same-5090 DMMV/MMVQ comparison complete; target not met | FP32 group-affine/vector-load experiment passes 256 cells: Q5 ~DMMV, Q4 still slower. Current MMVQ remains faster. [Matched evidence](../dev/gemv_cuda/README.md#matched-llamacpp-comparison); optimize producer/metadata traffic next, no unmeasured production promotion |
 | Equal-weight dense/grouped reproduction | [Five-arm prebuilt runner](KPACK_DENSE_GROUPED_AB.md) ready for PPU measurements | Q4 N4096/K2048 dense versus eight N512/K2048 experts, identical logical weights/A; historical winner plus matched tile controls. SF excluded |
-| Split-K reducer optimization | Bounded PPU gate: 9/9 jobs, 384 cells across two runs; Q4 compact S4 -17.03% full-call time | Two failed jobs now pass 96/96 with the ordered fixture and unchanged DSOs. ACU reducer 5.77→2.16 µs is separate from warm timing. Integrate measured modules/choices and test full adapters; [review](KPACK_GROUPED_POSTOPS.md#reviewed-ppu-closure) |
+| Split-K reducer optimization | Bounded PPU gate: 9/9 jobs, 384 cells; measured Q4/S4 and Q5/S1 native choices integrated | Only two modules added; old 214 preserved; no device compilation. ACU reducer 5.77→2.16 µs is separate from warm timing. Full-adapter/model measurement remains; [review](KPACK_GROUPED_POSTOPS.md#reviewed-ppu-closure) |
+| Q8_0 native plugin | Not implemented | Define and test the separate Q8_0 weight/scale contract, dense decode/prefill reader, selector and adapter admission. Q8_0 is qtype8, not a two-plane K-quant; keep current llama.cpp Q8_0 routing until independently validated |
 
 Profiling default: standalone operators use ACU native reports; model/stream
 timelines and launch bubbles use Asys. The compact ACU entry selects only the
 two measured anchors and their old-module controls, not the entire gate.
 
 The Q4 N512/K2048/E256/top8 single-token case was not omitted: overnight
-screen/neighbor/confirmation evidence includes TM8, and the runtime selects
+screen/neighbor/confirmation evidence includes TM8, and the earlier runtime selected
 the confirmed TM16/TN64/TK256 winner. Its historical 18.44 us is itself only
 about 9.25% effective weight bandwidth; replaying that number is not closure.
 See [the coverage audit and no-recompile single-op probe](KPACK_GROUPED_DECODE_REVIEW.md).
@@ -41,7 +44,7 @@ See [the coverage audit and no-recompile single-op probe](KPACK_GROUPED_DECODE_R
 ## Native model gate
 
 Entry: `bash tools/run_kpack_native_box.sh` (see `--help`). This consumes
-`prebuilt/ppu0010/kpack-native-v1`: 214 selected parent modules plus the native
+`prebuilt/ppu0010/kpack-native-v1`: 216 selected parent modules plus the native
 host dispatcher and execution DSO. It does not replace the old six libraries,
 which still provide intake/admission and explicitly logged K-pack FQ misses.
 The box rebuilds llama.cpp for the changed context layout, not Quactlize.

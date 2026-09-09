@@ -253,6 +253,20 @@
       "persistent": 0
     },
     {
+      "symbol": "fqg_q12_l1_tm8_tn64_tk256_wm8_wn16_s2_ap0_dn64_nonpersistent",
+      "qtype": 12,
+      "route": "fq-grouped",
+      "tm": 8,
+      "tn": 64,
+      "tk": 256,
+      "wm": 8,
+      "wn": 16,
+      "stages": 2,
+      "ap": 0,
+      "dn": 64,
+      "persistent": 0
+    },
+    {
       "symbol": "fqg_q13_l2_tm128_tn256_tk256_wm64_wn32_s2_ap0_dn16_nonpersistent",
       "qtype": 13,
       "route": "fq-grouped",
@@ -320,6 +334,20 @@
       "stages": 2,
       "ap": 0,
       "dn": 16,
+      "persistent": 0
+    },
+    {
+      "symbol": "fqg_q13_l2_tm8_tn64_tk256_wm8_wn16_s2_ap0_dn64_nonpersistent",
+      "qtype": 13,
+      "route": "fq-grouped",
+      "tm": 8,
+      "tn": 64,
+      "tk": 256,
+      "wm": 8,
+      "wn": 16,
+      "stages": 2,
+      "ap": 0,
+      "dn": 64,
       "persistent": 0
     },
     {
@@ -14105,11 +14133,11 @@
         1
       ],
       "status": "SELECTED",
-      "parent": "fqg_q12_l1_tm16_tn64_tk256_wm16_wn16_s2_ap0_dn64_nonpersistent",
-      "split": 1,
+      "parent": "fqg_q12_l1_tm8_tn64_tk256_wm8_wn16_s2_ap0_dn64_nonpersistent",
+      "split": 4,
       "grid_mode": 0,
       "grid_b": 0,
-      "policy": 4
+      "policy": 5
     },
     {
       "request": [
@@ -18614,11 +18642,11 @@
         1
       ],
       "status": "SELECTED",
-      "parent": "fqg_q13_l2_tm16_tn64_tk256_wm16_wn16_s2_ap0_dn64_nonpersistent",
+      "parent": "fqg_q13_l2_tm8_tn64_tk256_wm8_wn16_s2_ap0_dn64_nonpersistent",
       "split": 1,
       "grid_mode": 0,
       "grid_b": 0,
-      "policy": 4
+      "policy": 5
     },
     {
       "request": [

@@ -13,6 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from quactlize.runtime.compiler import Compiler, sha, validate_parent
 from quactlize.runtime.tuning import ROUTES, digest
+from quactlize.runtime.native import sdk_identity
+from tools.verify_kpack_dispatch import verify as verify_native
 
 
 def requests():
@@ -120,6 +122,8 @@ def plan(output):
 
 
 def catalog(records):
+    if len({r["parent"]["symbol"] for r in records}) != len(records):
+        raise ValueError("catalog has multiple builds of one parent")
     rows = []
     for r in records:
         p = r["parent"]
@@ -135,6 +139,38 @@ def catalog(records):
     return "static Image const kImages[] = {\n" + "\n".join(rows) + "\n};\n"
 
 
+def reuse_records(base, postops, parents, sdk):
+    """Keep the deployed closure; add the two measured postops parents only."""
+    from tools.run_kpack_grouped_postops import verify as verify_postops
+
+    native = verify_native(base)
+    measured, _ = verify_postops(postops)
+    records = {
+        r["parent"]["symbol"]: dict(r, path=str(base / r["path"]))
+        for r in native["modules"]
+    }
+    if len(records) != len(native["modules"]):
+        raise ValueError("base has ambiguous parent builds")
+    for name in ("fq-q12-tm8-ordinary", "fq-q13-tm8-ordinary"):
+        group = next(g for g in measured["groups"] if g["job"] == name)
+        record = next(r for r in measured["modules"] if r["key"] == group["candidate"])
+        symbol = record["parent"]["symbol"]
+        if symbol in records and records[symbol]["key"] != record["key"]:
+            raise ValueError(
+                "postops would replace a pre-existing parent outside its measured scope"
+            )
+        records[symbol] = dict(record, path=str(postops / record["path"]))
+    for parent in parents:
+        if records.get(parent["symbol"], {}).get("parent") != parent:
+            raise ValueError(
+                "selected parent is absent from reused receipts: " + parent["symbol"]
+            )
+    expected_sdk = sdk_identity(sdk)
+    if any(r["identity"]["sdk"] != expected_sdk for r in records.values()):
+        raise ValueError("reused module SDK differs")
+    return sorted(records.values(), key=lambda r: r["parent"]["symbol"])
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--sdk", type=Path, required=True)
@@ -142,6 +178,16 @@ def main():
     p.add_argument("--cache", type=Path)
     p.add_argument("--jobs", type=int, default=8)
     p.add_argument("--plan-only", action="store_true")
+    p.add_argument(
+        "--reuse-bundle",
+        type=Path,
+        help="reuse a verified native closure; no device compilation",
+    )
+    p.add_argument(
+        "--postops-bundle",
+        type=Path,
+        default=ROOT / "prebuilt/ppu0010/kpack-grouped-postops-v1",
+    )
     p.add_argument(
         "--execution-bundle",
         type=Path,
@@ -161,10 +207,24 @@ def main():
     )
     if args.plan_only:
         return
-    compiler = Compiler(args.sdk, args.cache or output / "modules", args.jobs)
-    records = compiler.compile_only(
-        parents, progress=lambda *x: print("KPACK_DISPATCH_BUILD", *x, flush=True)
-    )
+    compiler = None
+    reused = []
+    if args.reuse_bundle:
+        base, postops = args.reuse_bundle.resolve(), args.postops_bundle.resolve()
+        records = reuse_records(base, postops, parents, args.sdk)
+        reused = [
+            dict(path=str(p), manifest_sha256=sha(p / "manifest.json"))
+            for p in (base, postops)
+        ]
+        print(
+            f"KPACK_DISPATCH_REUSE modules={len(records)} device_compilations=0",
+            flush=True,
+        )
+    else:
+        compiler = Compiler(args.sdk, args.cache or output / "modules", args.jobs)
+        records = compiler.compile_only(
+            parents, progress=lambda *x: print("KPACK_DISPATCH_BUILD", *x, flush=True)
+        )
     for r in records:
         target = output / "modules" / r["key"] / "kernel.so"
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -213,12 +273,14 @@ def main():
         },
         dispatch_sha256=sha(host),
         execution_sha256=sha(execution),
-        compiler_identity=compiler.identity,
+        compiler_identity=compiler.identity if compiler else None,
+        compiler_identities={digest(r["identity"]): r["identity"] for r in records},
+        reused_packages=reused,
         execution_receipt=receipt,
         host_command=command,
         device_validated=False,
         heuristic_admitted=False,
-        grouped_profile="device-bounds-proposal-no-router-readback",
+        grouped_profile="measured-q4-q5-single-token-otherwise-device-bounds-no-router-readback",
     )
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(

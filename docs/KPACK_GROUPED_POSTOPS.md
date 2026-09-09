@@ -2,9 +2,9 @@
 
 Status: the bounded PPU gate covers nine exact parents / 384 passing cells
 across two preserved result archives. Q4 compact S4 improves 17.58→14.59 µs;
-the ACU capture confirms the reducer improvement. Production bundle selection
-and model-level performance remain pending. This is not a new offline format,
-routing rule or large sweep.
+the ACU capture confirms the reducer improvement. The native bundle now
+selects the two measured compact anchors. Model-level performance with those
+choices remains pending; offline formats and the other choices are unchanged.
 
 ## Two changes
 
@@ -131,9 +131,19 @@ Tensor FP16 instructions remain 32,768 and global-to-shared transactions
 208,896. This matches a partial-store/reduction optimization, not a change to
 the MMA mainloop or a solution to all remaining bank conflicts.
 
-Next admission step: integrate only the measured grouped modules/choices
-(Q4 compact S4, Q5 compact S1) and test the complete llama.cpp adapter path
-against matched reference work. No new full sweep is required for this gate.
+The native bundle integrates only the measured grouped modules/choices
+(Q4 compact S4, Q5 compact S1). Each requires total M8, E256 and max_rows1;
+Q4 matches N512/K2048 and Q5 N2048/K512. Other shapes, ScaleFirst and dense
+keep their old selection. `QKS_MEASURED_GROUPED=5` exposes the choice through
+the existing selection record without changing its ABI size. The two added
+DSOs are byte-identical to the PPU-tested postops candidates; all 214 previous
+modules and the execution DSO are preserved. Only the host selector is rebuilt.
+
+Host tests check exact parent/split propagation through query, prepare and
+run, as well as nearby-shape exclusions. Of 1,320 existing plan requests,
+exactly two selections change. These tests do not replace the next admission
+step: complete llama.cpp adapter/model measurements against matched reference
+work. No new full sweep is required for this gate.
 SIMT GEMV performance and its production recipe coverage remain separate open
 items; this result does not close them.
 

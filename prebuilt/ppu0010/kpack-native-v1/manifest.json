@@ -956,6 +956,58 @@
       "cache_hit": true
     },
     {
+      "key": "42042dea0927472f0481de5f4501840cb1f20330f6fa3f6e62c2e166253de440",
+      "parent": {
+        "symbol": "fqg_q12_l1_tm8_tn64_tk256_wm8_wn16_s2_ap0_dn64_nonpersistent",
+        "route": "fq-grouped",
+        "qtype": 12,
+        "tm": 8,
+        "tn": 64,
+        "tk": 256,
+        "wm": 8,
+        "wn": 16,
+        "stages": 2,
+        "ap": 0,
+        "dn": 64,
+        "persistent": 0
+      },
+      "identity": {
+        "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
+        "kernel": "41ececd5c74f5dd7ff7e9d29f455a6eae7860038db802204cc23e3950b49914b",
+        "flags": [
+          "--forward-unknown-to-host-compiler",
+          "--forward-unknown-to-host-linker",
+          "-arch=ppu_10",
+          "-x",
+          "hg",
+          "-DSWITCH_TO_HGGCRT",
+          "-std=c++17",
+          "-O3",
+          "-Xcompiler",
+          "-ftemplate-depth=8192",
+          "-Xllvm",
+          "-wno-loop-miss-transform",
+          "-Xllvm",
+          "-ppu-simt-branch=false",
+          "-Xllvm",
+          "-ppu-patch-fence-ppu=false",
+          "-Xllvm",
+          "-ppu-cg-to-kp1=true",
+          "-Xllvm",
+          "-ppu-fix-uninit=true",
+          "--expt-relaxed-constexpr",
+          "-DUSE_CLANG",
+          "-DCUTLASS_USE_PACKED_TUPLE=1",
+          "-DCUTE_USE_PACKED_TUPLE=1",
+          "-fPIC"
+        ],
+        "generator": "8f93997be17e436547a8fc40b4516006823d5d429714c098789846867a137ab3",
+        "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n"
+      },
+      "sha256": "a3368d8e2b54ec8b480394003cefd6b9d5c3cf53758a18f744d88492a4665ae7",
+      "path": "modules/42042dea0927472f0481de5f4501840cb1f20330f6fa3f6e62c2e166253de440/kernel.so"
+    },
+    {
       "identity": {
         "flags": [
           "--forward-unknown-to-host-compiler",
@@ -1219,6 +1271,58 @@
       "sha256": "3f001bc3fbb4f338c22b7b12231011519abd2c8e2c25fd039d0ef230839e3d49",
       "path": "modules/e3b531311ce8ec1d4516b9e187789bf60af36673d3646c3a6549e70b7938beb6/kernel.so",
       "cache_hit": true
+    },
+    {
+      "key": "c43f4c1f91cc67a84bfea4266844e0ccf522d45da6ed99e7f5600d21b9712ec2",
+      "parent": {
+        "symbol": "fqg_q13_l2_tm8_tn64_tk256_wm8_wn16_s2_ap0_dn64_nonpersistent",
+        "route": "fq-grouped",
+        "qtype": 13,
+        "tm": 8,
+        "tn": 64,
+        "tk": 256,
+        "wm": 8,
+        "wn": 16,
+        "stages": 2,
+        "ap": 0,
+        "dn": 64,
+        "persistent": 0
+      },
+      "identity": {
+        "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
+        "kernel": "41ececd5c74f5dd7ff7e9d29f455a6eae7860038db802204cc23e3950b49914b",
+        "flags": [
+          "--forward-unknown-to-host-compiler",
+          "--forward-unknown-to-host-linker",
+          "-arch=ppu_10",
+          "-x",
+          "hg",
+          "-DSWITCH_TO_HGGCRT",
+          "-std=c++17",
+          "-O3",
+          "-Xcompiler",
+          "-ftemplate-depth=8192",
+          "-Xllvm",
+          "-wno-loop-miss-transform",
+          "-Xllvm",
+          "-ppu-simt-branch=false",
+          "-Xllvm",
+          "-ppu-patch-fence-ppu=false",
+          "-Xllvm",
+          "-ppu-cg-to-kp1=true",
+          "-Xllvm",
+          "-ppu-fix-uninit=true",
+          "--expt-relaxed-constexpr",
+          "-DUSE_CLANG",
+          "-DCUTLASS_USE_PACKED_TUPLE=1",
+          "-DCUTE_USE_PACKED_TUPLE=1",
+          "-fPIC"
+        ],
+        "generator": "8f93997be17e436547a8fc40b4516006823d5d429714c098789846867a137ab3",
+        "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n"
+      },
+      "sha256": "bb203598052fe7cd0816206054cd8744a03715335a2cda365ac19ead8b145ca8",
+      "path": "modules/c43f4c1f91cc67a84bfea4266844e0ccf522d45da6ed99e7f5600d21b9712ec2/kernel.so"
     },
     {
       "identity": {
@@ -11345,50 +11449,96 @@
     }
   ],
   "policy_hashes": {
-    "quactlize/dispatch/api.h": "7e0c28731ea90b1f49890f9765c06c959a9e01be940c18857e4bf4151a794c44",
+    "quactlize/dispatch/api.h": "33c494e22ee910601713383c534704a3e388a74b03e549df6bacb90063d6c7ca",
     "quactlize/dispatch/binding.cpp": "90d2589cb9bd2a33aea0f25538ff99ff9d5263947da3617bf2c5cd505009057f",
     "quactlize/dispatch/native.py": "03c6b937772e0900168d06824c3f54847f03a24bfa3c5196bc53fed9d7abbb8d",
-    "quactlize/dispatch/policy.hpp": "e18872da5dae2db32b7ab22d06ee47e41a76ed6eaca34ea85fcae866a000b485",
-    "tools/build_kpack_dispatch.py": "2df5bc71440d63224a3e854ae69122a2a9e9b6b63e73ba2a484de0ffe80fa748",
+    "quactlize/dispatch/policy.hpp": "2a467a2146b8052a63e19d168a868f2a1645e8d216227ce53b42bd2d7eeed550",
+    "tools/build_kpack_dispatch.py": "020f569f0eb59823d10c38f70632d04d7820df43917f4dbc42877e274f238dc7",
     "tools/kpack_native_policy.cpp": "248a73d43bb6b05daa7ec45e61eb8ecf859d3181a57ea3ef6384eecaf284964f",
     "policies/kpack_zw810_heuristic_v1.hpp": "7a8c74e9d9d739dac3022329aaa19d314dc39c34b210dcbe80431a04c1ca5e8d",
     "policies/kpack_zw810_runtime_v1.hpp": "88f22bc4b1fd82036bba6b42d152f6ed9ff6e4de4dbf9d5ca55355ff9b0ffda8"
   },
-  "dispatch_sha256": "0f88707e9fdf69d1381cee6b6dfcc0da93a5663db017acd0f78bcb9aef01e514",
+  "dispatch_sha256": "acea41a96cbe79a940d1a38da91efe35e2f33a238d0de84b88000e365c567895",
   "execution_sha256": "53165c9ec37a7f73057b31289434c90a2a4da0065f37c93ca78208cecd4ba1de",
-  "compiler_identity": {
-    "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-    "kernel": "88a032224f6d3adb69322389c9db2fa5433f7ed57c2c248cb20c3d39265e09bf",
-    "flags": [
-      "--forward-unknown-to-host-compiler",
-      "--forward-unknown-to-host-linker",
-      "-arch=ppu_10",
-      "-x",
-      "hg",
-      "-DSWITCH_TO_HGGCRT",
-      "-std=c++17",
-      "-O3",
-      "-Xcompiler",
-      "-ftemplate-depth=8192",
-      "-Xllvm",
-      "-wno-loop-miss-transform",
-      "-Xllvm",
-      "-ppu-simt-branch=false",
-      "-Xllvm",
-      "-ppu-patch-fence-ppu=false",
-      "-Xllvm",
-      "-ppu-cg-to-kp1=true",
-      "-Xllvm",
-      "-ppu-fix-uninit=true",
-      "--expt-relaxed-constexpr",
-      "-DUSE_CLANG",
-      "-DCUTLASS_USE_PACKED_TUPLE=1",
-      "-DCUTE_USE_PACKED_TUPLE=1",
-      "-fPIC"
-    ],
-    "generator": "8f93997be17e436547a8fc40b4516006823d5d429714c098789846867a137ab3",
-    "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n"
+  "compiler_identity": null,
+  "compiler_identities": {
+    "624e424577a9b256f09098f46bf96f5bbc312f40df19363611a6b516c0d19ea2": {
+      "flags": [
+        "--forward-unknown-to-host-compiler",
+        "--forward-unknown-to-host-linker",
+        "-arch=ppu_10",
+        "-x",
+        "hg",
+        "-DSWITCH_TO_HGGCRT",
+        "-std=c++17",
+        "-O3",
+        "-Xcompiler",
+        "-ftemplate-depth=8192",
+        "-Xllvm",
+        "-wno-loop-miss-transform",
+        "-Xllvm",
+        "-ppu-simt-branch=false",
+        "-Xllvm",
+        "-ppu-patch-fence-ppu=false",
+        "-Xllvm",
+        "-ppu-cg-to-kp1=true",
+        "-Xllvm",
+        "-ppu-fix-uninit=true",
+        "--expt-relaxed-constexpr",
+        "-DUSE_CLANG",
+        "-DCUTLASS_USE_PACKED_TUPLE=1",
+        "-DCUTE_USE_PACKED_TUPLE=1",
+        "-fPIC"
+      ],
+      "generator": "8f93997be17e436547a8fc40b4516006823d5d429714c098789846867a137ab3",
+      "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
+      "kernel": "88a032224f6d3adb69322389c9db2fa5433f7ed57c2c248cb20c3d39265e09bf",
+      "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f"
+    },
+    "aeb50c6cf16bce0e2fcc401c75700d0705668175e70648a488ebf3faba336f66": {
+      "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
+      "kernel": "41ececd5c74f5dd7ff7e9d29f455a6eae7860038db802204cc23e3950b49914b",
+      "flags": [
+        "--forward-unknown-to-host-compiler",
+        "--forward-unknown-to-host-linker",
+        "-arch=ppu_10",
+        "-x",
+        "hg",
+        "-DSWITCH_TO_HGGCRT",
+        "-std=c++17",
+        "-O3",
+        "-Xcompiler",
+        "-ftemplate-depth=8192",
+        "-Xllvm",
+        "-wno-loop-miss-transform",
+        "-Xllvm",
+        "-ppu-simt-branch=false",
+        "-Xllvm",
+        "-ppu-patch-fence-ppu=false",
+        "-Xllvm",
+        "-ppu-cg-to-kp1=true",
+        "-Xllvm",
+        "-ppu-fix-uninit=true",
+        "--expt-relaxed-constexpr",
+        "-DUSE_CLANG",
+        "-DCUTLASS_USE_PACKED_TUPLE=1",
+        "-DCUTE_USE_PACKED_TUPLE=1",
+        "-fPIC"
+      ],
+      "generator": "8f93997be17e436547a8fc40b4516006823d5d429714c098789846867a137ab3",
+      "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n"
+    }
   },
+  "reused_packages": [
+    {
+      "path": "/root/autodl-tmp/kpack-native-postops-4490c7a-v1",
+      "manifest_sha256": "23c3ff8650028281584c37e59a73068906e1e885fc4d6564198849ba538e4faa"
+    },
+    {
+      "path": "/root/marlin_ppu/quactlize/prebuilt/ppu0010/kpack-grouped-postops-v1",
+      "manifest_sha256": "9bb4ba8645fa49de63bc50163d6e1387093520d6eb78cb3902b879155aacb4b9"
+    }
+  ],
   "execution_receipt": {
     "schema": "quactlize.kpack-execution-build.v1",
     "source_hashes": {
@@ -12065,13 +12215,13 @@
     "-shared",
     "-pthread",
     "-Wl,-Bsymbolic",
-    "-I/root/autodl-tmp/kpack-native-dispatch-20260909-r3",
+    "-I/root/autodl-tmp/kpack-native-postops-4490c7a-v2",
     "/root/marlin_ppu/quactlize/quactlize/dispatch/binding.cpp",
     "-ldl",
     "-o",
-    "/root/autodl-tmp/kpack-native-dispatch-20260909-r3/libquactlize_kpack_dispatch.so"
+    "/root/autodl-tmp/kpack-native-postops-4490c7a-v2/libquactlize_kpack_dispatch.so"
   ],
   "device_validated": false,
   "heuristic_admitted": false,
-  "grouped_profile": "device-bounds-proposal-no-router-readback"
+  "grouped_profile": "measured-q4-q5-single-token-otherwise-device-bounds-no-router-readback"
 }
