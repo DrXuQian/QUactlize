@@ -1,6 +1,72 @@
 # JIT native gate: sparse grid and fixture ordering
 
-## Uploaded result (2026-09-10)
+## Current result: both corrected runs pass
+
+Archive: `kpack-jit-retry.5gSImm.results.tgz`.
+SHA256: `d4d4a4b80191c0ef80eddf026c08c8db2d6de27e005074b52fd4256aaf224c5a`.
+Source: `72b6db864fc335ad15f48165943d2cf42c243177`.
+Package: `prebuilt/ppu0010/kpack-jit-v2`, manifest SHA256
+`d9a2b7f6c689a287eccc0e8b1a62d2aa3cc5a186c6f1eff0b1929ecd04d85266`.
+Device: ordinal 0, PCI `0000:08:00.0`, one visible device.
+
+| Check | First process | Restarted process |
+| --- | --- | --- |
+| Native contexts | 28/28 PASS | 28/28 PASS |
+| Dense FQ / SF | 10 / 10 PASS | 10 / 10 PASS |
+| Grouped FQ / SF | 4 / 4 PASS | 4 / 4 PASS |
+| Eager checks / graph replays | 28 / 84 PASS | 28 / 84 PASS |
+| Independent scale+zero prepass proofs | 14/14 PASS | 14/14 PASS |
+| JIT disk-cache resolutions | 28/28 hits, zero compiles | 28/28 hits, zero compiles |
+
+Both JSONs match the published manifest. Every selected parent/build key is
+unchanged between processes and matches the original 23 compiled parents.
+All 168 recorded replay-profile errors are finite and below the `5e-3`
+condition-scaled dot-error limit; the maximum is `2.448390734577721e-4`.
+All 840 recorded full-call samples are finite and positive. This confirms
+the declared native gate, not additional shapes or a full-model release.
+
+Q4 SF-grouped now prepares and runs with grid=256. Q6 SF-dense M128 passes
+eager and replay checks in both processes with the **same device binary** as
+the failing run. Together with the local delayed-queue negative, this closes
+the operational regression through host-grid and fixture-order corrections,
+without changing the collective. The old log did not retain enough raw
+output to reconstruct the precise historical NaN interleaving.
+
+### Bounded full-call timing observations
+
+Both processes produce the same 14/14 FQ/SF choices when checked by the V2
+exporter. The times below are medians of per-profile medians in microseconds;
+each range is the two process medians, not a confidence interval. SF includes
+its **per-call GPU metadata expansion**. This is the native gate scope, not
+llama adapter/model latency or an ACU-only kernel duration.
+
+| Context | FQ us | SF full-call us | Both runs favor |
+| --- | --- | --- | --- |
+| All five tested dense M1 contexts | 14.60--20.64 | 25.52--34.80 | FQ |
+| Dense M128, Q2--Q6, N1024/K5120 | Per-qtype comparison | SF is 14.35--32.60% faster | SF |
+| Q4 grouped, tokens=1, M8/N512/K2048/E256 | 18.32--18.44 | 75.08--75.24 | FQ |
+| Q5 grouped, tokens=1, M8/N2048/K512/E256 | 18.48--18.64 | 71.56--71.80 | FQ |
+| Q4 grouped, tokens=128, M1024/N512/K2048/E256 | 121.04--121.60 | 192.32--192.40 | FQ |
+| Q5 grouped, tokens=128, M1024/N2048/K512/E256 | 254.56--255.96 | 218.72--219.12 | SF |
+
+These observations do not change production routing in this review.
+Automatic decode stays FQ; no all-prefill SF promotion is justified by this
+small workload set. Standalone prepass samples include early/cold effects
+and must not be added again to the already-combined SF samples.
+
+Cache resolution is not free: the per-resolution median was 0.4515 s in the
+first process and 0.3945 s after restart, with tails of 5.039 s and 3.430 s.
+This gate creates a fresh dispatcher for each context and reports helper
+wall time; it is not a per-token cost. Keep startup/TTFT and warm-cache
+resolution overhead tracked for the model gate, rather than calling it zero.
+
+The native retry is complete. Next: the updated llama adapter with selected
+JIT/cached modules, graph execution, real routing and full-model latency.
+Same-parent prebuilt/JIT A/B, full model startup and removal of the six
+intake/fallback libraries remain separate tasks. No repeat of these 23 cold
+compilations is required while the cache/source/SDK identities remain valid.
+
+## Original failing result (2026-09-10)
 
 Archive: `kpack-jit-box.maMVzW.results.tgz`.
 SHA256: `c384fcadaf2d20e2f4a3732bac3c3388d2ad9142e6ec621a19dca1292b734422`.
@@ -52,7 +118,7 @@ CPU tests compare recipe grids to the **actual shipping directory helper**
 across all supported TM values, splits and sparse/ragged cases. The old
 Q4 recipe is red at occupancies 4/6/12; the corrected recipe is green.
 
-## Confirmed harness ordering defect; Q6 attribution still needs retry
+## Confirmed harness ordering defect (retry closure above)
 
 The gate used `SDK.fill`, a default-stream device memset, while its prepass
 and GEMM ran on a nonblocking stream. Device memset may return before it
@@ -69,8 +135,8 @@ prepass, including every graph replay; there is no cross-call scale cache.
 The CPU test executes the gate's actual poison helper under a legal delayed
 default-stream interleaving. Legacy ordering produces NaNs; same-stream
 ordering produces the expected values. A missing prepass remains red. This
-proves the test defect, **not** that it was the sole cause of the uploaded Q6
-failure. The corrected PPU row must pass before admitting that kernel.
+proves the test defect, **not** a reconstruction of the original PPU NaN
+interleaving. The corrected PPU row subsequently passed both processes above.
 
 The next gate checks eager output before capture and poisons again before
 each replay. If it fails, the JSON includes selected parent/recipe, phase,
@@ -78,7 +144,7 @@ profile, first coordinate/raw bits, nonfinite/poison counts and output/golden
 hashes. Route export rejects receipts lacking ordered-fixture and separate
 eager/replay evidence; incomplete or failed runs cannot produce a policy.
 
-## Delivery and next boundary
+## Delivery and completed retry procedure
 
 Use `prebuilt/ppu0010/kpack-jit-v2`. Only the small host dispatcher was
 rebuilt. The module ABI, compiler, source contract, all device kernel bodies
@@ -92,7 +158,7 @@ grouped host grid formula and test setup/evidence changed. Parent instruction
 counts are unchanged because those binaries are reused. Kernel and full-model
 performance still require the corresponding device measurements.
 
-Rerun the native gate in two fresh processes with the same JIT cache. Require
-`KPACK_NATIVE_GATE PASS contexts=28/28` twice. The second process checks
-restart/cache reuse; an old cached file alone is not that proof. A failure
-keeps its result directory. Do not erase the cache or repeat the 23 cold builds.
+The retry ran the native gate in two fresh processes with the same JIT cache
+and returned `KPACK_NATIVE_GATE PASS contexts=28/28` twice. The second process
+checked restart/cache reuse; an old cached file alone would not be that proof.
+Keep the old failure archive and the compiled cache for reproducibility.

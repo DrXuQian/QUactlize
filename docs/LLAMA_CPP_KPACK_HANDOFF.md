@@ -11,16 +11,17 @@ inspection, its selected-config oracle, and all 26 host ABI cases in a fresh
 LFS checkout. Its PPU device gate is still **PENDING**. Host/ELF admission is
 not device admission and does not authorize deployment by itself.
 
-## Current routing: FQ decode; per-call SF and JIT locally implemented
+## Current routing: FQ decode; per-call SF and JIT native gate passed
 
-Latest native JIT gate: `maMVzW` passed 26/28 contexts, all 14 FQ contexts
-included. Use `prebuilt/ppu0010/kpack-jit-v2` for the next gate: its host
-dispatcher fixes a sparse SF-grouped grid-bound rejection; the test now
-orders poison on the consumer stream and checks eager output separately.
-The Q6 SF M128 nonfinite case needs corrected-gate confirmation, not an
-unproved mainloop change. Existing JIT device binaries/cache keys and the
-execution DSO are unchanged, so this repair does not require recompiling
-the 23 cached parents or llama.cpp. Details: [JIT gate review](KPACK_JIT_GATE_REVIEW.md).
+Latest native JIT retry: `5gSImm` at `72b6db8` passes **28/28 in both
+processes**, including Q4 SF-grouped preparation and Q6 SF-dense M128. Use
+`prebuilt/ppu0010/kpack-jit-v2` for the next model integration gate. All 56
+module resolutions hit the original 23-parent cache, with unchanged device
+binaries and execution DSO. Eager, graph and metadata checks pass; this does
+not establish the updated llama model's latency, accuracy or startup cost.
+No recompilation of those cached parents or llama.cpp is required solely for
+this repair. Keep the six intake/fallback libraries. Details:
+[JIT gate review](KPACK_JIT_GATE_REVIEW.md).
 
 The [complete delivery backlog](KPACK_EXECUTION_FOLLOWUP.md#complete-delivery-backlog)
 is the current task authority, including production JIT, model-load
@@ -32,7 +33,8 @@ ScaleFirst is required to expand scale/zero on the GPU for every SF call.
 The updated adapter removes `ggml_quactlize_prepare_scales` and
 `art.scale_ready`, using per-stream scratch and a prepass node before each
 SF GEMM/replay. The native gate and V2 route exporter include every expansion.
-The SDK build and CPU contracts pass; new PPU execution evidence is pending.
+The SDK build, CPU contracts and native PPU gate pass; the updated llama
+adapter/full-model gate remains pending.
 The K-pack weight disk cache is independent and remains valid.
 
 Following the matched PPU comparison below, automatic single-token decode
@@ -48,9 +50,10 @@ The earlier FQ decode switch is consumer commit `135d7edcf` on the private
 Current consumer: `789e09f500106d83e239f1054cd0f5cfb56b23b2` (implementation
 `229fe8660`, followed by test-report cleanup). The complete local PPU backend
 and adapter/buffer executables link successfully. The Quactlize local gate
-passes 145 related pytest cases; llama's five parser cases and delayed-D2H
-buffer positive/three planted negatives also pass. Device arithmetic and
-graph replay are still pending, not inferred from these host results.
+passes 173 related pytest cases after the host-grid/gate-order repair;
+llama's five parser cases and delayed-D2H buffer positive/three planted
+negatives also pass. Native device arithmetic and graph replay pass in
+`5gSImm`; full-model/adapter device admission is still separate.
 The changed production and adapter-test translation units compile with the
 local PPU SDK; 49 host policy/parser tests pass. The new `auto` device test
 is included in the box runner, but has not yet been run on PPU after this

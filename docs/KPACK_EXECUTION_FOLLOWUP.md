@@ -5,13 +5,12 @@ model prefill improves, but decode remains about 31% slower and the short
 trace lacks selected native dense compute. This is not optimized-routing
 closure. Canonical offline planes are unchanged.
 
-Latest JIT run `maMVzW`: 26/28 native contexts passed (all 14 FQ). Q4
-SF-grouped preparation exposed a host grid larger than the compact work
-bound. Q6 SF-dense M128 returned nonfinite output and the new gate contained
-a default-stream poison race. Host recipe and gate ordering are corrected
-in `kpack-jit-v2`; device modules and cache identity are unchanged. Q6's
-specific failure attribution and the second-process gate remain pending.
-See [evidence and retry scope](KPACK_JIT_GATE_REVIEW.md).
+Latest JIT retry `5gSImm`: **28/28 native contexts pass in both processes**,
+including the original Q4 SF-grouped and Q6 SF-dense failures. The unchanged
+23 device modules were reused in all 56 cache resolutions. Metadata and
+eager/graph checks pass; max normalized error is `2.45e-4`. Native operator
+closure is complete for this gate, not for the full llama model or additional
+shapes. See [evidence, timing and remaining boundaries](KPACK_JIT_GATE_REVIEW.md).
 
 ## Complete delivery backlog
 
@@ -28,10 +27,10 @@ across calls or amortized across requests in the selector.
 
 | ID | Workstream | Actual status / remaining work | PPU box boundary |
 | --- | --- | --- | --- |
-| T01 | Per-call ScaleFirst execution and selection | Implemented/SDK-compiled locally: per-call compute-stream expansion, reusable scratch, no scale-ready cache; V2 exporter requires timed expansion+GEMM. Adapter replay test poisons both planes. Device execution pending | Expansion executes on every replay; independent numerics, memory and full-call timing |
-| T02 | Production single-parent JIT | Additive C ABI, exact selected-parent compiler/load seam, source contract, no online search. First PPU run 26/28; `kpack-jit-v2` fixes host grid and test ordering without rebuilding device modules. Cold compilation is still expensive; prewarm is recommended | Finish the two SF rows, cold/prebuilt equivalence and process-restart validation |
+| T01 | Per-call ScaleFirst execution and selection | Native PPU gate passes both processes, including metadata poison and eager/replay checks; per-call cost is included. V2 pairwise decisions agree 14/14. No production routing change in this review | Validate the updated llama adapter/full-model path; do not promote SF for every prefill shape |
+| T02 | Production single-parent JIT | `kpack-jit-v2` passes 28/28 twice using the original 23 compiled parents. No rebuild on 56 resolutions. Cold compilation remains expensive; prewarm is recommended | Same-parent prebuilt/JIT comparison and final model deployment scope remain |
 | T03 | Model-load preparation and JIT misses | Implemented bounded prewarm: unsplit GGUF header inventory or explicit requests, actual C++ heuristic, deduplicated parallel compilation; llama enables JIT before graph preparation. Unknown families still explicitly miss; sharded/TP discovery remains explicit-request mode | Cold startup, disk-cache hit, process restart, new-M/router and graph replay |
-| T04 | Production module-cache lifecycle | Host-tested: C++ resolver, content/source/ABI contracts, locking/atomic publish, relocation, corruption/escape rejection and bounded prewarm. Real 20-parent cache-hit compile pass performs no rebuild. SDK/device admission remains pending | Validate moved prebuilt/cache images and real SDK/device compatibility; host negatives run locally |
+| T04 | Production module-cache lifecycle | Host contracts pass; PPU two-process reuse passes with exact stable parent keys. Cache helper median remains about 0.4 s per resolution in this gate, so startup cost is not zero | Full-model startup/TTFT, moved-image/device scope and resolution-tail cost remain |
 | T05 | Small-library delivery and legacy dependency removal | Small JIT dispatcher/execution candidate built (about 1.1 MiB); intake/conversion/admission extraction remains. The model still needs the old six libraries for intake and explicit FQ fallback; do not remove them before replacement coverage | Load and execute with legacy libraries deliberately absent; compare cold/hot startup and model results |
 | T06 | Complete heuristic/recipe contract | Partial: measured/heuristic C++ selection is wired, not globally optimal coverage. Keep one owner for parent, AP, delivery, Split-K, scheduler/grid and legal optimization axes; cover misses without compiled-default guesses or restoring a Cartesian sweep | Bounded challenge around coverage gaps and historical winners, not universal 5% claims |
 | T07 | Q8_0 production integration | Partial: controlled ScaleFirst/I8 collective and sweep exist. Reuse them; add the production GGUF/device producer, arrangement, ABI, selector and dense llama admission. Do not feed the historical Xplane fixture through the K-pack API | Producer bytes, decode/prefill numerics and matched Q8 native-reference timings |
@@ -46,7 +45,7 @@ across calls or amortized across requests in the selector.
 The locally implemented path is heuristic -> one complete tactic ->
 prebuilt/disk-cache hit or explicitly enabled single-parent compilation ->
 prepared execution. See [JIT package, commands, timing and boundaries](KPACK_JIT.md).
-No PPU device admission is implied. Keep online multi-candidate tuning opt-in
+PPU admission is limited to the recorded native gate. Keep online multi-candidate tuning opt-in
 and outside the default model path; the old six-library dependency is not
 removed by shrinking the dispatcher.
 
@@ -72,7 +71,7 @@ Model admission with this new selection remains open; see
 | --- | --- | --- |
 | 3. Native selected-module binding | Micro gates pass; Q6 output-head policy coverage remains open | Both hooks are wired, but N248320/K2048 dense head misses the native policy and retains labelled legacy K-pack FQ. No Python/JIT/online timing in inference |
 | 4. Device-only grouped metadata | Correctness and changing-router replay pass; performance open | No per-token D2H; isolate the cost of rectangular device-only scheduling against the same-parent compact diagnostic |
-| 5. ScaleFirst prefill | Per-call adapter implemented/SDK-compiled; PPU gate pending | Cross-call expanded-value reuse removed. V2 timing/selection includes every expansion. Existing resident-core measurements remain diagnostic components; no inference wait on cache D2H |
+| 5. ScaleFirst prefill | Native per-call PPU gate passes; updated full-model adapter gate remains | Cross-call expanded-value reuse removed. V2 timing includes every expansion. No inference wait on cache D2H; do not generalize the measured FQ/SF crossover to untested shapes |
 | Decode GEMV | Provisionally accepted for this milestone; optimization parked | User accepts the current comparable level. Preserve the matched evidence and its scope; automatic decode remains FQ |
 | Uniform FQ decode | Automatic dense/grouped single-token routing changed in llama.cpp; deployment requires adapter rebuild | Ignore GEMV policy in `auto`; preserve measured FQ parent/Split-K/compact selection and prefill FQ/SF policy. Forced GEMV/SF stay diagnostic. No Quactlize kernel DSO rebuild; this does not by itself close model performance debt |
 | Model decode regression | Open performance debt | Isolate the measured per-token gap with matched work; retain the old GEMM incumbent and do not attribute the whole gap to one missing algorithm |

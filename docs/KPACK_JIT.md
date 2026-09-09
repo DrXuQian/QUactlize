@@ -5,12 +5,12 @@ and execution libraries total approximately 1.1 MiB; it contains **no GEMM
 modules**. The existing `kpack-native-v1` package is unchanged. This is not
 yet a replacement for llama.cpp's six intake/admission/fallback libraries.
 
-The first PPU JIT run passed 26/28 contexts, including all 14 FQ contexts.
-Two SF failures exposed a sparse grouped grid-bound mismatch and an unordered
-fixture poison path. The small host dispatcher and gate are corrected;
-device kernel binaries/cache keys are unchanged. Q6 numerical closure and
-the process-restart run still require retry. See the
-[uploaded result and exact repair scope](KPACK_JIT_GATE_REVIEW.md).
+The corrected PPU JIT gate passes **28/28 in both fresh processes**. The
+sparse grouped grid-bound rejection and Q6 SF-dense nonfinite result are
+resolved in this workload set. All 56 resolutions hit the existing 23-parent
+disk cache; no device kernel was rebuilt or modified. Metadata, eager and
+graph checks pass. Full-model integration/performance remains separate. See
+the [uploaded results, timings and exact repair scope](KPACK_JIT_GATE_REVIEW.md).
 
 ## Execution contract
 
@@ -122,13 +122,14 @@ local compiler wall times under concurrent work, not inference timings or a
 promise for another CPU. Cold JIT latency remains a real limitation; use
 prewarm/prebuilt caches, not synchronous multi-candidate tuning.
 
-PPU validation remains required: cold/cached/restarted JIT execution,
-equivalence to prebuilt parents, per-call SF numerical and graph checks, then
-full-model latency. Local compile success is not device admission. The
+PPU native cached/restarted execution and per-call SF numerical/graph checks
+now pass in the declared gate. Equivalence to prebuilt parents and full-model
+startup/latency remain separate validation steps. Local compile success is
+not device admission. The
 updated llama adapter tag test poisons metadata and changes its source on
 every eager/replayed call; it tests adapters, not GEMM arithmetic.
 
-After waking, a standalone native gate (no model load, no full sweep) is:
+To reproduce the completed standalone native gate (no model load, no full sweep):
 
 ```bash
 python tools/run_kpack_native_gate.py --sdk "$PPU_SDK" \
