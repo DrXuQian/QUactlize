@@ -98,6 +98,7 @@ def main():
             raise ValueError("model requests outside heuristic coverage; no tactic was invented")
     elif args.command == "resolve":
         parent = parent_tuple(args.parent, args.values)
+        print(f"KPACK_JIT_RESOLVE parent={parent['symbol']} cache={args.cache}", file=sys.stderr, flush=True)
         compiler = Compiler(args.sdk, args.cache)
         if args.source_contract and args.source_contract != source_contract(compiler.identity):
             raise ValueError("JIT helper source differs from dispatcher; rebuild the small dispatcher")
@@ -107,6 +108,7 @@ def main():
         print("QK_JIT_V1", record["key"], digest(record["identity"]), source_contract(record["identity"]))
     else:
         parents = json.loads(args.plan.read_text())["parents"]
+        print(f"KPACK_JIT_PREWARM start parents={len(parents)} jobs={args.jobs} cache={args.cache}", flush=True)
         compiler = Compiler(args.sdk, args.cache, args.jobs)
         records = compiler.compile_only(parents, progress=lambda n, total: print(
             f"KPACK_JIT_PREWARM completed={n}/{total} seconds={time.monotonic()-start:.1f}", flush=True))

@@ -36,6 +36,12 @@ Incrementally rebuild llama.cpp and restart the process to apply it.
 
 The earlier FQ decode switch is consumer commit `135d7edcf` on the private
 `feat/kpack-gpu-cache` branch; the per-call SF/JIT update follows it.
+Current consumer: `789e09f500106d83e239f1054cd0f5cfb56b23b2` (implementation
+`229fe8660`, followed by test-report cleanup). The complete local PPU backend
+and adapter/buffer executables link successfully. The Quactlize local gate
+passes 145 related pytest cases; llama's five parser cases and delayed-D2H
+buffer positive/three planted negatives also pass. Device arithmetic and
+graph replay are still pending, not inferred from these host results.
 The changed production and adapter-test translation units compile with the
 local PPU SDK; 49 host policy/parser tests pass. The new `auto` device test
 is included in the box runner, but has not yet been run on PPU after this

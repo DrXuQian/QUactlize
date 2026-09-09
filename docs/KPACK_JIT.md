@@ -102,6 +102,13 @@ cache relocation/concurrency/corruption and no compilation during run.
 They also check model-header deduplication and reject resident-only SF data.
 
 SDK compilation covers Q2-Q6 x dense/grouped x FQ/SF: 20 selected parents.
+The final source-bound package was rechecked: all 20 compiled in 304.1 s
+with 12 jobs and all 20 subsequent hits completed in 0.35 s. Every module's
+eight required native exports and matching source contract were inspected;
+none has an absolute SDK RPATH. The production llama backend shared library
+and both adapter/buffer test executables also link with the local SDK.
+The delayed-queue buffer test passes on the CPU with GPU initialization
+disabled; this is an asynchronous-lifetime test, not device admission.
 The initial 8-job cold compile took 318.7 s; all 20 hits took 0.35 s. An
 additional cold Q4 grouped compile took 85.2 s and its hit 0.17 s. These are
 local compiler wall times under concurrent work, not inference timings or a

@@ -169,3 +169,15 @@ def test_cache_concurrency_corruption_relocation_and_key_invalidation(tmp_path, 
     with pytest.raises(ValueError, match="identity/payload"):
         compiler.build(parent)
     assert not list((tmp_path / "cache" / key).glob("build-*"))
+
+
+def test_helper_rejects_foreign_dispatcher_source_before_compile(tmp_path, monkeypatch):
+    sdk = fake_compiler(tmp_path)
+    monkeypatch.setenv("PATH", str(sdk / "bin") + os.pathsep + os.environ["PATH"])
+    cache = tmp_path / "not-built"
+    result = subprocess.run([sys.executable, str(ROOT / "tools/kpack_jit.py"), "resolve",
+        "--sdk", str(sdk), "--cache", str(cache), "--source-contract", "0"*64,
+        "--parent", "parent", "--tuple", "12", "0", "8", "64", "64", "8", "16", "2", "0", "16", "-1"],
+        text=True, capture_output=True)
+    assert result.returncode == 1 and "source differs" in result.stderr
+    assert not result.stdout and not cache.exists()

@@ -2,6 +2,7 @@
 """Copy verified native runtime payloads into a new, focused LFS package."""
 
 import argparse
+import json
 from pathlib import Path
 import shutil
 import sys
@@ -26,7 +27,6 @@ def main():
     dst.mkdir(parents=True)
     paths = [
         "manifest.json",
-        "plan.json",
         "libquactlize_kpack_dispatch.so",
         "libquactlize_ppu_execution.so",
     ]
@@ -35,6 +35,13 @@ def main():
         target = dst / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src / name, target)
+    if m.get("jit_required"):
+        # A JIT-only package has no compiled closure. Model prewarm uses the
+        # caller's actual requests, not the development coverage census.
+        (dst / "plan.json").write_text(json.dumps(dict(parents=[], requests=[],
+            scope="ON_DEMAND_JIT_USE_MODEL_PREWARM_PLAN"), indent=2)+"\n")
+    else:
+        shutil.copy2(src / "plan.json", dst / "plan.json")
     verify(dst)
     print(
         f"KPACK_NATIVE_PUBLISHED modules={len(m['modules'])} output={dst} device_validation=PENDING"
