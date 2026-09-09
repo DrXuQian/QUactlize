@@ -1,5 +1,7 @@
 import ctypes as C
 import json
+import shutil
+import subprocess
 from types import SimpleNamespace
 
 import numpy as np
@@ -59,6 +61,7 @@ def test_concatenated_oracle_and_all_split_planes_agree():
         3,
         partial_specs=[(256, s) for s in (2, 4, 8)],
         partial_experts=(2, 0),
+        include_contiguous_partials=True,
     )
     d = ab.concatenate_q4_experts(w, (2, 0))
     values = activation_values([0])
@@ -66,6 +69,102 @@ def test_concatenated_oracle_and_all_split_planes_agree():
     assert np.array_equal(values @ d.sums[0], expected)
     for key, parts in d.partial_sums.items():
         assert np.allclose(parts[0][0].sum(0), d.sums[0], rtol=1e-14, atol=1e-12)
+        interleaved = np.concatenate(
+            [w.partial_sums[key][e][0] for e in (2, 0)], axis=2
+        )
+        if key[1] == 8:
+            assert np.array_equal(parts[0][0], interleaved)
+        else:
+            assert not np.allclose(parts[0][0], interleaved)
+    assert d.partial_schedule == "contiguous"
+    assert w.partial_schedule == "interleaved"
+    w.contiguous_partial_sums = {}
+    with pytest.raises(ValueError, match="contiguous K"):
+        ab.concatenate_q4_experts(w, (2, 0))
+
+
+def test_dense_schedule_uses_actual_production_partition_ranges(tmp_path):
+    compiler = shutil.which("c++")
+    if not compiler:
+        pytest.skip("requires a host C++ compiler")
+    source = r"""
+#include <cstdio>
+#include "actlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_partition.hpp"
+int main() {
+  namespace split = cutlass::gemm::kernel::fixed_splitk;
+  for (unsigned s : {2u, 4u, 8u}) {
+    auto p = split::make_params(1, 8, s);
+    for (unsigned peer=0; peer<s; ++peer) {
+      auto w = split::work_for(p, 0, peer);
+      for (unsigned tile=w.k_begin; tile<w.k_begin+w.k_count; ++tile)
+        std::printf("%u %u %u\n", s, tile, peer);
+    }
+  }
+}
+"""
+    exe = tmp_path / "partition"
+    subprocess.run(
+        [
+            compiler,
+            "-std=c++17",
+            "-include",
+            "initializer_list",
+            "-I",
+            str(ab.ROOT / "quactlize/include"),
+            "-x",
+            "c++",
+            "-",
+            "-o",
+            str(exe),
+        ],
+        input=source,
+        text=True,
+        check=True,
+        capture_output=True,
+    )
+    lines = subprocess.check_output([exe], text=True).splitlines()
+    assert len(lines) == 24
+    for line in lines:
+        splits, tile, peer = map(int, line.split())
+        assert tile // (8 // splits) == peer
+
+
+@pytest.mark.parametrize("split", [2, 4])
+def test_real_s2_s4_contiguous_partials_reject_historical_interleaved_oracle(split):
+    grouped = IndexedWeights(
+        12,
+        512,
+        2048,
+        1,
+        partial_specs=[(256, split)],
+        partial_experts=(0,),
+        include_contiguous_partials=True,
+    )
+    dense = ab.concatenate_q4_experts(grouped, (0,))
+    data = sweep.fixture(dense, dict(mode=0, rows=1, channels=1, topk=1))
+    data["values"] = activation_values([0])
+    partials = sweep.partial_gold(dense, data, 256, split)["golden"].astype("f4")
+    total = np.zeros_like(partials[0])
+    for part in partials:
+        np.add(total, part, out=total)
+    output = total.astype("f2")
+    assert (
+        sweep.check_partials(
+            partials.tobytes(), output, dense, data, 256, split, np.array([0])
+        )
+        < 0.005
+    )
+    # The old wrong oracle still agrees on the final output. Only checking
+    # one-tile-per-split S8, or the sum of all partials, cannot catch this bug.
+    assert sweep.admit(output, data, "total") < 0.005
+    wrong = sweep.partial_gold(grouped, data, 256, split)["golden"]
+    if split == 4:
+        assert wrong[0, 0, 0] == pytest.approx(4.1096813678741455)
+        assert partials[0, 0, 0] == pytest.approx(-22.626305788755417)
+    with pytest.raises(ValueError, match="partial"):
+        sweep.check_partials(
+            partials.tobytes(), output, grouped, data, 256, split, np.array([0])
+        )
 
 
 def test_existing_payload_selection_and_five_arm_plan():
@@ -81,10 +180,21 @@ def test_existing_payload_selection_and_five_arm_plan():
 
 
 @pytest.mark.parametrize(
-    "plant", [None, "output", "partial", "guard", "workspace-size"]
+    "plant", [None, "output", "partial", "guard", "workspace-size", "schedule"]
 )
 def test_dense_shared_driver_keeps_alignment_and_checks_partials(monkeypatch, plant):
-    w = IndexedWeights(12, 256, 512, 1, partial_specs=[(256, 2)], partial_experts=(0,))
+    base = IndexedWeights(
+        12,
+        256,
+        2048,
+        1,
+        partial_specs=[(256, 2)],
+        partial_experts=(0,),
+        include_contiguous_partials=True,
+    )
+    w = ab.concatenate_q4_experts(base, (0,))
+    if plant == "schedule":
+        w.partial_schedule = "interleaved"
     data = sweep.fixture(w, dict(mode=0, rows=1, topk=1, channels=1))
     data["values"] = activation_values([0])
     memory, calls = [], {}

@@ -155,6 +155,9 @@ def gemm_cell(
     m = len(order)
     rec = module.record["parent"]
     dense = arm == "dense"
+    partial_schedule = getattr(w, "partial_schedule", "interleaved")
+    if partial_schedule != ("contiguous" if dense else "interleaved"):
+        raise ValueError("partial oracle schedule does not match producer route")
     if dense and (
         rec.get("route") != "fq-dense"
         or w.experts != 1
@@ -194,6 +197,7 @@ def gemm_cell(
         algorithm="PERSISTENT" if grid_b else "ORDINARY",
         grid_b=grid_b,
         gpu_directory=gpu_directory,
+        partial_schedule=partial_schedule,
     )
     try:
         dev = module.device_identity()

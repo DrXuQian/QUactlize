@@ -13,7 +13,15 @@ from tools.kpack_warmup_fixture import Weights, prepare_expert
 
 class IndexedWeights(Weights):
     def __init__(
-        self, q, n, k, experts, progress=None, partial_specs=(), partial_experts=()
+        self,
+        q,
+        n,
+        k,
+        experts,
+        progress=None,
+        partial_specs=(),
+        partial_experts=(),
+        include_contiguous_partials=False,
     ):
         from gguf import GGMLQuantizationType
         from gguf.quants import dequantize
@@ -29,6 +37,14 @@ class IndexedWeights(Weights):
         # Optional independent per-K-tile oracle for bounded Split-K gates.
         # It uses official logical weights, never the consumer's packed map.
         self.partial_sums = {tuple(key): {} for key in partial_specs}
+        # Grouped walks every S-th K tile. Dense fixed Split-K instead owns
+        # contiguous ranges. Their final sum agrees, but their partials do not.
+        self.contiguous_partial_sums = (
+            {key: {} for key in self.partial_sums}
+            if include_contiguous_partials
+            else {}
+        )
+        self.partial_schedule = "interleaved"
         selected_experts = set(partial_experts)
         if any(
             tk <= 0 or split not in (2, 4, 8) or k % (tk * split)
@@ -59,17 +75,25 @@ class IndexedWeights(Weights):
                 self.sums[e, g] = subset.sum(axis=1, dtype=np.float64)
                 self.abs_sums[e, g] = np.abs(subset).sum(axis=1, dtype=np.float64)
             if e in selected_experts:
-                for (tk, split), entries in self.partial_sums.items():
-                    sums = np.empty((split, 4, n), dtype=np.float64)
-                    absolute = np.empty_like(sums)
-                    for part in range(split):
-                        partition = (np.arange(k) // tk) % split == part
-                        for g in range(4):
-                            values = official[:, partition & (category == g)]
-                            sums[part, g] = values.sum(axis=1, dtype=np.float64)
-                            absolute[part, g] = np.abs(values).sum(
-                                axis=1, dtype=np.float64
-                            )
-                    entries[e] = (sums, absolute)
+                for schedule, collection in (
+                    ("interleaved", self.partial_sums),
+                    ("contiguous", self.contiguous_partial_sums),
+                ):
+                    for (tk, split), entries in collection.items():
+                        sums = np.empty((split, 4, n), dtype=np.float64)
+                        absolute = np.empty_like(sums)
+                        owners = (
+                            (np.arange(k) // tk) % split
+                            if schedule == "interleaved"
+                            else np.arange(k) // (k // split)
+                        )
+                        for part in range(split):
+                            for g in range(4):
+                                values = official[:, (owners == part) & (category == g)]
+                                sums[part, g] = values.sum(axis=1, dtype=np.float64)
+                                absolute[part, g] = np.abs(values).sum(
+                                    axis=1, dtype=np.float64
+                                )
+                        entries[e] = (sums, absolute)
             if progress and (e + 1 == experts or (e + 1) % 32 == 0):
                 progress(e + 1, experts)

@@ -143,13 +143,16 @@ def concatenate_q4_experts(w, ids):
         name: np.concatenate([a[e] for e in ids], axis=1)[None] if a.size else a.copy()
         for name, a in w.planes.items()
     }
+    contiguous = getattr(w, "contiguous_partial_sums", {})
+    if set(contiguous) != set(w.partial_sums):
+        raise ValueError("dense comparison requires contiguous K partial oracles")
     partials = {
         key: {
             0: tuple(
                 np.concatenate([entries[e][i] for e in ids], axis=2) for i in (0, 1)
             )
         }
-        for key, entries in w.partial_sums.items()
+        for key, entries in contiguous.items()
     }
     return SimpleNamespace(
         q=12,
@@ -161,6 +164,7 @@ def concatenate_q4_experts(w, ids):
         sums=np.concatenate([w.sums[e] for e in ids], axis=1)[None],
         abs_sums=np.concatenate([w.abs_sums[e] for e in ids], axis=1)[None],
         partial_sums=partials,
+        partial_schedule="contiguous",
     )
 
 
@@ -173,6 +177,7 @@ def paired_fixture():
         256,
         partial_specs=[(256, s) for s in (2, 4, 8)],
         partial_experts=ids,
+        include_contiguous_partials=True,
         progress=lambda done, total: print(
             f"Q4_DENSE_GROUPED_FIXTURE experts={done}/{total}", flush=True
         ),
@@ -218,6 +223,7 @@ def paired_fixture():
         identical_activation=True,
         identical_logical_weights=True,
         packing="CONCATENATE_N_IN_EACH_KPACK_PLANE_OUTSIDE_TIMING",
+        partial_schedules={"dense": "contiguous", "device-only": "interleaved"},
         input_kind="SYNTHETIC_OFFICIAL_GGUF_NOT_MODEL_TENSOR_DUMP",
         dense_plane_sha256={
             k: hashlib.sha256(a.tobytes()).hexdigest() for k, a in dense.planes.items()

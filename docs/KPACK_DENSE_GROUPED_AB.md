@@ -20,6 +20,13 @@ not a tensor dump from a live llama.cpp request. All output values and every
 FP32 Split-K plane are checked against official GGUF arithmetic. Reduction
 is also checked against the downloaded partials in increasing split order.
 
+The producer schedules differ: dense fixed Split-K owns contiguous K-tile
+ranges, while grouped owns every S-th K tile. Each route therefore has its
+own independently computed partial oracle. They coincide when each split
+owns one K tile (S8 here), but not for S2/S4. The initial comparison script
+incorrectly reused the grouped partial oracle for dense; that test-only
+error is corrected without changing a kernel or relaxing numerical checks.
+
 ## Five bounded arms
 
 | Arm | Geometry / provider | Split | Timed work |
@@ -38,6 +45,7 @@ the old time on a different fixture/run.
 "Matched" means tile/provider geometry, **not identical collective types**:
 dense and grouped retain their actual metadata publication and epilogue
 implementations. Grouped includes its two preparation kernels. Timing
+also reflects contiguous versus interleaved K scheduling. Thus
 differences are not automatically attributed to the expert lookup or router.
 ACU provides the per-kernel breakdown.
 
