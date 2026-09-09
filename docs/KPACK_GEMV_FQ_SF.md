@@ -6,6 +6,15 @@ experiment improves on the old pair reader but does not generally beat FQ.
 This is bounded operator evidence, not all-format or model admission. No
 production kernel or heuristic is changed by this gate.
 
+Subsequent user decision (2026-09-09): SIMT GEMV is sufficient for the
+current milestone; further optimization is parked and automatic decode
+stays on FQ. This is a delivery decision, not a rewrite of the measured
+comparison or a claim of parity on every platform/shape. ScaleFirst is to
+expand metadata for every call; use the `sf_with_prepass` full-call column
+for that execution model. The `sf`/resident-core columns are diagnostic
+components and cannot amortize expansion across requests. The current llama
+adapter's cross-call `scale_ready` caching is a separate pending correction.
+
 Local checks: the eight small compilation units plus link take 10.61 seconds;
 the DSO is 1,070,896 bytes. The exact Q4 C16/W4 SIMT specialization has
 `mma_en=0`, 60 vector registers and zero stack bytes in hgobjdump. Package
@@ -246,12 +255,9 @@ winner. SF's slower time here cannot be attributed solely to metadata format.
 
 ### Decision and remaining work
 
-- Retain current production selections. The small q4-up gain is a candidate
-  for model-level validation, not a reason for a global GEMV switch.
-- Investigate SIMT instruction and KVD traffic first, with a bounded change
-  and matched PPU comparison. Preserve the canonical offline format while
-  testing metadata/index hoisting and A/word reuse.
-- Track the remaining equal-weight grouped/dense FQ gap, and the rectangular
-  SF grouped fallback, separately from SIMT reader work.
-- The same-device llama.cpp comparison remains open on PPU. RTX 5090 and
-  historical model traces are not interchangeable baselines for these times.
+- Keep automatic decode on FQ. SIMT GEMV is provisionally accepted for the
+  milestone and further optimization is parked; preserve its source/results.
+- Track the equal-weight grouped/dense FQ gap and rectangular SF fallback.
+  Per-call SF decisions must include GPU expansion and matching adapters.
+- The same-device llama.cpp arm was not part of this PPU gate. Preserve that
+  evidence boundary without making additional SIMT comparisons a blocker.

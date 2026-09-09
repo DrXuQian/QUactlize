@@ -11,7 +11,21 @@ inspection, its selected-config oracle, and all 26 host ABI cases in a fresh
 LFS checkout. Its PPU device gate is still **PENDING**. Host/ELF admission is
 not device admission and does not authorize deployment by itself.
 
-## Current routing: FQ decode and measured ScaleFirst prefill
+## Current routing: FQ decode; ScaleFirst per-call correction pending
+
+The [complete delivery backlog](KPACK_EXECUTION_FOLLOWUP.md#complete-delivery-backlog)
+is the current task authority, including production JIT, model-load
+preparation, cache lifecycle, small-library packaging, Q8/Q6 coverage,
+provider work and main admission. SIMT GEMV is provisionally accepted by
+the user for this milestone; further optimization is parked, not a blocker.
+
+ScaleFirst is required to expand scale/zero on the GPU for every SF call.
+The current adapter does not yet meet that requirement:
+`ggml_quactlize_prepare_scales` returns early when `art.scale_ready` exists
+and retains expanded planes with the weight. That is custom Quactlize wiring,
+not a requirement imposed by llama.cpp. T01 removes cross-call value caching
+and changes FQ/SF selection to include every expansion. Scratch allocation
+may be reused. The K-pack weight disk cache is independent and remains valid.
 
 Following the matched PPU comparison below, automatic single-token decode
 uses selected FQ for both dense and grouped K-pack weights (Q2_K through
@@ -27,11 +41,12 @@ local PPU SDK; 49 host policy/parser tests pass. The new `auto` device test
 is included in the box runner, but has not yet been run on PPU after this
 change. No new model speedup is claimed.
 
-Prefill still uses its measured FQ/SF policy. Explicit `sf` and `gemv` route
-overrides remain diagnostic options; keep `QUACTLIZE_KPACK_ROUTE=auto` for
-normal inference. Do not set global `fq` just to enforce decode, since that
-also overrides prefill. Requests already falling through an empty GEMV
-policy to FQ do not acquire a different kernel from this change.
+The deployed prefill path still uses the historical resident FQ/SF policy;
+it needs T01 before claiming the required per-call SF behavior. Explicit `sf`
+and `gemv` route overrides remain diagnostic options. Automatic FQ decode
+is already separate; setting global `fq` would also override prefill.
+Requests already falling through an empty GEMV policy to FQ do not acquire
+a different kernel from the decode-only change.
 
 Q8_0 is a separate pending integration, not a missing int8 collective: the
 repository already has a controlled ScaleFirst/I8 Q8 path and a sweep. Its
@@ -102,18 +117,21 @@ misses. It is not rebuilt or silently replaced. No new device admission yet.
 
 Handles and complete recipes (including Split-K and persistent grid) are
 prepared and cached before graph capture. Grouped bounds stay on the GPU;
-ScaleFirst is prepared once with the immutable weight and a separate ready
-event, subject to a memory reserve. Compute has no explicit wait on D2H/cache
-publication; first-use allocator synchronization remains a timing caveat.
+the current ScaleFirst implementation still prepares once with the immutable
+weight and a separate ready event, subject to a memory reserve. This cache
+is pending removal under T01, not the required per-call contract. Compute
+has no explicit wait on D2H/cache publication; first-use allocator
+synchronization remains a timing caveat.
 `QUACTLIZE_KPACK_GEMV_POLICY` is an exact measured TSV generated
 by the offline gate, used only for explicitly forced GEMV diagnostics;
 an unmeasured initial recipe is never substituted.
 
 The default behavior without `QUACTLIZE_KPACK_EXECUTION` is unchanged. With it,
 automatic single-token decode uses selected FQ. Prefill reads the paired
-FQ/SF measurements in `QUACTLIZE_KPACK_PREFILL_POLICY`; SF must beat FQ by more
-than 2% in resident core time. Missing entries or resource declines retain
-selected FQ. Unknown families retain the
+FQ/SF measurements in `QUACTLIZE_KPACK_PREFILL_POLICY`; the existing exporter
+still compares resident core time with a 2% margin. This is not admission
+for the required per-call expansion path. Missing entries or resource
+declines retain selected FQ. Unknown families retain the
 old canonical K-pack FQ path with an explicit log. Grouped bound-based choices
 and route-level SF decisions are not globally optimal measurements.
 
@@ -166,11 +184,11 @@ Each model log includes `[quactlize-plan]` (parent/build/split/grid or measured
 GEMV recipe). `[quactlize-prepass]` GPU event intervals are read at teardown.
 Neither host plan receipts nor library loading alone are device execution proof.
 
-SF timing must include first-use metadata preparation separately from resident
-GEMM. This model needs an additional 3.75 GiB for FP16 scale+zero over all 120
-MoE weights; ideal one-time traffic is 5.625 GiB. Cache that preparation with
-the weight, not per token/request, and retain packed units for GEMV/FQ. The
-checklist explicitly includes the memory budget and first-use break-even.
+SF timing must include metadata expansion for every SF invocation followed
+by GEMM. Expanding all 120 MoE weights writes 3.75 GiB of scale/zero and has
+5.625 GiB ideal aggregate read/write traffic; it does not require all planes
+to stay resident if temporary scratch is reused. Do not amortize expansion
+across requests. Retain packed units and the existing weight disk cache.
 
 ## Completed box entry: single-request GSM8K generated answers
 
@@ -946,7 +964,17 @@ all-config build. The measured module cache stays valid unless its own
 ABI/body/build contract changes. A missing parent still needs a one-time
 target-SDK compilation. The C++ binding and model-level gate remain pending.
 
-## Current deployment direction: heuristic plus cached JIT
+## Deployment target: heuristic plus cached JIT
+
+Current source audit (2026-09-09): C++ prebuilt-module binding and llama.cpp
+selected execution are implemented. Production JIT is not connected.
+`runtime/compiler.py` provides single-parent generation/compilation and an
+atomic locked cache, but C++ `binding.cpp` still resolves only static
+`kImages`; an unlisted selected parent returns `QKS_MISS`. T02-T05 track the
+remaining startup compiler hook, cache/relocation integration and removal of
+the old six-library dependency. The dated gate descriptions below retain
+their original scopes; their earlier "binding pending" notes are not a
+statement that the present prebuilt binding is missing.
 
 Decision updated after the real-shape review on 2026-09-07: default inference
 uses a deterministic heuristic to select **one complete tactic**, then loads
@@ -1833,6 +1861,8 @@ on-chip traffic, grouped scheduling, and a matched same-PPU llama reference.
 Use an idle PPU. These paths come from the last uploaded successful model
 setup; edit MODEL/CACHE/BUILD if they were moved. This incrementally rebuilds
 llama.cpp and runs its adapter tests, not the Quactlize module sweep.
+Until T01 is implemented, this captures the existing cached-SF prefill path
+and the updated FQ decode path; it must not be labelled per-call-SF admission.
 One request contains prompt evaluation followed by 64 generated tokens;
 `-b 128` is the prompt microbatch limit, not 128 concurrent requests.
 `default-set` records GPU API, kernel and memory activity together; graphs

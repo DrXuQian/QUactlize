@@ -5,6 +5,50 @@ model prefill improves, but decode remains about 31% slower and the short
 trace lacks selected native dense compute. This is not optimized-routing
 closure. Canonical offline planes are unchanged.
 
+## Complete delivery backlog
+
+This is the delivery-level list; the local/box tables below break down only
+part of it. Earlier gate results are evidence for their recorded scope, not
+proof that the complete production chain is finished.
+
+Current decisions: automatic decode stays on FQ. SIMT GEMV is provisionally
+accepted for this milestone by user decision and further optimization is
+parked; this does not rewrite individual benchmark results or promote GEMV
+over FQ. ScaleFirst must expand metadata on the GPU for every SF call, then
+consume it. Workspace may be reused, but expanded values must not be cached
+across calls or amortized across requests in the selector.
+
+| ID | Workstream | Actual status / remaining work | PPU box boundary |
+| --- | --- | --- | --- |
+| T01 | Per-call ScaleFirst execution and selection | TODO. Current llama adapter caches `scale_ready`; change to per-call GPU expansion, stream-safe scratch and capture/replay ordering. Replace resident-only FQ/SF comparison with matching full-call expansion+GEMM+adapter timing | Expansion executes on every replay; independent numerics, memory and full-call timing |
+| T02 | Production single-parent JIT | Partial: `runtime/compiler.py` generates/builds/caches one parent; C++ dispatch still uses compiled `kImages` and returns `QKS_MISS` when the selected parent is absent. Connect selected-parent generation/compilation/loading without a multi-candidate online search | Cold-generated module executes correctly and matches the equivalent prebuilt parent |
+| T03 | Model-load preparation and JIT misses | TODO. Discover the model's required formats/shapes, select complete tactics, deduplicate parent compilation and prepare handles before capture. Define behavior for unseen M/router requests; no compiler, timing search or Python on steady token execution | Cold startup, disk-cache hit, process restart, new-M/router and graph replay |
+| T04 | Production module-cache lifecycle | Partial: locking, atomic receipts and content hashes exist in Python. Add C++ consumption of new cache entries, relocation/SDK/ABI contracts, interrupted/corrupt build handling and bounded concurrent compilation. A cache hit must not rebuild a module | Validate moved prebuilt/cache images and real SDK/device compatibility; host negatives run locally |
+| T05 | Small-library delivery and legacy dependency removal | TODO. Extract only required intake/conversion/admission/loader exports; deliver small libraries plus selected module cache/JIT support. The model still needs the old six libraries for intake and explicit FQ fallback; do not remove them before replacement coverage | Load and execute with legacy libraries deliberately absent; compare cold/hot startup and model results |
+| T06 | Complete heuristic/recipe contract | Partial: measured/heuristic C++ selection is wired, not globally optimal coverage. Keep one owner for parent, AP, delivery, Split-K, scheduler/grid and legal optimization axes; cover misses without compiled-default guesses or restoring a Cartesian sweep | Bounded challenge around coverage gaps and historical winners, not universal 5% claims |
+| T07 | Q8_0 production integration | Partial: controlled ScaleFirst/I8 collective and sweep exist. Reuse them; add the production GGUF/device producer, arrangement, ABI, selector and dense llama admission. Do not feed the historical Xplane fixture through the K-pack API | Producer bytes, decode/prefill numerics and matched Q8 native-reference timings |
+| T08 | Q6 output-head native coverage | TODO: N248320/K2048 still takes labelled legacy FQ. Inventory/build a bounded candidate set and provide a measured selected-native route | Same-shape correctness/performance and actual dense compute trace |
+| T09 | End-to-end adapters and scheduling | Partial: GPU routing/compact directory, gather/scatter and prepared handles exist; newest FQ decode route is locally compiled. Verify selected TM8/S4 Q4 and TM8/S1 Q5 in model execution; diagnose launch/adapter gaps | New Asys timeline and unprofiled request-batch-1 latency |
+| T10 | Final accuracy/performance release gate | Pending for the final module/route set. Reuse unchanged evidence, but do not relabel historical model gates as validation of new paths | Paired GPU-reference numerical/PPL/GSM8K, actual kernel execution and full-model latency |
+| T11 | Optimization-axis coverage | TODO: reconcile recorded B-chunk, AP/packed-A, delivery N, fused scale/zero, stage and scheduler results with generated/native tactics. Distinguish untested combinations from rejected or numerically invalid ones | Only missing or changed promising combinations need bounded PPU checks |
+| T12 | Reader/provider extensions | Deferred: AIU+UniversalCopy, cp.async+reader and DeepGEMM-compatible placement need an explicit offline-layout/fragment contract and adapter boundary. Existing provider experiments are not blanket correctness/performance admission | Exact reader/layout numeric and performance gates before promotion |
+| T13 | Product main cleanup and documentation | Pending: minimal public entry points, reproducible config/JIT scripts, README/ABI/handoff, unused flag/debug removal; enforce the recorded main-admission skill, PPU-only code and required production formats | Final release regression after selective cleanup; no Xplane/NVIDIA diagnostic path admitted implicitly |
+| T14 | SIMT GEMV further optimization | PARKED: user accepts the current comparable level for this milestone. Preserve code and evidence; not a blocker and not selected by automatic decode | No new gate solely for this parked item; reopen only for a new regression/target |
+
+The JIT source generator and compile cache do not by themselves implement
+production JIT: [`compiler.py`](../quactlize/runtime/compiler.py) is currently
+a development-side CPU tool, whereas
+[`binding.cpp`](../quactlize/dispatch/binding.cpp) looks up a static catalog.
+The desired path is heuristic -> one complete tactic -> prebuilt/disk-cache
+hit or startup-time single-parent compilation -> prepared execution. Keep
+online multi-candidate tuning opt-in and outside the default model path.
+
+Implement/compile T01-T08 and their host tests locally where bounded; actual
+PPU admission follows the last column. T02-T04 can be developed alongside
+T07/T08 and do not require another full sweep. T05 depends on those coverage
+and miss-path contracts. T13 follows stable runtime/ABI selection. Do not
+restart T14 as an active performance project.
+
 ## Tracked delivery
 
 Grouped direct FP32 partial publication and the compact fixed-S reducer are
@@ -21,17 +65,17 @@ Model admission with this new selection remains open; see
 | --- | --- | --- |
 | 3. Native selected-module binding | Micro gates pass; Q6 output-head policy coverage remains open | Both hooks are wired, but N248320/K2048 dense head misses the native policy and retains labelled legacy K-pack FQ. No Python/JIT/online timing in inference |
 | 4. Device-only grouped metadata | Correctness and changing-router replay pass; performance open | No per-token D2H; isolate the cost of rectangular device-only scheduling against the same-parent compact diagnostic |
-| 5. ScaleFirst prefill | Native metadata/GEMM gates pass; model prefill improves | Immutable-weight prepass is reused. Full-model first-use and resident timing remain separate; no inference wait on cache D2H |
-| Decode GEMV | Equal-F32-endpoint gate now passes; no production promotion | Affine GEMV gains 1.12–6.37% over pair, only 3.55% ahead of full FQ on Q4-up; Q5 and dense still favor FQ. Large-case ACU shows low DRAM utilization despite high occupancy and zero SIMT bank conflicts; investigate instruction/KVD traffic |
+| 5. ScaleFirst prefill | Per-call expansion required; current cached adapter differs | T01 must remove cross-call expanded-value reuse and include expansion in every SF timing/selection. Existing resident-core measurements remain diagnostic components; no inference wait on cache D2H |
+| Decode GEMV | Provisionally accepted for this milestone; optimization parked | User accepts the current comparable level. Preserve the matched evidence and its scope; automatic decode remains FQ |
 | Uniform FQ decode | Automatic dense/grouped single-token routing changed in llama.cpp; deployment requires adapter rebuild | Ignore GEMV policy in `auto`; preserve measured FQ parent/Split-K/compact selection and prefill FQ/SF policy. Forced GEMV/SF stay diagnostic. No Quactlize kernel DSO rebuild; this does not by itself close model performance debt |
 | Model decode regression | Open performance debt | Isolate the measured per-token gap with matched work; retain the old GEMM incumbent and do not attribute the whole gap to one missing algorithm |
 | Grouped Split-K / SIMT pair reader | 260/260 PPU cells pass; performance reviewed | Q4 compact S2 improves on compact S1; Q5 compact S1 remains best. Pair reader improves both SIMT anchors. Host compact excludes CPU preparation and is not a production replacement |
 | GPU compact / persistent Split-K | PPU 204/204 pass; newer postops choices integrated below | [Reviewed gate and ACU capture](KPACK_GPU_COMPACT.md) include directory cost, mutable GPU routing and FP32 partials. Persistent is not the anchor winner. External ABI unchanged |
-| SIMT NVIDIA diagnosis | Same-5090 DMMV/MMVQ comparison complete; target not met | FP32 group-affine/vector-load experiment passes 256 cells: Q5 ~DMMV, Q4 still slower. Current MMVQ remains faster. [Matched evidence](../dev/gemv_cuda/README.md#matched-llamacpp-comparison); optimize producer/metadata traffic next, no unmeasured production promotion |
+| SIMT NVIDIA diagnosis | Comparison evidence retained; no further optimization in current milestone | [Matched evidence](../dev/gemv_cuda/README.md#matched-llamacpp-comparison) remains unchanged. T14 is parked by user decision, not a new claim of all-shape parity or PPU promotion |
 | Equal-weight dense/grouped reproduction | [Five-arm prebuilt runner](KPACK_DENSE_GROUPED_AB.md) ready for PPU measurements | Q4 N4096/K2048 dense versus eight N512/K2048 experts, identical logical weights/A; historical winner plus matched tile controls. SF excluded |
 | Split-K reducer optimization | Bounded PPU gate: 9/9 jobs, 384 cells; measured Q4/S4 and Q5/S1 native choices integrated | Only two modules added; old 214 preserved; no device compilation. ACU reducer 5.77→2.16 µs is separate from warm timing. Full-adapter/model measurement remains; [review](KPACK_GROUPED_POSTOPS.md#reviewed-ppu-closure) |
 | Q8_0 production integration | Existing controlled resident ScaleFirst/I8 kernel and sweep; production integration missing | Reuse the existing int8 collective and converter. Add the GGUF/device producer, production arrangement/ABI, selector and llama.cpp admission with independent tests. The historical A32/F1 Xplane fixture is not a production K-pack artifact. There is no shipping Q8 FQ reader; keep llama.cpp Q8_0 routing until the replacement passes PPU gates |
-| PPU GEMV / FQ / SF comparison | k5Tp2m: 5 cases, 240 SIMT recipes, 25 confirmed arms and 25 ACU reports pass | [Reviewed results](KPACK_GEMV_FQ_SF.md#reviewed-ppu-results-k5tp2m-2026-09-09). Common F32 endpoints and resident cores are separate. All-256-expert SF expansion costs ~55 us warm; reuse is required for decode. No production selection or binary change |
+| PPU GEMV / FQ / SF comparison | k5Tp2m: 5 cases, 240 SIMT recipes, 25 confirmed arms and 25 ACU reports pass | [Reviewed results](KPACK_GEMV_FQ_SF.md#reviewed-ppu-results-k5tp2m-2026-09-09). Per-call SF must charge the ~55 us all-256-expert expansion on these small MoE inputs; resident-only timing is not its full-call cost. No new measurement or binary change |
 | SF grouped decode selection | Open scheduling debt | Q5-down SF remains a rectangular 8,192-CTA `DEVICE_BOUNDS` choice versus 256 compact FQ CTAs. Measure compact SF before treating this as the format's best performance; Q4-up resident SF/FQ are within 3% |
 
 ## Local work and required PPU gates (2026-09-09)
@@ -45,7 +89,7 @@ local. No fresh full Cartesian sweep is required for the tasks below.
 Q8 status was rechecked in source: the `Q8` specialization in
 [`test_scalefirst_bench.cu`](../benchmarks/test_scalefirst_bench.cu) calls
 `FinegrainedScaleOnly` with `int8_t`, group size 32, and no zero plane.
-[`q8_scale_first_contract`](../tools/prefill_sweep.py) explicitly limits it
+[`controlled_scalefirst_row`](../tools/prefill_sweep.py) explicitly limits it
 to controlled resident GEMM; the checkpoint split/reorder producer is not
 connected. The resident code is `q+128`, not the raw signed GGUF byte.
 [`fully_quantized_internal_matrix.py`](../tools/fully_quantized_internal_matrix.py)
@@ -60,8 +104,9 @@ SF kernel work, not a claim that Quactlize has no Q8 implementation at all.
 | L2 | Q8 production format and wiring | TODO: reuse the int8 collective; define the separate weight/scale arrangement, GGUF GPU producer and inverse/reference, C ABI, selector and llama.cpp dense admission. Host round trips, unsupported-type rejection, CuTe layout proofs, SDK compilation and ELF/ABI checks are local; B2/B3 admit execution |
 | L3 | Q6 output-head native coverage | TODO: inventory candidates for N248320/K2048, reuse historical measured configurations where applicable, prepare a bounded comparison and compile missing candidates. Do not replace the labelled legacy FQ miss with an unmeasured supposed winner; B2/B3 remain required |
 | L4 | Adapter and evidence tooling | TODO: strengthen route/parent/Split-K receipts and graph/lifetime tests; inspect uploaded traces for CPU waits, allocations and routing/cast/scatter cost. Trace capture is B1; fixes can be implemented/compiled locally, with device replay still required |
-| L5 | SIMT optimization backlog | TODO, not a blocker for FQ rollout: inspect unpack/index and metadata traffic; implement bounded experiments and optionally compare on RTX 5090. PPU speedup and promotion require B3 |
+| L5 | SIMT optimization backlog | PARKED by user decision; retain current implementation and evidence, no additional optimization required for this milestone |
 | L6 | Packaging and maintainability | TODO: inventory required exports/modules and unused flags, keep the single integration handoff current, clarify reader/provider boundaries and prepare cleanup. AIU+UniversalCopy/provider extensions remain separate experiments; product main admission is not authorized by static cleanup alone |
+| L7 | Per-call SF and production JIT | TODO: T01-T04 above can be implemented, compiled and host-tested without PPU. The current cached SF adapter and static C++ module catalog are not completion of these requirements |
 
 ### Must execute on a PPU box
 
@@ -69,8 +114,8 @@ SF kernel work, not a claim that Quactlize has no Q8 implementation at all.
 | --- | --- | --- |
 | B1 | Rebuilt llama adapter tests plus one new model Asys capture | Automatic dense/grouped decode really uses FQ; Q4-up selects compact TM8/S4 and Q5-down compact TM8/S1 on the measured anchors. Inspect launch gaps, auxiliary kernels and explicit Q6 fallback. Existing Q8_0 remains native llama |
 | B2 | Correctness and graph replay for changed/new device paths | Q8 GPU producer bytes, dense decode/prefill output, tails, scales and stream lifetimes against independent oracles; include grouped only if exposed. Also test any added Q6 parent and adapter changes on PPU |
-| B3 | Matched operator/model performance | Measure selected FQ, new Q8/Q6 paths and any promoted SIMT candidate against the appropriate same-PPU baseline. Include adapters/reducers in full-call timing; use ACU for operator counters and separate unprofiled samples for latency |
-| B4 | ScaleFirst first-use and resident timing | Measure GPU prepass, resident GEMM, reuse and memory footprint; confirm no repeated decode expansion or compute wait on background cache D2H |
+| B3 | Matched operator/model performance | Measure selected FQ and new Q8/Q6 paths against the appropriate same-PPU baseline. Include adapters/reducers in full-call timing; use ACU for operator counters and separate unprofiled samples for latency. SIMT further optimization is parked |
+| B4 | ScaleFirst per-call expansion timing | Measure GPU expansion+GEMM for every SF call and graph replay, including scratch footprint and correct stream ordering. Reusing allocation is allowed, reusing expanded values across calls is not; compute must not wait on background cache D2H |
 | B5 | Final model accuracy and release evidence | Paired GPU-reference numerical/PPL/GSM8K checks with actual route evidence after final selection changes; then review the release bundle/main admission |
 
 Immediate order: B1 can run while L2/L3/L4 are prepared locally. Q8 and Q6
@@ -99,9 +144,10 @@ The box rebuilds llama.cpp for the changed context layout, not Quactlize.
 1. Twenty dense and eight grouped contexts use the actual C++ selector and
    prepared module, independent GGUF arithmetic, output guards and changed
    router graph replay. ScaleFirst prepass is checked and timed separately.
-   These paired measurements produce the FQ/SF route table before the model
-   starts. SF must improve resident core time by more than 2%; otherwise FQ
-   is retained. Reports include first prepass time and reuse break-even.
+   The existing exporter compares resident core time with a 2% margin and
+   reports prepass separately. T01 must change this to per-call expansion
+   plus GEMM before its route table can admit the requested SF execution
+   model; existing resident tables are not that admission.
 2. Fourteen model-shaped GEMV contexts (Q4/Q5 experts, both broadcast/per-slot
    A, and Q6 N248320/K2048 dense output) compare all eight recipes in 3x11
    samples. The comparison uses selected FQ when covered, explicitly tagged
@@ -293,7 +339,8 @@ SF adds 3.75 GiB of resident device memory; it is not byte-neutral.
 At a *hypothetical effective* 500 GB/s, traffic alone is about 12.08 ms for
 all tensors. This is a scale estimate, not a PPU timing prediction or bound.
 
-Long prefill amortizes metadata preparation over many tokens/requests. A
+Long prefill shares one call's metadata preparation over that call's tokens,
+not across requests. A
 short MoE chunk may touch few experts while a full prepass expands all 256;
 using active-expert bytes to price that full prepass is incorrect. Current
 metadata preparation has no active-expert selection. A future partial cache
@@ -308,21 +355,24 @@ consider token chunking and expert work, not only the total sequence length.
 The device-only gate therefore uses the caller-available max-rows bound 128,
 not the tighter maximum visible only to its host oracle.
 
-Implementation and measurement requirements:
+Implementation and measurement requirements (corrected per-call contract):
 
-1. Own metadata with the immutable weight artifact. Prepare once, outside
-   graph capture, then record readiness and reuse across prefill requests.
-   Decode GEMV continues to read packed units without requiring SF allocation.
+1. Expand on the GPU for each SF call, using temporary scale/zero workspace.
+   Put expansion before its GEMM in stream/capture order so every graph replay
+   expands again. Reuse workspace allocation if safe, not expanded values
+   across calls. Automatic FQ decode reads packed units without SF expansion.
 2. Keep preparation and weight backcopy independent. Compute waits only for
    the device data it consumes, never for D2H/disk publication.
-3. Record memory capacity before enabling SF. Do not eagerly allocate every
-   expert plane without accounting for KV/workspaces and the extra 3.75 GiB.
-4. Time prepass, resident SF GEMM, first-use prepass+SF, and FQ on identical
-   expert routing. Include lazy allocation in model first-use wall timing,
-   not in the kernel-only prepass timer. Cold-D2H publication is separate.
-5. First-use SF wins only if `prepass + SF < FQ`. Over R reused calls, compare
-   `prepass + sum(SF)` with `sum(FQ)`. Do not train the first-use selector on
-   resident-only timing or charge preparation again on every request.
+3. Budget per-stream scratch plus concurrent uses; do not keep expanded
+   planes for all 120 weights. The 3.75 GiB total above describes the previous
+   cached implementation, not the required temporary-workspace residency.
+4. Time prepass, GEMM and their complete per-call sequence against FQ on
+   identical routing/endpoints. Include allocation in startup wall timing
+   separately; no CPU reference or disk-cache work belongs in kernel timing.
+5. For serial expansion and GEMM, compare `T_expand + T_gemm` plus matching
+   adapters against the FQ full call. For R calls, charge every expansion:
+   `sum(T_expand_i + T_gemm_i)`, not one expansion plus R GEMMs. Existing
+   `scale_ready` cross-call caching and resident-only policy export need T01.
 
 ## Locally compiled box package
 
