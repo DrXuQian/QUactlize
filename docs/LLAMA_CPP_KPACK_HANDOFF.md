@@ -33,6 +33,14 @@ normal inference. Do not set global `fq` just to enforce decode, since that
 also overrides prefill. Requests already falling through an empty GEMV
 policy to FQ do not acquire a different kernel from this change.
 
+Q8_0 is a separate pending integration, not a missing int8 collective: the
+repository already has a controlled ScaleFirst/I8 Q8 path and a sweep. Its
+historical A32/F1 Xplane fixture, however, is not the production K-pack
+arrangement and no checkpoint GPU producer/public native route is connected.
+Reuse that SF implementation when adding Q8 production support; do not alias
+qtype 8 to a K-quant format. See the
+[local TODOs and required PPU gates](KPACK_EXECUTION_FOLLOWUP.md#local-work-and-required-ppu-gates-2026-09-09).
+
 The reviewed `kpack-decode.XZM60u` experiment passed 260/260 cells. A follow-up
 [GPU compact/persistent package](KPACK_GPU_COMPACT.md) now implements the
 missing device-only compact schedule and persistent S1/S2/S4/S8 inside parent
@@ -1819,3 +1827,89 @@ rectangular, so it is not a measured optimum against compact FQ.
 No library, native selection, llama adapter or cache synchronization contract
 is changed by this result review. Remaining work targets SIMT instruction/
 on-chip traffic, grouped scheduling, and a matched same-PPU llama reference.
+
+## Model Asys rerun after FQ decode switch
+
+Use an idle PPU. These paths come from the last uploaded successful model
+setup; edit MODEL/CACHE/BUILD if they were moved. This incrementally rebuilds
+llama.cpp and runs its adapter tests, not the Quactlize module sweep.
+One request contains prompt evaluation followed by 64 generated tokens;
+`-b 128` is the prompt microbatch limit, not 128 concurrent requests.
+`default-set` records GPU API, kernel and memory activity together; graphs
+remain enabled. Profiled times are not unprofiled latency admission or ACU
+bandwidth counters. Q8_0 tensors intentionally stay on the llama route.
+The subshell preserves the calling Docker shell on failure.
+
+```bash
+(
+  set -Ee -o pipefail
+  QZ=/sim/eec/shared/junfu.qx/quactlize
+  LLAMA=/sim/eec/shared/junfu.qx/llama.cpp
+  BUILD="$LLAMA/build-kpack-9f86a1340"
+  MODEL=/sim/eec/shared/AI_workspace/llm-models/Qwen3.5-35B-A3B-Q4_K_M-GGUF/Qwen3.5-35B-A3B-Q4_K_M.gguf
+  CACHE=/workspace/llama-kpack-smoke.Lwpxya/cache
+
+  export PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK
+  source "$PPU_SDK/envsetup.sh"
+  set -Ee -o pipefail
+  export CUDA_VISIBLE_DEVICES=0 LC_ALL=C
+  export LD_LIBRARY_PATH="$PPU_SDK/CUDA_SDK/targets/x86_64-linux/lib:$PPU_SDK/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  export QUACTLIZE_PPU_BUNDLE=/workspace/quactlize-runtime-artifact-2826cf1-46fc3096e1a1/prebuilt/ppu0010/2826cf1/runtime6-46fc3096e1a1/bundle
+  export QUACTLIZE_PPU_PACK_LIBRARY="$QZ/prebuilt/ppu0010/kpack-pack-v1/libquactlize_ppu_pack.so"
+  export QUACTLIZE_KPACK_EXECUTION="$QZ/prebuilt/ppu0010/kpack-native-v1"
+  export QUACTLIZE_KPACK_PREFILL_POLICY=/workspace/kpack-native-model.O0ki3q/results/prefill-policy.tsv
+  export QUACTLIZE_KPACK_ROUTE=auto
+  unset GGML_CUDA_DISABLE_GRAPHS QUACTLIZE_KPACK_GEMV_POLICY
+
+  RUN=$(mktemp -d /workspace/kpack-fq-asys.XXXXXX)
+  test -d "$RUN"
+  trap 'printf "\ntrace=%s\nrunner_rc=%s\n" "$RUN" "$?"' EXIT
+
+  for f in "$MODEL" "$CACHE/manifest.json" "$BUILD/CMakeCache.txt" \
+           "$QUACTLIZE_PPU_BUNDLE/manifest.json" "$QUACTLIZE_KPACK_PREFILL_POLICY"; do
+    test -s "$f" || { printf 'MISSING %s\n' "$f"; false; }
+  done
+
+  test "$(git -C "$LLAMA" branch --show-current)" = feat/kpack-gpu-cache
+  test "$(git -C "$QZ" branch --show-current)" = develop
+  git -C "$LLAMA" pull --ff-only
+  git -C "$LLAMA" merge-base --is-ancestor 135d7edcf HEAD
+  git -C "$QZ" pull --ff-only
+  git -C "$QZ" lfs pull --include='prebuilt/ppu0010/kpack-native-v1/**,prebuilt/ppu0010/kpack-pack-v1/**' --exclude=''
+  python3 "$QZ/tools/verify_kpack_dispatch.py" "$QUACTLIZE_KPACK_EXECUTION" | tee "$RUN/bundle.log"
+  git -C "$LLAMA" rev-parse HEAD | tee "$RUN/llama-source.txt"
+
+  cmake --build "$BUILD" --target llama-completion test-quactlize-execution -j 192 \
+    2>&1 | tee "$RUN/build.log"
+  ctest --test-dir "$BUILD" --output-on-failure \
+    -R '^test-quactlize-execution-(auto|fq|sf|gemv)$' \
+    2>&1 | tee "$RUN/adapter-tests.log"
+
+  PROMPT=
+  for i in {1..16}; do PROMPT+='Explain matrix multiplication in one paragraph. '; done
+
+  "$PPU_SDK/asight/bin/asys" profile \
+    --trace hggc --hggc-trace-set default-set \
+    --sample none --kill none --show-output true \
+    --output "$RUN/kpack.asysrep" \
+    "$BUILD/bin/llama-completion" \
+    -m "$MODEL" --mmap -ngl 99 --split-mode none --fit off \
+    --no-conversation --no-warmup --log-colors off --verbosity 4 \
+    -c 1024 -b 128 -ub 128 -t 16 -tb 32 \
+    -ot '^(blk\.[0-9]+\.ffn_[a-z0-9_]+_exps\.weight|output\.weight)$=CUDA0_KPACK' \
+    --kpack-cache "$CACHE" -n 64 --ignore-eos --temp 0 \
+    -p "$PROMPT" </dev/null 2>&1 | tee "$RUN/kpack.log"
+
+  test -s "$RUN/kpack.asysrep"
+  grep -aE '\[quactlize-plan\]|native policy miss|native execution package' \
+    "$RUN/kpack.log" | sort -u > "$RUN/selected.txt"
+  head -n 30 "$RUN/selected.txt"
+  printf '\nOPEN %s/kpack.asysrep\n' "$RUN"
+)
+```
+
+Open the printed `kpack.asysrep` in Asight. Return `selected.txt`,
+`kpack.log`, `adapter-tests.log` and the trace when sharing the complete
+timeline. A selected recipe in the log is not by itself proof of execution;
+cross-check its parent with the actual compute activities, including the
+compact producer and reducer where Split-K is selected.

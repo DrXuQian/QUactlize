@@ -30,9 +30,53 @@ Model admission with this new selection remains open; see
 | SIMT NVIDIA diagnosis | Same-5090 DMMV/MMVQ comparison complete; target not met | FP32 group-affine/vector-load experiment passes 256 cells: Q5 ~DMMV, Q4 still slower. Current MMVQ remains faster. [Matched evidence](../dev/gemv_cuda/README.md#matched-llamacpp-comparison); optimize producer/metadata traffic next, no unmeasured production promotion |
 | Equal-weight dense/grouped reproduction | [Five-arm prebuilt runner](KPACK_DENSE_GROUPED_AB.md) ready for PPU measurements | Q4 N4096/K2048 dense versus eight N512/K2048 experts, identical logical weights/A; historical winner plus matched tile controls. SF excluded |
 | Split-K reducer optimization | Bounded PPU gate: 9/9 jobs, 384 cells; measured Q4/S4 and Q5/S1 native choices integrated | Only two modules added; old 214 preserved; no device compilation. ACU reducer 5.77→2.16 µs is separate from warm timing. Full-adapter/model measurement remains; [review](KPACK_GROUPED_POSTOPS.md#reviewed-ppu-closure) |
-| Q8_0 native plugin | Not implemented | Define and test the separate Q8_0 weight/scale contract, dense decode/prefill reader, selector and adapter admission. Q8_0 is qtype8, not a two-plane K-quant; keep current llama.cpp Q8_0 routing until independently validated |
+| Q8_0 production integration | Existing controlled resident ScaleFirst/I8 kernel and sweep; production integration missing | Reuse the existing int8 collective and converter. Add the GGUF/device producer, production arrangement/ABI, selector and llama.cpp admission with independent tests. The historical A32/F1 Xplane fixture is not a production K-pack artifact. There is no shipping Q8 FQ reader; keep llama.cpp Q8_0 routing until the replacement passes PPU gates |
 | PPU GEMV / FQ / SF comparison | k5Tp2m: 5 cases, 240 SIMT recipes, 25 confirmed arms and 25 ACU reports pass | [Reviewed results](KPACK_GEMV_FQ_SF.md#reviewed-ppu-results-k5tp2m-2026-09-09). Common F32 endpoints and resident cores are separate. All-256-expert SF expansion costs ~55 us warm; reuse is required for decode. No production selection or binary change |
 | SF grouped decode selection | Open scheduling debt | Q5-down SF remains a rectangular 8,192-CTA `DEVICE_BOUNDS` choice versus 256 compact FQ CTAs. Measure compact SF before treating this as the format's best performance; Q4-up resident SF/FQ are within 3% |
+
+## Local work and required PPU gates (2026-09-09)
+
+"Local" means no PPU box is required for the listed deliverable, not that
+compilation proves numerical correctness or performance. RTX 5090 experiments
+are optional additional device evidence and cannot admit PPU kernels. Keep
+hour-scale builds on the box as requested; small selective SDK builds remain
+local. No fresh full Cartesian sweep is required for the tasks below.
+
+Q8 status was rechecked in source: the `Q8` specialization in
+[`test_scalefirst_bench.cu`](../benchmarks/test_scalefirst_bench.cu) calls
+`FinegrainedScaleOnly` with `int8_t`, group size 32, and no zero plane.
+[`q8_scale_first_contract`](../tools/prefill_sweep.py) explicitly limits it
+to controlled resident GEMM; the checkpoint split/reorder producer is not
+connected. The resident code is `q+128`, not the raw signed GGUF byte.
+[`fully_quantized_internal_matrix.py`](../tools/fully_quantized_internal_matrix.py)
+records Q8 FQ as unavailable. This is an integration task building on existing
+SF kernel work, not a claim that Quactlize has no Q8 implementation at all.
+
+### Can be completed without a PPU box
+
+| ID | Deliverable | Status / completion boundary |
+| --- | --- | --- |
+| L1 | Audit reusable Q8 ScaleFirst implementation and production gaps | Source audit done above; no Q8 production admission claimed |
+| L2 | Q8 production format and wiring | TODO: reuse the int8 collective; define the separate weight/scale arrangement, GGUF GPU producer and inverse/reference, C ABI, selector and llama.cpp dense admission. Host round trips, unsupported-type rejection, CuTe layout proofs, SDK compilation and ELF/ABI checks are local; B2/B3 admit execution |
+| L3 | Q6 output-head native coverage | TODO: inventory candidates for N248320/K2048, reuse historical measured configurations where applicable, prepare a bounded comparison and compile missing candidates. Do not replace the labelled legacy FQ miss with an unmeasured supposed winner; B2/B3 remain required |
+| L4 | Adapter and evidence tooling | TODO: strengthen route/parent/Split-K receipts and graph/lifetime tests; inspect uploaded traces for CPU waits, allocations and routing/cast/scatter cost. Trace capture is B1; fixes can be implemented/compiled locally, with device replay still required |
+| L5 | SIMT optimization backlog | TODO, not a blocker for FQ rollout: inspect unpack/index and metadata traffic; implement bounded experiments and optionally compare on RTX 5090. PPU speedup and promotion require B3 |
+| L6 | Packaging and maintainability | TODO: inventory required exports/modules and unused flags, keep the single integration handoff current, clarify reader/provider boundaries and prepare cleanup. AIU+UniversalCopy/provider extensions remain separate experiments; product main admission is not authorized by static cleanup alone |
+
+### Must execute on a PPU box
+
+| ID | Test | What it establishes |
+| --- | --- | --- |
+| B1 | Rebuilt llama adapter tests plus one new model Asys capture | Automatic dense/grouped decode really uses FQ; Q4-up selects compact TM8/S4 and Q5-down compact TM8/S1 on the measured anchors. Inspect launch gaps, auxiliary kernels and explicit Q6 fallback. Existing Q8_0 remains native llama |
+| B2 | Correctness and graph replay for changed/new device paths | Q8 GPU producer bytes, dense decode/prefill output, tails, scales and stream lifetimes against independent oracles; include grouped only if exposed. Also test any added Q6 parent and adapter changes on PPU |
+| B3 | Matched operator/model performance | Measure selected FQ, new Q8/Q6 paths and any promoted SIMT candidate against the appropriate same-PPU baseline. Include adapters/reducers in full-call timing; use ACU for operator counters and separate unprofiled samples for latency |
+| B4 | ScaleFirst first-use and resident timing | Measure GPU prepass, resident GEMM, reuse and memory footprint; confirm no repeated decode expansion or compute wait on background cache D2H |
+| B5 | Final model accuracy and release evidence | Paired GPU-reference numerical/PPL/GSM8K checks with actual route evidence after final selection changes; then review the release bundle/main admission |
+
+Immediate order: B1 can run while L2/L3/L4 are prepared locally. Q8 and Q6
+new paths remain unselected until their B2/B3 results are reviewed. Already
+passed unchanged kernel gates need not be rebuilt/repeated just because the
+consumer's automatic route changed.
 
 Profiling default: standalone operators use ACU native reports; model/stream
 timelines and launch bubbles use Asys. The compact ACU entry selects only the
