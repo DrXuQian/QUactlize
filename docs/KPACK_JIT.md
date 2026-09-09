@@ -1,9 +1,16 @@
 # Single-parent JIT and per-call ScaleFirst
 
-The new candidate package is `prebuilt/ppu0010/kpack-jit-v1`. Its dispatcher
+The current candidate package is `prebuilt/ppu0010/kpack-jit-v2`. Its dispatcher
 and execution libraries total approximately 1.1 MiB; it contains **no GEMM
 modules**. The existing `kpack-native-v1` package is unchanged. This is not
 yet a replacement for llama.cpp's six intake/admission/fallback libraries.
+
+The first PPU JIT run passed 26/28 contexts, including all 14 FQ contexts.
+Two SF failures exposed a sparse grouped grid-bound mismatch and an unordered
+fixture poison path. The small host dispatcher and gate are corrected;
+device kernel binaries/cache keys are unchanged. Q6 numerical closure and
+the process-restart run still require retry. See the
+[uploaded result and exact repair scope](KPACK_JIT_GATE_REVIEW.md).
 
 ## Execution contract
 
@@ -66,7 +73,7 @@ For the updated llama.cpp feature branch, add these settings to the existing
 working K-pack model command, retaining its intake bundle/pack-library/cache:
 
 ```bash
-export QUACTLIZE_KPACK_EXECUTION=/path/quactlize/prebuilt/ppu0010/kpack-jit-v1
+export QUACTLIZE_KPACK_EXECUTION=/path/quactlize/prebuilt/ppu0010/kpack-jit-v2
 export QUACTLIZE_KPACK_JIT_PYTHON=/absolute/path/to/python3
 export QUACTLIZE_KPACK_JIT_HELPER=/path/quactlize/tools/kpack_jit.py
 export QUACTLIZE_KPACK_JIT_CACHE=/path/kpack-module-cache
@@ -125,7 +132,7 @@ After waking, a standalone native gate (no model load, no full sweep) is:
 
 ```bash
 python tools/run_kpack_native_gate.py --sdk "$PPU_SDK" \
-  --bundle prebuilt/ppu0010/kpack-jit-v1 --jit-cache /workspace/kpack-jit-cache \
+  --bundle prebuilt/ppu0010/kpack-jit-v2 --jit-cache /workspace/kpack-jit-cache \
   --samples 5 --output /workspace/kpack-jit-native-new
 ```
 

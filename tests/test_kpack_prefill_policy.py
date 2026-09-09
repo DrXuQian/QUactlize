@@ -26,6 +26,8 @@ def fixture():
                         rows_host=False,
                         rows_device=False,
                         sf_metadata_mode="PER_CALL_GPU_PREPASS" if sf else "PACKED_UNITS",
+                        fixture_order="CONSUMER_STREAM_V1",
+                        correctness_scope="EAGER_AND_THREE_GRAPH_REPLAYS",
                         profiles=[
                             dict(
                                 rows=[m] if e == 1 else [t] * 8 + [0] * (e - 8),
@@ -55,6 +57,14 @@ def test_old_resident_timings_cannot_be_silently_reused():
     for r in s["results"]:
         r.pop("sf_metadata_mode")
     with pytest.raises(ValueError, match="resident-only"):
+        export(s)
+
+
+@pytest.mark.parametrize("field", ["fixture_order", "correctness_scope"])
+def test_unordered_or_replay_only_gate_cannot_select_prefill(field):
+    s = fixture()
+    s["results"][0].pop(field)
+    with pytest.raises(ValueError, match="ordered fixture"):
         export(s)
 
 

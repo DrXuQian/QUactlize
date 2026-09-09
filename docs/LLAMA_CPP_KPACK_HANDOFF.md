@@ -4,7 +4,7 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
-Last updated: 2026-09-09. Verified offline bundles retain schema v3; the local
+Last updated: 2026-09-10. Verified offline bundles retain schema v3; the local
 runtime cache now has a separate hash-free contract, described below. The
 published `2826cf1` loader-safe runtime bundle has passed strict binary
 inspection, its selected-config oracle, and all 26 host ABI cases in a fresh
@@ -12,6 +12,15 @@ LFS checkout. Its PPU device gate is still **PENDING**. Host/ELF admission is
 not device admission and does not authorize deployment by itself.
 
 ## Current routing: FQ decode; per-call SF and JIT locally implemented
+
+Latest native JIT gate: `maMVzW` passed 26/28 contexts, all 14 FQ contexts
+included. Use `prebuilt/ppu0010/kpack-jit-v2` for the next gate: its host
+dispatcher fixes a sparse SF-grouped grid-bound rejection; the test now
+orders poison on the consumer stream and checks eager output separately.
+The Q6 SF M128 nonfinite case needs corrected-gate confirmation, not an
+unproved mainloop change. Existing JIT device binaries/cache keys and the
+execution DSO are unchanged, so this repair does not require recompiling
+the 23 cached parents or llama.cpp. Details: [JIT gate review](KPACK_JIT_GATE_REVIEW.md).
 
 The [complete delivery backlog](KPACK_EXECUTION_FOLLOWUP.md#complete-delivery-backlog)
 is the current task authority, including production JIT, model-load

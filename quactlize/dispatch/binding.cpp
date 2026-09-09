@@ -223,7 +223,16 @@ extern "C" int quactlize_kpack_dispatch_prepare_v1(void* runtime,qks_choice_v1 c
         qk_device_call_v2 d{2,sizeof(d),*call,plan.request.max_rows,0};
         int rc=plan.request.route>=2 ? plan.module->prepare_device(&d,&plan.recipe,&handle->inner) :
             plan.module->prepare(call,&plan.recipe,&handle->inner);
-        if (rc!=QK_OK) { last_error="selected handle preparation failed rc="+std::to_string(rc); return QKS_RUNTIME; }
+        if (rc!=QK_OK) {
+            last_error="selected handle preparation failed rc="+std::to_string(rc)+
+                (rc==QK_UNSUPPORTED ? " (QK_UNSUPPORTED)" : "")+
+                " parent="+std::string(plan.choice.parent)+
+                " route="+std::to_string(plan.request.route)+
+                " shape="+std::to_string(call->m)+"x"+std::to_string(call->n)+"x"+std::to_string(call->k)+
+                " experts="+std::to_string(call->experts)+" max_rows="+std::to_string(plan.request.max_rows)+
+                " split="+std::to_string(plan.recipe.split)+" grid="+std::to_string(plan.recipe.grid);
+            return QKS_RUNTIME;
+        }
         *out=handle.release(); return QKS_OK;
     } catch (std::exception const& e) { last_error=e.what(); return QKS_RUNTIME; }
 }

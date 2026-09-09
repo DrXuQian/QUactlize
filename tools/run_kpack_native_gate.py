@@ -25,6 +25,44 @@ from tools.kpack_warmup_fixture import Weights
 from tools.verify_kpack_dispatch import verify
 
 
+class OutputFailure(ValueError):
+    def __init__(self, proof):
+        self.proof = proof
+        super().__init__("selected output check failed: " + json.dumps(proof))
+
+
+def check_output(got, gold, denom, context, phase, profile):
+    try:
+        return compare(got, dict(golden=gold, denom=denom))
+    except ValueError as error:
+        bits = np.asarray(got, dtype="<f2").view("<u2")
+        nonfinite = ~np.isfinite(got)
+        bad = nonfinite | (np.abs(got.astype("f8") - gold) >= 0.005 * np.maximum(denom, 1e-30))
+        indices = np.flatnonzero(bad)
+        first = None
+        if indices.size:
+            i = int(indices[0])
+            first = dict(index=i, coord=list(map(int, np.unravel_index(i, got.shape))),
+                         got_bits=f"0x{bits.flat[i]:04x}", want=float(gold.flat[i]))
+        proof = dict(context, phase=phase, profile=profile, error=str(error),
+                     cells=got.size, bad=int(bad.sum()), nonfinite=int(nonfinite.sum()),
+                     output_poison=int(np.count_nonzero(bits == 0xA5A5)),
+                     metadata_poison=int(np.count_nonzero(bits == 0x7E7E)), first=first,
+                     output_sha256=hashlib.sha256(got.tobytes()).hexdigest(),
+                     golden_sha256=hashlib.sha256(gold.tobytes()).hexdigest())
+        print("KPACK_NATIVE_OUTPUT_FAILURE " + json.dumps(proof), flush=True)
+        raise OutputFailure(proof) from error
+
+
+def poison_call(r, output, output_bytes, scale=None, zero=None, metadata_bytes=0):
+    # All fills precede prepass/GEMM on their own nonblocking stream. A
+    # default-stream memset can return early and overwrite their results.
+    r.fill(output, 0xA5, output_bytes)
+    if scale is not None:
+        r.fill(scale, 0x7E, metadata_bytes)
+        r.fill(zero, 0x7E, metadata_bytes)
+
+
 def check_prepass(sdk, w, scale, zero):
     # The historical timing fixture is not the canonical metadata oracle:
     # for Q3/Q6 it starts the zero channel at -0, whereas unit_group starts
@@ -105,14 +143,21 @@ def run(sdk, bundle, w, route, tokens, samples, jit=None):
         again = d.query(w.q, route, m, w.n, w.k, e, tokens, arr.mapping_id)
         if bytes(choice) != bytes(again):
             raise ValueError("cached selection changed")
+        context = dict(q=w.q, route=route, m=m, n=w.n, k=w.k, experts=e,
+                       max_rows=tokens, selection=receipt(choice))
+        print("KPACK_NATIVE_SELECTED " + json.dumps(context), flush=True)
         planes = {
             x: r.upload(w.planes[x]) if w.planes[x].size else None
             for x in ("low", "high", "units")
         }
+        # Pageable default-stream uploads need an explicit edge to the
+        # nonblocking consumer. This is fixture setup, outside timed work.
+        sdk.synchronize(None)
         sf = route in (1, 3)
         prepass_samples = []
         prepass_proof = None
         scale = zero = None
+        size = 0
         if sf:
             _, _, prepare = bind(
                 C.CDLL(str(bundle / "libquactlize_ppu_execution.so"), mode=C.RTLD_LOCAL)
@@ -120,8 +165,8 @@ def run(sdk, bundle, w, route, tokens, samples, jit=None):
             size = e * (w.k // arr.group_size) * w.n * 2
             scale, zero = r.alloc(size), r.alloc(size)
             # A skipped/partial store must not inherit valid allocator bytes.
-            sdk.fill(scale, 0x7E, size)
-            sdk.fill(zero, 0x7E, size)
+            r.fill(scale, 0x7E, size)
+            r.fill(zero, 0x7E, size)
             prepass = lambda: prepare(
                 w.q,
                 w.n,
@@ -168,6 +213,12 @@ def run(sdk, bundle, w, route, tokens, samples, jit=None):
             if sf:
                 checked(prepass(), "per-call SF prepass")
             return gemm()
+        def check(phase, profile):
+            raw = sdk.download(output, m * w.n * 2 + 32)
+            if raw[:16] != b"\xa5" * 16 or raw[-16:] != b"\xa5" * 16:
+                raise ValueError(f"selected output guard changed phase={phase} profile={profile}")
+            got = np.frombuffer(raw[16:-16], dtype="<f2").reshape(m, w.n)
+            return check_output(got, gold, denom, context, phase, profile)
         records = []
         for index, rows in enumerate(vectors):
             req = Request(
@@ -188,15 +239,12 @@ def run(sdk, bundle, w, route, tokens, samples, jit=None):
                     sdk.lib.hggcMemcpy(bounds, offsets.ctypes.data, offsets.nbytes, 1),
                     "GPU router fixture upload",
                 )
-            sdk.fill(output, 0xA5, m * w.n * 2 + 32)
-            if sf:
-                # Every replay must rebuild both planes; prior valid values
-                # must not make a missing prepass look correct.
-                sdk.fill(scale, 0x7E, size)
-                sdk.fill(zero, 0x7E, size)
+            sdk.synchronize(None)
             if index == 0:
+                poison_call(r, output, m * w.n * 2 + 32, scale, zero, size)
                 checked(launch(), "selected eager run")
                 sdk.synchronize(r.stream)
+                check("eager", index)
                 checked(sdk.lib.hggcStreamBeginCapture(r.stream, 0), "begin capture")
                 checked(launch(), "selected capture")
                 checked(
@@ -207,13 +255,11 @@ def run(sdk, bundle, w, route, tokens, samples, jit=None):
                     sdk.lib.hggcGraphInstantiateWithFlags(C.byref(instance), graph, 0),
                     "instantiate",
                 )
+            # Eager success must not mask a missing graph store/prepass.
+            poison_call(r, output, m * w.n * 2 + 32, scale, zero, size)
             checked(sdk.lib.hggcGraphLaunch(instance, r.stream), "selected replay")
             sdk.synchronize(r.stream)
-            raw = sdk.download(output, m * w.n * 2 + 32)
-            if raw[:16] != b"\xa5" * 16 or raw[-16:] != b"\xa5" * 16:
-                raise ValueError("selected output guard changed")
-            got = np.frombuffer(raw[16:-16], dtype="<f2").reshape(m, w.n)
-            err = compare(got, dict(golden=gold, denom=denom))
+            err = check("graph_replay", index)
             # Finite arithmetic corruption must be visible to this oracle.
             if np.max(np.abs(gold) / np.maximum(denom, 1e-30)) <= 0.005:
                 raise ValueError("zero-output negative is not discriminating")
@@ -238,6 +284,8 @@ def run(sdk, bundle, w, route, tokens, samples, jit=None):
             rows_host=False,
             rows_device=False,
             sf_metadata_mode="PER_CALL_GPU_PREPASS" if sf else "PACKED_UNITS",
+            fixture_order="CONSUMER_STREAM_V1",
+            correctness_scope="EAGER_AND_THREE_GRAPH_REPLAYS",
             scope="SELECTED_CALL_INCLUDING_PREPASS_AND_GPU_DIRECTORY_NOT_LLAMA_ADAPTERS",
         )
         print(
@@ -306,6 +354,7 @@ def main():
                                 route=route,
                                 tokens=tokens,
                                 error=str(error),
+                                proof=getattr(error, "proof", None),
                             )
                         )
                     (a.output / "summary.json").write_text(

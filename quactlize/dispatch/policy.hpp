@@ -79,7 +79,15 @@ inline qk_recipe_v1 recipe(Config const& c, qks_request_v1 const& r, int occupan
         int b=std::max(1,std::min(c.grid_b,occupancy));
         int64_t mt=r.route >= 2 ? int64_t(r.experts)*((int64_t(r.max_rows)+c.tm-1)/c.tm) :
             (int64_t(r.m)+c.tm-1)/c.tm;
-        int64_t tiles=mt*((int64_t(r.n)+c.tn-1)/c.tn), cap=72LL*b;
+        if (r.route >= 2) {
+            // Match the device directory's bounded_entries(), not the padded
+            // experts*max_rows rectangle. Sparse decode may have far fewer
+            // active experts. The host-only recipe test checks this bound
+            // against the shipping directory helper for every supported TM.
+            int64_t active=std::min(r.m,r.experts);
+            mt=std::min(mt,(int64_t(r.m)+active*(c.tm-1))/c.tm);
+        }
+        int64_t tiles=mt*((int64_t(r.n)+c.tn-1)/c.tn)*(r.route>=2 ? c.split : 1), cap=72LL*b;
         out.grid=int(c.grid_mode == 3 ? (tiles+(tiles+cap-1)/cap-1)/((tiles+cap-1)/cap) :
             std::min(tiles,cap));
     }

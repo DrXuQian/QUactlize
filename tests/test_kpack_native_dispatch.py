@@ -85,6 +85,57 @@ def query(probe, rows):
     ).splitlines()
 
 
+@pytest.fixture(scope="module")
+def recipe_probe(tmp_path_factory):
+    exe = tmp_path_factory.mktemp("native-recipe") / "recipe"
+    subprocess.run([
+        "g++", "-std=c++17", "-O2", f"-I{ROOT}",
+        f"-I{ROOT / 'quactlize/include'}", f"-I{ROOT / 'third_party/actlize/include'}",
+        str(ROOT / "tests/kpack_dispatch_recipe.cpp"), "-o", str(exe)], check=True)
+    return exe
+
+
+@pytest.mark.parametrize("occupancy", [1, 3, 4, 6, 12])
+def test_sparse_sf_grouped_grid_fits_actual_directory(recipe_probe, occupancy):
+    # The measured Q4 SF parent requests four CTAs/CU, but eight routed rows
+    # occupy only eight TM16 blocks, not one block for each of 256 experts.
+    fields = (3, 8, 512, 256, 1, 16, 16, 1, 2, 4, occupancy)
+    line = subprocess.check_output([str(recipe_probe), *map(str, fields)], text=True)
+    result = dict(item.split("=") for item in line.split())
+    assert int(result["work"]) == 256
+    assert int(result["grid"]) == min(72 * min(4, occupancy), 256)
+
+
+@pytest.mark.parametrize("route", [2, 3])
+@pytest.mark.parametrize("mode", [0, 2, 3])
+def test_grouped_recipes_match_shipping_work_bound(recipe_probe, route, mode):
+    for tm in (8, 16, 32, 64, 128, 256):
+        for m, experts, maximum in ((1, 256, 1), (9, 256, 9), (528, 256, 129), (1024, 256, 128)):
+            for split in (1, 2, 4, 8):
+                fields = (route, m, 512, experts, maximum, tm, 32, split, mode, 9, 6)
+                line = subprocess.check_output([str(recipe_probe), *map(str, fields)], text=True)
+                result = {k: int(v) for k, v in (item.split("=") for item in line.split())}
+                work, capacity = result["work"], 72 * 6
+                expected = 0 if mode == 0 else min(work, capacity)
+                if mode == 3:
+                    waves = (work + capacity - 1) // capacity
+                    expected = (work + waves - 1) // waves
+                assert result["grid"] == expected
+                assert result["split"] == split
+
+
+def test_dense_recipe_does_not_change(recipe_probe):
+    for mode in (0, 2, 3):
+        for m in (1, 128, 4096):
+            fields = (1, m, 1024, 1, m, 16, 32, 1, mode, 4, 6)
+            line = subprocess.check_output([str(recipe_probe), *map(str, fields)], text=True)
+            result = {k: int(v) for k, v in (item.split("=") for item in line.split())}
+            work = ((m + 15) // 16) * 32
+            waves = (work + 287) // 288
+            expected = 0 if mode == 0 else min(work, 288) if mode == 2 else (work + waves - 1) // waves
+            assert result["grid"] == expected
+
+
 def test_all_formats_bounds_and_dense(probe):
     rows = [
         (q, r, 1024 if r >= 2 else 128, 512, 3072, 256 if r >= 2 else 1, 128)
@@ -325,6 +376,27 @@ def test_wrong_build_declines(tmp_path, probe):
     f, r, req = build_stub(tmp_path, probe, wrong_key=True)
     choice = Choice()
     assert f["query"](r, C.byref(req), C.byref(choice)) == 3
+    f["close"](r)
+
+
+def test_prepare_rejection_preserves_selected_context(tmp_path, probe):
+    f, r, req = build_stub(tmp_path, probe, values=(12, 3, 8, 512, 2048, 256, 1))
+    choice = Choice()
+    assert f["query"](r, C.byref(req), C.byref(choice)) == 0
+    assert choice.grid == 256 and choice.split == 1
+    call = Call(version=1, size=C.sizeof(Call), m=req.m, n=req.n, k=req.k,
+                experts=req.experts, group_size=32, device=0, compute_units=72,
+                mapping_id=req.mapping_id, low=0x2000, metadata=0x3000,
+                zero=0x4000, output=0x5000, offsets_device=0x6000,
+                workspace=0x7000, workspace_bytes=choice.workspace_bytes)
+    handle = C.c_void_p()
+    # The module (not the dispatcher shape check) rejects the missing A.
+    assert f["prepare"](r, C.byref(choice), C.byref(call), C.byref(handle)) == 4
+    assert not handle.value
+    error = f["error"]().decode()
+    for text in (choice.parent.decode(), "route=3", "shape=8x512x2048",
+                 "experts=256", "max_rows=1", "split=1", "grid=256", "rc=2"):
+        assert text in error
     f["close"](r)
 
 

@@ -1,9 +1,17 @@
 # K-pack execution follow-up
 
-Updated: 2026-09-09. The O0ki3q native micro gates and adapter tests pass;
+Updated: 2026-09-10. The O0ki3q native micro gates and adapter tests pass;
 model prefill improves, but decode remains about 31% slower and the short
 trace lacks selected native dense compute. This is not optimized-routing
 closure. Canonical offline planes are unchanged.
+
+Latest JIT run `maMVzW`: 26/28 native contexts passed (all 14 FQ). Q4
+SF-grouped preparation exposed a host grid larger than the compact work
+bound. Q6 SF-dense M128 returned nonfinite output and the new gate contained
+a default-stream poison race. Host recipe and gate ordering are corrected
+in `kpack-jit-v2`; device modules and cache identity are unchanged. Q6's
+specific failure attribution and the second-process gate remain pending.
+See [evidence and retry scope](KPACK_JIT_GATE_REVIEW.md).
 
 ## Complete delivery backlog
 
@@ -21,7 +29,7 @@ across calls or amortized across requests in the selector.
 | ID | Workstream | Actual status / remaining work | PPU box boundary |
 | --- | --- | --- | --- |
 | T01 | Per-call ScaleFirst execution and selection | Implemented/SDK-compiled locally: per-call compute-stream expansion, reusable scratch, no scale-ready cache; V2 exporter requires timed expansion+GEMM. Adapter replay test poisons both planes. Device execution pending | Expansion executes on every replay; independent numerics, memory and full-call timing |
-| T02 | Production single-parent JIT | Implemented locally: additive C ABI, exact selected-parent compiler/load seam, source contract, no online search. Small `kpack-jit-v1` candidate built. Cold compilation is still expensive; prewarm is recommended | Cold-generated module executes correctly and matches the equivalent prebuilt parent |
+| T02 | Production single-parent JIT | Additive C ABI, exact selected-parent compiler/load seam, source contract, no online search. First PPU run 26/28; `kpack-jit-v2` fixes host grid and test ordering without rebuilding device modules. Cold compilation is still expensive; prewarm is recommended | Finish the two SF rows, cold/prebuilt equivalence and process-restart validation |
 | T03 | Model-load preparation and JIT misses | Implemented bounded prewarm: unsplit GGUF header inventory or explicit requests, actual C++ heuristic, deduplicated parallel compilation; llama enables JIT before graph preparation. Unknown families still explicitly miss; sharded/TP discovery remains explicit-request mode | Cold startup, disk-cache hit, process restart, new-M/router and graph replay |
 | T04 | Production module-cache lifecycle | Host-tested: C++ resolver, content/source/ABI contracts, locking/atomic publish, relocation, corruption/escape rejection and bounded prewarm. Real 20-parent cache-hit compile pass performs no rebuild. SDK/device admission remains pending | Validate moved prebuilt/cache images and real SDK/device compatibility; host negatives run locally |
 | T05 | Small-library delivery and legacy dependency removal | Small JIT dispatcher/execution candidate built (about 1.1 MiB); intake/conversion/admission extraction remains. The model still needs the old six libraries for intake and explicit FQ fallback; do not remove them before replacement coverage | Load and execute with legacy libraries deliberately absent; compare cold/hot startup and model results |

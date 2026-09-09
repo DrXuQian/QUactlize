@@ -38,6 +38,9 @@ def export(summary):
         sf = r["route"] % 2
         if r.get("sf_metadata_mode") != ("PER_CALL_GPU_PREPASS" if sf else "PACKED_UNITS"):
             raise ValueError("resident-only timings cannot select a per-call SF route; rerun native gate")
+        if (r.get("fixture_order") != "CONSUMER_STREAM_V1" or
+                r.get("correctness_scope") != "EAGER_AND_THREE_GRAPH_REPLAYS"):
+            raise ValueError("native gate lacks ordered fixture and eager/replay evidence")
         if sf in grouped.setdefault(key, {}):
             raise ValueError("duplicate native context")
         times = []
