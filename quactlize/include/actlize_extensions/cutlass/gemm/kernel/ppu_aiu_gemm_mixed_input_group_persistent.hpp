@@ -1,10 +1,9 @@
 // Copyright (c) 2026, quactlize contributors.
 // SPDX-License-Identifier: BSD-3-Clause
 //
-// Persistent driver for a ragged grouped mixed-input collective.  This file is
-// intentionally a new kernel rather than another compatibility branch in the
-// shipping non-persistent GemmUniversal specialization: both kernels instantiate
-// the exact same collective, and the old kernel remains a bit-exact control.
+// Device-directory driver for a ragged grouped mixed-input collective. Ordinary
+// mode assigns one task per CTA; persistent mode walks tasks with a resident
+// grid. Both use the same directory, collective and slice-major epilogue.
 #pragma once
 
 #include "cutlass/cutlass.h"
@@ -19,12 +18,12 @@
 
 namespace cutlass::gemm::kernel {
 
-template <class ProblemShape_, class CollectiveMainloop_, class CollectiveEpilogue_>
-class GroupPersistentMixedInputKernel {
+template <class ProblemShape_, class CollectiveMainloop_, class CollectiveEpilogue_, bool Persistent>
+class GroupDirectoryMixedInputKernel {
  public:
   using ProblemShape = ProblemShape_;
   static_assert(isGroupProblemShape_v<ProblemShape>,
-                "GroupPersistentMixedInputKernel requires GroupProblemShape");
+                "GroupDirectoryMixedInputKernel requires GroupProblemShape");
   static_assert(cute::rank(typename ProblemShape::UnderlyingProblemShape{}) == 3 ||
                     cute::rank(typename ProblemShape::UnderlyingProblemShape{}) == 4,
                 "underlying problem shape must be <M,N,K> or <M,N,K,L>");
@@ -99,6 +98,7 @@ class GroupPersistentMixedInputKernel {
     int representative_m = 0;
     int representative_n = 0;
     int representative_k = 0;
+    int splitk = 1;
     typename DirectoryScheduler::Params directory{};
     uint64_t logical_work_upper = 0;
     int ctas_per_cu = 0;
@@ -124,8 +124,9 @@ class GroupPersistentMixedInputKernel {
         args.representative_m,
         args.representative_n,
         args.representative_k,
+        args.splitk,
         {args.directory_header, args.directory_entries,
-         int(cute::ceil_div(args.representative_n, TileN))},
+         int(cute::ceil_div(args.representative_n, TileN)), args.splitk},
         args.logical_work_upper,
         args.ctas_per_cu,
         args.grid_ctas_override,
@@ -137,8 +138,15 @@ class GroupPersistentMixedInputKernel {
         args.problem_shape.groups() <= 0 || args.representative_m <= 0 ||
         args.representative_n <= 0 || args.representative_k <= 0 ||
         args.directory_header == nullptr || args.directory_entries == nullptr ||
-        args.logical_work_upper == 0 || args.ctas_per_cu <= 0 || args.splitk != 1) {
+        args.logical_work_upper == 0 || args.ctas_per_cu <= 0 ||
+        (args.splitk != 1 && args.splitk != 2 && args.splitk != 4 && args.splitk != 8)) {
       return false;
+    }
+    int64_t const partition = int64_t(cute::size<2>(TileShape{})) * args.splitk;
+    if (args.representative_k % partition ||
+        args.representative_k / partition < DispatchPolicy::Stages - 1) return false;
+    if constexpr (!Persistent) {
+      if (args.grid_ctas_override != 0 || args.logical_work_upper > uint64_t(INT32_MAX)) return false;
     }
     int cu_count = args.hw_info.cu_count;
     if (cu_count <= 0) {
@@ -146,7 +154,7 @@ class GroupPersistentMixedInputKernel {
     }
     uint64_t const capacity = cu_count > 0
         ? uint64_t(cu_count) * uint64_t(args.ctas_per_cu) : 0;
-    if (args.grid_ctas_override != 0 &&
+    if (Persistent && args.grid_ctas_override != 0 &&
         (uint64_t(args.grid_ctas_override) > capacity ||
          uint64_t(args.grid_ctas_override) > args.logical_work_upper)) {
       return false;
@@ -170,6 +178,7 @@ class GroupPersistentMixedInputKernel {
         params.logical_work_upper == 0) {
       return dim3(0, 0, 0);
     }
+    if constexpr (!Persistent) return dim3(static_cast<unsigned>(params.logical_work_upper),1,1);
     uint64_t const resident =
         uint64_t(params.hw_info.cu_count) * uint64_t(params.ctas_per_cu);
     uint64_t requested = params.grid_ctas_override != 0
@@ -219,18 +228,22 @@ class GroupPersistentMixedInputKernel {
       Tensor accumulators = make_fragment_like<ElementCompute>(
           partition_fragment_C(tiled_mma, take<0, 2>(block_shape)));
       clear(accumulators);
-      auto k_tile_iter = make_coord_iterator(shape<2>(gA));
-      int const k_tile_count = size<2>(gA);
+      auto k_tile_iter = make_splitk_coord_iterator(shape<2>(gA),work.slice,params.splitk);
+      int const k_tile_count = size<2>(gA) / params.splitk;
       collective_mainloop(params.mainloop, load_inputs, accumulators,
                           k_tile_iter, k_tile_count, thread_idx, smem_buf);
 
       CollectiveEpilogue epilogue{params.epilogue, shared_storage.tensors.epilogue};
       #pragma hggc dislicm
       {
-        epilogue(problem_shape_mnkl, block_shape, block_coord_mnkl,
+        auto const epilogue_shape = make_shape(M,N,K,groups*params.splitk);
+        auto const epilogue_coord = make_coord(work.m_tile,work.n_tile,_,expert+work.slice*groups);
+        epilogue(epilogue_shape, block_shape, epilogue_coord,
                  accumulators, tiled_mma, residue_mnk, thread_idx,
                  reinterpret_cast<char*>(&shared_storage.tensors.epilogue));
       }
+
+      if constexpr (!Persistent) break;
 
       // The next work item may select a different expert and immediately reuse
       // both halves of the shared-storage union.  Make that lifetime boundary
@@ -239,5 +252,11 @@ class GroupPersistentMixedInputKernel {
     }
   }
 };
+
+template<class ProblemShape, class Mainloop, class Epilogue>
+using GroupPersistentMixedInputKernel = GroupDirectoryMixedInputKernel<ProblemShape,Mainloop,Epilogue,true>;
+
+template<class ProblemShape, class Mainloop, class Epilogue>
+using GroupCompactMixedInputKernel = GroupDirectoryMixedInputKernel<ProblemShape,Mainloop,Epilogue,false>;
 
 }  // namespace cutlass::gemm::kernel

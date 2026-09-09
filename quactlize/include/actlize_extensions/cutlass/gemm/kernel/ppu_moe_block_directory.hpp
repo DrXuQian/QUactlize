@@ -64,6 +64,23 @@ constexpr size_t workspace_bytes(int max_rows, int experts, int tile_m) {
   return entries_offset() + size_t(maximum_entries(max_rows, experts, tile_m)) * sizeof(BlockEntry);
 }
 
+// sum(ceil(rows_e / TM)) <= floor((rows + active * (TM-1)) / TM).
+// Unlike experts * ceil(max_rows/TM), this bound stays small for sparse decode
+// and needs no host knowledge of the device's current expert assignment.
+constexpr int bounded_entries(int rows, int max_rows, int experts, int tile_m) {
+  if (rows <= 0 || max_rows <= 0 || experts <= 0 || tile_m <= 0 ||
+      int64_t(max_rows) * experts < rows) return 0;
+  int64_t const active = rows < experts ? rows : experts;
+  int64_t const by_rows = (int64_t(rows) + active * (tile_m - 1)) / tile_m;
+  int64_t const by_experts = int64_t(experts) *
+      ((int64_t(max_rows) + tile_m - 1) / tile_m);
+  return int(by_rows < by_experts ? by_rows : by_experts);
+}
+
+constexpr size_t bounded_workspace_bytes(int rows, int max_rows, int experts, int tile_m) {
+  return entries_offset() + size_t(bounded_entries(rows,max_rows,experts,tile_m)) * sizeof(BlockEntry);
+}
+
 struct View {
   Header* header;
   BlockEntry* entries;
@@ -82,6 +99,16 @@ inline View make_view(void* workspace, size_t bytes, int max_rows, int experts, 
   };
 }
 
+inline View make_bounded_view(void* workspace, size_t bytes,
+    int rows, int max_rows, int experts, int tile_m) {
+  int const capacity = bounded_entries(rows,max_rows,experts,tile_m);
+  if (!workspace || capacity <= 0 ||
+      bytes < entries_offset() + size_t(capacity)*sizeof(BlockEntry)) return {nullptr,nullptr,0};
+  auto* base = static_cast<unsigned char*>(workspace);
+  return {reinterpret_cast<Header*>(base),
+          reinterpret_cast<BlockEntry*>(base + entries_offset()),capacity};
+}
+
 CUTLASS_HOST_DEVICE
 constexpr BlockEntry make_entry(
     int expert, int expert_rows, int expert_block_begin, int row_begin) {
@@ -92,6 +119,16 @@ struct DecodedWork {
   int m_tile;
   int n_tile;
 };
+
+struct SplitWork {
+  uint64_t tile;
+  int slice;
+};
+
+CUTLASS_HOST_DEVICE
+constexpr SplitWork decode_split_work(uint64_t linear, int splits) {
+  return {linear / uint64_t(splits), int(linear % uint64_t(splits))};
+}
 
 // Decode the same two-M-block L2 swizzle used by DeepGEMM, but with runtime N.
 // `linear_in_expert` is in the expert-local M-block x N-block product.
@@ -206,6 +243,7 @@ struct WorkTile {
   int n_tile = 0;
   int expert_rows = 0;
   int row_begin = 0;
+  int slice = 0;
 
   CUTLASS_DEVICE bool is_valid() const { return expert >= 0; }
 };
@@ -217,10 +255,11 @@ class MoeBlockDirectoryScheduler {
     Header const* header = nullptr;
     BlockEntry const* entries = nullptr;
     int n_blocks = 0;
+    int splits = 1;
   };
 
   CUTLASS_DEVICE explicit MoeBlockDirectoryScheduler(Params params)
-      : entries_(params.entries), n_blocks_(params.n_blocks),
+      : entries_(params.entries), n_blocks_(params.n_blocks), splits_(params.splits),
         num_m_blocks_(0), valid_(false), current_iter_(0) {
     // Match DeepGEMM's scheduler lifetime: header/count is a constructor load,
     // not a load repeated for every work item.  Every thread constructs the
@@ -229,7 +268,8 @@ class MoeBlockDirectoryScheduler {
     num_m_blocks_ = header.num_m_blocks;
     valid_ = header.status == int(BuildStatus::Success) &&
              header.tile_m == TileM && header.experts > 0 &&
-             n_blocks_ > 0 && num_m_blocks_ >= 0;
+             n_blocks_ > 0 && num_m_blocks_ >= 0 &&
+             (splits_ == 1 || splits_ == 2 || splits_ == 4 || splits_ == 8);
   }
 
   CUTLASS_DEVICE WorkTile fetch_next() {
@@ -237,13 +277,14 @@ class MoeBlockDirectoryScheduler {
     if (!valid_) return out;
 
     uint64_t const linear = uint64_t(current_iter_++) * uint64_t(gridDim.x) + uint64_t(blockIdx.x);
-    uint64_t const total = uint64_t(num_m_blocks_) * uint64_t(n_blocks_);
+    uint64_t const total = uint64_t(num_m_blocks_) * uint64_t(n_blocks_) * uint64_t(splits_);
     if (linear >= total) return out;
 
-    int const directory_index = int(linear / uint64_t(n_blocks_));
+    auto const split = decode_split_work(linear, splits_);
+    int const directory_index = int(split.tile / uint64_t(n_blocks_));
     BlockEntry const entry = entries_[directory_index];
     int const expert_m_blocks = ceil_div_nonnegative(entry.expert_rows, TileM);
-    int const linear_in_expert = int(linear) - entry.expert_block_begin * n_blocks_;
+    int const linear_in_expert = int(split.tile - uint64_t(entry.expert_block_begin) * n_blocks_);
     DecodedWork const decoded = decode_swizzled(
         linear_in_expert, expert_m_blocks, n_blocks_, MBlocksPerGroup);
 
@@ -252,12 +293,14 @@ class MoeBlockDirectoryScheduler {
     out.n_tile = decoded.n_tile;
     out.expert_rows = entry.expert_rows;
     out.row_begin = entry.row_begin;
+    out.slice = split.slice;
     return out;
   }
 
  private:
   BlockEntry const* entries_;
   int n_blocks_;
+  int splits_;
   int num_m_blocks_;
   bool valid_;
   int current_iter_;

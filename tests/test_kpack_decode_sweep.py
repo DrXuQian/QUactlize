@@ -191,9 +191,20 @@ def test_job_denominator():
     )
 
 
-@pytest.mark.parametrize("arm", ["device-only", "host-compact"])
+@pytest.mark.parametrize(
+    "arm,gpu_directory,grid_b",
+    [
+        ("host-compact", False, 0),
+        ("device-only", False, 0),
+        ("device-only", True, 0),
+        ("device-only", True, 1),
+        ("device-only", True, 2),
+    ],
+)
 @pytest.mark.parametrize("split", [1, 2])
-def test_gemm_driver_mutable_router_and_fp32_partial_boundary(monkeypatch, arm, split):
+def test_gemm_driver_mutable_router_and_fp32_partial_boundary(
+    monkeypatch, arm, split, gpu_directory, grid_b
+):
     w = IndexedWeights(
         12, 256, 512, 4, partial_specs=[(256, 2)], partial_experts=range(4)
     )
@@ -243,6 +254,7 @@ def test_gemm_driver_mutable_router_and_fp32_partial_boundary(monkeypatch, arm, 
         q = C.cast(qp, C.POINTER(sweep.Query)).contents
         q.workspace_bytes = 512 + (c.m * c.n * r.split * 4 if r.split > 1 else 0)
         q.shared_bytes = 38912
+        q.occupancy = 10
         return 0
 
     def prepare(cp, rp, hp):
@@ -277,6 +289,20 @@ def test_gemm_driver_mutable_router_and_fp32_partial_boundary(monkeypatch, arm, 
             c = captured["call"]
             bounds = np.frombuffer(C.string_at(c.offsets_device, 20), dtype="i4")
             data = sweep.grouped_data(w, np.diff(bounds))
+            if gpu_directory:
+                rows = np.diff(bounds)
+                prefix = np.r_[0, np.cumsum((rows + 7) // 8)]
+                header = np.array([prefix[-1], 0, 8, 4], dtype="<i4")
+                entries = np.array(
+                    [
+                        [e, rows[e], prefix[e], bounds[e]]
+                        for e in range(4)
+                        for _ in range(int(prefix[e + 1] - prefix[e]))
+                    ],
+                    dtype="<i4",
+                )
+                C.memmove(c.workspace, header.ctypes.data, header.nbytes)
+                C.memmove(c.workspace + 16, entries.ctypes.data, entries.nbytes)
             if split == 1:
                 out = data["golden"].astype("<f2")
             else:
@@ -308,10 +334,23 @@ def test_gemm_driver_mutable_router_and_fp32_partial_boundary(monkeypatch, arm, 
     args = SimpleNamespace(
         graph_repeats=16, correctness_repeats=3, warmups=1, samples=3, rounds=2
     )
-    result = sweep.gemm_cell(args, SDK(), Module(), w, profiles, split, arm)
+    result = sweep.gemm_cell(
+        args,
+        SDK(),
+        Module(),
+        w,
+        profiles,
+        split,
+        arm,
+        gpu_directory=gpu_directory,
+        grid_b=grid_b,
+    )
     assert result["status"] == "PASS" and result["median_us"] == 10.0
     assert result["profiles_checked"] == (2 if arm == "device-only" else 1)
     assert result["partial_bytes"] == (2 * 13 * 256 * 4 if split == 2 else 0)
+    if gpu_directory:
+        assert result["directory_capacity"] == 5
+        assert result["grid"] == [20 * split, 1, 1]
     c = captured["call"]
     assert np.array_equal(
         np.frombuffer(C.string_at(c.offsets_device, 20), dtype="i4"), [0, 9, 9, 12, 13]

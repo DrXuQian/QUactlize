@@ -41,7 +41,7 @@ struct DenseTypes {
 };
 
 template<int Q, int TM, int TN, int TK, int WM, int WN, int ST, int DN, bool Persistent,
-         class Output = Half>
+         class Output = Half, bool Compact = false>
 struct GroupedTypes {
   using F = Format<Q>;
   using Low = typename F::Low;
@@ -67,7 +67,9 @@ struct GroupedTypes {
       cutlass::epilogue::fusion::LinearCombination<Output, float>>::CollectiveOp;
   using Kernel = std::conditional_t<Persistent,
       cutlass::gemm::kernel::GroupPersistentMixedInputKernel<moe_grouped_ppu::GroupProblemShape, Mainloop, Epilogue>,
-      cutlass::gemm::kernel::GemmUniversal<moe_grouped_ppu::GroupProblemShape, Mainloop, Epilogue>>;
+      std::conditional_t<Compact,
+        cutlass::gemm::kernel::GroupCompactMixedInputKernel<moe_grouped_ppu::GroupProblemShape, Mainloop, Epilogue>,
+        cutlass::gemm::kernel::GemmUniversal<moe_grouped_ppu::GroupProblemShape, Mainloop, Epilogue>>>;
   using Gemm = cutlass::gemm::device::GemmUniversalAdapter<Kernel>;
   static_assert(cute::size<0>(typename Epilogue::SmemLayout{}) ==
       cute::size<0>(typename Mainloop::TiledMma::AtomShape_MNK{}) *

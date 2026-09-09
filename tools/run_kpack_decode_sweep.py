@@ -133,13 +133,25 @@ def bind_group(module):
     return query, prepare
 
 
-def gemm_cell(args, sdk, module, w, profiles, split, arm):
+def gemm_cell(
+    args, sdk, module, w, profiles, split, arm, *, grid_b=0, gpu_directory=False
+):
     data = profiles[0]
     order = np.argsort(data["expert"], kind="stable")
     rows = np.bincount(data["expert"], minlength=w.experts).astype("i4")
     offsets = np.r_[0, rows.cumsum()].astype("i4")
     m = len(order)
     rec = module.record["parent"]
+    maximum = max(
+        int(np.bincount(x["expert"], minlength=w.experts).max()) for x in profiles
+    )
+    tile_m = rec["tm"]
+    active_bound = min(m, w.experts)
+    directory_capacity = min(
+        (m + active_bound * (tile_m - 1)) // tile_m,
+        w.experts * ((maximum + tile_m - 1) // tile_m),
+    )
+    work_upper = directory_capacity * ((w.n + rec["tn"] - 1) // rec["tn"]) * split
     r = Resources(sdk)
     handle = C.c_void_p()
     graph = None
@@ -155,6 +167,9 @@ def gemm_cell(args, sdk, module, w, profiles, split, arm):
         max_rows=int(rows.max()),
         status="FAIL",
         partial_error=0.0,
+        algorithm="PERSISTENT" if grid_b else "ORDINARY",
+        grid_b=grid_b,
+        gpu_directory=gpu_directory,
     )
     try:
         dev = module.device_identity()
@@ -162,6 +177,12 @@ def gemm_cell(args, sdk, module, w, profiles, split, arm):
             k: r.upload(w.planes[k]) if w.planes[k].size else None
             for k in ("low", "high", "units")
         }
+        sf = rec.get("route") == "sf-grouped"
+        if sf:
+            from tools.run_kpack_gemv_gate import metadata_oracle
+
+            scale, zero = metadata_oracle(w.planes["units"], w.q, w.n, w.k, w.experts)
+            planes["scale"], planes["zero"] = r.upload(scale), r.upload(zero)
         outbytes = m * w.n * 2
         output = r.alloc(outbytes + 32)
         sdk.fill(output, 0xA5, outbytes + 32)
@@ -179,12 +200,13 @@ def gemm_cell(args, sdk, module, w, profiles, split, arm):
             a=r.upload(data["a"][data["arows"][order]]),
             low=planes["low"],
             high=planes["high"],
-            metadata=planes["units"],
+            metadata=planes["scale"] if sf else planes["units"],
+            zero=planes["zero"] if sf else None,
             output=output + 16,
             offsets_device=r.upload(offsets),
             stream=r.stream.value,
         )
-        recipe = Recipe(1, C.sizeof(Recipe), 0, split, 0)
+        recipe = Recipe(1, C.sizeof(Recipe), int(grid_b > 0), split, 1 if grid_b else 0)
         query = Query()
         v2query, v2prepare = bind_group(module)
         if arm == "device-only":
@@ -192,10 +214,7 @@ def gemm_cell(args, sdk, module, w, profiles, split, arm):
                 2,
                 C.sizeof(DeviceCall),
                 c,
-                max(
-                    int(np.bincount(x["expert"], minlength=w.experts).max())
-                    for x in profiles
-                ),
+                maximum,
                 0,
             )
             checked(
@@ -207,6 +226,20 @@ def gemm_cell(args, sdk, module, w, profiles, split, arm):
             checked(
                 module.query(C.byref(c), C.byref(recipe), C.byref(query)),
                 "Split-K compact query",
+            )
+        if grid_b:
+            recipe.grid = min(
+                work_upper, dev["compute_units"] * min(grid_b, query.occupancy)
+            )
+            if recipe.grid < 1:
+                raise ValueError("persistent grid has no admitted residency")
+            checked(
+                (
+                    v2query(C.byref(d), C.byref(recipe), C.byref(query))
+                    if arm == "device-only"
+                    else module.query(C.byref(c), C.byref(recipe), C.byref(query))
+                ),
+                "persistent grid query",
             )
         workspace = r.alloc(query.workspace_bytes + 32)
         sdk.fill(workspace, 0xA5, query.workspace_bytes + 32)
@@ -240,6 +273,8 @@ def gemm_cell(args, sdk, module, w, profiles, split, arm):
                 sdk.fill(output, 0xA5, outbytes + 32)
                 if partialbytes:
                     sdk.fill(partialptr, 0xFF, partialbytes)
+                if gpu_directory:
+                    sdk.fill(c.workspace, 0xA5, 16 + 16 * directory_capacity)
                 checked(launch() if repeat == 0 else graph(), "Split-K correctness")
                 sdk.synchronize(r.stream)
                 raw = sdk.download(output, outbytes + 32)
@@ -252,6 +287,33 @@ def gemm_cell(args, sdk, module, w, profiles, split, arm):
                 ):
                     raise ValueError("output/workspace guard changed")
                 got = np.frombuffer(raw[16:-16], dtype="<f2").reshape(m, w.n)
+                if gpu_directory:
+                    prefix = np.r_[0, np.cumsum((rowcounts + tile_m - 1) // tile_m)]
+                    header = np.frombuffer(sdk.download(c.workspace, 16), dtype="<i4")
+                    if not np.array_equal(header, [prefix[-1], 0, tile_m, w.experts]):
+                        raise ValueError(
+                            f"device directory header differs: {header.tolist()}"
+                        )
+                    entries = np.frombuffer(
+                        sdk.download(c.workspace + 16, int(prefix[-1]) * 16),
+                        dtype="<i4",
+                    ).reshape(-1, 4)
+                    expected = np.array(
+                        [
+                            [expert, rowcounts[expert], prefix[expert], bounds[expert]]
+                            for expert in range(w.experts)
+                            for _ in range(int(prefix[expert + 1] - prefix[expert]))
+                        ],
+                        dtype="<i4",
+                    )
+                    if not np.array_equal(entries, expected):
+                        raise ValueError("device directory entry/owner differs")
+                    used = int(prefix[-1])
+                    if used > directory_capacity or sdk.download(
+                        c.workspace + 16 + used * 16,
+                        (directory_capacity - used) * 16,
+                    ) != b"\xa5" * ((directory_capacity - used) * 16):
+                        raise ValueError("device directory wrote unused capacity")
                 errors.append(
                     admit(
                         got[np.argsort(permutation)], profile, "grouped output [row,N]"
@@ -276,9 +338,9 @@ def gemm_cell(args, sdk, module, w, profiles, split, arm):
             checked(graph(), "warmup")
         sdk.synchronize(r.stream)
         timing = [r.samples(graph, args.samples) for _ in range(args.rounds)]
-        weights = sum(
-            w.planes[k].nbytes // w.experts * int((rows > 0).sum()) for k in planes
-        )
+        weights = sum(w.planes[k].nbytes for k in ("low", "high"))
+        weights += scale.nbytes + zero.nbytes if sf else w.planes["units"].nbytes
+        weights = weights // w.experts * int((rows > 0).sum())
         result.update(timing_summary(timing, args.graph_repeats, weights))
         result.update(
             status="PASS",
@@ -292,6 +354,7 @@ def gemm_cell(args, sdk, module, w, profiles, split, arm):
             timing_scope=(
                 "METADATA_PLUS_" if arm == "device-only" else "HOST_PREPARED_"
             )
+            + ("DIRECTORY_PLUS_" if gpu_directory else "")
             + "GEMM_PLUS_REDUCER",
             valid_ctas=sum((int(x) + rec["tm"] - 1) // rec["tm"] for x in rows)
             * ((w.n + rec["tn"] - 1) // rec["tn"])
@@ -302,6 +365,9 @@ def gemm_cell(args, sdk, module, w, profiles, split, arm):
                 else "SOURCE_GRID_DEPENDS_ON_ROW_TILES"
             ),
         )
+        if gpu_directory:
+            result["grid"] = [recipe.grid if grid_b else work_upper, 1, 1]
+            result["directory_capacity"] = directory_capacity
         return result
     finally:
         sdk.synchronize(r.stream)

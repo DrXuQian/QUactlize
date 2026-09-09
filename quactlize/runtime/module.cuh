@@ -20,6 +20,10 @@ constexpr uint64_t mapping = qtype == 12 ? UINT64_C(0x51344b5034540001)
 
 inline uint64_t align16(uint64_t value) { return (value + 15) & ~UINT64_C(15); }
 
+inline bool compact_device_call(int device_maximum, int experts) {
+  return device_maximum > 0 && experts <= 1024;
+}
+
 inline int validate(qk_call_v1 const& c, qk_recipe_v1 const& r, int& max_rows, int device_maximum = 0) {
   if (c.version != 1 || c.size != sizeof(c) || r.version != 1 || r.size != sizeof(r) ||
       c.mapping_id != mapping || c.m <= 0 || c.n <= 0 || c.k <= 0 ||
@@ -29,15 +33,15 @@ inline int validate(qk_call_v1 const& c, qk_recipe_v1 const& r, int& max_rows, i
       c.n % 256 || c.k % ((qtype == 11 || qtype == 14) ? 512 : 256) || c.k % tk ||
       r.algorithm < QK_ORDINARY || r.algorithm > QK_PERSISTENT ||
       (r.split != 1 && r.split != 2 && r.split != 4 && r.split != 8)) return QK_INVALID;
-  if (r.algorithm == QK_PERSISTENT ? (r.grid <= 0 || r.split != 1) : r.grid != 0)
+  if (r.algorithm == QK_PERSISTENT ? (r.grid <= 0 || (!grouped && r.split != 1)) : r.grid != 0)
     return QK_INVALID;
   if (c.k % (tk * r.split) || c.k / (tk * r.split) < stages - 1)
     return QK_UNSUPPORTED;
   max_rows = c.m;
   if constexpr (grouped) {
-    // Only the ordinary kernel has K partitioning. Its output directory is
-    // slice-major and its FP32 partials require a final ordered reduction.
+    // Both grouped schedules use slice-major FP32 partials and an ordered reducer.
     if (uint64_t(c.experts) * r.split > 65535) return QK_UNSUPPORTED;
+    if (r.algorithm==QK_PERSISTENT && c.experts>1024) return QK_UNSUPPORTED;
     if (device_maximum > 0) {
       if (c.rows_host || c.rows_device || device_maximum > c.m ||
           device_maximum > INT32_MAX-256 || int64_t(device_maximum)*c.experts < c.m)
@@ -57,6 +61,11 @@ inline int validate(qk_call_v1 const& c, qk_recipe_v1 const& r, int& max_rows, i
       if (total != c.m) return QK_INVALID;
     }
     if (int64_t(c.experts)*((int64_t(max_rows)+tm-1)/tm)>INT32_MAX) return QK_INVALID;
+    if (r.algorithm==QK_PERSISTENT || compact_device_call(device_maximum,c.experts)) {
+      int const bound=quactlize::moe_directory::bounded_entries(c.m,max_rows,c.experts,tm);
+      uint64_t const work=uint64_t(bound)*uint64_t((c.n+tn-1)/tn)*r.split;
+      if (bound<=0 || work>uint64_t(INT32_MAX)) return QK_UNSUPPORTED;
+    }
     if constexpr (route == QK_GROUPED_FQ) {
       if (r.algorithm != QK_PERSISTENT_PARENT) return QK_UNSUPPORTED;
     }
@@ -113,11 +122,11 @@ template<class T> struct DenseHandle final : Handle {
 };
 
 using Dense = DenseTypes<qtype,QK_TM,QK_TN,QK_TK,QK_WM,QK_WN,QK_STAGES,QK_AP,QK_DN>;
-template<bool P, class O = Half>
-using Group = GroupedTypes<qtype,QK_TM,QK_TN,QK_TK,QK_WM,QK_WN,QK_STAGES,QK_DN,P,O>;
+template<bool P, class O = Half, bool Compact = false>
+using Group = GroupedTypes<qtype,QK_TM,QK_TN,QK_TK,QK_WM,QK_WN,QK_STAGES,QK_DN,P,O,Compact>;
 
-inline uint64_t scheduler_bytes(int max_rows, int experts, bool persistent) {
-  return align16(persistent ? quactlize::moe_directory::workspace_bytes(max_rows, experts, tm)
+inline uint64_t scheduler_bytes(int max_rows, int experts, bool directory, int rows) {
+  return align16(directory ? quactlize::moe_directory::bounded_workspace_bytes(rows,max_rows,experts,tm)
                            : uint64_t(experts + 1) * sizeof(int));
 }
 
@@ -147,10 +156,10 @@ __global__ void grouped_splitk_device_metadata(int const* offsets, float* partia
   }
 }
 
-template<bool Persistent, bool Split = false> struct GroupedHandle final : Handle {
-  static_assert(!Persistent || !Split, "persistent grouped Split-K is not implemented");
+template<bool Persistent, bool Split = false, bool Compact = false> struct GroupedHandle final : Handle {
+  static constexpr bool Directory = Persistent || Compact;
   using Output = std::conditional_t<Split,float,Half>;
-  using T = Group<Persistent,Output>;
+  using T = Group<Persistent,Output,Compact>;
   using K = typename T::Kernel;
   using G = typename T::Gemm;
   using Shape = moe_grouped_ppu::GroupShape;
@@ -182,7 +191,7 @@ template<bool Persistent, bool Split = false> struct GroupedHandle final : Handl
       shapes.reserve(c.experts);
     }
     GroupedWorkspace layout;
-    uint64_t head = scheduler_bytes(max_rows,c.experts,Persistent);
+    uint64_t head = scheduler_bytes(max_rows,c.experts,Directory,c.m);
     if (!grouped_workspace(c.experts,splits,c.m,c.n,head,sizeof(Shape),sizeof(DStride),
         device_only,layout) || layout.total > c.workspace_bytes) return QK_INVALID;
     char* base = static_cast<char*>(c.workspace);
@@ -240,18 +249,18 @@ template<bool Persistent, bool Split = false> struct GroupedHandle final : Handl
     args.representative_m=max_rows; args.representative_n=c.n; args.representative_k=c.k;
     if constexpr (!std::is_void_v<typename T::High>)
       args.mainloop.ptr_B2=static_cast<typename T::High const*>(c.high);
-    if constexpr (Persistent) {
-      directory=quactlize::moe_directory::make_view(base,head,max_rows,c.experts,tm);
+    if constexpr (Directory) {
+      directory=quactlize::moe_directory::make_bounded_view(base,head,c.m,max_rows,c.experts,tm);
       args.directory_header=directory.header; args.directory_entries=directory.entries;
-      args.logical_work_upper=uint64_t(directory.capacity)*uint64_t((c.n+tn-1)/tn);
-      args.ctas_per_cu=occupancy; args.grid_ctas_override=r.grid; args.splitk=1;
+      args.logical_work_upper=uint64_t(directory.capacity)*uint64_t((c.n+tn-1)/tn)*splits;
+      args.ctas_per_cu=occupancy; args.grid_ctas_override=r.grid; args.splitk=splits;
     } else {
       args.group_M=call.rows_device; args.mtiles_uniform=uniform?first_tiles:0; args.splitk=splits;
     }
     if (G::can_implement(args) != cutlass::Status::kSuccess) return QK_UNSUPPORTED;
     if (G::get_workspace_size(args)>head) return QK_INVALID;
     if (gemm.initialize(args,base,stream)!=cutlass::Status::kSuccess) return QK_INITIALIZE_ERROR;
-    if constexpr (!Persistent)
+    if constexpr (!Directory)
       if (!device_only && !uniform && !copy(base,prefix.data(),prefix.size()*sizeof(int))) return QK_RUNTIME_ERROR;
     return QK_OK;
   }
@@ -268,7 +277,7 @@ template<bool Persistent, bool Split = false> struct GroupedHandle final : Handl
       }
       if (hggcGetLastError()!=hggcSuccess) return QK_RUNTIME_ERROR;
     }
-    if constexpr (Persistent) {
+    if constexpr (Directory) {
       if (!quactlize::moe_directory::launch_build<tm>(call.rows_device,call.offsets_device,
           max_rows,call.experts,directory,stream)) return QK_RUNTIME_ERROR;
     }
@@ -298,14 +307,22 @@ inline int query(qk_call_v1 const& c,qk_recipe_v1 const& r,qk_resources_v1& out,
     return QK_INVALID;
   if constexpr (grouped) {
     GroupedWorkspace layout;
+    bool const compact=compact_device_call(device_maximum,c.experts);
     if (!grouped_workspace(c.experts,r.split,c.m,c.n,
-        scheduler_bytes(maximum,c.experts,r.algorithm==QK_PERSISTENT),
+        scheduler_bytes(maximum,c.experts,r.algorithm==QK_PERSISTENT || compact,c.m),
         sizeof(moe_grouped_ppu::GroupShape),sizeof(moe_grouped_ppu::DStride),device_maximum>0,layout))
       return QK_INVALID;
     out.workspace_bytes=layout.total;
-    if (r.split>1) status=resource_query<typename Group<false,float>::Gemm>(out);
-    else status = r.algorithm==QK_PERSISTENT ? resource_query<typename Group<true>::Gemm>(out)
-                                           : resource_query<typename Group<false>::Gemm>(out);
+    if (r.algorithm==QK_PERSISTENT) {
+      status=r.split>1 ? resource_query<typename Group<true,float>::Gemm>(out)
+                       : resource_query<typename Group<true>::Gemm>(out);
+    } else if (compact) {
+      status=r.split>1 ? resource_query<typename Group<false,float,true>::Gemm>(out)
+                       : resource_query<typename Group<false,Half,true>::Gemm>(out);
+    } else {
+      status=r.split>1 ? resource_query<typename Group<false,float>::Gemm>(out)
+                       : resource_query<typename Group<false>::Gemm>(out);
+    }
   } else {
     if (r.split>1) {
       dense_splitk_parallel_ppu::WorkspacePlan plan;
@@ -360,7 +377,10 @@ extern "C" int quactlize_kpack_prepare_v1(qk_call_v1 const* c,qk_recipe_v1 const
   try {
     if constexpr (grouped) {
       int maximum=0; validate(*c,*r,maximum);
-      if (r->algorithm==QK_PERSISTENT) {
+      if (r->algorithm==QK_PERSISTENT && r->split>1) {
+        result=std::make_unique<GroupedHandle<true,true>>();
+        status=static_cast<GroupedHandle<true,true>*>(result.get())->prepare(*c,*r,resources.occupancy,maximum);
+      } else if (r->algorithm==QK_PERSISTENT) {
         result=std::make_unique<GroupedHandle<true>>();
         status=static_cast<GroupedHandle<true>*>(result.get())->prepare(*c,*r,resources.occupancy,maximum);
       } else if (r->split>1) {
@@ -420,9 +440,20 @@ extern "C" int quactlize_kpack_grouped_prepare_v2(qk_device_call_v2 const* d,
   if constexpr (grouped) {
     try {
       std::unique_ptr<Handle> result;
-      if (r->algorithm==QK_PERSISTENT) {
+      if (r->algorithm==QK_PERSISTENT && r->split>1) {
+        auto p=std::make_unique<GroupedHandle<true,true>>();
+        status=p->prepare(c,*r,resources.occupancy,d->max_rows,true); result=std::move(p);
+      } else if (r->algorithm==QK_PERSISTENT) {
         auto p=std::make_unique<GroupedHandle<true>>();
         status=p->prepare(c,*r,resources.occupancy,d->max_rows,true); result=std::move(p);
+      } else if (compact_device_call(d->max_rows,c.experts)) {
+        if (r->split>1) {
+          auto p=std::make_unique<GroupedHandle<false,true,true>>();
+          status=p->prepare(c,*r,resources.occupancy,d->max_rows,true); result=std::move(p);
+        } else {
+          auto p=std::make_unique<GroupedHandle<false,false,true>>();
+          status=p->prepare(c,*r,resources.occupancy,d->max_rows,true); result=std::move(p);
+        }
       } else if (r->split>1) {
         auto p=std::make_unique<GroupedHandle<false,true>>();
         status=p->prepare(c,*r,resources.occupancy,d->max_rows,true); result=std::move(p);

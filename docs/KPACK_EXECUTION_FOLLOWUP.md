@@ -14,7 +14,9 @@ closure. Canonical offline planes are unchanged.
 | 5. ScaleFirst prefill | Native metadata/GEMM gates pass; model prefill improves | Immutable-weight prepass is reused. Full-model first-use and resident timing remain separate; no inference wait on cache D2H |
 | Decode GEMV | 14 contexts x 8 recipes pass; zero recipes admitted | Current FQ comparison excludes casts/gather/scatter while GEMV includes indexed I/O. Revisit equal-work timing; this is not proof GEMV cannot win |
 | Model decode regression | Open performance debt | Isolate the measured per-token gap with matched work; retain the old GEMM incumbent and do not attribute the whole gap to one missing algorithm |
-| Grouped Split-K / SIMT pair reader | Implemented and locally compiled; box pending | [Bounded experiment](KPACK_DECODE_SWEEP.md): 11 grouped modules, five SIMT formats, 260 cells. FP32 partials plus ordered reduction; no production promotion |
+| Grouped Split-K / SIMT pair reader | 260/260 PPU cells pass; performance reviewed | Q4 compact S2 improves on compact S1; Q5 compact S1 remains best. Pair reader improves both SIMT anchors. Host compact excludes CPU preparation and is not a production replacement |
+| GPU compact / persistent Split-K | Implemented; 16 new modules compile, 109 local tests pass; PPU pending | [204-cell device gate](KPACK_GPU_COMPACT.md) includes directory cost, mutable GPU routing, FP32 partials and ordinary/persistent comparison. External ABI unchanged; deployed native bundle not switched |
+| SIMT NVIDIA diagnosis | Real CUDA/half probe passes on RTX 5090; kernel port in progress | Development-only bridge, independent GGUF oracle, then memory/instruction counters. No NVIDIA result substitutes for PPU admission |
 
 The Q4 N512/K2048/E256/top8 single-token case was not omitted: overnight
 screen/neighbor/confirmation evidence includes TM8, and the runtime selects

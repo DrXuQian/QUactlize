@@ -13,6 +13,15 @@ not device admission and does not authorize deployment by itself.
 
 ## Current work: decode GEMV and ScaleFirst prefill
 
+The reviewed `kpack-decode.XZM60u` experiment passed 260/260 cells. A follow-up
+[GPU compact/persistent package](KPACK_GPU_COMPACT.md) now implements the
+missing device-only compact schedule and persistent S1/S2/S4/S8 inside parent
+modules, without changing the external grouped ABI. Sixteen new modules and
+109 local tests pass; the 204-cell PPU gate remains pending. It reuses the
+existing GPU directory and includes its build cost plus Split-K reduction in
+timing. No CPU router is introduced. The deployed native bundle and llama.cpp
+selection have not been switched to these experimental modules yet.
+
 An additive [decode experiment](KPACK_DECODE_SWEEP.md) now supplies ordinary
 grouped Split-K and an explicit SIMT word-pair/FMA reader. The experimental
 package is not a replacement for `kpack-native-v1` and must not be selected
