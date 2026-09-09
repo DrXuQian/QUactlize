@@ -15,5 +15,5 @@ claimed bitwise equivalent to the scalar reader. Both require independent
 device numerical checks. Existing runtime bundles and production selection
 are unchanged.
 
-See [the experiment guide](../../../../docs/KPACK_DECODE_SWEEP.md) for scope,
+See [the experiment guide](../../../docs/KPACK_DECODE_SWEEP.md) for scope,
 commands, timing boundaries, and failed-job resume behavior.
