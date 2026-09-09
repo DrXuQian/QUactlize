@@ -1,6 +1,7 @@
 #pragma once
 #include "abi.h"
 #include "kernel_types.cuh"
+#include "grouped_workspace.hpp"
 #include <algorithm>
 #include <limits>
 #include <memory>
@@ -34,7 +35,9 @@ inline int validate(qk_call_v1 const& c, qk_recipe_v1 const& r, int& max_rows, i
     return QK_UNSUPPORTED;
   max_rows = c.m;
   if constexpr (grouped) {
-    if (r.split != 1) return QK_INVALID;
+    // Only the ordinary kernel has K partitioning. Its output directory is
+    // slice-major and its FP32 partials require a final ordered reduction.
+    if (uint64_t(c.experts) * r.split > 65535) return QK_UNSUPPORTED;
     if (device_maximum > 0) {
       if (c.rows_host || c.rows_device || device_maximum > c.m ||
           device_maximum > INT32_MAX-256 || int64_t(device_maximum)*c.experts < c.m)
@@ -110,7 +113,8 @@ template<class T> struct DenseHandle final : Handle {
 };
 
 using Dense = DenseTypes<qtype,QK_TM,QK_TN,QK_TK,QK_WM,QK_WN,QK_STAGES,QK_AP,QK_DN>;
-template<bool P> using Group = GroupedTypes<qtype,QK_TM,QK_TN,QK_TK,QK_WM,QK_WN,QK_STAGES,QK_DN,P>;
+template<bool P, class O = Half>
+using Group = GroupedTypes<qtype,QK_TM,QK_TN,QK_TK,QK_WM,QK_WN,QK_STAGES,QK_DN,P,O>;
 
 inline uint64_t scheduler_bytes(int max_rows, int experts, bool persistent) {
   return align16(persistent ? quactlize::moe_directory::workspace_bytes(max_rows, experts, tm)
@@ -128,32 +132,73 @@ __global__ void grouped_device_metadata(int const* offsets, Half* output,
   strides[e]=cutlass::make_cute_packed_stride(Stride{},cute::make_shape(count,n,1));
 }
 
-template<bool Persistent> struct GroupedHandle final : Handle {
-  using T = Group<Persistent>;
+template<class Shape, class Stride>
+__global__ void grouped_splitk_device_metadata(int const* offsets, float* partials,
+    Shape* shapes, float** outputs, Stride* strides, int* rows,
+    int m, int n, int k, int experts, int splits) {
+  int e = int(blockIdx.x)*int(blockDim.x)+int(threadIdx.x);
+  if (e >= experts) return;
+  int begin=offsets[e], count=offsets[e+1]-begin;
+  rows[e]=count; shapes[e]=cute::make_shape(count,n,k);
+  for (int s=0; s<splits; ++s) {
+    int entry=e+s*experts;
+    outputs[entry]=partials+(int64_t(s)*m+begin)*n;
+    strides[entry]=cutlass::make_cute_packed_stride(Stride{},cute::make_shape(count,n,1));
+  }
+}
+
+template<bool Persistent, bool Split = false> struct GroupedHandle final : Handle {
+  static_assert(!Persistent || !Split, "persistent grouped Split-K is not implemented");
+  using Output = std::conditional_t<Split,float,Half>;
+  using T = Group<Persistent,Output>;
   using K = typename T::Kernel;
   using G = typename T::Gemm;
   using Shape = moe_grouped_ppu::GroupShape;
   using DStride = moe_grouped_ppu::DStride;
   G gemm;
+  using Reduction = cutlass::gemm::device::splitk_parallel::PpuMixedInputSplitKParallelReduction<8>;
+  Reduction reduction;
+  int splits = 1;
+  float* partials = nullptr;
   qk_call_v1 call{};
   int max_rows = 0;
   quactlize::moe_directory::View directory{};
   std::vector<Shape> shapes;
-  std::vector<Half*> outputs;
+  std::vector<Output*> outputs;
   std::vector<DStride> strides;
   std::vector<int> prefix;
   bool device_only = false;
   Shape* device_shapes = nullptr;
-  Half** device_outputs = nullptr;
+  Output** device_outputs = nullptr;
   DStride* device_strides = nullptr;
 
   int prepare(qk_call_v1 const& c, qk_recipe_v1 const& r, int occupancy, int maximum, bool from_device = false) {
     call = c;
+    splits = r.split;
     device_only = from_device;
     max_rows = maximum;
     auto stream = static_cast<hggcStream_t>(c.stream);
     if (!device_only) {
-      shapes.reserve(c.experts); outputs.reserve(c.experts); strides.reserve(c.experts);
+      shapes.reserve(c.experts);
+    }
+    GroupedWorkspace layout;
+    uint64_t head = scheduler_bytes(max_rows,c.experts,Persistent);
+    if (!grouped_workspace(c.experts,splits,c.m,c.n,head,sizeof(Shape),sizeof(DStride),
+        device_only,layout) || layout.total > c.workspace_bytes) return QK_INVALID;
+    char* base = static_cast<char*>(c.workspace);
+    auto ds = reinterpret_cast<Shape*>(base + layout.shapes);
+    auto dp = reinterpret_cast<Output**>(base + layout.outputs);
+    auto dd = reinterpret_cast<DStride*>(base + layout.strides);
+    Output* destination;
+    if constexpr (Split) {
+      partials = reinterpret_cast<float*>(base + layout.partials);
+      destination = partials;
+      typename Reduction::Arguments reduction_args{c.m,c.n,splits,partials,
+          layout.partial_bytes,static_cast<Half*>(c.output),c.n};
+      if (reduction.initialize(reduction_args)!=cutlass::Status::kSuccess) return QK_INVALID;
+    } else destination = static_cast<Half*>(c.output);
+    if (!device_only) {
+      outputs.resize(size_t(c.experts)*splits); strides.resize(outputs.size());
     }
     prefix.push_back(0);
     int64_t offset = 0;
@@ -163,25 +208,22 @@ template<bool Persistent> struct GroupedHandle final : Handle {
       int rows = c.rows_host[e], tiles = (rows + tm - 1) / tm;
       uniform &= tiles == first_tiles;
       shapes.emplace_back(rows,c.n,c.k);
-      outputs.push_back(static_cast<Half*>(c.output) + offset * c.n);
-      strides.push_back(cutlass::make_cute_packed_stride(DStride{},cute::make_shape(rows,c.n,1)));
+      for (int s=0; s<splits; ++s) {
+        outputs[e+s*c.experts]=destination+(int64_t(s)*c.m+offset)*c.n;
+        strides[e+s*c.experts]=cutlass::make_cute_packed_stride(DStride{},cute::make_shape(rows,c.n,1));
+      }
       prefix.push_back(prefix.back() + tiles);
       offset += rows;
     }
-    uint64_t head = scheduler_bytes(max_rows,c.experts,Persistent);
-    char* base = static_cast<char*>(c.workspace);
-    auto ds = reinterpret_cast<Shape*>(base + head);
-    auto dp = reinterpret_cast<Half**>(base + head + align16(sizeof(Shape)*c.experts));
-    auto dd = reinterpret_cast<DStride*>(reinterpret_cast<char*>(dp) + align16(sizeof(Half*)*c.experts));
     auto copy = [&](void* dst, void const* src, size_t bytes) {
       return hggcMemcpyAsync(dst,src,bytes,hggcMemcpyHostToDevice,stream) == hggcSuccess;
     };
     if (!device_only && (!copy(ds,shapes.data(),sizeof(Shape)*c.experts) ||
-        !copy(dp,outputs.data(),sizeof(Half*)*c.experts) ||
-        !copy(dd,strides.data(),sizeof(DStride)*c.experts))) return QK_RUNTIME_ERROR;
+        !copy(dp,outputs.data(),sizeof(Output*)*outputs.size()) ||
+        !copy(dd,strides.data(),sizeof(DStride)*strides.size()))) return QK_RUNTIME_ERROR;
     if (device_only) {
       device_shapes=ds; device_outputs=dp; device_strides=dd;
-      call.rows_device=reinterpret_cast<int*>(reinterpret_cast<char*>(dd)+align16(sizeof(DStride)*c.experts));
+      call.rows_device=reinterpret_cast<int*>(base + layout.rows);
     }
     auto sa = cutlass::make_cute_packed_stride(typename K::StrideA{},cute::make_shape(max_rows,c.k,c.experts));
     auto sb = cutlass::make_cute_packed_stride(typename K::StrideB{},cute::make_shape(c.n,c.k,c.experts));
@@ -193,7 +235,7 @@ template<bool Persistent> struct GroupedHandle final : Handle {
     typename G::Arguments args{cutlass::gemm::GemmUniversalMode::kGrouped, problem,
         {static_cast<Half const*>(c.a),sa,static_cast<typename T::Low const*>(c.low),sb,
          static_cast<Half const*>(c.metadata),ss,c.group_size,static_cast<Half const*>(c.zero),c.offsets_device},
-        {{},static_cast<Half const**>(nullptr),typename T::Epilogue::StrideC{},dp,dd},
+        {{},static_cast<Output const**>(nullptr),typename T::Epilogue::StrideC{},dp,dd},
         cutlass::KernelHardwareInfo{c.device,c.compute_units}};
     args.representative_m=max_rows; args.representative_n=c.n; args.representative_k=c.k;
     if constexpr (!std::is_void_v<typename T::High>)
@@ -204,7 +246,7 @@ template<bool Persistent> struct GroupedHandle final : Handle {
       args.logical_work_upper=uint64_t(directory.capacity)*uint64_t((c.n+tn-1)/tn);
       args.ctas_per_cu=occupancy; args.grid_ctas_override=r.grid; args.splitk=1;
     } else {
-      args.group_M=call.rows_device; args.mtiles_uniform=uniform?first_tiles:0; args.splitk=1;
+      args.group_M=call.rows_device; args.mtiles_uniform=uniform?first_tiles:0; args.splitk=splits;
     }
     if (G::can_implement(args) != cutlass::Status::kSuccess) return QK_UNSUPPORTED;
     if (G::get_workspace_size(args)>head) return QK_INVALID;
@@ -215,16 +257,25 @@ template<bool Persistent> struct GroupedHandle final : Handle {
   }
   int run(hggcStream_t stream) override {
     if (device_only) {
-      grouped_device_metadata<<<(call.experts+127)/128,128,0,stream>>>(call.offsets_device,
-          static_cast<Half*>(call.output),device_shapes,device_outputs,device_strides,
-          const_cast<int*>(call.rows_device),call.n,call.k,call.experts);
+      if constexpr (Split) {
+        grouped_splitk_device_metadata<<<(call.experts+127)/128,128,0,stream>>>(call.offsets_device,
+            partials,device_shapes,device_outputs,device_strides,const_cast<int*>(call.rows_device),
+            call.m,call.n,call.k,call.experts,splits);
+      } else {
+        grouped_device_metadata<<<(call.experts+127)/128,128,0,stream>>>(call.offsets_device,
+            static_cast<Half*>(call.output),device_shapes,device_outputs,device_strides,
+            const_cast<int*>(call.rows_device),call.n,call.k,call.experts);
+      }
       if (hggcGetLastError()!=hggcSuccess) return QK_RUNTIME_ERROR;
     }
     if constexpr (Persistent) {
       if (!quactlize::moe_directory::launch_build<tm>(call.rows_device,call.offsets_device,
           max_rows,call.experts,directory,stream)) return QK_RUNTIME_ERROR;
     }
-    return gemm.run(stream)==cutlass::Status::kSuccess ? QK_OK : QK_RUNTIME_ERROR;
+    if (gemm.run(stream)!=cutlass::Status::kSuccess) return QK_RUNTIME_ERROR;
+    if constexpr (Split)
+      if (reduction.run(stream)!=cutlass::Status::kSuccess) return QK_RUNTIME_ERROR;
+    return QK_OK;
   }
 };
 
@@ -246,12 +297,15 @@ inline int query(qk_call_v1 const& c,qk_recipe_v1 const& r,qk_resources_v1& out,
       cutlass::KernelHardwareInfo::query_device_multiprocessor_count(actual_device)!=c.compute_units)
     return QK_INVALID;
   if constexpr (grouped) {
-    out.workspace_bytes=scheduler_bytes(maximum,c.experts,r.algorithm==QK_PERSISTENT)+
-        align16(sizeof(moe_grouped_ppu::GroupShape)*c.experts)+
-        align16(sizeof(Half*)*c.experts)+align16(sizeof(moe_grouped_ppu::DStride)*c.experts)+
-        (device_maximum > 0 ? align16(sizeof(int)*c.experts) : 0);
-    status = r.algorithm==QK_PERSISTENT ? resource_query<typename Group<true>::Gemm>(out)
-                                      : resource_query<typename Group<false>::Gemm>(out);
+    GroupedWorkspace layout;
+    if (!grouped_workspace(c.experts,r.split,c.m,c.n,
+        scheduler_bytes(maximum,c.experts,r.algorithm==QK_PERSISTENT),
+        sizeof(moe_grouped_ppu::GroupShape),sizeof(moe_grouped_ppu::DStride),device_maximum>0,layout))
+      return QK_INVALID;
+    out.workspace_bytes=layout.total;
+    if (r.split>1) status=resource_query<typename Group<false,float>::Gemm>(out);
+    else status = r.algorithm==QK_PERSISTENT ? resource_query<typename Group<true>::Gemm>(out)
+                                           : resource_query<typename Group<false>::Gemm>(out);
   } else {
     if (r.split>1) {
       dense_splitk_parallel_ppu::WorkspacePlan plan;
@@ -309,6 +363,9 @@ extern "C" int quactlize_kpack_prepare_v1(qk_call_v1 const* c,qk_recipe_v1 const
       if (r->algorithm==QK_PERSISTENT) {
         result=std::make_unique<GroupedHandle<true>>();
         status=static_cast<GroupedHandle<true>*>(result.get())->prepare(*c,*r,resources.occupancy,maximum);
+      } else if (r->split>1) {
+        result=std::make_unique<GroupedHandle<false,true>>();
+        status=static_cast<GroupedHandle<false,true>*>(result.get())->prepare(*c,*r,resources.occupancy,maximum);
       } else {
         result=std::make_unique<GroupedHandle<false>>();
         status=static_cast<GroupedHandle<false>*>(result.get())->prepare(*c,*r,resources.occupancy,maximum);
@@ -365,6 +422,9 @@ extern "C" int quactlize_kpack_grouped_prepare_v2(qk_device_call_v2 const* d,
       std::unique_ptr<Handle> result;
       if (r->algorithm==QK_PERSISTENT) {
         auto p=std::make_unique<GroupedHandle<true>>();
+        status=p->prepare(c,*r,resources.occupancy,d->max_rows,true); result=std::move(p);
+      } else if (r->split>1) {
+        auto p=std::make_unique<GroupedHandle<false,true>>();
         status=p->prepare(c,*r,resources.occupancy,d->max_rows,true); result=std::move(p);
       } else {
         auto p=std::make_unique<GroupedHandle<false>>();

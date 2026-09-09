@@ -22,12 +22,15 @@ inline int sizes(int q, int n, int k, int experts,
 }
 
 inline int query(qkg_call_v1 const& c, qkg_config_v1 const& f,
-                 quactlize_ppu_placed_arrangement_v2 const* arrangement, qkg_sizes_v1& out) {
+                 quactlize_ppu_placed_arrangement_v2 const* arrangement, qkg_sizes_v1& out,
+                 bool pair = false) {
     if (c.version != 1 || c.size != sizeof(c) || f.version != 1 || f.size != sizeof(f) ||
         c.rows <= 0 || c.mode < QKG_DENSE || c.mode > QKG_INDEXED ||
         c.input_type < QKG_F16 || c.input_type > QKG_F32 ||
-        (f.columns != 16 && f.columns != 32) || (f.warps != 4 && f.warps != 8) ||
-        (f.split != 1 && f.split != 4) || c.a_row_stride < c.k || c.out_row_stride < c.n)
+        (f.columns != 16 && f.columns != 32) ||
+        (f.warps != 4 && f.warps != 8 && !(pair && f.warps == 2)) ||
+        (f.split != 1 && f.split != 4 && !(pair && (f.split == 2 || f.split == 8))) ||
+        c.a_row_stride < c.k || c.out_row_stride < c.n)
         return QKG_INVALID;
     int const rc = sizes(c.qtype, c.n, c.k, c.experts, arrangement, out);
     if (rc) return rc;

@@ -13,6 +13,13 @@ not device admission and does not authorize deployment by itself.
 
 ## Current work: decode GEMV and ScaleFirst prefill
 
+An additive [decode experiment](KPACK_DECODE_SWEEP.md) now supplies ordinary
+grouped Split-K and an explicit SIMT word-pair/FMA reader. The experimental
+package is not a replacement for `kpack-native-v1` and must not be selected
+by llama.cpp yet. Its one-command box gate checks 260 cells, including FP32
+partials and mutable device routing. Production heuristic and libraries stay
+unchanged until the results are reviewed.
+
 Latest update: `kpack-native-model.O0ki3q.results.tgz` has passing 28 native
 contexts, 14 GEMV contexts and adapter tests. Model prefill improves, but
 decode remains about 31% slower; the selected-native dense trace admission

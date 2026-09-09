@@ -14,6 +14,7 @@ closure. Canonical offline planes are unchanged.
 | 5. ScaleFirst prefill | Native metadata/GEMM gates pass; model prefill improves | Immutable-weight prepass is reused. Full-model first-use and resident timing remain separate; no inference wait on cache D2H |
 | Decode GEMV | 14 contexts x 8 recipes pass; zero recipes admitted | Current FQ comparison excludes casts/gather/scatter while GEMV includes indexed I/O. Revisit equal-work timing; this is not proof GEMV cannot win |
 | Model decode regression | Open performance debt | Isolate the measured per-token gap with matched work; retain the old GEMM incumbent and do not attribute the whole gap to one missing algorithm |
+| Grouped Split-K / SIMT pair reader | Implemented and locally compiled; box pending | [Bounded experiment](KPACK_DECODE_SWEEP.md): 11 grouped modules, five SIMT formats, 260 cells. FP32 partials plus ordered reduction; no production promotion |
 
 The Q4 N512/K2048/E256/top8 single-token case was not omitted: overnight
 screen/neighbor/confirmation evidence includes TM8, and the runtime selects

@@ -6,6 +6,11 @@ int qkg_launch_11(qkg_call_v1 const&, qkg_config_v1 const&);
 int qkg_launch_12(qkg_call_v1 const&, qkg_config_v1 const&);
 int qkg_launch_13(qkg_call_v1 const&, qkg_config_v1 const&);
 int qkg_launch_14(qkg_call_v1 const&, qkg_config_v1 const&);
+int qkg_pair_launch_10(qkg_call_v1 const&, qkg_config_v1 const&);
+int qkg_pair_launch_11(qkg_call_v1 const&, qkg_config_v1 const&);
+int qkg_pair_launch_12(qkg_call_v1 const&, qkg_config_v1 const&);
+int qkg_pair_launch_13(qkg_call_v1 const&, qkg_config_v1 const&);
+int qkg_pair_launch_14(qkg_call_v1 const&, qkg_config_v1 const&);
 }
 
 extern "C" int quactlize_kpack_gemv_query_v1(qkg_call_v1 const* c, qkg_config_v1 const* f,
@@ -17,11 +22,21 @@ extern "C" int quactlize_kpack_gemv_query_v1(qkg_call_v1 const* c, qkg_config_v1
     return rc;
 }
 
-extern "C" int quactlize_kpack_gemv_run_v1(qkg_call_v1 const* c, qkg_config_v1 const* f,
-        quactlize_ppu_placed_arrangement_v2 const* arrangement) {
+extern "C" int quactlize_kpack_gemv_pair_query_v1(qkg_call_v1 const* c, qkg_config_v1 const* f,
+        quactlize_ppu_placed_arrangement_v2 const* arrangement, qkg_sizes_v1* out) {
+    if (!c || !f || !out) return QKG_INVALID;
+    qkg_sizes_v1 result{};
+    int const rc=quactlize::execution::query(*c,*f,arrangement,result,true);
+    if (!rc) *out=result;
+    return rc;
+}
+
+static int run(qkg_call_v1 const* c, qkg_config_v1 const* f,
+        quactlize_ppu_placed_arrangement_v2 const* arrangement, bool pair) {
     using namespace quactlize::execution;
     qkg_sizes_v1 s{};
-    int const rc = quactlize_kpack_gemv_query_v1(c, f, arrangement, &s);
+    int const rc = pair ? quactlize_kpack_gemv_pair_query_v1(c,f,arrangement,&s)
+                       : quactlize_kpack_gemv_query_v1(c,f,arrangement,&s);
     if (rc) return rc;
     if (!c->a || !c->low || !c->units || !c->output ||
         (s.high_bytes != 0) != (c->high != nullptr) ||
@@ -48,5 +63,15 @@ extern "C" int quactlize_kpack_gemv_run_v1(qkg_call_v1 const* c, qkg_config_v1 c
     }
     using Launch = int(*)(qkg_call_v1 const&, qkg_config_v1 const&);
     static Launch const launch[] = {qkg_launch_10,qkg_launch_11,qkg_launch_12,qkg_launch_13,qkg_launch_14};
-    return launch[c->qtype - 10](*c, *f);
+    static Launch const pairs[] = {qkg_pair_launch_10,qkg_pair_launch_11,qkg_pair_launch_12,qkg_pair_launch_13,qkg_pair_launch_14};
+    return (pair ? pairs : launch)[c->qtype - 10](*c, *f);
+}
+
+extern "C" int quactlize_kpack_gemv_run_v1(qkg_call_v1 const* c, qkg_config_v1 const* f,
+        quactlize_ppu_placed_arrangement_v2 const* arrangement) {
+    return run(c,f,arrangement,false);
+}
+extern "C" int quactlize_kpack_gemv_pair_run_v1(qkg_call_v1 const* c, qkg_config_v1 const* f,
+        quactlize_ppu_placed_arrangement_v2 const* arrangement) {
+    return run(c,f,arrangement,true);
 }

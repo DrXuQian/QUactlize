@@ -109,6 +109,13 @@ def build(sdk, output, jobs):
             for s in (1, 4)
         ],
         device_validated=False,
+        gemv_pair_configs=[
+            dict(columns=c, warps=w, split=s)
+            for c in (16, 32)
+            for w in (2, 4, 8)
+            for s in (1, 2, 4, 8)
+        ],
+        gemv_pair_affine="FP16_FMA_ONE_ROUNDING",
     )
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(

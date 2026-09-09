@@ -3,3 +3,5 @@ prebuilt/ppu0010/kpack-execution-v1/**/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/kpack-execution-v1/libquactlize_ppu_execution.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/kpack-native-v1/**/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/kpack-native-v1/*.so filter=lfs diff=lfs merge=lfs -text
+prebuilt/ppu0010/kpack-decode-sweep-v1/**/*.so filter=lfs diff=lfs merge=lfs -text
+prebuilt/ppu0010/kpack-decode-sweep-v1/*.so filter=lfs diff=lfs merge=lfs -text

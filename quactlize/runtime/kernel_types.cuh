@@ -40,7 +40,8 @@ struct DenseTypes {
       Shipping, Tile, Warp, High, (PPU_PACKED_SCALE != 0)>;
 };
 
-template<int Q, int TM, int TN, int TK, int WM, int WN, int ST, int DN, bool Persistent>
+template<int Q, int TM, int TN, int TK, int WM, int WN, int ST, int DN, bool Persistent,
+         class Output = Half>
 struct GroupedTypes {
   using F = Format<Q>;
   using Low = typename F::Low;
@@ -60,9 +61,10 @@ struct GroupedTypes {
   using Epilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
       cutlass::arch::PPU0010, cutlass::arch::OpClassTensorOp, Tile, Warp,
       cutlass::epilogue::collective::EpilogueTileAuto, float, float,
-      Half, cutlass::layout::RowMajor*, 8, Half, cutlass::layout::RowMajor*, 8,
+      Output, cutlass::layout::RowMajor*, 16 / sizeof(Output),
+      Output, cutlass::layout::RowMajor*, 16 / sizeof(Output),
       cutlass::epilogue::EpiloguePtrArraySimtVectorized,
-      cutlass::epilogue::fusion::LinearCombination<Half, float>>::CollectiveOp;
+      cutlass::epilogue::fusion::LinearCombination<Output, float>>::CollectiveOp;
   using Kernel = std::conditional_t<Persistent,
       cutlass::gemm::kernel::GroupPersistentMixedInputKernel<moe_grouped_ppu::GroupProblemShape, Mainloop, Epilogue>,
       cutlass::gemm::kernel::GemmUniversal<moe_grouped_ppu::GroupProblemShape, Mainloop, Epilogue>>;

@@ -23,7 +23,43 @@ __device__ int expert_for(qkg_call_v1 const& c, int row) {
     return lo;
 }
 
-template<int Columns, int Warps>
+// The pair reader keeps one b16 word from each plane live across all K8
+// slots in this metadata group. It uses half2 only for exact code conversion
+// and fused affine dequantization; the dot still accumulates in FP32.
+template<class Reader>
+__device__ __forceinline__ float pair_dot(qkg_call_v1 const& c, int64_t a_base,
+    uint16_t const* low, uint16_t const* high, uint8_t const* units,
+    int col, int worker, int workers, int partition, int split) {
+    using R=Reader;
+    float even=0.f, odd=0.f;
+    for (int g=partition*workers+worker; g<c.k/R::group; g+=split*workers) {
+        auto const s=R::scale(units,col,g,c.n);
+        #pragma unroll
+        for (int r=0; r<8; ++r) {
+            int const begin=g*R::group+r;
+            uint16_t const lo=low[R::LowMap::word_index(col,begin,c.n)];
+            uint16_t hi=0;
+            if constexpr (R::hi_bits!=0) hi=high[R::HighMap::word_index(col,begin,c.n)];
+            #pragma unroll
+            for (int slot=0; slot<R::group/8; slot+=2) {
+                int const k0=begin+8*slot, k1=k0+8;
+                // Remove the magic integer before multiplying. Folding it
+                // into zero would cause FP16 cancellation and change values.
+                uint32_t const weight=R::weight_pair(R::raw_from_words(lo,hi,col,k0),
+                    R::raw_from_words(lo,hi,col,k1),s);
+                float a0=c.input_type==QKG_F32 ? static_cast<float const*>(c.a)[a_base+k0]
+                    : float(static_cast<Half const*>(c.a)[a_base+k0]);
+                float a1=c.input_type==QKG_F32 ? static_cast<float const*>(c.a)[a_base+k1]
+                    : float(static_cast<Half const*>(c.a)[a_base+k1]);
+                even=fmaf(float(Half(a0)),float(cutlass::gguf_packed::lo_h2(weight)),even);
+                odd=fmaf(float(Half(a1)),float(cutlass::gguf_packed::hi_h2(weight)),odd);
+            }
+        }
+    }
+    return even+odd;
+}
+
+template<int Columns, int Warps, bool Pair = false>
 __global__ void kpack_gemv(qkg_call_v1 c, int split) {
     constexpr int Workers = Warps * 32 / Columns;
     int const tiles = c.n / Columns;
@@ -51,6 +87,9 @@ __global__ void kpack_gemv(qkg_call_v1 c, int split) {
         high = reinterpret_cast<uint16_t const*>(c.high + expert * (nk / 8 * R::hi_bits));
     auto units = c.units + expert * (nk / 256 * R::U::kSbBytes);
     float accum = 0.f;
+    if constexpr (Pair) {
+        accum=pair_dot<R>(c,a_base,low,high,units,col,worker,Workers,partition,split);
+    } else {
     for (int g = partition * Workers + worker; g < c.k / R::group; g += split * Workers) {
         auto const s = R::scale(units, col, g, c.n);
         // Eight b16 word addresses per group. Slots are K8-spaced in each
@@ -68,6 +107,7 @@ __global__ void kpack_gemv(qkg_call_v1 c, int split) {
                 accum = fmaf(a, float(R::weight(R::code(low, high, col, kk, c.n), s)), accum);
             }
         }
+    }
     }
     __shared__ float partial[Warps * 32];
     partial[threadIdx.x] = accum;
@@ -92,10 +132,10 @@ __global__ void kpack_gemv_reduce(qkg_call_v1 c, int split) {
     }
 }
 
-template<int Columns, int Warps> int launch(qkg_call_v1 const& c, int split) {
+template<int Columns, int Warps, bool Pair = false> int launch(qkg_call_v1 const& c, int split) {
     auto stream = static_cast<hggcStream_t>(c.stream);
     unsigned const grid = unsigned(uint64_t(c.rows) * split * (c.n / Columns));
-    kpack_gemv<Columns,Warps><<<grid,Warps*32,0,stream>>>(c,split);
+    kpack_gemv<Columns,Warps,Pair><<<grid,Warps*32,0,stream>>>(c,split);
     if (hggcGetLastError() != hggcSuccess) return QKG_RUNTIME;
     if (split > 1) {
         uint64_t const count = (uint64_t(c.rows)*c.n+255)/256;
@@ -110,4 +150,15 @@ extern "C" int QKG_CONCAT(qkg_launch_,QKG_QTYPE)(qkg_call_v1 const& c, qkg_confi
     if (hggcGetLastError() != hggcSuccess) return QKG_RUNTIME;
     if (f.columns == 16) return f.warps == 4 ? launch<16,4>(c,f.split) : launch<16,8>(c,f.split);
     return f.warps == 4 ? launch<32,4>(c,f.split) : launch<32,8>(c,f.split);
+}
+
+extern "C" int QKG_CONCAT(qkg_pair_launch_,QKG_QTYPE)(qkg_call_v1 const& c, qkg_config_v1 const& f) {
+    using namespace QKG_CONCAT(kpack_q,QKG_QTYPE);
+    if (hggcGetLastError()!=hggcSuccess) return QKG_RUNTIME;
+    if (f.columns==16) {
+        if (f.warps==2) return launch<16,2,true>(c,f.split);
+        return f.warps==4 ? launch<16,4,true>(c,f.split) : launch<16,8,true>(c,f.split);
+    }
+    if (f.warps==2) return launch<32,2,true>(c,f.split);
+    return f.warps==4 ? launch<32,4,true>(c,f.split) : launch<32,8,true>(c,f.split);
 }
