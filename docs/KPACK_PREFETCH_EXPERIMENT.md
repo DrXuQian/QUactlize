@@ -1,8 +1,59 @@
 # Cross-call weight prefetch experiment
 
-Status: local host contracts and PPU SDK compilation only; device performance
-and correctness are pending. No production kernel, selection, offline format,
-or JIT cache key is changed. The helper lives under `dev/l2_prefetch`.
+Status: the same-shape Q4/Q5 controls pass on PPU in `qmk0by` at `89a9e3e`.
+The added Q4-to-Q5 projection pairing is pending device measurement. No
+production kernel, selection, offline format, or JIT cache key is changed.
+The helper lives under `dev/l2_prefetch`.
+
+## Q4 gate/up window, Q5 down prefetch
+
+Run the two already-built projection operators with the same eight known
+expert IDs: current Q4 N512/K2048/S4, target Q5 N2048/K512/S1. This is one
+gate/up-shaped Q4 call followed by one down-shaped Q5 call, **not** a complete
+gate-plus-up MLP. Down still consumes an independently checked synthetic input;
+no SiLU, product, activation handoff, router, gather/scatter or llama integration
+is added. The purpose is to measure a compute/prefetch window in isolation.
+
+```bash
+PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
+CUDA_VISIBLE_DEVICES=0 \
+bash tools/run_kpack_prefetch_box.sh --case q4-to-q5 --blocks 16 36
+```
+
+This runs 12 configurations, 3 alternating rounds and 11 samples: 396 measured
+replays, plus the small timer gate and setup. There is no rebuild or new binary.
+The ordinary `pair` arms include the current call, any prefetch tail, and down;
+their total delta is the actual instrumented sequence comparison.
+
+An additional `primed-pair/load` arm finishes the same blocking weight reader
+**before** the timing origin, then runs current and down. It excludes preload
+cost and resource overlap intentionally. Its receipt says
+`OPTIMISTIC_CURRENT_PLUS_TARGET_NOT_NET_LATENCY`; never promote its delta as a
+net speedup. It primes weights without running a full target GEMM first.
+
+All selected experts' low/high/unit ranges are traversed, at one request every
+32 bytes. The load control reads one 4-byte word at each address and validates
+its checksum; it does not read every byte individually. Range coverage and
+completed loads are **not proof of complete L2 residency**, even for the primed
+control. The 16/36 CTA choices change parallelism, not weight coverage or a
+fixed CU partition.
+
+## First box results: same-shape controls
+
+`kpack-prefetch.qmk0by.results.tgz` contains 990 finite samples and passing
+timer/numerical checks for Q4 and Q5. Runtime libraries match the build;
+only compiler/inspector hashes differ. Recomputed summaries agree with the
+archive. For concurrent hints with 16 CTAs:
+
+| Case | Current, us | Target, us | Combined, us |
+|---|---:|---:|---:|
+| Q4 to Q4 | 20.60 → 21.96 | 16.56 → 15.36 | 37.48 → 37.80 |
+| Q5 to Q5 | 20.16 → 21.40 | 16.52 → 15.20 | 36.80 → 37.00 |
+
+Target intervals improve, but the current-call interference offsets them;
+no net gain is established. These are not Q4-to-Q5 results. A repeated-target
+warm control reaches 14.64/14.44 us, but also warms non-weight state and is not
+a weight-only prefetch promise.
 
 ## Questions, kept separate
 
@@ -39,8 +90,9 @@ evidence that a half-CU partition retains its performance.
 
 ## Experimental boundaries
 
-- Current and target have separate full device allocations. Target contents
-  are an expert permutation, not aliases of already-read current weights.
+- Current and target have separate full device allocations. Same-format
+  controls use an expert permutation; cross-projection controls use their
+  respective Q4/Q5 fixtures. Neither aliases already-read current weights.
 - Only the eight selected experts' low/high/unit planes are prefetched.
   Next experts are assumed known, not predicted. This models an upper-bound
   cache opportunity, not a deployable next-layer MoE router.
@@ -72,12 +124,13 @@ each must appear exactly once as an event-record node in the resulting graph.
 The local PPU SDK declares that API and flag in `hggc_runtime_api.h` and
 `driver_types.h`. The corresponding capture meaning is documented in the
 [CUDA event API](https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__EVENT.html).
-PPU execution of the repaired timer still needs device validation.
+The repaired timer passes on PPU in `qmk0by`; the added primed timeline still
+needs a device run.
 
 Fork and join use **different** ordinary capture events, with wait flags 0.
 No external wait or dependency on an uncaptured setup event is introduced.
 Before constructing the full weight fixture, the runner exercises these same
-five timeline shapes using small device memsets, validates graph record nodes,
+six timeline shapes using small device memsets, validates graph record nodes,
 replays each three times and checks the writes. Its `*.timing.json` receipt is
 saved on pass or failure. A failed interval names the arm, event endpoints,
 query status and expected timing-node count; it is never treated as zero time.

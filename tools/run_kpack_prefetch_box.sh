@@ -22,6 +22,24 @@ finish() {
     exit "$rc"
 }
 trap finish EXIT
+cases=(q12 q13)
+options=()
+while (($#)); do
+    case "$1" in
+        --case)
+            if (($# < 2)); then
+                printf 'missing --case value\n' >&2
+                exit 2
+            fi
+            case "$2" in
+                q12|q13|q4-to-q5) cases=("$2") ;;
+                *) printf 'unknown prefetch case: %s\n' "$2" >&2; exit 2 ;;
+            esac
+            shift 2
+            ;;
+        *) options+=("$1"); shift ;;
+    esac
+done
 # Keep the chosen Python interpreter when SDK setup changes PATH.
 set +u
 source "$PPU_SDK/envsetup.sh"
@@ -34,9 +52,9 @@ cd "$REPO"
 git rev-parse HEAD > "$RUN/results/source.txt"
 printf 'KPACK_PREFETCH_START no_compilation=1 profiler=none results=%s/results\n' "$RUN"
 failed=0
-for q in q12 q13; do
+for q in "${cases[@]}"; do
     if "$PYTHON" -u tools/run_kpack_prefetch.py --sdk "$PPU_SDK" \
-        --case "$q" --output "$RUN/results" "$@" 2>&1 | tee "$RUN/results/$q.log"; then
+        --case "$q" --output "$RUN/results" "${options[@]}" 2>&1 | tee "$RUN/results/$q.log"; then
         printf 'KPACK_PREFETCH_CASE case=%s status=PASS\n' "$q"
     else
         failed=1

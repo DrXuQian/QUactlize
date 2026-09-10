@@ -35,8 +35,12 @@ recorded before launch; this changes no binary or numerical check. The helper
 and measured GEMM parents do not need recompilation for this preflight repair.
 The subsequent `event interval status=1` is a timer-path failure: graph timing
 now uses explicit event-record nodes and separate internal fork/join events.
-A small five-arm timer gate runs before weight construction. Host contracts
-pass, but repaired PPU timing remains pending; no prefetch gain is claimed.
+A small timer gate runs before weight construction. In `qmk0by`, both original
+cases pass that gate and numerical checks (990 samples), but concurrent hints
+do not establish a net speedup. A Q4 gate/up-shaped call with Q5 down-weight
+prefetch and a preload-cost-excluded control are now available as
+`--case q4-to-q5`; their PPU results remain pending. This stays an independent
+operator-window experiment with synthetic down inputs, not a model change.
 
 The [complete delivery backlog](KPACK_EXECUTION_FOLLOWUP.md#complete-delivery-backlog)
 is the current task authority, including production JIT, model-load

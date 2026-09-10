@@ -1,5 +1,7 @@
 import ctypes as C
 import json
+import os
+import subprocess
 from types import SimpleNamespace
 
 import numpy as np
@@ -126,6 +128,33 @@ def test_exact_measured_subjects():
         ) == ("fq-grouped", 8, 64, 256, 8, 16, 2, 0)
 
 
+def test_cross_projection_reuses_exact_q4_and_q5_parents():
+    rows = subjects()
+    manifest = dict(subjects=rows)
+    selected = probe.select_subject(manifest, "q4-to-q5")
+    current = selected["current_subject"]
+    assert (current["q"], current["n"], current["k"], current["split"]) == (
+        12,
+        512,
+        2048,
+        4,
+    )
+    assert (selected["q"], selected["n"], selected["k"], selected["split"]) == (
+        13,
+        2048,
+        512,
+        1,
+    )
+    assert current["module"] == rows[0]["module"]
+    assert selected["module"] == rows[1]["module"]
+    assert rows[1]["case"] == "q13" and "current_subject" not in rows[1]
+    assert probe.select_subject(manifest, "q12") == rows[0]
+    with pytest.raises(ValueError, match="dimensions do not match"):
+        probe.select_subject(
+            dict(subjects=[rows[0], rows[1] | dict(k=1024)]), "q4-to-q5"
+        )
+
+
 def test_ranges_only_active_experts_and_all_planes():
     planes = dict(low=4096, high=8192, units=16384)
     sizes = dict(low=512, high=256, units=256)
@@ -211,7 +240,10 @@ def test_receipt_detects_dropped_load_or_wrong_range():
 
 
 @pytest.mark.parametrize("record_nodes", [True, False])
-def test_graph_has_internal_fork_and_explicit_timestamps(monkeypatch, record_nodes):
+@pytest.mark.parametrize("kind", ["pair", "primed-pair"])
+def test_graph_has_internal_fork_and_explicit_timestamps(
+    monkeypatch, record_nodes, kind
+):
     log, nodes = [], []
 
     def create(ptr):
@@ -285,7 +317,7 @@ def test_graph_has_internal_fork_and_explicit_timestamps(monkeypatch, record_nod
         0,
         0,
         0,
-        "pair",
+        kind,
         "load",
         4,
     )
@@ -294,36 +326,50 @@ def test_graph_has_internal_fork_and_explicit_timestamps(monkeypatch, record_nod
         # event RECORD nodes exist. Reject before running the numerical fixture.
         with pytest.raises(ValueError, match="exactly one record node: origin"):
             probe.Experiment(*args)
-        assert len([v for v in log if v[0] == "destroy"]) == 9
+        assert len([v for v in log if v[0] == "destroy"]) == (
+            9 if kind == "pair" else 5
+        )
         assert ("destroy_graph",) in log
         return
     graph = probe.Experiment(*args)
-    assert graph.timing_nodes == 7
+    assert graph.timing_nodes == (7 if kind == "pair" else 5)
     origin = graph.events["origin"].value
-    fork, join = graph.fences["fork"].value, graph.fences["join"].value
-    assert (
-        log.index(("timestamp", origin, 1, 1))
-        < log.index(("record", fork, 1))
-        < log.index(("wait", 2, fork, 0))
-        < log.index(("prefetch", 2))
-        < log.index(("record", join, 2))
-    )
-    assert (
-        log.index(("current",))
-        < log.index(("timestamp", graph.events["current_end"].value, 1, 1))
-        < log.index(("wait", 1, join, 0))
-        < log.index(("target",))
-    )
+    if kind == "pair":
+        fork, join = graph.fences["fork"].value, graph.fences["join"].value
+        assert (
+            log.index(("timestamp", origin, 1, 1))
+            < log.index(("record", fork, 1))
+            < log.index(("wait", 2, fork, 0))
+            < log.index(("prefetch", 2))
+            < log.index(("record", join, 2))
+        )
+        assert (
+            log.index(("current",))
+            < log.index(("timestamp", graph.events["current_end"].value, 1, 1))
+            < log.index(("wait", 1, join, 0))
+            < log.index(("target",))
+        )
+        assert not ({fork, join} & set(nodes))
+        assert [entry for entry in log if entry[0] == "wait"] == [
+            ("wait", 2, fork, 0),
+            ("wait", 1, join, 0),
+        ]
+    else:
+        assert (
+            log.index(("pressure",))
+            < log.index(("prefetch", 1))
+            < log.index(("timestamp", origin, 1, 1))
+            < log.index(("current",))
+            < log.index(("target",))
+        )
+        assert not graph.fences and not graph.prefetching
+        assert not any(v[0] == "wait" for v in log)
+        assert "prefetch_start" not in graph.events
     assert (
         log.index(("capture_begin", 1))
         < log.index(("pressure",))
         < log.index(("capture_end", 1))
     )
-    assert not ({fork, join} & set(nodes))
-    assert [entry for entry in log if entry[0] == "wait"] == [
-        ("wait", 2, fork, 0),
-        ("wait", 1, join, 0),
-    ]
     # A duplicate node for a timer is not a valid single timestamp boundary.
     nodes.append(origin)
     with pytest.raises(ValueError, match="exactly one record node: origin"):
@@ -399,7 +445,7 @@ def test_timing_self_test_covers_timelines_and_detects_missing_write(
 
         def sample(self):
             self.api.pressure()
-            if self.kind == "pair":
+            if self.kind in probe.PAIR_KINDS:
                 self.current.launch()
             if self.mode != "none" and not drop_prefetch:
                 self.api.prefetch(2)
@@ -426,7 +472,7 @@ def test_timing_self_test_covers_timelines_and_detects_missing_write(
         result = probe.timing_self_test(sdk, path)
         assert result == json.loads(path.read_text())
         assert result["status"] == "PASS"
-        assert len(replays) == 15 and len(set(replays)) == len(result["arms"]) == 5
+        assert len(replays) == 18 and len(set(replays)) == len(result["arms"]) == 6
 
 
 def test_timing_admission_precedes_full_weight_fixture(tmp_path, monkeypatch):
@@ -472,6 +518,12 @@ def test_summary_does_not_mix_pair_and_sequential_baselines():
                     envelope_overlap_us=10.0,
                 ),
             ),
+            (
+                "primed-pair",
+                "load",
+                36,
+                dict(current_us=20.0, target_us=8.0, total_us=28.0),
+            ),
         )
     ]
     rows = probe.summary(cells)
@@ -481,3 +533,52 @@ def test_summary_does_not_mix_pair_and_sequential_baselines():
     assert rows[3]["current_delta_pct"] == pytest.approx(10.0)
     assert "NOT_PRODUCER" in rows[3]["overlap_scope"]
     assert len(probe.configurations([4, 16, 36])) == 15
+    assert rows[4]["current_delta_pct"] == 0
+    assert rows[4]["total_delta_pct"] == pytest.approx(100 * (28 / 38 - 1))
+    assert rows[4]["preload_cost_excluded"] is True
+    assert rows[4]["metric_scope"] == "OPTIMISTIC_CURRENT_PLUS_TARGET_NOT_NET_LATENCY"
+    assert "overlap_scope" not in rows[4]
+    assert probe.configurations([16, 36], include_primed=True)[-1] == (
+        "primed-pair",
+        "load",
+        36,
+    )
+    assert len(probe.configurations([16, 36], include_primed=True)) == 12
+
+
+@pytest.mark.parametrize("selected", [None, "q4-to-q5"])
+def test_box_case_selection_runs_each_requested_case_once(tmp_path, selected):
+    sdk = tmp_path / "sdk"
+    sdk.mkdir()
+    (sdk / "envsetup.sh").write_text("# empty test environment\n")
+    log = tmp_path / "argv.txt"
+    python = tmp_path / "python"
+    python.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$PREFETCH_TEST_ARGV"\n')
+    python.chmod(0o700)
+    args = ["bash", str(probe.ROOT / "tools/run_kpack_prefetch_box.sh")]
+    if selected:
+        args += ["--case", selected]
+    args += ["--blocks", "16", "36", "--allow-unverified-sdk"]
+    result = subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        env=os.environ
+        | dict(
+            PPU_SDK=str(sdk),
+            PYTHON=str(python),
+            RESULT_ROOT=str(tmp_path),
+            PREFETCH_TEST_ARGV=str(log),
+        ),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    runs = [
+        line
+        for line in log.read_text().splitlines()
+        if line.startswith("-u tools/run_kpack_prefetch.py")
+    ]
+    expected = [selected] if selected else ["q12", "q13"]
+    assert len(runs) == len(expected)
+    for line, case in zip(runs, expected):
+        assert line.count("--case ") == 1 and f"--case {case} " in line
+        assert "--blocks 16 36 --allow-unverified-sdk" in line

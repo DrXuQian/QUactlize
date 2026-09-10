@@ -55,6 +55,18 @@ class Range(C.Structure):
 # cross-stream dependencies still use separate, ordinary capture events.
 EVENT_RECORD_EXTERNAL = 0x01
 GRAPH_EVENT_RECORD = 0x07
+PAIR_KINDS = ("pair", "primed-pair")
+CASES = ("q12", "q13", "q4-to-q5")
+
+
+def select_subject(manifest, case):
+    rows = {s["case"]: s for s in manifest["subjects"]}
+    if case == "q4-to-q5":
+        current, target = rows["q12"], rows["q13"]
+        if (current["n"], current["k"]) != (target["k"], target["n"]):
+            raise ValueError("gate/up and down projection dimensions do not match")
+        return target | dict(case=case, current_subject=current)
+    return rows[case]
 
 
 def timing_bind(sdk):
@@ -394,11 +406,14 @@ class Experiment:
     ):
         self.sdk, self.r, self.pf = sdk, r, pf
         self.events, self.fences = {}, {}
-        self.kind, self.prefetching = kind, mode != "none"
+        self.kind = kind
+        self.prefetching = mode != "none" and kind != "primed-pair"
+        if kind == "primed-pair" and mode != "load":
+            raise ValueError("primed-pair requires the completed-load control")
         self.label = f"kind={kind} mode={mode} blocks={blocks}"
         self.graph = None
         names = ["origin", "next_start", "next_end"]
-        if kind == "pair":
+        if kind in PAIR_KINDS:
             names += ["current_start", "current_end"]
         if self.prefetching:
             names += ["prefetch_start", "prefetch_end"]
@@ -407,7 +422,7 @@ class Experiment:
                 (self.events, names),
                 (
                     self.fences,
-                    ["fork", "join"] if kind == "pair" and self.prefetching else [],
+                    ["fork", "join"] if kind in PAIR_KINDS and self.prefetching else [],
                 ),
             ):
                 for name in event_names:
@@ -428,8 +443,7 @@ class Experiment:
                 "capture timing record " + name,
             )
 
-        def prefetch(stream):
-            record("prefetch_start", stream)
+        def launch_prefetch(stream):
             checked(
                 probe.prefetch(
                     ranges,
@@ -441,6 +455,10 @@ class Experiment:
                 ),
                 "prefetch",
             )
+
+        def prefetch(stream):
+            record("prefetch_start", stream)
+            launch_prefetch(stream)
             record("prefetch_end", stream)
 
         def capture():
@@ -448,8 +466,13 @@ class Experiment:
                 probe.pressure(pressure, pressure_bytes, pressure_sink, r.stream),
                 "cache pressure",
             )
+            if kind == "primed-pair":
+                # An optimistic control, not a net-speedup measurement: the
+                # same weight reads finish before either current or target is
+                # timed. No full target GEMM is used to prime its other state.
+                launch_prefetch(r.stream)
             record("origin", r.stream)
-            if kind == "pair":
+            if kind in PAIR_KINDS:
                 if self.prefetching:
                     # Keep dependency events separate from timestamp nodes.
                     # No external wait and no dependency on uncaptured work.
@@ -511,7 +534,7 @@ class Experiment:
                     f"event_query=[{begin_query},{end_query}] timing_nodes={self.timing_nodes}"
                 )
             result[name] = float(elapsed.value) * 1000
-        return intervals(result, self.kind == "pair", self.prefetching)
+        return intervals(result, self.kind in PAIR_KINDS, self.prefetching)
 
     def close(self):
         if self.graph:
@@ -553,6 +576,7 @@ def timing_self_test(sdk, output):
             ("pair", "none", 0),
             ("sequential", "load", 1),
             ("pair", "load", 1),
+            ("primed-pair", "load", 1),
         ):
             result["current_arm"] = dict(kind=key[0], mode=key[1])
             r.fill(target, 0xA5, size)
@@ -581,7 +605,7 @@ def timing_self_test(sdk, output):
         result["status"] = "PASS"
         result.pop("current_arm")
         print(
-            "KPACK_PREFETCH_TIMING PASS arms=5 graph_replays=15 before_weight_fixture=1",
+            "KPACK_PREFETCH_TIMING PASS arms=6 graph_replays=18 before_weight_fixture=1",
             flush=True,
         )
         return result
@@ -591,13 +615,16 @@ def timing_self_test(sdk, output):
         r.close()
 
 
-def configurations(blocks):
-    return [("cold", "none", 0), ("warm", "none", 0), ("pair", "none", 0)] + [
+def configurations(blocks, *, include_primed=False):
+    result = [("cold", "none", 0), ("warm", "none", 0), ("pair", "none", 0)] + [
         (kind, mode, count)
         for kind in ("sequential", "pair")
         for mode in ("hint", "load")
         for count in blocks
     ]
+    if include_primed:
+        result.append(("primed-pair", "load", max(blocks)))
+    return result
 
 
 def summary(cells):
@@ -614,15 +641,18 @@ def summary(cells):
     cold = next(r for r in result if r["kind"] == "cold")
     pair = next(r for r in result if r["kind"] == "pair" and r["mode"] == "none")
     for row in result:
-        base = pair if row["kind"] == "pair" else cold
+        base = pair if row["kind"] in PAIR_KINDS else cold
         row["target_delta_pct"] = 100 * (row["target_us"] / base["target_us"] - 1)
         row["total_delta_pct"] = 100 * (row["total_us"] / base["total_us"] - 1)
-        if row["kind"] == "pair":
+        if row["kind"] in PAIR_KINDS:
             row["current_delta_pct"] = 100 * (
                 row["current_us"] / base["current_us"] - 1
             )
         if row["kind"] == "pair" and row["mode"] != "none":
             row["overlap_scope"] = "CALL_ENVELOPES_NOT_PRODUCER_CONCURRENCY_PROOF"
+        if row["kind"] == "primed-pair":
+            row["preload_cost_excluded"] = True
+            row["metric_scope"] = "OPTIMISTIC_CURRENT_PLUS_TARGET_NOT_NET_LATENCY"
     return result
 
 
@@ -631,6 +661,8 @@ def run(args, subject, manifest, library, runtime_sdk):
     graph_bind(sdk)
     timing_bind(sdk)
     timing_probe = timing_self_test(sdk, args.output / (args.case + ".timing.json"))
+    current_subject = subject.get("current_subject", subject)
+    cross_projection = subject["case"] == "q4-to-q5"
     probe = Probe(library, sdk)
     if probe.device["l2_bytes"] <= 0 and not args.pressure_mib:
         raise ValueError("SDK reports no L2 size; explicitly choose --pressure-mib")
@@ -647,6 +679,7 @@ def run(args, subject, manifest, library, runtime_sdk):
         status="FAIL",
         case=subject["case"],
         subject=subject,
+        current_subject=current_subject,
         device=device_identity(sdk),
         device_resources=probe.device,
         cells=[],
@@ -658,7 +691,11 @@ def run(args, subject, manifest, library, runtime_sdk):
         pressure_bytes=pressure_bytes,
         timing="UNPROFILED_EXPLICIT_GRAPH_EVENTS_FULL_COMPACT_CALL",
         instrumentation="TIMESTAMP_NODES_PRESENT_IN_ALL_ARMS_NOT_ZERO_OVERHEAD",
-        known_next_experts="ASSUMED_NOT_PREDICTED",
+        known_next_experts=(
+            "SAME_PRECOMPUTED_TOP8_IDS" if cross_projection else "ASSUMED_NOT_PREDICTED"
+        ),
+        activation_dependency="SYNTHETIC_DOWN_INPUT_NOT_A_FULL_MLP",
+        current_projection_calls=1,
         hint_completion="ISSUANCE_ONLY_LOAD_CONTROL_WAITS_FOR_READS",
         excluded="LLAMA_ADAPTERS_ROUTER_PREDICTION_AND_ACTIVATION_DEPENDENCY",
     )
@@ -670,18 +707,25 @@ def run(args, subject, manifest, library, runtime_sdk):
         print(
             f"KPACK_PREFETCH_FIXTURE case={subject['case']} E=256 active=8", flush=True
         )
-        w = IndexedWeights(
-            subject["q"],
-            subject["n"],
-            subject["k"],
-            256,
-            progress=lambda done, total: print(
-                f"KPACK_PREFETCH_FIXTURE experts={done}/{total}", flush=True
-            ),
-        )
-        current, target = Prepared(sdk, r, subject, w, 0), Prepared(
-            sdk, r, subject, w, 1
-        )
+
+        def weights(spec, role):
+            return IndexedWeights(
+                spec["q"],
+                spec["n"],
+                spec["k"],
+                256,
+                progress=lambda done, total: print(
+                    f"KPACK_PREFETCH_FIXTURE role={role} q={spec['q']} experts={done}/{total}",
+                    flush=True,
+                ),
+            )
+
+        w = weights(subject, "target")
+        current_w = weights(current_subject, "current") if cross_projection else w
+        current = Prepared(sdk, r, current_subject, current_w, 0)
+        target = Prepared(sdk, r, subject, w, 0 if cross_projection else 1)
+        if current.active != target.active or len(target.active) != 8:
+            raise ValueError("current and down must use the same eight expert IDs")
         disjoint(
             [(p, current.sizes[n]) for n, p in current.planes.items() if p],
             [(p, target.sizes[n]) for n, p in target.planes.items() if p],
@@ -748,8 +792,11 @@ def run(args, subject, manifest, library, runtime_sdk):
             current_hashes=current.hashes,
             next_hashes=target.hashes,
             weight_address_sets_disjoint=True,
+            active_experts=target.active,
+            target_shared_bytes=target.query.shared_bytes,
+            target_residency_ctas_per_cu=target.query.occupancy,
         )
-        config = configurations(args.blocks)
+        config = configurations(args.blocks, include_primed=cross_projection)
         for key in config:
             print(
                 f"KPACK_PREFETCH_GRAPH case={subject['case']} kind={key[0]} mode={key[1]} blocks={key[2]}",
@@ -780,11 +827,11 @@ def run(args, subject, manifest, library, runtime_sdk):
                 values = []
                 for _ in range(args.samples):
                     target.poison()
-                    if kind == "pair":
+                    if kind in PAIR_KINDS:
                         current.poison()
                     values.append(graphs[key].sample())
                 error = target.check()
-                if kind == "pair":
+                if kind in PAIR_KINDS:
                     error = max(error, current.check())
                 if mode != "none":
                     check_receipt(sdk, sink + 16, blocks, target, mode)
@@ -832,7 +879,7 @@ def main():
         "--bundle", type=Path, default=ROOT / "prebuilt/ppu0010/kpack-prefetch-v1"
     )
     p.add_argument("--output", type=Path, required=True)
-    p.add_argument("--case", choices=("q12", "q13"), required=True)
+    p.add_argument("--case", choices=CASES, required=True)
     p.add_argument("--blocks", type=int, nargs="+", default=[4, 16, 36])
     p.add_argument("--samples", type=int, default=11)
     p.add_argument("--rounds", type=int, default=3)
@@ -856,7 +903,7 @@ def main():
         p.error("result already exists; use a fresh output directory")
     manifest, library = verify(args.bundle)
     runtime_sdk = admit_runtime_sdk(args, manifest)
-    subject = next(s for s in manifest["subjects"] if s["case"] == args.case)
+    subject = select_subject(manifest, args.case)
     run(args, subject, manifest, library, runtime_sdk)
 
 
