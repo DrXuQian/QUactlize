@@ -35,13 +35,13 @@ across calls or amortized across requests in the selector.
 | T06 | Complete heuristic/recipe contract | Partial: measured/heuristic C++ selection is wired, not globally optimal coverage. Keep one owner for parent, AP, delivery, Split-K, scheduler/grid and legal optimization axes; cover misses without compiled-default guesses or restoring a Cartesian sweep | Bounded challenge around coverage gaps and historical winners, not universal 5% claims |
 | T07 | Q8_0 production integration | Partial: controlled ScaleFirst/I8 collective and sweep exist. Reuse them; add the production GGUF/device producer, arrangement, ABI, selector and dense llama admission. Do not feed the historical Xplane fixture through the K-pack API | Producer bytes, decode/prefill numerics and matched Q8 native-reference timings |
 | T08 | Q6 output-head native coverage | TODO: N248320/K2048 still takes labelled legacy FQ. Inventory/build a bounded candidate set and provide a measured selected-native route | Same-shape correctness/performance and actual dense compute trace |
-| T09 | End-to-end adapters and scheduling | Partial: GPU routing/compact directory, gather/scatter and prepared handles exist; newest FQ decode route is locally compiled. Verify selected TM8/S4 Q4 and TM8/S1 Q5 in model execution; diagnose launch/adapter gaps | New Asys timeline and unprofiled request-batch-1 latency |
+| T09 | End-to-end adapters and scheduling | Model runner now accepts small JIT v2, prewarms model parents and binds selected cache receipts to trace symbols. Per-process/per-prompt first use is excluded; Asys starts after a completed warmup request in the same process. Local contracts pass; model/Asys PPU gate remains | Verify selected TM8/S4 Q4 and TM8/S1 Q5 in the new timeline and unprofiled request-batch-1 latency; retain labelled Q6 fallback |
 | T10 | Final accuracy/performance release gate | Pending for the final module/route set. Reuse unchanged evidence, but do not relabel historical model gates as validation of new paths | Paired GPU-reference numerical/PPL/GSM8K, actual kernel execution and full-model latency |
 | T11 | Optimization-axis coverage | TODO: reconcile recorded B-chunk, AP/packed-A, delivery N, fused scale/zero, stage and scheduler results with generated/native tactics. Distinguish untested combinations from rejected or numerically invalid ones | Only missing or changed promising combinations need bounded PPU checks |
 | T12 | Reader/provider extensions | Deferred: AIU+UniversalCopy, cp.async+reader and DeepGEMM-compatible placement need an explicit offline-layout/fragment contract and adapter boundary. Existing provider experiments are not blanket correctness/performance admission | Exact reader/layout numeric and performance gates before promotion |
 | T13 | Product main cleanup and documentation | Pending: minimal public entry points, reproducible config/JIT scripts, README/ABI/handoff, unused flag/debug removal; enforce the recorded main-admission skill, PPU-only code and required production formats | Final release regression after selective cleanup; no Xplane/NVIDIA diagnostic path admitted implicitly |
 | T14 | SIMT GEMV further optimization | PARKED: user accepts the current comparable level for this milestone. Preserve code and evidence; not a blocker and not selected by automatic decode | No new gate solely for this parked item; reopen only for a new regression/target |
-| T15 | Cross-call weight prefetch | `qmk0by` passes timer/numerical gates and 990 same-shape samples; target gains are offset by current-call interference. Added Q4-to-Q5 pairing with known top8 IDs and a preload-cost-excluded control; unchanged binaries, no production change or CU partition | Q4-to-Q5 PPU measurement; distinguish optimistic priming from net gain, inspect real concurrency and cache state. [Protocol](KPACK_PREFETCH_EXPERIMENT.md) |
+| T15 | Cross-call weight prefetch | PARKED by user decision. Reported `fBihrU` Q4-to-Q5 pair: hints improve total 41.24 -> 40.88 us (0.87%); cost-excluded priming reaches 39.40 us (4.46%), not a net speedup. Production prefetch stays disabled | No further box run for this item now. On reopening, audit the raw archive, measure minimally instrumented net latency and inspect cache/concurrency. [Evidence and protocol](KPACK_PREFETCH_EXPERIMENT.md) |
 
 The locally implemented path is heuristic -> one complete tactic ->
 prebuilt/disk-cache hit or explicitly enabled single-parent compilation ->
@@ -54,7 +54,8 @@ Implement/compile T01-T08 and their host tests locally where bounded; actual
 PPU admission follows the last column. T02-T04 can be developed alongside
 T07/T08 and do not require another full sweep. T05 depends on those coverage
 and miss-path contracts. T13 follows stable runtime/ABI selection. Do not
-restart T14 as an active performance project.
+restart T14 or T15 as active performance projects. Resume T09's model adapter,
+JIT-cache evidence and full-call routing gate next.
 
 ## Tracked delivery
 
@@ -143,10 +144,13 @@ See [the coverage audit and no-recompile single-op probe](KPACK_GROUPED_DECODE_R
 ## Native model gate
 
 Entry: `bash tools/run_kpack_native_box.sh` (see `--help`). This consumes
-`prebuilt/ppu0010/kpack-native-v1`: 216 selected parent modules plus the native
-host dispatcher and execution DSO. It does not replace the old six libraries,
-which still provide intake/admission and explicitly logged K-pack FQ misses.
-The box rebuilds llama.cpp for the changed context layout, not Quactlize.
+`prebuilt/ppu0010/kpack-jit-v2` by default. Set `JIT_CACHE` to the existing
+`/workspace/kpack-jit-cache` to reuse admitted parents. Missing selected
+parents compile before use; this is not a full sweep or bundle build. An
+explicit `QUACTLIZE_KPACK_EXECUTION` may still select `kpack-native-v1`.
+Both retain the old six intake/admission/fallback libraries. The box rebuilds
+llama.cpp incrementally if necessary; this orchestration update itself changes
+no C++ code, kernel image, offline layout or source-bound device cache key.
 
 1. Twenty dense and eight grouped contexts use the actual C++ selector and
    prepared module, independent GGUF arithmetic, output guards and changed
@@ -154,7 +158,8 @@ The box rebuilds llama.cpp for the changed context layout, not Quactlize.
    The updated exporter compares per-call expansion plus GEMM with a 2%
    margin. Existing resident-only tables are rejected; rerun this gate before
    choosing SF under the new execution contract.
-2. Fourteen model-shaped GEMV contexts (Q4/Q5 experts, both broadcast/per-slot
+2. The parked GEMV gate is skipped by default, including on resume. With the
+   old prebuilt package and explicit `RUN_GEMV_GATE=1`, fourteen contexts (Q4/Q5 experts, both broadcast/per-slot
    A, and Q6 N248320/K2048 dense output) compare all eight recipes in 3x11
    samples. The comparison uses selected FQ when covered, explicitly tagged
    legacy FQ otherwise. GEMV includes indexed access and reduction; FQ here
@@ -167,10 +172,22 @@ The box rebuilds llama.cpp for the changed context layout, not Quactlize.
    intentionally stubbed in this seam test, not in the separate numeric gate.
 4. Real model ABBA: reference/native/native/reference, one business request
    at a time, 128/512 input tokens, 128 generated tokens, chunk=128. First-use
-   samples are separate; steady timings include the whole model adapters.
-5. A separate short Asight run must observe native dense and grouped compute.
-   Its timings are never performance samples. It proves that short request,
-   not every parent in all ABBA requests.
+   samples are separate for **each process and prompt shape**; only subsequent
+   requests enter steady comparisons. JIT, graph preparation and first-use
+   costs remain recorded separately, not in the steady median.
+5. A separate short Asight server run completes one 128-token prompt / eight
+   generated-token request before `asys start`; only the identical second
+   request is captured, followed by `asys stop`. No fixed startup delay or
+   cold process duration is used as a performance estimate. This capture is
+   still separate from unprofiled ABBA timings. Actual PPU session/window
+   validation remains pending.
+
+Selected JIT modules are inspected read-only from their published cache
+receipts: full compiler key, source contract, payload hash and parent identity.
+The trace reads those exact files, not an assumed `bundle/modules` path.
+The known Q6 output-head miss is not promoted by this change: partial native
+coverage now preserves `proof.json` and timing summaries, reports
+`INCOMPLETE_NATIVE_COVERAGE`, and exits nonzero rather than claiming a full pass.
 
 Reports retain parent/build ID, split, grid, policy class, explicit fallback,
 prepass time and raw per-request timers. `fully_selected=false` is not admitted

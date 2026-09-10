@@ -8,8 +8,9 @@ import sys
 import pytest
 
 from test_kpack_native_dispatch import build_stub, probe, query, Choice, Call
-from quactlize.runtime.compiler import Compiler, sha
-from tools.kpack_jit import parent_tuple, model_requests
+from quactlize.runtime.compiler import Compiler, sha, source_contract
+from quactlize.runtime.tuning import digest
+from tools.kpack_jit import parent_tuple, model_requests, inspect_modules
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -128,6 +129,9 @@ def test_header_only_model_plan_deduplicates_and_does_not_admit_q8(tmp_path):
                         (14,0,1,248320,2048,1,1),(14,0,128,248320,2048,1,128)]
     assert {x["name"] for x in proof["omitted"]} == {"token_embd.weight", "blk.0.attn_output.weight"}
     assert len(model_requests(path,[1,128],True)[0]) == 8
+    filtered, proof = model_requests(path, [1,128], tensor_pattern=r"^blk\.\d+\.ffn_up_exps\.weight$")
+    assert filtered == requests[:2]
+    assert next(r for r in proof["omitted"] if r["name"] == "output.weight")["reason"] == "OUTSIDE_CONSUMER_TENSOR_PATTERN"
 
 
 def fake_compiler(tmp):
@@ -181,3 +185,74 @@ def test_helper_rejects_foreign_dispatcher_source_before_compile(tmp_path, monke
         text=True, capture_output=True)
     assert result.returncode == 1 and "source differs" in result.stderr
     assert not result.stdout and not cache.exists()
+
+
+def published_module(tmp_path):
+    parent = parent_tuple("parent", [12, 0, 8, 64, 64, 8, 16, 2, 0, 16, -1])
+    identity = dict(kernel="kernel", generator="generator", flags=[], sdk="sdk", host="host")
+    key = digest(dict(parent=parent, identity=identity, source=Compiler.source(None, parent, "")))
+    directory = tmp_path / key
+    directory.mkdir()
+    library = directory / "kernel.so"
+    library.write_bytes(b"module fixture")
+    receipt = dict(key=key, parent=parent, identity=identity, sha256=sha(library))
+    (directory / "manifest.json").write_text(json.dumps(receipt))
+    return receipt, directory
+
+
+def test_inspect_selected_cache_is_read_only_and_relocatable(tmp_path):
+    receipt, directory = published_module(tmp_path)
+    contract = source_contract(receipt["identity"])
+    before = {p.name: sha(p) for p in directory.iterdir()}
+    records = inspect_modules(tmp_path, [receipt["key"], receipt["key"]], contract)
+    assert len(records) == 1 and records[0]["parent"] == receipt["parent"]
+    assert Path(records[0]["path"]) == directory / "kernel.so"
+    output = subprocess.check_output([sys.executable, str(ROOT / "tools/kpack_jit.py"), "inspect",
+        "--cache", str(tmp_path), "--keys", receipt["key"], "--source-contract", contract], text=True)
+    assert json.loads(output)["modules"] == records
+    assert before == {p.name: sha(p) for p in directory.iterdir()}
+    moved = tmp_path / "moved"
+    moved.mkdir()
+    directory.rename(moved / receipt["key"])
+    assert inspect_modules(moved, [receipt["key"]], contract)[0]["path"].startswith(str(moved))
+
+
+@pytest.mark.parametrize("fault", ["payload", "key", "parent", "source", "manifest-link", "library-link", "directory-link", "traversal"])
+def test_inspect_cache_rejects_stale_tampered_or_escaped_receipts(tmp_path, fault):
+    receipt, directory = published_module(tmp_path)
+    contract, key = source_contract(receipt["identity"]), receipt["key"]
+    if fault in ("manifest-link", "library-link"):
+        path = directory / ("manifest.json" if fault == "manifest-link" else "kernel.so")
+        moved = tmp_path / "outside"
+        path.rename(moved)
+        path.symlink_to(moved)
+    elif fault == "directory-link":
+        moved = tmp_path / "elsewhere"
+        directory.rename(moved)
+        directory.symlink_to(moved)
+    elif fault == "traversal":
+        key = "../" + key
+    elif fault == "payload":
+        (directory / "kernel.so").write_bytes(b"different")
+    else:
+        if fault == "key":
+            receipt["key"] = "0"*64
+        elif fault == "parent":
+            receipt["parent"]["stages"] = 3
+        else:
+            receipt["identity"]["kernel"] = "different"
+        (directory / "manifest.json").write_text(json.dumps(receipt))
+    with pytest.raises(ValueError):
+        inspect_modules(tmp_path, [key], contract)
+
+
+def test_prewarm_source_mismatch_rejected_before_build(tmp_path, monkeypatch):
+    sdk = fake_compiler(tmp_path)
+    monkeypatch.setenv("PATH", str(sdk / "bin") + os.pathsep + os.environ["PATH"])
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps(dict(parents=[parent_tuple("parent", [12,0,8,64,64,8,16,2,0,16,-1])])))
+    result = subprocess.run([sys.executable, str(ROOT / "tools/kpack_jit.py"), "prewarm", "--sdk", str(sdk),
+        "--cache", str(tmp_path / "cache"), "--plan", str(plan), "--source-contract", "0"*64],
+        text=True, capture_output=True)
+    assert result.returncode == 1 and "source differs" in result.stderr
+    assert not (tmp_path / "cache").exists()

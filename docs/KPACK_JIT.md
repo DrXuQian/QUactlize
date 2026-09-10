@@ -84,6 +84,39 @@ This opt-in requires matching dispatcher/helper sources. Do not set these
 variables with the old prebuilt dispatcher, which has no JIT entry point.
 Automatic decode stays FQ; SIMT remains a parked, explicit diagnostic.
 
+## Updated model gate
+
+`bash tools/run_kpack_native_box.sh` now defaults to this small package. It
+retains the required llama build, model, weight-cache and six-library intake
+environment from the previous model gate (see `--help`). Set `JIT_CACHE` to
+the existing `/workspace/kpack-jit-cache`, not an empty per-run directory.
+`JIT_JOBS=8` controls CPU parent compilation on misses; `JOBS=192` controls
+the separate incremental llama build. Neither option launches a config sweep.
+
+The runner first executes/reuses the native gate and emits its per-call V2
+prefill policy. It reads the model header, filters the exact consumer weight
+pattern, then prewarms deduplicated FQ/SF parents for tokens 1/128. Prewarming
+SF does not select it. Other first-use shapes still use the actual selector
+and may compile a missing parent; unknown families retain labelled fallback.
+The Python executable is bound before SDK setup changes `PATH`.
+
+Timing policy: exclude the first complete request for each process and prompt
+shape. Record cold startup/JIT/first-use cost separately. ABBA statistics use
+only steady unprofiled requests. Asys now launches the same server, completes
+one request, then starts collection for the identical second request; it does
+not capture loading/JIT and report that wall time as inference. The SDK 2.1.1
+`launch/start/stop/shutdown` options were checked locally. Their real PPU
+capture window still needs the model gate.
+
+Cache execution evidence uses `kpack_jit.py inspect`: a read-only check of
+the selected keys, full parent/generator identity, payload hash, source
+contract and path containment. This runs after the model/profiler process,
+not inside inference. It preserves cache/package module provenance in each
+selection receipt. No recompilation or DSO change is needed for this reader.
+Known missing native coverage (especially Q6 N248320/K2048) remains a failing
+full-coverage verdict with preserved timing and partial-trace JSON, not a
+successful claim about an unobserved dense kernel.
+
 ## ScaleFirst correction
 
 The llama adapter now queues `sf_prepare -> GEMM` for **every SF call** on

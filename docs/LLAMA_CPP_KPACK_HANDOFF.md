@@ -23,24 +23,29 @@ No recompilation of those cached parents or llama.cpp is required solely for
 this repair. Keep the six intake/fallback libraries. Details:
 [JIT gate review](KPACK_JIT_GATE_REVIEW.md).
 
-The next-layer prefetch proposal is now a separate [bounded cache
-experiment](KPACK_PREFETCH_EXPERIMENT.md): measure target-call benefit and
-current-call interference independently, using unchanged Q4/S4 and Q5/S1
-modules. Its small auxiliary library is not a llama runtime dependency or
-production route change. Whole-model JIT validation remains pending; this
-experiment does not replace it or predict future MoE expert routing.
-Its prebuilt runner now separates unused build-tool differences from runtime
-library changes. Runtime differences require `--allow-unverified-sdk` and are
-recorded before launch; this changes no binary or numerical check. The helper
-and measured GEMM parents do not need recompilation for this preflight repair.
-The subsequent `event interval status=1` is a timer-path failure: graph timing
-now uses explicit event-record nodes and separate internal fork/join events.
-A small timer gate runs before weight construction. In `qmk0by`, both original
-cases pass that gate and numerical checks (990 samples), but concurrent hints
-do not establish a net speedup. A Q4 gate/up-shaped call with Q5 down-weight
-prefetch and a preload-cost-excluded control are now available as
-`--case q4-to-q5`; their PPU results remain pending. This stays an independent
-operator-window experiment with synthetic down inputs, not a model change.
+Weight prefetch is **parked** (T15). The supplied `fBihrU` Q4-to-Q5 summary
+shows hints reducing the instrumented pair from 41.24 to 40.88 us (0.87%);
+39.40 us for primed weights excludes the preload cost. These are not model
+speedups. Preserve the [experiment and deferred checks](KPACK_PREFETCH_EXPERIMENT.md),
+but do not add its helper or a prefetch dependency to the production path.
+Resume the small-JIT-package model integration gate instead.
+
+The model runner now defaults to `kpack-jit-v2`, uses the existing
+`JIT_CACHE=/workspace/kpack-jit-cache`, and prewarms only deduplicated parents
+for the consumer's weight-name scope. Cache receipts and payload hashes are
+bound to the actual selected trace symbols; the test no longer assumes every
+module resides inside `bundle/modules`. This update changes scripts/evidence,
+not production kernel binaries or device cache keys. The parked GEMV gate is
+not required to resume a complete native gate.
+
+Performance convention: one excluded first request per process and prompt
+shape, then steady ABBA requests. Asys uses the same server process, starts
+collection only after a completed warmup request, and captures the identical
+second request. Cold/JIT/first-use costs stay separate. Local host contracts
+pass; the new Asys session and full-model path still need PPU validation.
+The known Q6 output-head fallback remains `INCOMPLETE_NATIVE_COVERAGE`; its
+timings and partial trace are saved rather than hidden by the missing dense
+activity. Q8_0 remains ordinary llama.cpp, not newly admitted K-pack.
 
 The [complete delivery backlog](KPACK_EXECUTION_FOLLOWUP.md#complete-delivery-backlog)
 is the current task authority, including production JIT, model-load
@@ -66,8 +71,12 @@ Incrementally rebuild llama.cpp and restart the process to apply it.
 
 The earlier FQ decode switch is consumer commit `135d7edcf` on the private
 `feat/kpack-gpu-cache` branch; the per-call SF/JIT update follows it.
-Current consumer: `789e09f500106d83e239f1054cd0f5cfb56b23b2` (implementation
-`229fe8660`, followed by test-report cleanup). The complete local PPU backend
+Current consumer: `cba8d4a0620adce5baa4c6534f968a55a87432c3` (implementation
+`229fe8660`, followed by JIT-cache evidence and warmed Asys request capture).
+The latest local validation passes 80 Quactlize host/orchestration tests and
+11 llama evidence tests; the small package's source contract and both DSO
+hashes are unchanged. This does not claim the new model capture ran on PPU.
+The complete local PPU backend
 and adapter/buffer executables link successfully. The Quactlize local gate
 passes 173 related pytest cases after the host-grid/gate-order repair;
 llama's five parser cases and delayed-D2H buffer positive/three planted
@@ -155,9 +164,9 @@ misses. It is not rebuilt or silently replaced. No new device admission yet.
 
 Handles and complete recipes (including Split-K and persistent grid) are
 prepared and cached before graph capture. Grouped bounds stay on the GPU;
-the current ScaleFirst implementation still prepares once with the immutable
-weight and a separate ready event, subject to a memory reserve. This cache
-is pending removal under T01, not the required per-call contract. Compute
+ScaleFirst expands metadata on every call into per-stream scratch. The old
+per-weight expanded-value cache and separate scale-ready event were removed.
+Compute
 has no explicit wait on D2H/cache publication; first-use allocator
 synchronization remains a timing caveat.
 `QUACTLIZE_KPACK_GEMV_POLICY` is an exact measured TSV generated
@@ -166,9 +175,9 @@ an unmeasured initial recipe is never substituted.
 
 The default behavior without `QUACTLIZE_KPACK_EXECUTION` is unchanged. With it,
 automatic single-token decode uses selected FQ. Prefill reads the paired
-FQ/SF measurements in `QUACTLIZE_KPACK_PREFILL_POLICY`; the existing exporter
-still compares resident core time with a 2% margin. This is not admission
-for the required per-call expansion path. Missing entries or resource
+FQ/SF measurements in `QUACTLIZE_KPACK_PREFILL_POLICY`; the V2 exporter
+compares per-call expansion plus GEMM with a 2% margin. Old resident-only
+V1 tables are rejected. Missing entries or resource
 declines retain selected FQ. Unknown families retain the
 old canonical K-pack FQ path with an explicit log. Grouped bound-based choices
 and route-level SF decisions are not globally optimal measurements.

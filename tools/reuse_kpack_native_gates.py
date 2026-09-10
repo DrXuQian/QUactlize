@@ -27,16 +27,18 @@ NATIVE_SOURCES = (
 
 
 def validate(native, gemv, device, native_hash, execution_hash):
-    if native.get("device") != device or gemv.get("device") != device:
+    if native.get("device") != device or (gemv and gemv.get("device") != device):
         raise ValueError("resume device receipt differs")
     if (
         native.get("manifest_sha256") != native_hash
-        or gemv.get("native_manifest_sha256") != native_hash
+        or (gemv and gemv.get("native_manifest_sha256") != native_hash)
     ):
         raise ValueError("resume native package differs")
+    prefill_export(native)
+    if gemv is None:
+        return
     if gemv.get("execution_sha256") != execution_hash:
         raise ValueError("resume execution image differs")
-    prefill_export(native)
     _, recipes = gemv_export(gemv)
     expected = {
         (q, n, k, 256, 2, t * 8, ch, 8, 1)
@@ -48,9 +50,9 @@ def validate(native, gemv, device, native_hash, execution_hash):
         raise ValueError("resume lacks the exact 14 model GEMV contexts")
 
 
-def reuse(source, output, bundle, legacy, execution, device):
+def reuse(source, output, bundle, legacy, execution, device, include_gemv=True):
     native = json.loads((source / "native-gate/summary.json").read_text())
-    gemv = json.loads((source / "gemv-gate/summary.json").read_text())
+    gemv = json.loads((source / "gemv-gate/summary.json").read_text()) if include_gemv else None
     validate(
         native,
         gemv,
@@ -58,14 +60,15 @@ def reuse(source, output, bundle, legacy, execution, device):
         sha(bundle / "manifest.json"),
         sha(bundle / "libquactlize_ppu_execution.so"),
     )
-    if gemv.get("manifest_sha256") != sha(execution / "manifest.json"):
-        raise ValueError("resume GEMV candidate package differs")
-    libraries = {
-        f"libquactlize_ppu_fmt{i}.so": sha(legacy / f"libquactlize_ppu_fmt{i}.so")
-        for i in range(5)
-    }
-    if gemv.get("baseline_libraries") != libraries:
-        raise ValueError("resume incumbent libraries differ")
+    if include_gemv:
+        if gemv.get("manifest_sha256") != sha(execution / "manifest.json"):
+            raise ValueError("resume GEMV candidate package differs")
+        libraries = {
+            f"libquactlize_ppu_fmt{i}.so": sha(legacy / f"libquactlize_ppu_fmt{i}.so")
+            for i in range(5)
+        }
+        if gemv.get("baseline_libraries") != libraries:
+            raise ValueError("resume incumbent libraries differ")
     if (source / "quactlize-dirty.patch").read_bytes():
         raise ValueError("cannot reuse an unversioned measurement source")
     commit = (source / "quactlize-source.txt").read_text().strip()
@@ -77,10 +80,11 @@ def reuse(source, output, bundle, legacy, execution, device):
             raise ValueError(f"native measurement source changed: {name}")
     from tools.run_kpack_gemv_gate import subprocess_source
 
-    if gemv.get("source") != subprocess_source():
+    if include_gemv and gemv.get("source") != subprocess_source():
         raise ValueError("GEMV measurement source changed")
     files = []
-    for directory in ("native-gate", "gemv-gate"):
+    directories = ("native-gate", "gemv-gate") if include_gemv else ("native-gate",)
+    for directory in directories:
         if (output / directory).exists():
             raise ValueError("resume destination already contains gates")
         if (source / directory).is_symlink():
@@ -101,11 +105,11 @@ def reuse(source, output, bundle, legacy, execution, device):
         source_commit=commit,
         device=device,
         native_contexts=28,
-        gemv_contexts=14,
+        gemv_contexts=14 if include_gemv else 0,
         files={str(p.relative_to(source)): sha(p) for p in files},
         scope="REUSED_MICROBENCHMARKS_MODEL_TIMING_NOT_REUSED",
     )
-    for directory in ("native-gate", "gemv-gate"):
+    for directory in directories:
         (output / directory).mkdir()
     for path in files:
         shutil.copy2(path, output / path.relative_to(source))
@@ -113,7 +117,7 @@ def reuse(source, output, bundle, legacy, execution, device):
         json.dump(receipt, f, indent=2)
         f.write("\n")
     print(
-        f"KPACK_NATIVE_RESUME PASS native=28 gemv=14 source={source} model_rerun=1",
+        f"KPACK_NATIVE_RESUME PASS native=28 gemv={receipt['gemv_contexts']} source={source} model_rerun=1",
         flush=True,
     )
 
@@ -122,8 +126,10 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     for name in ("source", "output", "bundle", "legacy", "execution", "sdk"):
         p.add_argument(f"--{name}", type=Path, required=True)
+    p.add_argument("--native-only", action="store_true", help="do not require or resume the parked GEMV gate")
     a = p.parse_args()
-    manifest = json.loads((a.execution / "manifest.json").read_text())
+    manifest = (json.loads((a.bundle / "manifest.json").read_text())["execution_receipt"]
+                if a.native_only else json.loads((a.execution / "manifest.json").read_text()))
     for name, value in manifest["runtime"].items():
         if sha(a.sdk / "lib" / name) != value:
             raise ValueError(f"resume SDK runtime differs: {name}")
@@ -134,6 +140,7 @@ def main():
         a.legacy,
         a.execution,
         device_identity(SDK(a.sdk)),
+        include_gemv=not a.native_only,
     )
 
 

@@ -49,6 +49,15 @@ def test_exact_gates_reusable():
     validate(*summaries(), DEVICE, "native", "execution")
 
 
+def test_native_only_does_not_require_parked_gemv():
+    native, _ = summaries()
+    validate(native, None, DEVICE, "native", "execution")
+    for bad in (native | {"device": {}}, native | {"manifest_sha256": "different"},
+                native | {"results": native["results"][:-1]}):
+        with pytest.raises(ValueError):
+            validate(bad, None, DEVICE, "native", "execution")
+
+
 @pytest.mark.parametrize(
     "fault",
     [
@@ -86,7 +95,8 @@ def test_bad_measurements_cannot_resume(fault):
         validate(n, g, DEVICE, "native", "execution")
 
 
-def test_copy_preserves_old_run_and_does_not_reuse_model(tmp_path):
+@pytest.mark.parametrize("include_gemv", [True, False])
+def test_copy_preserves_old_run_and_does_not_reuse_model(tmp_path, include_gemv):
     source, output, bundle, legacy, execution = [
         tmp_path / name for name in ("old", "new", "native", "legacy", "execution")
     ]
@@ -107,6 +117,8 @@ def test_copy_preserves_old_run_and_does_not_reuse_model(tmp_path):
     g["baseline_libraries"] = {p.name: sha(p) for p in legacy.iterdir()}
     g["source"] = subprocess_source()
     for name, data in (("native-gate", n), ("gemv-gate", g)):
+        if name == "gemv-gate" and not include_gemv:
+            continue
         (source / name).mkdir()
         (source / name / "summary.json").write_text(json.dumps(data))
         (source / f"{name}.log").write_text("raw log fixture\n")
@@ -117,18 +129,19 @@ def test_copy_preserves_old_run_and_does_not_reuse_model(tmp_path):
         subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True)
     )
     hashes = {p: sha(p) for p in source.rglob("*") if p.is_file()}
-    reuse(source, output, bundle, legacy, execution, DEVICE)
+    reuse(source, output, bundle, legacy, execution, DEVICE, include_gemv=include_gemv)
     assert hashes == {p: sha(p) for p in hashes}
     assert not (output / "model").exists()
     receipt = json.loads((output / "reused-gates.json").read_text())
-    assert (receipt["native_contexts"], receipt["gemv_contexts"]) == (28, 14)
+    assert (receipt["native_contexts"], receipt["gemv_contexts"]) == (28, 14 if include_gemv else 0)
+    assert (output / "gemv-gate").exists() == include_gemv
     for name, value in receipt["files"].items():
         assert sha(output / name) == value
     with pytest.raises(ValueError, match="already contains"):
-        reuse(source, output, bundle, legacy, execution, DEVICE)
+        reuse(source, output, bundle, legacy, execution, DEVICE, include_gemv=include_gemv)
     empty = tmp_path / "retry"
     empty.mkdir()
     (source / "quactlize-dirty.patch").write_text("untracked oracle edit")
     with pytest.raises(ValueError, match="unversioned"):
-        reuse(source, empty, bundle, legacy, execution, DEVICE)
+        reuse(source, empty, bundle, legacy, execution, DEVICE, include_gemv=include_gemv)
     assert not list(empty.iterdir())

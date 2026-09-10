@@ -1,9 +1,34 @@
 # Cross-call weight prefetch experiment
 
-Status: the same-shape Q4/Q5 controls pass on PPU in `qmk0by` at `89a9e3e`.
-The added Q4-to-Q5 projection pairing is pending device measurement. No
-production kernel, selection, offline format, or JIT cache key is changed.
-The helper lives under `dev/l2_prefetch`.
+Status: **PARKED** by user decision on 2026-09-10; resume llama integration.
+The same-shape Q4/Q5 controls pass on PPU in `qmk0by` at `89a9e3e`.
+The reported Q4-to-Q5 run `fBihrU` also passes; its raw archive has not yet
+been reviewed locally. No production kernel, selection, offline format, or
+JIT cache key is changed. The helper lives under `dev/l2_prefetch`.
+
+## Reported Q4-to-Q5 result and deferred work
+
+The supplied `fBihrU` summary reports 33 samples per arm:
+
+| Arm | Current, us | Target, us | Combined, us | Combined delta |
+|---|---:|---:|---:|---:|
+| No prefetch | 20.80 | 20.28 | 41.24 | baseline |
+| Concurrent hint, 16 CTAs | 22.00 | 18.52 | 40.88 | -0.87% |
+| Concurrent hint, 36 CTAs | 22.12 | 18.52 | 40.92 | -0.78% |
+| Concurrent load, 36 CTAs | 22.40 | 18.48 | 48.04 | +16.49% |
+| Completed load before timing, 36 CTAs | 20.68 | 18.52 | 39.40 | -4.46%, preload excluded |
+
+The hint makes the target about 8.7% faster but delays the current call,
+leaving less than 1% combined improvement in these instrumented summaries.
+The last row excludes preload cost and interference; it is not a deployable
+net gain or a proof of complete L2 residency. The repeated-target warm
+control (14.44 us) also warms non-weight state and cannot justify that gain
+from weight prefetch alone.
+
+Keep production prefetch disabled. If reopened: audit the raw archive,
+validate net latency with fewer timing nodes, and inspect producer overlap
+and cache behavior before changing scheduling. No additional prefetch box
+run or CU-partition work is required for the current integration milestone.
 
 ## Q4 gate/up window, Q5 down prefetch
 
@@ -124,8 +149,8 @@ each must appear exactly once as an event-record node in the resulting graph.
 The local PPU SDK declares that API and flag in `hggc_runtime_api.h` and
 `driver_types.h`. The corresponding capture meaning is documented in the
 [CUDA event API](https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__EVENT.html).
-The repaired timer passes on PPU in `qmk0by`; the added primed timeline still
-needs a device run.
+The repaired timer passes on PPU in `qmk0by`; the supplied `fBihrU` log also
+reports the added primed timeline passing, pending raw-archive review.
 
 Fork and join use **different** ordinary capture events, with wait flags 0.
 No external wait or dependency on an uncaptured setup event is introduced.
