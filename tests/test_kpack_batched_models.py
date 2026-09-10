@@ -126,6 +126,19 @@ def test_explicit_file_resolves_ambiguity(tmp_path):
     assert resolve_plan(source, ["subject"])["models"][0]["path"] == str(chosen)
 
 
+def test_qwen3_catalog_selects_base_even_with_eagle3_present(tmp_path):
+    source = json.loads((ROOT / "tools/kpack_batched_models.json").read_text())
+    fixture(tmp_path, "Qwen3-32B-GGUF/Qwen3-32B-eagle3.gguf")
+    # The explicit base file must exist; the other GGUF is never a fallback.
+    with pytest.raises(ValueError, match="binding path does not exist"):
+        resolve_plan(source, ["qwen3-32b-base"], tmp_path)
+    chosen = fixture(tmp_path, "Qwen3-32B-GGUF/Qwen3-32b.gguf")
+    resolved = resolve_plan(source, ["qwen3-32b-base"], tmp_path)
+    model, = resolved["models"]
+    assert model["path"] == str(chosen) and model["files"] == [str(chosen)]
+    assert resolve_plan(resolved) == resolved
+
+
 def test_empty_file_and_unknown_model_are_errors(tmp_path):
     fixture(tmp_path).write_bytes(b"")
     with pytest.raises(ValueError, match="empty GGUF"):

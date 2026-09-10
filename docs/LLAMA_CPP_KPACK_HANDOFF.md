@@ -72,6 +72,8 @@ Direct GGUF files take precedence over nested directories; hidden cache files
 are excluded. File symlinks retain their public shard names instead of using
 the backing blob's filename. The 35B base entry explicitly names
 `Qwen3.5-35B-A3B-BF16-00001-of-00002.gguf` and requires its second shard.
+The 32B base entry explicitly names `Qwen3-32b.gguf`; a colocated
+`Qwen3-32B-eagle3.gguf` is not a replacement or fallback.
 Paths can be checked separately, without SDK/GPU work:
 
 ```bash
