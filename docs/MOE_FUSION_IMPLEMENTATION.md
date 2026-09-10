@@ -33,7 +33,11 @@ V2 local preparation data and sample hashes are recorded in
 header also compiles through hgcc with the real CuTe packed Shape/Stride.
 The new native dispatcher and execution DSO are locally compiled; selected
 GEMM JIT keys change. No PPU runtime or model speedup is asserted locally.
-Current local regression set: 214 passed, one optional device test skipped.
+Current local regression set: 214 passed, one optional SDK-runtime test skipped.
+An explicit retry of the old-reader DSO query is blocked by the local
+`libstdc++` lacking `GLIBCXX_3.4.32`, which the supplied SDK wrapper requires;
+this is a host loader limitation, not a numerical result. The new PPU DSO
+is compile/ELF-verified, not locally runtime-admitted.
 The three affected llama CUDA translation units compile; its real host policy
 parser accepts exact Q8/Q4 recipes and rejects malformed/duplicate rows.
 
