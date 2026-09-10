@@ -237,7 +237,7 @@ def test_benchmark_collects_compute_receipts_without_per_kernel_debug(arm, tmp_p
 
 
 @pytest.mark.parametrize("kind", ["missing", "dense", "legacy", "wrong-q8"])
-def test_compute_receipts_stay_required_and_are_preserved(kind, tmp_path, monkeypatch):
+def test_compute_receipts_stay_required_and_are_preserved(kind, tmp_path, monkeypatch, capsys):
     source = plan(tmp_path)
     model = source["models"][0] | {"path": "/weights.gguf"}
     evidence = dict(plans=[], fallbacks=[])
@@ -255,6 +255,11 @@ def test_compute_receipts_stay_required_and_are_preserved(kind, tmp_path, monkey
     # satisfy native route admission. The kernel-plan verifier is a separate
     # boundary; this test exercises run_arm's admission and failure receipts.
     transcript = json.dumps(row) + "\n" + json.dumps(row) + "\n"
+    if kind == "dense":
+        transcript += "[kpack-pair] blk.0.ffn_gate_up_exps.weight <- {gate,up} N=1024 GPU_PACK\n"
+        transcript += "[quactlize-moe] merged=1 rows=8 shared_prepare=1 reduce_scatter=1\n"
+    elif kind == "legacy":
+        transcript += "[quactlize-moe] merged=0 rows=8 shared_prepare=1 reduce_scatter=1\n"
     monkeypatch.setattr(bench, "command", lambda *args: [
         sys.executable, "-c", "print(" + repr(transcript) + ", end='')"])
     args = SimpleNamespace(cache_root=tmp_path / "cache", repeats=1, binary=Path(sys.executable),
@@ -274,6 +279,14 @@ def test_compute_receipts_stay_required_and_are_preserved(kind, tmp_path, monkey
     receipt = json.loads((tmp_path / "1-kpack.selection.json").read_text())
     assert receipt["plans"] == evidence["plans"] and receipt["fallbacks"] == evidence["fallbacks"]
     assert receipt["plan_admission"] == ("FAIL" if kind in ("missing", "wrong-q8") else "PASS")
+    assert receipt["fusion"] == dict(paired_weights=int(kind == "dense"),
+        merged_chain_plans=int(kind == "dense"), separate_chain_plans=int(kind == "legacy"))
+    if kind in ("dense", "legacy"):
+        output = capsys.readouterr().out
+        assert "BATCHED_MODEL_FUSION model=subject arm=1-kpack" in output
+        assert f"paired_weights={int(kind == 'dense')}" in output
+        assert f"merged_chain_plans={int(kind == 'dense')}" in output
+        assert "scope=PLAN_RECEIPTS" in output
     assert json.loads((tmp_path / "1-kpack.process.json").read_text())["rc"] == 0
     records = json.loads((tmp_path / "1-kpack.timings.json").read_text())
     assert [r["phase"] for r in records] == ["warmup", "measured"]

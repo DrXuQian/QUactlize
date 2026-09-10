@@ -43,6 +43,10 @@ trap finish EXIT
 trap 'printf "FAIL stage=%s line=%s rc=%s\n" "$stage" "$LINENO" "$?" >&2' ERR
 [[ $# == 0 && $JOBS =~ ^[1-9][0-9]*$ && -d $RESULT_ROOT ]]
 [[ -s $BUILD_DIR/CMakeCache.txt && -s $LLAMA_DIR/ggml/src/ggml-cuda/quactlize/kpack_indexed.h ]]
+if [[ ! -s $LLAMA_DIR/tests/test-kpack-model-loader.cpp ]]; then
+    printf 'Update llama.cpp feat/kpack-gpu-cache: paired-weight loader regression is required (bd4e8bf93).\n' >&2
+    false
+fi
 [[ -s $PPU_SDK/envsetup.sh ]]
 source "$PPU_SDK/envsetup.sh"
 set -Ee -o pipefail
@@ -135,13 +139,13 @@ cmake -S "$LLAMA_DIR" -B "$BUILD_DIR" -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_TEST
     -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DGGML_NCP_FA=OFF -DGGML_NCP_MOE=OFF -DGGML_NCP_GDN=OFF \
     2>&1 | tee "$RUN/results/configure.log"
 cmake --build "$BUILD_DIR" --target llama-server llama-batched-bench \
-    test-quactlize-execution test-quactlize-buffer test-quactlize-loader test-kpack-sidecar -j "$JOBS" \
+    test-quactlize-execution test-quactlize-buffer test-quactlize-loader test-kpack-sidecar test-kpack-model-loader -j "$JOBS" \
     2>&1 | tee "$RUN/results/build.log"
 stage=adapter-contract
 env -u QUACTLIZE_KPACK_EXECUTION -u QUACTLIZE_KPACK_JIT_HELPER -u QUACTLIZE_KPACK_JIT_PYTHON \
     -u QUACTLIZE_KPACK_JIT_CACHE -u QUACTLIZE_KPACK_PAIR_WEIGHTS \
     ctest --test-dir "$BUILD_DIR" --output-on-failure \
-    -R '^(test-quactlize-(execution-(auto|fq|sf|gemv)|buffer|loader(-env)?)|test-kpack-sidecar)$' \
+    -R '^(test-quactlize-(execution-(auto|fq|sf|gemv)|buffer|loader(-env)?)|test-kpack-(sidecar|model-loader))$' \
     2>&1 | tee "$RUN/results/adapter-tests.log"
 if [[ ${RUN_MODEL_BENCH:-1} == 1 ]]; then
     stage=batched-model

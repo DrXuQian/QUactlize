@@ -11,8 +11,34 @@ execution library. The GPU packing library stays at
 `prebuilt/ppu0010/kpack-fusion-v1/libquactlize_ppu_pack.so`: offline bytes and
 cache schema have not changed. Both new libraries total about 1.8 MiB and
 are stored with Git LFS. There are no precompiled GEMM modules in this package.
-The client change is private llama.cpp `feat/kpack-gpu-cache` commit
-`83e8efdfe` (automatic recipe lookup, Q8 allowance, and trace symbols).
+The client requires private llama.cpp `feat/kpack-gpu-cache` commit
+`bd4e8bf93` (paired-weight placement inheritance), which includes `83e8efdfe`
+(automatic recipe lookup, Q8 allowance, and trace symbols).
+
+The model loader now lets a synthetic `ffn_gate_up_exps.weight` inherit
+equal explicit buffer assignments on its two source weights. The benchmark's
+exact source-name overrides no longer accidentally send the synthetic name
+to ordinary CUDA. An explicit merged-name override keeps precedence;
+conflicting source assignments, different qtypes/shapes, per-projection
+bias/scales, or missing merged capability still decline pairing. Benchmark
+and Asys keep their existing exact-name inventory; no broad regex is added.
+
+`convert_hf_to_gguf.py --fuse-gate-up-exps` instead writes the merged tensor
+into the GGUF itself. Such files use normal intake and the existing merged
+graph, even with online pairing disabled. Our opt-in online pairing reads
+already-quantized, separate GGUF tensors and joins their raw blocks during
+GPU K-pack conversion, without requantizing. Both paths use gate then up
+within each expert.
+
+The real model-loader host test covers 20 cases, including both intake paths
+and rejection controls; the old loader fails the exact-source-name case.
+The sidecar/cache CTest also passes, plus 40 benchmark/gate Python tests and
+14 llama trace-runner tests. PPU model pairing and timing still need the next
+box run. `BATCHED_MODEL_FUSION` reports newly paired weights and separate vs
+merged chain-plan counts; these are plan receipts, not kernel timing evidence.
+This loader repair does not change Quactlize DSOs, offline bytes, or the JIT
+source contract. Incrementally rebuild llama.cpp; reuse matching cached JIT
+modules, compiling only missing selections for the doubled-N requests.
 
 The new preparation removes serial duplicate validation and repeated integer
 division in directory construction, distributes expert/split descriptors
@@ -58,8 +84,8 @@ For device gates only, set `RUN_MODEL_BENCH=0 RUN_MODEL_TRACE=0`. Results are
 packed automatically; Asys report/SQLite stay on the box. GEMV policy and
 per-configuration raw timings are included in the result archive.
 
-Remaining model issues: the exact tensor override omits synthesized paired
-gate/up names; the 35B output head may retain legacy FQ; 32B prefill has no
+Remaining model issues: actual paired-weight model admission is pending;
+the 35B output head may retain legacy FQ; 32B prefill has no
 admitted SF comparison policy. Do not equate native plan creation with
 execution/fusion coverage or a measured global optimum.
 

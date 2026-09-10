@@ -218,6 +218,10 @@ def run_arm(args, model, plan, inv, arm, directory, index):
         evidence["moe_chains"] = [dict(re.findall(r"([a-z_]+)=([^\s]+)",line))
             for line in text.splitlines() if "[quactlize-moe]" in line]
         evidence["paired_weights"] = [line for line in text.splitlines() if "[kpack-pair]" in line]
+        evidence["fusion"] = dict(
+            paired_weights=len(evidence["paired_weights"]),
+            merged_chain_plans=sum(p.get("merged") == "1" for p in evidence["moe_chains"]),
+            separate_chain_plans=sum(p.get("merged") == "0" for p in evidence["moe_chains"]))
         evidence["cache"] = [line for line in text.splitlines() if "[kpack-cache]" in line]
         evidence["plan_admission"] = "FAIL"
         try:
@@ -230,6 +234,9 @@ def run_arm(args, model, plan, inv, arm, directory, index):
             evidence["plan_admission"] = "PASS"
         finally:
             save(directory / (label + ".selection.json"), evidence)
+        print(f"BATCHED_MODEL_FUSION model={model['name']} arm={label} " +
+              " ".join(f"{key}={value}" for key, value in evidence["fusion"].items()) +
+              " scope=PLAN_RECEIPTS", flush=True)
         coverage = "PARTIAL_NATIVE" if evidence["fallbacks"] else "SELECTED_PLANS"
     else:
         if "[quactlize-plan]" in text or "native policy miss" in text:

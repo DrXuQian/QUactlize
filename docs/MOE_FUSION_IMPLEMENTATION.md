@@ -8,7 +8,7 @@ close. No graph-capture-time compilation, D2H routing, or CPU scale cache.
 | --- | --- | --- |
 | Q8_0 W8A16, resident original FP16 d, dense/grouped intake | Implemented; XYUgHJ bounded PPU gate 7/7 pass | Model routing/accuracy and timing on PPU |
 | Gate/up paired GPU pack | Implemented; XYUgHJ device gate passes all six formats | Actual model paired-weight coverage and timing |
-| Merged weight intake and cache | Implemented; nonadjacent/reversed source spans, cold/warm and negative host tests pass | PPU model cold/warm gate |
+| Merged weight intake and cache | Source-name buffer inheritance fixed; 20 real-loader cases and nonadjacent/reversed source/cache tests pass | PPU model paired coverage and cold/warm gate |
 | Fused route/gather/metadata/directory | Implemented per call and shared across the small chain; XYUgHJ four PPU chain cases pass | Model fusion/latency trace; larger prefill retains its original path |
 | Ordered Split-K reduce + scatter | Implemented for that indexed path; bounded PPU chain/replay gate passes | Actual model coverage and performance |
 | Gate/up completion + SwiGLU, expert-ordered down input | Implemented; separate/merged PPU chain cases pass | Full-model coverage, numerical and performance checks |
@@ -41,8 +41,17 @@ is compile/ELF-verified, not locally runtime-admitted.
 The three affected llama CUDA translation units compile; its real host policy
 parser accepts exact Q8/Q4 recipes and rejects malformed/duplicate rows.
 
-Still open after v2: synthesized paired-name override admission, Q8 N32 SSM
-intake, output-head selector coverage, and measured 32B prefill route choice.
+The paired-name override omission is repaired in private llama.cpp
+`bd4e8bf93`. Both source overrides must agree; merged-name conflicts and the
+existing shape/qtype/producer/kernel guards still reject. A host test runs
+the real model loader against GGUF fixtures: the old code fails and the
+candidate passes all 20 cases, including a preconverted merged GGUF. No
+Quactlize DSO or JIT contract change is needed for this loader repair. The
+benchmark now prints paired-weight and merged/separate chain-plan counts.
+Actual model merged execution and timing remain pending on PPU.
+
+Still open after v2: Q8 N32 SSM intake, output-head selector coverage, and
+measured 32B prefill route choice.
 Keep these separate from the now-measured prepare-only improvement.
 
 ## Reuse llama.cpp's merged graph
