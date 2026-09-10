@@ -23,6 +23,13 @@ No recompilation of those cached parents or llama.cpp is required solely for
 this repair. Keep the six intake/fallback libraries. Details:
 [JIT gate review](KPACK_JIT_GATE_REVIEW.md).
 
+The next-layer prefetch proposal is now a separate [bounded cache
+experiment](KPACK_PREFETCH_EXPERIMENT.md): measure target-call benefit and
+current-call interference independently, using unchanged Q4/S4 and Q5/S1
+modules. Its small auxiliary library is not a llama runtime dependency or
+production route change. Whole-model JIT validation remains pending; this
+experiment does not replace it or predict future MoE expert routing.
+
 The [complete delivery backlog](KPACK_EXECUTION_FOLLOWUP.md#complete-delivery-backlog)
 is the current task authority, including production JIT, model-load
 preparation, cache lifecycle, small-library packaging, Q8/Q6 coverage,
