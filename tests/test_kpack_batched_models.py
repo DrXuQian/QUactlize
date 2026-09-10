@@ -139,6 +139,16 @@ def test_qwen3_catalog_selects_base_even_with_eagle3_present(tmp_path):
     assert resolve_plan(resolved) == resolved
 
 
+def test_qwen3_q4_catalog_uses_exact_underscore_directory(tmp_path):
+    source = json.loads((ROOT / "tools/kpack_batched_models.json").read_text())
+    fixture(tmp_path, "Qwen3-32B-Q4_K_M-GGUF/Qwen3-32B-Q4_K_M.gguf")
+    with pytest.raises(ValueError, match="binding path does not exist"):
+        resolve_plan(source, ["qwen3-32b-q4km"], tmp_path)
+    chosen = fixture(tmp_path, "Qwen3-32B-Q4_K_M_GGUF/Qwen3-32B-Q4_K_M.gguf")
+    model, = resolve_plan(source, ["qwen3-32b-q4km"], tmp_path)["models"]
+    assert model["path"] == str(chosen) and model["files"] == [str(chosen)]
+
+
 def test_empty_file_and_unknown_model_are_errors(tmp_path):
     fixture(tmp_path).write_bytes(b"")
     with pytest.raises(ValueError, match="empty GGUF"):

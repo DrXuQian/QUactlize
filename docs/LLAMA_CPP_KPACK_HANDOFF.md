@@ -74,6 +74,8 @@ the backing blob's filename. The 35B base entry explicitly names
 `Qwen3.5-35B-A3B-BF16-00001-of-00002.gguf` and requires its second shard.
 The 32B base entry explicitly names `Qwen3-32b.gguf`; a colocated
 `Qwen3-32B-eagle3.gguf` is not a replacement or fallback.
+The 32B Q4_K_M directory is exactly `Qwen3-32B-Q4_K_M_GGUF`
+(underscore before `GGUF`), with no alternative-spelling fallback.
 Paths can be checked separately, without SDK/GPU work:
 
 ```bash
