@@ -16,6 +16,7 @@ from pathlib import Path
 import statistics
 import sys
 import traceback
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -48,6 +49,52 @@ from tools.run_kpack_pack_gate import device_identity
 
 class Range(C.Structure):
     _fields_ = [("pointer", C.c_uint64), ("bytes", C.c_uint64)]
+
+
+# PPU SDK include/driver_types.h. External RECORD nodes supply timestamps;
+# cross-stream dependencies still use separate, ordinary capture events.
+EVENT_RECORD_EXTERNAL = 0x01
+GRAPH_EVENT_RECORD = 0x07
+
+
+def timing_bind(sdk):
+    for name, args in {
+        "hggcEventRecordWithFlags": [C.c_void_p, C.c_void_p, C.c_uint],
+        "hggcEventQuery": [C.c_void_p],
+        "hggcStreamWaitEvent": [C.c_void_p, C.c_void_p, C.c_uint],
+        "hggcGraphGetNodes": [C.c_void_p, C.POINTER(C.c_void_p), C.POINTER(C.c_size_t)],
+        "hggcGraphNodeGetType": [C.c_void_p, C.POINTER(C.c_int)],
+        "hggcGraphEventRecordNodeGetEvent": [C.c_void_p, C.POINTER(C.c_void_p)],
+    }.items():
+        fn = getattr(sdk.lib, name)
+        fn.argtypes, fn.restype = args, C.c_int
+
+
+def validate_timing_nodes(sdk, graph, events):
+    count = C.c_size_t()
+    checked(sdk.lib.hggcGraphGetNodes(graph, None, C.byref(count)), "graph node count")
+    nodes = (C.c_void_p * count.value)()
+    checked(sdk.lib.hggcGraphGetNodes(graph, nodes, C.byref(count)), "graph nodes")
+    recorded = []
+    for node in nodes:
+        kind = C.c_int()
+        checked(sdk.lib.hggcGraphNodeGetType(node, C.byref(kind)), "graph node type")
+        if kind.value == GRAPH_EVENT_RECORD:
+            event = C.c_void_p()
+            checked(
+                sdk.lib.hggcGraphEventRecordNodeGetEvent(node, C.byref(event)),
+                "graph timing event",
+            )
+            recorded.append(event.value)
+    missing = [
+        name for name, event in events.items() if recorded.count(event.value) != 1
+    ]
+    if missing:
+        raise ValueError(
+            "captured timing events require exactly one record node: "
+            + ",".join(missing)
+        )
+    return len(events)
 
 
 def weight_ranges(planes, sizes, experts, active):
@@ -346,22 +393,39 @@ class Experiment:
         blocks,
     ):
         self.sdk, self.r, self.pf = sdk, r, pf
-        self.events = {}
+        self.events, self.fences = {}, {}
         self.kind, self.prefetching = kind, mode != "none"
+        self.label = f"kind={kind} mode={mode} blocks={blocks}"
         self.graph = None
         names = ["origin", "next_start", "next_end"]
         if kind == "pair":
             names += ["current_start", "current_end"]
         if self.prefetching:
             names += ["prefetch_start", "prefetch_end"]
-        for name in names:
-            event = C.c_void_p()
-            checked(sdk.lib.hggcEventCreate(C.byref(event)), "event create")
-            self.events[name] = event
+        try:
+            for destination, event_names in (
+                (self.events, names),
+                (
+                    self.fences,
+                    ["fork", "join"] if kind == "pair" and self.prefetching else [],
+                ),
+            ):
+                for name in event_names:
+                    event = C.c_void_p()
+                    checked(
+                        sdk.lib.hggcEventCreate(C.byref(event)), "event create " + name
+                    )
+                    destination[name] = event
+        except BaseException:
+            self.close()
+            raise
 
         def record(name, stream):
             checked(
-                sdk.lib.hggcEventRecord(self.events[name], stream), "record " + name
+                sdk.lib.hggcEventRecordWithFlags(
+                    self.events[name], stream, EVENT_RECORD_EXTERNAL
+                ),
+                "capture timing record " + name,
             )
 
         def prefetch(stream):
@@ -387,23 +451,27 @@ class Experiment:
             record("origin", r.stream)
             if kind == "pair":
                 if self.prefetching:
-                    # Both events belong to this capture. Never wait on an
-                    # uncaptured setup event, or request an external wait.
+                    # Keep dependency events separate from timestamp nodes.
+                    # No external wait and no dependency on uncaptured work.
                     checked(
-                        sdk.lib.hggcStreamWaitEvent(
-                            pf.stream, self.events["origin"], 0
-                        ),
+                        sdk.lib.hggcEventRecord(self.fences["fork"], r.stream),
+                        "capture fork record",
+                    )
+                    checked(
+                        sdk.lib.hggcStreamWaitEvent(pf.stream, self.fences["fork"], 0),
                         "capture fork",
                     )
                     prefetch(pf.stream)
+                    checked(
+                        sdk.lib.hggcEventRecord(self.fences["join"], pf.stream),
+                        "capture join record",
+                    )
                 record("current_start", r.stream)
                 checked(current.launch(), "current selected call")
                 record("current_end", r.stream)
                 if self.prefetching:
                     checked(
-                        sdk.lib.hggcStreamWaitEvent(
-                            r.stream, self.events["prefetch_end"], 0
-                        ),
+                        sdk.lib.hggcStreamWaitEvent(r.stream, self.fences["join"], 0),
                         "capture join",
                     )
             elif self.prefetching:
@@ -417,6 +485,9 @@ class Experiment:
 
         try:
             self.graph = Replay(sdk, r.stream, capture, 1)
+            self.timing_nodes = validate_timing_nodes(
+                sdk, self.graph.graph, self.events
+            )
         except BaseException:
             self.close()
             raise
@@ -429,21 +500,95 @@ class Experiment:
             if name == "origin":
                 continue
             elapsed = C.c_float()
-            checked(
-                self.sdk.lib.hggcEventElapsedTime(
-                    C.byref(elapsed), self.events["origin"], event
-                ),
-                "event interval",
+            status = self.sdk.lib.hggcEventElapsedTime(
+                C.byref(elapsed), self.events["origin"], event
             )
+            if status:
+                begin_query = self.sdk.lib.hggcEventQuery(self.events["origin"])
+                end_query = self.sdk.lib.hggcEventQuery(event)
+                raise RuntimeError(
+                    f"event interval {self.label} origin->{name} failed: status={status} "
+                    f"event_query=[{begin_query},{end_query}] timing_nodes={self.timing_nodes}"
+                )
             result[name] = float(elapsed.value) * 1000
         return intervals(result, self.kind == "pair", self.prefetching)
 
     def close(self):
         if self.graph:
             self.graph.close()
-        for event in self.events.values():
+            self.graph = None
+        for event in (*self.events.values(), *self.fences.values()):
             checked(self.sdk.lib.hggcEventDestroy(event), "destroy graph event")
         self.events.clear()
+        self.fences.clear()
+
+
+def timing_self_test(sdk, output):
+    """Exercise the actual timeline with small memsets, before GGUF fixtures.
+
+    This admits event-node timestamps and capture fork/join only. Its times
+    are not kernel performance results or proof of concurrent kernel execution.
+    """
+    r, pf = Resources(sdk), Resources(sdk)
+    result = dict(status="FAIL", timing="EXPLICIT_GRAPH_RECORD_NODES", arms=[])
+    size = 4 * 1024**2
+    try:
+        print("KPACK_PREFETCH_TIMING_BEGIN before_weight_fixture=1", flush=True)
+        pressure, target, prefetched = (r.alloc(size) for _ in range(3))
+
+        def fill(pointer, value, stream):
+            return sdk.lib.hggcMemsetAsync(pointer, value, size, stream)
+
+        current = SimpleNamespace(launch=lambda: fill(target, 0x22, r.stream))
+        next_call = SimpleNamespace(
+            launch=lambda: fill(target, 0x33, r.stream), ranges=[(prefetched, size)]
+        )
+        probe = SimpleNamespace(
+            pressure=lambda *args: fill(pressure, 0x11, r.stream),
+            prefetch=lambda *args: fill(prefetched, 0x44, args[-1]),
+        )
+        for key in (
+            ("cold", "none", 0),
+            ("warm", "none", 0),
+            ("pair", "none", 0),
+            ("sequential", "load", 1),
+            ("pair", "load", 1),
+        ):
+            result["current_arm"] = dict(kind=key[0], mode=key[1])
+            r.fill(target, 0xA5, size)
+            r.fill(prefetched, 0xA5, size)
+            sdk.synchronize(r.stream)
+            graph = Experiment(
+                sdk, r, pf, probe, current, next_call, pressure, size, 0, 0, 0, *key
+            )
+            try:
+                values = [graph.sample() for _ in range(3)]
+                if sdk.download(target, size) != b"\x33" * size:
+                    raise ValueError("timing self-test target write differs")
+                expected = 0x44 if key[1] != "none" else 0xA5
+                if sdk.download(prefetched, size) != bytes([expected]) * size:
+                    raise ValueError("timing self-test fork/join write differs")
+                result["arms"].append(
+                    dict(
+                        kind=key[0],
+                        mode=key[1],
+                        timing_nodes=graph.timing_nodes,
+                        samples=values,
+                    )
+                )
+            finally:
+                graph.close()
+        result["status"] = "PASS"
+        result.pop("current_arm")
+        print(
+            "KPACK_PREFETCH_TIMING PASS arms=5 graph_replays=15 before_weight_fixture=1",
+            flush=True,
+        )
+        return result
+    finally:
+        output.write_text(json.dumps(result, indent=2) + "\n")
+        pf.close()
+        r.close()
 
 
 def configurations(blocks):
@@ -484,11 +629,8 @@ def summary(cells):
 def run(args, subject, manifest, library, runtime_sdk):
     sdk = SDK(args.sdk)
     graph_bind(sdk)
-    sdk.lib.hggcStreamWaitEvent.argtypes, sdk.lib.hggcStreamWaitEvent.restype = [
-        C.c_void_p,
-        C.c_void_p,
-        C.c_uint,
-    ], C.c_int
+    timing_bind(sdk)
+    timing_probe = timing_self_test(sdk, args.output / (args.case + ".timing.json"))
     probe = Probe(library, sdk)
     if probe.device["l2_bytes"] <= 0 and not args.pressure_mib:
         raise ValueError("SDK reports no L2 size; explicitly choose --pressure-mib")
@@ -511,9 +653,11 @@ def run(args, subject, manifest, library, runtime_sdk):
         manifest_sha256=sha(args.bundle / "manifest.json"),
         runner_sha256=sha(__file__),
         runtime_sdk=runtime_sdk,
+        timing_probe=timing_probe,
         cache_initialization="PRESSURE_EVICTION_NOT_PROVEN_FLUSH",
         pressure_bytes=pressure_bytes,
-        timing="UNPROFILED_GRAPH_EVENTS_FULL_COMPACT_CALL",
+        timing="UNPROFILED_EXPLICIT_GRAPH_EVENTS_FULL_COMPACT_CALL",
+        instrumentation="TIMESTAMP_NODES_PRESENT_IN_ALL_ARMS_NOT_ZERO_OVERHEAD",
         known_next_experts="ASSUMED_NOT_PREDICTED",
         hint_completion="ISSUANCE_ONLY_LOAD_CONTROL_WAITS_FOR_READS",
         excluded="LLAMA_ADAPTERS_ROUTER_PREDICTION_AND_ACTIVATION_DEPENDENCY",
@@ -607,6 +751,10 @@ def run(args, subject, manifest, library, runtime_sdk):
         )
         config = configurations(args.blocks)
         for key in config:
+            print(
+                f"KPACK_PREFETCH_GRAPH case={subject['case']} kind={key[0]} mode={key[1]} blocks={key[2]}",
+                flush=True,
+            )
             graphs[key] = Experiment(
                 sdk,
                 r,

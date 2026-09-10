@@ -62,6 +62,33 @@ evidence that a half-CU partition retains its performance.
   work and auxiliary kernels are included. Use Asys to inspect the actual
   kernel timeline before making a concurrency claim.
 
+## Captured timestamp repair
+
+The first box replay failed at `hggcEventElapsedTime` with status 1. The old
+runner captured ordinary `hggcEventRecord` calls: capture dependencies are
+not sufficient to supply replay-readable timestamps. Timing events now use
+`hggcEventRecordWithFlags(..., hggcEventRecordExternal)` inside capture;
+each must appear exactly once as an event-record node in the resulting graph.
+The local PPU SDK declares that API and flag in `hggc_runtime_api.h` and
+`driver_types.h`. The corresponding capture meaning is documented in the
+[CUDA event API](https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__EVENT.html).
+PPU execution of the repaired timer still needs device validation.
+
+Fork and join use **different** ordinary capture events, with wait flags 0.
+No external wait or dependency on an uncaptured setup event is introduced.
+Before constructing the full weight fixture, the runner exercises these same
+five timeline shapes using small device memsets, validates graph record nodes,
+replays each three times and checks the writes. Its `*.timing.json` receipt is
+saved on pass or failure. A failed interval names the arm, event endpoints,
+query status and expected timing-node count; it is never treated as zero time.
+
+Timestamp nodes have overhead and may perturb scheduling. All reported times
+are instrumented full-call intervals, not overhead-free producer latency;
+there is no subtraction of an assumed event cost. In particular, extra
+prefetch timing nodes differ from the no-prefetch control. Confirm small gains
+with a minimally instrumented end-to-end comparison before production use.
+This repair changes only the runner: helper and GEMM binaries are unchanged.
+
 ## Profiling and cache flushing
 
 The default runner deliberately does **not** launch ACU. Existing operator

@@ -210,8 +210,9 @@ def test_receipt_detects_dropped_load_or_wrong_range():
         probe.check_receipt(sdk, 4096, 1, target, "hint")
 
 
-def test_graph_has_internal_fork_and_join_after_current_end(monkeypatch):
-    log = []
+@pytest.mark.parametrize("record_nodes", [True, False])
+def test_graph_has_internal_fork_and_explicit_timestamps(monkeypatch, record_nodes):
+    log, nodes = [], []
 
     def create(ptr):
         ptr._obj.value = 100 + len(log)
@@ -222,22 +223,48 @@ def test_graph_has_internal_fork_and_join_after_current_end(monkeypatch):
         log.append((tag, *args))
         return 0
 
+    def record(event, stream, flags):
+        assert flags == probe.EVENT_RECORD_EXTERNAL
+        if record_nodes:
+            nodes.append(event.value)
+        return call("timestamp", event.value, stream, flags)
+
+    def get_nodes(graph, out, count):
+        count._obj.value = len(nodes)
+        if out is not None:
+            for i in range(len(nodes)):
+                out[i] = i + 1
+        return 0
+
+    def get_type(node, out):
+        out._obj.value = probe.GRAPH_EVENT_RECORD
+        return 0
+
+    def get_event(node, out):
+        out._obj.value = nodes[node - 1]
+        return 0
+
     lib = SimpleNamespace(
         hggcEventCreate=create,
         hggcEventRecord=lambda e, s: call("record", e.value, s),
+        hggcEventRecordWithFlags=record,
+        hggcGraphGetNodes=get_nodes,
+        hggcGraphNodeGetType=get_type,
+        hggcGraphEventRecordNodeGetEvent=get_event,
         hggcStreamWaitEvent=lambda s, e, f: call("wait", s, e.value, f),
-        hggcEventDestroy=lambda e: 0,
+        hggcEventDestroy=lambda e: call("destroy", e.value),
     )
 
     class Replay:
         def __init__(self, sdk, stream, fn, repeats):
             assert repeats == 1
+            self.graph = C.c_void_p(777)
             log.append(("capture_begin", stream))
             assert fn() == 0
             log.append(("capture_end", stream))
 
         def close(self):
-            pass
+            log.append(("destroy_graph",))
 
     monkeypatch.setattr(probe, "Replay", Replay)
     api = SimpleNamespace(
@@ -246,7 +273,7 @@ def test_graph_has_internal_fork_and_join_after_current_end(monkeypatch):
     )
     current = SimpleNamespace(launch=lambda: call("current"))
     target = SimpleNamespace(launch=lambda: call("target"), ranges=[(4096, 256)])
-    graph = probe.Experiment(
+    args = (
         SimpleNamespace(lib=lib),
         SimpleNamespace(stream=1),
         SimpleNamespace(stream=2),
@@ -262,17 +289,29 @@ def test_graph_has_internal_fork_and_join_after_current_end(monkeypatch):
         "load",
         4,
     )
+    if not record_nodes:
+        # Model the original bug: dependencies capture successfully, but no
+        # event RECORD nodes exist. Reject before running the numerical fixture.
+        with pytest.raises(ValueError, match="exactly one record node: origin"):
+            probe.Experiment(*args)
+        assert len([v for v in log if v[0] == "destroy"]) == 9
+        assert ("destroy_graph",) in log
+        return
+    graph = probe.Experiment(*args)
+    assert graph.timing_nodes == 7
     origin = graph.events["origin"].value
-    end = graph.events["prefetch_end"].value
+    fork, join = graph.fences["fork"].value, graph.fences["join"].value
     assert (
-        log.index(("record", origin, 1))
-        < log.index(("wait", 2, origin, 0))
+        log.index(("timestamp", origin, 1, 1))
+        < log.index(("record", fork, 1))
+        < log.index(("wait", 2, fork, 0))
         < log.index(("prefetch", 2))
+        < log.index(("record", join, 2))
     )
     assert (
         log.index(("current",))
-        < log.index(("record", graph.events["current_end"].value, 1))
-        < log.index(("wait", 1, end, 0))
+        < log.index(("timestamp", graph.events["current_end"].value, 1, 1))
+        < log.index(("wait", 1, join, 0))
         < log.index(("target",))
     )
     assert (
@@ -280,7 +319,133 @@ def test_graph_has_internal_fork_and_join_after_current_end(monkeypatch):
         < log.index(("pressure",))
         < log.index(("capture_end", 1))
     )
+    assert not ({fork, join} & set(nodes))
+    assert [entry for entry in log if entry[0] == "wait"] == [
+        ("wait", 2, fork, 0),
+        ("wait", 1, join, 0),
+    ]
+    # A duplicate node for a timer is not a valid single timestamp boundary.
+    nodes.append(origin)
+    with pytest.raises(ValueError, match="exactly one record node: origin"):
+        probe.validate_timing_nodes(
+            SimpleNamespace(lib=lib), graph.graph.graph, graph.events
+        )
     graph.close()
+    graph.close()  # cleanup is idempotent
+
+
+@pytest.mark.parametrize("status", [0, 1])
+def test_graph_timestamp_read_success_or_named_failure(status):
+    calls = []
+
+    def elapsed(ms, begin, end):
+        ms._obj.value = {2: 0.002, 3: 0.022}[end.value]
+        calls.append("elapsed")
+        return status
+
+    graph = object.__new__(probe.Experiment)
+    graph.kind, graph.prefetching = "cold", False
+    graph.label, graph.timing_nodes = "kind=cold mode=none blocks=0", 3
+    graph.events = dict(
+        origin=C.c_void_p(1), next_start=C.c_void_p(2), next_end=C.c_void_p(3)
+    )
+    graph.graph = lambda: 0
+    graph.r = SimpleNamespace(stream=9)
+    graph.sdk = SimpleNamespace(
+        synchronize=lambda stream: calls.append("sync"),
+        lib=SimpleNamespace(hggcEventElapsedTime=elapsed, hggcEventQuery=lambda e: 0),
+    )
+    if status:
+        with pytest.raises(
+            RuntimeError,
+            match=r"kind=cold.*origin->next_start.*status=1.*event_query=\[0,0\]",
+        ):
+            graph.sample()
+    else:
+        assert graph.sample() == pytest.approx(dict(target_us=20, total_us=22))
+    assert calls[0] == "sync"
+
+
+@pytest.mark.parametrize("drop_prefetch", [False, True])
+def test_timing_self_test_covers_timelines_and_detects_missing_write(
+    tmp_path, monkeypatch, drop_prefetch
+):
+    memory, replays = {}, []
+
+    def fill(pointer, value, size, stream):
+        memory[pointer] = value
+        return 0
+
+    class Resources:
+        def __init__(self, sdk):
+            self.stream = 1
+
+        def alloc(self, size):
+            pointer = len(memory) + 1
+            memory[pointer] = 0
+            return pointer
+
+        def fill(self, pointer, value, size):
+            fill(pointer, value, size, self.stream)
+
+        def close(self):
+            pass
+
+    class Experiment:
+        def __init__(self, sdk, r, pf, api, current, target, *rest):
+            self.kind, self.mode, _ = rest[-3:]
+            self.api, self.current, self.target = api, current, target
+            self.timing_nodes = 3
+
+        def sample(self):
+            self.api.pressure()
+            if self.kind == "pair":
+                self.current.launch()
+            if self.mode != "none" and not drop_prefetch:
+                self.api.prefetch(2)
+            self.target.launch()
+            replays.append((self.kind, self.mode))
+            return dict(target_us=10.0)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(probe, "Resources", Resources)
+    monkeypatch.setattr(probe, "Experiment", Experiment)
+    sdk = SimpleNamespace(
+        lib=SimpleNamespace(hggcMemsetAsync=fill),
+        synchronize=lambda stream: None,
+        download=lambda pointer, size: bytes([memory[pointer]]) * size,
+    )
+    path = tmp_path / "timing.json"
+    if drop_prefetch:
+        with pytest.raises(ValueError, match="fork/join write differs"):
+            probe.timing_self_test(sdk, path)
+        assert json.loads(path.read_text())["status"] == "FAIL"
+    else:
+        result = probe.timing_self_test(sdk, path)
+        assert result == json.loads(path.read_text())
+        assert result["status"] == "PASS"
+        assert len(replays) == 15 and len(set(replays)) == len(result["arms"]) == 5
+
+
+def test_timing_admission_precedes_full_weight_fixture(tmp_path, monkeypatch):
+    monkeypatch.setattr(probe, "SDK", lambda _: None)
+    monkeypatch.setattr(probe, "graph_bind", lambda _: None)
+    monkeypatch.setattr(probe, "timing_bind", lambda _: None)
+
+    def reject(*args):
+        raise RuntimeError("timer unavailable")
+
+    def unexpected(*args):
+        pytest.fail("fixture must not be constructed when timing admission fails")
+
+    monkeypatch.setattr(probe, "timing_self_test", reject)
+    monkeypatch.setattr(probe, "IndexedWeights", unexpected)
+    with pytest.raises(RuntimeError, match="timer unavailable"):
+        probe.run(
+            SimpleNamespace(sdk=tmp_path, output=tmp_path, case="q12"), {}, {}, None, {}
+        )
 
 
 def test_summary_does_not_mix_pair_and_sequential_baselines():

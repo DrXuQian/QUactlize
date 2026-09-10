@@ -33,6 +33,10 @@ Its prebuilt runner now separates unused build-tool differences from runtime
 library changes. Runtime differences require `--allow-unverified-sdk` and are
 recorded before launch; this changes no binary or numerical check. The helper
 and measured GEMM parents do not need recompilation for this preflight repair.
+The subsequent `event interval status=1` is a timer-path failure: graph timing
+now uses explicit event-record nodes and separate internal fork/join events.
+A small five-arm timer gate runs before weight construction. Host contracts
+pass, but repaired PPU timing remains pending; no prefetch gain is claimed.
 
 The [complete delivery backlog](KPACK_EXECUTION_FOLLOWUP.md#complete-delivery-backlog)
 is the current task authority, including production JIT, model-load
