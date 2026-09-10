@@ -11,8 +11,9 @@ execution library. The GPU packing library stays at
 `prebuilt/ppu0010/kpack-fusion-v1/libquactlize_ppu_pack.so`: offline bytes and
 cache schema have not changed. Both new libraries total about 1.8 MiB and
 are stored with Git LFS. There are no precompiled GEMM modules in this package.
-The client requires private llama.cpp `feat/kpack-gpu-cache` commit
-`e9bd8a81c` (single-owner profiler shutdown), which includes `bd4e8bf93`
+Use private llama.cpp `feat/kpack-gpu-cache` commit `58b2bc27d` for matched
+reference trace scripts. It includes `e9bd8a81c` (single-owner profiler
+shutdown), `bd4e8bf93`
 (paired-weight placement inheritance) and `83e8efdfe` (automatic recipe
 lookup, Q8 allowance, and trace symbols).
 
@@ -58,6 +59,46 @@ the repair passes and still rejects real nonzero exits and shutdown timeouts.
 The existing benchmark/report need not be discarded or rerun. Script-only
 repair: no DSO rebuild, GEMM JIT invalidation, or model-format change.
 Automatic trace export/selected-kernel summarization had not run on the box.
+
+### Matched original llama.cpp vs K-pack trace
+
+The acceptance target is no regression against original llama.cpp for the
+complete warmed call/model path, including activation conversions and MoE
+adapters. The +31.32% decode result above does **not** meet that target.
+The earlier Q8 SIMT gate compared against the naked FP16 TC core, excluding
+its F32-to-FP16 and FP16-to-F32 casts. It cannot establish the best complete
+F32-to-F32 path, let alone a win over native llama.cpp.
+
+After updating both checkouts, use the completed model run as input:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash tools/run_kpack_reference_trace.sh /workspace/kpack-fusion.y9B4tw
+```
+
+The runner reuses that run's server binary, model, exact prompt token IDs,
+weight cache, JIT cache, tensor inventory, and Q8 policy. It captures original
+llama.cpp and K-pack sequentially in separate processes, with the original
+native fusion and graph settings enabled. Each process completes an excluded
+first request before capturing the second PP2048/TG16 request. There is no
+build or config sweep; existing valid JIT selections remain reusable.
+
+Reports are printed under `/workspace/kpack-reference-ab.XXXXXX/results/`:
+
+- `reference/proof.asysrep` and `native/proof.asysrep` for the GUI;
+- each arm's `kernel-times.json`, including casts, preparation, reduction,
+  and math kernels, not only selected GEMM symbols;
+- `summary.json` verifies matching request/model/server identities and
+  records whether generated text matches. Different continuations can
+  produce different MoE routing; this is not an identical-router microbench.
+
+The result archive excludes report/SQLite payloads but includes all-kernel
+summaries and request/selection evidence. A failed arm preserves its outputs
+and does not prevent the other arm from running. Kernel duration sums are
+profiler diagnostics, **not** bandwidth utilization, critical-path time, or
+end-to-end performance admission. Final speed acceptance uses the unprofiled
+warmed benchmark. Local tests cover 52 llama evidence/runner cases and 9
+Quactlize orchestration cases; PPU capture remains to be run on the box.
+Only scripts changed: no server rebuild, DSO rebuild, or offline-format change.
 
 The new preparation removes serial duplicate validation and repeated integer
 division in directory construction, distributes expert/split descriptors

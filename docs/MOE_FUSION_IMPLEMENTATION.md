@@ -3,6 +3,9 @@
 The target is complete, warmed model latency, not just producer GEMM time.
 Changes stay on develop/private llama.cpp until numerical and device gates
 close. No graph-capture-time compilation, D2H routing, or CPU scale cache.
+Acceptance requires no slowdown against original llama.cpp's complete warmed
+path, with native fusions retained. The current decode regression is still
+open; a faster isolated GEMM is not sufficient.
 
 | Work | State | Required closure |
 | --- | --- | --- |
@@ -17,7 +20,7 @@ close. No graph-capture-time compilation, D2H routing, or CPU scale cache.
 | SIMT automatic selection | Auto now queries exact measured recipes; Q8 K-pack2 W8A16 direct reader and small DSO compiled | Bounded PPU Q8 comparison must supply recipes; missing recipes retain TC |
 | Q8 dense input/output adapters | Still separate gather/scatter casts around TC; not covered by the MoE fusion | Compare F32-to-F32 total calls, then fuse conversions or select faster SIMT |
 | 5090 fusion checks | 10 complete SIMT-stage contexts pass, 7 changing-input replays each; 15 x 8 Q8 GEMV cells pass | Completed-projection fixtures do not emulate PPU GEMM; PPU/model admission is separate |
-| PPU model benchmark and trace | y9B4tw benchmark completed, paired model receipts present; trace written, double shutdown fixed in e9bd8a81c | Inspect existing warmed Asys; 35B decode remains +31.32% vs reference |
+| PPU model benchmark and trace | y9B4tw benchmark completed; paired model receipts present; matched original/K-pack capture runner ready | Run paired warmed Asys and attribute full-call overhead; 35B decode remains +31.32% vs reference |
 
 See [the XYUgHJ receipt review](KPACK_FUSION_XYUGHJ_REVIEW.md). The logging
 repair does not admit the old timings or prove that a model graph used the
@@ -55,6 +58,18 @@ caused rc=1; the script repair waits for Asys-owned shutdown and keeps real
 nonzero/timeout failures strict. Sixteen host trace-runner tests pass. Keep
 the already completed benchmark and report; model numerical and detailed
 trace admission remain pending.
+
+Matched comparison is now one command:
+`bash tools/run_kpack_reference_trace.sh /workspace/kpack-fusion.y9B4tw`,
+using private llama scripts `58b2bc27d`. It reuses the same server binary and
+prompt token IDs, preserves original native fusions, excludes each process's
+first request, and exports all GPU kernel durations alongside both Asys
+reports. No compilation or sweep is needed. The first targets are Q8 casts
+around TC and the residual MoE preparation/reduction chain; attribution is
+pending this PPU capture, not inferred from the naked-TC SIMT gate.
+Different generated continuations are reported and are not treated as equal
+expert routing. Profiler data diagnoses the regression; final admission uses
+unprofiled warmed timings. Host checks pass (52 llama + 9 orchestration).
 
 Still open after v2: Q8 N32 SSM intake, output-head selector coverage, and
 measured 32B prefill route choice.
