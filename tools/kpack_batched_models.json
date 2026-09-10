@@ -7,7 +7,7 @@
   "batch": 5120,
   "ubatch": 5120,
   "models": [
-    {"name": "qwen35-35b-base", "directory": "Qwen3.5-35B-A3B-GGUF", "devices": "7", "split": "none"},
+    {"name": "qwen35-35b-base", "directory": "Qwen3.5-35B-A3B-GGUF", "filename": "Qwen3.5-35B-A3B-BF16-00001-of-00002.gguf", "devices": "7", "split": "none"},
     {"name": "qwen35-35b-q4km", "directory": "Qwen3.5-35B-A3B-Q4_K_M-GGUF", "devices": "7", "split": "none"},
     {"name": "qwen3-32b-base", "directory": "Qwen3-32B-GGUF", "devices": "7", "split": "none"},
     {"name": "qwen3-32b-q4km", "directory": "Qwen3-32B-Q4_K_M-GGUF", "devices": "7", "split": "none"},

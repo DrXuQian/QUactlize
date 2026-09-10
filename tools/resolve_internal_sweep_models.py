@@ -147,7 +147,10 @@ def parse_bindings(values: Iterable[str]) -> dict[str, pathlib.Path]:
 
 def split_group(paths: Iterable[pathlib.Path]) -> list[pathlib.Path]:
     """Validate one plain GGUF or one complete standard split filename set."""
-    resolved = sorted({path.resolve() for path in paths}, key=lambda item: item.name)
+    # The public filename owns the shard index. A file symlink may point to a
+    # download-cache blob with a different name (or no extension). Resolve only
+    # the directory: llama loads subsequent shards beside the public first file.
+    resolved = sorted({path.parent.resolve() / path.name for path in paths}, key=lambda item: item.name)
     if not resolved:
         raise ResolveError("binding resolved to no .gguf files")
     for path in resolved:
@@ -159,10 +162,12 @@ def split_group(paths: Iterable[pathlib.Path]) -> list[pathlib.Path]:
     if not any(matches):
         if len(resolved) != 1:
             raise ResolveError(
-                "directory contains multiple unsplit GGUF files; bind the exact file or one split directory")
+                "directory contains multiple unsplit GGUF files; bind the exact file or one split directory; "
+                f"found={[path.name for path in resolved[:8]]}")
         return resolved
     if not all(matches):
-        raise ResolveError("binding mixes split and unsplit GGUF filenames")
+        raise ResolveError("binding mixes split and unsplit GGUF filenames; "
+                           f"found={[path.name for path in resolved[:8]]}")
     groups = {(match.group("prefix"), int(match.group("count"))) for match in matches if match}
     if len(groups) != 1:
         raise ResolveError(f"binding contains multiple GGUF split groups: {sorted(groups)}")

@@ -68,6 +68,10 @@ prints each path and saves `results/model-plan.json`. Benchmark and trace use
 that same plan. It does not hash/read weight payloads or substitute HF/GPTQ
 weights. Multiple GGUF families require an explicit file `path` in `MODEL_PLAN`;
 `MODEL_ROOT` replaces the single root without adding fallback directories.
+Direct GGUF files take precedence over nested directories; hidden cache files
+are excluded. File symlinks retain their public shard names instead of using
+the backing blob's filename. The 35B base entry explicitly names
+`Qwen3.5-35B-A3B-BF16-00001-of-00002.gguf` and requires its second shard.
 Paths can be checked separately, without SDK/GPU work:
 
 ```bash

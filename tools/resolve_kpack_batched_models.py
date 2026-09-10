@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Resolve benchmark GGUF paths without reading/hashing model payloads.
 
-Only the selected model directories are searched, including nested split-file
-directories. Multiple weight files/families are an error, not a first-file
-choice. Vision mmproj files are not text model candidates. An explicit `path`
-in a custom plan binds one file or directory instead of `model_root/directory`.
+Search the selected directory's GGUF files first, then visible nested folders
+only when there are none. Multiple weight files/families are an error, not a
+first-file choice. Vision mmproj and hidden files are not model candidates.
+An explicit `path` binds one file/directory instead of `model_root/directory`;
+`filename` binds a known model or first shard inside that directory.
 """
 
 import argparse
@@ -15,6 +16,16 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from tools.resolve_internal_sweep_models import resolve_binding, split_group
+
+
+def model_files(directory):
+    def candidate(path):
+        return (path.is_file() and path.suffix.lower() == ".gguf"
+                and not path.name.lower().startswith("mmproj")
+                and not any(part.startswith(".") for part in path.relative_to(directory).parts))
+
+    direct = [path for path in directory.iterdir() if candidate(path)]
+    return direct or [path for path in directory.rglob("*") if candidate(path)]
 
 
 def resolve_plan(plan, names=None, model_root=None):
@@ -34,11 +45,14 @@ def resolve_plan(plan, names=None, model_root=None):
             if root is None or directory.is_absolute() or ".." in directory.parts:
                 raise ValueError(f"{model['name']}: model_root and relative directory required")
             source = Path(root) / directory
+            if model.get("filename"):
+                filename = model["filename"]
+                if Path(filename).name != filename or filename in (".", ".."):
+                    raise ValueError(f"{model['name']}: filename must be a basename")
+                source /= filename
         try:
             if source.is_dir():
-                files = split_group(p for p in source.rglob("*")
-                    if p.is_file() and p.suffix.lower() == ".gguf"
-                    and not p.name.lower().startswith("mmproj"))
+                files = split_group(model_files(source))
             else:
                 files = resolve_binding(source)
             if len({p.parent for p in files}) != 1:

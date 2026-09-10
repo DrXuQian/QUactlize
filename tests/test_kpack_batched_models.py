@@ -49,6 +49,55 @@ def test_nested_complete_split_uses_first_shard(tmp_path):
     assert resolve_plan(resolved) == resolved
 
 
+@pytest.mark.parametrize("extra", [".cache/stale.gguf", "nested/other.gguf", ".hidden.gguf"])
+def test_visible_bf16_shards_are_not_mixed_with_other_directories(tmp_path, extra):
+    files = [fixture(tmp_path, f"model/Qwen3.5-35B-A3B-BF16-{i:05d}-of-00002.gguf")
+             for i in (1, 2)]
+    fixture(tmp_path, "model/" + extra)
+    model, = resolve_plan(plan(tmp_path), ["subject"])["models"]
+    assert model["files"] == list(map(str, files))
+
+
+@pytest.mark.parametrize("target_name", ["downloaded.gguf", "blob-without-extension"])
+def test_split_symlinks_keep_their_public_filenames(tmp_path, target_name):
+    first = fixture(tmp_path, "model/weights-00001-of-00002.gguf")
+    target = fixture(tmp_path, "blobs/" + target_name)
+    second = tmp_path / "model/weights-00002-of-00002.gguf"
+    second.symlink_to(target)
+    source = plan(tmp_path)
+    resolved = resolve_plan(source, ["subject"])
+    assert resolved["models"][0]["files"] == [str(first), str(second)]
+    assert resolve_plan(resolved) == resolved
+    source["models"][0]["filename"] = first.name
+    assert resolve_plan(source, ["subject"])["models"][0]["files"] == [str(first), str(second)]
+
+
+def test_explicit_bf16_filename_selects_only_its_complete_family(tmp_path):
+    first = fixture(tmp_path, "model/Qwen3.5-35B-A3B-BF16-00001-of-00002.gguf")
+    fixture(tmp_path, "model/other.gguf")
+    source = plan(tmp_path)
+    source["models"][0]["filename"] = first.name
+    with pytest.raises(ValueError, match="incomplete"):
+        resolve_plan(source, ["subject"])
+    second = fixture(tmp_path, "model/Qwen3.5-35B-A3B-BF16-00002-of-00002.gguf")
+    model, = resolve_plan(source, ["subject"])["models"]
+    assert model["files"] == [str(first), str(second)]
+
+
+def test_incomplete_direct_set_does_not_borrow_nested_shard(tmp_path):
+    fixture(tmp_path, "model/weights-00001-of-00002.gguf")
+    fixture(tmp_path, "model/old/weights-00002-of-00002.gguf")
+    with pytest.raises(ValueError, match="incomplete"):
+        resolve_plan(plan(tmp_path), ["subject"])
+
+
+def test_nested_discovery_excludes_hidden_cache(tmp_path):
+    fixture(tmp_path, "model/.cache/old.gguf")
+    chosen = fixture(tmp_path, "model/Q4_K_M/weights.gguf")
+    model, = resolve_plan(plan(tmp_path), ["subject"])["models"]
+    assert model["files"] == [str(chosen)]
+
+
 @pytest.mark.parametrize("filenames,reason", [
     (["Q4.gguf", "Q8.gguf"], "multiple unsplit"),
     (["a-00001-of-00003.gguf", "a-00003-of-00003.gguf"], "incomplete"),
@@ -115,6 +164,7 @@ def test_box_catalog_uses_only_requested_parent_root():
     assert all(not Path(m["directory"]).is_absolute() and ".." not in Path(m["directory"]).parts
                for m in source["models"])
     assert source["models"][1]["directory"] == "Qwen3.5-35B-A3B-Q4_K_M-GGUF"
+    assert source["models"][0]["filename"] == "Qwen3.5-35B-A3B-BF16-00001-of-00002.gguf"
     runner = (ROOT / "tools/run_kpack_fusion_box.sh").read_text()
     assert runner.index("stage=model-paths") < runner.index("stage=device-gates")
     assert '--plan "$RUN/results/model-plan.json" "${MODEL_ARGS[@]}"' in runner
