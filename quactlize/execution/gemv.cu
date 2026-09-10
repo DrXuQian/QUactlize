@@ -8,8 +8,12 @@
 // same-source host stubs/device registrations from aliasing across objects.
 namespace QKG_CONCAT(kpack_q,QKG_QTYPE) {
 using namespace quactlize::execution;
+#if QKG_QTYPE == 8
+using R = Q8Reader;
+#else
 constexpr KType type = KType(QKG_QTYPE - 10);
 using R = Reader<type>;
+#endif
 
 __device__ int expert_for(qkg_call_v1 const& c, int row) {
     if (c.mode == QKG_DENSE) return 0;
@@ -37,12 +41,15 @@ __device__ __forceinline__ float pair_dot(qkg_call_v1 const& c, int64_t a_base,
         #pragma unroll
         for (int r=0; r<8; ++r) {
             int const begin=g*R::group+r;
-            uint16_t const lo=low[R::LowMap::word_index(col,begin,c.n)];
+            uint16_t lo=low[R::LowMap::word_index(col,begin,c.n)];
             uint16_t hi=0;
             if constexpr (R::hi_bits!=0) hi=high[R::HighMap::word_index(col,begin,c.n)];
             #pragma unroll
             for (int slot=0; slot<R::group/8; slot+=2) {
                 int const k0=begin+8*slot, k1=k0+8;
+                // Q8 has two slots per word, so the upper K16 half of this
+                // scale group needs a second word. K-quants reuse one word.
+                if constexpr (R::lo_bits==8) lo=low[R::LowMap::word_index(col,k0,c.n)];
                 // Remove the magic integer before multiplying. Folding it
                 // into zero would cause FP16 cancellation and change values.
                 uint32_t const weight=R::weight_pair(R::raw_from_words(lo,hi,col,k0),
@@ -85,7 +92,7 @@ __global__ void kpack_gemv(qkg_call_v1 c, int split) {
     uint16_t const* high = nullptr;
     if constexpr (R::hi_bits != 0)
         high = reinterpret_cast<uint16_t const*>(c.high + expert * (nk / 8 * R::hi_bits));
-    auto units = c.units + expert * (nk / 256 * R::U::kSbBytes);
+    auto units = c.units + expert * R::metadata_bytes(nk);
     float accum = 0.f;
     if constexpr (Pair) {
         accum=pair_dot<R>(c,a_base,low,high,units,col,worker,Workers,partition,split);
@@ -148,8 +155,13 @@ template<int Columns, int Warps, bool Pair = false> int launch(qkg_call_v1 const
 extern "C" int QKG_CONCAT(qkg_launch_,QKG_QTYPE)(qkg_call_v1 const& c, qkg_config_v1 const& f) {
     using namespace QKG_CONCAT(kpack_q,QKG_QTYPE);
     if (hggcGetLastError() != hggcSuccess) return QKG_RUNTIME;
+#if QKG_QTYPE == 8
+    if (f.columns == 16) return f.warps == 4 ? launch<16,4,true>(c,f.split) : launch<16,8,true>(c,f.split);
+    return f.warps == 4 ? launch<32,4,true>(c,f.split) : launch<32,8,true>(c,f.split);
+#else
     if (f.columns == 16) return f.warps == 4 ? launch<16,4>(c,f.split) : launch<16,8>(c,f.split);
     return f.warps == 4 ? launch<32,4>(c,f.split) : launch<32,8>(c,f.split);
+#endif
 }
 
 extern "C" int QKG_CONCAT(qkg_pair_launch_,QKG_QTYPE)(qkg_call_v1 const& c, qkg_config_v1 const& f) {

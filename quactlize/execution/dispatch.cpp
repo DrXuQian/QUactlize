@@ -1,6 +1,8 @@
 #include "validation.hpp"
 
 extern "C" {
+int qkg_launch_8(qkg_call_v1 const&, qkg_config_v1 const&);
+int qkg_pair_launch_8(qkg_call_v1 const&, qkg_config_v1 const&);
 int qkg_launch_10(qkg_call_v1 const&, qkg_config_v1 const&);
 int qkg_launch_11(qkg_call_v1 const&, qkg_config_v1 const&);
 int qkg_launch_12(qkg_call_v1 const&, qkg_config_v1 const&);
@@ -43,6 +45,7 @@ static int run(qkg_call_v1 const* c, qkg_config_v1 const* f,
         (c->mode == QKG_GROUPED) != (c->offsets != nullptr) ||
         (c->mode == QKG_INDEXED) != (c->ids != nullptr) ||
         ((uintptr_t(c->a) | uintptr_t(c->low) | uintptr_t(c->high)) & 1) ||
+        (c->qtype==8 && (uintptr_t(c->units)&1)) ||
         ((uintptr_t(c->output) | uintptr_t(c->workspace) | uintptr_t(c->ids) | uintptr_t(c->offsets)) & 3) ||
         (c->input_type == QKG_F32 && (uintptr_t(c->a) & 3))) return QKG_INVALID;
     if (s.workspace_bytes && (!c->workspace || c->workspace_bytes < s.workspace_bytes)) return QKG_CAPACITY;
@@ -62,6 +65,7 @@ static int run(qkg_call_v1 const* c, qkg_config_v1 const* f,
             if (i >= 6 && overlap(p[i], b[i], p[j], b[j])) return QKG_INVALID;
     }
     using Launch = int(*)(qkg_call_v1 const&, qkg_config_v1 const&);
+    if (c->qtype==8) return (pair ? qkg_pair_launch_8 : qkg_launch_8)(*c,*f);
     static Launch const launch[] = {qkg_launch_10,qkg_launch_11,qkg_launch_12,qkg_launch_13,qkg_launch_14};
     static Launch const pairs[] = {qkg_pair_launch_10,qkg_pair_launch_11,qkg_pair_launch_12,qkg_pair_launch_13,qkg_pair_launch_14};
     return (pair ? pairs : launch)[c->qtype - 10](*c, *f);

@@ -4,7 +4,66 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
-## Current box candidate: Q8 and MoE fusion
+## Current box candidate: parallel MoE preparation and measured SIMT intake
+
+Use `prebuilt/ppu0010/kpack-fusion-v2/dispatch` for the native dispatcher and
+execution library. The GPU packing library stays at
+`prebuilt/ppu0010/kpack-fusion-v1/libquactlize_ppu_pack.so`: offline bytes and
+cache schema have not changed. Both new libraries total about 1.8 MiB and
+are stored with Git LFS. There are no precompiled GEMM modules in this package.
+The client change is private llama.cpp `feat/kpack-gpu-cache` commit
+`83e8efdfe` (automatic recipe lookup, Q8 allowance, and trace symbols).
+
+The new preparation removes serial duplicate validation and repeated integer
+division in directory construction, distributes expert/split descriptors
+across CTAs/warps, and computes routing once per row/expert CTA rather than
+once per K/256 gather chunk. All current IDs are still consumed on every
+replay; no CPU router readback, scale cache, or ready flag was introduced.
+
+RTX5090 ABBA prepare-only measurements: separate gate/up, 256 experts, top8,
+one token **9.207 -> 4.614 us (-49.9%)**; four tokens **26.861 -> 4.803 us
+(-82.1%)**. Router-inclusive cases improve as well. Ten SIMT-stage contexts
+pass their changing-input replay/descriptor/guard checks. See
+[raw timing samples](measurements/moe_prepare_5090_20260910.json).
+These results do not establish PPU or whole-model speedup.
+
+`auto` now checks exact measured GEMV recipes instead of reserving them for
+forced diagnostics. Q8_0 has a direct K-pack2 SIMT reader: F32 source is
+rounded to FP16 in registers, weights use the original FP16 d, accumulation
+and output are F32. No A quantization, gather/scatter, or metadata prepass.
+It is **not** enabled unconditionally: a missing recipe retains the selected
+W8A16 TC path. NVIDIA numerical checks cover 15 contexts x 8 configurations;
+PPU numerical/performance admission remains pending. N32 SSM matrices remain
+outside the current K-pack intake; this change does not claim full Q8 coverage.
+
+The box runner defaults to the v2 native package and `RUN_Q8_SIMT=1`. After
+the existing gates it compares eight SIMT candidates on six real-sized
+dense shapes at M1/M4, alternating order over three rounds. A recipe is
+exported only if the whole SIMT F32 call beats the selected TC FP16 core,
+without credit for TC's adapter overhead. This conservative policy is then
+loaded for the same run's warmed model benchmark and Asys trace. First-use
+JIT and the first complete PP/TG pass remain excluded. No Cartesian sweep.
+
+The MoE runtime header changes its JIT source contract. Selected missing
+parents must compile again under the new cache key; old keys are not reused
+or deleted. The old large sweep bundles do not need rebuilding.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 JOBS=192 MODEL_NAMES=qwen35-35b-q4km \
+  RUN_MODEL_TRACE=1 TRACE_PROMPT=2048 TRACE_GENERATE=16 \
+  bash tools/run_kpack_fusion_box.sh
+```
+
+For device gates only, set `RUN_MODEL_BENCH=0 RUN_MODEL_TRACE=0`. Results are
+packed automatically; Asys report/SQLite stay on the box. GEMV policy and
+per-configuration raw timings are included in the result archive.
+
+Remaining model issues: the exact tensor override omits synthesized paired
+gate/up names; the 35B output head may retain legacy FQ; 32B prefill has no
+admitted SF comparison policy. Do not equate native plan creation with
+execution/fusion coverage or a measured global optimum.
+
+## Previous box candidate: Q8 and MoE fusion v1
 
 Q8_0 W8A16, paired gate/up GPU packing, and the small indexed MoE fusion pass
 the bounded `XYUgHJ` device gates. See [the fusion checklist](MOE_FUSION_IMPLEMENTATION.md)

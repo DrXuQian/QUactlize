@@ -77,3 +77,19 @@ def test_fused_dispatch_is_additive_and_large_cases_decline():
 
 def test_indexed_c_abi_matches_python(library):
     assert library.indexed_io_size()==C.sizeof(IndexedIO)
+
+
+@pytest.mark.parametrize('experts',[1,2,31,32,33,256,1024])
+@pytest.mark.parametrize('rows',[1,8,9,17,31,32])
+def test_prepare_ctas_own_every_expert_and_gather_word_once(library,experts,rows):
+    blocks=library.prepare_blocks(experts,rows)
+    assert blocks>=rows and blocks*32>=experts
+    experts_seen=[e for b in range(blocks) for e in range(b*32,min((b+1)*32,experts))]
+    assert experts_seen==list(range(experts))
+    for k in (256,2048,5120,16384):
+        seen=np.zeros((rows,(k+255)//256),dtype='i4')
+        for block in range(blocks):
+            row,chunk=block%rows,block//rows
+            chunks=(blocks-1-row)//rows+1
+            seen[row,chunk::chunks]+=1
+        assert np.all(seen==1)

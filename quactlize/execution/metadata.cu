@@ -22,6 +22,7 @@ extern "C" int quactlize_kpack_sf_prepare_v1(int q, int n, int k, int experts,
         uint8_t const* units, uint64_t unit_bytes, uint16_t* scale, uint16_t* zero,
         uint64_t plane_bytes, quactlize_ppu_placed_arrangement_v2 const* arrangement, void* stream) {
     using namespace quactlize::execution;
+    if (q==8) return QKG_FORMAT;  // Q8 uses resident d, not a K-quant prepass.
     qkg_sizes_v1 s{};
     int const rc = sizes(q,n,k,experts,arrangement,s);
     if (rc) return rc;

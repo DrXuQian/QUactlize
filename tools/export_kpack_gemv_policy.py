@@ -100,8 +100,8 @@ def export(summary):
                     * (max(round_medians) / min(round_medians) - 1),
                     incumbent_us=incumbent,
                     incumbent_selection=row.get("incumbent_selection"),
-                    selected="GEMV" if admitted else "RETAIN_FQ",
-                    scope="MEASURED_GEMV_POOL_VS_FQ_CORE_NOT_GLOBAL_OPTIMUM",
+                    selected="GEMV" if admitted else ("RETAIN_TC" if row["q"]==8 else "RETAIN_FQ"),
+                    scope=row.get("scope","MEASURED_GEMV_POOL_VS_FQ_CORE_NOT_GLOBAL_OPTIMUM"),
                 )
             )
     if len(expected) != len(set(expected)) or set(observed) != set(expected):

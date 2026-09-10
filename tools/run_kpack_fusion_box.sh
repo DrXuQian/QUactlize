@@ -16,6 +16,7 @@ if [[ ${1:-} == --help ]]; then
         'No Cartesian sweep or large Quactlize bundle rebuild. JIT compiles selected missing parents only.' \
         'Gate failures are collected independently; failed numerics prevent model timing admission.' \
         'Optional RUN_MODEL_TRACE=1 captures Asys only (no second ABBA benchmark).' \
+        'RUN_Q8_SIMT=1 compares eight SIMT choices on twelve small dense contexts and exports only measured winners.' \
         'TRACE_PROMPT=128 TRACE_GENERATE=8; set TRACE_PROMPT=2048 for the focused int4 plan.'
     exit 0
 fi
@@ -50,8 +51,8 @@ export PPU_SDK LC_ALL=C CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 export LD_LIBRARY_PATH="$PPU_SDK/CUDA_SDK/targets/x86_64-linux/lib:$PPU_SDK/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 PYTHON=$(command -v -- "$PYTHON")
 "$PYTHON" -c 'import sys,numpy,torch,gguf; assert sys.version_info >= (3,11)'
-export QUACTLIZE_PPU_PACK_LIBRARY="$REPO/prebuilt/ppu0010/kpack-fusion-v1/libquactlize_ppu_pack.so"
-export QUACTLIZE_KPACK_EXECUTION="$REPO/prebuilt/ppu0010/kpack-fusion-v1/dispatch"
+export QUACTLIZE_PPU_PACK_LIBRARY=${QUACTLIZE_PPU_PACK_LIBRARY:-$REPO/prebuilt/ppu0010/kpack-fusion-v1/libquactlize_ppu_pack.so}
+export QUACTLIZE_KPACK_EXECUTION=${QUACTLIZE_KPACK_EXECUTION:-$REPO/prebuilt/ppu0010/kpack-fusion-v2/dispatch}
 export QUACTLIZE_PPU_BUNDLE=${QUACTLIZE_PPU_BUNDLE:-/workspace/quactlize-runtime-artifact-2826cf1-46fc3096e1a1/prebuilt/ppu0010/2826cf1/runtime6-46fc3096e1a1/bundle}
 [[ -s $QUACTLIZE_PPU_BUNDLE/manifest.json && -s $QUACTLIZE_PPU_PACK_LIBRARY ]]
 grep -qx 'GGML_USE_PPU:BOOL=ON' "$BUILD_DIR/CMakeCache.txt"
@@ -107,11 +108,15 @@ if [[ ${RUN_MODEL_BENCH:-1} == 1 || ${RUN_MODEL_TRACE:-0} == 1 ]]; then
 fi
 stage=device-gates
 failed=0
-for item in q8_kpack2 kpack_moe; do
+GATES=(q8_kpack2 kpack_moe)
+if [[ ${RUN_Q8_SIMT:-1} == 1 ]]; then GATES+=(q8_simt); fi
+for item in "${GATES[@]}"; do
     printf 'KPACK_FUSION_PHASE gate=%s (selected-parent JIT, then numerical/replay/timing)\n' "$item"
+    GATE_ARGS=()
+    if [[ $item != q8_simt ]]; then GATE_ARGS+=(--pack-library "$QUACTLIZE_PPU_PACK_LIBRARY"); fi
     if OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 "$PYTHON" -u "$REPO/tools/run_${item}_gate.py" \
         --sdk "$PPU_SDK" --bundle "$QUACTLIZE_KPACK_EXECUTION" \
-        --pack-library "$QUACTLIZE_PPU_PACK_LIBRARY" --jit-cache "$QUACTLIZE_KPACK_JIT_CACHE" \
+        "${GATE_ARGS[@]}" --jit-cache "$QUACTLIZE_KPACK_JIT_CACHE" \
         --output "$RUN/results/$item" --samples 11 2>&1 | tee "$RUN/results/$item.log"; then
         printf 'KPACK_FUSION_GATE gate=%s status=PASS\n' "$item"
     else
@@ -119,6 +124,11 @@ for item in q8_kpack2 kpack_moe; do
     fi
 done
 [[ $failed == 0 ]]
+if [[ ${RUN_Q8_SIMT:-1} == 1 ]]; then
+    export QUACTLIZE_KPACK_GEMV_POLICY="$RUN/results/q8_simt/gemv-policy.tsv"
+    [[ -s $QUACTLIZE_KPACK_GEMV_POLICY ]]
+    printf 'KPACK_FUSION_POLICY Q8 measured SIMT winners loaded; misses retain selected W8A16 TC\n'
+fi
 stage=adapter-build
 printf 'KPACK_FUSION_PHASE adapter-build jobs=%s no_quactlize_sweep=1\n' "$JOBS"
 cmake -S "$LLAMA_DIR" -B "$BUILD_DIR" -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_TESTS=ON \

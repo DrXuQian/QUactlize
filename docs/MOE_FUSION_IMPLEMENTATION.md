@@ -13,12 +13,33 @@ close. No graph-capture-time compilation, D2H routing, or CPU scale cache.
 | Ordered Split-K reduce + scatter | Implemented for that indexed path; bounded PPU chain/replay gate passes | Actual model coverage and performance |
 | Gate/up completion + SwiGLU, expert-ordered down input | Implemented; separate/merged PPU chain cases pass | Full-model coverage, numerical and performance checks |
 | Top-k/preparation integration | Implemented for matching 256-expert small-decode graphs; softmax, sigmoid+bias+norm, delayed-softmax 5090 checks pass | Additional NaN/Inf cases, matched timing, PPU graph and model checks |
-| 5090 fusion checks | Initial 8 per-call cells plus 7 complete SIMT-stage contexts pass, 7 changing-input replays each | These use completed-projection fixtures, not a PPU GEMM emulator; matched timing remains |
+| MoE prepare performance | Parallel validation/directory/descriptors implemented; RTX5090 ABBA -49.9% at one token, -82.1% at four tokens | PPU trace and warmed whole-model latency |
+| SIMT automatic selection | Auto now queries exact measured recipes; Q8 K-pack2 W8A16 direct reader and small DSO compiled | Bounded PPU Q8 comparison must supply recipes; missing recipes retain TC |
+| 5090 fusion checks | 10 complete SIMT-stage contexts pass, 7 changing-input replays each; 15 x 8 Q8 GEMV cells pass | Completed-projection fixtures do not emulate PPU GEMM; PPU/model admission is separate |
 | PPU model benchmark and trace | XYUgHJ model processes rc=0, missing plan logs; script verbosity fixed | Repeat PP2048/TG128 int4 plan; inspect warmed Asys, especially 35B decode and 32B prefill |
 
 See [the XYUgHJ receipt review](KPACK_FUSION_XYUGHJ_REVIEW.md). The logging
 repair does not admit the old timings or prove that a model graph used the
 bounded-gate fusions. No kernel or selector binary was changed for this fix.
+
+The newer `Ic9IoZ` upload contains plan receipts. It shows 250 Q8 matrices
+using initial W8A16 TC recipes and 40 small MoE chain plans, but no paired
+gate/up weights. Its warmed 35B prefill improves while decode regresses;
+32B prefill still uses FQ. The v2 task therefore targets preparation latency
+and missing SIMT policy lookup, not another broad configuration sweep.
+
+V2 local preparation data and sample hashes are recorded in
+[the 5090 ABBA receipt](measurements/moe_prepare_5090_20260910.json). The shared
+header also compiles through hgcc with the real CuTe packed Shape/Stride.
+The new native dispatcher and execution DSO are locally compiled; selected
+GEMM JIT keys change. No PPU runtime or model speedup is asserted locally.
+Current local regression set: 214 passed, one optional device test skipped.
+The three affected llama CUDA translation units compile; its real host policy
+parser accepts exact Q8/Q4 recipes and rejects malformed/duplicate rows.
+
+Still open after v2: synthesized paired-name override admission, Q8 N32 SSM
+intake, output-head selector coverage, and measured 32B prefill route choice.
+Keep these separate from the now-measured prepare-only improvement.
 
 ## Reuse llama.cpp's merged graph
 

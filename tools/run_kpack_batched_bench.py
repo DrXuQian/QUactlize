@@ -225,7 +225,7 @@ def run_arm(args, model, plan, inv, arm, directory, index):
                 raise ValueError(f"no selected or legacy K-pack compute plan; not a K-pack timing; "
                                  f"see {log} (plan receipts require --verbosity 4)")
             if inv["q8"] and (not q8_plans or any(p.get("activation")!="FP16" or
-                    p.get("route")!="sf" or p.get("scale_resident")!="1" for p in q8_plans)):
+                    p.get("route") not in ("sf", "gemv") or p.get("scale_resident")!="1" for p in q8_plans)):
                 raise ValueError("Q8_0 W8A16 compute evidence missing or activation/scale contract differs")
             evidence["plan_admission"] = "PASS"
         finally:

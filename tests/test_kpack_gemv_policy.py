@@ -46,6 +46,21 @@ def test_slower_gemv_does_not_replace_fq():
     assert text == "KPACK_GEMV_POLICY_V1\n" and report[0]["selected"] == "RETAIN_FQ"
 
 
+@pytest.mark.parametrize('winner',[True,False])
+def test_q8_conservative_admission_and_incumbent_label(winner):
+    from tools.run_q8_simt_gate import SCOPE, SHAPES
+    s=fixture(); row=s['results'][0]['records'][0]
+    s['plan'][0]['q']=row['q']=8
+    row['scope']=SCOPE
+    row['gemm_median_us']=20.0 if winner else 5.0
+    row['gemm_samples_us']=[[row['gemm_median_us']]*11 for _ in range(3)]
+    text,report=export(s)
+    assert ('\n8\t' in text)==winner
+    assert report[0]['selected']==('GEMV' if winner else 'RETAIN_TC')
+    assert report[0]['scope']==SCOPE
+    assert len(SHAPES)==6 and len(set(SHAPES))==6
+
+
 @pytest.mark.parametrize("plant", range(8))
 def test_invalid_evidence_rejected(plant):
     s = fixture()

@@ -2,6 +2,7 @@
 #include "gguf_packed_unit.hpp"
 #include "gguf_scale_layout.hpp"
 #include "kquant_kpack_offline.hpp"
+#include "q8_kpack2.hpp"
 #include "actlize_extensions/cutlass/gguf_packed_scale.h"
 
 namespace quactlize::execution {
@@ -17,6 +18,10 @@ template<KType T> struct Reader {
     static constexpr int group = gguf_scale::Traits<T>::kGroupSize;
     using LowMap = kquant_kpack::PlaneMap<lo_bits, group>;
     using HighMap = kquant_kpack::HighPlaneMap<lo_bits, hi_bits, group>;
+
+    CUTLASS_HOST_DEVICE static constexpr int64_t metadata_bytes(int64_t nk) {
+        return nk / 256 * U::kSbBytes;
+    }
 
     CUTLASS_HOST_DEVICE static int raw_from_words(
             uint16_t low, uint16_t high, int col, int kk) {
@@ -79,6 +84,34 @@ template<KType T> struct Reader {
         return pack_h2(Half(float(lo_h2(integer))*float(s.scale)+float(s.zero)),
                        Half(float(hi_h2(integer))*float(s.scale)+float(s.zero)));
 #endif
+    }
+};
+
+struct Q8Reader {
+    static constexpr int lo_bits = 8, hi_bits = 0, group = 32;
+    using LowMap = q8_kpack2::Map;
+
+    CUTLASS_HOST_DEVICE static constexpr int64_t metadata_bytes(int64_t nk) {
+        return nk / group * sizeof(Half);
+    }
+    CUTLASS_HOST_DEVICE static int raw_from_words(uint16_t low, uint16_t, int, int kk) {
+        return (low >> (8 * LowMap::word_slot(kk))) & 255;
+    }
+    CUTLASS_HOST_DEVICE static int code(uint16_t const* low, uint16_t const*, int col, int kk, int n) {
+        return raw_from_words(low[LowMap::word_index(col,kk,n)],0,col,kk)-128;
+    }
+    CUTLASS_HOST_DEVICE static gguf_scale::GroupScale scale(uint8_t const* units, int col, int g, int n) {
+        return {Half::bitcast(reinterpret_cast<uint16_t const*>(units)[int64_t(g)*n+col]),Half(0.f)};
+    }
+    CUTLASS_HOST_DEVICE static Half weight(int code, gguf_scale::GroupScale s) {
+        return Half(float(code)*float(s.scale));
+    }
+    CUTLASS_HOST_DEVICE static uint32_t weight_pair(int raw0,int raw1,gguf_scale::GroupScale s) {
+        using namespace cutlass::gguf_packed;
+        uint32_t codes=uint32_t(raw0)|(uint32_t(raw1)<<16)|UINT32_C(0x64006400);
+        uint32_t integer=sub_f16x2(codes,pack_h2(Half(1152.f),Half(1152.f)));
+        // The PPU pair ISA implements multiply as FMA with negative zero.
+        return fma_f16x2(integer,pack_h2(s.scale,s.scale),UINT32_C(0x80008000));
     }
 };
 } // namespace quactlize::execution

@@ -70,7 +70,8 @@ def build(sdk, output, jobs, variant="production"):
             hashes[str(p.relative_to(ROOT))] = sha(p)
     commands = []
     for name, filename, defines in (
-        [(f"q{q}", gemv_source, [f"-DQKG_QTYPE={q}"]) for q in range(10, 15)]
+        [("q8", source / "gemv.cu", ["-DQKG_QTYPE=8"])]
+        + [(f"q{q}", gemv_source, [f"-DQKG_QTYPE={q}"]) for q in range(10, 15)]
         + [
             ("metadata", source / "metadata.cu", []),
             ("dispatch", source / "dispatch.cpp", []),
@@ -131,7 +132,7 @@ def build(sdk, output, jobs, variant="production"):
         library=library.name,
         sha256=sha(library),
         compile_seconds=time.monotonic() - start,
-        formats=list(range(10, 15)),
+        formats=[8, *range(10, 15)],
         gemv_configs=[
             dict(columns=c, warps=w, split=s)
             for c in (16, 32)

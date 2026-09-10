@@ -1,19 +1,26 @@
 #pragma once
 #include "api.h"
 #include "ppu_placed_arrangement.hpp"
+#include "q8_kpack2.hpp"
 #include <limits>
 
 namespace quactlize::execution {
 
 inline int sizes(int q, int n, int k, int experts,
                  quactlize_ppu_placed_arrangement_v2 const* arrangement, qkg_sizes_v1& out) {
-    if (q < 10 || q > 14) return QKG_FORMAT;
-    if (!ppu_arrangements::matches_canonical_kpack(arrangement, q)) return QKG_ARRANGEMENT;
+    if (q != 8 && (q < 10 || q > 14)) return QKG_FORMAT;
+    if (q==8 ? !q8_kpack2::matches(arrangement) :
+        !ppu_arrangements::matches_canonical_kpack(arrangement, q)) return QKG_ARRANGEMENT;
     if (n <= 0 || k <= 0 || experts <= 0 || n % 256 ||
         k % ((q == 11 || q == 14) ? 512 : 256)) return QKG_SHAPE;
     uint64_t const nk = uint64_t(n) * k;
     if (nk > uint64_t(INT64_MAX) / uint64_t(experts)) return QKG_OVERFLOW;
     uint64_t const count = nk * experts;
+    if (q==8) {
+        // Resident original FP16 d; no expanded scale/zero workspace.
+        out={count,0,count/32*2,0,0};
+        return QKG_OK;
+    }
     constexpr int low[] = {2,2,4,4,4}, high[] = {0,1,0,1,2};
     constexpr int unit[] = {20,14,16,16,18}, group[] = {16,16,32,32,16};
     out = {count / 8 * low[q-10], count / 8 * high[q-10],

@@ -26,5 +26,6 @@ def test_llama_headers_are_exact_copies():
         (root / "quactlize/execution/api.h", "kpack_execution.h"),
         (root / "quactlize/dispatch/api.h", "kpack_dispatch.h"),
     ):
-        text = source.read_text().replace("../runtime/abi.h", "kpack_module.h")
+        text = source.read_text().replace("../runtime/abi.h", "kpack_module.h").replace(
+            "../integrations/llama/indexed.h", "kpack_indexed.h")
         assert text == (llama / target).read_text()

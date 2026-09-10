@@ -69,6 +69,40 @@ def raw_fixture(q, n, k, experts):
     return raw
 
 
+@pytest.mark.parametrize("pair", [False, True])
+def test_q8_signed_codes_original_scale_and_expert_slices(host, pair):
+    from tools.run_q8_kpack2_gate import fixture
+
+    n, k, experts = 256, 512, 3
+    raw, low, units, weight = fixture(n, k, experts)
+    # Include every signed code, signed zero and subnormal scale products.
+    scales = np.array([0, 0x8000, 1, 0x8001, 0x03ff, 0x83ff, 0x211f, 0xa11f, 0x3c00], dtype='<u2')
+    scale_bits = np.resize(scales, (experts, k // 32, n))
+    units = scale_bits.view('u1').reshape(-1)
+    logical = raw[..., 2:].copy().reshape(experts, n, k).view('i1')
+    expected = (logical.astype('f4') * np.repeat(scale_bits.view('<f2').transpose(0, 2, 1).astype('f4'), 32, axis=2)).astype('<f2')
+    got = np.empty_like(expected)
+    s = np.empty((experts, k // 32, n), dtype='<f2'); z = np.empty_like(s)
+    fn = host.qkg_host_pair_read if pair else host.qkg_host_read
+    fn.argtypes = host.qkg_host_read.argtypes
+    assert fn(8, low.ctypes.data, None, units.ctypes.data, n, k, experts,
+              got.ctypes.data, s.ctypes.data, z.ctypes.data) == 0
+    assert np.array_equal(got.view('<u2'), expected.view('<u2'))
+    assert np.array_equal(s.view('<u2'), scale_bits)
+    assert not z.any()
+    assert np.unique(logical).size == 256
+
+
+def test_q8_query_has_no_metadata_expansion(host):
+    c = call(q=8)
+    cfg, out, arr = Config(16, 4, 4), Sizes(), arrangement(8)
+    assert host.qkg_host_query(C.byref(c), C.byref(cfg), C.byref(arr), C.byref(out)) == 0
+    assert (out.low_bytes, out.high_bytes, out.units_bytes, out.sf_plane_bytes) == (
+        c.n * c.k, 0, c.n * c.k // 16, 0)
+    arr.mapping_id ^= 1
+    assert host.qkg_host_query(C.byref(c), C.byref(cfg), C.byref(arr), C.byref(out)) != 0
+
+
 @pytest.mark.parametrize("q", range(10, 15))
 def test_independent_offline_bytes_and_affine_reader(host, q):
     n, k, e = 256, 512, 3

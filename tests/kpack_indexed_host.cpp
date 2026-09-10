@@ -29,3 +29,6 @@ extern "C" int row_map(int const* ids,int m,int topk,int experts,int tm,
   return 0;
 }
 extern "C" int indexed_io_size() { return sizeof(qk_llama_indexed_v1); }
+extern "C" int prepare_blocks(int experts,int rows) {
+  return quactlize::runtime::moe_prepare_blocks(experts,rows);
+}

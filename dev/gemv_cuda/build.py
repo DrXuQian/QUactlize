@@ -143,7 +143,8 @@ def build(cuda, output, jobs, reader="production", schedule="production"):
     if reader == "cuda-affine" or schedule != "production":
         gemv_source = output / "gemv_experiment.cu"
         gemv_source.write_text(original)
-    entries = [(f"q{q}", gemv_source, [f"-DQKG_QTYPE={q}"]) for q in range(10, 15)] + [
+    entries = [("q8", ROOT / "quactlize/execution/gemv.cu", ["-DQKG_QTYPE=8"])] + [
+        (f"q{q}", gemv_source, [f"-DQKG_QTYPE={q}"]) for q in range(10, 15)] + [
         ("dispatch", ROOT / "quactlize/execution/dispatch.cpp", []),
         ("reducer", HERE / "reducer.cu", []),
         (

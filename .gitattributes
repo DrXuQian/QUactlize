@@ -14,3 +14,4 @@ prebuilt/ppu0010/kpack-jit-v2/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/kpack-prefetch-v1/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/kpack-fusion-v1/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/kpack-fusion-v1/dispatch/*.so filter=lfs diff=lfs merge=lfs -text
+prebuilt/ppu0010/kpack-fusion-v2/dispatch/*.so filter=lfs diff=lfs merge=lfs -text

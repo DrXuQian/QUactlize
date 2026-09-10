@@ -67,6 +67,8 @@ class Sizes(C.Structure):
 
 
 def arrangement(q):
+    if q == 8:
+        return Arrangement(2, 4, 8, 0, 0, 32, 32, 0, 0x51384B5032540001)
     return Arrangement(**asdict(ref.canonical_arrangement(q)))
 
 

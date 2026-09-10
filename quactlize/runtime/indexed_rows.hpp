@@ -2,6 +2,13 @@
 #include "cutlass/cutlass.h"
 
 namespace quactlize::runtime {
+// One warp-wide expert range per CTA. Keep at least one CTA per routed row
+// without repeating the router for every K/256 activation chunk.
+CUTLASS_HOST_DEVICE constexpr int moe_prepare_blocks(int experts,int rows) {
+  int ranges=(experts+31)/32;
+  return ranges>rows ? ranges : rows;
+}
+
 // Stable expert-major row permutation, independent of thread/warp topology.
 CUTLASS_HOST_DEVICE constexpr int expert_begin(int const* ids, int rows, int expert) {
   int result=0;
