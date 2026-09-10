@@ -56,7 +56,7 @@ export LD_LIBRARY_PATH="$PPU_SDK/CUDA_SDK/targets/x86_64-linux/lib:$PPU_SDK/lib$
 PYTHON=$(command -v -- "$PYTHON")
 "$PYTHON" -c 'import sys,numpy,torch,gguf; assert sys.version_info >= (3,11)'
 export QUACTLIZE_PPU_PACK_LIBRARY=${QUACTLIZE_PPU_PACK_LIBRARY:-$REPO/prebuilt/ppu0010/kpack-fusion-v1/libquactlize_ppu_pack.so}
-export QUACTLIZE_KPACK_EXECUTION=${QUACTLIZE_KPACK_EXECUTION:-$REPO/prebuilt/ppu0010/kpack-fusion-v2/dispatch}
+export QUACTLIZE_KPACK_EXECUTION=${QUACTLIZE_KPACK_EXECUTION:-$REPO/prebuilt/ppu0010/kpack-fusion-v3/dispatch}
 export QUACTLIZE_PPU_BUNDLE=${QUACTLIZE_PPU_BUNDLE:-/workspace/quactlize-runtime-artifact-2826cf1-46fc3096e1a1/prebuilt/ppu0010/2826cf1/runtime6-46fc3096e1a1/bundle}
 [[ -s $QUACTLIZE_PPU_BUNDLE/manifest.json && -s $QUACTLIZE_PPU_PACK_LIBRARY ]]
 grep -qx 'GGML_USE_PPU:BOOL=ON' "$BUILD_DIR/CMakeCache.txt"

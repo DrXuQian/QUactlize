@@ -18,6 +18,7 @@ namespace quactlize::runtime { using Half=cutlass::half_t; }
 
 void check(cudaError_t rc);
 static bool benchmark_prepare=false;
+static bool generic_prepare=false;
 template<class F> static void time_prepare(F prepare,int merged,int tokens,int topk,int experts,int router) {
   constexpr int batch=64,samples=15;
   cudaGraph_t graph; cudaGraphExec_t instance;
@@ -59,6 +60,75 @@ template<class T> struct Buffer {
 using namespace quactlize::runtime;
 using Shape=cute::Shape<int,int,int>;
 using Stride=cute::Stride<int64_t,cute::_1,cute::_0>;
+
+__global__ void router_probe(qk_llama_router_v1 router,qk_llama_indexed_v1 io,bool fast) {
+  int fixture=int(blockIdx.x);
+  router.logits+=fixture*256;
+  if (router.bias) router.bias+=fixture*256;
+  router.weights+=fixture*16;
+  io.ids+=fixture*32;
+  __shared__ int ids[32];
+  if (fast) {
+    if (router.bias) quactlize::llama::router_256_top8<true>(router,io,ids);
+    else quactlize::llama::router_256_top8<false>(router,io,ids);
+  } else quactlize::llama::router_256(router,io,ids,true);
+  __syncthreads();
+  if (threadIdx.x<8) const_cast<int32_t*>(io.ids)[16+threadIdx.x]=ids[threadIdx.x];
+}
+
+static void router_equivalence() {
+  constexpr int fixtures=256;
+  Buffer<float> logits(fixtures*256),bias(fixtures*256),weights(fixtures*16);
+  Buffer<int> ids(fixtures*32);
+  std::vector<float> hl(logits.count),hb(bias.count);
+  uint32_t state=0x93457719;
+  for (int f=0;f<fixtures;++f) for (int e=0;e<256;++e) {
+    state^=state<<13; state^=state>>17; state^=state<<5;
+    float value=float(int(state%65537)-32768)*.00317f;
+    // Equal scores, signed zero, sparse extremes and nonfinite inputs all
+    // exercise the same exact tie/sanitization rules as the generic router.
+    if (f==0) value=0.f;
+    if (f==1) value=e%2?-0.f:0.f;
+    if (f==2) value=float(e%7);
+    if (f==3) value=e%3?NAN:float(e);
+    if (f==4) value=-INFINITY;
+    if (f==5) value=e==37?INFINITY:-20.f;
+    if (f==6) value=e<8?10000.f:-10000.f;
+    hl[f*256+e]=value;
+    hb[f*256+e]=f<3?0.f:float(int(state%131)-65)*.01937f;
+  }
+  logits.put(hl); bias.put(hb);
+  qk_llama_indexed_v1 io{};
+  io.tokens=1; io.topk=8; io.ids_stride=8; io.ids=ids.ptr;
+  size_t bad=0;
+  for (int mode=0;mode<16;++mode) {
+    qk_llama_router_v1 router{1,sizeof(router),mode&1,(mode>>1)&1,(mode>>2)&1,0,
+        6.103515625e-5f,1.25f,logits.ptr,mode&8?bias.ptr:nullptr,weights.ptr};
+    std::vector<int> reference_ids;
+    std::vector<float> reference_weights;
+    for (bool fast:{false,true}) {
+      ids.put(std::vector<int>(ids.count,-123));
+      weights.put(std::vector<float>(weights.count,-123.f));
+      router_probe<<<fixtures,256>>>(router,io,fast);
+      check(cudaGetLastError()); check(cudaDeviceSynchronize());
+      auto got_ids=ids.get(); auto got_weights=weights.get();
+      if (!fast) { reference_ids=got_ids; reference_weights=got_weights; }
+      else {
+        for (size_t i=0;i<got_ids.size();++i) bad+=got_ids[i]!=reference_ids[i];
+        for (size_t i=0;i<got_weights.size();++i)
+          bad+=std::memcmp(&got_weights[i],&reference_weights[i],sizeof(float))!=0;
+      }
+      for (int f=0;f<fixtures;++f) for (int j=0;j<8;++j) {
+        bad+=got_ids[f*32+j]!=got_ids[f*32+16+j];
+        bad+=got_ids[f*32+8+j]!=-123 || got_ids[f*32+24+j]!=-123;
+        bad+=got_weights[f*16+8+j]!=-123.f;
+      }
+    }
+  }
+  std::printf("KPACK_MOE_ROUTER_EQUIVALENCE modes=16 fixtures=256 ids_and_weights=RAW_BITS bad=%zu\n",bad);
+  if (bad) throw std::runtime_error("router equivalence failed");
+}
+
 struct Projection {
   qk_moe_projection_v1 p{};
   Buffer<Half> a,completed;
@@ -111,7 +181,9 @@ static void run(bool merged,int tokens,int topk,int experts,int sg,int su,int sd
 #ifdef KPACK_MOE_PREPARE_BASELINE
     moe_chain_prepare<Shape,Stride><<<dim3(8,m),256,0,cudaStreamPerThread>>>(plan);
 #else
-    moe_chain_prepare<Shape,Stride><<<moe_prepare_blocks(experts,m),256,0,cudaStreamPerThread>>>(plan);
+    if (!generic_prepare && moe_prepare_m1_supported(plan))
+      moe_chain_prepare_m1<Shape,Stride><<<1,256,0,cudaStreamPerThread>>>(plan);
+    else moe_chain_prepare<Shape,Stride><<<moe_prepare_blocks(experts,m),256,0,cudaStreamPerThread>>>(plan);
 #endif
   };
   auto activate=[&] { moe_chain_swiglu<<<dim3(2,m),256,0,cudaStreamPerThread>>>(plan); };
@@ -239,12 +311,17 @@ static void run(bool merged,int tokens,int topk,int experts,int sg,int su,int sd
 }
 int main(int argc,char** argv) {
   try {
-    if (argc==2 && std::strcmp(argv[1],"--benchmark")==0) benchmark_prepare=true;
-    else if (argc!=1) throw std::runtime_error("usage: moe-chain [--benchmark]");
+    for (int i=1;i<argc;++i) {
+      if (std::strcmp(argv[i],"--benchmark")==0) benchmark_prepare=true;
+      else if (std::strcmp(argv[i],"--generic")==0) generic_prepare=true;
+      else throw std::runtime_error("usage: moe-chain [--benchmark] [--generic]");
+    }
+    router_equivalence();
     run(false,1,8,256,4,2,1); run(false,4,8,256,1,8,4);
     run(true,1,8,256,4,1,2); run(true,9,1,2,2,1,8);
     run(false,1,8,256,4,2,1,0); run(false,4,8,256,4,2,4,1); run(true,1,8,256,2,1,8,2);
+    run(true,1,8,256,2,1,4,0); run(false,1,8,256,8,4,2,1);
     run(false,17,1,1024,8,4,2); run(false,1,1,1,1,1,1); run(true,31,1,33,2,1,8);
-    std::puts("KPACK_MOE_CHAIN_CUDA PASS cells=10 PPU_GEMM_ADMISSION=NOT_TESTED"); return 0;
+    std::puts("KPACK_MOE_CHAIN_CUDA PASS cells=12 PPU_GEMM_ADMISSION=NOT_TESTED"); return 0;
   } catch (std::exception const& e) { std::fprintf(stderr,"FAIL %s\n",e.what()); return 1; }
 }

@@ -75,7 +75,7 @@ export PPU_SDK LC_ALL=C CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 [[ $CUDA_VISIBLE_DEVICES =~ ^[0-9]+$ ]]
 [[ -x $PPU_SDK/asight/bin/asys && -x $PPU_SDK/bin/hgobjdump ]]
 export LD_LIBRARY_PATH="$PPU_SDK/CUDA_SDK/targets/x86_64-linux/lib:$PPU_SDK/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export QUACTLIZE_KPACK_EXECUTION=${QUACTLIZE_KPACK_EXECUTION:-$REPO/prebuilt/ppu0010/kpack-fusion-v2/dispatch}
+export QUACTLIZE_KPACK_EXECUTION=${QUACTLIZE_KPACK_EXECUTION:-$REPO/prebuilt/ppu0010/kpack-fusion-v3/dispatch}
 export QUACTLIZE_PPU_PACK_LIBRARY=${QUACTLIZE_PPU_PACK_LIBRARY:-$REPO/prebuilt/ppu0010/kpack-fusion-v1/libquactlize_ppu_pack.so}
 export QUACTLIZE_PPU_BUNDLE=${QUACTLIZE_PPU_BUNDLE:-/workspace/quactlize-runtime-artifact-2826cf1-46fc3096e1a1/prebuilt/ppu0010/2826cf1/runtime6-46fc3096e1a1/bundle}
 export QUACTLIZE_KPACK_JIT_HELPER="$REPO/tools/kpack_jit.py" QUACTLIZE_KPACK_JIT_PYTHON="$PYTHON"

@@ -4,7 +4,77 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
-## Current box candidate: parallel MoE preparation and measured SIMT intake
+## Current box candidate: v3 single-token router/preparation
+
+Use `prebuilt/ppu0010/kpack-fusion-v3/dispatch` and private llama.cpp
+`feat/kpack-gpu-cache` at `579ab2464` or later. GPU packing remains the v1
+pack DSO. No offline layout, weight cache, selected GEMM, or Q8 policy changes.
+The execution DSO is identical to v2; the rebuilt small host dispatcher binds
+the changed JIT source. Only selected parents are recompiled on a cache miss.
+Old modules and measurements remain historical evidence, not v3 admission.
+
+The real GGML graph expands router weights before constructing the activation
+reshape. The old fusion matcher incorrectly treated that input view as an
+elided intermediate, so GGML rejected it. A host test using the actual graph
+predicate reproduces the rejection and verifies the repair. Extra projection
+consumers and mismatched IDs still reject; input aliases are retained.
+Memory overlap and runtime descriptor checks remain enabled. Whether all
+model layers actually use the router-fused path needs the next PPU trace.
+
+For one token, top8 and 256 experts, one CTA performs the complete prepare.
+One warp computes top-k using register-resident candidates; the other warps
+convert the common activation once and replicate it to eight expert rows.
+Typed metadata/directories follow for gate/up/down. This does not read
+weight data or expand scale planes. Other shapes retain the general prepare.
+
+Same-binary ABBA, warmed graph-batched preparation medians:
+
+| Case | RTX5090 generic / v3 | RTX5070 WSL generic / v3 |
+| --- | --- | --- |
+| Merged gate/up, softmax+top8+prepare | 6.052 / 3.432 us (-43.3%) | 6.142 / 3.542 us (-42.3%) |
+| Separate gate/up, softmax+top8+prepare | 6.533 / 4.294 us (-34.3%) | 6.659 / 4.414 us (-33.7%) |
+| Merged gate/up, delayed-softmax+prepare | 6.050 / 3.601 us (-40.5%) | 6.199 / 3.676 us (-40.7%) |
+
+[Raw samples and identities](measurements/moe_prepare_nvidia_20260911.json)
+cover 12 SIMT-stage contexts per process, seven changed-input graph replays,
+and 16 x 256 raw-bit router comparisons including ties, signed zero, bias,
+NaN and Inf. PPU production packed-CuTe grouped code compiles and its ELF
+contains the M1 kernel. These are not PPU numerical or model speed admission.
+
+The 5070 NCU report is on its Windows data disk at
+`E:\\kpack-moe-ncu.digOh7\\fused-top8-v5.ncu-rep` (WSL
+`/mnt/e/kpack-moe-ncu.digOh7/fused-top8-v5.ncu-rep`). A local copy is at
+`/root/autodl-tmp/kpack-moe-transfer.sYvWdC/fused-top8-v5.ncu-rep`.
+NCU guided overlapping activation conversion with top-k. Its durations are
+profiler diagnostics, not the unprofiled ABBA latency above.
+
+The uploaded `3gMc6e` startup log now identifies the actual abort: forced Q8
+K-pack placement had no Q8 arrangement, and the expected paired weights were
+also absent. Missing route/JIT controls in the profiled process could explain
+both; stale Asys-service environment is a hypothesis, not a proved root cause.
+The trace runner now applies route controls inside its child immediately
+before exec, preserves profiler injection, and prints `KPACK_PROFILE_ENV`.
+A subprocess test covers both arms launched with stale controls. Check that
+receipt first if startup still fails; do not discard the weight cache or
+call the HTTP retry a loader repair.
+
+Bounded box entry after updating both branches and fetching LFS:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 JOBS=192 RUN_Q8_SIMT=0 RUN_MODEL_TRACE=1 \
+  TRACE_PROMPT=2048 TRACE_GENERATE=16 bash tools/run_kpack_fusion_box.sh
+```
+
+This runs device numerical gates, incrementally builds the llama adapter,
+then the int4 model benchmark and warmed Asys capture. It does not redo the
+Q8 candidate sweep. First-use JIT and first whole PP/TG pass are excluded.
+Inspect `so-quactlize-kpack-moe-router-fused` and `moe_chain_prepare_m1`, plus
+whether separate top-k calls remain. If memory/lifetime checks decline router
+fusion, diagnose those aliases instead of bypassing the checks. End-to-end
+decode must still meet the no-slower-than-native target; v3 has no such PPU
+result yet. Q8 cast adapters and policy coverage remain separate open work.
+
+## Historical v2 candidate and model receipts
 
 Use `prebuilt/ppu0010/kpack-fusion-v2/dispatch` for the native dispatcher and
 execution library. The GPU packing library stays at
@@ -105,10 +175,10 @@ The later `kpack-reference-ab.3gMc6e` run produced a 4.3 MiB reference report,
 but native aborted during model loading inside `qz_set_raw`, before trace
 capture. The HTTP health reset is secondary evidence, not the loader's root
 cause. With Asys as the child process, `server_rc=None` means the launcher is
-still alive; it does not prove the profiled server is alive. The exact
-abort message preceding the backtrace is still required to distinguish the
-descriptor/size checks from a GPU-pack failure. Do not rerun for performance
-or label this loader crash repaired by the health-poll change.
+still alive; it does not prove the profiled server is alive. The subsequently
+uploaded archive identifies a missing Q8 arrangement, not a GPU-pack launch
+failure; see the v3 section for the target-environment check. Do not label
+this loader crash repaired by the health-poll change.
 
 The health-poll repair retries connection errors only during startup, inside
 the existing 900-second deadline and process-exit checks. Completion errors

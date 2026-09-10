@@ -217,7 +217,8 @@ template<bool Persistent, bool Split = false, bool Compact = false> struct Group
     if (!indexed.version || plan.version!=1 || plan.size!=sizeof(plan)) return QK_INVALID;
     switch (phase) {
       case QK_MOE_PREPARE:
-        moe_chain_prepare<Shape,DStride><<<moe_prepare_blocks(call.experts,call.m),256,0,stream>>>(plan);
+        if (moe_prepare_m1_supported(plan)) moe_chain_prepare_m1<Shape,DStride><<<1,256,0,stream>>>(plan);
+        else moe_chain_prepare<Shape,DStride><<<moe_prepare_blocks(call.experts,call.m),256,0,stream>>>(plan);
         break;
       case QK_MOE_PRODUCER:
         return gemm.run(stream)==cutlass::Status::kSuccess ? QK_OK : QK_RUNTIME_ERROR;

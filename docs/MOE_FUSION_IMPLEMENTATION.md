@@ -15,13 +15,21 @@ open; a faster isolated GEMM is not sufficient.
 | Fused route/gather/metadata/directory | Implemented per call and shared across the small chain; XYUgHJ four PPU chain cases pass | Model fusion/latency trace; larger prefill retains its original path |
 | Ordered Split-K reduce + scatter | Implemented for that indexed path; bounded PPU chain/replay gate passes | Actual model coverage and performance |
 | Gate/up completion + SwiGLU, expert-ordered down input | Implemented; separate/merged PPU chain cases pass | Full-model coverage, numerical and performance checks |
-| Top-k/preparation integration | Implemented for matching 256-expert small-decode graphs; softmax, sigmoid+bias+norm, delayed-softmax 5090 checks pass | Additional NaN/Inf cases, matched timing, PPU graph and model checks |
-| MoE prepare performance | Parallel validation/directory/descriptors implemented; RTX5090 ABBA -49.9% at one token, -82.1% at four tokens | PPU trace and warmed whole-model latency |
+| Top-k/preparation integration | Real graph/input-view rejection reproduced and repaired; 4096 raw-bit router comparisons pass on 5090/5070, including NaN/Inf and ties | PPU graph coverage; retain memory alias rejection until separately proved safe |
+| MoE prepare performance | V3 single-CTA top8 and activation overlap; merged router+prepare 6.052 to 3.432 us on 5090, 6.142 to 3.542 us on 5070 | PPU trace and warmed whole-model latency |
 | SIMT automatic selection | Auto now queries exact measured recipes; Q8 K-pack2 W8A16 direct reader and small DSO compiled | Bounded PPU Q8 comparison must supply recipes; missing recipes retain TC |
 | Q8 dense input/output adapters | Still separate gather/scatter casts around TC; not covered by the MoE fusion | Compare F32-to-F32 total calls, then fuse conversions or select faster SIMT |
-| 5090 fusion checks | 10 complete SIMT-stage contexts pass, 7 changing-input replays each; 15 x 8 Q8 GEMV cells pass | Completed-projection fixtures do not emulate PPU GEMM; PPU/model admission is separate |
+| NVIDIA fusion checks | 12 SIMT-stage contexts pass on 5090/5070, 7 changing-input replays each; 15 x 8 prior Q8 GEMV cells pass | Completed-projection fixtures do not emulate PPU GEMM; PPU/model admission is separate |
 | PPU model benchmark and trace | y9B4tw benchmark completed; paired model receipts present; matched original/K-pack capture runner ready | Run paired warmed Asys and attribute full-call overhead; 35B decode remains +31.32% vs reference |
-| Matched trace native startup | 3gMc6e reference report exists; native aborts in qz_set_raw during weight loading | Obtain exact pre-backtrace abort message; health retry alone does not fix the loader |
+| Matched trace native startup | 3gMc6e abort is missing Q8 arrangement with forced placement; pairing also absent. New target-side environment handoff has a subprocess regression test | Check KPACK_PROFILE_ENV on PPU; stale Asys service environment remains unproved |
+
+V3 sources, exact measurement scope, library paths and box command are in
+[the current handoff](LLAMA_CPP_KPACK_HANDOFF.md). It changes neither offline
+formats nor GEMM math. The execution DSO is reused; the small dispatcher has
+a new source-bound JIT contract. The production PPU grouped specialization
+compiles, but device/model admission remains pending. Local targeted checks:
+142 passed, 25 optional device/external tests skipped; 23 llama trace tests
+passed. Do not count those skips as device coverage.
 
 See [the XYUgHJ receipt review](KPACK_FUSION_XYUGHJ_REVIEW.md). The logging
 repair does not admit the old timings or prove that a model graph used the

@@ -5,6 +5,85 @@
 namespace quactlize::runtime {
 namespace moe = quactlize::moe_directory;
 
+CUTLASS_HOST_DEVICE bool moe_prepare_m1_supported(qk_moe_plan_v1 const& plan) {
+  auto const& p=plan.gate;
+  return p.m==8 && p.experts==256 && p.io.tokens==1 && p.io.topk==8 && p.io.channels==1;
+}
+
+template<class Shape,class Stride>
+CUTLASS_DEVICE void moe_m1_descriptors(qk_moe_projection_v1 const& p,
+    int const* ids,int const* ranks,int begin,int count,bool valid) {
+  int e=int(threadIdx.x);
+  p.offsets[e]=begin; p.rows[e]=count;
+  static_cast<Shape*>(p.shapes)[e]=cute::make_shape(count,p.n,p.k);
+  auto strides=static_cast<Stride*>(p.strides);
+  for (int s=0;s<p.splits;++s) {
+    int entry=e+s*256;
+    int64_t offset=(int64_t(s)*8+begin)*p.n;
+    if (p.splits==1) static_cast<Half**>(p.outputs)[entry]=static_cast<Half*>(p.output)+offset;
+    else static_cast<float**>(p.outputs)[entry]=static_cast<float*>(p.partials)+offset;
+    strides[entry]=cutlass::make_cute_packed_stride(Stride{},cute::make_shape(count,p.n,1));
+  }
+  if (e<8) {
+    p.io.row_ids[valid?ranks[e]:e]=e;
+    if (valid) static_cast<moe::BlockEntry*>(p.directory_entries)[ranks[e]]=
+        moe::make_entry(ids[e],1,ranks[e],ranks[e]);
+  }
+  if (e==0) {
+    p.offsets[256]=valid?8:0;
+    *static_cast<moe::Header*>(p.directory_header)={valid?8:0,
+        valid?0:int(moe::BuildStatus::InvalidArgument),p.tile_m,256};
+  }
+}
+
+// Every selected expert consumes the same single-token activation, so this
+// copy is independent of IDs and their expert-order permutation.
+CUTLASS_DEVICE void moe_m1_gather(qk_moe_plan_v1 const& plan,int lane,int stride) {
+  auto const& p=plan.gate;
+  for (int64_t col=lane;col<p.k;col+=stride) {
+    Half value=Half(p.io.a[col]);
+    #pragma unroll
+    for (int r=0;r<8;++r) {
+      static_cast<Half*>(p.a)[int64_t(r)*p.k+col]=value;
+      if (!plan.merged) static_cast<Half*>(plan.up.a)[int64_t(r)*p.k+col]=value;
+    }
+  }
+}
+
+// One CTA computes the router once; the other warps prepare activations in
+// parallel. No other CTA polls a flag or waits for global router publication.
+template<class Shape,class Stride>
+__global__ void moe_chain_prepare_m1(qk_moe_plan_v1 plan) {
+  auto const& p=plan.gate;
+  __shared__ int ids[8],ranks[8];
+  int tid=int(threadIdx.x);
+  if (plan.router.version) {
+    if (tid<32) {
+      if (plan.router.bias) quactlize::llama::router_256_top8<true>(plan.router,p.io,ids);
+      else quactlize::llama::router_256_top8<false>(plan.router,p.io,ids);
+    } else moe_m1_gather(plan,tid-32,224);
+  }
+  else if (tid<8) ids[tid]=p.io.ids[tid];
+  __syncthreads();
+  int begin=0,count=0,rank=0;
+  bool invalid=tid<8 && (ids[tid]<0 || ids[tid]>=256);
+  #pragma unroll
+  for (int i=0;i<8;++i) {
+    begin+=ids[i]<tid; count+=ids[i]==tid;
+    if (tid<8) {
+      rank+=ids[i]<ids[tid];
+      invalid|=i<tid && ids[i]==ids[tid];
+    }
+  }
+  if (tid<8) ranks[tid]=rank;
+  bool valid=__syncthreads_or(invalid)==0;
+  if (!valid) begin=count=0;
+  moe_m1_descriptors<Shape,Stride>(plan.gate,ids,ranks,begin,count,valid);
+  if (!plan.merged) moe_m1_descriptors<Shape,Stride>(plan.up,ids,ranks,begin,count,valid);
+  moe_m1_descriptors<Shape,Stride>(plan.down,ids,ranks,begin,count,valid);
+  if (valid && !plan.router.version) moe_m1_gather(plan,tid,256);
+}
+
 // All participants use the production GroupShape/DStride types. Their member
 // offsets, not an assumed packed tuple representation, are checked at bind.
 template<class Shape,class Stride>
