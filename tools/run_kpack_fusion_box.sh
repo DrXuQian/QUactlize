@@ -15,7 +15,8 @@ if [[ ${1:-} == --help ]]; then
         'The old six-library bundle remains intake/fallback only; QUACTLIZE_PPU_BUNDLE can override its path.' \
         'No Cartesian sweep or large Quactlize bundle rebuild. JIT compiles selected missing parents only.' \
         'Gate failures are collected independently; failed numerics prevent model timing admission.' \
-        'Optional RUN_MODEL_TRACE=1 runs a short warmed Asys proof after the unprofiled benchmark.'
+        'Optional RUN_MODEL_TRACE=1 captures Asys only (no second ABBA benchmark).' \
+        'TRACE_PROMPT=128 TRACE_GENERATE=8; set TRACE_PROMPT=2048 for the focused int4 plan.'
     exit 0
 fi
 set -Ee -o pipefail
@@ -77,6 +78,14 @@ if [[ ${MODEL_NAMES:-qwen35-35b-q4km} != all ]]; then
 fi
 if [[ ${RUN_MODEL_BENCH:-1} == 1 || ${RUN_MODEL_TRACE:-0} == 1 ]]; then
     stage=model-paths
+    if [[ ${RUN_MODEL_TRACE:-0} == 1 ]]; then
+        "$PYTHON" "$LLAMA_DIR/tests/quactlize_native.py" --help > "$RUN/results/model-trace-help.txt"
+        if ! grep -q -- '--proof-only' "$RUN/results/model-trace-help.txt" || \
+           ! grep -q -- '--tensor-inventory' "$RUN/results/model-trace-help.txt"; then
+            printf 'Update llama.cpp feat/kpack-gpu-cache: the Asys-only runner is required.\n' >&2
+            false
+        fi
+    fi
     RESOLVE_ARGS=()
     if [[ ${RUN_MODEL_BENCH:-1} == 1 ]]; then RESOLVE_ARGS+=("${MODEL_ARGS[@]}"); fi
     if [[ ${RUN_MODEL_TRACE:-0} == 1 ]]; then
@@ -92,6 +101,8 @@ if [[ ${RUN_MODEL_BENCH:-1} == 1 || ${RUN_MODEL_TRACE:-0} == 1 ]]; then
     if [[ ${RUN_MODEL_TRACE:-0} == 1 ]]; then
         MODEL=$("$PYTHON" -c 'import json,sys; m=next(x for x in json.load(open(sys.argv[1]))["models"] if x["name"]==sys.argv[2]); assert m["split"]=="none", "K-pack tensor-parallel trace is not admitted"; print(m["path"])' \
             "$RUN/results/model-plan.json" "$MODEL_NAME")
+        (cd "$REPO" && "$PYTHON" -c 'import json,sys; from pathlib import Path; from tools.run_kpack_batched_bench import inventory; Path(sys.argv[2]).write_text(json.dumps(inventory(Path(sys.argv[1])), indent=2)+"\n")' \
+            "$MODEL" "$RUN/results/model-trace-inventory.json")
     fi
 fi
 stage=device-gates
@@ -139,7 +150,9 @@ if [[ ${RUN_MODEL_TRACE:-0} == 1 ]]; then
         --model "$MODEL" --cache "$RUN/cache/$MODEL_NAME" --bundle "$QUACTLIZE_KPACK_EXECUTION" \
         --asys "$PPU_SDK/asight/bin/asys" --inspector "$PPU_SDK/bin/hgobjdump" \
         --jit-cache "$QUACTLIZE_KPACK_JIT_CACHE" --jit-helper "$QUACTLIZE_KPACK_JIT_HELPER" \
-        --jit-python "$PYTHON" --output "$RUN/results/model-proof" --prompts 128 --generate 16 --repeats 2 \
+        --jit-python "$PYTHON" --output "$RUN/results/model-proof" --proof-only \
+        --tensor-inventory "$RUN/results/model-trace-inventory.json" \
+        --proof-prompt "${TRACE_PROMPT:-128}" --proof-generate "${TRACE_GENERATE:-8}" \
         2>&1 | tee "$RUN/results/model-proof.log"
 fi
 stage=done

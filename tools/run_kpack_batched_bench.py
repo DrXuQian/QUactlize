@@ -126,6 +126,15 @@ def parse_row(line, expected, plan):
                       decode_us_per_token=1e6*row["t_tg"]/tg)
 
 
+def progress_line(model, label, row, completed, total):
+    return (f"BATCHED_MODEL_PROGRESS model={model['name']} arm={label} "
+            f"phase={row['phase']} pp={row['pp']} tg={row['tg']} "
+            f"completed={completed}/{total} "
+            f"prefill_us_per_token={row['prefill_us_per_token']:.3f} "
+            f"decode_us_per_token={row['decode_us_per_token']:.3f} "
+            f"prefill_total_ms={1000*row['t_pp']:.3f} decode_total_ms={1000*row['t_tg']:.3f}")
+
+
 def run_arm(args, model, plan, inv, arm, directory, index):
     label = f"{index}-{arm}"
     log = directory / (label + ".log")
@@ -169,10 +178,7 @@ def run_arm(args, model, plan, inv, arm, directory, index):
                         raise ValueError("extra/duplicate benchmark row")
                     row = parse_row(line, expected[len(records)], plan)
                     records.append(row)
-                    print(f"BATCHED_MODEL_PROGRESS model={model['name']} arm={label} "
-                          f"phase={row['phase']} pp={row['pp']} tg={row['tg']} "
-                          f"completed={len(records)}/{len(expected)} "
-                          f"prefill_us={row['prefill_us_per_token']:.3f} decode_us={row['decode_us_per_token']:.3f}", flush=True)
+                    print(progress_line(model, label, row, len(records), len(expected)), flush=True)
                 rc = proc.poll()
                 if rc is not None:
                     # Drain once after observing exit, including a partial

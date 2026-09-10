@@ -6,7 +6,7 @@ import sys
 import pytest
 
 from tools.resolve_kpack_batched_models import resolve_plan
-from tools.run_kpack_batched_bench import command, validate_plan
+from tools.run_kpack_batched_bench import command, validate_plan, sequence, parse_row, progress_line
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -192,3 +192,32 @@ def test_box_catalog_uses_only_requested_parent_root():
     assert runner.index("stage=model-paths") < runner.index("stage=device-gates")
     assert '--plan "$RUN/results/model-plan.json" "${MODEL_ARGS[@]}"' in runner
     assert '"$RUN/results/model-plan.json" "$MODEL_NAME"' in runner
+
+
+def test_focused_int4_plan_has_only_2048_and_short_decode():
+    focused = validate_plan(json.loads((ROOT / "tools/kpack_batched_int4_2048.json").read_text()))
+    full = json.loads((ROOT / "tools/kpack_batched_models.json").read_text())
+    assert focused["prompts"] == [2048] and focused["generations"] == [128]
+    assert focused["batch"] == focused["ubatch"] == 2048 and focused["parallel"] == 1
+    assert {m["name"] for m in focused["models"]} == {"qwen35-35b-q4km", "qwen3-32b-q4km"}
+    assert focused["model_root"] == full["model_root"]
+    by_name = {m["name"]: m for m in full["models"]}
+    for model in focused["models"]:
+        assert model["directory"] == by_name[model["name"]]["directory"]
+        assert model["split"] == "none"
+    assert sequence(focused, 1) == [(2048, 128, 0), (2048, 128, 1)]
+    assert 3 * sum(tg for _, tg, _ in sequence(focused, 1)) == 768
+
+
+def test_progress_distinguishes_per_token_from_total_time():
+    source = json.loads((ROOT / "tools/kpack_batched_int4_2048.json").read_text())
+    row = dict(n_kv_max=2176, pp=2048, tg=128, pl=1, n_batch=2048, n_ubatch=2048,
+               flash_attn=1, is_pp_shared=0, n_kv=2176,
+               t_pp=.2048, t_tg=1.28, speed_pp=10000, speed_tg=100)
+    parsed = parse_row(json.dumps(row), (2048, 128, 1), source)
+    line = progress_line(source["models"][0], "1-kpack", parsed, 2, 2)
+    assert "phase=measured" in line and "completed=2/2" in line
+    for field in ("prefill_us_per_token=100.000", "decode_us_per_token=10000.000",
+                  "prefill_total_ms=204.800", "decode_total_ms=1280.000"):
+        assert field in line
+    assert "prefill_us=" not in line and "decode_us=" not in line

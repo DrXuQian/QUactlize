@@ -82,6 +82,26 @@ Paths can be checked separately, without SDK/GPU work:
 python3 tools/resolve_kpack_batched_models.py --model qwen35-35b-q4km
 ```
 
+For the narrowed comparison use `MODEL_PLAN=$PWD/tools/kpack_batched_int4_2048.json`
+and `MODEL_NAMES=all`: only 35B-A3B Q4_K_M and 32B Q4_K_M, PP=2048, TG=128,
+NPL=1, token batch/ubatch=2048. Each of reference/K-pack-cold/K-pack-hot runs
+one excluded warmup plus one measured pass: 768 generated tokens per model,
+versus 107,520 in the original matrix. Progress prints both us/token and total
+milliseconds. Existing results and JIT cache stay valid; no GEMM rebuild is
+needed for this protocol change.
+
+Set `RUN_MODEL_TRACE=1 TRACE_PROMPT=2048 TRACE_GENERATE=16` for the subsequent
+35B Q4_K_M Asys capture. It now uses `quactlize_native.py --proof-only`: one
+warmup and one captured request, with no duplicate server ABBA benchmark.
+The trace uses the same header-derived eligible weight names as the benchmark,
+including supported dense Q8 weights, instead of the old MoE/output-only regex.
+Both repositories must be updated; the wrapper checks the script option
+before device work. The private llama `feat/kpack-gpu-cache` change starts at
+`558e5a06b`. Partial kernel coverage stays labelled partial, not a
+performance or correctness admission. The report remains at
+`results/model-proof/proof.asysrep`. The 122B TP and BF16 models are outside
+this focused plan.
+
 Last updated: 2026-09-10. Verified offline bundles retain schema v3; the local
 runtime cache now has a separate hash-free contract, described below. The
 published `2826cf1` loader-safe runtime bundle has passed strict binary

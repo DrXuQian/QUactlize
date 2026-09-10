@@ -1,0 +1,13 @@
+{
+  "source": "focused-int4-2048",
+  "model_root": "/sim/eec/shared/AI_workspace/llm-models",
+  "prompts": [2048],
+  "generations": [128],
+  "parallel": 1,
+  "batch": 2048,
+  "ubatch": 2048,
+  "models": [
+    {"name": "qwen35-35b-q4km", "directory": "Qwen3.5-35B-A3B-Q4_K_M-GGUF", "devices": "0", "split": "none"},
+    {"name": "qwen3-32b-q4km", "directory": "Qwen3-32B-Q4_K_M_GGUF", "devices": "0", "split": "none"}
+  ]
+}
