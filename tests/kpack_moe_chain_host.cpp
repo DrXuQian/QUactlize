@@ -78,25 +78,25 @@ static void graph(bool merged,bool extra_consumer,bool bad_view,bool same_ids,bo
   ggml_free(ctx);
 }
 
-static void router_graph(bool merged,int fault) {
+static void router_graph(bool merged,int fault,int tokens=1) {
   auto * ctx=ggml_init({8*1024*1024,nullptr,true});
-  auto * input=ggml_new_tensor_2d(ctx,GGML_TYPE_F32,2048,1);
-  auto * logits=ggml_new_tensor_2d(ctx,GGML_TYPE_F32,256,1);
+  auto * input=ggml_new_tensor_2d(ctx,GGML_TYPE_F32,2048,tokens);
+  auto * logits=ggml_new_tensor_2d(ctx,GGML_TYPE_F32,256,tokens);
   auto * probs=ggml_soft_max(ctx,logits);
   auto * ids=ggml_argsort_top_k(ctx,probs,8);
-  auto * view=ggml_reshape_3d(ctx,probs,1,256,1);
+  auto * view=ggml_reshape_3d(ctx,probs,1,256,tokens);
   auto * weights=ggml_get_rows(ctx,view,ids);
   auto * g=ggml_new_graph(ctx);
   ggml_build_forward_expand(g,weights);
   // The real model expands router weights before the input's reshape.
-  auto * a=ggml_reshape_3d(ctx,input,2048,1,1);
+  auto * a=ggml_reshape_3d(ctx,input,2048,1,tokens);
   auto * weight=ggml_new_tensor_3d(ctx,GGML_TYPE_Q4_K,2048,merged?1024:512,256);
   auto * gate=ggml_mul_mat_id(ctx,weight,a,ids);
   ggml_tensor * up;
   if (merged) {
     auto * both=gate;
-    gate=ggml_view_3d(ctx,both,512,8,1,both->nb[1],both->nb[2],0);
-    up=ggml_view_3d(ctx,both,512,8,1,both->nb[1],both->nb[2],512*4);
+    gate=ggml_view_3d(ctx,both,512,8,tokens,both->nb[1],both->nb[2],0);
+    up=ggml_view_3d(ctx,both,512,8,tokens,both->nb[1],both->nb[2],512*4);
   } else up=ggml_mul_mat_id(ctx,weight,a,ids);
   auto * glu=ggml_swiglu_split(ctx,gate,up);
   auto * dw=ggml_new_tensor_3d(ctx,GGML_TYPE_Q5_K,512,2048,256);
@@ -119,7 +119,7 @@ static void router_graph(bool merged,int fault) {
   bool legacy=ggml_can_fuse_subgraph(g,start,int(whole.size()),whole.data(),old_outputs,3);
   auto span=quactlize::llama::match_moe_router(g,start,prefix,ii,wi);
   require(!legacy,"legacy predicate unexpectedly accepted external input view");
-  require(bool(span.count)==(fault==0 || fault==3),"router/input-view fusion disagrees");
+  require(bool(span.count)==(tokens<=4 && (fault==0 || fault==3)),"router/input-view fusion disagrees");
   if (span.count) require(start+span.count-1==end,"router fusion skipped wrong nodes");
   require(!quactlize::llama::match_moe_router(g,start,prefix,wi,wi).count,"wrong router IDs accepted");
   ggml_free(ctx);
@@ -132,7 +132,9 @@ int main() {
       graph(merged,false,false,false,true); graph(merged,false,false,true,false);
     }
     graph(true,false,true,true,true);
-    for (bool merged:{false,true}) for (int fault=0;fault<4;++fault) router_graph(merged,fault);
+    for (int tokens:{1,2,3,4,5,8,16,32,64,128,512,2048})
+      for (bool merged:{false,true}) for (int fault=0;fault<4;++fault) router_graph(merged,fault,tokens);
+    std::puts("KPACK_MOE_GRAPH_TOKEN_SCOPE PASS topk=8 fused_tokens=1,2,3,4 declined_tokens=5,8,16,32,64,128,512,2048");
     std::puts("KPACK_MOE_ROUTER_GRAPH PASS input views retained; legacy predicate RED; projection uses/IDs rejected");
     std::puts("KPACK_MOE_GRAPH PASS exact GGML separate+merged; shared consumer, wrong view, IDs, activation RED");
     return 0;

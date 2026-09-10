@@ -74,6 +74,44 @@ fusion, diagnose those aliases instead of bypassing the checks. End-to-end
 decode must still meet the no-slower-than-native target; v3 has no such PPU
 result yet. Q8 cast adapters and policy coverage remain separate open work.
 
+### Multi-token coverage and the remaining boundary
+
+The follow-up 5070 test uses `--multi-token --benchmark` and the same binary's
+`--generic` control in ABBA order. All 96 contexts pass: tokens 1/2/3/4,
+K=512/2048/3072, separate/merged gate-up, external IDs or three router modes.
+Each context has seven changed-input replays, stable expert-order checks,
+guard checks and independent completed-projection/activation/scatter oracles.
+This remains a SIMT-stage test, not an NVIDIA emulation of PPU GEMM.
+
+With top8, E256, K2048, merged gate/up and softmax+norm, fixed descriptor
+splits gate=4/up=2/down=8, preparation medians are:
+
+| Tokens | General control | V3 selected path |
+| --- | --- | --- |
+| 1 | 6.141 us | 3.731 us (M1 fast) |
+| 2 | 6.274 us | 6.213 us (unchanged general) |
+| 3 | 6.352 us | 6.343 us (unchanged general) |
+| 4 | 6.459 us | 6.456 us (unchanged general) |
+
+The 72 multi-token cases still launch the identical general kernel; their
+observed deltas range from -2.46% to +0.87%, not a new multi-token speedup.
+[The matrix](measurements/moe_prepare_multitoken_20260911.json) and its
+compressed raw logs preserve all timing samples and paths.
+
+The small fused chain is bounded by `tokens * topk <= 32`. Real GGML host
+tests accept top8 with 1-4 tokens and decline 5/8/16/32/64/128/512/2048,
+retaining the existing unfused route. Those rejection tests do not validate
+the larger path's device correctness or performance. General prefill/model
+coverage still needs PPU measurements. Extending the fast path to 2-4 tokens
+must handle different activation vectors and repeated experts across tokens;
+the M1 broadcast cannot simply be reused.
+
+The PPU gate now requests all 16 combinations of 1/2/3/4 tokens,
+separate/merged gate-up and router off/on. It also covers the previously
+missing single-token router-on case. All requests have a valid host policy
+choice. The actual selected PPU chains remain pending the box gate. This
+follow-up changes tests only: no DSO, JIT contract or weight-cache rebuild.
+
 ## Historical v2 candidate and model receipts
 
 Use `prebuilt/ppu0010/kpack-fusion-v2/dispatch` for the native dispatcher and

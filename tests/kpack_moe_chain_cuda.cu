@@ -19,7 +19,8 @@ namespace quactlize::runtime { using Half=cutlass::half_t; }
 void check(cudaError_t rc);
 static bool benchmark_prepare=false;
 static bool generic_prepare=false;
-template<class F> static void time_prepare(F prepare,int merged,int tokens,int topk,int experts,int router) {
+static bool multi_token=false;
+template<class F> static void time_prepare(F prepare,int merged,int tokens,int topk,int experts,int router,int k) {
   constexpr int batch=64,samples=15;
   cudaGraph_t graph; cudaGraphExec_t instance;
   cudaEvent_t start,stop;
@@ -37,8 +38,8 @@ template<class F> static void time_prepare(F prepare,int merged,int tokens,int t
     if (i>=0) times.push_back(ms*1000.f/batch);
   }
   auto sorted=times; std::sort(sorted.begin(),sorted.end());
-  std::printf("KPACK_MOE_PREPARE_PERF merged=%d tokens=%d topk=%d experts=%d router=%d median_us=%.6f batch=%d warmups=5 samples=[",
-      merged,tokens,topk,experts,router,sorted[samples/2],batch);
+  std::printf("KPACK_MOE_PREPARE_PERF merged=%d tokens=%d topk=%d experts=%d router=%d k=%d median_us=%.6f batch=%d warmups=5 samples=[",
+      merged,tokens,topk,experts,router,k,sorted[samples/2],batch);
   for (int i=0;i<samples;++i) std::printf("%s%.6f",i?",":"",times[i]);
   std::puts("]");
   check(cudaEventDestroy(start)); check(cudaEventDestroy(stop));
@@ -163,8 +164,9 @@ struct Projection {
   }
 };
 
-static void run(bool merged,int tokens,int topk,int experts,int sg,int su,int sd,int router_mode=-1) {
-  int m=tokens*topk,k=2048,n=512,out_n=1024,ids_stride=topk+5;
+static void run(bool merged,int tokens,int topk,int experts,int sg,int su,int sd,int router_mode=-1,int k=2048) {
+  int m=tokens*topk,n=512,out_n=1024,ids_stride=topk+5;
+  if (m>32) throw std::runtime_error("bounded chain supports at most 32 routed rows");
   Buffer<int> ids(tokens*ids_stride);
   Buffer<float> source(size_t(tokens)*(k+17)), output(size_t(m)*(out_n+3)+2);
   Buffer<float> logits(tokens*256), bias(256), weights(m);
@@ -295,7 +297,7 @@ static void run(bool merged,int tokens,int topk,int experts,int sg,int su,int sd
       for (int c=out_n;c<out_n+3;++c) bad+=got[1+size_t(r)*(out_n+3)+c]!=-123.f;
     }
     bad+=got.front()!=-123.f || got.back()!=-123.f;
-    if (replay==6 && benchmark_prepare && bad==0) time_prepare(prepare,int(merged),tokens,topk,experts,router_mode);
+    if (replay==6 && benchmark_prepare && bad==0) time_prepare(prepare,int(merged),tokens,topk,experts,router_mode,k);
     if (replay==6 && topk>1 && router_mode<0) {
       hi[1]=hi[0]; ids.put(hi);
       check(cudaGraphLaunch(instance,cudaStreamPerThread)); check(cudaDeviceSynchronize());
@@ -305,8 +307,9 @@ static void run(bool merged,int tokens,int topk,int experts,int sg,int su,int sd
     }
   }
   check(cudaGraphExecDestroy(instance)); check(cudaGraphDestroy(graph));
-  std::printf("KPACK_MOE_CHAIN_CUDA merged=%d tokens=%d topk=%d experts=%d splits=%d,%d,%d router=%d replays=7 bad=%zu activation_half_bad=%zu rounding_red=%zu gate_up_red=%zu\n",
-      int(merged),tokens,topk,experts,sg,su,sd,router_mode,bad,activation_half_bad,rounding_red,gate_up_red);
+  std::printf("KPACK_MOE_CHAIN_CUDA merged=%d tokens=%d topk=%d experts=%d splits=%d,%d,%d router=%d k=%d prepare=%s replays=7 bad=%zu activation_half_bad=%zu rounding_red=%zu gate_up_red=%zu\n",
+      int(merged),tokens,topk,experts,sg,su,sd,router_mode,k,
+      !generic_prepare&&moe_prepare_m1_supported(plan)?"M1_FAST":"GENERAL",bad,activation_half_bad,rounding_red,gate_up_red);
   if (bad || !rounding_red || !gate_up_red) throw std::runtime_error("MoE chain oracle failed");
 }
 int main(int argc,char** argv) {
@@ -314,9 +317,17 @@ int main(int argc,char** argv) {
     for (int i=1;i<argc;++i) {
       if (std::strcmp(argv[i],"--benchmark")==0) benchmark_prepare=true;
       else if (std::strcmp(argv[i],"--generic")==0) generic_prepare=true;
-      else throw std::runtime_error("usage: moe-chain [--benchmark] [--generic]");
+      else if (std::strcmp(argv[i],"--multi-token")==0) multi_token=true;
+      else throw std::runtime_error("usage: moe-chain [--benchmark] [--generic] [--multi-token]");
     }
     router_equivalence();
+    if (multi_token) {
+      for (int k:{512,2048,3072}) for (int tokens:{1,2,3,4})
+        for (bool merged:{false,true}) for (int router:{-1,0,1,2})
+          run(merged,tokens,8,256,4,2,8,router,k);
+      std::puts("KPACK_MOE_CHAIN_CUDA PASS cells=96 PPU_GEMM_ADMISSION=NOT_TESTED");
+      return 0;
+    }
     run(false,1,8,256,4,2,1); run(false,4,8,256,1,8,4);
     run(true,1,8,256,4,1,2); run(true,9,1,2,2,1,8);
     run(false,1,8,256,4,2,1,0); run(false,4,8,256,4,2,4,1); run(true,1,8,256,2,1,8,2);

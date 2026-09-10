@@ -26,7 +26,8 @@ from tools.run_kpack_grouped_device_gate import graph_bind
 from tools.run_kpack_pack_gate import Arrangement, Sizes, bind, device_identity
 from tools.verify_kpack_dispatch import verify
 
-CHAIN_CASES=((False,1,False),(True,1,False),(False,4,True),(True,4,True))
+CHAIN_CASES=tuple((merged,tokens,router) for tokens in (1,2,3,4)
+                  for merged in (False,True) for router in (False,True))
 
 
 def chain_requests(merged,tokens):
@@ -230,7 +231,7 @@ def main():
                 traceback.print_exc();result['failures'].append(dict(merged=merged,tokens=tokens,router=router,error=str(error)))
         result['status']='FAIL' if result['failures'] else 'PASS'
     finally:(args.output/'summary.json').write_text(json.dumps(result,indent=2)+'\n')
-    print(f"KPACK_MOE_GATE status={result['status']} pair_formats={len(result['pairs'])}/6 chains={len(result['chains'])}/4",flush=True)
+    print(f"KPACK_MOE_GATE status={result['status']} pair_formats={len(result['pairs'])}/6 chains={len(result['chains'])}/{len(CHAIN_CASES)}",flush=True)
     return int(result['status']!='PASS')
 
 

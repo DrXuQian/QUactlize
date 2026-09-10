@@ -36,6 +36,9 @@ def test_bindings_match_c_abi():
 
 
 def test_every_real_chain_request_has_a_policy_choice(probe):
+    assert len(CHAIN_CASES)==16
+    assert set(CHAIN_CASES)=={(merged,tokens,router) for tokens in (1,2,3,4)
+                            for merged in (False,True) for router in (False,True)}
     for merged,tokens,_ in CHAIN_CASES:
         requests=chain_requests(merged,tokens)
         rows=[tuple(r[key] for key in ('q','route','m','n','k','experts','max_rows')) for r in requests]

@@ -17,6 +17,7 @@ def test_composition_and_exact_ggml_graph(tmp_path):
     assert result.returncode==0,result.stdout+result.stderr
     assert 'KPACK_MOE_COMPOSITION PASS' in result.stdout
     assert 'KPACK_MOE_GRAPH PASS' in result.stdout
+    assert 'KPACK_MOE_GRAPH_TOKEN_SCOPE PASS' in result.stdout
 
 
 def test_moe_graph_mirror():

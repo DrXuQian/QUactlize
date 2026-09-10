@@ -17,6 +17,8 @@ open; a faster isolated GEMM is not sufficient.
 | Gate/up completion + SwiGLU, expert-ordered down input | Implemented; separate/merged PPU chain cases pass | Full-model coverage, numerical and performance checks |
 | Top-k/preparation integration | Real graph/input-view rejection reproduced and repaired; 4096 raw-bit router comparisons pass on 5090/5070, including NaN/Inf and ties | PPU graph coverage; retain memory alias rejection until separately proved safe |
 | MoE prepare performance | V3 single-CTA top8 and activation overlap; merged router+prepare 6.052 to 3.432 us on 5090, 6.142 to 3.542 us on 5070 | PPU trace and warmed whole-model latency |
+| Multi-token prepare | 96 contexts pass on 5070 (1-4 tokens, three K values, four router settings, separate/merged); 2-4 tokens still use unchanged general kernel | Optimize 2-4 token routing/gather; do not broadcast a single activation across distinct tokens |
+| Large-token chain boundary | Real GGML host predicates decline top8 above 4 tokens; shared chain storage is limited to 32 routed rows | Larger prefill fallback needs PPU numerical/performance coverage; extension requires a new supported algorithm, not lifting the guard |
 | SIMT automatic selection | Auto now queries exact measured recipes; Q8 K-pack2 W8A16 direct reader and small DSO compiled | Bounded PPU Q8 comparison must supply recipes; missing recipes retain TC |
 | Q8 dense input/output adapters | Still separate gather/scatter casts around TC; not covered by the MoE fusion | Compare F32-to-F32 total calls, then fuse conversions or select faster SIMT |
 | NVIDIA fusion checks | 12 SIMT-stage contexts pass on 5090/5070, 7 changing-input replays each; 15 x 8 prior Q8 GEMV cells pass | Completed-projection fixtures do not emulate PPU GEMM; PPU/model admission is separate |
@@ -30,6 +32,9 @@ a new source-bound JIT contract. The production PPU grouped specialization
 compiles, but device/model admission remains pending. Local targeted checks:
 142 passed, 25 optional device/external tests skipped; 23 llama trace tests
 passed. Do not count those skips as device coverage.
+The multi-token follow-up adds 96-context NVIDIA evidence and expands the
+next PPU gate from 4 to 16 real selected chains. Its targeted host set passes
+98 tests. Only tests/orchestration changed; v3 libraries remain valid.
 
 See [the XYUgHJ receipt review](KPACK_FUSION_XYUGHJ_REVIEW.md). The logging
 repair does not admit the old timings or prove that a model graph used the
