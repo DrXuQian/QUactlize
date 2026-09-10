@@ -6,15 +6,19 @@ close. No graph-capture-time compilation, D2H routing, or CPU scale cache.
 
 | Work | State | Required closure |
 | --- | --- | --- |
-| Q8_0 W8A16, resident original FP16 d, dense/grouped intake | Implemented; four PPU parents compiled locally | Q8 GPU pack, native graph, model routing/accuracy and timing on PPU |
-| Gate/up paired GPU pack | Implemented, 18 host exact cases pass, PPU producer compiled | PPU device bytes and consumer numerical gate |
+| Q8_0 W8A16, resident original FP16 d, dense/grouped intake | Implemented; XYUgHJ bounded PPU gate 7/7 pass | Model routing/accuracy and timing on PPU |
+| Gate/up paired GPU pack | Implemented; XYUgHJ device gate passes all six formats | Actual model paired-weight coverage and timing |
 | Merged weight intake and cache | Implemented; nonadjacent/reversed source spans, cold/warm and negative host tests pass | PPU model cold/warm gate |
-| Fused route/gather/metadata/directory | Implemented per call and shared across the small gate/up/down chain; 5090 checks pass | PPU numerical/performance gate; larger prefill retains its original path |
-| Ordered Split-K reduce + scatter | Implemented for that indexed path; 5090 checks pass | PPU guard/replay/numerical/performance gate |
-| Gate/up completion + SwiGLU, expert-ordered down input | Implemented and wired through the closed llama graph; separate or already-merged weights | PPU producer/chain and full model checks |
+| Fused route/gather/metadata/directory | Implemented per call and shared across the small chain; XYUgHJ four PPU chain cases pass | Model fusion/latency trace; larger prefill retains its original path |
+| Ordered Split-K reduce + scatter | Implemented for that indexed path; bounded PPU chain/replay gate passes | Actual model coverage and performance |
+| Gate/up completion + SwiGLU, expert-ordered down input | Implemented; separate/merged PPU chain cases pass | Full-model coverage, numerical and performance checks |
 | Top-k/preparation integration | Implemented for matching 256-expert small-decode graphs; softmax, sigmoid+bias+norm, delayed-softmax 5090 checks pass | Additional NaN/Inf cases, matched timing, PPU graph and model checks |
 | 5090 fusion checks | Initial 8 per-call cells plus 7 complete SIMT-stage contexts pass, 7 changing-input replays each | These use completed-projection fixtures, not a PPU GEMM emulator; matched timing remains |
-| PPU model benchmark and trace | Pending | Uploaded batched-bench axes, first full pass excluded, honest TP admission |
+| PPU model benchmark and trace | XYUgHJ model processes rc=0, missing plan logs; script verbosity fixed | Repeat PP2048/TG128 int4 plan; inspect warmed Asys, especially 35B decode and 32B prefill |
+
+See [the XYUgHJ receipt review](KPACK_FUSION_XYUGHJ_REVIEW.md). The logging
+repair does not admit the old timings or prove that a model graph used the
+bounded-gate fusions. No kernel or selector binary was changed for this fix.
 
 ## Reuse llama.cpp's merged graph
 

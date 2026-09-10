@@ -85,7 +85,10 @@ def command(binary, model, plan, repeats, names, arm, cache):
             "-b", str(plan["batch"]), "-ub", str(plan["ubatch"]),
             "-c", str(max(plan["prompts"]) + max(plan["generations"])),
             "-fa", "1", "-sm", model["split"], "--fit", "off", "--mmap",
-            "--output-format", "jsonl", "--log-colors", "off"]
+            "--output-format", "jsonl", "--log-colors", "off", "--verbosity", "4"]
+    # GGML_LOG_INFO plan/fallback receipts require common logger level 4;
+    # default level 3 suppresses them while leaving benchmark JSON visible.
+    # Use the same level in both arms without per-kernel DEBUG (level 5).
     if model["split"] == "tensor":
         if arm != "reference":
             raise ValueError("K-pack tensor-parallel intake is not admitted")
@@ -210,18 +213,23 @@ def run_arm(args, model, plan, inv, arm, directory, index):
         evidence = model_selection(SimpleNamespace(
             manifest=args.manifest, bundle=args.bundle, jit_cache=args.jit_cache,
             jit_helper=ROOT / "tools/kpack_jit.py", jit_python=Path(sys.executable)), text)
-        if not evidence["plans"] and not evidence["fallbacks"]:
-            raise ValueError("no selected or legacy K-pack compute plan; not a K-pack timing")
         q8_plans=[p for p in evidence["plans"] if p.get("q")=="8"]
-        if inv["q8"] and (not q8_plans or any(p.get("activation")!="FP16" or
-                p.get("route")!="sf" or p.get("scale_resident")!="1" for p in q8_plans)):
-            raise ValueError("Q8_0 W8A16 compute evidence missing or activation/scale contract differs")
         evidence["q8_w8a16_plans"] = len(q8_plans)
         evidence["moe_chains"] = [dict(re.findall(r"([a-z_]+)=([^\s]+)",line))
             for line in text.splitlines() if "[quactlize-moe]" in line]
         evidence["paired_weights"] = [line for line in text.splitlines() if "[kpack-pair]" in line]
         evidence["cache"] = [line for line in text.splitlines() if "[kpack-cache]" in line]
-        save(directory / (label + ".selection.json"), evidence)
+        evidence["plan_admission"] = "FAIL"
+        try:
+            if not evidence["plans"] and not evidence["fallbacks"]:
+                raise ValueError(f"no selected or legacy K-pack compute plan; not a K-pack timing; "
+                                 f"see {log} (plan receipts require --verbosity 4)")
+            if inv["q8"] and (not q8_plans or any(p.get("activation")!="FP16" or
+                    p.get("route")!="sf" or p.get("scale_resident")!="1" for p in q8_plans)):
+                raise ValueError("Q8_0 W8A16 compute evidence missing or activation/scale contract differs")
+            evidence["plan_admission"] = "PASS"
+        finally:
+            save(directory / (label + ".selection.json"), evidence)
         coverage = "PARTIAL_NATIVE" if evidence["fallbacks"] else "SELECTED_PLANS"
     else:
         if "[quactlize-plan]" in text or "native policy miss" in text:

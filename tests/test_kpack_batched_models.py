@@ -2,10 +2,12 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
 from tools.resolve_kpack_batched_models import resolve_plan
+from tools import run_kpack_batched_bench as bench
 from tools.run_kpack_batched_bench import command, validate_plan, sequence, parse_row, progress_line
 
 
@@ -221,3 +223,57 @@ def test_progress_distinguishes_per_token_from_total_time():
                   "prefill_total_ms=204.800", "decode_total_ms=1280.000"):
         assert field in line
     assert "prefill_us=" not in line and "decode_us=" not in line
+
+
+@pytest.mark.parametrize("arm", ["reference", "kpack"])
+def test_benchmark_collects_compute_receipts_without_per_kernel_debug(arm, tmp_path):
+    source = plan(tmp_path)
+    model = source["models"][0] | {"path": "/weights.gguf"}
+    argv = command("/bench", model, source, 1, ["blk.0.ffn_down.weight"], arm, tmp_path)
+    # GGML_LOG_INFO enters common_log_default_callback at TRACE (4), not
+    # common LOG_INF's level 3. DEBUG (5) would add per-kernel route traffic.
+    assert argv.count("--verbosity") == 1
+    assert argv[argv.index("--verbosity") + 1] == "4"
+
+
+@pytest.mark.parametrize("kind", ["missing", "dense", "legacy", "wrong-q8"])
+def test_compute_receipts_stay_required_and_are_preserved(kind, tmp_path, monkeypatch):
+    source = plan(tmp_path)
+    model = source["models"][0] | {"path": "/weights.gguf"}
+    evidence = dict(plans=[], fallbacks=[])
+    if kind in ("dense", "wrong-q8"):
+        evidence["plans"] = [dict(op="dense", q="8" if kind == "wrong-q8" else "12")]
+    elif kind == "legacy":
+        evidence["fallbacks"] = ["blk.0.ffn_down.weight: native policy miss"]
+    monkeypatch.setattr(sys, "path", sys.path.copy())
+    monkeypatch.setitem(sys.modules, "quactlize_native", SimpleNamespace(
+        model_selection=lambda args, text: evidence.copy()))
+    row = dict(n_kv_max=528, pp=512, tg=16, pl=1, n_batch=512, n_ubatch=512,
+               flash_attn=1, is_pp_shared=0, n_kv=528,
+               t_pp=.512, t_tg=.016, speed_pp=1000, speed_tg=1000)
+    # Run a real, short host subprocess: valid timing rows alone must not
+    # satisfy native route admission. The kernel-plan verifier is a separate
+    # boundary; this test exercises run_arm's admission and failure receipts.
+    transcript = json.dumps(row) + "\n" + json.dumps(row) + "\n"
+    monkeypatch.setattr(bench, "command", lambda *args: [
+        sys.executable, "-c", "print(" + repr(transcript) + ", end='')"])
+    args = SimpleNamespace(cache_root=tmp_path / "cache", repeats=1, binary=Path(sys.executable),
+                           llama_dir=tmp_path, bundle=tmp_path, manifest={}, jit_cache=tmp_path)
+    inv = dict(eligible=["blk.0.ffn_down.weight"], q8=["blk.0.ffn_down.weight"]
+               if kind == "wrong-q8" else [])
+    if kind == "missing":
+        with pytest.raises(ValueError, match="no selected or legacy K-pack compute plan") as failure:
+            bench.run_arm(args, model, source, inv, "kpack", tmp_path, 1)
+        assert str(tmp_path / "1-kpack.log") in str(failure.value)
+    elif kind == "wrong-q8":
+        with pytest.raises(ValueError, match="Q8_0 W8A16 compute evidence missing"):
+            bench.run_arm(args, model, source, inv, "kpack", tmp_path, 1)
+    else:
+        result = bench.run_arm(args, model, source, inv, "kpack", tmp_path, 1)
+        assert result["coverage"] == ("PARTIAL_NATIVE" if kind == "legacy" else "SELECTED_PLANS")
+    receipt = json.loads((tmp_path / "1-kpack.selection.json").read_text())
+    assert receipt["plans"] == evidence["plans"] and receipt["fallbacks"] == evidence["fallbacks"]
+    assert receipt["plan_admission"] == ("FAIL" if kind in ("missing", "wrong-q8") else "PASS")
+    assert json.loads((tmp_path / "1-kpack.process.json").read_text())["rc"] == 0
+    records = json.loads((tmp_path / "1-kpack.timings.json").read_text())
+    assert [r["phase"] for r in records] == ["warmup", "measured"]

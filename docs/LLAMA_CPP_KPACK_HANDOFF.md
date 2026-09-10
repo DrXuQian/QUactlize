@@ -6,11 +6,12 @@ binary bundle, or loader contract changes.
 
 ## Current box candidate: Q8 and MoE fusion
 
-Q8_0 W8A16, paired gate/up GPU packing, and the small indexed MoE fusion are
-ready for the bounded box gate. See [the fusion checklist](MOE_FUSION_IMPLEMENTATION.md).
+Q8_0 W8A16, paired gate/up GPU packing, and the small indexed MoE fusion pass
+the bounded `XYUgHJ` device gates. See [the fusion checklist](MOE_FUSION_IMPLEMENTATION.md)
+and [the uploaded run review](KPACK_FUSION_XYUGHJ_REVIEW.md).
 Use `prebuilt/ppu0010/kpack-fusion-v1` and `tools/run_kpack_fusion_box.sh`;
-the historical bundles below do not contain these changes. No new
-box/model admission is claimed. Q8's canonical map is
+the historical bundles below do not contain these changes. Full-model
+accuracy, fusion coverage and performance admission remain pending. Q8's canonical map is
 `0x51384b5032540001` (biased int8 K-pack2 plus original resident FP16 d; no
 high/zero plane). Gate/up pairing retains each qtype's existing map and uses
 N doubled with gate then up within every expert, matching llama.cpp's
@@ -89,6 +90,15 @@ one excluded warmup plus one measured pass: 768 generated tokens per model,
 versus 107,520 in the original matrix. Progress prints both us/token and total
 milliseconds. Existing results and JIT cache stay valid; no GEMM rebuild is
 needed for this protocol change.
+
+The uploaded focused run `XYUgHJ` exposed missing plan logs: default verbosity
+3 suppresses GGML_LOG_INFO receipts although JSON timing and JIT helper output
+remain visible. The benchmark now uses `--verbosity 4` in both arms, without
+per-kernel DEBUG. It keeps route checks strict and saves `.selection.json`
+even on a missing-plan/Q8-contract failure. This is a script-only repair;
+neither Quactlize libraries nor llama C++ nor cached GEMM parents change.
+All six model processes exited successfully in the old run, but its four
+K-pack arms remain unadmitted and no Asys capture was reached.
 
 Set `RUN_MODEL_TRACE=1 TRACE_PROMPT=2048 TRACE_GENERATE=16` for the subsequent
 35B Q4_K_M Asys capture. It now uses `quactlize_native.py --proof-only`: one
