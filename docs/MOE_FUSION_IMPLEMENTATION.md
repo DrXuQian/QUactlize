@@ -8,15 +8,16 @@ close. No graph-capture-time compilation, D2H routing, or CPU scale cache.
 | --- | --- | --- |
 | Q8_0 W8A16, resident original FP16 d, dense/grouped intake | Implemented; XYUgHJ bounded PPU gate 7/7 pass | Model routing/accuracy and timing on PPU |
 | Gate/up paired GPU pack | Implemented; XYUgHJ device gate passes all six formats | Actual model paired-weight coverage and timing |
-| Merged weight intake and cache | Source-name buffer inheritance fixed; 20 real-loader cases and nonadjacent/reversed source/cache tests pass | PPU model paired coverage and cold/warm gate |
+| Merged weight intake and cache | Source-name inheritance fixed; y9B4tw cold/hot processes report 40 paired weights and 40 merged chain plans | Merged-model numerical admission and trace analysis |
 | Fused route/gather/metadata/directory | Implemented per call and shared across the small chain; XYUgHJ four PPU chain cases pass | Model fusion/latency trace; larger prefill retains its original path |
 | Ordered Split-K reduce + scatter | Implemented for that indexed path; bounded PPU chain/replay gate passes | Actual model coverage and performance |
 | Gate/up completion + SwiGLU, expert-ordered down input | Implemented; separate/merged PPU chain cases pass | Full-model coverage, numerical and performance checks |
 | Top-k/preparation integration | Implemented for matching 256-expert small-decode graphs; softmax, sigmoid+bias+norm, delayed-softmax 5090 checks pass | Additional NaN/Inf cases, matched timing, PPU graph and model checks |
 | MoE prepare performance | Parallel validation/directory/descriptors implemented; RTX5090 ABBA -49.9% at one token, -82.1% at four tokens | PPU trace and warmed whole-model latency |
 | SIMT automatic selection | Auto now queries exact measured recipes; Q8 K-pack2 W8A16 direct reader and small DSO compiled | Bounded PPU Q8 comparison must supply recipes; missing recipes retain TC |
+| Q8 dense input/output adapters | Still separate gather/scatter casts around TC; not covered by the MoE fusion | Compare F32-to-F32 total calls, then fuse conversions or select faster SIMT |
 | 5090 fusion checks | 10 complete SIMT-stage contexts pass, 7 changing-input replays each; 15 x 8 Q8 GEMV cells pass | Completed-projection fixtures do not emulate PPU GEMM; PPU/model admission is separate |
-| PPU model benchmark and trace | XYUgHJ model processes rc=0, missing plan logs; script verbosity fixed | Repeat PP2048/TG128 int4 plan; inspect warmed Asys, especially 35B decode and 32B prefill |
+| PPU model benchmark and trace | y9B4tw benchmark completed, paired model receipts present; trace written, double shutdown fixed in e9bd8a81c | Inspect existing warmed Asys; 35B decode remains +31.32% vs reference |
 
 See [the XYUgHJ receipt review](KPACK_FUSION_XYUGHJ_REVIEW.md). The logging
 repair does not admit the old timings or prove that a model graph used the
@@ -48,7 +49,12 @@ the real model loader against GGUF fixtures: the old code fails and the
 candidate passes all 20 cases, including a preconverted merged GGUF. No
 Quactlize DSO or JIT contract change is needed for this loader repair. The
 benchmark now prints paired-weight and merged/separate chain-plan counts.
-Actual model merged execution and timing remain pending on PPU.
+The y9B4tw model run now reports paired/merged plans and completed cold/hot
+benchmarks. Its trace report was written before a duplicate shutdown signal
+caused rc=1; the script repair waits for Asys-owned shutdown and keeps real
+nonzero/timeout failures strict. Sixteen host trace-runner tests pass. Keep
+the already completed benchmark and report; model numerical and detailed
+trace admission remain pending.
 
 Still open after v2: Q8 N32 SSM intake, output-head selector coverage, and
 measured 32B prefill route choice.

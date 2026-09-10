@@ -12,8 +12,9 @@ execution library. The GPU packing library stays at
 cache schema have not changed. Both new libraries total about 1.8 MiB and
 are stored with Git LFS. There are no precompiled GEMM modules in this package.
 The client requires private llama.cpp `feat/kpack-gpu-cache` commit
-`bd4e8bf93` (paired-weight placement inheritance), which includes `83e8efdfe`
-(automatic recipe lookup, Q8 allowance, and trace symbols).
+`e9bd8a81c` (single-owner profiler shutdown), which includes `bd4e8bf93`
+(paired-weight placement inheritance) and `83e8efdfe` (automatic recipe
+lookup, Q8 allowance, and trace symbols).
 
 The model loader now lets a synthetic `ffn_gate_up_exps.weight` inherit
 equal explicit buffer assignments on its two source weights. The benchmark's
@@ -33,12 +34,30 @@ within each expert.
 The real model-loader host test covers 20 cases, including both intake paths
 and rejection controls; the old loader fails the exact-source-name case.
 The sidecar/cache CTest also passes, plus 40 benchmark/gate Python tests and
-14 llama trace-runner tests. PPU model pairing and timing still need the next
-box run. `BATCHED_MODEL_FUSION` reports newly paired weights and separate vs
+16 llama trace-runner tests. `BATCHED_MODEL_FUSION` reports newly paired weights and separate vs
 merged chain-plan counts; these are plan receipts, not kernel timing evidence.
 This loader repair does not change Quactlize DSOs, offline bytes, or the JIT
 source contract. Incrementally rebuild llama.cpp; reuse matching cached JIT
 modules, compiling only missing selections for the doubled-N requests.
+
+The `kpack-fusion.y9B4tw` upload (Quactlize `c985922`, llama `bd4e8bf93`)
+confirms 40 paired weights and 40 merged small-chain plans in both K-pack
+benchmark processes. Its PP2048/TG128/NPL1 benchmark completed: reference
+prefill/decode were 311.100/7760.805 us per token, K-pack 110.866/10191.551,
+or -64.36%/+31.32%. These are warmed unprofiled measurements; model numerical
+admission and remaining decode overhead are not closed by these timings.
+
+Only the trace runner's exit check failed. Both HTTP requests completed and
+Asys reported writing
+`/workspace/kpack-fusion.y9B4tw/results/model-proof/proof.asysrep` before
+the server logged `Received second interrupt, terminating immediately.`
+Session shutdown already sends SIGTERM; the runner then sent another through
+the still-exiting launcher. `e9bd8a81c` waits after session shutdown instead
+of sending twice. The old code reproduces rc=1 in the delayed-exit regression;
+the repair passes and still rejects real nonzero exits and shutdown timeouts.
+The existing benchmark/report need not be discarded or rerun. Script-only
+repair: no DSO rebuild, GEMM JIT invalidation, or model-format change.
+Automatic trace export/selected-kernel summarization had not run on the box.
 
 The new preparation removes serial duplicate validation and repeated integer
 division in directory construction, distributes expert/split descriptors
@@ -84,8 +103,11 @@ For device gates only, set `RUN_MODEL_BENCH=0 RUN_MODEL_TRACE=0`. Results are
 packed automatically; Asys report/SQLite stay on the box. GEMV policy and
 per-configuration raw timings are included in the result archive.
 
-Remaining model issues: actual paired-weight model admission is pending;
-the 35B output head may retain legacy FQ; 32B prefill has no
+Remaining model issues: merged-model numerical/trace admission is pending;
+Q8 dense TC still launches separate F32-to-FP16 and FP16-to-F32 adapters
+(named gather/scatter, without MoE permutation). The current SIMT gate does
+not charge TC for those adapters, so it is not an end-to-end route comparison.
+The 35B output head may retain legacy FQ; 32B prefill has no
 admitted SF comparison policy. Do not equate native plan creation with
 execution/fusion coverage or a measured global optimum.
 
