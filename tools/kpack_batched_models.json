@@ -1,15 +1,16 @@
 {
   "source": "run_batched_bench.sh",
+  "model_root": "/sim/eec/shared/AI_workspace/llm-models",
   "prompts": [5120, 4096, 2048, 1024, 512],
   "generations": [2048, 1024, 512],
   "parallel": 1,
   "batch": 5120,
   "ubatch": 5120,
   "models": [
-    {"name": "qwen35-35b-base", "path": "/sim/ollama_HLLM_compare/Qwen/Qwen3.5-35B-A3B-Base-GGUF/Qwen3.5-35B-A3B-Base-GGUF.gguf", "devices": "7", "split": "none"},
-    {"name": "qwen35-35b-q4km", "path": "/sim/ollama_HLLM_compare/Qwen/Qwen3.5-35B-A3B-Q4_K_M-GGUF/Qwen3.5-35B-A3B-Q4_K_M.gguf", "devices": "7", "split": "none"},
-    {"name": "qwen3-32b-base", "path": "/sim/ollama_HLLM_compare/Qwen/Qwen3-32B-GGUF/Qwen3-32b.gguf", "devices": "7", "split": "none"},
-    {"name": "qwen3-32b-q4km", "path": "/sim/ollama_HLLM_compare/Qwen/Qwen3-32B-GGUF/Qwen3-32B-Q4_K_M.gguf", "devices": "7", "split": "none"},
-    {"name": "qwen35-122b-q4km", "path": "/sim/ollama_HLLM_compare/Qwen/Qwen3.5-122B-A10B-GGUF-Q4_K_M/Q4_K_M/Qwen3.5-122B-A10B-Q4_K_M-00001-of-00003.gguf", "devices": "6,7", "split": "tensor", "tensor_split": "1,1"}
+    {"name": "qwen35-35b-base", "directory": "Qwen3.5-35B-A3B-GGUF", "devices": "7", "split": "none"},
+    {"name": "qwen35-35b-q4km", "directory": "Qwen3.5-35B-A3B-Q4_K_M-GGUF", "devices": "7", "split": "none"},
+    {"name": "qwen3-32b-base", "directory": "Qwen3-32B-GGUF", "devices": "7", "split": "none"},
+    {"name": "qwen3-32b-q4km", "directory": "Qwen3-32B-Q4_K_M-GGUF", "devices": "7", "split": "none"},
+    {"name": "qwen35-122b-q4km", "directory": "Qwen3.5-122B-A10B-GGUF-Q4_K_M", "devices": "6,7", "split": "tensor", "tensor_split": "1,1"}
   ]
 }

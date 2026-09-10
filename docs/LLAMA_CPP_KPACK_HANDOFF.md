@@ -60,6 +60,20 @@ reference plus separate cold/hot K-pack processes and excludes the first
 whole pass per PP. `RUN_MODEL_TRACE=1` adds a warmed Asys proof. Return the
 one `kpack-fusion.*.results.tgz`; large raw Asys files stay on the box.
 
+The box model root is `/sim/eec/shared/AI_workspace/llm-models`, not
+`bench_model_zoo` or `/sim/ollama_HLLM_compare`. The five catalog entries are
+retained. Before device gates, the runner resolves selected model directories
+to one GGUF file or a complete split set (including nested shard directories),
+prints each path and saves `results/model-plan.json`. Benchmark and trace use
+that same plan. It does not hash/read weight payloads or substitute HF/GPTQ
+weights. Multiple GGUF families require an explicit file `path` in `MODEL_PLAN`;
+`MODEL_ROOT` replaces the single root without adding fallback directories.
+Paths can be checked separately, without SDK/GPU work:
+
+```bash
+python3 tools/resolve_kpack_batched_models.py --model qwen35-35b-q4km
+```
+
 Last updated: 2026-09-10. Verified offline bundles retain schema v3; the local
 runtime cache now has a separate hash-free contract, described below. The
 published `2826cf1` loader-safe runtime bundle has passed strict binary

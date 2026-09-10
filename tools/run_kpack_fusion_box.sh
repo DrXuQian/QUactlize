@@ -9,7 +9,9 @@ if [[ ${1:-} == --help ]]; then
         'Defaults: LLAMA_DIR=<sibling llama.cpp>, BUILD_DIR=$LLAMA_DIR/build-kpack-9f86a1340' \
         'PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK CUDA_VISIBLE_DEVICES=0 JOBS=192' \
         'RUN_MODEL_BENCH=1 MODEL_NAMES=qwen35-35b-q4km (all for the uploaded model list)' \
-        'MODEL_PLAN may override tools/kpack_batched_models.json; all timings omit the first whole pass.' \
+        'MODEL_ROOT=/sim/eec/shared/AI_workspace/llm-models (one root, no fallback directory)' \
+        'MODEL_PLAN may override tools/kpack_batched_models.json; file paths resolve before device gates.' \
+        'All timings omit the first whole pass; benchmark and trace use the same resolved model plan.' \
         'The old six-library bundle remains intake/fallback only; QUACTLIZE_PPU_BUNDLE can override its path.' \
         'No Cartesian sweep or large Quactlize bundle rebuild. JIT compiles selected missing parents only.' \
         'Gate failures are collected independently; failed numerics prevent model timing admission.' \
@@ -67,6 +69,31 @@ export QUACTLIZE_KPACK_ROUTE=auto QUACTLIZE_KPACK_PAIR_WEIGHTS=1
 unset QUACTLIZE_KPACK_PREFILL_POLICY QUACTLIZE_KPACK_GEMV_POLICY GGML_CUDA_DISABLE_GRAPHS GGML_CUDA_DISABLE_FUSION
 "$PYTHON" "$REPO/tools/verify_kpack_dispatch.py" "$QUACTLIZE_KPACK_EXECUTION" | tee "$RUN/results/verify.log"
 (cd "$LLAMA_DIR/ggml/src/ggml-cuda/quactlize" && sha256sum -c ABI_SHA256) | tee "$RUN/results/abi.log"
+MODEL_ARGS=()
+if [[ ${MODEL_NAMES:-qwen35-35b-q4km} != all ]]; then
+    read -r -a names <<< "${MODEL_NAMES:-qwen35-35b-q4km}"
+    [[ ${#names[@]} -gt 0 ]]
+    for name in "${names[@]}"; do MODEL_ARGS+=(--model "$name"); done
+fi
+if [[ ${RUN_MODEL_BENCH:-1} == 1 || ${RUN_MODEL_TRACE:-0} == 1 ]]; then
+    stage=model-paths
+    RESOLVE_ARGS=()
+    if [[ ${RUN_MODEL_BENCH:-1} == 1 ]]; then RESOLVE_ARGS+=("${MODEL_ARGS[@]}"); fi
+    if [[ ${RUN_MODEL_TRACE:-0} == 1 ]]; then
+        MODEL_NAME=${TRACE_MODEL_NAME:-qwen35-35b-q4km}
+        if [[ ${RUN_MODEL_BENCH:-1} != 1 || ${MODEL_NAMES:-qwen35-35b-q4km} != all ]]; then
+            RESOLVE_ARGS+=(--model "$MODEL_NAME")
+        fi
+    fi
+    if [[ -n ${MODEL_ROOT:-} ]]; then RESOLVE_ARGS+=(--model-root "$MODEL_ROOT"); fi
+    "$PYTHON" "$REPO/tools/resolve_kpack_batched_models.py" \
+        --plan "${MODEL_PLAN:-$REPO/tools/kpack_batched_models.json}" "${RESOLVE_ARGS[@]}" \
+        --output "$RUN/results/model-plan.json" | tee "$RUN/results/model-paths.log"
+    if [[ ${RUN_MODEL_TRACE:-0} == 1 ]]; then
+        MODEL=$("$PYTHON" -c 'import json,sys; m=next(x for x in json.load(open(sys.argv[1]))["models"] if x["name"]==sys.argv[2]); assert m["split"]=="none", "K-pack tensor-parallel trace is not admitted"; print(m["path"])' \
+            "$RUN/results/model-plan.json" "$MODEL_NAME")
+    fi
+fi
 stage=device-gates
 failed=0
 for item in q8_kpack2 kpack_moe; do
@@ -97,25 +124,17 @@ env -u QUACTLIZE_KPACK_EXECUTION -u QUACTLIZE_KPACK_JIT_HELPER -u QUACTLIZE_KPAC
     2>&1 | tee "$RUN/results/adapter-tests.log"
 if [[ ${RUN_MODEL_BENCH:-1} == 1 ]]; then
     stage=batched-model
-    MODEL_ARGS=()
-    if [[ ${MODEL_NAMES:-qwen35-35b-q4km} != all ]]; then
-        read -r -a names <<< "${MODEL_NAMES:-qwen35-35b-q4km}"
-        for name in "${names[@]}"; do MODEL_ARGS+=(--model "$name"); done
-    fi
     printf 'KPACK_FUSION_PHASE benchmark first_whole_pass_excluded=1 reference+kpack-cold+kpack-hot\n'
     "$PYTHON" -u "$REPO/tools/run_kpack_batched_bench.py" \
         --binary "$BUILD_DIR/bin/llama-batched-bench" --llama-dir "$LLAMA_DIR" \
         --bundle "$QUACTLIZE_KPACK_EXECUTION" --jit-cache "$QUACTLIZE_KPACK_JIT_CACHE" \
-        --plan "${MODEL_PLAN:-$REPO/tools/kpack_batched_models.json}" "${MODEL_ARGS[@]}" \
+        --plan "$RUN/results/model-plan.json" "${MODEL_ARGS[@]}" \
         --device "$CUDA_VISIBLE_DEVICES" \
         --cache-root "$RUN/cache" --output-root "$RESULT_ROOT" --output "$RUN/results/benchmark" \
         --repeats "${MODEL_REPEATS:-1}" 2>&1 | tee "$RUN/results/benchmark.log"
 fi
 if [[ ${RUN_MODEL_TRACE:-0} == 1 ]]; then
     stage=warm-model-trace
-    MODEL_NAME=${TRACE_MODEL_NAME:-qwen35-35b-q4km}
-    MODEL=$("$PYTHON" -c 'import json,sys; print(next(x["path"] for x in json.load(open(sys.argv[1]))["models"] if x["name"]==sys.argv[2]))' \
-        "${MODEL_PLAN:-$REPO/tools/kpack_batched_models.json}" "$MODEL_NAME")
     "$PYTHON" -u "$LLAMA_DIR/tests/quactlize_native.py" --binary "$BUILD_DIR/bin/llama-server" \
         --model "$MODEL" --cache "$RUN/cache/$MODEL_NAME" --bundle "$QUACTLIZE_KPACK_EXECUTION" \
         --asys "$PPU_SDK/asight/bin/asys" --inspector "$PPU_SDK/bin/hgobjdump" \

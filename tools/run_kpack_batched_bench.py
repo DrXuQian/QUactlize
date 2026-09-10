@@ -28,6 +28,7 @@ sys.path.insert(0, str(ROOT))
 from quactlize.gguf_roles import match_role
 from quactlize.runtime.compiler import sha
 from tools.gguf_internal_shape_inventory import read_gguf_header
+from tools.resolve_kpack_batched_models import resolve_plan
 from tools.verify_kpack_dispatch import verify
 
 
@@ -253,6 +254,7 @@ def main():
     p.add_argument("--output",type=Path,help="fresh explicit run directory")
     p.add_argument("--repeats", type=int, default=1, help="measured passes after one full excluded pass per PP")
     p.add_argument("--model", action="append", help="select model name(s); default is all five")
+    p.add_argument("--model-root", type=Path, help="override the plan's model root")
     p.add_argument("--device",help="override the ordinal for single-device models only")
     a = p.parse_args()
     plan = validate_plan(json.loads(a.plan.read_text()))
@@ -262,10 +264,10 @@ def main():
             if model['split']=='none':model['devices']=a.device
     if a.repeats < 1 or not a.output_root.is_dir() or not os.access(a.binary, os.X_OK):
         p.error("positive repeats, executable benchmark and existing output root required")
-    if a.model:
-        if set(a.model) - {m["name"] for m in plan["models"]}:
-            p.error("unknown model name")
-        plan["models"] = [m for m in plan["models"] if m["name"] in a.model]
+    try:
+        plan = resolve_plan(plan, a.model, a.model_root)
+    except (OSError, ValueError, KeyError) as exc:
+        p.error(str(exc))
     a.manifest = verify(a.bundle)
     a.bundle = a.bundle.resolve(strict=True)
     a.jit_cache = a.jit_cache.resolve()
