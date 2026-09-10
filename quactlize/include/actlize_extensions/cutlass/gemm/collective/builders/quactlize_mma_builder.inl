@@ -343,8 +343,8 @@ template <int Pack, typename Arch, typename Block_N, typename LogicalBlock_K,
 struct MixGemm_KPack_Transpose_Operand {
   static_assert(cute::is_same_v<Arch, cutlass::arch::PPU0010>,
                 "K-pack transport is bound to the proved PPU0010 b16 pair");
-  static_assert(Pack == 4 || Pack == 8 || Pack == 16,
-                "b16 K-pack supports int4/int2/int1 planes");
+  static_assert(Pack == 2 || Pack == 4 || Pack == 8 || Pack == 16,
+                "b16 K-pack supports int8/int4/int2/int1 planes");
   static_assert(Block_N{} % kquant_kpack::kTransportN == 0,
                 "K-pack transposed N must compose whole N16 reads");
   static_assert(LogicalBlock_K{} >= kquant_kpack::kReaderPhysicalK * Pack &&

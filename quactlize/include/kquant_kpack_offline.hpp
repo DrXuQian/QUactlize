@@ -26,7 +26,7 @@ inline constexpr int kReaderPhysicalK = 16;
 inline constexpr int kTransportN = 16;
 
 constexpr int pack_for_bits(int bits) {
-  return bits == 1 || bits == 2 || bits == 4 ? kWordBits / bits : 0;
+  return bits == 1 || bits == 2 || bits == 4 || bits == 8 ? kWordBits / bits : 0;
 }
 
 constexpr int transport_k(int low_bits, int high_bits) {
@@ -38,8 +38,8 @@ constexpr int transport_k(int low_bits, int high_bits) {
 
 template <int Bits, int GroupK>
 struct PlaneMap {
-  static_assert(Bits == 1 || Bits == 2 || Bits == 4,
-                "K-pack b16 supports one-, two- and four-bit code planes");
+  static_assert(Bits == 1 || Bits == 2 || Bits == 4 || Bits == 8,
+                "K-pack b16 supports one-, two-, four- and eight-bit code planes");
   static constexpr int kBits = Bits;
   static constexpr int kPack = kWordBits / Bits;
   static_assert(GroupK > 0,

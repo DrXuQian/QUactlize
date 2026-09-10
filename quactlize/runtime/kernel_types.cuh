@@ -4,6 +4,7 @@
 #include "dense_splitk_multiformat_ppu.cuh"
 #include "moe_grouped_ppu.cuh"
 #include "ppu_format_config.hpp"
+#include "q8_kpack2.hpp"
 #include "ppu_group_schedule.hpp"
 #include "actlize_extensions/cutlass/gemm/kernel/ppu_aiu_gemm_mixed_input_persistent.hpp"
 #include "actlize_extensions/cutlass/gemm/kernel/detail/ppu_grouped_splitk_direct_epilogue.hpp"
@@ -14,10 +15,18 @@ inline constexpr auto mode = ppu_mixed_policy::QuantMode::FinegrainedScaleZero;
 
 template<int Q> struct Format {
   static constexpr auto spec = ppu_formats::for_qtype(Q);
+  static constexpr auto quant_mode = mode;
   static_assert(Q >= 10 && Q <= 14);
   using Low = std::conditional_t<spec.low_bits == 2, cutlass::uint2b_t, cutlass::int4b_t>;
   using High = std::conditional_t<spec.high_bits == 0, void,
       std::conditional_t<spec.high_bits == 1, cutlass::uint1b_t, cutlass::uint2b_t>>;
+};
+
+template<> struct Format<8> {
+  static constexpr q8_kpack2::Traits spec{};
+  static constexpr auto quant_mode = ppu_mixed_policy::QuantMode::FinegrainedScaleOnly;
+  using Low = int8_t;
+  using High = void;
 };
 
 template<int Q, int TM, int TN, int TK, int WM, int WN, int ST, int AP, int DN>
@@ -31,8 +40,8 @@ struct DenseTypes {
       ppu_group_schedule::scale_groups_v<TK, F::spec.group_size>>>;
   using Warp = cute::Shape<cute::C<WM>, cute::C<WN>, cute::C<TK>>;
   using Shipping = std::conditional_t<Q == 12,
-      fpa_intb_ppu::DenseQ4KPack4KernelTypes<mode, Schedule, Tile, ScaleTile, Warp, ST, true, AP, DN>,
-      fpa_intb_ppu::DenseKPackKernelTypes<mode, Schedule, Tile, ScaleTile, Warp, ST, true, Low, High, AP, DN>>;
+      fpa_intb_ppu::DenseQ4KPack4KernelTypes<F::quant_mode, Schedule, Tile, ScaleTile, Warp, ST, true, AP, DN>,
+      fpa_intb_ppu::DenseKPackKernelTypes<F::quant_mode, Schedule, Tile, ScaleTile, Warp, ST, true, Low, High, AP, DN>>;
   using Mainloop = typename Shipping::CollectiveMainloop;
   using PersistentKernel = cutlass::gemm::kernel::PersistentMixedInputKernel<
       cute::Shape<int,int,int,int>, Mainloop, typename Shipping::CollectiveEpilogue>;
@@ -56,8 +65,8 @@ struct GroupedTypes {
   // its own factory default; do not infer this choice from PackedScale.
   using Publication = cutlass::gemm::SeparateHalfPlanes;
   using Policy = std::conditional_t<Q == 12,
-      ppu_mixed_policy::Q4KPack4MainloopPolicy<mode, Schedule, Tile, ScaleTile, Warp, ST, true, 0, DN, Publication>,
-      ppu_mixed_policy::KPackMainloopPolicy<mode, Schedule, Tile, ScaleTile, Warp, ST, true, Low, High, 0, DN>>;
+      ppu_mixed_policy::Q4KPack4MainloopPolicy<F::quant_mode, Schedule, Tile, ScaleTile, Warp, ST, true, 0, DN, Publication>,
+      ppu_mixed_policy::KPackMainloopPolicy<F::quant_mode, Schedule, Tile, ScaleTile, Warp, ST, true, Low, High, 0, DN>>;
   using Mainloop = typename Policy::CollectiveOp;
   using OutputEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
       cutlass::arch::PPU0010, cutlass::arch::OpClassTensorOp, Tile, Warp,

@@ -30,12 +30,12 @@ def requests():
         (3072, 512),
     ]
     grouped = [(512, 2048), (2048, 512), (512, 3072), (3072, 512)]
-    for q in range(10, 15):
-        for route in (0, 1):
+    for q in (8, 10, 11, 12, 13, 14):
+        for route in ((1,) if q == 8 else (0, 1)):
             for n, k in dense:
                 for m in (1, 4, 8, 64, 128, 256, 512, 1024, 2048, 4096):
                     result.append((q, route, m, n, k, 1, m))
-        for route in (2, 3):
+        for route in ((3,) if q == 8 else (2, 3)):
             for n, k in grouped:
                 for tokens in (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096):
                     result.append((q, route, tokens * 8, n, k, 256, tokens))

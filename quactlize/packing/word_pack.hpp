@@ -2,11 +2,50 @@
 
 #include "gguf_unit_pack.hpp"
 #include "kquant_kpack_offline.hpp"
+#include "q8_kpack2.hpp"
 #include <type_traits>
 
 namespace quactlize_pack {
 
 using gguf_scale::KType;
+
+// Virtual raw [E,2N,K], gate rows before up rows within each expert.
+// Both sources retain their original GGUF block bytes; no intermediate copy.
+struct PairedRows {
+  uint8_t const* gate;
+  uint8_t const* up;
+  uint64_t expert_bytes;
+  CUTLASS_HOST_DEVICE uint8_t const* operator+(uint64_t offset) const {
+    uint64_t const expert = offset / (2 * expert_bytes);
+    uint64_t const local = offset % (2 * expert_bytes);
+    return (local < expert_bytes ? gate : up) + expert * expert_bytes + local % expert_bytes;
+  }
+  CUTLASS_HOST_DEVICE uint8_t operator[](uint64_t offset) const { return *(operator+(offset)); }
+};
+
+struct Q8 {
+  template<class Source>
+  CUTLASS_HOST_DEVICE static uint16_t word(Source raw, int n, int k, uint64_t index) {
+    uint64_t const words = uint64_t(n) * (k / 2);
+    uint64_t const expert = index / words, local = index % words;
+    int const col = int(local % n), kg = int(local / n);
+    uint16_t result = 0;
+    for (int slot = 0; slot < 2; ++slot) {
+      int const kk = q8_kpack2::Map::logical_k(kg, slot);
+      uint64_t const block = (expert * n + col) * (k / 32) + kk / 32;
+      result |= uint16_t(raw[block * 34 + 2 + kk % 32] ^ 0x80) << (8 * slot);
+    }
+    return result;
+  }
+  template<class Source>
+  CUTLASS_HOST_DEVICE static void metadata(Source raw, uint8_t* scale,
+                                           int n, int k, uint64_t index) {
+    uint64_t const groups = k / 32, outer = index / n;
+    uint64_t const block = ((outer / groups) * n + index % n) * groups + outer % groups;
+    scale[2*index] = raw[34*block];
+    scale[2*index+1] = raw[34*block+1];
+  }
+};
 
 // Ownership is one entire output word, not an atomic nibble scatter.
 template <KType T, bool High>
@@ -21,8 +60,9 @@ struct Plane {
       kquant_kpack::HighPlaneMap<low_bits, bits, group>,
       kquant_kpack::PlaneMap<bits, group>>;
 
+  template<class Source>
   CUTLASS_HOST_DEVICE static uint16_t word(
-      uint8_t const* raw, int n, int k, uint64_t index) {
+      Source raw, int n, int k, uint64_t index) {
     using R = gguf_scale::unit_pack::Raw<T>;
     uint64_t const words = uint64_t(n) * (k / pack);
     uint64_t const expert = index / words;
@@ -50,9 +90,9 @@ struct Plane {
   }
 };
 
-template <KType T>
+template <KType T, class Source>
 CUTLASS_HOST_DEVICE void metadata(
-    uint8_t const* raw, uint8_t* units, int n, int k, uint64_t index) {
+    Source raw, uint8_t* units, int n, int k, uint64_t index) {
   using U = gguf_scale::packed_unit::Unit<T>;
   using R = gguf_scale::unit_pack::Raw<T>;
   int const ku = k / (256 * U::kSbPerUnit);

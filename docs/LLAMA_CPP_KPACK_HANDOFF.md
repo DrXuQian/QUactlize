@@ -4,6 +4,53 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
+## Current box candidate: Q8 and MoE fusion
+
+Q8_0 W8A16, paired gate/up GPU packing, and the small indexed MoE fusion are
+ready for the bounded box gate. See [the fusion checklist](MOE_FUSION_IMPLEMENTATION.md).
+Use `prebuilt/ppu0010/kpack-fusion-v1` and `tools/run_kpack_fusion_box.sh`;
+the historical bundles below do not contain these changes. No new
+box/model admission is claimed. Q8's canonical map is
+`0x51384b5032540001` (biased int8 K-pack2 plus original resident FP16 d; no
+high/zero plane). Gate/up pairing retains each qtype's existing map and uses
+N doubled with gate then up within every expert, matching llama.cpp's
+**conversion-time** `--fuse-gate-up-exps` ordering.
+
+The additive `quactlize_kpack_dispatch_bind_llama_indexed_v1` binds a prepared
+grouped handle to llama's F32 token/slot inputs and outputs before capture.
+For <=32 routed rows it performs fused route/gather/metadata/directory, the
+same selected producer, then FP16-preserving reduce/scatter. Older modules
+or larger contexts explicitly miss this binding and retain their original
+preparation.
+
+The optional `quactlize_kpack_dispatch_moe_create_v1` now composes selected
+gate/up/down handles with **disjoint retained scratch**, followed by
+`moe_run_v1`/`moe_destroy_v1`. NULL up describes an already-merged gate/up
+weight. The library shares preparation, preserves projection FP16 rounding,
+fuses SwiGLU into down's expert-ordered input and fuses down reduction/scatter.
+`moe_run_router_v1` additionally folds a matching 256-expert top-k into the
+same preparation launch. There is no persistent scale-ready/router-ready
+flag; all current device inputs are consumed on every replay. Large,
+non-SwiGLU or concurrent-stream graphs explicitly retain the original path.
+
+The new small package has zero compiled GEMM modules; selected-parent JIT is
+required. The execution DSO is unchanged, while the selector and GPU producer
+are rebuilt. 147 host/Python tests, loader/cache CTests and seven new 5090
+SIMT-stage contexts pass. This is NOT a model/PPU performance admission.
+Online two-source merging is implemented behind `QUACTLIZE_KPACK_PAIR_WEIGHTS=1`.
+Sources need equal qtype/N/K/E and no per-projection bias/scales; separate-weight
+LoRA is outside this opt-in contract. It reuses the conversion-time merged
+tensor name and graph. Runtime cache v2 records both real source spans, even
+if nonadjacent; v1 caches and offline v3 bundles remain readable. No CPU raw
+hashing or inference-thread D2H wait is added.
+
+Run `bash tools/run_kpack_fusion_box.sh --help`. Default model is the uploaded
+35B Q4_K_M entry, full PP/TG axes and NPL=1; `MODEL_NAMES=all` selects the full
+list (tensor-parallel K-pack remains explicitly NOT_TESTED). It executes
+reference plus separate cold/hot K-pack processes and excludes the first
+whole pass per PP. `RUN_MODEL_TRACE=1` adds a warmed Asys proof. Return the
+one `kpack-fusion.*.results.tgz`; large raw Asys files stay on the box.
+
 Last updated: 2026-09-10. Verified offline bundles retain schema v3; the local
 runtime cache now has a separate hash-free contract, described below. The
 published `2826cf1` loader-safe runtime bundle has passed strict binary

@@ -2,6 +2,8 @@
 #include "abi.h"
 #include "kernel_types.cuh"
 #include "grouped_workspace.hpp"
+#include "indexed.cuh"
+#include "moe_chain.cuh"
 #include <algorithm>
 #include <limits>
 #include <memory>
@@ -14,9 +16,11 @@ constexpr int qtype = QK_QTYPE, route = QK_ROUTE;
 constexpr int tm = QK_TM, tn = QK_TN, tk = QK_TK, stages = QK_STAGES;
 constexpr bool grouped = route >= QK_GROUPED_FQ;
 constexpr bool packed = route == QK_DENSE_FQ || route == QK_GROUPED_FQ;
+static_assert(qtype != 8 || (!packed && QK_AP == 0), "Q8_0 requires W8A16 with FP16 scale, no packed-A");
 using F = Format<qtype>;
-constexpr uint64_t mapping = qtype == 12 ? UINT64_C(0x51344b5034540001)
+constexpr uint64_t mapping = qtype == 8 ? q8_kpack2::kMappingId : qtype == 12 ? UINT64_C(0x51344b5034540001)
                                         : UINT64_C(0x514b504b54000001);
+constexpr bool needs_zero = !packed && qtype != 8;
 
 inline uint64_t align16(uint64_t value) { return (value + 15) & ~UINT64_C(15); }
 
@@ -81,6 +85,9 @@ inline int validate(qk_call_v1 const& c, qk_recipe_v1 const& r, int& max_rows, i
 
 struct Handle {
   virtual int run(hggcStream_t) = 0;
+  virtual int bind_indexed(qk_llama_indexed_v1 const&) { return QK_UNSUPPORTED; }
+  virtual int moe_projection(qk_moe_projection_v1&) { return QK_UNSUPPORTED; }
+  virtual int moe_stage(qk_moe_plan_v1 const&,int,hggcStream_t) { return QK_UNSUPPORTED; }
   virtual ~Handle() = default;
 };
 
@@ -180,6 +187,72 @@ template<bool Persistent, bool Split = false, bool Compact = false> struct Group
   Shape* device_shapes = nullptr;
   Output** device_outputs = nullptr;
   DStride* device_strides = nullptr;
+  qk_llama_indexed_v1 indexed{};
+
+  int moe_projection(qk_moe_projection_v1& p) override {
+    if constexpr (!Directory) return QK_UNSUPPORTED;
+    if (!device_only || !indexed.version) return QK_UNSUPPORTED;
+    Shape shape{}; DStride stride{};
+    auto offset=[](auto const& tuple,auto const& member) {
+      return uint32_t(reinterpret_cast<char const*>(&member)-reinterpret_cast<char const*>(&tuple));
+    };
+    p={}; p.version=1; p.size=sizeof(p);
+    p.shape_size=sizeof(Shape); p.stride_size=sizeof(DStride);
+    p.shape_offsets[0]=offset(shape,cute::get<0>(shape));
+    p.shape_offsets[1]=offset(shape,cute::get<1>(shape));
+    p.shape_offsets[2]=offset(shape,cute::get<2>(shape));
+    p.stride_offset=offset(stride,cute::get<0>(stride));
+    p.m=call.m; p.n=call.n; p.k=call.k; p.experts=call.experts;
+    p.tile_m=tm; p.splits=splits; p.device=call.device;
+    p.a=const_cast<void*>(call.a); p.output=call.output; p.partials=partials;
+    p.shapes=device_shapes; p.outputs=device_outputs; p.strides=device_strides;
+    p.offsets=const_cast<int*>(call.offsets_device); p.rows=const_cast<int*>(call.rows_device);
+    p.directory_header=directory.header; p.directory_entries=directory.entries;
+    p.directory_capacity=directory.capacity; p.io=indexed;
+    p.workspace=call.workspace; p.workspace_bytes=call.workspace_bytes;
+    return QK_OK;
+  }
+
+  int moe_stage(qk_moe_plan_v1 const& plan,int phase,hggcStream_t stream) override {
+    if (!indexed.version || plan.version!=1 || plan.size!=sizeof(plan)) return QK_INVALID;
+    switch (phase) {
+      case QK_MOE_PREPARE:
+        moe_chain_prepare<Shape,DStride><<<dim3(std::min((call.k+255)/256,32),call.m),256,0,stream>>>(plan);
+        break;
+      case QK_MOE_PRODUCER:
+        return gemm.run(stream)==cutlass::Status::kSuccess ? QK_OK : QK_RUNTIME_ERROR;
+      case QK_MOE_ACTIVATE:
+        moe_chain_swiglu<<<dim3(std::min((plan.down.k+255)/256,32),call.m),256,0,stream>>>(plan);
+        break;
+      case QK_MOE_FINISH:
+        return finish_indexed(stream);
+      default: return QK_INVALID;
+    }
+    return hggcGetLastError()==hggcSuccess ? QK_OK : QK_RUNTIME_ERROR;
+  }
+
+  int bind_indexed(qk_llama_indexed_v1 const& io) override {
+    if constexpr (!Directory) return QK_UNSUPPORTED;
+    if (!device_only || call.m>32 || call.experts>1024) return QK_UNSUPPORTED;
+    if (indexed.version || io.version!=1 || io.size!=sizeof(io) || io.reserved ||
+        io.tokens<=0 || io.topk<=0 || io.channels<=0 || io.topk>call.experts ||
+        int64_t(io.tokens)*io.topk!=call.m || io.tokens!=max_rows ||
+        io.ids_stride<io.topk || io.a_row_stride<call.k ||
+        io.a_token_stride<=0 || io.out_row_stride<call.n ||
+        !io.ids || !io.a || !io.output || !io.row_ids ||
+        (uintptr_t(io.ids)|uintptr_t(io.a)|uintptr_t(io.output)|uintptr_t(io.row_ids))%4)
+      return QK_INVALID;
+    constexpr auto limit=INT64_MAX/sizeof(float);
+    if (io.a_row_stride>limit/io.channels || io.a_token_stride<int64_t(io.channels)*io.a_row_stride ||
+        io.ids_stride>limit/io.tokens || io.a_token_stride>limit/io.tokens ||
+        io.out_row_stride>limit/call.m) return QK_INVALID;
+    hggcStreamCaptureStatus capture=hggcStreamCaptureStatusNone;
+    if (hggcStreamIsCapturing(static_cast<hggcStream_t>(call.stream),&capture)!=hggcSuccess)
+      return QK_RUNTIME_ERROR;
+    if (capture!=hggcStreamCaptureStatusNone) return QK_UNSUPPORTED;
+    indexed=io;
+    return QK_OK;
+  }
 
   int prepare(qk_call_v1 const& c, qk_recipe_v1 const& r, int occupancy, int maximum, bool from_device = false) {
     call = c;
@@ -264,7 +337,28 @@ template<bool Persistent, bool Split = false, bool Compact = false> struct Group
       if (!device_only && !uniform && !copy(base,prefix.data(),prefix.size()*sizeof(int))) return QK_RUNTIME_ERROR;
     return QK_OK;
   }
+  int finish_indexed(hggcStream_t stream) {
+#define QK_FINISH(S) case S: indexed_finish<S><<<dim3(std::min((call.n+255)/256,32),call.m),256,0,stream>>>( \
+        partials,static_cast<Half const*>(call.output),indexed.output,indexed.row_ids, \
+        call.m,call.n,indexed.out_row_stride,directory.header); break
+    switch (splits) { QK_FINISH(1); QK_FINISH(2); QK_FINISH(4); QK_FINISH(8); }
+#undef QK_FINISH
+    return hggcGetLastError()==hggcSuccess ? QK_OK : QK_RUNTIME_ERROR;
+  }
   int run(hggcStream_t stream) override {
+    if (indexed.version) {
+      Output* destination;
+      if constexpr (Split) destination=partials;
+      else destination=static_cast<Half*>(call.output);
+      indexed_prepare<tm><<<dim3(std::min((call.k+255)/256,32),call.m),256,0,stream>>>(
+          indexed,const_cast<Half*>(static_cast<Half const*>(call.a)),
+          const_cast<int*>(call.offsets_device),const_cast<int*>(call.rows_device),
+          device_shapes,device_outputs,device_strides,destination,call.m,call.n,call.k,
+          call.experts,splits,directory);
+      if (hggcGetLastError()!=hggcSuccess) return QK_RUNTIME_ERROR;
+      if (gemm.run(stream)!=cutlass::Status::kSuccess) return QK_RUNTIME_ERROR;
+      return finish_indexed(stream);
+    }
     if (device_only) {
       if constexpr (Split) {
         grouped_splitk_device_metadata<<<(call.experts+127)/128,128,0,stream>>>(call.offsets_device,
@@ -369,7 +463,7 @@ extern "C" int quactlize_kpack_prepare_v1(qk_call_v1 const* c,qk_recipe_v1 const
   if (status!=QK_OK) return status;
   if (!c->a || !c->low || !c->metadata || !c->output ||
       ((F::spec.high_bits!=0) != (c->high!=nullptr)) ||
-      (packed ? c->zero!=nullptr : c->zero==nullptr) ||
+      (needs_zero ? c->zero==nullptr : c->zero!=nullptr) ||
       c->workspace_bytes<resources.workspace_bytes ||
       (resources.workspace_bytes && (!c->workspace || (uintptr_t(c->workspace)&15))) ||
       (grouped && (!c->rows_device || !c->offsets_device))) return QK_INVALID;
@@ -410,6 +504,19 @@ extern "C" int quactlize_kpack_run_v1(void* handle,void* stream) {
   return static_cast<quactlize::runtime::Handle*>(handle)->run(static_cast<hggcStream_t>(stream));
 }
 
+extern "C" int quactlize_kpack_bind_llama_indexed_v1(void* handle,qk_llama_indexed_v1 const* io) {
+  if (!handle || !io) return QK_INVALID;
+  return static_cast<quactlize::runtime::Handle*>(handle)->bind_indexed(*io);
+}
+extern "C" int quactlize_kpack_moe_projection_v1(void* handle,qk_moe_projection_v1* out) {
+  if (!handle || !out) return QK_INVALID;
+  return static_cast<quactlize::runtime::Handle*>(handle)->moe_projection(*out);
+}
+extern "C" int quactlize_kpack_moe_stage_v1(void* handle,qk_moe_plan_v1 const* plan,int phase,void* stream) {
+  if (!handle || !plan) return QK_INVALID;
+  return static_cast<quactlize::runtime::Handle*>(handle)->moe_stage(*plan,phase,static_cast<hggcStream_t>(stream));
+}
+
 extern "C" int quactlize_kpack_grouped_query_v2(qk_device_call_v2 const* d,
     qk_recipe_v1 const* r,qk_resources_v1* out) {
   using namespace quactlize::runtime;
@@ -434,7 +541,7 @@ extern "C" int quactlize_kpack_grouped_prepare_v2(qk_device_call_v2 const* d,
     return QK_RUNTIME_ERROR;
   if (capture!=hggcStreamCaptureStatusNone) return QK_UNSUPPORTED;
   if (!c.a || !c.low || !c.metadata || !c.output || !c.offsets_device ||
-      ((F::spec.high_bits!=0)!=(c.high!=nullptr)) || (packed ? c.zero!=nullptr : c.zero==nullptr) ||
+      ((F::spec.high_bits!=0)!=(c.high!=nullptr)) || (needs_zero ? c.zero==nullptr : c.zero!=nullptr) ||
       !c.workspace || c.workspace_bytes<resources.workspace_bytes ||
       (uintptr_t(c.workspace)&15) || (uintptr_t(c.offsets_device)&3)) return QK_INVALID;
   if constexpr (grouped) {

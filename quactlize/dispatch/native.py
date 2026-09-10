@@ -34,6 +34,20 @@ class JitOptions(C.Structure):
         (name, C.c_char_p) for name in ("python", "helper", "sdk", "cache")]
 
 
+class IndexedIO(C.Structure):
+    _fields_ = [("version",C.c_uint32),("size",C.c_uint32)] + [
+        (name,C.c_int32) for name in ("tokens","topk","channels","reserved")] + [
+        (name,C.c_int64) for name in ("ids_stride","a_row_stride","a_token_stride","out_row_stride")] + [
+        (name,C.c_void_p) for name in ("ids","a","output","row_ids")]
+
+
+class Router(C.Structure):
+    _fields_ = [("version",C.c_uint32),("size",C.c_uint32)] + [
+        (name,C.c_int32) for name in ("use_sigmoid","with_norm","delayed_softmax","reserved")] + [
+        ("clamp",C.c_float),("scale",C.c_float)] + [
+        (name,C.c_void_p) for name in ("logits","bias","weights")]
+
+
 class Dispatch:
     def __init__(self, root, jit=None):
         self.lib = C.CDLL(
@@ -59,6 +73,7 @@ class Dispatch:
             self.fn[name] = f
         self.runtime = C.c_void_p()
         self.handles = []
+        self.chains = []
         checked(
             self.fn["open"](str(Path(root).resolve()).encode(), C.byref(self.runtime)),
             "dispatch open",
@@ -83,7 +98,7 @@ class Dispatch:
             raise ValueError("native query: " + self.fn["error"]().decode())
         return choice
 
-    def prepare(self, choice, call):
+    def prepare(self, choice, call, indexed=None):
         h = C.c_void_p()
         rc = self.fn["prepare"](
             self.runtime, C.byref(choice), C.byref(call), C.byref(h)
@@ -91,9 +106,37 @@ class Dispatch:
         if rc:
             raise ValueError("native prepare: " + self.fn["error"]().decode())
         self.handles.append(h)
+        if indexed is not None:
+            bind=self.lib.quactlize_kpack_dispatch_bind_llama_indexed_v1
+            bind.argtypes=[C.c_void_p,C.POINTER(IndexedIO)]; bind.restype=C.c_int
+            rc=bind(h,C.byref(indexed))
+            if rc:
+                self.fn["destroy"](h); self.handles.pop()
+                raise ValueError(f"native indexed binding failed rc={rc}")
         return lambda: self.fn["run"](h, call.stream)
 
+    def chain(self, gate, up, down, stream, router=None):
+        create=self.lib.quactlize_kpack_dispatch_moe_create_v1
+        create.argtypes=[C.c_void_p,C.c_void_p,C.c_void_p,C.POINTER(C.c_void_p)]
+        create.restype=C.c_int
+        chain=C.c_void_p()
+        rc=create(gate,up,down,C.byref(chain))
+        if rc: raise ValueError(f"native MoE chain creation failed rc={rc}: "+self.fn['error']().decode())
+        self.chains.append(chain)
+        if router is not None:
+            run=self.lib.quactlize_kpack_dispatch_moe_run_router_v1
+            run.argtypes=[C.c_void_p,C.POINTER(Router),C.c_void_p]; run.restype=C.c_int
+            return lambda: run(chain,C.byref(router),stream)
+        run=self.lib.quactlize_kpack_dispatch_moe_run_v1
+        run.argtypes=[C.c_void_p,C.c_void_p]; run.restype=C.c_int
+        return lambda: run(chain,stream)
+
     def close(self):
+        if self.chains:
+            destroy=self.lib.quactlize_kpack_dispatch_moe_destroy_v1
+            destroy.argtypes=[C.c_void_p]; destroy.restype=None
+            for chain in self.chains: destroy(chain)
+            self.chains.clear()
         for h in self.handles:
             self.fn["destroy"](h)
         self.handles.clear()

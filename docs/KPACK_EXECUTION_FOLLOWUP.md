@@ -1,5 +1,24 @@
 # K-pack execution follow-up
 
+## Active box candidate (2026-09-10)
+
+The next box delivery combines Q8_0 W8A16 intake with MoE adapter fusion.
+Track the exact [implementation and validation checklist](MOE_FUSION_IMPLEMENTATION.md).
+Q8 producer/policy/reader wiring is implemented and locally compiled; device
+admission is pending. Paired gate/up raw-to-Kpack packing now has an exact
+host oracle. The small indexed path fuses route/gather/typed metadata/directory
+and ordered reduction/scatter inside Quactlize, with a thin llama binding.
+The production SIMT bodies pass the initial eight-context oracle and seven
+cross-projection 5090 contexts. Shared preparation, FP16-preserving SwiGLU/down
+chaining and matching 256-expert top-k integration are now implemented and
+locally compiled with the llama graph adapter. This is not a PPU GEMM/model
+performance gate. Merging two source GGUF tensors during intake and paired
+runtime cache v2 are implemented with local cold/warm tests; final PPU/model
+gates remain open. Use `kpack-fusion-v1`, not the older JIT package, with
+`tools/run_kpack_fusion_box.sh`. 147 Python/host tests plus loader/cache CTests
+pass. Keep Q8 and doubled-N merged recipes explicitly unretuned; do not infer
+an optimum or a speedup before the box results.
+
 Updated: 2026-09-10. The O0ki3q native micro gates and adapter tests pass;
 model prefill improves, but decode remains about 31% slower and the short
 trace lacks selected native dense compute. This is not optimized-routing

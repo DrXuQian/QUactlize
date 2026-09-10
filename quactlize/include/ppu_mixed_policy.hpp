@@ -422,8 +422,8 @@ struct KPackMainloopPolicy {
   static constexpr int BChunkRequest = 0;
   static constexpr int TransportTileK = kquant_kpack::kReaderPhysicalK *
       (LowPack > HighPack ? LowPack : HighPack);
-  static_assert(LowBits == 2 || LowBits == 4,
-                "non-Q4 K-pack low plane is int2 or int4");
+  static_assert(LowBits == 2 || LowBits == 4 || LowBits == 8,
+                "K-pack low plane is int2, int4 or int8");
   static_assert(HighBits == 0 || HighBits == 1 || HighBits == 2,
                 "non-Q4 K-pack high plane is absent, int1 or int2");
   static_assert(LowPack * LowBits == 16 &&

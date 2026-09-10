@@ -70,7 +70,7 @@ def model_requests(path, tokens, include_sf=False, tensor_pattern=None):
         if tensor_pattern and not re.search(tensor_pattern, name):
             omitted.append(dict(name=name, qtype=q, reason="OUTSIDE_CONSUMER_TENSOR_PATTERN"))
             continue
-        role = match_role(name, len(dims)) if q in range(10, 15) else None
+        role = match_role(name, len(dims)) if q in (8,10,11,12,13,14) else None
         if not role or role[0].route_class not in ("dense", "grouped"):
             omitted.append(dict(name=name, qtype=q, reason="NOT_A_SUPPORTED_KQUANT_MATMUL"))
             continue
@@ -83,7 +83,7 @@ def model_requests(path, tokens, include_sf=False, tensor_pattern=None):
         if grouped and metadata.get(f"{arch}.expert_count") != experts:
             raise ValueError(f"{name}: tensor expert axis and GGUF expert_count differ")
         for t in tokens:
-            for sf in ((0, 1) if include_sf else (0,)):
+            for sf in ((1,) if q == 8 else (0, 1) if include_sf else (0,)):
                 requests.add((q, 2*int(grouped)+sf, t*topk, n, k, experts, t))
     return sorted(requests), dict(model=str(path), header_identity=digest(header), omitted=omitted,
                                   tensor_pattern=tensor_pattern,

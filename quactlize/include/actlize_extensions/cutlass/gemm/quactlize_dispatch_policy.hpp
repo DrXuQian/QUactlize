@@ -102,8 +102,8 @@ struct KernelAiuQ4KPack4Transpose {
 // historical wrapper above so its already-shipped type identity is unchanged.
 template<int LowPack_, int HighPack_, class WrappedSchedule_, int DeliveryN_ = 0>
 struct KernelAiuKPackTranspose {
-  static_assert(LowPack_ == 4 || LowPack_ == 8,
-                "low K-pack plane must be int4/Pack4 or int2/Pack8");
+  static_assert(LowPack_ == 2 || LowPack_ == 4 || LowPack_ == 8,
+                "low K-pack plane must be int8/Pack2, int4/Pack4 or int2/Pack8");
   static_assert(HighPack_ == 0 || HighPack_ == 8 || HighPack_ == 16,
                 "high K-pack plane must be absent, int2/Pack8 or int1/Pack16");
   static_assert(DeliveryN_ == 0 || DeliveryN_ == 16 ||

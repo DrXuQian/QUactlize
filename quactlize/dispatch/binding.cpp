@@ -1,5 +1,6 @@
 #include "policy.hpp"
 #include "jit.hpp"
+#include "moe.hpp"
 #include <dlfcn.h>
 #include <cstring>
 #include <filesystem>
@@ -35,6 +36,9 @@ struct Module {
     decltype(&quactlize_kpack_grouped_prepare_v2) prepare_device;
     decltype(&quactlize_kpack_run_v1) run;
     decltype(&quactlize_kpack_destroy_v1) destroy;
+    decltype(&quactlize_kpack_bind_llama_indexed_v1) bind_indexed=nullptr;
+    decltype(&quactlize_kpack_moe_projection_v1) moe_projection=nullptr;
+    decltype(&quactlize_kpack_moe_stage_v1) moe_stage=nullptr;
     ~Module() { if (library) dlclose(library); }
 };
 struct Plan {
@@ -59,6 +63,10 @@ struct Handle {
     std::shared_ptr<Module> module;
     void* inner=nullptr;
     ~Handle() { if (inner) module->destroy(inner); }
+};
+struct MoeChain {
+    Handle *gate, *up, *down;
+    qk_moe_plan_v1 plan{};
 };
 
 std::shared_ptr<Module> load(Runtime& r,Image const& image,Config const& c) {
@@ -92,13 +100,19 @@ std::shared_ptr<Module> load(Runtime& r,Image const& image,Config const& c) {
     module->prepare_device=symbol<decltype(module->prepare_device)>(module->library,"quactlize_kpack_grouped_prepare_v2");
     module->run=symbol<decltype(module->run)>(module->library,"quactlize_kpack_run_v1");
     module->destroy=symbol<decltype(module->destroy)>(module->library,"quactlize_kpack_destroy_v1");
+    module->bind_indexed=reinterpret_cast<decltype(module->bind_indexed)>(
+        dlsym(module->library,"quactlize_kpack_bind_llama_indexed_v1"));
+    module->moe_projection=reinterpret_cast<decltype(module->moe_projection)>(
+        dlsym(module->library,"quactlize_kpack_moe_projection_v1"));
+    module->moe_stage=reinterpret_cast<decltype(module->moe_stage)>(
+        dlsym(module->library,"quactlize_kpack_moe_stage_v1"));
     r.modules.emplace(image.key,module);
     return module;
 }
 qk_call_v1 call_for(qks_request_v1 const& req,Runtime const& r) {
     qk_call_v1 c{};
     c.version=1; c.size=sizeof(c); c.m=req.m; c.n=req.n; c.k=req.k; c.experts=req.experts;
-    c.group_size=(req.qtype==12 || req.qtype==13) ? 32 : 16;
+    c.group_size=(req.qtype==8 || req.qtype==12 || req.qtype==13) ? 32 : 16;
     c.device=r.device; c.compute_units=r.cu; c.mapping_id=req.mapping_id;
     return c;
 }
@@ -111,6 +125,11 @@ bool same_choice(qks_choice_v1 const& a,qks_choice_v1 const& b) {
         std::memcmp(a.build_key,b.build_key,sizeof(a.build_key))==0;
 }
 } // namespace
+
+extern "C" int quactlize_kpack_dispatch_q8_weight_supported_v1(
+    int n,int k,int experts,int route,uint64_t mapping_id) {
+    return quactlize::dispatch::q8_weight_supported(n,k,experts,route,mapping_id) ? 1 : 0;
+}
 
 extern "C" char const* quactlize_kpack_dispatch_error_v1() { return last_error.c_str(); }
 extern "C" int quactlize_kpack_dispatch_open_v1(char const* root,void** out) {
@@ -241,4 +260,57 @@ extern "C" int quactlize_kpack_dispatch_run_v1(void* handle,void* stream) {
     auto& h=*static_cast<Handle*>(handle);
     return h.module->run(h.inner,stream)==QK_OK ? QKS_OK : QKS_RUNTIME;
 }
+extern "C" int quactlize_kpack_dispatch_bind_llama_indexed_v1(void* handle,qk_llama_indexed_v1 const* io) {
+    if (!handle || !io) return QKS_INVALID;
+    auto& h=*static_cast<Handle*>(handle);
+    if (!h.module->bind_indexed) return QKS_MISS;
+    int rc=h.module->bind_indexed(h.inner,io);
+    if (rc==QK_OK) return QKS_OK;
+    return rc==QK_UNSUPPORTED ? QKS_MISS : rc==QK_INVALID ? QKS_INVALID : QKS_RUNTIME;
+}
 extern "C" void quactlize_kpack_dispatch_destroy_v1(void* handle) { delete static_cast<Handle*>(handle); }
+extern "C" int quactlize_kpack_dispatch_moe_create_v1(void* gate,void* up,void* down,void** out) {
+    if (!gate || !down || !out || gate==down || (up && (up==gate || up==down))) return QKS_INVALID;
+    *out=nullptr;
+    try {
+        auto chain=std::make_unique<MoeChain>();
+        chain->gate=static_cast<Handle*>(gate); chain->up=static_cast<Handle*>(up);
+        chain->down=static_cast<Handle*>(down);
+        chain->plan.version=1; chain->plan.size=sizeof(chain->plan); chain->plan.merged=up?0:1;
+        auto get=[](Handle* h,qk_moe_projection_v1& p) {
+            return h->module->moe_projection && h->module->moe_stage &&
+                h->module->moe_projection(h->inner,&p)==QK_OK;
+        };
+        if (!get(chain->gate,chain->plan.gate) || (up && !get(chain->up,chain->plan.up)) ||
+            !get(chain->down,chain->plan.down)) return QKS_MISS;
+        if (!compatible_moe(chain->plan)) {
+            last_error="MoE chain geometry, routing, tuple ABI or scratch alias differs";
+            return QKS_MISS;
+        }
+        *out=chain.release(); return QKS_OK;
+    } catch (std::exception const& e) { last_error=e.what(); return QKS_RUNTIME; }
+}
+extern "C" int quactlize_kpack_dispatch_moe_run_v1(void* handle,void* stream) {
+    if (!handle) return QKS_INVALID;
+    auto& c=*static_cast<MoeChain*>(handle);
+    auto stage=[&](Handle* h,int phase) { return h->module->moe_stage(h->inner,&c.plan,phase,stream)==QK_OK; };
+    if (!stage(c.gate,QK_MOE_PREPARE) || !stage(c.gate,QK_MOE_PRODUCER) ||
+        (c.up && !stage(c.up,QK_MOE_PRODUCER)) || !stage(c.gate,QK_MOE_ACTIVATE) ||
+        !stage(c.down,QK_MOE_PRODUCER) || !stage(c.down,QK_MOE_FINISH)) return QKS_RUNTIME;
+    return QKS_OK;
+}
+extern "C" int quactlize_kpack_dispatch_moe_run_router_v1(void* handle,qk_llama_router_v1 const* router,void* stream) {
+    if (!handle || !router) return QKS_INVALID;
+    auto& c=*static_cast<MoeChain*>(handle);
+    auto const& r=*router;
+    if (!compatible_router(c.plan,r)) return QKS_MISS;
+    // Copy the immutable host plan. Concurrent streams must not mutate its
+    // router or retain a ready flag across graph replays.
+    auto plan=c.plan; plan.router=r;
+    auto stage=[&](Handle* h,int phase) { return h->module->moe_stage(h->inner,&plan,phase,stream)==QK_OK; };
+    if (!stage(c.gate,QK_MOE_PREPARE) || !stage(c.gate,QK_MOE_PRODUCER) ||
+        (c.up && !stage(c.up,QK_MOE_PRODUCER)) || !stage(c.gate,QK_MOE_ACTIVATE) ||
+        !stage(c.down,QK_MOE_PRODUCER) || !stage(c.down,QK_MOE_FINISH)) return QKS_RUNTIME;
+    return QKS_OK;
+}
+extern "C" void quactlize_kpack_dispatch_moe_destroy_v1(void* handle) { delete static_cast<MoeChain*>(handle); }

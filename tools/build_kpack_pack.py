@@ -58,7 +58,7 @@ def build(sdk, output):
         compiler_sha256=sha(sdk / "bin/hgcc"), flags=FLAGS,
         runtime={f"lib{x}.so": sha(sdk / "lib" / f"lib{x}.so") for x in LIBRARIES},
         library=library.name, sha256=sha(library), compile_seconds=time.monotonic() - start,
-        formats=[10, 11, 12, 13, 14], device_validated=False,
+        formats=[8, 10, 11, 12, 13, 14], device_validated=False,
     )
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"KPACK_PACK_BUILD status=COMPILED device_validated=0 seconds={manifest['compile_seconds']:.3f} library={library}")

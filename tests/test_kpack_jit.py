@@ -112,7 +112,7 @@ def test_jit_resolve_rejects_invalid_source_fields():
         parent_tuple("parent", [12, 9, 8, 64, 64, 8, 16, 2, 0, 16, -1])
 
 
-def test_header_only_model_plan_deduplicates_and_does_not_admit_q8(tmp_path):
+def test_header_only_model_plan_deduplicates_and_q8_is_w8a16(tmp_path):
     from tools.gguf_internal_shape_inventory import _synthetic_gguf
     path = tmp_path / "model.gguf"
     # Header only: attempting to read/convert tensor bytes would fail.
@@ -125,12 +125,13 @@ def test_header_only_model_plan_deduplicates_and_does_not_admit_q8(tmp_path):
         ("token_embd.weight", (2048,248320), 14),
         ("output.weight", (2048,248320), 14)]))
     requests, proof = model_requests(path, [1,128])
-    assert requests == [(12,2,8,512,2048,256,1),(12,2,1024,512,2048,256,128),
+    assert requests == [(8,1,1,2048,2048,1,1),(8,1,128,2048,2048,1,128),
+                        (12,2,8,512,2048,256,1),(12,2,1024,512,2048,256,128),
                         (14,0,1,248320,2048,1,1),(14,0,128,248320,2048,1,128)]
-    assert {x["name"] for x in proof["omitted"]} == {"token_embd.weight", "blk.0.attn_output.weight"}
-    assert len(model_requests(path,[1,128],True)[0]) == 8
+    assert {x["name"] for x in proof["omitted"]} == {"token_embd.weight"}
+    assert len(model_requests(path,[1,128],True)[0]) == 10
     filtered, proof = model_requests(path, [1,128], tensor_pattern=r"^blk\.\d+\.ffn_up_exps\.weight$")
-    assert filtered == requests[:2]
+    assert filtered == requests[2:4]
     assert next(r for r in proof["omitted"] if r["name"] == "output.weight")["reason"] == "OUTSIDE_CONSUMER_TENSOR_PATTERN"
 
 

@@ -65,7 +65,7 @@ def sha(path):
 def validate_parent(parent):
     if (
         parent.get("route") not in ROUTES
-        or parent.get("qtype") not in range(10, 15)
+        or parent.get("qtype") not in (8, 10, 11, 12, 13, 14)
         or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", parent.get("symbol", ""))
     ):
         raise ValueError("invalid parent identity")
@@ -96,7 +96,9 @@ def validate_parent(parent):
         raise ValueError("invalid packed-A parent")
     if (parent["route"] == "fq-grouped") != (parent["persistent"] in (0, 1)):
         raise ValueError("persistent parent axis differs from route")
-    minimum_k = {10: 128, 11: 256, 12: 64, 13: 256, 14: 128}[parent["qtype"]]
+    if parent["qtype"] == 8 and not parent["route"].startswith("sf-"):
+        raise ValueError("Q8_0 uses FP16 scale directly, not K-quant packed units")
+    minimum_k = {8: 32, 10: 128, 11: 256, 12: 64, 13: 256, 14: 128}[parent["qtype"]]
     if parent["tk"] % minimum_k:
         raise ValueError("parent does not contain whole K-pack transport tiles")
 
@@ -117,6 +119,7 @@ class Compiler:
         self.includes = [
             ROOT / "quactlize/include",
             ROOT / "quactlize/runtime",
+            ROOT / "quactlize/integrations",
             ROOT / "third_party/actlize/include",
             ROOT / "third_party/actlize/tools/util/include",
             ROOT / "third_party/actlize/examples/common",
@@ -196,7 +199,7 @@ class Compiler:
                 q = parent["qtype"]
                 defines = [
                     f'-DPPU_PACKED_SCALE={int(parent["route"].startswith("fq"))}',
-                    f"-DPPU_PACKED_FORMAT={ {10:2,11:3,12:0,13:1,14:4}[q] }",
+                    f"-DPPU_PACKED_FORMAT={ {8:0,10:2,11:3,12:0,13:1,14:4}[q] }",
                 ]
                 commands = [
                     [
