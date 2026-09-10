@@ -1,0 +1,135 @@
+{
+  "schema": "quactlize.kpack-prefetch.v1",
+  "library": "libkpack_prefetch.so",
+  "sha256": "c73e01204eaf520bb3e05056930d8aff1f22f83b85b5bb100be7b9b1b0ac7679",
+  "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
+  "source_hashes": {
+    "dev/l2_prefetch/probe.cu": "4e74720cce14d5548af79bb9c158471ff90a106aeb145f25f3dda85435c02405",
+    "third_party/actlize/include/cute/arch/copy.hpp": "f69da35e072b23d8bbd413f09bfc0599feaa7a64a6e33179686e3152cc471791",
+    "third_party/actlize/include/cute/config.hpp": "ef626d96b33d7595daebcfd62769b79fea1a03af2cf7439c75a31d37295ffbd7"
+  },
+  "subjects": [
+    {
+      "case": "q12",
+      "q": 12,
+      "split": 4,
+      "n": 512,
+      "k": 2048,
+      "module": {
+        "key": "42042dea0927472f0481de5f4501840cb1f20330f6fa3f6e62c2e166253de440",
+        "parent": {
+          "symbol": "fqg_q12_l1_tm8_tn64_tk256_wm8_wn16_s2_ap0_dn64_nonpersistent",
+          "route": "fq-grouped",
+          "qtype": 12,
+          "tm": 8,
+          "tn": 64,
+          "tk": 256,
+          "wm": 8,
+          "wn": 16,
+          "stages": 2,
+          "ap": 0,
+          "dn": 64,
+          "persistent": 0
+        },
+        "identity": {
+          "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
+          "kernel": "41ececd5c74f5dd7ff7e9d29f455a6eae7860038db802204cc23e3950b49914b",
+          "flags": [
+            "--forward-unknown-to-host-compiler",
+            "--forward-unknown-to-host-linker",
+            "-arch=ppu_10",
+            "-x",
+            "hg",
+            "-DSWITCH_TO_HGGCRT",
+            "-std=c++17",
+            "-O3",
+            "-Xcompiler",
+            "-ftemplate-depth=8192",
+            "-Xllvm",
+            "-wno-loop-miss-transform",
+            "-Xllvm",
+            "-ppu-simt-branch=false",
+            "-Xllvm",
+            "-ppu-patch-fence-ppu=false",
+            "-Xllvm",
+            "-ppu-cg-to-kp1=true",
+            "-Xllvm",
+            "-ppu-fix-uninit=true",
+            "--expt-relaxed-constexpr",
+            "-DUSE_CLANG",
+            "-DCUTLASS_USE_PACKED_TUPLE=1",
+            "-DCUTE_USE_PACKED_TUPLE=1",
+            "-fPIC"
+          ],
+          "generator": "8f93997be17e436547a8fc40b4516006823d5d429714c098789846867a137ab3",
+          "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n"
+        },
+        "sha256": "a3368d8e2b54ec8b480394003cefd6b9d5c3cf53758a18f744d88492a4665ae7",
+        "path": "prebuilt/ppu0010/kpack-grouped-postops-v1/modules/42042dea0927472f0481de5f4501840cb1f20330f6fa3f6e62c2e166253de440.so"
+      }
+    },
+    {
+      "case": "q13",
+      "q": 13,
+      "split": 1,
+      "n": 2048,
+      "k": 512,
+      "module": {
+        "key": "c43f4c1f91cc67a84bfea4266844e0ccf522d45da6ed99e7f5600d21b9712ec2",
+        "parent": {
+          "symbol": "fqg_q13_l2_tm8_tn64_tk256_wm8_wn16_s2_ap0_dn64_nonpersistent",
+          "route": "fq-grouped",
+          "qtype": 13,
+          "tm": 8,
+          "tn": 64,
+          "tk": 256,
+          "wm": 8,
+          "wn": 16,
+          "stages": 2,
+          "ap": 0,
+          "dn": 64,
+          "persistent": 0
+        },
+        "identity": {
+          "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
+          "kernel": "41ececd5c74f5dd7ff7e9d29f455a6eae7860038db802204cc23e3950b49914b",
+          "flags": [
+            "--forward-unknown-to-host-compiler",
+            "--forward-unknown-to-host-linker",
+            "-arch=ppu_10",
+            "-x",
+            "hg",
+            "-DSWITCH_TO_HGGCRT",
+            "-std=c++17",
+            "-O3",
+            "-Xcompiler",
+            "-ftemplate-depth=8192",
+            "-Xllvm",
+            "-wno-loop-miss-transform",
+            "-Xllvm",
+            "-ppu-simt-branch=false",
+            "-Xllvm",
+            "-ppu-patch-fence-ppu=false",
+            "-Xllvm",
+            "-ppu-cg-to-kp1=true",
+            "-Xllvm",
+            "-ppu-fix-uninit=true",
+            "--expt-relaxed-constexpr",
+            "-DUSE_CLANG",
+            "-DCUTLASS_USE_PACKED_TUPLE=1",
+            "-DCUTE_USE_PACKED_TUPLE=1",
+            "-fPIC"
+          ],
+          "generator": "8f93997be17e436547a8fc40b4516006823d5d429714c098789846867a137ab3",
+          "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n"
+        },
+        "sha256": "bb203598052fe7cd0816206054cd8744a03715335a2cda365ac19ead8b145ca8",
+        "path": "prebuilt/ppu0010/kpack-grouped-postops-v1/modules/c43f4c1f91cc67a84bfea4266844e0ccf522d45da6ed99e7f5600d21b9712ec2.so"
+      }
+    }
+  ],
+  "compile_seconds": 5.164345528930426,
+  "device_validated": false,
+  "production_selection_changed": false,
+  "source": "fb53282318faecf3edc4350b17fc3c85b2f7380b"
+}
