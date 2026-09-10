@@ -1,11 +1,109 @@
 import ctypes as C
+import json
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from tools import run_kpack_prefetch as probe
-from tools.build_kpack_prefetch import subjects
+from tools.build_kpack_prefetch import (
+    SDK_FILES,
+    SDK_TOOLS,
+    SDK_RUNTIME,
+    digest,
+    subjects,
+    runtime_sdk_report,
+    validate_sdk_files,
+)
+
+
+@pytest.fixture
+def sdk_manifest():
+    files = {p: f"{i + 1:064x}" for i, p in enumerate(SDK_FILES)}
+    return dict(sdk=digest(list(files.items())), sdk_files=files)
+
+
+def test_sdk_exact_match_preserves_original_identity(sdk_manifest):
+    report = runtime_sdk_report(sdk_manifest, sdk_manifest["sdk_files"])
+    assert report["allowed"] and report["runtime_matches"]
+    assert report["status"] == "EXACT_SDK"
+    assert report["build_sdk"] == report["actual_sdk"] == sdk_manifest["sdk"]
+    assert not report["differences"]
+    assert not report["override_requested"]
+
+
+@pytest.mark.parametrize("tool", SDK_TOOLS)
+@pytest.mark.parametrize("value", [None, "a" * 64])
+def test_prebuilt_execution_allows_changed_or_absent_tools(sdk_manifest, tool, value):
+    actual = sdk_manifest["sdk_files"] | {tool: value}
+    report = runtime_sdk_report(sdk_manifest, actual)
+    assert report["allowed"] and report["runtime_matches"]
+    assert report["status"] == "RUNTIME_MATCH_TOOLS_DIFFER"
+    assert report["actual_sdk"] != report["build_sdk"]
+    assert report["differences"] == [
+        dict(
+            path=tool, build_sha256=sdk_manifest["sdk_files"][tool], actual_sha256=value
+        )
+    ]
+
+
+@pytest.mark.parametrize("library", SDK_RUNTIME)
+def test_changed_runtime_requires_explicit_unverified_experiment(sdk_manifest, library):
+    actual = sdk_manifest["sdk_files"] | {library: "a" * 64}
+    strict = runtime_sdk_report(sdk_manifest, actual)
+    assert strict["status"] == "REJECTED_RUNTIME_MISMATCH"
+    assert not strict["allowed"] and not strict["runtime_matches"]
+    opted_in = runtime_sdk_report(sdk_manifest, actual, allow_unverified=True)
+    assert opted_in["status"] == "UNVERIFIED_RUNTIME"
+    assert opted_in["allowed"] and opted_in["override_requested"]
+    assert not opted_in["runtime_matches"]
+    assert opted_in["actual_files"] == actual
+    assert opted_in["build_files"] == sdk_manifest["sdk_files"]
+    assert opted_in["device_validation"] == "REQUIRED_NOT_IMPLIED_BY_HASHES"
+    with pytest.raises(ValueError, match="missing/invalid runtime"):
+        runtime_sdk_report(
+            sdk_manifest, actual | {library: None}, allow_unverified=True
+        )
+
+
+def test_sdk_override_does_not_change_build_authority(sdk_manifest):
+    changed = sdk_manifest | {
+        "sdk_files": sdk_manifest["sdk_files"] | {SDK_TOOLS[0]: "a" * 64}
+    }
+    with pytest.raises(ValueError, match="original combined identity"):
+        runtime_sdk_report(changed, changed["sdk_files"], allow_unverified=True)
+    with pytest.raises(ValueError, match="per-file build SDK receipt"):
+        validate_sdk_files({"sdk": sdk_manifest["sdk"]})
+
+
+@pytest.mark.parametrize("allow", [False, True])
+def test_sdk_receipt_written_before_launch_or_rejection(
+    sdk_manifest, tmp_path, monkeypatch, capsys, allow
+):
+    actual = sdk_manifest["sdk_files"] | {SDK_RUNTIME[0]: "a" * 64}
+    monkeypatch.setattr(probe, "sdk_files", lambda *a, **kw: actual)
+    args = SimpleNamespace(
+        sdk=tmp_path, output=tmp_path, case="q12", allow_unverified_sdk=allow
+    )
+    if allow:
+        assert probe.admit_runtime_sdk(args, sdk_manifest)["allowed"]
+    else:
+        with pytest.raises(ValueError, match="--allow-unverified-sdk"):
+            probe.admit_runtime_sdk(args, sdk_manifest)
+    receipt = json.loads((tmp_path / "q12.sdk.json").read_text())
+    assert receipt["allowed"] is allow
+    assert receipt["actual_files"] == actual
+    assert "KPACK_PREFETCH_SDK " in capsys.readouterr().out
+
+
+def test_published_sdk_receipt_matches_unchanged_prebuilt():
+    manifest, _ = probe.verify(probe.ROOT / "prebuilt/ppu0010/kpack-prefetch-v1")
+    assert (
+        manifest["sha256"]
+        == "c73e01204eaf520bb3e05056930d8aff1f22f83b85b5bb100be7b9b1b0ac7679"
+    )
+    for subject in manifest["subjects"]:
+        assert subject["module"]["identity"]["sdk"] == manifest["sdk"]
 
 
 def test_exact_measured_subjects():

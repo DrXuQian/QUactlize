@@ -3,6 +3,14 @@
   "library": "libkpack_prefetch.so",
   "sha256": "c73e01204eaf520bb3e05056930d8aff1f22f83b85b5bb100be7b9b1b0ac7679",
   "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
+  "sdk_files": {
+    "bin/hgcc": "fa62c590c67411c23fa4028f15fa562b39ce0cf830830d038a1ec04c59d8c76e",
+    "bin/hgobjdump": "4176b21eb5b26e9f73acb5e17667a01fbb2808987b303d95cd8b31078221d16c",
+    "lib/libhggc_wrapper.so": "71c32cb41191458503234324360fcd3f1fa890dd5a082d465bb07328630c775e",
+    "lib/libhggcrt1.so": "f4765821e374712a5d9a21cb7276101067ff7da56f9e3c55366ffe88c1997e9f",
+    "lib/libhggc.so": "4acb6f71da458fbef346db163e5c04a1bdc341c8c560158412ec2c9618c1525a",
+    "lib/libhg_wrapper.so": "fd93f23bfb05dfee0ffa48fd07d3c0cf6d8ab37d266e12f841ee056291affcd5"
+  },
   "source_hashes": {
     "dev/l2_prefetch/probe.cu": "4e74720cce14d5548af79bb9c158471ff90a106aeb145f25f3dda85435c02405",
     "third_party/actlize/include/cute/arch/copy.hpp": "f69da35e072b23d8bbd413f09bfc0599feaa7a64a6e33179686e3152cc471791",

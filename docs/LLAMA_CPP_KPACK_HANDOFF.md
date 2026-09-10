@@ -29,6 +29,10 @@ current-call interference independently, using unchanged Q4/S4 and Q5/S1
 modules. Its small auxiliary library is not a llama runtime dependency or
 production route change. Whole-model JIT validation remains pending; this
 experiment does not replace it or predict future MoE expert routing.
+Its prebuilt runner now separates unused build-tool differences from runtime
+library changes. Runtime differences require `--allow-unverified-sdk` and are
+recorded before launch; this changes no binary or numerical check. The helper
+and measured GEMM parents do not need recompilation for this preflight repair.
 
 The [complete delivery backlog](KPACK_EXECUTION_FOLLOWUP.md#complete-delivery-backlog)
 is the current task authority, including production JIT, model-load

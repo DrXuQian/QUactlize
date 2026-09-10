@@ -29,10 +29,15 @@ from quactlize.runtime.native import (
     Recipe,
     Resources as Query,
     checked,
-    sdk_identity,
 )
 from quactlize.execution.native import arrangement
-from tools.build_kpack_prefetch import SCHEMA, subjects
+from tools.build_kpack_prefetch import (
+    SCHEMA,
+    subjects,
+    sdk_files,
+    validate_sdk_files,
+    runtime_sdk_report,
+)
 from tools.kpack_execution_fixture import IndexedWeights
 from tools.run_kpack_decode_sweep import bind_group, admit
 from tools.run_kpack_gemv_gate import Resources, fixture
@@ -124,6 +129,7 @@ def verify(bundle):
         or manifest.get("production_selection_changed") is not False
     ):
         raise ValueError("not the cache experiment")
+    validate_sdk_files(manifest)
     if manifest.get("subjects") != subjects():
         raise ValueError("experiment differs from the two measured FQ anchors")
     library = (bundle / manifest["library"]).resolve(strict=True)
@@ -139,6 +145,37 @@ def verify(bundle):
         if not path.is_relative_to(ROOT.resolve()) or sha(path) != record["sha256"]:
             raise ValueError("measured GEMM parent path/hash differs")
     return manifest, library
+
+
+def admit_runtime_sdk(args, manifest):
+    report = runtime_sdk_report(
+        manifest,
+        sdk_files(args.sdk, optional_tools=True),
+        allow_unverified=args.allow_unverified_sdk,
+    )
+    (args.output / (args.case + ".sdk.json")).write_text(
+        json.dumps(report, indent=2) + "\n"
+    )
+    print(
+        "KPACK_PREFETCH_SDK "
+        + json.dumps(
+            dict(
+                case=args.case,
+                status=report["status"],
+                allowed=report["allowed"],
+                differences=report["differences"],
+            )
+        ),
+        flush=True,
+    )
+    if not report["allowed"]:
+        changed = ", ".join(row["path"] for row in report["differences"])
+        raise ValueError(
+            f"SDK runtime libraries differ ({changed}); use matching libraries or "
+            "--allow-unverified-sdk for an explicitly unverified experiment. "
+            "GPU launch and numerical checks remain mandatory."
+        )
+    return report
 
 
 class Prepared:
@@ -444,7 +481,7 @@ def summary(cells):
     return result
 
 
-def run(args, subject, manifest, library):
+def run(args, subject, manifest, library, runtime_sdk):
     sdk = SDK(args.sdk)
     graph_bind(sdk)
     sdk.lib.hggcStreamWaitEvent.argtypes, sdk.lib.hggcStreamWaitEvent.restype = [
@@ -473,6 +510,7 @@ def run(args, subject, manifest, library):
         cells=[],
         manifest_sha256=sha(args.bundle / "manifest.json"),
         runner_sha256=sha(__file__),
+        runtime_sdk=runtime_sdk,
         cache_initialization="PRESSURE_EVICTION_NOT_PROVEN_FLUSH",
         pressure_bytes=pressure_bytes,
         timing="UNPROFILED_GRAPH_EVENTS_FULL_COMPACT_CALL",
@@ -651,6 +689,11 @@ def main():
     p.add_argument("--samples", type=int, default=11)
     p.add_argument("--rounds", type=int, default=3)
     p.add_argument("--pressure-mib", type=int, default=0)
+    p.add_argument(
+        "--allow-unverified-sdk",
+        action="store_true",
+        help="allow different runtime-library hashes, record unverified SDK; no numerical check bypass",
+    )
     args = p.parse_args()
     if (
         args.samples < 3
@@ -664,10 +707,9 @@ def main():
     if (args.output / (args.case + ".json")).exists():
         p.error("result already exists; use a fresh output directory")
     manifest, library = verify(args.bundle)
-    if sdk_identity(args.sdk) != manifest["sdk"]:
-        raise ValueError("runtime SDK differs from prebuilt experiment")
+    runtime_sdk = admit_runtime_sdk(args, manifest)
     subject = next(s for s in manifest["subjects"] if s["case"] == args.case)
-    run(args, subject, manifest, library)
+    run(args, subject, manifest, library, runtime_sdk)
 
 
 if __name__ == "__main__":

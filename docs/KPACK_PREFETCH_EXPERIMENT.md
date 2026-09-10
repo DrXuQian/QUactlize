@@ -83,8 +83,10 @@ the unprofiled run for timing.
 
 The only new binary is `prebuilt/ppu0010/kpack-prefetch-v1/libkpack_prefetch.so`.
 The Q4/Q5 parent images are reused from `kpack-grouped-postops-v1/modules`.
-The box needs the same SDK 2.1.1, Python >=3.11, NumPy and gguf. It does not
-compile anything or require the six-library llama intake bundle.
+The box needs PPU runtime libraries, Python >=3.11, NumPy and gguf. It does not
+compile anything or require the six-library llama intake bundle. The published
+images were built with SDK 2.1.1. Their original SDK digest is retained, with
+per-file hashes for the compiler, inspector and four runtime libraries.
 
 From the Quactlize `develop` checkout, after pulling sources and LFS payloads:
 
@@ -93,6 +95,16 @@ PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
 CUDA_VISIBLE_DEVICES=0 \
 bash tools/run_kpack_prefetch_box.sh
 ```
+
+Different or absent `hgcc`/`hgobjdump` tools do not block prebuilt execution
+when all four runtime-library hashes match. Different runtime libraries still
+stop by default, listing each difference. To explicitly try another installed
+runtime, append `--allow-unverified-sdk` to the command above. This records
+`UNVERIFIED_RUNTIME`, not SDK compatibility; missing runtime libraries, modified
+device payloads and numerical failures are never bypassed. The `.sdk.json`
+receipt is written before GPU initialization, even when admission rejects the
+SDK. Successful case results also retain that receipt. Do not silently pool
+timings collected under different runtime identities.
 
 Use one idle device. The script is a child shell; a failure does not exit the
 caller's Docker shell. Both independent cases are attempted, and failures
