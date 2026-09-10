@@ -6,7 +6,8 @@ import pytest
 import torch
 
 from reference import gguf_kpack as ref
-from tools.run_kpack_moe_gate import raw_weight, cpu_planes, dot, check
+from tools.run_kpack_moe_gate import raw_weight, cpu_planes, dot, check, chain_requests, CHAIN_CASES
+from tests.test_kpack_native_dispatch import probe, query
 from tools.run_kpack_batched_bench import command, sequence, validate_plan, parse_row
 from quactlize.dispatch.native import IndexedIO, Router
 
@@ -32,6 +33,20 @@ def test_pair_gate_uses_independent_bytes(q):
 def test_bindings_match_c_abi():
     assert C.sizeof(IndexedIO)==88
     assert C.sizeof(Router)==56
+
+
+def test_every_real_chain_request_has_a_policy_choice(probe):
+    for merged,tokens,_ in CHAIN_CASES:
+        requests=chain_requests(merged,tokens)
+        rows=[tuple(r[key] for key in ('q','route','m','n','k','experts','max_rows')) for r in requests]
+        results=query(probe,rows)
+        for request,line in zip(requests,results):
+            assert line!='MISS',request
+            fields=line.split()
+            assert int(fields[1])==request['q'] and int(fields[2])==2
+            if merged and request['projection']=='gate':
+                assert int(fields[-1])==3  # A prediction, not a measured doubled-N winner.
+                assert request['n']==1024
 
 
 def test_model_benchmark_axes_and_excluded_first_pass():

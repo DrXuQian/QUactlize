@@ -16,6 +16,15 @@ high/zero plane). Gate/up pairing retains each qtype's existing map and uses
 N doubled with gate then up within every expert, matching llama.cpp's
 **conversion-time** `--fuse-gate-up-exps` ordering.
 
+The initial fusion gate exposed a selector omission: merged Q4 N1024/K2048/E256
+had no exact historical family, while its N512 source did. The selector now
+allows a single N/2-family transfer for otherwise-uncovered grouped requests,
+with identical qtype/K/E/M and whole output tiles. Exact families win first;
+there is no recursive N extrapolation. Choices are marked `QKS_PREDICTED`,
+not measured winners. Resources/stride/recipe use the actual doubled N. The
+selector DSO is rebuilt, but GEMM JIT source contract, GPU producer and
+execution helper are unchanged; existing selected-parent cache remains valid.
+
 The additive `quactlize_kpack_dispatch_bind_llama_indexed_v1` binds a prepared
 grouped handle to llama's F32 token/slot inputs and outputs before capture.
 For <=32 routed rows it performs fused route/gather/metadata/directory, the

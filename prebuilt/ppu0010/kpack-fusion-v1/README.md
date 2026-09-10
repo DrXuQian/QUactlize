@@ -12,7 +12,10 @@ before model timing. The old six-library bundle is still required for the
 K-quant intake/capability ABI and explicit fallback; it is not rebuilt here.
 
 Q8 has initial, not measured-optimal, recipes. Fused gate/up uses doubled N;
-its existing heuristic selection is recorded, not advertised as retuned.
+when no exact family exists, a single same-qtype/K/E N/2-family transfer is
+marked predicted. Resources and recipe use real doubled N. This is not a
+retuned/measurement-backed winner. The selector correction leaves the GEMM
+JIT source contract and cached device modules unchanged.
 Small MoE fusion supports <=32 routed rows and compatible closed SwiGLU
 graphs. Larger contexts, incompatible activation and concurrent-stream
 graphs keep their original path. Two-source pairing is opt-in through

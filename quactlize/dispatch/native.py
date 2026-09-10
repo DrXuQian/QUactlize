@@ -74,6 +74,7 @@ class Dispatch:
         self.runtime = C.c_void_p()
         self.handles = []
         self.chains = []
+        self.last_miss = None
         checked(
             self.fn["open"](str(Path(root).resolve()).encode(), C.byref(self.runtime)),
             "dispatch open",
@@ -92,7 +93,9 @@ class Dispatch:
         r = Request(1, C.sizeof(Request), q, route, m, n, k, experts, max_rows, mapping)
         choice = Choice()
         rc = self.fn["query"](self.runtime, C.byref(r), C.byref(choice))
+        self.last_miss = None
         if rc == 1:
+            self.last_miss = self.fn["error"]().decode()
             return None
         if rc:
             raise ValueError("native query: " + self.fn["error"]().decode())

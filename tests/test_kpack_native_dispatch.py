@@ -198,8 +198,31 @@ def test_grouped_decode_does_not_expand_scope(probe, q, n, k):
         assert line == "MISS" or int(line.split()[-1]) != 5
 
 
+@pytest.mark.parametrize('tokens',[1,4,64,128,4096])
+@pytest.mark.parametrize('route',[2,3])
+@pytest.mark.parametrize('q',[10,11,12,13,14])
+def test_grouped_double_n_reuses_one_exact_family(probe,tokens,route,q):
+    source=(q,route,tokens*8,512,2048,256,tokens)
+    target=(q,route,tokens*8,1024,2048,256,tokens)
+    base,predicted=query(probe,[source,target])
+    assert base!='MISS' and predicted!='MISS'
+    assert base.split()[:-1]==predicted.split()[:-1]
+    assert int(predicted.split()[-1])==3
+
+
+@pytest.mark.parametrize('row',[
+    (12,2,8,2048,2048,256,1), # No recursive 512 -> 1024 -> 2048 inference.
+    (12,2,8,1024,1536,256,1), # No cross-K transfer.
+    (12,2,8,1024,2048,128,1), # No cross-expert transfer.
+    (12,2,8,768,2048,256,1),  # Half N is outside the canonical domain.
+])
+def test_grouped_n_prediction_stays_bounded(probe,row):
+    assert query(probe,[row])==['MISS']
+
+
 def build_stub(
-    tmp, probe, *, wrong_key=False, values=(12, 2, 528, 3072, 512, 256, 129), jit=False
+    tmp, probe, *, wrong_key=False, values=(12, 2, 528, 3072, 512, 256, 129), jit=False,
+    shape_resources=False
 ):
     parts = query(probe, [values])[0].split()
     assert parts[0] != "MISS"
@@ -229,6 +252,7 @@ def build_stub(
         + json.dumps(actual_key)
         + "};\n"
         + f"static constexpr int stub_expected_split = {int(parts[12])};\n"
+        + f"static constexpr int stub_expected_n = {values[3] if shape_resources else 0};\n"
     )
     subprocess.run(
         [
@@ -285,6 +309,29 @@ def build_stub(
     assert functions["open"](str(tmp).encode(), C.byref(runtime)) == 0
     req = Request(1, C.sizeof(Request), *values, mapping)
     return functions, runtime, req
+
+
+@pytest.mark.parametrize('route,split,grid',[(2,4,0),(3,1,288)])
+def test_doubled_n_reaches_runtime_resource_and_prepare(tmp_path,probe,route,split,grid):
+    values=(12,route,8,1024,2048,256,1)
+    f,r,req=build_stub(tmp_path,probe,values=values,shape_resources=True)
+    choice=Choice()
+    try:
+        assert f['query'](r,C.byref(req),C.byref(choice))==0
+        assert (choice.policy,choice.split,choice.grid)==(3,split,grid)
+        assert choice.workspace_bytes==req.m*req.n*split*4
+        call=Call(version=1,size=C.sizeof(Call),m=req.m,n=req.n,k=req.k,experts=req.experts,
+            group_size=32,device=0,compute_units=72,mapping_id=req.mapping_id,
+            a=0x1000,low=0x2000,metadata=0x3000,zero=0x4000 if route==3 else None,
+            output=0x5000,offsets_device=0x6000,workspace=0x7000,workspace_bytes=choice.workspace_bytes)
+        handle=C.c_void_p()
+        call.n//=2
+        assert f['prepare'](r,C.byref(choice),C.byref(call),C.byref(handle))==2 and not handle.value
+        call.n=req.n
+        assert f['prepare'](r,C.byref(choice),C.byref(call),C.byref(handle))==0
+        assert f['run'](handle,None)==0
+        f['destroy'](handle)
+    finally:f['close'](r)
 
 
 @pytest.mark.parametrize(

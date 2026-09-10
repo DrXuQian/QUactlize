@@ -61,7 +61,7 @@ inline bool valid(qks_request_v1 const& r) {
             r.max_rows > 0 && r.max_rows <= r.m && int64_t(r.max_rows)*r.experts >= r.m);
 }
 
-inline Selected select(qks_request_v1 const& r) {
+inline Selected select_same_family(qks_request_v1 const& r) {
     if (!valid(r)) return {};
     if (r.qtype == 8) {
         auto const* pool = r.route == QK_GROUPED_SF ? kQ8Grouped : kQ8Dense;
@@ -112,6 +112,19 @@ inline Selected select(qks_request_v1 const& r) {
         if (d<distance) { best=c; distance=d; }
     }
     return {best,QKS_DEVICE_BOUNDS};
+}
+
+inline Selected select(qks_request_v1 const& r) {
+    auto exact=select_same_family(r);
+    if (exact.config || !valid(r) || r.route<2 || r.qtype==8 || r.n%512) return exact;
+    // A paired gate/up tensor doubles N without changing K, E, M or format.
+    // Only transfer from an existing N/2 family, never recursively through
+    // another prediction. Its M/K/stage/split checks remain valid; require
+    // complete output tiles. Runtime resources and the recipe use the real N.
+    auto source=r; source.n/=2;
+    auto base=select_same_family(source);
+    if (!base.config || r.n%base.config->tn) return {};
+    return {base.config,QKS_PREDICTED};
 }
 
 inline qk_recipe_v1 recipe(Config const& c, qks_request_v1 const& r, int occupancy) {

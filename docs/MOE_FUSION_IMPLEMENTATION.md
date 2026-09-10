@@ -149,3 +149,20 @@ Final local checks: 147 Python/host tests pass; llama loader/environment/cache
 CTest entries pass (including 35 loader cases). The modified host loader and
 three CUDA integration TUs compile. PPU numerical and model performance are
 still pending: an implemented fusion is not a measured speedup or optimum.
+
+## Doubled-N selector correction
+
+The first box gate stopped before launch for merged Q4 N1024/K2048/E256,
+M8/max_rows1 and M32/max_rows4. Both source-N512 requests selected successfully;
+the previous selector required exact N in its historical grouped family.
+This was missing production selection coverage, not a numerical mismatch.
+
+Exact-family selection is unchanged. An uncovered grouped request may now
+reuse a compatible N/2 family once, with whole output tiles and unchanged
+qtype/K/E/M. It is labeled predicted; resource queries and runtime preparation
+receive doubled N. No new offline mapping, GEMM body or activation is used.
+Tests consume the same request generator as the device gate, cover Q2-Q6
+FQ/SF at five token counts, reject recursive/cross-K/cross-E transfers, and
+exercise actual C dispatch query/prepare with a doubled-N resource stub.
+The 1,452 prior catalog requests retain exactly their previous selections.
+Only the small host selector needs rebuilding; the JIT source hash is unchanged.

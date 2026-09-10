@@ -26,6 +26,17 @@ from tools.run_kpack_grouped_device_gate import graph_bind
 from tools.run_kpack_pack_gate import Arrangement, Sizes, bind, device_identity
 from tools.verify_kpack_dispatch import verify
 
+CHAIN_CASES=((False,1,False),(True,1,False),(False,4,True),(True,4,True))
+
+
+def chain_requests(merged,tokens):
+    """Actual selector inputs, shared by the host coverage test and device gate."""
+    weights=[('gate',12,1024 if merged else 512,2048)]
+    if not merged: weights.append(('up',12,512,2048))
+    weights.append(('down',13,2048,512))
+    return [dict(projection=name,q=q,route=2,m=tokens*8,n=n,k=k,experts=256,max_rows=tokens)
+            for name,q,n,k in weights]
+
 
 def raw_weight(q,e,n,k,seed):
     block,width=(32,34) if q==8 else (256,ref.SPECS[q].raw_bytes)
@@ -113,11 +124,16 @@ def chain_case(args,sdk,lib,merged,tokens,router_enabled):
         weights=[(gate,12,source,k,1,up if merged else None)]
         if not merged: weights.append((up,12,source,k,1,None))
         weights.append((down,13,activation,n,topk,None))
-        for raw,q,inp,kk,channels,paired in weights:
+        requests=chain_requests(merged,tokens)
+        assert len(weights)==len(requests)
+        for (raw,q,inp,kk,channels,paired),request in zip(weights,requests):
             arr,planes,lengths=pack(r,lib,raw,q,up=paired,verify_bytes=False)
             nn=raw.shape[1]*(2 if paired is not None else 1)
-            choice=d.query(q,2,m,nn,kk,e,tokens,arr.mapping_id)
-            if choice is None: raise ValueError('selected grouped parent unavailable')
+            assert (q,m,nn,kk,e,tokens)==tuple(request[key] for key in ('q','m','n','k','experts','max_rows'))
+            print('KPACK_MOE_QUERY '+json.dumps(dict(request,merged=merged,router=router_enabled)),flush=True)
+            choice=d.query(*[request[key] for key in ('q','route','m','n','k','experts','max_rows')],arr.mapping_id)
+            if choice is None:
+                raise ValueError('selected grouped parent unavailable: '+json.dumps(dict(request,reason=d.last_miss)))
             out=r.alloc(m*nn*4+32);r.fill(out,0xA5,m*nn*4+32)
             call=Call(1,C.sizeof(Call),m,nn,kk,e,arr.group_size,choice.device,choice.compute_units,arr.mapping_id,
                 r.alloc(m*kk*2),*planes[:2],planes[2],None,r.alloc(m*nn*2),None,None,
@@ -208,7 +224,7 @@ def main():
             except Exception as error:
                 traceback.print_exc();result['failures'].append(dict(q=q,error=str(error)))
             finally:r.close()
-        for merged,tokens,router in ((False,1,False),(True,1,False),(False,4,True),(True,4,True)):
+        for merged,tokens,router in CHAIN_CASES:
             try:result['chains'].append(chain_case(args,sdk,lib,merged,tokens,router))
             except Exception as error:
                 traceback.print_exc();result['failures'].append(dict(merged=merged,tokens=tokens,router=router,error=str(error)))
