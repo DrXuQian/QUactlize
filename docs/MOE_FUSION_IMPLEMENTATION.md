@@ -21,6 +21,7 @@ open; a faster isolated GEMM is not sufficient.
 | Q8 dense input/output adapters | Still separate gather/scatter casts around TC; not covered by the MoE fusion | Compare F32-to-F32 total calls, then fuse conversions or select faster SIMT |
 | 5090 fusion checks | 10 complete SIMT-stage contexts pass, 7 changing-input replays each; 15 x 8 Q8 GEMV cells pass | Completed-projection fixtures do not emulate PPU GEMM; PPU/model admission is separate |
 | PPU model benchmark and trace | y9B4tw benchmark completed; paired model receipts present; matched original/K-pack capture runner ready | Run paired warmed Asys and attribute full-call overhead; 35B decode remains +31.32% vs reference |
+| Matched trace native startup | 3gMc6e reference report exists; native aborts in qz_set_raw during weight loading | Obtain exact pre-backtrace abort message; health retry alone does not fix the loader |
 
 See [the XYUgHJ receipt review](KPACK_FUSION_XYUGHJ_REVIEW.md). The logging
 repair does not admit the old timings or prove that a model graph used the
@@ -70,6 +71,12 @@ pending this PPU capture, not inferred from the naked-TC SIMT gate.
 Different generated continuations are reported and are not treated as equal
 expert routing. Profiler data diagnoses the regression; final admission uses
 unprofiled warmed timings. Host checks pass (52 llama + 9 orchestration).
+
+Latest script-only checks pass (55 llama + 12 orchestration). Startup health
+connection resets now retry within the existing deadline; inference errors
+do not retry. The actual 3gMc6e loader abort is still unresolved. After that
+is fixed, `TRACE_ARM=native` avoids recapturing the completed reference;
+single-arm output is not labelled a completed paired comparison.
 
 Still open after v2: Q8 N32 SSM intake, output-head selector coverage, and
 measured 32B prefill route choice.

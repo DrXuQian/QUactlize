@@ -9,6 +9,7 @@ if [[ ${1:-} == --help ]]; then
         'Usage: bash tools/run_kpack_reference_trace.sh /workspace/kpack-fusion.XXXXXX' \
         'Reuses the prior model, binary, token IDs, cache and prompt/generation lengths.' \
         'Captures reference then K-pack in separate processes; first request is warmup.' \
+        'Set TRACE_ARM=native or reference to rerun only one arm into a fresh directory.' \
         'No build or config sweep. Original native fusions remain enabled.' \
         'Outputs reference/proof.asysrep, native/proof.asysrep and kernel-times.json.' \
         'Profiler timings diagnose overhead; they do not admit end-to-end performance.'
@@ -29,6 +30,11 @@ finish() {
 trap finish EXIT
 trap 'printf "FAIL stage=%s line=%s rc=%s\n" "$stage" "$LINENO" "$?" >&2' ERR
 [[ $# == 1 ]]
+case ${TRACE_ARM:-both} in
+    both) ARMS=(reference native) ;;
+    reference|native) ARMS=("$TRACE_ARM") ;;
+    *) printf 'TRACE_ARM must be both, reference or native.\n' >&2; false ;;
+esac
 PRIOR=$(realpath -e -- "$1")
 [[ -d $PRIOR ]]
 REPO=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
@@ -89,7 +95,7 @@ printf 'KPACK_REFERENCE_TRACE run=%s prior=%s prompt=%s generate=%s\n' "$RUN" "$
 git -C "$REPO" rev-parse HEAD > "$RUN/results/quactlize-source.txt"
 git -C "$LLAMA_DIR" rev-parse HEAD > "$RUN/results/llama-source.txt"
 failed=0
-for arm in reference native; do
+for arm in "${ARMS[@]}"; do
     stage="trace-$arm"
     if "$PYTHON" -u "$LLAMA_DIR/tests/quactlize_native.py" --binary "$BINARY" \
         --model "$MODEL" --cache "$CACHE" --bundle "$QUACTLIZE_KPACK_EXECUTION" \
@@ -106,19 +112,22 @@ for arm in reference native; do
 done
 [[ $failed == 0 ]]
 stage=compare
-"$PYTHON" - "$RUN/results" <<'PY'
+"$PYTHON" - "$RUN/results" "${ARMS[@]}" <<'PY'
 import json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
-results = {arm: json.loads((root/arm/'proof.json').read_text()) for arm in ('reference', 'native')}
-for key in ('input_tokens_sha256', 'request_sha256', 'prompt_tokens', 'generated_tokens', 'prefill_token_batch'):
-    assert results['reference'][key] == results['native'][key], f'paired trace differs: {key}'
-props = {arm: json.loads((root/arm/'proof-request'/f'0-{arm}.props.json').read_text()) for arm in results}
-for key in ('model_path', 'build_info'):
-    assert key in props['reference'] and props['reference'][key] == props['native'][key], f'server identity differs: {key}'
-summary = dict(status='TRACE_PAIR_COMPLETE', performance_admission='NOT_MEASURED_BY_PROFILER',
-               request_sha256=results['reference']['request_sha256'],
-               same_generated_text=results['reference']['response_sha256'] == results['native']['response_sha256'],
+results = {arm: json.loads((root/arm/'proof.json').read_text()) for arm in sys.argv[2:]}
+summary = dict(status='TRACE_ARM_COMPLETE', pair_comparison='NOT_RUN',
+               performance_admission='NOT_MEASURED_BY_PROFILER',
+               request_sha256=next(iter(results.values()))['request_sha256'],
                routes={arm: data['kernel_execution'] for arm, data in results.items()})
+if set(results) == {'reference', 'native'}:
+    for key in ('input_tokens_sha256', 'request_sha256', 'prompt_tokens', 'generated_tokens', 'prefill_token_batch'):
+        assert results['reference'][key] == results['native'][key], f'paired trace differs: {key}'
+    props = {arm: json.loads((root/arm/'proof-request'/f'0-{arm}.props.json').read_text()) for arm in results}
+    for key in ('model_path', 'build_info'):
+        assert key in props['reference'] and props['reference'][key] == props['native'][key], f'server identity differs: {key}'
+    summary.update(status='TRACE_PAIR_COMPLETE', pair_comparison='PASS',
+                   same_generated_text=results['reference']['response_sha256'] == results['native']['response_sha256'])
 (root/'summary.json').write_text(json.dumps(summary, indent=2)+'\n')
 print('KPACK_REFERENCE_TRACE '+json.dumps(summary))
 PY

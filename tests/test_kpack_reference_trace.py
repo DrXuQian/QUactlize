@@ -34,7 +34,7 @@ else:
     for name in ('proof.asysrep', 'proof.sqlite', 'kernel-times.json'):
         (out / name).write_text('fixture')
     fault = os.environ.get('TRACE_FAULT')
-    if fault == 'reference-failure' and arm == 'reference': sys.exit(7)
+    if fault == arm + '-failure': sys.exit(7)
     proof = dict(input_tokens_sha256='tokens', request_sha256='request', prompt_tokens=2048,
         generated_tokens=16, prefill_token_batch=2048, response_sha256='response',
         kernel_execution='REFERENCE_COMPUTE_OBSERVED' if arm == 'reference' else 'PASS_SHORT_REQUEST')
@@ -48,9 +48,10 @@ else:
 '''
 
 
-@pytest.mark.parametrize("fault", ["", "reference-failure", "request-mismatch", "build-mismatch",
-                                   "continuation-differs"])
-def test_matched_trace_reuses_inputs_and_preserves_failures(tmp_path, fault):
+@pytest.mark.parametrize("fault,trace_arm", [(fault, "both") for fault in (
+    "", "reference-failure", "request-mismatch", "build-mismatch", "continuation-differs")]
+    + [("", "native"), ("native-failure", "native"), ("", "reference")])
+def test_matched_trace_reuses_inputs_and_preserves_failures(tmp_path, fault, trace_arm):
     repo, llama, sdk, prior, legacy, commands, results = [tmp_path / name for name in (
         "repo", "llama", "sdk", "prior run", "legacy", "bin", "results")]
     for p in (repo / "tools", llama / "tests", sdk / "bin", sdk / "asight/bin",
@@ -85,13 +86,15 @@ def test_matched_trace_reuses_inputs_and_preserves_failures(tmp_path, fault):
                QUACTLIZE_PPU_BUNDLE=str(legacy), QUACTLIZE_PPU_PACK_LIBRARY=str(pack),
                PATH=str(commands) + os.pathsep + env["PATH"], RESULT_ROOT=str(results),
                CUDA_VISIBLE_DEVICES="0", TRACE_STEPS=str(tmp_path / "steps"), TRACE_FAULT=fault,
+               TRACE_ARM=trace_arm,
                GGML_CUDA_DISABLE_GRAPHS="1", GGML_CUDA_DISABLE_FUSION="1")
     run = subprocess.run(["bash", str(runner), str(prior)], env=env, text=True,
                          capture_output=True, timeout=30)
     success = fault in ("", "continuation-differs")
     assert (run.returncode == 0) == success, run.stdout + run.stderr
     steps = [json.loads(line) for line in (tmp_path / "steps").read_text().splitlines()]
-    assert [s["arm"] for s in steps] == ["reference", "native"]
+    expected_arms = ["reference", "native"] if trace_arm == "both" else [trace_arm]
+    assert [s["arm"] for s in steps] == expected_arms
     for step in steps:
         argv = step["argv"]
         assert argv[argv.index("--binary")+1] == str(commands / "llama-server")
@@ -104,14 +107,22 @@ def test_matched_trace_reuses_inputs_and_preserves_failures(tmp_path, fault):
     with tarfile.open(archive) as tf:
         names = tf.getnames()
         assert "results/runner-status.txt" in names
-        assert "results/native/kernel-times.json" in names
+        assert f"results/{expected_arms[-1]}/kernel-times.json" in names
         assert not any(n.endswith((".asysrep", ".sqlite")) for n in names)
-    assert (output / "native/proof.asysrep").is_file()
+    for arm in expected_arms:
+        assert (output / arm / "proof.asysrep").is_file()
+    if trace_arm != "both":
+        assert not (output / ("reference" if trace_arm == "native" else "native")).exists()
     assert (output / "summary.json").exists() == success
     if success:
         summary = json.loads((output / "summary.json").read_text())
         assert summary["performance_admission"] == "NOT_MEASURED_BY_PROFILER"
-        assert summary["same_generated_text"] == (fault != "continuation-differs")
+        if trace_arm == "both":
+            assert summary["same_generated_text"] == (fault != "continuation-differs")
+            assert summary["pair_comparison"] == "PASS"
+        else:
+            assert summary["status"] == "TRACE_ARM_COMPLETE"
+            assert summary["pair_comparison"] == "NOT_RUN"
 
 
 def test_trace_help_and_missing_input_do_not_start_work(tmp_path):

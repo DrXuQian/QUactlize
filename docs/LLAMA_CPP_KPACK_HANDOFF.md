@@ -11,8 +11,9 @@ execution library. The GPU packing library stays at
 `prebuilt/ppu0010/kpack-fusion-v1/libquactlize_ppu_pack.so`: offline bytes and
 cache schema have not changed. Both new libraries total about 1.8 MiB and
 are stored with Git LFS. There are no precompiled GEMM modules in this package.
-Use private llama.cpp `feat/kpack-gpu-cache` commit `58b2bc27d` for matched
-reference trace scripts. It includes `e9bd8a81c` (single-owner profiler
+Use private llama.cpp `feat/kpack-gpu-cache` commit `adb77f27f` for trace
+scripts (bounded health-connection retries), including `58b2bc27d` for matched
+reference capture. It includes `e9bd8a81c` (single-owner profiler
 shutdown), `bd4e8bf93`
 (paired-weight placement inheritance) and `83e8efdfe` (automatic recipe
 lookup, Q8 allowance, and trace symbols).
@@ -96,9 +97,27 @@ summaries and request/selection evidence. A failed arm preserves its outputs
 and does not prevent the other arm from running. Kernel duration sums are
 profiler diagnostics, **not** bandwidth utilization, critical-path time, or
 end-to-end performance admission. Final speed acceptance uses the unprofiled
-warmed benchmark. Local tests cover 52 llama evidence/runner cases and 9
+warmed benchmark. Local tests cover 55 llama evidence/runner cases and 12
 Quactlize orchestration cases; PPU capture remains to be run on the box.
 Only scripts changed: no server rebuild, DSO rebuild, or offline-format change.
+
+The later `kpack-reference-ab.3gMc6e` run produced a 4.3 MiB reference report,
+but native aborted during model loading inside `qz_set_raw`, before trace
+capture. The HTTP health reset is secondary evidence, not the loader's root
+cause. With Asys as the child process, `server_rc=None` means the launcher is
+still alive; it does not prove the profiled server is alive. The exact
+abort message preceding the backtrace is still required to distinguish the
+descriptor/size checks from a GPU-pack failure. Do not rerun for performance
+or label this loader crash repaired by the health-poll change.
+
+The health-poll repair retries connection errors only during startup, inside
+the existing 900-second deadline and process-exit checks. Completion errors
+remain failures and are never replayed as successful timing samples. Local
+tests reproduce the old premature exit and cover recovery, process exit,
+deadline, and completion-reset rejection. Once the loader blocker is fixed,
+`TRACE_ARM=native` reruns only that arm into a fresh directory, preserving
+the old reference and failed logs. A one-arm summary explicitly reports
+`pair_comparison=NOT_RUN`; both result archives must be reviewed together.
 
 The new preparation removes serial duplicate validation and repeated integer
 division in directory construction, distributes expert/split descriptors
