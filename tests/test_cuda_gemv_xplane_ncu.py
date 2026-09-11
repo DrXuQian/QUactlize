@@ -110,3 +110,20 @@ def test_small_profile_scope_requires_both_small_families_and_both_regimes():
     receipt["cases"].pop(0)
     with pytest.raises(ValueError,match="missing"):
         list(retuned_jobs(receipt,small=True))
+
+
+def test_large_warm_profiles_cover_all_four_shapes_not_cold_or_small():
+    receipt=dict(status="PASS",arithmetic="BOTH_FP32_DOT_AND_REDUCTION_FP16_WEIGHT_AND_A_BOUNDARY",cases=[])
+    for n,k in ((512,2048),(1024,5120),(4096,2048),(4096,4096),(5120,8192),(8192,5120)):
+        for mode in ("warm","rotating"):
+            receipt["cases"].append(dict(shape=[1,n,k],mode=mode,winners={
+                "xplane":dict(recipe=["xplane",1,4,1]),
+                "kpack":dict(recipe=["kpack",4,8,1])}))
+    rows=list(retuned_jobs(receipt,large_warm=True))
+    assert len(rows)==8 and all(r["mode"]=="warm" for r in rows)
+    assert len({(r["n"],r["k"]) for r in rows})==4
+    with pytest.raises(ValueError,match="exclusive"):
+        list(retuned_jobs(receipt,small=True,large_warm=True))
+    receipt["cases"].pop(-2)
+    with pytest.raises(ValueError,match="missing"):
+        list(retuned_jobs(receipt,large_warm=True))

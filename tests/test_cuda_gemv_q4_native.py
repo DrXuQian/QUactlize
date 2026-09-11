@@ -7,7 +7,7 @@ import pytest
 from dev.gemv_cuda.build import (n2_schedule, q4_n2_source, q4_wide_source, q4_wide_validation,
                                 q4_grid_source, q4_aligned_source, replace_dot)
 from dev.gemv_cuda.build import q4_n4_source, q4_tree_source, q4_small_source, q4_warp_source, q4_coop_source, q4_static_source
-from dev.gemv_cuda.build import q4_balanced_source
+from dev.gemv_cuda.build import q4_balanced_source, q4_large_static_source
 from dev.gemv_cuda.compare_q4_native import parse_timing
 from dev.gemv_cuda.build_xplane_accum import fp32_source
 
@@ -186,6 +186,28 @@ def test_balanced_warps_are_only_an_extra_s1_q4_domain():
     assert all(arm=="kpack" and s==1 for arm,c,w,s in rows if w in (5,10))
     # The K=5120/C4 subjects have no final partially active K-group pass.
     assert all(160%(w*32//4)==0 for w in (5,10))
+
+
+def test_large_static_keeps_small_kernel_and_bounds_new_dispatch():
+    old=(ROOT/"quactlize/execution/gemv.cu").read_text()
+    base,source=q4_balanced_source(old),q4_large_static_source(old)
+    begin="template<int Columns,int Warps,int N,int K>\n__global__ void kpack_q4_small_static"
+    end="\n#endif\ntemplate<int Columns"
+    body=base[base.index(begin):base.index(end)]
+    assert body in source
+    assert body.replace("kpack_q4_small_static","kpack_q4_large_static") in source
+    assert "if constexpr ((Columns==4 || Columns==8) && Warps>=4)" in source
+    assert source.count("c.input_type==0 && c.mode==QKG_DENSE && c.rows==1 && split==1")==2
+    for n,k in ((4096,2048),(4096,4096),(5120,8192),(8192,5120)):
+        assert f"kpack_q4_large_static<Columns,Warps,{n},{k}>" in source
+        for c in (4,8):
+            for w in (4,5,8,10,16):
+                workers=w*32//c
+                groups=[p*workers+i for p in range((k//32+workers-1)//workers)
+                        for i in range(workers) if p*workers+i<k//32]
+                assert groups==list(range(k//32))
+    assert "kpack_q4_n4_coop<Columns,Warps,0>" in source
+    assert source.index("if (Pair && aligned_b && aligned_a)") < source.index("c.n==4096 && c.k==2048")
 
 
 def test_q4_native_preserves_n2_launch_and_reducer():

@@ -34,7 +34,9 @@ that rounding path; it is not promoted to production.
 The first matched campaign covers Q4 M=1 with `(N,K)`:
 `(512,2048)`, `(1024,5120)`, `(4096,2048)`, `(4096,4096)`,
 `(8192,5120)`, `(5120,8192)`, separately warm and rotating more than 2.25 L2.
-These are six dense families, **not grouped-performance coverage**.
+These are six dense families, **not grouped-performance coverage**. The
+RTX5070 S1 candidate now meets the 5% target on all twelve shape/cache points
+in a separate fixed-recipe confirmation; see the larger-shape result below.
 
 Each configuration must pass the independent official-GGUF FP64 dot
 oracle with the unchanged 0.005 conditioned-error bound. Complete call
@@ -70,7 +72,7 @@ performance or a PPU policy change.
 
 The accepted latency tolerance is **5% slower than the FP32 Xplane
 comparator**, separately for each shape, device and cache regime. Further
-work prioritizes N=512/1024 and retains the other families as regressions.
+work retains N=512/1024 and the other families as regressions.
 S1 is a first-class candidate, not a missing algorithm: the N2/N4 warp-tree
 experiments increase intra-CTA K parallelism and use FP32 warp/CTA reduction
 to avoid an extra reducer when S1 wins. Split-K is optional and must earn its
@@ -91,8 +93,9 @@ and initial warmups excluded. Positive delta means K-pack is slower.
 | 1,1024,5120 | >2.25 L2 rotation | 6.8956 | 6.7543 | -2.05% | 4/10/1 |
 
 **These four points satisfy the 5% target using S1 only.** No separate
-reducer or new offline layout is necessary. This is not all-shape admission:
-the larger-family warm cases still have approximately 5–9% gaps. The 5090
+reducer or new offline layout is necessary. At that checkpoint, the larger
+families still had approximately 5–9% warm gaps; the next section closes those
+four measured gaps on RTX5070. This is not all-shape admission. The 5090
 machine was shut down before it could repeat the new small-shape variants;
 no 5090 parity claim is made for them.
 
@@ -122,6 +125,54 @@ contains raw confirmation samples, NCU counters, source/library/fixture
 hashes and the six-family regression campaign. Production libraries,
 llama.cpp routing and canonical packing are unchanged.
 
+## RTX5070 larger-shape S1 result
+
+`cuda-q4-n4-static` extends the F16/M1/S1 constant-geometry reader to the four
+larger families. It preserves the existing small-shape kernels and all generic
+fallbacks. Full-loop specialization is bounded to C4/C8 and W4/5/8/10/16;
+other input types, alignment, modes, shapes and split counts still use the
+previous paths. The stored K-pack bytes and FP32 accumulation are unchanged.
+
+The two layouts are independently tuned over the original candidate domain.
+The selected recipes are then held fixed for another six alternating rounds,
+15 event samples per arm/round, without another search. These are the latter
+confirmation numbers, not NCU replay times:
+
+| N,K (M=1) | Warm Xplane FP32, us | Warm K-pack FP32, us | Warm delta | Rotating delta | Warm K-pack C/W/S |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 4096,2048 | 5.8185 | 5.5330 | -4.91% | -3.84% | 8/8/1 |
+| 4096,4096 | 10.0780 | 9.4965 | -5.77% | -3.60% | 4/8/1 |
+| 5120,8192 | 22.1240 | 21.3720 | -3.40% | +0.39% | 4/8/1 |
+| 8192,5120 | 21.6840 | 20.1385 | -7.13% | +1.31% | 4/10/1 |
+
+Positive delta means K-pack is slower. All six dense families pass both
+regimes, including the two small regressions; the worst confirmed regression
+is +2.32% on N1024/K5120 warm. All twelve selected K-pack recipes are S1.
+Thus Split-K is **not required** to reach the measured FP32 Xplane level.
+
+The four K-pack warm profiles use 56–58 registers per thread versus 64
+for the matched Xplane kernels, and each profile contains exactly one
+producer. Instruction counts are not uniformly lower than Xplane; these
+results do not justify attributing every gain to fewer instructions or
+higher occupancy. The measured DRAM traffic is zero or small in this warm
+regime, so logical weight bytes divided by latency must not be called
+physical DRAM utilization. The named NCU counters are retained in the receipt.
+
+All forty new static specializations and four small-shape controls pass the
+independent GGUF dot, output/workspace guards, graph replay and zeroed-code
+negative. Another 116 F16-aligned and 116 F32-weak-alignment indexed checks
+pass across Q2–Q6. These 276 checks do not imply new grouped performance
+coverage. The [six-family receipt](measurements/q4_fp32_large_s1_5070_20260911.json)
+contains raw confirmation samples, the numerical records and profile counters.
+Full sources, binaries and raw profiles are preserved in
+`/root/autodl-tmp/q4-large-20260911.V928jM/q4-large-V928jM-evidence.tgz`
+(SHA256 `14c2889599c26d10f369efa38ea2e7f893b7d15ede34942257bc3b41c7d83cae`).
+
+This remains a development CUDA result, not a shipping policy change or a
+PPU performance claim. Grouped/multi-token performance, other quantized
+formats, and a recheck on RTX5090 are still open. Per the current workflow,
+PPU comparison is deferred until the local investigations are collected.
+
 ## Reproduction
 
 Development/NVIDIA only:
@@ -149,6 +200,14 @@ the two fixed S1 recipes without searching again; `check_standalone.py`
 provides the CUDA-only indexed numerical gate, and
 `run_xplane_ncu.py --retuned-fp32 --small-shapes` selects the measured small
 families for profiling. None of these commands is a PPU production runner.
+
+The six-family candidate uses `build.py --reader cuda-q4-n4-static`.
+`confirm_q4_retuned.py` takes the complete six-family tuning receipt via
+`--recipes` and re-measures its fixed winners without searching.
+`check_q4_static.py` exercises all forty new large static specializations
+plus four small-shape regressions, including zeroed-code negatives.
+`run_xplane_ncu.py --retuned-fp32 --large-warm` profiles the two measured
+winners for each of the four larger warm cases.
 
 ## Prefetch interpretation
 

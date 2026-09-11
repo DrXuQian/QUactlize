@@ -43,10 +43,11 @@ def main():
     columns = manifest.get("q4_n_positions")
     warps=manifest.get("q4_warps",[2,4,8])
     expected_warps=[2,4,8,16] if args.expected_reader in ("cuda-q4-n4-tree","cuda-q4-n2-tree","cuda-q4-n2-warp","cuda-q4-n4-coop","cuda-q4-small-static","cuda-q4-small-balanced") else [2,4,8]
+    if args.expected_reader=="cuda-q4-n4-static": expected_warps=[2,4,8,16]
     extra_s1=manifest.get("q4_s1_extra_warps",[])
     if (manifest.get("reader") != args.expected_reader or
         warps!=expected_warps or
-        extra_s1!=([5,10] if args.expected_reader=="cuda-q4-small-balanced" else []) or
+        extra_s1!=([5,10] if args.expected_reader in ("cuda-q4-small-balanced","cuda-q4-n4-static") else []) or
         columns not in ([16,32], [4,8,16,32], [1,2,4,8,16,32]) or
         manifest.get("pair_column_values_per_thread") != 2 or
         manifest.get("library") != args.candidate.name or

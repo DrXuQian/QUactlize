@@ -33,6 +33,7 @@ def n2_authority(library, expected_reader="cuda-n2"):
     manifest_path = library.parent / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
     readers = ("cuda-n2", "cuda-q4-n2", "cuda-q4-n2-wide", "cuda-q4-n2-shared", "cuda-q4-n2-half-control", "cuda-q4-shm-fp32", "cuda-q4-n2-grid", "cuda-q4-n2-aligned", "cuda-q4-n2-metadata", "cuda-q4-n4", "cuda-q4-n4-unsigned", "cuda-q4-n4-tree", "cuda-q4-n2-tree", "cuda-q4-n2-warp", "cuda-q4-n4-coop", "cuda-q4-small-static", "cuda-q4-small-balanced")
+    readers += ("cuda-q4-n4-static",)
     if (expected_reader not in readers or manifest.get("reader") != expected_reader or
             manifest.get("pair_column_values_per_thread", 2) != 2 or
             manifest.get("library") != library.name or
@@ -42,9 +43,10 @@ def n2_authority(library, expected_reader="cuda-n2"):
     if manifest.get("q4_n_positions", [16, 32]) != columns:
         raise ValueError("manifest-bound N2 column domain differs")
     warps=[2,4,8,16] if expected_reader in ("cuda-q4-n4-tree","cuda-q4-n2-tree","cuda-q4-n2-warp","cuda-q4-n4-coop","cuda-q4-small-static","cuda-q4-small-balanced") else [2,4,8]
+    if expected_reader=="cuda-q4-n4-static": warps=[2,4,8,16]
     if manifest.get("q4_warps",[2,4,8])!=warps:
         raise ValueError("manifest-bound N2 warp domain differs")
-    extra_s1=[5,10] if expected_reader=="cuda-q4-small-balanced" else []
+    extra_s1=[5,10] if expected_reader in ("cuda-q4-small-balanced","cuda-q4-n4-static") else []
     if manifest.get("q4_s1_extra_warps",[])!=extra_s1:
         raise ValueError("manifest-bound S1 warp domain differs")
     return dict(reader=expected_reader, columns=columns,warps=warps,extra_s1=extra_s1, manifest_sha256=sha(manifest_path),
@@ -243,7 +245,7 @@ def main():
     p.add_argument("--xplane-library",type=Path,required=True)
     p.add_argument("--xplane-arithmetic", choices=("fp16-group", "fp32"), default="fp16-group")
     p.add_argument("--kpack-library",type=Path,required=True)
-    p.add_argument("--expected-reader", choices=("cuda-n2", "cuda-q4-n2", "cuda-q4-n2-wide", "cuda-q4-n2-shared", "cuda-q4-n2-half-control", "cuda-q4-shm-fp32", "cuda-q4-n2-grid", "cuda-q4-n2-aligned", "cuda-q4-n2-metadata", "cuda-q4-n4", "cuda-q4-n4-unsigned", "cuda-q4-n4-tree", "cuda-q4-n2-tree", "cuda-q4-n2-warp", "cuda-q4-n4-coop", "cuda-q4-small-static", "cuda-q4-small-balanced"),
+    p.add_argument("--expected-reader", choices=("cuda-n2", "cuda-q4-n2", "cuda-q4-n2-wide", "cuda-q4-n2-shared", "cuda-q4-n2-half-control", "cuda-q4-shm-fp32", "cuda-q4-n2-grid", "cuda-q4-n2-aligned", "cuda-q4-n2-metadata", "cuda-q4-n4", "cuda-q4-n4-unsigned", "cuda-q4-n4-tree", "cuda-q4-n2-tree", "cuda-q4-n2-warp", "cuda-q4-n4-coop", "cuda-q4-small-static", "cuda-q4-small-balanced", "cuda-q4-n4-static"),
                    default="cuda-n2")
     p.add_argument("--output",type=Path,required=True)
     args=p.parse_args()

@@ -396,6 +396,30 @@ def q4_balanced_source(original):
     return replace_once(source,"    if (f.warps==16) {",extra+"    if (f.warps==16) {")
 
 
+def q4_large_static_source(original):
+    """Bounded M1/S1 geometry experiment; keep small kernels and fallbacks intact."""
+    source=q4_balanced_source(original)
+    begin="template<int Columns,int Warps,int N,int K>\n__global__ void kpack_q4_small_static"
+    end="\n#endif\ntemplate<int Columns, int Warps, bool Pair = false> int launch"
+    first,last=source.index(begin),source.index(end)
+    kernel=source[first:last].replace("kpack_q4_small_static", "kpack_q4_large_static")
+    source=source[:last]+"\n"+kernel+source[last:]
+    launch="""        // Limit full-loop specialization to the useful warm-cache N tile
+        // sizes. Other recipes, inputs, shapes and split counts remain generic.
+        if constexpr ((Columns==4 || Columns==8) && Warps>=4) {
+            if(c.input_type==0 && c.mode==QKG_DENSE && c.rows==1 && split==1) {
+"""
+    for n,k in ((4096,2048),(4096,4096),(5120,8192),(8192,5120)):
+        launch+=f"""                if(c.n=={n} && c.k=={k}) {{
+                    kpack_q4_large_static<Columns,Warps,{n},{k}><<<n4_grid,Warps*32,0,stream>>>(c);
+                    return hggcGetLastError()==hggcSuccess ? QKG_OK : QKG_RUNTIME;
+                }}
+"""
+    launch+="            }\n        }\n"
+    seam="        if(c.input_type==0) kpack_q4_n4_coop<"
+    return replace_once(source,seam,launch+seam)
+
+
 def q4_warp_source(original):
     source=q4_small_source(original)
     kernel=(HERE/"q4_n2_tree_kernel.cuh").read_text()
@@ -537,6 +561,11 @@ def build(cuda, output, jobs, reader="production", schedule="production", max_q4
     narrow_readers=n4_readers+("cuda-q4-n2-tree","cuda-q4-n2-warp")
     tree_readers=("cuda-q4-n4-tree","cuda-q4-n2-tree","cuda-q4-n2-warp","cuda-q4-n4-coop","cuda-q4-small-static","cuda-q4-small-balanced")
     wide_readers = q4_readers[1:]
+    q4_readers += ("cuda-q4-n4-static",)
+    n4_readers += ("cuda-q4-n4-static",)
+    narrow_readers += ("cuda-q4-n4-static",)
+    tree_readers += ("cuda-q4-n4-static",)
+    wide_readers += ("cuda-q4-n4-static",)
     n2_readers = ("cuda-n2",) + q4_readers
     if reader in q4_readers:
         if schedule != "production":
@@ -555,7 +584,8 @@ def build(cuda, output, jobs, reader="production", schedule="production", max_q4
                        "cuda-q4-n2-warp": q4_warp_source,
                        "cuda-q4-n4-coop": q4_coop_source,
                        "cuda-q4-small-static": q4_static_source,
-                       "cuda-q4-small-balanced": q4_balanced_source}[reader]
+                       "cuda-q4-small-balanced": q4_balanced_source,
+                       "cuda-q4-n4-static": q4_large_static_source}[reader]
         original = make_source((ROOT / "quactlize/execution/gemv.cu").read_text())
     if schedule == "cuda-grid":
         original = grid_schedule(original)
@@ -572,7 +602,7 @@ def build(cuda, output, jobs, reader="production", schedule="production", max_q4
         if reader in tree_readers:
             validation=replace_once(validation,"!(pair && f.warps == 2)",
                                     "!(pair && (f.warps == 2 || (c.qtype == 12 && f.warps == 16)))")
-        if reader=="cuda-q4-small-balanced":
+        if reader in ("cuda-q4-small-balanced","cuda-q4-n4-static"):
             validation=replace_once(validation,"c.qtype == 12 && f.warps == 16",
                 "c.qtype == 12 && (f.warps == 16 || (f.split == 1 && (f.warps == 5 || f.warps == 10)))")
         (output / "validation.hpp").write_text(validation)
@@ -659,13 +689,14 @@ def build(cuda, output, jobs, reader="production", schedule="production", max_q4
             "cuda-q4-n4-coop": "N4_FP32_WARP_COOPERATIVE_CTA_REDUCTION_FLOAT4_SHARED",
             "cuda-q4-small-static": "N4_FP32_S1_F16_M1_KN_STATIC_SMALL_SHAPES_COOP_FALLBACK",
             "cuda-q4-small-balanced": "N4_FP32_SMALL_STATIC_S1_W5_W10_BALANCED_K_GROUPS",
+            "cuda-q4-n4-static": "N4_FP32_STATIC_S1_F16_M1_SIX_SHAPES_GENERIC_FALLBACK",
         }[reader],
         reader=reader,
         pair_column_values_per_thread=2 if reader in n2_readers else 1,
         q4_aligned_column_values_per_thread=4 if reader in n4_readers else 2,
         q4_n_positions=[1,2,4,8,16,32] if reader in narrow_readers else [4,8,16,32] if reader in wide_readers else [16,32],
         q4_warps=[2,4,8,16] if reader in tree_readers else [2,4,8],
-        q4_s1_extra_warps=[5,10] if reader=="cuda-q4-small-balanced" else [],
+        q4_s1_extra_warps=[5,10] if reader in ("cuda-q4-small-balanced","cuda-q4-n4-static") else [],
         query_source_sha256=digest(output / "validation.hpp") if reader in wide_readers else digest(ROOT / "quactlize/execution/validation.hpp"),
         q8_reader=("cuda-n2" if reader in q4_readers else reader)
                   if reader in ("cuda-vector",) + n2_readers else "production",
@@ -689,7 +720,7 @@ if __name__ == "__main__":
                         help="development-only q12 register-allocation control")
     parser.add_argument(
         "--reader",
-        choices=("production", "cuda-half2", "cuda-affine", "cuda-vector", "cuda-n2", "cuda-q4-n2", "cuda-q4-n2-wide", "cuda-q4-n2-shared", "cuda-q4-n2-half-control", "cuda-q4-shm-fp32", "cuda-q4-n2-grid", "cuda-q4-n2-aligned", "cuda-q4-n2-metadata", "cuda-q4-n4", "cuda-q4-n4-unsigned", "cuda-q4-n4-tree", "cuda-q4-n2-tree", "cuda-q4-n2-warp", "cuda-q4-n4-coop", "cuda-q4-small-static", "cuda-q4-small-balanced"),
+        choices=("production", "cuda-half2", "cuda-affine", "cuda-vector", "cuda-n2", "cuda-q4-n2", "cuda-q4-n2-wide", "cuda-q4-n2-shared", "cuda-q4-n2-half-control", "cuda-q4-shm-fp32", "cuda-q4-n2-grid", "cuda-q4-n2-aligned", "cuda-q4-n2-metadata", "cuda-q4-n4", "cuda-q4-n4-unsigned", "cuda-q4-n4-tree", "cuda-q4-n2-tree", "cuda-q4-n2-warp", "cuda-q4-n4-coop", "cuda-q4-small-static", "cuda-q4-small-balanced", "cuda-q4-n4-static"),
         default="production",
     )
     parser.add_argument(

@@ -42,16 +42,22 @@ def jobs(receipt):
                            recipe=[recipe[x] for x in ("columns", "warps", "split")])
 
 
-def retuned_jobs(receipt, small=False):
+def retuned_jobs(receipt, small=False, large_warm=False):
     if receipt.get("status") != "PASS" or receipt.get("arithmetic") != "BOTH_FP32_DOT_AND_REDUCTION_FP16_WEIGHT_AND_A_BOUNDARY":
         raise ValueError("expected a complete same-GPU FP32 retune")
     shapes=([1,512,2048],[1,1024,5120]) if small else ([1,4096,2048],[1,4096,4096])
+    if small and large_warm:
+        raise ValueError("small and large-warm scopes are exclusive")
+    if large_warm:
+        shapes=([1,4096,2048],[1,4096,4096],[1,5120,8192],[1,8192,5120])
     seen=set()
     for case in receipt["cases"]:
         if case["shape"] not in shapes:
             continue
         m,n,k=case["shape"]
         mode=case["mode"]
+        if large_warm and mode=="rotating":
+            continue
         if mode not in ("warm","rotating") or (k,mode) in seen:
             raise ValueError("duplicate or unknown anchor cache regime")
         seen.add((k,mode))
@@ -73,9 +79,13 @@ def main():
                    help="use this GPU's independently retuned FP32 winners for the two anchors")
     p.add_argument("--small-shapes",action="store_true",
                    help="profile the N512/K2048 and N1024/K5120 families instead of the large anchors")
+    p.add_argument("--large-warm",action="store_true",
+                   help="profile all four larger families, warm regime only")
     args = p.parse_args()
-    if args.small_shapes and not args.retuned_fp32:
-        p.error("small shapes require a same-GPU FP32 retune")
+    if (args.small_shapes or args.large_warm) and not args.retuned_fp32:
+        p.error("selected shape scopes require a same-GPU FP32 retune")
+    if args.small_shapes and args.large_warm:
+        p.error("small shapes and large warm are exclusive")
     args.output.mkdir(parents=True, exist_ok=False)
     receipt = json.loads(args.recipes.read_text())
     for name in ("xplane", "kpack"):
@@ -83,7 +93,7 @@ def main():
                   if args.retuned_fp32 else receipt[name+"_library_sha256"])
         if sha(getattr(args, name + "_library")) != expected:
             raise ValueError(name + " library differs from measured comparison")
-    planned = list(retuned_jobs(receipt,args.small_shapes) if args.retuned_fp32 else jobs(receipt))
+    planned = list(retuned_jobs(receipt,args.small_shapes,args.large_warm) if args.retuned_fp32 else jobs(receipt))
     if len(planned) != 8 or len({x["key"] for x in planned}) != 8:
         raise ValueError("expected eight distinct profile arms")
     paths = dict(runner=args.runner, xplane=args.xplane_library, kpack=args.kpack_library,
@@ -91,7 +101,7 @@ def main():
     result = dict(status="RUNNING", recipe_scope=("SAME_GPU_RETUNED_FP32" if args.retuned_fp32 else
                                                  "FIXED_5090_WINNERS_NOT_5070_RETUNING"),
                   replay_mode="application", cache_control="none", clock_control="none",
-                  shape_scope="SMALL_N_512_1024" if args.small_shapes else "ANCHOR_N4096",
+                  shape_scope="LARGE_FOUR_WARM" if args.large_warm else "SMALL_N_512_1024" if args.small_shapes else "ANCHOR_N4096",
                   authority={name:dict(path=str(path.resolve()),sha256=sha(path)) for name,path in paths.items()},
                   ncu_version=subprocess.check_output([str(args.ncu), "--version"], text=True),
                   profiles=[])
