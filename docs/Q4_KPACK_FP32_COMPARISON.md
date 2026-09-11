@@ -173,8 +173,9 @@ copy is not required to use the committed, hash-linked results.
 
 This remains a development CUDA result, not a shipping policy change or a
 PPU performance claim. Grouped/multi-token performance, other quantized
-formats, and a recheck on RTX5090 are still open. Per the current workflow,
-PPU comparison is deferred until the local investigations are collected.
+formats, and a recheck on RTX5090 are still open. The requested next PPU
+comparison now has a [native prebuilt runner](Q4_SIMT_PPU_COMPARISON.md);
+its numerical/performance device admission remains pending.
 
 ## Reproduction
 

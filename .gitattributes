@@ -16,3 +16,4 @@ prebuilt/ppu0010/kpack-fusion-v1/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/kpack-fusion-v1/dispatch/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/kpack-fusion-v2/dispatch/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/kpack-fusion-v3/dispatch/*.so filter=lfs diff=lfs merge=lfs -text
+prebuilt/ppu0010/q4-simt-ab-v1/*.so filter=lfs diff=lfs merge=lfs -text
