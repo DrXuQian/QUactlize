@@ -15,6 +15,12 @@ faster than N2. Equal-shape, >L2 rotations give 4.880 vs 9.441 us at K2048
 and 7.819 vs 14.807 us at K4096 (M1/N4096). These are independently tuned
 complete calls, not a layout-only or PPU verdict.
 
+The [matched NCU follow-up](../../docs/Q4_SIMT_XPLANE_KPACK_NCU.md) on 5070
+finds 80.14% vs 43.98% DRAM throughput for rotating M1/N4096/K4096. N2's
+76.38% SM throughput is ALU-heavy activity, not FMA utilization; it executes
+5.78x the warp instructions. Recipes remain fixed to the 5090 winners, with
+no production admission or claim of 5070-optimal tuning.
+
 ## Reproduce
 
 Requires an sm_120 NVIDIA GPU (tested on RTX 5090/5070), CUDA 12.8,
