@@ -1,5 +1,6 @@
 """Host gates for the PPU comparison; not PPU numeric/performance admission."""
 import json
+import ctypes as C
 from pathlib import Path
 import subprocess
 
@@ -8,9 +9,61 @@ import pytest
 
 from dev.gemv_ppu.build import ppu_api, q4_dispatch, candidate_validation
 from dev.gemv_ppu.campaign import parse_cells
-from dev.gemv_ppu.run import configs, check_reduction, verify_bundle
+from dev.gemv_ppu.run import configs, check_reduction, verify_bundle, query_l2_attribute, resolve_l2
 
 ROOT=Path(__file__).resolve().parents[1]
+
+
+class AttributeLibrary:
+    """Optional-query behavior only; never masquerades as a device launch."""
+    def __init__(self,*,value=64*1024**2,rc=0,deferred=0):
+        self.calls=[]
+        def query(out,attribute,device):
+            self.calls.append((attribute,device))
+            if value is not None:C.cast(out,C.POINTER(C.c_int))[0]=value
+            return rc
+        def clear():self.calls.append("clear");return deferred
+        self.hggcDeviceGetAttribute=query
+        self.hggcGetLastError=clear
+
+
+def test_zero_properties_uses_separate_attribute_not_a_guessed_capacity():
+    lib=AttributeLibrary()
+    observed=query_l2_attribute(lib)
+    r=resolve_l2(0,0,observed)
+    assert lib.calls==[(38,0)]
+    assert r['l2_bytes']==64*1024**2 and r['l2_source']=='DEVICE_ATTRIBUTE_38'
+    assert r['reported_l2_bytes']==0 and r['l2_override'] is False
+
+
+@pytest.mark.parametrize('rc',[1,801,998])
+def test_optional_query_rejection_is_recorded_without_poisoning_launch(rc):
+    lib=AttributeLibrary(rc=rc,deferred=rc)
+    observed=query_l2_attribute(lib)
+    assert observed==dict(status=rc,bytes=0) and lib.calls[-1]=='clear'
+    with pytest.raises(ValueError,match='confirmed capacity'):resolve_l2(0,0,observed)
+    r=resolve_l2(0,64*1024**2,observed)
+    assert r['l2_source']=='EXPLICIT_OVERRIDE'
+
+
+@pytest.mark.parametrize('value,status',[(None,'UNWRITTEN'),(0,0)])
+def test_success_without_capacity_does_not_invent_l2(value,status):
+    observed=query_l2_attribute(AttributeLibrary(value=value))
+    assert observed==dict(status=status,bytes=0)
+    with pytest.raises(ValueError):resolve_l2(0,0,observed)
+
+
+def test_missing_attribute_and_real_runtime_failures_are_distinct():
+    assert query_l2_attribute(object())==dict(status='NOT_EXPORTED',bytes=0)
+    with pytest.raises(RuntimeError,match='status=200'):query_l2_attribute(AttributeLibrary(rc=200))
+    with pytest.raises(RuntimeError,match='status=700'):query_l2_attribute(AttributeLibrary(rc=1,deferred=700))
+    with pytest.raises(ValueError,match='negative'):query_l2_attribute(AttributeLibrary(value=-2))
+
+
+def test_explicit_capacity_keeps_both_sdk_observations():
+    r=resolve_l2(0,64*1024**2,dict(status=0,bytes=32*1024**2))
+    assert r['l2_source']=='EXPLICIT_OVERRIDE' and r['l2_override'] is True
+    assert r['l2_attribute']['bytes']==32*1024**2 and r['reported_l2_bytes']==0
 
 
 def test_native_runtime_translation_preserves_device_body():

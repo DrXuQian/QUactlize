@@ -34,9 +34,18 @@ experiment: their half-affine dequantization expressions also differ. See
 
 Warm uses one resident weight; rotating uses at least two distinct allocations,
 totalling at least 2.25 times the device-reported L2. Every timed graph traverses
-whole rings, including across replay boundaries. A reported L2 size of zero
-requires an explicit, verified `L2_BYTES`; no hardware size is guessed.
+whole rings, including across replay boundaries. If `DeviceProperties` reports
+zero L2, the runner queries native `hggcDeviceGetAttribute(...,38,0)` separately.
+The scalar attribute does not depend on the properties-structure layout. If
+both interfaces leave capacity unavailable, use an explicit verified
+`L2_BYTES`; no hardware size is guessed. For example, **if the board has 64 MiB**,
+`L2_BYTES=67108864` selects that capacity and is recorded as `EXPLICIT_OVERRIDE`,
+not an SDK-measured value. Both SDK observations remain in the receipt.
 For a weight larger than L2, “warm” means repeatedly used, not fully L2-resident.
+
+The [local SDK audit](PPU_SDK_L2_QUERY_AUDIT.md) confirms that the native
+attribute-38 path is implemented, not an empty stub. The PPU result `0` from
+the properties path alone does not prove that the scalar attribute is absent.
 
 Screen all SIMT recipes with five samples. Confirm the top two plus the best
 S1 when necessary, in six alternating-arm rounds of fifteen samples. Each

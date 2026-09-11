@@ -31,6 +31,39 @@ SHAPES=((512,2048),(1024,5120),(4096,2048),(4096,4096),(5120,8192),(8192,5120))
 ARMS=("xplane","old","new","fq")
 
 
+def query_l2_attribute(lib):
+    # Native SDK 2.1.1 driver_types.h: hggcDevAttrL2CacheSize=38.
+    # This returns one integer, independently of DeviceProperties struct ABI.
+    try:fn=lib.hggcDeviceGetAttribute
+    except AttributeError:return dict(status="NOT_EXPORTED",bytes=0)
+    fn.argtypes=[C.POINTER(C.c_int),C.c_int,C.c_int];fn.restype=C.c_int
+    value=C.c_int(-1)
+    rc=fn(C.byref(value),38,0)
+    if rc:
+        # Optional-query rejection is not a kernel failure. Clear only these
+        # documented rejections; propagate device and unexpected runtime errors.
+        unsupported=(1,801,998)
+        checked(rc if rc not in unsupported else 0,"L2 attribute query")
+        clear=lib.hggcGetLastError;clear.argtypes=[];clear.restype=C.c_int
+        deferred=clear()
+        checked(deferred if deferred not in (0,*unsupported) else 0,"L2 attribute deferred error")
+        return dict(status=rc,bytes=0)
+    if value.value==-1:return dict(status="UNWRITTEN",bytes=0)
+    if value.value<0:raise ValueError("negative L2 attribute")
+    return dict(status=0,bytes=value.value)
+
+
+def resolve_l2(reported,override,attribute):
+    if min(reported,override,attribute["bytes"])<0:raise ValueError("negative L2 capacity")
+    capacity=override or reported or attribute["bytes"]
+    if capacity<=0:
+        raise ValueError(f"SDK reports no L2 capacity: properties={reported}, attribute={attribute}; "
+                         "set L2_BYTES to a confirmed capacity in bytes")
+    source="EXPLICIT_OVERRIDE" if override else "DEVICE_PROPERTIES" if reported else "DEVICE_ATTRIBUTE_38"
+    return dict(l2_bytes=capacity,reported_l2_bytes=reported,l2_override=bool(override),
+                l2_source=source,l2_attribute=attribute)
+
+
 def configs(arm):
     if arm=="fq":return [(0,0,0)] # The production selector owns this recipe.
     if arm=="xplane":return [(c,w,1) for c in (1,2,4,8) for w in (2,4,8)]
@@ -63,10 +96,9 @@ def load_library(args,arm):
     l2,sm,warp=C.c_int(),C.c_int(),C.c_int();name=C.create_string_buffer(256)
     checked(probe(C.byref(l2),C.byref(sm),C.byref(warp),name),"real PPU image/marker probe: "+arm)
     if warp.value<=0 or sm.value<=0:raise ValueError("invalid reported device warp/SM geometry")
-    l2_bytes=args.l2_bytes or l2.value
-    if l2_bytes<=0:raise ValueError("device reports no L2 size; supply verified bytes with L2_BYTES, not a guess")
-    identity=dict(name=name.value.decode(),sm=sm.value,warp=warp.value,l2_bytes=l2_bytes,
-                  reported_l2_bytes=l2.value,l2_override=bool(args.l2_bytes))
+    attribute=query_l2_attribute(lib) if l2.value==0 else dict(status="NOT_NEEDED",bytes=0)
+    identity=dict(name=name.value.decode(),sm=sm.value,warp=warp.value,
+                  **resolve_l2(l2.value,args.l2_bytes,attribute))
     print("Q4_PPU_DEVICE "+json.dumps(identity),flush=True)
     return lib,identity
 
