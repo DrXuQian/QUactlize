@@ -15,6 +15,24 @@ from tools.verify_kpack_dispatch import verify as verify_native
 from tools.profile_kpack_gpu_compact import acu_launch_command
 
 ROOT=Path(__file__).resolve().parents[2]
+# The only older orchestration admitted for native-only repair. Its child
+# runner, SIMT binaries, fixtures, runtime and device must still match exactly.
+FQ_REFRESH_CAMPAIGNS={"06a609630be2e1997e44924cc0bf28651f4a7573b33b34519def1e502e38c05c"}
+
+
+def validate_fq_refresh(previous,current,enabled):
+    if previous==current:return False
+    changed={key for key in previous.keys()|current.keys() if previous.get(key)!=current.get(key)}
+    if (not enabled or set(previous)!=set(current) or not changed<={"native","campaign"}
+            or previous["campaign"] not in FQ_REFRESH_CAMPAIGNS|{current["campaign"]}):
+        raise ValueError("resume identity changed; only an explicit native-only REFRESH_FQ=1 can reuse SIMT results")
+    return True
+
+
+def cached_batch_matches(record,command,log,arm,native_hash):
+    return (record.get("command")==command and record.get("log_sha256")==digest(log)
+            and record.get("rc")==0
+            and (arm!="fq" or record.get("native_manifest_sha256")==native_hash))
 
 
 def parse_cells(text,arm,recipes,shape,mode,samples):
@@ -46,7 +64,7 @@ def parse_cells(text,arm,recipes,shape,mode,samples):
 def run(args):
     if args.output is None or args.fixtures is None:raise ValueError("--output and --fixtures are required")
     args.output=args.output.resolve();args.fixtures=args.fixtures.resolve(strict=True)
-    m=verify_bundle(args.bundle);native=verify_native(args.native_bundle)
+    m=verify_bundle(args.bundle);verify_native(args.native_bundle,sdk=args.sdk)
     sdk=SDK(args.sdk);device=device_identity(sdk)
     for arm in ("old","new","xplane"):
         library,geometry=load_library(args,arm)
@@ -62,8 +80,19 @@ def run(args):
     if runtime_diff:print("Q4_PPU_SDK_DIFFERENCE recorded="+",".join(runtime_diff)+" admission=REAL_MARKER_AND_NUMERIC_REQUIRED",flush=True)
     args.output.mkdir(parents=True,exist_ok=True)
     authority=args.output/"authority.json"
-    if authority.exists() and json.loads(authority.read_text())!=inputs:
-        raise ValueError("resume identity changed; use a new output directory")
+    refresh=os.environ.get("REFRESH_FQ","0")
+    if refresh not in ("0","1"):raise ValueError("REFRESH_FQ must be 0 or 1")
+    lineage=args.output/"fq-refresh.jsonl"
+    if authority.exists():
+        previous=json.loads(authority.read_text())
+        if validate_fq_refresh(previous,inputs,refresh=="1"):
+            snapshot=f"authority.before-fq-refresh.{time.time_ns()}.json"
+            (args.output/snapshot).write_text(authority.read_text())
+            with lineage.open("a") as f:
+                f.write(json.dumps(dict(previous_authority=snapshot,previous=previous,current=inputs,
+                    timing_cohort="FQ_SUPPLEMENTAL_NOT_CONTEMPORANEOUS_FOUR_ARM_ROUNDS"))+"\n")
+            print("Q4_PPU_FQ_REFRESH SIMT=UNCHANGED_REUSE FQ=REMEASURE_NATIVE_BOUND supplemental=1",flush=True)
+    elif refresh=="1":raise ValueError("FQ refresh requires an existing authority.json")
     authority.write_text(json.dumps(inputs,indent=2)+"\n")
     started=time.monotonic();jobs=0
     def command(arm,n,k,mode,recipes,samples,profile=False):
@@ -79,7 +108,7 @@ def run(args):
         cmd=command(arm,n,k,mode,recipes,samples)
         if saved.is_file() and log.is_file():
             record=json.loads(saved.read_text())
-            if record.get("command")==cmd and record.get("log_sha256")==digest(log) and record.get("rc")==0:
+            if cached_batch_matches(record,cmd,log,arm,inputs["native"]):
                 rows=parse_cells(log.read_text(),arm,recipes,[1,n,k],mode,samples)
                 if any(r["device"]!=device for r in rows):raise ValueError("cached batch device differs")
                 return rows
@@ -88,12 +117,14 @@ def run(args):
         with log.open("w") as out:
             proc=subprocess.run(cmd,stdout=out,stderr=subprocess.STDOUT)
         record=dict(command=cmd,log_sha256=digest(log),rc=proc.returncode)
+        if arm=="fq":record["native_manifest_sha256"]=inputs["native"]
         saved.write_text(json.dumps(record,indent=2)+"\n");jobs+=1
         if proc.returncode:raise ValueError(f"child rc={proc.returncode}; log={log}")
         rows=parse_cells(log.read_text(),arm,recipes,[1,n,k],mode,samples)
         if any(r["device"]!=device for r in rows):raise ValueError("child batch device differs")
         return rows
     report=dict(status="RUNNING",scope="Q4_DENSE_M1_PPU_COLD_AND_WARM",authority=inputs,cases=[],failures=[],profiles=[])
+    if lineage.exists():report["timing_cohort"]="FQ_SUPPLEMENTAL_NOT_CONTEMPORANEOUS_FOUR_ARM_ROUNDS"
     for n,k in SHAPES:
         for mode in ("warm","rotating"):
             winners={}
@@ -175,7 +206,7 @@ def run(args):
                 except Exception as exc:record.update(status="FAIL",error=str(exc))
                 saved.write_text(json.dumps(record,indent=2)+"\n")
                 report["profiles"].append(record)
-    verify_bundle(args.bundle);verify_native(args.native_bundle)
+    verify_bundle(args.bundle);verify_native(args.native_bundle,sdk=args.sdk)
     if digest(args.bundle/"manifest.json")!=inputs["bundle"] or digest(args.native_bundle/"manifest.json")!=inputs["native"]:
         raise ValueError("bundle identity changed during measurement")
     if any(digest(args.sdk/"lib"/name)!=value for name,value in inputs["runtime"].items()):

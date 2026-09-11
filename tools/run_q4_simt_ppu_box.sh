@@ -40,7 +40,9 @@
     BUNDLE="$ROOT/prebuilt/ppu0010/q4-simt-ab-v1"
     NATIVE=${NATIVE_BUNDLE:-$ROOT/prebuilt/ppu0010/kpack-jit-v2}
     test -s "$BUNDLE/manifest.json" && test -s "$NATIVE/manifest.json"
-    "$PYTHON" -c 'import sys; from pathlib import Path; from dev.gemv_ppu.run import verify_bundle; from tools.verify_kpack_dispatch import verify; verify_bundle(Path(sys.argv[1])); verify(Path(sys.argv[2])); print("Q4_PPU_PACKAGE PASS")' "$BUNDLE" "$NATIVE"
+    "$PYTHON" -c 'import sys; from pathlib import Path; from dev.gemv_ppu.run import verify_bundle; from tools.verify_kpack_dispatch import verify; verify_bundle(Path(sys.argv[1])); verify(Path(sys.argv[2]),sdk=Path(sys.argv[3])); print("Q4_PPU_PACKAGE PASS live_jit_source=MATCH")' "$BUNDLE" "$NATIVE" "$SDK"
+    [[ ${REFRESH_FQ:-0} == 0 || ${REFRESH_FQ:-0} == 1 ]]
+    if [[ ${REFRESH_FQ:-0} == 1 ]]; then test -n "${RESUME_RUN:-}"; fi
     if [[ -n ${RESUME_RUN:-} ]]; then
         RUN=$(realpath -e -- "$RESUME_RUN")
         test -n "$RUN" && test -d "$RUN/fixtures" && test -d "$RUN/results"

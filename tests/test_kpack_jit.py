@@ -188,6 +188,32 @@ def test_helper_rejects_foreign_dispatcher_source_before_compile(tmp_path, monke
     assert not result.stdout and not cache.exists()
 
 
+@pytest.mark.parametrize("changed",[None,"sdk","host","kernel","generator","flags"])
+def test_package_preflight_checks_live_source_without_building(tmp_path,monkeypatch,changed):
+    from types import SimpleNamespace
+    import tools.verify_kpack_dispatch as verifier
+    identity=dict(kernel="kernel",generator="generator",flags=[],sdk="sdk",host="host")
+    manifest=dict(schema="quactlize.kpack-native-dispatch.v1",modules=[],jit_required=True,
+                  jit_source_identity=identity,jit_source_contract=source_contract(identity))
+    for name,field in (("libquactlize_kpack_dispatch.so","dispatch_sha256"),
+                       ("libquactlize_ppu_execution.so","execution_sha256")):
+        path=tmp_path/name;path.write_bytes(b"host-only-package-test")
+        manifest[field]=sha(path)
+    (tmp_path/"manifest.json").write_text(json.dumps(manifest))
+    current=identity.copy()
+    if changed:current[changed]=["other"] if changed=="flags" else "other"
+    def compiler(sdk,cache):
+        assert sdk=="test-sdk" and not cache.exists()
+        return SimpleNamespace(identity=current)
+    monkeypatch.setattr(verifier,"Compiler",compiler)
+    assert verifier.verify(tmp_path)==manifest  # Internal/historical validation remains available.
+    if changed in ("kernel","generator","flags"):
+        with pytest.raises(ValueError,match="rebuild the small dispatcher"):
+            verifier.verify(tmp_path,sdk="test-sdk")
+    else:assert verifier.verify(tmp_path,sdk="test-sdk")==manifest
+    assert not (tmp_path/".source-check-unused").exists()
+
+
 def published_module(tmp_path):
     parent = parent_tuple("parent", [12, 0, 8, 64, 64, 8, 16, 2, 0, 16, -1])
     identity = dict(kernel="kernel", generator="generator", flags=[], sdk="sdk", host="host")

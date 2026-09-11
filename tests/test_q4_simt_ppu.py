@@ -8,10 +8,58 @@ import numpy as np
 import pytest
 
 from dev.gemv_ppu.build import ppu_api, q4_dispatch, candidate_validation
-from dev.gemv_ppu.campaign import parse_cells
+from dev.gemv_ppu.campaign import parse_cells, validate_fq_refresh, cached_batch_matches, FQ_REFRESH_CAMPAIGNS
+from dev.gemv_cuda.build import digest
 from dev.gemv_ppu.run import configs, check_reduction, verify_bundle, query_l2_attribute, resolve_l2
 
 ROOT=Path(__file__).resolve().parents[1]
+
+
+def refresh_authority():
+    return dict(native="old",campaign=next(iter(FQ_REFRESH_CAMPAIGNS)),runner="runner",
+                bundle="simt",device={"pci":"one"},runtime={"lib":"same"},
+                fixtures={"512x2048":"same"},samples=15,confirm_rounds=6,l2_override=67108864)
+
+
+def test_native_only_refresh_is_explicit_and_keeps_simt_authority():
+    previous=refresh_authority()
+    current=previous|dict(native="new",campaign="new-campaign")
+    assert validate_fq_refresh(previous,previous,False) is False
+    with pytest.raises(ValueError):validate_fq_refresh(previous,current,False)
+    assert validate_fq_refresh(previous,current,True) is True
+    assert validate_fq_refresh(current,current|dict(native="next"),True) is True
+
+
+@pytest.mark.parametrize("key",["runner","bundle","device","runtime","fixtures","samples","confirm_rounds","l2_override"])
+def test_fq_refresh_cannot_excuse_any_simt_measurement_change(key):
+    previous=refresh_authority()
+    current=previous|dict(native="new",campaign="new-campaign")
+    current[key]="changed"
+    with pytest.raises(ValueError):validate_fq_refresh(previous,current,True)
+
+
+def test_refresh_rejects_unknown_or_incomplete_authority():
+    previous=refresh_authority()
+    current=previous|dict(native="new",campaign="new-campaign")
+    with pytest.raises(ValueError):validate_fq_refresh(previous|dict(campaign="unknown"),current,True)
+    del previous["samples"]
+    with pytest.raises(ValueError):validate_fq_refresh(previous,current,True)
+
+
+def test_fq_cache_is_bound_to_native_manifest_but_simt_is_independent(tmp_path):
+    log=tmp_path/"batch.log";log.write_text("record")
+    cmd=["python","run.py","--child"]
+    saved=dict(command=cmd,log_sha256=digest(log),rc=0)
+    for arm in ("xplane","old","new"):
+        assert cached_batch_matches(saved,cmd,log,arm,"new-native")
+    assert not cached_batch_matches(saved,cmd,log,"fq","new-native")
+    saved["native_manifest_sha256"]="old-native"
+    assert not cached_batch_matches(saved,cmd,log,"fq","new-native")
+    assert cached_batch_matches(saved,cmd,log,"fq","old-native")
+    assert not cached_batch_matches(saved,cmd+["--profile"],log,"fq","old-native")
+    assert not cached_batch_matches(saved|dict(rc=1),cmd,log,"fq","old-native")
+    log.write_text("modified")
+    assert not cached_batch_matches(saved,cmd,log,"new","new-native")
 
 
 class AttributeLibrary:

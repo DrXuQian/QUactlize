@@ -12,7 +12,7 @@ from quactlize.runtime.compiler import Compiler, sha, source_contract
 from quactlize.runtime.tuning import digest
 
 
-def verify(root):
+def verify(root, *, sdk=None):
     root = Path(root).resolve(strict=True)
     m = json.loads((root / "manifest.json").read_text())
     if (m.get("schema") != "quactlize.kpack-native-dispatch.v1" or
@@ -28,6 +28,15 @@ def verify(root):
     if m.get("jit_required") or "jit_source_contract" in m:
         if source_contract(m.get("jit_source_identity", {})) != m.get("jit_source_contract"):
             raise ValueError("JIT source contract differs")
+        if sdk is not None:
+            # Constructor hashes inputs only: no cache directory, compilation,
+            # runtime loading or GPU work. Reject stale bundles before a sweep.
+            identity = Compiler(sdk, root / ".source-check-unused").identity
+            if source_contract(identity) != m["jit_source_contract"]:
+                changed = [key for key in ("kernel", "flags", "generator")
+                           if identity[key] != m["jit_source_identity"][key]]
+                raise ValueError("JIT checkout differs from dispatcher (" + ",".join(changed)
+                                 + "); rebuild the small dispatcher")
     seen = set()
     for r in m["modules"]:
         if (
@@ -57,8 +66,9 @@ def verify(root):
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("bundle", type=Path)
+    p.add_argument("--sdk", type=Path, help="also check the live JIT source contract, without compiling")
     a = p.parse_args()
-    manifest = verify(a.bundle)
+    manifest = verify(a.bundle, sdk=a.sdk)
     print(
         f"KPACK_NATIVE_PACKAGE VERIFIED modules={len(manifest['modules'])} "
         f"execution_sha256={manifest['execution_sha256']} device_admission=PENDING"

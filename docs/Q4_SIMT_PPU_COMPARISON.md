@@ -91,10 +91,47 @@ Successful exact batches and ACU reports are reused only when their receipts
 match; failed attempts remain preserved. A changed device/runtime/source/input
 requires a new run directory.
 
+### Repair a stale FQ JIT dispatcher without repeating SIMT
+
+The original `q4-simt-ppu.0uCEmO` run completed the three SIMT arms but all twelve
+FQ cases stopped at the JIT source-contract check. The small dispatcher had
+not been rebuilt after kernel headers and the generator changed. This was not
+a device arithmetic failure. The package now includes the rebuilt 599 KiB
+dispatcher; the execution library and all three comparison kernels are unchanged.
+Preflight checks the live checkout contract before starting a campaign.
+
+After the previous run has finished, from the box repository:
+
+```bash
+(
+  GIT_LFS_SKIP_SMUDGE=1 git pull --ff-only origin develop &&
+  git lfs pull --include="prebuilt/ppu0010/kpack-jit-v2/*.so" --exclude="" &&
+  PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
+  CUDA_VISIBLE_DEVICES=0 L2_BYTES=67108864 ACU=1 \
+  RESUME_RUN=/workspace/q4-simt-ppu.0uCEmO REFRESH_FQ=1 \
+  bash tools/run_q4_simt_ppu_box.sh
+)
+```
+
+`REFRESH_FQ=1` admits only the audited old orchestration (or the current one)
+and a changed native package. The child runner, SIMT bundle, fixtures, device,
+SDK runtime, L2 setting and sample counts must still match. Successful SIMT
+batches are reused; FQ caches must carry the new native-manifest hash. Old
+authority and failed logs remain saved. FQ measurements are explicitly marked
+**supplemental**, not contemporaneous four-arm alternating rounds. JIT cold
+compilation remains outside kernel timing; numerical device admission is still
+required.
+
 **ACU is not timing authority.** SDK 2.1.1 flushes even when its cache-control
 setting says `none`; this runner explicitly uses `all` and profiles individual
 nodes. ACU captures the warm-selected new/Xplane recipes for diagnosis, but
 its durations must not replace the unprofiled warm/cold timings.
+
+For the uploaded `5120×8192` case, both regimes selected Xplane `C2/W8/S1`
+and new K-pack `C4/W8/S1`. The existing `n5120-k8192-{xplane,new}.acu.acurep`
+reports therefore already cover both selected kernel specializations. See
+[the first PPU ACU comparison](Q4_SIMT_PPU_ACU_20260911.md) for the counters
+and the distinction between profiled cold calls and rotating-graph timings.
 
 ## Rebuild locally
 

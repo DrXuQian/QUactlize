@@ -2,17 +2,18 @@
   "schema": "quactlize.kpack-native-dispatch.v1",
   "modules": [],
   "policy_hashes": {
-    "quactlize/dispatch/api.h": "489adad4397641ae3b73464dd66ea61cfa17270b339b3d9f7122333d67e9951f",
-    "quactlize/dispatch/binding.cpp": "7492f6c4b1f82beccb97b7c5c8c5912acba488ae4c5858df53601c33e22f20f8",
+    "quactlize/dispatch/api.h": "4ae390dd1b0c2cdb6b39460b48f04e611275dfbc7fbbc60deb1c30604cc68e83",
+    "quactlize/dispatch/binding.cpp": "67963276bbe751550b5e321be1d938416737674e6af6e33adeff466d821ca60a",
     "quactlize/dispatch/jit.hpp": "f13b155283337ea7051eafde0fcc4abc825ce5414cfed4265d3ab805fb0cb5ab",
-    "quactlize/dispatch/native.py": "eb9af35d7cd9da5154594b226abcdb97ef3226aba1e98174a2f369411cbf3684",
-    "quactlize/dispatch/policy.hpp": "47199ee914cdfd043f917631ba78e329774071bfd1a7d3521b2692c1fe693835",
-    "tools/build_kpack_dispatch.py": "025e07a521937464984bb058231b2e3bae698de15edb27b404cf48447975493e",
-    "tools/kpack_native_policy.cpp": "248a73d43bb6b05daa7ec45e61eb8ecf859d3181a57ea3ef6384eecaf284964f",
+    "quactlize/dispatch/moe.hpp": "8cb116afd6ee2587a695676bb5c0293bcce238fbf6b1cbd8769da6ff1674c0e2",
+    "quactlize/dispatch/native.py": "e8119ca1399578eace0451b7aa43c789b9b574f5f40d8c006b392923d2a36628",
+    "quactlize/dispatch/policy.hpp": "9469f33679cc915ae8a620caf7cc55bc35b0dfb2693d8763f065f2e364129e1c",
+    "tools/build_kpack_dispatch.py": "e25a00aa34740494dc122aff69c04b00120187c06f30c09a758e85403b049404",
+    "tools/kpack_native_policy.cpp": "ee3b77bf506387cc5ee748237290c5ed8a503bf9955db6ae4ed357de4c0a8a0a",
     "policies/kpack_zw810_heuristic_v1.hpp": "7a8c74e9d9d739dac3022329aaa19d314dc39c34b210dcbe80431a04c1ca5e8d",
     "policies/kpack_zw810_runtime_v1.hpp": "88f22bc4b1fd82036bba6b42d152f6ed9ff6e4de4dbf9d5ca55355ff9b0ffda8"
   },
-  "dispatch_sha256": "b5c6d0a3533d855d5727e761c8f50ebe7b5237266ef434ad1e76ce4e5292c39b",
+  "dispatch_sha256": "14545ed985b7c6f0b686bbc251db84edea2009cfc1249bdc5c38c49216a7e553",
   "execution_sha256": "53165c9ec37a7f73057b31289434c90a2a4da0065f37c93ca78208cecd4ba1de",
   "compiler_identity": null,
   "compiler_identities": {},
@@ -693,18 +694,18 @@
     "-shared",
     "-pthread",
     "-Wl,-Bsymbolic",
-    "-I/root/autodl-tmp/kpack-jit-gridfix-20260910.PWASqI/build",
+    "-I/root/autodl-tmp/q4-fq-dispatch.qMSSFY/bundle",
     "/root/marlin_ppu/quactlize/quactlize/dispatch/binding.cpp",
     "-ldl",
     "-o",
-    "/root/autodl-tmp/kpack-jit-gridfix-20260910.PWASqI/build/libquactlize_kpack_dispatch.so"
+    "/root/autodl-tmp/q4-fq-dispatch.qMSSFY/bundle/libquactlize_kpack_dispatch.so"
   ],
   "device_validated": false,
   "heuristic_admitted": false,
   "grouped_profile": "measured-q4-q5-single-token-otherwise-device-bounds-no-router-readback",
-  "jit_source_contract": "70aa510bf1c32e17ff6a4205a5952684a87c9dce5e99147132e8accc814b6f84",
+  "jit_source_contract": "05ce6187acb80740c3ea2dbcee3be0593f0f27c4aef9e4b68138eb15373938c0",
   "jit_source_identity": {
-    "kernel": "41ececd5c74f5dd7ff7e9d29f455a6eae7860038db802204cc23e3950b49914b",
+    "kernel": "cbddfe7e7831d3435424fafa48c3a8252b586887d86f5f1c89e2508df1354e62",
     "flags": [
       "--forward-unknown-to-host-compiler",
       "--forward-unknown-to-host-linker",
@@ -732,7 +733,7 @@
       "-DCUTE_USE_PACKED_TUPLE=1",
       "-fPIC"
     ],
-    "generator": "8047bdc9604148db92067f2ce1ea733c07adfdbab34c1f65d025f26cb55773fb"
+    "generator": "0fa5f3b1ebf3ffb381fd8fdfa1a8b2b22aa081a1f23f8b3d8daca3f8d3e93d82"
   },
   "jit_required": true
 }
