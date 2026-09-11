@@ -58,7 +58,7 @@ def grid_schedule(source):
     )
 
 
-def replace_dot(original, filename):
+def replace_dot(original, filename, *, content=None):
     start = "template<class Reader>\n__device__ __forceinline__ float pair_dot("
     end = "template<int Columns, int Warps, bool Pair = false>\n__global__ void kpack_gemv("
     if original.count(start) != 1 or original.count(end) != 1:
@@ -68,7 +68,7 @@ def replace_dot(original, filename):
         raise ValueError("reversed dot boundaries")
     return (
         original[:first]
-        + (HERE / filename).read_text()
+        + ((HERE / filename).read_text() if content is None else content)
         + "\n"
         + original[last:]
     )
@@ -76,6 +76,14 @@ def replace_dot(original, filename):
 
 def affine_source(original):
     return replace_dot(original, "affine_dot.cuh")
+
+
+def q4_n2_source(original):
+    generic = replace_once((HERE / "n2_dot.cuh").read_text(),
+                           "float2 pair_dot(", "float2 generic_n2_pair_dot(")
+    return '#include "' + str(HERE / "q4_native.cuh") + '"\n' + n2_schedule(
+        replace_dot(original, "q4_n2_dot.cuh",
+                    content=generic + "\n" + (HERE / "q4_n2_dot.cuh").read_text()))
 
 
 def n2_schedule(source):
@@ -188,12 +196,16 @@ def build(cuda, output, jobs, reader="production", schedule="production"):
             (ROOT / "quactlize/execution/gemv.cu").read_text(), "n2_dot.cuh"))
         if schedule != "production":
             raise ValueError("N2 owns its launch mapping; use the production schedule option")
+    if reader == "cuda-q4-n2":
+        if schedule != "production":
+            raise ValueError("Q4 N2 owns its launch mapping; use the production schedule option")
+        original = q4_n2_source((ROOT / "quactlize/execution/gemv.cu").read_text())
     if schedule == "cuda-grid":
         original = grid_schedule(original)
-    if reader in ("cuda-affine", "cuda-vector", "cuda-n2") or schedule != "production":
+    if reader in ("cuda-affine", "cuda-vector", "cuda-n2", "cuda-q4-n2") or schedule != "production":
         gemv_source = output / "gemv_experiment.cu"
         gemv_source.write_text(original)
-    q8_source = gemv_source if reader in ("cuda-vector", "cuda-n2") else ROOT / "quactlize/execution/gemv.cu"
+    q8_source = gemv_source if reader in ("cuda-vector", "cuda-n2", "cuda-q4-n2") else ROOT / "quactlize/execution/gemv.cu"
     entries = [("q8", q8_source, ["-DQKG_QTYPE=8"])] + [
         (f"q{q}", gemv_source, [f"-DQKG_QTYPE={q}"]) for q in range(10, 15)] + [
         ("dispatch", ROOT / "quactlize/execution/dispatch.cpp", []),
@@ -257,10 +269,12 @@ def build(cuda, output, jobs, reader="production", schedule="production"):
             "cuda-affine": "FP32_GROUP_AFFINE_NO_METADATA_WEIGHT_OR_A_FP16_ROUNDING",
             "cuda-vector": "FP16_PAIR_AFFINE_VECTOR_A_FOUR_FP32_DOT_CHAINS",
             "cuda-n2": "FP16_PAIR_AFFINE_TWO_COLUMNS_PER_THREAD_VECTOR_A",
+            "cuda-q4-n2": "FP16_PAIR_AFFINE_Q4_NATIVE_WORDS_SAME_N2_FP32_ORDER",
         }[reader],
         reader=reader,
-        pair_column_values_per_thread=2 if reader == "cuda-n2" else 1,
-        q8_reader=reader if reader in ("cuda-vector", "cuda-n2") else "production",
+        pair_column_values_per_thread=2 if reader in ("cuda-n2", "cuda-q4-n2") else 1,
+        q8_reader=("cuda-n2" if reader == "cuda-q4-n2" else reader)
+                  if reader in ("cuda-vector", "cuda-n2", "cuda-q4-n2") else "production",
         schedule=schedule,
         ppu_admission=False,
     )
@@ -278,7 +292,7 @@ if __name__ == "__main__":
     parser.add_argument("--jobs", type=int, default=6)
     parser.add_argument(
         "--reader",
-        choices=("production", "cuda-half2", "cuda-affine", "cuda-vector", "cuda-n2"),
+        choices=("production", "cuda-half2", "cuda-affine", "cuda-vector", "cuda-n2", "cuda-q4-n2"),
         default="production",
     )
     parser.add_argument(

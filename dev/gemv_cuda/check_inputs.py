@@ -26,7 +26,7 @@ def cases():
     yield 1, 6, 1
 
 
-def run(library, fixture):
+def run(library, fixture, *, baseline=None):
     q, n, k, experts = (int(fixture[x]) for x in ("q", "n", "k", "experts"))
     selected = fixture["ids"].tolist()
     assert len(selected) == 8 and experts == 16
@@ -41,6 +41,7 @@ def run(library, fixture):
             dest[expert].copy_(torch.from_numpy(src[slot]))
         storage[name] = dest
     query, launch = bind(library, "pair")
+    baseline_launch = bind(baseline, "pair")[1] if baseline is not None else None
     arr = arrangement(q)
     stream = torch.cuda.Stream()
     records = []
@@ -122,6 +123,18 @@ def run(library, fixture):
                         for s in range(split):
                             np.add(total, p[:, s], out=total)
                         assert np.array_equal(total.view("u4"), matrix[:, :n].view("u4"))
+                if baseline_launch is not None:
+                    # Separate output allocations are unnecessary: matrix is
+                    # already a CPU copy of the candidate's last graph replay.
+                    with torch.cuda.stream(stream):
+                        output.fill_(float("nan"))
+                        ws.fill_(float("nan"))
+                    checked(baseline_launch(C.byref(call), C.byref(cfg), C.byref(arr)))
+                    stream.synchronize()
+                    base = output.cpu().numpy()[4:-4].reshape(rows, output_stride)
+                    if not np.array_equal(base[:, :n].view("u4"), matrix[:, :n].view("u4")):
+                        bad = int(np.count_nonzero(base[:, :n].view("u4") != matrix[:, :n].view("u4")))
+                        raise ValueError(f"N2 baseline output bits differ: {bad}/{rows*n}")
                 if mode == 2:
                     with torch.cuda.stream(stream):
                         ids_dev.fill_(selected[0])
@@ -139,7 +152,8 @@ def run(library, fixture):
                 record = dict(q=q, mode=mode, tokens=tokens if mode == 2 else None,
                               rows=rows, channels=channels, dtype=str(dtype), a_offset=offset,
                               plane_offset=2 if offset else 0, config=[columns, warps, split],
-                              repeats=3, error=worst, status="PASS")
+                              repeats=3, error=worst, status="PASS",
+                              baseline_bitwise="PASS" if baseline_launch is not None else "NOT_REQUESTED")
                 records.append(record)
                 print("GEMV_INPUT_CONTROL " + json.dumps(record), flush=True)
     return records
@@ -150,20 +164,24 @@ def main():
     p.add_argument("--library", type=Path, required=True)
     p.add_argument("--fixtures", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--baseline", type=Path,
+                   help="optional same-ownership N2 library for exact output-bit comparison")
     a = p.parse_args()
     if a.output.exists():
         raise ValueError("output already exists")
     records = []
     library = C.CDLL(str(a.library.resolve()))
+    baseline = C.CDLL(str(a.baseline.resolve())) if a.baseline else None
     paths = sorted(a.fixtures.glob("*.npz"))
     if len(paths) != 5:
         raise ValueError("expected five format fixtures")
     for path in paths:
         with np.load(path, allow_pickle=False) as f:
-            records.extend(run(library, f))
+            records.extend(run(library, f, baseline=baseline))
     assert len(records) == 360
     a.output.write_text(json.dumps(dict(status="PASS", device=torch.cuda.get_device_name(),
         library_sha256=hashlib.sha256(a.library.read_bytes()).hexdigest(),
+        baseline_sha256=hashlib.sha256(a.baseline.read_bytes()).hexdigest() if a.baseline else None,
         source_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         fixture_sha256={x.name: hashlib.sha256(x.read_bytes()).hexdigest() for x in paths},
         ppu_admission=False, records=records), indent=2) + "\n")

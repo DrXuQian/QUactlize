@@ -21,6 +21,12 @@ finds 80.14% vs 43.98% DRAM throughput for rotating M1/N4096/K4096. N2's
 5.78x the warp instructions. Recipes remain fixed to the 5090 winners, with
 no production admission or claim of 5070-optimal tuning.
 
+The [Q4 native-word follow-up](../../docs/Q4_KPACK_NATIVE_READER.md) keeps
+the same K-pack bytes, N2 ownership and FP32 dot order. On 5070 it reduces
+rotating M1/N4096/K4096 from 33.318 to 19.528 us and producer instructions
+from 11.66M to 6.13M; request-side excessive sectors fall from 68% to below
+1%. This is `--reader cuda-q4-n2`, not a production or PPU promotion.
+
 ## Reproduce
 
 Requires an sm_120 NVIDIA GPU (tested on RTX 5090/5070), CUDA 12.8,

@@ -32,6 +32,26 @@ they require their own type identity and correctness closure before they may
 enter an incremental performance sweep.  They do not justify changing or
 pruning that baseline denominator.
 
+## SIMT K-pack instruction follow-up, 2026-09-11
+
+Keep one canonical resident format for decode and prefill; Xplane remains a
+development comparator, never a product fallback. Do not classify the old
+generic N2 overhead as an unavoidable format cost. The
+[Q4 native-word experiment](../../docs/Q4_KPACK_NATIVE_READER.md) preserves
+bytes, mapping, FP32 dot order and reducer, passes 360 exact-output A/B input
+contexts, and reduces 5070 rotating M1/N4096/K4096 complete latency by 41.39%.
+NCU global excessive sectors drop from 68% to 0.77% without a B transpose.
+This is CUDA evidence only; PPU selection and libraries are unchanged.
+
+| Follow-up | Status | Required evidence |
+| --- | --- | --- |
+| Q4 word-level metadata/decode/A-conversion cleanup | CUDA PROVED | 4.72M exact half values, 360 same-output-bit contexts, independent dot/guards/negatives; same-recipe timing and NCU recorded |
+| Refit S1/Split-K and A/metadata reuse | NEXT | Complete-call timing, including reducer; do not inherit the old N2 winner without remeasurement |
+| Optional SHM packed-B thread exchange | EXPERIMENT | Compare with instruction-clean direct loading, preserve ABI and numeric boundary; measure net cost, bank conflicts and register pressure |
+| Precision-matched Xplane diagnostic | PENDING | Same FP32 accumulation contract; current Xplane uses partial FP16 accumulation |
+| Q2/Q3/Q5/Q6 word-reader extensions | PENDING | Actual per-plane maps, exact metadata/code checks and dense/grouped/indexed coverage |
+| PPU codegen, numerical and performance admission | BOX REQUIRED | Native PPU half lowering may already avoid some CUDA overhead; no extrapolated speedup or policy promotion |
+
 ## Candidate axes
 
 | candidate | current canonical state | offline arrangement impact | admission work |
