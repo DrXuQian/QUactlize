@@ -9,6 +9,12 @@ The [2026-09-11 NCU follow-up](#ncu-guided-reader-follow-up-2026-09-11)
 below supersedes the old "no counter evidence" limitation for the RTX 5070.
 PPU and whole-model admission are still separate.
 
+The subsequent [matched Q4 Xplane comparison](../../docs/Q4_SIMT_XPLANE_KPACK_5090_AB.md)
+finds that the historical optimized Xplane SIMT reader remains substantially
+faster than N2. Equal-shape, >L2 rotations give 4.880 vs 9.441 us at K2048
+and 7.819 vs 14.807 us at K4096 (M1/N4096). These are independently tuned
+complete calls, not a layout-only or PPU verdict.
+
 ## Reproduce
 
 Requires an sm_120 NVIDIA GPU (tested on RTX 5090/5070), CUDA 12.8,
