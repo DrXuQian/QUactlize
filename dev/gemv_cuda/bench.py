@@ -77,7 +77,7 @@ def bind(lib, kind):
     return query, run
 
 
-def gemv(lib, fixture_path, *, profile=None, quick=False):
+def gemv(lib, fixture_path, *, profile=None, quick=False, pair_column_values=1):
     fixture = np.load(fixture_path, allow_pickle=False)
     q, n, k, experts, channels = [
         int(fixture[x]) for x in ("q", "n", "k", "experts", "channels")
@@ -206,7 +206,8 @@ def gemv(lib, fixture_path, *, profile=None, quick=False):
             error=err,
             samples_us=samples,
             median_us=statistics.median(samples) if samples else None,
-            grid=rows * split * (n // columns),
+            grid=rows * split * (n // (columns * (pair_column_values if kind == "pair" or q == 8 else 1))),
+            column_values_per_thread=pair_column_values if kind == "pair" or q == 8 else 1,
             status="PASS",
             scope="INDEXED_F32_INPUT_OUTPUT_NO_GATHER_SCATTER",
         )
@@ -377,7 +378,8 @@ def main():
         path = args.fixtures / record["path"]
         if hashlib.sha256(path.read_bytes()).hexdigest() != record["sha256"]:
             raise ValueError("fixture payload differs")
-        result["gemv"] += gemv(lib, path, profile=args.profile, quick=args.quick)
+        result["gemv"] += gemv(lib, path, profile=args.profile, quick=args.quick,
+                              pair_column_values=2 if manifest.get("reader") == "cuda-n2" else 1)
         args.output.write_text(json.dumps(result, indent=2) + "\n")
     if args.only != "gemv" and not args.profile:
         result["reducers"] = reducers(lib)

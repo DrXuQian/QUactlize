@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Development-only NVIDIA compile of the unchanged SIMT reader/kernel."""
+"""Development-only CUDA builds of production SIMT GEMV and reader experiments."""
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -58,7 +58,7 @@ def grid_schedule(source):
     )
 
 
-def affine_source(original):
+def replace_dot(original, filename):
     start = "template<class Reader>\n__device__ __forceinline__ float pair_dot("
     end = "template<int Columns, int Warps, bool Pair = false>\n__global__ void kpack_gemv("
     if original.count(start) != 1 or original.count(end) != 1:
@@ -68,10 +68,52 @@ def affine_source(original):
         raise ValueError("reversed dot boundaries")
     return (
         original[:first]
-        + (HERE / "affine_dot.cuh").read_text()
+        + (HERE / filename).read_text()
         + "\n"
         + original[last:]
     )
+
+
+def affine_source(original):
+    return replace_dot(original, "affine_dot.cuh")
+
+
+def n2_schedule(source):
+    # Only Pair=true changes ownership. Scalar dispatch remains the exact
+    # production control. The API's N divisibility also admits twice Columns.
+    source = replace_once(source, "int const tiles = c.n / Columns;",
+                          "int const tiles = c.n / (Columns * (Pair ? 2 : 1));")
+    source = replace_once(source, "int const col = tile * Columns + threadIdx.x % Columns;",
+                          "int const col = (tile * Columns + threadIdx.x % Columns) * (Pair ? 2 : 1);")
+    source = replace_once(source, "float accum = 0.f;", "float accum = 0.f, accum2 = 0.f;")
+    source = replace_once(source,
+        "accum=pair_dot<R>(c,a_base,low,high,units,col,worker,Workers,partition,split);",
+        "auto dot=pair_dot<R>(c,a_base,low,high,units,col,worker,Workers,partition,split);\n"
+        "        accum=dot.x; accum2=dot.y;")
+    source = replace_once(source, "__shared__ float partial[Warps * 32];",
+                          "__shared__ float partial[Warps * 32 * (Pair ? 2 : 1)];")
+    source = replace_once(source, "partial[threadIdx.x] = accum;",
+                          "partial[threadIdx.x] = accum;\n"
+                          "    if constexpr (Pair) partial[Warps * 32 + threadIdx.x] = accum2;")
+    source = replace_once(source,
+        "else static_cast<float*>(c.workspace)[(int64_t(row) * split + partition) * c.n + col] = value;",
+        "else static_cast<float*>(c.workspace)[(int64_t(row) * split + partition) * c.n + col] = value;\n"
+        "        if constexpr (Pair) {\n"
+        "            float second=0.f;\n"
+        "            #pragma unroll\n"
+        "            for (int w=0;w<Workers;++w) second+=partial[Warps*32+w*Columns+threadIdx.x];\n"
+        "            if (split==1) c.output[int64_t(row)*c.out_row_stride+col+1]=second;\n"
+        "            else static_cast<float*>(c.workspace)[(int64_t(row)*split+partition)*c.n+col+1]=second;\n"
+        "        }")
+    # Preserve observable NaN writes for invalid expert IDs in both columns.
+    source = replace_once(source, "        return;\n    }\n    int64_t const a_base",
+        "        if constexpr (Pair) if (threadIdx.x<Columns) {\n"
+        "            if (split==1) c.output[int64_t(row)*c.out_row_stride+col+1]=__int_as_float(0x7fc00000);\n"
+        "            else static_cast<float*>(c.workspace)[(int64_t(row)*split+partition)*c.n+col+1]=__int_as_float(0x7fc00000);\n"
+        "        }\n        return;\n    }\n    int64_t const a_base")
+    return replace_once(source,
+        "unsigned const grid = unsigned(uint64_t(c.rows) * split * (c.n / Columns));",
+        "unsigned const grid = unsigned(uint64_t(c.rows) * split * (c.n / (Columns*(Pair ? 2 : 1))));")
 
 
 def build(cuda, output, jobs, reader="production", schedule="production"):
@@ -137,13 +179,22 @@ def build(cuda, output, jobs, reader="production", schedule="production"):
     )
     original = gemv_source.read_text()
     if reader == "cuda-affine":
-        original = affine_source((ROOT / "quactlize/execution/gemv.cu").read_text())
+        original = replace_dot((ROOT / "quactlize/execution/gemv.cu").read_text(), "affine_dot.cuh")
+    if reader == "cuda-vector":
+        original = "#include <cuda_fp16.h>\n" + replace_dot(
+            (ROOT / "quactlize/execution/gemv.cu").read_text(), "vector_dot.cuh")
+    if reader == "cuda-n2":
+        original = "#include <cuda_fp16.h>\n" + n2_schedule(replace_dot(
+            (ROOT / "quactlize/execution/gemv.cu").read_text(), "n2_dot.cuh"))
+        if schedule != "production":
+            raise ValueError("N2 owns its launch mapping; use the production schedule option")
     if schedule == "cuda-grid":
         original = grid_schedule(original)
-    if reader == "cuda-affine" or schedule != "production":
+    if reader in ("cuda-affine", "cuda-vector", "cuda-n2") or schedule != "production":
         gemv_source = output / "gemv_experiment.cu"
         gemv_source.write_text(original)
-    entries = [("q8", ROOT / "quactlize/execution/gemv.cu", ["-DQKG_QTYPE=8"])] + [
+    q8_source = gemv_source if reader in ("cuda-vector", "cuda-n2") else ROOT / "quactlize/execution/gemv.cu"
+    entries = [("q8", q8_source, ["-DQKG_QTYPE=8"])] + [
         (f"q{q}", gemv_source, [f"-DQKG_QTYPE={q}"]) for q in range(10, 15)] + [
         ("dispatch", ROOT / "quactlize/execution/dispatch.cpp", []),
         ("reducer", HERE / "reducer.cu", []),
@@ -204,8 +255,12 @@ def build(cuda, output, jobs, reader="production", schedule="production"):
             "production": "CUDA_SCALAR_FALLBACK_NOT_PPU_F16X2_ASM",
             "cuda-half2": "CUDA_HFMA2_EXPERIMENT",
             "cuda-affine": "FP32_GROUP_AFFINE_NO_METADATA_WEIGHT_OR_A_FP16_ROUNDING",
+            "cuda-vector": "FP16_PAIR_AFFINE_VECTOR_A_FOUR_FP32_DOT_CHAINS",
+            "cuda-n2": "FP16_PAIR_AFFINE_TWO_COLUMNS_PER_THREAD_VECTOR_A",
         }[reader],
         reader=reader,
+        pair_column_values_per_thread=2 if reader == "cuda-n2" else 1,
+        q8_reader=reader if reader in ("cuda-vector", "cuda-n2") else "production",
         schedule=schedule,
         ppu_admission=False,
     )
@@ -223,7 +278,7 @@ if __name__ == "__main__":
     parser.add_argument("--jobs", type=int, default=6)
     parser.add_argument(
         "--reader",
-        choices=("production", "cuda-half2", "cuda-affine"),
+        choices=("production", "cuda-half2", "cuda-affine", "cuda-vector", "cuda-n2"),
         default="production",
     )
     parser.add_argument(

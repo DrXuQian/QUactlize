@@ -1,0 +1,1288 @@
+{
+  "schema": "quactlize.cuda-gemv-ncu.v1",
+  "date": "2026-09-11",
+  "source_base": "a21f1d3",
+  "production_modified": false,
+  "ppu_admission": false,
+  "candidate": "cuda-n2 / b16-safe vector loads; FP16 pair affine; four FP32 accumulator chains",
+  "baseline": "existing experimental pair entry, not a claimed default model SIMT selection",
+  "builds": {
+    "baseline": {
+      "manifest_sha256": "1ccd3e641302c4a8bed398858454718c1e2570d42174a9393e8e97691243a400",
+      "library_sha256": "461c63f7f16c032738f4c3bb3252bc4b64c8fb6a9048edeebcbd804ef6761fd2",
+      "seconds": 10.334428997710347
+    },
+    "candidate": {
+      "manifest_sha256": "57703e15efbd1dc518559247f32c7313e0fc37db24e5ad645dbf4f59bf39b975",
+      "library_sha256": "eec36616718b24490237f441edcd3099a6629b0323ca7d8b22ac1bfa54780955",
+      "seconds": 10.366835603490472
+    }
+  },
+  "comparison": {
+    "RTX5090": {
+      "q4-indexed": {
+        "median_us": {
+          "baseline": 10.7904995,
+          "candidate": 7.6125,
+          "dmmv_fpA": 5.7725,
+          "mmvq_q8A": 4.04
+        },
+        "delta_pct": -29.451829361560133,
+        "fixture_sha256": "2c10a97e40973cce790cc06cd3e0b5db072223103d8098199a1e61abc50b865f"
+      },
+      "q5-indexed": {
+        "median_us": {
+          "baseline": 12.7075,
+          "candidate": 9.132,
+          "dmmv_fpA": 10.8285,
+          "mmvq_q8A": 6.663
+        },
+        "delta_pct": -28.136927011607316,
+        "fixture_sha256": "a4feb78f1fe8197c05a9c71b2da0c4246d48f0804621ac2e9461a80ad88268f2"
+      },
+      "q4-dense": {
+        "median_us": {
+          "baseline": 10.2584995,
+          "candidate": 7.3085,
+          "dmmv_fpA": 5.6905,
+          "mmvq_q8A": 4.039
+        },
+        "delta_pct": -28.75663736202355,
+        "fixture_sha256": "021c0cda3c5f77cb3bfaf88e6cafb13728763025e52b4e7c84d2ec43d61f136b"
+      }
+    },
+    "RTX5070_WSL": {
+      "q4-indexed": {
+        "median_us": {
+          "baseline": 29.6885005,
+          "candidate": 18.365001
+        },
+        "delta_pct": -38.1410287124471,
+        "fixture_sha256": "2c10a97e40973cce790cc06cd3e0b5db072223103d8098199a1e61abc50b865f"
+      },
+      "q5-indexed": {
+        "median_us": {
+          "baseline": 37.195,
+          "candidate": 21.5625
+        },
+        "delta_pct": -42.02849845409329,
+        "fixture_sha256": "a4feb78f1fe8197c05a9c71b2da0c4246d48f0804621ac2e9461a80ad88268f2"
+      }
+    }
+  },
+  "timing": {
+    "scope": "warm complete GEMV with reducer, F32 endpoints, no gather/scatter or activation quantization in K-pack",
+    "calls_per_graph": 32,
+    "samples_per_round": 15,
+    "rounds": 4,
+    "excluded_graph_warmups": 5,
+    "order": "alternating arm order",
+    "recipe_scope": "fixed RTX5090 recipes, not a 5070 config search",
+    "reference": "DMMV historical unchanged dot with indexed pointer wrapper; current MMVQ includes Q8_1 quantization; not identical arithmetic"
+  },
+  "numerical": {
+    "kquant_cells": 256,
+    "kquant_max_error": 0.0001581053152988033,
+    "kquant_input_cells": 360,
+    "input_max_error": 0.00018475307402751625,
+    "input_tokens": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "input_graph_replays": 3,
+    "input_modes": [
+      "dense",
+      "grouped-empty-expert",
+      "indexed-broadcast",
+      "indexed-per-slot"
+    ],
+    "q8_pair_screen_cells_per_arm": 360,
+    "q8_contexts": 15,
+    "q8_configs": 24,
+    "direct_store": "PASS_216_CELLS_PPU_C_OWNERSHIP_PROJECTION",
+    "host_n2_map_cells": 114688,
+    "q5_duplicate_high_negative_bad": 8192,
+    "threshold": 0.005
+  },
+  "ncu": {
+    "device": "RTX5070 WSL / NCU 2025.1.1",
+    "scope": "diagnostic warm-cache replay, not unprofiled latency or DRAM MBU",
+    "cache_control": "none",
+    "clock_control": "none",
+    "profiles": {
+      "q4-scalar": [
+        {
+          "kernel": "void kpack_gemv<16, 4, 0>(qkg_call_v1, int)",
+          "metrics": {
+            "gpu__time_duration.sum": {
+              "value": 37.44,
+              "unit": "us"
+            },
+            "smsp__inst_executed.sum": {
+              "value": 13048832,
+              "unit": "inst"
+            },
+            "launch__grid_size": {
+              "value": 1024,
+              "unit": ""
+            },
+            "launch__block_size": {
+              "value": 128,
+              "unit": ""
+            },
+            "launch__registers_per_thread": {
+              "value": 44,
+              "unit": "register/thread"
+            },
+            "sm__warps_active.avg.pct_of_peak_sustained_active": {
+              "value": 67.767559,
+              "unit": "%"
+            },
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+              "value": 79.038605,
+              "unit": "%"
+            },
+            "dram__cycles_active.avg.pct_of_peak_sustained_elapsed": {
+              "value": 0.966474,
+              "unit": "%"
+            },
+            "l1tex__t_sector_hit_rate.pct": {
+              "value": 89.305086,
+              "unit": "%"
+            },
+            "lts__t_sector_hit_rate.pct": {
+              "value": 98.863405,
+              "unit": "%"
+            },
+            "smsp__average_warp_latency_per_inst_issued.ratio": {
+              "value": 12.160568,
+              "unit": "cycle"
+            },
+            "smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio": {
+              "value": 3.770184,
+              "unit": "inst"
+            }
+          }
+        },
+        {
+          "kernel": "kpack_gemv_reduce(qkg_call_v1, int)",
+          "metrics": {
+            "gpu__time_duration.sum": {
+              "value": 1.504,
+              "unit": "us"
+            },
+            "smsp__inst_executed.sum": {
+              "value": 18048,
+              "unit": "inst"
+            },
+            "launch__grid_size": {
+              "value": 16,
+              "unit": ""
+            },
+            "launch__block_size": {
+              "value": 256,
+              "unit": ""
+            },
+            "launch__registers_per_thread": {
+              "value": 40,
+              "unit": "register/thread"
+            },
+            "sm__warps_active.avg.pct_of_peak_sustained_active": {
+              "value": 16.525115,
+              "unit": "%"
+            },
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+              "value": 2.343531,
+              "unit": "%"
+            },
+            "dram__cycles_active.avg.pct_of_peak_sustained_elapsed": {
+              "value": 0,
+              "unit": "%"
+            },
+            "l1tex__t_sector_hit_rate.pct": {
+              "value": 25.9375,
+              "unit": "%"
+            },
+            "lts__t_sector_hit_rate.pct": {
+              "value": 97.445378,
+              "unit": "%"
+            },
+            "smsp__average_warp_latency_per_inst_issued.ratio": {
+              "value": 9.363531,
+              "unit": "cycle"
+            },
+            "smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio": {
+              "value": 0.14406,
+              "unit": "inst"
+            }
+          }
+        }
+      ],
+      "q4-pair": [
+        {
+          "kernel": "void kpack_gemv<16, 4, 1>(qkg_call_v1, int)",
+          "metrics": {
+            "gpu__time_duration.sum": {
+              "value": 29.024,
+              "unit": "us"
+            },
+            "smsp__inst_executed.sum": {
+              "value": 10762240,
+              "unit": "inst"
+            },
+            "launch__grid_size": {
+              "value": 2048,
+              "unit": ""
+            },
+            "launch__block_size": {
+              "value": 128,
+              "unit": ""
+            },
+            "launch__registers_per_thread": {
+              "value": 47,
+              "unit": "register/thread"
+            },
+            "sm__warps_active.avg.pct_of_peak_sustained_active": {
+              "value": 74.085273,
+              "unit": "%"
+            },
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+              "value": 78.893708,
+              "unit": "%"
+            },
+            "dram__cycles_active.avg.pct_of_peak_sustained_elapsed": {
+              "value": 0.001334,
+              "unit": "%"
+            },
+            "l1tex__t_sector_hit_rate.pct": {
+              "value": 85.9503,
+              "unit": "%"
+            },
+            "lts__t_sector_hit_rate.pct": {
+              "value": 99.489772,
+              "unit": "%"
+            },
+            "smsp__average_warp_latency_per_inst_issued.ratio": {
+              "value": 12.591723,
+              "unit": "cycle"
+            },
+            "smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio": {
+              "value": 3.654753,
+              "unit": "inst"
+            }
+          }
+        },
+        {
+          "kernel": "kpack_gemv_reduce(qkg_call_v1, int)",
+          "metrics": {
+            "gpu__time_duration.sum": {
+              "value": 1.632,
+              "unit": "us"
+            },
+            "smsp__inst_executed.sum": {
+              "value": 23168,
+              "unit": "inst"
+            },
+            "launch__grid_size": {
+              "value": 16,
+              "unit": ""
+            },
+            "launch__block_size": {
+              "value": 256,
+              "unit": ""
+            },
+            "launch__registers_per_thread": {
+              "value": 40,
+              "unit": "register/thread"
+            },
+            "sm__warps_active.avg.pct_of_peak_sustained_active": {
+              "value": 16.547911,
+              "unit": "%"
+            },
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+              "value": 2.734526,
+              "unit": "%"
+            },
+            "dram__cycles_active.avg.pct_of_peak_sustained_elapsed": {
+              "value": 0,
+              "unit": "%"
+            },
+            "l1tex__t_sector_hit_rate.pct": {
+              "value": 22.141372,
+              "unit": "%"
+            },
+            "lts__t_sector_hit_rate.pct": {
+              "value": 99.76336,
+              "unit": "%"
+            },
+            "smsp__average_warp_latency_per_inst_issued.ratio": {
+              "value": 9.185773,
+              "unit": "cycle"
+            },
+            "smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio": {
+              "value": 0.153229,
+              "unit": "inst"
+            }
+          }
+        }
+      ],
+      "q4-vector": [
+        {
+          "kernel": "void kpack_gemv<16, 4, 1>(qkg_call_v1, int)",
+          "metrics": {
+            "gpu__time_duration.sum": {
+              "value": 25.824,
+              "unit": "us"
+            },
+            "smsp__inst_executed.sum": {
+              "value": 9091072,
+              "unit": "inst"
+            },
+            "launch__grid_size": {
+              "value": 2048,
+              "unit": ""
+            },
+            "launch__block_size": {
+              "value": 128,
+              "unit": ""
+            },
+            "launch__registers_per_thread": {
+              "value": 56,
+              "unit": "register/thread"
+            },
+            "sm__warps_active.avg.pct_of_peak_sustained_active": {
+              "value": 66.8316,
+              "unit": "%"
+            },
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+              "value": 83.063422,
+              "unit": "%"
+            },
+            "dram__cycles_active.avg.pct_of_peak_sustained_elapsed": {
+              "value": 0.018003,
+              "unit": "%"
+            },
+            "l1tex__t_sector_hit_rate.pct": {
+              "value": 78.98101,
+              "unit": "%"
+            },
+            "lts__t_sector_hit_rate.pct": {
+              "value": 99.736457,
+              "unit": "%"
+            },
+            "smsp__average_warp_latency_per_inst_issued.ratio": {
+              "value": 11.907487,
+              "unit": "cycle"
+            },
+            "smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio": {
+              "value": 3.91376,
+              "unit": "inst"
+            }
+          }
+        },
+        {
+          "kernel": "kpack_gemv_reduce(qkg_call_v1, int)",
+          "metrics": {
+            "gpu__time_duration.sum": {
+              "value": 1.472,
+              "unit": "us"
+            },
+            "smsp__inst_executed.sum": {
+              "value": 16896,
+              "unit": "inst"
+            },
+            "launch__grid_size": {
+              "value": 32,
+              "unit": ""
+            },
+            "launch__block_size": {
+              "value": 128,
+              "unit": ""
+            },
+            "launch__registers_per_thread": {
+              "value": 40,
+              "unit": "register/thread"
+            },
+            "sm__warps_active.avg.pct_of_peak_sustained_active": {
+              "value": 8.300687,
+              "unit": "%"
+            },
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+              "value": 2.344843,
+              "unit": "%"
+            },
+            "dram__cycles_active.avg.pct_of_peak_sustained_elapsed": {
+              "value": 0,
+              "unit": "%"
+            },
+            "l1tex__t_sector_hit_rate.pct": {
+              "value": 17.873893,
+              "unit": "%"
+            },
+            "lts__t_sector_hit_rate.pct": {
+              "value": 79.978973,
+              "unit": "%"
+            },
+            "smsp__average_warp_latency_per_inst_issued.ratio": {
+              "value": 7.962772,
+              "unit": "cycle"
+            },
+            "smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio": {
+              "value": 0.015152,
+              "unit": "inst"
+            }
+          }
+        }
+      ],
+      "q4-n2-v2": [
+        {
+          "kernel": "void kpack_gemv<16, 4, 1>(qkg_call_v1, int)",
+          "metrics": {
+            "gpu__time_duration.sum": {
+              "value": 17.664,
+              "unit": "us"
+            },
+            "smsp__inst_executed.sum": {
+              "value": 6096896,
+              "unit": "inst"
+            },
+            "launch__grid_size": {
+              "value": 1024,
+              "unit": ""
+            },
+            "launch__block_size": {
+              "value": 128,
+              "unit": ""
+            },
+            "launch__registers_per_thread": {
+              "value": 64,
+              "unit": "register/thread"
+            },
+            "sm__warps_active.avg.pct_of_peak_sustained_active": {
+              "value": 56.207753,
+              "unit": "%"
+            },
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+              "value": 77.315968,
+              "unit": "%"
+            },
+            "dram__cycles_active.avg.pct_of_peak_sustained_elapsed": {
+              "value": 0,
+              "unit": "%"
+            },
+            "l1tex__t_sector_hit_rate.pct": {
+              "value": 86.880451,
+              "unit": "%"
+            },
+            "lts__t_sector_hit_rate.pct": {
+              "value": 102.754409,
+              "unit": "%"
+            },
+            "smsp__average_warp_latency_per_inst_issued.ratio": {
+              "value": 9.705845,
+              "unit": "cycle"
+            },
+            "smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio": {
+              "value": 2.617976,
+              "unit": "inst"
+            }
+          }
+        },
+        {
+          "kernel": "kpack_gemv_reduce(qkg_call_v1, int)",
+          "metrics": {
+            "gpu__time_duration.sum": {
+              "value": 1.6,
+              "unit": "us"
+            },
+            "smsp__inst_executed.sum": {
+              "value": 23168,
+              "unit": "inst"
+            },
+            "launch__grid_size": {
+              "value": 16,
+              "unit": ""
+            },
+            "launch__block_size": {
+              "value": 256,
+              "unit": ""
+            },
+            "launch__registers_per_thread": {
+              "value": 40,
+              "unit": "register/thread"
+            },
+            "sm__warps_active.avg.pct_of_peak_sustained_active": {
+              "value": 16.548613,
+              "unit": "%"
+            },
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+              "value": 2.748123,
+              "unit": "%"
+            },
+            "dram__cycles_active.avg.pct_of_peak_sustained_elapsed": {
+              "value": 0,
+              "unit": "%"
+            },
+            "l1tex__t_sector_hit_rate.pct": {
+              "value": 21.979167,
+              "unit": "%"
+            },
+            "lts__t_sector_hit_rate.pct": {
+              "value": 99.763314,
+              "unit": "%"
+            },
+            "smsp__average_warp_latency_per_inst_issued.ratio": {
+              "value": 9.194104,
+              "unit": "cycle"
+            },
+            "smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio": {
+              "value": 0.151977,
+              "unit": "inst"
+            }
+          }
+        }
+      ],
+      "q5-pair": [
+        {
+          "kernel": "void kpack_gemv<16, 8, 1>(qkg_call_v1, int)",
+          "metrics": {
+            "gpu__time_duration.sum": {
+              "value": 37.6,
+              "unit": "us"
+            },
+            "smsp__inst_executed.sum": {
+              "value": 13473792,
+              "unit": "inst"
+            },
+            "launch__grid_size": {
+              "value": 1024,
+              "unit": ""
+            },
+            "launch__block_size": {
+              "value": 256,
+              "unit": ""
+            },
+            "launch__registers_per_thread": {
+              "value": 54,
+              "unit": "register/thread"
+            },
+            "sm__warps_active.avg.pct_of_peak_sustained_active": {
+              "value": 61.028953,
+              "unit": "%"
+            },
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+              "value": 80.743938,
+              "unit": "%"
+            },
+            "dram__cycles_active.avg.pct_of_peak_sustained_elapsed": {
+              "value": 0.187335,
+              "unit": "%"
+            },
+            "l1tex__t_sector_hit_rate.pct": {
+              "value": 83.451577,
+              "unit": "%"
+            },
+            "lts__t_sector_hit_rate.pct": {
+              "value": 99.381728,
+              "unit": "%"
+            },
+            "smsp__average_warp_latency_per_inst_issued.ratio": {
+              "value": 10.634512,
+              "unit": "cycle"
+            },
+            "smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio": {
+              "value": 3.14578,
+              "unit": "inst"
+            }
+          }
+        }
+      ],
+      "q5-n2-v2": [
+        {
+          "kernel": "void kpack_gemv<16, 4, 1>(qkg_call_v1, int)",
+          "metrics": {
+            "gpu__time_duration.sum": {
+              "value": 22.336,
+              "unit": "us"
+            },
+            "smsp__inst_executed.sum": {
+              "value": 7211008,
+              "unit": "inst"
+            },
+            "launch__grid_size": {
+              "value": 512,
+              "unit": ""
+            },
+            "launch__block_size": {
+              "value": 128,
+              "unit": ""
+            },
+            "launch__registers_per_thread": {
+              "value": 86,
+              "unit": "register/thread"
+            },
+            "sm__warps_active.avg.pct_of_peak_sustained_active": {
+              "value": 35.100313,
+              "unit": "%"
+            },
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+              "value": 75.947,
+              "unit": "%"
+            },
+            "dram__cycles_active.avg.pct_of_peak_sustained_elapsed": {
+              "value": 0.001735,
+              "unit": "%"
+            },
+            "l1tex__t_sector_hit_rate.pct": {
+              "value": 84.340096,
+              "unit": "%"
+            },
+            "lts__t_sector_hit_rate.pct": {
+              "value": 98.345494,
+              "unit": "%"
+            },
+            "smsp__average_warp_latency_per_inst_issued.ratio": {
+              "value": 6.472809,
+              "unit": "cycle"
+            },
+            "smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio": {
+              "value": 1.4872,
+              "unit": "inst"
+            }
+          }
+        }
+      ],
+      "q8-base": [
+        {
+          "kernel": "void kpack_gemv<16, 4, 1>(qkg_call_v1, int)",
+          "metrics": {
+            "gpu__time_duration.sum": {
+              "value": 51.2,
+              "unit": "us"
+            },
+            "smsp__inst_executed.sum": {
+              "value": 18935808,
+              "unit": "inst"
+            },
+            "launch__grid_size": {
+              "value": 4096,
+              "unit": ""
+            },
+            "launch__block_size": {
+              "value": 128,
+              "unit": ""
+            },
+            "launch__registers_per_thread": {
+              "value": 43,
+              "unit": "register/thread"
+            },
+            "sm__warps_active.avg.pct_of_peak_sustained_active": {
+              "value": 77.590685,
+              "unit": "%"
+            },
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+              "value": 81.472213,
+              "unit": "%"
+            },
+            "dram__cycles_active.avg.pct_of_peak_sustained_elapsed": {
+              "value": 0.8026,
+              "unit": "%"
+            },
+            "l1tex__t_sector_hit_rate.pct": {
+              "value": 64.035591,
+              "unit": "%"
+            },
+            "lts__t_sector_hit_rate.pct": {
+              "value": 98.960112,
+              "unit": "%"
+            },
+            "smsp__average_warp_latency_per_inst_issued.ratio": {
+              "value": 13.430394,
+              "unit": "cycle"
+            },
+            "smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio": {
+              "value": 3.466059,
+              "unit": "inst"
+            }
+          }
+        },
+        {
+          "kernel": "kpack_gemv_reduce(qkg_call_v1, int)",
+          "metrics": {
+            "gpu__time_duration.sum": {
+              "value": 1.632,
+              "unit": "us"
+            },
+            "smsp__inst_executed.sum": {
+              "value": 46336,
+              "unit": "inst"
+            },
+            "launch__grid_size": {
+              "value": 32,
+              "unit": ""
+            },
+            "launch__block_size": {
+              "value": 256,
+              "unit": ""
+            },
+            "launch__registers_per_thread": {
+              "value": 40,
+              "unit": "register/thread"
+            },
+            "sm__warps_active.avg.pct_of_peak_sustained_active": {
+              "value": 16.544109,
+              "unit": "%"
+            },
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+              "value": 5.437681,
+              "unit": "%"
+            },
+            "dram__cycles_active.avg.pct_of_peak_sustained_elapsed": {
+              "value": 0,
+              "unit": "%"
+            },
+            "l1tex__t_sector_hit_rate.pct": {
+              "value": 22.291182,
+              "unit": "%"
+            },
+            "lts__t_sector_hit_rate.pct": {
+              "value": 99.929965,
+              "unit": "%"
+            },
+            "smsp__average_warp_latency_per_inst_issued.ratio": {
+              "value": 8.998856,
+              "unit": "cycle"
+            },
+            "smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio": {
+              "value": 0.152322,
+              "unit": "inst"
+            }
+          }
+        }
+      ],
+      "q8-n2-v2": [
+        {
+          "kernel": "void kpack_gemv<16, 4, 1>(qkg_call_v1, int)",
+          "metrics": {
+            "gpu__time_duration.sum": {
+              "value": 39.488,
+              "unit": "us"
+            },
+            "smsp__inst_executed.sum": {
+              "value": 14413824,
+              "unit": "inst"
+            },
+            "launch__grid_size": {
+              "value": 2048,
+              "unit": ""
+            },
+            "launch__block_size": {
+              "value": 128,
+              "unit": ""
+            },
+            "launch__registers_per_thread": {
+              "value": 52,
+              "unit": "register/thread"
+            },
+            "sm__warps_active.avg.pct_of_peak_sustained_active": {
+              "value": 67.618732,
+              "unit": "%"
+            },
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+              "value": 81.750006,
+              "unit": "%"
+            },
+            "dram__cycles_active.avg.pct_of_peak_sustained_elapsed": {
+              "value": 0.874098,
+              "unit": "%"
+            },
+            "l1tex__t_sector_hit_rate.pct": {
+              "value": 28.067705,
+              "unit": "%"
+            },
+            "lts__t_sector_hit_rate.pct": {
+              "value": 100.510215,
+              "unit": "%"
+            },
+            "smsp__average_warp_latency_per_inst_issued.ratio": {
+              "value": 11.710621,
+              "unit": "cycle"
+            },
+            "smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio": {
+              "value": 3.388357,
+              "unit": "inst"
+            }
+          }
+        },
+        {
+          "kernel": "kpack_gemv_reduce(qkg_call_v1, int)",
+          "metrics": {
+            "gpu__time_duration.sum": {
+              "value": 1.632,
+              "unit": "us"
+            },
+            "smsp__inst_executed.sum": {
+              "value": 46336,
+              "unit": "inst"
+            },
+            "launch__grid_size": {
+              "value": 32,
+              "unit": ""
+            },
+            "launch__block_size": {
+              "value": 256,
+              "unit": ""
+            },
+            "launch__registers_per_thread": {
+              "value": 40,
+              "unit": "register/thread"
+            },
+            "sm__warps_active.avg.pct_of_peak_sustained_active": {
+              "value": 16.544241,
+              "unit": "%"
+            },
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+              "value": 5.480489,
+              "unit": "%"
+            },
+            "dram__cycles_active.avg.pct_of_peak_sustained_elapsed": {
+              "value": 0,
+              "unit": "%"
+            },
+            "l1tex__t_sector_hit_rate.pct": {
+              "value": 22.135822,
+              "unit": "%"
+            },
+            "lts__t_sector_hit_rate.pct": {
+              "value": 99.780198,
+              "unit": "%"
+            },
+            "smsp__average_warp_latency_per_inst_issued.ratio": {
+              "value": 8.99318,
+              "unit": "cycle"
+            },
+            "smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio": {
+              "value": 0.152279,
+              "unit": "inst"
+            }
+          }
+        }
+      ]
+    },
+    "report_root_windows": "E:/kpack-gemv-ncu.7YMu6i",
+    "report_root_local": "/root/autodl-tmp/kpack-gemv-ncu-evidence-20260911",
+    "reports": {
+      "q4-scalar.ncu-rep": {
+        "sha256": "fc7dd7d9245f453c162d86ad981f6c6450178b988b04544eb1e687fdc3579902",
+        "bytes": 2264237
+      },
+      "q4-pair.ncu-rep": {
+        "sha256": "937fde900a5ba364dfbf1b4cd15ebf3e91ed803ed5ec788963c314452dae5566",
+        "bytes": 2080965
+      },
+      "q4-n2-v2.ncu-rep": {
+        "sha256": "5ee88b41b008cc8e3c99509787a5b69c55cefb48e8f55296953387d72c0814e9",
+        "bytes": 2266990
+      },
+      "q5-pair.ncu-rep": {
+        "sha256": "eebb95aa7482ff00a53a30fb1c78ac1fbb83f8f42bd2390ff04b031bfc75c97c",
+        "bytes": 2439815
+      },
+      "q5-n2-v2.ncu-rep": {
+        "sha256": "11b3d95fc033971666035426148c9611685ecbf568b585bb45312072ce1d441e",
+        "bytes": 2667863
+      },
+      "q8-base.ncu-rep": {
+        "sha256": "91d2f9db25d9cbd3787146f898e7f6c27b02d91aff92b01bfc0c10674488365e",
+        "bytes": 1539355
+      },
+      "q8-n2-v2.ncu-rep": {
+        "sha256": "fbe6d63b061199255e10d89b6a24522831395d7fd5c60b7ec7c6f00f8766d334",
+        "bytes": 2103913
+      }
+    }
+  },
+  "q8": {
+    "arithmetic": "W8A16; F32 source rounds to FP16 in reader; FP32 accumulation; original resident FP16 d",
+    "screen_best": {
+      "base": {
+        "512_2048_1_0_1": {
+          "n": "512",
+          "k": "2048",
+          "m": "1",
+          "mode": "0",
+          "channels": "1",
+          "config": "16-8-4",
+          "error": "1.369775e-08",
+          "negative": "RED",
+          "median_us": "4.750000"
+        },
+        "2048_512_1_0_1": {
+          "n": "2048",
+          "k": "512",
+          "m": "1",
+          "mode": "0",
+          "channels": "1",
+          "config": "16-8-1",
+          "error": "3.9428818e-08",
+          "negative": "RED",
+          "median_us": "4.678000"
+        },
+        "2048_4096_1_0_1": {
+          "n": "2048",
+          "k": "4096",
+          "m": "1",
+          "mode": "0",
+          "channels": "1",
+          "config": "16-8-8",
+          "error": "1.359939e-08",
+          "negative": "RED",
+          "median_us": "11.338000"
+        },
+        "4096_2048_1_0_1": {
+          "n": "4096",
+          "k": "2048",
+          "m": "1",
+          "mode": "0",
+          "channels": "1",
+          "config": "32-8-8",
+          "error": "2.042785e-08",
+          "negative": "RED",
+          "median_us": "11.082000"
+        },
+        "8192_2048_1_0_1": {
+          "n": "8192",
+          "k": "2048",
+          "m": "1",
+          "mode": "0",
+          "channels": "1",
+          "config": "16-4-8",
+          "error": "2.042785e-08",
+          "negative": "RED",
+          "median_us": "18.056000"
+        },
+        "1024_5120_1_0_1": {
+          "n": "1024",
+          "k": "5120",
+          "m": "1",
+          "mode": "0",
+          "channels": "1",
+          "config": "16-8-8",
+          "error": "1.6241431e-08",
+          "negative": "RED",
+          "median_us": "8.647000"
+        },
+        "512_2048_4_0_1": {
+          "n": "512",
+          "k": "2048",
+          "m": "4",
+          "mode": "0",
+          "channels": "1",
+          "config": "16-4-8",
+          "error": "1.6585948e-08",
+          "negative": "RED",
+          "median_us": "7.500000"
+        },
+        "2048_512_4_0_1": {
+          "n": "2048",
+          "k": "512",
+          "m": "4",
+          "mode": "0",
+          "channels": "1",
+          "config": "16-8-1",
+          "error": "3.9723415e-08",
+          "negative": "RED",
+          "median_us": "6.923000"
+        },
+        "2048_4096_4_0_1": {
+          "n": "2048",
+          "k": "4096",
+          "m": "4",
+          "mode": "0",
+          "channels": "1",
+          "config": "32-8-8",
+          "error": "1.3722723e-08",
+          "negative": "RED",
+          "median_us": "31.815998"
+        },
+        "4096_2048_4_0_1": {
+          "n": "4096",
+          "k": "2048",
+          "m": "4",
+          "mode": "0",
+          "channels": "1",
+          "config": "32-4-8",
+          "error": "2.0535887e-08",
+          "negative": "RED",
+          "median_us": "31.373001"
+        },
+        "8192_2048_4_0_1": {
+          "n": "8192",
+          "k": "2048",
+          "m": "4",
+          "mode": "0",
+          "channels": "1",
+          "config": "16-2-8",
+          "error": "2.0535887e-08",
+          "negative": "RED",
+          "median_us": "58.051998"
+        },
+        "1024_5120_4_0_1": {
+          "n": "1024",
+          "k": "5120",
+          "m": "4",
+          "mode": "0",
+          "channels": "1",
+          "config": "16-4-8",
+          "error": "1.0943216e-08",
+          "negative": "RED",
+          "median_us": "22.216999"
+        },
+        "256_512_6_1_1": {
+          "n": "256",
+          "k": "512",
+          "m": "6",
+          "mode": "1",
+          "channels": "1",
+          "config": "16-8-1",
+          "error": "3.8858658e-08",
+          "negative": "RED",
+          "median_us": "4.170000"
+        },
+        "256_512_8_2_1": {
+          "n": "256",
+          "k": "512",
+          "m": "8",
+          "mode": "2",
+          "channels": "1",
+          "config": "16-8-1",
+          "error": "3.9428818e-08",
+          "negative": "RED",
+          "median_us": "4.234000"
+        },
+        "256_512_8_2_2": {
+          "n": "256",
+          "k": "512",
+          "m": "8",
+          "mode": "2",
+          "channels": "2",
+          "config": "16-8-1",
+          "error": "4.0428207e-08",
+          "negative": "RED",
+          "median_us": "4.170000"
+        }
+      },
+      "n2-v2": {
+        "512_2048_1_0_1": {
+          "n": "512",
+          "k": "2048",
+          "m": "1",
+          "mode": "0",
+          "channels": "1",
+          "config": "16-4-8",
+          "error": "1.3674165e-08",
+          "negative": "RED",
+          "median_us": "4.619000"
+        },
+        "2048_512_1_0_1": {
+          "n": "2048",
+          "k": "512",
+          "m": "1",
+          "mode": "0",
+          "channels": "1",
+          "config": "16-8-1",
+          "error": "2.9586527e-08",
+          "negative": "RED",
+          "median_us": "4.049000"
+        },
+        "2048_4096_1_0_1": {
+          "n": "2048",
+          "k": "4096",
+          "m": "1",
+          "mode": "0",
+          "channels": "1",
+          "config": "16-8-8",
+          "error": "1.3634568e-08",
+          "negative": "RED",
+          "median_us": "9.740000"
+        },
+        "4096_2048_1_0_1": {
+          "n": "4096",
+          "k": "2048",
+          "m": "1",
+          "mode": "0",
+          "channels": "1",
+          "config": "16-4-8",
+          "error": "1.3757803e-08",
+          "negative": "RED",
+          "median_us": "9.289001"
+        },
+        "8192_2048_1_0_1": {
+          "n": "8192",
+          "k": "2048",
+          "m": "1",
+          "mode": "0",
+          "channels": "1",
+          "config": "16-4-8",
+          "error": "1.3757803e-08",
+          "negative": "RED",
+          "median_us": "14.283000"
+        },
+        "1024_5120_1_0_1": {
+          "n": "1024",
+          "k": "5120",
+          "m": "1",
+          "mode": "0",
+          "channels": "1",
+          "config": "16-8-8",
+          "error": "1.606468e-08",
+          "negative": "RED",
+          "median_us": "8.676000"
+        },
+        "512_2048_4_0_1": {
+          "n": "512",
+          "k": "2048",
+          "m": "4",
+          "mode": "0",
+          "channels": "1",
+          "config": "16-8-4",
+          "error": "1.3778093e-08",
+          "negative": "RED",
+          "median_us": "6.408000"
+        },
+        "2048_512_4_0_1": {
+          "n": "2048",
+          "k": "512",
+          "m": "4",
+          "mode": "0",
+          "channels": "1",
+          "config": "16-8-1",
+          "error": "3.0202834e-08",
+          "negative": "RED",
+          "median_us": "5.389000"
+        },
+        "2048_4096_4_0_1": {
+          "n": "2048",
+          "k": "4096",
+          "m": "4",
+          "mode": "0",
+          "channels": "1",
+          "config": "16-8-8",
+          "error": "1.3732743e-08",
+          "negative": "RED",
+          "median_us": "26.121000"
+        },
+        "4096_2048_4_0_1": {
+          "n": "4096",
+          "k": "2048",
+          "m": "4",
+          "mode": "0",
+          "channels": "1",
+          "config": "16-4-8",
+          "error": "2.0353902e-08",
+          "negative": "RED",
+          "median_us": "25.428001"
+        },
+        "8192_2048_4_0_1": {
+          "n": "8192",
+          "k": "2048",
+          "m": "4",
+          "mode": "0",
+          "channels": "1",
+          "config": "16-2-8",
+          "error": "2.0150966e-08",
+          "negative": "RED",
+          "median_us": "47.304001"
+        },
+        "1024_5120_4_0_1": {
+          "n": "1024",
+          "k": "5120",
+          "m": "4",
+          "mode": "0",
+          "channels": "1",
+          "config": "16-8-8",
+          "error": "1.6386457e-08",
+          "negative": "RED",
+          "median_us": "18.636999"
+        },
+        "256_512_6_1_1": {
+          "n": "256",
+          "k": "512",
+          "m": "6",
+          "mode": "1",
+          "channels": "1",
+          "config": "16-8-1",
+          "error": "2.6478588e-08",
+          "negative": "RED",
+          "median_us": "4.490000"
+        },
+        "256_512_8_2_1": {
+          "n": "256",
+          "k": "512",
+          "m": "8",
+          "mode": "2",
+          "channels": "1",
+          "config": "16-8-1",
+          "error": "3.0202834e-08",
+          "negative": "RED",
+          "median_us": "4.430000"
+        },
+        "256_512_8_2_2": {
+          "n": "256",
+          "k": "512",
+          "m": "8",
+          "mode": "2",
+          "channels": "2",
+          "config": "16-8-1",
+          "error": "3.0202834e-08",
+          "negative": "RED",
+          "median_us": "4.488000"
+        }
+      }
+    },
+    "confirmed": {
+      "256_512_8_2_1_16_8_1": {
+        "median_us": {
+          "base": 4.106,
+          "n2-v2": 4.3420000000000005
+        },
+        "delta_pct": 5.747686312713118
+      },
+      "1024_5120_1_0_1_16_8_8": {
+        "median_us": {
+          "base": 8.4585,
+          "n2-v2": 8.459
+        },
+        "delta_pct": 0.005911213572140639
+      },
+      "8192_2048_1_0_1_16_4_8": {
+        "median_us": {
+          "base": 17.8425,
+          "n2-v2": 13.961500000000001
+        },
+        "delta_pct": -21.751436177665685
+      }
+    },
+    "small_indexed_regression_retains_baseline": true,
+    "timing": {
+      "calls_per_graph": 32,
+      "samples_per_round": 11,
+      "excluded_graph_warmups": 5,
+      "confirmation_rounds": 4,
+      "scope": "Q8 uses a separate generated logical-weight fixture and separate timing runs; do not pool with the K-quant measurements"
+    }
+  },
+  "evidence_archive": {
+    "path": "docs/measurements/gemv_ncu_20260911.logs.tgz",
+    "sha256": "6b934277890327d3aefdc568280fde6e0172dccd1454cf4c8ac22ab494e42d45",
+    "bytes": 316305
+  },
+  "open": [
+    "PPU port and independent numerical/performance admission before any production promotion",
+    "Q4 still slower than historical DMMV; Q4/Q5 still slower than MMVQ+Q8_1",
+    "Q8 small-shape regression and shape-specific recipe admission",
+    "cold-cache/whole-model performance are unmeasured for this reader"
+  ]
+}

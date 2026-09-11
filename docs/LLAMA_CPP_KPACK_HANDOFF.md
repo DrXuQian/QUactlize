@@ -4,6 +4,12 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
+The latest [SIMT GEMV NCU investigation](../dev/gemv_cuda/README.md#ncu-guided-reader-follow-up-2026-09-11)
+is development-only: Q4/Q5 full-call latency drops about 28-29% on 5090,
+with independent 1-4-token input controls; Q8 needs per-shape reader/config
+choice. No production library, JIT key, offline layout or model selector is
+changed by this experiment. The v3 MoE box candidate below remains current.
+
 ## Current box candidate: v3 single-token router/preparation
 
 Use `prebuilt/ppu0010/kpack-fusion-v3/dispatch` and private llama.cpp

@@ -5,9 +5,15 @@ production package. It compiles the production SIMT GEMV and reduction bodies
 against real CUDA headers/runtime; it does not emulate PPU MMA or AIU opcodes.
 The compatibility headers rename APIs, not arithmetic or synchronization.
 
+The [2026-09-11 NCU follow-up](#ncu-guided-reader-follow-up-2026-09-11)
+below supersedes the old "no counter evidence" limitation for the RTX 5070.
+PPU and whole-model admission are still separate.
+
 ## Reproduce
 
-Requires an RTX 5090, CUDA 12.8, PyTorch with CUDA support, NumPy and `gguf`.
+Requires an sm_120 NVIDIA GPU (tested on RTX 5090/5070), CUDA 12.8,
+PyTorch with CUDA support, NumPy and `gguf` for the full Python gates.
+The standalone profiler below only needs CUDA on its execution machine.
 Use fresh output directories and do not run simultaneous GPU benchmarks.
 
 ```bash
@@ -212,3 +218,166 @@ passed. This demonstrates a test-harness race mechanism, not PPU admission.
   dev/gemv_cuda/stream_poison.cu -o /workspace/kpack-stream-poison
 /workspace/kpack-stream-poison
 ```
+
+## NCU-guided reader follow-up, 2026-09-11
+
+The new `--reader cuda-n2` is a development candidate, not a replacement of
+the production SIMT entry or a model-policy promotion. It preserves the
+canonical K-pack bytes and metadata, converts A to FP16, computes the pair
+reader's fused FP16 affine weights, and accumulates in FP32. Unlike the
+older `cuda-affine` experiment, it does not move the affine transform after
+the group dot. Its FP32 addition order changes, and its one-rounding pair
+affine is not the scalar reader's two-rounding affine.
+
+Each thread now owns two adjacent N columns. A contiguous b32 load serves
+both b16 code words, a half2 affine serves both weights, and the same A value
+feeds both dots. Aligned float4 A loads and four accumulator chains reduce
+instruction overhead. F16/unaligned A and b16-but-not-b32 weight pointers
+retain in-bounds scalar loads. No offline conversion, new scale workspace,
+gather/scatter, or activation quantization is added.
+
+`columns` in this candidate counts thread positions along N, **not** final
+output values: 16 positions deliver 32 columns. Its manifest records this
+factor; the benchmark reports the actual grid. Do not export these recipes
+to a production reader with different ownership. Public scalar Q2-Q6 entry
+bodies are unchanged. Q8's already-paired entry uses the experimental reader
+only inside this development build.
+
+### Complete-call measurements
+
+Four alternating-order rounds, 15 samples per round, 32 graph calls per
+sample; five first graph replays are excluded. CUDA events include producer
+and Split-K reducer, with F32 input/output and no gather/scatter. Weights are
+warm/cache-resident; this is not DRAM MBU. No clocks or driver permissions
+were changed. The baseline is the existing **pair experimental entry**, not
+a claim that the model previously selected SIMT. Its scalar Q4 control was
+separately reproduced at about 14.4 us on 5090.
+
+| Workload | 5090 pair → N2 (us) | Change | 5070 pair → N2 (us) | Change |
+| --- | ---: | ---: | ---: | ---: |
+| Q4 indexed 8×512×2048, E=256 | 10.790 → 7.613 | -29.45% | 29.689 → 18.365 | -38.14% |
+| Q5 indexed 8×2048×512, E=256 | 12.708 → 9.132 | -28.14% | 37.195 → 21.563 | -42.03% |
+| Q4 dense 1×4096×2048 | 10.258 → 7.309 | -28.76% | not measured | — |
+
+The 5070 uses fixed 5090 recipes, not a per-device optimum. A separate
+24-recipe screen and six alternating rounds on 5090 selected N2
+16/4/S8 for Q4 and 16/4/S1 for Q5. The earlier pair control uses 16/4/S8
+for Q4 and 16/8/S1 for Q5. Do not pool the six-round and four-round datasets.
+
+In the four-round matched 5090 run, historical DMMV takes 5.773/10.828/5.691
+us and MMVQ plus Q8_1 takes 4.040/6.663/4.039 us, in table order. N2 now
+beats DMMV on Q5, but **Q4 remains slower than DMMV and both remain slower
+than MMVQ**. Those controls use different intermediate arithmetic, as
+described above. The no-slower-than-native target remains open.
+
+### What NCU established
+
+NCU 2025.1.1 counters work on RTX5070 WSL. Baseline Q4 scalar shows about
+79% SM throughput, 31% of warp issue latency waiting for a math pipeline,
+and less than 1% DRAM activity in this warm-cache capture. It is not evidence
+of a saturated DRAM channel. Reducing instruction work is productive here.
+
+| Producer | Executed warp instructions, pair → N2 | Registers/thread | Achieved occupancy |
+| --- | ---: | ---: | ---: |
+| Q4 indexed | 10,762,240 → 6,096,896 | 47 → 64 | 74.09% → 56.21% |
+| Q5 indexed | 13,473,792 → 7,211,008 | 54 → 86 | 61.03% → 35.10% |
+| Q8 dense 1×8192×2048 | 18,935,808 → 14,413,824 | 43 → 52 | 77.59% → 67.62% |
+
+The kernels become faster despite lower occupancy. Register count and
+occupancy alone are not a latency verdict. Q4/Q8 keep the same separate
+reducer body; its measured instruction count is unchanged. The intermediate
+`cuda-vector --schedule cuda-grid` ablation reduces Q4 producer instructions
+to 9,091,072; N2 removes substantially more repeated A/decode work.
+NCU replay durations are diagnostics, not the unprofiled table's timings.
+
+### Q8: scan S8 before deciding
+
+Q8 remains W8A16, using original resident FP16 d, with no Q8_1 A conversion.
+The old shipping-domain check covered only S1/S4. This run additionally
+scanned the existing pair domain: columns 16/32, warps 2/4/8, S1/2/4/8.
+All 360 cells per arm pass across 15 dense/grouped/indexed contexts.
+Fixed-recipe four-round confirmations on 5090 are:
+
+| Q8 workload | Pair → N2 (us) | Decision |
+| --- | ---: | --- |
+| Dense M1, N8192, K2048, 16/4/S8 | 17.843 → 13.962 | -21.75%, candidate benefit |
+| Dense M1, N1024, K5120, 16/8/S8 | 8.459 → 8.459 | effectively tied |
+| Indexed 8 rows, E4, N256, K512, 16/8/S1 | 4.106 → 4.342 | +5.75%, retain old reader |
+
+This is not a Q8-vs-native-llama speed verdict or a reason for one global
+reader default. The production selector and its admitted recipe domain are
+unchanged.
+
+### Correctness and reproduction
+
+Final N2 passes 256 existing K-quant cells, plus 360 new input controls over
+Q2/Q3/Q4/Q5/Q6: 1/2/3/4 tokens, top8 with broadcast/per-slot inputs, dense
+M1/M2/M4, ragged grouped rows including empty experts, F32/F16, nontrivial
+row strides, A offsets +4/+2 and weight-plane offsets +2. Output/workspace
+guards, three graph replays, ordered downloaded-partial reduction, and
+wrong-expert negatives are checked. Maximum conditioned error is 1.85e-4
+against the 0.005 bound. The existing direct-store projection's 216 cells
+also pass; they are not PPU MMA execution.
+
+The first N2 Q5 attempt incorrectly duplicated the high word for adjacent
+columns. The actual map shares columns separated by 8, not 1. The host
+`n2_layout_check.cpp` enumerates seven actual offline maps (114,688 codes),
+proves aligned adjacent word addresses for even/odd N, and reproduces 8,192
+errors with the duplicated-word negative. The corrected GPU reader passes
+the independent oracle without changing packing or relaxing its threshold.
+
+```bash
+python3 dev/gemv_cuda/build.py --cuda /usr/local/cuda-12.8 \
+  --output /work/gemv-base --jobs 8
+python3 dev/gemv_cuda/build.py --cuda /usr/local/cuda-12.8 \
+  --output /work/gemv-n2 --jobs 8 --reader cuda-n2
+python3 dev/gemv_cuda/prepare_fixtures.py --input-controls \
+  --output /work/gemv-input-fixtures
+OPENBLAS_NUM_THREADS=1 python3 dev/gemv_cuda/check_inputs.py \
+  --library /work/gemv-n2/libkpack_gemv_cuda.so \
+  --fixtures /work/gemv-input-fixtures --output /work/gemv-inputs.json
+```
+
+The CUDA-only `standalone.cu` and `run_standalone.py` require neither PyTorch
+nor NumPy on the profiling machine. Export the existing independent fixtures
+on the development host, copy their `.bin` files, the runner and CUDA DSO:
+
+```bash
+python3 dev/gemv_cuda/export_standalone.py --fixtures /work/gemv-fixtures \
+  --output /work/gemv-binary-fixtures
+nvcc -std=c++17 -O3 -lineinfo -arch=sm_120 -I. -Iquactlize/include \
+  dev/gemv_cuda/standalone.cu -ldl -o /work/gemv-standalone
+python3 dev/gemv_cuda/run_standalone.py --runner /work/gemv-standalone \
+  --fixtures /work/gemv-binary-fixtures \
+  --baseline /work/gemv-base/libkpack_gemv_cuda.so \
+  --candidate /work/gemv-n2/libkpack_gemv_cuda.so --output /work/gemv-ab
+ncu --kernel-name regex:kpack_gemv --launch-skip 10 --launch-count 2 \
+  --section SpeedOfLight --section LaunchStats --section Occupancy \
+  --section SchedulerStats --section WarpStateStats --section SourceCounters \
+  --section MemoryWorkloadAnalysis --section ComputeWorkloadAnalysis \
+  --cache-control none --clock-control none --export /work/q4-n2 \
+  /work/gemv-standalone /work/gemv-binary-fixtures/q12-n512-k2048-e256-c1.bin \
+  /work/gemv-n2/libkpack_gemv_cuda.so pair 16 4 8 --profile
+```
+
+For S1 use `--launch-skip 5 --launch-count 1`. NCU outputs must use fresh
+names. The profiling mode checks a positive output, then launches five warm
+calls; it does not time wrong-expert/zero-code negative arms. Normal timing
+also requires those negatives to be detected.
+
+Q8's standalone test can scan all 24 pair recipes or run one fixed case:
+
+```bash
+nvcc -std=c++17 -O3 -lineinfo -arch=sm_120 -I. -Iquactlize/include \
+  dev/gemv_cuda/q8_check.cu /work/gemv-n2/q8.o -o /work/q8-check
+/work/q8-check --pair-sweep
+/work/q8-check --pair-case 8192 2048 1 0 1 16 4 8
+```
+
+[Summary and counter identities](../../docs/measurements/gemv_ncu_20260911.json),
+[raw samples, CSV counters and source-bound manifests](../../docs/measurements/gemv_ncu_20260911.logs.tgz).
+Full NCU reports remain at `E:/kpack-gemv-ncu.7YMu6i` on the 5070 host and
+`/root/autodl-tmp/kpack-gemv-ncu-evidence-20260911` locally; their hashes are
+in the summary. No NVIDIA DSO, recipe or compatibility code was added to the
+PPU bundle. Next: portable PPU implementation, bounded numerical/ACU gate,
+and shape-specific full-call admission before changing model selection.

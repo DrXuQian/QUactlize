@@ -17,12 +17,12 @@ from reference import gguf_kpack as ref
 from tools.kpack_warmup_fixture import activation_values, prepare_expert
 
 
-def export(output, q, n, k, experts, selected, channels):
+def export(output, q, n, k, experts, selected, channels, *, retain_official=False):
     spec = ref.SPECS[q]
     category = np.random.default_rng(81811 + k).integers(0, 4, k, dtype=np.uint8)
     coefficients = activation_values(np.arange(channels))
     a = coefficients[:, category].astype("<f4")
-    planes, golden, denom, raw_experts = {}, [], [], []
+    planes, golden, denom, raw_experts, weights = {}, [], [], [], []
     for slot, e in enumerate(selected):
         rng = np.random.default_rng(np.random.SeedSequence([81923, q, n, k, e]))
         raw = rng.integers(0, 256, (n * (k // 256), spec.raw_bytes), dtype=np.uint8)
@@ -35,6 +35,8 @@ def export(output, q, n, k, experts, selected, channels):
         for name in ("low", "high", "units"):
             planes.setdefault(name, []).append(placed[name])
         official = dequantize(raw.reshape(-1), GGMLQuantizationType(q)).reshape(n, k)
+        if retain_official:
+            weights.append(official)
         activation = a[slot % channels].astype("f8")
         golden.append(official.astype("f8") @ activation)
         denom.append(np.abs(official.astype("f8")) @ np.abs(activation))
@@ -52,6 +54,7 @@ def export(output, q, n, k, experts, selected, channels):
         k=k,
         experts=experts,
         channels=channels,
+        **({"official": np.stack(weights)} if retain_official else {}),
     )
     receipt = dict(
         path=path.name,
@@ -72,8 +75,15 @@ def export(output, q, n, k, experts, selected, channels):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--input-controls", action="store_true",
+                        help="small 16-expert fixtures with independent GGUF weights for changed-A tests")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
+    if args.input_controls:
+        cases = [export(args.output, q, 256, 512, 16, list(range(0, 16, 2)), 8,
+                        retain_official=True) for q in range(10, 15)]
+        (args.output / "manifest.json").write_text(json.dumps(cases, indent=2) + "\n")
+        return
     cases = [export(args.output, q, 256, 512, 1, [0], 1) for q in range(10, 15)]
     selected = list(range(0, 8 * 17, 17))
     cases += [
