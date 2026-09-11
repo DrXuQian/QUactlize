@@ -3,12 +3,14 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from dev.gemv_ppu.bload_source import REFERENCE_SHA256, RECIPES, reference_fp32, reference_wrapper
-from dev.gemv_ppu.run_bload import ROOT, ROUNDS, VARIANTS, exact_bits, parse_result, recipes, summarize, transport_expected
+from dev.gemv_ppu.run_bload import (ROOT, ROUNDS, VARIANTS, CONTROL_RECEIPT, exact_bits,
+    parse_result, read_control_recipes, recipes, summarize, transport_expected, verify_packages)
 from dev.gemv_cuda.build_fixed_reference import runner_source
 
 
@@ -76,8 +78,9 @@ def test_source_has_real_aiu_transpose_and_explicit_lifetime_edges():
 
 
 def record(variant="fragment-aiu"):
-    return dict(status="PASS",arm="new",variant=variant,recipe=[256,4,1],shape=[1,5120,8192],mode="warm",
+    return dict(status="PASS",arm=variant,variant=variant,recipe=[256,4,1],shape=[1,5120,8192],mode="warm",
         error=.00003,zero_code_negative="PASS",zero_a_check="PASS",output_type="F32",storage="CANONICAL_KPACK4",
+        weight_arithmetic="PER_WEIGHT_FP16",launches_per_call=1,inter_cta_split=1,
         samples_us=[10.,11.,12.],median_us=11.,copies=1,weight_bytes=5120*8192*9//16,calls_per_graph=32,
         device=dict(l2_bytes=64*1024**2),transport_b16_sha256="a"*64,matched_fp32_sha256="b"*64)
 
@@ -90,7 +93,8 @@ def test_receipt_requires_transport_and_matched_fp32():assert parse(record())["m
 
 @pytest.mark.parametrize("key,value",[("matched_fp32_sha256",None),("transport_b16_sha256","z"*64),
     ("zero_code_negative","SKIP"),("zero_a_check","SKIP"),("output_type","F16"),("storage","RAW_GGUF"),
-    ("error",float("nan")),("samples_us",[10.,11.]),("recipe",[256,4,2])])
+    ("error",float("nan")),("samples_us",[10.,11.]),("recipe",[256,4,2]),
+    ("weight_arithmetic","FP32_GROUP_AFFINE"),("launches_per_call",2),("inter_cta_split",2)])
 def test_bad_receipt_cannot_be_a_timing(key,value):
     with pytest.raises(ValueError):parse(record()|{key:value})
 
@@ -103,8 +107,116 @@ def test_summary_keeps_same_recipe_comparison_and_missing_cells():
     s=summarize(5120,8192,"warm",records)
     assert s["status"]=="PASS" and len(s["matched_transport"])==3
     assert all(r["delta_pct"]<0 for r in s["matched_transport"])
+    assert s["candidate_deltas"]["fragment-aiu"]["parity_verdict"]=="WITHIN_5_PERCENT"
     records["fragment-aiu"][json.dumps(RECIPES[1])].pop()
-    assert summarize(5120,8192,"warm",records)["status"]=="INCOMPLETE"
+    incomplete=summarize(5120,8192,"warm",records)
+    assert incomplete["status"]=="INCOMPLETE"
+    assert incomplete["candidate_deltas"]["fragment-aiu"]["parity_verdict"]=="INCOMPLETE"
+
+
+def test_reference_replays_ppu_winner_including_k_warps_not_external_split():
+    r=recipes("raw-reference",5120,8192,"warm")[0]
+    assert r==(4,4,2)
+    row=record("raw-reference")|dict(recipe=list(r),storage="RAW_GGUF")
+    assert parse_result("Q4_PPU_CELL "+json.dumps(row),"raw-reference",r,[1,5120,8192],"warm",3)["inter_cta_split"]==1
+    row["inter_cta_split"]=2
+    with pytest.raises(ValueError):
+        parse_result("Q4_PPU_CELL "+json.dumps(row),"raw-reference",r,[1,5120,8192],"warm",3)
+
+
+def test_current_control_is_not_the_old_n4_kernel_or_false_fp16_affine_label():
+    r=recipes("kpack-current",5120,8192,"warm")[0]
+    row=record("kpack-current")|dict(recipe=list(r))
+    with pytest.raises(ValueError):
+        parse_result("Q4_PPU_CELL "+json.dumps(row),"kpack-current",r,[1,5120,8192],"warm",3)
+    row["weight_arithmetic"]="FP32_GROUP_AFFINE"
+    assert parse_result("Q4_PPU_CELL "+json.dumps(row),"kpack-current",r,[1,5120,8192],"warm",3)
+    assert recipes("kpack-current",512,2048,"warm")==[(1,16,1)]
+
+
+@pytest.mark.parametrize("fault",["duplicate","missing","invalid_recipe","incomplete"])
+def test_control_selection_receipt_rejects_bad_denominator_and_recipe(tmp_path,fault):
+    report=json.loads(CONTROL_RECEIPT.read_text())
+    if fault=="duplicate":report["cases"].append(report["cases"][0])
+    elif fault=="missing":report["cases"].pop()
+    elif fault=="invalid_recipe":report["cases"][0]["winners"]["raw-reference"]["recipe"]=[1,8,99]
+    else:report["status"]="INCOMPLETE"
+    path=tmp_path/"receipt.json";path.write_text(json.dumps(report))
+    with pytest.raises(ValueError):read_control_recipes(path)
+
+
+def test_parent_device_probe_finishes_before_children_and_does_not_keep_context():
+    import ast
+    source=(ROOT/"dev/gemv_ppu/run_bload.py").read_text()
+    tree=ast.parse(source)
+    run=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=="run")
+    calls=[n.func.id for n in ast.walk(run) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name)]
+    assert "SDK" not in calls and "load_library" not in calls and "probe_device" in calls
+
+
+@pytest.mark.parametrize("fault",[None,"partial_child","invalid_cell","duplicate_cell"])
+def test_coordinator_runs_bounded_cohort_without_a_parent_gpu_context(tmp_path,monkeypatch,fault):
+    from dev.gemv_ppu import run_bload as runner
+    fixture=tmp_path/"q12-n5120-k8192-e1-c1.npz"
+    fixture.write_bytes(b"orchestration-only fixture identity")
+    args=SimpleNamespace(sdk=tmp_path,bundle=ROOT/"prebuilt/ppu0010/q4-simt-ab-v1",
+        candidate=ROOT/"prebuilt/ppu0010/q4-bload-v1",controls=ROOT/"prebuilt/ppu0010/q4-h800-port-v1",
+        fixtures=tmp_path,output=tmp_path/"results",all_shapes=False,samples=3,l2_bytes=67108864,skip_acu=True)
+    device=dict(l2_bytes=67108864)
+    monkeypatch.setattr(runner,"verify_packages",lambda *a,**kw:dict(runtime={}))
+    monkeypatch.setattr(runner,"probe_device",lambda args:device)
+    def no_sdk(*a,**kw):raise AssertionError("parent acquired a GPU context")
+    monkeypatch.setattr(runner,"SDK",no_sdk)
+    jobs=[]
+    def fake_child(command,stdout,stderr):
+        def arg(name):return command[command.index(name)+1]
+        arm,mode=arg("--variant"),arg("--mode")
+        wanted=json.loads(arg("--recipes"))
+        assert arg("--controls")==str(args.controls)
+        planted=fault and not any(j[0]=="fragment-global" for j in jobs) and arm=="fragment-global"
+        jobs.append((arm,mode,wanted))
+        for i,recipe in enumerate(wanted):
+            if planted and fault=="partial_child" and i==len(wanted)-1:break
+            copies=1 if mode=="warm" else 7
+            row=record(arm)|dict(recipe=recipe,mode=mode,device=device,copies=copies,
+                calls_per_graph=max(2,(32+copies-1)//copies)*copies,
+                storage="RAW_GGUF" if arm=="raw-reference" else "CANONICAL_KPACK4",
+                weight_arithmetic=runner.arithmetic(arm,5120,8192))
+            if planted and fault=="invalid_cell" and i==len(wanted)-1:row["error"]=float("nan")
+            stdout.write("Q4_PPU_CELL "+json.dumps(row)+"\n")
+            if planted and fault=="duplicate_cell" and i==len(wanted)-1:
+                stdout.write("Q4_PPU_CELL "+json.dumps(row)+"\n")
+        return SimpleNamespace(returncode=int(bool(planted and fault=="partial_child")))
+    monkeypatch.setattr(runner.subprocess,"run",fake_child)
+    rc=runner.run(args)
+    report=json.loads((args.output/"summary.json").read_text())
+    assert len(jobs)==40 and sum(len(j[2]) for j in jobs)==72
+    assert len(report["cases"])==2 and all(set(c["winners"])==set(VARIANTS) for c in report["cases"])
+    assert (rc,report["status"])==((0,"PASS") if fault is None else (1,"INCOMPLETE"))
+    if fault:
+        # Two good recipes in the same child survive the third recipe's failure.
+        receipts=list(args.output.glob("*warm-fragment-global-r0.json"))
+        assert len(receipts)==1 and len(json.loads(receipts[0].read_text()))==2
+        assert len(report["failures"])==1
+        assert report["cases"][0]["candidate_deltas"]["fragment-aiu"]["parity_verdict"]=="INCOMPLETE"
+        assert report["cases"][1]["status"]=="PASS"
+
+
+@pytest.mark.parametrize("variant",["raw-reference","kpack-current","fragment-global","fragment-aiu"])
+def test_prebuilt_call_signature_and_k_warp_are_preserved(variant):
+    from dev.gemv_ppu.run_bload import ExperimentBench
+    bench=ExperimentBench.__new__(ExperimentBench)
+    bench.variant=variant;bench.n=5120;bench.k=8192;bench.copies=1
+    bench.weight_pointers=[(101,102)];bench.a=103;bench.output=104;bench.r=SimpleNamespace(stream=105)
+    calls=[]
+    def launch(*args):calls.append(args);return 0
+    bench.raw_launch=bench.current_launch=bench.blaunch=launch
+    recipe=recipes(variant,5120,8192,"warm")[0]
+    assert bench.invoke(recipe)==0
+    if variant=="raw-reference":expected=(4,4,2,5120,8192,103,101,104,105)
+    elif variant=="kpack-current":expected=(5120,8192,103,101,102,104,105)
+    else:expected=(int(variant=="fragment-aiu"),256,4,5120,8192,103,101,102,104,105)
+    assert calls==[expected]
 
 
 def test_cuda_profile_adapts_raw_storage_without_weakening_oracle():
@@ -131,8 +243,8 @@ def test_script_does_not_compile_or_modify_existing_astage_run():
 
 
 def test_published_native_addon_is_bound_and_not_device_admitted():
-    from dev.gemv_ppu.build_bload import verify
-    m=verify(ROOT/"prebuilt/ppu0010/q4-bload-v1",ROOT/"prebuilt/ppu0010/q4-simt-ab-v1")
+    m=verify_packages(ROOT/"prebuilt/ppu0010/q4-bload-v1",ROOT/"prebuilt/ppu0010/q4-simt-ab-v1",
+                      ROOT/"prebuilt/ppu0010/q4-h800-port-v1")
     assert m["device_validated"] is False and m["production_changed"] is False
     assert m["reference_original_sha256"]==REFERENCE_SHA256
     assert m["recipes"]==[list(r) for r in RECIPES]

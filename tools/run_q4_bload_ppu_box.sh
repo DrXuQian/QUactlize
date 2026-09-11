@@ -37,7 +37,7 @@
     export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
     [[ "$CUDA_VISIBLE_DEVICES" =~ ^[0-9]+$ ]]
     "$PYTHON" -c 'import numpy, torch, gguf'
-    "$PYTHON" -c 'from pathlib import Path; from dev.gemv_ppu.build_bload import verify; verify(Path("prebuilt/ppu0010/q4-bload-v1"),Path("prebuilt/ppu0010/q4-simt-ab-v1")); print("Q4_BLOAD_PACKAGE PASS controls=UNCHANGED production=UNCHANGED")'
+    "$PYTHON" -c 'from pathlib import Path; from dev.gemv_ppu.run_bload import verify_packages; verify_packages(Path("prebuilt/ppu0010/q4-bload-v1"),Path("prebuilt/ppu0010/q4-simt-ab-v1"),Path("prebuilt/ppu0010/q4-h800-port-v1")); print("Q4_BLOAD_PACKAGE PASS controls=PPU_RETEST_SELECTED production=UNCHANGED")'
     if [[ -n ${RESUME_RUN:-} ]]; then
         RUN=$(realpath -e -- "$RESUME_RUN")
         test -n "$RUN" && test -d "$RUN/results"
@@ -72,8 +72,8 @@
     if [[ ${ALL_SHAPES:-0} == 1 ]]; then EXTRA+=(--all-shapes); fi
     if [[ -n ${L2_BYTES:-} ]]; then EXTRA+=(--l2-bytes "$L2_BYTES"); fi
     stage=compare
-    printf 'Q4_BLOAD_BOX run=%s arms=xplane,baseline,raw-reference,fragment-global,fragment-aiu cache=warm+rotating\n' "$RUN"
-    printf 'PREBUILT=1 compile=NONE JIT=NONE sweep=BOUNDED_THREE_RECIPE_SET first_launch=EXCLUDED rounds=4 samples=15\n'
+    printf 'Q4_BLOAD_BOX run=%s arms=xplane,kpack-current,raw-reference,fragment-global,fragment-aiu cache=warm+rotating\n' "$RUN"
+    printf 'PREBUILT=1 compile=NONE JIT=NONE sweep=THREE_TRANSPORT_PAIRS controls=PPU_RETEST_SELECTED first_launch=EXCLUDED rounds=4 samples=15\n'
     "$PYTHON" -u dev/gemv_ppu/run_bload.py --sdk "$SDK" --fixtures "$FIXTURE_DIR" \
         --output "$RUN/results" "${EXTRA[@]}" 2>&1 | tee -a "$RUN/results/console.log"
     stage=complete

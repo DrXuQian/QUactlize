@@ -8,15 +8,22 @@ K-pack4 bytes, production dispatch, or the running shared-A package.
 | Arm | Weight bytes | A | Dot/reduction/output | Purpose |
 | --- | --- | --- | --- | --- |
 | `xplane` | Historical Xplane | FP16, CTA shared staging | FP32 | Frozen PPU-selected comparator |
-| `baseline` | Canonical K-pack4 | FP16, direct global reads | FP32 | Frozen current N4 reader |
+| `kpack-current` | Canonical K-pack4 | Frozen latest implementation | FP32 | Latest H800-optimized implementation, replayed on PPU |
 | `raw-reference` | Original GGUF Q4_K blocks | FP16, CTA shared staging | FP32 | Supplied `gemv_ref.cu`, with FP32 inner accumulators |
 | `fragment-global` | Canonical K-pack4 | FP16, direct global reads | FP32 | Direct B loads with the new fragment/compute topology |
 | `fragment-aiu` | Canonical K-pack4 | Same as `fragment-global` | Same FP32 order as `fragment-global` | AIU -> swizzled shared -> transposed ldmatrix |
 
-The three raw-reference recipes are `(columns-per-warp, N-warps, split) =
-(1,8,1), (2,8,1), (4,8,1)`. They are a bounded comparison, not a claim of
-global optimality. The Xplane/current K-pack recipes are unchanged from the
-previous PPU receipt.
+The controls replay the winners from the audited PPU retest in
+`docs/measurements/q4_h800_port_ppu_20260911/summary.json`. Only recipes are
+reused: **all timings are collected again alongside the new readers**. The
+receipt binds the exact prebuilt images. The old N4 K-pack kernel and the
+old WK1-only reference shortlist are no longer the timing controls.
+
+At the default N5120/K8192 anchor, Xplane uses `(C,WN,WK)=(2,8,1)` and
+raw-reference uses `(4,4,2)` in both cache modes. WK2 is intra-CTA K work
+sharing: it remains one kernel, without an external Split-K reducer. Current
+K-pack replays `affine4-early-fast-bare`, `(C,W,S)=(4,8,1)`. This is a bounded
+comparison against previously measured winners, not a fresh global search.
 
 The B experiment uses only `(stage-K, K-warps, split) = (256,4,1), (512,8,1),
 (1024,8,1)`. All CTAs compute N16; increasing stage-K amortizes AIU completion
@@ -28,7 +35,7 @@ of its latency cost, not excluded setup.
 ## What can be attributed to B transport
 
 The original N4 mapping and native ldmatrix mapping differ. Therefore comparing
-`fragment-aiu` only with the original `baseline` cannot isolate transport.
+`fragment-aiu` only with `kpack-current` cannot isolate transport.
 `fragment-global` and `fragment-aiu` share A accesses, metadata formulas,
 FP32 dot order, output ownership, block/grid geometry and reduction. The
 runner requires exact FP32 output equality between these two. Their generated
@@ -72,9 +79,12 @@ folds/reduces in FP32 and writes FP32. It preserves raw block addressing,
 vector header/code loads, A staging and the reference's FP16 dequantization
 formulas. The original file is not silently edited.
 
-Raw-reference and K-pack use different affine rounding formulas. All arms are
-checked against the SAME independent GGUF dot oracle, but raw-reference vs
-K-pack is not a bit-identical dequantization or pure-layout comparison.
+Raw-reference and the fragment pair use different affine rounding formulas.
+Current K-pack's medium/large bodies use FP32 group-affine arithmetic; the
+other bodies dequantize individual weights in FP16. Every record identifies
+its arithmetic. All arms use FP16 A and FP32 accumulation/output and are
+checked against the SAME independent GGUF dot oracle, but only the fragment
+pair is a bit-identical transport A/B, not the comparisons with controls.
 
 For NVIDIA compilation only, the packed-half inline-assembly constants use
 register constraints instead of immediate constraints, as required by ptxas.
@@ -84,15 +94,19 @@ is no AIU emulation on NVIDIA.
 ## PPU execution
 
 Default: N5120/K8192 only, warm and >L2 rotating, four alternating rounds of
-15 graph samples. First graph upload/replays are excluded. Three recipes are
-batched per process where possible. This is not a Cartesian sweep. Failed
+15 graph samples: 72 timing cells total (three selected controls plus three
+matched transport pairs, two cache modes, four rounds). First graph
+upload/replays are excluded. Three transport recipes are batched per process
+where possible. This is not a Cartesian sweep. Failed
 children retain already-validated cells; other arms continue in fresh
-processes. No production library, JIT or box compilation is involved.
+processes. The identity probe runs in a short-lived child; the parent does
+not hold a GPU context during timing or ACU. No production library, JIT or
+box compilation is involved. Existing prebuilt device bodies are unchanged.
 
 ```bash
 (
   GIT_LFS_SKIP_SMUDGE=1 git pull --ff-only origin develop &&
-  git lfs pull --include="prebuilt/ppu0010/q4-simt-ab-v1/*.so,prebuilt/ppu0010/q4-bload-v1/*.so" --exclude="" &&
+  git lfs pull --include="prebuilt/ppu0010/q4-simt-ab-v1/*.so,prebuilt/ppu0010/q4-bload-v1/*.so,prebuilt/ppu0010/q4-h800-port-v1/*.so" --exclude="" &&
   PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
   CUDA_VISIBLE_DEVICES=0 L2_BYTES=67108864 \
   bash tools/run_q4_bload_ppu_box.sh
@@ -109,8 +123,14 @@ profiled durations do not replace warm/rotating event timings.
 inputs. `RESUME_RUN=/workspace/q4-bload-ppu.<suffix>` reuses successful timing
 cells only when runtime/source/device/fixture hashes match. ACU reports are
 retained, but an explicit resume currently recollects them.
+Use a **fresh run** after this control update: earlier N4/WK1 timings cannot
+be resumed as the new control cohort. Use an otherwise idle PPU for comparison.
 
 Upload the printed `q4-bload-ppu.<suffix>.results.tgz`. `status=PASS` means
 valid measurements, not a performance win. Compare each recipe's
-`matched_transport` before attributing improvement to AIU. No device result or
-latency improvement is claimed from compilation or the host layout proof.
+`matched_transport` before attributing improvement to AIU. `candidate_deltas`
+compares both fragment implementations with all three controls;
+`WITHIN_5_PERCENT` requires a complete measurement denominator. No device
+result or latency improvement is claimed from compilation or the host layout
+proof. If the raw transport or numeric gate fails, the affected timing is not
+admitted.

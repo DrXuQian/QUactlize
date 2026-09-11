@@ -3,6 +3,7 @@
 import argparse
 import csv
 import ctypes as C
+from functools import lru_cache
 import hashlib
 import json
 import math
@@ -17,25 +18,71 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from dev.gemv_cuda.build import digest
-from dev.gemv_ppu.astage_source import CASES
 from dev.gemv_ppu.bload_source import RECIPES
 from dev.gemv_ppu.build_bload import PAYLOAD, verify
 from dev.gemv_ppu.campaign import parse_cells
-from dev.gemv_ppu.run import Bench, SDK, checked, load_library, device_identity
+from dev.gemv_ppu.h800_port import IMPLEMENTATIONS, REFERENCE_RECIPES, XPLANE_RECIPES, selection, verify as verify_controls
+from dev.gemv_ppu.run import Bench, SDK, SHAPES, checked, load_library, device_identity
 from tools.run_kpack_grouped_decode_probe import Replay
 from tools.profile_kpack_gpu_compact import AcuRange, acu_launch_command
 
-VARIANTS = ("xplane", "baseline", "raw-reference", "fragment-global", "fragment-aiu")
+VARIANTS = ("xplane", "kpack-current", "raw-reference", "fragment-global", "fragment-aiu")
 ROUNDS = 4
+CONTROL_RECEIPT = ROOT / "docs/measurements/q4_h800_port_ppu_20260911/summary.json"
+
+
+def read_control_recipes(path):
+    """Reuse selected *recipes*, never historical timings, from the PPU retest."""
+    report = json.loads(path.read_text())
+    if report.get("status") != "PASS" or report.get("failures"):
+        raise ValueError("control receipt is incomplete")
+    expected = {(n, k, mode) for n, k in SHAPES for mode in ("warm", "rotating")}
+    result = {}
+    for case in report["cases"]:
+        if len(case["shape"]) != 3 or case["shape"][0] != 1:
+            raise ValueError("control receipt is not M1")
+        _, n, k = case["shape"]
+        key = (n, k, case["mode"])
+        if key not in expected or key in result or set(case["winners"]) != {"xplane", "raw-reference", "kpack"}:
+            raise ValueError("control receipt has duplicate/missing/unexpected cells")
+        chosen = {arm: tuple(row["recipe"]) for arm, row in case["winners"].items()}
+        if (chosen["xplane"] not in XPLANE_RECIPES or chosen["raw-reference"] not in REFERENCE_RECIPES
+                or chosen["kpack"] != tuple(selection(n, k)[1])):
+            raise ValueError("control recipe is not present in its compiled implementation")
+        result[key] = chosen
+    if set(result) != expected:
+        raise ValueError("control receipt shape/cache denominator differs")
+    return result
+
+
+@lru_cache(maxsize=1)
+def control_recipes():
+    return read_control_recipes(CONTROL_RECEIPT)
+
+
+def verify_packages(candidate, baseline, controls, *, sources=True):
+    manifest = verify(candidate, baseline, sources=sources)
+    verify_controls(controls, baseline, sources=sources)
+    receipt = json.loads(CONTROL_RECEIPT.read_text())
+    if (receipt["authority"]["candidate"] != digest(controls / "manifest.json")
+            or receipt["authority"]["baseline"] != digest(baseline / "manifest.json")):
+        raise ValueError("selected controls and prebuilt images differ")
+    read_control_recipes(CONTROL_RECEIPT)
+    return manifest
 
 
 def recipes(variant, n, k, mode):
-    fixed = next(row for row in CASES if row[:3] == (n, k, mode))
-    if variant == "xplane": return [fixed[4]]
-    if variant == "baseline": return [fixed[3]]
-    if variant == "raw-reference": return [(1, 8, 1), (2, 8, 1), (4, 8, 1)]
+    fixed = control_recipes()[(n, k, mode)]
+    if variant in ("xplane", "raw-reference"): return [fixed[variant]]
+    if variant == "kpack-current": return [fixed["kpack"]]
     if variant in ("fragment-global", "fragment-aiu"): return list(RECIPES)
     raise ValueError("unknown variant")
+
+
+def arithmetic(variant, n, k):
+    if variant == "kpack-current" and IMPLEMENTATIONS[selection(n, k)[0]].startswith("affine"):
+        return "FP32_GROUP_AFFINE"
+    return "PER_WEIGHT_FP16"
 
 
 def transport_expected():
@@ -66,20 +113,31 @@ def exact_bits(a, b, label):
 class ExperimentBench(Bench):
     def __init__(self, args):
         super().__init__(args)
-        self.extra = C.CDLL(str(args.candidate / PAYLOAD), mode=C.RTLD_LOCAL)
+        self.variant = args.variant
+        if self.variant == "raw-reference":
+            library = args.controls / "libq4_ppu_port_reference.so"
+        elif self.variant == "kpack-current":
+            library = args.controls / f"libq4_ppu_port_{selection(self.n, self.k)[0]}.so"
+        else:
+            library = args.candidate / PAYLOAD
+        self.extra = C.CDLL(str(library), mode=C.RTLD_LOCAL)
         marker = self.extra.q4_ppu_probe
         marker.argtypes = [C.POINTER(C.c_int)] * 3 + [C.c_char_p]; marker.restype = C.c_int
         l2, sm, warp, name = C.c_int(), C.c_int(), C.c_int(), C.create_string_buffer(256)
         checked(marker(C.byref(l2), C.byref(sm), C.byref(warp), name), "B-load native marker")
         if (sm.value, warp.value, name.value.decode()) != (self.device["sm"], self.device["warp"], self.device["name"]):
             raise ValueError("candidate device differs")
-        self.blaunch = self.extra.q4_bload_run
-        self.blaunch.argtypes = [C.c_int] * 5 + [C.c_void_p] * 5; self.blaunch.restype = C.c_int
-        self.raw_launch = self.extra.q4_ref_fp32_run
-        self.raw_launch.argtypes = [C.c_int] * 4 + [C.c_void_p] * 4; self.raw_launch.restype = C.c_int
-        self.transport = self.extra.q4_bload_transport
-        self.transport.argtypes = [C.c_int] * 2 + [C.c_void_p] * 3; self.transport.restype = C.c_int
-        self.variant = args.variant
+        if self.variant == "raw-reference":
+            self.raw_launch = self.extra.q4_ref_fp32_run_v2
+            self.raw_launch.argtypes = [C.c_int] * 5 + [C.c_void_p] * 4; self.raw_launch.restype = C.c_int
+        elif self.variant == "kpack-current":
+            self.current_launch = self.extra.q4_h800_port_run
+            self.current_launch.argtypes = [C.c_int] * 2 + [C.c_void_p] * 5; self.current_launch.restype = C.c_int
+        else:
+            self.blaunch = self.extra.q4_bload_run
+            self.blaunch.argtypes = [C.c_int] * 5 + [C.c_void_p] * 5; self.blaunch.restype = C.c_int
+            self.transport = self.extra.q4_bload_transport
+            self.transport.argtypes = [C.c_int] * 2 + [C.c_void_p] * 3; self.transport.restype = C.c_int
         self.raw_weight = None
         if self.variant == "raw-reference":
             self.raw_weight = np.ascontiguousarray(self.data["raw"]).view("u1").reshape(-1)
@@ -113,7 +171,9 @@ class ExperimentBench(Bench):
     def invoke(self, recipe, index=0, force_aiu=None):
         lp, up = self.weight_pointers[index % self.copies]
         if self.variant == "raw-reference":
-            return self.raw_launch(recipe[0], recipe[1], self.n, self.k, self.a, lp, self.output, self.r.stream)
+            return self.raw_launch(*recipe, self.n, self.k, self.a, lp, self.output, self.r.stream)
+        if self.variant == "kpack-current":
+            return self.current_launch(self.n, self.k, self.a, lp, up, self.output, self.r.stream)
         aiu = int(self.variant == "fragment-aiu") if force_aiu is None else force_aiu
         return self.blaunch(aiu, recipe[0], recipe[1], self.n, self.k, self.a, lp, up, self.output, self.r.stream)
 
@@ -180,24 +240,29 @@ class ExperimentBench(Bench):
         if error >= .005: raise ValueError("post-replay independent oracle failed")
         if self.sdk.download(self.workspace_base, self.workspace_bytes + 256) != b"\xff" * (self.workspace_bytes + 256):
             raise ValueError("S1 arm unexpectedly wrote workspace")
-        return dict(status="PASS", arm="new", variant=self.variant, shape=[1, self.n, self.k], mode=self.args.mode,
+        return dict(status="PASS", arm=self.variant, variant=self.variant, shape=[1, self.n, self.k], mode=self.args.mode,
             recipe=recipe, error=error, zero_code_negative="PASS", zero_a_check="PASS", device=self.device,
             copies=self.copies, weight_bytes=self.weight_bytes, calls_per_graph=calls, samples_us=samples,
             median_us=statistics.median(samples) if samples else None, output_type="F32", reducer_check="NOT_APPLICABLE",
             transport_b16_sha256=gate_hash, matched_fp32_sha256=matched,
             storage="RAW_GGUF" if self.raw_weight is not None else "CANONICAL_KPACK4",
-            precision="FP16_A_FP16_DEQUANT_FP32_DOT_REDUCTION_OUTPUT",
+            weight_arithmetic=arithmetic(self.variant, self.n, self.k),
+            launches_per_call=1, inter_cta_split=1,
             timing_scope="RESIDENT_COMPLETE_CALL_INCLUDING_REDUCER_NO_HOST_PACK_OR_JIT")
 
 
 def parse_result(text, variant, recipe, shape, mode, samples):
-    arm = "xplane" if variant == "xplane" else "new"
-    row = parse_cells(text, arm, [recipe], shape, mode, samples)[0]
-    if row.get("variant") != variant or row.get("output_type") != "F32" or recipe[2] != 1:
+    row = parse_cells(text, variant, [recipe], shape, mode, samples)[0]
+    if (row.get("variant") != variant or row.get("output_type") != "F32"
+            or tuple(recipe) not in recipes(variant, *shape[1:], mode)):
         raise ValueError("B-load/reference arm or precision differs")
-    if variant in ("fragment-global", "fragment-aiu", "raw-reference"):
+    # Raw-reference's third field is intra-CTA K-warps, NOT inter-CTA split.
+    if variant != "xplane":
         if row.get("zero_a_check") != "PASS" or row.get("storage") != ("RAW_GGUF" if variant == "raw-reference" else "CANONICAL_KPACK4"):
             raise ValueError("missing A check or wrong input format")
+        if (row.get("weight_arithmetic") != arithmetic(variant, *shape[1:])
+                or row.get("launches_per_call") != 1 or row.get("inter_cta_split") != 1):
+            raise ValueError("arithmetic or single-kernel scope differs")
     if variant.startswith("fragment-"):
         for key in ("transport_b16_sha256", "matched_fp32_sha256"):
             if not isinstance(row.get(key), str) or len(row[key]) != 64 or any(c not in "0123456789abcdef" for c in row[key]):
@@ -206,12 +271,12 @@ def parse_result(text, variant, recipe, shape, mode, samples):
 
 
 def child(args):
-    verify(args.candidate, args.bundle, sources=False)
+    verify_packages(args.candidate, args.bundle, args.controls, sources=False)
     args.arm = "xplane" if args.variant == "xplane" else "new"
     bench = None
     failed = False
     try:
-        bench = ExperimentBench(args) if args.variant not in ("xplane", "baseline") else Bench(args)
+        bench = Bench(args) if args.variant == "xplane" else ExperimentBench(args)
         for recipe in json.loads(args.recipes):
             if tuple(recipe) not in recipes(args.variant, bench.n, bench.k, args.mode):
                 raise ValueError("recipe outside bounded experiment")
@@ -238,25 +303,40 @@ def summarize(n, k, mode, records):
             winners[variant] = dict(recipe=json.loads(selected), median_us=values[selected])
     full = all(len(all_medians[v]) == len(recipes(v, n, k, mode)) for v in VARIANTS)
     result = dict(shape=[1,n,k], mode=mode, status="PASS" if full else "INCOMPLETE", winners=winners,
-                  scope="BOUNDED_THREE_RECIPE_SET_NOT_GLOBAL_OPTIMUM", matched_transport=[])
+                  scope="THREE_TRANSPORT_RECIPES_VS_PPU_SELECTED_CONTROLS_NOT_GLOBAL_OPTIMUM", matched_transport=[],
+                  candidate_deltas={})
     for recipe in RECIPES:
         key = json.dumps(recipe)
         if key in all_medians["fragment-aiu"] and key in all_medians["fragment-global"]:
             a, b = all_medians["fragment-aiu"][key], all_medians["fragment-global"][key]
             result["matched_transport"].append(dict(recipe=recipe, aiu_us=a, direct_us=b, delta_pct=100*(a/b-1)))
-    if "fragment-aiu" in winners:
-        t = winners["fragment-aiu"]["median_us"]
-        for v in ("xplane", "baseline", "raw-reference"):
-            if v in winners: result["aiu_vs_" + v + "_pct"] = 100*(t/winners[v]["median_us"]-1)
+    for arm in ("fragment-global", "fragment-aiu"):
+        if arm not in winners: continue
+        deltas = {v: 100*(winners[arm]["median_us"]/winners[v]["median_us"]-1)
+                  for v in ("xplane", "kpack-current", "raw-reference") if v in winners}
+        result["candidate_deltas"][arm] = dict(delta_pct=deltas,
+            parity_verdict="INCOMPLETE" if not full else "WITHIN_5_PERCENT" if max(deltas.values()) <= 5 else "PARITY_OPEN")
     return result
 
 
+def probe_device(args):
+    """End the probe context before timing/profiling children start."""
+    command = [sys.executable, "-u", str(Path(__file__).resolve()), "--probe", "--sdk", str(args.sdk),
+               "--bundle", str(args.bundle), "--l2-bytes", str(args.l2_bytes)]
+    proc = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    rows = [line.split(" ", 1)[1] for line in proc.stdout.splitlines() if line.startswith("Q4_BLOAD_PROBE ")]
+    if proc.returncode or len(rows) != 1:
+        raise ValueError(f"native device probe rc={proc.returncode}: {proc.stdout}")
+    return json.loads(rows[0])
+
+
 def run(args):
-    m = verify(args.candidate, args.bundle)
-    sdk = SDK(args.sdk); device = device_identity(sdk)
-    _, geometry = load_library(args, "new"); device.update(geometry)
-    cases = [r[:3] for r in CASES if args.all_shapes or r[:2] == (5120,8192)]
+    m = verify_packages(args.candidate, args.bundle, args.controls)
+    device = probe_device(args)
+    cases = [(n, k, mode) for n, k in SHAPES if args.all_shapes or (n, k) == (5120,8192)
+             for mode in ("warm", "rotating")]
     authority = dict(candidate=digest(args.candidate / "manifest.json"), baseline=digest(args.bundle / "manifest.json"),
+        controls=digest(args.controls / "manifest.json"), control_selection=digest(CONTROL_RECEIPT),
         runner=digest(Path(__file__)), protocol=digest(ROOT / "dev/gemv_ppu/run.py"), parser=digest(ROOT / "dev/gemv_ppu/campaign.py"),
         cases=cases, samples=args.samples, rounds=ROUNDS, device=device, l2_override=args.l2_bytes,
         runtime={name:digest(args.sdk / "lib" / name) for name in m["runtime"]},
@@ -272,7 +352,7 @@ def run(args):
     started = time.monotonic(); summaries, profiles, failures = [], [], []
     def cmd(n,k,mode,variant,wanted,profile=False):
         result = [sys.executable,"-u",str(Path(__file__).resolve()),"--child","--sdk",str(args.sdk),
-            "--bundle",str(args.bundle),"--candidate",str(args.candidate),"--fixture",
+            "--bundle",str(args.bundle),"--candidate",str(args.candidate),"--controls",str(args.controls),"--fixture",
             str(args.fixtures/f"q12-n{n}-k{k}-e1-c1.npz"),"--variant",variant,"--mode",mode,
             "--recipes",json.dumps(wanted),"--samples",str(args.samples),"--l2-bytes",str(args.l2_bytes)]
         return result + (["--profile"] if profile else [])
@@ -295,17 +375,23 @@ def run(args):
             with log.open("w") as stream:
                 rc = subprocess.run(cmd(n,k,mode,variant,missing),stdout=stream,stderr=subprocess.STDOUT).returncode
             lines = [line for line in log.read_text().splitlines() if line.startswith("Q4_PPU_CELL ")]
-            seen = set()
+            seen, errors = set(), []
             for line in lines:
-                raw = json.loads(line.split(" ",1)[1]); key = json.dumps(raw["recipe"])
-                if key in seen or tuple(raw["recipe"]) not in missing: raise ValueError("duplicate/unrequested child recipe")
-                seen.add(key)
-                row = parse_result(line,variant,raw["recipe"],[1,n,k],mode,args.samples)
-                if row["device"] != device: raise ValueError("child device differs")
-                cached[key] = dict(row=row,log=log.name,log_sha256=digest(log))
+                key = None
+                try:
+                    raw = json.loads(line.split(" ",1)[1]); key = json.dumps(raw["recipe"])
+                    if key in seen or tuple(raw["recipe"]) not in missing:
+                        raise ValueError("duplicate/unrequested child recipe")
+                    seen.add(key)
+                    row = parse_result(line,variant,raw["recipe"],[1,n,k],mode,args.samples)
+                    if row["device"] != device: raise ValueError("child device differs")
+                    cached[key] = dict(row=row,log=log.name,log_sha256=digest(log))
+                except (ValueError, KeyError, TypeError) as exc:
+                    if key is not None: cached.pop(key, None)
+                    errors.append(str(exc))
             receipt.write_text(json.dumps(cached,indent=2)+"\n")
-            if rc or len(seen) != len(missing):
-                failures.append(dict(shape=[1,n,k],mode=mode,variant=variant,round=turn,rc=rc,log=log.name))
+            if rc or errors or any(json.dumps(r) not in cached for r in wanted):
+                failures.append(dict(shape=[1,n,k],mode=mode,variant=variant,round=turn,rc=rc,log=log.name,errors=errors))
                 print(f"Q4_BLOAD_CHILD_FAIL arm={variant} rc={rc} log={log} successful_cells_retained=1",flush=True)
         return {key:entry["row"] for key,entry in cached.items()}
     for n,k,mode in cases:
@@ -313,7 +399,11 @@ def run(args):
         for turn in range(ROUNDS):
             for v in (VARIANTS if turn%2==0 else VARIANTS[::-1]):
                 for key,row in collect(n,k,mode,v,turn).items(): records[v].setdefault(key,[]).append(row)
-        summary = summarize(n,k,mode,records); summaries.append(summary)
+        summary = summarize(n,k,mode,records)
+        if any(f["shape"] == [1,n,k] and f["mode"] == mode for f in failures):
+            summary["status"] = "INCOMPLETE"
+            for result in summary["candidate_deltas"].values(): result["parity_verdict"] = "INCOMPLETE"
+        summaries.append(summary)
         print("Q4_BLOAD_RESULT " + json.dumps(summary),flush=True)
         (args.output / "summary.json").write_text(json.dumps(dict(cases=summaries,failures=failures),indent=2)+"\n")
     if not args.skip_acu:
@@ -335,7 +425,9 @@ def run(args):
                 profiles.append(dict(variant=v,status="PASS",recipe=chosen,files=[p.name for p in files]))
             except Exception as exc:
                 profiles.append(dict(variant=v,status="FAIL",error=str(exc),log=log.name))
-    verify(args.candidate,args.bundle)
+    verify_packages(args.candidate,args.bundle,args.controls)
+    if digest(CONTROL_RECEIPT) != authority["control_selection"]:
+        raise ValueError("selected control receipt changed during run")
     if any(digest(args.sdk/"lib"/name)!=sha for name,sha in authority["runtime"].items()): raise ValueError("runtime changed during run")
     report=dict(status="PASS" if all(r["status"]=="PASS" for r in summaries) and not failures and all(p["status"]=="PASS" for p in profiles) else "INCOMPLETE",
                 cases=summaries,failures=failures,profiles=profiles,seconds=time.monotonic()-started)
@@ -353,6 +445,7 @@ def main():
     p.add_argument("--sdk",type=Path,required=True)
     p.add_argument("--bundle",type=Path,default=ROOT/"prebuilt/ppu0010/q4-simt-ab-v1")
     p.add_argument("--candidate",type=Path,default=ROOT/"prebuilt/ppu0010/q4-bload-v1")
+    p.add_argument("--controls",type=Path,default=ROOT/"prebuilt/ppu0010/q4-h800-port-v1")
     p.add_argument("--fixtures",type=Path);p.add_argument("--output",type=Path)
     p.add_argument("--fixture",type=Path);p.add_argument("--child",action="store_true")
     p.add_argument("--variant",choices=VARIANTS);p.add_argument("--recipes")
@@ -360,9 +453,16 @@ def main():
     p.add_argument("--all-shapes",action="store_true");p.add_argument("--profile",action="store_true")
     p.add_argument("--skip-acu",action="store_true");p.add_argument("--acu",type=Path)
     p.add_argument("--l2-bytes",type=int,default=0)
+    p.add_argument("--probe",action="store_true")
     a=p.parse_args()
     a.sdk=a.sdk.resolve(strict=True);a.bundle=a.bundle.resolve(strict=True);a.candidate=a.candidate.resolve(strict=True)
+    a.controls=a.controls.resolve(strict=True)
     if a.samples<3 or a.l2_bytes<0:p.error("invalid samples/L2 size")
+    if a.probe:
+        sdk=SDK(a.sdk);device=device_identity(sdk)
+        _,geometry=load_library(a,"new");device.update(geometry)
+        print("Q4_BLOAD_PROBE " + json.dumps(device),flush=True)
+        return 0
     if a.child:return child(a)
     if a.fixtures is None or a.output is None:p.error("--fixtures and --output required")
     a.fixtures=a.fixtures.resolve(strict=True);a.output=a.output.resolve()
