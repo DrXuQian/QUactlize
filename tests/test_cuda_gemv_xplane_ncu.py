@@ -79,6 +79,19 @@ def test_profiling_boundary_is_after_the_cache_setup():
         assert fragment in runner
 
 
+def test_cuda_rotating_graph_uses_the_same_whole_ring_rule_as_ppu():
+    from dev.gemv_cuda.build_profile_runner import whole_ring_source
+    original=(ROOT/"dev/gemv_cuda/profile_xplane.cu").read_text()
+    source=whole_ring_source(original)
+    assert "int const calls=std::max(2,(32+copies-1)/copies)*copies;" in source
+    assert "calls_per_graph=%d" in source
+    assert 'std::max(32,2*copies)' not in source
+    with pytest.raises(ValueError):whole_ring_source(source)
+    for copies in (1,2,7,13,33,128):
+        calls=max(2,(32+copies-1)//copies)*copies
+        assert calls>=32 and calls%copies==0
+
+
 @pytest.mark.parametrize("plant",(None,"half","incomplete","duplicate","missing","arm"))
 def test_retuned_fp32_profiles_cannot_use_half_or_incomplete_receipts(plant):
     receipt=dict(status="PASS",arithmetic="BOTH_FP32_DOT_AND_REDUCTION_FP16_WEIGHT_AND_A_BOUNDARY",cases=[])

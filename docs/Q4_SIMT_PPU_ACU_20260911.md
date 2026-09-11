@@ -25,20 +25,30 @@ Both warm and rotating confirmations chose Xplane `C2/W8/S1` and new K-pack
 | DRAM read throughput, GB/s | 1,002.7412 | 822.6368 |
 | ACU DRAM throughput, % sustained peak | 35.7832 | 30.1238 |
 | KVD/LSU global-read transactions | 737,280 | 2,293,760 |
+| Global-load instructions (`ws__inst_executed_op_vmem_ld.sum`) | 92,160 | 286,720 |
+| Transactions/global-load instruction | 8 | 8 |
 | KVD/LSU global-read transaction bytes | 47,185,920 | 146,800,640 |
 | KVD bytes loaded from L2 | 24,778,496 | 90,074,240 |
 | L2 request hit rate, % | 4.6601 | 73.1301 |
 | PU executed instructions | 9,689,600 | 10,214,720 |
+| Vector-memory-pipe-busy stall / issue-active ratio | 0.000839 | 0.615353 |
+| LSU active cycles, % elapsed | 35.3826 | 60.8853 |
 
 The rotating regression is 25.9845%. These observations make insufficient
 theoretical occupancy or a separate reducer poor explanations for this cell.
 DRAM reads are nearly equal, but the new reader generates 3.11 times the
 LSU read transactions and 3.64 times the KVD-from-L2 bytes. These counters
-describe traffic at different cache levels, not distinct weight bytes. The
-working hypothesis is inefficient/coalesced-at-too-small-a-granularity or
-repeated requests inside the hierarchy, not additional useful weight data.
-This is a lead to validate against load addresses and generated PPU ISA;
-the counters alone do not identify the offending source expression.
+describe traffic at different cache levels, not distinct weight bytes.
+Global-load instruction count also rises by exactly 3.11 times, while
+transactions per instruction remain eight in both kernels. Thus this is not
+proof that each individual load coalesces worse: extra load instructions and
+repeated activation/metadata requests are primary suspects too. Validate
+addresses, instruction widths and generated PPU ISA separately for B, A and
+metadata; these aggregate counters do not identify the offending expression.
+
+The vector-memory-pipe-busy stall metric is an issue-active-normalized ratio,
+not a percentage of total kernel time. It confirms much greater vector-load
+pipeline pressure, but by itself does not prove which load path causes it.
 
 The new reader executes about 5.4% more PU instructions in this capture, not
 three times as many. Its higher L2 hit rate does not imply higher efficiency:
@@ -76,3 +86,45 @@ it can coexist with extra requests and lower delivered DRAM throughput.
 The PPU-specific memory-transaction behavior is a reason to retain native
 ACU/ISA checks even when NVIDIA NCU optimization succeeds. BF16 Tensor Core
 peak alone cannot predict FP32-accumulating SIMT GEMV rankings.
+
+## RTX PRO 6000 Blackwell Server Edition controlled replay
+
+A fresh CUDA 12.8 build was executed on a 96 GB RTX PRO 6000 Blackwell Server
+Edition (188 SMs, 128 MiB L2, driver 580.119.02). The input NPZ SHA256 matches
+the PPU receipt exactly; the exported standalone fixture preserves the same
+official-GGUF FP64 dot oracle. Both layout recipes remain the PPU-selected
+ones above; **no CUDA retuning** occurred.
+
+| Regime | CUDA Xplane, us | CUDA new K-pack, us | CUDA delta | PPU delta |
+|---|---:|---:|---:|---:|
+| Warm | 10.2265 | 11.0675 | +8.2237% | +12.1645% |
+| Rotating | 18.2441 | 18.2597 | +0.0854% | +25.9845% |
+
+Six alternating-arm rounds, fifteen event samples per round, five graph
+warmups discarded. Warm graphs contain 32 calls; rotating graphs contain
+39 calls over thirteen copies (at least 2.25 times this device's L2).
+Every graph ends on a whole-ring boundary. Maximum conditioned errors are
+2.430e-5 for Xplane and 2.971e-5 for K-pack, matching the PPU observations
+to the reported precision, below the unchanged 0.005 bound.
+
+The rotating 26% regression does **not** reproduce on this CUDA device with
+the same recipes. Warm still regresses by 8.22%; this is not all-regime parity
+or a claim that either configuration is the CUDA optimum. Memory-request
+behavior on PPU remains the immediate investigation target.
+
+NCU 2025.1.1 is installed, but its real kernel probe returns
+`ERR_NVGPUCTRPERM` even as container root. There are **no PRO 6000 hardware
+counters** in this receipt. The host/container administrator must grant
+profiling access; no driver/security policy was changed by this experiment.
+
+Remote experiment directory: `/root/autodl-tmp/q4-ppu-repro.ZAlupc`.
+The build took about 72.5 seconds for the candidate. `dev/gemv_cuda/build_profile_runner.py`
+generates a whole-ring variant of the historical standalone harness without
+changing its frozen source or any benchmark kernel. `reproduce_ppu.py` replays
+the selected pair and preserves every raw sample and input hash.
+
+Retained evidence:
+
+- [Complete paired timing receipt](measurements/q4_ppu_fixed_pro6000_20260911.json).
+- [Raw timing logs, build receipts and NCU permission failure](measurements/q4_ppu_fixed_pro6000_20260911.logs.tgz),
+  SHA256 `3ee9ec26a0673ce5f1874d508980efe2c85fb33e35121538c320b6708d9157d8`.
