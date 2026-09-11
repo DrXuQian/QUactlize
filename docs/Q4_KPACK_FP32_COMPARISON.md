@@ -164,9 +164,12 @@ negative. Another 116 F16-aligned and 116 F32-weak-alignment indexed checks
 pass across Q2–Q6. These 276 checks do not imply new grouped performance
 coverage. The [six-family receipt](measurements/q4_fp32_large_s1_5070_20260911.json)
 contains raw confirmation samples, the numerical records and profile counters.
-Full sources, binaries and raw profiles are preserved in
-`/root/autodl-tmp/q4-large-20260911.V928jM/q4-large-V928jM-evidence.tgz`
+Full sources, binaries and raw profiles are preserved on the RTX5070 host in
+`E:\q4-large-V928jM-evidence.tgz` (WSL `/mnt/e/q4-large-V928jM-evidence.tgz`)
 (SHA256 `14c2889599c26d10f369efa38ea2e7f893b7d15ede34942257bc3b41c7d83cae`).
+The compact receipts are also local under
+`/root/autodl-tmp/q4-large-20260911.V928jM/`; a redundant 198 MiB full-archive
+copy is not required to use the committed, hash-linked results.
 
 This remains a development CUDA result, not a shipping policy change or a
 PPU performance claim. Grouped/multi-token performance, other quantized
