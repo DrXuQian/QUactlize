@@ -10,6 +10,8 @@ from dev.gemv_cuda.build_h800_candidates import source
 from dev.gemv_ppu.build import ppu_api
 from dev.gemv_ppu.h800_port import IMPLEMENTATIONS, POLICY, REFERENCE_RECIPES, candidate_source, reference_source, selection, verify
 from dev.gemv_ppu.run_h800_port import VARIANTS, ROUNDS, parse_result, summarize
+from dev.gemv_ppu.review_h800_port import receipt_entry
+from dev.gemv_cuda.build import digest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -97,3 +99,17 @@ def test_native_payloads_are_compile_only_and_bound():
     data = verify(ROOT / "prebuilt/ppu0010/q4-h800-port-v1", ROOT / "prebuilt/ppu0010/q4-simt-ab-v1")
     assert not data["device_validated"] and not data["production_changed"]
     assert set(data["payloads"]) == {"small", "medium", "large", "reference"}
+
+
+def test_offline_review_requires_unchanged_log_and_exact_device(tmp_path):
+    row = record()
+    log = tmp_path / 'child.log'
+    log.write_text('Q4_PPU_CELL ' + json.dumps(row) + '\n')
+    entry = dict(row=row, log=log.name, log_sha256=digest(log))
+    args = (tmp_path, entry, 'kpack', row['recipe'], row['shape'], 'warm', 3)
+    assert receipt_entry(*args, row['device']) == row
+    with pytest.raises(ValueError, match='device'):
+        receipt_entry(*args, {'l2_bytes': 0})
+    log.write_text('Q4_PPU_CELL {}\n')
+    with pytest.raises(ValueError, match='hash'):
+        receipt_entry(*args, row['device'])

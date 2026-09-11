@@ -42,10 +42,15 @@ and rotating regimes. They are not claimed to be PPU-optimal before measuring.
 - Native image/marker and numerical checks remain mandatory even if the
   installed SDK differs; SDK differences are recorded, not silently ignored.
 
+The [2026-09-11 PPU retest](Q4_PPU_H800_PORT_RETEST_20260911.md) has now
+completed: 1,236 numerical/timing records pass, but only 3/12 cells meet the
+5% performance gate against both controls. Production remains unchanged.
+
 Local compilation took 19.5 seconds with five parallel translation units.
 The three candidate DSOs total about 206 KiB; the expanded raw-reference DSO
 is about 684 KiB. Native device disassembly, exact entry symbols and runtime
-linkage were checked. **PPU device correctness/performance is still pending.**
+linkage were checked. The immutable build manifest retains compile-only
+status; device evidence is held separately in the retest receipt above.
 Separate DSOs prevent helper interposition between signed per-weight-half
 and unsigned group-affine implementations. No NVIDIA runtime is linked.
 

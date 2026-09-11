@@ -1,0 +1,8089 @@
+{
+  "scope": "H800_Q4_DENSE_M1_TO_7_INDEXED_M1_AND_MOE_PREPARE",
+  "production_changed": false,
+  "PPU_admission": "PENDING",
+  "NCU_counters": "UNAVAILABLE_HOST_PERMISSION",
+  "gemv_cells": 108,
+  "gemv_numeric_pass": 108,
+  "gemv_within_5pct": 105,
+  "gemv_open": [
+    "dense-m2-1024x5120-warm",
+    "dense-m2-512x2048-rotating",
+    "dense-m4-512x2048-warm"
+  ],
+  "moe_cells": 96,
+  "moe_model_splits": [
+    2,
+    2,
+    1
+  ],
+  "sample_receipt_sha256": "0253d1974db9316f0849c5c5bfa2d230e1bf479266b57208b8035641a2b6848f",
+  "gemv": [
+    {
+      "scope": "dense",
+      "M": 1,
+      "rows": 1,
+      "experts": 1,
+      "channels": 1,
+      "n": 1024,
+      "k": 5120,
+      "kpack_implementation": "medium",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 40,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "cd079c5dfa62023dcb348bc0a7fa1809e3a3ce97061afda4ffcae9e397a5ad80",
+      "ids": [
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            1,
+            4,
+            1
+          ],
+          "median_us": 7.092799991369247
+        },
+        "reference": {
+          "recipe": [
+            1,
+            2,
+            2
+          ],
+          "median_us": 6.428400054574013
+        },
+        "kpack": {
+          "recipe": [
+            2,
+            16,
+            1
+          ],
+          "median_us": 6.67480006814003
+        }
+      },
+      "delta_pct": {
+        "xplane": -5.893299172933874,
+        "reference": 3.8329912804772492
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m1-1024x5120-rotating",
+      "source_sha256": "cca900f323a212565071836531968b3e21a7aafeaf3432369eae6c3a6ec8e75b"
+    },
+    {
+      "scope": "dense",
+      "M": 1,
+      "rows": 1,
+      "experts": 1,
+      "channels": 1,
+      "n": 1024,
+      "k": 5120,
+      "kpack_implementation": "medium",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "cd079c5dfa62023dcb348bc0a7fa1809e3a3ce97061afda4ffcae9e397a5ad80",
+      "ids": [
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            1,
+            4,
+            1
+          ],
+          "median_us": 5.375000182539225
+        },
+        "reference": {
+          "recipe": [
+            1,
+            2,
+            2
+          ],
+          "median_us": 5.373500054702163
+        },
+        "kpack": {
+          "recipe": [
+            2,
+            10,
+            1
+          ],
+          "median_us": 5.498500075191259
+        }
+      },
+      "delta_pct": {
+        "xplane": 2.297672343402457,
+        "reference": 2.326230933592588
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m1-1024x5120-warm",
+      "source_sha256": "1bd2a2c95ac80ae01e131390beaef786ce1f72e802fe48953d7e6689121e4ddb"
+    },
+    {
+      "scope": "dense",
+      "M": 1,
+      "rows": 1,
+      "experts": 1,
+      "channels": 1,
+      "n": 4096,
+      "k": 2048,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 25,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "021c0cda3c5f77cb3bfaf88e6cafb13728763025e52b4e7c84d2ec43d61f136b",
+      "ids": [
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 6.882239878177643
+        },
+        "reference": {
+          "recipe": [
+            2,
+            1,
+            1
+          ],
+          "median_us": 7.765440046787262
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 6.84799998998642
+        }
+      },
+      "delta_pct": {
+        "xplane": -0.49751082201874297,
+        "reference": -11.814398814145866
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m1-4096x2048-rotating",
+      "source_sha256": "82dd7959555f334223fd13262e50a66de94b1c23d854016ba47cc8971fc537c1"
+    },
+    {
+      "scope": "dense",
+      "M": 1,
+      "rows": 1,
+      "experts": 1,
+      "channels": 1,
+      "n": 4096,
+      "k": 2048,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "021c0cda3c5f77cb3bfaf88e6cafb13728763025e52b4e7c84d2ec43d61f136b",
+      "ids": [
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 5.590000189840794
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 6.339499959722161
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 5.661499919369817
+        }
+      },
+      "delta_pct": {
+        "xplane": 1.2790648855248055,
+        "reference": -10.694850456029636
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m1-4096x2048-warm",
+      "source_sha256": "6d7e91433074fc30513a68fb3319223721a02e9a0b2ad430632d8a717391fe7b"
+    },
+    {
+      "scope": "dense",
+      "M": 1,
+      "rows": 1,
+      "experts": 1,
+      "channels": 1,
+      "n": 4096,
+      "k": 4096,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 13,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "d98ad38f77ce3d565a135a8e4beb538b91f1536046d55cf7d26fe24e8d431628",
+      "ids": [
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 10.80205119573153
+        },
+        "reference": {
+          "recipe": [
+            4,
+            2,
+            2
+          ],
+          "median_us": 11.881025937887339
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 10.624410250248053
+        }
+      },
+      "delta_pct": {
+        "xplane": -1.644511234622481,
+        "reference": -10.576659744779038
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m1-4096x4096-rotating",
+      "source_sha256": "b27186a4975c5fcfc979a4141db6fec3c0d8514f2523068fdcc2cf4cb9548430"
+    },
+    {
+      "scope": "dense",
+      "M": 1,
+      "rows": 1,
+      "experts": 1,
+      "channels": 1,
+      "n": 4096,
+      "k": 4096,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "d98ad38f77ce3d565a135a8e4beb538b91f1536046d55cf7d26fe24e8d431628",
+      "ids": [
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 8.889500051736832
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 10.117499623447657
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 9.001499973237514
+        }
+      },
+      "delta_pct": {
+        "xplane": 1.2599124905657622,
+        "reference": -11.030389836870114
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m1-4096x4096-warm",
+      "source_sha256": "5b68b5127997e9cdb63922388bb78f14dd1e1fe313587fd2a9d819502ab2163b"
+    },
+    {
+      "scope": "dense",
+      "M": 1,
+      "rows": 1,
+      "experts": 1,
+      "channels": 1,
+      "n": 5120,
+      "k": 8192,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 5,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "e8a5368daed3700a1783f3fe0ca04e5aca1cdbe4755f21f6b7842d9893d1d66b",
+      "ids": [
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 20.130742447716848
+        },
+        "reference": {
+          "recipe": [
+            4,
+            4,
+            2
+          ],
+          "median_us": 22.342400039945332
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 18.581485748291016
+        }
+      },
+      "delta_pct": {
+        "xplane": -7.695973973386872,
+        "reference": -16.833080980245118
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m1-5120x8192-rotating",
+      "source_sha256": "d66e4352a1cd38d77e0994f87aa7c9e05db594211e03a487f51b93870c5eb707"
+    },
+    {
+      "scope": "dense",
+      "M": 1,
+      "rows": 1,
+      "experts": 1,
+      "channels": 1,
+      "n": 5120,
+      "k": 8192,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "e8a5368daed3700a1783f3fe0ca04e5aca1cdbe4755f21f6b7842d9893d1d66b",
+      "ids": [
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 16.843000426888466
+        },
+        "reference": {
+          "recipe": [
+            4,
+            4,
+            2
+          ],
+          "median_us": 19.36350017786026
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 15.045500360429287
+        }
+      },
+      "delta_pct": {
+        "xplane": -10.672089419350828,
+        "reference": -22.299686408803645
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m1-5120x8192-warm",
+      "source_sha256": "aaf9d24cd754eb058de4084767f3452743fb450785cc67ffcafab4ef8573366e"
+    },
+    {
+      "scope": "dense",
+      "M": 1,
+      "rows": 1,
+      "experts": 1,
+      "channels": 1,
+      "n": 512,
+      "k": 2048,
+      "kpack_implementation": "small",
+      "weight_arithmetic": "PER_WEIGHT_FP16",
+      "mode": "rotating",
+      "copies": 200,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "5dd5a6b81370152d8f7cea1a56c1d32ee5bcfadf913ccae14ae6cb3f55b73ebb",
+      "ids": [
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            1,
+            2,
+            1
+          ],
+          "median_us": 3.5235200822353363
+        },
+        "reference": {
+          "recipe": [
+            1,
+            1,
+            2
+          ],
+          "median_us": 3.1463199853897095
+        },
+        "kpack": {
+          "recipe": [
+            1,
+            16,
+            1
+          ],
+          "median_us": 3.2652799785137177
+        }
+      },
+      "delta_pct": {
+        "xplane": -7.329037374402869,
+        "reference": 3.7809248161792874
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m1-512x2048-rotating",
+      "source_sha256": "8399b51f77f9b7a638d02f1876addb867cf845d470088e27a2b9176d5aa1c14e"
+    },
+    {
+      "scope": "dense",
+      "M": 1,
+      "rows": 1,
+      "experts": 1,
+      "channels": 1,
+      "n": 512,
+      "k": 2048,
+      "kpack_implementation": "small",
+      "weight_arithmetic": "PER_WEIGHT_FP16",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "5dd5a6b81370152d8f7cea1a56c1d32ee5bcfadf913ccae14ae6cb3f55b73ebb",
+      "ids": [
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            1,
+            8,
+            1
+          ],
+          "median_us": 2.840499975718558
+        },
+        "reference": {
+          "recipe": [
+            1,
+            1,
+            2
+          ],
+          "median_us": 2.869499963708222
+        },
+        "kpack": {
+          "recipe": [
+            1,
+            16,
+            1
+          ],
+          "median_us": 2.929499954916537
+        }
+      },
+      "delta_pct": {
+        "xplane": 3.133250482618455,
+        "reference": 2.0909563327116354
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m1-512x2048-warm",
+      "source_sha256": "e9112d966f088ca2d31b48139539c93fa951f4a4a1020030f814e7e432d99b98"
+    },
+    {
+      "scope": "dense",
+      "M": 1,
+      "rows": 1,
+      "experts": 1,
+      "channels": 1,
+      "n": 8192,
+      "k": 5120,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 5,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "ba3e2edffef7591f3bc10007aa664cf336cb00195d6913ce1c87d2b12537840a",
+      "ids": [
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 21.857371500560216
+        },
+        "reference": {
+          "recipe": [
+            1,
+            8,
+            1
+          ],
+          "median_us": 23.099428415298462
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 18.162742682865687
+        }
+      },
+      "delta_pct": {
+        "xplane": -16.90335371570105,
+        "reference": -21.371462720537583
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m1-8192x5120-rotating",
+      "source_sha256": "40b05bf10de48846d94d89eaa79d922fa229b5bf72bd6194a3ffcc6e899ae32a"
+    },
+    {
+      "scope": "dense",
+      "M": 1,
+      "rows": 1,
+      "experts": 1,
+      "channels": 1,
+      "n": 8192,
+      "k": 5120,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "ba3e2edffef7591f3bc10007aa664cf336cb00195d6913ce1c87d2b12537840a",
+      "ids": [
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 17.21549965441227
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 20.34249994903803
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 15.606500208377838
+        }
+      },
+      "delta_pct": {
+        "xplane": -9.34622565905051,
+        "reference": -23.281306390683564
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m1-8192x5120-warm",
+      "source_sha256": "b6b028718e969877702245b3001815fe86b730ba79ac9b1b8e39a965bbc02235"
+    },
+    {
+      "scope": "dense",
+      "M": 2,
+      "rows": 2,
+      "experts": 1,
+      "channels": 2,
+      "n": 1024,
+      "k": 5120,
+      "kpack_implementation": "medium",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 40,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "cd079c5dfa62023dcb348bc0a7fa1809e3a3ce97061afda4ffcae9e397a5ad80",
+      "ids": [
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            1,
+            4,
+            1
+          ],
+          "median_us": 7.933599874377251
+        },
+        "reference": {
+          "recipe": [
+            1,
+            4,
+            1
+          ],
+          "median_us": 8.379600197076797
+        },
+        "kpack": {
+          "recipe": [
+            1,
+            5,
+            1
+          ],
+          "median_us": 8.083200082182884
+        }
+      },
+      "delta_pct": {
+        "xplane": 1.8856535516593054,
+        "reference": -3.5371629662869997
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m2-1024x5120-rotating",
+      "source_sha256": "ce7470c13de2526a9050b0120737cf7a8b096b3e5424d8ad7e997ad771981473"
+    },
+    {
+      "scope": "dense",
+      "M": 2,
+      "rows": 2,
+      "experts": 1,
+      "channels": 2,
+      "n": 1024,
+      "k": 5120,
+      "kpack_implementation": "medium",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "cd079c5dfa62023dcb348bc0a7fa1809e3a3ce97061afda4ffcae9e397a5ad80",
+      "ids": [
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            1,
+            4,
+            1
+          ],
+          "median_us": 7.1000000461936
+        },
+        "reference": {
+          "recipe": [
+            1,
+            4,
+            1
+          ],
+          "median_us": 7.546999957412481
+        },
+        "kpack": {
+          "recipe": [
+            1,
+            5,
+            1
+          ],
+          "median_us": 7.684999844059348
+        }
+      },
+      "delta_pct": {
+        "xplane": 8.239433719150103,
+        "reference": 1.8285396505312912
+      },
+      "parity": "OPEN",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m2-1024x5120-warm",
+      "source_sha256": "75fef050526e61af152e4fd0156acbcaae34bceed30b4a4d2183db6f27a5f652"
+    },
+    {
+      "scope": "dense",
+      "M": 2,
+      "rows": 2,
+      "experts": 1,
+      "channels": 2,
+      "n": 4096,
+      "k": 2048,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 25,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "021c0cda3c5f77cb3bfaf88e6cafb13728763025e52b4e7c84d2ec43d61f136b",
+      "ids": [
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            2,
+            1
+          ],
+          "median_us": 10.039039850234985
+        },
+        "reference": {
+          "recipe": [
+            4,
+            4,
+            2
+          ],
+          "median_us": 11.351360082626343
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 8.629440069198608
+        }
+      },
+      "delta_pct": {
+        "xplane": -14.041181249055235,
+        "reference": -23.978800721807147
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m2-4096x2048-rotating",
+      "source_sha256": "e0ab221728ea156ced8cee0e5b7cda89a0aa829467aeb53599efcb9751c69322"
+    },
+    {
+      "scope": "dense",
+      "M": 2,
+      "rows": 2,
+      "experts": 1,
+      "channels": 2,
+      "n": 4096,
+      "k": 2048,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "021c0cda3c5f77cb3bfaf88e6cafb13728763025e52b4e7c84d2ec43d61f136b",
+      "ids": [
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 8.35500005632639
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 9.55999968573451
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 7.98900006338954
+        }
+      },
+      "delta_pct": {
+        "xplane": -4.380610298855892,
+        "reference": -16.43305098314204
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m2-4096x2048-warm",
+      "source_sha256": "e2fb52aec66be0ef2bce18fc45a215f3dd3b06924b723fcac321e07dfc83304b"
+    },
+    {
+      "scope": "dense",
+      "M": 2,
+      "rows": 2,
+      "experts": 1,
+      "channels": 2,
+      "n": 4096,
+      "k": 4096,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 13,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "d98ad38f77ce3d565a135a8e4beb538b91f1536046d55cf7d26fe24e8d431628",
+      "ids": [
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 16.39466637220138
+        },
+        "reference": {
+          "recipe": [
+            2,
+            2,
+            2
+          ],
+          "median_us": 17.442051416788345
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 13.956922751206617
+        }
+      },
+      "delta_pct": {
+        "xplane": -14.869126127068832,
+        "reference": -19.981185597396056
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m2-4096x4096-rotating",
+      "source_sha256": "e26154f62d9ea8b724acf1eab87163e111470d4b6c31cca418794f975368487d"
+    },
+    {
+      "scope": "dense",
+      "M": 2,
+      "rows": 2,
+      "experts": 1,
+      "channels": 2,
+      "n": 4096,
+      "k": 4096,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "d98ad38f77ce3d565a135a8e4beb538b91f1536046d55cf7d26fe24e8d431628",
+      "ids": [
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 14.203000348061323
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 15.77599998563528
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 12.804500292986631
+        }
+      },
+      "delta_pct": {
+        "xplane": -9.846511446897088,
+        "reference": -18.83557109124192
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m2-4096x4096-warm",
+      "source_sha256": "1b9b4931fbfda405974f7b5b11072eeee6745157f1c91d256c6ad8703bc22556"
+    },
+    {
+      "scope": "dense",
+      "M": 2,
+      "rows": 2,
+      "experts": 1,
+      "channels": 2,
+      "n": 5120,
+      "k": 8192,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 5,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "e8a5368daed3700a1783f3fe0ca04e5aca1cdbe4755f21f6b7842d9893d1d66b",
+      "ids": [
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 33.1451416015625
+        },
+        "reference": {
+          "recipe": [
+            4,
+            1,
+            4
+          ],
+          "median_us": 37.42720058986119
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 28.62445797239031
+        }
+      },
+      "delta_pct": {
+        "xplane": -13.63905360102332,
+        "reference": -23.519639403261937
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m2-5120x8192-rotating",
+      "source_sha256": "65f4c538fecf72696ea4c42e5b04ff2eefe749220952c127da6ca23d273dac8d"
+    },
+    {
+      "scope": "dense",
+      "M": 2,
+      "rows": 2,
+      "experts": 1,
+      "channels": 2,
+      "n": 5120,
+      "k": 8192,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "e8a5368daed3700a1783f3fe0ca04e5aca1cdbe4755f21f6b7842d9893d1d66b",
+      "ids": [
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 30.008000321686268
+        },
+        "reference": {
+          "recipe": [
+            4,
+            8,
+            2
+          ],
+          "median_us": 34.44099985063076
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 26.79650019854307
+        }
+      },
+      "delta_pct": {
+        "xplane": -10.702146390015532,
+        "reference": -22.19592835644022
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m2-5120x8192-warm",
+      "source_sha256": "9d8d17493e97f82d662ab70b31dd75c626c5f8da926d7e4d947358602cf9a531"
+    },
+    {
+      "scope": "dense",
+      "M": 2,
+      "rows": 2,
+      "experts": 1,
+      "channels": 2,
+      "n": 512,
+      "k": 2048,
+      "kpack_implementation": "rows2-small",
+      "weight_arithmetic": "PER_WEIGHT_FP16",
+      "mode": "rotating",
+      "copies": 200,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "5dd5a6b81370152d8f7cea1a56c1d32ee5bcfadf913ccae14ae6cb3f55b73ebb",
+      "ids": [
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            1,
+            2,
+            1
+          ],
+          "median_us": 4.152640104293823
+        },
+        "reference": {
+          "recipe": [
+            1,
+            4,
+            2
+          ],
+          "median_us": 3.904400020837784
+        },
+        "kpack": {
+          "recipe": [
+            1,
+            16,
+            1
+          ],
+          "median_us": 4.183440059423447
+        }
+      },
+      "delta_pct": {
+        "xplane": 0.7416957491157561,
+        "reference": 7.146809678732358
+      },
+      "parity": "OPEN",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m2-512x2048-rotating",
+      "source_sha256": "464f949dc21167e393a1aa893f3a6c6c8311193b12000aa91f5106f035ee56a9"
+    },
+    {
+      "scope": "dense",
+      "M": 2,
+      "rows": 2,
+      "experts": 1,
+      "channels": 2,
+      "n": 512,
+      "k": 2048,
+      "kpack_implementation": "affine2-small",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "5dd5a6b81370152d8f7cea1a56c1d32ee5bcfadf913ccae14ae6cb3f55b73ebb",
+      "ids": [
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            1,
+            2,
+            1
+          ],
+          "median_us": 3.449999960139394
+        },
+        "reference": {
+          "recipe": [
+            1,
+            4,
+            2
+          ],
+          "median_us": 3.5019998904317617
+        },
+        "kpack": {
+          "recipe": [
+            8,
+            16,
+            1
+          ],
+          "median_us": 3.4920000471174717
+        }
+      },
+      "delta_pct": {
+        "xplane": 1.217393839517067,
+        "reference": -0.28554664840544364
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m2-512x2048-warm",
+      "source_sha256": "8956897a9486df4a655ad18b16e996e34303a784af71bda385fa58a7e3f983d5"
+    },
+    {
+      "scope": "dense",
+      "M": 2,
+      "rows": 2,
+      "experts": 1,
+      "channels": 2,
+      "n": 8192,
+      "k": 5120,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 5,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "ba3e2edffef7591f3bc10007aa664cf336cb00195d6913ce1c87d2b12537840a",
+      "ids": [
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 32.597027506147114
+        },
+        "reference": {
+          "recipe": [
+            4,
+            2,
+            2
+          ],
+          "median_us": 38.02194254738944
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            4,
+            1
+          ],
+          "median_us": 28.682971000671387
+        }
+      },
+      "delta_pct": {
+        "xplane": -12.007403143546203,
+        "reference": -24.56205790926709
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m2-8192x5120-rotating",
+      "source_sha256": "4951b8fe36520c02e466539a76fbbac0ec486463cc0df4ab633d1b91cb4839ba"
+    },
+    {
+      "scope": "dense",
+      "M": 2,
+      "rows": 2,
+      "experts": 1,
+      "channels": 2,
+      "n": 8192,
+      "k": 5120,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "ba3e2edffef7591f3bc10007aa664cf336cb00195d6913ce1c87d2b12537840a",
+      "ids": [
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 28.09550054371357
+        },
+        "reference": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 33.677998930215836
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 25.509499944746494
+        }
+      },
+      "delta_pct": {
+        "xplane": -9.204322930440545,
+        "reference": -24.254704094489952
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m2-8192x5120-warm",
+      "source_sha256": "268d6d45e0e1b1ebb523275a6992958a2cdb1beb440cfb6ae9a282838507e3ec"
+    },
+    {
+      "scope": "dense",
+      "M": 3,
+      "rows": 3,
+      "experts": 1,
+      "channels": 3,
+      "n": 1024,
+      "k": 5120,
+      "kpack_implementation": "medium",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 40,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "cd079c5dfa62023dcb348bc0a7fa1809e3a3ce97061afda4ffcae9e397a5ad80",
+      "ids": [
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            1,
+            4,
+            1
+          ],
+          "median_us": 9.452800080180168
+        },
+        "reference": {
+          "recipe": [
+            1,
+            4,
+            1
+          ],
+          "median_us": 10.06999984383583
+        },
+        "kpack": {
+          "recipe": [
+            2,
+            10,
+            1
+          ],
+          "median_us": 8.47960002720356
+        }
+      },
+      "delta_pct": {
+        "xplane": -10.295362693823728,
+        "reference": -15.793444302839843
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m3-1024x5120-rotating",
+      "source_sha256": "282ba8da057a2b615f2f468101af8ecbaddab82ce0d6cf7c71a0c185f3b06db2"
+    },
+    {
+      "scope": "dense",
+      "M": 3,
+      "rows": 3,
+      "experts": 1,
+      "channels": 3,
+      "n": 1024,
+      "k": 5120,
+      "kpack_implementation": "medium",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "cd079c5dfa62023dcb348bc0a7fa1809e3a3ce97061afda4ffcae9e397a5ad80",
+      "ids": [
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 8.792500011622906
+        },
+        "reference": {
+          "recipe": [
+            1,
+            4,
+            1
+          ],
+          "median_us": 9.378500282764435
+        },
+        "kpack": {
+          "recipe": [
+            2,
+            10,
+            1
+          ],
+          "median_us": 7.89499981328845
+        }
+      },
+      "delta_pct": {
+        "xplane": -10.207565506375204,
+        "reference": -15.818099106979
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m3-1024x5120-warm",
+      "source_sha256": "7ffab35d85090e39ffa9c0090fcf658be6cf21a2eb21364ce0dc6a3c9e3a1d76"
+    },
+    {
+      "scope": "dense",
+      "M": 3,
+      "rows": 3,
+      "experts": 1,
+      "channels": 3,
+      "n": 4096,
+      "k": 2048,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 25,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "021c0cda3c5f77cb3bfaf88e6cafb13728763025e52b4e7c84d2ec43d61f136b",
+      "ids": [
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 11.722559928894043
+        },
+        "reference": {
+          "recipe": [
+            4,
+            4,
+            2
+          ],
+          "median_us": 13.590399622917175
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            4,
+            1
+          ],
+          "median_us": 11.183039546012878
+        }
+      },
+      "delta_pct": {
+        "xplane": -4.602410959327596,
+        "reference": -17.713681302239426
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m3-4096x2048-rotating",
+      "source_sha256": "0fafa21677ffd5c1d7a2fd1e277259db505ef1d22ad29efe6d3437bf1f1c0bcd"
+    },
+    {
+      "scope": "dense",
+      "M": 3,
+      "rows": 3,
+      "experts": 1,
+      "channels": 3,
+      "n": 4096,
+      "k": 2048,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "021c0cda3c5f77cb3bfaf88e6cafb13728763025e52b4e7c84d2ec43d61f136b",
+      "ids": [
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 10.761499870568514
+        },
+        "reference": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 12.488999869674444
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            4,
+            1
+          ],
+          "median_us": 10.147000197321177
+        }
+      },
+      "delta_pct": {
+        "xplane": -5.710167547628975,
+        "reference": -18.752499774141786
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m3-4096x2048-warm",
+      "source_sha256": "1817c37cf31fea6e70be932f05839b5329f8a38086678509070d5ef96984083d"
+    },
+    {
+      "scope": "dense",
+      "M": 3,
+      "rows": 3,
+      "experts": 1,
+      "channels": 3,
+      "n": 4096,
+      "k": 4096,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 13,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "d98ad38f77ce3d565a135a8e4beb538b91f1536046d55cf7d26fe24e8d431628",
+      "ids": [
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 20.060718059539795
+        },
+        "reference": {
+          "recipe": [
+            4,
+            4,
+            2
+          ],
+          "median_us": 23.19261508110242
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            4,
+            1
+          ],
+          "median_us": 17.946256276888725
+        }
+      },
+      "delta_pct": {
+        "xplane": -10.540309556095606,
+        "reference": -22.620816091103425
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m3-4096x4096-rotating",
+      "source_sha256": "4028e31b66bd04ab1fd522ae5c4eb0c9af0d6e267c999447e616bcc9db0f0eb2"
+    },
+    {
+      "scope": "dense",
+      "M": 3,
+      "rows": 3,
+      "experts": 1,
+      "channels": 3,
+      "n": 4096,
+      "k": 4096,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "d98ad38f77ce3d565a135a8e4beb538b91f1536046d55cf7d26fe24e8d431628",
+      "ids": [
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 18.623000010848045
+        },
+        "reference": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 21.899999119341373
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 16.74600038677454
+        }
+      },
+      "delta_pct": {
+        "xplane": -10.078932626215643,
+        "reference": -23.534241734352346
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m3-4096x4096-warm",
+      "source_sha256": "c38357e09d9a271f42846e9d6b3df444017645f70a83d3fc8c328d1feb1524a7"
+    },
+    {
+      "scope": "dense",
+      "M": 3,
+      "rows": 3,
+      "experts": 1,
+      "channels": 3,
+      "n": 5120,
+      "k": 8192,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 5,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "e8a5368daed3700a1783f3fe0ca04e5aca1cdbe4755f21f6b7842d9893d1d66b",
+      "ids": [
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 48.52937119347709
+        },
+        "reference": {
+          "recipe": [
+            4,
+            1,
+            4
+          ],
+          "median_us": 52.35839911869594
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 42.540342467171804
+        }
+      },
+      "delta_pct": {
+        "xplane": -12.341039207840144,
+        "reference": -18.751636445695574
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m3-5120x8192-rotating",
+      "source_sha256": "a0e10a7216e5f13938dc3732fb5fe67983cfcbee024210aeb7540dcca5454e24"
+    },
+    {
+      "scope": "dense",
+      "M": 3,
+      "rows": 3,
+      "experts": 1,
+      "channels": 3,
+      "n": 5120,
+      "k": 8192,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "e8a5368daed3700a1783f3fe0ca04e5aca1cdbe4755f21f6b7842d9893d1d66b",
+      "ids": [
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 42.525000870227814
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 49.150500446558
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 38.588499650359154
+        }
+      },
+      "delta_pct": {
+        "xplane": -9.256910380511352,
+        "reference": -21.489101230379237
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m3-5120x8192-warm",
+      "source_sha256": "9d282f5359772f832151679d55ba96dd6f15b434ad1c02ab21b1597c7dd38f9a"
+    },
+    {
+      "scope": "dense",
+      "M": 3,
+      "rows": 3,
+      "experts": 1,
+      "channels": 3,
+      "n": 512,
+      "k": 2048,
+      "kpack_implementation": "affine2-small",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 200,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "5dd5a6b81370152d8f7cea1a56c1d32ee5bcfadf913ccae14ae6cb3f55b73ebb",
+      "ids": [
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            1,
+            8,
+            1
+          ],
+          "median_us": 3.9498399198055267
+        },
+        "reference": {
+          "recipe": [
+            1,
+            4,
+            2
+          ],
+          "median_us": 3.899199962615967
+        },
+        "kpack": {
+          "recipe": [
+            8,
+            16,
+            1
+          ],
+          "median_us": 3.8705599308013916
+        }
+      },
+      "delta_pct": {
+        "xplane": -2.007169673044329,
+        "reference": -0.7345104659716051
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m3-512x2048-rotating",
+      "source_sha256": "b367bb6b0a3e26ef9deb007b5f99c07618ac90c028171b31981066506093937f"
+    },
+    {
+      "scope": "dense",
+      "M": 3,
+      "rows": 3,
+      "experts": 1,
+      "channels": 3,
+      "n": 512,
+      "k": 2048,
+      "kpack_implementation": "affine2-small",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "5dd5a6b81370152d8f7cea1a56c1d32ee5bcfadf913ccae14ae6cb3f55b73ebb",
+      "ids": [
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            1,
+            8,
+            1
+          ],
+          "median_us": 3.6284999223425984
+        },
+        "reference": {
+          "recipe": [
+            1,
+            8,
+            1
+          ],
+          "median_us": 3.8189999759197235
+        },
+        "kpack": {
+          "recipe": [
+            8,
+            16,
+            1
+          ],
+          "median_us": 3.570999950170517
+        }
+      },
+      "delta_pct": {
+        "xplane": -1.5846761307068968,
+        "reference": -6.493847271875963
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m3-512x2048-warm",
+      "source_sha256": "cf61a96eccda9f29a13d32875807696666ec0c7b48fd230ce0cc56ac27d1c936"
+    },
+    {
+      "scope": "dense",
+      "M": 3,
+      "rows": 3,
+      "experts": 1,
+      "channels": 3,
+      "n": 8192,
+      "k": 5120,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 5,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "ba3e2edffef7591f3bc10007aa664cf336cb00195d6913ce1c87d2b12537840a",
+      "ids": [
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 46.04708637510027
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 53.01714284079415
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 40.93120098114014
+        }
+      },
+      "delta_pct": {
+        "xplane": -11.110117483408299,
+        "reference": -22.796290429959686
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m3-8192x5120-rotating",
+      "source_sha256": "d76933857ed72ea805c32a07f0298d47429d8390299c7dd0914cc9d6918d2e3b"
+    },
+    {
+      "scope": "dense",
+      "M": 3,
+      "rows": 3,
+      "experts": 1,
+      "channels": 3,
+      "n": 8192,
+      "k": 5120,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "ba3e2edffef7591f3bc10007aa664cf336cb00195d6913ce1c87d2b12537840a",
+      "ids": [
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 41.464000940322876
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 48.4595000743866
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 37.399500608444214
+        }
+      },
+      "delta_pct": {
+        "xplane": -9.802479837217104,
+        "reference": -22.823181107863256
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m3-8192x5120-warm",
+      "source_sha256": "ebd51ef5b1c504a8884d13d610c87ce8d7b8548e8526a6f69d1b42bd5967a523"
+    },
+    {
+      "scope": "dense",
+      "M": 4,
+      "rows": 4,
+      "experts": 1,
+      "channels": 4,
+      "n": 1024,
+      "k": 5120,
+      "kpack_implementation": "medium",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 40,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "cd079c5dfa62023dcb348bc0a7fa1809e3a3ce97061afda4ffcae9e397a5ad80",
+      "ids": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 11.310000345110893
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 13.489200174808502
+        },
+        "kpack": {
+          "recipe": [
+            2,
+            5,
+            1
+          ],
+          "median_us": 11.246799677610397
+        }
+      },
+      "delta_pct": {
+        "xplane": -0.5588034091247085,
+        "reference": -16.62367277628407
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m4-1024x5120-rotating",
+      "source_sha256": "cf68f94d4a62e19c421f267018458163f11b3eb4573e39cec74bf6452105240f"
+    },
+    {
+      "scope": "dense",
+      "M": 4,
+      "rows": 4,
+      "experts": 1,
+      "channels": 4,
+      "n": 1024,
+      "k": 5120,
+      "kpack_implementation": "medium",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "cd079c5dfa62023dcb348bc0a7fa1809e3a3ce97061afda4ffcae9e397a5ad80",
+      "ids": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 10.675500147044659
+        },
+        "reference": {
+          "recipe": [
+            2,
+            2,
+            2
+          ],
+          "median_us": 12.236999813467264
+        },
+        "kpack": {
+          "recipe": [
+            2,
+            16,
+            1
+          ],
+          "median_us": 10.62449999153614
+        }
+      },
+      "delta_pct": {
+        "xplane": -0.47773083046265263,
+        "reference": -13.17724807151267
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m4-1024x5120-warm",
+      "source_sha256": "f2eb010e43cd3007cfa5120fa7d1881be707d9e8b72a495672802015dd462eb9"
+    },
+    {
+      "scope": "dense",
+      "M": 4,
+      "rows": 4,
+      "experts": 1,
+      "channels": 4,
+      "n": 4096,
+      "k": 2048,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 25,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "021c0cda3c5f77cb3bfaf88e6cafb13728763025e52b4e7c84d2ec43d61f136b",
+      "ids": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 14.44703996181488
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 16.558079719543457
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            4,
+            1
+          ],
+          "median_us": 12.77184009552002
+        }
+      },
+      "delta_pct": {
+        "xplane": -11.595453952661572,
+        "reference": -22.86641741164315
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m4-4096x2048-rotating",
+      "source_sha256": "69728f5790b4faad4e2b8ada97530ffa3133ae0411d6cd51f292b746329859c5"
+    },
+    {
+      "scope": "dense",
+      "M": 4,
+      "rows": 4,
+      "experts": 1,
+      "channels": 4,
+      "n": 4096,
+      "k": 2048,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "021c0cda3c5f77cb3bfaf88e6cafb13728763025e52b4e7c84d2ec43d61f136b",
+      "ids": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 13.172999955713749
+        },
+        "reference": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 15.384499914944172
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            4,
+            1
+          ],
+          "median_us": 12.091000098735094
+        }
+      },
+      "delta_pct": {
+        "xplane": -8.21376953325913,
+        "reference": -21.407909483036512
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m4-4096x2048-warm",
+      "source_sha256": "934bdb56a3c0734f4599f015c69671d56c498a967982053257842a6829544449"
+    },
+    {
+      "scope": "dense",
+      "M": 4,
+      "rows": 4,
+      "experts": 1,
+      "channels": 4,
+      "n": 4096,
+      "k": 4096,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 13,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "d98ad38f77ce3d565a135a8e4beb538b91f1536046d55cf7d26fe24e8d431628",
+      "ids": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 25.65948779766376
+        },
+        "reference": {
+          "recipe": [
+            4,
+            4,
+            2
+          ],
+          "median_us": 28.982564424857117
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 22.128000473364807
+        }
+      },
+      "delta_pct": {
+        "xplane": -13.762890951472883,
+        "reference": -23.650646819966838
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m4-4096x4096-rotating",
+      "source_sha256": "6f4b7c9e48139121e23893eae070ac5d249a2a588739367ccda159707b755b49"
+    },
+    {
+      "scope": "dense",
+      "M": 4,
+      "rows": 4,
+      "experts": 1,
+      "channels": 4,
+      "n": 4096,
+      "k": 4096,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "d98ad38f77ce3d565a135a8e4beb538b91f1536046d55cf7d26fe24e8d431628",
+      "ids": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 23.0919998139143
+        },
+        "reference": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 27.211499400436878
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 20.8320003002882
+        }
+      },
+      "delta_pct": {
+        "xplane": -9.78693717234622,
+        "reference": -23.44412928618794
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m4-4096x4096-warm",
+      "source_sha256": "9cd73bc67d0cf1c0832978aa052737d6f3bd34d2046cff3c60dbeea06afd95d3"
+    },
+    {
+      "scope": "dense",
+      "M": 4,
+      "rows": 4,
+      "experts": 1,
+      "channels": 4,
+      "n": 5120,
+      "k": 8192,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 5,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "e8a5368daed3700a1783f3fe0ca04e5aca1cdbe4755f21f6b7842d9893d1d66b",
+      "ids": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 59.170743397303994
+        },
+        "reference": {
+          "recipe": [
+            4,
+            2,
+            2
+          ],
+          "median_us": 66.78034237452916
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 52.003657817840576
+        }
+      },
+      "delta_pct": {
+        "xplane": -12.112549493150315,
+        "reference": -22.127296793142214
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m4-5120x8192-rotating",
+      "source_sha256": "b14e59a2b9f15c7af065e2123369468c308fbe9c86a2d2100c4f72d9124e2b95"
+    },
+    {
+      "scope": "dense",
+      "M": 4,
+      "rows": 4,
+      "experts": 1,
+      "channels": 4,
+      "n": 5120,
+      "k": 8192,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "e8a5368daed3700a1783f3fe0ca04e5aca1cdbe4755f21f6b7842d9893d1d66b",
+      "ids": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 55.56450039148331
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 64.34649974107742
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 49.822499975562096
+        }
+      },
+      "delta_pct": {
+        "xplane": -10.3339369119952,
+        "reference": -22.57154596436194
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m4-5120x8192-warm",
+      "source_sha256": "8072d0219fc2e1f977e1eae86f7d9e420f65e20881c01cbae0c364a560f5f910"
+    },
+    {
+      "scope": "dense",
+      "M": 4,
+      "rows": 4,
+      "experts": 1,
+      "channels": 4,
+      "n": 512,
+      "k": 2048,
+      "kpack_implementation": "affine2-small",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 200,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "5dd5a6b81370152d8f7cea1a56c1d32ee5bcfadf913ccae14ae6cb3f55b73ebb",
+      "ids": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            1,
+            4,
+            1
+          ],
+          "median_us": 4.610480070114136
+        },
+        "reference": {
+          "recipe": [
+            1,
+            4,
+            1
+          ],
+          "median_us": 4.716639965772629
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 4.824000000953674
+        }
+      },
+      "delta_pct": {
+        "xplane": 4.631186505362184,
+        "reference": 2.2761973769490185
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m4-512x2048-rotating",
+      "source_sha256": "3e8098ec2ba8dc26c37a2013d4380debe1b9c488f3de8819124b88a72ba3ddb2"
+    },
+    {
+      "scope": "dense",
+      "M": 4,
+      "rows": 4,
+      "experts": 1,
+      "channels": 4,
+      "n": 512,
+      "k": 2048,
+      "kpack_implementation": "affine4-small",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "5dd5a6b81370152d8f7cea1a56c1d32ee5bcfadf913ccae14ae6cb3f55b73ebb",
+      "ids": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            1,
+            4,
+            1
+          ],
+          "median_us": 4.102499922737479
+        },
+        "reference": {
+          "recipe": [
+            1,
+            4,
+            1
+          ],
+          "median_us": 4.418000113219023
+        },
+        "kpack": {
+          "recipe": [
+            8,
+            16,
+            1
+          ],
+          "median_us": 4.428999964147806
+        }
+      },
+      "delta_pct": {
+        "xplane": 7.958563011805331,
+        "reference": 0.24897805900616632
+      },
+      "parity": "OPEN",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m4-512x2048-warm",
+      "source_sha256": "8cef6863444d8465cc96efaa91dd5fe771cfc98c9b15d48180f482310827ca90"
+    },
+    {
+      "scope": "dense",
+      "M": 4,
+      "rows": 4,
+      "experts": 1,
+      "channels": 4,
+      "n": 8192,
+      "k": 5120,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 5,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "ba3e2edffef7591f3bc10007aa664cf336cb00195d6913ce1c87d2b12537840a",
+      "ids": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 57.42217132023403
+        },
+        "reference": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 67.41257054465157
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 52.8607998575483
+        }
+      },
+      "delta_pct": {
+        "xplane": -7.943571895335877,
+        "reference": -21.58613826699387
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m4-8192x5120-rotating",
+      "source_sha256": "45d5318d4a146711ca9d37f6fe04878470b7cbab6e637cda623a96548cb45dd4"
+    },
+    {
+      "scope": "dense",
+      "M": 4,
+      "rows": 4,
+      "experts": 1,
+      "channels": 4,
+      "n": 8192,
+      "k": 5120,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "ba3e2edffef7591f3bc10007aa664cf336cb00195d6913ce1c87d2b12537840a",
+      "ids": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 53.26300114393234
+        },
+        "reference": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 63.879501074552536
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 48.21999929845333
+        }
+      },
+      "delta_pct": {
+        "xplane": -9.468114332970712,
+        "reference": -24.514126617587863
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m4-8192x5120-warm",
+      "source_sha256": "95be5fda0561eb1ae4a297dfecb68a4a1a85abb39e2a3715953c3a10b1e0427d"
+    },
+    {
+      "scope": "dense",
+      "M": 5,
+      "rows": 5,
+      "experts": 1,
+      "channels": 5,
+      "n": 1024,
+      "k": 5120,
+      "kpack_implementation": "medium",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 40,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "cd079c5dfa62023dcb348bc0a7fa1809e3a3ce97061afda4ffcae9e397a5ad80",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 12.520000338554382
+        },
+        "reference": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 14.94160071015358
+        },
+        "kpack": {
+          "recipe": [
+            2,
+            5,
+            1
+          ],
+          "median_us": 11.324400082230568
+        }
+      },
+      "delta_pct": {
+        "xplane": -9.549522555858525,
+        "reference": -24.208923114007053
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m5-1024x5120-rotating",
+      "source_sha256": "28d46858074134ad736ecb47b5bbda7988d04e22d7da0b044a37de5d522f1e45"
+    },
+    {
+      "scope": "dense",
+      "M": 5,
+      "rows": 5,
+      "experts": 1,
+      "channels": 5,
+      "n": 1024,
+      "k": 5120,
+      "kpack_implementation": "medium",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "cd079c5dfa62023dcb348bc0a7fa1809e3a3ce97061afda4ffcae9e397a5ad80",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 11.682999785989523
+        },
+        "reference": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 13.55000026524067
+        },
+        "kpack": {
+          "recipe": [
+            2,
+            16,
+            1
+          ],
+          "median_us": 10.968000162392855
+        }
+      },
+      "delta_pct": {
+        "xplane": -6.120000314081231,
+        "reference": -19.05535093952232
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m5-1024x5120-warm",
+      "source_sha256": "245a6538b5196ab48d1d6072472f33ae451a27e34aeb457c6578266e9c643809"
+    },
+    {
+      "scope": "dense",
+      "M": 5,
+      "rows": 5,
+      "experts": 1,
+      "channels": 5,
+      "n": 4096,
+      "k": 2048,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 25,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "021c0cda3c5f77cb3bfaf88e6cafb13728763025e52b4e7c84d2ec43d61f136b",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 16.900479793548584
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 19.628159999847412
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 15.579520463943481
+        }
+      },
+      "delta_pct": {
+        "xplane": -7.816105493699366,
+        "reference": -20.626689083110207
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m5-4096x2048-rotating",
+      "source_sha256": "152c998a95ef1311cc28a275ad22645a811a58ab9811f7845c1e7ed7ae4305dd"
+    },
+    {
+      "scope": "dense",
+      "M": 5,
+      "rows": 5,
+      "experts": 1,
+      "channels": 5,
+      "n": 4096,
+      "k": 2048,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "021c0cda3c5f77cb3bfaf88e6cafb13728763025e52b4e7c84d2ec43d61f136b",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 16.125000081956387
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 18.81599985063076
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            4,
+            1
+          ],
+          "median_us": 14.743499923497438
+        }
+      },
+      "delta_pct": {
+        "xplane": -8.567442799611669,
+        "reference": -21.64381356006867
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m5-4096x2048-warm",
+      "source_sha256": "41d82c30c7777edcd20451aa8a594a2777f399b3fc35e64caf37b342d468f40d"
+    },
+    {
+      "scope": "dense",
+      "M": 5,
+      "rows": 5,
+      "experts": 1,
+      "channels": 5,
+      "n": 4096,
+      "k": 4096,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 13,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "d98ad38f77ce3d565a135a8e4beb538b91f1536046d55cf7d26fe24e8d431628",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 30.712615220974655
+        },
+        "reference": {
+          "recipe": [
+            4,
+            2,
+            2
+          ],
+          "median_us": 34.56410230734409
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 27.81456403243236
+        }
+      },
+      "delta_pct": {
+        "xplane": -9.43602870576492,
+        "reference": -19.527596044285534
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m5-4096x4096-rotating",
+      "source_sha256": "8a864e52a9bfea0162b183922baf8304d8cfd0f199e61e3c1dc08302725e16a1"
+    },
+    {
+      "scope": "dense",
+      "M": 5,
+      "rows": 5,
+      "experts": 1,
+      "channels": 5,
+      "n": 4096,
+      "k": 4096,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "d98ad38f77ce3d565a135a8e4beb538b91f1536046d55cf7d26fe24e8d431628",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 29.217000119388103
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 33.98049995303154
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 26.410499587655067
+        }
+      },
+      "delta_pct": {
+        "xplane": -9.60571078572393,
+        "reference": -22.277483779932204
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m5-4096x4096-warm",
+      "source_sha256": "8c12066a83efb4ebe9de337d08084ece451173726394e8b803fa95e385a3d5f6"
+    },
+    {
+      "scope": "dense",
+      "M": 5,
+      "rows": 5,
+      "experts": 1,
+      "channels": 5,
+      "n": 5120,
+      "k": 8192,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 5,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "e8a5368daed3700a1783f3fe0ca04e5aca1cdbe4755f21f6b7842d9893d1d66b",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            4,
+            4,
+            1
+          ],
+          "median_us": 74.12571225847518
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 83.85371480669295
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 67.5392014639718
+        }
+      },
+      "delta_pct": {
+        "xplane": -8.88559528647268,
+        "reference": -19.45592199502528
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m5-5120x8192-rotating",
+      "source_sha256": "4202992b609fe4dff768e2103f9b361a4b5653b5840b4ee9aef5db8e16099d9d"
+    },
+    {
+      "scope": "dense",
+      "M": 5,
+      "rows": 5,
+      "experts": 1,
+      "channels": 5,
+      "n": 5120,
+      "k": 8192,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "e8a5368daed3700a1783f3fe0ca04e5aca1cdbe4755f21f6b7842d9893d1d66b",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 68.69649887084961
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 79.53550294041634
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 61.38700060546398
+        }
+      },
+      "delta_pct": {
+        "xplane": -10.640277722344461,
+        "reference": -22.818114758824404
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m5-5120x8192-warm",
+      "source_sha256": "1af606fd8751c3248317a6c6b4fd42b3b960e1f3e64d92c2cca16cefc0e9f640"
+    },
+    {
+      "scope": "dense",
+      "M": 5,
+      "rows": 5,
+      "experts": 1,
+      "channels": 5,
+      "n": 512,
+      "k": 2048,
+      "kpack_implementation": "affine4-small",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 200,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "5dd5a6b81370152d8f7cea1a56c1d32ee5bcfadf913ccae14ae6cb3f55b73ebb",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            1,
+            8,
+            1
+          ],
+          "median_us": 4.736879914999008
+        },
+        "reference": {
+          "recipe": [
+            1,
+            8,
+            1
+          ],
+          "median_us": 4.886240065097809
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 4.966399967670441
+        }
+      },
+      "delta_pct": {
+        "xplane": 4.845384658046181,
+        "reference": 1.6405232142646886
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m5-512x2048-rotating",
+      "source_sha256": "f9824547e9f4212fc5c059e30018ea2ff442e23623ee7da2cacb30c182d91911"
+    },
+    {
+      "scope": "dense",
+      "M": 5,
+      "rows": 5,
+      "experts": 1,
+      "channels": 5,
+      "n": 512,
+      "k": 2048,
+      "kpack_implementation": "affine4-small",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "5dd5a6b81370152d8f7cea1a56c1d32ee5bcfadf913ccae14ae6cb3f55b73ebb",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            1,
+            8,
+            1
+          ],
+          "median_us": 4.3739997781813145
+        },
+        "reference": {
+          "recipe": [
+            1,
+            8,
+            1
+          ],
+          "median_us": 4.621000029146671
+        },
+        "kpack": {
+          "recipe": [
+            8,
+            16,
+            1
+          ],
+          "median_us": 4.494000226259232
+        }
+      },
+      "delta_pct": {
+        "xplane": 2.7434946082190326,
+        "reference": -2.7483185909196406
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m5-512x2048-warm",
+      "source_sha256": "c2278cfe9062cdca2493173eb977c35d7eea9e56797c4e094a51789139bdc934"
+    },
+    {
+      "scope": "dense",
+      "M": 5,
+      "rows": 5,
+      "experts": 1,
+      "channels": 5,
+      "n": 8192,
+      "k": 5120,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 5,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "ba3e2edffef7591f3bc10007aa664cf336cb00195d6913ce1c87d2b12537840a",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 72.04617091587612
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 83.7275436946324
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 66.83565889086042
+        }
+      },
+      "delta_pct": {
+        "xplane": -7.232184526641527,
+        "reference": -20.17482426736339
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m5-8192x5120-rotating",
+      "source_sha256": "d5bee34c0936334c771ed57290eeac1e4ddf2153c6546df385290a70e94e4e83"
+    },
+    {
+      "scope": "dense",
+      "M": 5,
+      "rows": 5,
+      "experts": 1,
+      "channels": 5,
+      "n": 8192,
+      "k": 5120,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "ba3e2edffef7591f3bc10007aa664cf336cb00195d6913ce1c87d2b12537840a",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 66.95299968123436
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 78.80350202322006
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 60.37300080060959
+        }
+      },
+      "delta_pct": {
+        "xplane": -9.827788018389594,
+        "reference": -23.387921538283653
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m5-8192x5120-warm",
+      "source_sha256": "956739843970acacf97f17e07d85dae18b86ba5a2bf0f577b81bf2b53b7253df"
+    },
+    {
+      "scope": "dense",
+      "M": 6,
+      "rows": 6,
+      "experts": 1,
+      "channels": 6,
+      "n": 1024,
+      "k": 5120,
+      "kpack_implementation": "medium",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 40,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "cd079c5dfa62023dcb348bc0a7fa1809e3a3ce97061afda4ffcae9e397a5ad80",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 15.011200308799744
+        },
+        "reference": {
+          "recipe": [
+            1,
+            8,
+            1
+          ],
+          "median_us": 16.46919995546341
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            10,
+            1
+          ],
+          "median_us": 12.801200151443481
+        }
+      },
+      "delta_pct": {
+        "xplane": -14.722341397714434,
+        "reference": -22.271876071327455
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m6-1024x5120-rotating",
+      "source_sha256": "487dc65b37ce83455b77827a4b5196e60c86ea020e738b106f6a6d971a71806a"
+    },
+    {
+      "scope": "dense",
+      "M": 6,
+      "rows": 6,
+      "experts": 1,
+      "channels": 6,
+      "n": 1024,
+      "k": 5120,
+      "kpack_implementation": "medium",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "cd079c5dfa62023dcb348bc0a7fa1809e3a3ce97061afda4ffcae9e397a5ad80",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 13.631000183522701
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 15.545999631285667
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            10,
+            1
+          ],
+          "median_us": 12.357000261545181
+        }
+      },
+      "delta_pct": {
+        "xplane": -9.346342196646319,
+        "reference": -20.513311754637897
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m6-1024x5120-warm",
+      "source_sha256": "d3af4d07359b6f5390a288a5a5321cc04aec42e76ef4a8856b9d1e841db27f12"
+    },
+    {
+      "scope": "dense",
+      "M": 6,
+      "rows": 6,
+      "experts": 1,
+      "channels": 6,
+      "n": 4096,
+      "k": 2048,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 25,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "021c0cda3c5f77cb3bfaf88e6cafb13728763025e52b4e7c84d2ec43d61f136b",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 19.48415994644165
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 22.613439559936523
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 17.59455978870392
+        }
+      },
+      "delta_pct": {
+        "xplane": -9.698135115559992,
+        "reference": -22.194234353116215
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m6-4096x2048-rotating",
+      "source_sha256": "81f27b0b31ede66275e5f6ac717b567e6d205913f677441d558120e7c98e0095"
+    },
+    {
+      "scope": "dense",
+      "M": 6,
+      "rows": 6,
+      "experts": 1,
+      "channels": 6,
+      "n": 4096,
+      "k": 2048,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "021c0cda3c5f77cb3bfaf88e6cafb13728763025e52b4e7c84d2ec43d61f136b",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 18.775999546051025
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 21.68150059878826
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            4,
+            1
+          ],
+          "median_us": 16.7684992775321
+        }
+      },
+      "delta_pct": {
+        "xplane": -10.691842336250712,
+        "reference": -22.659876786991116
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m6-4096x2048-warm",
+      "source_sha256": "cc3f3b1d6596843c6a07fc2dbcfeb83edd493f55730c2768fde057c8b2508bcf"
+    },
+    {
+      "scope": "dense",
+      "M": 6,
+      "rows": 6,
+      "experts": 1,
+      "channels": 6,
+      "n": 4096,
+      "k": 4096,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 13,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "d98ad38f77ce3d565a135a8e4beb538b91f1536046d55cf7d26fe24e8d431628",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 35.541332685030426
+        },
+        "reference": {
+          "recipe": [
+            4,
+            2,
+            2
+          ],
+          "median_us": 41.059691172379715
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 31.891691379058052
+        }
+      },
+      "delta_pct": {
+        "xplane": -10.268723849822203,
+        "reference": -22.328467486109215
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m6-4096x4096-rotating",
+      "source_sha256": "3de3ca233b5fe3987d93a110e6cb4eb9d82db3a37eea994253f5485cfdb0e278"
+    },
+    {
+      "scope": "dense",
+      "M": 6,
+      "rows": 6,
+      "experts": 1,
+      "channels": 6,
+      "n": 4096,
+      "k": 4096,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "d98ad38f77ce3d565a135a8e4beb538b91f1536046d55cf7d26fe24e8d431628",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 33.73450040817261
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 39.15350139141083
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 30.510999262332916
+        }
+      },
+      "delta_pct": {
+        "xplane": -9.55550284378528,
+        "reference": -22.073382512282368
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m6-4096x4096-warm",
+      "source_sha256": "267fbe0d9ee549ddc1fd14ee11530a2b9a43ac682d403ccb3e335d873ac5fe07"
+    },
+    {
+      "scope": "dense",
+      "M": 6,
+      "rows": 6,
+      "experts": 1,
+      "channels": 6,
+      "n": 5120,
+      "k": 8192,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 5,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "e8a5368daed3700a1783f3fe0ca04e5aca1cdbe4755f21f6b7842d9893d1d66b",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 83.20914336613245
+        },
+        "reference": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 97.84822804587228
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 77.50719955989292
+        }
+      },
+      "delta_pct": {
+        "xplane": -6.85254477521795,
+        "reference": -20.788346291200355
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m6-5120x8192-rotating",
+      "source_sha256": "3d89b6e291df836830fc781da647a1e35963954fbf63aa9b3a120b392b48c6be"
+    },
+    {
+      "scope": "dense",
+      "M": 6,
+      "rows": 6,
+      "experts": 1,
+      "channels": 6,
+      "n": 5120,
+      "k": 8192,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "e8a5368daed3700a1783f3fe0ca04e5aca1cdbe4755f21f6b7842d9893d1d66b",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            4,
+            4,
+            1
+          ],
+          "median_us": 79.63600009679794
+        },
+        "reference": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 92.97199919819832
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 75.22750273346901
+        }
+      },
+      "delta_pct": {
+        "xplane": -5.535809631285327,
+        "reference": -19.08585016753429
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m6-5120x8192-warm",
+      "source_sha256": "1aff6a5069db4f010773f9673103d7ccdac7c0df15895d03d70e679b17970f0b"
+    },
+    {
+      "scope": "dense",
+      "M": 6,
+      "rows": 6,
+      "experts": 1,
+      "channels": 6,
+      "n": 512,
+      "k": 2048,
+      "kpack_implementation": "affine4-small",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 200,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "5dd5a6b81370152d8f7cea1a56c1d32ee5bcfadf913ccae14ae6cb3f55b73ebb",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            1,
+            4,
+            1
+          ],
+          "median_us": 4.755359888076782
+        },
+        "reference": {
+          "recipe": [
+            1,
+            4,
+            1
+          ],
+          "median_us": 5.119679868221283
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 4.629999995231628
+        }
+      },
+      "delta_pct": {
+        "xplane": -2.6361809788460255,
+        "reference": -9.56465805663319
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m6-512x2048-rotating",
+      "source_sha256": "f18fcd2f9b186cb985c4d3b7bd5a6904ad877ab5cd1c8b0f51cb69d110c33386"
+    },
+    {
+      "scope": "dense",
+      "M": 6,
+      "rows": 6,
+      "experts": 1,
+      "channels": 6,
+      "n": 512,
+      "k": 2048,
+      "kpack_implementation": "affine4-small",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "5dd5a6b81370152d8f7cea1a56c1d32ee5bcfadf913ccae14ae6cb3f55b73ebb",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 4.717499949038029
+        },
+        "reference": {
+          "recipe": [
+            1,
+            4,
+            1
+          ],
+          "median_us": 5.194999976083636
+        },
+        "kpack": {
+          "recipe": [
+            8,
+            16,
+            1
+          ],
+          "median_us": 4.578000167384744
+        }
+      },
+      "delta_pct": {
+        "xplane": -2.957070125283867,
+        "reference": -11.876800992096081
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m6-512x2048-warm",
+      "source_sha256": "33e6addcca295d6e211ce5a69f84e50c59754767cec01d7ae1874c064dfeda0b"
+    },
+    {
+      "scope": "dense",
+      "M": 6,
+      "rows": 6,
+      "experts": 1,
+      "channels": 6,
+      "n": 8192,
+      "k": 5120,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 5,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "ba3e2edffef7591f3bc10007aa664cf336cb00195d6913ce1c87d2b12537840a",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 83.28777040754045
+        },
+        "reference": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 102.79771600450789
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 77.37782682691301
+        }
+      },
+      "delta_pct": {
+        "xplane": -7.095811968202703,
+        "reference": -24.728068059878073
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m6-8192x5120-rotating",
+      "source_sha256": "2a4cac967292d0c9e2931c7aa1f36f52ee801f45a1bdbb1328076084f88fd9df"
+    },
+    {
+      "scope": "dense",
+      "M": 6,
+      "rows": 6,
+      "experts": 1,
+      "channels": 6,
+      "n": 8192,
+      "k": 5120,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "ba3e2edffef7591f3bc10007aa664cf336cb00195d6913ce1c87d2b12537840a",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 78.84849980473518
+        },
+        "reference": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 93.77099946141243
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 73.20299744606018
+        }
+      },
+      "delta_pct": {
+        "xplane": -7.159936298922409,
+        "reference": -21.93428899498523
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m6-8192x5120-warm",
+      "source_sha256": "c6dcb3b28b30f6c7c9533ab8af78db677a303fce97a04b0499cacc7c9a2f9638"
+    },
+    {
+      "scope": "dense",
+      "M": 7,
+      "rows": 7,
+      "experts": 1,
+      "channels": 7,
+      "n": 1024,
+      "k": 5120,
+      "kpack_implementation": "medium",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 40,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "cd079c5dfa62023dcb348bc0a7fa1809e3a3ce97061afda4ffcae9e397a5ad80",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 15.868400037288666
+        },
+        "reference": {
+          "recipe": [
+            4,
+            8,
+            2
+          ],
+          "median_us": 17.110799998044968
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            10,
+            1
+          ],
+          "median_us": 12.876799702644348
+        }
+      },
+      "delta_pct": {
+        "xplane": -18.852564389695548,
+        "reference": -24.74460747530439
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m7-1024x5120-rotating",
+      "source_sha256": "09b11afc6c0e6025ec20a08a7b6cea1e91d87d4effb0b0a3dc000894ef121e6a"
+    },
+    {
+      "scope": "dense",
+      "M": 7,
+      "rows": 7,
+      "experts": 1,
+      "channels": 7,
+      "n": 1024,
+      "k": 5120,
+      "kpack_implementation": "medium",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "cd079c5dfa62023dcb348bc0a7fa1809e3a3ce97061afda4ffcae9e397a5ad80",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 14.444500207901001
+        },
+        "reference": {
+          "recipe": [
+            4,
+            8,
+            2
+          ],
+          "median_us": 16.171500086784363
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            10,
+            1
+          ],
+          "median_us": 12.395000085234642
+        }
+      },
+      "delta_pct": {
+        "xplane": -14.188792226575641,
+        "reference": -23.352811930143346
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m7-1024x5120-warm",
+      "source_sha256": "c81d6ce92b08d97a31f30eb62ec361c6df65d03aef2d4dea23a200ca502b1814"
+    },
+    {
+      "scope": "dense",
+      "M": 7,
+      "rows": 7,
+      "experts": 1,
+      "channels": 7,
+      "n": 4096,
+      "k": 2048,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 25,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "021c0cda3c5f77cb3bfaf88e6cafb13728763025e52b4e7c84d2ec43d61f136b",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 21.879360675811768
+        },
+        "reference": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 25.2675199508667
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            4,
+            1
+          ],
+          "median_us": 19.598079919815063
+        }
+      },
+      "delta_pct": {
+        "xplane": -10.426633528276364,
+        "reference": -22.437659264051234
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m7-4096x2048-rotating",
+      "source_sha256": "7383530b491ff0fbcbfd19ad239dc67caf169697a36a558678e7cba2576de5fd"
+    },
+    {
+      "scope": "dense",
+      "M": 7,
+      "rows": 7,
+      "experts": 1,
+      "channels": 7,
+      "n": 4096,
+      "k": 2048,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "021c0cda3c5f77cb3bfaf88e6cafb13728763025e52b4e7c84d2ec43d61f136b",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 21.103999577462673
+        },
+        "reference": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 24.3520000949502
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            4,
+            1
+          ],
+          "median_us": 18.811500631272793
+        }
+      },
+      "delta_pct": {
+        "xplane": -10.862864822258999,
+        "reference": -22.75172241324984
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m7-4096x2048-warm",
+      "source_sha256": "518aa4ff88557caa5c579df1584e74d90acc257be57548c018bf8c573af22588"
+    },
+    {
+      "scope": "dense",
+      "M": 7,
+      "rows": 7,
+      "experts": 1,
+      "channels": 7,
+      "n": 4096,
+      "k": 4096,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 13,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "d98ad38f77ce3d565a135a8e4beb538b91f1536046d55cf7d26fe24e8d431628",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 39.99712833991418
+        },
+        "reference": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 46.803281857417176
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 36.468513500996124
+        }
+      },
+      "delta_pct": {
+        "xplane": -8.822170454164224,
+        "reference": -22.081289914466208
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m7-4096x4096-rotating",
+      "source_sha256": "cf5add704e8830f15757769061f5fab87c0a1e66741c94afaed93b603cd57045"
+    },
+    {
+      "scope": "dense",
+      "M": 7,
+      "rows": 7,
+      "experts": 1,
+      "channels": 7,
+      "n": 4096,
+      "k": 4096,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "d98ad38f77ce3d565a135a8e4beb538b91f1536046d55cf7d26fe24e8d431628",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 38.12600113451481
+        },
+        "reference": {
+          "recipe": [
+            8,
+            8,
+            1
+          ],
+          "median_us": 45.23899964988232
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 34.626999869942665
+        }
+      },
+      "delta_pct": {
+        "xplane": -9.17746724139018,
+        "reference": -23.457635805541642
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m7-4096x4096-warm",
+      "source_sha256": "952a0ecfe04281c8718f938f163aca1ebe0b8a6830fa389bc019250e022a7514"
+    },
+    {
+      "scope": "dense",
+      "M": 7,
+      "rows": 7,
+      "experts": 1,
+      "channels": 7,
+      "n": 5120,
+      "k": 8192,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 5,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "e8a5368daed3700a1783f3fe0ca04e5aca1cdbe4755f21f6b7842d9893d1d66b",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            4,
+            4,
+            1
+          ],
+          "median_us": 99.97348444802421
+        },
+        "reference": {
+          "recipe": [
+            8,
+            8,
+            2
+          ],
+          "median_us": 111.62834508078438
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 90.14719894954136
+        }
+      },
+      "delta_pct": {
+        "xplane": -9.828891683365793,
+        "reference": -19.24345121814475
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m7-5120x8192-rotating",
+      "source_sha256": "afd10592823ccc0859af30a89bceb2d64b1be29cc835d451a1b8d504549349e2"
+    },
+    {
+      "scope": "dense",
+      "M": 7,
+      "rows": 7,
+      "experts": 1,
+      "channels": 7,
+      "n": 5120,
+      "k": 8192,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "e8a5368daed3700a1783f3fe0ca04e5aca1cdbe4755f21f6b7842d9893d1d66b",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            8,
+            8,
+            1
+          ],
+          "median_us": 91.98950231075287
+        },
+        "reference": {
+          "recipe": [
+            8,
+            8,
+            2
+          ],
+          "median_us": 109.2815026640892
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 85.83050221204758
+        }
+      },
+      "delta_pct": {
+        "xplane": -6.695329297357611,
+        "reference": -21.459258776963917
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m7-5120x8192-warm",
+      "source_sha256": "938d3c10f86799a2fa158977a41434904f2d29dce6a9fdf392d8ff088594a049"
+    },
+    {
+      "scope": "dense",
+      "M": 7,
+      "rows": 7,
+      "experts": 1,
+      "channels": 7,
+      "n": 512,
+      "k": 2048,
+      "kpack_implementation": "affine4-small",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 200,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "5dd5a6b81370152d8f7cea1a56c1d32ee5bcfadf913ccae14ae6cb3f55b73ebb",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            1,
+            8,
+            1
+          ],
+          "median_us": 5.280400216579437
+        },
+        "reference": {
+          "recipe": [
+            1,
+            8,
+            1
+          ],
+          "median_us": 5.619039833545685
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 4.9747200310230255
+        }
+      },
+      "delta_pct": {
+        "xplane": -5.788958658789445,
+        "reference": -11.46672423776155
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m7-512x2048-rotating",
+      "source_sha256": "94824cd5babc14a1ebf86962dd1ea70a08b04c838c34d6ae238eea1427ce9510"
+    },
+    {
+      "scope": "dense",
+      "M": 7,
+      "rows": 7,
+      "experts": 1,
+      "channels": 7,
+      "n": 512,
+      "k": 2048,
+      "kpack_implementation": "affine4-small",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "5dd5a6b81370152d8f7cea1a56c1d32ee5bcfadf913ccae14ae6cb3f55b73ebb",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 4.75750002078712
+        },
+        "reference": {
+          "recipe": [
+            1,
+            8,
+            1
+          ],
+          "median_us": 5.368500016629696
+        },
+        "kpack": {
+          "recipe": [
+            8,
+            16,
+            1
+          ],
+          "median_us": 4.620499908924103
+        }
+      },
+      "delta_pct": {
+        "xplane": -2.879666027628325,
+        "reference": -13.933130397477056
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m7-512x2048-warm",
+      "source_sha256": "3fcb014dfe894df07429036947b1b92f894ebe4f3df4ab9de6aed17ab5f8d7f8"
+    },
+    {
+      "scope": "dense",
+      "M": 7,
+      "rows": 7,
+      "experts": 1,
+      "channels": 7,
+      "n": 8192,
+      "k": 5120,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 5,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "ba3e2edffef7591f3bc10007aa664cf336cb00195d6913ce1c87d2b12537840a",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            8,
+            8,
+            1
+          ],
+          "median_us": 98.6624002456665
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 111.58811364855086
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 91.88662937709263
+        }
+      },
+      "delta_pct": {
+        "xplane": -6.867632301365467,
+        "reference": -17.655540207004904
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m7-8192x5120-rotating",
+      "source_sha256": "875b6b67f3bb22c6de1a0a7054a97ac0e9aabdc3d51cf780993ed69a8fbc4f6f"
+    },
+    {
+      "scope": "dense",
+      "M": 7,
+      "rows": 7,
+      "experts": 1,
+      "channels": 7,
+      "n": 8192,
+      "k": 5120,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "ba3e2edffef7591f3bc10007aa664cf336cb00195d6913ce1c87d2b12537840a",
+      "ids": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 90.48999845981598
+        },
+        "reference": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 110.46700179576874
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 85.34149825572968
+        }
+      },
+      "delta_pct": {
+        "xplane": -5.689579281375067,
+        "reference": -22.744804449831147
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "dense-m7-8192x5120-warm",
+      "source_sha256": "34235bda1e71c2ca6760c16df25d7086734304a7697fe48a3c19082954aacfd4"
+    },
+    {
+      "scope": "indexed-independent-a",
+      "M": 1,
+      "rows": 8,
+      "experts": 256,
+      "channels": 8,
+      "n": 1024,
+      "k": 5120,
+      "kpack_implementation": "medium",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 5,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "cd079c5dfa62023dcb348bc0a7fa1809e3a3ce97061afda4ffcae9e397a5ad80",
+      "ids": [
+        255,
+        2,
+        137,
+        0,
+        89,
+        4,
+        201,
+        6
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            4,
+            4,
+            1
+          ],
+          "median_us": 22.663314001900808
+        },
+        "reference": {
+          "recipe": [
+            1,
+            8,
+            1
+          ],
+          "median_us": 24.736457211630686
+        },
+        "kpack": {
+          "recipe": [
+            2,
+            10,
+            1
+          ],
+          "median_us": 18.821028300694056
+        }
+      },
+      "delta_pct": {
+        "xplane": -16.953768106837742,
+        "reference": -23.913808110545798
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "indexed-independent-a-m1-1024x5120-rotating",
+      "source_sha256": "4da43098982e39b6e23c164d67e811a5bbda95248fdc62e3b76bb32d578a8d86"
+    },
+    {
+      "scope": "indexed-independent-a",
+      "M": 1,
+      "rows": 8,
+      "experts": 256,
+      "channels": 8,
+      "n": 1024,
+      "k": 5120,
+      "kpack_implementation": "medium",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "cd079c5dfa62023dcb348bc0a7fa1809e3a3ce97061afda4ffcae9e397a5ad80",
+      "ids": [
+        255,
+        2,
+        137,
+        0,
+        89,
+        4,
+        201,
+        6
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 18.503500148653984
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 21.442499943077564
+        },
+        "kpack": {
+          "recipe": [
+            2,
+            10,
+            1
+          ],
+          "median_us": 15.786999836564064
+        }
+      },
+      "delta_pct": {
+        "xplane": -14.681007864814855,
+        "reference": -26.375190026941354
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "indexed-independent-a-m1-1024x5120-warm",
+      "source_sha256": "1afe946e9fc9ebbd9a8f061f18bc6be99ce308189a4752ccb8f0be8f13ee99c3"
+    },
+    {
+      "scope": "indexed-independent-a",
+      "M": 1,
+      "rows": 8,
+      "experts": 256,
+      "channels": 8,
+      "n": 4096,
+      "k": 2048,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 4,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "021c0cda3c5f77cb3bfaf88e6cafb13728763025e52b4e7c84d2ec43d61f136b",
+      "ids": [
+        255,
+        2,
+        137,
+        0,
+        89,
+        4,
+        201,
+        6
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 32.00550004839897
+        },
+        "reference": {
+          "recipe": [
+            4,
+            1,
+            2
+          ],
+          "median_us": 36.455001682043076
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            4,
+            1
+          ],
+          "median_us": 27.45399996638298
+        }
+      },
+      "delta_pct": {
+        "xplane": -14.220993501533098,
+        "reference": -24.690718146623457
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "indexed-independent-a-m1-4096x2048-rotating",
+      "source_sha256": "5d5bb078c2b366e7dd9fcd4840a124f63eca9c0be2539dcffa817d97ba3f4e11"
+    },
+    {
+      "scope": "indexed-independent-a",
+      "M": 1,
+      "rows": 8,
+      "experts": 256,
+      "channels": 8,
+      "n": 4096,
+      "k": 2048,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "021c0cda3c5f77cb3bfaf88e6cafb13728763025e52b4e7c84d2ec43d61f136b",
+      "ids": [
+        255,
+        2,
+        137,
+        0,
+        89,
+        4,
+        201,
+        6
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 29.0930001065135
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 33.52800011634827
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            4,
+            1
+          ],
+          "median_us": 25.270000100135803
+        }
+      },
+      "delta_pct": {
+        "xplane": -13.14061799189209,
+        "reference": -24.630159829264198
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "indexed-independent-a-m1-4096x2048-warm",
+      "source_sha256": "69c0cb60303b257a83e225ef24d1d89a04352b363b3fad72472c7a5bba198ba4"
+    },
+    {
+      "scope": "indexed-independent-a",
+      "M": 1,
+      "rows": 8,
+      "experts": 256,
+      "channels": 8,
+      "n": 4096,
+      "k": 4096,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 2,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "d98ad38f77ce3d565a135a8e4beb538b91f1536046d55cf7d26fe24e8d431628",
+      "ids": [
+        255,
+        2,
+        137,
+        0,
+        89,
+        4,
+        201,
+        6
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 58.92850086092949
+        },
+        "reference": {
+          "recipe": [
+            4,
+            4,
+            2
+          ],
+          "median_us": 68.8914991915226
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 52.98849940299988
+        }
+      },
+      "delta_pct": {
+        "xplane": -10.080014544995707,
+        "reference": -23.084125001128807
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "indexed-independent-a-m1-4096x4096-rotating",
+      "source_sha256": "cc903d6d0e2089b6a6cf48998167f51bdb3675affd3887d6e65efbb3adbf5839"
+    },
+    {
+      "scope": "indexed-independent-a",
+      "M": 1,
+      "rows": 8,
+      "experts": 256,
+      "channels": 8,
+      "n": 4096,
+      "k": 4096,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "d98ad38f77ce3d565a135a8e4beb538b91f1536046d55cf7d26fe24e8d431628",
+      "ids": [
+        255,
+        2,
+        137,
+        0,
+        89,
+        4,
+        201,
+        6
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 58.89049917459488
+        },
+        "reference": {
+          "recipe": [
+            4,
+            4,
+            2
+          ],
+          "median_us": 68.80350038409233
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            4,
+            1
+          ],
+          "median_us": 52.37100087106228
+        }
+      },
+      "delta_pct": {
+        "xplane": -11.070543457619541,
+        "reference": -23.88323184328761
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "indexed-independent-a-m1-4096x4096-warm",
+      "source_sha256": "65bba89acfacf9e58b40a7f70b17106c927ec27d5161724ec3768e83623ecc30"
+    },
+    {
+      "scope": "indexed-independent-a",
+      "M": 1,
+      "rows": 8,
+      "experts": 256,
+      "channels": 8,
+      "n": 5120,
+      "k": 8192,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 2,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "e8a5368daed3700a1783f3fe0ca04e5aca1cdbe4755f21f6b7842d9893d1d66b",
+      "ids": [
+        255,
+        2,
+        137,
+        0,
+        89,
+        4,
+        201,
+        6
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 139.0179991722107
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 158.11800211668015
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 134.46949422359467
+        }
+      },
+      "delta_pct": {
+        "xplane": -3.271882040958951,
+        "reference": -14.956240008417588
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "indexed-independent-a-m1-5120x8192-rotating",
+      "source_sha256": "0144558fbcf58d9be505d6d4e65ed1a0536abdcbfae56fd52b15a620c47860d7"
+    },
+    {
+      "scope": "indexed-independent-a",
+      "M": 1,
+      "rows": 8,
+      "experts": 256,
+      "channels": 8,
+      "n": 5120,
+      "k": 8192,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "e8a5368daed3700a1783f3fe0ca04e5aca1cdbe4755f21f6b7842d9893d1d66b",
+      "ids": [
+        255,
+        2,
+        137,
+        0,
+        89,
+        4,
+        201,
+        6
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 140.0965005159378
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 157.9125002026558
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 134.6684992313385
+        }
+      },
+      "delta_pct": {
+        "xplane": -3.87447314144852,
+        "reference": -14.719544647502437
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "indexed-independent-a-m1-5120x8192-warm",
+      "source_sha256": "541db6c37fa2e820fcb52831e30b08402e46d21f8f180156da207c1489cf2b8e"
+    },
+    {
+      "scope": "indexed-independent-a",
+      "M": 1,
+      "rows": 8,
+      "experts": 256,
+      "channels": 8,
+      "n": 512,
+      "k": 2048,
+      "kpack_implementation": "affine2-small",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 25,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "5dd5a6b81370152d8f7cea1a56c1d32ee5bcfadf913ccae14ae6cb3f55b73ebb",
+      "ids": [
+        255,
+        2,
+        137,
+        0,
+        89,
+        4,
+        201,
+        6
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 7.273599803447723
+        },
+        "reference": {
+          "recipe": [
+            4,
+            1,
+            2
+          ],
+          "median_us": 8.071039915084839
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 7.104320228099823
+        }
+      },
+      "delta_pct": {
+        "xplane": -2.3273149461379594,
+        "reference": -11.977634817270689
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "indexed-independent-a-m1-512x2048-rotating",
+      "source_sha256": "2b0ffa06218ea81fe1ad60b21610860011299002fe794ebfd9bca88272db6627"
+    },
+    {
+      "scope": "indexed-independent-a",
+      "M": 1,
+      "rows": 8,
+      "experts": 256,
+      "channels": 8,
+      "n": 512,
+      "k": 2048,
+      "kpack_implementation": "affine8-small",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "5dd5a6b81370152d8f7cea1a56c1d32ee5bcfadf913ccae14ae6cb3f55b73ebb",
+      "ids": [
+        255,
+        2,
+        137,
+        0,
+        89,
+        4,
+        201,
+        6
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 5.860000150278211
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 6.485499907284975
+        },
+        "kpack": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 5.9414999559521675
+        }
+      },
+      "delta_pct": {
+        "xplane": 1.3907816311248267,
+        "reference": -8.387941702408297
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "indexed-independent-a-m1-512x2048-warm",
+      "source_sha256": "6d8dbdcf3dea6e33d280547b3223c089adaadffec67100b8f64951cb2b574f75"
+    },
+    {
+      "scope": "indexed-independent-a",
+      "M": 1,
+      "rows": 8,
+      "experts": 256,
+      "channels": 8,
+      "n": 8192,
+      "k": 5120,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 2,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "ba3e2edffef7591f3bc10007aa664cf336cb00195d6913ce1c87d2b12537840a",
+      "ids": [
+        255,
+        2,
+        137,
+        0,
+        89,
+        4,
+        201,
+        6
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            2,
+            1
+          ],
+          "median_us": 146.48550003767014
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 161.65349632501602
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            4,
+            1
+          ],
+          "median_us": 134.46099311113358
+        }
+      },
+      "delta_pct": {
+        "xplane": -8.208667017175308,
+        "reference": -16.821475459590406
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "indexed-independent-a-m1-8192x5120-rotating",
+      "source_sha256": "a96da6b339efa45cca06827ad53f5a20abd35a6edc547172d66bf5a8e199724e"
+    },
+    {
+      "scope": "indexed-independent-a",
+      "M": 1,
+      "rows": 8,
+      "experts": 256,
+      "channels": 8,
+      "n": 8192,
+      "k": 5120,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "ba3e2edffef7591f3bc10007aa664cf336cb00195d6913ce1c87d2b12537840a",
+      "ids": [
+        255,
+        2,
+        137,
+        0,
+        89,
+        4,
+        201,
+        6
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            2,
+            1
+          ],
+          "median_us": 147.15349674224854
+        },
+        "reference": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 158.3705022931099
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 129.75549697875977
+        }
+      },
+      "delta_pct": {
+        "xplane": -11.823028435377791,
+        "reference": -18.068393356099786
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "indexed-independent-a-m1-8192x5120-warm",
+      "source_sha256": "95266c17cd0c9bd7eb7f2314b4662487440e0131a89d8c9ac2c6586ba47a71c6"
+    },
+    {
+      "scope": "indexed-shared-a",
+      "M": 1,
+      "rows": 8,
+      "experts": 256,
+      "channels": 1,
+      "n": 1024,
+      "k": 5120,
+      "kpack_implementation": "medium",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 5,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "cd079c5dfa62023dcb348bc0a7fa1809e3a3ce97061afda4ffcae9e397a5ad80",
+      "ids": [
+        255,
+        2,
+        137,
+        0,
+        89,
+        4,
+        201,
+        6
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            4,
+            4,
+            1
+          ],
+          "median_us": 22.634057487760273
+        },
+        "reference": {
+          "recipe": [
+            1,
+            8,
+            1
+          ],
+          "median_us": 24.30902804647173
+        },
+        "kpack": {
+          "recipe": [
+            2,
+            10,
+            1
+          ],
+          "median_us": 19.16982872145517
+        }
+      },
+      "delta_pct": {
+        "xplane": -15.30538114157588,
+        "reference": -21.14111397293187
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "indexed-shared-a-m1-1024x5120-rotating",
+      "source_sha256": "a59a551c84c005882cc5a61240d94c6046ab46a092c33d7899b266654850623b"
+    },
+    {
+      "scope": "indexed-shared-a",
+      "M": 1,
+      "rows": 8,
+      "experts": 256,
+      "channels": 1,
+      "n": 1024,
+      "k": 5120,
+      "kpack_implementation": "medium",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "cd079c5dfa62023dcb348bc0a7fa1809e3a3ce97061afda4ffcae9e397a5ad80",
+      "ids": [
+        255,
+        2,
+        137,
+        0,
+        89,
+        4,
+        201,
+        6
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 18.422499299049377
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 21.374999545514584
+        },
+        "kpack": {
+          "recipe": [
+            2,
+            10,
+            1
+          ],
+          "median_us": 15.708000399172306
+        }
+      },
+      "delta_pct": {
+        "xplane": -14.73469400548243,
+        "reference": -26.512277271750694
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "indexed-shared-a-m1-1024x5120-warm",
+      "source_sha256": "bafd4604c50d8b4e988ce0c9edcb25ca57e09d8c3999960713f7b5ccbc1d5a23"
+    },
+    {
+      "scope": "indexed-shared-a",
+      "M": 1,
+      "rows": 8,
+      "experts": 256,
+      "channels": 1,
+      "n": 4096,
+      "k": 2048,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 4,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "021c0cda3c5f77cb3bfaf88e6cafb13728763025e52b4e7c84d2ec43d61f136b",
+      "ids": [
+        255,
+        2,
+        137,
+        0,
+        89,
+        4,
+        201,
+        6
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            4,
+            2,
+            1
+          ],
+          "median_us": 31.649500131607056
+        },
+        "reference": {
+          "recipe": [
+            4,
+            2,
+            2
+          ],
+          "median_us": 36.00999899208546
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            4,
+            1
+          ],
+          "median_us": 27.320499531924725
+        }
+      },
+      "delta_pct": {
+        "xplane": -13.677943037587303,
+        "reference": -24.1307961771134
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "indexed-shared-a-m1-4096x2048-rotating",
+      "source_sha256": "85067634aff47f58da62a84e0ba55ae5a7f41a654b99ee554c5394aa7ec90cb3"
+    },
+    {
+      "scope": "indexed-shared-a",
+      "M": 1,
+      "rows": 8,
+      "experts": 256,
+      "channels": 1,
+      "n": 4096,
+      "k": 2048,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "021c0cda3c5f77cb3bfaf88e6cafb13728763025e52b4e7c84d2ec43d61f136b",
+      "ids": [
+        255,
+        2,
+        137,
+        0,
+        89,
+        4,
+        201,
+        6
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 28.40700000524521
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 33.27699936926365
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            4,
+            1
+          ],
+          "median_us": 24.92049988359213
+        }
+      },
+      "delta_pct": {
+        "xplane": -12.273383746996569,
+        "reference": -25.111938107586752
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "indexed-shared-a-m1-4096x2048-warm",
+      "source_sha256": "61deb188e6aa8c279ead33f5267a14ff7686350dac72e6dedd0ff8b87d6d16cd"
+    },
+    {
+      "scope": "indexed-shared-a",
+      "M": 1,
+      "rows": 8,
+      "experts": 256,
+      "channels": 1,
+      "n": 4096,
+      "k": 4096,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 2,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "d98ad38f77ce3d565a135a8e4beb538b91f1536046d55cf7d26fe24e8d431628",
+      "ids": [
+        255,
+        2,
+        137,
+        0,
+        89,
+        4,
+        201,
+        6
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 58.571500703692436
+        },
+        "reference": {
+          "recipe": [
+            4,
+            1,
+            2
+          ],
+          "median_us": 67.32399761676788
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            4,
+            1
+          ],
+          "median_us": 52.35050059854984
+        }
+      },
+      "delta_pct": {
+        "xplane": -10.621206611409928,
+        "reference": -22.24095054998443
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "indexed-shared-a-m1-4096x4096-rotating",
+      "source_sha256": "29192548ad4f792e20ab0e3fd3941ecd8bdf8dee8b437166470bc332bbf50cc0"
+    },
+    {
+      "scope": "indexed-shared-a",
+      "M": 1,
+      "rows": 8,
+      "experts": 256,
+      "channels": 1,
+      "n": 4096,
+      "k": 4096,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "d98ad38f77ce3d565a135a8e4beb538b91f1536046d55cf7d26fe24e8d431628",
+      "ids": [
+        255,
+        2,
+        137,
+        0,
+        89,
+        4,
+        201,
+        6
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 59.3395009636879
+        },
+        "reference": {
+          "recipe": [
+            4,
+            1,
+            2
+          ],
+          "median_us": 67.4550011754036
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            4,
+            1
+          ],
+          "median_us": 52.23449878394604
+        }
+      },
+      "delta_pct": {
+        "xplane": -11.973478145847027,
+        "reference": -22.563934661982444
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "indexed-shared-a-m1-4096x4096-warm",
+      "source_sha256": "4ebca16bd88a13f99586deaefe5110164648392107e2ca560db69b0f27700d16"
+    },
+    {
+      "scope": "indexed-shared-a",
+      "M": 1,
+      "rows": 8,
+      "experts": 256,
+      "channels": 1,
+      "n": 5120,
+      "k": 8192,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 2,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "e8a5368daed3700a1783f3fe0ca04e5aca1cdbe4755f21f6b7842d9893d1d66b",
+      "ids": [
+        255,
+        2,
+        137,
+        0,
+        89,
+        4,
+        201,
+        6
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 140.28850197792053
+        },
+        "reference": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 155.13800084590912
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 131.9970041513443
+        }
+      },
+      "delta_pct": {
+        "xplane": -5.910318885492982,
+        "reference": -14.916394802295807
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "indexed-shared-a-m1-5120x8192-rotating",
+      "source_sha256": "b3bdc43ecf7134e91640bf0e39ff04b23bcf23a947f4b82d888f9dbf7534eac4"
+    },
+    {
+      "scope": "indexed-shared-a",
+      "M": 1,
+      "rows": 8,
+      "experts": 256,
+      "channels": 1,
+      "n": 5120,
+      "k": 8192,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "e8a5368daed3700a1783f3fe0ca04e5aca1cdbe4755f21f6b7842d9893d1d66b",
+      "ids": [
+        255,
+        2,
+        137,
+        0,
+        89,
+        4,
+        201,
+        6
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 138.31249624490738
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 155.3170010447502
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 135.62650233507156
+        }
+      },
+      "delta_pct": {
+        "xplane": -1.9419748632688805,
+        "reference": -12.677619692132346
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "indexed-shared-a-m1-5120x8192-warm",
+      "source_sha256": "ee4aa2ce9f894b0406eb7f7bd2582a2127774e09363ddaae11c255011201ced0"
+    },
+    {
+      "scope": "indexed-shared-a",
+      "M": 1,
+      "rows": 8,
+      "experts": 256,
+      "channels": 1,
+      "n": 512,
+      "k": 2048,
+      "kpack_implementation": "affine2-small",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 25,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "5dd5a6b81370152d8f7cea1a56c1d32ee5bcfadf913ccae14ae6cb3f55b73ebb",
+      "ids": [
+        255,
+        2,
+        137,
+        0,
+        89,
+        4,
+        201,
+        6
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            2,
+            1
+          ],
+          "median_us": 7.296319901943207
+        },
+        "reference": {
+          "recipe": [
+            4,
+            1,
+            2
+          ],
+          "median_us": 8.118400275707245
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 6.957760155200958
+        }
+      },
+      "delta_pct": {
+        "xplane": -4.640143953283637,
+        "reference": -14.296414085165022
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "indexed-shared-a-m1-512x2048-rotating",
+      "source_sha256": "fd26327bacbd05b1f293f275a98431987000ba3d7c89d718794de50ded194114"
+    },
+    {
+      "scope": "indexed-shared-a",
+      "M": 1,
+      "rows": 8,
+      "experts": 256,
+      "channels": 1,
+      "n": 512,
+      "k": 2048,
+      "kpack_implementation": "affine8-small",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "5dd5a6b81370152d8f7cea1a56c1d32ee5bcfadf913ccae14ae6cb3f55b73ebb",
+      "ids": [
+        255,
+        2,
+        137,
+        0,
+        89,
+        4,
+        201,
+        6
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 5.85799990221858
+        },
+        "reference": {
+          "recipe": [
+            2,
+            2,
+            1
+          ],
+          "median_us": 6.4940000884234905
+        },
+        "kpack": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 5.8479998260736465
+        }
+      },
+      "delta_pct": {
+        "xplane": -0.17070802853967892,
+        "reference": -9.947647883489164
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "indexed-shared-a-m1-512x2048-warm",
+      "source_sha256": "85f70bbe0f46026de8d7cf351be8382bbdd4d7bcffb796fc7a6d8980a87a6466"
+    },
+    {
+      "scope": "indexed-shared-a",
+      "M": 1,
+      "rows": 8,
+      "experts": 256,
+      "channels": 1,
+      "n": 8192,
+      "k": 5120,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "rotating",
+      "copies": 2,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "ba3e2edffef7591f3bc10007aa664cf336cb00195d6913ce1c87d2b12537840a",
+      "ids": [
+        255,
+        2,
+        137,
+        0,
+        89,
+        4,
+        201,
+        6
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 143.86099576950073
+        },
+        "reference": {
+          "recipe": [
+            2,
+            4,
+            1
+          ],
+          "median_us": 157.95199573040009
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            8,
+            1
+          ],
+          "median_us": 134.54850018024445
+        }
+      },
+      "delta_pct": {
+        "xplane": -6.47325950960127,
+        "reference": -14.816840674873033
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "indexed-shared-a-m1-8192x5120-rotating",
+      "source_sha256": "68564aed75deef5ca19fa181853b133c56b3bc6f48fdc9cddf7d666d0ae1e2d3"
+    },
+    {
+      "scope": "indexed-shared-a",
+      "M": 1,
+      "rows": 8,
+      "experts": 256,
+      "channels": 1,
+      "n": 8192,
+      "k": 5120,
+      "kpack_implementation": "large",
+      "weight_arithmetic": "FP32_GROUP_AFFINE",
+      "mode": "warm",
+      "copies": 1,
+      "L2_bytes": 52428800,
+      "fixture_sha256": "ba3e2edffef7591f3bc10007aa664cf336cb00195d6913ce1c87d2b12537840a",
+      "ids": [
+        255,
+        2,
+        137,
+        0,
+        89,
+        4,
+        201,
+        6
+      ],
+      "input": "F16_RANDOM",
+      "output": "F32_PADDED",
+      "oracle": "OFFICIAL_GGUF_FP64_DOT",
+      "rounds": 6,
+      "samples": 15,
+      "status": "PASS",
+      "best": {
+        "xplane": {
+          "recipe": [
+            2,
+            2,
+            1
+          ],
+          "median_us": 142.1154960989952
+        },
+        "reference": {
+          "recipe": [
+            2,
+            8,
+            1
+          ],
+          "median_us": 158.06850045919418
+        },
+        "kpack": {
+          "recipe": [
+            4,
+            4,
+            1
+          ],
+          "median_us": 135.34149527549744
+        }
+      },
+      "delta_pct": {
+        "xplane": -4.766546231368829,
+        "reference": -14.377946977211808
+      },
+      "parity": "WITHIN_5PCT",
+      "launches_per_call": 1,
+      "reducer": false,
+      "CPU_routing": false,
+      "metric_scope": "RESIDENT_F16_A_F32_OUTPUT_NO_LLAMA_ADAPTERS",
+      "key": "indexed-shared-a-m1-8192x5120-warm",
+      "source_sha256": "3a5cc9ab193908e43d403d933b63cbe75ce26f35203afb4acdb76217e7dee2d1"
+    }
+  ],
+  "moe": [
+    {
+      "merged": 0,
+      "tokens": 1,
+      "router": -1,
+      "k": 512,
+      "median_us": {
+        "baseline": 3.7335000000000003,
+        "selected": 4.19975
+      },
+      "delta_pct": 12.488281773135125
+    },
+    {
+      "merged": 0,
+      "tokens": 1,
+      "router": -1,
+      "k": 2048,
+      "median_us": {
+        "baseline": 5.72225,
+        "selected": 5.668
+      },
+      "delta_pct": -0.9480536502249892
+    },
+    {
+      "merged": 0,
+      "tokens": 1,
+      "router": -1,
+      "k": 3072,
+      "median_us": {
+        "baseline": 7.0365,
+        "selected": 6.731
+      },
+      "delta_pct": -4.341647125701698
+    },
+    {
+      "merged": 0,
+      "tokens": 1,
+      "router": 0,
+      "k": 512,
+      "median_us": {
+        "baseline": 4.61625,
+        "selected": 4.71075
+      },
+      "delta_pct": 2.047116165718932
+    },
+    {
+      "merged": 0,
+      "tokens": 1,
+      "router": 0,
+      "k": 2048,
+      "median_us": {
+        "baseline": 5.79025,
+        "selected": 5.7475000000000005
+      },
+      "delta_pct": -0.7383100902378925
+    },
+    {
+      "merged": 0,
+      "tokens": 1,
+      "router": 0,
+      "k": 3072,
+      "median_us": {
+        "baseline": 7.11375,
+        "selected": 6.7505
+      },
+      "delta_pct": -5.106308205939203
+    },
+    {
+      "merged": 0,
+      "tokens": 1,
+      "router": 1,
+      "k": 512,
+      "median_us": {
+        "baseline": 6.24275,
+        "selected": 6.1345
+      },
+      "delta_pct": -1.7340114532858109
+    },
+    {
+      "merged": 0,
+      "tokens": 1,
+      "router": 1,
+      "k": 2048,
+      "median_us": {
+        "baseline": 6.53925,
+        "selected": 6.569
+      },
+      "delta_pct": 0.45494513896853217
+    },
+    {
+      "merged": 0,
+      "tokens": 1,
+      "router": 1,
+      "k": 3072,
+      "median_us": {
+        "baseline": 7.1715,
+        "selected": 7.1745
+      },
+      "delta_pct": 0.0418322526668069
+    },
+    {
+      "merged": 0,
+      "tokens": 1,
+      "router": 2,
+      "k": 512,
+      "median_us": {
+        "baseline": 4.3365,
+        "selected": 4.53425
+      },
+      "delta_pct": 4.560129136400315
+    },
+    {
+      "merged": 0,
+      "tokens": 1,
+      "router": 2,
+      "k": 2048,
+      "median_us": {
+        "baseline": 5.761,
+        "selected": 5.6815
+      },
+      "delta_pct": -1.37996875542441
+    },
+    {
+      "merged": 0,
+      "tokens": 1,
+      "router": 2,
+      "k": 3072,
+      "median_us": {
+        "baseline": 7.1095,
+        "selected": 6.68
+      },
+      "delta_pct": -6.041212462198464
+    },
+    {
+      "merged": 0,
+      "tokens": 2,
+      "router": -1,
+      "k": 512,
+      "median_us": {
+        "baseline": 6.293749999999999,
+        "selected": 5.1905
+      },
+      "delta_pct": -17.529294935451823
+    },
+    {
+      "merged": 0,
+      "tokens": 2,
+      "router": -1,
+      "k": 2048,
+      "median_us": {
+        "baseline": 7.3765,
+        "selected": 6.277
+      },
+      "delta_pct": -14.905442960753746
+    },
+    {
+      "merged": 0,
+      "tokens": 2,
+      "router": -1,
+      "k": 3072,
+      "median_us": {
+        "baseline": 8.10725,
+        "selected": 7.014
+      },
+      "delta_pct": -13.484843812636838
+    },
+    {
+      "merged": 0,
+      "tokens": 2,
+      "router": 0,
+      "k": 512,
+      "median_us": {
+        "baseline": 9.683,
+        "selected": 6.864
+      },
+      "delta_pct": -29.112878240214812
+    },
+    {
+      "merged": 0,
+      "tokens": 2,
+      "router": 0,
+      "k": 2048,
+      "median_us": {
+        "baseline": 10.77075,
+        "selected": 7.93725
+      },
+      "delta_pct": -26.307360211684426
+    },
+    {
+      "merged": 0,
+      "tokens": 2,
+      "router": 0,
+      "k": 3072,
+      "median_us": {
+        "baseline": 11.4932505,
+        "selected": 8.6647505
+      },
+      "delta_pct": -24.610096160350803
+    },
+    {
+      "merged": 0,
+      "tokens": 2,
+      "router": 1,
+      "k": 512,
+      "median_us": {
+        "baseline": 10.209,
+        "selected": 8.542
+      },
+      "delta_pct": -16.32872955235576
+    },
+    {
+      "merged": 0,
+      "tokens": 2,
+      "router": 1,
+      "k": 2048,
+      "median_us": {
+        "baseline": 11.304749999999999,
+        "selected": 9.61625
+      },
+      "delta_pct": -14.936199385214167
+    },
+    {
+      "merged": 0,
+      "tokens": 2,
+      "router": 1,
+      "k": 3072,
+      "median_us": {
+        "baseline": 12.0132495,
+        "selected": 10.3485
+      },
+      "delta_pct": -13.857611964190042
+    },
+    {
+      "merged": 0,
+      "tokens": 2,
+      "router": 2,
+      "k": 512,
+      "median_us": {
+        "baseline": 9.545,
+        "selected": 6.66575
+      },
+      "delta_pct": -30.165007857517022
+    },
+    {
+      "merged": 0,
+      "tokens": 2,
+      "router": 2,
+      "k": 2048,
+      "median_us": {
+        "baseline": 10.6330005,
+        "selected": 7.7305
+      },
+      "delta_pct": -27.297097371527446
+    },
+    {
+      "merged": 0,
+      "tokens": 2,
+      "router": 2,
+      "k": 3072,
+      "median_us": {
+        "baseline": 11.357,
+        "selected": 8.471499999999999
+      },
+      "delta_pct": -25.407237826890906
+    },
+    {
+      "merged": 0,
+      "tokens": 3,
+      "router": -1,
+      "k": 512,
+      "median_us": {
+        "baseline": 6.5642499999999995,
+        "selected": 5.361
+      },
+      "delta_pct": -18.33035000190425
+    },
+    {
+      "merged": 0,
+      "tokens": 3,
+      "router": -1,
+      "k": 2048,
+      "median_us": {
+        "baseline": 7.651,
+        "selected": 6.44825
+      },
+      "delta_pct": -15.720167298392361
+    },
+    {
+      "merged": 0,
+      "tokens": 3,
+      "router": -1,
+      "k": 3072,
+      "median_us": {
+        "baseline": 8.3825,
+        "selected": 7.185
+      },
+      "delta_pct": -14.28571428571429
+    },
+    {
+      "merged": 0,
+      "tokens": 3,
+      "router": 0,
+      "k": 512,
+      "median_us": {
+        "baseline": 9.942999499999999,
+        "selected": 6.9685
+      },
+      "delta_pct": -29.91551493088177
+    },
+    {
+      "merged": 0,
+      "tokens": 3,
+      "router": 0,
+      "k": 2048,
+      "median_us": {
+        "baseline": 11.028750500000001,
+        "selected": 8.041
+      },
+      "delta_pct": -27.09056207228553
+    },
+    {
+      "merged": 0,
+      "tokens": 3,
+      "router": 0,
+      "k": 3072,
+      "median_us": {
+        "baseline": 11.7485,
+        "selected": 8.771749499999999
+      },
+      "delta_pct": -25.337281355066622
+    },
+    {
+      "merged": 0,
+      "tokens": 3,
+      "router": 1,
+      "k": 512,
+      "median_us": {
+        "baseline": 10.541,
+        "selected": 8.697
+      },
+      "delta_pct": -17.493596432976013
+    },
+    {
+      "merged": 0,
+      "tokens": 3,
+      "router": 1,
+      "k": 2048,
+      "median_us": {
+        "baseline": 11.629250500000001,
+        "selected": 9.774000000000001
+      },
+      "delta_pct": -15.953311006586368
+    },
+    {
+      "merged": 0,
+      "tokens": 3,
+      "router": 1,
+      "k": 3072,
+      "median_us": {
+        "baseline": 12.330999,
+        "selected": 10.49
+      },
+      "delta_pct": -14.929844694659366
+    },
+    {
+      "merged": 0,
+      "tokens": 3,
+      "router": 2,
+      "k": 512,
+      "median_us": {
+        "baseline": 9.8035,
+        "selected": 6.7645
+      },
+      "delta_pct": -30.99913296271739
+    },
+    {
+      "merged": 0,
+      "tokens": 3,
+      "router": 2,
+      "k": 2048,
+      "median_us": {
+        "baseline": 10.882,
+        "selected": 7.8375
+      },
+      "delta_pct": -27.977393861422527
+    },
+    {
+      "merged": 0,
+      "tokens": 3,
+      "router": 2,
+      "k": 3072,
+      "median_us": {
+        "baseline": 11.609,
+        "selected": 8.572250499999999
+      },
+      "delta_pct": -26.158579550348872
+    },
+    {
+      "merged": 0,
+      "tokens": 4,
+      "router": -1,
+      "k": 512,
+      "median_us": {
+        "baseline": 6.40625,
+        "selected": 5.374
+      },
+      "delta_pct": -16.113170731707328
+    },
+    {
+      "merged": 0,
+      "tokens": 4,
+      "router": -1,
+      "k": 2048,
+      "median_us": {
+        "baseline": 7.49225,
+        "selected": 6.44875
+      },
+      "delta_pct": -13.927725316160034
+    },
+    {
+      "merged": 0,
+      "tokens": 4,
+      "router": -1,
+      "k": 3072,
+      "median_us": {
+        "baseline": 8.2192505,
+        "selected": 7.179
+      },
+      "delta_pct": -12.656269571051515
+    },
+    {
+      "merged": 0,
+      "tokens": 4,
+      "router": 0,
+      "k": 512,
+      "median_us": {
+        "baseline": 9.851501,
+        "selected": 7.007
+      },
+      "delta_pct": -28.873782787008807
+    },
+    {
+      "merged": 0,
+      "tokens": 4,
+      "router": 0,
+      "k": 2048,
+      "median_us": {
+        "baseline": 10.935500000000001,
+        "selected": 8.087499999999999
+      },
+      "delta_pct": -26.043619404691164
+    },
+    {
+      "merged": 0,
+      "tokens": 4,
+      "router": 0,
+      "k": 3072,
+      "median_us": {
+        "baseline": 11.656501,
+        "selected": 8.811499999999999
+      },
+      "delta_pct": -24.406989713293903
+    },
+    {
+      "merged": 0,
+      "tokens": 4,
+      "router": 1,
+      "k": 512,
+      "median_us": {
+        "baseline": 10.5885,
+        "selected": 8.75225
+      },
+      "delta_pct": -17.34192756292203
+    },
+    {
+      "merged": 0,
+      "tokens": 4,
+      "router": 1,
+      "k": 2048,
+      "median_us": {
+        "baseline": 11.6395,
+        "selected": 9.8095
+      },
+      "delta_pct": -15.722324842132396
+    },
+    {
+      "merged": 0,
+      "tokens": 4,
+      "router": 1,
+      "k": 3072,
+      "median_us": {
+        "baseline": 12.3835,
+        "selected": 10.5539995
+      },
+      "delta_pct": -14.77369483587031
+    },
+    {
+      "merged": 0,
+      "tokens": 4,
+      "router": 2,
+      "k": 512,
+      "median_us": {
+        "baseline": 9.73175,
+        "selected": 6.827
+      },
+      "delta_pct": -29.848177357618113
+    },
+    {
+      "merged": 0,
+      "tokens": 4,
+      "router": 2,
+      "k": 2048,
+      "median_us": {
+        "baseline": 10.807750500000001,
+        "selected": 7.9025
+      },
+      "delta_pct": -26.88117661487468
+    },
+    {
+      "merged": 0,
+      "tokens": 4,
+      "router": 2,
+      "k": 3072,
+      "median_us": {
+        "baseline": 11.5305,
+        "selected": 8.6415
+      },
+      "delta_pct": -25.055288148822687
+    },
+    {
+      "merged": 1,
+      "tokens": 1,
+      "router": -1,
+      "k": 512,
+      "median_us": {
+        "baseline": 3.18375,
+        "selected": 3.6475
+      },
+      "delta_pct": 14.566156262269336
+    },
+    {
+      "merged": 1,
+      "tokens": 1,
+      "router": -1,
+      "k": 2048,
+      "median_us": {
+        "baseline": 4.793,
+        "selected": 4.519
+      },
+      "delta_pct": -5.716670143959945
+    },
+    {
+      "merged": 1,
+      "tokens": 1,
+      "router": -1,
+      "k": 3072,
+      "median_us": {
+        "baseline": 5.834,
+        "selected": 5.13025
+      },
+      "delta_pct": -12.062907096331843
+    },
+    {
+      "merged": 1,
+      "tokens": 1,
+      "router": 0,
+      "k": 512,
+      "median_us": {
+        "baseline": 4.2765,
+        "selected": 4.24175
+      },
+      "delta_pct": -0.8125803811528276
+    },
+    {
+      "merged": 1,
+      "tokens": 1,
+      "router": 0,
+      "k": 2048,
+      "median_us": {
+        "baseline": 5.081,
+        "selected": 4.721
+      },
+      "delta_pct": -7.085219444991154
+    },
+    {
+      "merged": 1,
+      "tokens": 1,
+      "router": 0,
+      "k": 3072,
+      "median_us": {
+        "baseline": 6.1537500000000005,
+        "selected": 5.17925
+      },
+      "delta_pct": -15.835872435506815
+    },
+    {
+      "merged": 1,
+      "tokens": 1,
+      "router": 1,
+      "k": 512,
+      "median_us": {
+        "baseline": 5.9245,
+        "selected": 5.836
+      },
+      "delta_pct": -1.493796944889858
+    },
+    {
+      "merged": 1,
+      "tokens": 1,
+      "router": 1,
+      "k": 2048,
+      "median_us": {
+        "baseline": 6.046749999999999,
+        "selected": 5.9175
+      },
+      "delta_pct": -2.1375118865506137
+    },
+    {
+      "merged": 1,
+      "tokens": 1,
+      "router": 1,
+      "k": 3072,
+      "median_us": {
+        "baseline": 6.17,
+        "selected": 5.93275
+      },
+      "delta_pct": -3.845218800648287
+    },
+    {
+      "merged": 1,
+      "tokens": 1,
+      "router": 2,
+      "k": 512,
+      "median_us": {
+        "baseline": 4.04725,
+        "selected": 4.1065000000000005
+      },
+      "delta_pct": 1.4639570078448516
+    },
+    {
+      "merged": 1,
+      "tokens": 1,
+      "router": 2,
+      "k": 2048,
+      "median_us": {
+        "baseline": 4.864750000000001,
+        "selected": 4.581
+      },
+      "delta_pct": -5.832776607225454
+    },
+    {
+      "merged": 1,
+      "tokens": 1,
+      "router": 2,
+      "k": 3072,
+      "median_us": {
+        "baseline": 6.062749999999999,
+        "selected": 5.1842500000000005
+      },
+      "delta_pct": -14.490124118593029
+    },
+    {
+      "merged": 1,
+      "tokens": 2,
+      "router": -1,
+      "k": 512,
+      "median_us": {
+        "baseline": 5.3655,
+        "selected": 4.7765
+      },
+      "delta_pct": -10.977541701612148
+    },
+    {
+      "merged": 1,
+      "tokens": 2,
+      "router": -1,
+      "k": 2048,
+      "median_us": {
+        "baseline": 6.41975,
+        "selected": 5.8325
+      },
+      "delta_pct": -9.147552474784849
+    },
+    {
+      "merged": 1,
+      "tokens": 2,
+      "router": -1,
+      "k": 3072,
+      "median_us": {
+        "baseline": 7.123749999999999,
+        "selected": 6.543749999999999
+      },
+      "delta_pct": -8.141779259519211
+    },
+    {
+      "merged": 1,
+      "tokens": 2,
+      "router": 0,
+      "k": 512,
+      "median_us": {
+        "baseline": 8.847999999999999,
+        "selected": 6.44225
+      },
+      "delta_pct": -27.18976039783001
+    },
+    {
+      "merged": 1,
+      "tokens": 2,
+      "router": 0,
+      "k": 2048,
+      "median_us": {
+        "baseline": 9.92425,
+        "selected": 7.513
+      },
+      "delta_pct": -24.296546338514247
+    },
+    {
+      "merged": 1,
+      "tokens": 2,
+      "router": 0,
+      "k": 3072,
+      "median_us": {
+        "baseline": 10.646749499999999,
+        "selected": 8.2447495
+      },
+      "delta_pct": -22.560876444026412
+    },
+    {
+      "merged": 1,
+      "tokens": 2,
+      "router": 1,
+      "k": 512,
+      "median_us": {
+        "baseline": 9.3672505,
+        "selected": 8.1355
+      },
+      "delta_pct": -13.149541586402547
+    },
+    {
+      "merged": 1,
+      "tokens": 2,
+      "router": 1,
+      "k": 2048,
+      "median_us": {
+        "baseline": 10.4612495,
+        "selected": 9.199
+      },
+      "delta_pct": -12.065953498193494
+    },
+    {
+      "merged": 1,
+      "tokens": 2,
+      "router": 1,
+      "k": 3072,
+      "median_us": {
+        "baseline": 11.15,
+        "selected": 9.926499
+      },
+      "delta_pct": -10.973103139013462
+    },
+    {
+      "merged": 1,
+      "tokens": 2,
+      "router": 2,
+      "k": 512,
+      "median_us": {
+        "baseline": 8.70725,
+        "selected": 6.23775
+      },
+      "delta_pct": -28.361422952137584
+    },
+    {
+      "merged": 1,
+      "tokens": 2,
+      "router": 2,
+      "k": 2048,
+      "median_us": {
+        "baseline": 9.789250500000001,
+        "selected": 7.30225
+      },
+      "delta_pct": -25.405423019872675
+    },
+    {
+      "merged": 1,
+      "tokens": 2,
+      "router": 2,
+      "k": 3072,
+      "median_us": {
+        "baseline": 10.50625,
+        "selected": 8.03925
+      },
+      "delta_pct": -23.48126115407496
+    },
+    {
+      "merged": 1,
+      "tokens": 3,
+      "router": -1,
+      "k": 512,
+      "median_us": {
+        "baseline": 5.62275,
+        "selected": 4.949
+      },
+      "delta_pct": -11.982570806100224
+    },
+    {
+      "merged": 1,
+      "tokens": 3,
+      "router": -1,
+      "k": 2048,
+      "median_us": {
+        "baseline": 6.68,
+        "selected": 6.01075
+      },
+      "delta_pct": -10.018712574850298
+    },
+    {
+      "merged": 1,
+      "tokens": 3,
+      "router": -1,
+      "k": 3072,
+      "median_us": {
+        "baseline": 7.4015,
+        "selected": 6.72625
+      },
+      "delta_pct": -9.123150712693374
+    },
+    {
+      "merged": 1,
+      "tokens": 3,
+      "router": 0,
+      "k": 512,
+      "median_us": {
+        "baseline": 9.05375,
+        "selected": 6.545
+      },
+      "delta_pct": -27.709512632886934
+    },
+    {
+      "merged": 1,
+      "tokens": 3,
+      "router": 0,
+      "k": 2048,
+      "median_us": {
+        "baseline": 10.12075,
+        "selected": 7.6125
+      },
+      "delta_pct": -24.783242348640165
+    },
+    {
+      "merged": 1,
+      "tokens": 3,
+      "router": 0,
+      "k": 3072,
+      "median_us": {
+        "baseline": 10.82475,
+        "selected": 8.329
+      },
+      "delta_pct": -23.055959721933526
+    },
+    {
+      "merged": 1,
+      "tokens": 3,
+      "router": 1,
+      "k": 512,
+      "median_us": {
+        "baseline": 9.602750499999999,
+        "selected": 8.262
+      },
+      "delta_pct": -13.962150740040558
+    },
+    {
+      "merged": 1,
+      "tokens": 3,
+      "router": 1,
+      "k": 2048,
+      "median_us": {
+        "baseline": 10.6772505,
+        "selected": 9.32925
+      },
+      "delta_pct": -12.624977750592247
+    },
+    {
+      "merged": 1,
+      "tokens": 3,
+      "router": 1,
+      "k": 3072,
+      "median_us": {
+        "baseline": 11.361,
+        "selected": 10.037250499999999
+      },
+      "delta_pct": -11.651698794120247
+    },
+    {
+      "merged": 1,
+      "tokens": 3,
+      "router": 2,
+      "k": 512,
+      "median_us": {
+        "baseline": 8.91625,
+        "selected": 6.33725
+      },
+      "delta_pct": -28.924716108229354
+    },
+    {
+      "merged": 1,
+      "tokens": 3,
+      "router": 2,
+      "k": 2048,
+      "median_us": {
+        "baseline": 9.9792495,
+        "selected": 7.40775
+      },
+      "delta_pct": -25.768465855072563
+    },
+    {
+      "merged": 1,
+      "tokens": 3,
+      "router": 2,
+      "k": 3072,
+      "median_us": {
+        "baseline": 10.685749999999999,
+        "selected": 8.129000000000001
+      },
+      "delta_pct": -23.92672484383406
+    },
+    {
+      "merged": 1,
+      "tokens": 4,
+      "router": -1,
+      "k": 512,
+      "median_us": {
+        "baseline": 5.567,
+        "selected": 4.97625
+      },
+      "delta_pct": -10.61164002155559
+    },
+    {
+      "merged": 1,
+      "tokens": 4,
+      "router": -1,
+      "k": 2048,
+      "median_us": {
+        "baseline": 6.6355,
+        "selected": 6.037
+      },
+      "delta_pct": -9.019666942958338
+    },
+    {
+      "merged": 1,
+      "tokens": 4,
+      "router": -1,
+      "k": 3072,
+      "median_us": {
+        "baseline": 7.343,
+        "selected": 6.747
+      },
+      "delta_pct": -8.116573607517363
+    },
+    {
+      "merged": 1,
+      "tokens": 4,
+      "router": 0,
+      "k": 512,
+      "median_us": {
+        "baseline": 9.0642505,
+        "selected": 6.609
+      },
+      "delta_pct": -27.087187186629492
+    },
+    {
+      "merged": 1,
+      "tokens": 4,
+      "router": 0,
+      "k": 2048,
+      "median_us": {
+        "baseline": 10.134750499999999,
+        "selected": 7.67975
+      },
+      "delta_pct": -24.223590901423762
+    },
+    {
+      "merged": 1,
+      "tokens": 4,
+      "router": 0,
+      "k": 3072,
+      "median_us": {
+        "baseline": 10.8415,
+        "selected": 8.407
+      },
+      "delta_pct": -22.45537979061938
+    },
+    {
+      "merged": 1,
+      "tokens": 4,
+      "router": 1,
+      "k": 512,
+      "median_us": {
+        "baseline": 9.6985005,
+        "selected": 8.347
+      },
+      "delta_pct": -13.935149047009897
+    },
+    {
+      "merged": 1,
+      "tokens": 4,
+      "router": 1,
+      "k": 2048,
+      "median_us": {
+        "baseline": 10.73025,
+        "selected": 9.3845
+      },
+      "delta_pct": -12.541646280375584
+    },
+    {
+      "merged": 1,
+      "tokens": 4,
+      "router": 1,
+      "k": 3072,
+      "median_us": {
+        "baseline": 11.46,
+        "selected": 10.117750000000001
+      },
+      "delta_pct": -11.712478184991271
+    },
+    {
+      "merged": 1,
+      "tokens": 4,
+      "router": 2,
+      "k": 512,
+      "median_us": {
+        "baseline": 8.941,
+        "selected": 6.4365
+      },
+      "delta_pct": -28.01140811989711
+    },
+    {
+      "merged": 1,
+      "tokens": 4,
+      "router": 2,
+      "k": 2048,
+      "median_us": {
+        "baseline": 9.9980005,
+        "selected": 7.501
+      },
+      "delta_pct": -24.974998751000253
+    },
+    {
+      "merged": 1,
+      "tokens": 4,
+      "router": 2,
+      "k": 3072,
+      "median_us": {
+        "baseline": 10.717000500000001,
+        "selected": 8.22825
+      },
+      "delta_pct": -23.22245389463219
+    }
+  ]
+}
