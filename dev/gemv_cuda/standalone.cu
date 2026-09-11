@@ -1,6 +1,7 @@
 // Real CUDA runner for NCU without a PyTorch installation. Host fixtures carry
 // independent official-GGUF FP64 dots; timings contain only queued CUDA work.
 #include "standalone_support.hpp"
+#include <cuda_fp16.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -14,9 +15,15 @@
 
 int main(int argc,char** argv) {
   try {
-    require(argc>=4,"usage: standalone fixture.bin library.so scalar|pair|mmvq|dmmv [columns warps split] [--profile]");
+    require(argc>=4,"usage: standalone fixture.bin library.so scalar|pair|mmvq|dmmv [columns warps split] [--f16] [--unaligned] [--profile]");
     std::ifstream file(argv[1],std::ios::binary);
     Header h{}; file.read(reinterpret_cast<char*>(&h),sizeof(h));
+    bool f16=false,unaligned=false;
+    for(int i=4;i<argc;++i) {
+        f16|=std::string(argv[i])=="--f16";
+        unaligned|=std::string(argv[i])=="--unaligned";
+    }
+    size_t const plane_shift=unaligned?2:0;
     require(bool(file) && h.magic==UINT64_C(0x3146584D5647514B) && h.version==1 && !h.reserved,"fixture header");
     require(h.n>0 && h.n%256==0 && h.k>0 && h.k%256==0 && h.rows>0 && h.rows<=32 &&
             h.experts>0 && h.experts<=1024 && h.channels>0 && h.channels<=h.rows,"fixture dimensions");
@@ -41,20 +48,31 @@ int main(int argc,char** argv) {
     for (int j=0;j<4;++j) if (h.lengths[j]) {
         require(h.lengths[j]%h.rows==0,"per-expert fixture slices");
         size_t slice=h.lengths[j]/h.rows;
-        planes[j]=std::make_unique<Device>(slice*h.experts);
+        planes[j]=std::make_unique<Device>(slice*h.experts+(j?plane_shift:0));
         check(cudaMemset(planes[j]->ptr,0,planes[j]->bytes));
-        for (int r=0;r<h.rows;++r) planes[j]->put(data[j].data()+r*slice,slice,ids[r]*slice);
+        for (int r=0;r<h.rows;++r) planes[j]->put(data[j].data()+r*slice,slice,ids[r]*slice+(j?plane_shift:0));
     }
-    Device a(data[4].size()),id(data[5].size()),out((size_t(h.rows)*h.n+8)*4),
+    size_t const a_bytes=size_t(h.channels)*h.k*(f16?2:4),a_shift=unaligned?(f16?2:4):0;
+    Device a(a_bytes+a_shift),id(data[5].size()),out((size_t(h.rows)*h.n+8)*4),
            workspace(size_t(h.rows)*h.n*8*4+32),quantized(size_t(h.channels)*(h.k/32)*36);
-    a.put(data[4].data(),data[4].size()); id.put(data[5].data(),data[5].size());
+    if(f16) {
+        std::vector<__half> half_a(size_t(h.channels)*h.k);
+        for(size_t i=0;i<half_a.size();++i) {
+            float value;std::memcpy(&value,data[4].data()+4*i,4);
+            half_a[i]=__float2half_rn(value);
+            require(std::isfinite(value) && __half2float(half_a[i])==value,"F16-exact fixture input");
+        }
+        a.put(half_a.data(),a_bytes,a_shift);
+    } else a.put(data[4].data(),data[4].size(),a_shift);
+    id.put(data[5].data(),data[5].size());
     cudaStream_t stream; check(cudaStreamCreateWithFlags(&stream,cudaStreamNonBlocking));
     qkg_call_v1 c{}; c.version=1; c.size=sizeof(c); c.qtype=h.q; c.n=h.n; c.k=h.k; c.experts=h.experts;
-    c.rows=h.rows; c.mode=h.experts>1?QKG_INDEXED:QKG_DENSE; c.input_type=QKG_F32;
+    c.rows=h.rows; c.mode=h.experts>1?QKG_INDEXED:QKG_DENSE; c.input_type=f16?QKG_F16:QKG_F32;
     c.channels=h.channels; c.topk=h.experts>1?h.rows:1; c.a_row_stride=h.k; c.a_token_stride=int64_t(h.channels)*h.k;
-    c.ids_stride=h.rows; c.out_row_stride=h.n; c.a=a.ptr;
-    c.low=static_cast<uint8_t*>(planes[1]->ptr); c.high=planes[2]?static_cast<uint8_t*>(planes[2]->ptr):nullptr;
-    c.units=static_cast<uint8_t*>(planes[3]->ptr); c.ids=h.experts>1?static_cast<int32_t*>(id.ptr):nullptr;
+    c.ids_stride=h.rows; c.out_row_stride=h.n; c.a=static_cast<uint8_t*>(a.ptr)+a_shift;
+    c.low=static_cast<uint8_t*>(planes[1]->ptr)+plane_shift;
+    c.high=planes[2]?static_cast<uint8_t*>(planes[2]->ptr)+plane_shift:nullptr;
+    c.units=static_cast<uint8_t*>(planes[3]->ptr)+plane_shift; c.ids=h.experts>1?static_cast<int32_t*>(id.ptr):nullptr;
     c.output=static_cast<float*>(out.ptr)+4; c.workspace=static_cast<float*>(workspace.ptr)+4; c.stream=stream;
     std::string kind=argv[3]; bool profile=std::string(argv[argc-1])=="--profile";
     qkg_config_v1 cfg{1,sizeof(cfg),16,4,1};
@@ -68,11 +86,12 @@ int main(int argc,char** argv) {
         qkg_sizes_v1 sizes{};
         require(query(&c,&cfg,&h.arrangement,&sizes)==0,"GEMV query");
         require(sizes.workspace_bytes<=workspace.bytes-32,"workspace capacity");
-        require(sizes.low_bytes==planes[1]->bytes && sizes.units_bytes==planes[3]->bytes &&
-                sizes.high_bytes==(planes[2]?planes[2]->bytes:0),"weight plane sizes");
+        require(sizes.low_bytes==planes[1]->bytes-plane_shift && sizes.units_bytes==planes[3]->bytes-plane_shift &&
+                sizes.high_bytes==(planes[2]?planes[2]->bytes-plane_shift:0),"weight plane sizes");
         c.workspace_bytes=sizes.workspace_bytes;
         run=[&,launch]{return launch(&c,&cfg,&h.arrangement);};
     } else {
+        require(!f16 && !unaligned,"reference runner requires its original aligned F32 endpoints");
         require(kind=="mmvq" || kind=="dmmv","unknown kind");
         using Run=int(*)(int,int,int,int,int,int,void const*,float const*,int const*,float*,void*,void*);
         auto launch=library.symbol<Run>("llama_reference_run");
@@ -112,10 +131,10 @@ int main(int argc,char** argv) {
         id.put(data[5].data(),data[5].size());
     }
     if (!profile && (kind=="scalar" || kind=="pair")) {
-        check(cudaMemsetAsync(planes[1]->ptr,h.q==8?128:0,planes[1]->bytes,stream));
+        check(cudaMemsetAsync(const_cast<uint8_t*>(c.low),h.q==8?128:0,planes[1]->bytes-plane_shift,stream));
         launch(); download(); require(error()>.005,"missing-code negative insensitive");
         size_t slice=h.lengths[1]/h.rows;
-        for(int r=0;r<h.rows;++r) planes[1]->put(data[1].data()+r*slice,slice,ids[r]*slice);
+        for(int r=0;r<h.rows;++r) planes[1]->put(data[1].data()+r*slice,slice,ids[r]*slice+plane_shift);
     }
     for(int j=0;j<5;++j) launch(); check(cudaStreamSynchronize(stream));
     std::vector<float> times;
@@ -140,6 +159,8 @@ int main(int argc,char** argv) {
         h.q,h.rows,h.n,h.k,h.experts,h.channels,kind.c_str(),cfg.columns,cfg.warps,cfg.split,err,prop.multiProcessorCount,
         sorted.empty()?0.f:sorted[sorted.size()/2]);
     for(size_t i=0;i<times.size();++i)std::printf("%s%.6f",i?",":"",times[i]); std::puts("]");
+    std::printf("GEMV_STANDALONE_INPUT type=%s a_offset_bytes=%zu plane_offset_bytes=%zu\n",
+                f16?"F16":"F32",a_shift,plane_shift);
     check(cudaStreamDestroy(stream)); return 0;
   } catch(std::exception const& e) { std::fprintf(stderr,"GEMV_STANDALONE FAIL: %s\n",e.what());return 1; }
 }

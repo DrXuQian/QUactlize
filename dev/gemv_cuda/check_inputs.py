@@ -26,7 +26,15 @@ def cases():
     yield 1, 6, 1
 
 
-def run(library, fixture, *, baseline=None):
+def q4_recipe_extension(extra, tree):
+    recipes = [(4,8,1),(8,8,1),(4,4,2),(8,2,4)] if extra else []
+    if tree:
+        recipes += [(1,2,1),(2,4,2),(4,16,1),(8,16,8),(16,16,2),(32,16,4)]
+    return recipes
+
+
+def run(library, fixture, *, baseline=None, extra_q4_recipes=False, f16_aligned=False,
+        q4_tree_recipes=False):
     q, n, k, experts = (int(fixture[x]) for x in ("q", "n", "k", "experts"))
     selected = fixture["ids"].tolist()
     assert len(selected) == 8 and experts == 16
@@ -54,7 +62,10 @@ def run(library, fixture, *, baseline=None):
         owners = (ids.reshape(-1) if mode == 2 else np.repeat(np.arange(experts), counts)
                   if mode == 1 else np.zeros(rows, dtype="i4"))
         slot_of = {expert: slot for slot, expert in enumerate(selected)}
-        for dtype, offset in ((torch.float32, 0), (torch.float32, 1), (torch.float16, 1)):
+        input_cases=[(torch.float32,0),(torch.float32,1),(torch.float16,1)]
+        if f16_aligned:
+            input_cases.append((torch.float16,0))
+        for dtype, offset in input_cases:
             a_rows = tokens * channels if mode == 2 else rows
             stride = k + (3 if offset else 4)
             rng = np.random.default_rng(99231 + q + rows + offset)
@@ -94,7 +105,10 @@ def run(library, fixture, *, baseline=None):
                         units=planes["units"].data_ptr(), ids=ids_dev.data_ptr() if mode == 2 else None,
                         offsets=offsets_dev.data_ptr() if mode == 1 else None,
                         output=output.data_ptr() + 16, stream=stream.cuda_stream)
-            for columns, warps, split in ((16, 4, 8), (32, 8, 1)):
+            recipes=[(16,4,8),(32,8,1)]
+            if q==12:
+                recipes += q4_recipe_extension(extra_q4_recipes, q4_tree_recipes)
+            for columns, warps, split in recipes:
                 cfg, sizes = Config(columns, warps, split), Sizes()
                 checked(query(C.byref(call), C.byref(cfg), C.byref(arr), C.byref(sizes)))
                 ws = torch.full((sizes.workspace_bytes // 4 + 8,), float("nan"), device="cuda")
@@ -166,7 +180,15 @@ def main():
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--baseline", type=Path,
                    help="optional same-ownership N2 library for exact output-bit comparison")
+    p.add_argument("--extra-q4-recipes", action="store_true",
+                   help="also validate the new C4/C8 domains; baseline must expose the same recipes")
+    p.add_argument("--f16-aligned", action="store_true",
+                   help="also exercise fast F16 endpoints for every indexed/grouped context")
+    p.add_argument("--q4-tree-recipes", action="store_true",
+                   help="also cover C1/C2 and W16; FP32 sum order differs from the serial N2 reference")
     a = p.parse_args()
+    if a.q4_tree_recipes and a.baseline:
+        p.error("tree reduction changes FP32 addition order; use the independent oracle, not exact N2 bits")
     if a.output.exists():
         raise ValueError("output already exists")
     records = []
@@ -177,8 +199,11 @@ def main():
         raise ValueError("expected five format fixtures")
     for path in paths:
         with np.load(path, allow_pickle=False) as f:
-            records.extend(run(library, f, baseline=baseline))
-    assert len(records) == 360
+            records.extend(run(library, f, baseline=baseline, extra_q4_recipes=a.extra_q4_recipes,
+                               f16_aligned=a.f16_aligned,q4_tree_recipes=a.q4_tree_recipes))
+    expected=12*(4 if a.f16_aligned else 3)*(10+len(q4_recipe_extension(
+        a.extra_q4_recipes,a.q4_tree_recipes)))
+    assert len(records) == expected
     a.output.write_text(json.dumps(dict(status="PASS", device=torch.cuda.get_device_name(),
         library_sha256=hashlib.sha256(a.library.read_bytes()).hexdigest(),
         baseline_sha256=hashlib.sha256(a.baseline.read_bytes()).hexdigest() if a.baseline else None,

@@ -29,19 +29,43 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def n2_authority(library):
+def n2_authority(library, expected_reader="cuda-n2"):
     manifest_path = library.parent / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
-    if (manifest.get("reader") != "cuda-n2" or
+    readers = ("cuda-n2", "cuda-q4-n2", "cuda-q4-n2-wide", "cuda-q4-n2-shared", "cuda-q4-n2-half-control", "cuda-q4-shm-fp32", "cuda-q4-n2-grid", "cuda-q4-n2-aligned", "cuda-q4-n2-metadata", "cuda-q4-n4", "cuda-q4-n4-unsigned", "cuda-q4-n4-tree", "cuda-q4-n2-tree", "cuda-q4-n2-warp", "cuda-q4-n4-coop", "cuda-q4-small-static", "cuda-q4-small-balanced")
+    if (expected_reader not in readers or manifest.get("reader") != expected_reader or
             manifest.get("pair_column_values_per_thread", 2) != 2 or
             manifest.get("library") != library.name or
             manifest.get("library_sha256") != sha(library)):
         raise ValueError("K-pack library is not the manifest-bound N2 reader")
-    return dict(reader="cuda-n2", manifest_sha256=sha(manifest_path),
+    columns = [1,2,4,8,16,32] if expected_reader.startswith(("cuda-q4-n4","cuda-q4-small")) or expected_reader in ("cuda-q4-n2-tree","cuda-q4-n2-warp") else [4, 8, 16, 32] if expected_reader in readers[2:] else [16, 32]
+    if manifest.get("q4_n_positions", [16, 32]) != columns:
+        raise ValueError("manifest-bound N2 column domain differs")
+    warps=[2,4,8,16] if expected_reader in ("cuda-q4-n4-tree","cuda-q4-n2-tree","cuda-q4-n2-warp","cuda-q4-n4-coop","cuda-q4-small-static","cuda-q4-small-balanced") else [2,4,8]
+    if manifest.get("q4_warps",[2,4,8])!=warps:
+        raise ValueError("manifest-bound N2 warp domain differs")
+    extra_s1=[5,10] if expected_reader=="cuda-q4-small-balanced" else []
+    if manifest.get("q4_s1_extra_warps",[])!=extra_s1:
+        raise ValueError("manifest-bound S1 warp domain differs")
+    return dict(reader=expected_reader, columns=columns,warps=warps,extra_s1=extra_s1, manifest_sha256=sha(manifest_path),
                 library_sha256=manifest["library_sha256"])
 
 
-def compare(path, xplane, kpack, l2_bytes):
+def xplane_authority(library, arithmetic):
+    if arithmetic == "fp16-group":
+        return dict(arithmetic=arithmetic, library_sha256=sha(library))
+    if arithmetic != "fp32":
+        raise ValueError("unknown Xplane arithmetic")
+    receipt_path = library.parent.parent / "manifest.json"
+    receipt = json.loads(receipt_path.read_text())
+    matches = [r for r in receipt["arms"] if r["arm"] == "fp32-control"]
+    if len(matches) != 1 or matches[0]["library_sha256"] != sha(library):
+        raise ValueError("Xplane FP32 arithmetic control identity differs")
+    return dict(arithmetic=arithmetic, library_sha256=sha(library),
+                manifest_sha256=sha(receipt_path), generated_header_sha256=matches[0]["generated_header_sha256"])
+
+
+def compare(path, xplane, kpack, l2_bytes, columns=(16, 32), warps=(2,4,8), extra_s1=()):
     f = np.load(path, allow_pickle=False)
     q, n, k, experts = (int(f[x]) for x in ("q", "n", "k", "experts"))
     if (q, experts, len(f["ids"])) != (12, 1, 1):
@@ -150,7 +174,8 @@ def compare(path, xplane, kpack, l2_bytes):
 
         cells=[]
         recipes = [("xplane",c,w,1) for c in (1,2,4,8) for w in (2,4,8)]
-        recipes += [("kpack",c,w,s) for c in (16,32) for w in (2,4,8) for s in (1,2,4,8)]
+        recipes += [("kpack",c,w,s) for c in columns for w in warps for s in (1,2,4,8)]
+        recipes += [("kpack",c,w,1) for c in columns for w in extra_s1]
         # Interleave arm blocks to reduce a systematic warmup/thermal ordering bias.
         recipes = sorted(recipes,key=lambda x:(x[2],x[3],x[0],x[1]))
         for arm,c,w,s in recipes:
@@ -216,13 +241,19 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("--fixtures",type=Path,required=True)
     p.add_argument("--xplane-library",type=Path,required=True)
+    p.add_argument("--xplane-arithmetic", choices=("fp16-group", "fp32"), default="fp16-group")
     p.add_argument("--kpack-library",type=Path,required=True)
+    p.add_argument("--expected-reader", choices=("cuda-n2", "cuda-q4-n2", "cuda-q4-n2-wide", "cuda-q4-n2-shared", "cuda-q4-n2-half-control", "cuda-q4-shm-fp32", "cuda-q4-n2-grid", "cuda-q4-n2-aligned", "cuda-q4-n2-metadata", "cuda-q4-n4", "cuda-q4-n4-unsigned", "cuda-q4-n4-tree", "cuda-q4-n2-tree", "cuda-q4-n2-warp", "cuda-q4-n4-coop", "cuda-q4-small-static", "cuda-q4-small-balanced"),
+                   default="cuda-n2")
     p.add_argument("--output",type=Path,required=True)
     args=p.parse_args()
     if args.output.exists(): raise ValueError("output already exists")
     fixtures = sorted(args.fixtures.glob("*.npz"))
     if not fixtures: raise ValueError("no fixtures")
-    authority = n2_authority(args.kpack_library)
+    authority = n2_authority(args.kpack_library, args.expected_reader)
+    xp_authority = xplane_authority(args.xplane_library, args.xplane_arithmetic)
+    if args.xplane_arithmetic == "fp32" and args.expected_reader == "cuda-q4-n2-half-control":
+        raise ValueError("FP32 comparison may not use the K-pack half arithmetic control")
     xplane=C.CDLL(str(args.xplane_library.resolve()))
     xplane.q4_xplane_pack.argtypes=[C.c_int,C.c_int]+[C.c_void_p]*3
     xplane.q4_xplane_run.argtypes=[C.c_int]*4+[C.c_void_p]*5
@@ -233,13 +264,19 @@ def main():
     kpack=C.CDLL(str(args.kpack_library.resolve()))
     prop=torch.cuda.get_device_properties(0)
     result=dict(scope="MATCHED_Q4_F16_A_F32_OUTPUT_WARM_AND_GT_L2_ROTATION",
-        arithmetic="XPLANE_FP16_GROUP_ACCUM_VS_KPACK_FP32_ACCUM_NOT_LAYOUT_ONLY",
+        arithmetic=("BOTH_FP32_DOT_AND_REDUCTION_FP16_WEIGHT_AND_A_BOUNDARY"
+                    if args.xplane_arithmetic == "fp32" else
+                    "BOTH_FP16_GROUP_PARTIAL_FP32_CROSS_GROUP_NOT_IDENTICAL_SUM_ORDER"
+                    if args.expected_reader == "cuda-q4-n2-half-control" else
+                    "XPLANE_FP16_GROUP_ACCUM_VS_KPACK_FP32_ACCUM_NOT_LAYOUT_ONLY"),
         gpu=str(prop),xplane_library_sha256=sha(args.xplane_library),
         kpack_library_sha256=sha(args.kpack_library),kpack_authority=authority,
+        xplane_authority=xp_authority,
+        kpack_affine="UNSIGNED_ZMUL0" if args.expected_reader.endswith("-unsigned") else "SIGNED_ZMUL8",
         runner_sha256=sha(Path(__file__)), cases=[])
     started=time.monotonic()
     for path in fixtures:
-        result["cases"].append(compare(path,xplane,kpack,l2_bytes))
+        result["cases"].append(compare(path,xplane,kpack,l2_bytes,authority["columns"],authority["warps"],authority["extra_s1"]))
         args.output.write_text(json.dumps(result,indent=2)+"\n")
     result["seconds"]=time.monotonic()-started
     args.output.write_text(json.dumps(result,indent=2)+"\n")

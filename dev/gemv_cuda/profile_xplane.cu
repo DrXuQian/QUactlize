@@ -47,9 +47,22 @@ int main(int argc,char** argv) {
     std::string arm=argv[4],mode=argv[8],purpose=argv[9];
     require(arm=="xplane" || arm=="kpack","arm");
     require(mode=="warm" || mode=="rotating","cache mode");
-    require(purpose=="profile" || purpose=="timing","purpose");
-    qkg_config_v1 cfg{1,sizeof(cfg),std::stoi(argv[5]),std::stoi(argv[6]),std::stoi(argv[7])};
-    require(arm!="xplane" || cfg.split==1,"Xplane has no inter-CTA Split-K");
+    require(purpose=="profile" || purpose=="timing" || purpose=="batch","purpose");
+    std::vector<qkg_config_v1> configurations;
+    if(purpose=="batch") {
+        std::string list=argv[5];size_t begin=0;
+        while(begin<list.size()) {
+            size_t end=list.find(',',begin);
+            auto item=list.substr(begin,end==std::string::npos ? end : end-begin);
+            int c=0,w=0,s=0;char tail;
+            require(std::sscanf(item.c_str(),"%d:%d:%d%c",&c,&w,&s,&tail)==3,"batch recipe");
+            require(c>0 && w>0 && s>0,"positive recipe");
+            configurations.push_back({1,sizeof(qkg_config_v1),c,w,s});
+            if(end==std::string::npos) break;
+            begin=end+1;
+        }
+        require(!configurations.empty() && configurations.size()<=128,"bounded recipe batch");
+    } else configurations.push_back({1,sizeof(qkg_config_v1),std::stoi(argv[5]),std::stoi(argv[6]),std::stoi(argv[7])});
     cudaDeviceProp prop{}; check(cudaGetDeviceProperties(&prop,0));
     require(prop.l2CacheSize>0,"device L2 size");
     uint64_t const one=h.lengths[1]+h.lengths[3];
@@ -72,6 +85,8 @@ int main(int argc,char** argv) {
     call.a_row_stride=h.k;call.a_token_stride=h.k;call.ids_stride=1;call.out_row_stride=h.n;
     call.a=a.ptr;call.low=static_cast<uint8_t*>(low.ptr);call.units=static_cast<uint8_t*>(units.ptr);
     call.output=static_cast<float*>(out.ptr)+4;call.stream=stream;
+    for(auto const& cfg:configurations) {
+    require(arm!="xplane" || cfg.split==1,"Xplane has no inter-CTA Split-K");
     qkg_sizes_v1 sizes{};
     if(arm=="kpack") {
         require(query(&call,&cfg,&h.arrangement,&sizes)==0,"K-pack query");
@@ -133,9 +148,11 @@ int main(int argc,char** argv) {
     auto sorted=times;std::sort(sorted.begin(),sorted.end());
     std::printf("Q4_LAYOUT_PROFILE arm=%s config=%d-%d-%d shape=1x%dx%d sm=%d L2_bytes=%d copies=%d mode=%s purpose=%s error=%.9g median_us=%.6f status=PASS samples=[",
         arm.c_str(),cfg.columns,cfg.warps,cfg.split,h.n,h.k,prop.multiProcessorCount,prop.l2CacheSize,copies,
-        mode.c_str(),purpose.c_str(),err,sorted.empty()?0.f:sorted[sorted.size()/2]);
+        mode.c_str(),purpose=="batch" ? "timing" : purpose.c_str(),err,sorted.empty()?0.f:sorted[sorted.size()/2]);
     for(size_t i=0;i<times.size();++i) std::printf("%s%.6f",i?",":"",times[i]);
-    std::puts("]");check(cudaStreamDestroy(stream));return 0;
+    std::puts("]");std::fflush(stdout);
+    }
+    check(cudaStreamDestroy(stream));return 0;
   } catch(std::exception const& e) {
     std::fprintf(stderr,"Q4_LAYOUT_PROFILE FAIL: %s\n",e.what());return 1;
   }

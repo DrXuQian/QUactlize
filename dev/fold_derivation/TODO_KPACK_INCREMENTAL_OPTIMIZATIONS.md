@@ -46,9 +46,13 @@ This is CUDA evidence only; PPU selection and libraries are unchanged.
 | Follow-up | Status | Required evidence |
 | --- | --- | --- |
 | Q4 word-level metadata/decode/A-conversion cleanup | CUDA PROVED | 4.72M exact half values, 360 same-output-bit contexts, independent dot/guards/negatives; same-recipe timing and NCU recorded |
-| Refit S1/Split-K and A/metadata reuse | NEXT | Complete-call timing, including reducer; do not inherit the old N2 winner without remeasurement |
+| Refit S1/Split-K and A/metadata reuse | CUDA EXPERIMENT IN PROGRESS | Complete-call timing, including reducer; S1 warp/CTA-tree candidates added, no requirement to use Split-K; do not inherit the old N2 winner without remeasurement |
 | Optional SHM packed-B thread exchange | EXPERIMENT | Compare with instruction-clean direct loading, preserve ABI and numeric boundary; measure net cost, bank conflicts and register pressure |
-| Precision-matched Xplane diagnostic | PENDING | Same FP32 accumulation contract; current Xplane uses partial FP16 accumulation |
+| Precision-matched Xplane diagnostic | CUDA COMPARATOR IMPLEMENTED; PARITY OPEN | [FP32 on both sides](../../docs/Q4_KPACK_FP32_COMPARISON.md), six dense families, warm and >L2 rotation, independent same-GPU tuning; old partial-FP16 Xplane is not the target |
+| Aligned N2 / b64 N4 SIMT reader | CUDA NUMERIC PASS; MULTI-GPU PERF OPEN | Preserve canonical bytes and FP32 accumulation; 672 N4 contexts pass exact N2 output comparison; do not generalize large-family parity to all shapes |
+| Small-N SIMT parity | RTX5070 Q4 M1/F16 S1 PASS <=5%; PPU NOT ADMITTED | N512/K2048 and N1024/K5120: six-round fixed confirmation, worst +2.55% versus FP32 Xplane; 232 indexed numeric checks and eight S1/no-reducer NCU profiles; [receipt and limits](../../docs/Q4_KPACK_FP32_COMPARISON.md) |
+| Remaining SIMT parity | OPEN | Larger-family warm gaps about 5–9%; multi-token/grouped and other-format performance remain; 5090 recheck deferred while machine is shut down |
+| Down-weight prefetch during gate/up | DEFERRED EXPERIMENT | Use known expert IDs; measure current slowdown and complete pair latency, not just target warm-cache speedup; include preload cost |
 | Q2/Q3/Q5/Q6 word-reader extensions | PENDING | Actual per-plane maps, exact metadata/code checks and dense/grouped/indexed coverage |
 | PPU codegen, numerical and performance admission | BOX REQUIRED | Native PPU half lowering may already avoid some CUDA overhead; no extrapolated speedup or policy promotion |
 

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from dev.gemv_cuda.read_xplane_ncu import CORE, parse
-from dev.gemv_cuda.run_xplane_ncu import jobs
+from dev.gemv_cuda.run_xplane_ncu import jobs, retuned_jobs
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -77,3 +77,36 @@ def test_profiling_boundary_is_after_the_cache_setup():
     for fragment in ('"--replay-mode", "application"', '"--cache-control", "none"',
                      '"--profile-from-start", "off"'):
         assert fragment in runner
+
+
+@pytest.mark.parametrize("plant",(None,"half","incomplete","duplicate","missing","arm"))
+def test_retuned_fp32_profiles_cannot_use_half_or_incomplete_receipts(plant):
+    receipt=dict(status="PASS",arithmetic="BOTH_FP32_DOT_AND_REDUCTION_FP16_WEIGHT_AND_A_BOUNDARY",cases=[])
+    for k in (2048,4096):
+        for mode in ("warm","rotating"):
+            receipt["cases"].append(dict(shape=[1,4096,k],mode=mode,winners={
+                "xplane":dict(recipe=["xplane",1,8,1]),
+                "kpack":dict(recipe=["kpack",4,8,1])}))
+    if plant=="half": receipt["arithmetic"]="FP16"
+    if plant=="incomplete": receipt["status"]="RUNNING"
+    if plant=="duplicate": receipt["cases"].append(copy.deepcopy(receipt["cases"][0]))
+    if plant=="missing": receipt["cases"].pop()
+    if plant=="arm": receipt["cases"][0]["winners"]["kpack"]["recipe"][0]="xplane"
+    if plant:
+        with pytest.raises(ValueError): list(retuned_jobs(receipt))
+    else:
+        assert len(list(retuned_jobs(receipt)))==8
+
+
+def test_small_profile_scope_requires_both_small_families_and_both_regimes():
+    receipt=dict(status="PASS",arithmetic="BOTH_FP32_DOT_AND_REDUCTION_FP16_WEIGHT_AND_A_BOUNDARY",cases=[])
+    for n,k in ((512,2048),(1024,5120),(4096,2048),(4096,4096)):
+        for mode in ("warm","rotating"):
+            receipt["cases"].append(dict(shape=[1,n,k],mode=mode,winners={
+                "xplane":dict(recipe=["xplane",1,4,1]),
+                "kpack":dict(recipe=["kpack",4,8,1])}))
+    rows=list(retuned_jobs(receipt,small=True))
+    assert len(rows)==8 and {x["n"] for x in rows}=={512,1024}
+    receipt["cases"].pop(0)
+    with pytest.raises(ValueError,match="missing"):
+        list(retuned_jobs(receipt,small=True))

@@ -77,8 +77,17 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--input-controls", action="store_true",
                         help="small 16-expert fixtures with independent GGUF weights for changed-A tests")
+    parser.add_argument("--q4-dense-wide", action="store_true",
+                        help="six Q4 M1 families within the historical Xplane K-loop domain")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
+    if args.q4_dense_wide:
+        if args.input_controls:
+            raise ValueError("choose one fixture scope")
+        cases = [export(args.output,12,n,k,1,[0],1) for n,k in
+                 ((512,2048),(1024,5120),(4096,2048),(4096,4096),(8192,5120),(5120,8192))]
+        (args.output / "manifest.json").write_text(json.dumps(cases,indent=2)+"\n")
+        return
     if args.input_controls:
         cases = [export(args.output, q, 256, 512, 16, list(range(0, 16, 2)), 8,
                         retain_official=True) for q in range(10, 15)]

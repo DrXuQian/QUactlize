@@ -1,5 +1,10 @@
 # Q4 K-pack native-word reader, 2026-09-11
 
+The Xplane numbers in this historical experiment use partial FP16
+accumulation. The subsequent acceptance comparison uses
+[FP32 on both sides](Q4_KPACK_FP32_COMPARISON.md); these old half-Xplane
+numbers are not its performance threshold.
+
 The previous N2 instruction/coalescing overhead is not an intrinsic cost of
 the canonical K-pack format. A CUDA-only Q4 instruction replacement, with
 identical weight bytes, thread mapping, Split-K and FP32 dot order, reduces

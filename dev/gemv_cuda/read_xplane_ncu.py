@@ -79,7 +79,8 @@ def main():
     manifest = json.loads((args.directory/"manifest.json").read_text())
     if manifest["status"] != "PASS" or len(manifest["profiles"]) != 8:
         raise ValueError("incomplete profile campaign")
-    result = dict(scope="RTX5070_WSL_FIXED_5090_WINNERS_NOT_PPU_OR_5090_COUNTERS",
+    result = dict(scope=("RTX5070_WSL_SAME_GPU_RETUNED_FP32_NOT_PPU" if manifest.get("recipe_scope")=="SAME_GPU_RETUNED_FP32"
+                         else "RTX5070_WSL_FIXED_5090_WINNERS_NOT_PPU_OR_5090_COUNTERS"),
                   replay_mode=manifest["replay_mode"], cache_control=manifest["cache_control"],
                   clock_control=manifest["clock_control"], authority=manifest["authority"], profiles=[])
     for profile in manifest["profiles"]:

@@ -42,24 +42,56 @@ def jobs(receipt):
                            recipe=[recipe[x] for x in ("columns", "warps", "split")])
 
 
+def retuned_jobs(receipt, small=False):
+    if receipt.get("status") != "PASS" or receipt.get("arithmetic") != "BOTH_FP32_DOT_AND_REDUCTION_FP16_WEIGHT_AND_A_BOUNDARY":
+        raise ValueError("expected a complete same-GPU FP32 retune")
+    shapes=([1,512,2048],[1,1024,5120]) if small else ([1,4096,2048],[1,4096,4096])
+    seen=set()
+    for case in receipt["cases"]:
+        if case["shape"] not in shapes:
+            continue
+        m,n,k=case["shape"]
+        mode=case["mode"]
+        if mode not in ("warm","rotating") or (k,mode) in seen:
+            raise ValueError("duplicate or unknown anchor cache regime")
+        seen.add((k,mode))
+        for arm in ("xplane","kpack"):
+            recipe=case["winners"][arm]["recipe"]
+            if len(recipe)!=4 or recipe[0]!=arm:
+                raise ValueError("retuned recipe arm differs")
+            yield dict(key=f"k{k}-{mode}-{arm}",arm=arm,mode=mode,n=n,k=k,recipe=recipe[1:])
+    if len(seen)!=4:
+        raise ValueError("missing retuned anchor regimes")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     for name in ("runner", "xplane-library", "kpack-library", "fixtures", "recipes", "output"):
         p.add_argument("--" + name, type=Path, required=True)
     p.add_argument("--ncu", type=Path, default=Path("/usr/local/cuda-12.8/bin/ncu"))
+    p.add_argument("--retuned-fp32", action="store_true",
+                   help="use this GPU's independently retuned FP32 winners for the two anchors")
+    p.add_argument("--small-shapes",action="store_true",
+                   help="profile the N512/K2048 and N1024/K5120 families instead of the large anchors")
     args = p.parse_args()
+    if args.small_shapes and not args.retuned_fp32:
+        p.error("small shapes require a same-GPU FP32 retune")
     args.output.mkdir(parents=True, exist_ok=False)
     receipt = json.loads(args.recipes.read_text())
     for name in ("xplane", "kpack"):
-        if sha(getattr(args, name + "_library")) != receipt[name + "_library_sha256"]:
+        expected=(receipt["authority"]["xplane" if name=="xplane" else "candidate"]["sha256"]
+                  if args.retuned_fp32 else receipt[name+"_library_sha256"])
+        if sha(getattr(args, name + "_library")) != expected:
             raise ValueError(name + " library differs from measured comparison")
-    planned = list(jobs(receipt))
+    planned = list(retuned_jobs(receipt,args.small_shapes) if args.retuned_fp32 else jobs(receipt))
     if len(planned) != 8 or len({x["key"] for x in planned}) != 8:
         raise ValueError("expected eight distinct profile arms")
     paths = dict(runner=args.runner, xplane=args.xplane_library, kpack=args.kpack_library,
                  recipes=args.recipes)
-    result = dict(status="RUNNING", recipe_scope="FIXED_5090_WINNERS_NOT_5070_RETUNING",
+    result = dict(status="RUNNING", recipe_scope=("SAME_GPU_RETUNED_FP32" if args.retuned_fp32 else
+                                                 "FIXED_5090_WINNERS_NOT_5070_RETUNING"),
                   replay_mode="application", cache_control="none", clock_control="none",
+                  shape_scope="SMALL_N_512_1024" if args.small_shapes else "ANCHOR_N4096",
                   authority={name:dict(path=str(path.resolve()),sha256=sha(path)) for name,path in paths.items()},
                   ncu_version=subprocess.check_output([str(args.ncu), "--version"], text=True),
                   profiles=[])
