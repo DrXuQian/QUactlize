@@ -302,3 +302,52 @@ def test_two_residue_lane_ownership(k,warps):
                     for slot in range(4):
                         covered.append(g*32+2*(lane%4)+residue+8*slot)
     assert np.array_equal(np.sort(covered),np.arange(k))
+
+
+def test_u32_unit_decode_matches_the_two_full_48_bit_runs():
+    rng=np.random.default_rng(92751)
+    u=rng.integers(0,2**32,(16384,4),dtype=np.uint32).astype(np.uint64)
+    for group in range(8):
+        shift=6*(group&3)
+        run=(u[:,2]>>16)|(u[:,3]<<16) if group&4 else u[:,1]|((u[:,2]&65535)<<32)
+        scales=((u[:,2]>>16)|(u[:,3]<<16))&0xffffffff if group&4 else u[:,1]
+        minima=(u[:,3]>>8) if group&4 else ((u[:,1]>>24)|(u[:,2]<<8))&0xffffffff
+        assert np.array_equal((scales>>shift)&63,(run>>shift)&63)
+        assert np.array_equal((minima>>shift)&63,(run>>(24+shift))&63)
+        assert np.any(((minima>>(shift+1))&63)!=((run>>(24+shift))&63))
+
+
+def test_explicit_activation_vectors_preserve_all_thirty_two_half_values():
+    values=np.arange(32,dtype=np.uint16)
+    activation=values.view(np.uint32).reshape(4,4)
+    for half in (0,1):
+        for slot in range(4):
+            bits=activation[slot,half*2:half*2+2]
+            got=bits.copy().view(np.uint16)
+            assert np.array_equal(got,values[slot*8+half*4:slot*8+half*4+4])
+    body,_=source("affine8-early-fast-bare-a8-u32")
+    assert "activation[slot]=*reinterpret_cast<uint4 const*>" in body
+    assert "q4_unit_codes(u,group)" in body
+    assert "(uintptr_t(c.a)&15)" in body
+    body,_=source("affine8-early-fast-bare-a4")
+    assert "uint2 const packed=*reinterpret_cast<uint2 const*>(p);" in body
+
+
+def test_full_b_stage_keeps_the_portable_shared_memory_floor():
+    body,recipes=source("matrix8-full-fast")
+    assert "q4_ldmatrix_v2<8,5120," in body
+    assert "q4_ldmatrix_v2<8,8192," not in body
+    assert "int const chunks=TileK/TileK;" in body
+    for _,warps in recipes:
+        for k in (2048,4096,5120):
+            assert k//4*8*2+warps*8*4+k*2<=48*1024
+
+
+def test_direct_integer_codes_still_dot_in_fp32():
+    body,_=source("affine8-early-fast-bare-a4-u32-int")
+    kernel=body[body.index("__global__ void q4_group_affine"):]
+    kernel=kernel[:kernel.index("\n}\n")]
+    assert "float((code_word>>(4*slot))&15)" in kernel
+    assert "float((code_word>>(16+4*slot))&15)" in kernel
+    assert "dot[p].x=fmaf(ax[r],v.x,dot[p].x)" in kernel
+    assert "codes<" not in kernel

@@ -26,7 +26,7 @@ WIDE = [(c, w) for c in (1, 2, 4, 8) for w in (2, 4, 5, 8, 10, 16)]
 
 def parse_arm(name):
     flags={}
-    for suffix in ("unsigned","s2","skew","av","as","bare","one","cg","fast","rs"):
+    for suffix in ("unsigned","int","u32","a8","a4","dm","lb1","s2","skew","av","as","bare","one","cg","fast","rs"):
         flags[suffix]=name.endswith("-"+suffix)
         if flags[suffix]: name=name.removesuffix("-"+suffix)
     return name,flags
@@ -96,7 +96,13 @@ def source(arm):
     if arm.startswith("matrix"):
         recipes = [(8,4),(16,4),(16,8)] if arm.startswith("matrix8") else [(4,4),(8,4),(8,8),(16,4),(16,8),(16,16)]
         seam = "template<int Columns, int Warps, bool Pair = false> int launch"
-        body = replace_once(body, seam, (ROOT / "dev/gemv_cuda/q4_ldmatrix_v2.cuh").read_text() + "\n" + seam)
+        matrix=(ROOT / "dev/gemv_cuda/q4_ldmatrix_v2.cuh").read_text()
+        if arm=="matrix8-full":
+            recipes=[(1,w) for w in (4,8,10,16)]
+            matrix=replace_once(matrix,"template<int TileN,int TileK,int Warps,bool Pipeline>",
+                                "template<int TileN,int TileK,int Warps,bool Pipeline,int N>")
+            matrix=matrix.replace("c.k","TileK").replace("c.n","N")
+        body = replace_once(body, seam, matrix + "\n" + seam)
     if arm.startswith("affine"):
         recipes=[(c,w) for c in (1,2,4) for w in (2,4,5,8,10,16)]
         seam = "template<int Columns, int Warps, bool Pair = false> int launch"
@@ -135,6 +141,13 @@ extern "C" int qkg_pair_launch_12(qkg_call_v1 const& c,qkg_config_v1 const& f) {
             for n,k in ((512,2048),(1024,5120),(4096,2048),(4096,4096),(5120,8192),(8192,5120)):
                 body += f'''    if(f.columns=={c} && f.warps=={w} && c.n=={n} && c.k=={k}) {{
         q4_group_affine<{c},{w},{width},{n},{k},{str(early).lower()}><<<c.n/{width*c},{32*w},0,static_cast<hggcStream_t>(c.stream)>>>(c);
+        return hggcGetLastError()==hggcSuccess ? QKG_OK : QKG_RUNTIME;
+    }}
+'''
+        elif arm=="matrix8-full":
+            for n,k in ((512,2048),(1024,5120),(4096,2048),(4096,4096),(8192,5120)):
+                body+=f'''    if(f.columns=={c} && f.warps=={w} && c.n=={n} && c.k=={k}) {{
+        q4_ldmatrix_v2<8,{k},{w},false,{n}><<<c.n/8,{32*w},size_t(c.k)*2,static_cast<hggcStream_t>(c.stream)>>>(c);
         return hggcGetLastError()==hggcSuccess ? QKG_OK : QKG_RUNTIME;
     }}
 '''
@@ -205,6 +218,54 @@ extern "C" int qkg_pair_launch_12(qkg_call_v1 const& c,qkg_config_v1 const& f) {
         else:
             body += f"    if(f.columns=={c} && f.warps=={w}) return launch<{c},{w},true>(c,1);\n"
     body = '#include "' + str(ROOT / "dev/gemv_cuda/q4_warp_reduce_scatter.cuh") + '"\n' + body
+    if flags["int"]:
+        if not arm.startswith("affine") or arm.startswith("affine-coop"): raise ValueError("integer conversion targets group affine")
+        start=body.index("__global__ void q4_group_affine(qkg_call_v1 c)")
+        end=body.index("\n}\n",start)+3
+        kernel=body[start:end]
+        first=kernel.index("                        __half2 q;")
+        last=kernel.index("                        dot[p].x",first)
+        kernel=kernel[:first]+'''                        uint32_t code_word=words[r][p];
+                        float2 v=make_float2(float((code_word>>(4*slot))&15),
+                                            float((code_word>>(16+4*slot))&15));
+'''+kernel[last:]
+        body=body[:start]+kernel+body[end:]
+    if flags["a8"]:
+        if not arm.startswith("affine") or arm.startswith("affine-coop") or stage_a: raise ValueError("A8 requires direct group A")
+        start=body.index("__global__ void q4_group_affine(qkg_call_v1 c)")
+        end=body.index("\n}\n",start)+3
+        kernel=body[start:end]
+        kernel=replace_once(kernel,"        uint4 metadata[Early ? P : 1];",'''        uint4 activation[4];
+        #pragma unroll
+        for(int slot=0;slot<4;++slot)
+            activation[slot]=*reinterpret_cast<uint4 const*>(static_cast<__half const*>(c.a)+g*32+slot*8);
+        uint4 metadata[Early ? P : 1];''')
+        kernel=replace_once(kernel,"                float4 av=aligned_activation<0>(c.a,g*32+slot*8+half*4);",'''                uint4 packed_a=activation[slot];
+                uint32_t lo_bits=half ? packed_a.z : packed_a.x;
+                uint32_t hi_bits=half ? packed_a.w : packed_a.y;
+                __half2_raw lo,hi;
+                lo.x=uint16_t(lo_bits);lo.y=uint16_t(lo_bits>>16);
+                hi.x=uint16_t(hi_bits);hi.y=uint16_t(hi_bits>>16);
+                float2 av0=__half22float2(__half2(lo)),av1=__half22float2(__half2(hi));
+                float4 av=make_float4(av0.x,av0.y,av1.x,av1.y);''')
+        body=body[:start]+kernel+body[end:]
+    if flags["dm"]:
+        if not arm.startswith("affine") or not arm.endswith("early"): raise ValueError("decoded metadata requires early group arm")
+        start=body.index("__global__ void q4_group_affine(qkg_call_v1 c)")
+        end=body.index("\n}\n",start)+3
+        kernel=body[start:end].replace("uint4 metadata[Early ? P : 1];","float2 metadata[Early ? P : 1];")
+        kernel=replace_once(kernel,"metadata[p]=aligned_unit(c.units+(size_t(g/8)*N+col+p)*16);",
+                            "metadata[p]=q4_affine_header(aligned_unit(c.units+(size_t(g/8)*N+col+p)*16),g&7);")
+        first=kernel.index("            uint4 u0,u1;")
+        last=kernel.index("            total[p].x",first)
+        kernel=kernel[:first]+'''            float2 s0,s1;
+            if constexpr(Early) {s0=metadata[2*p];s1=metadata[2*p+1];}
+            else {
+                s0=q4_affine_header(aligned_unit(c.units+(size_t(g/8)*N+col+2*p)*16),g&7);
+                s1=q4_affine_header(aligned_unit(c.units+(size_t(g/8)*N+col+2*p+1)*16),g&7);
+            }
+'''+kernel[last:]
+        body=body[:start]+kernel+body[end:]
     if flags["skew"]:
         if not arm.startswith("affine") or arm.startswith("affine-coop"): raise ValueError("K phase requires full groups")
         start=body.index("__global__ void q4_group_affine(qkg_call_v1 c)")
@@ -244,6 +305,10 @@ extern "C" int qkg_pair_launch_12(qkg_call_v1 const& c,qkg_config_v1 const& f) {
         body=body[:start]+kernel+body[end:]
         body,count=re.subn(r"("+kernel_name+r"<[^\n]+>>>\()c(\);)",r"\1c.a,c.low,c.units,c.output\2",body)
         if not count: raise ValueError("bare kernel launch seam missing")
+    if flags["lb1"]:
+        if not arm.startswith("meta"): raise ValueError("launch-bound experiment targets cooperative metadata")
+        body=replace_once(body,"__global__ void q4_cooperative_metadata(",
+                          "__global__ void __launch_bounds__(Warps*32,1) q4_cooperative_metadata(")
     if flags["s2"]:
         if not (arm.startswith("affine") and not arm.startswith("affine-coop") and bare) or stage_a or flags["skew"]:
             raise ValueError("S2 experiment requires the plain, bare per-thread group kernel")
@@ -293,9 +358,26 @@ __global__ void q4_two_part_reduce(float const* partial,float* output,int n) {
         body, count = re.subn(r"=\s*\*reinterpret_cast<(uint(?:2|4)|uint(?:32|64)_t) const\*>\((low\s*\+[^;\n]*)\);",
                               r"= __ldcg(reinterpret_cast<\1 const*>(\2));", body)
         if not count: raise ValueError("B-only cache load seam missing")
-    if unsigned or fast:
+    if unsigned or fast or flags["a4"] or flags["u32"]:
         native = (ROOT / "dev/gemv_cuda/q4_native.cuh").read_text()
         aligned = (ROOT / "dev/gemv_cuda/q4_aligned.cuh").read_text().replace('#include "q4_native.cuh"', "")
+        if flags["u32"]:
+            start=aligned.index("    uint64_t const run=")
+            end=aligned.index("    __half2_raw codes_raw,header_raw;",start)
+            aligned=aligned[:start]+"    uint2 code=q4_unit_codes(m,group);\n    unsigned const sc=code.x,mn=code.y;\n"+aligned[end:]
+            if "float2 q4_affine_header" in body:
+                start=body.index("    uint64_t run=",body.index("float2 q4_affine_header"))
+                end=body.index("    return make_float2",start)
+                body=body[:start]+"    uint2 code=q4_unit_codes(u,group);\n    float sc=float(code.x),mn=float(code.y);\n"+body[end:]
+            native='#include "'+str(ROOT/"dev/gemv_cuda/q4_unit_bits.cuh")+'"\n'+native
+        if flags["a4"]:
+            aligned=replace_once(aligned,"""        float2 const a=__half22float2(*reinterpret_cast<__half2 const*>(p));
+        float2 const b=__half22float2(*reinterpret_cast<__half2 const*>(p+2));""","""        uint2 const packed=*reinterpret_cast<uint2 const*>(p);
+        __half2_raw lo,hi;
+        lo.x=uint16_t(packed.x);lo.y=uint16_t(packed.x>>16);
+        hi.x=uint16_t(packed.y);hi.y=uint16_t(packed.y>>16);
+        float2 const a=__half22float2(__half2(lo));
+        float2 const b=__half22float2(__half2(hi));""")
         if unsigned:
             native = replace_once(native, "__float2half2_rn(1032.f)", "__float2half2_rn(1024.f)")
             native = replace_once(native, "return {scale, __float2half_rn(__half2float(zero) + 8.f * __half2float(scale))};", "return {scale, zero};")
@@ -338,7 +420,7 @@ def main():
     flags = command[1:command.index("-c")]
     dispatch_obj=a.control/"dispatch.o"
     dispatch_command=None
-    inputs = [Path(__file__), ROOT / "dev/gemv_cuda/q4_warp_k.cuh", ROOT / "dev/gemv_cuda/q4_nwide.cuh", ROOT / "dev/gemv_cuda/q4_ldmatrix.cuh", ROOT / "dev/gemv_cuda/q4_ldmatrix_v2.cuh", ROOT / "dev/gemv_cuda/q4_group_affine.cuh", ROOT / "dev/gemv_cuda/q4_cooperative_affine.cuh", ROOT / "dev/gemv_cuda/q4_cooperative_residue2.cuh", ROOT / "dev/gemv_cuda/q4_cooperative_metadata.cuh", ROOT / "dev/gemv_cuda/q4_warp_reduce_scatter.cuh", ROOT / "dev/gemv_cuda/q4_warp_activation.cuh", ROOT / "dev/gemv_cuda/build.py",
+    inputs = [Path(__file__), ROOT / "dev/gemv_cuda/q4_warp_k.cuh", ROOT / "dev/gemv_cuda/q4_nwide.cuh", ROOT / "dev/gemv_cuda/q4_ldmatrix.cuh", ROOT / "dev/gemv_cuda/q4_ldmatrix_v2.cuh", ROOT / "dev/gemv_cuda/q4_group_affine.cuh", ROOT / "dev/gemv_cuda/q4_cooperative_affine.cuh", ROOT / "dev/gemv_cuda/q4_cooperative_residue2.cuh", ROOT / "dev/gemv_cuda/q4_cooperative_metadata.cuh", ROOT / "dev/gemv_cuda/q4_warp_reduce_scatter.cuh", ROOT / "dev/gemv_cuda/q4_warp_activation.cuh", ROOT / "dev/gemv_cuda/q4_unit_bits.cuh", ROOT / "dev/gemv_cuda/build.py",
               ROOT / "dev/gemv_ppu/astage_source.py", ROOT / "dev/gemv_cuda/q4_shm_kernel.cuh"]
     hashes = {str(p.relative_to(ROOT)): digest(p) for p in inputs}
     started = time.monotonic()
@@ -359,11 +441,13 @@ def main():
                    source_sha256=digest(src), commands=commands)
         row["launches_per_call"]=split
         row["weight_arithmetic"]="FP32_GROUP_AFFINE_NOT_PER_WEIGHT_FP16" if arm.startswith("affine") and "fp16" not in arm else "PER_WEIGHT_FP16_AFFINE"
+        if parse_arm(arm)[0]=="matrix8-full":
+            row["supported_shapes"]=[[1,n,k] for n,k in ((512,2048),(1024,5120),(4096,2048),(4096,4096),(8192,5120))]
         (out / "manifest.json").write_text(json.dumps(row, indent=2) + "\n")
         print(f"Q4_H800_BUILD arm={arm} status=COMPILED", flush=True)
         return row
     arms = a.arms.split(",")
-    if len(set(arms)) != len(arms) or not {parse_arm(x)[0] for x in arms} <= {"shared-a", "shared-b", "warp-global", "warp-shared", "warp-sb", "n8-global", "n8-shared", "n8-static-global", "n8-static-shared", "n2-global", "n2-static", "n4-global", "n16-global", "n16-shared", "ldmatrix-single", "ldmatrix-pipeline", "meta-global", "meta-shared", "meta2-global", "meta4-global", "meta-static-global", "meta2-static-global", "matrix8-single", "matrix8-pipe", "matrix16-single", "matrix16-pipe", "affine2-early", "affine4-early", "affine8-early", "affine8-late", "affine-coop", "affine-coop2r", "affine-coop2r-fp16"}:
+    if len(set(arms)) != len(arms) or not {parse_arm(x)[0] for x in arms} <= {"shared-a", "shared-b", "warp-global", "warp-shared", "warp-sb", "n8-global", "n8-shared", "n8-static-global", "n8-static-shared", "n2-global", "n2-static", "n4-global", "n16-global", "n16-shared", "ldmatrix-single", "ldmatrix-pipeline", "meta-global", "meta-shared", "meta2-global", "meta4-global", "meta-static-global", "meta2-static-global", "matrix8-single", "matrix8-pipe", "matrix8-full", "matrix16-single", "matrix16-pipe", "affine2-early", "affine4-early", "affine8-early", "affine8-late", "affine-coop", "affine-coop2r", "affine-coop2r-fp16"}:
         raise ValueError("unknown or duplicate arm")
     if any(parse_arm(x)[1]["s2"] for x in arms):
         # The new S2 templates support W5/W10. The frozen control dispatcher

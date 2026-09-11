@@ -1,0 +1,535 @@
+{
+  "status": "MEASURED",
+  "precision": "FP16_A_FP32_DOT_REDUCTION_OUTPUT_SEE_ARM_WEIGHT_ARITHMETIC",
+  "arms": {
+    "xplane": {
+      "library": "/root/autodl-tmp/q4-ppu-replay.qC6s95/control-r3/libkpack.so",
+      "mode": "xplane",
+      "recipes": [
+        [
+          1,
+          8,
+          1
+        ],
+        [
+          1,
+          2,
+          1
+        ]
+      ]
+    },
+    "raw-reference": {
+      "library": "/root/autodl-tmp/q4-ppu-replay.qC6s95/control-r3/libkpack.so",
+      "mode": "raw-reference",
+      "recipes": [
+        [
+          1,
+          1,
+          2
+        ],
+        [
+          1,
+          8,
+          1
+        ]
+      ]
+    },
+    "meta-static-global-rs-fast-bare-av": {
+      "library": "/root/autodl-tmp/q4-ppu-replay.qC6s95/candidates-r18/meta-static-global-rs-fast-bare-av/libkpack.so",
+      "mode": "kpack",
+      "recipes": [
+        [
+          1,
+          16,
+          1
+        ]
+      ],
+      "launches_per_call": 1,
+      "weight_arithmetic": "PER_WEIGHT_FP16_AFFINE"
+    }
+  },
+  "rounds": 1,
+  "controls_retuned": true,
+  "cases": [
+    {
+      "shape": [
+        1,
+        512,
+        2048
+      ],
+      "mode": "warm",
+      "best": {
+        "xplane": {
+          "recipe": [
+            1,
+            8,
+            1
+          ],
+          "median_us": 2.754
+        },
+        "raw-reference": {
+          "recipe": [
+            1,
+            1,
+            2
+          ],
+          "median_us": 2.746
+        },
+        "meta-static-global-rs-fast-bare-av": {
+          "recipe": [
+            1,
+            16,
+            1
+          ],
+          "median_us": 2.76
+        }
+      },
+      "records": {
+        "xplane": [
+          {
+            "arm": "xplane",
+            "config": "1-8-1",
+            "shape": "1x512x2048",
+            "sm": "114",
+            "L2_bytes": "52428800",
+            "copies": "1",
+            "calls_per_graph": "32",
+            "mode": "warm",
+            "purpose": "timing",
+            "error": "5.86050095e-05",
+            "median_us": "2.754000",
+            "status": "PASS",
+            "samples_us": [
+              2.757,
+              2.749,
+              2.773,
+              2.76,
+              2.739,
+              2.741,
+              2.772,
+              2.761,
+              2.761,
+              2.751,
+              2.752,
+              2.744,
+              2.754,
+              2.746,
+              2.761
+            ],
+            "recipe": [
+              1,
+              8,
+              1
+            ],
+            "turn": 0,
+            "log": "n512-k2048-warm-0-xplane.log",
+            "log_sha256": "ce6c0ae3b24612f7a1afdad5f184f4e1b44e4326dd791b46d8bf0d5e4bdf5eda"
+          },
+          {
+            "arm": "xplane",
+            "config": "1-2-1",
+            "shape": "1x512x2048",
+            "sm": "114",
+            "L2_bytes": "52428800",
+            "copies": "1",
+            "calls_per_graph": "32",
+            "mode": "warm",
+            "purpose": "timing",
+            "error": "5.86050095e-05",
+            "median_us": "2.822000",
+            "status": "PASS",
+            "samples_us": [
+              2.821,
+              2.82,
+              2.827,
+              2.832,
+              2.836,
+              2.822,
+              2.823,
+              2.832,
+              2.833,
+              2.822,
+              2.818,
+              2.814,
+              2.813,
+              2.816,
+              2.807
+            ],
+            "recipe": [
+              1,
+              2,
+              1
+            ],
+            "turn": 0,
+            "log": "n512-k2048-warm-0-xplane.log",
+            "log_sha256": "ce6c0ae3b24612f7a1afdad5f184f4e1b44e4326dd791b46d8bf0d5e4bdf5eda"
+          }
+        ],
+        "raw-reference": [
+          {
+            "arm": "raw-reference",
+            "config": "1-1-2",
+            "shape": "1x512x2048",
+            "sm": "114",
+            "L2_bytes": "52428800",
+            "copies": "1",
+            "calls_per_graph": "32",
+            "mode": "warm",
+            "purpose": "timing",
+            "error": "4.388191e-05",
+            "median_us": "2.746000",
+            "status": "PASS",
+            "samples_us": [
+              2.741,
+              2.738,
+              2.758,
+              2.736,
+              2.745,
+              2.746,
+              2.749,
+              2.745,
+              2.752,
+              2.761,
+              2.738,
+              2.747,
+              2.758,
+              2.74,
+              2.747
+            ],
+            "recipe": [
+              1,
+              1,
+              2
+            ],
+            "turn": 0,
+            "log": "n512-k2048-warm-0-raw-reference.log",
+            "log_sha256": "c3fd6fe730b7a9b50558bdf0af765e222fc40921c26ee744bfc51fe85bb4dcf0"
+          },
+          {
+            "arm": "raw-reference",
+            "config": "1-8-1",
+            "shape": "1x512x2048",
+            "sm": "114",
+            "L2_bytes": "52428800",
+            "copies": "1",
+            "calls_per_graph": "32",
+            "mode": "warm",
+            "purpose": "timing",
+            "error": "4.38771643e-05",
+            "median_us": "2.891000",
+            "status": "PASS",
+            "samples_us": [
+              2.886,
+              2.891,
+              2.885,
+              2.907,
+              2.895,
+              2.894,
+              2.882,
+              2.904,
+              2.881,
+              2.887,
+              2.881,
+              2.893,
+              2.892,
+              2.897,
+              2.891
+            ],
+            "recipe": [
+              1,
+              8,
+              1
+            ],
+            "turn": 0,
+            "log": "n512-k2048-warm-0-raw-reference.log",
+            "log_sha256": "c3fd6fe730b7a9b50558bdf0af765e222fc40921c26ee744bfc51fe85bb4dcf0"
+          }
+        ],
+        "meta-static-global-rs-fast-bare-av": [
+          {
+            "arm": "kpack",
+            "config": "1-16-1",
+            "shape": "1x512x2048",
+            "sm": "114",
+            "L2_bytes": "52428800",
+            "copies": "1",
+            "calls_per_graph": "32",
+            "mode": "warm",
+            "purpose": "timing",
+            "error": "5.35566591e-05",
+            "median_us": "2.760000",
+            "status": "PASS",
+            "samples_us": [
+              2.756,
+              2.748,
+              2.756,
+              2.759,
+              2.788,
+              2.76,
+              2.765,
+              2.768,
+              2.769,
+              2.762,
+              2.791,
+              2.758,
+              2.767,
+              2.756,
+              2.756
+            ],
+            "recipe": [
+              1,
+              16,
+              1
+            ],
+            "turn": 0,
+            "log": "n512-k2048-warm-0-meta-static-global-rs-fast-bare-av.log",
+            "log_sha256": "0a522ba2497e1195f435486b324f724d03d23cfa1a086b9b4e8e0b3cc0a244e5"
+          }
+        ]
+      },
+      "fixture_sha256": "30837312a1b183fd227d99f45efbf7c00311fedf341008b007b7f42642108275"
+    },
+    {
+      "shape": [
+        1,
+        512,
+        2048
+      ],
+      "mode": "rotating",
+      "best": {
+        "xplane": {
+          "recipe": [
+            1,
+            2,
+            1
+          ],
+          "median_us": 3.43472
+        },
+        "raw-reference": {
+          "recipe": [
+            1,
+            1,
+            2
+          ],
+          "median_us": 3.03816
+        },
+        "meta-static-global-rs-fast-bare-av": {
+          "recipe": [
+            1,
+            16,
+            1
+          ],
+          "median_us": 3.05752
+        }
+      },
+      "records": {
+        "xplane": [
+          {
+            "arm": "xplane",
+            "config": "1-8-1",
+            "shape": "1x512x2048",
+            "sm": "114",
+            "L2_bytes": "52428800",
+            "copies": "200",
+            "calls_per_graph": "400",
+            "mode": "rotating",
+            "purpose": "timing",
+            "error": "5.86050095e-05",
+            "median_us": "3.472080",
+            "status": "PASS",
+            "samples_us": [
+              3.476,
+              3.47176,
+              3.47248,
+              3.48184,
+              3.47032,
+              3.46888,
+              3.47368,
+              3.4732,
+              3.47568,
+              3.47056,
+              3.46856,
+              3.47208,
+              3.47072,
+              3.47112,
+              3.47464
+            ],
+            "recipe": [
+              1,
+              8,
+              1
+            ],
+            "turn": 0,
+            "log": "n512-k2048-rotating-0-xplane.log",
+            "log_sha256": "9d4ae6fd0a11a8467ac8265a1af51a4df540c9c777629b1dcae4ec36ef84dd0f"
+          },
+          {
+            "arm": "xplane",
+            "config": "1-2-1",
+            "shape": "1x512x2048",
+            "sm": "114",
+            "L2_bytes": "52428800",
+            "copies": "200",
+            "calls_per_graph": "400",
+            "mode": "rotating",
+            "purpose": "timing",
+            "error": "5.86050095e-05",
+            "median_us": "3.434720",
+            "status": "PASS",
+            "samples_us": [
+              3.4328,
+              3.4368,
+              3.43464,
+              3.43624,
+              3.4372,
+              3.43744,
+              3.43432,
+              3.43472,
+              3.43248,
+              3.4372,
+              3.44008,
+              3.43688,
+              3.42928,
+              3.43384,
+              3.4324
+            ],
+            "recipe": [
+              1,
+              2,
+              1
+            ],
+            "turn": 0,
+            "log": "n512-k2048-rotating-0-xplane.log",
+            "log_sha256": "9d4ae6fd0a11a8467ac8265a1af51a4df540c9c777629b1dcae4ec36ef84dd0f"
+          }
+        ],
+        "raw-reference": [
+          {
+            "arm": "raw-reference",
+            "config": "1-1-2",
+            "shape": "1x512x2048",
+            "sm": "114",
+            "L2_bytes": "52428800",
+            "copies": "200",
+            "calls_per_graph": "400",
+            "mode": "rotating",
+            "purpose": "timing",
+            "error": "4.388191e-05",
+            "median_us": "3.038160",
+            "status": "PASS",
+            "samples_us": [
+              3.0448,
+              3.04032,
+              3.0372,
+              3.03688,
+              3.03776,
+              3.03792,
+              3.03928,
+              3.03688,
+              3.03896,
+              3.04008,
+              3.03776,
+              3.03616,
+              3.03816,
+              3.03912,
+              3.0388
+            ],
+            "recipe": [
+              1,
+              1,
+              2
+            ],
+            "turn": 0,
+            "log": "n512-k2048-rotating-0-raw-reference.log",
+            "log_sha256": "40369cfcfd8b15d31dc4033ec53e8322dbe3e749025fcb00347e341ff06a1236"
+          },
+          {
+            "arm": "raw-reference",
+            "config": "1-8-1",
+            "shape": "1x512x2048",
+            "sm": "114",
+            "L2_bytes": "52428800",
+            "copies": "200",
+            "calls_per_graph": "400",
+            "mode": "rotating",
+            "purpose": "timing",
+            "error": "4.38771643e-05",
+            "median_us": "3.426960",
+            "status": "PASS",
+            "samples_us": [
+              3.42424,
+              3.4244,
+              3.42512,
+              3.42528,
+              3.42824,
+              3.42904,
+              3.42712,
+              3.42392,
+              3.42496,
+              3.42696,
+              3.43184,
+              3.42552,
+              3.43256,
+              3.43632,
+              3.43592
+            ],
+            "recipe": [
+              1,
+              8,
+              1
+            ],
+            "turn": 0,
+            "log": "n512-k2048-rotating-0-raw-reference.log",
+            "log_sha256": "40369cfcfd8b15d31dc4033ec53e8322dbe3e749025fcb00347e341ff06a1236"
+          }
+        ],
+        "meta-static-global-rs-fast-bare-av": [
+          {
+            "arm": "kpack",
+            "config": "1-16-1",
+            "shape": "1x512x2048",
+            "sm": "114",
+            "L2_bytes": "52428800",
+            "copies": "200",
+            "calls_per_graph": "400",
+            "mode": "rotating",
+            "purpose": "timing",
+            "error": "5.35566591e-05",
+            "median_us": "3.057520",
+            "status": "PASS",
+            "samples_us": [
+              3.06712,
+              3.06088,
+              3.05512,
+              3.06176,
+              3.05344,
+              3.05664,
+              3.0588,
+              3.05456,
+              3.05752,
+              3.0592,
+              3.05536,
+              3.05992,
+              3.05736,
+              3.05904,
+              3.0528
+            ],
+            "recipe": [
+              1,
+              16,
+              1
+            ],
+            "turn": 0,
+            "log": "n512-k2048-rotating-0-meta-static-global-rs-fast-bare-av.log",
+            "log_sha256": "ef6021594c3bfb2feb7899252179511873d94bfcb102c52579d47657b3bf5c95"
+          }
+        ]
+      },
+      "fixture_sha256": "30837312a1b183fd227d99f45efbf7c00311fedf341008b007b7f42642108275"
+    }
+  ],
+  "failures": [],
+  "production_changed": false,
+  "control_manifest_sha256": "329bfc8c3c722ec4ad9bd6f87c62293281948f5e94b1fbb0e913b1866d215b72",
+  "seconds": 3.1595790088176727
+}

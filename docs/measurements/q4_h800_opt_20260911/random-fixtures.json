@@ -1,0 +1,170 @@
+[
+  {
+    "path": "seed-93711/q12-n512-k2048-e1-c1.bin",
+    "shape": [
+      1,
+      512,
+      2048
+    ],
+    "seed": 93711,
+    "source_sha256": "5dd5a6b81370152d8f7cea1a56c1d32ee5bcfadf913ccae14ae6cb3f55b73ebb",
+    "sha256": "30837312a1b183fd227d99f45efbf7c00311fedf341008b007b7f42642108275",
+    "weight_bytes_unchanged": true,
+    "oracle": "OFFICIAL_GGUF_FP64_DOT",
+    "input": "DENSE_RANDOM_F16_EXACT"
+  },
+  {
+    "path": "seed-93719/q12-n512-k2048-e1-c1.bin",
+    "shape": [
+      1,
+      512,
+      2048
+    ],
+    "seed": 93719,
+    "source_sha256": "5dd5a6b81370152d8f7cea1a56c1d32ee5bcfadf913ccae14ae6cb3f55b73ebb",
+    "sha256": "009008f80d10dac8fcc2b3146825db3159d5f7c25cd00bfbfdaf657cbb9ee917",
+    "weight_bytes_unchanged": true,
+    "oracle": "OFFICIAL_GGUF_FP64_DOT",
+    "input": "DENSE_RANDOM_F16_EXACT"
+  },
+  {
+    "path": "seed-93711/q12-n1024-k5120-e1-c1.bin",
+    "shape": [
+      1,
+      1024,
+      5120
+    ],
+    "seed": 93711,
+    "source_sha256": "cd079c5dfa62023dcb348bc0a7fa1809e3a3ce97061afda4ffcae9e397a5ad80",
+    "sha256": "1396e2f185dd797395aba622cc3299e40ce7a7afccb48fec63fad5e3faf96c67",
+    "weight_bytes_unchanged": true,
+    "oracle": "OFFICIAL_GGUF_FP64_DOT",
+    "input": "DENSE_RANDOM_F16_EXACT"
+  },
+  {
+    "path": "seed-93719/q12-n1024-k5120-e1-c1.bin",
+    "shape": [
+      1,
+      1024,
+      5120
+    ],
+    "seed": 93719,
+    "source_sha256": "cd079c5dfa62023dcb348bc0a7fa1809e3a3ce97061afda4ffcae9e397a5ad80",
+    "sha256": "799ff5d009b1284f61545a8bc9f93df162399adbe55fe5cbbf097c7fe6a45e07",
+    "weight_bytes_unchanged": true,
+    "oracle": "OFFICIAL_GGUF_FP64_DOT",
+    "input": "DENSE_RANDOM_F16_EXACT"
+  },
+  {
+    "path": "seed-93711/q12-n4096-k2048-e1-c1.bin",
+    "shape": [
+      1,
+      4096,
+      2048
+    ],
+    "seed": 93711,
+    "source_sha256": "021c0cda3c5f77cb3bfaf88e6cafb13728763025e52b4e7c84d2ec43d61f136b",
+    "sha256": "b6bf66ef1055f584fa4186a1339e399af18e41288106a44145dc24cea6f11a5b",
+    "weight_bytes_unchanged": true,
+    "oracle": "OFFICIAL_GGUF_FP64_DOT",
+    "input": "DENSE_RANDOM_F16_EXACT"
+  },
+  {
+    "path": "seed-93719/q12-n4096-k2048-e1-c1.bin",
+    "shape": [
+      1,
+      4096,
+      2048
+    ],
+    "seed": 93719,
+    "source_sha256": "021c0cda3c5f77cb3bfaf88e6cafb13728763025e52b4e7c84d2ec43d61f136b",
+    "sha256": "8c048104fab25af27e3f24bef0e59661b296fa7c3c181419b8f52e832d5d533c",
+    "weight_bytes_unchanged": true,
+    "oracle": "OFFICIAL_GGUF_FP64_DOT",
+    "input": "DENSE_RANDOM_F16_EXACT"
+  },
+  {
+    "path": "seed-93711/q12-n4096-k4096-e1-c1.bin",
+    "shape": [
+      1,
+      4096,
+      4096
+    ],
+    "seed": 93711,
+    "source_sha256": "d98ad38f77ce3d565a135a8e4beb538b91f1536046d55cf7d26fe24e8d431628",
+    "sha256": "ce90f6fb7adc49a99078dcaa8b033fbe7c82ad7f73daa1c4906dffdd3be998dc",
+    "weight_bytes_unchanged": true,
+    "oracle": "OFFICIAL_GGUF_FP64_DOT",
+    "input": "DENSE_RANDOM_F16_EXACT"
+  },
+  {
+    "path": "seed-93719/q12-n4096-k4096-e1-c1.bin",
+    "shape": [
+      1,
+      4096,
+      4096
+    ],
+    "seed": 93719,
+    "source_sha256": "d98ad38f77ce3d565a135a8e4beb538b91f1536046d55cf7d26fe24e8d431628",
+    "sha256": "448c25ac7e611353ad53b7ea58c507ef4f5b1d42ddb6be3dd7bcad4780522fa0",
+    "weight_bytes_unchanged": true,
+    "oracle": "OFFICIAL_GGUF_FP64_DOT",
+    "input": "DENSE_RANDOM_F16_EXACT"
+  },
+  {
+    "path": "seed-93711/q12-n5120-k8192-e1-c1.bin",
+    "shape": [
+      1,
+      5120,
+      8192
+    ],
+    "seed": 93711,
+    "source_sha256": "e8a5368daed3700a1783f3fe0ca04e5aca1cdbe4755f21f6b7842d9893d1d66b",
+    "sha256": "0a30ed2f6796462bcf06103957843359c934471709ed0aec769acc0d58078955",
+    "weight_bytes_unchanged": true,
+    "oracle": "OFFICIAL_GGUF_FP64_DOT",
+    "input": "DENSE_RANDOM_F16_EXACT"
+  },
+  {
+    "path": "seed-93719/q12-n5120-k8192-e1-c1.bin",
+    "shape": [
+      1,
+      5120,
+      8192
+    ],
+    "seed": 93719,
+    "source_sha256": "e8a5368daed3700a1783f3fe0ca04e5aca1cdbe4755f21f6b7842d9893d1d66b",
+    "sha256": "ef5c5bc43471acb81fdd3158645b0d3df12863f3715eb9b68c15e4d3e94d3f88",
+    "weight_bytes_unchanged": true,
+    "oracle": "OFFICIAL_GGUF_FP64_DOT",
+    "input": "DENSE_RANDOM_F16_EXACT"
+  },
+  {
+    "path": "seed-93711/q12-n8192-k5120-e1-c1.bin",
+    "shape": [
+      1,
+      8192,
+      5120
+    ],
+    "seed": 93711,
+    "source_sha256": "ba3e2edffef7591f3bc10007aa664cf336cb00195d6913ce1c87d2b12537840a",
+    "sha256": "f535bc24d3d504135976ec2021c66f06b05bece8d14406ac1ac225e9cd3ccb6d",
+    "weight_bytes_unchanged": true,
+    "oracle": "OFFICIAL_GGUF_FP64_DOT",
+    "input": "DENSE_RANDOM_F16_EXACT"
+  },
+  {
+    "path": "seed-93719/q12-n8192-k5120-e1-c1.bin",
+    "shape": [
+      1,
+      8192,
+      5120
+    ],
+    "seed": 93719,
+    "source_sha256": "ba3e2edffef7591f3bc10007aa664cf336cb00195d6913ce1c87d2b12537840a",
+    "sha256": "11447387a7dd1d65ac5a29fc240f1148b44c289edca727ba6ef9ae8136fd6bd9",
+    "weight_bytes_unchanged": true,
+    "oracle": "OFFICIAL_GGUF_FP64_DOT",
+    "input": "DENSE_RANDOM_F16_EXACT"
+  }
+]
