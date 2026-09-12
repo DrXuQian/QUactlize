@@ -5,7 +5,9 @@ The remaining N5120/K8192 gap has nearly equal grid/block, achieved occupancy
 and DRAM bytes versus raw reference, but 3.70x L1/L2 traffic and 1.78x vector
 loads. This experiment changes reader internals without changing canonical
 K-pack4 bytes, dot accumulation precision, reduction topology or production
-selection. PPU numerical/performance admission is **pending**.
+selection. [PPU results are now reviewed](Q4_READER_REUSE_RESULTS_20260912.md):
+all declared numerical cells pass; one of two shapes meets the strict
+reference performance target. Shipping admission remains out of scope.
 
 ## Exact experiment matrix
 
