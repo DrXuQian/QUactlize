@@ -20,3 +20,4 @@ prebuilt/ppu0010/q4-simt-ab-v1/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/q4-astage-v1/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/q4-bload-v1/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/q4-h800-port-v1/*.so filter=lfs diff=lfs merge=lfs -text
+prebuilt/ppu0010/q4-cold-geometry-v1/*.so filter=lfs diff=lfs merge=lfs -text

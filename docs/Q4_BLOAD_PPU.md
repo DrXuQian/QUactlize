@@ -134,3 +134,22 @@ compares both fragment implementations with all three controls;
 result or latency improvement is claimed from compilation or the host layout
 proof. If the raw transport or numeric gate fails, the affected timing is not
 admitted.
+
+## Recorded PPU result
+
+`q4-bload-ppu.lWPrQW.results.tgz` (SHA256
+`8f408a70b30c55a5a23878525ed59465f9eea11b60112691ff79a60b2d482748`)
+validated all 72 timing cells and five profiles. Maximum conditioned error
+was `2.971e-5`; paired transport outputs were bit-identical. The new AIU
+body did not reach parity: its best warm/rotating times were 32.70/38.08 us,
+versus current K-pack 19.78/24.94 us and reference 20.27/22.57 us.
+
+At the matched BK1024/WK8 profile, direct versus AIU vector loads fell from
+737280 to 409600. The remaining count matches 327680 A b32 loads plus 81920
+metadata b128 loads in the ISA. L1-L2 transaction bytes fell from 89.42 MB
+to 45.81 MB, while sync-stall/issue rose from 0.0076 to 0.859 (ratios, not
+wall-time percentages). Both direct and AIU versions of the new work mapping
+remain slow. This experiment is not a production replacement.
+
+The next acceptance target is [N8192/K5120 rotating weights only](Q4_COLD_GEOMETRY_PPU.md),
+starting from the current group-affine body rather than this AIU work mapping.
