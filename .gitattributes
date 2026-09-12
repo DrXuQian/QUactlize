@@ -25,3 +25,4 @@ prebuilt/ppu0010/q4-cold-shapes-v1/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/q4-config-sweep-v1/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/q4-reader-reuse-v1/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/q4-reader-followup-v1/*.so filter=lfs diff=lfs merge=lfs -text
+prebuilt/ppu0010/q4-small-latency-v1/*.so filter=lfs diff=lfs merge=lfs -text
