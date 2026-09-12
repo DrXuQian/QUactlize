@@ -1,0 +1,341 @@
+{
+  "schema": "quactlize.q4-cold-config-baselines.v1",
+  "source": "a008d20",
+  "archive": "q4-cold-shapes-ppu.Eppghl.results.tgz",
+  "archive_sha256": "72919bd33f7bf1ea0f7777b6423e11e36e4bccb21f1d0c1fe72b9dd03660f24a",
+  "authority": {
+    "schema": "quactlize.q4-cold-shapes-run.v1",
+    "shapes": [
+      [
+        512,
+        2048
+      ],
+      [
+        1024,
+        5120
+      ],
+      [
+        4096,
+        2048
+      ],
+      [
+        4096,
+        4096
+      ],
+      [
+        5120,
+        8192
+      ],
+      [
+        8192,
+        5120
+      ]
+    ],
+    "mode": "rotating",
+    "rounds": 6,
+    "samples": 15,
+    "device": {
+      "ordinal": 0,
+      "pci": "0000:08:00.0",
+      "visible_devices": "0",
+      "name": "PPU-ZW810",
+      "sm": 1,
+      "warp": 32,
+      "l2_bytes": 67108864,
+      "reported_l2_bytes": 0,
+      "l2_override": true,
+      "l2_source": "EXPLICIT_OVERRIDE",
+      "l2_attribute": {
+        "status": 0,
+        "bytes": 67108864
+      }
+    },
+    "control_receipt_sha256": "7ebfaeb285c037060f3fe790fdbdf8761e8488f3ef205c145242409e2ebf735b",
+    "fixtures": {
+      "512x2048": "011bfa2daf0d82062e5c77670087e819f5d0c7565a0d1eca03d5e9326f1eb2da",
+      "1024x5120": "7dbe56a0083bf71d32d7711688e118ebeeddcd49e6ffc8cd2c20c53ae2ada9df",
+      "4096x2048": "c6e69226605311074df3859daca57f2e52ba77f6341054767b76c0ce87b8de7d",
+      "4096x4096": "26a698a281c6c11d98d7bbd74ab8ef992b2b8a41f5d24030b8ab65650cb51aeb",
+      "5120x8192": "cb221ae77612e45c28c0972651a20ccd6e37f0512a7c662ecaaf5e39d336910d",
+      "8192x5120": "12ba6380956eb65b8374bbdca6e1427bee1cd679b7da7d4552e4619626225241"
+    },
+    "recipes": {
+      "512x2048": {
+        "xplane": [
+          1,
+          8,
+          1
+        ],
+        "raw-reference": [
+          1,
+          8,
+          2
+        ],
+        "kpack-current": [
+          1,
+          16,
+          1
+        ],
+        "kpack-c8": [
+          8,
+          8,
+          1
+        ]
+      },
+      "1024x5120": {
+        "xplane": [
+          1,
+          8,
+          1
+        ],
+        "raw-reference": [
+          1,
+          8,
+          2
+        ],
+        "kpack-current": [
+          2,
+          10,
+          1
+        ],
+        "kpack-c8": [
+          8,
+          8,
+          1
+        ]
+      },
+      "4096x2048": {
+        "xplane": [
+          2,
+          8,
+          1
+        ],
+        "raw-reference": [
+          2,
+          8,
+          1
+        ],
+        "kpack-current": [
+          4,
+          8,
+          1
+        ],
+        "kpack-c8": [
+          8,
+          8,
+          1
+        ]
+      },
+      "4096x4096": {
+        "xplane": [
+          2,
+          8,
+          1
+        ],
+        "raw-reference": [
+          2,
+          8,
+          1
+        ],
+        "kpack-current": [
+          4,
+          8,
+          1
+        ],
+        "kpack-c8": [
+          8,
+          8,
+          1
+        ]
+      },
+      "5120x8192": {
+        "xplane": [
+          2,
+          8,
+          1
+        ],
+        "raw-reference": [
+          4,
+          4,
+          2
+        ],
+        "kpack-current": [
+          4,
+          8,
+          1
+        ],
+        "kpack-c8": [
+          8,
+          8,
+          1
+        ]
+      },
+      "8192x5120": {
+        "xplane": [
+          4,
+          8,
+          1
+        ],
+        "raw-reference": [
+          4,
+          8,
+          1
+        ],
+        "kpack-current": [
+          4,
+          8,
+          1
+        ],
+        "kpack-c8": [
+          8,
+          8,
+          1
+        ]
+      }
+    },
+    "candidate": "4c4b9c1a2b1ab384916fe2f7d72d5db8fcb51cd27e11a39fb0c1dc1e89c98b6a",
+    "controls": "90255b864ba5eb080119c8562c68f0e030cb373d1bca0101d4155408cc3316c7",
+    "baseline": "ea64bf610a340999e7e42ad486700decda2a1239c03eac1b9a6713f658bf95d8",
+    "runtime": {
+      "libhggc_wrapper.so": "71c32cb41191458503234324360fcd3f1fa890dd5a082d465bb07328630c775e",
+      "libhggcrt1.so": "f4765821e374712a5d9a21cb7276101067ff7da56f9e3c55366ffe88c1997e9f",
+      "libhggc.so": "4acb6f71da458fbef346db163e5c04a1bdc341c8c560158412ec2c9618c1525a",
+      "libhg_wrapper.so": "fd93f23bfb05dfee0ffa48fd07d3c0cf6d8ab37d266e12f841ee056291affcd5"
+    },
+    "sources": {
+      "dev/gemv_ppu/run_cold_shapes.py": "5c3764d3afd88f8ebb94a924204bc4a0e05bf7f6f52a89b0f5206c0518a380a0",
+      "dev/gemv_ppu/cold_shapes.py": "562bac79f32f0f9573f632f2652489ef14b5bf4e1c393682528eec63764303bd",
+      "dev/gemv_ppu/run_cold_geometry.py": "eca1f535c8a87a3cc49510131e60de2479f31660f4f912c1e3b983111afd0948",
+      "dev/gemv_ppu/run.py": "edb15e3e944c646b2989caeabbf48d465ef5847d2c83389950087845875cf2a2",
+      "dev/gemv_ppu/campaign.py": "f91c1f6fcdc45bd652ecaee06ad749cb0c346d141ad962cdb4bec7403bae383d",
+      "dev/gemv_ppu/run_bload.py": "87cdfa3337c326836e243a6d04a664ba7bf475aec71c5127bea529ddb6249849",
+      "dev/gemv_ppu/run_h800_port.py": "958884cab5732890f6becb311da67cda75dec3ae7c88c7e19de8a3ecaf17fccf",
+      "dev/gemv_ppu/h800_port.py": "90e5329f75ba40a4a8724ac99c5c51cb8cdc9804913d0512edaa04ee36f7f5b9",
+      "tools/run_kpack_gemv_gate.py": "d74357f53daf4dd7afce203c61295bd0d405e5265395adec4917eebd9793be5e",
+      "tools/run_kpack_grouped_decode_probe.py": "276e67aa9fcc2545f5b4f481ec84d35a7d066998c48dd2c3df3dc926504fff82",
+      "tools/profile_kpack_gpu_compact.py": "bdce1b8ae8a5b41b0415838fa3d33bea9d7d27bd3a042acfc1f69457e5af8572"
+    }
+  },
+  "cases": [
+    {
+      "shape": [
+        1,
+        512,
+        2048
+      ],
+      "median_us": {
+        "xplane": 3.425820264965296,
+        "raw-reference": 2.4493358796462417,
+        "kpack-current": 2.9437500052154064,
+        "kpack-c8": 5.296366987749934
+      },
+      "baseline": "kpack-current",
+      "recipe": [
+        1,
+        16,
+        1
+      ],
+      "implementation": "meta-static-global-rs-fast-bare-av"
+    },
+    {
+      "shape": [
+        1,
+        1024,
+        5120
+      ],
+      "median_us": {
+        "xplane": 6.841346048391783,
+        "raw-reference": 5.300384587966478,
+        "kpack-current": 6.914615631103516,
+        "kpack-c8": 11.317500128195835
+      },
+      "baseline": "kpack-current",
+      "recipe": [
+        2,
+        10,
+        1
+      ],
+      "implementation": "affine8-early-fast-bare-a4"
+    },
+    {
+      "shape": [
+        1,
+        4096,
+        2048
+      ],
+      "median_us": {
+        "xplane": 6.943749962374568,
+        "raw-reference": 6.536250002682209,
+        "kpack-current": 7.095937617123127,
+        "kpack-c8": 7.269999943673611
+      },
+      "baseline": "kpack-current",
+      "recipe": [
+        4,
+        8,
+        1
+      ],
+      "implementation": "affine4-early-fast-bare"
+    },
+    {
+      "shape": [
+        1,
+        4096,
+        4096
+      ],
+      "median_us": {
+        "xplane": 11.22312480583787,
+        "raw-reference": 10.589375160634518,
+        "kpack-current": 11.763125192373991,
+        "kpack-c8": 12.201874982565641
+      },
+      "baseline": "kpack-current",
+      "recipe": [
+        4,
+        8,
+        1
+      ],
+      "implementation": "affine4-early-fast-bare"
+    },
+    {
+      "shape": [
+        1,
+        5120,
+        8192
+      ],
+      "median_us": {
+        "xplane": 22.909143141337804,
+        "raw-reference": 22.545142684664043,
+        "kpack-current": 24.95714340891157,
+        "kpack-c8": 27.785142830439977
+      },
+      "baseline": "kpack-current",
+      "recipe": [
+        4,
+        8,
+        1
+      ],
+      "implementation": "affine4-early-fast-bare"
+    },
+    {
+      "shape": [
+        1,
+        8192,
+        5120
+      ],
+      "median_us": {
+        "xplane": 22.38685744149344,
+        "raw-reference": 22.409143618174962,
+        "kpack-current": 27.804571390151978,
+        "kpack-c8": 22.94971432004656
+      },
+      "baseline": "kpack-c8",
+      "recipe": [
+        8,
+        8,
+        1
+      ],
+      "implementation": "affine4-early-fast-bare"
+    }
+  ]
+}

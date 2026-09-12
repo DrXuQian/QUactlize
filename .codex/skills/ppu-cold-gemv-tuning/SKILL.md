@@ -81,6 +81,18 @@ the installed SDK metric definitions if a sum is ambiguous.
 
 Write down lane-to-N/K ownership, contiguous request widths, workers, passes,
 tail activity, CTA count and reduction ownership before changing code.
+For every candidate config, derive B, metadata and A byte addresses per warp,
+vector widths, unique bytes, duplicate reads and 32/64/128-byte footprint
+models. Record actual plane-base alignment. A coalesced B request does not
+imply efficient A/metadata requests, and source-level bytes are not measured
+DRAM traffic. Compare emitted native load widths with the address model;
+the compiler may combine or scalarize source loads.
+
+Check whether dequantization really uses a fast code path in both the source
+and native ISA. Separate code extraction, scale/min decoding, conversion and
+dot accumulation. `lop3` plus half2 code construction is not FP16 accumulation
+and does not remove metadata shifts or FP32 affine work. Static ISA counts
+are not dynamic instructions or timings.
 Look for excess on-chip transactions even when DRAM bytes are already near
 the minimum. Higher occupancy is not intrinsically better if it increases
 memory-issue pressure. Conversely, fewer CTAs do not intrinsically help.
@@ -92,11 +104,20 @@ instruction overhead; retain them only after a full-scope measured gain.
 NVIDIA results guide hypotheses, but PPU lowering and counters decide PPU
 acceptance. Do not assume a transplanted winner stays optimal.
 
-For the user's current tolerance, a complete shape passes when its selected
-K-pack time is at most 1.05 times **each** required contemporaneous control.
+For the user's current Q4 cold-tuning bottom line (2026-09-12), selected
+K-pack must be **no slower than raw-GGUF reference** in contemporaneous
+confirmation medians: no 5% regression allowance against reference. Report
+round distributions rather than interpreting a marginal median as proof of
+a true speedup. Xplane within 5% remains a secondary comparison. Historical
+5%-against-both passes must not be relabelled as meeting this stricter target.
 Report missing data separately from measured regressions, and retain the old
 K-pack winner when the new mapping loses. A single passing shape does not
 authorize a global selector change or admission of untested M/grouped/qtypes.
+
+When sweeping configs, publish the actual inventory and pruning reasons;
+do not replace the sweep with an unexplained handful of candidates. Include
+the previous per-shape winner even if it uses another reader body. A bounded
+inventory yields a best measured configuration, not proof of global optimality.
 
 Keep bounded experiment libraries isolated from shipping selection. A box
 handoff should execute an already built, hash-verified payload, retain

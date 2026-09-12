@@ -1,5 +1,36 @@
 # K-pack incremental optimization backlog
 
+## Weekend delivery target, 2026-09-12/13
+
+Target is measured decoding improvement plus llama.cpp integration over the
+weekend, contingent on prompt box returns and the measured bottom line. It
+is not a promise of global optimality, nor admission of all qtypes/M values
+from the first M1/Q4 sweep. Preserve one canonical format. Xplane is an
+experiment control only, never the deployed fallback.
+
+| Order | Work | State / acceptance |
+|---|---|---|
+| 1 | Q4 cold M1 six-shape config sweep | LOCAL COMPILED; BOX PENDING. [393 explicit C/W/P configs](../../docs/Q4_CONFIG_SWEEP_PPU.md), actual per-shape previous winner retained, top-three confirmation. New bottom line: no slower than raw-GGUF FP32-accumulation reference (0% allowance); Xplane within 5% secondary. Latest fixed cohort is 0/6 against the new ref line. |
+| 2 | Diagnose remaining losing families | BOX RESULTS NEEDED. Compare B/A/metadata lane addresses, observed pointer alignment, static native ISA and actual ACU transactions/stalls. Code unpack is fast lop3/half2; metadata/FP32 affine costs remain. Expand one justified axis if the bounded inventory misses parity. |
+| 3 | Small-M and indexed/batched deployment coverage | NEXT. Extend confirmed reader/config to dense M=1..7 and indexed M=1/top8 MoE using actual routing. Count complete call/reduction/adapters; M1 dense parity does not admit these. Other qtypes need their own word/plane maps and tests, not copied Q4 config identities. |
+| 4 | Plugin into llama.cpp | AFTER DEVICE ADMISSION. Add the winning implementation to the existing Quactlize dispatch/JIT path, preserve its ABI/canonical weights, retain supported canonical TC fallback outside measured scope. Verify actual dense MUL_MAT and MoE MUL_MAT_ID native symbols/configs in traces; a compiled DSO alone is not integration. |
+| 5 | End-to-end decode non-regression | BOX REQUIRED. Same model/shape/request-batch=1 versus llama.cpp native. Exclude first JIT/graph upload; report kernel and gather/router/reduction/scatter separately. Follow run_batched_bench.sh; numerical check plus steady-state asys. User bottom line: no slowdown versus native. |
+| 6 | Prefill vs dequant-first + DeepGEMM BF16 | NEW REQUEST; PENDING. Start real int4-model prefill M=2048 (M64 excluded), dense plus grouped. Same original GGUF values, identical shape/routing; compare our selected path with device weight dequantization to BF16 plus DeepGEMM BF16 GEMM. Report dequant-only, resident GEMM-only, **combined CUDA-event span**, workspace/peak memory and full adapters. Do not omit expansion or assume a reusable BF16/scale cache. For MoE expand the experts actually consumed, report their count/bytes, and do not charge one arm all E while the other reads only active experts. Warm JIT first. |
+
+Working order: Saturday finish Q4 cold tuning/coverage; Sunday integrate the
+admitted selection and measure model decoding, then the prefill comparator.
+If a scope remains slower/untested, report it explicitly rather than declare
+the weekend goal complete. Do not delay the ready GEMV box handoff for the
+prefill comparison implementation.
+
+Local prefill reference checkout found at `../DeepGEMM-for-sail`, inspected
+HEAD `f89eae1`. Its `deep_gemm/jit_kernels/gemm.py` dense BF16 entry and
+grouped BF16 entries exported in `deep_gemm/__init__.py` must be used for
+their respective routes; dense and grouped configs are not interchangeable.
+Record the actual checkout/dirty source hashes at measurement time. BF16
+weight rounding versus FP16/FP32 group-affine is a numerical-contract
+difference to test, not a reason to silently change our input precision.
+
 ## Budgeted tuning delivery (2026-09-06)
 
 The user-approved tuning objective is now a practical near-optimal policy with
@@ -57,7 +88,8 @@ This is CUDA evidence only; PPU selection and libraries are unchanged.
 | PPU AIU/swzl/transpose SIMT B reader | NUMERIC PASS; PERFORMANCE NOT ADMITTED | [B-transport experiment](../../docs/Q4_BLOAD_PPU.md): 72 cells + five ACU profiles validated from `q4-bload-ppu.lWPrQW.results.tgz`. N5120/K8192 AIU best 32.70 us warm / 38.08 us rotating, slower than current 19.78 / 24.94. B vector loads removed, but 327680 A + 81920 metadata loads and per-stage sync remain. Retain as diagnostic only; no production replacement. |
 | Supplied raw-GGUF GEMV FP32 reference / H800 replay | H800 FIXED-RECIPE TIMING COMPLETE; COUNTERS UNAVAILABLE | FP16 inner dot accumulators replaced with FP32, raw GGUF reader retained. [H800 comparison](../../docs/Q4_H800_FIXED_20260911.md): N5120/K8192 K-pack trails FP32 Xplane by 21.76% warm / 20.39% rotating; raw reference is within 2.54% / 0.33% of K-pack. NCU denied by host counter permissions, so same-stall causality is not established. |
 | H800 optimized M1 port on PPU | NUMERIC PASS; PARITY OPEN | [Fresh three-arm PPU retest](../../docs/Q4_PPU_H800_PORT_RETEST_20260911.md): 1,236 valid records; 9/12 within 5% of Xplane, 3/12 of raw reference. N8192/K5120 still +18–24%; N5120/K8192 has ~3.7x L1-L2 traffic but similar DRAM bytes/occupancy. Retune native geometry and isolate repeated A/metadata loads; unchanged canonical bytes. |
-| PPU N8192/K5120 cold-only C4/C8 | PREBUILT READY; DEVICE PENDING | [Focused geometry A/B](../../docs/Q4_COLD_GEOMETRY_PPU.md): reuse exact C4/controls, compile only C8/W8/P4; 24 rotating-weight timing cells + four ACU reports. Warm results no longer count toward this PPU acceptance target (rotating matrix currently 0/6 within 5% of both controls). Historical target 23.491 us vs current 27.817 us; threshold recalculated from new paired controls. No AIU, JIT or format change. |
+| PPU N8192/K5120 cold-only C4/C8 | BOX MEASURED; HISTORICAL 5% PASS, NEW REF LINE OPEN | [Focused geometry A/B](../../docs/Q4_COLD_GEOMETRY_PPU.md) completed: 24 timing cells + four ACU reports. C8 ~23.00 us, -17.16% versus C4, +2.73% versus raw ref; L1/L2 traffic nearly halves. This is not a pass under the later 0% reference allowance. No AIU, JIT or format change. |
+| PPU six-shape cold config selection | FIXED MAPPING BOX MEASURED; CONFIG SWEEP READY | Latest C4/C8 shape campaign validates 144 timing cells +24 reports. Best prior K-pack is retained per shape; C8 wins only N8192/K5120. [Next 393-config sweep](../../docs/Q4_CONFIG_SWEEP_PPU.md) exposes C/W/P, access patterns and native fast-dequant ISA; local tests pass, box numeric/performance pending. |
 | H800 dense M1–7 and indexed M1 | NUMERIC 108/108; PERF 105/108 | [Extended six-family test](../../docs/H800_SMALLM_20260911.md): E256/top8 shared and independent A; six rounds x15, warm/rotating. Three small dense gaps remain at 7–8%; larger four families 72/72 within 5% of both controls. Not PPU or production admission. |
 | H800 MoE prepare | NUMERIC 96/96; PPU PENDING | Vector M1 gather and compact M2–4 router/directory prefix: merged softmax cases improve ~22–27% for 2/4 tokens, up to 15.8% for M1. No B weight copy; unchanged fallback. Top8 tokens5–7 still require a separate >32-row contract extension. |
 | Remaining SIMT parity | OPEN | Close the three H800 small-M gaps, PPU tuning and other formats; 5090 recheck deferred while machine is shut down. H800/RTX5070 performance does not admit PPU. |

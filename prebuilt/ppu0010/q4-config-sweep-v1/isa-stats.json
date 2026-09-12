@@ -1,0 +1,6928 @@
+{
+  "n512-k2048-c1-w1-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 12,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c1-w2-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 6,
+      "vmem.ld.b32": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 32,
+      "v.add.f16x2": 16,
+      "v.fma.f16x2": 16,
+      "v.fma.f32.rtte": 66,
+      "v.shrl.b64": 4,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c2-w1-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c2-w2-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c2-w4-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32": 8,
+      "vmem.ld.b32x4": 2
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 32,
+      "v.add.f16x2": 16,
+      "v.fma.f16x2": 16,
+      "v.fma.f32.rtte": 66,
+      "v.shrl.b64": 4,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c4-w1-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x4": 16,
+      "vmem.ld.b32": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f16x2": 128,
+      "v.fma.f32.rtte": 528,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c4-w2-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c4-w4-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c4-w5-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c4-w8-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32": 8,
+      "vmem.ld.b32x4": 2
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 32,
+      "v.add.f16x2": 16,
+      "v.fma.f16x2": 16,
+      "v.fma.f32.rtte": 66,
+      "v.shrl.b64": 4,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c8-w1-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32": 64,
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.shrl.b64": 32,
+      "v.fma.f32.rtte": 528,
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f16x2": 128,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c8-w2-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x4": 16,
+      "vmem.ld.b32": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f16x2": 128,
+      "v.fma.f32.rtte": 528,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c8-w4-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c8-w5-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.fma.f16x2": 64,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c8-w8-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c8-w10-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c8-w16-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32": 8,
+      "vmem.ld.b32x4": 2
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 32,
+      "v.add.f16x2": 16,
+      "v.fma.f16x2": 16,
+      "v.fma.f32.rtte": 66,
+      "v.shrl.b64": 4,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c16-w2-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32": 64,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.shrl.b64": 32,
+      "v.fma.f32.rtte": 528,
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f16x2": 128,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c16-w4-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x4": 16,
+      "vmem.ld.b32": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f16x2": 128,
+      "v.fma.f32.rtte": 528,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c16-w5-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 28,
+      "vmem.ld.b32x4": 14,
+      "vmem.ld.b32": 56
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 224,
+      "v.add.f16x2": 112,
+      "v.fma.f16x2": 112,
+      "v.fma.f32.rtte": 462,
+      "v.shrl.b64": 28,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c16-w8-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c16-w10-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.fma.f16x2": 64,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c16-w16-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c16-w20-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c16-w32-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32": 8,
+      "vmem.ld.b32x4": 2
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 32,
+      "v.add.f16x2": 16,
+      "v.fma.f16x2": 16,
+      "v.fma.f32.rtte": 66,
+      "v.shrl.b64": 4,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c1-w1-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 16,
+      "vmem.ld.b32x2": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n512-k2048-c1-w2-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32x2": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 136,
+      "v.fma.f16x2": 32,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n512-k2048-c2-w1-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x2": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n512-k2048-c2-w2-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n512-k2048-c2-w4-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x2": 8,
+      "vmem.ld.b32x4": 4
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 136,
+      "v.fma.f16x2": 32,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n512-k2048-c4-w1-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x2": 64,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n512-k2048-c4-w2-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x2": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n512-k2048-c4-w4-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n512-k2048-c4-w5-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n512-k2048-c4-w8-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x2": 8,
+      "vmem.ld.b32x4": 4
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 136,
+      "v.fma.f16x2": 32,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n512-k2048-c8-w1-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n512-k2048-c8-w2-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x2": 64,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n512-k2048-c8-w4-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x2": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n512-k2048-c8-w5-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x2": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n512-k2048-c8-w8-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n512-k2048-c8-w10-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n512-k2048-c8-w16-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x2": 8,
+      "vmem.ld.b32x4": 4
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 136,
+      "v.fma.f16x2": 32,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n512-k2048-c1-w1-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 40
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n512-k2048-c1-w2-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 20
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n512-k2048-c2-w1-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n512-k2048-c2-w2-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n512-k2048-c2-w4-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n512-k2048-c4-w1-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n512-k2048-c4-w2-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n512-k2048-c4-w4-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n512-k2048-c4-w5-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n512-k2048-c4-w8-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c1-w1-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 30,
+      "vmem.ld.b32": 40
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 160,
+      "v.add.f16x2": 80,
+      "v.fma.f16x2": 80,
+      "v.fma.f32.rtte": 330,
+      "v.shrl.b64": 20,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c1-w2-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 18,
+      "vmem.ld.b32": 24
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 96,
+      "v.add.f16x2": 48,
+      "v.fma.f16x2": 48,
+      "v.fma.f32.rtte": 198,
+      "v.shrl.b64": 12,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c1-w4-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 12,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c1-w5-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 6,
+      "vmem.ld.b32": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 32,
+      "v.add.f16x2": 16,
+      "v.fma.f16x2": 16,
+      "v.fma.f32.rtte": 66,
+      "v.shrl.b64": 4,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c2-w1-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 40,
+      "vmem.ld.b32x4": 20,
+      "vmem.ld.b32": 80
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 320,
+      "v.add.f16x2": 160,
+      "v.fma.f16x2": 160,
+      "v.fma.f32.rtte": 660,
+      "v.shrl.b64": 40,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c2-w2-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 20,
+      "vmem.ld.b32x4": 10,
+      "vmem.ld.b32": 40
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 160,
+      "v.add.f16x2": 80,
+      "v.fma.f16x2": 80,
+      "v.fma.f32.rtte": 330,
+      "v.shrl.b64": 20,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c2-w4-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 12,
+      "vmem.ld.b32x4": 6,
+      "vmem.ld.b32": 24
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 96,
+      "v.add.f16x2": 48,
+      "v.fma.f16x2": 48,
+      "v.fma.f32.rtte": 198,
+      "v.shrl.b64": 12,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c2-w5-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c2-w8-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c2-w10-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32": 8,
+      "vmem.ld.b32x4": 2
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 32,
+      "v.add.f16x2": 16,
+      "v.fma.f16x2": 16,
+      "v.fma.f32.rtte": 66,
+      "v.shrl.b64": 4,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c4-w2-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 40,
+      "vmem.ld.b32x4": 20,
+      "vmem.ld.b32": 80
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 320,
+      "v.add.f16x2": 160,
+      "v.fma.f16x2": 160,
+      "v.fma.f32.rtte": 660,
+      "v.shrl.b64": 40,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c4-w4-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 20,
+      "vmem.ld.b32x4": 10,
+      "vmem.ld.b32": 40
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 160,
+      "v.add.f16x2": 80,
+      "v.fma.f16x2": 80,
+      "v.fma.f32.rtte": 330,
+      "v.shrl.b64": 20,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c4-w5-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c4-w8-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 12,
+      "vmem.ld.b32x4": 6,
+      "vmem.ld.b32": 24
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 96,
+      "v.add.f16x2": 48,
+      "v.fma.f16x2": 48,
+      "v.fma.f32.rtte": 198,
+      "v.shrl.b64": 12,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c4-w10-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c4-w16-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c4-w20-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32": 8,
+      "vmem.ld.b32x4": 2
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 32,
+      "v.add.f16x2": 16,
+      "v.fma.f16x2": 16,
+      "v.fma.f32.rtte": 66,
+      "v.shrl.b64": 4,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c8-w4-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 40,
+      "vmem.ld.b32x4": 20,
+      "vmem.ld.b32": 80
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 320,
+      "v.add.f16x2": 160,
+      "v.fma.f16x2": 160,
+      "v.fma.f32.rtte": 660,
+      "v.shrl.b64": 40,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c8-w5-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x4": 16,
+      "vmem.ld.b32": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.fma.f16x2": 128,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 528,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c8-w8-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 20,
+      "vmem.ld.b32x4": 10,
+      "vmem.ld.b32": 40
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 160,
+      "v.add.f16x2": 80,
+      "v.fma.f16x2": 80,
+      "v.fma.f32.rtte": 330,
+      "v.shrl.b64": 20,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c8-w10-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c8-w16-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 12,
+      "vmem.ld.b32x4": 6,
+      "vmem.ld.b32": 24
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 96,
+      "v.add.f16x2": 48,
+      "v.fma.f16x2": 48,
+      "v.fma.f32.rtte": 198,
+      "v.shrl.b64": 12,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c8-w20-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c8-w32-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c16-w5-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32": 64,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.shrl.b64": 32,
+      "v.fma.f32.rtte": 528,
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f16x2": 128,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c16-w8-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 40,
+      "vmem.ld.b32": 80,
+      "vmem.ld.b32x4": 20
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 320,
+      "v.add.f16x2": 160,
+      "v.fma.f32.rtte": 660,
+      "v.fma.f16x2": 160,
+      "v.shrl.b64": 40,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c16-w10-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32": 64,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 528,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c16-w16-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 20,
+      "vmem.ld.b32": 40,
+      "vmem.ld.b32x4": 10
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 160,
+      "v.add.f16x2": 80,
+      "v.fma.f32.rtte": 330,
+      "v.fma.f16x2": 80,
+      "v.shrl.b64": 20,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c16-w20-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32": 32,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c16-w32-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 12,
+      "vmem.ld.b32": 24,
+      "vmem.ld.b32x4": 6
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 96,
+      "v.add.f16x2": 48,
+      "v.fma.f32.rtte": 198,
+      "v.fma.f16x2": 48,
+      "v.shrl.b64": 12,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n1024-k5120-c1-w1-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x2": 40,
+      "vmem.ld.b32x4": 40
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 320,
+      "v.add.f16x2": 160,
+      "v.fma.f32.rtte": 680,
+      "v.fma.f16x2": 160,
+      "v.shrl.b64": 80,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c1-w2-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x2": 24,
+      "vmem.ld.b32x4": 24
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 192,
+      "v.add.f16x2": 96,
+      "v.fma.f32.rtte": 408,
+      "v.fma.f16x2": 96,
+      "v.shrl.b64": 48,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c1-w4-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c1-w5-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32x2": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 136,
+      "v.fma.f16x2": 32,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c2-w1-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c2-w2-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 20,
+      "vmem.ld.b32x2": 40,
+      "vmem.ld.b32x4": 20
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 320,
+      "v.add.f16x2": 160,
+      "v.fma.f32.rtte": 680,
+      "v.fma.f16x2": 160,
+      "v.shrl.b64": 80,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c2-w4-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 12,
+      "vmem.ld.b32x2": 24,
+      "vmem.ld.b32x4": 12
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 192,
+      "v.add.f16x2": 96,
+      "v.fma.f32.rtte": 408,
+      "v.fma.f16x2": 96,
+      "v.shrl.b64": 48,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c2-w5-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c2-w8-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c2-w10-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x2": 8,
+      "vmem.ld.b32x4": 4
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 136,
+      "v.fma.f16x2": 32,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c4-w2-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c4-w4-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 20,
+      "vmem.ld.b32x2": 40,
+      "vmem.ld.b32x4": 20
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 320,
+      "v.add.f16x2": 160,
+      "v.fma.f32.rtte": 680,
+      "v.fma.f16x2": 160,
+      "v.shrl.b64": 80,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c4-w5-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x2": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c4-w8-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 12,
+      "vmem.ld.b32x2": 24,
+      "vmem.ld.b32x4": 12
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 192,
+      "v.add.f16x2": 96,
+      "v.fma.f32.rtte": 408,
+      "v.fma.f16x2": 96,
+      "v.shrl.b64": 48,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c4-w10-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c4-w16-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c4-w20-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x2": 8,
+      "vmem.ld.b32x4": 4
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 136,
+      "v.fma.f16x2": 32,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c8-w4-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c8-w5-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x2": 64,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c8-w8-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 20,
+      "vmem.ld.b32x2": 40,
+      "vmem.ld.b32x4": 20
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 320,
+      "v.add.f16x2": 160,
+      "v.fma.f32.rtte": 680,
+      "v.fma.f16x2": 160,
+      "v.shrl.b64": 80,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c8-w10-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x2": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c8-w16-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 12,
+      "vmem.ld.b32x2": 24,
+      "vmem.ld.b32x4": 12
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 192,
+      "v.add.f16x2": 96,
+      "v.fma.f32.rtte": 408,
+      "v.fma.f16x2": 96,
+      "v.shrl.b64": 48,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c8-w20-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c8-w32-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c1-w1-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 100
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 640,
+      "v.add.f16x2": 320,
+      "v.fma.f32.rtte": 1360,
+      "v.fma.f16x2": 320,
+      "v.shrl.b64": 160,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c1-w2-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 60
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 384,
+      "v.add.f16x2": 192,
+      "v.fma.f32.rtte": 816,
+      "v.fma.f16x2": 192,
+      "v.shrl.b64": 96,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c1-w4-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 40
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c1-w5-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 20
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c2-w1-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 20,
+      "vmem.ld.b32x4": 80
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 640,
+      "v.add.f16x2": 320,
+      "v.fma.f32.rtte": 1360,
+      "v.fma.f16x2": 320,
+      "v.shrl.b64": 160,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c2-w2-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 20,
+      "vmem.ld.b32x4": 80
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 640,
+      "v.add.f16x2": 320,
+      "v.fma.f32.rtte": 1360,
+      "v.fma.f16x2": 320,
+      "v.shrl.b64": 160,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c2-w4-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 12,
+      "vmem.ld.b32x4": 48
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 384,
+      "v.add.f16x2": 192,
+      "v.fma.f32.rtte": 816,
+      "v.fma.f16x2": 192,
+      "v.shrl.b64": 96,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c2-w5-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c2-w8-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c2-w10-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c4-w2-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 20,
+      "vmem.ld.b32x4": 80
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 640,
+      "v.add.f16x2": 320,
+      "v.fma.f32.rtte": 1360,
+      "v.fma.f16x2": 320,
+      "v.shrl.b64": 160,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c4-w4-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 20,
+      "vmem.ld.b32x4": 80
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 640,
+      "v.add.f16x2": 320,
+      "v.fma.f32.rtte": 1360,
+      "v.fma.f16x2": 320,
+      "v.shrl.b64": 160,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c4-w5-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c4-w8-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 12,
+      "vmem.ld.b32x4": 48
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 384,
+      "v.add.f16x2": 192,
+      "v.fma.f32.rtte": 816,
+      "v.fma.f16x2": 192,
+      "v.shrl.b64": 96,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c4-w10-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c4-w16-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n1024-k5120-c4-w20-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c1-w1-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 12,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c1-w2-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 6,
+      "vmem.ld.b32": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 32,
+      "v.add.f16x2": 16,
+      "v.fma.f16x2": 16,
+      "v.fma.f32.rtte": 66,
+      "v.shrl.b64": 4,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c2-w1-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c2-w2-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c2-w4-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32": 8,
+      "vmem.ld.b32x4": 2
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 32,
+      "v.add.f16x2": 16,
+      "v.fma.f16x2": 16,
+      "v.fma.f32.rtte": 66,
+      "v.shrl.b64": 4,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c4-w1-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x4": 16,
+      "vmem.ld.b32": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f16x2": 128,
+      "v.fma.f32.rtte": 528,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c4-w2-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c4-w4-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c4-w5-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c4-w8-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32": 8,
+      "vmem.ld.b32x4": 2
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 32,
+      "v.add.f16x2": 16,
+      "v.fma.f16x2": 16,
+      "v.fma.f32.rtte": 66,
+      "v.shrl.b64": 4,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c8-w1-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32": 64,
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.shrl.b64": 32,
+      "v.fma.f32.rtte": 528,
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f16x2": 128,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c8-w2-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x4": 16,
+      "vmem.ld.b32": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f16x2": 128,
+      "v.fma.f32.rtte": 528,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c8-w4-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c8-w5-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.fma.f16x2": 64,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c8-w8-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c8-w10-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c8-w16-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32": 8,
+      "vmem.ld.b32x4": 2
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 32,
+      "v.add.f16x2": 16,
+      "v.fma.f16x2": 16,
+      "v.fma.f32.rtte": 66,
+      "v.shrl.b64": 4,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c16-w2-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32": 64,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.shrl.b64": 32,
+      "v.fma.f32.rtte": 528,
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f16x2": 128,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c16-w4-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x4": 16,
+      "vmem.ld.b32": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f16x2": 128,
+      "v.fma.f32.rtte": 528,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c16-w5-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 28,
+      "vmem.ld.b32x4": 14,
+      "vmem.ld.b32": 56
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 224,
+      "v.add.f16x2": 112,
+      "v.fma.f16x2": 112,
+      "v.fma.f32.rtte": 462,
+      "v.shrl.b64": 28,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c16-w8-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c16-w10-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.fma.f16x2": 64,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c16-w16-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c16-w20-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c16-w32-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32": 8,
+      "vmem.ld.b32x4": 2
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 32,
+      "v.add.f16x2": 16,
+      "v.fma.f16x2": 16,
+      "v.fma.f32.rtte": 66,
+      "v.shrl.b64": 4,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c1-w1-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c1-w2-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32x2": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 136,
+      "v.fma.f16x2": 32,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c2-w1-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x2": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c2-w2-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c2-w4-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x2": 8,
+      "vmem.ld.b32x4": 4
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 136,
+      "v.fma.f16x2": 32,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c4-w1-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x2": 64,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c4-w2-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x2": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c4-w4-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c4-w5-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c4-w8-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x2": 8,
+      "vmem.ld.b32x4": 4
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 136,
+      "v.fma.f16x2": 32,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c8-w1-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c8-w2-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x2": 64,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c8-w4-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x2": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c8-w5-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x2": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c8-w8-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c8-w10-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c8-w16-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x2": 8,
+      "vmem.ld.b32x4": 4
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 136,
+      "v.fma.f16x2": 32,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k2048-c1-w1-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 40
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c1-w2-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 20
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c2-w1-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c2-w2-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c2-w4-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c4-w1-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c4-w2-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c4-w4-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c4-w5-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k2048-c4-w8-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c1-w1-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 24,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c1-w2-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 12,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c1-w4-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 6,
+      "vmem.ld.b32": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 32,
+      "v.add.f16x2": 16,
+      "v.fma.f16x2": 16,
+      "v.fma.f32.rtte": 66,
+      "v.shrl.b64": 4,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c2-w1-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x4": 16,
+      "vmem.ld.b32": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f16x2": 128,
+      "v.fma.f32.rtte": 528,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c2-w2-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c2-w4-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c2-w5-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c2-w8-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32": 8,
+      "vmem.ld.b32x4": 2
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 32,
+      "v.add.f16x2": 16,
+      "v.fma.f16x2": 16,
+      "v.fma.f32.rtte": 66,
+      "v.shrl.b64": 4,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c4-w1-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32": 64,
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.shrl.b64": 32,
+      "v.fma.f32.rtte": 528,
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f16x2": 128,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c4-w2-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x4": 16,
+      "vmem.ld.b32": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f16x2": 128,
+      "v.fma.f32.rtte": 528,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c4-w4-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c4-w5-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c4-w8-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c4-w10-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c4-w16-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32": 8,
+      "vmem.ld.b32x4": 2
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 32,
+      "v.add.f16x2": 16,
+      "v.fma.f16x2": 16,
+      "v.fma.f32.rtte": 66,
+      "v.shrl.b64": 4,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c8-w2-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32": 64,
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.shrl.b64": 32,
+      "v.fma.f32.rtte": 528,
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f16x2": 128,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c8-w4-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x4": 16,
+      "vmem.ld.b32": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f16x2": 128,
+      "v.fma.f32.rtte": 528,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c8-w5-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 28,
+      "vmem.ld.b32x4": 14,
+      "vmem.ld.b32": 56
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 224,
+      "v.add.f16x2": 112,
+      "v.fma.f16x2": 112,
+      "v.fma.f32.rtte": 462,
+      "v.shrl.b64": 28,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c8-w8-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c8-w10-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c8-w16-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c8-w20-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c8-w32-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32": 8,
+      "vmem.ld.b32x4": 2
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 32,
+      "v.add.f16x2": 16,
+      "v.fma.f16x2": 16,
+      "v.fma.f32.rtte": 66,
+      "v.shrl.b64": 4,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c16-w4-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32": 64,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.shrl.b64": 32,
+      "v.fma.f32.rtte": 528,
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f16x2": 128,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c16-w5-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32": 64,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.shrl.b64": 32,
+      "v.fma.f32.rtte": 528,
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f16x2": 128,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c16-w8-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32": 64,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 528,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c16-w10-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 28,
+      "vmem.ld.b32": 56,
+      "vmem.ld.b32x4": 14
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 224,
+      "v.add.f16x2": 112,
+      "v.fma.f32.rtte": 462,
+      "v.fma.f16x2": 112,
+      "v.shrl.b64": 28,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c16-w16-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32": 32,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c16-w20-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32": 32,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c16-w32-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32": 16,
+      "vmem.ld.b32x4": 4
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.fma.f16x2": 32,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c1-w1-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x2": 32,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c1-w2-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c1-w4-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32x2": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 136,
+      "v.fma.f16x2": 32,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c2-w1-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x2": 64,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c2-w2-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x2": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c2-w4-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c2-w5-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c2-w8-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x2": 8,
+      "vmem.ld.b32x4": 4
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 136,
+      "v.fma.f16x2": 32,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c4-w1-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c4-w2-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x2": 64,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c4-w4-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x2": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c4-w5-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x2": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c4-w8-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c4-w10-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c4-w16-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x2": 8,
+      "vmem.ld.b32x4": 4
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 136,
+      "v.fma.f16x2": 32,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c8-w2-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c8-w4-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x2": 64,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c8-w5-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 28,
+      "vmem.ld.b32x2": 56,
+      "vmem.ld.b32x4": 28
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 448,
+      "v.add.f16x2": 224,
+      "v.fma.f32.rtte": 952,
+      "v.fma.f16x2": 224,
+      "v.shrl.b64": 112,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c8-w8-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x2": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c8-w10-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x2": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c8-w16-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c8-w20-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c8-w32-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x2": 8,
+      "vmem.ld.b32x4": 4
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 136,
+      "v.fma.f16x2": 32,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n4096-k4096-c1-w1-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 80
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c1-w2-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 40
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c1-w4-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 20
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c2-w1-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c2-w2-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c2-w4-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c2-w5-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c2-w8-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c4-w1-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c4-w2-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c4-w4-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c4-w5-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c4-w8-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c4-w10-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n4096-k4096-c4-w16-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c1-w1-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 48,
+      "vmem.ld.b32": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 528,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c1-w2-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 24,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c1-w4-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 12,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.fma.f16x2": 32,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c1-w5-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 12,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.fma.f16x2": 32,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c1-w8-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 6,
+      "vmem.ld.b32": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 32,
+      "v.add.f16x2": 16,
+      "v.fma.f16x2": 16,
+      "v.fma.f32.rtte": 66,
+      "v.shrl.b64": 4,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c2-w1-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32": 32,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.shrl.b64": 16,
+      "v.fma.f32.rtte": 264,
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f16x2": 64,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c2-w2-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x4": 16,
+      "vmem.ld.b32": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.fma.f16x2": 128,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 528,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c2-w4-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.fma.f16x2": 64,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c2-w5-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.fma.f16x2": 64,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c2-w8-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.fma.f16x2": 32,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c2-w10-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.fma.f16x2": 32,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c2-w16-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32": 8,
+      "vmem.ld.b32x4": 2
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 32,
+      "v.add.f16x2": 16,
+      "v.fma.f16x2": 16,
+      "v.fma.f32.rtte": 66,
+      "v.shrl.b64": 4,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c4-w2-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32": 32,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.shrl.b64": 16,
+      "v.fma.f32.rtte": 264,
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f16x2": 64,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c4-w4-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x4": 16,
+      "vmem.ld.b32": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.fma.f16x2": 128,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 528,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c4-w5-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 28,
+      "vmem.ld.b32x4": 14,
+      "vmem.ld.b32": 56
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 224,
+      "v.fma.f16x2": 112,
+      "v.add.f16x2": 112,
+      "v.fma.f32.rtte": 462,
+      "v.shrl.b64": 28,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c4-w8-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.fma.f16x2": 64,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c4-w10-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.fma.f16x2": 64,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c4-w16-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.fma.f16x2": 32,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c4-w20-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.fma.f16x2": 32,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c4-w32-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32": 8,
+      "vmem.ld.b32x4": 2
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 32,
+      "v.add.f16x2": 16,
+      "v.fma.f16x2": 16,
+      "v.fma.f32.rtte": 66,
+      "v.shrl.b64": 4,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c8-w4-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32": 32,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.shrl.b64": 16,
+      "v.fma.f32.rtte": 264,
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f16x2": 64,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c8-w5-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32": 32,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.shrl.b64": 16,
+      "v.fma.f32.rtte": 264,
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f16x2": 64,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c8-w8-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32": 64,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 528,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c8-w10-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 28,
+      "vmem.ld.b32": 56,
+      "vmem.ld.b32x4": 14
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 224,
+      "v.add.f16x2": 112,
+      "v.fma.f32.rtte": 462,
+      "v.fma.f16x2": 112,
+      "v.shrl.b64": 28,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c8-w16-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32": 32,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c8-w20-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32": 32,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c8-w32-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32": 16,
+      "vmem.ld.b32x4": 4
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.fma.f16x2": 32,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c16-w8-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32": 32,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.shrl.b64": 16,
+      "v.fma.f32.rtte": 264,
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f16x2": 64,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c16-w10-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32": 32,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.shrl.b64": 16,
+      "v.fma.f32.rtte": 264,
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f16x2": 64,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c16-w16-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32": 64,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 528,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c16-w20-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 28,
+      "vmem.ld.b32": 56,
+      "vmem.ld.b32x4": 14
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 224,
+      "v.add.f16x2": 112,
+      "v.fma.f32.rtte": 462,
+      "v.fma.f16x2": 112,
+      "v.shrl.b64": 28,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c16-w32-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32": 32,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n5120-k8192-c1-w1-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 64,
+      "vmem.ld.b32x2": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c1-w2-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 32,
+      "vmem.ld.b32x2": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c1-w4-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 16,
+      "vmem.ld.b32x2": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c1-w5-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 16,
+      "vmem.ld.b32x2": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c1-w8-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32x2": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 136,
+      "v.fma.f16x2": 32,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c2-w1-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c2-w2-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x2": 64,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c2-w4-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x2": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c2-w5-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x2": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c2-w8-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c2-w10-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c2-w16-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x2": 8,
+      "vmem.ld.b32x4": 4
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 136,
+      "v.fma.f16x2": 32,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c4-w2-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c4-w4-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x2": 64,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c4-w5-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 28,
+      "vmem.ld.b32x2": 56,
+      "vmem.ld.b32x4": 28
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 448,
+      "v.add.f16x2": 224,
+      "v.fma.f32.rtte": 952,
+      "v.fma.f16x2": 224,
+      "v.shrl.b64": 112,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c4-w8-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x2": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c4-w10-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x2": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c4-w16-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c4-w20-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c4-w32-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x2": 8,
+      "vmem.ld.b32x4": 4
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 136,
+      "v.fma.f16x2": 32,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c8-w4-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c8-w5-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c8-w8-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x2": 64,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c8-w10-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 28,
+      "vmem.ld.b32x2": 56,
+      "vmem.ld.b32x4": 28
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 448,
+      "v.add.f16x2": 224,
+      "v.fma.f32.rtte": 952,
+      "v.fma.f16x2": 224,
+      "v.shrl.b64": 112,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c8-w16-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x2": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c8-w20-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x2": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c8-w32-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c1-w1-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c1-w2-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 80
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c1-w4-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 40
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c1-w5-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 40
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c1-w8-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 20
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c2-w1-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c2-w2-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c2-w4-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c2-w5-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c2-w8-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c2-w10-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c2-w16-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c4-w2-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c4-w4-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c4-w5-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c4-w8-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c4-w10-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c4-w16-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c4-w20-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n5120-k8192-c4-w32-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c1-w1-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 30,
+      "vmem.ld.b32": 40
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 160,
+      "v.add.f16x2": 80,
+      "v.fma.f16x2": 80,
+      "v.fma.f32.rtte": 330,
+      "v.shrl.b64": 20,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c1-w2-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 18,
+      "vmem.ld.b32": 24
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 96,
+      "v.add.f16x2": 48,
+      "v.fma.f16x2": 48,
+      "v.fma.f32.rtte": 198,
+      "v.shrl.b64": 12,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c1-w4-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 12,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c1-w5-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 6,
+      "vmem.ld.b32": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 32,
+      "v.add.f16x2": 16,
+      "v.fma.f16x2": 16,
+      "v.fma.f32.rtte": 66,
+      "v.shrl.b64": 4,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c2-w1-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 40,
+      "vmem.ld.b32x4": 20,
+      "vmem.ld.b32": 80
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 320,
+      "v.add.f16x2": 160,
+      "v.fma.f16x2": 160,
+      "v.fma.f32.rtte": 660,
+      "v.shrl.b64": 40,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c2-w2-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 20,
+      "vmem.ld.b32x4": 10,
+      "vmem.ld.b32": 40
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 160,
+      "v.add.f16x2": 80,
+      "v.fma.f16x2": 80,
+      "v.fma.f32.rtte": 330,
+      "v.shrl.b64": 20,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c2-w4-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 12,
+      "vmem.ld.b32x4": 6,
+      "vmem.ld.b32": 24
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 96,
+      "v.add.f16x2": 48,
+      "v.fma.f16x2": 48,
+      "v.fma.f32.rtte": 198,
+      "v.shrl.b64": 12,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c2-w5-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c2-w8-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c2-w10-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32": 8,
+      "vmem.ld.b32x4": 2
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 32,
+      "v.add.f16x2": 16,
+      "v.fma.f16x2": 16,
+      "v.fma.f32.rtte": 66,
+      "v.shrl.b64": 4,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c4-w2-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 40,
+      "vmem.ld.b32x4": 20,
+      "vmem.ld.b32": 80
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 320,
+      "v.add.f16x2": 160,
+      "v.fma.f16x2": 160,
+      "v.fma.f32.rtte": 660,
+      "v.shrl.b64": 40,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c4-w4-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 20,
+      "vmem.ld.b32x4": 10,
+      "vmem.ld.b32": 40
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 160,
+      "v.add.f16x2": 80,
+      "v.fma.f16x2": 80,
+      "v.fma.f32.rtte": 330,
+      "v.shrl.b64": 20,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c4-w5-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c4-w8-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 12,
+      "vmem.ld.b32x4": 6,
+      "vmem.ld.b32": 24
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 96,
+      "v.add.f16x2": 48,
+      "v.fma.f16x2": 48,
+      "v.fma.f32.rtte": 198,
+      "v.shrl.b64": 12,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c4-w10-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c4-w16-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c4-w20-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32": 8,
+      "vmem.ld.b32x4": 2
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 32,
+      "v.add.f16x2": 16,
+      "v.fma.f16x2": 16,
+      "v.fma.f32.rtte": 66,
+      "v.shrl.b64": 4,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c8-w4-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 40,
+      "vmem.ld.b32x4": 20,
+      "vmem.ld.b32": 80
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 320,
+      "v.add.f16x2": 160,
+      "v.fma.f16x2": 160,
+      "v.fma.f32.rtte": 660,
+      "v.shrl.b64": 40,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c8-w5-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x4": 16,
+      "vmem.ld.b32": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.fma.f16x2": 128,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 528,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c8-w8-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 20,
+      "vmem.ld.b32x4": 10,
+      "vmem.ld.b32": 40
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 160,
+      "v.add.f16x2": 80,
+      "v.fma.f16x2": 80,
+      "v.fma.f32.rtte": 330,
+      "v.shrl.b64": 20,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c8-w10-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c8-w16-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 12,
+      "vmem.ld.b32x4": 6,
+      "vmem.ld.b32": 24
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 96,
+      "v.add.f16x2": 48,
+      "v.fma.f16x2": 48,
+      "v.fma.f32.rtte": 198,
+      "v.shrl.b64": 12,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c8-w20-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c8-w32-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 4,
+      "vmem.ld.b32": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f16x2": 32,
+      "v.fma.f32.rtte": 132,
+      "v.shrl.b64": 8,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c16-w5-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32": 64,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.shrl.b64": 32,
+      "v.fma.f32.rtte": 528,
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f16x2": 128,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c16-w8-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 40,
+      "vmem.ld.b32": 80,
+      "vmem.ld.b32x4": 20
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 320,
+      "v.add.f16x2": 160,
+      "v.fma.f32.rtte": 660,
+      "v.fma.f16x2": 160,
+      "v.shrl.b64": 40,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c16-w10-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32": 64,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 528,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c16-w16-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 20,
+      "vmem.ld.b32": 40,
+      "vmem.ld.b32x4": 10
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 160,
+      "v.add.f16x2": 80,
+      "v.fma.f32.rtte": 330,
+      "v.fma.f16x2": 80,
+      "v.shrl.b64": 20,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c16-w20-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32": 32,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 264,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c16-w32-p2": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 12,
+      "vmem.ld.b32": 24,
+      "vmem.ld.b32x4": 6
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 96,
+      "v.add.f16x2": 48,
+      "v.fma.f32.rtte": 198,
+      "v.fma.f16x2": 48,
+      "v.shrl.b64": 12,
+      "s.lop3.emsk.b32": 14
+    }
+  },
+  "n8192-k5120-c1-w1-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x2": 40,
+      "vmem.ld.b32x4": 40
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 320,
+      "v.add.f16x2": 160,
+      "v.fma.f32.rtte": 680,
+      "v.fma.f16x2": 160,
+      "v.shrl.b64": 80,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c1-w2-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x2": 24,
+      "vmem.ld.b32x4": 24
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 192,
+      "v.add.f16x2": 96,
+      "v.fma.f32.rtte": 408,
+      "v.fma.f16x2": 96,
+      "v.shrl.b64": 48,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c1-w4-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c1-w5-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 8,
+      "vmem.ld.b32x2": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 136,
+      "v.fma.f16x2": 32,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c2-w1-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c2-w2-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 20,
+      "vmem.ld.b32x2": 40,
+      "vmem.ld.b32x4": 20
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 320,
+      "v.add.f16x2": 160,
+      "v.fma.f32.rtte": 680,
+      "v.fma.f16x2": 160,
+      "v.shrl.b64": 80,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c2-w4-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 12,
+      "vmem.ld.b32x2": 24,
+      "vmem.ld.b32x4": 12
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 192,
+      "v.add.f16x2": 96,
+      "v.fma.f32.rtte": 408,
+      "v.fma.f16x2": 96,
+      "v.shrl.b64": 48,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c2-w5-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c2-w8-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c2-w10-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x2": 8,
+      "vmem.ld.b32x4": 4
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 136,
+      "v.fma.f16x2": 32,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c4-w2-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c4-w4-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 20,
+      "vmem.ld.b32x2": 40,
+      "vmem.ld.b32x4": 20
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 320,
+      "v.add.f16x2": 160,
+      "v.fma.f32.rtte": 680,
+      "v.fma.f16x2": 160,
+      "v.shrl.b64": 80,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c4-w5-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x2": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c4-w8-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 12,
+      "vmem.ld.b32x2": 24,
+      "vmem.ld.b32x4": 12
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 192,
+      "v.add.f16x2": 96,
+      "v.fma.f32.rtte": 408,
+      "v.fma.f16x2": 96,
+      "v.shrl.b64": 48,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c4-w10-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c4-w16-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c4-w20-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x2": 8,
+      "vmem.ld.b32x4": 4
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 64,
+      "v.add.f16x2": 32,
+      "v.fma.f32.rtte": 136,
+      "v.fma.f16x2": 32,
+      "v.shrl.b64": 16,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c8-w4-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c8-w5-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 32,
+      "vmem.ld.b32x2": 64,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c8-w8-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 20,
+      "vmem.ld.b32x2": 40,
+      "vmem.ld.b32x4": 20
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 320,
+      "v.add.f16x2": 160,
+      "v.fma.f32.rtte": 680,
+      "v.fma.f16x2": 160,
+      "v.shrl.b64": 80,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c8-w10-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x2": 32,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c8-w16-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 12,
+      "vmem.ld.b32x2": 24,
+      "vmem.ld.b32x4": 12
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 192,
+      "v.add.f16x2": 96,
+      "v.fma.f32.rtte": 408,
+      "v.fma.f16x2": 96,
+      "v.shrl.b64": 48,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c8-w20-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c8-w32-p4": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x2": 16,
+      "vmem.ld.b32x4": 8
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c1-w1-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 100
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 640,
+      "v.add.f16x2": 320,
+      "v.fma.f32.rtte": 1360,
+      "v.fma.f16x2": 320,
+      "v.shrl.b64": 160,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c1-w2-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 60
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 384,
+      "v.add.f16x2": 192,
+      "v.fma.f32.rtte": 816,
+      "v.fma.f16x2": 192,
+      "v.shrl.b64": 96,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c1-w4-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 40
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c1-w5-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4": 20
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c2-w1-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 20,
+      "vmem.ld.b32x4": 80
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 640,
+      "v.add.f16x2": 320,
+      "v.fma.f32.rtte": 1360,
+      "v.fma.f16x2": 320,
+      "v.shrl.b64": 160,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c2-w2-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 20,
+      "vmem.ld.b32x4": 80
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 640,
+      "v.add.f16x2": 320,
+      "v.fma.f32.rtte": 1360,
+      "v.fma.f16x2": 320,
+      "v.shrl.b64": 160,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c2-w4-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 12,
+      "vmem.ld.b32x4": 48
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 384,
+      "v.add.f16x2": 192,
+      "v.fma.f32.rtte": 816,
+      "v.fma.f16x2": 192,
+      "v.shrl.b64": 96,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c2-w5-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c2-w8-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c2-w10-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c4-w2-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 20,
+      "vmem.ld.b32x4": 80
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 640,
+      "v.add.f16x2": 320,
+      "v.fma.f32.rtte": 1360,
+      "v.fma.f16x2": 320,
+      "v.shrl.b64": 160,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c4-w4-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 20,
+      "vmem.ld.b32x4": 80
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 640,
+      "v.add.f16x2": 320,
+      "v.fma.f32.rtte": 1360,
+      "v.fma.f16x2": 320,
+      "v.shrl.b64": 160,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c4-w5-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 16,
+      "vmem.ld.b32x4": 64
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 512,
+      "v.add.f16x2": 256,
+      "v.fma.f32.rtte": 1088,
+      "v.fma.f16x2": 256,
+      "v.shrl.b64": 128,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c4-w8-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 12,
+      "vmem.ld.b32x4": 48
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 384,
+      "v.add.f16x2": 192,
+      "v.fma.f32.rtte": 816,
+      "v.fma.f16x2": 192,
+      "v.shrl.b64": 96,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c4-w10-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c4-w16-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 8,
+      "vmem.ld.b32x4": 32
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 256,
+      "v.add.f16x2": 128,
+      "v.fma.f32.rtte": 544,
+      "v.fma.f16x2": 128,
+      "v.shrl.b64": 64,
+      "s.lop3.emsk.b32": 6
+    }
+  },
+  "n8192-k5120-c4-w20-p8": {
+    "scope": "STATIC_ISA_COUNTS_NOT_DYNAMIC_INSTRUCTIONS",
+    "loads": {
+      "vmem.ld.b32x4.sign": 4,
+      "vmem.ld.b32x4": 16
+    },
+    "code_fastpath_present": true,
+    "fp32_fma_present": true,
+    "operations": {
+      "v.lop3.b32": 128,
+      "v.add.f16x2": 64,
+      "v.fma.f32.rtte": 272,
+      "v.fma.f16x2": 64,
+      "v.shrl.b64": 32,
+      "s.lop3.emsk.b32": 6
+    }
+  }
+}
