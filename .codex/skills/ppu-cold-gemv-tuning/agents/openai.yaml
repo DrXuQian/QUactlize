@@ -1,0 +1,4 @@
+interface:
+  display_name: "PPU Cold GEMV Tuning"
+  short_description: "Audit cold GEMV parity and ACU-backed thread mappings"
+  default_prompt: "Use $ppu-cold-gemv-tuning to review cold PPU GEMV results and propose a bounded, evidence-backed shape experiment."
