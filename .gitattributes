@@ -33,3 +33,5 @@ prebuilt/ppu0010/q4-moe-s1-v1/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/q4-moe-s1-v2/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/q4-moe-compare-v1/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/q4-moe-compare-v1/modules/*/kernel.so filter=lfs diff=lfs merge=lfs -text
+prebuilt/ppu0010/q4-decode-sweep-v1/*.so filter=lfs diff=lfs merge=lfs -text
+prebuilt/ppu0010/q4-decode-sweep-v1/modules/*/kernel.so filter=lfs diff=lfs merge=lfs -text

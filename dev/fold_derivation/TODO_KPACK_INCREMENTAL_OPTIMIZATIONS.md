@@ -25,6 +25,13 @@ The model-level no-slowdown target remains a separate, unproven requirement.
 Latest order (2026-09-13): finish the MoE SIMT reader/entry first, then run
 GEMV and TC together on the previous decode workload inventory, then update
 the heuristic and integrate/test model decoding. Prefill comparison stays separate.
+The [incremental Q4 decode sweep](../../docs/Q4_DECODE_SWEEP.md) is now
+locally compiled: 96 dense M1..8 cases, 276 MoE cases, 25 retained TC parents
+and optimized SIMT candidates on all earlier families. It adds weighted and
+partial-collision expert-local rows2..7, keeps the old dense TM8/S4 winner,
+and measures F32 endpoints including real TC adapters/reducers. PPU execution,
+policy review and chain-preserving integration remain PENDING; no shipping
+heuristic is changed by building the package.
 If a scope remains slower/untested, report it explicitly rather than declare
 the weekend goal complete. Do not delay the ready GEMV box handoff for the
 prefill comparison implementation.
