@@ -1,6 +1,7 @@
 #include <hggc_runtime.h>
 #include "quactlize/dequant/reader.hpp"
 #include "quactlize/dequant/api.h"
+#include "quactlize/dequant/unit16.hpp"
 
 template<gguf_scale::KType T>
 void decode(uint16_t const* low, uint16_t const* high, uint8_t const* units,
@@ -24,6 +25,28 @@ extern "C" int dequant_host(int q,uint16_t const* l,uint16_t const* h,uint8_t co
     return 0;
 }
 extern "C" int dequant_call_size() { return sizeof(qzd_call_v1); }
+
+template<gguf_scale::KType T>
+int cached16(uint8_t const* units, uint16_t* scale, uint16_t* zero, int n, int k) {
+    using U=quactlize::dequant::Unit16<T>;
+    using R=quactlize::dequant::Reader<T>;
+    for(int sb=0;sb<k/256;++sb) for(int col=0;col<n;++col) {
+        auto const* p=units+(int64_t(sb)*n+col)*16;
+        auto v=U::load(p);
+        for(int g=0;g<8;++g) {
+            auto sz=v.scale(g);int64_t o=(int64_t(sb)*8+g)*n+col;
+            scale[o]=sz.scale.raw();zero[o]=sz.zero.raw();
+            auto a=v.affine(g),b=R::affine(units,col,sb*8+g,n);
+            if(a.scale!=b.scale || a.minimum!=b.minimum) return 2;
+        }
+    }
+    return 0;
+}
+extern "C" int dequant_unit16_host(int q,uint8_t const* u,uint16_t* s,uint16_t* z,int n,int k) {
+    if(q==12)return cached16<gguf_scale::KType::Q4_K>(u,s,z,n,k);
+    if(q==13)return cached16<gguf_scale::KType::Q5_K>(u,s,z,n,k);
+    return 1;
+}
 
 template<gguf_scale::KType T>
 void tiled(uint16_t const* l,uint16_t const* h,uint8_t const* u,uint16_t* out,int n,int k) {

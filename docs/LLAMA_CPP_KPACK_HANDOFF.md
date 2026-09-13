@@ -19,7 +19,7 @@ not an override of this new decode package.
 
 Published small-M selection: Quactlize `91a93b5`, private llama branch
 `feat/kpack-gpu-cache` at `ef40c53bd`. The independent
-`prebuilt/ppu0010/kpack-dequant-v1` library is **diagnostic only**, not a
+`prebuilt/ppu0010/kpack-dequant-v2` library is **diagnostic only**, not a
 replacement inference package. See [independent dequant measurement](KPACK_DEQUANT_BENCHMARK.md).
 Its SF/full-BF16 results and future separately warmed cuBLAS/DeepGEMM timings
 must be reviewed before changing large-M selection. No hidden scale-ready or

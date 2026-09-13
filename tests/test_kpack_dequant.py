@@ -24,6 +24,7 @@ def host(tmp_path_factory):
     assert result.returncode==0,result.stderr
     lib=C.CDLL(str(out));lib.dequant_host.argtypes=[C.c_int]+[C.c_void_p]*4+[C.c_int]*2
     lib.dequant_tiled_host.argtypes=lib.dequant_host.argtypes
+    lib.dequant_unit16_host.argtypes=[C.c_int]+[C.c_void_p]*3+[C.c_int]*2
     assert lib.dequant_call_size()==C.sizeof(Call)
     return lib
 
@@ -40,6 +41,54 @@ def test_actual_host_decoder_matches_original_gguf_bf16(host,q):
     bad=planes['low'].copy();bad[:]=0
     assert host.dequant_host(q,bad.ctypes.data,ptr('high'),ptr('units'),out.ctypes.data,256,512)==0
     with pytest.raises(ValueError):fixture.compare(out,gold)
+
+
+@pytest.mark.parametrize('q',[12,13])
+def test_vector_unit_reuses_registry_and_exact_rounding(host,q):
+    planes,_,sf=fixture.expert(q,256,512,2)
+    out=[np.empty_like(x) for x in sf]
+    assert host.dequant_unit16_host(q,planes['units'].ctypes.data,*[x.ctypes.data for x in out],256,512)==0
+    for got,want in zip(out,sf):assert np.array_equal(got.view('u2'),want.view('u2'))
+
+
+@pytest.mark.parametrize('q',range(10,15))
+def test_full_vector_words_cover_exact_codes_and_alignment(q):
+    from reference import gguf_kpack as ref
+    s=ref.SPECS[q];n=256;k=512
+    for k0 in range(0,k,128):
+        covered=[]
+        for t in range(128):
+            lane,warp=t%32,t//32;col0=(lane%4)*8;kb=k0+warp*32;residue=lane//4
+            low_word=ref._placed_word_slot(kb+residue,s.low_bits)[0]*n+col0
+            assert (low_word*2)%16==0
+            for v in range(8):
+                for slot in range(4):
+                    kk=kb+residue+slot*8
+                    assert ref._placed_word_slot(kk,s.low_bits)[0]*n+col0+v==low_word+v
+                    if s.high_bits and q!=13:
+                        hw=ref._placed_word_slot(kb+residue,s.high_bits)[0]*n+col0
+                        assert hw*2%16==0
+                        assert ref._placed_word_slot(kk,s.high_bits)[0]*n+col0+v==hw+v
+                    if q==13:
+                        address=lambda c,kk:(((kk//256)*16)|(((kk>>6)&1)<<3)|(kk&7))*n+(c&~15)+(c&7)+(((kk>>7)&1)<<3)
+                        hw=address(col0,kb+residue)
+                        assert hw*2%16==0 and address(col0+v,kk)==hw+v
+                    covered.append((col0+v,kk))
+        assert len(covered)==len(set(covered))==4096
+        assert set(covered)=={(n_,k_) for n_ in range(32) for k_ in range(k0,k0+128)}
+
+
+def test_vector_output_and_metadata_footprints():
+    from tools.run_kpack_dequant_gate import pattern
+    from quactlize.dequant.native import config_ids
+    w=dict(q=12,n=512,k=2048,operation=1)
+    fields=pattern(w,5)['fields']
+    assert fields['low_word']['width']==16 and fields['low_word']['unique_bytes']==512
+    assert fields['bf16_output_uint4']['width']==16 and fields['bf16_output_uint4']['unique_bytes']==512
+    assert fields['metadata_unit16']['lane_requests']==4
+    assert pattern(w|dict(operation=0),4)['fields']['metadata_unit16']['unique_bytes']==512
+    assert config_ids(12,0,2)==list(range(6)) and config_ids(10,0,2)==list(range(4))
+    for q in range(10,15):assert config_ids(q,1,2)==list(range(6))
 
 
 @pytest.mark.parametrize('q',range(10,15))

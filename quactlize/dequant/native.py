@@ -7,6 +7,15 @@ from quactlize.execution.native import Arrangement
 from quactlize.runtime.compiler import sha
 
 
+def config_ids(q, operation, generation=1):
+    """Stable old config IDs; vector readers are additive experiment arms."""
+    if q not in range(10, 15) or operation not in (0, 1) or generation not in (1, 2):
+        raise ValueError('invalid dequant inventory')
+    if generation == 2 and (operation or q in (12, 13)):
+        return list(range(6))
+    return list(range(3 if operation else 4))
+
+
 class Call(C.Structure):
     _fields_ = [('version',C.c_uint32), ('size',C.c_uint32)] + [
         (n,C.c_int32) for n in ('qtype','n','k','experts','operation','config')] + [

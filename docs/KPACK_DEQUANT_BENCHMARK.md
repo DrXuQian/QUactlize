@@ -1,5 +1,103 @@
 # Independent weight-expansion measurements
 
+## Current handoff: vector dequant and separate BF16 providers
+
+The v1 result `kpack-dequant-ppu.0046wb.results.tgz` was reviewed on
+2026-09-14: 78/78 stage cases, 238 timed configs, 8 locally imported ACU
+reports, all numerical/guard/negative checks passed. Archive SHA256:
+`344f3267a56a4ee9fc1cd5abc29ab1ccdbe5ef07516bebb5ad7094cb9cc774bd`.
+SF means **only metadata expansion**, even when E256 metadata is expanded;
+it never materializes the low/high weight codes. Q4 dense5120x8192 improved
+12.3983 to 11.7072 us, and Q5 grouped2048x512/E256 improved 61.8511 to 54.0911 us.
+The respective useful-byte bandwidths are 671.7 and 930.5 GB/s. They are not
+ACU DRAM bandwidths. In these SF profiles outputs largely remain in cache;
+single-kernel DRAM writes are near zero. Use the complete-ring event timing
+for the declared standalone cost, not that incomplete writeback interval.
+
+Full BF16 c2 won all 34 full cases against c0/c1, but its ACU profiles still
+show shared bank-conflict latency and amplified DRAM reads. A higher read
+count is evidence to investigate output write allocation/tile order, not
+proof of that unique cause. The experiment is not yet tuned to a bandwidth
+ceiling and no production choice is changed.
+
+`kpack-dequant-v2` adds candidates while retaining every old config:
+
+| Stage/config | Change | Unchanged numerical/storage contract |
+|---|---|---|
+| SF4/5, Q4/Q5 only | One aligned uint4 per N/superblock, decode all8 groups from registers, block128/256 | Same packed16 metadata and exact FP16 scale/zero rounding |
+| Full3 | N32/K128 tile, block128, paired BF16 output | Same scalar B reader and FP32 raw-GGUF arithmetic |
+| Full4 | Same tile, uint4 output stores | Same B load and decode as Full3 |
+| Full5 | uint4 low/high B loads, metadata broadcast across8 K residues, uint4 output | Same canonical plane maps; Q5 high-plane fold preserved |
+
+SF uint4 requests 512 contiguous bytes per warp, not 32 isolated byte loads;
+each output group still has 64 contiguous bytes of FP16 stores. Full5 gives
+lane `l` N base `8*(l%4)` and K residue `l/4`: four adjacent16-byte N vectors
+per residue, eight residues per warp. The four residue-zero lanes read
+metadata and broadcast decoded affine values. A warp owns N32/K32; four
+warps own N32/K128. A uint4 output warp writes two256-byte contiguous rows.
+All plane bases and vector addresses are16-byte aligned. Shared[32][129]
+remains an experimental choice: source-level padding does not prove a
+conflict-free PPU instruction. Preserve ACU bank counters.
+
+Local compilation explicitly rejects scalarized uint4 metadata loads or
+vector output stores. The local host, dispatch and receipt regression set
+passes 210 tests; the PPU compile takes about 13 seconds and emits 49 kernel
+specializations. Numerical execution/performance for the new variants
+is **PPU pending**. Default v2 dequant plan:10 untimed smoke cases,
+68 timed stage cases, **408 config timings**; timing protocol unchanged.
+
+To run the two independent phases together:
+
+```bash
+git pull --ff-only origin develop &&
+PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK CUDA_VISIBLE_DEVICES=0 \
+  bash tools/run_kpack_prefill_cost_ppu_box.sh
+```
+
+The second phase uses installed libraries, not a replacement GEMM:
+
+- Dense: the SDK `libcublas.so` cuBLAS compatibility API, BF16 A/B/output,
+  FP32 compute with reduced-precision reductions disabled. Actual loaded
+  cuBLAS/PPU BLAS backend images are recorded. This is not NVIDIA hardware.
+- Grouped: installed DeepGEMM's public
+  `m_grouped_gemm_bf16_bf16_bf16_nt_nopad`, with its own default selection.
+  Resident sorted row IDs and row counts are supplied. Any internal block
+  directory kernel remains timed. Missing entry/import is a failure, never
+  silently replaced by torch.matmul or padded batched GEMM.
+
+Default providers: Q4/Q5, the same5 dense/6 grouped families, M/tokens2048
+and4096: **44 GEMM cells in22 weight-family processes**. Grouped uses E256,
+top8 and the previous weighted-without-replacement real router; its total
+rows are tokens*8, not tokens. `MS=512,2048,4096` extends the M ladder.
+The actual dequant output is verified and consumed as BF16[E,N,K].
+Provider setup/JIT/first invocation, graph upload and two initial replays are
+excluded and the first-use wall time is reported. Torch graph capture owns
+provider temporary allocations. The complete BF16 weight ring exceeds2.25L2;
+changed-A replay, zero-A, full output and guards are checked outside timing.
+Independent BF16 dot references use official-GGUF-rounded weights and
+factorized, BF16-representable activations; no compared GEMM computes its
+own oracle.
+
+The runner returns `results/bf16/summary.tsv` with independent full-dequant
+and BF16-provider times plus their **sum estimate**, not measured E2E.
+External routing/gather, A dtype conversion and output adapters are excluded
+and must be charged before model admission. The GEMM cache state is not
+claimed to reproduce the immediate dequant consumer. Failures continue to
+other families; `RESUME_RUN=/workspace/kpack-prefill-cost.XXXXXX` preserves
+completed matching cases and retries missing M values. `ACU=0` explicitly
+omits counters. Box compilation of our kernels is unnecessary; installed
+DeepGEMM may JIT during untimed setup. No whole-run deadline is inferred
+from kernel duration; progress estimates observed wall time.
+
+Keep three prefill candidates: FQ GEMM alone, SF expansion+SF GEMM, and full
+expansion+BF16 provider. `prefill_candidates()` marks missing components
+UNMEASURED. This handoff measures the new dequant/BF16 pieces; a matched
+FQ/SF GEMM remeasurement and model-adapter cost remain required before
+selecting the winning production route. FQ must not be excluded from
+prefill just because M is large.
+
+## Original v1 measurement contract
+
 SF metadata expansion must be remeasured before a measured large-M cost
 policy can use it. Do not mix its historical bandwidth estimate with a
 measured full-weight dequant time. The current experiment **never launches

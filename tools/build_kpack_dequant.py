@@ -40,23 +40,28 @@ def build(sdk, output):
     isa=subprocess.run([str(sdk/'bin/hgobjdump'),'--dump-isa',str(output/'libquactlize_ppu_dequant.so')],
                        check=True,capture_output=True,text=True).stdout
     entries=list(re.finditer(r'Disassembly of section \.text\.kernel\.([^\n]+):',isa))
-    if len(entries)!=30:raise ValueError('dequant kernel specialization denominator differs')
+    if len(entries)!=49:raise ValueError('dequant kernel specialization denominator differs')
     native={}
     for i,entry in enumerate(entries):
         body=isa[entry.end():entries[i+1].start() if i+1<len(entries) else None]
         ops=Counter(re.findall(r'\t([a-z][\w.]+)\s',body))
         symbol=entry[1]
-        if ('full_transpose' in symbol or 'sf_columns' in symbol) and any('f64' in op for op in ops):
+        if any(x in symbol for x in ('full_transpose','sf_columns','full_wide','sf_unit16')) and any('f64' in op for op in ops):
             raise ValueError('coordinate decomposition unexpectedly uses FP64 division lowering')
-        if ('full_transpose' in symbol or 'full_direct' in symbol) and not any('bf16.f32' in op for op in ops):
+        if any(x in symbol for x in ('full_transpose','full_direct','full_wide')) and not any('bf16.f32' in op for op in ops):
             raise ValueError('native BF16 output conversion missing')
+        if 'sf_unit16' in symbol and (ops['vmem.ld.b32x4']!=1 or any(op.startswith('vmem.ld.b8') for op in ops)):
+            raise ValueError('metadata uint4 load was scalarized')
+        if 'full_wide' in symbol and 'ELb1EE' in symbol and not any(op.startswith('vmem.st.b32x4') for op in ops):
+            raise ValueError('wide BF16 output store was scalarized')
         native[symbol]=dict(operations=dict(sorted(ops.items())),scope='STATIC_COUNTS_NOT_DYNAMIC_PROFILE')
     (output/'native.json').write_text(json.dumps(native,indent=2)+'\n')
     manifest = dict(schema='quactlize.dequant-only.v1', source_hashes=inputs,
         library='libquactlize_ppu_dequant.so', sha256=sha(output/'libquactlize_ppu_dequant.so'),
         compiler=sha(sdk/'bin/hgcc'), runtime={f'lib{x}.so':sha(sdk/'lib'/f'lib{x}.so') for x in LIBRARIES},
         commands=commands, flags=FLAGS, seconds=time.monotonic()-start,
-        formats=list(range(10,15)), sf_configs=[0,1,2,3], full_configs=[0,1,2],
+        formats=list(range(10,15)), config_generation=2,
+        sf_configs=[0,1,2,3,4,5], sf_vector_qtypes=[12,13], full_configs=[0,1,2,3,4,5],
         device_validated=False, production_changed=False,
         full_output='BF16_E_N_K', full_arithmetic='RAW_GGUF_FP32_MUL_SUB_BF16_RNE',
         sf_output='FP16_E_GROUP_N_TWO_PLANES', timing='NO_GEMM')

@@ -19,7 +19,7 @@ import numpy as np
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from quactlize.dequant.native import Call, traffic, verify, bind
+from quactlize.dequant.native import Call, traffic, verify, bind, config_ids
 from quactlize.execution.native import arrangement
 from quactlize.runtime.native import SDK, checked
 from quactlize.runtime.compiler import sha
@@ -31,7 +31,7 @@ from tools.run_kpack_pack_gate import device_identity
 from tools.profile_kpack_gpu_compact import AcuRange, acu_launch_command
 from reference import gguf_kpack as ref
 
-BUNDLE=ROOT/'prebuilt/ppu0010/kpack-dequant-v1'
+BUNDLE=ROOT/'prebuilt/ppu0010/kpack-dequant-v2'
 DENSE=((1024,5120),(5120,8192),(5120,25600),(8192,5120),(25600,5120))
 GROUPED=((512,2048),(512,3072),(2048,512),(3072,512),(1024,2048),(1024,3072))
 
@@ -60,7 +60,7 @@ def pattern(w, config):
     """First warp/pass byte footprint, not measured DRAM traffic."""
     q,n,k=w['q'],w['n'],w['k'];s=ref.SPECS[q]
     if w['operation']:
-        coords=[(0,lane) if config==0 else (lane,0) for lane in range(32)]
+        coords=[(0,lane) if config==0 else ((lane%4)*8,lane//4) if config==5 else (lane,0) for lane in range(32)]
     else:
         cols=8 if config==0 else 16 if config==1 else 32
         coords=[(lane//4,(lane%4)*s.group_size) if config==0
@@ -72,7 +72,7 @@ def pattern(w, config):
             requested_bytes=width*len(addresses),sectors={str(size):len({b//size for b in unique}) for size in (32,64,128)},
             byte_addresses=addresses)
     if w['operation']:
-        field('low_word',[2*(ref._placed_word_slot(kk,s.low_bits)[0]*n+col) for col,kk in coords],2)
+        field('low_word',[2*(ref._placed_word_slot(kk,s.low_bits)[0]*n+col) for col,kk in coords],16 if config==5 else 2)
         if s.high_bits:
             addresses=[]
             for col,kk in coords:
@@ -81,18 +81,25 @@ def pattern(w, config):
                     kg=(kk//256)*16|(((kk>>6)&1)<<3)|(kk&7)
                 else:pn,kg=col,ref._placed_word_slot(kk,s.high_bits)[0]
                 addresses.append(2*(kg*n+pn))
-            field('high_word',addresses,2)
+            field('high_word',addresses,16 if config==5 else 2)
     headers=[];codes=[];mins=[]
     for col,kk in coords:
         sb=kk//256;g=(kk//s.group_size)%s.groups
         unit=((sb//s.superblocks_per_unit)*n+col)*s.unit_bytes+(sb%s.superblocks_per_unit)*s.sb_bytes
         headers.append(unit);codes.append(unit+ref._unit_bit(s,g,0)//8)
         if s.has_min:mins.append(unit+ref._unit_bit(s,g,1)//8)
-    field('header_d_u16',headers,2);field('first_scale_byte',codes,1)
-    if s.has_min:
-        field('header_dmin_u16',[x+2 for x in headers],2);field('first_min_byte',mins,1)
-    if w['operation'] and config:
-        field('bf16_output_pairs',[(i//16*k+i%16*2)*2 for i in range(32)],4)
+    if (not w['operation'] and config>=4) or (w['operation'] and config==5 and q in (12,13)):
+        field('metadata_unit16',headers[:4] if w['operation'] else headers,16)
+    else:
+        select=slice(0,4) if w['operation'] and config==5 else slice(None)
+        field('header_d_u16',headers[select],2);field('first_scale_byte',codes[select],1)
+        if s.has_min:
+            field('header_dmin_u16',[x+2 for x in headers[select]],2);field('first_min_byte',mins[select],1)
+    if w['operation'] and config>=4:
+        field('bf16_output_uint4',[(i//16*k+i%16*8)*2 for i in range(32)],16)
+    elif w['operation'] and config:
+        per_row=64 if config==3 else 16
+        field('bf16_output_pairs',[(i//per_row*k+i%per_row*2)*2 for i in range(32)],4)
     else:
         field('output_scalar',[2*(col*k+kk if w['operation'] else (kk//s.group_size)*n+col) for col,kk in coords],2)
     return dict(scope='FIRST_WARP_PASS_SOURCE_ADDRESS_MODEL_BASE_ALIGNED_128',fields=fields,
@@ -127,6 +134,7 @@ class Bench:
     def __init__(self,a,w):
         self.w=w;self.sdk=SDK(a.sdk);graph_bind(self.sdk);self.r=Resources(self.sdk)
         self.lib,self.fn,probe=bind(a.bundle);self.device=device(self.sdk,probe)
+        self.generation=json.loads((a.bundle/'manifest.json').read_text()).get('config_generation',1)
         self.arr=arrangement(w['q']);self.bytes=traffic(w['q'],w['n'],w['k'],w['experts'],w['operation'])
         self.graphs={};self.calls=[]
         started=time.monotonic()
@@ -216,7 +224,7 @@ def child(a,w):
     b=None
     try:
         b=Bench(a,w)
-        configs=[a.config] if a.profile else list(range(3 if w['operation'] else 4))
+        configs=[a.config] if a.profile else config_ids(w['q'],w['operation'],b.generation)
         proofs={c:b.check(c) for c in configs}
         if a.profile:
             checked(b.run(a.config),'profile warmup');b.sdk.synchronize(b.r.stream)
@@ -242,7 +250,7 @@ def child(a,w):
                 bandwidth_scope='USEFUL_BYTES_DIVIDED_BY_EVENT_TIME_NOT_ACU_DRAM',pattern=pattern(w,c))
             rows.append(row)
             print('KPACK_DEQUANT_RESULT '+json.dumps(dict(case=w['id'],**{k:v for k,v in row.items() if k not in ('pattern','samples_us')})),flush=True)
-        result=dict(status='PASS',workload=w,device=b.device,bytes=b.bytes,rows=rows,
+        result=dict(status='PASS',workload=w,device=b.device,bytes=b.bytes,rows=rows,config_generation=b.generation,
             fixture_hashes={name:hashlib.sha256(p.tobytes()).hexdigest() for name,p in b.planes.items()},
             golden_sha256=hashlib.sha256(b.gold.tobytes()).hexdigest(),copies=b.copies,
             input_ring_bytes=b.bytes['reads']*b.copies,output_ring_bytes=b.bytes['writes']*b.copies,
@@ -263,7 +271,7 @@ def validate_result(r,w,dev,peak):
         r.get('gemm_calls')!=0 or r.get('scope')!='DEQUANT_ONLY_NOT_COMBINED_OR_REUSABLE_CACHE' or
         r.get('peak_gbps')!=peak or r.get('bytes')!=traffic(w['q'],w['n'],w['k'],w['experts'],w['operation'])):
         raise ValueError('dequant result identity/scope differs: '+w['id'])
-    configs=list(range(3 if w['operation'] else 4))
+    configs=config_ids(w['q'],w['operation'],r.get('config_generation',1))
     if [v['config'] for v in r['rows']]!=configs:raise ValueError('dequant result config set differs')
     for row in r['rows']:
         p=row['proof'];values=row['samples_us']
@@ -298,7 +306,7 @@ def main():
     tasks=work(qtypes)
     if a.plan_only:
         print(json.dumps(dict(cases=len(tasks),numerical_smokes=10,
-            timing_cells=sum(3 if w['operation'] else 4 for w in tasks if not w['smoke']),gemm_calls=0,workloads=tasks),indent=2));return
+            timing_cells=sum(len(config_ids(w['q'],w['operation'],2)) for w in tasks if not w['smoke']),gemm_calls=0,workloads=tasks),indent=2));return
     manifest=verify(a.bundle,a.sdk)
     a.output.mkdir(parents=True,exist_ok=True)
     if a.probe_only:
@@ -321,7 +329,7 @@ def main():
     authority=a.output/'authority.json'
     if authority.exists() and json.loads(authority.read_text())!=identity:raise ValueError('dequant resume authority differs')
     save(authority,identity)
-    print('KPACK_DEQUANT_PLAN '+json.dumps(dict(cases=len(tasks),timing_cells=sum(3 if w['operation'] else 4 for w in tasks if not w['smoke']),gemm_calls=0)),flush=True)
+    print('KPACK_DEQUANT_PLAN '+json.dumps(dict(cases=len(tasks),timing_cells=sum(len(config_ids(w['q'],w['operation'],manifest.get('config_generation',1))) for w in tasks if not w['smoke']),gemm_calls=0)),flush=True)
     started=time.monotonic();failed=[];complete=[];executed=0
     for i,w in enumerate(tasks):
         out=a.output/(w['id']+'.json')
@@ -340,7 +348,10 @@ def main():
             w=record['workload']
             if (w['q'],w['n'],w['k'],w['experts']) not in anchors or w['smoke']:continue
             winner=min(record['rows'],key=lambda r:r['median_us'])['config']
-            for c in sorted({0,winner}):
+            # Compare to the previous admitted implementation, not only the
+            # deliberately scalar full-dequant reference.
+            old=min(record['rows'][:3 if w['operation'] else 4],key=lambda r:r['median_us'])['config']
+            for c in sorted({old,winner}):
                 receipt=a.output/(w['id']+f'-c{c}.acu.json')
                 profile_identity=dict(result_sha256=sha(a.output/(w['id']+'.json')),
                     bundle_sha256=identity['manifest_sha256'],acu_sha256=sha(a.acu))

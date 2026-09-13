@@ -37,7 +37,7 @@
     [[ "$CUDA_VISIBLE_DEVICES" =~ ^[0-9]+$ ]]
     if [[ ${FETCH_PAYLOADS:-1} == 1 ]]; then
         stage=fetch
-        git lfs pull --include="prebuilt/ppu0010/kpack-dequant-v1/*.so" --exclude=""
+        git lfs pull --include="prebuilt/ppu0010/kpack-dequant-v2/*.so" --exclude=""
     fi
     EXTRA=()
     [[ ${ACU:-1} == 0 || ${ACU:-1} == 1 ]]

@@ -1,5 +1,20 @@
 # K-pack incremental optimization backlog
 
+## Independent prefill costs, 2026-09-14
+
+| Work | State | Remaining device evidence |
+|---|---|---|
+| SF scale/zero-only expansion measurement | v1 reviewed:34 timed Q4/Q5 cases,10 cross-format stage smokes; paired numerical/negative/guards pass | SF best larger-workload effective bandwidth remains about0.9--0.98TB/s; not a bandwidth ceiling |
+| Full BF16 expansion measurement | v1 reviewed:34 cases; old c2 wins all; ACU reveals shared bank-conflict latency and excess DRAM reads | Tune using full useful read+write model and actual counters, not input bytes alone |
+| Vectorized dequant readers | LOCAL BUILT: additive SF uint4 unit cache and full N32/K128, uint4 B/output candidates; old configs retained | v2 correctness and cold-event/ACU A/B against previous per-shape best; no shipping change yet |
+| Installed BF16 cuBLAS dense and DeepGEMM MoE baselines | LOCAL RUNNER: separate provider-only event graphs, untimed JIT/setup, same original-GGUF BF16 weights and real E256/top8 rows, independent CPU oracle |44 default M2048/4096 cells; actual provider GPU execution, precision and graph compatibility require box |
+| Three-way prefill policy | FQ explicitly retained. Cost candidates: FQ GEMM; SF expansion+SF GEMM; full expansion+BF16 provider | Matched FQ/SF GEMM remeasurement and adapter costs still open. Missing components cannot win; sums are not measured E2E |
+
+Entry: `tools/run_kpack_prefill_cost_ppu_box.sh`; details and exact scope in
+[KPACK_DEQUANT_BENCHMARK.md](../../docs/KPACK_DEQUANT_BENCHMARK.md).
+Do not equate E256 SF expansion with expanding E256 weight matrices: SF
+only creates the two scale/zero planes. No cached scale-ready assumption.
+
 ## Weekend delivery target, 2026-09-12/13
 
 Target is measured decoding improvement plus llama.cpp integration over the
