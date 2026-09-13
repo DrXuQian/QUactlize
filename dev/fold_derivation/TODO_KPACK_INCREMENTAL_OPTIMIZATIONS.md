@@ -17,16 +17,29 @@ The model-level no-slowdown target remains a separate, unproven requirement.
 |---|---|---|
 | 1 | Q4 cold M1 six-shape config sweep | BOX COMPLETE; retain exact per-shape winners and package identities. [393 screens,216 confirmations,24 profiles](../../docs/Q4_CONFIG_SWEEP_RESULTS_20260912.md), 603.35 s. Subsequent reader experiments supersede these historical timings; [current combined board](../../docs/Q4_MEDIUM_REFINE_RESULTS_20260912.md) closes **six of six** under the updated ref+5% gate, using separate contemporaneous cohorts. |
 | 2 | Diagnose remaining losing families | CLOSED for Q4 dense M1 cold weights. N1024/K5120 winner p4-w20-r0-u1: 5.324615 us vs ref5.290000, **+0.65%**, worst paired round+1.44%; -6.15% vs P2 and -5.90% vs same-geometry P4 anchor. [68 timing cells,5 ACU reports and839 source hashes reviewed](../../docs/Q4_MEDIUM_REFINE_RESULTS_20260912.md), 144.66 s. Original FP32 fold order retained, unsigned indices simplify native control/address code; no format change. All six shapes now within5%; stop further M1-only tuning. No production selection change or model-level admission. |
-| 3 | Small-M and indexed/batched deployment coverage | Q4 dense **M=2..8** [scan locally compiled](../../docs/Q4_SMALLM_PPU.md), DEVICE PENDING: six shapes/42 cases,52 SIMT contexts, raw reference, current TC policy and five-parent TC union S1/2/4/8 with reducer included. One multirow launch, one row per CTA; no claim of explicit cross-row B reuse. PPU numerical/performance result still required. Indexed M1/top8 MoE with actual routing remains NEXT; count all adapters. Other qtypes need their own maps and gates. |
+| 3 | Small-M and indexed/batched deployment coverage | [Q4 dense M2..8 BOX REVIEWED](../../docs/Q4_SMALLM_RESULTS_20260913.md):42/42 numerical cases,43 ACU reports/60 kernels,847 source hashes. SIMT faster than scanned TC in15 cases; TC faster in27. SIMT beats raw ref in35/42; N512/K2048 M2..8 remains+5.43..16.06% and OPEN. TC N4096/K4096 current TM64/S1 misses measured TM8/S4 (~35.4us vs18.2..18.5us full call). No production policy update. NEXT: indexed single-/multi-token MoE, then unified prior-shape GEMV/TC sweep and heuristic. |
 | 4 | Plugin into llama.cpp | AFTER DEVICE ADMISSION. Add the winning implementation to the existing Quactlize dispatch/JIT path, preserve its ABI/canonical weights, retain supported canonical TC fallback outside measured scope. Verify actual dense MUL_MAT and MoE MUL_MAT_ID native symbols/configs in traces; a compiled DSO alone is not integration. |
 | 5 | End-to-end decode non-regression | BOX REQUIRED. Same model/shape/request-batch=1 versus llama.cpp native. Exclude first JIT/graph upload; report kernel and gather/router/reduction/scatter separately. Follow run_batched_bench.sh; numerical check plus steady-state asys. User bottom line: no slowdown versus native. |
 | 6 | Prefill vs dequant-first + DeepGEMM BF16 | NEW REQUEST; PENDING. Start real int4-model prefill M=2048 (M64 excluded), dense plus grouped. Same original GGUF values, identical shape/routing; compare our selected path with device weight dequantization to BF16 plus DeepGEMM BF16 GEMM. Report dequant-only, resident GEMM-only, **combined CUDA-event span**, workspace/peak memory and full adapters. Do not omit expansion or assume a reusable BF16/scale cache. For MoE expand the experts actually consumed, report their count/bytes, and do not charge one arm all E while the other reads only active experts. Warm JIT first. |
 
-Working order: Saturday finish Q4 cold tuning/coverage; Sunday integrate the
-admitted selection and measure model decoding, then the prefill comparator.
+Latest order (2026-09-13): finish the MoE SIMT reader/entry first, then run
+GEMV and TC together on the previous decode workload inventory, then update
+the heuristic and integrate/test model decoding. Prefill comparison stays separate.
 If a scope remains slower/untested, report it explicitly rather than declare
 the weekend goal complete. Do not delay the ready GEMV box handoff for the
 prefill comparison implementation.
+
+### MoE completion before the next broad sweep
+
+| Item | Required boundary / state |
+|---|---|
+| Real optimized-reader entry and recipe identity | LOCAL IMPLEMENTED/COMPILED; DEVICE PENDING. Additive `q4_s1_api.h` exposes META/MEDIUM/REUSE with exact recipe identity; `qkg_call_v1` addressing retained, old config/selector unchanged. [Bounded gate](../../docs/Q4_MOE_S1_GATE.md): six shapes,16 recipes,F16/F32,192 native specializations. Standalone production-side headers have no development-source dependency. |
+| Single-token indexed SIMT | LOCAL IMPLEMENTED; DEVICE PENDING. One launch resolves GPU IDs and activation/weight/output bases with no host routing/D2H or standalone gather/scatter. Token1/top8 remains eight separate expert rows. Canonical bytes unchanged; immutable dense DSO is a numerical control for the overlapping small shape. |
+| Multi-token indexed SIMT | LOCAL IMPLEMENTED; DEVICE PENDING. Gate covers token1..8, shared gate/up A (`channels=1`), slot-specific down A (`channels=topk`), padded strides, empty/skewed experts and changed IDs on graph replay.108 cases, including clustered token8. No GPU histogram readback for selection. This is per-row S1, not explicit multi-row B reuse. |
+| Numerical and timing boundary | FP32 accumulation; actual F32 caller inputs rounded to F16 in registers and F32 outputs, not only the microbenchmark's F16 input. Test independent GGUF, negative IDs/expert/row plants and guards. Compare end-to-end adapters and reducers on cold active weights, not only core kernel time. |
+| Chain-fusion compatibility | PENDING. Current llama.cpp `prepare_moe` returns no chain for `Plan::direct` GEMV. Test fused/unfused gate-up and mixed SIMT/TC gate/up/down; avoid losing existing activation/router/output fusion after selecting a faster isolated kernel. |
+| Model qtypes | Inventory actual gate/up/down types. Q4_K_M does not mean every expert weight is Q4_K. Keep Q5/Q6 and other unadmitted readers on supported canonical TC until separately measured; no copied Q4 heuristic. |
+| Unified sweep and heuristic | AFTER MoE entry closure. Retain previous TC best configs and actual Split-K cost. Add GEMV to the same measured selection; publish exact coverage, near-tie handling and unsupported fallback. Dense boundaries above are not MoE policy. |
 
 Local prefill reference checkout found at `../DeepGEMM-for-sail`, inspected
 HEAD `f89eae1`. Its `deep_gemm/jit_kernels/gemm.py` dense BF16 entry and
