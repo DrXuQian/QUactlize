@@ -4,6 +4,19 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
+## Current addition: measured Q4 small-M SIMT/TC selection
+
+`prebuilt/ppu0010/q4-decode-policy-v1` adds automatic measured Q4 decode
+selection and retains the existing JIT mechanism. See
+[Q4 decode policy](Q4_DECODE_POLICY.md) for the 372-case replay, known
+token8 routing compromises, exact interfaces and selected-only box gate.
+The optimized SIMT path is no longer the old generic GEMV candidate pool.
+The private llama adapter needs the matching `kpack_q4_decode.h` and optional
+entry bindings. No Q8 policy, prefill selection or offline bytes change.
+Local host/PPU compilation passes; selected-call and model-level device
+admission remain pending. The older v3 text below records prior experiments,
+not an override of this new decode package.
+
 The latest [SIMT GEMV NCU investigation](../dev/gemv_cuda/README.md#ncu-guided-reader-follow-up-2026-09-11)
 is development-only: Q4/Q5 full-call latency drops about 28-29% on 5090,
 with independent 1-4-token input controls; Q8 needs per-shape reader/config

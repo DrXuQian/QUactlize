@@ -1,4 +1,5 @@
 #include "policy.hpp"
+#include "decode.hpp"
 #include "jit.hpp"
 #include "moe.hpp"
 #include <dlfcn.h>
@@ -47,8 +48,8 @@ struct Plan {
     qk_recipe_v1 recipe;
     std::shared_ptr<Module> module;
 };
-using Key=std::tuple<int,int,int,int,int,int,int,uint64_t>;
-Key key(qks_request_v1 const& r) { return {r.qtype,r.route,r.m,r.n,r.k,r.experts,r.max_rows,r.mapping_id}; }
+using Key=std::tuple<int,int,int,int,int,int,int,uint64_t,bool>;
+Key key(qks_request_v1 const& r,bool decode) { return {r.qtype,r.route,r.m,r.n,r.k,r.experts,r.max_rows,r.mapping_id,decode}; }
 struct Runtime {
     std::filesystem::path root;
     int device=-1, cu=0;
@@ -165,15 +166,15 @@ extern "C" int quactlize_kpack_dispatch_enable_jit_v1(void* runtime,qks_jit_opti
     } catch (std::exception const& e) { last_error=e.what(); return QKS_BINDING; }
 }
 
-extern "C" int quactlize_kpack_dispatch_query_v1(void* runtime,qks_request_v1 const* req,qks_choice_v1* out) {
+static int query(void* runtime,qks_request_v1 const* req,qks_choice_v1* out,bool decode) {
     if (!runtime || !req || !out || !valid(*req)) return QKS_INVALID;
     *out={};
     try {
         auto& r=*static_cast<Runtime*>(runtime);
         std::lock_guard<std::mutex> lock(r.mutex);
-        auto found=r.requests.find(key(*req));
+        auto found=r.requests.find(key(*req,decode));
         if (found!=r.requests.end()) { *out=r.plans.at(found->second-1).choice; return QKS_OK; }
-        auto selected=select(*req);
+        auto selected=decode ? select_decode_tc(*req) : select(*req);
         if (!selected.config) { last_error="no same-family policy choice"; return QKS_MISS; }
         auto const& config=*selected.config;
         Image const* image=nullptr;
@@ -217,9 +218,16 @@ extern "C" int quactlize_kpack_dispatch_query_v1(void* runtime,qks_request_v1 co
         choice.device=r.device; choice.compute_units=r.cu;
         if (image->parent.size()>=sizeof(choice.parent)) return QKS_BINDING;
         std::strcpy(choice.parent,image->parent.c_str()); std::strcpy(choice.build_key,image->key.c_str());
-        r.plans.push_back({*req,choice,rec,module}); r.requests.emplace(key(*req),choice.ticket);
+        r.plans.push_back({*req,choice,rec,module}); r.requests.emplace(key(*req,decode),choice.ticket);
         *out=choice; return QKS_OK;
     } catch (std::exception const& e) { last_error=e.what(); return QKS_BINDING; }
+}
+
+extern "C" int quactlize_kpack_dispatch_query_v1(void* runtime,qks_request_v1 const* req,qks_choice_v1* out) {
+    return query(runtime,req,out,false);
+}
+extern "C" int quactlize_kpack_dispatch_query_decode_v1(void* runtime,qks_request_v1 const* req,qks_choice_v1* out) {
+    return query(runtime,req,out,true);
 }
 
 extern "C" int quactlize_kpack_dispatch_prepare_v1(void* runtime,qks_choice_v1 const* choice,

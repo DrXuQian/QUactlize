@@ -13,6 +13,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from quactlize.runtime.compiler import FLAGS, LIBRARIES, sha
+from quactlize.execution import q4_decode_codegen
 
 
 def build(sdk, output, jobs, variant="production"):
@@ -61,6 +62,12 @@ def build(sdk, output, jobs, variant="production"):
         }
     )
     hashes = {str(p.relative_to(ROOT)): sha(p) for p in inputs}
+    for p in (q4_decode_codegen.POLICY, q4_decode_codegen.POLICY.with_suffix('.hpp'),
+              ROOT/'quactlize/execution/q4_decode_codegen.py',
+              ROOT/'policies/kpack_zw810_heuristic_v1.hpp',
+              ROOT/'policies/kpack_zw810_runtime_v1.hpp',
+              ROOT/'policies/kpack_zw810_v1.hpp'):
+        hashes[str(p.relative_to(ROOT))] = sha(p)
     if variant == "fp32-affine":
         for p in [
             ROOT / "dev/gemv_cuda/build.py",
@@ -69,13 +76,21 @@ def build(sdk, output, jobs, variant="production"):
         ]:
             hashes[str(p.relative_to(ROOT))] = sha(p)
     commands = []
+    selected_sources = []
+    for name, text in q4_decode_codegen.sources().items():
+        p = output / name
+        p.write_text(text)
+        selected_sources.append((p.stem, p, []))
     for name, filename, defines in (
         [("q8", source / "gemv.cu", ["-DQKG_QTYPE=8"])]
         + [(f"q{q}", gemv_source, [f"-DQKG_QTYPE={q}"]) for q in range(10, 15)]
         + [
             ("metadata", source / "metadata.cu", []),
             ("dispatch", source / "dispatch.cpp", []),
+            ("q4_decode", source / "q4_decode.cpp", []),
+            ("q4_decode_io", source / "q4_decode_io.cu", []),
         ]
+        + selected_sources
         + [("adapters", p, []) for p in extra_sources]
     ):
         command = [
@@ -150,6 +165,8 @@ def build(sdk, output, jobs, variant="production"):
         variant=variant,
         generated_source_sha256=sha(gemv_source),
         comparison_adapters=bool(extra_sources),
+        q4_decode_policy_sha256=sha(q4_decode_codegen.POLICY),
+        q4_decode_configs={f'{n}x{k}':v for (n,k),v in q4_decode_codegen.recipes().items()},
     )
     if variant == "fp32-affine":
         manifest["gemv_pair_affine"] = "FP32_GROUP_AFFINE_NO_INTERMEDIATE_FP16_ROUNDING"

@@ -25,6 +25,12 @@ def verify(root, *, sdk=None):
     ):
         if sha(root / name) != m[field]:
             raise ValueError("native payload differs: " + name)
+    if "decode_policy" in m:
+        receipt = m["decode_policy"]
+        path = (root / receipt["path"]).resolve(strict=True)
+        if (path.parent != root or sha(path) != receipt["sha256"] or
+            m["execution_receipt"].get("q4_decode_policy_sha256") != receipt["sha256"]):
+            raise ValueError("decode policy/execution identity differs")
     if m.get("jit_required") or "jit_source_contract" in m:
         if source_contract(m.get("jit_source_identity", {})) != m.get("jit_source_contract"):
             raise ValueError("JIT source contract differs")

@@ -20,7 +20,7 @@ The model-level no-slowdown target remains a separate, unproven requirement.
 | 3 | Small-M and indexed/batched deployment coverage | [Q4 dense M2..8 BOX REVIEWED](../../docs/Q4_SMALLM_RESULTS_20260913.md):42/42 numerical cases; SIMT faster than scanned TC in15, TC in27. SIMT beats raw ref in35/42; N512/K2048 M2..8 remains+5.43..16.06% and OPEN. TC N4096/K4096 policy misses measured TM8/S4 (~35.4us vs18.2..18.5us full call). [MoE indexed S1 now108/108 numerical PASS](../../docs/Q4_MOE_S1_RESULTS_20260913.md),18 noisy timing cases tagged. No production policy update. NEXT: unified prior-shape GEMV/TC sweep and heuristic, preserving chain fusion. |
 | 4 | Plugin into llama.cpp | AFTER DEVICE ADMISSION. Add the winning implementation to the existing Quactlize dispatch/JIT path, preserve its ABI/canonical weights, retain supported canonical TC fallback outside measured scope. Verify actual dense MUL_MAT and MoE MUL_MAT_ID native symbols/configs in traces; a compiled DSO alone is not integration. |
 | 5 | End-to-end decode non-regression | BOX REQUIRED. Same model/shape/request-batch=1 versus llama.cpp native. Exclude first JIT/graph upload; report kernel and gather/router/reduction/scatter separately. Follow run_batched_bench.sh; numerical check plus steady-state asys. User bottom line: no slowdown versus native. |
-| 6 | Prefill vs dequant-first + DeepGEMM BF16 | NEW REQUEST; PENDING. Start real int4-model prefill M=2048 (M64 excluded), dense plus grouped. Same original GGUF values, identical shape/routing; compare our selected path with device weight dequantization to BF16 plus DeepGEMM BF16 GEMM. Report dequant-only, resident GEMM-only, **combined CUDA-event span**, workspace/peak memory and full adapters. Do not omit expansion or assume a reusable BF16/scale cache. For MoE expand the experts actually consumed, report their count/bytes, and do not charge one arm all E while the other reads only active experts. Warm JIT first. |
+| 6 | Prefill vs dequant-first + cuBLAS / DeepGEMM BF16 | NEW REQUEST; PENDING. Start real int4-model prefill M=2048 (M64 excluded), dense plus grouped. Same original GGUF values and routing. Updated measurement contract: **dequant-only and warmed GEMM-only in separate experiments**, no combined event span. Also remeasure SF scale/zero expansion independently. Report workspace, useful read/write bytes and ACU DRAM traffic, not a presumed reusable BF16/scale cache. Expand the experts actually consumed, record their count, and charge identical active weights. Any component sum is a cost estimate, not measured E2E. |
 
 Latest order (2026-09-13): finish the MoE SIMT reader/entry first, then run
 GEMV and TC together on the previous decode workload inventory, then update
@@ -312,6 +312,27 @@ Run the investigation in this order:
    with identical tile, stage, provider, grid and numerical fixture.
 5. Do not select layout 3 in `auto`, change the canonical mapping ID, or feed
    its bytes to the shipping reader before all four steps close.
+
+## Large-M dequant-first comparison (after small-M production selection)
+
+- [x] Fit and wire the 372-case small-M Q4 SIMT/TC policy locally; see
+  `docs/Q4_DECODE_POLICY.md`. Selected box gate and actual model timing remain
+  pending. Keep the 46 router-sensitive token8 gaps explicit.
+
+- [ ] Scan canonical K-pack -> full BF16 weight dequantization -> installed
+  cuBLAS BF16 dense GEMM, against selected quantized GEMM on the same families.
+- [ ] Scan canonical K-pack -> full BF16 weight dequantization -> installed
+  DeepGEMM BF16 grouped GEMM, with real expert rows and empty experts.
+- [ ] Treat external libraries as providers: warm up/JIT outside measured
+  steady-state calls; record cold setup separately. Measure dequant-only and
+  GEMM-only in separate experiments, plus workspace and read/write bandwidth
+  models. Re-measure SF scale/zero expansion independently; do not combine its
+  old modeled cost with a new measured cost as an end-to-end comparison. Do not replace
+  measured dequant latency by a utilization estimate. Mark sums of independent
+  stage timings as cost estimates, not measured complete-call latencies.
+- [ ] Reuse the real shape registry and library-selected configs. Start with
+  a bounded M ladder, then refine only crossover intervals; no config/shape
+  Cartesian sweep. Keep unavailable provider/API/shape cases explicit.
 
 ## DeepGEMM comparison anchor
 
