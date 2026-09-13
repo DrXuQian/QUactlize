@@ -319,6 +319,16 @@ Run the investigation in this order:
   `docs/Q4_DECODE_POLICY.md`. Selected box gate and actual model timing remain
   pending. Keep the 46 router-sensitive token8 gaps explicit.
 
+- [x] Build an independent dequant diagnostic library and box runner;
+  `docs/KPACK_DEQUANT_BENCHMARK.md`. SF production baseline plus3 candidates;
+  full BF16 direct baseline plus2 shared-transpose candidates. Five-format
+  host original-GGUF oracle, poisoned output/negative controls and complete
+  ownership tests pass. Default box plan10 numerical smokes+238 timings,
+  at most8 ACU reports. No GEMM inside timing; no GPU bandwidth admission yet.
+- [ ] Review box dequant-only results and optimize low-throughput stages.
+  Use useful read/write byte models alongside actual ACU DRAM/L2 traffic;
+  do not label deferred-output/cache-inflated event bandwidth as utilization.
+
 - [ ] Scan canonical K-pack -> full BF16 weight dequantization -> installed
   cuBLAS BF16 dense GEMM, against selected quantized GEMM on the same families.
 - [ ] Scan canonical K-pack -> full BF16 weight dequantization -> installed
