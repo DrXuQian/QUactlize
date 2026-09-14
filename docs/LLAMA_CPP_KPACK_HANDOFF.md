@@ -6,21 +6,28 @@ binary bundle, or loader contract changes.
 
 ## Current addition: decode F32/BF16 endpoints, 2026-09-14
 
+**PPU library gate reviewed: PASS.** [Result and exact scope](KPACK_DECODE_IO_RESULTS_20260914.md):
+208/208 dense endpoint records (104 F32 + 104 BF16), 32 indexed-stage cases,
+192 MoE-stage cases and four real selected chains pass. The 27 typed parent
+keys and complete request set match the published package; graph node counts
+prove no standalone dtype adapters inside the dense calls. Model-level
+accuracy, trace and speed remain pending.
+
 The original gate is superseded by
 `tools/run_kpack_decode_io_device_fix_box.sh`: it fetches typed modules at
 artifact commit `11d0f34be65b8c61997b47f4ca6000e6da8c489b`, with the SM-count
 attribute-query repair. The MoE fixture dependency is explicitly
 `kpack-fusion-v1/libquactlize_ppu_pack.so` (canonical + single + paired
 producer), not the old `kpack-pack-v1` DSO. The complete producer ABI is
-checked before numerical phases. These packaging/query corrections are not
-PPU numerical or model-performance admission.
+checked before numerical phases. The returned result, rather than those
+packaging/query corrections alone, supplies the library numerical evidence.
 
 `prebuilt/ppu0010/kpack-decode-io-v1` is the focused, locally compiled
 endpoint gate: 27 typed dense parents, five compatibility/grouped controls,
 the small dispatcher, unchanged measured SIMT execution DSO, and two fused
 stage proof binaries. [Contract and box command](KPACK_DECODE_IO.md).
-Device admission and model performance are **pending**, not inherited from
-the earlier FP16 or SIMT sweeps.
+This original bundle is historical; use the pinned device-query repair above.
+Model performance is not inherited from earlier FP16 or SIMT sweeps.
 
 Published code/payload: Quactlize `develop` at `0eac0a0`; private llama branch
 `feat/kpack-gpu-cache` at `b312a0955`. All 36 payloads are Git LFS objects
@@ -37,11 +44,17 @@ The private llama adapter uses the caller's F32 pointers with no standalone
 gather/scatter casts on this admitted path. Indexed MoE retains fused
 conversion/placement and extends to top8 tokens5..8 (64 routed rows).
 
-The current branch remains `feat/kpack-gpu-cache`; the interrupted rebase was
-aborted. Only after this endpoint task finishes: apply
-`/root/ppu_dev-vs-master.diff` to official `v0.3.0` as `dev/v0.3.0`, then branch
-`dev/quactlize-v0.3.0` and cherry-pick the Quactlize-only integration changes.
-Do not update the active eight-card cost-campaign checkout while it measures.
+The original `feat/kpack-gpu-cache` history is retained. The requested
+[v0.3.0 branches](LLAMA_V030_PORT.md) now exist in the private fork:
+`dev/v0.3.0` at `e73e2136b` is the exact release-plus-patch base, and
+`dev/quactlize-v0.3.0` at `7bddc62e7` contains the selective Quactlize port.
+Local host tests and three PPU compile checks pass; the migrated whole-model
+device run remains pending. Do not switch an active measuring checkout.
+
+The [audited component-cost policy](KPACK_COMPONENT_POLICY.md) has been
+imported at `431a698`. New full-BF16 provider composition and its llama
+bindings remain local work in progress, not part of these published llama
+branches or the decode gate's numerical conclusion.
 
 ## Current addition: measured Q4 small-M SIMT/TC selection
 

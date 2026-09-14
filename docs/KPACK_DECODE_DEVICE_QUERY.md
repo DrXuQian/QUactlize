@@ -23,9 +23,11 @@ For a read-only inspection of either old or repaired payloads:
 python3 tools/probe_kpack_decode_device.py --sdk "$PPU_SDK" --bundle "$BUNDLE"
 ```
 
-The repaired artifact must rerun the original 104 requests, both F32/BF16
-storage variants and the MoE graph controls. Numerical and performance verdicts
-remain pending until the new PPU results return.
+The repaired artifact has now passed the original 104 requests with both
+F32/BF16 storage variants and the MoE graph controls. See the
+[PPU result review](KPACK_DECODE_IO_RESULTS_20260914.md). The ordinary and
+typed queries both report 72 CUs, agreeing with the explicit attribute.
+This closes the identity failure for the tested artifact, not model speed.
 
 The subsequent `undefined symbol: quactlize_ppu_kpack_canonical_arrangement_v1`
 is a separate fixture dependency error. The decode runner incorrectly selected

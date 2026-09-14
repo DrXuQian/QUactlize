@@ -1,8 +1,10 @@
 # Decode input/output without standalone casts
 
-Local implementation and PPU compilation are complete. Device numerical,
-graph-replay and model-speed admission remain pending. This is an additive
-endpoint change, not a new sweep or a new heuristic.
+Local implementation, PPU compilation and the tested library's numerical /
+graph-replay gate are complete: [208 dense endpoints and four real MoE
+chains pass](KPACK_DECODE_IO_RESULTS_20260914.md). Model-level accuracy,
+trace and speed admission remain pending. This is an additive endpoint
+change, not a new sweep or a new heuristic.
 
 ## Scope
 

@@ -1,0 +1,68 @@
+{
+  "schema": "quactlize.decode-io-review.v1",
+  "status": "PASS_TESTED_LIBRARY_ENDPOINTS",
+  "archive": "kpack-decode-io.auxlBV.results.tgz",
+  "archive_sha256": "9177a41062e105d268823a0b98610883a9cc5df29a073cc2fd11dbfaf5838644",
+  "members_sha256": {
+    "results/device.log": "6774dd8bd310f2659661e01f03ba40815a0bbad5d3debdd781c99dc6fbf73964",
+    "results/summary.json": "3488287567129f90066487f30d26b6d5db7573da511e9c25d501d0ad6c0dd8a7",
+    "results/moe-stages.log": "bd0e9c12f94e8db6ac435996f3b3b93983f4758754647a9a4e794b32ef55722e",
+    "results/verify.log": "a6d244a7b63e35ccf53b48301165b1d02828e25742a2430b8269bc2ea161b133",
+    "results/pack-library.log": "9c48e5264010f244518e44b43944000409b5da5068964650e5951516bc9b9b35",
+    "results/indexed.log": "232a58c7cc08e1cf90dcf56c40a81be8c85c973f36f5a771110566b798d1918c"
+  },
+  "package": {
+    "artifact_commit": "11d0f34be65b8c61997b47f4ca6000e6da8c489b",
+    "manifest_sha256": "18cef9864bb3271a1f0763ba05acd4eb7744d48fc0fede524ead7da3f1d7a9d2",
+    "runtime_source_contract": "cd5da8665199dd5bf845b49856cd54ee24f11ab9c369126cc2be0f77b7d9355a",
+    "execution_sha256": "2d4f441abd8f5423bed4ddbc33d10868f3983b44a1a747fe82729849209782d7",
+    "packer_sha256": "b57013dc15d5ba50874480d8ae61a6143e929a1765cec352d0b3a0c29553e5fa",
+    "runner_checkout_sha": null,
+    "runner_checkout_scope": "NOT_RECORDED_IN_ARCHIVE"
+  },
+  "device": {"name": "PPU-ZW810", "ordinal": 0, "pci": "0000:08:00.0", "cu": 72},
+  "checks": {
+    "dense_manifest_denominator_exact": true,
+    "dense_module_identities_exact": true,
+    "raw_records_equal_summary": true,
+    "device_probe_agrees_with_attribute": true,
+    "packer_host_abi": "PASS",
+    "input_output_workspace_guards": "PASS",
+    "zero_a_negative": "RED",
+    "original_fp16_control": "PASS"
+  },
+  "dense": {
+    "policy_requests": 104,
+    "f32_pass": 104,
+    "bf16_pass": 104,
+    "typed_parents_exercised": 27,
+    "m": [1, 2, 3, 4, 5, 6, 7, 8],
+    "selected_splits": [1, 4, 8],
+    "split_counts": {"1": 84, "4": 86, "8": 38},
+    "graph_node_counts": {"1": 84, "2": 124},
+    "standalone_adapters": 0,
+    "changing_input_checks_per_endpoint": 7,
+    "error_bound": 0.005,
+    "max_f32_error": 0.0001687491558355228,
+    "max_bf16_error": 0.0037873659308926455,
+    "error_scope": "ABSOLUTE_DOT_ERROR_DIVIDED_BY_SUM_ABSOLUTE_PRODUCTS",
+    "timing_scope": "WARM_FUNCTIONAL_DIAGNOSTIC_NOT_MODEL_SPEED"
+  },
+  "indexed_stages": {"pass": 32, "replays": 7, "gemm_scope": "NOT_TESTED"},
+  "moe_stages": {"pass": 192, "replays": 7, "gemm_scope": "NOT_TESTED"},
+  "router_equivalence": {"modes": 16, "fixtures": 256, "bad": 0, "scope": "RAW_BITS"},
+  "real_moe_chains": {
+    "pass": 4,
+    "tokens": 8,
+    "topk": 8,
+    "experts": 256,
+    "merged": [false, true],
+    "router": [false, true],
+    "graph_replays": 3,
+    "max_error": 0.00045635340859028416
+  },
+  "failures": 0,
+  "model_accuracy_admission": "PENDING",
+  "model_trace_admission": "PENDING",
+  "model_speed_admission": "PENDING"
+}
