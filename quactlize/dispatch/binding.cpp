@@ -13,6 +13,12 @@
 #include <tuple>
 #include <vector>
 
+extern "C" int quactlize_kpack_dispatch_prefill_v1(qks_request_v1 const* r,
+        uint32_t mask,qks_prefill_choice_v1* out) {
+    if (!r || !out || !quactlize::dispatch::valid(*r)) return QKS_INVALID;
+    return quactlize::dispatch::cost::query(*r,mask,*out);
+}
+
 namespace {
 using namespace quactlize::dispatch;
 struct Image {
@@ -99,9 +105,13 @@ std::shared_ptr<Module> load(Runtime& r,Image const& image,Config const& c,bool 
     char name[128]{}; int device=-1,cu=0;
     auto probe=symbol<decltype(&quactlize_kpack_device_v1)>(module->library,
         dense_io?"quactlize_kpack_decode_dense_device_v1":"quactlize_kpack_device_v1");
-    if (probe(name,sizeof(name),&device,&cu)!=QK_OK || std::strcmp(name,"PPU-ZW810") || cu!=72 ||
+    int probe_rc=probe(name,sizeof(name),&device,&cu);
+    if (probe_rc!=QK_OK || std::strcmp(name,"PPU-ZW810") || cu!=72 ||
         (r.device>=0 && (r.device!=device || r.cu!=cu)))
-        throw std::runtime_error("loaded module device differs from policy");
+        throw std::runtime_error("loaded module device differs from policy: probe_rc="+std::to_string(probe_rc)+
+            " name="+std::string(name)+" ordinal="+std::to_string(device)+" compute_units="+std::to_string(cu)+
+            " expected_name=PPU-ZW810 expected_compute_units=72 previous_ordinal="+std::to_string(r.device)+
+            " previous_compute_units="+std::to_string(r.cu));
     r.device=device; r.cu=cu;
     if (dense_io) {
         module->query_dense_io=symbol<decltype(module->query_dense_io)>(module->library,"quactlize_kpack_decode_dense_query_v1");

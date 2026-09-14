@@ -1,5 +1,6 @@
 #pragma once
 #include "api.h"
+#include "cost.hpp"
 #include "../include/q8_kpack2.hpp"
 #include "../../policies/kpack_zw810_heuristic_v1.hpp"
 #include <algorithm>
@@ -82,6 +83,8 @@ inline Selected select_same_family(qks_request_v1 const& r) {
         if (r.qtype == 13 && r.n == 2048 && r.k == 512)
             return {&kGroupedDecode[1],QKS_MEASURED_GROUPED};
     }
+    if (auto c=cost::fixed_route(r))
+        return {c,cost::knot(r)->tokens==r.max_rows ? QKS_COMPONENT_MEASURED : QKS_PREDICTED};
     policy::Query q;
     q.qtype=r.qtype; q.n=r.n; q.k=r.k; q.m=r.m; q.total_rows=r.m;
     q.experts=r.experts; q.max_rows=r.max_rows;

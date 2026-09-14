@@ -274,6 +274,7 @@ def main():
         ROOT / "tools/kpack_native_policy.cpp",
         ROOT / "policies/kpack_zw810_heuristic_v1.hpp",
         ROOT / "policies/kpack_zw810_runtime_v1.hpp",
+        ROOT / "policies/kpack_zw810_cost_v1.hpp",
     ]
     manifest = dict(
         schema="quactlize.kpack-native-dispatch.v1",
