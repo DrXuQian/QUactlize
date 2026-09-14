@@ -139,7 +139,8 @@ def weight_run(a,points):
         for operation in (0,1):
             key=dequant_key(p,operation)
             def measure(operation=operation):
-                old=reuse(evidence,p,operation,w.identity,a.device,a.manifest['runtime'],a.packages)
+                old=None if getattr(a,'no_reuse',False) else reuse(
+                    evidence,p,operation,w.identity,a.device,a.manifest['runtime'],a.packages)
                 return old if old is not None else dequant_measure(a,p,w,operation)
             dequant[operation]=perform(a,key,measure)
         for route,info in p['routes'].items():
@@ -152,8 +153,9 @@ def weight_run(a,points):
         else:print(f'COST_COMPONENT id={p["id"]}-bf16 status=BLOCKED_FULL_DEQUANT remaining_continue=1',flush=True)
 
 
-def summarize(output,points,authority):
-    expected={key for p in points for key in keys(p)}|{'dense-m1-n4096-s4-recheck'}
+def summarize(output,points,authority,include_reducer=True):
+    expected={key for p in points for key in keys(p)}
+    if include_reducer:expected.add('dense-m1-n4096-s4-recheck')
     records={};missing=[];noisy=[]
     for key in sorted(expected):
         path=output/'components'/f'{key}.json'
@@ -192,13 +194,36 @@ def reducer_recheck(a):
     if manifest['reducer_header_sha256']!=sha(header):raise ValueError('reducer implementation changed')
     if manifest['runtime']!=a.manifest['runtime']:raise ValueError('reducer runtime differs')
     expected=json.loads((BUNDLE/'fixture-receipts.json').read_text())['authority']['device']
-    if expected!=a.device:raise ValueError('reducer physical device differs')
+    if expected!=a.device and not (getattr(a,'allow_equivalent_device',False) and same_device_class(expected,a.device)):
+        raise ValueError('reducer device class differs')
     p=next(w for w in cases() if w['id']=='dense-m1-n4096-s4')
     ctx=Context(a.sdk,a.bundle,a.device)
     try:
         lib=bind_reducer(BUNDLE/'libprefill_reducer.so')
         return measure(ctx.sdk,lib,a.device,p)|dict(kind='reducer')
     finally:ctx.close()
+
+
+def same_device_class(expected,observed):
+    """The caller admits same-model cards, not fabricated PCI equivalence.
+
+    Every cost GEMM module independently requires PPU-ZW810 / 72 CUs. Here
+    additionally retain the measured cache size and warp-width contract.
+    """
+    fields=('l2_bytes','compute_units','warp')
+    return all(k in expected and expected[k]==observed.get(k) for k in fields)
+
+
+def measurement_sources():
+    sources=[p for p in (ROOT/'tools').glob('*kpack_cost*.py')]+[
+        ROOT/'tools/kpack_prefill_measurement.py',ROOT/'tools/kpack_bf16_fixture.py',
+        ROOT/'tools/kpack_bf16_providers.py',ROOT/'tools/kpack_dequant_fixture.py',
+        ROOT/'tools/run_kpack_decode_reducer.py',ROOT/'tools/run_kpack_dequant_gate.py',
+        ROOT/'tools/run_kpack_gemv_gate.py',ROOT/'tools/run_kpack_grouped_decode_probe.py',
+        ROOT/'tools/run_kpack_grouped_device_gate.py',ROOT/'quactlize/runtime/native.py',
+        ROOT/'quactlize/dispatch/native.py',ROOT/'quactlize/dequant/native.py',
+        ROOT/'tools/kpack_warmup_fixture.py',ROOT/'reference/gguf_kpack.py',EVIDENCE]
+    return {str(p.relative_to(ROOT)):sha(p) for p in sources}
 
 
 def main():
@@ -209,6 +234,10 @@ def main():
     parser.add_argument('--phase',choices=['all',*PHASES],default='dense-mid')
     parser.add_argument('--child-weight')
     parser.add_argument('--summarize-only',action='store_true')
+    parser.add_argument('--probe-device',action='store_true')
+    parser.add_argument('--allow-equivalent-device',action='store_true')
+    parser.add_argument('--no-reuse',action='store_true',help='fresh measurements, no historical timing reuse')
+    parser.add_argument('--reducer-only',action='store_true')
     a=parser.parse_args()
     a.bundle=a.bundle.resolve(strict=True);a.sdk=a.sdk.resolve(strict=True);a.output=a.output.resolve()
     a.manifest,plan=verify(a.bundle,a.sdk)
@@ -216,19 +245,18 @@ def main():
     ctx=Context(a.sdk,a.bundle)
     a.device=ctx.device;ctx.close()
     expected=json.loads(EVIDENCE.read_text())['entries'][0]['device']
-    if a.device!=expected:raise ValueError('use the same idle physical PPU as prior costs')
-    sources=[p for p in (ROOT/'tools').glob('*kpack_cost*.py')]+[
-        ROOT/'tools/kpack_prefill_measurement.py',ROOT/'tools/kpack_bf16_fixture.py',
-        ROOT/'tools/kpack_bf16_providers.py',ROOT/'tools/kpack_dequant_fixture.py',
-        ROOT/'tools/run_kpack_decode_reducer.py',ROOT/'tools/run_kpack_dequant_gate.py',
-        ROOT/'tools/run_kpack_gemv_gate.py',ROOT/'tools/run_kpack_grouped_decode_probe.py',
-        ROOT/'tools/run_kpack_grouped_device_gate.py',ROOT/'quactlize/runtime/native.py',
-        ROOT/'quactlize/dispatch/native.py',ROOT/'quactlize/dequant/native.py',
-        ROOT/'tools/kpack_warmup_fixture.py',ROOT/'reference/gguf_kpack.py',EVIDENCE]
+    if a.device!=expected and not (a.allow_equivalent_device and same_device_class(expected,a.device)):
+        raise ValueError('use the prior PPU or explicitly admit an equivalent device class')
+    if a.probe_device:
+        print('COST_DEVICE '+json.dumps(dict(device=a.device,packages=a.packages,runtime=a.manifest['runtime'])),flush=True)
+        return
     authority=dict(schema='quactlize.cost-supplement-results.v1',plan_sha256=plan['plan_sha256'],
         bundle_sha256=sha(a.bundle/'manifest.json'),device=a.device,runtime=a.manifest['runtime'],
-        sources={str(p.relative_to(ROOT)):sha(p) for p in sources},python_packages=a.packages,
+        sources=measurement_sources(),python_packages=a.packages,
         production_changed=False,small_m_full_dequant=False)
+    if a.allow_equivalent_device:
+        authority.update(device_admission='SAME_MODEL_CROSS_CARD_COMPARISON_ALLOWED',
+                         historical_timing_reuse=not a.no_reuse)
     a.authority=digest(authority)
     a.output.mkdir(parents=True,exist_ok=True)
     for name in ('components','failures','logs'):(a.output/name).mkdir(exist_ok=True)
@@ -238,10 +266,16 @@ def main():
     save(a.output/'plan.json',plan)
     save(a.output/'bundle-receipt.json',a.manifest)
     points=[p for p in plan['points'] if a.phase=='all' or p['phase']==a.phase]
+    if a.reducer_only:
+        perform(a,'dense-m1-n4096-s4-recheck',lambda:reducer_recheck(a))
+        r=summarize(a.output,[],a.authority)
+        if r['status']!='COMPLETE':raise SystemExit(1)
+        return
     if a.child_weight:
         points=[p for p in points if p['weight_id']==a.child_weight]
         if not points:raise ValueError('child weight outside selected phase')
         weight_run(a,points)
+        if a.allow_equivalent_device:summarize(a.output,points,a.authority,include_reducer=False)
         if any(not (a.output/'components'/f'{key}.json').exists() for p in points for key in keys(p)):
             raise SystemExit(1)
         return
@@ -254,6 +288,8 @@ def main():
             path=a.output/'logs'/f'{weight}.{time.time_ns()}.log'
             cmd=[sys.executable,'-u',str(Path(__file__).resolve()),'--sdk',str(a.sdk),'--bundle',str(a.bundle),
                  '--output',str(a.output),'--phase',a.phase,'--child-weight',weight]
+            if a.allow_equivalent_device:cmd.append('--allow-equivalent-device')
+            if a.no_reuse:cmd.append('--no-reuse')
             with path.open('w') as log:
                 child=subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,bufsize=1)
                 for line in child.stdout:
