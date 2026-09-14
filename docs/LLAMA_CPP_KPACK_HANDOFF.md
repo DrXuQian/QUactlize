@@ -34,12 +34,12 @@ offline bytes. SIMT keeps F32 caller-order IO; TC keeps compact FP16 inputs
 and ordered split reduction. Shared SwiGLU performs the required transition;
 SIMT down writes the final caller output directly. See the table above for
 the exact pending 80-stage/24-chain device denominator.
-`tools/run_kpack_q4_model_box.sh` is the new prebuilt deployment entry. It
-pins the private v0.3.0 caller and small runtime, checks mixed chains before
+`tools/run_kpack_q4_model_box.sh` is the joint CI/prebuilt-runtime entry. It
+pins the private v0.3.0 caller source and small runtime, checks mixed chains before
 model numerics, and separates warmed ABBA timings from Asys. Do not use the
 old fusion-v3 defaults as evidence for this build.
 
-Published local build: Quactlize `d93b118`, private llama `9b2fa0bf6`,
+Historical combined local build (not used by the current runner): Quactlize `d93b118`, private llama `9b2fa0bf6`,
 artifact branch `artifacts/kpack-model-v1` at `f2a2f99`. All three model
 executables and the seven-parent gate closure are prebuilt and hash-pinned;
 25 ELF payloads use LFS. The native llama CUDA backend accounts for most of

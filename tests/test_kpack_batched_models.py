@@ -228,11 +228,12 @@ def test_final_model_runner_uses_joint_ci_caller_and_pinned_runtime():
     assert '--exclude=\'*.asysrep\'' in text
     assert 'DrXuQian/llama.cpp.git' in text and 'ggml-org/llama.cpp.git' not in text
     receipt = json.loads((ROOT/'tools/kpack_q4_model_artifact.json').read_text())
-    assert receipt['branch'] == 'artifacts/kpack-model-v1'
+    assert receipt['branch'] == 'artifacts/kpack-model-runtime-v1'
+    assert receipt['path'] == 'prebuilt/ppu0010/kpack-model-runtime-v1'
     assert receipt['llama_branch'] == 'dev/quactlize-v0.3.0'
-    assert len(receipt['commit']) == len(receipt['llama_commit']) == 40
-    assert len(receipt['llama_ci_commit']) == 40 and receipt['llama_ci_commit'] != receipt['llama_commit']
-    assert len(receipt['manifest_sha256']) == 64 and receipt['lfs_payloads'] == 25
+    assert 'llama_commit' not in receipt and 'test ! -e "$BUNDLE/llama"' in text
+    assert len(receipt['commit']) == len(receipt['llama_ci_commit']) == 40
+    assert len(receipt['manifest_sha256']) == 64 and receipt['lfs_payloads'] == 12
 
 
 def test_joint_ci_checkout_preserves_dirty_source_and_nested_submodules(tmp_path):

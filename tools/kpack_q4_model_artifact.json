@@ -1,12 +1,11 @@
 {
-  "branch": "artifacts/kpack-model-v1",
-  "commit": "f2a2f999024cfde992fac84379dc733a4205b8cd",
-  "path": "prebuilt/ppu0010/kpack-model-v1",
-  "manifest_sha256": "2b20e6fcafd8068249f29e198336cfbb3c1001fc5a1570bb338858f2cb5eaa64",
+  "branch": "artifacts/kpack-model-runtime-v1",
+  "commit": "58ab5fbcbf897b1416954b536884f471863b3952",
+  "path": "prebuilt/ppu0010/kpack-model-runtime-v1",
+  "manifest_sha256": "e6ec8f4a29d364de63b9de2dcb86fa6d0686f550b34b298cad99146ff3e83896",
   "source_commit": "d93b11867813df4723179f11ae583aa4ebdb078a",
   "llama_branch": "dev/quactlize-v0.3.0",
-  "llama_commit": "9b2fa0bf65f0ba1464288e9c473ded9a739a6268",
   "llama_ci_commit": "ebaf84b23695bfa29341a57cb7291ece021249e0",
-  "lfs_payloads": 25,
+  "lfs_payloads": 12,
   "device_admission": "PENDING_MIXED_CHAIN_AND_MODEL"
 }

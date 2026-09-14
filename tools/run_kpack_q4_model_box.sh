@@ -70,7 +70,7 @@
 
     stage=fetch
     mapfile -t INFO < <("$PYTHON" -c 'import json,sys; m=json.load(open(sys.argv[1])); print(m["branch"]); print(m["commit"]); print(m["path"]); print(m["manifest_sha256"]); print(m["llama_ci_commit"])' "$ROOT/tools/kpack_q4_model_artifact.json")
-    [[ ${#INFO[@]} == 5 && ${INFO[0]} == artifacts/kpack-model-v1 && ${INFO[1]} =~ ^[0-9a-f]{40}$ && ${INFO[2]} == prebuilt/ppu0010/kpack-model-v1 && ${INFO[3]} =~ ^[0-9a-f]{64}$ && ${INFO[4]} =~ ^[0-9a-f]{40}$ ]]
+    [[ ${#INFO[@]} == 5 && ${INFO[0]} == artifacts/kpack-model-runtime-v1 && ${INFO[1]} =~ ^[0-9a-f]{40}$ && ${INFO[2]} == prebuilt/ppu0010/kpack-model-runtime-v1 && ${INFO[3]} =~ ^[0-9a-f]{64}$ && ${INFO[4]} =~ ^[0-9a-f]{40}$ ]]
     ART="$RESULT_DIR/quactlize-model-artifact-${INFO[1]:0:10}"
     git fetch origin "${INFO[0]}"
     git cat-file -e "${INFO[1]}^{commit}"
@@ -83,6 +83,7 @@
     BUNDLE="$ART/${INFO[2]}"
     "$PYTHON" -c 'import hashlib,sys; assert hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()==sys.argv[2],"model package manifest differs"' "$BUNDLE/manifest.json" "${INFO[3]}"
     "$PYTHON" tools/verify_kpack_dispatch.py "$BUNDLE" --sdk "$SDK" | tee "$RUN/results/verify.log"
+    test ! -e "$BUNDLE/llama"
     LLAMA_DIR="$RESULT_DIR/llama-model-source-${INFO[4]:0:10}"
     if [[ ! -e "$LLAMA_DIR" ]]; then
         git clone --no-checkout --depth 1 --single-branch --branch dev/quactlize-v0.3.0 \

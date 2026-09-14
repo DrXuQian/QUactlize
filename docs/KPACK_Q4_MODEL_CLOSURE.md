@@ -12,6 +12,8 @@ producer and gate payloads; the old `--llama-build`/`--llama-source` options
 are removed. The focused `kpack-model-runtime-v1` package has 12 LFS
 payloads, about9.3MiB, with unchanged kernel hashes. The old combined
 package remains historical and is not fetched by the current runner.
+Artifact commit: `58ab5fb`; its producer, execution, prefill, dispatcher,
+seven parents and mixed-stage binary match the previous package bytewise.
 
 Update source with `GIT_LFS_SKIP_SMUDGE=1 git pull --ff-only` so unrelated
 historical experiments are not downloaded. The runner then pulls only
