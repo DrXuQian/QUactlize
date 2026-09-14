@@ -25,6 +25,8 @@ def host(tmp_path_factory):
     lib=C.CDLL(str(out));lib.dequant_host.argtypes=[C.c_int]+[C.c_void_p]*4+[C.c_int]*2
     lib.dequant_tiled_host.argtypes=lib.dequant_host.argtypes
     lib.dequant_unit16_host.argtypes=[C.c_int]+[C.c_void_p]*3+[C.c_int]*2
+    lib.dequant_shared_host.argtypes=[C.c_int]*2+[C.c_void_p]*4+[C.c_int]*3
+    lib.dequant_shared_offset.argtypes=[C.c_int]*3
     assert lib.dequant_call_size()==C.sizeof(Call)
     return lib
 
@@ -49,6 +51,47 @@ def test_vector_unit_reuses_registry_and_exact_rounding(host,q):
     out=[np.empty_like(x) for x in sf]
     assert host.dequant_unit16_host(q,planes['units'].ctypes.data,*[x.ctypes.data for x in out],256,512)==0
     for got,want in zip(out,sf):assert np.array_equal(got.view('u2'),want.view('u2'))
+
+
+@pytest.mark.parametrize('q',[12,13])
+@pytest.mark.parametrize('config',[6,7,8,9])
+def test_shared_vector_decode_matches_official_gguf_and_rejects_wrong_view(host,q,config):
+    planes,gold,_=fixture.expert(q,256,512,2)
+    out=np.full_like(gold,0x7fff)
+    args=(q,config,planes['low'].ctypes.data,planes['high'].ctypes.data if planes['high'].size else None,
+          planes['units'].ctypes.data,out.ctypes.data,256,512)
+    assert host.dequant_shared_host(*args,0)==0
+    assert fixture.compare(out,gold)['bad']==0
+    assert host.dequant_shared_host(*args,1)==0
+    with pytest.raises(ValueError):fixture.compare(out,gold)
+
+
+@pytest.mark.parametrize('stage_k',[128,256])
+def test_actual_cute_shared_layout_ownership_vector_alignment_and_bank_model(host,stage_k):
+    from collections import Counter
+    address=lambda row,k:host.dequant_shared_offset(stage_k,row,k)
+    coords={(n,k):address(n,k) for n in range(32) for k in range(stage_k)}
+    assert set(coords.values())==set(range(32*stage_k))
+    for row in range(32):
+        for k in range(0,stage_k,4):
+            pos=address(row,k)
+            assert pos%4==0
+            assert [address(row,k+i) for i in range(4)]==list(range(pos,pos+4))
+    # A 32-bank, 4-byte/cell model. This is not proof of PPU bank timing.
+    for part in range(stage_k//128):
+        for warp in range(4):
+            for v in range(8):
+                for s in range(4):
+                    banks=[address((lane%4)*8+v,part*128+warp*32+lane//4+8*s)%32 for lane in range(32)]
+                    assert len(set(banks))==32
+    for start in range(0,32*stage_k//8,32):
+        for half in (0,4):
+            banks=Counter()
+            for i in range(start,start+32):
+                row,k=i//(stage_k//8),(i%(stage_k//8))*8+half
+                pos=address(row,k)
+                banks.update((pos+j)%32 for j in range(4))
+            assert set(banks.values())=={4} and len(banks)==32
 
 
 @pytest.mark.parametrize('q',range(10,15))
@@ -89,6 +132,39 @@ def test_vector_output_and_metadata_footprints():
     assert pattern(w|dict(operation=0),4)['fields']['metadata_unit16']['unique_bytes']==512
     assert config_ids(12,0,2)==list(range(6)) and config_ids(10,0,2)==list(range(4))
     for q in range(10,15):assert config_ids(q,1,2)==list(range(6))
+
+
+def test_full_reader_inventory_preserves_both_measured_controls():
+    from quactlize.dequant.native import selected_configs,config_ids
+    from tools.run_kpack_dequant_gate import selected_work,pattern,control_config
+    plan=selected_work([12,13],'full-reader')
+    assert len(plan)==36 and sum(w['smoke'] for w in plan)==2
+    assert all(w['operation']==1 and w['q'] in (12,13) for w in plan)
+    assert sum(len(selected_configs(w['q'],1,3,'full-reader')) for w in plan if not w['smoke'])==204
+    assert set(config_ids(12,1,3))==set(range(10))
+    for q in (10,11,14):assert config_ids(q,1,3)==list(range(6))
+    for q,o,g in ((10,1,3),(12,0,3),(12,1,2)):
+        with pytest.raises(ValueError):selected_configs(q,o,g,'full-reader')
+    with pytest.raises(ValueError):selected_work([12,14],'full-reader')
+    w=dict(q=12,n=5120,k=8192,experts=1,operation=1)
+    for c in range(6,10):
+        p=pattern(w,c);f=p['fields']
+        assert f['low_word']['unique_bytes']==512 and f['low_word']['sectors']['64']==8
+        assert f['bf16_output_uint4']['unique_bytes']==512
+        if c>=7:assert f['metadata_cta_unit16']['unique_bytes']==512
+        assert p['a_bytes']==0 and p['cta_barriers']=={6:1,7:2,8:2,9:4}[c]
+    assert pattern(w,7)['metadata_requested_bytes_per_n_superblock']==32
+    assert pattern(w,8)['metadata_requested_bytes_per_n_superblock']==16
+    r=dict(workload=w,config_generation=3,rows=[dict(config=c,median_us=100/c) for c in range(4,10)])
+    assert control_config(r)==5  # The faster new c9 must never become the baseline.
+
+
+def test_native_resource_parser_preserves_encoded_allocation_and_fails_closed():
+    from tools.build_kpack_dequant import resource_usage
+    text='Func 25 example RESOURCE INFO:\nvreg_number:38\nsreg_number:80\nshared_memory_size:132\nSTACK SIZE:0\n'
+    assert resource_usage(text)=={'example':dict(registers=38,scalar_registers=80,shared_allocation_field=132,stack_bytes=0)}
+    for bad in ('',text+text,text.replace('STACK SIZE:0\n',''),text+'vreg_number:39\n'):
+        with pytest.raises(ValueError):resource_usage(bad)
 
 
 @pytest.mark.parametrize('q',range(10,15))

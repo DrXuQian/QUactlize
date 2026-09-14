@@ -23,6 +23,13 @@
     ROOT=$(git -C "$(dirname "${BASH_SOURCE[0]}")/.." rev-parse --show-toplevel)
     test -n "$ROOT" && test -f "$ROOT/tools/run_kpack_dequant_gate.py"
     cd "$ROOT"
+    test "$#" -le 1
+    INVENTORY=${1:-all}
+    case "$INVENTORY" in
+        all) BUNDLE_REL=prebuilt/ppu0010/kpack-dequant-v2; RUN_PREFIX=kpack-dequant-ppu ;;
+        full-reader) BUNDLE_REL=prebuilt/ppu0010/kpack-dequant-v3; RUN_PREFIX=kpack-full-reader-ppu ;;
+        *) printf 'Expected no argument or full-reader\n' >&2; false ;;
+    esac
     SDK=$(realpath -e -- "${PPU_SDK:-/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK}")
     test -n "$SDK" && test -f "$SDK/lib/libhggc_wrapper.so"
     set +u
@@ -37,7 +44,7 @@
     [[ "$CUDA_VISIBLE_DEVICES" =~ ^[0-9]+$ ]]
     if [[ ${FETCH_PAYLOADS:-1} == 1 ]]; then
         stage=fetch
-        git lfs pull --include="prebuilt/ppu0010/kpack-dequant-v2/*.so" --exclude=""
+        git lfs pull --include="$BUNDLE_REL/*.so" --exclude=""
     fi
     EXTRA=()
     [[ ${ACU:-1} == 0 || ${ACU:-1} == 1 ]]
@@ -52,14 +59,15 @@
         RUN=$(realpath -e -- "$RESUME_RUN")
         test -n "$RUN" && test -f "$RUN/results/authority.json"
     else
-        RUN=$(mktemp -d "$RESULT_DIR/kpack-dequant-ppu.XXXXXX")
+        RUN=$(mktemp -d "$RESULT_DIR/$RUN_PREFIX.XXXXXX")
         test -n "$RUN" && test -d "$RUN"
         mkdir "$RUN/results"
     fi
     stage=dequant-only
-    printf 'KPACK_DEQUANT run=%s compile=NONE jit=NONE gemm_calls=0\n' "$RUN"
+    printf 'KPACK_DEQUANT run=%s inventory=%s compile=NONE jit=NONE gemm_calls=0\n' "$RUN" "$INVENTORY"
     printf 'Use an idle PPU; SF and full BF16 expansion are separate measurements.\n'
     "$PYTHON" -u tools/run_kpack_dequant_gate.py --sdk "$SDK" --output "$RUN/results" \
+        --bundle "$ROOT/$BUNDLE_REL" --inventory "$INVENTORY" \
         --qtypes "${QTYPES:-12,13}" --peak-gbps "${PEAK_GBPS:-2700}" "${EXTRA[@]}" \
         2>&1 | tee -a "$RUN/results/console.log"
     stage=complete

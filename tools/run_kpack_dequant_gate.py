@@ -19,7 +19,7 @@ import numpy as np
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from quactlize.dequant.native import Call, traffic, verify, bind, config_ids
+from quactlize.dequant.native import Call, traffic, verify, bind, config_ids, selected_configs
 from quactlize.execution.native import arrangement
 from quactlize.runtime.native import SDK, checked
 from quactlize.runtime.compiler import sha
@@ -56,11 +56,28 @@ def work(qtypes):
     return rows
 
 
+def selected_work(qtypes,inventory):
+    tasks=work(qtypes)
+    if inventory=='all':return tasks
+    if inventory=='full-reader' and qtypes and all(q in (12,13) for q in qtypes):
+        return [w for w in tasks if w['operation']==1 and w['q'] in qtypes]
+    raise ValueError('full-reader inventory is Q4/Q5 full dequant only')
+
+
+def control_config(record):
+    w=record['workload']
+    generation=record.get('config_generation',1)
+    prior=config_ids(w['q'],w['operation'],max(1,generation-1))
+    controls=[r for r in record['rows'] if r['config'] in prior]
+    if not controls:raise ValueError('previous best controls missing')
+    return min(controls,key=lambda r:r['median_us'])['config']
+
+
 def pattern(w, config):
     """First warp/pass byte footprint, not measured DRAM traffic."""
     q,n,k=w['q'],w['n'],w['k'];s=ref.SPECS[q]
     if w['operation']:
-        coords=[(0,lane) if config==0 else ((lane%4)*8,lane//4) if config==5 else (lane,0) for lane in range(32)]
+        coords=[(0,lane) if config==0 else ((lane%4)*8,lane//4) if config>=5 else (lane,0) for lane in range(32)]
     else:
         cols=8 if config==0 else 16 if config==1 else 32
         coords=[(lane//4,(lane%4)*s.group_size) if config==0
@@ -72,7 +89,7 @@ def pattern(w, config):
             requested_bytes=width*len(addresses),sectors={str(size):len({b//size for b in unique}) for size in (32,64,128)},
             byte_addresses=addresses)
     if w['operation']:
-        field('low_word',[2*(ref._placed_word_slot(kk,s.low_bits)[0]*n+col) for col,kk in coords],16 if config==5 else 2)
+        field('low_word',[2*(ref._placed_word_slot(kk,s.low_bits)[0]*n+col) for col,kk in coords],16 if config>=5 else 2)
         if s.high_bits:
             addresses=[]
             for col,kk in coords:
@@ -81,14 +98,16 @@ def pattern(w, config):
                     kg=(kk//256)*16|(((kk>>6)&1)<<3)|(kk&7)
                 else:pn,kg=col,ref._placed_word_slot(kk,s.high_bits)[0]
                 addresses.append(2*(kg*n+pn))
-            field('high_word',addresses,16 if config==5 else 2)
+            field('high_word',addresses,16 if config>=5 else 2)
     headers=[];codes=[];mins=[]
     for col,kk in coords:
         sb=kk//256;g=(kk//s.group_size)%s.groups
         unit=((sb//s.superblocks_per_unit)*n+col)*s.unit_bytes+(sb%s.superblocks_per_unit)*s.sb_bytes
         headers.append(unit);codes.append(unit+ref._unit_bit(s,g,0)//8)
         if s.has_min:mins.append(unit+ref._unit_bit(s,g,1)//8)
-    if (not w['operation'] and config>=4) or (w['operation'] and config==5 and q in (12,13)):
+    if w['operation'] and config>=7:
+        field('metadata_cta_unit16',[lane*16 for lane in range(32)],16)
+    elif (not w['operation'] and config>=4) or (w['operation'] and config>=5 and q in (12,13)):
         field('metadata_unit16',headers[:4] if w['operation'] else headers,16)
     else:
         select=slice(0,4) if w['operation'] and config==5 else slice(None)
@@ -96,13 +115,24 @@ def pattern(w, config):
         if s.has_min:
             field('header_dmin_u16',[x+2 for x in headers[select]],2);field('first_min_byte',mins[select],1)
     if w['operation'] and config>=4:
-        field('bf16_output_uint4',[(i//16*k+i%16*8)*2 for i in range(32)],16)
+        per_row=32 if config==8 else 16
+        field('bf16_output_uint4',[(i//per_row*k+i%per_row*8)*2 for i in range(32)],16)
     elif w['operation'] and config:
         per_row=64 if config==3 else 16
         field('bf16_output_pairs',[(i//per_row*k+i%per_row*2)*2 for i in range(32)],4)
     else:
         field('output_scalar',[2*(col*k+kk if w['operation'] else (kk//s.group_size)*n+col) for col,kk in coords],2)
-    return dict(scope='FIRST_WARP_PASS_SOURCE_ADDRESS_MODEL_BASE_ALIGNED_128',fields=fields,
+    details={}
+    if w['operation'] and config>=6:
+        stage_k=256 if config==8 else 128;tile_k=256 if config>=8 else 128
+        details=dict(tile_n=32,tile_k=tile_k,stage_k=stage_k,threads=128,a_bytes=0,
+            cta_count=(w.get('experts',1)*n//32)*(k//tile_k),
+            shared_weight_bytes=32*stage_k*4,shared_metadata_bytes=512 if config>=7 else 0,
+            metadata_requested_bytes_per_n_superblock=128 if config==6 else 32 if config==7 else 16,
+            cta_barriers={6:1,7:2,8:2,9:4}[config],
+            shared_layout='CuTe Swizzle<3,2,3>(N*StageK+K) xor (N&24)',
+            shared_load='two aligned uint4 reads per output vector; PPU bank counters decide benefit')
+    return dict(scope='FIRST_WARP_PASS_SOURCE_ADDRESS_MODEL_BASE_ALIGNED_128',fields=fields,**details,
                 full_arithmetic='FP32_RAW_GGUF_NOT_FP16_FAST_DEQUANT',
                 metadata_straddles='second byte only for crossing fields; first-byte footprint shown')
 
@@ -224,7 +254,10 @@ def child(a,w):
     b=None
     try:
         b=Bench(a,w)
-        configs=[a.config] if a.profile else config_ids(w['q'],w['operation'],b.generation)
+        inventory=getattr(a,'inventory','all')
+        allowed=selected_configs(w['q'],w['operation'],b.generation,inventory)
+        configs=[a.config] if a.profile else allowed
+        if any(c not in allowed for c in configs):raise ValueError('profile config outside selected inventory')
         proofs={c:b.check(c) for c in configs}
         if a.profile:
             checked(b.run(a.config),'profile warmup');b.sdk.synchronize(b.r.stream)
@@ -250,7 +283,7 @@ def child(a,w):
                 bandwidth_scope='USEFUL_BYTES_DIVIDED_BY_EVENT_TIME_NOT_ACU_DRAM',pattern=pattern(w,c))
             rows.append(row)
             print('KPACK_DEQUANT_RESULT '+json.dumps(dict(case=w['id'],**{k:v for k,v in row.items() if k not in ('pattern','samples_us')})),flush=True)
-        result=dict(status='PASS',workload=w,device=b.device,bytes=b.bytes,rows=rows,config_generation=b.generation,
+        result=dict(status='PASS',workload=w,device=b.device,bytes=b.bytes,rows=rows,config_generation=b.generation,inventory=inventory,
             fixture_hashes={name:hashlib.sha256(p.tobytes()).hexdigest() for name,p in b.planes.items()},
             golden_sha256=hashlib.sha256(b.gold.tobytes()).hexdigest(),copies=b.copies,
             input_ring_bytes=b.bytes['reads']*b.copies,output_ring_bytes=b.bytes['writes']*b.copies,
@@ -271,7 +304,7 @@ def validate_result(r,w,dev,peak):
         r.get('gemm_calls')!=0 or r.get('scope')!='DEQUANT_ONLY_NOT_COMBINED_OR_REUSABLE_CACHE' or
         r.get('peak_gbps')!=peak or r.get('bytes')!=traffic(w['q'],w['n'],w['k'],w['experts'],w['operation'])):
         raise ValueError('dequant result identity/scope differs: '+w['id'])
-    configs=config_ids(w['q'],w['operation'],r.get('config_generation',1))
+    configs=selected_configs(w['q'],w['operation'],r.get('config_generation',1),r.get('inventory','all'))
     if [v['config'] for v in r['rows']]!=configs:raise ValueError('dequant result config set differs')
     for row in r['rows']:
         p=row['proof'];values=row['samples_us']
@@ -298,16 +331,19 @@ def main():
     p.add_argument('--sdk',type=Path,required=True);p.add_argument('--bundle',type=Path,default=BUNDLE)
     p.add_argument('--output',type=Path,required=True);p.add_argument('--qtypes',default='12,13')
     p.add_argument('--peak-gbps',type=float,default=2700)
+    p.add_argument('--inventory',choices=('all','full-reader'),default='all')
     p.add_argument('--case');p.add_argument('--profile',action='store_true');p.add_argument('--config',type=int,default=0)
     p.add_argument('--acu',type=Path);p.add_argument('--probe-only',action='store_true');p.add_argument('--plan-only',action='store_true')
     a=p.parse_args();qtypes=list(map(int,a.qtypes.split(',')))
-    if len(set(qtypes))!=len(qtypes) or any(q not in range(10,15) for q in qtypes):raise ValueError('invalid qtype set')
+    if not qtypes or len(set(qtypes))!=len(qtypes) or any(q not in range(10,15) for q in qtypes):raise ValueError('invalid qtype set')
     if not math.isfinite(a.peak_gbps) or a.peak_gbps<=0:raise ValueError('invalid peak bandwidth')
-    tasks=work(qtypes)
+    tasks=selected_work(qtypes,a.inventory)
     if a.plan_only:
-        print(json.dumps(dict(cases=len(tasks),numerical_smokes=10,
-            timing_cells=sum(len(config_ids(w['q'],w['operation'],2)) for w in tasks if not w['smoke']),gemm_calls=0,workloads=tasks),indent=2));return
+        generation=json.loads((a.bundle/'manifest.json').read_text()).get('config_generation',1)
+        print(json.dumps(dict(cases=len(tasks),numerical_smokes=sum(w['smoke'] for w in tasks),inventory=a.inventory,
+            timing_cells=sum(len(selected_configs(w['q'],w['operation'],generation,a.inventory)) for w in tasks if not w['smoke']),gemm_calls=0,workloads=tasks),indent=2));return
     manifest=verify(a.bundle,a.sdk)
+    for w in tasks:selected_configs(w['q'],w['operation'],manifest.get('config_generation',1),a.inventory)
     a.output.mkdir(parents=True,exist_ok=True)
     if a.probe_only:
         lib,_,probe=bind(a.bundle)
@@ -315,7 +351,7 @@ def main():
     if a.case:
         child(a,next(w for w in tasks if w['id']==a.case));return
     command=[sys.executable,'-u',__file__,'--sdk',str(a.sdk),'--bundle',str(a.bundle),'--output',str(a.output),
-             '--qtypes',a.qtypes,'--peak-gbps',str(a.peak_gbps)]
+             '--qtypes',a.qtypes,'--peak-gbps',str(a.peak_gbps),'--inventory',a.inventory]
     probe=subprocess.run(command+['--probe-only'],check=True,capture_output=True,text=True)
     lines=[s.split(' ',1)[1] for s in probe.stdout.splitlines() if s.startswith('KPACK_DEQUANT_DEVICE ')]
     if len(lines)!=1:raise ValueError('missing/duplicate dequant device identity')
@@ -326,10 +362,12 @@ def main():
              ROOT/'tools/run_kpack_pack_gate.py',ROOT/'tools/profile_kpack_gpu_compact.py',ROOT/'quactlize/runtime/native.py']
     identity=dict(manifest_sha256=sha(a.bundle/'manifest.json'),device=dev,workloads=tasks,peak_gbps=a.peak_gbps,
                   harness={str(x.relative_to(ROOT)):sha(x) for x in harness},runtime=manifest['runtime'],python_packages=packages())
+    if a.inventory!='all':identity['inventory']=a.inventory
     authority=a.output/'authority.json'
     if authority.exists() and json.loads(authority.read_text())!=identity:raise ValueError('dequant resume authority differs')
     save(authority,identity)
-    print('KPACK_DEQUANT_PLAN '+json.dumps(dict(cases=len(tasks),timing_cells=sum(len(config_ids(w['q'],w['operation'],manifest.get('config_generation',1))) for w in tasks if not w['smoke']),gemm_calls=0)),flush=True)
+    print('KPACK_DEQUANT_PLAN '+json.dumps(dict(cases=len(tasks),inventory=a.inventory,
+        timing_cells=sum(len(selected_configs(w['q'],w['operation'],manifest.get('config_generation',1),a.inventory)) for w in tasks if not w['smoke']),gemm_calls=0)),flush=True)
     started=time.monotonic();failed=[];complete=[];executed=0
     for i,w in enumerate(tasks):
         out=a.output/(w['id']+'.json')
@@ -337,7 +375,11 @@ def main():
             rc=run_logged(command+['--case',w['id']],a.output/(w['id']+'.log'))
             executed+=1
             if rc:failed.append(w['id'])
-        if out.exists():complete.append(validate_result(json.loads(out.read_text()),w,dev,a.peak_gbps))
+        if out.exists():
+            record=validate_result(json.loads(out.read_text()),w,dev,a.peak_gbps)
+            if record.get('inventory','all')!=a.inventory or record.get('config_generation',1)!=manifest.get('config_generation',1):
+                raise ValueError('resumed candidate inventory differs')
+            complete.append(record)
         elapsed=time.monotonic()-started
         eta=elapsed/max(1,executed)*(len(tasks)-i-1)/60
         print(f'KPACK_DEQUANT_CASE completed={i+1}/{len(tasks)} failed={len(failed)} elapsed_s={elapsed:.1f} remaining_minutes={eta:.1f} eta=OBSERVED_CASE_AVERAGE scope=TIMING_PHASE_ONLY_ACU_NOT_INCLUDED',flush=True)
@@ -350,7 +392,7 @@ def main():
             winner=min(record['rows'],key=lambda r:r['median_us'])['config']
             # Compare to the previous admitted implementation, not only the
             # deliberately scalar full-dequant reference.
-            old=min(record['rows'][:3 if w['operation'] else 4],key=lambda r:r['median_us'])['config']
+            old=control_config(record)
             for c in sorted({old,winner}):
                 receipt=a.output/(w['id']+f'-c{c}.acu.json')
                 profile_identity=dict(result_sha256=sha(a.output/(w['id']+'.json')),

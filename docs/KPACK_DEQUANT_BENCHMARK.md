@@ -1,5 +1,86 @@
 # Independent weight-expansion measurements
 
+## Full-weight reader follow-up: v3
+
+Reviewed return: `kpack-prefill-cost.9jSpJD.results.tgz`, SHA256
+`bac13ed261e20d1c8cfbec292642aeb015fd939d73622ac7fd77d08189a03c87`.
+Source `210d6c9`, same PPU PCI `0000:08:00.0`, 72 compute units, 64 MiB L2.
+All 78 dequant cases / 408 timed configs validate; all nine ACU reports
+were imported locally. BF16 dense has 20 valid cells. The 12 grouped
+families stop at the zero-A/NaN-output test before timing: no BF16 MoE cost
+is admitted. This failure remains separate work; v3 does not bypass it.
+
+Compared with contemporaneous old per-shape bests, SF improves in all 34
+cases (median time reduction 45.42%); full BF16 expansion improves in all
+34 (median 26.45%). Full c4/c5 win 13/21 cases respectively. Keep both as
+controls. This is **full weight expansion**, not fully-quantized GEMM.
+
+| Evidence | Old best | v2 best |
+|---|---:|---:|
+| Q4 N5120/K8192/E1 full event time | 120.180 us | 88.571 us |
+| Same full kernel, ACU DRAM read bytes | 106,516,224 | 23,609,600 |
+| Same full kernel, ACU L1/L2 traffic bytes | 228,751,616 | 130,819,968 |
+| Same full kernel, ACU vector-load instructions | 1,474,560 | 368,640 |
+| Same full kernel, shared bank-conflict latency sum | 2,580,480 | 2,580,480 |
+| Q5 N2048/K512/E256 full event time | 755.340 us | 543.230 us |
+| Same Q5 full kernel, ACU DRAM read bytes | 714,804,480 | 184,567,168 |
+
+The read amplification is largely removed in these anchors. Remaining
+shared exchange, repeated metadata requests and integer/decode work are
+candidate targets, not proved wall-time attribution. SF expands only two
+scale/zero planes; its speedup percentage is not the full-weight ceiling.
+
+The v3 package retains all earlier kernel bodies and adds four Q4/Q5-only
+reader variants. Global B vector ownership remains N32/K32 per warp:
+`col0=8*(lane%4)`, `residue=lane/4`. Each B request comprises eight aligned
+64-byte segments, no extra A input, unchanged canonical Q5 high-plane fold.
+The emitted output stores remain uint4. FP32 multiply/subtract and final
+BF16 RNE are unchanged; no FP16 fast-dequant substitution.
+
+| Config | K per CTA / shared stage | Shared exchange | Metadata lifetime | CTA barriers |
+|---|---|---|---|---:|
+| 4/5 | 128/128 | Previous measured controls, unchanged | Previous readers | 1 |
+| 6 | 128/128 | CuTe bank swizzle, two aligned K4 shared vectors per output K8 | Same per-group global unit reads as c5 | 1 |
+| 7 | 128/128 | Same as c6 | One unit per N per CTA, published before use | 2 |
+| 8 | 256/256 | Full superblock shared stage | One unit per N for all eight groups | 2 |
+| 9 | 256/128 | Reuse a K128 shared stage twice | Same full-superblock unit cache | 4 |
+
+The shared address function is
+`Swizzle<3,2,3>(N*StageK+K) xor (N&24)` in uint32 cells. Host tests execute
+the actual CuTe function: complete bijection, unique producer, matching
+consumer, aligned K4 vectors, and wrong-view negatives. The 32-bank/4-byte
+model has uniform vector reads and unique scalar producer banks; PPU ACU
+must verify actual latency. This is not a claim of hardware bank parity.
+
+The **old** c5 shared loads were already vectorized by the compiler; c6
+tests their address layout, not a fictional new load-width improvement.
+For c5/c6 the requested metadata is 128 bytes per N/superblock; c7 reduces
+it to 32, c8/c9 to 16. These are request bytes, not distinct DRAM bytes.
+Cached metadata costs 512 shared bytes and a publishing barrier. Shared
+weight storage is 16 KiB for c6/7/9 and 32 KiB for c8. The staged c9 also
+uses more registers (Q4:66, Q5:72 in the initial local compile), so its gain
+is not assumed. All new kernels have zero reported stack size. Native
+receipts retain opcodes and inspector register/shared-allocation fields.
+
+Box command (prebuilt library; no GEMM, JIT, or SF retest):
+
+```bash
+git pull --ff-only origin develop &&
+PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK CUDA_VISIBLE_DEVICES=0 \
+  bash tools/run_kpack_dequant_ppu_box.sh full-reader
+```
+
+The `full-reader` inventory contains 2 untimed Q4/Q5 smoke cases and the
+same 34 timed weight domains, configs 4--9: **204 timings**. Earlier c0--c3
+remain in the library but are not re-swept: the reviewed v2 result selects
+c4 or c5 for every domain. New variants are not instantiated for Q2/Q3/Q6;
+their precision/storage and admission are not inferred from Q4/Q5. The
+input/output rings and 3x5 alternating-order protocol remain unchanged.
+At most four ACU profiles compare each anchor's current old best to the
+new winner. Successful independent cases remain resumable on failure.
+The prior full-only portion consumed 2307.6 seconds of measured wall time;
+kernel-only timings are not a campaign ETA. New performance is PPU pending.
+
 ## Current handoff: vector dequant and separate BF16 providers
 
 The v1 result `kpack-dequant-ppu.0046wb.results.tgz` was reviewed on

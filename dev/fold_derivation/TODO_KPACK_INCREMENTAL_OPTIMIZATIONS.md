@@ -1,5 +1,18 @@
 # K-pack incremental optimization backlog
 
+## Full-weight expansion follow-up, 2026-09-14
+
+| Item | State | Next evidence |
+|---|---|---|
+| SF/full vector expansion v2 | PPU reviewed: 78/78 correctness cases, 408 valid config timings; SF/full median reductions 45.42%/26.45% versus current old best | Production selection is still unchanged; retain per-shape c4/c5 controls |
+| Full BF16 shared exchange and superblock metadata reuse | Local candidate c6--c9; unchanged offline bytes and FP32 multiply/subtract | Run `run_kpack_dequant_ppu_box.sh full-reader`: 34 domains x 6 configs, exact numeric checks and at most four ACU reports |
+| BF16 cuBLAS dense | 20/20 measured cells reviewed | Same-scope FQ/SF comparison and model adapters still required |
+| BF16 DeepGEMM MoE | 0/24 completed: 12 families stop at zero-A with NaN-prefilled output; normal first-call check reached the next check | Diagnose nonzero vs NaN residual and exact installed provider before any timing admission; do not bypass the failed check |
+
+The full-expansion optimization above is not an FQ GEMM change and does not
+invalidate the already collected SF or dense-BLAS results. See
+[measurement contract](../../docs/KPACK_DEQUANT_BENCHMARK.md).
+
 ## Independent prefill costs, 2026-09-14
 
 | Work | State | Remaining device evidence |

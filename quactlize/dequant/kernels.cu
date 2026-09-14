@@ -2,6 +2,7 @@
 #include "api.h"
 #include "reader.hpp"
 #include "vector_kernels.cuh"
+#include "shared_kernels.cuh"
 #include "../execution/validation.hpp"
 #include "gguf_scale_prepass.hpp"
 
@@ -101,6 +102,7 @@ int launch(qzd_call_v1 const& c) {
             int const grid = prepass::prepass_unit_grid_size<T>(c.experts,c.n,c.k/256,256);
             prepass::prepass_unit_kernel<T,packed_unit::kCanonicalPlacedZMul<T>><<<grid,256,0,stream>>>(args);
         } else if (c.config >= 4) {
+            if (c.config > 5) return QKG_INVALID;
             if constexpr (T == KType::Q4_K || T == KType::Q5_K) {
                 int const threads = c.config == 4 ? 128 : 256;
                 dim3 const grid(c.n / threads, c.k / 256, c.experts);
@@ -118,6 +120,15 @@ int launch(qzd_call_v1 const& c) {
         if (c.config == 0) {
             int const grid = (int64_t(c.experts)*c.n*c.k+255)/256;
             full_direct<T><<<grid,256,0,stream>>>(low,high,units,output,c.n,c.k,c.experts);
+        } else if (c.config >= 6) {
+            if constexpr (T == KType::Q4_K || T == KType::Q5_K) {
+                int const tile_k = c.config >= 8 ? 256 : 128;
+                dim3 const grid(c.n/32,c.k/tile_k,c.experts);
+                if (c.config == 6) full_shared<T,128,128,false><<<grid,128,0,stream>>>(low,high,units,output,c.n,c.k);
+                else if (c.config == 7) full_shared<T,128,128,true><<<grid,128,0,stream>>>(low,high,units,output,c.n,c.k);
+                else if (c.config == 8) full_shared<T,256,256,true><<<grid,128,0,stream>>>(low,high,units,output,c.n,c.k);
+                else full_shared<T,256,128,true><<<grid,128,0,stream>>>(low,high,units,output,c.n,c.k);
+            } else return QKG_FORMAT;
         } else if (c.config >= 3) {
             dim3 const grid(c.n/32,c.k/128,c.experts);
             if (c.config == 3) full_wide<T,false,false><<<grid,128,0,stream>>>(low,high,units,output,c.n,c.k);
@@ -139,7 +150,7 @@ extern "C" int quactlize_kpack_dequant_v1(qzd_call_v1 const* call,
     using namespace quactlize::dequant;
     if (!call || call->version != 1 || call->size != sizeof(*call)) return QKG_INVALID;
     auto const& c = *call;
-    if (c.operation < 0 || c.operation > 1 || c.config < 0 || c.config > 5) return QKG_INVALID;
+    if (c.operation < 0 || c.operation > 1 || c.config < 0 || c.config > 9) return QKG_INVALID;
     qkg_sizes_v1 s{};
     int rc = sizes(c.qtype,c.n,c.k,c.experts,arrangement,s);
     if (rc) return rc;
