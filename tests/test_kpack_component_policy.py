@@ -19,6 +19,8 @@ def test_generated_cost_table_matches_audited_receipt():
             assert int(mask)&(1<<c['route'])
             if c['route']==0:assert c['dequant_us']==0
             if c['route']==2 and row['experts']>1:assert c['dequant_config'] in (4,5,10,11)
+            if c['route']<2:
+                assert c['tactic']==row['choices'][str(1<<c['route'])]['tactic']
 
 
 def test_tie_prefers_fq_and_unstable_times_do_not_win():

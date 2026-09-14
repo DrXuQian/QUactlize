@@ -234,6 +234,10 @@ def policy_rows(points):
         for mask in (1,2,3,7):
             filtered=[p|dict(candidates=[c for c in p['candidates'] if mask&(1<<c['route'])]) for p in ps]
             row['choices'][str(mask)]=choose_profiles(filtered)
+        for mask in ('3','7'):
+            c=row['choices'][mask]
+            if c['route']<2 and c['tactic']!=row['choices'][str(1<<c['route'])]['tactic']:
+                raise ValueError('cross-route choice differs from the actual fixed-route dispatcher')
         out.append(row)
     return out
 
