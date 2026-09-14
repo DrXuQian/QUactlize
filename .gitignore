@@ -59,3 +59,6 @@ dev/fold_derivation/leg3
 dev/fold_derivation/leg5
 dev/fold_derivation/sweep
 dev/low_bit/w2a16_swzl_probe
+
+# Pinned binary deployment on this artifact branch; payloads use Git LFS.
+!/prebuilt/ppu0010/kpack-model-v1/**
