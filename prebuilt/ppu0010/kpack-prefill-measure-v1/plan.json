@@ -1,0 +1,2008 @@
+{
+  "parents": [
+    {
+      "symbol": "fqg_q12_l1_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "qtype": 12,
+      "route": "fq-grouped",
+      "tm": 64,
+      "tn": 128,
+      "tk": 128,
+      "wm": 64,
+      "wn": 32,
+      "stages": 2,
+      "ap": 0,
+      "dn": 16,
+      "persistent": 0
+    },
+    {
+      "symbol": "fqg_q13_l2_tm128_tn256_tk256_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "qtype": 13,
+      "route": "fq-grouped",
+      "tm": 128,
+      "tn": 256,
+      "tk": 256,
+      "wm": 64,
+      "wn": 32,
+      "stages": 2,
+      "ap": 0,
+      "dn": 16,
+      "persistent": 0
+    },
+    {
+      "symbol": "fqg_q13_l2_tm64_tn128_tk256_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "qtype": 13,
+      "route": "fq-grouped",
+      "tm": 64,
+      "tn": 128,
+      "tk": 256,
+      "wm": 64,
+      "wn": 32,
+      "stages": 2,
+      "ap": 0,
+      "dn": 16,
+      "persistent": 0
+    },
+    {
+      "symbol": "fqk_tc_q12_l1_a0_tm64_tn128_tk256_wm64_wn16_s2_bc0_ap0_dn64",
+      "qtype": 12,
+      "route": "fq-dense",
+      "tm": 64,
+      "tn": 128,
+      "tk": 256,
+      "wm": 64,
+      "wn": 16,
+      "stages": 2,
+      "ap": 0,
+      "dn": 64,
+      "persistent": -1
+    },
+    {
+      "symbol": "fqk_tc_q13_l2_a0_tm128_tn256_tk256_wm64_wn32_s2_bc0_ap0_dn16",
+      "qtype": 13,
+      "route": "fq-dense",
+      "tm": 128,
+      "tn": 256,
+      "tk": 256,
+      "wm": 64,
+      "wn": 32,
+      "stages": 2,
+      "ap": 0,
+      "dn": 16,
+      "persistent": -1
+    },
+    {
+      "symbol": "sf_q12_a0_tm64_tn128_tk256_wm64_wn16_s2_bc0_ap0_dn64",
+      "qtype": 12,
+      "route": "sf-dense",
+      "tm": 64,
+      "tn": 128,
+      "tk": 256,
+      "wm": 64,
+      "wn": 16,
+      "stages": 2,
+      "ap": 0,
+      "dn": 64,
+      "persistent": -1
+    },
+    {
+      "symbol": "sf_q12_a0_tm64_tn64_tk64_wm64_wn32_s3_bc0_ap0_dn16",
+      "qtype": 12,
+      "route": "sf-dense",
+      "tm": 64,
+      "tn": 64,
+      "tk": 64,
+      "wm": 64,
+      "wn": 32,
+      "stages": 3,
+      "ap": 0,
+      "dn": 16,
+      "persistent": -1
+    },
+    {
+      "symbol": "sf_q12_a0_tm64_tn64_tk64_wm64_wn32_s3_bc0_ap0_dn64",
+      "qtype": 12,
+      "route": "sf-dense",
+      "tm": 64,
+      "tn": 64,
+      "tk": 64,
+      "wm": 64,
+      "wn": 32,
+      "stages": 3,
+      "ap": 0,
+      "dn": 64,
+      "persistent": -1
+    },
+    {
+      "symbol": "sf_q13_a0_tm128_tn256_tk256_wm64_wn32_s2_bc0_ap0_dn16",
+      "qtype": 13,
+      "route": "sf-dense",
+      "tm": 128,
+      "tn": 256,
+      "tk": 256,
+      "wm": 64,
+      "wn": 32,
+      "stages": 2,
+      "ap": 0,
+      "dn": 16,
+      "persistent": -1
+    },
+    {
+      "symbol": "sfg_q12_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16",
+      "qtype": 12,
+      "route": "sf-grouped",
+      "tm": 64,
+      "tn": 128,
+      "tk": 128,
+      "wm": 64,
+      "wn": 32,
+      "stages": 2,
+      "ap": 0,
+      "dn": 16,
+      "persistent": -1
+    },
+    {
+      "symbol": "sfg_q13_tm128_tn256_tk256_wm64_wn32_s2_ap0_dn16",
+      "qtype": 13,
+      "route": "sf-grouped",
+      "tm": 128,
+      "tn": 256,
+      "tk": 256,
+      "wm": 64,
+      "wn": 32,
+      "stages": 2,
+      "ap": 0,
+      "dn": 16,
+      "persistent": -1
+    },
+    {
+      "symbol": "sfg_q13_tm64_tn128_tk256_wm64_wn32_s2_ap0_dn16",
+      "qtype": 13,
+      "route": "sf-grouped",
+      "tm": 64,
+      "tn": 128,
+      "tk": 256,
+      "wm": 64,
+      "wn": 32,
+      "stages": 2,
+      "ap": 0,
+      "dn": 16,
+      "persistent": -1
+    }
+  ],
+  "requests": [
+    {
+      "request": [
+        12,
+        0,
+        2048,
+        1024,
+        5120,
+        1,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "fqk_tc_q12_l1_a0_tm64_tn128_tk256_wm64_wn16_s2_bc0_ap0_dn64",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 2
+    },
+    {
+      "request": [
+        12,
+        1,
+        2048,
+        1024,
+        5120,
+        1,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "sf_q12_a0_tm64_tn64_tk64_wm64_wn32_s3_bc0_ap0_dn64",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 8,
+      "policy": 1
+    },
+    {
+      "request": [
+        12,
+        0,
+        4096,
+        1024,
+        5120,
+        1,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "fqk_tc_q12_l1_a0_tm64_tn128_tk256_wm64_wn16_s2_bc0_ap0_dn64",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 2
+    },
+    {
+      "request": [
+        12,
+        1,
+        4096,
+        1024,
+        5120,
+        1,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "sf_q12_a0_tm64_tn64_tk64_wm64_wn32_s3_bc0_ap0_dn64",
+      "split": 1,
+      "grid_mode": 3,
+      "grid_b": 8,
+      "policy": 2
+    },
+    {
+      "request": [
+        12,
+        0,
+        2048,
+        5120,
+        8192,
+        1,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "fqk_tc_q12_l1_a0_tm64_tn128_tk256_wm64_wn16_s2_bc0_ap0_dn64",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 2
+    },
+    {
+      "request": [
+        12,
+        1,
+        2048,
+        5120,
+        8192,
+        1,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "sf_q12_a0_tm64_tn64_tk64_wm64_wn32_s3_bc0_ap0_dn64",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 8,
+      "policy": 2
+    },
+    {
+      "request": [
+        12,
+        0,
+        4096,
+        5120,
+        8192,
+        1,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "fqk_tc_q12_l1_a0_tm64_tn128_tk256_wm64_wn16_s2_bc0_ap0_dn64",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 2
+    },
+    {
+      "request": [
+        12,
+        1,
+        4096,
+        5120,
+        8192,
+        1,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "sf_q12_a0_tm64_tn64_tk64_wm64_wn32_s3_bc0_ap0_dn16",
+      "split": 1,
+      "grid_mode": 1,
+      "grid_b": 0,
+      "policy": 2
+    },
+    {
+      "request": [
+        12,
+        0,
+        2048,
+        5120,
+        25600,
+        1,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "fqk_tc_q12_l1_a0_tm64_tn128_tk256_wm64_wn16_s2_bc0_ap0_dn64",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 2
+    },
+    {
+      "request": [
+        12,
+        1,
+        2048,
+        5120,
+        25600,
+        1,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "sf_q12_a0_tm64_tn64_tk64_wm64_wn32_s3_bc0_ap0_dn64",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 8,
+      "policy": 1
+    },
+    {
+      "request": [
+        12,
+        0,
+        4096,
+        5120,
+        25600,
+        1,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "fqk_tc_q12_l1_a0_tm64_tn128_tk256_wm64_wn16_s2_bc0_ap0_dn64",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 2
+    },
+    {
+      "request": [
+        12,
+        1,
+        4096,
+        5120,
+        25600,
+        1,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "sf_q12_a0_tm64_tn128_tk256_wm64_wn16_s2_bc0_ap0_dn64",
+      "split": 1,
+      "grid_mode": 1,
+      "grid_b": 0,
+      "policy": 2
+    },
+    {
+      "request": [
+        12,
+        0,
+        2048,
+        8192,
+        5120,
+        1,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "fqk_tc_q12_l1_a0_tm64_tn128_tk256_wm64_wn16_s2_bc0_ap0_dn64",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 2
+    },
+    {
+      "request": [
+        12,
+        1,
+        2048,
+        8192,
+        5120,
+        1,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "sf_q12_a0_tm64_tn64_tk64_wm64_wn32_s3_bc0_ap0_dn64",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 8,
+      "policy": 1
+    },
+    {
+      "request": [
+        12,
+        0,
+        4096,
+        8192,
+        5120,
+        1,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "fqk_tc_q12_l1_a0_tm64_tn128_tk256_wm64_wn16_s2_bc0_ap0_dn64",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 2
+    },
+    {
+      "request": [
+        12,
+        1,
+        4096,
+        8192,
+        5120,
+        1,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "sf_q12_a0_tm64_tn64_tk64_wm64_wn32_s3_bc0_ap0_dn16",
+      "split": 1,
+      "grid_mode": 1,
+      "grid_b": 0,
+      "policy": 2
+    },
+    {
+      "request": [
+        12,
+        0,
+        2048,
+        25600,
+        5120,
+        1,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "fqk_tc_q12_l1_a0_tm64_tn128_tk256_wm64_wn16_s2_bc0_ap0_dn64",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 2
+    },
+    {
+      "request": [
+        12,
+        1,
+        2048,
+        25600,
+        5120,
+        1,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "sf_q12_a0_tm64_tn64_tk64_wm64_wn32_s3_bc0_ap0_dn64",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 8,
+      "policy": 2
+    },
+    {
+      "request": [
+        12,
+        0,
+        4096,
+        25600,
+        5120,
+        1,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "fqk_tc_q12_l1_a0_tm64_tn128_tk256_wm64_wn16_s2_bc0_ap0_dn64",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 2
+    },
+    {
+      "request": [
+        12,
+        1,
+        4096,
+        25600,
+        5120,
+        1,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "sf_q12_a0_tm64_tn64_tk64_wm64_wn32_s3_bc0_ap0_dn16",
+      "split": 1,
+      "grid_mode": 1,
+      "grid_b": 0,
+      "policy": 2
+    },
+    {
+      "request": [
+        12,
+        2,
+        16384,
+        512,
+        2048,
+        256,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "fqg_q12_l1_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 4
+    },
+    {
+      "request": [
+        12,
+        3,
+        16384,
+        512,
+        2048,
+        256,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "sfg_q12_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 4,
+      "policy": 4
+    },
+    {
+      "request": [
+        12,
+        2,
+        32768,
+        512,
+        2048,
+        256,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "fqg_q12_l1_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 4
+    },
+    {
+      "request": [
+        12,
+        3,
+        32768,
+        512,
+        2048,
+        256,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "sfg_q12_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 4,
+      "policy": 4
+    },
+    {
+      "request": [
+        12,
+        2,
+        16384,
+        512,
+        3072,
+        256,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "fqg_q12_l1_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 4
+    },
+    {
+      "request": [
+        12,
+        3,
+        16384,
+        512,
+        3072,
+        256,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "sfg_q12_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 4,
+      "policy": 4
+    },
+    {
+      "request": [
+        12,
+        2,
+        32768,
+        512,
+        3072,
+        256,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "fqg_q12_l1_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 4
+    },
+    {
+      "request": [
+        12,
+        3,
+        32768,
+        512,
+        3072,
+        256,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "sfg_q12_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 4,
+      "policy": 4
+    },
+    {
+      "request": [
+        12,
+        2,
+        16384,
+        2048,
+        512,
+        256,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "fqg_q12_l1_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 4
+    },
+    {
+      "request": [
+        12,
+        3,
+        16384,
+        2048,
+        512,
+        256,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "sfg_q12_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 4
+    },
+    {
+      "request": [
+        12,
+        2,
+        32768,
+        2048,
+        512,
+        256,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "fqg_q12_l1_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 4
+    },
+    {
+      "request": [
+        12,
+        3,
+        32768,
+        2048,
+        512,
+        256,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "sfg_q12_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 4
+    },
+    {
+      "request": [
+        12,
+        2,
+        16384,
+        3072,
+        512,
+        256,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "fqg_q12_l1_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 4
+    },
+    {
+      "request": [
+        12,
+        3,
+        16384,
+        3072,
+        512,
+        256,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "sfg_q12_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 4
+    },
+    {
+      "request": [
+        12,
+        2,
+        32768,
+        3072,
+        512,
+        256,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "fqg_q12_l1_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 4
+    },
+    {
+      "request": [
+        12,
+        3,
+        32768,
+        3072,
+        512,
+        256,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "sfg_q12_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 4,
+      "policy": 4
+    },
+    {
+      "request": [
+        12,
+        2,
+        16384,
+        1024,
+        2048,
+        256,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "fqg_q12_l1_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 3
+    },
+    {
+      "request": [
+        12,
+        3,
+        16384,
+        1024,
+        2048,
+        256,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "sfg_q12_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 4,
+      "policy": 3
+    },
+    {
+      "request": [
+        12,
+        2,
+        32768,
+        1024,
+        2048,
+        256,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "fqg_q12_l1_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 3
+    },
+    {
+      "request": [
+        12,
+        3,
+        32768,
+        1024,
+        2048,
+        256,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "sfg_q12_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 4,
+      "policy": 3
+    },
+    {
+      "request": [
+        12,
+        2,
+        16384,
+        1024,
+        3072,
+        256,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "fqg_q12_l1_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 3
+    },
+    {
+      "request": [
+        12,
+        3,
+        16384,
+        1024,
+        3072,
+        256,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "sfg_q12_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 4,
+      "policy": 3
+    },
+    {
+      "request": [
+        12,
+        2,
+        32768,
+        1024,
+        3072,
+        256,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "fqg_q12_l1_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 3
+    },
+    {
+      "request": [
+        12,
+        3,
+        32768,
+        1024,
+        3072,
+        256,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "sfg_q12_tm64_tn128_tk128_wm64_wn32_s2_ap0_dn16",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 4,
+      "policy": 3
+    },
+    {
+      "request": [
+        13,
+        0,
+        2048,
+        1024,
+        5120,
+        1,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "fqk_tc_q13_l2_a0_tm128_tn256_tk256_wm64_wn32_s2_bc0_ap0_dn16",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 2
+    },
+    {
+      "request": [
+        13,
+        1,
+        2048,
+        1024,
+        5120,
+        1,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "sf_q13_a0_tm128_tn256_tk256_wm64_wn32_s2_bc0_ap0_dn16",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 1,
+      "policy": 1
+    },
+    {
+      "request": [
+        13,
+        0,
+        4096,
+        1024,
+        5120,
+        1,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "fqk_tc_q13_l2_a0_tm128_tn256_tk256_wm64_wn32_s2_bc0_ap0_dn16",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 2
+    },
+    {
+      "request": [
+        13,
+        1,
+        4096,
+        1024,
+        5120,
+        1,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "sf_q13_a0_tm128_tn256_tk256_wm64_wn32_s2_bc0_ap0_dn16",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 1,
+      "policy": 2
+    },
+    {
+      "request": [
+        13,
+        0,
+        2048,
+        5120,
+        8192,
+        1,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "fqk_tc_q13_l2_a0_tm128_tn256_tk256_wm64_wn32_s2_bc0_ap0_dn16",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 2
+    },
+    {
+      "request": [
+        13,
+        1,
+        2048,
+        5120,
+        8192,
+        1,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "sf_q13_a0_tm128_tn256_tk256_wm64_wn32_s2_bc0_ap0_dn16",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 1,
+      "policy": 2
+    },
+    {
+      "request": [
+        13,
+        0,
+        4096,
+        5120,
+        8192,
+        1,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "fqk_tc_q13_l2_a0_tm128_tn256_tk256_wm64_wn32_s2_bc0_ap0_dn16",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 2
+    },
+    {
+      "request": [
+        13,
+        1,
+        4096,
+        5120,
+        8192,
+        1,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "sf_q13_a0_tm128_tn256_tk256_wm64_wn32_s2_bc0_ap0_dn16",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 1,
+      "policy": 2
+    },
+    {
+      "request": [
+        13,
+        0,
+        2048,
+        5120,
+        25600,
+        1,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "fqk_tc_q13_l2_a0_tm128_tn256_tk256_wm64_wn32_s2_bc0_ap0_dn16",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 2
+    },
+    {
+      "request": [
+        13,
+        1,
+        2048,
+        5120,
+        25600,
+        1,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "sf_q13_a0_tm128_tn256_tk256_wm64_wn32_s2_bc0_ap0_dn16",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 1,
+      "policy": 1
+    },
+    {
+      "request": [
+        13,
+        0,
+        4096,
+        5120,
+        25600,
+        1,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "fqk_tc_q13_l2_a0_tm128_tn256_tk256_wm64_wn32_s2_bc0_ap0_dn16",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 2
+    },
+    {
+      "request": [
+        13,
+        1,
+        4096,
+        5120,
+        25600,
+        1,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "sf_q13_a0_tm128_tn256_tk256_wm64_wn32_s2_bc0_ap0_dn16",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 1,
+      "policy": 2
+    },
+    {
+      "request": [
+        13,
+        0,
+        2048,
+        8192,
+        5120,
+        1,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "fqk_tc_q13_l2_a0_tm128_tn256_tk256_wm64_wn32_s2_bc0_ap0_dn16",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 2
+    },
+    {
+      "request": [
+        13,
+        1,
+        2048,
+        8192,
+        5120,
+        1,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "sf_q13_a0_tm128_tn256_tk256_wm64_wn32_s2_bc0_ap0_dn16",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 1,
+      "policy": 1
+    },
+    {
+      "request": [
+        13,
+        0,
+        4096,
+        8192,
+        5120,
+        1,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "fqk_tc_q13_l2_a0_tm128_tn256_tk256_wm64_wn32_s2_bc0_ap0_dn16",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 2
+    },
+    {
+      "request": [
+        13,
+        1,
+        4096,
+        8192,
+        5120,
+        1,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "sf_q13_a0_tm128_tn256_tk256_wm64_wn32_s2_bc0_ap0_dn16",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 1,
+      "policy": 2
+    },
+    {
+      "request": [
+        13,
+        0,
+        2048,
+        25600,
+        5120,
+        1,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "fqk_tc_q13_l2_a0_tm128_tn256_tk256_wm64_wn32_s2_bc0_ap0_dn16",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 2
+    },
+    {
+      "request": [
+        13,
+        1,
+        2048,
+        25600,
+        5120,
+        1,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "sf_q13_a0_tm128_tn256_tk256_wm64_wn32_s2_bc0_ap0_dn16",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 1,
+      "policy": 2
+    },
+    {
+      "request": [
+        13,
+        0,
+        4096,
+        25600,
+        5120,
+        1,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "fqk_tc_q13_l2_a0_tm128_tn256_tk256_wm64_wn32_s2_bc0_ap0_dn16",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 2
+    },
+    {
+      "request": [
+        13,
+        1,
+        4096,
+        25600,
+        5120,
+        1,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "sf_q13_a0_tm128_tn256_tk256_wm64_wn32_s2_bc0_ap0_dn16",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 1,
+      "policy": 2
+    },
+    {
+      "request": [
+        13,
+        2,
+        16384,
+        512,
+        2048,
+        256,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "fqg_q13_l2_tm64_tn128_tk256_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 4
+    },
+    {
+      "request": [
+        13,
+        3,
+        16384,
+        512,
+        2048,
+        256,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "sfg_q13_tm64_tn128_tk256_wm64_wn32_s2_ap0_dn16",
+      "split": 1,
+      "grid_mode": 3,
+      "grid_b": 2,
+      "policy": 4
+    },
+    {
+      "request": [
+        13,
+        2,
+        32768,
+        512,
+        2048,
+        256,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "fqg_q13_l2_tm128_tn256_tk256_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 4
+    },
+    {
+      "request": [
+        13,
+        3,
+        32768,
+        512,
+        2048,
+        256,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "sfg_q13_tm128_tn256_tk256_wm64_wn32_s2_ap0_dn16",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 4
+    },
+    {
+      "request": [
+        13,
+        2,
+        16384,
+        512,
+        3072,
+        256,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "fqg_q13_l2_tm64_tn128_tk256_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 4
+    },
+    {
+      "request": [
+        13,
+        3,
+        16384,
+        512,
+        3072,
+        256,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "sfg_q13_tm64_tn128_tk256_wm64_wn32_s2_ap0_dn16",
+      "split": 1,
+      "grid_mode": 3,
+      "grid_b": 2,
+      "policy": 4
+    },
+    {
+      "request": [
+        13,
+        2,
+        32768,
+        512,
+        3072,
+        256,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "fqg_q13_l2_tm128_tn256_tk256_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 4
+    },
+    {
+      "request": [
+        13,
+        3,
+        32768,
+        512,
+        3072,
+        256,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "sfg_q13_tm128_tn256_tk256_wm64_wn32_s2_ap0_dn16",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 4
+    },
+    {
+      "request": [
+        13,
+        2,
+        16384,
+        2048,
+        512,
+        256,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "fqg_q13_l2_tm64_tn128_tk256_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 4
+    },
+    {
+      "request": [
+        13,
+        3,
+        16384,
+        2048,
+        512,
+        256,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "sfg_q13_tm64_tn128_tk256_wm64_wn32_s2_ap0_dn16",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 2,
+      "policy": 4
+    },
+    {
+      "request": [
+        13,
+        2,
+        32768,
+        2048,
+        512,
+        256,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "fqg_q13_l2_tm128_tn256_tk256_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 4
+    },
+    {
+      "request": [
+        13,
+        3,
+        32768,
+        2048,
+        512,
+        256,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "sfg_q13_tm128_tn256_tk256_wm64_wn32_s2_ap0_dn16",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 1,
+      "policy": 4
+    },
+    {
+      "request": [
+        13,
+        2,
+        16384,
+        3072,
+        512,
+        256,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "fqg_q13_l2_tm64_tn128_tk256_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 4
+    },
+    {
+      "request": [
+        13,
+        3,
+        16384,
+        3072,
+        512,
+        256,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "sfg_q13_tm64_tn128_tk256_wm64_wn32_s2_ap0_dn16",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 2,
+      "policy": 4
+    },
+    {
+      "request": [
+        13,
+        2,
+        32768,
+        3072,
+        512,
+        256,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "fqg_q13_l2_tm128_tn256_tk256_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 4
+    },
+    {
+      "request": [
+        13,
+        3,
+        32768,
+        3072,
+        512,
+        256,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "sfg_q13_tm128_tn256_tk256_wm64_wn32_s2_ap0_dn16",
+      "split": 1,
+      "grid_mode": 2,
+      "grid_b": 1,
+      "policy": 4
+    },
+    {
+      "request": [
+        13,
+        2,
+        16384,
+        1024,
+        2048,
+        256,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "fqg_q13_l2_tm64_tn128_tk256_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 3
+    },
+    {
+      "request": [
+        13,
+        3,
+        16384,
+        1024,
+        2048,
+        256,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "sfg_q13_tm64_tn128_tk256_wm64_wn32_s2_ap0_dn16",
+      "split": 1,
+      "grid_mode": 3,
+      "grid_b": 2,
+      "policy": 3
+    },
+    {
+      "request": [
+        13,
+        2,
+        32768,
+        1024,
+        2048,
+        256,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "fqg_q13_l2_tm128_tn256_tk256_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 3
+    },
+    {
+      "request": [
+        13,
+        3,
+        32768,
+        1024,
+        2048,
+        256,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "sfg_q13_tm128_tn256_tk256_wm64_wn32_s2_ap0_dn16",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 3
+    },
+    {
+      "request": [
+        13,
+        2,
+        16384,
+        1024,
+        3072,
+        256,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "fqg_q13_l2_tm64_tn128_tk256_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 3
+    },
+    {
+      "request": [
+        13,
+        3,
+        16384,
+        1024,
+        3072,
+        256,
+        2048
+      ],
+      "status": "SELECTED",
+      "parent": "sfg_q13_tm64_tn128_tk256_wm64_wn32_s2_ap0_dn16",
+      "split": 1,
+      "grid_mode": 3,
+      "grid_b": 2,
+      "policy": 3
+    },
+    {
+      "request": [
+        13,
+        2,
+        32768,
+        1024,
+        3072,
+        256,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "fqg_q13_l2_tm128_tn256_tk256_wm64_wn32_s2_ap0_dn16_nonpersistent",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 3
+    },
+    {
+      "request": [
+        13,
+        3,
+        32768,
+        1024,
+        3072,
+        256,
+        4096
+      ],
+      "status": "SELECTED",
+      "parent": "sfg_q13_tm128_tn256_tk256_wm64_wn32_s2_ap0_dn16",
+      "split": 1,
+      "grid_mode": 0,
+      "grid_b": 0,
+      "policy": 3
+    }
+  ],
+  "reducers": [
+    {
+      "compact": 0,
+      "m": 2048,
+      "n": 1024,
+      "split": 2,
+      "id": "dense-m2048-n1024-s2"
+    },
+    {
+      "compact": 0,
+      "m": 2048,
+      "n": 1024,
+      "split": 4,
+      "id": "dense-m2048-n1024-s4"
+    },
+    {
+      "compact": 0,
+      "m": 2048,
+      "n": 1024,
+      "split": 8,
+      "id": "dense-m2048-n1024-s8"
+    },
+    {
+      "compact": 0,
+      "m": 2048,
+      "n": 5120,
+      "split": 2,
+      "id": "dense-m2048-n5120-s2"
+    },
+    {
+      "compact": 0,
+      "m": 2048,
+      "n": 5120,
+      "split": 4,
+      "id": "dense-m2048-n5120-s4"
+    },
+    {
+      "compact": 0,
+      "m": 2048,
+      "n": 5120,
+      "split": 8,
+      "id": "dense-m2048-n5120-s8"
+    },
+    {
+      "compact": 0,
+      "m": 2048,
+      "n": 8192,
+      "split": 2,
+      "id": "dense-m2048-n8192-s2"
+    },
+    {
+      "compact": 0,
+      "m": 2048,
+      "n": 8192,
+      "split": 4,
+      "id": "dense-m2048-n8192-s4"
+    },
+    {
+      "compact": 0,
+      "m": 2048,
+      "n": 8192,
+      "split": 8,
+      "id": "dense-m2048-n8192-s8"
+    },
+    {
+      "compact": 0,
+      "m": 2048,
+      "n": 25600,
+      "split": 2,
+      "id": "dense-m2048-n25600-s2"
+    },
+    {
+      "compact": 0,
+      "m": 2048,
+      "n": 25600,
+      "split": 4,
+      "id": "dense-m2048-n25600-s4"
+    },
+    {
+      "compact": 0,
+      "m": 2048,
+      "n": 25600,
+      "split": 8,
+      "id": "dense-m2048-n25600-s8"
+    },
+    {
+      "compact": 0,
+      "m": 4096,
+      "n": 1024,
+      "split": 2,
+      "id": "dense-m4096-n1024-s2"
+    },
+    {
+      "compact": 0,
+      "m": 4096,
+      "n": 1024,
+      "split": 4,
+      "id": "dense-m4096-n1024-s4"
+    },
+    {
+      "compact": 0,
+      "m": 4096,
+      "n": 1024,
+      "split": 8,
+      "id": "dense-m4096-n1024-s8"
+    },
+    {
+      "compact": 0,
+      "m": 4096,
+      "n": 5120,
+      "split": 2,
+      "id": "dense-m4096-n5120-s2"
+    },
+    {
+      "compact": 0,
+      "m": 4096,
+      "n": 5120,
+      "split": 4,
+      "id": "dense-m4096-n5120-s4"
+    },
+    {
+      "compact": 0,
+      "m": 4096,
+      "n": 5120,
+      "split": 8,
+      "id": "dense-m4096-n5120-s8"
+    },
+    {
+      "compact": 0,
+      "m": 4096,
+      "n": 8192,
+      "split": 2,
+      "id": "dense-m4096-n8192-s2"
+    },
+    {
+      "compact": 0,
+      "m": 4096,
+      "n": 8192,
+      "split": 4,
+      "id": "dense-m4096-n8192-s4"
+    },
+    {
+      "compact": 0,
+      "m": 4096,
+      "n": 8192,
+      "split": 8,
+      "id": "dense-m4096-n8192-s8"
+    },
+    {
+      "compact": 0,
+      "m": 4096,
+      "n": 25600,
+      "split": 2,
+      "id": "dense-m4096-n25600-s2"
+    },
+    {
+      "compact": 0,
+      "m": 4096,
+      "n": 25600,
+      "split": 4,
+      "id": "dense-m4096-n25600-s4"
+    },
+    {
+      "compact": 0,
+      "m": 4096,
+      "n": 25600,
+      "split": 8,
+      "id": "dense-m4096-n25600-s8"
+    },
+    {
+      "compact": 1,
+      "m": 16384,
+      "n": 512,
+      "split": 2,
+      "id": "grouped-m16384-n512-s2"
+    },
+    {
+      "compact": 1,
+      "m": 16384,
+      "n": 512,
+      "split": 4,
+      "id": "grouped-m16384-n512-s4"
+    },
+    {
+      "compact": 1,
+      "m": 16384,
+      "n": 512,
+      "split": 8,
+      "id": "grouped-m16384-n512-s8"
+    },
+    {
+      "compact": 1,
+      "m": 16384,
+      "n": 1024,
+      "split": 2,
+      "id": "grouped-m16384-n1024-s2"
+    },
+    {
+      "compact": 1,
+      "m": 16384,
+      "n": 1024,
+      "split": 4,
+      "id": "grouped-m16384-n1024-s4"
+    },
+    {
+      "compact": 1,
+      "m": 16384,
+      "n": 1024,
+      "split": 8,
+      "id": "grouped-m16384-n1024-s8"
+    },
+    {
+      "compact": 1,
+      "m": 16384,
+      "n": 2048,
+      "split": 2,
+      "id": "grouped-m16384-n2048-s2"
+    },
+    {
+      "compact": 1,
+      "m": 16384,
+      "n": 2048,
+      "split": 4,
+      "id": "grouped-m16384-n2048-s4"
+    },
+    {
+      "compact": 1,
+      "m": 16384,
+      "n": 2048,
+      "split": 8,
+      "id": "grouped-m16384-n2048-s8"
+    },
+    {
+      "compact": 1,
+      "m": 16384,
+      "n": 3072,
+      "split": 2,
+      "id": "grouped-m16384-n3072-s2"
+    },
+    {
+      "compact": 1,
+      "m": 16384,
+      "n": 3072,
+      "split": 4,
+      "id": "grouped-m16384-n3072-s4"
+    },
+    {
+      "compact": 1,
+      "m": 16384,
+      "n": 3072,
+      "split": 8,
+      "id": "grouped-m16384-n3072-s8"
+    },
+    {
+      "compact": 1,
+      "m": 32768,
+      "n": 512,
+      "split": 2,
+      "id": "grouped-m32768-n512-s2"
+    },
+    {
+      "compact": 1,
+      "m": 32768,
+      "n": 512,
+      "split": 4,
+      "id": "grouped-m32768-n512-s4"
+    },
+    {
+      "compact": 1,
+      "m": 32768,
+      "n": 512,
+      "split": 8,
+      "id": "grouped-m32768-n512-s8"
+    },
+    {
+      "compact": 1,
+      "m": 32768,
+      "n": 1024,
+      "split": 2,
+      "id": "grouped-m32768-n1024-s2"
+    },
+    {
+      "compact": 1,
+      "m": 32768,
+      "n": 1024,
+      "split": 4,
+      "id": "grouped-m32768-n1024-s4"
+    },
+    {
+      "compact": 1,
+      "m": 32768,
+      "n": 1024,
+      "split": 8,
+      "id": "grouped-m32768-n1024-s8"
+    },
+    {
+      "compact": 1,
+      "m": 32768,
+      "n": 2048,
+      "split": 2,
+      "id": "grouped-m32768-n2048-s2"
+    },
+    {
+      "compact": 1,
+      "m": 32768,
+      "n": 2048,
+      "split": 4,
+      "id": "grouped-m32768-n2048-s4"
+    },
+    {
+      "compact": 1,
+      "m": 32768,
+      "n": 2048,
+      "split": 8,
+      "id": "grouped-m32768-n2048-s8"
+    },
+    {
+      "compact": 1,
+      "m": 32768,
+      "n": 3072,
+      "split": 2,
+      "id": "grouped-m32768-n3072-s2"
+    },
+    {
+      "compact": 1,
+      "m": 32768,
+      "n": 3072,
+      "split": 4,
+      "id": "grouped-m32768-n3072-s4"
+    },
+    {
+      "compact": 1,
+      "m": 32768,
+      "n": 3072,
+      "split": 8,
+      "id": "grouped-m32768-n3072-s8"
+    }
+  ]
+}

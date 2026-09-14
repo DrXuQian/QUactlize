@@ -41,3 +41,5 @@ prebuilt/ppu0010/kpack-dequant-v1/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/kpack-dequant-v2/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/kpack-dequant-v3/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/kpack-dequant-v4/*.so filter=lfs diff=lfs merge=lfs -text
+prebuilt/ppu0010/kpack-prefill-measure-v1/**/*.so filter=lfs diff=lfs merge=lfs -text
+prebuilt/ppu0010/kpack-prefill-measure-v1/*.so filter=lfs diff=lfs merge=lfs -text

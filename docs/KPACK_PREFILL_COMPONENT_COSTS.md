@@ -102,6 +102,13 @@ their recorded implementation/image identities remain in the source chain.
 
 ## Remaining comparison, not another BF16 sweep
 
+An executable **selected-heuristic** measurement is now provided in
+[Selected prefill calls and standalone Split-K reduction](KPACK_PREFILL_SELECTED_MEASUREMENT.md).
+It uses the actual production dispatcher (88 requests, currently all S1,
+12 parent modules). It is not an online tuner or a new exhaustive search.
+An independent 48-point reducer-only command supplies S2/S4/S8 diagnostic
+costs without changing those heuristic choices. Device results are pending.
+
 There are 44 workload/token points needing FQ and SF GEMM-only costs:
 **88 route measurements**, before any small tactic challenge set. This is
 not an exhaustive config Cartesian product. Use production-selected tactics
