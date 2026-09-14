@@ -18,6 +18,11 @@ hash `2d4f441abd8f5423bed4ddbc33d10868f3983b44a1a747fe82729849209782d7`.
 The new prefill runtime and model-level caller still require PPU admission.
 Use `tools/run_kpack_prefill_runtime_box.sh` for the next library composition
 gate; it fetches the pinned artifact through LFS without a Quactlize rebuild.
+Source `5947352`, artifact `10053e6`, private llama `03142a8b7`.
+The release-plus-patch base remains `e73e2136b`; only its Quactlize child
+branch advances. Local 142 library tests, 24 llama Python tests, four CTest
+cases and three PPU adapter compilations pass. New composition GPU admission
+is still pending.
 
 ## Current addition: decode F32/BF16 endpoints, 2026-09-14
 

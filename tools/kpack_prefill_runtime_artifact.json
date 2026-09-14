@@ -1,0 +1,9 @@
+{
+  "branch": "artifacts/kpack-prefill-runtime-v1",
+  "commit": "10053e67585eaddb3ffd758f243da64274199e27",
+  "path": "prebuilt/ppu0010/kpack-prefill-runtime-v1",
+  "manifest_sha256": "e1d726b3c944d22f7d1d1a69dfcf93625f4b5ce89b66dd4d2f34fcf915b2ee77",
+  "source_commit": "5947352afcebfa9c0036f74e6829b719b6a0b74d",
+  "llama_branch": "dev/quactlize-v0.3.0",
+  "llama_commit": "03142a8b7bdf690ac8c1ecfc51c9b20d4fbafc8e"
+}

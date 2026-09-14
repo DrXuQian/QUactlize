@@ -62,6 +62,15 @@ No GEMM Cartesian-product bundle is rebuilt. GEMM JIT remains selected-only.
 Payloads are published via Git LFS on `artifacts/kpack-prefill-runtime-v1`,
 separate from `develop`; the launcher pins the exact artifact commit/hash.
 
+Published source: `5947352afcebfa9c0036f74e6829b719b6a0b74d`; artifact:
+`10053e67585eaddb3ffd758f243da64274199e27`; private llama caller:
+`03142a8b7bdf690ac8c1ecfc51c9b20d4fbafc8e`.
+Local checks: 142 focused library ABI/policy/package/JIT tests (including
+native cuBLAS and DeepGEMM call signatures with host stubs), 24 llama Python
+tests, four llama CTest cases, and PPU compilation of `ggml-cuda.cu`,
+`quactlize-execution.cu`, `quactlize-execution-lib.cu`. No PPU GPU execution
+or model performance result is claimed by these checks.
+
 ## PPU gate
 
 Use an idle PPU with the SDK and DeepGEMM Python package already installed:
