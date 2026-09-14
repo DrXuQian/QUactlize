@@ -1,5 +1,21 @@
 # Full BF16 expansion: packed-code shared exchange
 
+## PPU result and composition
+
+`kpack-full-packed-ppu.NU9nBv.results.tgz` (SHA256
+`9904a22f22a194d12fef65021fb9cdcabf6f0d87fb9bd1981d7afdc27cd81648`)
+passes all 170 timing cells and ten untimed config smokes. All 34 per-shape
+best medians improve over contemporaneous c4/c5 controls. Six ACU reports
+import successfully: shared bank-conflict totals drop to zero in all three
+new-kernel anchors, with essentially unchanged DRAM read bytes.
+
+All twelve Q4/Q5 E256 domains select c11. Q4 time decreases 21.15--22.95%
+and reaches 67.52--69.58% useful MBU; Q5 decreases 13.44--16.32% and reaches
+56.92--59.19%. Dense/E8 still need per-shape c10/c11/c12 selection. No other
+qtype or unmeasured sparse expert domain is admitted by this experiment.
+The [44-point composed prefill board](KPACK_PREFILL_COMPONENT_COSTS.md)
+now uses these measurements; the production route policy is unchanged.
+
 ## Evidence and scope, 2026-09-14
 
 The DeepGEMM Python return `kpack-deepgemm-python.XOCxcL.results.tgz`
@@ -110,5 +126,5 @@ five configs, including multi-expert and K768 domains, low/high plane
 negatives and output guards. All 78,643,200 output elements match the
 independent BF16 oracle. The [source-bound receipt](measurements/dequant_packed_5070_20260914.json)
 records the final header hashes and separate CUDA/PPU binary hashes.
-NVIDIA checks are numerical portability evidence only; PPU correctness
-and performance of the new candidates remain pending this box run.
+NVIDIA checks are numerical portability evidence only. The separate PPU
+return summarized above supplies the measured device evidence.

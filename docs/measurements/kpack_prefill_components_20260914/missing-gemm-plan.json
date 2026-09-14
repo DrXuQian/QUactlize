@@ -1,0 +1,1070 @@
+{
+  "status": "PLAN_ONLY_NOT_EXECUTABLE",
+  "cells": 88,
+  "tasks": [
+    {
+      "workload": {
+        "q": 12,
+        "n": 1024,
+        "k": 5120,
+        "experts": 1,
+        "operation": 1,
+        "smoke": false,
+        "id": "q12-n1024-k5120-e1-full"
+      },
+      "tokens": 2048,
+      "total_rows": 2048,
+      "max_rows": 2048,
+      "active_experts": 1,
+      "topk": 1,
+      "routes_sha256": null,
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 12,
+        "n": 1024,
+        "k": 5120,
+        "experts": 1,
+        "operation": 1,
+        "smoke": false,
+        "id": "q12-n1024-k5120-e1-full"
+      },
+      "tokens": 4096,
+      "total_rows": 4096,
+      "max_rows": 4096,
+      "active_experts": 1,
+      "topk": 1,
+      "routes_sha256": null,
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 12,
+        "n": 5120,
+        "k": 8192,
+        "experts": 1,
+        "operation": 1,
+        "smoke": false,
+        "id": "q12-n5120-k8192-e1-full"
+      },
+      "tokens": 2048,
+      "total_rows": 2048,
+      "max_rows": 2048,
+      "active_experts": 1,
+      "topk": 1,
+      "routes_sha256": null,
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 12,
+        "n": 5120,
+        "k": 8192,
+        "experts": 1,
+        "operation": 1,
+        "smoke": false,
+        "id": "q12-n5120-k8192-e1-full"
+      },
+      "tokens": 4096,
+      "total_rows": 4096,
+      "max_rows": 4096,
+      "active_experts": 1,
+      "topk": 1,
+      "routes_sha256": null,
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 12,
+        "n": 5120,
+        "k": 25600,
+        "experts": 1,
+        "operation": 1,
+        "smoke": false,
+        "id": "q12-n5120-k25600-e1-full"
+      },
+      "tokens": 2048,
+      "total_rows": 2048,
+      "max_rows": 2048,
+      "active_experts": 1,
+      "topk": 1,
+      "routes_sha256": null,
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 12,
+        "n": 5120,
+        "k": 25600,
+        "experts": 1,
+        "operation": 1,
+        "smoke": false,
+        "id": "q12-n5120-k25600-e1-full"
+      },
+      "tokens": 4096,
+      "total_rows": 4096,
+      "max_rows": 4096,
+      "active_experts": 1,
+      "topk": 1,
+      "routes_sha256": null,
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 12,
+        "n": 8192,
+        "k": 5120,
+        "experts": 1,
+        "operation": 1,
+        "smoke": false,
+        "id": "q12-n8192-k5120-e1-full"
+      },
+      "tokens": 2048,
+      "total_rows": 2048,
+      "max_rows": 2048,
+      "active_experts": 1,
+      "topk": 1,
+      "routes_sha256": null,
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 12,
+        "n": 8192,
+        "k": 5120,
+        "experts": 1,
+        "operation": 1,
+        "smoke": false,
+        "id": "q12-n8192-k5120-e1-full"
+      },
+      "tokens": 4096,
+      "total_rows": 4096,
+      "max_rows": 4096,
+      "active_experts": 1,
+      "topk": 1,
+      "routes_sha256": null,
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 12,
+        "n": 25600,
+        "k": 5120,
+        "experts": 1,
+        "operation": 1,
+        "smoke": false,
+        "id": "q12-n25600-k5120-e1-full"
+      },
+      "tokens": 2048,
+      "total_rows": 2048,
+      "max_rows": 2048,
+      "active_experts": 1,
+      "topk": 1,
+      "routes_sha256": null,
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 12,
+        "n": 25600,
+        "k": 5120,
+        "experts": 1,
+        "operation": 1,
+        "smoke": false,
+        "id": "q12-n25600-k5120-e1-full"
+      },
+      "tokens": 4096,
+      "total_rows": 4096,
+      "max_rows": 4096,
+      "active_experts": 1,
+      "topk": 1,
+      "routes_sha256": null,
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 12,
+        "n": 512,
+        "k": 2048,
+        "experts": 256,
+        "operation": 1,
+        "smoke": false,
+        "id": "q12-n512-k2048-e256-full"
+      },
+      "tokens": 2048,
+      "total_rows": 16384,
+      "max_rows": 239,
+      "active_experts": 256,
+      "topk": 8,
+      "routes_sha256": "82575014fc48edb62dac19d2df7dbff8a8b64b9ef6039f45da40915c4b8289b8",
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 12,
+        "n": 512,
+        "k": 2048,
+        "experts": 256,
+        "operation": 1,
+        "smoke": false,
+        "id": "q12-n512-k2048-e256-full"
+      },
+      "tokens": 4096,
+      "total_rows": 32768,
+      "max_rows": 447,
+      "active_experts": 256,
+      "topk": 8,
+      "routes_sha256": "4d69905f0c4707861078d6861880d2b54e976afbcaee703db586d3956741140a",
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 12,
+        "n": 512,
+        "k": 3072,
+        "experts": 256,
+        "operation": 1,
+        "smoke": false,
+        "id": "q12-n512-k3072-e256-full"
+      },
+      "tokens": 2048,
+      "total_rows": 16384,
+      "max_rows": 239,
+      "active_experts": 256,
+      "topk": 8,
+      "routes_sha256": "82575014fc48edb62dac19d2df7dbff8a8b64b9ef6039f45da40915c4b8289b8",
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 12,
+        "n": 512,
+        "k": 3072,
+        "experts": 256,
+        "operation": 1,
+        "smoke": false,
+        "id": "q12-n512-k3072-e256-full"
+      },
+      "tokens": 4096,
+      "total_rows": 32768,
+      "max_rows": 447,
+      "active_experts": 256,
+      "topk": 8,
+      "routes_sha256": "4d69905f0c4707861078d6861880d2b54e976afbcaee703db586d3956741140a",
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 12,
+        "n": 1024,
+        "k": 2048,
+        "experts": 256,
+        "operation": 1,
+        "smoke": false,
+        "id": "q12-n1024-k2048-e256-full"
+      },
+      "tokens": 2048,
+      "total_rows": 16384,
+      "max_rows": 239,
+      "active_experts": 256,
+      "topk": 8,
+      "routes_sha256": "82575014fc48edb62dac19d2df7dbff8a8b64b9ef6039f45da40915c4b8289b8",
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 12,
+        "n": 1024,
+        "k": 2048,
+        "experts": 256,
+        "operation": 1,
+        "smoke": false,
+        "id": "q12-n1024-k2048-e256-full"
+      },
+      "tokens": 4096,
+      "total_rows": 32768,
+      "max_rows": 447,
+      "active_experts": 256,
+      "topk": 8,
+      "routes_sha256": "4d69905f0c4707861078d6861880d2b54e976afbcaee703db586d3956741140a",
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 12,
+        "n": 1024,
+        "k": 3072,
+        "experts": 256,
+        "operation": 1,
+        "smoke": false,
+        "id": "q12-n1024-k3072-e256-full"
+      },
+      "tokens": 2048,
+      "total_rows": 16384,
+      "max_rows": 239,
+      "active_experts": 256,
+      "topk": 8,
+      "routes_sha256": "82575014fc48edb62dac19d2df7dbff8a8b64b9ef6039f45da40915c4b8289b8",
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 12,
+        "n": 1024,
+        "k": 3072,
+        "experts": 256,
+        "operation": 1,
+        "smoke": false,
+        "id": "q12-n1024-k3072-e256-full"
+      },
+      "tokens": 4096,
+      "total_rows": 32768,
+      "max_rows": 447,
+      "active_experts": 256,
+      "topk": 8,
+      "routes_sha256": "4d69905f0c4707861078d6861880d2b54e976afbcaee703db586d3956741140a",
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 12,
+        "n": 2048,
+        "k": 512,
+        "experts": 256,
+        "operation": 1,
+        "smoke": false,
+        "id": "q12-n2048-k512-e256-full"
+      },
+      "tokens": 2048,
+      "total_rows": 16384,
+      "max_rows": 239,
+      "active_experts": 256,
+      "topk": 8,
+      "routes_sha256": "82575014fc48edb62dac19d2df7dbff8a8b64b9ef6039f45da40915c4b8289b8",
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 12,
+        "n": 2048,
+        "k": 512,
+        "experts": 256,
+        "operation": 1,
+        "smoke": false,
+        "id": "q12-n2048-k512-e256-full"
+      },
+      "tokens": 4096,
+      "total_rows": 32768,
+      "max_rows": 447,
+      "active_experts": 256,
+      "topk": 8,
+      "routes_sha256": "4d69905f0c4707861078d6861880d2b54e976afbcaee703db586d3956741140a",
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 12,
+        "n": 3072,
+        "k": 512,
+        "experts": 256,
+        "operation": 1,
+        "smoke": false,
+        "id": "q12-n3072-k512-e256-full"
+      },
+      "tokens": 2048,
+      "total_rows": 16384,
+      "max_rows": 239,
+      "active_experts": 256,
+      "topk": 8,
+      "routes_sha256": "82575014fc48edb62dac19d2df7dbff8a8b64b9ef6039f45da40915c4b8289b8",
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 12,
+        "n": 3072,
+        "k": 512,
+        "experts": 256,
+        "operation": 1,
+        "smoke": false,
+        "id": "q12-n3072-k512-e256-full"
+      },
+      "tokens": 4096,
+      "total_rows": 32768,
+      "max_rows": 447,
+      "active_experts": 256,
+      "topk": 8,
+      "routes_sha256": "4d69905f0c4707861078d6861880d2b54e976afbcaee703db586d3956741140a",
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 13,
+        "n": 1024,
+        "k": 5120,
+        "experts": 1,
+        "operation": 1,
+        "smoke": false,
+        "id": "q13-n1024-k5120-e1-full"
+      },
+      "tokens": 2048,
+      "total_rows": 2048,
+      "max_rows": 2048,
+      "active_experts": 1,
+      "topk": 1,
+      "routes_sha256": null,
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 13,
+        "n": 1024,
+        "k": 5120,
+        "experts": 1,
+        "operation": 1,
+        "smoke": false,
+        "id": "q13-n1024-k5120-e1-full"
+      },
+      "tokens": 4096,
+      "total_rows": 4096,
+      "max_rows": 4096,
+      "active_experts": 1,
+      "topk": 1,
+      "routes_sha256": null,
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 13,
+        "n": 5120,
+        "k": 8192,
+        "experts": 1,
+        "operation": 1,
+        "smoke": false,
+        "id": "q13-n5120-k8192-e1-full"
+      },
+      "tokens": 2048,
+      "total_rows": 2048,
+      "max_rows": 2048,
+      "active_experts": 1,
+      "topk": 1,
+      "routes_sha256": null,
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 13,
+        "n": 5120,
+        "k": 8192,
+        "experts": 1,
+        "operation": 1,
+        "smoke": false,
+        "id": "q13-n5120-k8192-e1-full"
+      },
+      "tokens": 4096,
+      "total_rows": 4096,
+      "max_rows": 4096,
+      "active_experts": 1,
+      "topk": 1,
+      "routes_sha256": null,
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 13,
+        "n": 5120,
+        "k": 25600,
+        "experts": 1,
+        "operation": 1,
+        "smoke": false,
+        "id": "q13-n5120-k25600-e1-full"
+      },
+      "tokens": 2048,
+      "total_rows": 2048,
+      "max_rows": 2048,
+      "active_experts": 1,
+      "topk": 1,
+      "routes_sha256": null,
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 13,
+        "n": 5120,
+        "k": 25600,
+        "experts": 1,
+        "operation": 1,
+        "smoke": false,
+        "id": "q13-n5120-k25600-e1-full"
+      },
+      "tokens": 4096,
+      "total_rows": 4096,
+      "max_rows": 4096,
+      "active_experts": 1,
+      "topk": 1,
+      "routes_sha256": null,
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 13,
+        "n": 8192,
+        "k": 5120,
+        "experts": 1,
+        "operation": 1,
+        "smoke": false,
+        "id": "q13-n8192-k5120-e1-full"
+      },
+      "tokens": 2048,
+      "total_rows": 2048,
+      "max_rows": 2048,
+      "active_experts": 1,
+      "topk": 1,
+      "routes_sha256": null,
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 13,
+        "n": 8192,
+        "k": 5120,
+        "experts": 1,
+        "operation": 1,
+        "smoke": false,
+        "id": "q13-n8192-k5120-e1-full"
+      },
+      "tokens": 4096,
+      "total_rows": 4096,
+      "max_rows": 4096,
+      "active_experts": 1,
+      "topk": 1,
+      "routes_sha256": null,
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 13,
+        "n": 25600,
+        "k": 5120,
+        "experts": 1,
+        "operation": 1,
+        "smoke": false,
+        "id": "q13-n25600-k5120-e1-full"
+      },
+      "tokens": 2048,
+      "total_rows": 2048,
+      "max_rows": 2048,
+      "active_experts": 1,
+      "topk": 1,
+      "routes_sha256": null,
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 13,
+        "n": 25600,
+        "k": 5120,
+        "experts": 1,
+        "operation": 1,
+        "smoke": false,
+        "id": "q13-n25600-k5120-e1-full"
+      },
+      "tokens": 4096,
+      "total_rows": 4096,
+      "max_rows": 4096,
+      "active_experts": 1,
+      "topk": 1,
+      "routes_sha256": null,
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 13,
+        "n": 512,
+        "k": 2048,
+        "experts": 256,
+        "operation": 1,
+        "smoke": false,
+        "id": "q13-n512-k2048-e256-full"
+      },
+      "tokens": 2048,
+      "total_rows": 16384,
+      "max_rows": 239,
+      "active_experts": 256,
+      "topk": 8,
+      "routes_sha256": "82575014fc48edb62dac19d2df7dbff8a8b64b9ef6039f45da40915c4b8289b8",
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 13,
+        "n": 512,
+        "k": 2048,
+        "experts": 256,
+        "operation": 1,
+        "smoke": false,
+        "id": "q13-n512-k2048-e256-full"
+      },
+      "tokens": 4096,
+      "total_rows": 32768,
+      "max_rows": 447,
+      "active_experts": 256,
+      "topk": 8,
+      "routes_sha256": "4d69905f0c4707861078d6861880d2b54e976afbcaee703db586d3956741140a",
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 13,
+        "n": 512,
+        "k": 3072,
+        "experts": 256,
+        "operation": 1,
+        "smoke": false,
+        "id": "q13-n512-k3072-e256-full"
+      },
+      "tokens": 2048,
+      "total_rows": 16384,
+      "max_rows": 239,
+      "active_experts": 256,
+      "topk": 8,
+      "routes_sha256": "82575014fc48edb62dac19d2df7dbff8a8b64b9ef6039f45da40915c4b8289b8",
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 13,
+        "n": 512,
+        "k": 3072,
+        "experts": 256,
+        "operation": 1,
+        "smoke": false,
+        "id": "q13-n512-k3072-e256-full"
+      },
+      "tokens": 4096,
+      "total_rows": 32768,
+      "max_rows": 447,
+      "active_experts": 256,
+      "topk": 8,
+      "routes_sha256": "4d69905f0c4707861078d6861880d2b54e976afbcaee703db586d3956741140a",
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 13,
+        "n": 1024,
+        "k": 2048,
+        "experts": 256,
+        "operation": 1,
+        "smoke": false,
+        "id": "q13-n1024-k2048-e256-full"
+      },
+      "tokens": 2048,
+      "total_rows": 16384,
+      "max_rows": 239,
+      "active_experts": 256,
+      "topk": 8,
+      "routes_sha256": "82575014fc48edb62dac19d2df7dbff8a8b64b9ef6039f45da40915c4b8289b8",
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 13,
+        "n": 1024,
+        "k": 2048,
+        "experts": 256,
+        "operation": 1,
+        "smoke": false,
+        "id": "q13-n1024-k2048-e256-full"
+      },
+      "tokens": 4096,
+      "total_rows": 32768,
+      "max_rows": 447,
+      "active_experts": 256,
+      "topk": 8,
+      "routes_sha256": "4d69905f0c4707861078d6861880d2b54e976afbcaee703db586d3956741140a",
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 13,
+        "n": 1024,
+        "k": 3072,
+        "experts": 256,
+        "operation": 1,
+        "smoke": false,
+        "id": "q13-n1024-k3072-e256-full"
+      },
+      "tokens": 2048,
+      "total_rows": 16384,
+      "max_rows": 239,
+      "active_experts": 256,
+      "topk": 8,
+      "routes_sha256": "82575014fc48edb62dac19d2df7dbff8a8b64b9ef6039f45da40915c4b8289b8",
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 13,
+        "n": 1024,
+        "k": 3072,
+        "experts": 256,
+        "operation": 1,
+        "smoke": false,
+        "id": "q13-n1024-k3072-e256-full"
+      },
+      "tokens": 4096,
+      "total_rows": 32768,
+      "max_rows": 447,
+      "active_experts": 256,
+      "topk": 8,
+      "routes_sha256": "4d69905f0c4707861078d6861880d2b54e976afbcaee703db586d3956741140a",
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 13,
+        "n": 2048,
+        "k": 512,
+        "experts": 256,
+        "operation": 1,
+        "smoke": false,
+        "id": "q13-n2048-k512-e256-full"
+      },
+      "tokens": 2048,
+      "total_rows": 16384,
+      "max_rows": 239,
+      "active_experts": 256,
+      "topk": 8,
+      "routes_sha256": "82575014fc48edb62dac19d2df7dbff8a8b64b9ef6039f45da40915c4b8289b8",
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 13,
+        "n": 2048,
+        "k": 512,
+        "experts": 256,
+        "operation": 1,
+        "smoke": false,
+        "id": "q13-n2048-k512-e256-full"
+      },
+      "tokens": 4096,
+      "total_rows": 32768,
+      "max_rows": 447,
+      "active_experts": 256,
+      "topk": 8,
+      "routes_sha256": "4d69905f0c4707861078d6861880d2b54e976afbcaee703db586d3956741140a",
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 13,
+        "n": 3072,
+        "k": 512,
+        "experts": 256,
+        "operation": 1,
+        "smoke": false,
+        "id": "q13-n3072-k512-e256-full"
+      },
+      "tokens": 2048,
+      "total_rows": 16384,
+      "max_rows": 239,
+      "active_experts": 256,
+      "topk": 8,
+      "routes_sha256": "82575014fc48edb62dac19d2df7dbff8a8b64b9ef6039f45da40915c4b8289b8",
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    },
+    {
+      "workload": {
+        "q": 13,
+        "n": 3072,
+        "k": 512,
+        "experts": 256,
+        "operation": 1,
+        "smoke": false,
+        "id": "q13-n3072-k512-e256-full"
+      },
+      "tokens": 4096,
+      "total_rows": 32768,
+      "max_rows": 447,
+      "active_experts": 256,
+      "topk": 8,
+      "routes_sha256": "4d69905f0c4707861078d6861880d2b54e976afbcaee703db586d3956741140a",
+      "required": [
+        "FQ_GEMM_ONLY",
+        "SF_GEMM_ONLY"
+      ],
+      "timing": "ROTATING_CANONICAL_WEIGHTS_COMPLETE_RING_EVENTS_FIRST_USE_EXCLUDED",
+      "include_splitk_reducer": true,
+      "sf_prepass_inside_gemm_timing": false
+    }
+  ],
+  "requirements": [
+    "Same physical PPU and original GGUF bytes",
+    "Same exact expert rows; no E256-to-active proportional scaling",
+    "Use selected tactics and retain historical winning configurations as challenges",
+    "Independent numerical checks for each route precision contract",
+    "Measure FQ/SF GEMM separately; do not double-count SF expansion",
+    "Record routing, activation/output adapters and precision conversion costs separately"
+  ]
+}

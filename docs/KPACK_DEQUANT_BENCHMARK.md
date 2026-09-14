@@ -1,9 +1,10 @@
 # Independent weight-expansion measurements
 
-Latest: the explicit Python-JIT DeepGEMM return has24/24 valid timing cells;
-only its ACU instrumentation failed. The new [packed-code exchange follow-up](KPACK_FULL_PACKED_EXCHANGE.md)
-retains v2 c4/c5 and targets the remaining full-dequant overhead without
-changing offline bytes or FP32/BF16 arithmetic. Its PPU comparison is pending.
+Latest: [v4 packed-code exchange](KPACK_FULL_PACKED_EXCHANGE.md) passes all
+170 timed configs and six ACU profiles. The [composed prefill cost board](KPACK_PREFILL_COMPONENT_COSTS.md)
+reuses 20 cuBLAS and 24 Python-JIT DeepGEMM measurements with the improved
+full-dequant component. FQ/SF matched GEMM costs remain missing; no
+production route is selected from an incomplete comparison.
 
 ## DeepGEMM-only supplement: explicit Python JIT
 
