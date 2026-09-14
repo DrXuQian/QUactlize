@@ -5,6 +5,12 @@ selection nor performs online tuning. The package contains the actual C++
 dispatcher and its 12 selected parent modules, plus a small carrier of the
 production reducer types. Box execution compiles nothing.
 
+Reviewed box results: **88/88 GEMM and 48/48 reducer measurements passed**,
+in 1,175 s and 1,234 s respectively. These commands need not be rerun to
+obtain missing small-M data. See the [cost evidence audit and targeted
+supplement](KPACK_HEURISTIC_COST_AUDIT.md) for archive receipts and remaining
+coverage. Production selection has not been changed by this import/review.
+
 ## 1. Complete heuristic-selected FQ/SF calls
 
 `bash tools/run_kpack_prefill_measurement_ppu_box.sh gemm`
@@ -87,5 +93,6 @@ not a promised full-run duration.
 
 The 12 parent modules compiled locally in about four minutes. Local tests
 cover policy closure, independent fixture hashes, oracle negatives, result
-validation, shell parsing and parent-shell survival. PPU numerical/timing
-admission is still the purpose of these two box runs.
+validation, shell parsing and parent-shell survival. The reviewed box runs
+supply numerical/timing evidence for this exact measurement denominator,
+not every M, qtype, or new production route.

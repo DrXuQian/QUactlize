@@ -107,10 +107,14 @@ An executable **selected-heuristic** measurement is now provided in
 It uses the actual production dispatcher (88 requests, currently all S1,
 12 parent modules). It is not an online tuner or a new exhaustive search.
 An independent 48-point reducer-only command supplies S2/S4/S8 diagnostic
-costs without changing those heuristic choices. Device results are pending.
+costs without changing those heuristic choices. Both result archives have now
+been reviewed: 88/88 GEMM and 48/48 reducer points passed. The original board
+JSON below predates these uploads and has not yet been replaced by a new
+production route table; its missing GEMM fields do not mean those box runs
+are still outstanding. See the [evidence audit](KPACK_HEURISTIC_COST_AUDIT.md).
 
-There are 44 workload/token points needing FQ and SF GEMM-only costs:
-**88 route measurements**, before any small tactic challenge set. This is
+The matched plan covers 44 workload/token points and FQ/SF GEMM-only costs:
+**88 completed route measurements**, before any small tactic challenge set. This is
 not an exhaustive config Cartesian product. Use production-selected tactics
 and explicitly retain applicable historical winning configurations as
 challenges; record which wins instead of treating the compiled default as
