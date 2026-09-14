@@ -16,6 +16,14 @@ compile_commands.json
 /prebuilt/**/libggml*
 /prebuilt/**/libmtmd*
 
+# Quactlize-only payloads on this artifact branch; caller builds stay on the box.
+!/prebuilt/ppu0010/kpack-model-runtime-v1/**
+/prebuilt/ppu0010/kpack-model-runtime-v1/llama/
+/prebuilt/ppu0010/kpack-model-runtime-v1/llama-*
+/prebuilt/ppu0010/kpack-model-runtime-v1/libllama*
+/prebuilt/ppu0010/kpack-model-runtime-v1/libggml*
+/prebuilt/ppu0010/kpack-model-runtime-v1/libmtmd*
+
 # built extension and setuptools scratch
 quactlize/_C*.so
 build/
