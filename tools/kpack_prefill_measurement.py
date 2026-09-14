@@ -73,13 +73,14 @@ def verify(bundle, sdk):
 
 class Weights:
     """Same raw bytes as dequant/BF16; official GGUF FP32 dot, not a self-oracle."""
-    def __init__(self,w,progress=None):
+    def __init__(self,w,progress=None,*,keep_bf16=False):
         from gguf import GGMLQuantizationType
         from gguf.quants import dequantize
         q,n,k,e=w['q'],w['n'],w['k'],w['experts'];spec=ref.SPECS[q]
         self.categories=np.random.default_rng(60413+k).integers(0,4,k)
         self.sums=np.empty((e,4,n),dtype='f8');self.absolute=np.empty_like(self.sums)
         self.planes={};full_hash=hashlib.sha256();sf_hash=hashlib.sha256()
+        self.gold=np.empty((e,n,k),dtype='<u2') if keep_bf16 else None
         # Keep scales separate; SF timing must never include their derivation.
         for expert in range(e):
             rng=np.random.default_rng(np.random.SeedSequence([935712,q,n,k,expert]))
@@ -96,7 +97,9 @@ class Weights:
             for name in self.planes:self.planes[name][expert]=placed[name]
             official=dequantize(raw.reshape(-1),GGMLQuantizationType(q)).reshape(n,k)
             if not np.isfinite(official).all():raise ValueError('nonfinite GGUF fixture')
-            full_hash.update(bf16(official).tobytes())
+            full_bits=bf16(official)
+            full_hash.update(full_bits.tobytes())
+            if keep_bf16:self.gold[expert]=full_bits
             for cat in range(4):
                 part=official[:,self.categories==cat]
                 self.sums[expert,cat]=part.sum(1,dtype='f8')

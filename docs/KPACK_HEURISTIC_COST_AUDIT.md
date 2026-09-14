@@ -50,7 +50,7 @@ new campaign.
 
 | Priority | Missing evidence / implementation | Minimal supplement |
 |---|---|---|
-| 1 | Small-M reducer attribution, separate from already measured complete TC calls | Reuse the existing carrier; 138 unique selected/confirmed `(implementation,M,N,S)` keys. No GEMM, dequant, new compilation, or automatic policy rewrite. |
+| 1 | Small-M reducer attribution | Received: 138/138 numerical PASS, 137 stable timings; recheck only `dense-m1-n4096-s4`. Complete TC calls still must not receive a second reducer charge. |
 | 2 | Intermediate/large-M cross-route crossover | Start with dense M128/512/1024, then challenge only differing/close boundaries. Measure current selected FQ/SF and BF16 separately. Reuse matching weight-only dequant costs. Retain applicable historical winning configs as a bounded challenge set. |
 | 3 | Q2/Q3/Q6 real-shape dequant and matched cross-route costs | Existing small numerical smokes do not price real weights. Add these formats' real geometries; do not copy Q4/Q5 timings. BF16 provider measurements may be shared only with compatible geometry/provider/precision and an explicit evidence contract. |
 | 4 | Remaining weight families | Historical dense coverage has 12 N/K families; the current large-M component board has five. Add the missing in-scope families, rather than extrapolating full-dequant winners to them. Grouped board covers six families, including doubled-N gate/up. |
@@ -61,6 +61,12 @@ The new component timings affect cross-route selection where coverage exists.
 They do not retroactively invalidate every measured small-M tactic. Q4's
 optimized SIMT ranking is not a Q2/Q3/Q5/Q6 or Q8 SIMT admission either.
 No result here establishes a global best over unmeasured configurations.
+
+The executable remaining supplement is now documented in
+[Remaining heuristic component measurements](KPACK_COST_SUPPLEMENT.md):
+458 finite workload points, 134 deduplicated selected/historical parent
+images, separate dequant/provider/GEMM measurements, resumable by component.
+No small-M full-dequant admission and no automatic production change.
 
 ## Ready box supplement: small-M reducers
 
@@ -88,9 +94,11 @@ cache state. No producer, scatter, dequant, allocation or H2D is timed.
 Complete output guards, fixed-order FP32-to-FP16 oracle, and a changed partial
 inside the captured graph are checked. The negative must fail the old oracle.
 
-Runtime is not yet measured on PPU. It should be much shorter than the prior
-20-minute large-reducer run: one device process, at most about 14 MB of
-partial/output buffers per case, 132,480 timed reducer calls in total. This
-call count alone is not a wall-time promise; the runner prints observed ETA.
+This run has completed: `kpack-decode-reducer.aVNayM.results.tgz`, SHA256
+`86a1cfc28416636551552782f7435cd3fd6217822a564048041ce2e86bfcd1d7`.
+All 138 numerical tests pass. 137 points have round-median spread within
+5%; `dense-m1-n4096-s4` has round medians 1.7294/1.7519/2.3944 us and needs
+one recheck. Do not repeat all 138. M1 fast dense costs are about 1.73--1.93 us;
+generic dense M2--8 costs 2.99--7.14 us, and compact grouped costs 1.74--1.87 us.
 Successful cases survive a later failure and `RESUME_RUN` resumes only with
 identical sources, package, SDK and device. Send its printed `*.results.tgz`.

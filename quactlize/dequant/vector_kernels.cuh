@@ -1,5 +1,6 @@
 #pragma once
 #include "unit16.hpp"
+#include "expert_selection.cuh"
 
 namespace quactlize::dequant {
 
@@ -24,13 +25,16 @@ __global__ __launch_bounds__(Threads) void sf_unit16(
 // tile. Compare scalar B/pair store, scalar B/vector store, and vector B/
 // vector store independently. A uint4 transports bits; it never performs
 // float4 arithmetic or changes BF16 rounding.
-template<KType T, bool VectorB, bool VectorStore>
+template<KType T, bool VectorB, bool VectorStore, bool Indexed = false>
 __global__ __launch_bounds__(128) void full_wide(
         uint16_t const* __restrict__ low, uint16_t const* __restrict__ high,
-        uint8_t const* __restrict__ units, uint16_t* __restrict__ output, int n, int k) {
+        uint8_t const* __restrict__ units, uint16_t* __restrict__ output, int n, int k,
+        ExpertSelection selection = {}) {
     using R = Reader<T>;
     __shared__ uint32_t tile[32][129];
-    int const e = blockIdx.z, n0 = blockIdx.x * 32, k0 = blockIdx.y * 128;
+    int const e = select_expert<Indexed>(blockIdx.z, selection);
+    if (e < 0) return;
+    int const n0 = blockIdx.x * 32, k0 = blockIdx.y * 128;
     int const lane = threadIdx.x % 32, warp = threadIdx.x / 32;
     int64_t const nk = int64_t(n) * k;
     auto const l = low + int64_t(e) * nk / (16 / R::lo_bits);

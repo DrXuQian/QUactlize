@@ -1,22 +1,25 @@
 #pragma once
 #include "unit16.hpp"
 #include "packed_exchange.hpp"
+#include "expert_selection.cuh"
 
 namespace quactlize::dequant {
 
 // Keep N-fast uint4 global loads and K-fast uint4 BF16 stores. Transpose
 // packed codes BEFORE the FP32 affine/BF16 conversion. No expanded output
 // crosses shared memory and no scale broadcast shuffle is required.
-template<KType T, int TileK, bool KMajor>
+template<KType T, int TileK, bool KMajor, bool Indexed = false>
 __global__ __launch_bounds__(128) void full_packed_exchange(
         uint16_t const* __restrict__ low, uint16_t const* __restrict__ high,
-        uint8_t const* __restrict__ units, uint16_t* __restrict__ output, int n, int k) {
+        uint8_t const* __restrict__ units, uint16_t* __restrict__ output, int n, int k,
+        ExpertSelection selection = {}) {
     using R = Reader<T>;
     using Codes = PackedCodes<T>;
     using Layout = PackedExchangeLayout<TileK>;
     __shared__ __align__(16) uint32_t tile[Layout::kCells];
     __shared__ float2 affine[32 * Layout::kGroups];
-    int const e = blockIdx.z;
+    int const e = select_expert<Indexed>(blockIdx.z, selection);
+    if (e < 0) return;
     int const n0 = (KMajor ? blockIdx.y : blockIdx.x) * 32;
     int const k0 = (KMajor ? blockIdx.x : blockIdx.y) * TileK;
     int const tid = threadIdx.x & 127;
