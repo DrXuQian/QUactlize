@@ -1,6 +1,7 @@
 """Installed BF16 providers; no local GEMM implementation or timing fallback."""
 import ctypes as C
 import importlib
+import inspect
 from pathlib import Path
 
 from quactlize.runtime.compiler import sha
@@ -52,17 +53,32 @@ class Cublas:
 
 
 class DeepGemm:
+    MODULE = 'deep_gemm.jit_kernels.m_grouped_gemm'
+
     def __init__(self):
-        module = importlib.import_module('deep_gemm')
+        package = importlib.import_module('deep_gemm')
+        module = importlib.import_module(self.MODULE)
         name = 'm_grouped_gemm_bf16_bf16_bf16_nt_nopad'
         if not hasattr(module, name):
-            raise ValueError('installed DeepGEMM lacks the PPU BF16 no-padding grouped entry: '+name)
+            raise ValueError('installed DeepGEMM lacks the Python JIT BF16 grouped entry: '+self.MODULE+'.'+name)
         self.fn = getattr(module, name)
-        root = Path(module.__file__).resolve().parent
+        # The package's top-level name can alias deep_gemm_cpp. Bind the
+        # Python JIT implementation explicitly: it passes current_stream to
+        # both directory construction and GEMM, unlike the fixed-stream C++
+        # launcher in the inspected checkout. Never silently fall back.
+        if not inspect.isfunction(self.fn) or self.fn.__module__ != self.MODULE:
+            raise ValueError('DeepGEMM BF16 entry is not the requested Python JIT implementation')
+        root = Path(package.__file__).resolve().parent
+        source = Path(inspect.getsourcefile(self.fn)).resolve(strict=True)
+        if not source.is_relative_to(root):
+            raise ValueError('DeepGEMM Python entry is outside the installed package')
         files = {str(p.relative_to(root)): sha(p) for p in root.rglob('*')
                  if p.is_file() and p.suffix in ('.py', '.so', '.hpp', '.h', '.cuh')}
         self.identity = dict(provider='DEEPGEMM_INSTALLED', entry=name, root=str(root), files=files,
+            implementation='PYTHON_JIT',entry_module=self.MODULE,entry_kind='function',
+            entry_source=str(source.relative_to(root)),entry_sha256=sha(source),
             a='BF16_SORTED_ROWS_K', b='BF16_E_N_K', output='BF16_SORTED_ROWS_N',
+            benchmark_stream='TORCH_CURRENT_NONBLOCKING_STREAM',
             selection='PROVIDER_DEFAULT_NO_EXTERNAL_TACTIC_OVERRIDE',
             scope='PROVIDER_CALL_INCLUDING_INTERNAL_BLOCK_DIRECTORY_NO_EXTERNAL_ROUTING')
 

@@ -5,9 +5,9 @@
 | Item | State | Next evidence |
 |---|---|---|
 | SF/full vector expansion v2 | PPU reviewed: 78/78 correctness cases, 408 valid config timings; SF/full median reductions 45.42%/26.45% versus current old best | Production selection is still unchanged; retain per-shape c4/c5 controls |
-| Full BF16 shared exchange and superblock metadata reuse | Local candidate c6--c9; unchanged offline bytes and FP32 multiply/subtract | Run `run_kpack_dequant_ppu_box.sh full-reader`: 34 domains x 6 configs, exact numeric checks and at most four ACU reports |
+| Full BF16 shared exchange and superblock metadata reuse | PPU reviewed:36/36 cases,204 timings; no broad speedup; user retains v2 c4/c5 | c6--c9 stay experimental; no additional full-dequant sweep requested |
 | BF16 cuBLAS dense | 20/20 measured cells reviewed | Same-scope FQ/SF comparison and model adapters still required |
-| BF16 DeepGEMM MoE | 0/24 completed: 12 families stop at zero-A with NaN-prefilled output; normal first-call check reached the next check | Diagnose nonzero vs NaN residual and exact installed provider before any timing admission; do not bypass the failed check |
+| BF16 DeepGEMM MoE | 0/24 admitted; local top-level C++ export has fixed-stream0 hazard. Supplement binds explicit Python JIT, retains graph timing and zero-A check. RTX5070 CUDA harness6/6 plus11 Python tests pass, not DeepGEMM admission | Run `run_kpack_deepgemm_ppu_box.sh` onPPU; reuse v2 dequant and all20 dense cuBLAS cells |
 
 The full-expansion optimization above is not an FQ GEMM change and does not
 invalidate the already collected SF or dense-BLAS results. See

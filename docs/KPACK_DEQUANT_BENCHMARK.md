@@ -1,5 +1,65 @@
 # Independent weight-expansion measurements
 
+## DeepGEMM-only supplement: explicit Python JIT
+
+Keep the admitted v2 c4/c5 full-dequant choices. The v3 return
+`kpack-full-reader-ppu.xCD59g.results.tgz` (SHA256
+`bfb7d4ab03f19c516130b24ddd69224485d7a85f55064f896bc69e8d1ec12594`)
+passes 36 cases / 204 timed configs but gives no broad improvement. Its
+best improvement is 4.77% on Q5 N1024/K5120/E1. The Q5 E256 profile reduces
+global-load instruction count but not DRAM bytes, while increasing register
+and shared-load costs. No new full-dequant selection is admitted.
+
+The previous combined return retains 20 valid cuBLAS dense cells. Its 24
+planned DeepGEMM MoE cells have no valid timing. The local DeepGEMM export
+chain explains a concrete hazard: `deep_gemm.__init__` exports this BF16
+entry from `deep_gemm_cpp`, whose `LaunchRuntime::launch` uses stream 0.
+The test used a nonblocking stream for input changes, poison and graph
+capture. The actual failed box package was not recorded before the check,
+so this static finding is not yet a device root-cause closure.
+
+The supplement explicitly imports
+`deep_gemm.jit_kernels.m_grouped_gemm.m_grouped_gemm_bf16_bf16_bf16_nt_nopad`.
+It requires a Python function from that module, records its source hash and
+package identity before launch, and never falls back to the top-level C++
+alias. The Python JIT implementation passes `torch.cuda.current_stream()`;
+nonblocking stream graph/event timing is retained. The selected Python
+provider's GEMM body and default tactic selection are unchanged; this is
+not a claim that its choices equal the top-level C++ implementation. The zero-A check is
+retained, with raw BF16 NaN/Inf/finite-residual counts and coordinates on
+failure. A changed-input graph replay must also pass before timing admission.
+
+```bash
+git pull --ff-only origin develop &&
+PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK CUDA_VISIBLE_DEVICES=0 \
+DEQUANT_RESULTS=/workspace/kpack-prefill-cost.9jSpJD/results/dequant \
+  bash tools/run_kpack_deepgemm_ppu_box.sh
+```
+
+`DEQUANT_RESULTS` must name the original v2 dequant folder, not the v3
+full-reader run. It is read-only. This command creates new results and runs
+only Q4/Q5, six grouped families, E256/top8, tokens2048/4096: 24 cells. The
+first family is a gate; if it fails, the remaining campaign is not started.
+Matching completed cells are reusable with `RESUME_RUN` pointing to the new
+supplement directory. No cuBLAS or dequant sweep is repeated. The provider
+may JIT during untimed first use; all GEMM costs remain separate from the
+previous dequant measurements. No large PPU bundle rebuild is needed.
+
+The development test `dev/gemv_cuda/check_bf16_harness.py` uses
+NVIDIA cuBLAS per expert to check the common BF16 oracle, NaN overwrite,
+nonblocking-stream graph replay and planted wrong-expert/missing-compute
+negatives. It does **not** execute PPU DeepGEMM or GGUF conversion, and is
+never provider-performance or PPU-admission evidence.
+
+RTX5070/WSL CUDA12.8 has now passed six control cases: N/K256/512 and
+512/2048, E256/top8, tokens128/2048/4096 (total rows1024/16384/32768).
+The tokens128 cases retain nine empty experts. All zero-A, NaN overwrite,
+guards and changed-input graph checks pass; both negative plants are red.
+Worst condition-normalized error is0.001114752, below0.005. Local tests
+pass53 cases; the eleven pure-Python tests also pass on the5070 host.
+The [source-bound CUDA receipt](measurements/bf16_harness_5070_20260914.json)
+explicitly records `deepgemm_executed=false` and `ppu_admission=false`.
+
 ## Full-weight reader follow-up: v3
 
 Reviewed return: `kpack-prefill-cost.9jSpJD.results.tgz`, SHA256

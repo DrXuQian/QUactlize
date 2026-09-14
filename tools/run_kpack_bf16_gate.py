@@ -23,18 +23,23 @@ from quactlize.runtime.compiler import sha
 from quactlize.runtime.native import SDK, checked
 from tools.kpack_dequant_fixture import fixture, compare
 from tools.kpack_bf16_fixture import Oracle, row_domain
+from tools.kpack_bf16_diagnostics import zero_observation
 from tools.kpack_bf16_providers import Cublas, DeepGemm, loaded_images
 from tools.run_kpack_dequant_gate import BUNDLE, work, save, device, validate_result, packages
 from tools.run_kpack_gemv_gate import Resources
 from tools.profile_kpack_gpu_compact import AcuRange, acu_launch_command
 
 
-def families(qtypes):
-    return [w for w in work(qtypes) if not w['smoke'] and w['operation'] and w['experts'] in (1,256)]
+def families(qtypes, provider='all'):
+    if provider not in ('all', 'cublas', 'deepgemm'):
+        raise ValueError('unknown BF16 provider selection')
+    experts = (1,256) if provider == 'all' else (1,) if provider == 'cublas' else (256,)
+    return [w for w in work(qtypes) if not w['smoke'] and w['operation'] and w['experts'] in experts]
 
 
 def source_identity():
     paths = ['tools/run_kpack_bf16_gate.py','tools/kpack_bf16_providers.py','tools/kpack_bf16_fixture.py',
+             'tools/kpack_bf16_diagnostics.py',
              'tools/run_kpack_dequant_gate.py','tools/kpack_dequant_fixture.py','quactlize/dequant/native.py',
              'tools/run_kpack_gemv_gate.py','tools/profile_kpack_gpu_compact.py',
              'dev/gemv_ppu/decode_sweep.py']
@@ -45,10 +50,16 @@ def validate_provider(identity):
     if identity['provider']=='CUBLAS_PPU_SDK':
         if sha(identity['library'])!=identity['sha256']:raise ValueError('cuBLAS image changed')
     elif identity['provider']=='DEEPGEMM_INSTALLED':
+        if (identity.get('implementation')!='PYTHON_JIT' or identity.get('entry_module')!=DeepGemm.MODULE or
+            identity.get('entry_kind')!='function' or
+            identity.get('benchmark_stream')!='TORCH_CURRENT_NONBLOCKING_STREAM'):
+            raise ValueError('DeepGEMM receipt is not the requested Python JIT implementation')
         root=Path(identity['root']).resolve(strict=True)
         for name,h in identity['files'].items():
             path=(root/name).resolve(strict=True)
             if not path.is_relative_to(root) or sha(path)!=h:raise ValueError('DeepGEMM source/image changed: '+name)
+        if identity['files'].get(identity['entry_source'])!=identity['entry_sha256']:
+            raise ValueError('DeepGEMM Python entry receipt differs')
     else:raise ValueError('unknown BF16 provider')
 
 
@@ -103,9 +114,16 @@ class Weights:
         import torch
         self.torch=torch;self.sdk=SDK(a.sdk);self.r=Resources(self.sdk)
         self.lib,self.fn,probe=bind(a.bundle);self.device=device(self.sdk,probe)
+        self.grouped=w['experts']>1
         self.stream=torch.cuda.ExternalStream(self.r.stream.value)
+        self.execution_stream=C.c_void_p(self.stream.cuda_stream)
+        self.output_folder=a.output
         self.w=w;self.arr=arrangement(w['q'])
-        self.provider=Cublas(a.sdk,self.r.stream) if w['experts']==1 else DeepGemm()
+        self.provider=Cublas(a.sdk,self.execution_stream) if not self.grouped else DeepGemm()
+        # Persist the actual entry/binary identity before fixture creation or
+        # any numerical check can fail. Previously every failed family lost it.
+        save(a.output/(w['id']+'.provider.json'),dict(provider=self.provider.identity,
+            device=self.device, stream=int(self.stream.cuda_stream), loaded_images=loaded_images()))
         self.record,self.best,authority=validate_dequant(a.dequant_results,w,self.device)
         if authority['manifest_sha256']!=sha(a.bundle/'manifest.json'):
             raise ValueError('full dequant evidence is from another kernel package')
@@ -125,14 +143,14 @@ class Weights:
             call=Call(version=1,size=C.sizeof(Call),qtype=w['q'],n=w['n'],k=w['k'],experts=w['experts'],
                 operation=1,config=self.best['config'],output=weight.data_ptr(),output_bytes=gold.nbytes,
                 low_bytes=planes['low'].nbytes,high_bytes=planes['high'].nbytes,unit_bytes=planes['units'].nbytes,
-                stream=self.r.stream.value,**pointers)
-            self.sdk.synchronize(self.r.stream)
+                stream=self.execution_stream.value,**pointers)
+            self.sdk.synchronize(self.execution_stream)
             checked(self.fn(C.byref(call),C.byref(self.arr)),'untimed full dequant for BF16 provider')
-            self.sdk.synchronize(self.r.stream)
+            self.sdk.synchronize(self.execution_stream)
             got=np.frombuffer(self.sdk.download(weight.data_ptr(),gold.nbytes),dtype='<u2').reshape(gold.shape)
             compare(got,gold)
             self.weights=[weight]+[weight.clone() for _ in range(self.copies-1)]
-        self.sdk.synchronize(self.r.stream)
+        self.sdk.synchronize(self.execution_stream)
         sf_work=w|dict(operation=0,id=w['id'].removesuffix('-full')+'-sf')
         self.sf_best=None
         if (a.dequant_results/(sf_work['id']+'.json')).exists():
@@ -141,6 +159,28 @@ class Weights:
             dequant_result_sha256=sha(a.dequant_results/(w['id']+'.json')),
             dequant_config=self.best['config'],golden_sha256=self.record['golden_sha256'],
             weight_ring_bytes=gold.nbytes*self.copies,copies=self.copies,base_alignment_bytes=128)
+
+    def read_bits(self, tensor):
+        return np.frombuffer(self.sdk.download(tensor.data_ptr(),tensor.numel()*2),
+                             dtype='<u2').reshape(tuple(tensor.shape))
+
+    def check_zero_a(self, a, out, launch, indices, tokens):
+        # Same negative as before, now on the same stream as the public entry.
+        a.zero_();out.fill_(float('nan'));launch();self.sdk.synchronize(self.execution_stream)
+        observation=zero_observation(self.read_bits(out),indices)
+        torch_zero=bool((out==0).all())
+        input_observation=zero_observation(self.read_bits(a),indices)
+        receipt=dict(workload=self.w,tokens=tokens,provider=self.provider.identity,
+            stream=int(self.stream.cuda_stream),output=observation,input=input_observation,
+            torch_all_zero=torch_zero,loaded_images=loaded_images())
+        save(self.output_folder/(self.w['id']+f'-m{tokens}.zero-a.json'),receipt)
+        print('KPACK_BF16_ZERO_A '+json.dumps(dict(case=self.w['id'],tokens=tokens,
+            stream=int(self.stream.cuda_stream),bad=observation['bad'],nan=observation['nan'],
+            finite_nonzero=observation['finite_nonzero'],input_bad=input_observation['bad'],
+            torch_all_zero=torch_zero,first=observation['first'])),flush=True)
+        if input_observation['bad'] or observation['bad'] or not torch_zero:
+            raise ValueError('zero A did not produce finite zero output; see .zero-a.json')
+        return 'PASS'
 
     def measure(self,tokens,profile=False):
         torch=self.torch;w=self.w
@@ -158,43 +198,46 @@ class Weights:
             def launch(i=0):
                 self.provider(a,self.weights[i] if w['experts']>1 else self.weights[i][0],output[i],ids,counts)
             def proof(i=0):
-                self.sdk.synchronize(self.r.stream)
+                self.sdk.synchronize(self.execution_stream)
                 if not bool((backing[i][:guard]==-123).all()) or not bool((backing[i][-guard:]==-123).all()):
                     raise ValueError('BF16 provider wrote outside output')
                 result=np.frombuffer(self.sdk.download(output[i].data_ptr(),m*w['n']*2),dtype='<u2').reshape(m,w['n'])
                 err=self.oracle.error(result,coeff,indices)
                 if err>=.005:raise ValueError(f'independent BF16 dot error {err:.6g}')
                 return err
-            first=time.monotonic();launch();self.sdk.synchronize(self.r.stream)
+            first=time.monotonic();launch();self.sdk.synchronize(self.execution_stream)
             first_seconds=time.monotonic()-first
             error=proof()
             # Input-dependent negative; zero A must overwrite poisoned output.
-            a.zero_();output[0].fill_(float('nan'));launch();self.sdk.synchronize(self.r.stream)
-            if not bool((output[0]==0).all()):raise ValueError('zero A did not produce finite zero output')
+            self.check_zero_a(a,output[0],launch,indices,tokens)
             zero_bits=np.zeros((m,w['n']),dtype='<u2')
             if self.oracle.error(zero_bits,coeff,indices)<=.005:raise ValueError('zero-A plant escaped dot oracle')
             a.copy_(torch.from_numpy(bits.view('i2')).view(torch.bfloat16));launch();error=max(error,proof())
             if profile:
-                with AcuRange(self.sdk):launch();self.sdk.synchronize(self.r.stream)
+                with AcuRange(self.sdk):launch();self.sdk.synchronize(self.execution_stream)
                 print('KPACK_BF16_PROFILE '+json.dumps(dict(workload=w,tokens=tokens,error=error,
                     provider=self.provider.identity['provider'],device=self.device)),flush=True)
                 return None
             for i in range(self.copies):launch(i)
-            self.sdk.synchronize(self.r.stream)
-            # PyTorch's graph owns the allocator pool for any provider-local
-            # workspace. Raw stream capture would not preserve that lifetime.
-            graph=torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph,stream=self.stream):
+            self.sdk.synchronize(self.execution_stream)
+            def sequence():
                 for _ in range(2):
                     for i in range(self.copies):launch(i)
-            graph.replay();graph.replay();self.sdk.synchronize(self.r.stream)
-            # Verify a changed input on replay, rather than only eager calls.
-            a.neg_();graph.replay();self.sdk.synchronize(self.r.stream)
+            # Python JIT passes the current stream. PyTorch's graph owns any
+            # provider-local workspace allocated while capturing the sequence.
+            graph=torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph,stream=self.stream):sequence()
+            replay=graph.replay
+            timing=dict(method='CAPTURED_COMPLETE_RING_EVENTS',stream=int(self.stream.cuda_stream),
+                graph_capture=True,host_enqueue_gaps='GRAPH_REPLAY')
+            replay();replay();self.sdk.synchronize(self.execution_stream)
+            # Verify changed inputs on the exact sequence used for timing.
+            a.neg_();replay();self.sdk.synchronize(self.execution_stream)
             coeff*=-1;error=max(error,proof(0),proof(self.copies-1));coeff*=-1
-            a.neg_();graph.replay();self.sdk.synchronize(self.r.stream)
+            a.neg_();replay();self.sdk.synchronize(self.execution_stream)
             samples=[]
             for round_id in range(3):
-                samples += [v/(2*self.copies) for v in self.r.samples(lambda:graph.replay() or 0,5)]
+                samples += [v/(2*self.copies) for v in self.r.samples(lambda:replay() or 0,5)]
                 error=max(error,proof(0),proof(self.copies-1))
                 print(f'KPACK_BF16_PROGRESS case={w["id"]} tokens={tokens} round={round_id+1}/3',flush=True)
             median=statistics.median(samples)
@@ -202,7 +245,8 @@ class Weights:
                 active_experts=int(np.count_nonzero(rows)),expanded_experts=w['experts'],max_rows=int(rows.max()),
                 active_weight_ring_bytes=active_bytes,
                 rows=rows.tolist(),routes_sha256=route_hash,identity=self.setup_identity,
-                error=error,guards='PASS',zero_a='PASS',changed_a_graph='PASS',samples_us=samples,
+                error=error,guards='PASS',zero_a='PASS',changed_a_sequence='PASS',
+                changed_a_graph='PASS',timing=timing,samples_us=samples,
                 round_medians_us=[statistics.median(samples[i:i+5]) for i in range(0,15,5)],median_us=median,
                 first_use_excluded_seconds=first_seconds,calls_per_graph=2*self.copies,
                 scope='GEMM_PROVIDER_ONLY_DEQUANT_NEVER_INSIDE_TIMED_GRAPH',
@@ -216,7 +260,7 @@ class Weights:
         return result
 
     def close(self):
-        self.sdk.synchronize(self.r.stream)
+        self.sdk.synchronize(self.execution_stream)
         if hasattr(self,'provider'):self.provider.close()
         self.weights.clear();self.r.close()
 
@@ -226,12 +270,14 @@ def main():
     p.add_argument('--sdk',type=Path,required=True);p.add_argument('--bundle',type=Path,default=BUNDLE)
     p.add_argument('--dequant-results',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
     p.add_argument('--qtypes',default='12,13');p.add_argument('--ms',default='2048,4096')
+    p.add_argument('--provider',choices=('all','cublas','deepgemm'),default='all')
+    p.add_argument('--gate-first',action='store_true',help='stop if the first family cannot pass; keep any valid cells')
     p.add_argument('--family');p.add_argument('--profile',type=int);p.add_argument('--acu',type=Path)
     p.add_argument('--plan-only',action='store_true')
     a=p.parse_args();qs=list(map(int,a.qtypes.split(',')));ms=list(map(int,a.ms.split(',')))
     if not qs or len(qs)!=len(set(qs)) or any(q not in range(10,15) for q in qs):raise ValueError('invalid formats')
     if not ms or len(ms)!=len(set(ms)) or any(m<128 or m>8192 for m in ms):raise ValueError('large-M range is128..8192')
-    tasks=families(qs)
+    tasks=families(qs,a.provider)
     if a.plan_only:
         print(json.dumps(dict(families=len(tasks),gemm_cells=len(tasks)*len(ms),ms=ms,
             stages='SEPARATE_DEQUANT_AND_PROVIDER',workloads=tasks)));return
@@ -250,7 +296,8 @@ def main():
         finally:
             if b:b.close()
         return
-    identity=dict(sources=source_identity(),manifest_sha256=sha(a.bundle/'manifest.json'),
+    identity=dict(sources=source_identity(),manifest_sha256=sha(a.bundle/'manifest.json'),provider=a.provider,
+        gate_first=a.gate_first,
         dequant_authority_sha256=sha(a.dequant_results/'authority.json'),workloads=tasks,ms=ms,
         python_packages=packages(),runtime=verify(a.bundle,a.sdk)['runtime'])
     authority=a.output/'authority.json'
@@ -261,7 +308,8 @@ def main():
     if dev!=json.loads((a.dequant_results/'authority.json').read_text())['device']:
         raise ValueError('BF16 and dequant measurements must use the same physical device')
     command=[sys.executable,'-u',__file__,'--sdk',str(a.sdk),'--bundle',str(a.bundle),
-        '--dequant-results',str(a.dequant_results),'--output',str(a.output),'--qtypes',a.qtypes,'--ms',a.ms]
+        '--dequant-results',str(a.dequant_results),'--output',str(a.output),'--qtypes',a.qtypes,'--ms',a.ms,
+        '--provider',a.provider]
     started=time.monotonic();failed=[];complete=[];profiles=[]
     for i,w in enumerate(tasks):
         wanted=[a.output/(w['id']+f'-m{m}.json') for m in ms]
@@ -289,6 +337,11 @@ def main():
                 complete.append(r)
         elapsed=time.monotonic()-started
         print(f'KPACK_BF16_FAMILY completed={i+1}/{len(tasks)} failed={len(failed)} elapsed_s={elapsed:.1f} remaining_minutes={elapsed/(i+1)*(len(tasks)-i-1)/60:.1f} eta=OBSERVED_FAMILY_AVERAGE',flush=True)
+        if a.gate_first and i==0:
+            if not all(path.exists() for path in wanted):
+                print('KPACK_BF16_PREFLIGHT FAIL remaining_families=NOT_RUN see first-family diagnostics',flush=True)
+                break
+            print('KPACK_BF16_PREFLIGHT PASS remaining_families_continue=1',flush=True)
     if a.acu:
         anchors={(12,5120,8192,1),(13,2048,512,256)}
         for w in tasks:
@@ -334,6 +387,14 @@ def validate_gemm_result(r,w,m):
         raise ValueError('invalid BF16 provider evidence')
     if r['cost']!=cost_record(r['median_us'],r['cost']['full_dequant_us']):raise ValueError('cost sum differs')
     if any(r.get(k)!='PASS' for k in ('guards','zero_a','changed_a_graph')):raise ValueError('missing BF16 numerical control')
+    if w['experts']>1:
+        timing=r.get('timing',{})
+        identity=r['identity']['provider']
+        if (r.get('changed_a_sequence')!='PASS' or
+            timing.get('method')!='CAPTURED_COMPLETE_RING_EVENTS' or not timing.get('stream') or
+            timing.get('graph_capture') is not True or timing.get('host_enqueue_gaps')!='GRAPH_REPLAY' or
+            identity.get('implementation')!='PYTHON_JIT' or identity.get('entry_module')!=DeepGemm.MODULE):
+            raise ValueError('DeepGEMM actual-stream timing/control differs')
     rows,_,route_hash=row_domain(m,w['experts'])
     if r['rows']!=rows.tolist() or r['routes_sha256']!=route_hash or r['total_rows']!=int(rows.sum()):
         raise ValueError('grouped row/weight domain differs')

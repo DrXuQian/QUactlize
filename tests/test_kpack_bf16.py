@@ -106,3 +106,60 @@ def test_cublas_abi_uses_nt_bf16_fp32_and_propagates_failures(monkeypatch,tmp_pa
     lib.cublasGemmEx.status=7
     with pytest.raises(RuntimeError):obj(Tensor((8,512),11),Tensor((256,512),12),Tensor((8,256),13))
     obj.close()
+
+
+def test_deepgemm_only_plan_does_not_repeat_dense_or_dequant():
+    tasks=families([12,13],'deepgemm')
+    assert len(tasks)==12 and len(tasks)*2==24
+    assert all(w['experts']==256 and w['operation']==1 for w in tasks)
+    assert len(families([12,13],'cublas'))==10
+    with pytest.raises(ValueError):families([12],'torch')
+
+
+def test_zero_observation_distinguishes_nonfinite_residuals_and_signed_zero():
+    from tools.kpack_bf16_diagnostics import zero_observation
+    bits=np.array([[0,0x8000,0x7fc0],[0x7f80,0xff80,0x3f80]],dtype='<u2')
+    r=zero_observation(bits,np.array([0,2]))
+    assert (r['cells'],r['bad'],r['zero'],r['negative_zero'])==(6,4,2,1)
+    assert (r['nan'],r['inf'],r['finite_nonzero'],r['bad_rows'])==(1,2,1,2)
+    assert r['first'][0]==dict(row=0,expert=0,n=2,bits='0x7fc0')
+    assert r['first'][1]['expert']==2
+    assert len(r['sha256'])==64
+    assert zero_observation(np.zeros((3,2),dtype='<u2'),np.arange(3))['bad']==0
+    with pytest.raises(ValueError):zero_observation(bits.astype('f4'),np.array([0,2]))
+    with pytest.raises(ValueError):zero_observation(bits,np.array([0]))
+
+
+def test_deepgemm_binding_rejects_top_level_cpp_alias_and_records_python_source(monkeypatch,tmp_path):
+    import types
+    from tools import kpack_bf16_providers as p
+    from tools.run_kpack_bf16_gate import validate_provider
+    root=tmp_path/'deep_gemm';(root/'jit_kernels').mkdir(parents=True)
+    (root/'__init__.py').write_text('# top-level exports can be C++\n')
+    source=root/'jit_kernels/m_grouped_gemm.py'
+    name='m_grouped_gemm_bf16_bf16_bf16_nt_nopad'
+    source.write_text(f'def {name}(a,b,out,indices,m_rows=None):\n    calls.append((a,b,out,indices,m_rows))\n')
+    package=types.ModuleType('deep_gemm');package.__file__=str(root/'__init__.py')
+    module=types.ModuleType(p.DeepGemm.MODULE);module.__file__=str(source);module.calls=[]
+    exec(compile(source.read_text(),str(source),'exec'),module.__dict__)
+    def wrong(*a,**k):raise AssertionError('top-level C++ alias was called')
+    setattr(package,name,wrong)
+    imported=[]
+    def load(n):
+        imported.append(n)
+        return {'deep_gemm':package,p.DeepGemm.MODULE:module}[n]
+    monkeypatch.setattr(p.importlib,'import_module',load)
+    obj=p.DeepGemm();obj(1,2,3,4,5)
+    assert module.calls==[(1,2,3,4,5)]
+    assert imported==['deep_gemm',p.DeepGemm.MODULE]
+    assert obj.identity['implementation']=='PYTHON_JIT'
+    assert obj.identity['entry_source']=='jit_kernels/m_grouped_gemm.py'
+    validate_provider(obj.identity)
+    for key,value in [('implementation','CPP_JIT'),('entry_module','deep_gemm.deep_gemm_cpp'),
+                      ('entry_sha256','0'*64),('benchmark_stream','LEGACY_DEFAULT_STREAM_0')]:
+        bad=copy.deepcopy(obj.identity);bad[key]=value
+        with pytest.raises(ValueError):validate_provider(bad)
+    setattr(module,name,len)
+    with pytest.raises(ValueError,match='not the requested Python'):p.DeepGemm()
+    delattr(module,name)
+    with pytest.raises(ValueError,match='lacks the Python JIT'):p.DeepGemm()
