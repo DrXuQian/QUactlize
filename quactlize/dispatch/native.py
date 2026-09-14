@@ -29,6 +29,11 @@ class Choice(C.Structure):
     )
 
 
+class DenseIO(C.Structure):
+    _fields_ = [("version",C.c_uint32),("size",C.c_uint32),("call",Call),
+                ("input_type",C.c_int32),("output_type",C.c_int32)]
+
+
 class JitOptions(C.Structure):
     _fields_ = [("version", C.c_uint32), ("size", C.c_uint32)] + [
         (name, C.c_char_p) for name in ("python", "helper", "sdk", "cache")]
@@ -117,6 +122,27 @@ class Dispatch:
                 self.fn["destroy"](h); self.handles.pop()
                 raise ValueError(f"native indexed binding failed rc={rc}")
         return lambda: self.fn["run"](h, call.stream)
+
+    def query_dense_io(self, request, endpoint_type=1, decode=False):
+        fn=self.lib.quactlize_kpack_dispatch_query_dense_io_v1
+        fn.argtypes=[C.c_void_p,C.POINTER(Request),C.c_int32,C.c_int32,C.POINTER(Choice)]
+        fn.restype=C.c_int
+        choice=Choice()
+        status=fn(self.runtime,C.byref(request),endpoint_type,int(decode),C.byref(choice))
+        if status==1: return None
+        if status: raise ValueError("typed native query: "+self.fn["error"]().decode())
+        return choice
+
+    def prepare_dense_io(self, choice, call, endpoint_type=1):
+        typed=DenseIO(1,C.sizeof(DenseIO),call,endpoint_type,endpoint_type)
+        fn=self.lib.quactlize_kpack_dispatch_prepare_dense_io_v1
+        fn.argtypes=[C.c_void_p,C.POINTER(Choice),C.POINTER(DenseIO),C.POINTER(C.c_void_p)]
+        fn.restype=C.c_int
+        handle=C.c_void_p()
+        if fn(self.runtime,C.byref(choice),C.byref(typed),C.byref(handle)):
+            raise ValueError("typed native prepare: "+self.fn["error"]().decode())
+        self.handles.append(handle)
+        return lambda: self.fn["run"](handle,call.stream)
 
     def chain(self, gate, up, down, stream, router=None):
         create=self.lib.quactlize_kpack_dispatch_moe_create_v1

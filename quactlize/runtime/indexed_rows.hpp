@@ -2,6 +2,11 @@
 #include "cutlass/cutlass.h"
 
 namespace quactlize::runtime {
+// Preserve the original <=32-row contract. The new 33..64-row arm is decode
+// only (tokens1..8), not an implicit prefill admission.
+CUTLASS_HOST_DEVICE constexpr bool fused_indexed_rows(int rows,int tokens) {
+  return rows>0 && tokens>0 && (rows<=32 || (rows<=64 && tokens<=8));
+}
 // One warp-wide expert range per CTA. Keep at least one CTA per routed row
 // without repeating the router for every K/256 activation chunk.
 CUTLASS_HOST_DEVICE constexpr int moe_prepare_blocks(int experts,int rows) {

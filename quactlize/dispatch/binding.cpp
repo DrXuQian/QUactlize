@@ -19,6 +19,7 @@ struct Image {
     std::string parent, key, contract;
     int qtype, route, tm, tn, tk, wm, wn, stages, ap, dn;
     std::filesystem::path path;
+    bool dense_io=false;
 };
 // Generated from full compiler receipts, not geometry-only config names.
 #include "catalog.inc"
@@ -31,12 +32,14 @@ template<class T> T symbol(void* h,char const* name) {
 }
 struct Module {
     void* library=nullptr;
-    decltype(&quactlize_kpack_query_v1) query;
-    decltype(&quactlize_kpack_prepare_v1) prepare;
-    decltype(&quactlize_kpack_grouped_query_v2) query_device;
-    decltype(&quactlize_kpack_grouped_prepare_v2) prepare_device;
-    decltype(&quactlize_kpack_run_v1) run;
-    decltype(&quactlize_kpack_destroy_v1) destroy;
+    decltype(&quactlize_kpack_query_v1) query=nullptr;
+    decltype(&quactlize_kpack_prepare_v1) prepare=nullptr;
+    decltype(&quactlize_kpack_grouped_query_v2) query_device=nullptr;
+    decltype(&quactlize_kpack_grouped_prepare_v2) prepare_device=nullptr;
+    decltype(&quactlize_kpack_run_v1) run=nullptr;
+    decltype(&quactlize_kpack_destroy_v1) destroy=nullptr;
+    decltype(&quactlize_kpack_decode_dense_query_v1) query_dense_io=nullptr;
+    decltype(&quactlize_kpack_decode_dense_prepare_v1) prepare_dense_io=nullptr;
     decltype(&quactlize_kpack_bind_llama_indexed_v1) bind_indexed=nullptr;
     decltype(&quactlize_kpack_moe_projection_v1) moe_projection=nullptr;
     decltype(&quactlize_kpack_moe_stage_v1) moe_stage=nullptr;
@@ -47,9 +50,12 @@ struct Plan {
     qks_choice_v1 choice;
     qk_recipe_v1 recipe;
     std::shared_ptr<Module> module;
+    int endpoint_type=0;
 };
-using Key=std::tuple<int,int,int,int,int,int,int,uint64_t,bool>;
-Key key(qks_request_v1 const& r,bool decode) { return {r.qtype,r.route,r.m,r.n,r.k,r.experts,r.max_rows,r.mapping_id,decode}; }
+using Key=std::tuple<int,int,int,int,int,int,int,uint64_t,bool,int>;
+Key key(qks_request_v1 const& r,bool decode,int endpoint_type) {
+    return {r.qtype,r.route,r.m,r.n,r.k,r.experts,r.max_rows,r.mapping_id,decode,endpoint_type};
+}
 struct Runtime {
     std::filesystem::path root;
     int device=-1, cu=0;
@@ -70,7 +76,7 @@ struct MoeChain {
     qk_moe_plan_v1 plan{};
 };
 
-std::shared_ptr<Module> load(Runtime& r,Image const& image,Config const& c) {
+std::shared_ptr<Module> load(Runtime& r,Image const& image,Config const& c,bool dense_io=false) {
     auto found=r.modules.find(image.key);
     if (found!=r.modules.end()) return found->second;
     if (image.qtype!=c.qtype || image.route!=c.route || image.tm!=c.tm || image.tn!=c.tn ||
@@ -81,7 +87,8 @@ std::shared_ptr<Module> load(Runtime& r,Image const& image,Config const& c) {
     auto module=std::make_shared<Module>();
     module->library=dlopen(path.c_str(),RTLD_NOW|RTLD_LOCAL);
     if (!module->library) throw std::runtime_error(dlerror());
-    auto identity=symbol<decltype(&quactlize_kpack_identity_v1)>(module->library,"quactlize_kpack_identity_v1")();
+    auto identity=symbol<decltype(&quactlize_kpack_identity_v1)>(module->library,
+        dense_io?"quactlize_kpack_decode_dense_identity_v1":"quactlize_kpack_identity_v1")();
     if (!identity || identity->version!=1 || identity->size!=sizeof(*identity) ||
         !identity->parent || !identity->build_key || identity->parent!=image.parent ||
         identity->build_key!=image.key || identity->qtype!=c.qtype || identity->route!=c.route ||
@@ -90,11 +97,18 @@ std::shared_ptr<Module> load(Runtime& r,Image const& image,Config const& c) {
         identity->delivery_n!=c.dn || identity->mapping_id!=c.mapping_id)
         throw std::runtime_error("loaded parent/build identity differs");
     char name[128]{}; int device=-1,cu=0;
-    auto probe=symbol<decltype(&quactlize_kpack_device_v1)>(module->library,"quactlize_kpack_device_v1");
+    auto probe=symbol<decltype(&quactlize_kpack_device_v1)>(module->library,
+        dense_io?"quactlize_kpack_decode_dense_device_v1":"quactlize_kpack_device_v1");
     if (probe(name,sizeof(name),&device,&cu)!=QK_OK || std::strcmp(name,"PPU-ZW810") || cu!=72 ||
         (r.device>=0 && (r.device!=device || r.cu!=cu)))
         throw std::runtime_error("loaded module device differs from policy");
     r.device=device; r.cu=cu;
+    if (dense_io) {
+        module->query_dense_io=symbol<decltype(module->query_dense_io)>(module->library,"quactlize_kpack_decode_dense_query_v1");
+        module->prepare_dense_io=symbol<decltype(module->prepare_dense_io)>(module->library,"quactlize_kpack_decode_dense_prepare_v1");
+        module->run=symbol<decltype(module->run)>(module->library,"quactlize_kpack_decode_dense_run_v1");
+        module->destroy=symbol<decltype(module->destroy)>(module->library,"quactlize_kpack_decode_dense_destroy_v1");
+    } else {
     module->query=symbol<decltype(module->query)>(module->library,"quactlize_kpack_query_v1");
     module->prepare=symbol<decltype(module->prepare)>(module->library,"quactlize_kpack_prepare_v1");
     module->query_device=symbol<decltype(module->query_device)>(module->library,"quactlize_kpack_grouped_query_v2");
@@ -107,8 +121,29 @@ std::shared_ptr<Module> load(Runtime& r,Image const& image,Config const& c) {
         dlsym(module->library,"quactlize_kpack_moe_projection_v1"));
     module->moe_stage=reinterpret_cast<decltype(module->moe_stage)>(
         dlsym(module->library,"quactlize_kpack_moe_stage_v1"));
+    }
     r.modules.emplace(image.key,module);
     return module;
+}
+
+Image const& jit_image(Runtime& r,Config const& config,bool dense_io=false) {
+    std::string name=config.symbol;
+    if (dense_io) name+="/dense-io";
+    auto found=r.jit_images.find(name);
+    if (found!=r.jit_images.end()) return found->second;
+    auto receipt=compile_parent(r.jit,config,dense_io);
+    std::istringstream in(receipt);
+    std::string tag,build,contract,source,extra;
+    if (!(in>>tag>>build>>contract>>source) || tag!="QK_JIT_V1" ||
+        !hex_digest(build) || !hex_digest(contract) || source!=kJitSource || (in>>extra))
+        throw std::runtime_error("JIT receipt identity differs");
+    auto path=std::filesystem::canonical(std::filesystem::path(r.jit.cache)/build/"kernel.so");
+    if (path.parent_path().parent_path()!=r.jit.cache || path.parent_path().filename()!=build ||
+        path.filename()!="kernel.so" || !std::filesystem::is_regular_file(path))
+        throw std::runtime_error("JIT module escapes its cache entry");
+    Image resolved{config.symbol,build,contract,config.qtype,config.route,config.tm,config.tn,
+        config.tk,config.wm,config.wn,config.stages,config.ap,config.dn,path,dense_io};
+    return r.jit_images.emplace(name,std::move(resolved)).first->second;
 }
 qk_call_v1 call_for(qks_request_v1 const& req,Runtime const& r) {
     qk_call_v1 c{};
@@ -166,44 +201,32 @@ extern "C" int quactlize_kpack_dispatch_enable_jit_v1(void* runtime,qks_jit_opti
     } catch (std::exception const& e) { last_error=e.what(); return QKS_BINDING; }
 }
 
-static int query(void* runtime,qks_request_v1 const* req,qks_choice_v1* out,bool decode) {
+static int query(void* runtime,qks_request_v1 const* req,qks_choice_v1* out,bool decode,int endpoint_type=0) {
     if (!runtime || !req || !out || !valid(*req)) return QKS_INVALID;
     *out={};
+    if (endpoint_type && (req->route>=2 || req->experts!=1 || req->m>8)) return QKS_MISS;
     try {
         auto& r=*static_cast<Runtime*>(runtime);
         std::lock_guard<std::mutex> lock(r.mutex);
-        auto found=r.requests.find(key(*req,decode));
+        auto found=r.requests.find(key(*req,decode,endpoint_type));
         if (found!=r.requests.end()) { *out=r.plans.at(found->second-1).choice; return QKS_OK; }
         auto selected=decode ? select_decode_tc(*req) : select(*req);
         if (!selected.config) { last_error="no same-family policy choice"; return QKS_MISS; }
         auto const& config=*selected.config;
         Image const* image=nullptr;
-        for (auto const& candidate : kImages) if (candidate.parent==config.symbol) { image=&candidate; break; }
-        if (!image && r.jit.enabled()) {
-            auto found=r.jit_images.find(config.symbol);
-            if (found==r.jit_images.end()) {
-                auto receipt=compile_parent(r.jit,config);
-                std::istringstream in(receipt);
-                std::string tag,build,contract,source,extra;
-                if (!(in>>tag>>build>>contract>>source) || tag!="QK_JIT_V1" ||
-                    !hex_digest(build) || !hex_digest(contract) || source!=kJitSource || (in>>extra))
-                    throw std::runtime_error("JIT receipt identity differs");
-                auto path=std::filesystem::canonical(std::filesystem::path(r.jit.cache)/build/"kernel.so");
-                if (path.parent_path().parent_path()!=r.jit.cache || path.parent_path().filename()!=build ||
-                    path.filename()!="kernel.so" || !std::filesystem::is_regular_file(path))
-                    throw std::runtime_error("JIT module escapes its cache entry");
-                Image resolved{config.symbol,build,contract,config.qtype,config.route,config.tm,config.tn,
-                    config.tk,config.wm,config.wn,config.stages,config.ap,config.dn,path};
-                found=r.jit_images.emplace(config.symbol,std::move(resolved)).first;
-            }
-            image=&found->second;
-        }
+        for (auto const& candidate : kImages)
+            if (candidate.parent==config.symbol && candidate.dense_io==(endpoint_type!=0)) { image=&candidate; break; }
+        if (!image && r.jit.enabled()) image=&jit_image(r,config,endpoint_type!=0);
         if (!image) { last_error=std::string("selected parent not packaged: ")+config.symbol; return QKS_MISS; }
-        auto module=load(r,*image,config);
+        auto module=load(r,*image,config,endpoint_type!=0);
         auto call=call_for(*req,r);
         auto rec=recipe(config,*req,1);
         qk_resources_v1 resources{};
         auto query=[&]() {
+            if (endpoint_type) {
+                qkd_dense_call_v1 typed{1,sizeof(typed),call,endpoint_type,endpoint_type};
+                return module->query_dense_io(&typed,&rec,&resources);
+            }
             qk_device_call_v2 d{2,sizeof(d),call,req->max_rows,0};
             return req->route>=2 ? module->query_device(&d,&rec,&resources) : module->query(&call,&rec,&resources);
         };
@@ -218,7 +241,8 @@ static int query(void* runtime,qks_request_v1 const* req,qks_choice_v1* out,bool
         choice.device=r.device; choice.compute_units=r.cu;
         if (image->parent.size()>=sizeof(choice.parent)) return QKS_BINDING;
         std::strcpy(choice.parent,image->parent.c_str()); std::strcpy(choice.build_key,image->key.c_str());
-        r.plans.push_back({*req,choice,rec,module}); r.requests.emplace(key(*req,decode),choice.ticket);
+        r.plans.push_back({*req,choice,rec,module,endpoint_type});
+        r.requests.emplace(key(*req,decode,endpoint_type),choice.ticket);
         *out=choice; return QKS_OK;
     } catch (std::exception const& e) { last_error=e.what(); return QKS_BINDING; }
 }
@@ -228,6 +252,37 @@ extern "C" int quactlize_kpack_dispatch_query_v1(void* runtime,qks_request_v1 co
 }
 extern "C" int quactlize_kpack_dispatch_query_decode_v1(void* runtime,qks_request_v1 const* req,qks_choice_v1* out) {
     return query(runtime,req,out,true);
+}
+
+extern "C" int quactlize_kpack_dispatch_query_dense_io_v1(void* runtime,qks_request_v1 const* req,
+    int32_t endpoint_type,int32_t decode_policy,qks_choice_v1* out) {
+    if ((endpoint_type!=QKD_F32 && endpoint_type!=QKD_BF16) || (decode_policy!=0 && decode_policy!=1))
+        return QKS_INVALID;
+    return query(runtime,req,out,decode_policy!=0,endpoint_type);
+}
+
+extern "C" int quactlize_kpack_dispatch_prepare_dense_io_v1(void* runtime,qks_choice_v1 const* choice,
+    qkd_dense_call_v1 const* typed,void** out) {
+    if (!out) return QKS_INVALID;*out=nullptr;
+    if (!runtime || !choice || !typed || typed->version!=1 || typed->size!=sizeof(*typed)) return QKS_INVALID;
+    try {
+        auto& r=*static_cast<Runtime*>(runtime);
+        std::lock_guard<std::mutex> lock(r.mutex);
+        if (!choice->ticket || choice->ticket>r.plans.size()) return QKS_INVALID;
+        auto const& plan=r.plans.at(choice->ticket-1);
+        auto expected=call_for(plan.request,r);auto const& call=typed->call;
+        if (!plan.endpoint_type || typed->input_type!=plan.endpoint_type || typed->output_type!=plan.endpoint_type ||
+            !same_choice(*choice,plan.choice) || call.version!=1 || call.size!=sizeof(call) ||
+            call.m!=expected.m || call.n!=expected.n || call.k!=expected.k || call.experts!=1 ||
+            call.group_size!=expected.group_size || call.mapping_id!=expected.mapping_id ||
+            call.device!=expected.device || call.compute_units!=expected.compute_units ||
+            call.rows_host || call.rows_device || call.offsets_device || call.workspace_bytes<choice->workspace_bytes)
+            return QKS_INVALID;
+        auto h=std::make_unique<Handle>();h->module=plan.module;
+        int rc=h->module->prepare_dense_io(typed,&plan.recipe,&h->inner);
+        if (rc!=QK_OK) {last_error="typed decode prepare failed rc="+std::to_string(rc);return QKS_RUNTIME;}
+        *out=h.release();return QKS_OK;
+    } catch (std::exception const& e) {last_error=e.what();return QKS_RUNTIME;}
 }
 
 extern "C" int quactlize_kpack_dispatch_prepare_v1(void* runtime,qks_choice_v1 const* choice,
@@ -241,7 +296,7 @@ extern "C" int quactlize_kpack_dispatch_prepare_v1(void* runtime,qks_choice_v1 c
         if (!choice->ticket || choice->ticket>r.plans.size()) return QKS_INVALID;
         auto const& plan=r.plans.at(choice->ticket-1);
         auto expected=call_for(plan.request,r);
-        if (!same_choice(*choice,plan.choice) || call->version!=1 || call->size!=sizeof(*call) ||
+        if (plan.endpoint_type || !same_choice(*choice,plan.choice) || call->version!=1 || call->size!=sizeof(*call) ||
             call->m!=expected.m || call->n!=expected.n || call->k!=expected.k || call->experts!=expected.experts ||
             call->group_size!=expected.group_size || call->mapping_id!=expected.mapping_id ||
             call->device!=expected.device || call->compute_units!=expected.compute_units ||

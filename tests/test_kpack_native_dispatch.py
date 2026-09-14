@@ -292,6 +292,8 @@ def build_stub(
         "open": ([C.c_char_p, C.POINTER(C.c_void_p)], C.c_int),
         "close": ([C.c_void_p], None),
         "query": ([C.c_void_p, C.POINTER(Request), C.POINTER(Choice)], C.c_int),
+        "query_dense_io": ([C.c_void_p, C.POINTER(Request), C.c_int32, C.c_int32, C.POINTER(Choice)], C.c_int),
+        "prepare_dense_io": ([C.c_void_p, C.POINTER(Choice), C.c_void_p, C.POINTER(C.c_void_p)], C.c_int),
         "prepare": (
             [C.c_void_p, C.POINTER(Choice), C.POINTER(Call), C.POINTER(C.c_void_p)],
             C.c_int,

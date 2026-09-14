@@ -23,7 +23,7 @@ struct Jit {
 // posix_spawn, not fork or a shell: query may run in a multi-threaded model
 // loader. The child does CPU compilation only. Diagnostics go to stderr;
 // stdout carries a bounded receipt, never source code or a library path.
-inline std::string compile_parent(Jit const& jit, Config const& c) {
+inline std::string compile_parent(Jit const& jit, Config const& c,bool dense_io=false) {
     std::vector<std::string> args{
         jit.python, jit.helper, "resolve", "--sdk", jit.sdk, "--cache", jit.cache,
         "--source-contract", jit.source,
@@ -31,6 +31,7 @@ inline std::string compile_parent(Jit const& jit, Config const& c) {
         std::to_string(c.tm), std::to_string(c.tn), std::to_string(c.tk),
         std::to_string(c.wm), std::to_string(c.wn), std::to_string(c.stages),
         std::to_string(c.ap), std::to_string(c.dn), std::to_string(c.parent_persistent)};
+    if (dense_io) args.push_back("--dense-io");
     std::vector<char*> argv;
     for (auto& a : args) argv.push_back(a.data());
     argv.push_back(nullptr);

@@ -86,7 +86,7 @@ __global__ void moe_chain_prepare_m1(qk_moe_plan_v1 plan) {
 
 // All participants use the production GroupShape/DStride types. Their member
 // offsets, not an assumed packed tuple representation, are checked at bind.
-template<class Shape,class Stride>
+template<class Shape,class Stride,int Capacity=32>
 CUTLASS_DEVICE void moe_descriptors(qk_moe_projection_v1 const& p,int const* ids,
     int const* ranks,int const* starts,int const* counts,
     int const* expert_starts,int const* expert_counts,bool valid) {
@@ -108,6 +108,7 @@ CUTLASS_DEVICE void moe_descriptors(qk_moe_projection_v1 const& p,int const* ids
       strides[entry]=cutlass::make_cute_packed_stride(Stride{},cute::make_shape(count,p.n,1));
     }
   }
+  if constexpr(Capacity==32) {
   if (blockIdx.x==0 && tid<32) {
     int id=tid<p.m ? ids[tid] : p.experts;
     int tiles=valid && tid<p.m && starts[tid]==ranks[tid] ? (counts[tid]+p.tile_m-1)/p.tile_m : 0;
@@ -130,18 +131,45 @@ CUTLASS_DEVICE void moe_descriptors(qk_moe_projection_v1 const& p,int const* ids
           valid ? 0 : int(moe::BuildStatus::InvalidArgument),p.tile_m,p.experts};
     }
   }
+  } else {
+    // Two warps cover the 33..64-row decode extension. Prefix across BOTH
+    // warps through shared semantic row coordinates, never warp-local ranks.
+    if (blockIdx.x==0 && tid<Capacity) {
+      int id=tid<p.m?ids[tid]:p.experts;
+      int begin=0,total=0;
+      for (int j=0;j<p.m;++j) {
+        int blocks=valid && ranks[j]==starts[j]?(counts[j]+p.tile_m-1)/p.tile_m:0;
+        begin+=ids[j]<id?blocks:0;total+=blocks;
+      }
+      if (tid<p.m) {
+        p.io.row_ids[ranks[tid]]=tid;
+        if (valid && ranks[tid]==starts[tid]) {
+          auto entry=moe::make_entry(id,counts[tid],begin,starts[tid]);
+          for (int b=0;b<(counts[tid]+p.tile_m-1)/p.tile_m;++b)
+            static_cast<moe::BlockEntry*>(p.directory_entries)[begin+b]=entry;
+        }
+      }
+      if (tid==0) {
+        p.offsets[p.experts]=valid?p.m:0;
+        *static_cast<moe::Header*>(p.directory_header)={total,
+            valid?0:int(moe::BuildStatus::InvalidArgument),p.tile_m,p.experts};
+      }
+    }
+  }
 }
 
-template<class Shape,class Stride>
+template<class Shape,class Stride,int Capacity=32>
 __global__ void moe_chain_prepare(qk_moe_plan_v1 plan) {
   auto const& p=plan.gate;
-  __shared__ int ids[32], ranks[32], starts[32], counts[32];
+  static_assert(Capacity==32 || Capacity==64);
+  __shared__ int ids[Capacity], ranks[Capacity], starts[Capacity], counts[Capacity];
   __shared__ int expert_starts[32], expert_counts[32];
   int tid=int(threadIdx.x);
   if (plan.router.version) quactlize::llama::router_256(plan.router,p.io,ids,blockIdx.x==0);
   else if (tid<p.m) ids[tid]=p.io.ids[int64_t(tid/p.io.topk)*p.io.ids_stride+tid%p.io.topk];
   __syncthreads();
   bool invalid=false;
+  if constexpr(Capacity==32) {
   if (tid<32) {
     int id=tid<p.m ? ids[tid] : -1;
     int e=int(blockIdx.x)*32+tid;
@@ -163,15 +191,30 @@ __global__ void moe_chain_prepare(qk_moe_plan_v1 plan) {
     if (tid<p.m) { ranks[tid]=rank; starts[tid]=start; counts[tid]=count; }
     expert_starts[tid]=eb; expert_counts[tid]=ec;
   }
+  } else if (tid<Capacity) {
+    int id=tid<p.m?ids[tid]:-1,e=int(blockIdx.x)*32+tid;
+    int rank=0,start=0,count=0,eb=0,ec=0;
+    int token_begin=tid/p.io.topk*p.io.topk;
+    invalid=tid<p.m && (id<0 || id>=p.experts);
+    for (int j=0;j<p.m;++j) {
+      int other=ids[j];
+      start+=other<id;count+=other==id;
+      rank+=other<id || (other==id && j<tid);
+      eb+=other<e;ec+=other==e;
+      invalid|=tid<p.m && j>=token_begin && j<tid && other==id;
+    }
+    if (tid<p.m) {ranks[tid]=rank;starts[tid]=start;counts[tid]=count;}
+    if (tid<32) {expert_starts[tid]=eb;expert_counts[tid]=ec;}
+  }
   bool valid=__syncthreads_or(invalid)==0;
   if (!valid) {
     if (tid<p.m) { ranks[tid]=tid; starts[tid]=0; counts[tid]=0; }
     if (tid<32) { expert_starts[tid]=0; expert_counts[tid]=0; }
     __syncthreads();
   }
-  moe_descriptors<Shape,Stride>(plan.gate,ids,ranks,starts,counts,expert_starts,expert_counts,valid);
-  if (!plan.merged) moe_descriptors<Shape,Stride>(plan.up,ids,ranks,starts,counts,expert_starts,expert_counts,valid);
-  moe_descriptors<Shape,Stride>(plan.down,ids,ranks,starts,counts,expert_starts,expert_counts,valid);
+  moe_descriptors<Shape,Stride,Capacity>(plan.gate,ids,ranks,starts,counts,expert_starts,expert_counts,valid);
+  if (!plan.merged) moe_descriptors<Shape,Stride,Capacity>(plan.up,ids,ranks,starts,counts,expert_starts,expert_counts,valid);
+  moe_descriptors<Shape,Stride,Capacity>(plan.down,ids,ranks,starts,counts,expert_starts,expert_counts,valid);
   if (!valid) return;
   int r=int(blockIdx.x)%p.m, to=ranks[r];
   int chunk=int(blockIdx.x)/p.m;

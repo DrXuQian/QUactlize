@@ -1,5 +1,12 @@
 # K-pack incremental optimization backlog
 
+## Decode endpoints and subsequent llama baseline, 2026-09-14
+
+- BOX GATE READY: dense M1..8 explicit F32/BF16 storage, unchanged FP16 compute and original FP16 ABI; conversion in the A load and output epilogue/reducer. Existing selected SIMT/TC recipe retained, no second tuner. Fused MoE prepare/finish extended to top8 tokens5..8 (40..64 rows). 27 typed parents, five controls and two SIMT-stage binaries compiled locally; [contract/command](../../docs/KPACK_DECODE_IO.md). PPU numerical/trace and model-speed admission are still pending.
+- QUEUED AFTER endpoint implementation handoff (user update, 2026-09-14): `/root/kpack-cost-multi.i8l9xA.results.tgz` is uploaded. Audit the returned component timings and then update the full heuristic, including measured Split-K reducers and large-M full-dequant candidates; small M does not use full dequant. Do not mix this policy change into the endpoint gate or remeasure valid results without cause.
+- AFTER endpoint completion: start `dev/v0.3.0` from official llama.cpp `v0.3.0` (`c1d0e7a004015f23bc0233470b747b596f29b264`), apply `/root/ppu_dev-vs-master.diff` (SHA256 `0ce55e7beb27ebf3f06cacca997daa72da61324ec6751eb311e66b2aa9be8b33`), then branch `dev/quactlize-v0.3.0` and cherry-pick Quactlize-only changes in dependency order. Do not rebase the existing K-pack branch or duplicate the PPU base snapshot. The attempted rebase was aborted; existing llama branch remains at `ef40c53bd` plus endpoint work.
+- Do not update the active eight-card cost-campaign checkout while it is measuring; its FP16 module identities and results remain separate from endpoint admission.
+
 ## Full-weight expansion follow-up, 2026-09-14
 
 | Item | State | Next evidence |

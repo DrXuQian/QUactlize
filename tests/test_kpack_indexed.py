@@ -25,7 +25,7 @@ def library(tmp_path_factory):
 
 
 @pytest.mark.parametrize("tm",[8,16,32,64,128,256])
-@pytest.mark.parametrize("tokens,topk,experts",[(1,8,256),(4,8,256),(16,2,8),(9,1,2),(1,1,1024)])
+@pytest.mark.parametrize("tokens,topk,experts",[(1,8,256),(4,8,256),(5,8,256),(7,8,256),(8,8,256),(16,2,8),(9,1,2),(1,1,1024)])
 def test_exact_route_and_directory(library,tm,tokens,topk,experts):
     rng=np.random.default_rng(132)
     # Rotate/permutate on every replay; ranks cannot be cached by pointer.
@@ -65,7 +65,8 @@ def test_invalid_router_rejected(library,ids):
 
 def test_fused_dispatch_is_additive_and_large_cases_decline():
     source=(ROOT/'quactlize/runtime/module.cuh').read_text()
-    assert 'call.m>32 || call.experts>1024' in source
+    assert '!fused_indexed_rows(call.m,io.tokens)' in source
+    assert 'indexed_prepare<tm,64>' in source
     assert 'hggcStreamIsCapturing' in source
     assert 'indexed_prepare<tm>' in source and 'indexed_finish<S>' in source
     # Existing runs remain the implementation for unsupported/older modules.
@@ -80,7 +81,7 @@ def test_indexed_c_abi_matches_python(library):
 
 
 @pytest.mark.parametrize('experts',[1,2,31,32,33,256,1024])
-@pytest.mark.parametrize('rows',[1,8,9,17,31,32])
+@pytest.mark.parametrize('rows',[1,8,9,17,31,32,33,40,48,56,64])
 def test_prepare_ctas_own_every_expert_and_gather_word_once(library,experts,rows):
     blocks=library.prepare_blocks(experts,rows)
     assert blocks>=rows and blocks*32>=experts
@@ -93,3 +94,8 @@ def test_prepare_ctas_own_every_expert_and_gather_word_once(library,experts,rows
             chunks=(blocks-1-row)//rows+1
             seen[row,chunk::chunks]+=1
         assert np.all(seen==1)
+
+
+@pytest.mark.parametrize("rows,tokens,want",[(32,32,1),(33,3,1),(40,5,1),(64,8,1),(65,8,0),(64,9,0),(0,1,0)])
+def test_decode_extension_does_not_admit_prefill(library,rows,tokens,want):
+    assert library.fused_rows(rows,tokens)==want

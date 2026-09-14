@@ -71,6 +71,7 @@
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_argument_contract.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_packed_metadata_ownership.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_a_schedule.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_decode_input.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_2plane_source_layout.hpp"
 #include "cutlass/detail/collective.hpp"
@@ -257,6 +258,11 @@ public:
   // using InternalElementB = cute::conditional_t<!SwapAB, ConvertedElementB, ConvertedElementA>;
 
   using RealInternalElementA = cute::conditional_t<!SwapAB, ElementA, ElementB>;
+  using DecodeInputTraits = detail::DecodeInputTraits<TransformA_, RealInternalElementA>;
+  using GlobalElementA = typename DecodeInputTraits::SourceElement;
+  static constexpr bool kDecodeInput = DecodeInputTraits::enabled;
+  using ArgumentElementA = cute::conditional_t<kDecodeInput,GlobalElementA,ElementA>;
+  static_assert(!kDecodeInput || !SwapAB,"decode input conversion requires ordinary A");
   using RealInternalElementB = cute::conditional_t<!SwapAB, ElementB, ElementA>;
   // THE TWO PLANE WIDTHS, named once. Q3 = int2+int1, Q6 = int4+int2, Q5 = int4+int1 are the same mainloop at different
   // widths -- MixGemm2Plane is one closed form over (LowBits, HiBits), gated against Q3's shipped constants in
@@ -568,7 +574,7 @@ public:
   };
   // Host side kernel arguments
   struct Arguments {
-    ElementA const* ptr_A = nullptr;
+    ArgumentElementA const* ptr_A = nullptr;
     StrideA dA{};
     ElementB const* ptr_B = nullptr;
     StrideB dB{};
@@ -633,7 +639,7 @@ public:
     GmemTiledCopyScalePacked gmem_tiled_copy_scale_packed;
     GmemTiledCopyZero gmem_tiled_copy_zero;
 
-    RealInternalElementA const* ptr_A = nullptr;
+    GlobalElementA const* ptr_A = nullptr;
     InternalStrideA dA{};
     RealInternalElementB const* ptr_B = nullptr;
     InternalStrideB dB{};
@@ -672,7 +678,7 @@ public:
   to_underlying_arguments(ProblemShape const& problem_shape, Arguments const& args, void* workspace) {
     Params p;
     if constexpr (!SwapAB) {
-      p.ptr_A = reinterpret_cast<RealInternalElementA const*>(args.ptr_A);
+      p.ptr_A = reinterpret_cast<GlobalElementA const*>(args.ptr_A);
       p.ptr_B = reinterpret_cast<RealInternalElementB const*>(args.ptr_B);
       p.dA = args.dA;
       p.dB = args.dB;
@@ -732,7 +738,10 @@ public:
         mainloop_params.group_row_offsets, l_coord);
     Tensor mA_mkl = make_tensor(make_gmem_ptr(a_expert_base),
                                 make_shape(M,K,cute::Int<1>{}), mainloop_params.dA);                            // (m,k,1)
-    Tensor mA_mk = make_mix_tensor_like(mA_mkl(_,_,0));                                                         // (m,k)
+    auto mA_mk = [&] {
+      if constexpr (kDecodeInput) return mA_mkl(_,_,0);
+      else return make_mix_tensor_like(mA_mkl(_,_,0));
+    }();                                                                                                    // (m,k)
     auto gA_logical = local_tile(
         mA_mk, TileShape{}, take<0,3>(blk_coord_mnkl), Step<_1, X,_1>{});                                       // (BLK_M,BLK_K,k)
     auto gA = [&] {
@@ -917,11 +926,15 @@ public:
     for (int k_pipe = 0; k_pipe < DispatchPolicy::Stages-1; ++k_pipe) {
       auto k_iter_crd    = cute::idx2crd(*k_tile_iter, k_iter_shape);
       auto k_iter_crd_b2 = cute::idx2crd(*k_tile_iter, k_iter_shape_b2);
-      copy_aiu(
-        gmem_tiled_copy_A, tAgA(_,_,_,*k_tile_iter), tAsA(_,_,_,k_pipe),
-        gmem_tiled_copy_B, tBgB(_,_,_,k_iter_crd), tBsB(_,_,_,k_pipe),
-        warp_idx
-      );
+      if constexpr (kDecodeInput) {
+        detail::copy_decode_a<PhysicalATileM,int(size<2>(TileShape{})),int(size(TiledMma{})),false,0,0,0>(
+            gA,storage.smem_a.begin(),int(*k_tile_iter),k_pipe,thread_idx,gmem_tiled_copy_A.desc_.dim_h);
+        copy_aiu(gmem_tiled_copy_B,tBgB(_,_,_,k_iter_crd),tBsB(_,_,_,k_pipe),warp_idx);
+      } else {
+        copy_aiu(
+          gmem_tiled_copy_A, tAgA(_,_,_,*k_tile_iter), tAsA(_,_,_,k_pipe),
+          gmem_tiled_copy_B, tBgB(_,_,_,k_iter_crd), tBsB(_,_,_,k_pipe),warp_idx);
+      }
       copy_aiu(gmem_tiled_copy_B2, tB2gB2(_,_,_,k_iter_crd_b2), tB2sB2(_,_,_,k_pipe), warp_idx);
       copy_async_extra_info(mainloop_params, extra_input_partitions, *k_tile_iter, k_pipe,
                             scale_copy_owner, packed_copy_owner);
@@ -1097,11 +1110,15 @@ public:
     auto prefetch = [&] (auto k_tile, int write_stage) {
           auto k_iter_crd    = cute::idx2crd(k_tile, k_iter_shape);
           auto k_iter_crd_b2 = cute::idx2crd(k_tile, k_iter_shape_b2);
-          copy_aiu(
-            gmem_tiled_copy_A, tAgA(_,_,_,k_tile), tAsA(_,_,_,write_stage),
-            gmem_tiled_copy_B, tBgB(_,_,_,k_iter_crd), tBsB(_,_,_,write_stage),
-            warp_idx
-          );
+          if constexpr (kDecodeInput) {
+            detail::copy_decode_a<PhysicalATileM,int(size<2>(TileShape{})),int(size(TiledMma{})),false,0,0,0>(
+                gA,storage.smem_a.begin(),int(k_tile),write_stage,thread_idx,gmem_tiled_copy_A.desc_.dim_h);
+            copy_aiu(gmem_tiled_copy_B,tBgB(_,_,_,k_iter_crd),tBsB(_,_,_,write_stage),warp_idx);
+          } else {
+            copy_aiu(
+              gmem_tiled_copy_A, tAgA(_,_,_,k_tile), tAsA(_,_,_,write_stage),
+              gmem_tiled_copy_B, tBgB(_,_,_,k_iter_crd), tBsB(_,_,_,write_stage),warp_idx);
+          }
           copy_aiu(gmem_tiled_copy_B2, tB2gB2(_,_,_,k_iter_crd_b2), tB2sB2(_,_,_,write_stage), warp_idx);
           copy_async_extra_info(mainloop_params, extra_input_partitions, k_tile, write_stage,
                                 scale_copy_owner, packed_copy_owner);

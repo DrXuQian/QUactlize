@@ -218,6 +218,7 @@ template<bool Persistent, bool Split = false, bool Compact = false> struct Group
     switch (phase) {
       case QK_MOE_PREPARE:
         if (moe_prepare_m1_supported(plan)) moe_chain_prepare_m1<Shape,DStride><<<1,256,0,stream>>>(plan);
+        else if (call.m>32) moe_chain_prepare<Shape,DStride,64><<<moe_prepare_blocks(call.experts,call.m),256,0,stream>>>(plan);
         else moe_chain_prepare<Shape,DStride><<<moe_prepare_blocks(call.experts,call.m),256,0,stream>>>(plan);
         break;
       case QK_MOE_PRODUCER:
@@ -234,7 +235,7 @@ template<bool Persistent, bool Split = false, bool Compact = false> struct Group
 
   int bind_indexed(qk_llama_indexed_v1 const& io) override {
     if constexpr (!Directory) return QK_UNSUPPORTED;
-    if (!device_only || call.m>32 || call.experts>1024) return QK_UNSUPPORTED;
+    if (!device_only || !fused_indexed_rows(call.m,io.tokens) || call.experts>1024) return QK_UNSUPPORTED;
     if (indexed.version || io.version!=1 || io.size!=sizeof(io) || io.reserved ||
         io.tokens<=0 || io.topk<=0 || io.channels<=0 || io.topk>call.experts ||
         int64_t(io.tokens)*io.topk!=call.m || io.tokens!=max_rows ||
@@ -351,7 +352,12 @@ template<bool Persistent, bool Split = false, bool Compact = false> struct Group
       Output* destination;
       if constexpr (Split) destination=partials;
       else destination=static_cast<Half*>(call.output);
-      indexed_prepare<tm><<<dim3(std::min((call.k+255)/256,32),call.m),256,0,stream>>>(
+      if (call.m>32) indexed_prepare<tm,64><<<dim3(std::min((call.k+255)/256,32),call.m),256,0,stream>>>(
+          indexed,const_cast<Half*>(static_cast<Half const*>(call.a)),
+          const_cast<int*>(call.offsets_device),const_cast<int*>(call.rows_device),
+          device_shapes,device_outputs,device_strides,destination,call.m,call.n,call.k,
+          call.experts,splits,directory);
+      else indexed_prepare<tm><<<dim3(std::min((call.k+255)/256,32),call.m),256,0,stream>>>(
           indexed,const_cast<Half*>(static_cast<Half const*>(call.a)),
           const_cast<int*>(call.offsets_device),const_cast<int*>(call.rows_device),
           device_shapes,device_outputs,device_strides,destination,call.m,call.n,call.k,

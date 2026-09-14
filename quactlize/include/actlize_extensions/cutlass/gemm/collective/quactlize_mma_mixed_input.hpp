@@ -51,6 +51,7 @@
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_argument_contract.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_packed_metadata_ownership.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_a_schedule.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_decode_input.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp"
 #include "actlize_extensions/cutlass/gemm/collective/detail/ppu_a_pack.hpp"
 #include "q4_kpack4_offline.hpp"
@@ -384,6 +385,11 @@ public:
   // using InternalElementB = cute::conditional_t<!SwapAB, ConvertedElementB, ConvertedElementA>;
 
   using RealInternalElementA = cute::conditional_t<!SwapAB, ElementA, ElementB>;
+  using DecodeInputTraits = detail::DecodeInputTraits<TransformA_, RealInternalElementA>;
+  using GlobalElementA = typename DecodeInputTraits::SourceElement;
+  static constexpr bool kDecodeInput = DecodeInputTraits::enabled;
+  using ArgumentElementA = cute::conditional_t<kDecodeInput,GlobalElementA,ElementA>;
+  static_assert(!kDecodeInput || !SwapAB,"decode input conversion requires ordinary A");
   static constexpr int LogicalTileM = int(size<0>(TileShape{}));
   static constexpr int PhysicalATileM = LogicalTileM < 16 ? 16 : LogicalTileM;
   // Packed-A geometry, all read off fold_derivation/l84-l86 rather than extrapolated from row 0. Every real row
@@ -746,7 +752,7 @@ public:
   };
   // Host side kernel arguments
   struct Arguments {
-    ElementA const* ptr_A = nullptr;
+    ArgumentElementA const* ptr_A = nullptr;
     StrideA dA{};
     ElementB const* ptr_B = nullptr;
     StrideB dB{};
@@ -800,7 +806,7 @@ public:
     GmemTiledCopyScalePacked gmem_tiled_copy_scale_packed;
     GmemTiledCopyZero gmem_tiled_copy_zero;
 
-    RealInternalElementA const* ptr_A = nullptr;
+    GlobalElementA const* ptr_A = nullptr;
     InternalStrideA dA{};
     RealInternalElementB const* ptr_B = nullptr;
     InternalStrideB dB{};
@@ -843,7 +849,7 @@ public:
   to_underlying_arguments(ProblemShape const& problem_shape, Arguments const& args, void* workspace) {
     Params p;
     if constexpr (!SwapAB) {
-      p.ptr_A = reinterpret_cast<RealInternalElementA const*>(args.ptr_A);
+      p.ptr_A = reinterpret_cast<GlobalElementA const*>(args.ptr_A);
       p.ptr_B = reinterpret_cast<RealInternalElementB const*>(args.ptr_B);
       p.dA = args.dA;
       p.dB = args.dB;
@@ -900,7 +906,7 @@ public:
     Tensor mA_mkl = make_tensor(make_gmem_ptr(a_expert_base),
                                 make_shape(M,K,cute::Int<1>{}), mainloop_params.dA);                            // (m,k,1)
     auto gA_logical = [&] {
-      if constexpr (kPackedA) {
+      if constexpr (kPackedA || kDecodeInput) {
         // PLAIN, not make_mix_tensor_like: that wrapper carries (ptr, coordinate) for the AIU descriptor and has NO
         // addressable strides (l74), so &gA(...) yields a meaningless address. The packed-row provider writes A with
         // cp.async and therefore needs real strides.
@@ -1070,7 +1076,13 @@ public:
     Tensor tBgB = gmem_thr_copy_B.partition_S(gB);                             // (BCPY,BCPY_N,BCPY_K,k)
     Tensor tBsB = gmem_thr_copy_B.partition_D(sB);                             // (BCPY,BCPY_N,BCPY_K,PIPE)
     auto copy_A_and_B = [&] (auto k_tile, auto k_iter_crd, int pipe) {
-      if constexpr (kPackedA) {
+      if constexpr (kDecodeInput) {
+        detail::issue_mixed_b_g2s<BDeliveryPolicy>(gmem_tiled_copy_B,
+            tBgB(_,_,_,k_iter_crd),tBsB(_,_,_,pipe),warp_idx);
+        detail::copy_decode_a<PhysicalATileM,int(size<2>(TileShape{})),int(size(TiledMma{})),
+            kPackedA,kAPackRows,kAPackPitch,kAPackStagePitch>(gA,storage.smem_a.begin(),
+                int(k_tile),pipe,thread_idx,gmem_tiled_copy_A.desc_.dim_h);
+      } else if constexpr (kPackedA) {
         detail::issue_mixed_b_g2s<BDeliveryPolicy>(
             gmem_tiled_copy_B, tBgB(_,_,_,k_iter_crd),
             tBsB(_,_,_,pipe), warp_idx);

@@ -165,7 +165,7 @@ def test_llama_automatic_binding_and_abi_copy():
     assert 'p->direct = p->q4_decode = rc == QKG_OK' in code
     assert 'if (!p->sf && !p->q4_tc)' in code
     assert 'p.api->q4_prepare(&p.gemv, p.a, p.bounds, p.ids_dst)' in code
-    assert code.index('p.api->q4_run(')<code.index('if (p.indexed)')
+    assert code.index('p.api->q4_run(')<code.index('if (p.indexed || p.dense_io)')
     # The existing fused-chain matcher cannot treat a direct SIMT plan as TC.
     assert 'plans[j]->legacy || plans[j]->direct' in code
     assert (path/'quactlize/kpack_q4_decode.h').read_text().strip()==(

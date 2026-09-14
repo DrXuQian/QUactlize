@@ -51,7 +51,7 @@ template<int TM,int S> void run(int tokens,int topk,int experts,int channels,int
   int m=tokens*topk, ids_stride=topk+5, a_row=k+7, a_token=channels*a_row+13, out_row=n+3;
   Buffer<int> ids(tokens*ids_stride), offsets(experts+1), rows(experts), row_ids(m);
   Buffer<Half> gathered(size_t(m)*k), completed(size_t(m)*n);
-  Buffer<float> a(size_t(tokens)*a_token), out(size_t(m)*out_row+2), partials(size_t(S)*m*n);
+  Buffer<float> a(size_t(tokens)*a_token), out(size_t(m)*out_row+2), partials(static_cast<size_t>(S)*m*n);
   Buffer<Shape> shapes(experts);
   Buffer<Stride> strides(experts*S);
   Buffer<Output*> outputs(experts*S);
@@ -63,9 +63,13 @@ template<int TM,int S> void run(int tokens,int topk,int experts,int channels,int
   Output* destination;
   if constexpr (S==1) destination=completed.ptr;
   else destination=partials.ptr;
-  auto prepare=[&] { indexed_prepare<TM><<<dim3(std::min((k+255)/256,32),m),256,0,cudaStreamPerThread>>>(io,
-      gathered.ptr,offsets.ptr,rows.ptr,shapes.ptr,outputs.ptr,strides.ptr,destination,
-      m,n,k,experts,S,view); check(cudaGetLastError()); };
+  auto prepare=[&] {
+    if (m>32) indexed_prepare<TM,64><<<dim3(std::min((k+255)/256,32),m),256,0,cudaStreamPerThread>>>(io,
+        gathered.ptr,offsets.ptr,rows.ptr,shapes.ptr,outputs.ptr,strides.ptr,destination,m,n,k,experts,S,view);
+    else indexed_prepare<TM><<<dim3(std::min((k+255)/256,32),m),256,0,cudaStreamPerThread>>>(io,
+        gathered.ptr,offsets.ptr,rows.ptr,shapes.ptr,outputs.ptr,strides.ptr,destination,m,n,k,experts,S,view);
+    check(cudaGetLastError());
+  };
   auto finish=[&] { indexed_finish<S><<<dim3(std::min((n+255)/256,32),m),256,0,cudaStreamPerThread>>>(
       partials.ptr,completed.ptr,out.ptr+1,row_ids.ptr,m,n,out_row,header.ptr); check(cudaGetLastError()); };
   std::vector<float> hp(partials.count);
@@ -80,10 +84,7 @@ template<int TM,int S> void run(int tokens,int topk,int experts,int channels,int
   prepare(); finish(); check(cudaDeviceSynchronize()); // Fully initialized before capture.
   check(cudaStreamBeginCapture(cudaStreamPerThread,cudaStreamCaptureModeGlobal));
   // Capture the production SIMT functions, not a recomputed test kernel.
-  indexed_prepare<TM><<<dim3(std::min((k+255)/256,32),m),256,0,cudaStreamPerThread>>>(io,
-      gathered.ptr,offsets.ptr,rows.ptr,shapes.ptr,outputs.ptr,strides.ptr,destination,m,n,k,experts,S,view);
-  indexed_finish<S><<<dim3(std::min((n+255)/256,32),m),256,0,cudaStreamPerThread>>>(
-      partials.ptr,completed.ptr,out.ptr+1,row_ids.ptr,m,n,out_row,header.ptr);
+  prepare(); finish();
   check(cudaStreamEndCapture(cudaStreamPerThread,&graph));
   check(cudaGraphInstantiate(&instance,graph,nullptr,nullptr,0));
   size_t bad=0, negative=0;
@@ -173,7 +174,12 @@ int main() {
     run<8,4>(1,8,256,1,512,2048); run<8,8>(1,8,256,8,2048,512);
     run<8,4>(4,8,256,8,512,2048); run<8,2>(9,1,2,1,512,512);
     run<16,4>(1,8,256,1,512,2048); run<16,2>(4,8,256,8,512,2048);
-    std::puts("KPACK_INDEXED_CUDA verdict=PASS cells=8 PPU_GEMM_ADMISSION=NOT_TESTED");
+    for (int tokens:{5,6,7,8}) for (int channels:{1,8}) {
+      run<8,1>(tokens,8,256,channels,512,2048);
+      run<8,4>(tokens,8,256,channels,512,2048);
+      run<16,2>(tokens,8,256,channels,2048,512);
+    }
+    std::puts("KPACK_INDEXED_CUDA verdict=PASS cells=32 PPU_GEMM_ADMISSION=NOT_TESTED");
     return 0;
   } catch (std::exception const& e) { std::fprintf(stderr,"KPACK_INDEXED_CUDA FAIL %s\n",e.what()); return 1; }
 }

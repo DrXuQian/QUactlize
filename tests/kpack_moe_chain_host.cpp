@@ -51,6 +51,13 @@ static void composition() {
   negative([](auto& p){p.up.workspace=(void*)(UINTPTR_MAX-255);});
   plan.merged=1; plan.gate.n*=2;
   require(compatible_moe(plan),"merged plan rejected");
+  for (int tokens:{5,6,7,8,9}) {
+    auto large=plan;
+    for (auto p:{&large.gate,&large.up,&large.down}) {
+      p->m=tokens*8;p->io.tokens=tokens;p->directory_capacity=p->m;
+    }
+    require(compatible_moe(large)==(tokens<=8),"decode 64-row boundary disagrees");
+  }
   std::puts("KPACK_MOE_COMPOSITION PASS separate+merged twelve negatives RED");
 }
 static void graph(bool merged,bool extra_consumer,bool bad_view,bool same_ids,bool silu) {
@@ -119,7 +126,7 @@ static void router_graph(bool merged,int fault,int tokens=1) {
   bool legacy=ggml_can_fuse_subgraph(g,start,int(whole.size()),whole.data(),old_outputs,3);
   auto span=quactlize::llama::match_moe_router(g,start,prefix,ii,wi);
   require(!legacy,"legacy predicate unexpectedly accepted external input view");
-  require(bool(span.count)==(tokens<=4 && (fault==0 || fault==3)),"router/input-view fusion disagrees");
+  require(bool(span.count)==(tokens<=8 && (fault==0 || fault==3)),"router/input-view fusion disagrees");
   if (span.count) require(start+span.count-1==end,"router fusion skipped wrong nodes");
   require(!quactlize::llama::match_moe_router(g,start,prefix,wi,wi).count,"wrong router IDs accepted");
   ggml_free(ctx);
@@ -134,7 +141,7 @@ int main() {
     graph(true,false,true,true,true);
     for (int tokens:{1,2,3,4,5,8,16,32,64,128,512,2048})
       for (bool merged:{false,true}) for (int fault=0;fault<4;++fault) router_graph(merged,fault,tokens);
-    std::puts("KPACK_MOE_GRAPH_TOKEN_SCOPE PASS topk=8 fused_tokens=1,2,3,4 declined_tokens=5,8,16,32,64,128,512,2048");
+    std::puts("KPACK_MOE_GRAPH_TOKEN_SCOPE PASS topk=8 fused_tokens=1..8 declined_tokens=16,32,64,128,512,2048");
     std::puts("KPACK_MOE_ROUTER_GRAPH PASS input views retained; legacy predicate RED; projection uses/IDs rejected");
     std::puts("KPACK_MOE_GRAPH PASS exact GGML separate+merged; shared consumer, wrong view, IDs, activation RED");
     return 0;

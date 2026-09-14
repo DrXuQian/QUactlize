@@ -9,6 +9,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from quactlize.runtime.compiler import Compiler, sha, source_contract
+from quactlize.decode.compiler import DecodeCompiler
 from quactlize.runtime.tuning import digest
 
 
@@ -60,7 +61,8 @@ def verify(root, *, sdk=None):
             or sha(path) != r["sha256"]
         ):
             raise ValueError("module payload differs: " + r["key"])
-        source = Compiler.source(None, r["parent"], "")
+        compiler = DecodeCompiler if r["identity"].get("endpoints") == "decode-m1-8-f32-bf16-v1" else Compiler
+        source = compiler.source(None, r["parent"], "")
         if (
             digest(dict(identity=r["identity"], parent=r["parent"], source=source))
             != r["key"]

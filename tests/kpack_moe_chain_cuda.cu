@@ -166,7 +166,7 @@ struct Projection {
 
 static void run(bool merged,int tokens,int topk,int experts,int sg,int su,int sd,int router_mode=-1,int k=2048) {
   int m=tokens*topk,n=512,out_n=1024,ids_stride=topk+5;
-  if (m>32) throw std::runtime_error("bounded chain supports at most 32 routed rows");
+  if (!fused_indexed_rows(m,tokens)) throw std::runtime_error("outside bounded fused decode chain");
   Buffer<int> ids(tokens*ids_stride);
   Buffer<float> source(size_t(tokens)*(k+17)), output(size_t(m)*(out_n+3)+2);
   Buffer<float> logits(tokens*256), bias(256), weights(m);
@@ -185,6 +185,7 @@ static void run(bool merged,int tokens,int topk,int experts,int sg,int su,int sd
 #else
     if (!generic_prepare && moe_prepare_m1_supported(plan))
       moe_chain_prepare_m1<Shape,Stride><<<1,256,0,cudaStreamPerThread>>>(plan);
+    else if (m>32) moe_chain_prepare<Shape,Stride,64><<<moe_prepare_blocks(experts,m),256,0,cudaStreamPerThread>>>(plan);
     else moe_chain_prepare<Shape,Stride><<<moe_prepare_blocks(experts,m),256,0,cudaStreamPerThread>>>(plan);
 #endif
   };
@@ -322,10 +323,10 @@ int main(int argc,char** argv) {
     }
     router_equivalence();
     if (multi_token) {
-      for (int k:{512,2048,3072}) for (int tokens:{1,2,3,4})
+      for (int k:{512,2048,3072}) for (int tokens:{1,2,3,4,5,6,7,8})
         for (bool merged:{false,true}) for (int router:{-1,0,1,2})
           run(merged,tokens,8,256,4,2,8,router,k);
-      std::puts("KPACK_MOE_CHAIN_CUDA PASS cells=96 PPU_GEMM_ADMISSION=NOT_TESTED");
+      std::puts("KPACK_MOE_CHAIN_CUDA PASS cells=192 PPU_GEMM_ADMISSION=NOT_TESTED");
       return 0;
     }
     run(false,1,8,256,4,2,1); run(false,4,8,256,1,8,4);
@@ -333,6 +334,9 @@ int main(int argc,char** argv) {
     run(false,1,8,256,4,2,1,0); run(false,4,8,256,4,2,4,1); run(true,1,8,256,2,1,8,2);
     run(true,1,8,256,2,1,4,0); run(false,1,8,256,8,4,2,1);
     run(false,17,1,1024,8,4,2); run(false,1,1,1,1,1,1); run(true,31,1,33,2,1,8);
-    std::puts("KPACK_MOE_CHAIN_CUDA PASS cells=12 PPU_GEMM_ADMISSION=NOT_TESTED"); return 0;
+    run(false,5,8,256,4,2,1); run(true,8,8,256,8,1,4);
+    run(false,7,8,256,4,2,8,0); run(true,8,8,256,2,1,8,1);
+    run(false,8,8,256,4,2,1,2);
+    std::puts("KPACK_MOE_CHAIN_CUDA PASS cells=17 PPU_GEMM_ADMISSION=NOT_TESTED"); return 0;
   } catch (std::exception const& e) { std::fprintf(stderr,"FAIL %s\n",e.what()); return 1; }
 }

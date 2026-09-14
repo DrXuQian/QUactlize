@@ -1,4 +1,5 @@
 #include "quactlize/runtime/abi.h"
+#include "quactlize/decode/api.h"
 #include <cstring>
 #include <new>
 #include "stub_identity.inc"
@@ -31,3 +32,31 @@ extern "C" int quactlize_kpack_grouped_prepare_v2(qk_device_call_v2 const* d,qk_
 }
 extern "C" int quactlize_kpack_run_v1(void* h,void*) { return h && *static_cast<int*>(h)==42 ? QK_OK : QK_INVALID; }
 extern "C" void quactlize_kpack_destroy_v1(void* h) { delete static_cast<int*>(h); }
+
+#ifdef QK_TEST_TYPED
+extern "C" qk_identity_v1 const* quactlize_kpack_decode_dense_identity_v1() {
+    static qk_identity_v1 const typed=[] {
+        auto value=stub_identity;
+        value.build_key="ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+        return value;
+    }();
+    return &typed;
+}
+extern "C" int quactlize_kpack_decode_dense_device_v1(char* n,int cap,int32_t* d,int32_t* cu) {
+    return quactlize_kpack_device_v1(n,cap,d,cu);
+}
+extern "C" int quactlize_kpack_decode_dense_query_v1(qkd_dense_call_v1 const* d,qk_recipe_v1 const* r,qk_resources_v1* out) {
+    if (!d || d->version!=1 || d->size!=sizeof(*d) || d->input_type!=d->output_type ||
+        (d->input_type!=QKD_F32 && d->input_type!=QKD_BF16) || d->call.m>8) return QK_INVALID;
+    int rc=quactlize_kpack_query_v1(&d->call,r,out);
+    if (!rc) out->shared_bytes+=d->input_type*128;
+    return rc;
+}
+extern "C" int quactlize_kpack_decode_dense_prepare_v1(qkd_dense_call_v1 const* d,qk_recipe_v1 const* r,void** out) {
+    qk_resources_v1 resources{};
+    int rc=quactlize_kpack_decode_dense_query_v1(d,r,&resources);
+    return rc ? rc : quactlize_kpack_prepare_v1(&d->call,r,out);
+}
+extern "C" int quactlize_kpack_decode_dense_run_v1(void* h,void* stream) {return quactlize_kpack_run_v1(h,stream);}
+extern "C" void quactlize_kpack_decode_dense_destroy_v1(void* h) {quactlize_kpack_destroy_v1(h);}
+#endif

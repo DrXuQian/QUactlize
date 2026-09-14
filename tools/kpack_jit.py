@@ -15,6 +15,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from quactlize.runtime.compiler import Compiler, validate_parent, source_contract, sha
+from quactlize.decode.compiler import DecodeCompiler
 from quactlize.runtime.tuning import ROUTES, digest
 
 
@@ -42,9 +43,11 @@ def inspect_modules(cache, keys, contract):
         if any(p.is_symlink() for p in (directory, receipt, library)) or directory.resolve().parent != cache:
             raise ValueError("module cache path escapes entry")
         r = json.loads(receipt.read_text())
-        if r.get("key") != key or source_contract(r["identity"]) != contract:
+        typed = r["identity"].get("endpoints") == "decode-m1-8-f32-bf16-v1"
+        observed = r["identity"].get("base_source_contract") if typed else source_contract(r["identity"])
+        if r.get("key") != key or observed != contract:
             raise ValueError("module source/receipt identity differs")
-        source = Compiler.source(None, r["parent"], "")
+        source = (DecodeCompiler if typed else Compiler).source(None, r["parent"], "")
         if digest(dict(identity=r["identity"], parent=r["parent"], source=source)) != key:
             raise ValueError("module compiler key differs")
         if sha(library) != r.get("sha256"):
@@ -115,10 +118,12 @@ def main():
     resolve.add_argument("--parent", required=True)
     resolve.add_argument("--source-contract", help="dispatcher source identity; check before compiling")
     resolve.add_argument("--tuple", type=int, nargs=11, required=True, dest="values")
+    resolve.add_argument("--dense-io", action="store_true", help="same selected parent, typed decode endpoints")
     prewarm.add_argument("--plan", type=Path, required=True)
     prewarm.add_argument("--jobs", type=int, default=4)
     prewarm.add_argument("--receipt", type=Path)
     prewarm.add_argument("--source-contract", help="reject a foreign dispatcher before prewarm")
+    prewarm.add_argument("--dense-io", action="store_true", help="plan must contain dense decode parents only")
     args = parser.parse_args()
     start = time.monotonic()
     if args.command == "inspect":
@@ -139,18 +144,20 @@ def main():
     elif args.command == "resolve":
         parent = parent_tuple(args.parent, args.values)
         print(f"KPACK_JIT_RESOLVE parent={parent['symbol']} cache={args.cache}", file=sys.stderr, flush=True)
-        compiler = Compiler(args.sdk, args.cache)
-        if args.source_contract and args.source_contract != source_contract(compiler.identity):
+        compiler = (DecodeCompiler if args.dense_io else Compiler)(args.sdk, args.cache)
+        contract = compiler.identity.get("base_source_contract", source_contract(compiler.identity))
+        if args.source_contract and args.source_contract != contract:
             raise ValueError("JIT helper source differs from dispatcher; rebuild the small dispatcher")
         record = compiler.build(parent)
         print(f"KPACK_JIT parent={parent['symbol']} cache_hit={int(record['cache_hit'])} "
               f"seconds={time.monotonic()-start:.3f} key={record['key']}", file=sys.stderr)
-        print("QK_JIT_V1", record["key"], digest(record["identity"]), source_contract(record["identity"]))
+        print("QK_JIT_V1", record["key"], digest(record["identity"]), contract)
     else:
         parents = json.loads(args.plan.read_text())["parents"]
         print(f"KPACK_JIT_PREWARM start parents={len(parents)} jobs={args.jobs} cache={args.cache}", flush=True)
-        compiler = Compiler(args.sdk, args.cache, args.jobs)
-        if args.source_contract and args.source_contract != source_contract(compiler.identity):
+        compiler = (DecodeCompiler if args.dense_io else Compiler)(args.sdk, args.cache, args.jobs)
+        contract = compiler.identity.get("base_source_contract", source_contract(compiler.identity))
+        if args.source_contract and args.source_contract != contract:
             raise ValueError("JIT helper source differs from dispatcher; rebuild the small dispatcher")
         records = compiler.compile_only(parents, progress=lambda n, total: print(
             f"KPACK_JIT_PREWARM completed={n}/{total} seconds={time.monotonic()-start:.1f}", flush=True))

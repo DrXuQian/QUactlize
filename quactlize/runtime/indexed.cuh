@@ -4,19 +4,27 @@
 
 namespace quactlize::runtime {
 
-template<int TileM,class Shape,class Stride,class Output>
+template<int TileM,int Capacity=32,class Shape,class Stride,class Output>
 __global__ void indexed_prepare(qk_llama_indexed_v1 io,
     Half* a, int* offsets, int* rows, Shape* shapes, Output** outputs, Stride* strides,
     Output* destination, int m, int n, int k, int experts, int splits,
     quactlize::moe_directory::View directory) {
-  __shared__ int ids[32];
-  __shared__ int ranks[32], counts[32], starts[32], tiles[32];
+  static_assert(Capacity==32 || Capacity==64);
+  __shared__ int ids[Capacity];
+  __shared__ int ranks[Capacity], counts[Capacity], starts[Capacity], tiles[Capacity];
   __shared__ bool valid;
   int tid=int(threadIdx.x);
   if (tid<m) ids[tid]=io.ids[int64_t(tid/io.topk)*io.ids_stride+tid%io.topk];
   __syncthreads();
+  if constexpr(Capacity==32) {
   if (tid==0) {
     valid=valid_route(ids,m,io.topk,experts);
+  }
+  } else {
+    bool invalid=tid<m && (ids[tid]<0 || ids[tid]>=experts);
+    if (tid<m) for (int j=tid-tid%io.topk;j<tid;++j) invalid|=ids[j]==ids[tid];
+    int bad=__syncthreads_or(invalid);
+    if (tid==0) valid=bad==0;
   }
   __syncthreads();
   if (tid<m) {

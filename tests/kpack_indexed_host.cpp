@@ -32,3 +32,6 @@ extern "C" int indexed_io_size() { return sizeof(qk_llama_indexed_v1); }
 extern "C" int prepare_blocks(int experts,int rows) {
   return quactlize::runtime::moe_prepare_blocks(experts,rows);
 }
+extern "C" int fused_rows(int rows,int tokens) {
+  return quactlize::runtime::fused_indexed_rows(rows,tokens);
+}

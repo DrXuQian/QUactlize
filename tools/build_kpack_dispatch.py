@@ -42,7 +42,7 @@ def requests():
     return result
 
 
-def plan(output, inputs=None):
+def plan(output, inputs=None, decode=False):
     executable = output / "policy-query"
     subprocess.run(
         [
@@ -58,7 +58,7 @@ def plan(output, inputs=None):
     )
     inputs = requests() if inputs is None else inputs
     lines = subprocess.check_output(
-        [str(executable)],
+        [str(executable)] + (["--decode"] if decode else []),
         text=True,
         input="".join(" ".join(map(str, r)) + "\n" for r in inputs),
     ).splitlines()
@@ -122,7 +122,9 @@ def plan(output, inputs=None):
 
 
 def catalog(records, jit_source=""):
-    if len({r["parent"]["symbol"] for r in records}) != len(records):
+    def typed(r):
+        return r["identity"].get("endpoints") == "decode-m1-8-f32-bf16-v1"
+    if len({(r["parent"]["symbol"],typed(r)) for r in records}) != len(records):
         raise ValueError("catalog has multiple builds of one parent")
     rows = []
     for r in records:
@@ -134,7 +136,7 @@ def catalog(records, jit_source=""):
         rows.append(
             "  {"
             + ",".join([json.dumps(s) for s in strings] + list(map(str, values)))
-            + "},"
+            + (",{},true" if typed(r) else "") + "},"
         )
     return ("static std::vector<Image> const kImages = {\n" + "\n".join(rows) + "\n};\n"
             + "static char const kJitSource[] = " + json.dumps(jit_source) + ";\n")

@@ -19,7 +19,7 @@ inline bool moe_overlap(MoeSpan a,MoeSpan b) { return a.begin<b.end && b.begin<a
 inline bool compatible_moe(qk_moe_plan_v1 const& plan) {
   if (plan.version!=1 || plan.size!=sizeof(plan) || plan.reserved || plan.merged>1) return false;
   auto const& g=plan.gate; auto const& u=plan.up; auto const& d=plan.down;
-  if (g.m<=0 || g.m>32 || g.experts<=0 || g.experts>1024 ||
+  if (g.m<=0 || g.m>64 || (g.m>32 && g.io.tokens>8) || g.experts<=0 || g.experts>1024 ||
       int64_t(d.k)*(plan.merged?2:1)!=g.n ||
       (!plan.merged && (u.n!=g.n || u.k!=g.k || u.io.a!=g.io.a ||
        u.io.channels!=g.io.channels || u.io.a_row_stride!=g.io.a_row_stride ||

@@ -4,6 +4,29 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
+## Current addition: decode F32/BF16 endpoints, 2026-09-14
+
+`prebuilt/ppu0010/kpack-decode-io-v1` is the focused, locally compiled
+endpoint gate: 27 typed dense parents, five compatibility/grouped controls,
+the small dispatcher, unchanged measured SIMT execution DSO, and two fused
+stage proof binaries. [Contract and box command](KPACK_DECODE_IO.md).
+Device admission and model performance are **pending**, not inherited from
+the earlier FP16 or SIMT sweeps.
+
+The additive `query_dense_io_v1` / `prepare_dense_io_v1` pair retains current
+recipe selection and changes dense M1..8 storage to actual F32 or BF16.
+Conversion happens inside A loading and output epilogue/reducer; the core
+still computes FP16 operands with FP32 accumulation. The old FP16 ABI remains.
+The private llama adapter uses the caller's F32 pointers with no standalone
+gather/scatter casts on this admitted path. Indexed MoE retains fused
+conversion/placement and extends to top8 tokens5..8 (64 routed rows).
+
+The current branch remains `feat/kpack-gpu-cache`; the interrupted rebase was
+aborted. Only after this endpoint task finishes: apply
+`/root/ppu_dev-vs-master.diff` to official `v0.3.0` as `dev/v0.3.0`, then branch
+`dev/quactlize-v0.3.0` and cherry-pick the Quactlize-only integration changes.
+Do not update the active eight-card cost-campaign checkout while it measures.
+
 ## Current addition: measured Q4 small-M SIMT/TC selection
 
 `prebuilt/ppu0010/q4-decode-policy-v1` adds automatic measured Q4 decode

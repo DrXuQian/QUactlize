@@ -115,7 +115,8 @@ def check(got,gold,denom):
 
 def chain_case(args,sdk,lib,merged,tokens,router_enabled):
     e,n,k,topk=256,512,2048,8;m=tokens*topk
-    r=Resources(sdk);d=Dispatch(args.bundle,jit=dict(python=sys.executable,helper=ROOT/'tools/kpack_jit.py',sdk=args.sdk,cache=args.jit_cache))
+    jit=dict(python=sys.executable,helper=ROOT/'tools/kpack_jit.py',sdk=args.sdk,cache=args.jit_cache) if args.jit_cache else None
+    r=Resources(sdk);d=Dispatch(args.bundle,jit=jit)
     graph,instance=C.c_void_p(),C.c_void_p()
     try:
         gate=raw_weight(12,e,n,k,18);up=raw_weight(12,e,n,k,27);down=raw_weight(13,e,k,n,39)
