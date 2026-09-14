@@ -3,6 +3,7 @@
 #include "reader.hpp"
 #include "vector_kernels.cuh"
 #include "shared_kernels.cuh"
+#include "packed_kernels.cuh"
 #include "../execution/validation.hpp"
 #include "gguf_scale_prepass.hpp"
 
@@ -120,6 +121,12 @@ int launch(qzd_call_v1 const& c) {
         if (c.config == 0) {
             int const grid = (int64_t(c.experts)*c.n*c.k+255)/256;
             full_direct<T><<<grid,256,0,stream>>>(low,high,units,output,c.n,c.k,c.experts);
+        } else if (c.config >= 10) {
+            if constexpr (T == KType::Q4_K || T == KType::Q5_K) {
+                if (c.config == 10) full_packed_exchange<T,128,false><<<dim3(c.n/32,c.k/128,c.experts),128,0,stream>>>(low,high,units,output,c.n,c.k);
+                else if (c.config == 11) full_packed_exchange<T,256,false><<<dim3(c.n/32,c.k/256,c.experts),128,0,stream>>>(low,high,units,output,c.n,c.k);
+                else full_packed_exchange<T,256,true><<<dim3(c.k/256,c.n/32,c.experts),128,0,stream>>>(low,high,units,output,c.n,c.k);
+            } else return QKG_FORMAT;
         } else if (c.config >= 6) {
             if constexpr (T == KType::Q4_K || T == KType::Q5_K) {
                 int const tile_k = c.config >= 8 ? 256 : 128;
@@ -150,12 +157,13 @@ extern "C" int quactlize_kpack_dequant_v1(qzd_call_v1 const* call,
     using namespace quactlize::dequant;
     if (!call || call->version != 1 || call->size != sizeof(*call)) return QKG_INVALID;
     auto const& c = *call;
-    if (c.operation < 0 || c.operation > 1 || c.config < 0 || c.config > 9) return QKG_INVALID;
+    if (c.operation < 0 || c.operation > 1 || c.config < 0 || c.config > 12) return QKG_INVALID;
     qkg_sizes_v1 s{};
     int rc = sizes(c.qtype,c.n,c.k,c.experts,arrangement,s);
     if (rc) return rc;
     if (c.qtype == 8) return QKG_FORMAT;
     if (c.experts > 65535 || c.k/32 > 65535) return QKG_SHAPE;
+    if (c.operation == 1 && c.config == 12 && c.n/32 > 65535) return QKG_SHAPE;
     uint64_t const count = uint64_t(c.n)*c.k*c.experts;
     if ((count+255)/256 > INT32_MAX || count > UINT64_MAX/2) return QKG_OVERFLOW;
     // Production SF prepass forms a signed 32-bit linear thread index.

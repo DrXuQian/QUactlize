@@ -27,6 +27,8 @@ def host(tmp_path_factory):
     lib.dequant_unit16_host.argtypes=[C.c_int]+[C.c_void_p]*3+[C.c_int]*2
     lib.dequant_shared_host.argtypes=[C.c_int]*2+[C.c_void_p]*4+[C.c_int]*3
     lib.dequant_shared_offset.argtypes=[C.c_int]*3
+    lib.dequant_packed_host.argtypes=lib.dequant_shared_host.argtypes
+    lib.dequant_packed_offset.argtypes=[C.c_int]*4
     assert lib.dequant_call_size()==C.sizeof(Call)
     return lib
 
@@ -165,6 +167,80 @@ def test_native_resource_parser_preserves_encoded_allocation_and_fails_closed():
     assert resource_usage(text)=={'example':dict(registers=38,scalar_registers=80,shared_allocation_field=132,stack_bytes=0)}
     for bad in ('',text+text,text.replace('STACK SIZE:0\n',''),text+'vreg_number:39\n'):
         with pytest.raises(ValueError):resource_usage(bad)
+    from tools.build_kpack_dequant import native_bf16_output
+    assert native_bf16_output({'v.cnvt.bf16.f32.rn':4})
+    assert native_bf16_output({'v.pcnvt.bf16x2':2})
+    assert not native_bf16_output({'v.pcnvt.f16x2':2})
+    assert not native_bf16_output({})
+
+
+@pytest.mark.parametrize('q',[12,13])
+@pytest.mark.parametrize('tile_k',[128,256])
+@pytest.mark.parametrize('n,k',[(256,512),(512,768)])
+def test_packed_exchange_matches_official_gguf_and_rejects_wrong_slot_or_view(host,q,tile_k,n,k):
+    for expert in (0,2):
+        planes,gold,_=fixture.expert(q,n,k,expert)
+        out=np.full_like(gold,0x7fff)
+        args=(q,tile_k,planes['low'].ctypes.data,planes['high'].ctypes.data if planes['high'].size else None,
+              planes['units'].ctypes.data,out.ctypes.data,n,k)
+        assert host.dequant_packed_host(*args,0)==0
+        assert fixture.compare(out,gold)['bad']==0
+        for fault in (1,2):
+            assert host.dequant_packed_host(*args,fault)==0
+            with pytest.raises(ValueError):fixture.compare(out,gold)
+
+
+@pytest.mark.parametrize('tile_k',[128,256])
+def test_packed_exchange_actual_layout_and_unique_bank_addresses(host,tile_k):
+    from collections import defaultdict
+    words=tile_k//4;groups=tile_k//32
+    address=lambda row,word:host.dequant_packed_offset(tile_k,row,word,0)
+    affine=lambda row,group:host.dequant_packed_offset(tile_k,row,group,1)
+    assert {address(n,w) for n in range(32) for w in range(words)}==set(range(32*words))
+    assert {affine(n,g) for n in range(32) for g in range(groups)}==set(range(32*groups))
+    for row in range(32):
+        for w in range(0,words,4):
+            a=address(row,w)
+            assert a%4==0 and [address(row,w+i) for i in range(4)]==list(range(a,a+4))
+    for part in range(tile_k//128):
+        for warp in range(4):
+            for v in range(8):
+                banks=[address(lane%4*8+v,(part*4+warp)*8+lane//4)%32 for lane in range(32)]
+                assert len(set(banks))==32
+                # float2 producers are only the four residue-zero lanes.
+                a=[2*affine(lane*8+v,part*4+warp) for lane in range(4)]
+                assert len({(p+j)%32 for p in a for j in (0,1)})==8
+    for start in range(0,32*tile_k//8,32):
+        for half in (0,4):
+            banks=defaultdict(set)
+            for i in range(start,start+32):
+                row,g=i//(tile_k//8),(i%(tile_k//8))//4
+                pos=address(row,g*8+half)
+                for j in range(4):banks[(pos+j)%32].add(pos+j)
+            # Count distinct addresses, not duplicate multicast requests.
+            assert len(banks)==32 and all(len(s)==1 for s in banks.values())
+
+
+def test_full_packed_inventory_and_traffic_keep_v2_controls():
+    from quactlize.dequant.native import selected_configs,config_ids
+    from tools.run_kpack_dequant_gate import selected_work,pattern,control_config
+    plan=selected_work([12,13],'full-packed')
+    assert len(plan)==36 and sum(w['smoke'] for w in plan)==2
+    assert sum(len(selected_configs(w['q'],1,4,'full-packed')) for w in plan if not w['smoke'])==170
+    assert config_ids(12,1,4)==list(range(13))
+    for q in (10,11,14):assert config_ids(q,1,4)==list(range(6))
+    for q,o,g in ((10,1,4),(12,0,4),(12,1,3)):
+        with pytest.raises(ValueError):selected_configs(q,o,g,'full-packed')
+    for c,tk in ((10,128),(11,256),(12,256)):
+        w=dict(q=12,n=512,k=2048,experts=256,operation=1)
+        p=pattern(w,c);f=p['fields']
+        assert f['low_word']['unique_bytes']==512 and f['low_word']['sectors']['64']==8
+        assert f['bf16_output_uint4']['unique_bytes']==512 and f['bf16_output_uint4']['sectors']['128']==4
+        assert f['metadata_unit16']['lane_requests']==4
+        assert p['shared_weight_bytes']==32*tk and p['shared_affine_bytes']==8*tk
+        assert p['a_bytes']==0 and p['scale_broadcast_shuffles']==0 and p['cta_barriers']==1
+    r=dict(workload=w,config_generation=4,rows=[dict(config=c,median_us=100/c) for c in (4,5,10,11,12)])
+    assert control_config(r)==5
 
 
 @pytest.mark.parametrize('q',range(10,15))

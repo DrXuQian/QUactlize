@@ -9,9 +9,11 @@ from quactlize.runtime.compiler import sha
 
 def config_ids(q, operation, generation=1):
     """Stable old config IDs; vector readers are additive experiment arms."""
-    if q not in range(10, 15) or operation not in (0, 1) or generation not in (1, 2, 3):
+    if q not in range(10, 15) or operation not in (0, 1) or generation not in (1, 2, 3, 4):
         raise ValueError('invalid dequant inventory')
-    if generation == 3 and operation == 1 and q in (12, 13):
+    if generation == 4 and operation == 1 and q in (12, 13):
+        return list(range(13))
+    if generation >= 3 and operation == 1 and q in (12, 13):
         return list(range(10))
     if generation >= 2 and (operation or q in (12, 13)):
         return list(range(6))
@@ -23,6 +25,8 @@ def selected_configs(q, operation, generation, inventory='all'):
     if inventory=='all':return available
     if inventory=='full-reader' and generation==3 and operation==1 and q in (12,13):
         return [4,5,6,7,8,9]
+    if inventory=='full-packed' and generation==4 and operation==1 and q in (12,13):
+        return [4,5,10,11,12]
     raise ValueError('inventory does not apply to this format/stage/package')
 
 

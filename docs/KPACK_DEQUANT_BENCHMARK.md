@@ -1,5 +1,10 @@
 # Independent weight-expansion measurements
 
+Latest: the explicit Python-JIT DeepGEMM return has24/24 valid timing cells;
+only its ACU instrumentation failed. The new [packed-code exchange follow-up](KPACK_FULL_PACKED_EXCHANGE.md)
+retains v2 c4/c5 and targets the remaining full-dequant overhead without
+changing offline bytes or FP32/BF16 arithmetic. Its PPU comparison is pending.
+
 ## DeepGEMM-only supplement: explicit Python JIT
 
 Keep the admitted v2 c4/c5 full-dequant choices. The v3 return

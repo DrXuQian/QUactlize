@@ -5,9 +5,11 @@
 | Item | State | Next evidence |
 |---|---|---|
 | SF/full vector expansion v2 | PPU reviewed: 78/78 correctness cases, 408 valid config timings; SF/full median reductions 45.42%/26.45% versus current old best | Production selection is still unchanged; retain per-shape c4/c5 controls |
-| Full BF16 shared exchange and superblock metadata reuse | PPU reviewed:36/36 cases,204 timings; no broad speedup; user retains v2 c4/c5 | c6--c9 stay experimental; no additional full-dequant sweep requested |
+| Full BF16 shared exchange and superblock metadata reuse | PPU reviewed:36/36 cases,204 timings; no broad speedup; user retains v2 c4/c5 | c6--c9 stay experimental; superseded by the separately requested packed-code exchange experiment |
 | BF16 cuBLAS dense | 20/20 measured cells reviewed | Same-scope FQ/SF comparison and model adapters still required |
-| BF16 DeepGEMM MoE | 0/24 admitted; local top-level C++ export has fixed-stream0 hazard. Supplement binds explicit Python JIT, retains graph timing and zero-A check. RTX5070 CUDA harness6/6 plus11 Python tests pass, not DeepGEMM admission | Run `run_kpack_deepgemm_ppu_box.sh` onPPU; reuse v2 dequant and all20 dense cuBLAS cells |
+| BF16 DeepGEMM MoE | Python-JIT return reviewed:24/24 numerical/timing PASS; all256 experts active at tokens2048/4096; error<=0.003886891 | ACU-only retry: libhgbit instrumentation aborts, no report; do not rerun24 valid timings |
+| Full BF16 packed-code exchange | New Q4/Q5 c10--12, N32/K128 or256; transpose compact codes before exact FP32 affine/BF16 RNE. Local64 tests pass, small PPU library built | [v4 box comparison](../../docs/KPACK_FULL_PACKED_EXCHANGE.md):170 timings plus two smokes; c4/c5 controls unchanged, no production admission yet |
+| Active-expert-only expansion | Required: dequant and GEMM must consume the same deduplicated expert set. Current large-M fixture uses all256; E8 dequant tests are contiguous supplied slices | Add a GPU resident active-ID/count entry before pricing sparse routes; never scale E256 timing by active/256 as a measured cost |
 
 The full-expansion optimization above is not an FQ GEMM change and does not
 invalidate the already collected SF or dense-BLAS results. See

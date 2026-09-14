@@ -3,6 +3,7 @@
 #include "quactlize/dequant/api.h"
 #include "quactlize/dequant/unit16.hpp"
 #include "quactlize/dequant/transpose_layout.hpp"
+#include "quactlize/dequant/packed_exchange.hpp"
 #include <vector>
 
 template<gguf_scale::KType T>
@@ -55,6 +56,66 @@ extern "C" int dequant_shared_offset(int stage_k, int row, int k) {
     if (stage_k == 128) return FullTransposeLayout<128>::offset(row,k);
     if (stage_k == 256) return FullTransposeLayout<256>::offset(row,k);
     return -1;
+}
+
+extern "C" int dequant_packed_offset(int tile_k,int row,int word,int affine) {
+    using namespace quactlize::dequant;
+    if(tile_k==128)return affine?PackedExchangeLayout<128>::affine_offset(row,word):PackedExchangeLayout<128>::offset(row,word);
+    if(tile_k==256)return affine?PackedExchangeLayout<256>::affine_offset(row,word):PackedExchangeLayout<256>::offset(row,word);
+    return -1;
+}
+
+template<gguf_scale::KType T,int TileK>
+int packed_decode(uint16_t const* l,uint16_t const* h,uint8_t const* u,uint16_t* out,int n,int k,int fault) {
+    using namespace quactlize::dequant;
+    using R=Reader<T>;using Codes=PackedCodes<T>;using Layout=PackedExchangeLayout<TileK>;
+    std::vector<uint32_t> tile(Layout::kCells);
+    std::vector<typename R::Affine> affine(32*Layout::kGroups);
+    std::vector<int> owners(Layout::kCells),aowners(affine.size());
+    for(int n0=0;n0<n;n0+=32)for(int k0=0;k0<k;k0+=TileK) {
+        std::fill(owners.begin(),owners.end(),0);std::fill(aowners.begin(),aowners.end(),0);
+        auto const* base=u+int64_t(k0/256)*n*16;
+        for(int t=0;t<128;++t) {
+            int lane=t%32,warp=t/32,col0=(lane%4)*8,residue=lane/4;
+            for(int v=0;v<8;++v) {
+                int col=col0+v;
+                for(int part=0;part<TileK/128;++part) {
+                    int group=part*4+warp,kb=k0+group*32;
+                    if(residue==0) {
+                        int a=Layout::affine_offset(col,group);
+                        if(++aowners[a]!=1)return 4;
+                        affine[a]=Unit16<T>::load(base+(n0+col)*16).affine((kb/32)%8);
+                    }
+                    uint16_t lw=l[R::LowMap::word_index(n0+col0,kb+residue,n)+v],hw=0;
+                    if constexpr(R::hi_bits)hw=h[R::HighMap::word_index(n0+col0,kb+residue,n)+v];
+                    int address=Layout::offset(col,group*8+residue);
+                    if(++owners[address]!=1)return 2;
+                    tile[address]=Codes::combine(lw,hw,n0+col,kb);
+                }
+            }
+        }
+        for(int count:owners)if(count!=1)return 3;
+        for(int count:aowners)if(count!=1)return 5;
+        for(int i=0;i<32*TileK/8;++i) {
+            int row=i/(TileK/8),kk=(i%(TileK/8))*8,group=kk/32,slot=(kk/8)%4;
+            if(fault==1)slot^=1;
+            auto s=affine[Layout::affine_offset(row,group)];
+            for(int half=0;half<2;++half) {
+                int pos=Layout::offset(row,group*8+half*4);
+                if(fault==2)pos^=4;
+                for(int v=0;v<4;++v)out[int64_t(n0+row)*k+k0+kk+half*4+v]=R::weight(Codes::code(tile[pos+v],slot),s);
+            }
+        }
+    }
+    return 0;
+}
+extern "C" int dequant_packed_host(int q,int tk,uint16_t const* l,uint16_t const* h,uint8_t const* u,uint16_t* o,int n,int k,int fault) {
+    using gguf_scale::KType;
+    if(q==12 && tk==128)return packed_decode<KType::Q4_K,128>(l,h,u,o,n,k,fault);
+    if(q==12 && tk==256)return packed_decode<KType::Q4_K,256>(l,h,u,o,n,k,fault);
+    if(q==13 && tk==128)return packed_decode<KType::Q5_K,128>(l,h,u,o,n,k,fault);
+    if(q==13 && tk==256)return packed_decode<KType::Q5_K,256>(l,h,u,o,n,k,fault);
+    return 1;
 }
 
 template<gguf_scale::KType T, int TileK, int StageK, bool CacheMetadata>

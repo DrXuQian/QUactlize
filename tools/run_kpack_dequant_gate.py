@@ -59,7 +59,7 @@ def work(qtypes):
 def selected_work(qtypes,inventory):
     tasks=work(qtypes)
     if inventory=='all':return tasks
-    if inventory=='full-reader' and qtypes and all(q in (12,13) for q in qtypes):
+    if inventory in ('full-reader','full-packed') and qtypes and all(q in (12,13) for q in qtypes):
         return [w for w in tasks if w['operation']==1 and w['q'] in qtypes]
     raise ValueError('full-reader inventory is Q4/Q5 full dequant only')
 
@@ -105,7 +105,9 @@ def pattern(w, config):
         unit=((sb//s.superblocks_per_unit)*n+col)*s.unit_bytes+(sb%s.superblocks_per_unit)*s.sb_bytes
         headers.append(unit);codes.append(unit+ref._unit_bit(s,g,0)//8)
         if s.has_min:mins.append(unit+ref._unit_bit(s,g,1)//8)
-    if w['operation'] and config>=7:
+    if w['operation'] and config>=10:
+        field('metadata_unit16',headers[:4],16)
+    elif w['operation'] and config>=7:
         field('metadata_cta_unit16',[lane*16 for lane in range(32)],16)
     elif (not w['operation'] and config>=4) or (w['operation'] and config>=5 and q in (12,13)):
         field('metadata_unit16',headers[:4] if w['operation'] else headers,16)
@@ -115,7 +117,7 @@ def pattern(w, config):
         if s.has_min:
             field('header_dmin_u16',[x+2 for x in headers[select]],2);field('first_min_byte',mins[select],1)
     if w['operation'] and config>=4:
-        per_row=32 if config==8 else 16
+        per_row=32 if config in (8,11,12) else 16
         field('bf16_output_uint4',[(i//per_row*k+i%per_row*8)*2 for i in range(32)],16)
     elif w['operation'] and config:
         per_row=64 if config==3 else 16
@@ -123,7 +125,18 @@ def pattern(w, config):
     else:
         field('output_scalar',[2*(col*k+kk if w['operation'] else (kk//s.group_size)*n+col) for col,kk in coords],2)
     details={}
-    if w['operation'] and config>=6:
+    if w['operation'] and config>=10:
+        tile_k=128 if config==10 else 256
+        details=dict(tile_n=32,tile_k=tile_k,threads=128,a_bytes=0,
+            cta_count=(w.get('experts',1)*n//32)*(k//tile_k),
+            shared_weight_bytes=32*tile_k,shared_affine_bytes=8*tile_k,
+            shared_representation='FOUR_RAW_CODES_PER_UINT32_BEFORE_FP32_AFFINE',
+            metadata_requested_bytes_per_n_superblock=128 if tile_k==128 else 64,
+            cta_barriers=1,scale_broadcast_shuffles=0,
+            cta_order='K_FAST' if config==12 else 'N_FAST',
+            shared_layout='PackedExchangeLayout; exact host coverage/vector/bank tests',
+            shared_load='two aligned uint4 code reads plus float2 affine per output vector')
+    elif w['operation'] and config>=6:
         stage_k=256 if config==8 else 128;tile_k=256 if config>=8 else 128
         details=dict(tile_n=32,tile_k=tile_k,stage_k=stage_k,threads=128,a_bytes=0,
             cta_count=(w.get('experts',1)*n//32)*(k//tile_k),
@@ -331,7 +344,7 @@ def main():
     p.add_argument('--sdk',type=Path,required=True);p.add_argument('--bundle',type=Path,default=BUNDLE)
     p.add_argument('--output',type=Path,required=True);p.add_argument('--qtypes',default='12,13')
     p.add_argument('--peak-gbps',type=float,default=2700)
-    p.add_argument('--inventory',choices=('all','full-reader'),default='all')
+    p.add_argument('--inventory',choices=('all','full-reader','full-packed'),default='all')
     p.add_argument('--case');p.add_argument('--profile',action='store_true');p.add_argument('--config',type=int,default=0)
     p.add_argument('--acu',type=Path);p.add_argument('--probe-only',action='store_true');p.add_argument('--plan-only',action='store_true')
     a=p.parse_args();qtypes=list(map(int,a.qtypes.split(',')))
@@ -386,6 +399,7 @@ def main():
     profiles=[]
     if a.acu:
         anchors={(12,5120,8192,1),(13,2048,512,256)}
+        if a.inventory=='full-packed':anchors.add((12,512,2048,256))
         for record in complete:
             w=record['workload']
             if (w['q'],w['n'],w['k'],w['experts']) not in anchors or w['smoke']:continue

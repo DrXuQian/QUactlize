@@ -25,6 +25,10 @@ extern "C" {
 // SF config0=unchanged production kernel/block256; 1=N16/block256;
 // 2=N32/block256; 3=N32/block128. Full config0=direct K-major/block256;
 // 1=N32K32 shared transpose/block256; 2=same tile/block128.
+// Full3/4/5=N32K128 scalar/pair, scalar/uint4, uint4/uint4;
+// Q4/Q5-only Full6..9=expanded shared experiments;
+// Full10/11=packed-code exchange K128/K256, Full12=K256 K-fast CTA order.
+// Config IDs are experimental candidates, not production heuristic choices.
 int quactlize_kpack_dequant_v1(qzd_call_v1 const*, quactlize_ppu_placed_arrangement_v2 const*);
 int quactlize_kpack_dequant_probe_v1(int* l2_bytes, int* sm_count, int* warp_size);
 #ifdef __cplusplus

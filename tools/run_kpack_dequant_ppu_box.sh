@@ -28,7 +28,8 @@
     case "$INVENTORY" in
         all) BUNDLE_REL=prebuilt/ppu0010/kpack-dequant-v2; RUN_PREFIX=kpack-dequant-ppu ;;
         full-reader) BUNDLE_REL=prebuilt/ppu0010/kpack-dequant-v3; RUN_PREFIX=kpack-full-reader-ppu ;;
-        *) printf 'Expected no argument or full-reader\n' >&2; false ;;
+        full-packed) BUNDLE_REL=prebuilt/ppu0010/kpack-dequant-v4; RUN_PREFIX=kpack-full-packed-ppu ;;
+        *) printf 'Expected no argument, full-reader or full-packed\n' >&2; false ;;
     esac
     SDK=$(realpath -e -- "${PPU_SDK:-/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK}")
     test -n "$SDK" && test -f "$SDK/lib/libhggc_wrapper.so"
