@@ -1,8 +1,11 @@
 # Per-call prefill composition
 
-This is a development candidate. Local ABI tests and PPU compilation pass;
-the new composed GPU path still needs the gate below. It does not inherit
-whole-model admission from independent component timings or decode tests.
+The declared nine-context PPU library gate passes. The returned
+`kpack-prefill-composition.A4NxtK.results.tgz` contains 27 graph replays and
+40 exact SF expansion checks, with maximum normalized dot error 0.00387572.
+[Receipt and model closure checklist](KPACK_Q4_MODEL_CLOSURE.md).
+Whole-model admission is still pending; independent component timings and
+library functional checks do not establish model accuracy or speed.
 
 ## Execution contract
 

@@ -1,11 +1,24 @@
 # K-pack incremental optimization backlog
 
+## Q4 model final-result path, 2026-09-14
+
+The [ordered model closure table](../../docs/KPACK_Q4_MODEL_CLOSURE.md) is the
+current checklist. Prefill composition `A4NxtK` passes 9/9 contexts, 27 graph
+replays and 40 SF config checks; the published library gate is closed.
+Next code work is mixed SIMT/TC decode MoE fusion: the caller currently
+declines a direct SIMT projection rather than passing it as a TC handle.
+Keep measured recipe selection and F32 endpoints, and validate row/type and
+scratch ownership at the bridge. Next deployment work is a runner pinned to
+the v0.3.0 child branch and the new package, not the old fusion-v3 default.
+Whole-model numerical/trace and warmed PP/TG A/B remain pending. No new
+full sweep is required before collecting that first model result.
+
 ## Decode endpoints and subsequent llama baseline, 2026-09-14
 
 - GATE INFRASTRUCTURE CLOSED: repaired artifact `11d0f34` reports the same 72-CU attribute through ordinary and typed entries. The runner selects the existing `kpack-fusion-v1` paired producer, not the old single-source DSO. The returned archive confirms both checks pass.
 - ENDPOINT LIBRARY FUNCTIONAL PASS: [reviewed auxlBV result](../../docs/KPACK_DECODE_IO_RESULTS_20260914.md), 104 requests x F32/BF16 = 208/208 dense passes, all 27 typed parents, 32 indexed stages, 192 MoE stages, four real selected chains. Dense graph nodes are exactly GEMM plus reducer only for S>1. Existing FP16 ABI retained. Whole-model accuracy/trace/speed, including the new llama branch, remain pending; do not resweep these passed fixtures without a source change.
 - TASK 2, COST POLICY IMPORTED: `/root/kpack-cost-multi.i8l9xA.results.tgz` is audited and production fixed-route choices updated at `431a698`; [component policy](../../docs/KPACK_COMPONENT_POLICY.md). Small M excludes full dequant; complete-output timings do not get the reducer added a second time. Router-common selection retains documented >5% exceptions, not a global parity claim.
-- TASK 3, LOCAL CLOSURE READY: [per-call prefill runtime](../../docs/KPACK_PREFILL_RUNTIME.md), full BF16 dense/cuBLAS and grouped/installed-Python-DeepGEMM, measured SF expansion, cross-route llama bindings and a three-DSO selected-JIT package. Exact admitted decode DSO retained. Host ABI/package/policy tests and three migrated PPU adapter compilations pass. NEXT BOX: nine composed full-BF16 contexts and their SF expansion checks; whole-model correctness/performance and complete cuBLAS provider trace attribution remain open. No component sum is claimed as model speedup.
+- TASK 3, LIBRARY COMPOSITION PASS: [per-call prefill runtime](../../docs/KPACK_PREFILL_RUNTIME.md), full BF16 dense/cuBLAS and grouped/installed-Python-DeepGEMM, measured SF expansion, cross-route llama bindings and a three-DSO selected-JIT package. Exact admitted decode DSO retained. Host ABI/package/policy tests and three migrated PPU adapter compilations pass. Returned A4NxtK passes all nine composed contexts and their SF expansion checks; whole-model correctness/performance and complete cuBLAS provider trace attribution remain open. No component sum is claimed as model speedup.
 - TASK 4, DEVELOPMENT PORT PUBLISHED: [branch handoff](../../docs/LLAMA_V030_PORT.md), `dev/v0.3.0` at `e73e2136b` exactly applies the supplied diff to official v0.3.0; `dev/quactlize-v0.3.0` at `7bddc62e7` adds the 40 selected integration commits and compatibility fix. Four CTest cases, 72 Python tests and three PPU translation-unit compile checks pass. Original feature history unchanged. New-branch whole-model PPU admission remains pending.
 - Do not update the active eight-card cost-campaign checkout while it is measuring; its FP16 module identities and results remain separate from endpoint admission.
 

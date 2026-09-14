@@ -4,6 +4,17 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
+## Current model closure checklist, 2026-09-14
+
+[Q4 model steps and exact remaining decode gap](KPACK_Q4_MODEL_CLOSURE.md).
+The new prefill composition return `A4NxtK` is reviewed: 9/9 contexts,
+27 graph replays, 40 SF config checks pass. This closes the published
+prefill library gate, not the new-branch whole-model gate.
+Direct F32 dense and measured SIMT calls already exist. Mixed SIMT/TC MoE
+fusion still declines in the caller because its chain ABI accepts only TC
+handles. That bridge and a model runner pinned to the new package remain
+open; the old fusion runner's default package must not be timed as this build.
+
 ## Current addition: composed prefill candidate, 2026-09-14
 
 [Runtime contract and box gate](KPACK_PREFILL_RUNTIME.md). The measured
@@ -15,14 +26,14 @@ small-M full-dequant path is introduced.
 
 The focused three-DSO package retains the exact admitted decode execution
 hash `2d4f441abd8f5423bed4ddbc33d10868f3983b44a1a747fe82729849209782d7`.
-The new prefill runtime and model-level caller still require PPU admission.
-Use `tools/run_kpack_prefill_runtime_box.sh` for the next library composition
-gate; it fetches the pinned artifact through LFS without a Quactlize rebuild.
+The new prefill runtime has passed its declared PPU library gate; model-level
+caller admission remains pending. `tools/run_kpack_prefill_runtime_box.sh`
+reproduces the library gate using the pinned LFS artifact without a rebuild.
 Source `5947352`, artifact `10053e6`, private llama `03142a8b7`.
 The release-plus-patch base remains `e73e2136b`; only its Quactlize child
 branch advances. Local 142 library tests, 24 llama Python tests, four CTest
-cases and three PPU adapter compilations pass. New composition GPU admission
-is still pending.
+cases and three PPU adapter compilations pass. The reviewed composition
+return is recorded above; it contains no model performance measurement.
 
 ## Current addition: decode F32/BF16 endpoints, 2026-09-14
 
