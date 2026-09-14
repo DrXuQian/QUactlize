@@ -84,23 +84,35 @@
     "$PYTHON" -c 'import hashlib,sys; assert hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()==sys.argv[2],"model package manifest differs"' "$BUNDLE/manifest.json" "${INFO[3]}"
     "$PYTHON" tools/verify_kpack_dispatch.py "$BUNDLE" --sdk "$SDK" | tee "$RUN/results/verify.log"
     test ! -e "$BUNDLE/llama"
-    LLAMA_DIR="$RESULT_DIR/llama-model-source-${INFO[4]:0:10}"
-    if [[ ! -e "$LLAMA_DIR" ]]; then
-        git clone --no-checkout --depth 1 --single-branch --branch dev/quactlize-v0.3.0 \
-            https://github.com/DrXuQian/llama.cpp.git "$LLAMA_DIR"
-        git -C "$LLAMA_DIR" fetch --depth 1 origin "${INFO[4]}"
-        git -C "$LLAMA_DIR" checkout --detach "${INFO[4]}"
+    CI_SOURCE_ARGS=()
+    if [[ -n ${LLAMA_CI_DIR:-} ]]; then
+        LLAMA_DIR=$(realpath -e -- "$LLAMA_CI_DIR")
+        test -f "$LLAMA_DIR/.aoneci/scripts/build.sh"
+        CI_SOURCE_ARGS+=(--local-llama)
+        printf 'KPACK_Q4_MODEL caller_source=LOCAL_WORKTREE path=%s local_edits=INCLUDED\n' "$LLAMA_DIR"
+    else
+        LLAMA_DIR="$RESULT_DIR/llama-model-source-${INFO[4]:0:10}"
+        if [[ ! -e "$LLAMA_DIR" ]]; then
+            git clone --no-checkout --depth 1 --single-branch --branch dev/quactlize-v0.3.0 \
+                https://github.com/DrXuQian/llama.cpp.git "$LLAMA_DIR"
+            git -C "$LLAMA_DIR" fetch --depth 1 origin "${INFO[4]}"
+            git -C "$LLAMA_DIR" checkout --detach "${INFO[4]}"
+        fi
+        test "$(git -C "$LLAMA_DIR" rev-parse HEAD)" == "${INFO[4]}"
+        git -C "$LLAMA_DIR" diff --quiet
+        git -C "$LLAMA_DIR" diff --cached --quiet
     fi
-    test "$(git -C "$LLAMA_DIR" rev-parse HEAD)" == "${INFO[4]}"
-    git -C "$LLAMA_DIR" diff --quiet
-    git -C "$LLAMA_DIR" diff --cached --quiet
 
     stage=ci-build
     "$PYTHON" -u tools/build_kpack_model_ci.py --llama "$LLAMA_DIR" --ncp "$NCP_SOURCE" \
         --sdk "$SDK" --output "$RUN/ci" --jobs "$JOBS" \
-        --receipt "$RUN/results/caller-ci-build.json" 2>&1 | tee "$RUN/results/caller-ci-build.log"
-    LLAMA_DIR="$RUN/ci/llama"
-    BUILD_DIR="$LLAMA_DIR/build-ci"
+        "${CI_SOURCE_ARGS[@]}" --receipt "$RUN/results/caller-ci-build.json" 2>&1 | tee "$RUN/results/caller-ci-build.log"
+    if [[ ${#CI_SOURCE_ARGS[@]} == 0 ]]; then
+        LLAMA_DIR="$RUN/ci/llama"
+        BUILD_DIR="$LLAMA_DIR/build-ci"
+    else
+        BUILD_DIR="$RUN/ci/llama-build"
+    fi
     export CUDA_HOME="$SDK/CUDA_SDK" DG_JIT_CACHE_DIR="$RUN/ci/ncp-jit-cache"
     unset DG_LIBRARY_ROOT GGML_NCP_FA_LIB GGML_NCP_MOE_LIB
     export LD_LIBRARY_PATH="$BUILD_DIR/bin:$LD_LIBRARY_PATH"
@@ -117,7 +129,7 @@
     CACHE_DIR=${CACHE_DIR:-$RESULT_DIR/kpack-model-cache}
     mkdir -p -- "$CACHE_DIR"
     cp "$BUNDLE/manifest.json" "$RUN/results/bundle-manifest.json"
-    printf '%s\n' "${INFO[4]}" > "$RUN/results/llama-source.txt"
+    git -C "$LLAMA_DIR" rev-parse HEAD > "$RUN/results/llama-source.txt"
 
     stage=mixed-decode-gate
     printf 'KPACK_Q4_MODEL caller=AONECI runtime=PREBUILT full_sweep=NONE model_prewarm=SELECTED_JIT_ONLY\n'

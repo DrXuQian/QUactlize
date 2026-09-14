@@ -147,6 +147,28 @@ PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
 JOBS=192 CUDA_VISIBLE_DEVICES=0 bash tools/run_kpack_q4_model_box.sh
 ```
 
+To build your local llama worktree instead of fetching the pinned caller,
+set `LLAMA_CI_DIR` as well:
+
+```bash
+LLAMA_CI_DIR=/sim/eec/shared/junfu.qx/llama.cpp \
+NCP_LIB_DIR=/sim/eec/shared/junfu.qx/ncp_flash_lib \
+PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
+JOBS=192 CUDA_VISIBLE_DEVICES=0 bash tools/run_kpack_q4_model_box.sh
+```
+
+The override builds that working tree directly, including tracked local
+edits and untracked inputs. It does not fetch, checkout, reset or clone
+llama, and it does not require the default caller commit. Its `.aoneci`
+script must support `LLAMA_BUILD_DIR` (private llama commit `bc4585dbc`);
+update that build script first if the precheck reports the feature missing.
+Output goes to `$RUN/ci/llama-build`, leaving the source's existing
+`build-ci` untouched. NCP still builds in its isolated pinned checkout.
+The result receipt says `LOCAL_WORKTREE` and records the actual source
+HEAD, working-tree status, tracked diff hash and build-script hash. Do not
+edit the caller sources while the build is running. Unset `LLAMA_CI_DIR`
+to retain the default isolated, pinned-source flow.
+
 `tools/kpack_q4_model_artifact.json` separately pins the runtime-only LFS
 package and the CI-enabled private llama source. This command builds NCP
 FA/MoE and llama via `.aoneci`, then runs the gates and model phases. The

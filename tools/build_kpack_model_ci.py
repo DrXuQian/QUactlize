@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the pinned llama joint CI build without modifying the supplied checkouts."""
+"""Run joint CI from an isolated commit or an explicit local llama worktree."""
 
 import argparse
 import hashlib
@@ -45,8 +45,8 @@ def clone_checkout(source, target, revision):
     git(target, 'submodule', 'absorbgitdirs')
 
 
-def build_receipt(llama, ncp, sdk, jobs):
-    build = llama / 'build-ci'
+def build_receipt(llama, ncp, sdk, jobs, build=None):
+    build = build or llama / 'build-ci'
     cache = {}
     for line in (build / 'CMakeCache.txt').read_text().splitlines():
         if '=' in line and ':' in line and not line.startswith(('//', '#')):
@@ -77,27 +77,45 @@ def build_receipt(llama, ncp, sdk, jobs):
         requested_jobs=jobs, cmake=expected, files=files, build=str(build), device_admission='PENDING')
 
 
+def local_source_state(llama):
+    return dict(directory=str(llama), commit=git(llama, 'rev-parse', 'HEAD'),
+        status=git(llama, 'status', '--porcelain'),
+        tracked_diff_sha256=hashlib.sha256(git(llama, 'diff', '--no-ext-diff', '--binary', 'HEAD').encode()).hexdigest(),
+        build_script_sha256=hashlib.sha256((llama / '.aoneci/scripts/build.sh').read_bytes()).hexdigest())
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('llama', 'ncp', 'sdk', 'output', 'receipt'):
         parser.add_argument('--' + name, required=True, type=Path)
     parser.add_argument('--jobs', type=int, default=192)
+    parser.add_argument('--local-llama', action='store_true', help='build the supplied llama worktree, including local edits')
     args = parser.parse_args()
     if args.jobs < 1:
         raise ValueError('jobs must be positive')
     sdk = args.sdk.resolve(strict=True)
     if not (sdk / 'CUDA_SDK/bin/nvcc').is_file():
         raise ValueError('SDK compiler is missing')
-    llama_rev = git(args.llama, 'rev-parse', 'HEAD')
-    pin = git(args.llama, 'show', llama_rev + ':.aoneci/NCP_LIB_VERSION')
+    source = args.llama.resolve(strict=True)
+    if Path(git(source, 'rev-parse', '--show-toplevel')).resolve() != source:
+        raise ValueError('llama source must be the checkout root')
+    llama_rev = git(source, 'rev-parse', 'HEAD')
+    pin = ((source / '.aoneci/NCP_LIB_VERSION').read_text() if args.local_llama else
+           git(source, 'show', llama_rev + ':.aoneci/NCP_LIB_VERSION'))
+    if '${LLAMA_BUILD_DIR' not in (source / '.aoneci/scripts/build.sh').read_text():
+        raise ValueError('update llama .aoneci/scripts/build.sh: LLAMA_BUILD_DIR support is required; no build started')
     revisions = [line.split('#', 1)[0].strip() for line in pin.splitlines()]
     revisions = [line for line in revisions if line]
     if len(revisions) != 1 or not re.fullmatch(r'[0-9a-f]{40}', revisions[0]):
         raise ValueError('CI NCP pin is missing or ambiguous')
     output = args.output.resolve()
     output.mkdir(exist_ok=False)
-    llama, ncp = output / 'llama', output / 'ncp_flash_lib'
-    clone_checkout(args.llama, llama, llama_rev)
+    llama = source if args.local_llama else output / 'llama'
+    ncp = output / 'ncp_flash_lib'
+    if not args.local_llama:
+        clone_checkout(source, llama, llama_rev)
+    build = output / 'llama-build' if args.local_llama else llama / 'build-ci'
+    source_state = local_source_state(llama)
     clone_checkout(args.ncp, ncp, revisions[0])
     env = os.environ.copy()
     # All submodules are cloned locally; no global credential rewrite is needed.
@@ -107,14 +125,20 @@ def main():
     python_bin.mkdir()
     (python_bin / 'python').symlink_to(sys.executable)
     env.update(LLAMA_CI_DIR=str(llama), NCP_LIB_DIR=str(ncp), NCP_LIB_REV=revisions[0],
+        LLAMA_BUILD_DIR=str(build),
         PPU_NVCC=str(sdk / 'CUDA_SDK/bin/nvcc'), CUDA_HOME=str(sdk / 'CUDA_SDK'),
         JOBS=str(args.jobs), DG_JIT_CACHE_DIR=str(output / 'ncp-jit-cache'),
         PATH=str(python_bin) + os.pathsep + env['PATH'])
     print(f'KPACK_MODEL_CI source={llama_rev} ncp={revisions[0]} jobs={args.jobs} output={output}', flush=True)
     subprocess.run(['bash', str(llama / '.aoneci/scripts/build.sh')], cwd=llama, env=env, check=True)
-    receipt = build_receipt(llama, ncp, sdk, args.jobs)
+    receipt = build_receipt(llama, ncp, sdk, args.jobs, build)
+    receipt['llama_source_mode'] = 'LOCAL_WORKTREE' if args.local_llama else 'PINNED_CHECKOUT'
+    receipt['llama_worktree'] = source_state
     if receipt['ncp_source_commit'] != revisions[0] or receipt['llama_source_commit'] != llama_rev:
         raise ValueError('CI build changed its pinned source')
+    after = local_source_state(llama)
+    if any(after[k] != source_state[k] for k in ('tracked_diff_sha256', 'build_script_sha256')):
+        raise ValueError('llama sources changed during the CI build')
     with args.receipt.open('x') as stream:
         json.dump(receipt, stream, indent=2)
         stream.write('\n')

@@ -22,6 +22,14 @@ runs: 12 LFS payloads, about9.3MiB, with the same Quactlize kernel hashes.
 The publisher no longer accepts llama binary inputs. An empty `.gitmodules`
 is accepted during the isolated checkout; malformed config still fails.
 
+Local caller override: set
+`LLAMA_CI_DIR=/sim/eec/shared/junfu.qx/llama.cpp`. The runner uses that
+working tree and its local edits without a clone or revision switch;
+the updated `.aoneci` writes to `$RUN/ci/llama-build` via `LLAMA_BUILD_DIR`,
+not the source's old `build-ci`. The receipt records `LOCAL_WORKTREE` and
+the actual HEAD/diff instead of claiming the default pinned caller.
+The default pinned flow remains available when the variable is unset.
+
 ## Current model closure checklist, 2026-09-14
 
 [Q4 model steps and exact remaining decode gap](KPACK_Q4_MODEL_CLOSURE.md).

@@ -220,6 +220,9 @@ def test_final_model_runner_uses_joint_ci_caller_and_pinned_runtime():
     assert 'build_kpack_model_ci.py' in text and 'NCP_LIB_DIR:-/sim/eec/shared/junfu.qx/ncp_flash_lib' in text
     assert 'BUILD_DIR="$LLAMA_DIR/build-ci"' in text and 'BUILD_DIR="$BUNDLE/llama"' not in text
     assert 'caller-ci-build.json' in text and 'JOBS=${JOBS:-192}' in text
+    assert 'if [[ -n ${LLAMA_CI_DIR:-} ]]' in text and 'CI_SOURCE_ARGS+=(--local-llama)' in text
+    assert 'BUILD_DIR="$RUN/ci/llama-build"' in text
+    assert 'git -C "$LLAMA_DIR" rev-parse HEAD > "$RUN/results/llama-source.txt"' in text
     assert text.index('stage=ci-build') < text.index('stage=mixed-decode-gate')
     assert '--mixed' in text and 'cells=80' in text
     assert text.index('stage=mixed-decode-gate') < text.index('stage=model-numerical') < text.index('stage=model-benchmark') < text.index('stage=model-trace')
@@ -334,6 +337,74 @@ def test_joint_ci_receipt_requires_hooks_libraries_and_jit_headers(tmp_path, mon
     header.unlink()
     with pytest.raises(ValueError, match='JIT include tree'):
         ci.build_receipt(llama, ncp, sdk, 192)
+
+
+def test_local_llama_override_uses_dirty_worktree_and_external_build(tmp_path, monkeypatch):
+    from tools import build_kpack_model_ci as ci
+    def repository(name):
+        root = tmp_path / name
+        subprocess.run(['git', 'init', '-q', str(root)], check=True)
+        ci.git(root, 'config', 'user.name', 'Test')
+        ci.git(root, 'config', 'user.email', 'test@example.invalid')
+        (root / 'source.cu').write_text('committed')
+        ci.git(root, 'add', '.')
+        ci.git(root, 'commit', '-qm', 'fixture')
+        return root
+    llama, ncp = repository('llama'), repository('ncp')
+    ncp_rev = ci.git(ncp, 'rev-parse', 'HEAD')
+    script = llama / '.aoneci/scripts/build.sh'
+    script.parent.mkdir(parents=True)
+    script.write_text('# fixture consumes ${LLAMA_BUILD_DIR}\n')
+    (llama / '.aoneci/NCP_LIB_VERSION').write_text(ncp_rev + '\n')
+    ci.git(llama, 'add', '.')
+    ci.git(llama, 'commit', '-qm', 'CI entry')
+    llama_rev = ci.git(llama, 'rev-parse', 'HEAD')
+    (llama / 'source.cu').write_text('local edit')
+    (llama / 'local.cu').write_text('untracked input')
+    old = llama / 'build-ci/keep'
+    old.parent.mkdir()
+    old.write_text('previous build')
+    sdk = tmp_path / 'sdk'
+    compiler = sdk / 'CUDA_SDK/bin/nvcc'
+    compiler.parent.mkdir(parents=True)
+    compiler.touch()
+    output, receipt = tmp_path / 'ci', tmp_path / 'receipt.json'
+    argv = ['build_kpack_model_ci.py', '--llama', str(llama), '--ncp', str(ncp), '--sdk', str(sdk),
+            '--output', str(output), '--receipt', str(receipt), '--local-llama', '--jobs', '192']
+    clone, run = ci.clone_checkout, subprocess.run
+    clones, builds = [], []
+    def checked_clone(source, target, revision):
+        clones.append(source)
+        return clone(source, target, revision)
+    def checked_run(command, *args, **kwargs):
+        if command[0] != 'bash':
+            return run(command, *args, **kwargs)
+        builds.append(command)
+        assert command == ['bash', str(script)]
+        assert kwargs['cwd'] == llama
+        assert kwargs['env']['LLAMA_CI_DIR'] == str(llama)
+        assert kwargs['env']['LLAMA_BUILD_DIR'] == str(output / 'llama-build')
+        assert kwargs['env']['NCP_LIB_DIR'] == str(output / 'ncp_flash_lib')
+        assert kwargs['env']['JOBS'] == '192'
+        assert (llama / 'source.cu').read_text() == 'local edit'
+        assert (llama / 'local.cu').is_file()
+        return subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(ci, 'clone_checkout', checked_clone)
+    monkeypatch.setattr(ci.subprocess, 'run', checked_run)
+    monkeypatch.setattr(ci, 'build_receipt', lambda l, n, s, jobs, build: dict(
+        llama_source_commit=llama_rev, ncp_source_commit=ncp_rev, build=str(build)))
+    monkeypatch.setattr(sys, 'argv', argv)
+    ci.main()
+    assert clones == [ncp] and len(builds) == 1
+    result = json.loads(receipt.read_text())
+    assert result['llama_source_mode'] == 'LOCAL_WORKTREE'
+    assert result['llama_worktree']['directory'] == str(llama)
+    assert 'source.cu' in result['llama_worktree']['status']
+    assert old.read_text() == 'previous build'
+    script.write_text('# old CI without external build support\n')
+    with pytest.raises(ValueError, match='LLAMA_BUILD_DIR support is required'):
+        ci.main()
+    assert len(builds) == 1
 
 
 def test_runtime_publication_excludes_historical_llama_binaries(tmp_path, monkeypatch):

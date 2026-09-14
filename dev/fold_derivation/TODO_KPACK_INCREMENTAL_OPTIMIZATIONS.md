@@ -7,6 +7,9 @@
 - NCP source located on box: `/sim/eec/shared/junfu.qx/ncp_flash_lib`.
   The model runner uses isolated committed source copies and calls the
   exact `.aoneci` entry with 192 jobs; original sources/builds are retained.
+- Optional caller override: `LLAMA_CI_DIR` builds the supplied worktree
+  including local edits, without cloning or switching llama. Its updated
+  `.aoneci` uses a fresh `LLAMA_BUILD_DIR`; old `build-ci` is preserved.
 - Runtime package boundary: no llama binaries in Quactlize publications.
   The runtime-only package keeps the same 12 Quactlize payload hashes;
   old combined packages are historical, not downloaded by this runner.
