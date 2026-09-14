@@ -13,6 +13,13 @@ stage proof binaries. [Contract and box command](KPACK_DECODE_IO.md).
 Device admission and model performance are **pending**, not inherited from
 the earlier FP16 or SIMT sweeps.
 
+Published code/payload: Quactlize `develop` at `0eac0a0`; private llama branch
+`feat/kpack-gpu-cache` at `b312a0955`. All 36 payloads are Git LFS objects
+(unchanged execution DSO reused). Local validation: 297 library host tests,
+72 llama host tests plus 89 subtests, and three PPU adapter compile checks.
+The independent A-layout oracle includes six deliberately wrong mappings;
+these checks do not replace PPU numerical execution.
+
 The additive `query_dense_io_v1` / `prepare_dense_io_v1` pair retains current
 recipe selection and changes dense M1..8 storage to actual F32 or BF16.
 Conversion happens inside A loading and output epilogue/reducer; the core
