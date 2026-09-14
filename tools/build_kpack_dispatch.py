@@ -15,6 +15,27 @@ from quactlize.runtime.compiler import Compiler, sha, validate_parent, source_co
 from quactlize.runtime.tuning import ROUTES, digest
 from quactlize.runtime.native import sdk_identity
 from tools.verify_kpack_dispatch import verify as verify_native
+from quactlize.execution.q4_decode_codegen import POLICY as DECODE_POLICY
+
+
+def attach_prefill(output, build, sdk):
+    build = Path(build).resolve(strict=True)
+    receipt = json.loads((build / 'manifest.json').read_text())
+    library = build / 'libquactlize_ppu_prefill.so'
+    if (receipt.get('schema') != 'quactlize.prefill-runtime.v1' or
+            receipt.get('library') != library.name or sha(library) != receipt.get('sha256')):
+        raise ValueError('prefill build identity differs')
+    for name, expected in receipt['runtime'].items():
+        if Path(name).name != name or sha(sdk / 'lib' / name) != expected:
+            raise ValueError('prefill SDK runtime differs: ' + name)
+    result = {}
+    for field, source, name in (
+            ('library', library, library.name),
+            ('receipt', build / 'manifest.json', 'prefill-runtime.json'),
+            ('helper', ROOT / 'tools/kpack_deepgemm_prewarm.py', 'kpack_deepgemm_prewarm.py')):
+        shutil.copy2(source, output / name)
+        result[field], result[field + '_sha256'] = name, sha(output / name)
+    return result
 
 
 def requests():
@@ -182,6 +203,7 @@ def main():
     p.add_argument("--jobs", type=int, default=8)
     p.add_argument("--plan-only", action="store_true")
     p.add_argument("--jit-only", action="store_true", help="small dispatcher, no precompiled GEMM modules")
+    p.add_argument("--prefill-runtime", type=Path, help="verified per-call dequant + BF16 provider runtime")
     p.add_argument(
         "--reuse-bundle",
         type=Path,
@@ -200,6 +222,8 @@ def main():
     args = p.parse_args()
     if args.jit_only and args.reuse_bundle:
         p.error("--jit-only and --reuse-bundle are mutually exclusive")
+    if args.jobs < 1:
+        p.error('--jobs must be positive')
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     parents, selected = plan(output)
@@ -297,7 +321,15 @@ def main():
     )
     if args.jit_only:
         manifest["jit_required"] = True
+    if receipt.get('q4_decode_policy_sha256'):
+        if sha(DECODE_POLICY) != receipt['q4_decode_policy_sha256']:
+            raise ValueError('execution uses a different Q4 decode selection table')
+        shutil.copy2(DECODE_POLICY, output / 'decode-policy.json')
+        manifest['decode_policy'] = dict(path='decode-policy.json', sha256=sha(DECODE_POLICY))
+    if args.prefill_runtime:
+        manifest['prefill'] = attach_prefill(output, args.prefill_runtime, args.sdk)
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    verify_native(output)
     print(
         f"KPACK_DISPATCH_BUILD COMPILED modules={len(records)} root={output} device_validated=0",
         flush=True,

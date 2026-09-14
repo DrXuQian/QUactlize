@@ -9,7 +9,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tools.verify_kpack_dispatch import verify
+from tools.verify_kpack_dispatch import verify, prefill_paths
 from quactlize.runtime.compiler import sha
 
 
@@ -33,6 +33,8 @@ def main():
     paths += [r["path"] for r in m["modules"]]
     if "decode_policy" in m:
         paths.append(m["decode_policy"]["path"])
+    if 'prefill' in m:
+        paths += prefill_paths(src, m['prefill'])
     for item in m.get("decode_io_gate", {}).get("simt_binaries", []):
         source = (src / item["path"]).resolve(strict=True)
         if source.parent != src or sha(source) != item["sha256"]:

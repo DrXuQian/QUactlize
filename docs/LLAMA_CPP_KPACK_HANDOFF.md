@@ -4,6 +4,21 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
+## Current addition: composed prefill candidate, 2026-09-14
+
+[Runtime contract and box gate](KPACK_PREFILL_RUNTIME.md). The measured
+FQ/SF/full-BF16 selector now has a per-call runtime and additive callers on
+private `dev/quactlize-v0.3.0`. Full dense uses installed cuBLAS; full grouped
+uses the installed DeepGEMM Python heuristic for compile-only prewarm and
+native invocation afterward. No online tuning, expanded-weight cache, or
+small-M full-dequant path is introduced.
+
+The focused three-DSO package retains the exact admitted decode execution
+hash `2d4f441abd8f5423bed4ddbc33d10868f3983b44a1a747fe82729849209782d7`.
+The new prefill runtime and model-level caller still require PPU admission.
+Use `tools/run_kpack_prefill_runtime_box.sh` for the next library composition
+gate; it fetches the pinned artifact through LFS without a Quactlize rebuild.
+
 ## Current addition: decode F32/BF16 endpoints, 2026-09-14
 
 **PPU library gate reviewed: PASS.** [Result and exact scope](KPACK_DECODE_IO_RESULTS_20260914.md):
@@ -52,9 +67,8 @@ Local host tests and three PPU compile checks pass; the migrated whole-model
 device run remains pending. Do not switch an active measuring checkout.
 
 The [audited component-cost policy](KPACK_COMPONENT_POLICY.md) has been
-imported at `431a698`. New full-BF16 provider composition and its llama
-bindings remain local work in progress, not part of these published llama
-branches or the decode gate's numerical conclusion.
+imported at `431a698`. The new composition candidate is described above;
+it is not part of the decode gate's numerical conclusion.
 
 ## Current addition: measured Q4 small-M SIMT/TC selection
 

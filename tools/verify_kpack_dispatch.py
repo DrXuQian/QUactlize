@@ -13,6 +13,30 @@ from quactlize.decode.compiler import DecodeCompiler
 from quactlize.runtime.tuning import digest
 
 
+def prefill_paths(root, receipt, *, sdk=None):
+    """Verify the optional composition closure, never load a device runtime."""
+    root = Path(root).resolve(strict=True)
+    names = {'library': 'libquactlize_ppu_prefill.so',
+             'receipt': 'prefill-runtime.json', 'helper': 'kpack_deepgemm_prewarm.py'}
+    if not isinstance(receipt, dict):
+        raise ValueError('prefill package receipt is missing')
+    for field, name in names.items():
+        path = root / name
+        if (receipt.get(field) != name or path.is_symlink() or
+                not path.is_file() or sha(path) != receipt.get(field + '_sha256')):
+            raise ValueError('prefill payload differs: ' + name)
+    build = json.loads((root / names['receipt']).read_text())
+    if (build.get('schema') != 'quactlize.prefill-runtime.v1' or
+            build.get('library') != names['library'] or
+            build.get('sha256') != receipt['library_sha256']):
+        raise ValueError('prefill build/library identity differs')
+    if sdk is not None:
+        for name, expected in build['runtime'].items():
+            if Path(name).name != name or sha(Path(sdk) / 'lib' / name) != expected:
+                raise ValueError('prefill SDK runtime differs: ' + name)
+    return list(names.values())
+
+
 def verify(root, *, sdk=None):
     root = Path(root).resolve(strict=True)
     m = json.loads((root / "manifest.json").read_text())
@@ -32,6 +56,10 @@ def verify(root, *, sdk=None):
         if (path.parent != root or sha(path) != receipt["sha256"] or
             m["execution_receipt"].get("q4_decode_policy_sha256") != receipt["sha256"]):
             raise ValueError("decode policy/execution identity differs")
+    if 'prefill' in m:
+        prefill_paths(root, m['prefill'], sdk=sdk)
+    elif (root / 'libquactlize_ppu_prefill.so').exists():
+        raise ValueError('unmanifested prefill runtime would arm the model loader')
     if m.get("jit_required") or "jit_source_contract" in m:
         if source_contract(m.get("jit_source_identity", {})) != m.get("jit_source_contract"):
             raise ValueError("JIT source contract differs")
