@@ -4,7 +4,10 @@
 
 - Use the private llama `.aoneci/scripts/build.sh`; preserve NCP FA/MoE ON,
   add Quactlize ON, and bind llama to the same `PPU_NVCC`.
-- Pending: locate `NCP_LIB_DIR`, build the pinned NCP revision and llama,
+- NCP source located on box: `/sim/eec/shared/junfu.qx/ncp_flash_lib`.
+  The model runner uses isolated committed source copies and calls the
+  exact `.aoneci` entry with 192 jobs; original sources/builds are retained.
+- Pending on box: build the pinned NCP revision and llama,
   package both NCP libraries plus the DeepGEMM include tree, then replace
   the model artifact pin. Do not treat the earlier FA/MoE-OFF package as
   the CI performance baseline. Existing Quactlize library gates remain

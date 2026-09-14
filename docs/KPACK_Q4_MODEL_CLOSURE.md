@@ -17,10 +17,19 @@ CI performance baseline. A new caller/NCP package must be built and pinned
 before reporting performance under the CI configuration. The Quactlize
 mixed-chain and prefill DSOs do not need a new kernel sweep for this change.
 
-Local rebuild currently requires the `NCP_LIB_DIR` source checkout; none
-was found in the inspected local workspace. The script pins NCP revision
-`9bfb44383588cbf4eed98e3d51de90e8f82d1779`. Do not claim that joint build
-has run, or relabel the previous binaries as CI-built.
+The supplied `NCP_LIB_DIR` is `/sim/eec/shared/junfu.qx/ncp_flash_lib` on
+the box; it is not mounted locally. The model runner now clones committed
+NCP/submodule objects into a fresh run directory and calls the exact
+`.aoneci/scripts/build.sh` there with `JOBS=192`. Original checkouts, local
+patches and old build products are untouched. NCP revision is pinned to
+`9bfb44383588cbf4eed98e3d51de90e8f82d1779`; the supplied checkout and its
+initialized submodules must contain the pinned commits.
+
+The model phases use the new `ci/llama/build-ci/bin`, not the historical
+packaged caller. `results/caller-ci-build.json` records source IDs, CMake
+flags, executable/library hashes and the DeepGEMM JIT headers. Quactlize
+DSOs and gate binaries still come from the unchanged LFS package. A joint
+build has not run locally; its receipt is produced only after box success.
 
 ## Current checklist, 2026-09-14
 
@@ -99,7 +108,7 @@ Model inputs are the existing focused int4 plan:
 `tools/kpack_batched_int4_2048.json` (Qwen3.5-35B-A3B-Q4_K_M MoE and
 Qwen3-32B-Q4_K_M dense; NPL=1, PP=2048, TG=128). User files remain unchanged.
 
-## Next box run
+## Historical prebuilt package
 
 Local publication: source `d93b118`, private llama `9b2fa0bf6`, artifact
 `f2a2f99`. The complete PPU build (not just three translation units) passes;
@@ -111,12 +120,25 @@ all soname links and the manifest dependency closure are tracked. Package
 size is about258MiB, mostly llama's ordinary CUDA backend, not a full
 Quactlize sweep closure.
 
-Run `bash tools/run_kpack_q4_model_box.sh` from the updated development
-checkout. `tools/kpack_q4_model_artifact.json` pins the LFS package and
-private llama source. The package contains the paired producer, small
-runtime, seven gate parents, mixed stage executable, and model executables.
-No full sweep or large Quactlize rebuild is part of this command. Missing
-model-specific parents are JIT-compiled outside capture during first use.
+## Next box run
+
+Run the following from the updated development checkout:
+
+```bash
+NCP_LIB_DIR=/sim/eec/shared/junfu.qx/ncp_flash_lib \
+PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
+JOBS=192 CUDA_VISIBLE_DEVICES=0 bash tools/run_kpack_q4_model_box.sh
+```
+
+`tools/kpack_q4_model_artifact.json` separately pins the unchanged LFS
+runtime and the CI-enabled private llama source. This command builds NCP
+FA/MoE and llama via `.aoneci`, then runs the gates and model phases. The
+package supplies the paired producer, small runtime, seven gate parents
+and mixed stage executable; its old model executables are not run. No
+full sweep or large Quactlize rebuild is required. Missing model-specific
+parents are JIT-compiled outside capture during first use. The independent
+CI source/build directory remains on disk for inspecting or packaging a
+successful build.
 
 The runner first requires both mixed gates, then collects GPU-native
 reference/self/K-pack likelihood comparisons on local GSM8K text at token

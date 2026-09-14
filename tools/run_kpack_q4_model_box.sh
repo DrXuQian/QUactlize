@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One pinned deployment: mixed decode gate, model numerics, warmed timings, Asys.
+# Joint CI caller build, prebuilt runtime, mixed gate, model timings and Asys.
 (
     set -Eeuo pipefail
     RUN= stage=precheck
@@ -45,14 +45,31 @@
     test -n "$RESULT_DIR" && test -d "$RESULT_DIR"
     CORPUS=${GSM8K_FILE:-/sim/eec/shared/AI_workspace/llm-models/datasets/gsm8k/main/test-00000-of-000001.parquet}
     test -s "$CORPUS"
+    NCP_SOURCE=$(realpath -e -- "${NCP_LIB_DIR:-/sim/eec/shared/junfu.qx/ncp_flash_lib}")
+    test -n "$NCP_SOURCE" && test -f "$NCP_SOURCE/CMakeLists.txt"
+    JOBS=${JOBS:-192}
+    [[ "$JOBS" =~ ^[1-9][0-9]*$ ]]
+    # Check loader dependencies before spending time on the joint build.
+    export QUACTLIZE_PPU_BUNDLE=${QUACTLIZE_PPU_BUNDLE:-/workspace/quactlize-runtime-artifact-2826cf1-46fc3096e1a1/prebuilt/ppu0010/2826cf1/runtime6-46fc3096e1a1/bundle}
+    test -s "$QUACTLIZE_PPU_BUNDLE/manifest.json"
     RUN=$(mktemp -d "$RESULT_DIR/kpack-q4-model.XXXXXX")
     test -n "$RUN" && test -d "$RUN"
     mkdir "$RUN/results"
     printf 'KPACK_Q4_MODEL run=%s\n' "$RUN"
     git rev-parse HEAD > "$RUN/results/quactlize-source.txt"
 
+    stage=model-paths
+    MODEL_ARGS=()
+    if [[ -n ${MODEL_NAMES:-} ]]; then
+        read -ra names <<< "$MODEL_NAMES"
+        for name in "${names[@]}"; do MODEL_ARGS+=(--model "$name"); done
+    fi
+    "$PYTHON" tools/resolve_kpack_batched_models.py --plan "$ROOT/tools/kpack_batched_int4_2048.json" \
+        --model-root "${MODEL_ROOT:-/sim/eec/shared/AI_workspace/llm-models}" "${MODEL_ARGS[@]}" \
+        --output "$RUN/results/model-plan.json"
+
     stage=fetch
-    mapfile -t INFO < <("$PYTHON" -c 'import json,sys; m=json.load(open(sys.argv[1])); print(m["branch"]); print(m["commit"]); print(m["path"]); print(m["manifest_sha256"]); print(m["llama_commit"])' "$ROOT/tools/kpack_q4_model_artifact.json")
+    mapfile -t INFO < <("$PYTHON" -c 'import json,sys; m=json.load(open(sys.argv[1])); print(m["branch"]); print(m["commit"]); print(m["path"]); print(m["manifest_sha256"]); print(m["llama_ci_commit"])' "$ROOT/tools/kpack_q4_model_artifact.json")
     [[ ${#INFO[@]} == 5 && ${INFO[0]} == artifacts/kpack-model-v1 && ${INFO[1]} =~ ^[0-9a-f]{40}$ && ${INFO[2]} == prebuilt/ppu0010/kpack-model-v1 && ${INFO[3]} =~ ^[0-9a-f]{64}$ && ${INFO[4]} =~ ^[0-9a-f]{40}$ ]]
     ART="$RESULT_DIR/quactlize-model-artifact-${INFO[1]:0:10}"
     git fetch origin "${INFO[0]}"
@@ -66,8 +83,6 @@
     BUNDLE="$ART/${INFO[2]}"
     "$PYTHON" -c 'import hashlib,sys; assert hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()==sys.argv[2],"model package manifest differs"' "$BUNDLE/manifest.json" "${INFO[3]}"
     "$PYTHON" tools/verify_kpack_dispatch.py "$BUNDLE" --sdk "$SDK" | tee "$RUN/results/verify.log"
-    test -x "$BUNDLE/llama/bin/llama-batched-bench"
-    BUILD_DIR="$BUNDLE/llama"
     LLAMA_DIR="$RESULT_DIR/llama-model-source-${INFO[4]:0:10}"
     if [[ ! -e "$LLAMA_DIR" ]]; then
         git clone --no-checkout --depth 1 --single-branch --branch dev/quactlize-v0.3.0 \
@@ -76,15 +91,20 @@
         git -C "$LLAMA_DIR" checkout --detach "${INFO[4]}"
     fi
     test "$(git -C "$LLAMA_DIR" rev-parse HEAD)" == "${INFO[4]}"
-    "$PYTHON" -c 'import json,sys; assert json.load(open(sys.argv[1]))["model"]["llama_source_commit"]==sys.argv[2],"caller payload/source mismatch"' "$BUNDLE/manifest.json" "${INFO[4]}"
     git -C "$LLAMA_DIR" diff --quiet
     git -C "$LLAMA_DIR" diff --cached --quiet
+
+    stage=ci-build
+    "$PYTHON" -u tools/build_kpack_model_ci.py --llama "$LLAMA_DIR" --ncp "$NCP_SOURCE" \
+        --sdk "$SDK" --output "$RUN/ci" --jobs "$JOBS" \
+        --receipt "$RUN/results/caller-ci-build.json" 2>&1 | tee "$RUN/results/caller-ci-build.log"
+    LLAMA_DIR="$RUN/ci/llama"
+    BUILD_DIR="$LLAMA_DIR/build-ci"
+    export CUDA_HOME="$SDK/CUDA_SDK" DG_JIT_CACHE_DIR="$RUN/ci/ncp-jit-cache"
+    unset DG_LIBRARY_ROOT GGML_NCP_FA_LIB GGML_NCP_MOE_LIB
     export LD_LIBRARY_PATH="$BUILD_DIR/bin:$LD_LIBRARY_PATH"
     "$BUILD_DIR/bin/llama-batched-bench" --help > "$RUN/results/binary-help.log" 2>&1
 
-    # Existing six DSOs are loader/compatibility dependencies, not the new selector.
-    export QUACTLIZE_PPU_BUNDLE=${QUACTLIZE_PPU_BUNDLE:-/workspace/quactlize-runtime-artifact-2826cf1-46fc3096e1a1/prebuilt/ppu0010/2826cf1/runtime6-46fc3096e1a1/bundle}
-    test -s "$QUACTLIZE_PPU_BUNDLE/manifest.json"
     export QUACTLIZE_PPU_PACK_LIBRARY="$BUNDLE/pack/libquactlize_ppu_pack.so"
     test -s "$QUACTLIZE_PPU_PACK_LIBRARY"
     export QUACTLIZE_KPACK_EXECUTION="$BUNDLE" QUACTLIZE_KPACK_ROUTE=auto QUACTLIZE_KPACK_PAIR_WEIGHTS=1
@@ -98,18 +118,8 @@
     cp "$BUNDLE/manifest.json" "$RUN/results/bundle-manifest.json"
     printf '%s\n' "${INFO[4]}" > "$RUN/results/llama-source.txt"
 
-    stage=model-paths
-    MODEL_ARGS=()
-    if [[ -n ${MODEL_NAMES:-} ]]; then
-        read -ra names <<< "$MODEL_NAMES"
-        for name in "${names[@]}"; do MODEL_ARGS+=(--model "$name"); done
-    fi
-    "$PYTHON" tools/resolve_kpack_batched_models.py --plan "$ROOT/tools/kpack_batched_int4_2048.json" \
-        --model-root "${MODEL_ROOT:-/sim/eec/shared/AI_workspace/llm-models}" "${MODEL_ARGS[@]}" \
-        --output "$RUN/results/model-plan.json"
-
     stage=mixed-decode-gate
-    printf 'KPACK_Q4_MODEL compiled_payloads=PREBUILT full_sweep=NONE model_prewarm=SELECTED_JIT_ONLY\n'
+    printf 'KPACK_Q4_MODEL caller=AONECI runtime=PREBUILT full_sweep=NONE model_prewarm=SELECTED_JIT_ONLY\n'
     failed=0
     if "$BUNDLE/mixed-stages" --mixed 2>&1 | tee "$RUN/results/mixed-stages.log"; then
         grep -qx 'KPACK_MOE_MIXED_STAGES PASS cells=80 PPU_GEMM_ADMISSION=NOT_TESTED' "$RUN/results/mixed-stages.log"

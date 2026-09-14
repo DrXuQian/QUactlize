@@ -10,8 +10,13 @@ The next llama caller build must use `.aoneci/scripts/build.sh` on
 `dev/quactlize-v0.3.0`, including the pinned NCP FA/MoE build. The script now
 explicitly enables Quactlize as well as the CI FA/MoE hooks. The previous
 `f2a2f99` package was built with a separate CMake command and FA/MoE OFF;
-it is not the requested CI performance baseline. Joint rebuilding and a
-replacement artifact are pending the local `NCP_LIB_DIR` source path.
+it is not the requested CI performance baseline. The supplied NCP source is
+`/sim/eec/shared/junfu.qx/ncp_flash_lib` on the box, not a local mount.
+`run_kpack_q4_model_box.sh` now builds isolated copies via `.aoneci` with
+192 jobs and uses those caller binaries for every model phase, while
+reusing the published Quactlize DSOs. See the [command and build receipt](KPACK_Q4_MODEL_CLOSURE.md#next-box-run).
+Original NCP files and existing builds are not reset. A replacement caller
+artifact remains pending the joint box build; no old binary is relabeled.
 
 ## Current model closure checklist, 2026-09-14
 

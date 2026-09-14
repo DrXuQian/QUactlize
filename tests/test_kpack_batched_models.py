@@ -211,12 +211,16 @@ def test_focused_int4_plan_has_only_2048_and_short_decode():
     assert 3 * sum(tg for _, tg, _ in sequence(focused, 1)) == 768
 
 
-def test_final_model_runner_uses_pinned_prebuilt_and_separate_proof():
+def test_final_model_runner_uses_joint_ci_caller_and_pinned_runtime():
     text = (ROOT / 'tools/run_kpack_q4_model_box.sh').read_text()
     subprocess.run(['bash', '-n', str(ROOT/'tools/run_kpack_q4_model_box.sh')], check=True)
     assert '\n(\n' in text and 'trap finish EXIT' in text
     assert 'lfs pull origin' in text and 'kpack_q4_model_artifact.json' in text
     assert 'dev/quactlize-v0.3.0' in text and 'cmake --build' not in text
+    assert 'build_kpack_model_ci.py' in text and 'NCP_LIB_DIR:-/sim/eec/shared/junfu.qx/ncp_flash_lib' in text
+    assert 'BUILD_DIR="$LLAMA_DIR/build-ci"' in text and 'BUILD_DIR="$BUNDLE/llama"' not in text
+    assert 'caller-ci-build.json' in text and 'JOBS=${JOBS:-192}' in text
+    assert text.index('stage=ci-build') < text.index('stage=mixed-decode-gate')
     assert '--mixed' in text and 'cells=80' in text
     assert text.index('stage=mixed-decode-gate') < text.index('stage=model-numerical') < text.index('stage=model-benchmark') < text.index('stage=model-trace')
     assert '--order abba --require-selected' in text
@@ -227,7 +231,75 @@ def test_final_model_runner_uses_pinned_prebuilt_and_separate_proof():
     assert receipt['branch'] == 'artifacts/kpack-model-v1'
     assert receipt['llama_branch'] == 'dev/quactlize-v0.3.0'
     assert len(receipt['commit']) == len(receipt['llama_commit']) == 40
+    assert len(receipt['llama_ci_commit']) == 40 and receipt['llama_ci_commit'] != receipt['llama_commit']
     assert len(receipt['manifest_sha256']) == 64 and receipt['lfs_payloads'] == 25
+
+
+def test_joint_ci_checkout_preserves_dirty_source_and_nested_submodules(tmp_path):
+    from tools.build_kpack_model_ci import clone_checkout, git
+    def repository(name):
+        root = tmp_path / name
+        root.mkdir()
+        subprocess.run(['git', 'init', '-q', str(root)], check=True)
+        git(root, 'config', 'user.name', 'Test')
+        git(root, 'config', 'user.email', 'test@example.invalid')
+        (root / 'source').write_text(name)
+        git(root, 'add', 'source')
+        git(root, 'commit', '-qm', 'initial')
+        return root
+    leaf, child, source = [repository(name) for name in ('leaf', 'child', 'source')]
+    git(child, '-c', 'protocol.file.allow=always', 'submodule', 'add', str(leaf), 'nested')
+    git(child, 'commit', '-qam', 'nested')
+    git(source, '-c', 'protocol.file.allow=always', 'submodule', 'add', str(child), 'third_party/library')
+    git(source, 'commit', '-qam', 'library')
+    git(source, '-c', 'protocol.file.allow=always', 'submodule', 'update', '--init', '--recursive')
+    pin = git(source, 'rev-parse', 'HEAD')
+    (source / 'source').write_text('local edit')
+    (source / 'third_party/library/source').write_text('local submodule patch')
+    before = git(source, 'status', '--porcelain')
+    target = tmp_path / 'isolated'
+    clone_checkout(source, target, pin)
+    assert git(target, 'rev-parse', 'HEAD') == pin
+    assert (target / 'source').read_text() == 'source'
+    assert (target / 'third_party/library/source').read_text() == 'child'
+    assert (target / 'third_party/library/.git').is_file()
+    assert (target / 'third_party/library/nested/.git').is_file()
+    assert git(target, 'status', '--porcelain') == ''
+    assert git(source, 'status', '--porcelain') == before
+    assert (source / 'third_party/library/source').read_text() == 'local submodule patch'
+    with pytest.raises(subprocess.CalledProcessError):
+        clone_checkout(source, target, pin)  # Never reset or clear an existing build checkout.
+
+
+def test_joint_ci_receipt_requires_hooks_libraries_and_jit_headers(tmp_path, monkeypatch):
+    from tools import build_kpack_model_ci as ci
+    llama, ncp, sdk = [tmp_path / name for name in ('llama', 'ncp', 'sdk')]
+    build = llama / 'build-ci'
+    binary = build / 'bin'
+    binary.mkdir(parents=True)
+    flags = dict(GGML_CUDA='ON', GGML_USE_PPU='ON', GGML_NCP_QUACTLIZE='ON',
+        GGML_NCP_FA='ON', GGML_NCP_MOE='ON', GGML_NCP_GDN='OFF',
+        CMAKE_CUDA_COMPILER=str(sdk / 'CUDA_SDK/bin/nvcc'))
+    cache = ''.join(f'{key}:STRING={value}\n' for key, value in flags.items())
+    (build / 'CMakeCache.txt').write_text(cache)
+    for name in ('llama-server', 'llama-batched-bench', 'llama-perplexity',
+                 'libncp_fa.so', 'libncp_moe.so', 'libggml-cuda.so'):
+        (binary / name).write_bytes(b'fixture')
+    header = binary / 'deep_gemm/include/deep_gemm/gemm.cuh'
+    header.parent.mkdir(parents=True)
+    header.write_text('header')
+    monkeypatch.setattr(ci, 'git', lambda path, *args: 'a'*40)
+    receipt = ci.build_receipt(llama, ncp, sdk, 192)
+    assert receipt['requested_jobs'] == 192 and receipt['device_admission'] == 'PENDING'
+    assert 'bin/deep_gemm/include/deep_gemm/gemm.cuh' in receipt['files']
+    for key in ('GGML_NCP_FA', 'GGML_NCP_MOE', 'GGML_NCP_QUACTLIZE'):
+        (build / 'CMakeCache.txt').write_text(cache.replace(key+':STRING=ON', key+':STRING=OFF'))
+        with pytest.raises(ValueError, match='CMake profile'):
+            ci.build_receipt(llama, ncp, sdk, 192)
+    (build / 'CMakeCache.txt').write_text(cache)
+    header.unlink()
+    with pytest.raises(ValueError, match='JIT include tree'):
+        ci.build_receipt(llama, ncp, sdk, 192)
 
 
 def test_model_numerical_metrics_bind_actual_coverage_and_reject_nonfinite():

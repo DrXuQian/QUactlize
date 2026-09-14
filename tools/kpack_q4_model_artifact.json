@@ -6,6 +6,7 @@
   "source_commit": "d93b11867813df4723179f11ae583aa4ebdb078a",
   "llama_branch": "dev/quactlize-v0.3.0",
   "llama_commit": "9b2fa0bf65f0ba1464288e9c473ded9a739a6268",
+  "llama_ci_commit": "ebaf84b23695bfa29341a57cb7291ece021249e0",
   "lfs_payloads": 25,
   "device_admission": "PENDING_MIXED_CHAIN_AND_MODEL"
 }
