@@ -1,0 +1,14 @@
+{
+  "schema": "quactlize.prefill-publication.v1",
+  "source_commit": "5947352afcebfa9c0036f74e6829b719b6a0b74d",
+  "llama_branch": "dev/quactlize-v0.3.0",
+  "llama_commit": "03142a8b7bdf690ac8c1ecfc51c9b20d4fbafc8e",
+  "architecture": "ppu0010",
+  "device_class": "PPU-ZW810/72-CU",
+  "decode_execution_reused": true,
+  "decode_execution_sha256": "2d4f441abd8f5423bed4ddbc33d10868f3983b44a1a747fe82729849209782d7",
+  "prefill_device_admission": "PENDING_COMPOSITION_GATE",
+  "quactlize_device_compilation_on_box": false,
+  "deepgemm": "INSTALLED_PROVIDER_SELECTED_COMPILE_ONLY_PREWARM",
+  "command": "bash tools/run_kpack_prefill_runtime_box.sh"
+}

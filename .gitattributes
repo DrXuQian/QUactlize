@@ -47,3 +47,4 @@ prebuilt/ppu0010/kpack-decode-io-v1/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/kpack-decode-io-v1/modules/*/kernel.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/kpack-decode-io-v1/kpack_indexed_cuda filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/kpack-decode-io-v1/kpack_moe_chain_cuda filter=lfs diff=lfs merge=lfs -text
+prebuilt/ppu0010/kpack-prefill-runtime-v1/*.so filter=lfs diff=lfs merge=lfs -text
