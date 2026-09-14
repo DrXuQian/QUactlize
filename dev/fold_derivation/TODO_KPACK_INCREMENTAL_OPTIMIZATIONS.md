@@ -7,9 +7,12 @@
 - NCP source located on box: `/sim/eec/shared/junfu.qx/ncp_flash_lib`.
   The model runner uses isolated committed source copies and calls the
   exact `.aoneci` entry with 192 jobs; original sources/builds are retained.
-- Pending on box: build the pinned NCP revision and llama,
-  package both NCP libraries plus the DeepGEMM include tree, then replace
-  the model artifact pin. Do not treat the earlier FA/MoE-OFF package as
+- Runtime package boundary: no llama binaries in Quactlize publications.
+  The runtime-only package keeps the same 12 Quactlize payload hashes;
+  old combined packages are historical, not downloaded by this runner.
+- Pending on box: build the pinned NCP revision and llama, retaining
+  both NCP libraries and the DeepGEMM include tree in `build-ci/bin`.
+  Do not treat the earlier FA/MoE-OFF package as
   the CI performance baseline. Existing Quactlize library gates remain
   separate from this caller build change.
 

@@ -9,6 +9,13 @@ build_*/
 .cache/
 compile_commands.json
 
+# Caller binaries are built in llama.cpp on the box, never packaged here.
+/prebuilt/**/llama/
+/prebuilt/**/llama-*
+/prebuilt/**/libllama*
+/prebuilt/**/libggml*
+/prebuilt/**/libmtmd*
+
 # built extension and setuptools scratch
 quactlize/_C*.so
 build/

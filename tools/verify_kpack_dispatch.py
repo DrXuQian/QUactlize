@@ -37,8 +37,26 @@ def prefill_paths(root, receipt, *, sdk=None):
     return list(names.values())
 
 
+def pack_paths(root, receipt):
+    """Validate the Quactlize producer independently of any caller build."""
+    root = Path(root).resolve(strict=True)
+    expected = {'pack/libquactlize_ppu_pack.so', 'pack/manifest.json'}
+    if receipt.get('schema') != 'quactlize.kpack-producer-package.v1' or set(receipt.get('files', {})) != expected:
+        raise ValueError('packer package payload set differs')
+    for name, digest in receipt['files'].items():
+        path = root / name
+        if path.is_symlink() or not path.resolve(strict=True).is_relative_to(root) or sha(path) != digest:
+            raise ValueError('packer payload differs: ' + name)
+    build = json.loads((root / 'pack/manifest.json').read_text())
+    if (build.get('schema') != 'quactlize.kpack-device-pack-build.v1' or
+            build.get('library') != 'libquactlize_ppu_pack.so' or
+            build.get('sha256') != receipt['files']['pack/libquactlize_ppu_pack.so']):
+        raise ValueError('packer build/library identity differs')
+    return sorted(expected)
+
+
 def model_paths(root, model):
-    """Verify the optional prebuilt llama caller and paired producer."""
+    """Read-only validation of historical prebuilt caller packages."""
     root = Path(root).resolve(strict=True)
     if model.get('schema') != 'quactlize.q4-model-deployment.v1':
         raise ValueError('model deployment schema differs')
@@ -96,6 +114,8 @@ def verify(root, *, sdk=None):
             raise ValueError('mixed MoE stage binary differs')
     if 'model' in m:
         model_paths(root, m['model'])
+    if 'pack' in m:
+        pack_paths(root, m['pack'])
     if m.get("jit_required") or "jit_source_contract" in m:
         if source_contract(m.get("jit_source_identity", {})) != m.get("jit_source_contract"):
             raise ValueError("JIT source contract differs")

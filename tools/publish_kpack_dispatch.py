@@ -5,66 +5,37 @@ import argparse
 import json
 from pathlib import Path
 import shutil
-import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tools.verify_kpack_dispatch import verify, prefill_paths
+from tools.verify_kpack_dispatch import verify, prefill_paths, pack_paths
 from quactlize.runtime.compiler import sha
 
 
-def attach_model(dst, build, source, pack):
-    build, source, pack = (p.resolve(strict=True) for p in (build, source, pack))
-    subprocess.run(['git', '-C', str(source), 'diff', '--quiet'], check=True)
-    subprocess.run(['git', '-C', str(source), 'diff', '--cached', '--quiet'], check=True)
-    commit = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
-    cache = (build / 'CMakeCache.txt').read_text()
-    for option in ('GGML_USE_PPU', 'GGML_NCP_QUACTLIZE'):
-        if f'{option}:BOOL=ON\n' not in cache:
-            raise ValueError('caller build option differs: ' + option)
-    if 'CMAKE_HOME_DIRECTORY:INTERNAL=' + str(source) + '\n' not in cache:
-        raise ValueError('caller source/build directories differ')
-    targets = ('llama-server', 'llama-batched-bench', 'llama-perplexity')
-    paths = [build / 'bin' / name for name in targets]
-    paths += sorted(p for p in (build/'bin').glob('lib*.so*') if not p.name.startswith('libquactlize'))
-    result = dict(schema='quactlize.q4-model-deployment.v1', llama_source_commit=commit,
-        llama_branch='dev/quactlize-v0.3.0', architecture='ppu0010', device_admission='PENDING', files={}, links={})
-    for path in paths:
-        if path.resolve(strict=True).parent != build/'bin':
-            raise ValueError('caller payload escapes build/bin')
-        target = dst / 'llama/bin' / path.name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if path.is_symlink():
-            link = str(path.readlink())
-            if '/' in link:
-                raise ValueError('caller symlink is not a relative soname')
-            target.symlink_to(link)
-            result['links'][str(target.relative_to(dst))] = link
-        else:
-            shutil.copy2(path, target)
-            result['files'][str(target.relative_to(dst))] = sha(target)
+def attach_pack(dst, pack):
+    pack = pack.resolve(strict=True)
+    if pack.name != 'libquactlize_ppu_pack.so':
+        raise ValueError('only the Quactlize packer may be attached')
+    result = dict(schema='quactlize.kpack-producer-package.v1', files={})
     (dst / 'pack').mkdir()
     for path in (pack, pack.parent/'manifest.json'):
         target = dst / 'pack' / path.name
         shutil.copy2(path, target)
         result['files'][str(target.relative_to(dst))] = sha(target)
+    pack_paths(dst, result)
     return result
 
 
-def main():
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--build", type=Path, required=True)
-    p.add_argument("--output", type=Path, required=True)
-    p.add_argument("--llama-build", type=Path)
-    p.add_argument("--llama-source", type=Path)
-    p.add_argument("--pack-library", type=Path)
-    a = p.parse_args()
-    if any((a.llama_build, a.llama_source, a.pack_library)) and not all((a.llama_build, a.llama_source, a.pack_library)):
-        p.error('model deployment requires llama-build, llama-source and pack-library')
-    src = a.build.resolve(strict=True)
-    dst = a.output.resolve()
+def publish(build, output, pack=None):
+    src = build.resolve(strict=True)
+    dst = output.resolve()
     m = verify(src)
+    if pack is None and ('model' in m or 'pack' in m):
+        pack = src / 'pack/libquactlize_ppu_pack.so'
+    # Historical packages may contain a caller. Never carry it into a new publication.
+    m.pop('model', None)
+    m.pop('pack', None)
     if dst.exists():
         raise ValueError("publication output already exists")
     if not dst.is_relative_to(ROOT / "prebuilt/ppu0010"):
@@ -86,6 +57,9 @@ def main():
             raise ValueError("SIMT proof payload identity differs")
         paths.append(item["path"])
     for name in paths:
+        if ('llama' in Path(name).parts or
+                Path(name).name.startswith(('llama-', 'libllama', 'libggml', 'libmtmd', 'libncp'))):
+            raise ValueError('caller binary is outside the Quactlize package: ' + name)
         source = (src / name).resolve(strict=True)
         if not source.is_relative_to(src) or not source.is_file() or (src/name).is_symlink():
             raise ValueError("publication source is not a regular internal payload")
@@ -103,13 +77,23 @@ def main():
             scope="ON_DEMAND_JIT_USE_MODEL_PREWARM_PLAN"), indent=2)+"\n")
     else:
         shutil.copy2(src / "plan.json", dst / "plan.json")
-    if a.llama_build:
-        m['model'] = attach_model(dst, a.llama_build, a.llama_source, a.pack_library)
-        (dst/'manifest.json').write_text(json.dumps(m, indent=2)+'\n')
+    if pack is not None:
+        m['pack'] = attach_pack(dst, pack)
+    (dst/'manifest.json').write_text(json.dumps(m, indent=2)+'\n')
     verify(dst)
     print(
         f"KPACK_NATIVE_PUBLISHED modules={len(m['modules'])} output={dst} device_validation=PENDING"
     )
+    return m
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--build', type=Path, required=True)
+    p.add_argument('--output', type=Path, required=True)
+    p.add_argument('--pack-library', type=Path)
+    a = p.parse_args()
+    publish(a.build, a.output, a.pack_library)
 
 
 if __name__ == "__main__":

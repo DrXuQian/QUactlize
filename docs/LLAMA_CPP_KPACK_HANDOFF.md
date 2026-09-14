@@ -16,7 +16,11 @@ it is not the requested CI performance baseline. The supplied NCP source is
 192 jobs and uses those caller binaries for every model phase, while
 reusing the published Quactlize DSOs. See the [command and build receipt](KPACK_Q4_MODEL_CLOSURE.md#next-box-run).
 Original NCP files and existing builds are not reset. A replacement caller
-artifact remains pending the joint box build; no old binary is relabeled.
+is built only on the box and is not uploaded to Quactlize. The runtime-only
+package `kpack-model-runtime-v1` replaces the combined package for current
+runs: 12 LFS payloads, about9.3MiB, with the same Quactlize kernel hashes.
+The publisher no longer accepts llama binary inputs. An empty `.gitmodules`
+is accepted during the isolated checkout; malformed config still fails.
 
 ## Current model closure checklist, 2026-09-14
 

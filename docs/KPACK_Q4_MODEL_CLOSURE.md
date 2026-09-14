@@ -4,6 +4,19 @@ Current scope: the private `dev/quactlize-v0.3.0` branch, canonical K-pack,
 request batch 1, prompt 2048. Q4_K_M model files can contain Q5_K, Q6_K and
 Q8_0 tensors; their actual paths must be covered, not just qtype 12.
 
+## Caller and runtime package boundary, 2026-09-15
+
+No llama executables or llama/ggml dependency libraries are published by
+Quactlize. `publish_kpack_dispatch.py` only copies Quactlize runtime, policy,
+producer and gate payloads; the old `--llama-build`/`--llama-source` options
+are removed. The focused `kpack-model-runtime-v1` package has 12 LFS
+payloads, about9.3MiB, with unchanged kernel hashes. The old combined
+package remains historical and is not fetched by the current runner.
+
+Update source with `GIT_LFS_SKIP_SMUDGE=1 git pull --ff-only` so unrelated
+historical experiments are not downloaded. The runner then pulls only
+its pinned runtime package and builds the caller on the box.
+
 ## Build entry correction, 2026-09-15
 
 Use the private llama branch's `.aoneci/scripts/build.sh` for the next
@@ -30,6 +43,8 @@ packaged caller. `results/caller-ci-build.json` records source IDs, CMake
 flags, executable/library hashes and the DeepGEMM JIT headers. Quactlize
 DSOs and gate binaries still come from the unchanged LFS package. A joint
 build has not run locally; its receipt is produced only after box success.
+An empty/comment-only `.gitmodules` means no submodules; Git's no-match
+status1 is not a failed checkout. Invalid config still fails before build.
 
 ## Current checklist, 2026-09-14
 
@@ -130,11 +145,11 @@ PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
 JOBS=192 CUDA_VISIBLE_DEVICES=0 bash tools/run_kpack_q4_model_box.sh
 ```
 
-`tools/kpack_q4_model_artifact.json` separately pins the unchanged LFS
-runtime and the CI-enabled private llama source. This command builds NCP
+`tools/kpack_q4_model_artifact.json` separately pins the runtime-only LFS
+package and the CI-enabled private llama source. This command builds NCP
 FA/MoE and llama via `.aoneci`, then runs the gates and model phases. The
 package supplies the paired producer, small runtime, seven gate parents
-and mixed stage executable; its old model executables are not run. No
+and mixed stage executable; it contains no llama binaries. No
 full sweep or large Quactlize rebuild is required. Missing model-specific
 parents are JIT-compiled outside capture during first use. The independent
 CI source/build directory remains on disk for inspecting or packaging a

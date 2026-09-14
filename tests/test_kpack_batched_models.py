@@ -271,6 +271,39 @@ def test_joint_ci_checkout_preserves_dirty_source_and_nested_submodules(tmp_path
         clone_checkout(source, target, pin)  # Never reset or clear an existing build checkout.
 
 
+@pytest.mark.parametrize('modules', [None, '', '# No submodules\n', '[other]\n    enabled = true\n'])
+def test_joint_ci_checkout_without_submodule_entries(tmp_path, modules):
+    from tools.build_kpack_model_ci import clone_checkout, git
+    source, target = tmp_path / 'source', tmp_path / 'isolated'
+    subprocess.run(['git', 'init', '-q', str(source)], check=True)
+    git(source, 'config', 'user.name', 'Test')
+    git(source, 'config', 'user.email', 'test@example.invalid')
+    (source / 'source.txt').write_text('committed source')
+    if modules is not None:
+        (source / '.gitmodules').write_text(modules)
+    git(source, 'add', '.')
+    git(source, 'commit', '-qm', 'fixture')
+    pin = git(source, 'rev-parse', 'HEAD')
+    clone_checkout(source, target, pin)
+    assert git(target, 'rev-parse', 'HEAD') == pin
+    assert git(target, 'status', '--porcelain') == ''
+    assert (target / 'source.txt').read_text() == 'committed source'
+
+
+def test_joint_ci_checkout_still_rejects_malformed_gitmodules(tmp_path):
+    from tools.build_kpack_model_ci import clone_checkout, git
+    source, target = tmp_path / 'source', tmp_path / 'isolated'
+    subprocess.run(['git', 'init', '-q', str(source)], check=True)
+    git(source, 'config', 'user.name', 'Test')
+    git(source, 'config', 'user.email', 'test@example.invalid')
+    (source / '.gitmodules').write_text('[submodule broken\n')
+    git(source, 'add', '.gitmodules')
+    git(source, 'commit', '-qm', 'malformed fixture')
+    with pytest.raises(subprocess.CalledProcessError) as failure:
+        clone_checkout(source, target, git(source, 'rev-parse', 'HEAD'))
+    assert failure.value.returncode != 1
+
+
 def test_joint_ci_receipt_requires_hooks_libraries_and_jit_headers(tmp_path, monkeypatch):
     from tools import build_kpack_model_ci as ci
     llama, ncp, sdk = [tmp_path / name for name in ('llama', 'ncp', 'sdk')]
@@ -300,6 +333,70 @@ def test_joint_ci_receipt_requires_hooks_libraries_and_jit_headers(tmp_path, mon
     header.unlink()
     with pytest.raises(ValueError, match='JIT include tree'):
         ci.build_receipt(llama, ncp, sdk, 192)
+
+
+def test_runtime_publication_excludes_historical_llama_binaries(tmp_path, monkeypatch):
+    from tools import publish_kpack_dispatch as publisher
+    from tools.verify_kpack_dispatch import verify
+    from quactlize.runtime.compiler import sha, source_contract
+    src = tmp_path / 'historical'
+    src.mkdir()
+    identity = dict(kernel='kernel', generator='generator', flags=[], sdk='sdk', host='host')
+    manifest = dict(schema='quactlize.kpack-native-dispatch.v1', modules=[], jit_required=True,
+                    jit_source_identity=identity, jit_source_contract=source_contract(identity))
+    for name, field in (('libquactlize_kpack_dispatch.so', 'dispatch_sha256'),
+                        ('libquactlize_ppu_execution.so', 'execution_sha256')):
+        (src / name).write_bytes(b'Quactlize fixture')
+        manifest[field] = sha(src / name)
+    old = dict(schema='quactlize.q4-model-deployment.v1', llama_source_commit='a'*40, files={}, links={})
+    for name in ('llama-server', 'llama-batched-bench', 'llama-perplexity', 'libggml-cuda.so'):
+        path = src / 'llama/bin' / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'historical caller fixture')
+        old['files'][str(path.relative_to(src))] = sha(path)
+    pack = src / 'pack/libquactlize_ppu_pack.so'
+    pack.parent.mkdir()
+    pack.write_bytes(b'Quactlize producer fixture')
+    (pack.parent / 'manifest.json').write_text(json.dumps(dict(
+        schema='quactlize.kpack-device-pack-build.v1', library=pack.name, sha256=sha(pack))))
+    for path in (pack, pack.parent / 'manifest.json'):
+        old['files'][str(path.relative_to(src))] = sha(path)
+    manifest['model'] = old
+    (src / 'manifest.json').write_text(json.dumps(manifest))
+    monkeypatch.setattr(publisher, 'ROOT', tmp_path)
+    dst = tmp_path / 'prebuilt/ppu0010/runtime-only'
+    result = publisher.publish(src, dst)
+    assert 'model' not in result and 'pack' in result
+    assert not (dst / 'llama').exists()
+    assert (src / 'llama/bin/llama-server').is_file()  # Historical payloads are not deleted.
+    assert result['dispatch_sha256'] == manifest['dispatch_sha256']
+    assert result['execution_sha256'] == manifest['execution_sha256']
+    assert verify(dst)['pack']['files']['pack/libquactlize_ppu_pack.so'] == sha(pack)
+    result['pack']['files']['llama/bin/llama-server'] = 'b'*64
+    (dst / 'manifest.json').write_text(json.dumps(result))
+    with pytest.raises(ValueError, match='packer package payload set'):
+        verify(dst)
+    result['pack']['files'].pop('llama/bin/llama-server')
+    (dst / 'manifest.json').write_text(json.dumps(result))
+    (dst / 'pack/libquactlize_ppu_pack.so').write_bytes(b'wrong producer')
+    with pytest.raises(ValueError, match='packer payload differs'):
+        verify(dst)
+    extra = src / 'llama-server'
+    extra.write_bytes(b'caller cannot enter as a gate payload')
+    manifest['decode_io_gate'] = dict(simt_binaries=[dict(path=extra.name, sha256=sha(extra))])
+    (src / 'manifest.json').write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match='caller binary is outside'):
+        publisher.publish(src, tmp_path / 'prebuilt/ppu0010/rejected')
+    assert not (tmp_path / 'prebuilt/ppu0010/rejected').exists()
+
+
+def test_publisher_has_no_llama_binary_cli_and_checkout_ignores_caller_payloads():
+    result = subprocess.run([sys.executable, str(ROOT / 'tools/publish_kpack_dispatch.py'),
+        '--build', '/unused', '--output', '/unused', '--llama-build', '/unused'], capture_output=True, text=True)
+    assert result.returncode == 2 and 'unrecognized arguments: --llama-build' in result.stderr
+    for path in ('prebuilt/ppu0010/test/llama/bin/llama-server',
+                 'prebuilt/ppu0010/test/libggml-cuda.so.0', 'prebuilt/ppu0010/test/llama-server'):
+        subprocess.run(['git', '-C', str(ROOT), 'check-ignore', '-q', path], check=True)
 
 
 def test_model_numerical_metrics_bind_actual_coverage_and_reject_nonfinite():

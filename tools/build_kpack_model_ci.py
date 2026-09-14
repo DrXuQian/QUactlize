@@ -26,8 +26,12 @@ def clone_checkout(source, target, revision):
     git(target, 'checkout', '--detach', revision)
     if not (target / '.gitmodules').is_file():
         return
-    entries = git(target, 'config', '-f', '.gitmodules', '--get-regexp', r'^submodule\..*\.path$')
-    for entry in entries.splitlines():
+    entries = subprocess.run(['git', '-C', str(target), 'config', '-f', '.gitmodules',
+        '--get-regexp', r'^submodule\..*\.path$'], text=True, stdout=subprocess.PIPE)
+    if entries.returncode == 1:  # No matching entries, including an empty .gitmodules.
+        return
+    entries.check_returncode()
+    for entry in entries.stdout.splitlines():
         _, name = entry.split(maxsplit=1)
         relative = Path(name)
         if relative.is_absolute() or '..' in relative.parts:
