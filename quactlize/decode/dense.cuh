@@ -120,7 +120,9 @@ extern "C" int quactlize_kpack_decode_dense_device_v1(char* name,int capacity,in
   hggcDeviceProp prop{};
   if (hggcGetDevice(device)!=hggcSuccess || hggcGetDeviceProperties(&prop,*device)!=hggcSuccess)return QK_RUNTIME_ERROR;
   if (std::strlen(prop.name)>=size_t(capacity))return QK_INVALID;
-  std::strcpy(name,prop.name);*cu=prop.multiProcessorCount;return QK_OK;
+  *cu=cutlass::KernelHardwareInfo::query_device_multiprocessor_count(*device);
+  if (*cu<=0) return QK_RUNTIME_ERROR;
+  std::strcpy(name,prop.name);return QK_OK;
 }
 extern "C" int quactlize_kpack_decode_dense_query_v1(qkd_dense_call_v1 const* d,qk_recipe_v1 const* r,qk_resources_v1* out) {
   using namespace quactlize::decode;

@@ -187,6 +187,13 @@ def main():
     graph_bind(sdk)
     args.output.mkdir(parents=True, exist_ok=True)
     results = dict(device=device_identity(sdk), dense=[], chains=[], failures=[], source=m["jit_source_contract"])
+    from tools.probe_kpack_decode_device import probe
+    results['device_probes'], identity_ok = probe(sdk, args.bundle, m)
+    if not identity_ok:
+        results.update(status='INFRASTRUCTURE_FAIL', phase='device-identity', numerical_cases_started=0)
+        (args.output / 'summary.json').write_text(json.dumps(results, indent=2) + '\n')
+        print('KPACK_DECODE_IO_COMPLETE status=INFRASTRUCTURE_FAIL phase=device-identity numerical_cases_started=0', flush=True)
+        return 2
     fixtures = {}
     for index, point in enumerate(m["decode_io_gate"]["requests"]):
         q, _, _, n, k, _, _ = point["request"]

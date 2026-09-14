@@ -10,6 +10,64 @@ from test_kpack_jit import enable, helper_file
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_actual_typed_device_probe_uses_the_same_sm_attribute_as_query(tmp_path):
+    text = (ROOT / 'quactlize/decode/dense.cuh').read_text()
+    begin = text.index('extern "C" int quactlize_kpack_decode_dense_device_v1(')
+    body = text[begin:text.index('extern "C" int quactlize_kpack_decode_dense_query_v1(', begin)]
+    # PPU property structure reports 1, but the explicit SM attribute is 72.
+    # Compile the actual host entry, without constructing any GPU collective.
+    source = r'''
+#include <cstdint>
+#include <cstring>
+#include <cassert>
+enum { QK_OK=0,QK_INVALID=2,QK_RUNTIME_ERROR=3,hggcSuccess=0 };
+struct hggcDeviceProp { char name[256]; int multiProcessorCount; };
+int attribute=72;
+int hggcGetDevice(int* d) { *d=0; return 0; }
+int hggcGetDeviceProperties(hggcDeviceProp* p,int) {
+    std::strcpy(p->name,"PPU-ZW810");p->multiProcessorCount=1;return 0;
+}
+namespace cutlass { struct KernelHardwareInfo {
+    static int query_device_multiprocessor_count(int) { return attribute; }
+}; }
+''' + body + r'''
+int main() {
+    char name[128]{};int device=-1,cu=-1;
+    assert(quactlize_kpack_decode_dense_device_v1(name,128,&device,&cu)==0);
+    assert(cu==72 && device==0 && !std::strcmp(name,"PPU-ZW810"));
+    attribute=0;
+    assert(quactlize_kpack_decode_dense_device_v1(name,128,&device,&cu)==QK_RUNTIME_ERROR);
+    assert(quactlize_kpack_decode_dense_device_v1(name,2,&device,&cu)==QK_INVALID);
+}
+'''
+    path=tmp_path/'probe.cpp';path.write_text(source)
+    exe=tmp_path/'probe'
+    subprocess.run(['g++','-std=c++17',str(path),'-o',str(exe)],check=True)
+    subprocess.run([str(exe)],check=True)
+
+
+def test_decode_device_preflight_retains_mismatch_values(tmp_path, capsys):
+    import json
+    from types import SimpleNamespace
+    from tools.probe_kpack_decode_device import probe
+    from quactlize.runtime.compiler import sha
+    source=tmp_path/'probe.cpp'
+    source.write_text(r'''
+#include <cstring>
+extern "C" int hggcDeviceGetAttribute(int* v,int a,int d) { *v=72; return a!=16||d!=0; }
+extern "C" int quactlize_kpack_device_v1(char* n,int,int* d,int* c) { std::strcpy(n,"PPU-ZW810");*d=0;*c=72;return 0; }
+extern "C" int quactlize_kpack_decode_dense_device_v1(char* n,int,int* d,int* c) { std::strcpy(n,"PPU-ZW810");*d=0;*c=1;return 0; }
+''')
+    lib=tmp_path/'probe.so'
+    subprocess.run(['g++','-shared','-fPIC',str(source),'-o',str(lib)],check=True)
+    manifest=dict(modules=[dict(identity=dict(endpoints='typed') if typed else {},
+        path=lib.name,sha256=sha(lib),parent=dict(symbol='control'),key='a'*64) for typed in (False,True)])
+    rows,valid=probe(SimpleNamespace(lib=C.CDLL(str(lib))),tmp_path,manifest)
+    assert not valid and rows[0]['reported_cu']==72 and rows[1]['reported_cu']==1
+    assert rows[1]['attribute_cu']==72
+    assert 'IDENTITY_MISMATCH_NOT_NUMERICAL' in capsys.readouterr().out
+
+
 def test_typed_input_matches_independent_tsm_reader(tmp_path):
     binary = tmp_path / "decode-input"
     sdk = Path(os.environ.get("PPU_SDK", "/root/ppu-sdk/2.1.1"))
