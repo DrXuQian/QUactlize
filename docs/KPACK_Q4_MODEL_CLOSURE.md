@@ -4,6 +4,24 @@ Current scope: the private `dev/quactlize-v0.3.0` branch, canonical K-pack,
 request batch 1, prompt 2048. Q4_K_M model files can contain Q5_K, Q6_K and
 Q8_0 tensors; their actual paths must be covered, not just qtype 12.
 
+## Build entry correction, 2026-09-15
+
+Use the private llama branch's `.aoneci/scripts/build.sh` for the next
+caller build. Preserve its joint NCP FA/MoE build and ON hooks; the Quactlize
+branch also explicitly enables `GGML_NCP_QUACTLIZE=ON` and passes `PPU_NVCC`
+to the llama CMake invocation. Do not substitute a separate CMake recipe.
+
+The previous `f2a2f99` artifact used a direct CMake invocation with NCP
+FA/MoE OFF. It remains a historical functional candidate, not the requested
+CI performance baseline. A new caller/NCP package must be built and pinned
+before reporting performance under the CI configuration. The Quactlize
+mixed-chain and prefill DSOs do not need a new kernel sweep for this change.
+
+Local rebuild currently requires the `NCP_LIB_DIR` source checkout; none
+was found in the inspected local workspace. The script pins NCP revision
+`9bfb44383588cbf4eed98e3d51de90e8f82d1779`. Do not claim that joint build
+has run, or relabel the previous binaries as CI-built.
+
 ## Current checklist, 2026-09-14
 
 | Step | State | Completion evidence | Location |

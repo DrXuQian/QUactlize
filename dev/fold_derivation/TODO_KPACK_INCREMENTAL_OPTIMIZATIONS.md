@@ -1,5 +1,15 @@
 # K-pack incremental optimization backlog
 
+## CI build entry, 2026-09-15
+
+- Use the private llama `.aoneci/scripts/build.sh`; preserve NCP FA/MoE ON,
+  add Quactlize ON, and bind llama to the same `PPU_NVCC`.
+- Pending: locate `NCP_LIB_DIR`, build the pinned NCP revision and llama,
+  package both NCP libraries plus the DeepGEMM include tree, then replace
+  the model artifact pin. Do not treat the earlier FA/MoE-OFF package as
+  the CI performance baseline. Existing Quactlize library gates remain
+  separate from this caller build change.
+
 ## Q4 model final-result path, 2026-09-14
 
 The [ordered model closure table](../../docs/KPACK_Q4_MODEL_CLOSURE.md) is the

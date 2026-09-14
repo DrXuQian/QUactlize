@@ -4,6 +4,15 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
+## Build entry requirement, 2026-09-15
+
+The next llama caller build must use `.aoneci/scripts/build.sh` on
+`dev/quactlize-v0.3.0`, including the pinned NCP FA/MoE build. The script now
+explicitly enables Quactlize as well as the CI FA/MoE hooks. The previous
+`f2a2f99` package was built with a separate CMake command and FA/MoE OFF;
+it is not the requested CI performance baseline. Joint rebuilding and a
+replacement artifact are pending the local `NCP_LIB_DIR` source path.
+
 ## Current model closure checklist, 2026-09-14
 
 [Q4 model steps and exact remaining decode gap](KPACK_Q4_MODEL_CLOSURE.md).
