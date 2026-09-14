@@ -19,7 +19,7 @@
         GIT_LFS_SKIP_SMUDGE=1 git worktree add --detach "$ART" "$SHA"
     fi
     git -C "$ART" lfs pull origin --include="prebuilt/ppu0010/kpack-decode-io-device-v2/**" --exclude=""
-    git lfs pull origin --include="prebuilt/ppu0010/kpack-pack-v1/*.so" --exclude=""
+    git lfs pull origin --include="prebuilt/ppu0010/kpack-fusion-v1/libquactlize_ppu_pack.so" --exclude=""
     export BUNDLE="$ART/prebuilt/ppu0010/kpack-decode-io-device-v2"
     export FETCH_PAYLOADS=0
     printf 'Typed decode repair fetched: %s\ncompile=NONE jit=NONE\n' "$SHA"

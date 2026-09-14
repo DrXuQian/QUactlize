@@ -26,3 +26,10 @@ python3 tools/probe_kpack_decode_device.py --sdk "$PPU_SDK" --bundle "$BUNDLE"
 The repaired artifact must rerun the original 104 requests, both F32/BF16
 storage variants and the MoE graph controls. Numerical and performance verdicts
 remain pending until the new PPU results return.
+
+The subsequent `undefined symbol: quactlize_ppu_kpack_canonical_arrangement_v1`
+is a separate fixture dependency error. The decode runner incorrectly selected
+the old single-source `kpack-pack-v1` producer for the MoE chain gate. It now
+fetches the existing paired producer from `kpack-fusion-v1`, checks all four
+required exports plus canonical/size queries up front, and records its path
+and SHA256. No compute module or kernel body changes for this correction.

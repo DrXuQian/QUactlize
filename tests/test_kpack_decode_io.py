@@ -237,3 +237,93 @@ def test_box_package_matches_all_gate_requests_without_jit():
         assert '<hggc_runtime.h>' in native and 'cudaStream' not in native
         assert 'quactlize/runtime/' in native
     assert json.loads((root/manifest['decode_policy']['path']).read_text())
+
+
+@pytest.mark.parametrize('missing_index', range(4))
+def test_moe_pack_preflight_requires_every_entry_before_host_queries(tmp_path, missing_index):
+    import json
+    from tools.run_kpack_moe_gate import load_pack_library, PACK_SYMBOLS
+    from quactlize.runtime.compiler import sha
+    # Any query call here would return 99: all symbols must be resolved first.
+    source = tmp_path / 'partial.cpp'
+    source.write_text('\n'.join(f'extern "C" int {name}() {{ return 99; }}'
+                                for i, name in enumerate(PACK_SYMBOLS) if i != missing_index))
+    library = tmp_path / 'partial.so'
+    subprocess.run(['g++', '-shared', '-fPIC', str(source), '-o', str(library)], check=True)
+    (tmp_path / 'manifest.json').write_text(json.dumps(dict(
+        schema='quactlize.kpack-device-pack-build.v1', library=library.name, sha256=sha(library))))
+    with pytest.raises(ValueError, match='lacks the MoE producer ABI') as error:
+        load_pack_library(library)
+    assert PACK_SYMBOLS[missing_index] in str(error.value)
+
+
+def test_actual_published_moe_pack_abi_and_old_producer_negative(tmp_path):
+    """Real LFS host queries; runtime registration is stubbed, launches abort."""
+    # Loading the published PPU DSO registers its device images. Those calls
+    # are inert here so this host-only proof also runs without the SDK's
+    # Ubuntu 24.04 runtime. The exported producer queries remain unmodified.
+    source = tmp_path / 'registration.cpp'
+    source.write_text(r'''
+#include <cstdlib>
+extern "C" void** __hggcRegisterFatBinary(void*) { static void* image; return &image; }
+extern "C" void __hggcUnregisterFatBinary(void**) {}
+extern "C" void __hggcRegisterFunction(void**, ...) {}
+extern "C" void __hggcRegisterVar(void**, ...) {}
+extern "C" int __hggcPushCallConfiguration(...) { std::abort(); }
+extern "C" int __hggcPopCallConfiguration(...) { std::abort(); }
+extern "C" int hggcLaunchKernel(...) { std::abort(); }
+extern "C" int hggcGetLastError() { std::abort(); }
+''')
+    subprocess.run(['g++', '-shared', '-fPIC', str(source),
+                    '-Wl,-soname,libhggc_wrapper.so', '-o', str(tmp_path/'libhggc_wrapper.so')], check=True)
+    env = dict(os.environ)
+    env['LD_LIBRARY_PATH'] = str(tmp_path) + ':' + env.get('LD_LIBRARY_PATH', '')
+    source = r'''
+from pathlib import Path
+from tools.run_kpack_moe_gate import load_pack_library
+root = Path('prebuilt/ppu0010')
+try:
+    load_pack_library(root/'kpack-pack-v1/libquactlize_ppu_pack.so')
+except ValueError as error:
+    assert 'canonical_arrangement_v1' in str(error)
+    assert 'prepare_gate_up_dev_for_arrangement_v1' in str(error)
+else:
+    raise AssertionError('old single-source producer was admitted')
+_, proof = load_pack_library(root/'kpack-fusion-v1/libquactlize_ppu_pack.so')
+assert proof['status'] == 'PASS' and proof['scope'] == 'HOST_ABI_ONLY'
+assert proof['formats'] == [8, 10, 11, 12, 13, 14]
+assert len(proof['symbols']) == 4
+print('DECODE_PACK_DEPENDENCY PASS old=REJECTED paired=HOST_ABI_PASS kernels_launched=0')
+'''
+    import sys
+    result = subprocess.run([sys.executable, '-c', source], cwd=ROOT, env=env,
+                            text=True, capture_output=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'DECODE_PACK_DEPENDENCY PASS' in result.stdout
+    launcher = (ROOT/'tools/run_kpack_decode_io_device_fix_box.sh').read_text()
+    runner = (ROOT/'tools/run_kpack_decode_io_ppu_box.sh').read_text()
+    dependency = 'prebuilt/ppu0010/kpack-fusion-v1/libquactlize_ppu_pack.so'
+    assert dependency in launcher and dependency in runner
+    assert 'kpack-pack-v1' not in launcher + runner
+    assert runner.index('phase=pack-library') < runner.index('phase=indexed-stages')
+
+
+def test_decode_pack_failure_stops_before_fixtures_and_records_reason(tmp_path, monkeypatch):
+    import json
+    import sys
+    import tools.run_kpack_decode_io as gate
+    import tools.run_kpack_moe_gate as moe
+    monkeypatch.setattr(sys, 'argv', ['gate', '--sdk', str(tmp_path), '--bundle', str(tmp_path),
+                                    '--output', str(tmp_path/'results'), '--pack-library', str(tmp_path/'old.so')])
+    monkeypatch.setattr(gate, 'verify', lambda *args, **kwargs: {})
+    def reject(*args):
+        raise ValueError('missing paired producer')
+    def device(*args):
+        raise AssertionError('device initialized before dependency validation')
+    monkeypatch.setattr(moe, 'load_pack_library', reject)
+    monkeypatch.setattr(gate, 'SDK', device)
+    assert gate.main() == 2
+    result = json.loads((tmp_path/'results/summary.json').read_text())
+    assert result['status'] == 'INFRASTRUCTURE_FAIL'
+    assert result['phase'] == 'pack-library' and result['numerical_cases_started'] == 0
+    assert result['error'] == 'missing paired producer'

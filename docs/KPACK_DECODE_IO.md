@@ -50,13 +50,24 @@ cd /sim/eec/shared/junfu.qx/quactlize &&
 git pull --ff-only &&
 PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
 CUDA_VISIBLE_DEVICES=0 \
-bash tools/run_kpack_decode_io_ppu_box.sh
+bash tools/run_kpack_decode_io_device_fix_box.sh
 ```
 
 The script pulls only the focused payloads with Git LFS, preserves the SDK
 environment and leaves the invoking Docker shell open on failure. Requires
 the same PPU SDK/runtime used by earlier successful box runs, Python, NumPy
 and `gguf`. No model is needed. Compilers/JIT are not invoked by this gate.
+
+The launcher fetches the typed-device-query repair pinned at artifact commit
+`11d0f34be65b8c61997b47f4ca6000e6da8c489b`. Its MoE fixture producer is
+`prebuilt/ppu0010/kpack-fusion-v1/libquactlize_ppu_pack.so`, SHA256
+`b57013dc15d5ba50874480d8ae61a6143e929a1765cec352d0b3a0c29553e5fa`.
+The older `kpack-pack-v1` producer has neither the canonical-arrangement query
+nor the paired gate/up entry and cannot run this gate. All four producer
+exports, the manifest digest, canonical descriptors and single/paired plane
+sizes are checked before device test phases. This read-only ABI check is not
+numerical admission. An explicit incompatible `PACK_LIBRARY` override fails
+at preflight, rather than after the dense requests.
 
 The package contains 27 typed parents, five old-ABI/grouped controls and two
 SIMT-stage test binaries. There are 104 policy requests with both endpoint

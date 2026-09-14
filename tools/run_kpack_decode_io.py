@@ -183,10 +183,21 @@ def main():
     p.add_argument("--pack-library", type=Path, required=True)
     args = p.parse_args()
     m = verify(args.bundle, sdk=args.sdk)
+    from tools.run_kpack_moe_gate import chain_case, load_pack_library
+    args.output.mkdir(parents=True, exist_ok=True)
+    try:
+        library, pack_identity = load_pack_library(args.pack_library)
+    except (OSError, ValueError, RuntimeError) as error:
+        traceback.print_exc()
+        failure = dict(status='INFRASTRUCTURE_FAIL', phase='pack-library',
+                       numerical_cases_started=0, error=str(error))
+        (args.output / 'summary.json').write_text(json.dumps(failure, indent=2) + '\n')
+        print('KPACK_DECODE_IO_COMPLETE status=INFRASTRUCTURE_FAIL phase=pack-library numerical_cases_started=0', flush=True)
+        return 2
     sdk = SDK(args.sdk)
     graph_bind(sdk)
-    args.output.mkdir(parents=True, exist_ok=True)
-    results = dict(device=device_identity(sdk), dense=[], chains=[], failures=[], source=m["jit_source_contract"])
+    results = dict(device=device_identity(sdk), pack_library=pack_identity,
+                   dense=[], chains=[], failures=[], source=m["jit_source_contract"])
     from tools.probe_kpack_decode_device import probe
     results['device_probes'], identity_ok = probe(sdk, args.bundle, m)
     if not identity_ok:
@@ -208,8 +219,6 @@ def main():
             traceback.print_exc()
             results["failures"].append(dict(request=point, error=str(error)))
         print(f"KPACK_DECODE_IO_PROGRESS completed={index+1}/{len(m['decode_io_gate']['requests'])} failures={len(results['failures'])}", flush=True)
-    from tools.run_kpack_moe_gate import chain_case
-    library = C.CDLL(str(args.pack_library.resolve()), mode=C.RTLD_LOCAL)
     options = SimpleNamespace(bundle=args.bundle, sdk=args.sdk, jit_cache=None, samples=3)
     for merged in (False, True):
         for router in (False, True):

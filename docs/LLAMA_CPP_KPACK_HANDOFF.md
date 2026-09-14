@@ -6,6 +6,15 @@ binary bundle, or loader contract changes.
 
 ## Current addition: decode F32/BF16 endpoints, 2026-09-14
 
+The original gate is superseded by
+`tools/run_kpack_decode_io_device_fix_box.sh`: it fetches typed modules at
+artifact commit `11d0f34be65b8c61997b47f4ca6000e6da8c489b`, with the SM-count
+attribute-query repair. The MoE fixture dependency is explicitly
+`kpack-fusion-v1/libquactlize_ppu_pack.so` (canonical + single + paired
+producer), not the old `kpack-pack-v1` DSO. The complete producer ABI is
+checked before numerical phases. These packaging/query corrections are not
+PPU numerical or model-performance admission.
+
 `prebuilt/ppu0010/kpack-decode-io-v1` is the focused, locally compiled
 endpoint gate: 27 typed dense parents, five compatibility/grouped controls,
 the small dispatcher, unchanged measured SIMT execution DSO, and two fused

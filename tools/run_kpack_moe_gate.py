@@ -24,10 +24,67 @@ from tools.kpack_warmup_fixture import prepare_expert
 from tools.run_kpack_gemv_gate import Resources
 from tools.run_kpack_grouped_device_gate import graph_bind
 from tools.run_kpack_pack_gate import Arrangement, Sizes, bind, device_identity
+from quactlize.runtime.compiler import sha
 from tools.verify_kpack_dispatch import verify
 
 CHAIN_CASES=tuple((merged,tokens,router) for tokens in (1,2,3,4)
                   for merged in (False,True) for router in (False,True))
+
+
+PACK_SYMBOLS = (
+    'quactlize_ppu_kpack_canonical_arrangement_v1',
+    'quactlize_ppu_kpack_sizes_for_arrangement_v1',
+    'quactlize_ppu_prepare_fully_quantized_dev_for_arrangement_v2',
+    'quactlize_ppu_prepare_gate_up_dev_for_arrangement_v1',
+)
+
+
+def load_pack_library(path):
+    """Validate the actual paired producer before allocating any fixtures.
+
+    The original kpack-pack-v1 DSO only supports the single-source API. It
+    cannot supply this gate's canonical query or fused gate/up producer.
+    These host queries establish ABI compatibility, not GPU correctness.
+    """
+    from quactlize.execution.native import arrangement
+    path = path.resolve(strict=True)
+    manifest = json.loads((path.parent / 'manifest.json').read_text())
+    if (manifest.get('schema') != 'quactlize.kpack-device-pack-build.v1' or
+            manifest.get('library') != path.name or sha(path) != manifest.get('sha256')):
+        raise ValueError(f'pack library differs from its build manifest: {path}')
+    lib = C.CDLL(str(path), mode=C.RTLD_LOCAL)
+    missing = [name for name in PACK_SYMBOLS if not hasattr(lib, name)]
+    if missing:
+        raise ValueError(f'pack library lacks the MoE producer ABI: {path}; missing={missing}; '
+                         'use kpack-fusion-v1/libquactlize_ppu_pack.so, not kpack-pack-v1')
+    canonical = lib.quactlize_ppu_kpack_canonical_arrangement_v1
+    canonical.argtypes, canonical.restype = [C.c_int, C.POINTER(Arrangement)], C.c_int
+    query = lib.quactlize_ppu_kpack_sizes_for_arrangement_v1
+    query.argtypes, query.restype = [C.c_int] * 4 + [C.POINTER(Arrangement), C.POINTER(Sizes)], C.c_int
+    formats = [8, 10, 11, 12, 13, 14]
+    for q in formats:
+        actual = Arrangement()
+        checked(canonical(q, C.byref(actual)), 'pack canonical query')
+        if bytes(actual) != bytes(arrangement(q)):
+            raise ValueError(f'pack canonical arrangement differs from consumer: q={q}')
+        for n in (256, 512):  # Single and paired N, with more than one expert.
+            e, k = 2, 512
+            block, width = (32, 34) if q == 8 else (256, ref.SPECS[q].raw_bytes)
+            raw = e * n * (k // block) * width
+            low, high = (e * n * k * b // 8 for b in (actual.bits, actual.high_bits))
+            expected = (raw, low, high, raw - low - high)
+            sizes = Sizes()
+            checked(query(n, k, e, q, C.byref(actual), C.byref(sizes)), 'pack plane sizes')
+            if tuple(getattr(sizes, name) for name, _ in Sizes._fields_) != expected:
+                raise ValueError(f'pack plane sizes differ from contract: q={q} n={n}')
+        wrong = Arrangement.from_buffer_copy(actual)
+        wrong.mapping_id ^= 1
+        if query(256, 512, 2, q, C.byref(wrong), C.byref(Sizes())) != 38:
+            raise ValueError(f'pack producer accepts a wrong mapping: q={q}')
+    record = dict(path=str(path), sha256=manifest['sha256'], symbols=list(PACK_SYMBOLS),
+                  formats=formats, scope='HOST_ABI_ONLY', status='PASS')
+    print('KPACK_MOE_PACK_LIBRARY ' + json.dumps(record), flush=True)
+    return lib, record
 
 
 def chain_requests(merged,tokens):
@@ -214,8 +271,9 @@ def main():
     args=parser.parse_args()
     if args.samples<3:parser.error('at least 3 samples')
     verify(args.bundle);args.output.mkdir(parents=True,exist_ok=False)
-    sdk=SDK(args.sdk);graph_bind(sdk);lib=C.CDLL(str(args.pack_library.resolve()),mode=C.RTLD_LOCAL)
-    result=dict(status='INCOMPLETE',device=device_identity(sdk),pairs=[],chains=[],failures=[])
+    lib,pack_identity=load_pack_library(args.pack_library)
+    sdk=SDK(args.sdk);graph_bind(sdk)
+    result=dict(status='INCOMPLETE',device=device_identity(sdk),pack_library=pack_identity,pairs=[],chains=[],failures=[])
     try:
         for q in (8,10,11,12,13,14):
             r=Resources(sdk)

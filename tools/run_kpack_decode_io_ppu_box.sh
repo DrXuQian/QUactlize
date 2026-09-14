@@ -38,11 +38,11 @@
     [[ "$CUDA_VISIBLE_DEVICES" =~ ^[0-9]+$ ]]
     if [[ ${FETCH_PAYLOADS:-1} == 1 ]]; then
         phase=fetch
-        git lfs pull --include="prebuilt/ppu0010/kpack-decode-io-v1/**,prebuilt/ppu0010/kpack-pack-v1/*.so" --exclude=""
+        git lfs pull --include="prebuilt/ppu0010/kpack-decode-io-v1/**,prebuilt/ppu0010/kpack-fusion-v1/libquactlize_ppu_pack.so" --exclude=""
     fi
     BUNDLE=$(realpath -e -- "${BUNDLE:-$ROOT/prebuilt/ppu0010/kpack-decode-io-v1}")
     test -n "$BUNDLE" && test -f "$BUNDLE/manifest.json"
-    PACK=$(realpath -e -- "${PACK_LIBRARY:-$ROOT/prebuilt/ppu0010/kpack-pack-v1/libquactlize_ppu_pack.so}")
+    PACK=$(realpath -e -- "${PACK_LIBRARY:-$ROOT/prebuilt/ppu0010/kpack-fusion-v1/libquactlize_ppu_pack.so}")
     test -n "$PACK" && test -f "$PACK"
     RESULT_DIR=$(realpath -e -- "${RESULT_ROOT:-/workspace}")
     test -n "$RESULT_DIR" && test -d "$RESULT_DIR"
@@ -61,6 +61,13 @@ for item in manifest['decode_io_gate']['simt_binaries']:
     if path.parent != root or sha(path)!=item['sha256']:
         raise ValueError('SIMT proof payload differs')
 print('KPACK_DECODE_IO_PAYLOAD PASS compile=NONE jit=NONE')
+PY
+    phase=pack-library
+    "$PYTHON" - "$PACK" 2>&1 <<'PY' | tee "$RUN/results/pack-library.log"
+from pathlib import Path
+import sys
+from tools.run_kpack_moe_gate import load_pack_library
+load_pack_library(Path(sys.argv[1]))
 PY
     printf 'Use one idle PPU; do not overlap the eight-card cost campaign. run=%s\n' "$RUN"
     failed=0
