@@ -10,10 +10,16 @@ binary bundle, or loader contract changes.
 The new prefill composition return `A4NxtK` is reviewed: 9/9 contexts,
 27 graph replays, 40 SF config checks pass. This closes the published
 prefill library gate, not the new-branch whole-model gate.
-Direct F32 dense and measured SIMT calls already exist. Mixed SIMT/TC MoE
-fusion still declines in the caller because its chain ABI accepts only TC
-handles. That bridge and a model runner pinned to the new package remain
-open; the old fusion runner's default package must not be timed as this build.
+Direct F32 dense and measured SIMT calls already exist. The additive mixed
+SIMT/TC MoE bridge is now implemented without changing measured recipes or
+offline bytes. SIMT keeps F32 caller-order IO; TC keeps compact FP16 inputs
+and ordered split reduction. Shared SwiGLU performs the required transition;
+SIMT down writes the final caller output directly. See the table above for
+the exact pending 80-stage/24-chain device denominator.
+`tools/run_kpack_q4_model_box.sh` is the new prebuilt deployment entry. It
+pins the private v0.3.0 caller and small runtime, checks mixed chains before
+model numerics, and separates warmed ABBA timings from Asys. Do not use the
+old fusion-v3 defaults as evidence for this build.
 
 ## Current addition: composed prefill candidate, 2026-09-14
 

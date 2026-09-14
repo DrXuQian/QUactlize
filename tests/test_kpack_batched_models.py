@@ -211,6 +211,54 @@ def test_focused_int4_plan_has_only_2048_and_short_decode():
     assert 3 * sum(tg for _, tg, _ in sequence(focused, 1)) == 768
 
 
+def test_final_model_runner_uses_pinned_prebuilt_and_separate_proof():
+    text = (ROOT / 'tools/run_kpack_q4_model_box.sh').read_text()
+    subprocess.run(['bash', '-n', str(ROOT/'tools/run_kpack_q4_model_box.sh')], check=True)
+    assert '\n(\n' in text and 'trap finish EXIT' in text
+    assert 'lfs pull origin' in text and 'kpack_q4_model_artifact.json' in text
+    assert 'dev/quactlize-v0.3.0' in text and 'cmake --build' not in text
+    assert '--mixed' in text and 'cells=80' in text
+    assert text.index('stage=mixed-decode-gate') < text.index('stage=model-numerical') < text.index('stage=model-benchmark') < text.index('stage=model-trace')
+    assert '--order abba --require-selected' in text
+    assert 'kpack-fusion-v3/dispatch' not in text
+    assert '--exclude=\'*.asysrep\'' in text
+    assert 'DrXuQian/llama.cpp.git' in text and 'ggml-org/llama.cpp.git' not in text
+
+
+def test_model_numerical_metrics_bind_actual_coverage_and_reject_nonfinite():
+    from tools.run_kpack_model_validation import numerical_metrics
+    metrics = dict(ppl=r'Final estimate: PPL =\s*(\S+)', mean_kld=r'Mean KLD:\s*(\S+)',
+                   max_kld=r'Maximum KLD:\s*(\S+)', ppl_ratio=r'Ratio:\s*(\S+)', same_top_pct=r'Same top:\s*(\S+)')
+    text = 'perplexity: calculating perplexity over 2 chunks, n_ctx=2048, batch_size=2048, n_seq=1\nFinal estimate: PPL = 1.25'
+    assert numerical_metrics(text, metrics, 2048, 2048, 2, True) == dict(ppl=1.25)
+    for bad in (text.replace('batch_size=2048', 'batch_size=128'), text.replace('1.25', 'nan'),
+                text.replace('chunks', 'missing'), text+'\nCUDA error: invalid image'):
+        with pytest.raises(ValueError):
+            numerical_metrics(bad, metrics, 2048, 2048, 2, True)
+    kld = 'kl_divergence: computing over 2 chunks, n_ctx=256, batch_size=1, n_seq=1\nMean KLD: 0.01\nMaximum KLD: 0.02\nRatio: 1.002\nSame top: 99.8'
+    assert numerical_metrics(kld, metrics, 1, 256, 2, False)['mean_kld'] == .01
+    with pytest.raises(ValueError):
+        numerical_metrics(kld.replace('Maximum KLD', 'Missing'), metrics, 1, 256, 2, False)
+
+
+def test_model_trace_reuses_reference_tokens_and_never_times_profiler(tmp_path, monkeypatch):
+    from tools import run_kpack_model_validation as model
+    commands = []
+    def fake_run(argv, log):
+        commands.append(argv)
+        output = Path(argv[argv.index('--output')+1]); output.mkdir()
+        (output/'proof.json').write_text(json.dumps(dict(input_tokens_sha256='a'*64, missing_ops=[])))
+    monkeypatch.setattr(model, 'run', fake_run)
+    args = SimpleNamespace(llama=Path('/source'), build=Path('/build'), cache=tmp_path/'cache',
+        bundle=Path('/bundle'), asys=Path('/asys'), inspector=Path('/inspect'), jit_cache=tmp_path/'jit')
+    model.traces(args, dict(name='model', path='/model.gguf'), tmp_path, tmp_path/'inventory.json')
+    assert len(commands)==2
+    ref, candidate = commands
+    assert '--proof-tokens' not in ref
+    assert candidate[candidate.index('--proof-tokens')+1] == tmp_path/'reference/proof-request/input-tokens.json'
+    assert all('--proof-only' in c and c[c.index('--proof-prompt')+1]==2048 for c in commands)
+
+
 def test_progress_distinguishes_per_token_from_total_time():
     source = json.loads((ROOT / "tools/kpack_batched_int4_2048.json").read_text())
     row = dict(n_kv_max=2176, pp=2048, tg=128, pl=1, n_batch=2048, n_ubatch=2048,

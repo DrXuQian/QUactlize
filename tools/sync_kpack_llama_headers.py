@@ -12,6 +12,7 @@ FILES={
     'quactlize/decode/api.h':'kpack_decode_io.h',
     'quactlize/dequant/api.h':'kpack_dequant.h',
     'quactlize/prefill/api.h':'kpack_prefill.h',
+    'quactlize/execution/q4_decode.h':'kpack_q4_decode.h',
 }
 INCLUDES={
     '../runtime/abi.h':'kpack_module.h',
@@ -19,6 +20,8 @@ INCLUDES={
     '../integrations/llama/indexed.h':'kpack_indexed.h',
     '../decode/api.h':'kpack_decode_io.h',
     '../dequant/api.h':'kpack_dequant.h',
+    '../execution/q4_decode.h':'kpack_q4_decode.h',
+    '../include/quactlize_ppu_config.h':'quactlize_ppu_config.h',
 }
 
 
@@ -27,6 +30,8 @@ def sync(llama):
     if not folder.is_dir():raise ValueError('missing private integration headers')
     for source,target in FILES.items():
         text=(ROOT/source).read_text()
+        if source=='quactlize/execution/q4_decode.h':
+            text=text.replace('"api.h"','"kpack_execution.h"')
         for before,after in INCLUDES.items():text=text.replace('"'+before+'"','"'+after+'"')
         (folder/target).write_text(text)
     sums=folder/'ABI_SHA256'

@@ -194,13 +194,14 @@ def test_bf16_storage_and_numerical_negatives():
 
 
 def test_llama_api_mirrors_and_dense_direct_pointers():
-    llama = Path('/root/llama.cpp/ggml/src/ggml-cuda')
+    llama = Path('/root/autodl-tmp/llama-v0.3.0/ggml/src/ggml-cuda')
     if not llama.is_dir():
         pytest.skip('private llama integration checkout is not present')
     expected = (ROOT/'quactlize/dispatch/api.h').read_text().replace(
         '#include "../runtime/abi.h"', '#include "kpack_module.h"').replace(
         '#include "../integrations/llama/indexed.h"', '#include "kpack_indexed.h"').replace(
-        '#include "../decode/api.h"', '#include "kpack_decode_io.h"')
+            '#include "../decode/api.h"', '#include "kpack_decode_io.h"').replace(
+            '#include "../execution/q4_decode.h"', '#include "kpack_q4_decode.h"')
     assert (llama/'quactlize/kpack_dispatch.h').read_text() == expected
     expected = (ROOT/'quactlize/decode/api.h').read_text().replace(
         '#include "../runtime/abi.h"', '#include "kpack_module.h"')
@@ -231,9 +232,12 @@ def test_box_package_matches_all_gate_requests_without_jit():
         assert point['status'] == 'SELECTED' and point['parent'] in ordinary
     for item in points['simt_binaries']:
         assert sha(root/item['path']) == item['sha256']
-        source = ROOT/'tests'/(item['path']+'.cu')
-        assert sha(source) == item['source_sha256']
-        native = native_simt_source(source.read_text())
+        # This frozen package predates the mixed-SIMT extension. Verify its
+        # actual published source, not today's expanded test denominator.
+        import hashlib
+        source = subprocess.check_output(['git','show','0eac0a0:tests/'+item['path']+'.cu'],cwd=ROOT)
+        assert hashlib.sha256(source).hexdigest() == item['source_sha256']
+        native = native_simt_source(source.decode())
         assert '<hggc_runtime.h>' in native and 'cudaStream' not in native
         assert 'quactlize/runtime/' in native
     assert json.loads((root/manifest['decode_policy']['path']).read_text())

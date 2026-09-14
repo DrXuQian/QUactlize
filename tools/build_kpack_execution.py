@@ -47,6 +47,7 @@ def build(sdk, output, jobs, variant="production"):
         source,
         ROOT / "quactlize/include",
         ROOT / "third_party/actlize/include",
+        ROOT / "third_party/actlize/tools/util/include",
     ]
     env = dict(os.environ)
     env["LD_LIBRARY_PATH"] = (
@@ -62,6 +63,10 @@ def build(sdk, output, jobs, variant="production"):
         }
     )
     hashes = {str(p.relative_to(ROOT)): sha(p) for p in inputs}
+    for folder in (ROOT/'quactlize/runtime',ROOT/'quactlize/integrations/llama'):
+        for p in sorted(folder.rglob('*')):
+            if p.is_file() and p.suffix in ('.h','.hpp','.cuh'):
+                hashes[str(p.relative_to(ROOT))]=sha(p)
     for p in (q4_decode_codegen.POLICY, q4_decode_codegen.POLICY.with_suffix('.hpp'),
               ROOT/'quactlize/execution/q4_decode_codegen.py',
               ROOT/'policies/kpack_zw810_heuristic_v1.hpp',
@@ -89,6 +94,7 @@ def build(sdk, output, jobs, variant="production"):
             ("dispatch", source / "dispatch.cpp", []),
             ("q4_decode", source / "q4_decode.cpp", []),
             ("q4_decode_io", source / "q4_decode_io.cu", []),
+            ("moe_mixed", source / "moe.cu", []),
         ]
         + selected_sources
         + [("adapters", p, []) for p in extra_sources]

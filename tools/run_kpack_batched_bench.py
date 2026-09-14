@@ -59,16 +59,17 @@ def validate_plan(plan):
 def inventory(path):
     with path.open("rb") as stream:
         header = read_gguf_header(stream, str(path))
-    eligible, omitted, q8 = [], [], []
+    eligible, omitted, q8, operators = [], [], [], set()
     for t in header["tensors"]:
         dims, q = t["dims_gguf"], t["qtype"]
         role = match_role(t["name"], len(dims)) if q in (8,10,11,12,13,14) else None
         if role and role[0].route_class in ("dense", "grouped") and dims[0] % (512 if q in (11,14) else 256) == 0 and dims[1] % 256 == 0:
             eligible.append(t["name"])
+            operators.add(role[0].route_class)
             if q == 8: q8.append(t["name"])
         else:
             omitted.append(dict(name=t["name"], qtype=q))
-    return dict(eligible=eligible, q8=q8, omitted=omitted,
+    return dict(eligible=eligible, q8=q8, omitted=omitted, operators=sorted(operators),
                 qtypes=dict(Counter(str(t["qtype"]) for t in header["tensors"])),
                 shards=header["metadata"].get("split.count", 1))
 
@@ -212,7 +213,8 @@ def run_arm(args, model, plan, inv, arm, directory, index):
         from quactlize_native import model_selection
         evidence = model_selection(SimpleNamespace(
             manifest=args.manifest, bundle=args.bundle, jit_cache=args.jit_cache,
-            jit_helper=ROOT / "tools/kpack_jit.py", jit_python=Path(sys.executable)), text)
+            jit_helper=ROOT / "tools/kpack_jit.py", jit_python=Path(sys.executable),
+            expected_ops=inv.get("operators")), text)
         q8_plans=[p for p in evidence["plans"] if p.get("q")=="8"]
         evidence["q8_w8a16_plans"] = len(q8_plans)
         evidence["moe_chains"] = [dict(re.findall(r"([a-z_]+)=([^\s]+)",line))
@@ -228,6 +230,8 @@ def run_arm(args, model, plan, inv, arm, directory, index):
             if not evidence["plans"] and not evidence["fallbacks"]:
                 raise ValueError(f"no selected or legacy K-pack compute plan; not a K-pack timing; "
                                  f"see {log} (plan receipts require --verbosity 4)")
+            if getattr(args, 'require_selected', False) and not evidence['fully_selected']:
+                raise ValueError('selected operator coverage incomplete or legacy fallback present')
             if inv["q8"] and (not q8_plans or any(p.get("activation")!="FP16" or
                     p.get("route") not in ("sf", "gemv") or p.get("scale_resident")!="1" for p in q8_plans)):
                 raise ValueError("Q8_0 W8A16 compute evidence missing or activation/scale contract differs")
@@ -274,6 +278,9 @@ def main():
     p.add_argument("--output-root", type=Path, default=Path("/workspace"))
     p.add_argument("--output",type=Path,help="fresh explicit run directory")
     p.add_argument("--repeats", type=int, default=1, help="measured passes after one full excluded pass per PP")
+    p.add_argument("--order", choices=("cache", "abba"), default="cache",
+                   help="cache: reference/cold/hot; abba: balanced performance comparison")
+    p.add_argument("--require-selected", action="store_true", help="reject missing operator receipts or legacy fallback")
     p.add_argument("--model", action="append", help="select model name(s); default is all five")
     p.add_argument("--model-root", type=Path, help="override the plan's model root")
     p.add_argument("--device",help="override the ordinal for single-device models only")
@@ -301,7 +308,7 @@ def main():
     if a.output: out.mkdir(parents=True,exist_ok=False)
     results = out / "results"
     results.mkdir()
-    save(results / "protocol.json", dict(plan=plan, repeats=a.repeats, first_pass_excluded=True,
+    save(results / "protocol.json", dict(plan=plan, repeats=a.repeats, first_pass_excluded=True, order=a.order,
         binary=str(a.binary), binary_sha256=sha(a.binary), policy_mode="auto",
         scope="SYNTHETIC_RANDOM_TOKENS_LLAMA_BATCHED_BENCH_NO_PROFILER",
         production_fusion="MOE_CHAIN_AND_GPU_GATE_UP_PAIR", kernel_execution_evidence="NOT_COLLECTED"))
@@ -317,7 +324,7 @@ def main():
                 save(directory / "inventory.json", inv)
                 reason = ("KPACK_TP_NOT_ADMITTED" if model["split"] == "tensor" else
                           "NO_SUPPORTED_MATRICES" if not inv["eligible"] else None)
-                arms = [] if reason else ["reference", "kpack", "kpack"]
+                arms = [] if reason else ["reference", "kpack", "kpack"] + (["reference"] if a.order == "abba" else [])
                 if reason:
                     statuses.append(dict(model=model["name"], arm="kpack", status="NOT_TESTED", reason=reason))
                     print(f"BATCHED_MODEL_SCOPE model={model['name']} kpack=NOT_TESTED reason={reason}", flush=True)

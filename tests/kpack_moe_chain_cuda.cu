@@ -20,6 +20,7 @@ void check(cudaError_t rc);
 static bool benchmark_prepare=false;
 static bool generic_prepare=false;
 static bool multi_token=false;
+static bool mixed_stages=false;
 template<class F> static void time_prepare(F prepare,int merged,int tokens,int topk,int experts,int router,int k) {
   constexpr int batch=64,samples=15;
   cudaGraph_t graph; cudaGraphExec_t instance;
@@ -134,19 +135,23 @@ struct Projection {
   qk_moe_projection_v1 p{};
   Buffer<Half> a,completed;
   Buffer<float> partial;
+  Buffer<float> float_a,float_completed;
   Buffer<int> offsets,rows,row_ids;
   Buffer<Shape> shapes;
   Buffer<Stride> strides;
   Buffer<void*> outputs;
   Buffer<moe::Header> header;
   Buffer<moe::BlockEntry> entries;
-  Projection(int m,int n,int k,int e,int tm,int s):a(size_t(m)*k+2),completed(size_t(m)*n),
-    partial(size_t(s)*m*n),offsets(e+1),rows(e),row_ids(m),shapes(e),strides(e*s),outputs(e*s),header(1),entries(m+2) {
+  bool simt;
+  Projection(int m,int n,int k,int e,int tm,int s,bool simt=false):a(size_t(m)*k+2),completed(size_t(m)*n),
+    partial(size_t(s)*m*n),float_a(size_t(m)*k+2),float_completed(size_t(m)*n+2),
+    offsets(e+1),rows(e),row_ids(m),shapes(e),strides(e*s),outputs(e*s),header(1),entries(m+2),simt(simt) {
     p.version=1; p.size=sizeof(p); p.m=m; p.n=n; p.k=k; p.experts=e; p.tile_m=tm; p.splits=s;
     p.a=a.ptr+1; p.output=completed.ptr; p.partials=partial.ptr;
     p.offsets=offsets.ptr; p.rows=rows.ptr; p.shapes=shapes.ptr; p.strides=strides.ptr;
     p.outputs=outputs.ptr; p.directory_header=header.ptr; p.directory_entries=entries.ptr+1; p.directory_capacity=m;
     p.io.row_ids=row_ids.ptr;
+    if (simt) {p.a=float_a.ptr+1;p.output=float_completed.ptr+1;}
   }
   std::vector<float> seed(int replay) {
     std::vector<float> raw(partial.count), sums(size_t(p.m)*p.n);
@@ -155,22 +160,28 @@ struct Projection {
     for (size_t i=0;i<half.size();++i) {
       float sum=0;
       for (int s=0;s<p.splits;++s) sum+=raw[size_t(s)*half.size()+i];
-      half[i]=Half(sum); sums[i]=float(half[i]);
+      half[i]=Half(sum); sums[i]=simt?sum:float(half[i]);
     }
     partial.put(raw); completed.put(half);
     a.put(std::vector<Half>(a.count,Half(-77.f)));
+    float_a.put(std::vector<float>(float_a.count,-77.f));
+    std::vector<float> values(float_completed.count,-77.f);
+    std::copy(sums.begin(),sums.end(),values.begin()+1);float_completed.put(values);
     entries.put(std::vector<moe::BlockEntry>(entries.count,{-123,-123,-123,-123}));
     return sums;
   }
 };
 
-static void run(bool merged,int tokens,int topk,int experts,int sg,int su,int sd,int router_mode=-1,int k=2048) {
+static void run(bool merged,int tokens,int topk,int experts,int sg,int su,int sd,int router_mode=-1,int k=2048,uint32_t simt_mask=0) {
   int m=tokens*topk,n=512,out_n=1024,ids_stride=topk+5;
   if (!fused_indexed_rows(m,tokens)) throw std::runtime_error("outside bounded fused decode chain");
   Buffer<int> ids(tokens*ids_stride);
   Buffer<float> source(size_t(tokens)*(k+17)), output(size_t(m)*(out_n+3)+2);
   Buffer<float> logits(tokens*256), bias(256), weights(m);
-  Projection gate(m,n*(merged?2:1),k,experts,8,sg), up(m,n,k,experts,16,su), down(m,out_n,n,experts,32,sd);
+  if (simt_mask&1) sg=1;
+  if (simt_mask&2) su=1;
+  if (simt_mask&4) sd=1;
+  Projection gate(m,n*(merged?2:1),k,experts,8,sg,simt_mask&1), up(m,n,k,experts,16,su,simt_mask&2), down(m,out_n,n,experts,32,sd,simt_mask&4);
   auto io=[&](Projection& p) {
     p.p.io={1,sizeof(qk_llama_indexed_v1),tokens,topk,1,0,ids_stride,k+17,k+17,out_n+3,
         ids.ptr,source.ptr,output.ptr+1,p.row_ids.ptr};
@@ -179,7 +190,14 @@ static void run(bool merged,int tokens,int topk,int experts,int sg,int su,int sd
   qk_moe_plan_v1 plan{1,sizeof(plan),uint32_t(merged),0,gate.p,up.p,down.p};
   if (router_mode>=0) plan.router={1,sizeof(plan.router),int(router_mode==1),int(router_mode!=2),
       int(router_mode==2),0,6.103515625e-5f,1.25f,logits.ptr,router_mode==1?bias.ptr:nullptr,weights.ptr};
+  MixedMoePlan mixed;static_cast<qk_moe_plan_v1&>(mixed)=plan;mixed.simt_mask=simt_mask;
   auto prepare=[&] {
+    if (simt_mask) {
+      if (moe_prepare_m1_supported(mixed)) moe_chain_prepare_m1<Shape,Stride><<<1,256,0,cudaStreamPerThread>>>(mixed);
+      else if (m>32) moe_chain_prepare<Shape,Stride,64><<<moe_prepare_blocks(experts,m),256,0,cudaStreamPerThread>>>(mixed);
+      else moe_chain_prepare<Shape,Stride><<<moe_prepare_blocks(experts,m),256,0,cudaStreamPerThread>>>(mixed);
+      return;
+    }
 #ifdef KPACK_MOE_PREPARE_BASELINE
     moe_chain_prepare<Shape,Stride><<<dim3(8,m),256,0,cudaStreamPerThread>>>(plan);
 #else
@@ -189,8 +207,12 @@ static void run(bool merged,int tokens,int topk,int experts,int sg,int su,int sd
     else moe_chain_prepare<Shape,Stride><<<moe_prepare_blocks(experts,m),256,0,cudaStreamPerThread>>>(plan);
 #endif
   };
-  auto activate=[&] { moe_chain_swiglu<<<dim3(2,m),256,0,cudaStreamPerThread>>>(plan); };
+  auto activate=[&] {
+    if (simt_mask) moe_chain_swiglu_mixed<<<dim3(2,m),256,0,cudaStreamPerThread>>>(mixed);
+    else moe_chain_swiglu<<<dim3(2,m),256,0,cudaStreamPerThread>>>(plan);
+  };
   auto finish=[&] {
+    if (simt_mask&4) return; // Stage-only fixture: no SIMT producer to finish.
 #define FINISH(S) case S: indexed_finish<S><<<dim3(4,m),256,0,cudaStreamPerThread>>>( \
     down.partial.ptr,down.completed.ptr,output.ptr+1,down.row_ids.ptr,m,out_n,out_n+3,down.header.ptr); break
     switch(sd) { FINISH(1); FINISH(2); FINISH(4); FINISH(8); }
@@ -258,7 +280,7 @@ static void run(bool merged,int tokens,int topk,int experts,int sg,int su,int sd
         bad+=offsets[e]!=begin || rows[e]!=count;
         bad+=cute::get<0>(shapes[e])!=count || cute::get<1>(shapes[e])!=p->p.n || cute::get<2>(shapes[e])!=p->p.k;
         for (int s=0;s<p->p.splits;++s) {
-          void* want=p->p.splits==1 ? (void*)(p->completed.ptr+size_t(begin)*p->p.n) :
+          void* want=p->p.splits==1 ? (void*)(static_cast<Half*>(p->p.output)+size_t(begin)*p->p.n) :
             (void*)(p->partial.ptr+(size_t(s)*m+begin)*p->p.n);
           bad+=pointers[s*experts+e]!=want || cute::get<0>(strides[s*experts+e])!=p->p.n;
         }
@@ -274,27 +296,42 @@ static void run(bool merged,int tokens,int topk,int experts,int sg,int su,int sd
       for (int i=tiles+1;i<int(entries.size());++i) bad+=entries[i].expert!=-123;
     }
     auto ga=gate.a.get(), ua=up.a.get(), da=down.a.get();
+    auto gfa=gate.float_a.get(), ufa=up.float_a.get(), dfa=down.float_a.get();
+    for (auto p:{&gate,&up,&down}) {
+      auto fa=p->float_a.get(),fc=p->float_completed.get();
+      bad+=fa.front()!=-77.f || fa.back()!=-77.f || fc.front()!=-77.f || fc.back()!=-77.f;
+    }
     auto got=output.get();
     bad+=ga.front().raw()!=Half(-77.f).raw() || ga.back().raw()!=Half(-77.f).raw();
     bad+=da.front().raw()!=Half(-77.f).raw() || da.back().raw()!=Half(-77.f).raw();
     for (int r=0;r<m;++r) {
       for (int c=0;c<k;++c) {
         Half want(ha[size_t(ordered[r]/topk)*(k+17)+c]);
-        bad+=ga[1+size_t(r)*k+c].raw()!=want.raw();
-        if (!merged) bad+=ua[1+size_t(r)*k+c].raw()!=want.raw();
+        if (gate.simt) bad+=gfa[1+size_t(r)*k+c]!=-77.f;
+        else bad+=ga[1+size_t(r)*k+c].raw()!=want.raw();
+        if (!merged) {
+          if (up.simt) bad+=ufa[1+size_t(r)*k+c]!=-77.f;
+          else bad+=ua[1+size_t(r)*k+c].raw()!=want.raw();
+        }
       }
       for (int c=0;c<n;++c) {
-        float g=gv[size_t(r)*gate.p.n+c],u=merged?gv[size_t(r)*gate.p.n+c+n]:uv[size_t(r)*n+c];
+        size_t gr=gate.simt?ordered[r]:r,ur=up.simt?ordered[r]:r;
+        float g=gv[gr*gate.p.n+c],u=merged?gv[gr*gate.p.n+c+n]:uv[ur*n+c];
         float value=(g/(1.f+std::exp(-g)))*u;
         Half want(value), swapped((u/(1.f+std::exp(-u)))*g);
         rounding_red+=float(want)!=value; gate_up_red+=want.raw()!=swapped.raw();
         // Host libm/device exp may straddle a half midpoint. Require tight
         // F32 error as well as counting exact half equality explicitly.
-        auto actual=da[1+size_t(r)*n+c];
-        activation_half_bad+=actual.raw()!=want.raw();
-        bad+=std::abs(float(actual)-float(want))>0.001f*std::max(1.f,std::abs(float(want)));
+        if (down.simt) {
+          float actual=dfa[1+size_t(ordered[r])*n+c];
+          bad+=!std::isfinite(actual) || std::abs(actual-value)>0.00001f*std::max(1.f,std::abs(value));
+        } else {
+          auto actual=da[1+size_t(r)*n+c];
+          activation_half_bad+=actual.raw()!=want.raw();
+          bad+=std::abs(float(actual)-float(want))>0.001f*std::max(1.f,std::abs(float(want)));
+        }
       }
-      for (int c=0;c<out_n;++c) bad+=got[1+size_t(ordered[r])*(out_n+3)+c]!=dv[size_t(r)*out_n+c];
+      for (int c=0;c<out_n;++c) bad+=got[1+size_t(ordered[r])*(out_n+3)+c]!=(down.simt?-123.f:dv[size_t(r)*out_n+c]);
       for (int c=out_n;c<out_n+3;++c) bad+=got[1+size_t(r)*(out_n+3)+c]!=-123.f;
     }
     bad+=got.front()!=-123.f || got.back()!=-123.f;
@@ -303,14 +340,15 @@ static void run(bool merged,int tokens,int topk,int experts,int sg,int su,int sd
       hi[1]=hi[0]; ids.put(hi);
       check(cudaGraphLaunch(instance,cudaStreamPerThread)); check(cudaDeviceSynchronize());
       bad+=!gate.header.get()[0].status || !down.header.get()[0].status;
-      auto invalid=output.get();
-      for (int r=0;r<m;++r) for (int c=0;c<out_n;++c) bad+=std::isfinite(invalid[1+size_t(r)*(out_n+3)+c]);
+      auto invalid=down.simt?down.float_a.get():output.get();
+      for (int r=0;r<m;++r) for (int c=0;c<(down.simt?n:out_n);++c)
+        bad+=std::isfinite(invalid[1+size_t(r)*(down.simt?n:out_n+3)+c]);
     }
   }
   check(cudaGraphExecDestroy(instance)); check(cudaGraphDestroy(graph));
-  std::printf("KPACK_MOE_CHAIN_CUDA merged=%d tokens=%d topk=%d experts=%d splits=%d,%d,%d router=%d k=%d prepare=%s replays=7 bad=%zu activation_half_bad=%zu rounding_red=%zu gate_up_red=%zu\n",
+  std::printf("KPACK_MOE_CHAIN_CUDA merged=%d tokens=%d topk=%d experts=%d splits=%d,%d,%d router=%d k=%d prepare=%s replays=7 bad=%zu activation_half_bad=%zu rounding_red=%zu gate_up_red=%zu simt_mask=%u\n",
       int(merged),tokens,topk,experts,sg,su,sd,router_mode,k,
-      !generic_prepare&&moe_prepare_m1_supported(plan)?"M1_FAST":"GENERAL",bad,activation_half_bad,rounding_red,gate_up_red);
+      !generic_prepare&&moe_prepare_m1_supported(plan)?"M1_FAST":"GENERAL",bad,activation_half_bad,rounding_red,gate_up_red,simt_mask);
   if (bad || !rounding_red || !gate_up_red) throw std::runtime_error("MoE chain oracle failed");
 }
 int main(int argc,char** argv) {
@@ -319,9 +357,17 @@ int main(int argc,char** argv) {
       if (std::strcmp(argv[i],"--benchmark")==0) benchmark_prepare=true;
       else if (std::strcmp(argv[i],"--generic")==0) generic_prepare=true;
       else if (std::strcmp(argv[i],"--multi-token")==0) multi_token=true;
+      else if (std::strcmp(argv[i],"--mixed")==0) mixed_stages=true;
       else throw std::runtime_error("usage: moe-chain [--benchmark] [--generic] [--multi-token]");
     }
     router_equivalence();
+    if (mixed_stages) {
+      for (bool merged:{false,true}) for (uint32_t mask=1;mask<8;++mask) {
+        if (merged && (mask&2)) continue;
+        for (int tokens:{1,2,4,8}) for (int router:{-1,0}) run(merged,tokens,8,256,4,2,8,router,2048,mask);
+      }
+      std::puts("KPACK_MOE_MIXED_STAGES PASS cells=80 PPU_GEMM_ADMISSION=NOT_TESTED");return 0;
+    }
     if (multi_token) {
       for (int k:{512,2048,3072}) for (int tokens:{1,2,3,4,5,6,7,8})
         for (bool merged:{false,true}) for (int router:{-1,0,1,2})

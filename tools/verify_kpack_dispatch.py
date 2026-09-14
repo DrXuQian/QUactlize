@@ -37,6 +37,32 @@ def prefill_paths(root, receipt, *, sdk=None):
     return list(names.values())
 
 
+def model_paths(root, model):
+    """Verify the optional prebuilt llama caller and paired producer."""
+    root = Path(root).resolve(strict=True)
+    if model.get('schema') != 'quactlize.q4-model-deployment.v1':
+        raise ValueError('model deployment schema differs')
+    commit = model.get('llama_source_commit', '')
+    if len(commit) != 40 or any(c not in '0123456789abcdef' for c in commit):
+        raise ValueError('model caller source commit differs')
+    files, links = model.get('files', {}), model.get('links', {})
+    required = {f'llama/bin/{name}' for name in ('llama-server', 'llama-batched-bench', 'llama-perplexity')}
+    required |= {'pack/libquactlize_ppu_pack.so', 'pack/manifest.json'}
+    if not required <= files.keys() or files.keys() & links.keys():
+        raise ValueError('model deployment payload set differs')
+    for name, expected in files.items():
+        path = root / name
+        if (not (name.startswith('llama/bin/') or name.startswith('pack/')) or
+                path.is_symlink() or not path.resolve(strict=True).is_relative_to(root) or sha(path) != expected):
+            raise ValueError('model payload differs: ' + name)
+    for name, target in links.items():
+        path = root / name
+        if (not name.startswith('llama/bin/') or '/' in target or not path.is_symlink() or
+                str(path.readlink()) != target or not path.resolve(strict=True).is_relative_to(root/'llama/bin')):
+            raise ValueError('model library link differs: ' + name)
+    return list(files) + list(links)
+
+
 def verify(root, *, sdk=None):
     root = Path(root).resolve(strict=True)
     m = json.loads((root / "manifest.json").read_text())
@@ -60,6 +86,16 @@ def verify(root, *, sdk=None):
         prefill_paths(root, m['prefill'], sdk=sdk)
     elif (root / 'libquactlize_ppu_prefill.so').exists():
         raise ValueError('unmanifested prefill runtime would arm the model loader')
+    if 'moe_mixed_gate' in m:
+        gate=m['moe_mixed_gate']
+        if (gate.get('schema')!='quactlize.moe-mixed-gate.v1' or gate.get('stage_cases')!=80 or
+                gate.get('chain_cases')!=24 or len(gate.get('simt_binaries',[]))!=1):
+            raise ValueError('mixed MoE gate denominator differs')
+        item=gate['simt_binaries'][0]
+        if item.get('path')!='mixed-stages' or (root/'mixed-stages').is_symlink() or sha(root/'mixed-stages')!=item.get('sha256'):
+            raise ValueError('mixed MoE stage binary differs')
+    if 'model' in m:
+        model_paths(root, m['model'])
     if m.get("jit_required") or "jit_source_contract" in m:
         if source_contract(m.get("jit_source_identity", {})) != m.get("jit_source_contract"):
             raise ValueError("JIT source contract differs")

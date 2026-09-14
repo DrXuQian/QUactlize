@@ -1,6 +1,6 @@
 #pragma once
 #include <stdint.h>
-#include "quactlize_ppu_config.h"
+#include "../include/quactlize_ppu_config.h"
 
 #ifdef __cplusplus
 extern "C" {

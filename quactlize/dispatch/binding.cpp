@@ -2,6 +2,7 @@
 #include "decode.hpp"
 #include "jit.hpp"
 #include "moe.hpp"
+#include "../execution/moe.h"
 #include <dlfcn.h>
 #include <cstring>
 #include <filesystem>
@@ -58,6 +59,17 @@ struct Plan {
     std::shared_ptr<Module> module;
     int endpoint_type=0;
 };
+struct MoeExecution {
+    void* library=nullptr;
+    decltype(&quactlize_kpack_moe_simt_query_v1) query=nullptr;
+    decltype(&quactlize_kpack_moe_simt_bind_v1) bind=nullptr;
+    decltype(&quactlize_kpack_moe_mixed_stage_v1) stage=nullptr;
+    decltype(&quactlize_kpack_q4_decode_select_v1) select=nullptr;
+    decltype(&quactlize_kpack_q4_decode_run_v1) q4=nullptr;
+    decltype(&quactlize_kpack_gemv_query_v1) query_generic=nullptr;
+    decltype(&quactlize_kpack_gemv_run_v1) generic=nullptr;
+    ~MoeExecution() { if (library) dlclose(library); }
+};
 using Key=std::tuple<int,int,int,int,int,int,int,uint64_t,bool,int>;
 Key key(qks_request_v1 const& r,bool decode,int endpoint_type) {
     return {r.qtype,r.route,r.m,r.n,r.k,r.experts,r.max_rows,r.mapping_id,decode,endpoint_type};
@@ -71,6 +83,7 @@ struct Runtime {
     std::vector<Plan> plans;
     Jit jit;
     std::map<std::string,Image> jit_images;
+    std::shared_ptr<MoeExecution> moe;
 };
 struct Handle {
     std::shared_ptr<Module> module;
@@ -78,9 +91,48 @@ struct Handle {
     ~Handle() { if (inner) module->destroy(inner); }
 };
 struct MoeChain {
-    Handle *gate, *up, *down;
+    Handle *gate=nullptr, *up=nullptr, *down=nullptr;
     qk_moe_plan_v1 plan{};
+    std::shared_ptr<MoeExecution> execution;
+    uint32_t simt_mask=0,q4_mask=0;
+    qkg_call_v1 calls[3]{};
+    qkg_config_v1 configs[3]{};
+    qkg_q4_decode_config_v1 q4_configs[3]{};
+    quactlize_ppu_placed_arrangement_v2 arrangements[3]{};
 };
+
+std::shared_ptr<MoeExecution> load_moe(Runtime& r) {
+    if (r.moe) return r.moe;
+    auto lib=std::make_shared<MoeExecution>();
+    lib->library=dlopen((r.root/"libquactlize_ppu_execution.so").c_str(),RTLD_NOW|RTLD_LOCAL);
+    if (!lib->library) throw std::runtime_error(dlerror());
+    lib->query=symbol<decltype(lib->query)>(lib->library,"quactlize_kpack_moe_simt_query_v1");
+    lib->bind=symbol<decltype(lib->bind)>(lib->library,"quactlize_kpack_moe_simt_bind_v1");
+    lib->stage=symbol<decltype(lib->stage)>(lib->library,"quactlize_kpack_moe_mixed_stage_v1");
+    lib->select=symbol<decltype(lib->select)>(lib->library,"quactlize_kpack_q4_decode_select_v1");
+    lib->q4=symbol<decltype(lib->q4)>(lib->library,"quactlize_kpack_q4_decode_run_v1");
+    lib->query_generic=symbol<decltype(lib->query_generic)>(lib->library,"quactlize_kpack_gemv_query_v1");
+    lib->generic=symbol<decltype(lib->generic)>(lib->library,"quactlize_kpack_gemv_run_v1");
+    r.moe=lib;return lib;
+}
+
+int run_mixed(MoeChain const& c,qk_moe_plan_v1 const& plan,void* stream) {
+    auto produce=[&](int i,Handle* h) {
+        if (!(c.simt_mask&(1u<<i)))
+            return h->module->moe_stage(h->inner,&plan,QK_MOE_PRODUCER,stream)==QK_OK;
+        auto call=c.calls[i];call.stream=stream;
+        int rc=(c.q4_mask&(1u<<i))?c.execution->q4(&call,&c.q4_configs[i],&c.arrangements[i]):
+            c.execution->generic(&call,&c.configs[i],&c.arrangements[i]);
+        return rc==QKG_OK;
+    };
+    if (c.execution->stage(&plan,c.simt_mask,QK_MOE_PREPARE,stream)!=QKG_OK ||
+        !produce(0,c.gate) || (!plan.merged && !produce(1,c.up)) ||
+        c.execution->stage(&plan,c.simt_mask,QK_MOE_ACTIVATE,stream)!=QKG_OK ||
+        !produce(2,c.down)) return QKS_RUNTIME;
+    if (!(c.simt_mask&4) && c.down->module->moe_stage(c.down->inner,&plan,QK_MOE_FINISH,stream)!=QK_OK)
+        return QKS_RUNTIME;
+    return QKS_OK;
+}
 
 std::shared_ptr<Module> load(Runtime& r,Image const& image,Config const& c,bool dense_io=false) {
     auto found=r.modules.find(image.key);
@@ -366,6 +418,7 @@ extern "C" int quactlize_kpack_dispatch_moe_create_v1(void* gate,void* up,void* 
 extern "C" int quactlize_kpack_dispatch_moe_run_v1(void* handle,void* stream) {
     if (!handle) return QKS_INVALID;
     auto& c=*static_cast<MoeChain*>(handle);
+    if (c.simt_mask) return run_mixed(c,c.plan,stream);
     auto stage=[&](Handle* h,int phase) { return h->module->moe_stage(h->inner,&c.plan,phase,stream)==QK_OK; };
     if (!stage(c.gate,QK_MOE_PREPARE) || !stage(c.gate,QK_MOE_PRODUCER) ||
         (c.up && !stage(c.up,QK_MOE_PRODUCER)) || !stage(c.gate,QK_MOE_ACTIVATE) ||
@@ -376,10 +429,11 @@ extern "C" int quactlize_kpack_dispatch_moe_run_router_v1(void* handle,qk_llama_
     if (!handle || !router) return QKS_INVALID;
     auto& c=*static_cast<MoeChain*>(handle);
     auto const& r=*router;
-    if (!compatible_router(c.plan,r)) return QKS_MISS;
+    if (!compatible_router(c.plan,r,c.simt_mask)) return QKS_MISS;
     // Copy the immutable host plan. Concurrent streams must not mutate its
     // router or retain a ready flag across graph replays.
     auto plan=c.plan; plan.router=r;
+    if (c.simt_mask) return run_mixed(c,plan,stream);
     auto stage=[&](Handle* h,int phase) { return h->module->moe_stage(h->inner,&plan,phase,stream)==QK_OK; };
     if (!stage(c.gate,QK_MOE_PREPARE) || !stage(c.gate,QK_MOE_PRODUCER) ||
         (c.up && !stage(c.up,QK_MOE_PRODUCER)) || !stage(c.gate,QK_MOE_ACTIVATE) ||
@@ -387,3 +441,74 @@ extern "C" int quactlize_kpack_dispatch_moe_run_router_v1(void* handle,qk_llama_
     return QKS_OK;
 }
 extern "C" void quactlize_kpack_dispatch_moe_destroy_v1(void* handle) { delete static_cast<MoeChain*>(handle); }
+
+extern "C" int quactlize_kpack_dispatch_moe_simt_scratch_v1(void* runtime,qkg_call_v1 const* call,uint64_t* bytes) {
+    if (!runtime || !call || !bytes) return QKS_INVALID;
+    *bytes=0;
+    try {
+        auto& r=*static_cast<Runtime*>(runtime);std::lock_guard<std::mutex> lock(r.mutex);
+        int rc=load_moe(r)->query(call,bytes);
+        return rc==QKG_OK?QKS_OK:rc==QKG_SHAPE?QKS_MISS:QKS_INVALID;
+    } catch (std::exception const& e) { last_error=e.what();return QKS_BINDING; }
+}
+
+extern "C" int quactlize_kpack_dispatch_moe_create_v2(void* runtime,qks_moe_endpoint_v2 const* gate,
+    qks_moe_endpoint_v2 const* up,qks_moe_endpoint_v2 const* down,void** out) {
+    if (!out) return QKS_INVALID;
+    *out=nullptr;
+    if (!runtime || !gate || !down || gate==down || (up && (up==gate || up==down))) return QKS_INVALID;
+    for (auto e:{gate,up,down}) if (e && (e->version!=2 || e->size!=sizeof(*e) ||
+        bool(e->tc_handle)==bool(e->simt_call) ||
+        (e->tc_handle && (e->q4_config || e->simt_config || e->arrangement || e->scratch || e->scratch_bytes)) ||
+        (e->simt_call && (!e->arrangement || bool(e->q4_config)==bool(e->simt_config))))) return QKS_INVALID;
+    if (gate->tc_handle && down->tc_handle && (!up || up->tc_handle))
+        return quactlize_kpack_dispatch_moe_create_v1(gate->tc_handle,up?up->tc_handle:nullptr,down->tc_handle,out);
+    try {
+        auto& r=*static_cast<Runtime*>(runtime);std::lock_guard<std::mutex> lock(r.mutex);
+        auto c=std::make_unique<MoeChain>();c->execution=load_moe(r);
+        c->plan.version=1;c->plan.size=sizeof(c->plan);c->plan.merged=up?0:1;
+        qks_moe_endpoint_v2 const* endpoints[3]={gate,up,down};
+        qk_moe_projection_v1* parts[3]={&c->plan.gate,&c->plan.up,&c->plan.down};
+        Handle** handles[3]={&c->gate,&c->up,&c->down};
+        // Resolve a context from an existing TC handle, if present. All-SIMT
+        // chains use the execution library's device probe at bind below.
+        int device=r.device;
+        for (int i=0;i<3;++i) if (endpoints[i] && endpoints[i]->tc_handle) {
+            auto h=static_cast<Handle*>(endpoints[i]->tc_handle);*handles[i]=h;
+            if (!h->module->moe_projection || !h->module->moe_stage ||
+                h->module->moe_projection(h->inner,parts[i])!=QK_OK) return QKS_MISS;
+            if (device>=0 && device!=parts[i]->device) return QKS_INVALID;
+            device=parts[i]->device;
+        }
+        for (int i=0;i<3;++i) {
+            auto e=endpoints[i];if (!e || !e->simt_call) continue;
+            auto call=*e->simt_call;qkg_sizes_v1 sizes{};
+            if (e->q4_config) {
+                qkg_q4_decode_config_v1 selected{};
+                int rc=c->execution->select(&call,e->arrangement,&selected,&sizes);
+                if (rc!=QKG_OK) {last_error="mixed MoE Q4 selection rejected";return QKS_MISS;}
+                if (std::memcmp(&selected,e->q4_config,sizeof(selected))) return QKS_INVALID;
+                c->q4_mask|=1u<<i;c->q4_configs[i]=selected;
+            } else {
+                if (c->execution->query_generic(&call,e->simt_config,e->arrangement,&sizes)!=QKG_OK)
+                    return QKS_INVALID;
+                c->configs[i]=*e->simt_config;
+            }
+            // The SIMT down projection consumes one activation per slot.
+            if (i==2 && call.channels!=call.topk) return QKS_MISS;
+            if (c->execution->bind(&call,device,e->scratch,e->scratch_bytes,parts[i])!=QKG_OK)
+                return QKS_INVALID;
+            if (device<0) device=parts[i]->device;
+            if (parts[i]->device!=device) return QKS_INVALID;
+            if (i==2) {
+                call.a=parts[i]->a;call.a_row_stride=call.k;
+                call.a_token_stride=int64_t(call.topk)*call.k;
+            } else { call.output=static_cast<float*>(parts[i]->output);call.out_row_stride=call.n; }
+            c->calls[i]=call;c->arrangements[i]=*e->arrangement;c->simt_mask|=1u<<i;
+        }
+        if (!compatible_moe(c->plan,c->simt_mask)) {
+            last_error="mixed MoE row/type/tuple/scratch contract differs";return QKS_MISS;
+        }
+        *out=c.release();return QKS_OK;
+    } catch (std::exception const& e) {last_error=e.what();return QKS_BINDING;}
+}

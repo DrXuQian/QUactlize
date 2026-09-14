@@ -5,11 +5,14 @@
 The [ordered model closure table](../../docs/KPACK_Q4_MODEL_CLOSURE.md) is the
 current checklist. Prefill composition `A4NxtK` passes 9/9 contexts, 27 graph
 replays and 40 SF config checks; the published library gate is closed.
-Next code work is mixed SIMT/TC decode MoE fusion: the caller currently
-declines a direct SIMT projection rather than passing it as a TC handle.
-Keep measured recipe selection and F32 endpoints, and validate row/type and
-scratch ownership at the bridge. Next deployment work is a runner pinned to
-the v0.3.0 child branch and the new package, not the old fusion-v3 default.
+Mixed SIMT/TC decode MoE fusion is implemented with an additive endpoint
+descriptor, exact selected recipes, F32 caller-order SIMT IO and compact TC
+IO. Local host composition tests cover masks, pointer/type transitions,
+router, scratch aliases and wrong recipe rejection. New PPU admission is
+80 mixed-stage contexts and 24 actual selected chains; do not count old
+all-TC results as this evidence. The new deployment entry is
+`tools/run_kpack_q4_model_box.sh`, pinned to the v0.3.0 child and matching
+prebuilt caller/runtime, not the old fusion-v3 defaults.
 Whole-model numerical/trace and warmed PP/TG A/B remain pending. No new
 full sweep is required before collecting that first model result.
 

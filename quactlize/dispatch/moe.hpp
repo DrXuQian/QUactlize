@@ -16,8 +16,9 @@ inline bool moe_overlap(MoeSpan a,MoeSpan b) { return a.begin<b.end && b.begin<a
 
 // Validates composition, not a second config selector. A miss does not mutate
 // the existing standalone handles. All buffers are owned by their callers.
-inline bool compatible_moe(qk_moe_plan_v1 const& plan) {
-  if (plan.version!=1 || plan.size!=sizeof(plan) || plan.reserved || plan.merged>1) return false;
+inline bool compatible_moe(qk_moe_plan_v1 const& plan,uint32_t simt_mask=0) {
+  if (plan.version!=1 || plan.size!=sizeof(plan) || plan.reserved || plan.merged>1 ||
+      simt_mask>7 || (plan.merged && (simt_mask&2))) return false;
   auto const& g=plan.gate; auto const& u=plan.up; auto const& d=plan.down;
   if (g.m<=0 || g.m>64 || (g.m>32 && g.io.tokens>8) || g.experts<=0 || g.experts>1024 ||
       int64_t(d.k)*(plan.merged?2:1)!=g.n ||
@@ -33,6 +34,8 @@ inline bool compatible_moe(qk_moe_plan_v1 const& plan) {
   };
   for (auto p:{&g,plan.merged?nullptr:&u,&d}) {
     if (!p) continue;
+    int index=p==&g?0:p==&u?1:2;
+    uint64_t bytes=(simt_mask&(1u<<index))?4:2;
     if (p->version!=1 || p->size!=sizeof(*p) || p->reserved || p->device!=g.device ||
         p->m!=g.m || p->experts!=g.experts || p->n<=0 || p->n>INT32_MAX-8192 ||
         p->k<=0 || p->k>INT32_MAX-8192 || p->tile_m<8 || p->tile_m>256 ||
@@ -49,7 +52,7 @@ inline bool compatible_moe(qk_moe_plan_v1 const& plan) {
         !p->directory_entries || !p->directory_capacity || (p->splits>1 && !p->partials)) return false;
     // Per-stream standalone scratch deliberately aliases between projections.
     // A fused chain MUST use disjoint retained storage or partials get clobbered.
-    if (!add(p->a,uint64_t(p->m)*p->k*2) || !add(p->output,uint64_t(p->m)*p->n*2) ||
+    if (!add(p->a,uint64_t(p->m)*p->k*bytes) || !add(p->output,uint64_t(p->m)*p->n*bytes) ||
         !add(p->offsets,uint64_t(p->experts+1)*4) || !add(p->io.row_ids,uint64_t(p->m)*4) ||
         !add(p->workspace,p->workspace_bytes)) return false;
   }
@@ -67,7 +70,7 @@ inline bool compatible_moe(qk_moe_plan_v1 const& plan) {
   return !moe_overlap(output,ids);
 }
 
-inline bool compatible_router(qk_moe_plan_v1 const& p,qk_llama_router_v1 const& r) {
+inline bool compatible_router(qk_moe_plan_v1 const& p,qk_llama_router_v1 const& r,uint32_t simt_mask=0) {
   if (r.version!=1 || r.size!=sizeof(r) || r.reserved || p.gate.experts!=256 ||
       (r.use_sigmoid!=0 && r.use_sigmoid!=1) || (r.with_norm!=0 && r.with_norm!=1) ||
       (r.delayed_softmax!=0 && r.delayed_softmax!=1) || (r.with_norm && r.delayed_softmax) ||
@@ -84,10 +87,12 @@ inline bool compatible_router(qk_moe_plan_v1 const& p,qk_llama_router_v1 const& 
       (r.bias && (moe_overlap(weights,bias) || moe_overlap(ids,bias)))) return false;
   for (auto part:{&p.gate,p.merged?nullptr:&p.up,&p.down}) {
     if (!part) continue;
+    int index=part==&p.gate?0:part==&p.up?1:2;
+    uint64_t bytes=(simt_mask&(1u<<index))?4:2;
     MoeSpan writes[5];
     if (!moe_span(part->workspace,part->workspace_bytes,writes[0]) ||
-        !moe_span(part->a,uint64_t(part->m)*part->k*2,writes[1]) ||
-        !moe_span(part->output,uint64_t(part->m)*part->n*2,writes[2]) ||
+        !moe_span(part->a,uint64_t(part->m)*part->k*bytes,writes[1]) ||
+        !moe_span(part->output,uint64_t(part->m)*part->n*bytes,writes[2]) ||
         !moe_span(part->offsets,uint64_t(part->experts+1)*4,writes[3]) ||
         !moe_span(part->io.row_ids,uint64_t(part->m)*4,writes[4])) return false;
     for (auto span:writes) if (moe_overlap(span,logits) || moe_overlap(span,weights) ||

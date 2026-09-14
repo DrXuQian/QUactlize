@@ -5,6 +5,16 @@ ROOT=Path(__file__).resolve().parents[1]
 LLAMA=Path('/root/llama.cpp')
 
 
+def test_mixed_dispatch_phases_and_pointer_contract(tmp_path):
+    (tmp_path/'catalog.inc').write_text('static std::vector<Image> const kImages{};\nstatic char const kJitSource[]="";\n')
+    exe=tmp_path/'mixed'
+    subprocess.run(['g++','-std=c++17','-O1','-pthread',f'-I{ROOT}',f'-I{tmp_path}',
+        str(ROOT/'tests/kpack_moe_mixed_host.cpp'),'-ldl','-o',str(exe)],check=True)
+    result=subprocess.run([str(exe)],capture_output=True,text=True)
+    assert result.returncode==0,result.stdout+result.stderr
+    assert 'KPACK_MOE_MIXED_HOST PASS' in result.stdout
+
+
 def test_composition_and_exact_ggml_graph(tmp_path):
     exe=tmp_path/'moe-host'
     library=Path('/root/autodl-tmp/q8-kpack2-llama-host/bin')

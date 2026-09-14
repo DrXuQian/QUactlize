@@ -8,11 +8,11 @@ Q8_0 tensors; their actual paths must be covered, not just qtype 12.
 
 | Step | State | Completion evidence | Location |
 | --- | --- | --- | --- |
-| Release and patch base | Complete | `dev/v0.3.0` at `e73e2136b`, Quactlize child at `03142a8b7` | Local/private fork |
+| Release and patch base | Complete | `dev/v0.3.0` at `e73e2136b`; only `dev/quactlize-v0.3.0` advances | Local/private fork |
 | Measured component selection | Complete within documented coverage | Small-M SIMT/TC policy and measured prefill FQ/SF/full-BF16 policy; no double-counted reducer | Existing PPU results |
 | Library functional gates | Complete for declared denominators | Decode 208 dense endpoints and four real TC chains; prefill nine composed contexts | Reviewed PPU results |
-| Decode fusion wiring | Open, current code task | Retain measured SIMT/TC choices through the shared MoE prepare/activation/finish path; direct F32 dense endpoints remain intact | Local implementation, then PPU gate |
-| Model deployment entry | Open | Pin the new dispatcher/execution/prefill package and v0.3.0 caller, matching headers/JIT source and paired packer | Local build/package tests |
+| Decode fusion wiring | Implemented; mixed-path PPU gate pending | Additive mixed-chain entry retains measured SIMT/TC choices and direct F32 dense endpoints | Local ABI/compile checks; 80 stage and 24 real-chain box contexts |
+| Model deployment entry | Implemented; publication receipt pins the payload | New dispatcher/execution/prefill package, v0.3.0 caller, headers/JIT source and paired packer | `tools/run_kpack_q4_model_box.sh` |
 | Whole-model accuracy and route proof | Pending | Same model/input against native; actual decode/prefill kernels match selection, no unnoticed legacy fallback or standalone decode dtype casts | PPU box |
 | Whole-model performance | Pending | Unprofiled native/K-pack A/B, first JIT/warmup excluded, separate PP/TG latency and throughput | PPU box |
 | Final optimization and freeze | Conditional on model A/B | Fix measured bottlenecks, rerun affected checks, retain exact source/binary/policy identities | Local plus PPU box |
@@ -39,28 +39,68 @@ time, not kernel latency. It contains no llama whole-model performance result.
 The archive does not supply a runner checkout SHA; none is inferred from its
 name or upload time.
 
-## Exact decode wiring gap
+## Mixed decode bridge
 
 The caller already implements direct F32 dense TC endpoints, measured Q4
-SIMT selection and direct F32 SIMT calls. The missing part is mixed SIMT/TC
-MoE composition. At private llama commit `03142a8b7`, `prepare_moe()` rejects
+SIMT selection and direct F32 SIMT calls. At private llama commit `03142a8b7`, `prepare_moe()` rejected
 any projection for which `Plan::direct` is true. The v1 chain interface takes
 only indexed-bound TC handles. A direct SIMT call is not such a handle and
 returns output in caller order, whereas the TC chain uses compact expert
 order and FP16 completed values (or FP32 split partials).
 
-Removing that rejection alone is incorrect. The bridge must preserve each
-projection's input/output type, ordering, pointer lifetime and measured
-recipe, including a SIMT projection adjacent to a TC projection. It must not
-force TC merely to satisfy the old fusion interface. Existing all-TC chain
-results do not admit this missing mixed path.
+The additive `dispatch_moe_create_v2` now accepts either an existing TC
+handle or a selected SIMT call per projection. It owns a copy of the recipe
+and arrangement, not the caller's tensors. Scratch is retained per chain.
+No measured policy, GEMV arithmetic, offline format or TC collective changes.
+
+| Projection | Input | Completed result | Chain adapter |
+| --- | --- | --- | --- |
+| SIMT gate/up | Original F32, caller order | F32, caller order | Shared prepare skips their gather; SwiGLU reads by the shared row map |
+| TC gate/up | Compact FP16 | FP16, or FP32 split partials | Existing prepare and ordered reduction semantics |
+| SIMT down | SwiGLU writes F32 in caller order | Final caller F32 | No standalone finish/scatter |
+| TC down | SwiGLU writes compact FP16 | FP16 or FP32 partials | Existing fused finish/reducer to caller F32 |
+
+The all-TC v1 path remains supported. The mixed stage gate covers every legal
+SIMT mask, merged/separate gate/up, tokens1/2/4/8, and router on/off (80
+contexts, seven changing replays). The 24 real chains use actual automatic
+choices at tokens1/4/8, Q4 gate/up and Q4/Q5 down, independent GGUF dot
+oracles, guards and three changing graph replays. Old all-TC PASS results
+do not admit this new composition; its device result is still required.
+
+The complete v0.3.0 caller build also catches the old compatibility route's
+new `mm_ids_helper` argument. It passes `write_inverse=false`, preserving
+the forward map consumed by that route's gather.
 
 The old `run_kpack_fusion_box.sh` still defaults to the early
 `kpack-fusion-v3/dispatch` package and the historical llama build directory.
 Do not use that default as proof of this new integration. The final model
-runner must bind the new package and branch explicitly, keep Asys separate
+runner binds the new package and branch explicitly, keeps Asys separate
 from reported timing, and exclude the first full PP/TG warmup pass.
 
 Model inputs are the existing focused int4 plan:
 `tools/kpack_batched_int4_2048.json` (Qwen3.5-35B-A3B-Q4_K_M MoE and
 Qwen3-32B-Q4_K_M dense; NPL=1, PP=2048, TG=128). User files remain unchanged.
+
+## Next box run
+
+Run `bash tools/run_kpack_q4_model_box.sh` from the updated development
+checkout. `tools/kpack_q4_model_artifact.json` pins the LFS package and
+private llama source. The package contains the paired producer, small
+runtime, seven gate parents, mixed stage executable, and model executables.
+No full sweep or large Quactlize rebuild is part of this command. Missing
+model-specific parents are JIT-compiled outside capture during first use.
+
+The runner first requires both mixed gates, then collects GPU-native
+reference/self/K-pack likelihood comparisons on local GSM8K text at token
+batches1 and2048. These are logits/KLD tests, not a new GSM8K answer score.
+It next performs unprofiled ABBA timings with two measured passes per
+process after one excluded full PP/TG pass. Separate Asys requests use
+the same prompt tokens in both arms and capture only the second request.
+Dense-only models require dense trace evidence, not a nonexistent MoE call.
+Any actual legacy compute fallback is rejected as a selected-performance
+result. cuBLAS provider attribution can remain explicitly partial.
+
+Return the printed `kpack-q4-model.*.results.tgz`. Large logits and complete
+Asys/SQLite files remain on the box; summaries, kernel timings, source and
+payload receipts are in the archive. Numerical quality and the no-slowdown
+target remain review decisions, not conclusions from `runner_rc=0` alone.

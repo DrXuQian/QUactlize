@@ -53,6 +53,12 @@ class Router(C.Structure):
         (name,C.c_void_p) for name in ("logits","bias","weights")]
 
 
+class MoeEndpoint(C.Structure):
+    _fields_ = [("version",C.c_uint32),("size",C.c_uint32)] + [
+        (name,C.c_void_p) for name in ("tc_handle","simt_call","q4_config","simt_config",
+                                      "arrangement","scratch")] + [("scratch_bytes",C.c_uint64)]
+
+
 class Dispatch:
     def __init__(self, root, jit=None):
         self.lib = C.CDLL(
@@ -144,12 +150,13 @@ class Dispatch:
         self.handles.append(handle)
         return lambda: self.fn["run"](handle,call.stream)
 
-    def chain(self, gate, up, down, stream, router=None):
-        create=self.lib.quactlize_kpack_dispatch_moe_create_v1
-        create.argtypes=[C.c_void_p,C.c_void_p,C.c_void_p,C.POINTER(C.c_void_p)]
+    def chain(self, gate, up, down, stream, router=None, mixed=False):
+        create=getattr(self.lib,'quactlize_kpack_dispatch_moe_create_v'+('2' if mixed else '1'))
+        create.argtypes=([C.c_void_p,C.POINTER(MoeEndpoint),C.POINTER(MoeEndpoint),C.POINTER(MoeEndpoint)] if mixed else
+                         [C.c_void_p,C.c_void_p,C.c_void_p])+[C.POINTER(C.c_void_p)]
         create.restype=C.c_int
         chain=C.c_void_p()
-        rc=create(gate,up,down,C.byref(chain))
+        rc=create(self.runtime,C.byref(gate),C.byref(up) if up is not None else None,C.byref(down),C.byref(chain)) if mixed else create(gate,up,down,C.byref(chain))
         if rc: raise ValueError(f"native MoE chain creation failed rc={rc}: "+self.fn['error']().decode())
         self.chains.append(chain)
         if router is not None:
@@ -159,6 +166,14 @@ class Dispatch:
         run=self.lib.quactlize_kpack_dispatch_moe_run_v1
         run.argtypes=[C.c_void_p,C.c_void_p]; run.restype=C.c_int
         return lambda: run(chain,stream)
+
+    def simt_scratch(self, call):
+        fn=self.lib.quactlize_kpack_dispatch_moe_simt_scratch_v1
+        fn.argtypes=[C.c_void_p,C.c_void_p,C.POINTER(C.c_uint64)];fn.restype=C.c_int
+        size=C.c_uint64()
+        if fn(self.runtime,C.byref(call),C.byref(size)):
+            raise ValueError('mixed MoE scratch: '+self.fn['error']().decode())
+        return size.value
 
     def close(self):
         if self.chains:

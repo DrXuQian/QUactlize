@@ -5,6 +5,10 @@
 namespace quactlize::runtime {
 namespace moe = quactlize::moe_directory;
 
+struct MixedMoePlan : qk_moe_plan_v1 { uint32_t simt_mask=0; };
+CUTLASS_HOST_DEVICE uint32_t moe_simt_mask(qk_moe_plan_v1 const&) { return 0; }
+CUTLASS_HOST_DEVICE uint32_t moe_simt_mask(MixedMoePlan const& p) { return p.simt_mask; }
+
 CUTLASS_HOST_DEVICE bool moe_prepare_m1_supported(qk_moe_plan_v1 const& plan) {
   auto const& p=plan.gate;
   return p.m==8 && p.experts==256 && p.io.tokens==1 && p.io.topk==8 && p.io.channels==1;
@@ -38,22 +42,25 @@ CUTLASS_DEVICE void moe_m1_descriptors(qk_moe_projection_v1 const& p,
 
 // Every selected expert consumes the same single-token activation, so this
 // copy is independent of IDs and their expert-order permutation.
-CUTLASS_DEVICE void moe_m1_gather(qk_moe_plan_v1 const& plan,int lane,int stride) {
+template<class Plan>
+CUTLASS_DEVICE void moe_m1_gather(Plan const& plan,int lane,int stride) {
   auto const& p=plan.gate;
+  uint32_t simt=moe_simt_mask(plan);
+  if ((simt&1) && (plan.merged || (simt&2))) return;
   for (int64_t col=lane;col<p.k;col+=stride) {
     Half value=Half(p.io.a[col]);
     #pragma unroll
     for (int r=0;r<8;++r) {
-      static_cast<Half*>(p.a)[int64_t(r)*p.k+col]=value;
-      if (!plan.merged) static_cast<Half*>(plan.up.a)[int64_t(r)*p.k+col]=value;
+      if (!(simt&1)) static_cast<Half*>(p.a)[int64_t(r)*p.k+col]=value;
+      if (!plan.merged && !(simt&2)) static_cast<Half*>(plan.up.a)[int64_t(r)*p.k+col]=value;
     }
   }
 }
 
 // One CTA computes the router once; the other warps prepare activations in
 // parallel. No other CTA polls a flag or waits for global router publication.
-template<class Shape,class Stride>
-__global__ void moe_chain_prepare_m1(qk_moe_plan_v1 plan) {
+template<class Shape,class Stride,class Plan=qk_moe_plan_v1>
+__global__ void moe_chain_prepare_m1(Plan plan) {
   auto const& p=plan.gate;
   __shared__ int ids[8],ranks[8];
   int tid=int(threadIdx.x);
@@ -158,8 +165,8 @@ CUTLASS_DEVICE void moe_descriptors(qk_moe_projection_v1 const& p,int const* ids
   }
 }
 
-template<class Shape,class Stride,int Capacity=32>
-__global__ void moe_chain_prepare(qk_moe_plan_v1 plan) {
+template<class Shape,class Stride,int Capacity=32,class Plan=qk_moe_plan_v1>
+__global__ void moe_chain_prepare(Plan plan) {
   auto const& p=plan.gate;
   static_assert(Capacity==32 || Capacity==64);
   __shared__ int ids[Capacity], ranks[Capacity], starts[Capacity], counts[Capacity];
@@ -216,14 +223,16 @@ __global__ void moe_chain_prepare(qk_moe_plan_v1 plan) {
   if (!plan.merged) moe_descriptors<Shape,Stride,Capacity>(plan.up,ids,ranks,starts,counts,expert_starts,expert_counts,valid);
   moe_descriptors<Shape,Stride,Capacity>(plan.down,ids,ranks,starts,counts,expert_starts,expert_counts,valid);
   if (!valid) return;
+  uint32_t simt=moe_simt_mask(plan);
+  if ((simt&1) && (plan.merged || (simt&2))) return;
   int r=int(blockIdx.x)%p.m, to=ranks[r];
   int chunk=int(blockIdx.x)/p.m;
   int chunks=(int(gridDim.x)-1-r)/p.m+1;
   int64_t from=int64_t(r/p.io.topk)*p.io.a_token_stride+(r%p.io.topk%p.io.channels)*p.io.a_row_stride;
   for (int64_t col=int64_t(chunk)*blockDim.x+tid;col<p.k;col+=int64_t(chunks)*blockDim.x) {
     Half value=Half(p.io.a[from+col]);
-    static_cast<Half*>(p.a)[int64_t(to)*p.k+col]=value;
-    if (!plan.merged) static_cast<Half*>(plan.up.a)[int64_t(to)*p.k+col]=value;
+    if (!(simt&1)) static_cast<Half*>(p.a)[int64_t(to)*p.k+col]=value;
+    if (!plan.merged && !(simt&2)) static_cast<Half*>(plan.up.a)[int64_t(to)*p.k+col]=value;
   }
 }
 
@@ -236,16 +245,26 @@ CUTLASS_DEVICE float moe_projection_value(qk_moe_projection_v1 const& p,int row,
   return float(Half(sum));
 }
 
-__global__ void moe_chain_swiglu(qk_moe_plan_v1 plan) {
+template<class Plan>
+CUTLASS_DEVICE void moe_swiglu_body(Plan const& plan) {
   int row=int(blockIdx.y), n=plan.down.k;
+  uint32_t simt=moe_simt_mask(plan);
   bool valid=!static_cast<moe::Header const*>(plan.gate.directory_header)->status;
   for (int64_t col=int64_t(blockIdx.x)*blockDim.x+threadIdx.x;col<n;col+=int64_t(gridDim.x)*blockDim.x) {
-    float gate=moe_projection_value(plan.gate,row,int(col));
-    float up=moe_projection_value(plan.merged ? plan.gate : plan.up,row,int(col)+(plan.merged?n:0));
+    auto read=[&](qk_moe_projection_v1 const& p,int index,int c) {
+      if (simt&(1u<<index))
+        return static_cast<float const*>(p.output)[int64_t(p.io.row_ids[row])*p.n+c];
+      return moe_projection_value(p,row,c);
+    };
+    float gate=read(plan.gate,0,int(col));
+    float up=read(plan.merged ? plan.gate : plan.up,plan.merged?0:1,int(col)+(plan.merged?n:0));
     // llama SWIGLU: gate * sigmoid(gate) * up, then down's F32->F16 gather.
     float value=(gate/(1.f+expf(-gate)))*up;
     if (!valid) value=__int_as_float(0x7fffffff);
-    static_cast<Half*>(plan.down.a)[int64_t(row)*n+col]=Half(value);
+    if (simt&4) static_cast<float*>(plan.down.a)[int64_t(plan.down.io.row_ids[row])*n+col]=value;
+    else static_cast<Half*>(plan.down.a)[int64_t(row)*n+col]=Half(value);
   }
 }
+__global__ void moe_chain_swiglu(qk_moe_plan_v1 plan) { moe_swiglu_body(plan); }
+__global__ void moe_chain_swiglu_mixed(MixedMoePlan plan) { moe_swiglu_body(plan); }
 } // namespace quactlize::runtime
