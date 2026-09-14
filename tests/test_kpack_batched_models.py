@@ -223,6 +223,11 @@ def test_final_model_runner_uses_pinned_prebuilt_and_separate_proof():
     assert 'kpack-fusion-v3/dispatch' not in text
     assert '--exclude=\'*.asysrep\'' in text
     assert 'DrXuQian/llama.cpp.git' in text and 'ggml-org/llama.cpp.git' not in text
+    receipt = json.loads((ROOT/'tools/kpack_q4_model_artifact.json').read_text())
+    assert receipt['branch'] == 'artifacts/kpack-model-v1'
+    assert receipt['llama_branch'] == 'dev/quactlize-v0.3.0'
+    assert len(receipt['commit']) == len(receipt['llama_commit']) == 40
+    assert len(receipt['manifest_sha256']) == 64 and receipt['lfs_payloads'] == 25
 
 
 def test_model_numerical_metrics_bind_actual_coverage_and_reject_nonfinite():

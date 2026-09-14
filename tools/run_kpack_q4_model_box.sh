@@ -40,6 +40,7 @@
     ASYS=${ASYS:-$SDK/asight/bin/asys}
     test -x "$ASYS"
     "$PYTHON" -c 'import numpy, gguf, torch, pyarrow; from deep_gemm.jit_kernels.m_grouped_gemm import m_grouped_gemm_bf16_bf16_bf16_nt_nopad'
+    "$PYTHON" -c 'import platform; name,version=platform.libc_ver(); assert name=="glibc" and tuple(map(int,version.split(".")[:2])) >= (2,38), "PPU SDK runtime requires glibc >= 2.38 (Ubuntu 24.04)"'
     RESULT_DIR=$(realpath -e -- "${RESULT_ROOT:-/workspace}")
     test -n "$RESULT_DIR" && test -d "$RESULT_DIR"
     CORPUS=${GSM8K_FILE:-/sim/eec/shared/AI_workspace/llm-models/datasets/gsm8k/main/test-00000-of-000001.parquet}

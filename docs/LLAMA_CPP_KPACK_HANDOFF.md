@@ -21,6 +21,13 @@ pins the private v0.3.0 caller and small runtime, checks mixed chains before
 model numerics, and separates warmed ABBA timings from Asys. Do not use the
 old fusion-v3 defaults as evidence for this build.
 
+Published local build: Quactlize `d93b118`, private llama `9b2fa0bf6`,
+artifact branch `artifacts/kpack-model-v1` at `f2a2f99`. All three model
+executables and the seven-parent gate closure are prebuilt and hash-pinned;
+25 ELF payloads use LFS. The native llama CUDA backend accounts for most of
+the approximately258MiB download. No all-config sweep rebuild is required.
+Mixed-path PPU correctness and whole-model results are still pending.
+
 ## Current addition: composed prefill candidate, 2026-09-14
 
 [Runtime contract and box gate](KPACK_PREFILL_RUNTIME.md). The measured

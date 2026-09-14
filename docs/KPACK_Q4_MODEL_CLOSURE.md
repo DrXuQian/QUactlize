@@ -83,6 +83,16 @@ Qwen3-32B-Q4_K_M dense; NPL=1, PP=2048, TG=128). User files remain unchanged.
 
 ## Next box run
 
+Local publication: source `d93b118`, private llama `9b2fa0bf6`, artifact
+`f2a2f99`. The complete PPU build (not just three translation units) passes;
+the packaged server reports commit `9b2fa0bf6` under the local Ubuntu24
+runtime loader. No PPU device is present locally. Host checks pass: 302
+decode/indexed/policy/JIT tests, 51 model/MoE/prefill tests, 25 llama evidence
+tests and four loader/cache CTest cases. The 25 ELF payloads are LFS objects;
+all soname links and the manifest dependency closure are tracked. Package
+size is about258MiB, mostly llama's ordinary CUDA backend, not a full
+Quactlize sweep closure.
+
 Run `bash tools/run_kpack_q4_model_box.sh` from the updated development
 checkout. `tools/kpack_q4_model_artifact.json` pins the LFS package and
 private llama source. The package contains the paired producer, small
