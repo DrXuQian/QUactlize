@@ -75,3 +75,40 @@ the complete MoE chain. Check AP1 Q2/Q4 FQ/SF at legal Split-K settings against
 independent BF16 oracles. Finally measure cold-weight latency against the
 existing generic BF16 route and the corresponding FP16 baseline; no speedup
 is claimed by compilation or host tests.
+# Typed selected-Q4 device gate
+
+`build_gate.py` packages the actual `q4_decode_select_v2/run_v2` implementation,
+not the generic SIMT reader. Reuse a source-matching execution receipt on PPU:
+
+```sh
+python dev/bf16_fastpath/build_gate.py --platform ppu --sdk "$PPU_SDK" \
+  --execution /path/to/execution-build --output /path/to/q4-bf16-gate
+python dev/bf16_fastpath/gate.py --sdk "$PPU_SDK" \
+  --bundle /path/to/q4-bf16-gate --output /path/to/q4-bf16-results
+```
+
+For an independent NVIDIA development check, omit `--execution`, pass
+`--platform cuda --sdk /usr/local/cuda --arch sm_120 --jobs 4`. This compiles
+only the production-selected Q4 closure. It never substitutes NVIDIA results
+for PPU device admission. Neither command changes a production policy.
+
+The frozen auto inventory declares 160 geometry requests: 101 selected Q4
+requests, 59 expected `QKG_SHAPE` declines to TC, and 202 BF16 numerical cells
+(F32/BF16 input storage). Dense covers every auto-policy shape and tokens 1..8;
+indexed covers E256/top8, channels 1/8 and tokens 1..8 at N/K = 512/2048,
+512/3072, 2048/512, 3072/512. A TC decline is not a numerical pass or fallback.
+Only eight distinct expert patterns are generated on CPU; the remaining planes
+are copied D2D. Different expert IDs select different patterns.
+
+Every selected request checks eager execution, changed A/IDs in graph replay,
+restored graph results, row padding, allocation guards, zero A, wrong-value
+negatives and invalid IDs. It also runs the actual F16 v1 implementation and
+checks v2 delegation bit-for-bit. A finite activation of 243383.484375 must
+remain finite under BF16 and provoke the known F16 overflow negative. Gold is
+computed from official GGUF dequantization with independent FP64 category sums
+and a separate large-activation column, not from the placed weight reader.
+
+Each weight shape has a separate process/log; a failed process does not stop
+other shapes. Missing cases, graph evidence or negative controls fail final
+admission. `summary.json` contains numerical evidence only: no kernel timings,
+BF16 performance claim, or heuristic-winner promotion.
