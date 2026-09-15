@@ -1,5 +1,6 @@
 #include "quactlize/dispatch/moe.hpp"
 #include "quactlize/integrations/llama/moe_graph.hpp"
+#include <cmath>
 #include <cstdio>
 #include <stdexcept>
 
@@ -85,7 +86,7 @@ static void graph(bool merged,bool extra_consumer,bool bad_view,bool same_ids,bo
   ggml_free(ctx);
 }
 
-static void router_graph(bool merged,int fault,int tokens=1) {
+static void router_graph(bool merged,int fault,int tokens=1,bool finish=false,bool scaled=false,int aliases=1) {
   auto * ctx=ggml_init({8*1024*1024,nullptr,true});
   auto * input=ggml_new_tensor_2d(ctx,GGML_TYPE_F32,2048,tokens);
   auto * logits=ggml_new_tensor_2d(ctx,GGML_TYPE_F32,256,tokens);
@@ -93,10 +94,17 @@ static void router_graph(bool merged,int fault,int tokens=1) {
   auto * ids=ggml_argsort_top_k(ctx,probs,8);
   auto * view=ggml_reshape_3d(ctx,probs,1,256,tokens);
   auto * weights=ggml_get_rows(ctx,view,ids);
+  if (finish) {
+    weights=ggml_reshape_2d(ctx,weights,8,tokens);
+    auto * sum=ggml_clamp(ctx,ggml_sum_rows(ctx,weights),6.103515625e-5f,INFINITY);
+    weights=ggml_reshape_3d(ctx,ggml_div(ctx,weights,sum),1,8,tokens);
+    if (scaled) weights=ggml_scale(ctx,weights,2.f);
+  }
   auto * g=ggml_new_graph(ctx);
   ggml_build_forward_expand(g,weights);
   // The real model expands router weights before the input's reshape.
   auto * a=ggml_reshape_3d(ctx,input,2048,1,tokens);
+  for (int i=1;i<aliases;++i) a=ggml_reshape_3d(ctx,a,2048,1,tokens);
   auto * weight=ggml_new_tensor_3d(ctx,GGML_TYPE_Q4_K,2048,merged?1024:512,256);
   auto * gate=ggml_mul_mat_id(ctx,weight,a,ids);
   ggml_tensor * up;
@@ -109,6 +117,21 @@ static void router_graph(bool merged,int fault,int tokens=1) {
   auto * dw=ggml_new_tensor_3d(ctx,GGML_TYPE_Q5_K,512,2048,256);
   auto * out=ggml_mul_mat_id(ctx,dw,glu,fault==2?ggml_dup_tensor(ctx,ids):ids);
   ggml_build_forward_expand(g,out);
+  auto * end_tensor=out;
+  if (finish) {
+    auto * mul=ggml_mul(ctx,out,weights);
+    ggml_build_forward_expand(g,mul);
+    ggml_tensor * views[8];
+    for (int slot=0;slot<8;++slot) {
+      views[slot]=ggml_view_2d(ctx,mul,2048,tokens,mul->nb[2],size_t(slot)*mul->nb[1]);
+      ggml_build_forward_expand(g,views[slot]);
+    }
+    end_tensor=views[0];
+    for (int slot=1;slot<8;++slot) {
+      end_tensor=ggml_add(ctx,end_tensor,views[slot]);
+      ggml_build_forward_expand(g,end_tensor);
+    }
+  }
   if (fault==1) ggml_build_forward_expand(g,ggml_scale(ctx,gate,2.f));
   if (fault==3) ggml_build_forward_expand(g,ggml_scale(ctx,a,2.f));
   int start=-1,ii=-1,wi=-1,end=-1;
@@ -116,18 +139,27 @@ static void router_graph(bool merged,int fault,int tokens=1) {
     if (g->nodes[i]==probs) start=i;
     if (g->nodes[i]==ids) ii=i;
     if (g->nodes[i]==weights) wi=i;
-    if (g->nodes[i]==out) end=i;
+    if (g->nodes[i]==end_tensor) end=i;
   }
   require(start>=0 && ii>start && wi>=ii && end>wi,"router fixture indices");
   std::vector<ggml_op> prefix,whole;
   for (int i=start;i<=wi;++i) prefix.push_back(g->nodes[i]->op);
   for (int i=start;i<=end;++i) whole.push_back(g->nodes[i]->op);
+  std::vector<int> node_idxs;
+  for (int i=start;i<=end;++i) node_idxs.push_back(i);
   int old_outputs[]={ii,wi,end};
-  bool legacy=ggml_can_fuse_subgraph(g,start,int(whole.size()),whole.data(),old_outputs,3);
+  bool legacy=ggml_can_fuse_subgraph_ext(g,node_idxs.data(),int(whole.size()),whole.data(),old_outputs,3);
   auto span=quactlize::llama::match_moe_router(g,start,prefix,ii,wi);
   require(!legacy,"legacy predicate unexpectedly accepted external input view");
   require(bool(span.count)==(tokens<=8 && (fault==0 || fault==3)),"router/input-view fusion disagrees");
-  if (span.count) require(start+span.count-1==end,"router fusion skipped wrong nodes");
+  if (span.count) {
+    require(start+span.count-1==end,"router fusion skipped wrong nodes");
+    if (finish) {
+      require(span.count==30+int(merged)+int(scaled)+aliases,"combined router/finish span differs");
+      auto chain=quactlize::llama::match_moe(g,span.chain_start);
+      require(chain.finish==end_tensor && chain.weights==weights,"combined router lost weighted finish");
+    }
+  }
   require(!quactlize::llama::match_moe_router(g,start,prefix,wi,wi).count,"wrong router IDs accepted");
   ggml_free(ctx);
 }
@@ -184,10 +216,16 @@ int main() {
       for (int fault=0;fault<4;++fault) finish_graph(merged,tokens,fault);
     for (int tokens:{1,2,3,4,5,8,16,32,64,128,512,2048})
       for (bool merged:{false,true}) for (int fault=0;fault<4;++fault) router_graph(merged,fault,tokens);
+    for (int tokens=1;tokens<=8;++tokens) for (bool merged:{false,true})
+      for (bool scaled:{false,true}) for (int aliases:{1,2,40})
+        for (int fault=0;fault<4;++fault) router_graph(merged,fault,tokens,true,scaled,aliases);
+    for (int tokens:{9,16,128}) for (bool merged:{false,true})
+      router_graph(merged,0,tokens,true,true);
     std::puts("KPACK_MOE_GRAPH_TOKEN_SCOPE PASS topk=8 fused_tokens=1..8 declined_tokens=16,32,64,128,512,2048");
     std::puts("KPACK_MOE_ROUTER_GRAPH PASS input views retained; legacy predicate RED; projection uses/IDs rejected");
     std::puts("KPACK_MOE_GRAPH PASS exact GGML separate+merged; shared consumer, wrong view, IDs, activation RED");
     std::puts("KPACK_MOE_FINISH_GRAPH PASS tokens1..8; shared down, wrong view, reordered sum declined");
+    std::puts("KPACK_MOE_ROUTER_FINISH_GRAPH PASS spans=31/32/33/34/70/71/72 tokens=1..8; external uses and wrong IDs rejected");
     return 0;
   } catch (std::exception const& e) { std::fprintf(stderr,"FAIL %s\n",e.what()); return 1; }
 }
