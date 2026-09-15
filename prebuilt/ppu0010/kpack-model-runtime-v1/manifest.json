@@ -2,7 +2,7 @@
   "schema": "quactlize.kpack-native-dispatch.v1",
   "modules": [
     {
-      "key": "b320bb2e5e0e382d79f349af92cdf9cfd87dafa1f4be6a428245384d1290a182",
+      "key": "03f17d5002b91433bf8d1b63a31ae36db4677a263f9ceef0f045869f7edc915f",
       "parent": {
         "symbol": "fqg_q12_l1_tm16_tn128_tk256_wm16_wn16_s2_ap0_dn32_nonpersistent",
         "qtype": 12,
@@ -19,7 +19,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "b0cba1f4c70292344150b5a734f683153f21155d12782affc383d1b08d9125ae",
+        "kernel": "11ae152f7d4561cb3601e611baa982181fa1418e48a9014860a9de9de6621409",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -47,15 +47,15 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "a9506216316ba539825ea177e3ed83606687ce7f04101a8f4f74ca7bbe43e978",
+        "generator": "5f57d2e26359866a004f9bf7f46b5059a44b69412adb339957e8f1fc6421c061",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n"
       },
-      "sha256": "0ec509f5d33118fb62471bf4c97f9786bf251ac9ecb50d975f4b99f25da61e92",
-      "path": "modules/b320bb2e5e0e382d79f349af92cdf9cfd87dafa1f4be6a428245384d1290a182/kernel.so",
+      "sha256": "73cfd0976e050021917648368a0d6a6d30dcb9ab8149c1234a85ce36c5072c17",
+      "path": "modules/03f17d5002b91433bf8d1b63a31ae36db4677a263f9ceef0f045869f7edc915f/kernel.so",
       "cache_hit": false
     },
     {
-      "key": "81f5c7d608fd6bc695d5057c2e5c3d8f8ca66b11287832e15bd3e0e4cf41e5ec",
+      "key": "bb4505484061ba24b4cd4faa0446b25f0b523ba1272b3aa8b3f58305bfcd8319",
       "parent": {
         "symbol": "fqg_q12_l1_tm16_tn128_tk256_wm16_wn16_s2_ap0_dn64_persistent",
         "qtype": 12,
@@ -72,7 +72,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "b0cba1f4c70292344150b5a734f683153f21155d12782affc383d1b08d9125ae",
+        "kernel": "11ae152f7d4561cb3601e611baa982181fa1418e48a9014860a9de9de6621409",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -100,15 +100,15 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "a9506216316ba539825ea177e3ed83606687ce7f04101a8f4f74ca7bbe43e978",
+        "generator": "5f57d2e26359866a004f9bf7f46b5059a44b69412adb339957e8f1fc6421c061",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n"
       },
-      "sha256": "274cae1d5a60b94af9de9032be0e066abdb1d8e1e4647b3844cac619c9056631",
-      "path": "modules/81f5c7d608fd6bc695d5057c2e5c3d8f8ca66b11287832e15bd3e0e4cf41e5ec/kernel.so",
+      "sha256": "018e43f80f40c33abb4f5c05fe5e6c5875cd813ef725d83a2a596ed2f45b0363",
+      "path": "modules/bb4505484061ba24b4cd4faa0446b25f0b523ba1272b3aa8b3f58305bfcd8319/kernel.so",
       "cache_hit": false
     },
     {
-      "key": "1660bb28d5ee7c2a9f4a3fcc0d5f8a8edd79ed754977b8fc3625817df277999a",
+      "key": "fbfb0ebc04656c1eb6eae71d2e44f6bf365875f5b67b373cc0d099adb4213be5",
       "parent": {
         "symbol": "fqg_q12_l1_tm16_tn64_tk256_wm16_wn16_s2_ap0_dn64_nonpersistent",
         "qtype": 12,
@@ -125,7 +125,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "b0cba1f4c70292344150b5a734f683153f21155d12782affc383d1b08d9125ae",
+        "kernel": "11ae152f7d4561cb3601e611baa982181fa1418e48a9014860a9de9de6621409",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -153,15 +153,15 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "a9506216316ba539825ea177e3ed83606687ce7f04101a8f4f74ca7bbe43e978",
+        "generator": "5f57d2e26359866a004f9bf7f46b5059a44b69412adb339957e8f1fc6421c061",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n"
       },
-      "sha256": "765434614aa0ff1a5f9e6771de11c7a38a3556d412d118925462f82c4d359012",
-      "path": "modules/1660bb28d5ee7c2a9f4a3fcc0d5f8a8edd79ed754977b8fc3625817df277999a/kernel.so",
+      "sha256": "84e7bb0bd28c175f34571b45066287f269b83a49cefd0a0586b87a9749c97313",
+      "path": "modules/fbfb0ebc04656c1eb6eae71d2e44f6bf365875f5b67b373cc0d099adb4213be5/kernel.so",
       "cache_hit": false
     },
     {
-      "key": "d0be32dd83ccf9561d8cbcea836d2b1aead7aa8bd8abb5115e78d583f1d977dd",
+      "key": "71b004e93f5d3ac7e7896e1c78d48013d5ff0da442d9c7ca7510ec115d98e3a6",
       "parent": {
         "symbol": "fqg_q12_l1_tm8_tn64_tk256_wm8_wn16_s2_ap0_dn64_nonpersistent",
         "qtype": 12,
@@ -178,7 +178,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "b0cba1f4c70292344150b5a734f683153f21155d12782affc383d1b08d9125ae",
+        "kernel": "11ae152f7d4561cb3601e611baa982181fa1418e48a9014860a9de9de6621409",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -206,15 +206,15 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "a9506216316ba539825ea177e3ed83606687ce7f04101a8f4f74ca7bbe43e978",
+        "generator": "5f57d2e26359866a004f9bf7f46b5059a44b69412adb339957e8f1fc6421c061",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n"
       },
-      "sha256": "2a09abb11e521c71efb9de4656055d4824e07c399d31cd69907a322a790b6884",
-      "path": "modules/d0be32dd83ccf9561d8cbcea836d2b1aead7aa8bd8abb5115e78d583f1d977dd/kernel.so",
+      "sha256": "a86f370037186dbbd4a3f19069c6aa2b19a574eea7f31eb999711c5c7f86fb73",
+      "path": "modules/71b004e93f5d3ac7e7896e1c78d48013d5ff0da442d9c7ca7510ec115d98e3a6/kernel.so",
       "cache_hit": false
     },
     {
-      "key": "ad280b7894ceb94f393ed80e22eaa182d6ee143e2110c0192c23dd3fc1d188bb",
+      "key": "1168baa60da4fa35f15a2bbfb56ad1792273b4bcdbda0e67064b458bc5bdb335",
       "parent": {
         "symbol": "fqg_q13_l2_tm16_tn128_tk256_wm16_wn16_s2_ap0_dn64_persistent",
         "qtype": 13,
@@ -231,7 +231,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "b0cba1f4c70292344150b5a734f683153f21155d12782affc383d1b08d9125ae",
+        "kernel": "11ae152f7d4561cb3601e611baa982181fa1418e48a9014860a9de9de6621409",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -259,15 +259,15 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "a9506216316ba539825ea177e3ed83606687ce7f04101a8f4f74ca7bbe43e978",
+        "generator": "5f57d2e26359866a004f9bf7f46b5059a44b69412adb339957e8f1fc6421c061",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n"
       },
-      "sha256": "ecf9662816a34cae2ba71b79eac5b6be98cdd3eaa2ef7d4aecd0a765116c1673",
-      "path": "modules/ad280b7894ceb94f393ed80e22eaa182d6ee143e2110c0192c23dd3fc1d188bb/kernel.so",
+      "sha256": "9f777947213b76615e417842b96c65cb9e3c6f41a9aff9d262b87305c068bc85",
+      "path": "modules/1168baa60da4fa35f15a2bbfb56ad1792273b4bcdbda0e67064b458bc5bdb335/kernel.so",
       "cache_hit": false
     },
     {
-      "key": "690e9120ce31f42ccee03ba28bc7a7b098b531ee579ba970923f6e5a03651f0b",
+      "key": "b7d47addb7458bd48eed82efe7910b65e3e590aba40b4c2feb7a422ac36b3834",
       "parent": {
         "symbol": "fqg_q13_l2_tm8_tn64_tk256_wm8_wn16_s2_ap0_dn64_nonpersistent",
         "qtype": 13,
@@ -284,7 +284,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "b0cba1f4c70292344150b5a734f683153f21155d12782affc383d1b08d9125ae",
+        "kernel": "11ae152f7d4561cb3601e611baa982181fa1418e48a9014860a9de9de6621409",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -312,15 +312,15 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "a9506216316ba539825ea177e3ed83606687ce7f04101a8f4f74ca7bbe43e978",
+        "generator": "5f57d2e26359866a004f9bf7f46b5059a44b69412adb339957e8f1fc6421c061",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n"
       },
-      "sha256": "6e35620b28a920f8f603977fd59f5902b08caa89a04a36fd486f270248bf7a31",
-      "path": "modules/690e9120ce31f42ccee03ba28bc7a7b098b531ee579ba970923f6e5a03651f0b/kernel.so",
+      "sha256": "4ef7def952219326d5b978148439653bcb32966ce277d3298f3a9f959b71a243",
+      "path": "modules/b7d47addb7458bd48eed82efe7910b65e3e590aba40b4c2feb7a422ac36b3834/kernel.so",
       "cache_hit": false
     },
     {
-      "key": "181ccad6d87dc577097e8224f4056ea0e8930a7a558933ab7bb81991bfd3a77a",
+      "key": "12bc1b031f776607219fbf2f1b11edc5c37de7c829cae95e742cda0e159078ce",
       "parent": {
         "symbol": "fqg_q12_l1_tm16_tn128_tk256_wm16_wn32_s2_ap0_dn64_nonpersistent",
         "qtype": 12,
@@ -337,7 +337,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "b0cba1f4c70292344150b5a734f683153f21155d12782affc383d1b08d9125ae",
+        "kernel": "11ae152f7d4561cb3601e611baa982181fa1418e48a9014860a9de9de6621409",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -365,39 +365,41 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "a9506216316ba539825ea177e3ed83606687ce7f04101a8f4f74ca7bbe43e978",
+        "generator": "5f57d2e26359866a004f9bf7f46b5059a44b69412adb339957e8f1fc6421c061",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n"
       },
-      "sha256": "780b1591911b8595a58460b10af442d23b3bdd60e3a21da52f45d393fe2a5de9",
-      "path": "modules/181ccad6d87dc577097e8224f4056ea0e8930a7a558933ab7bb81991bfd3a77a/kernel.so",
+      "sha256": "2a9267768c14ceea46ecaa03606df33b0e2e9970034ec41efe9def2dfb282e0a",
+      "path": "modules/12bc1b031f776607219fbf2f1b11edc5c37de7c829cae95e742cda0e159078ce/kernel.so",
       "cache_hit": false
     }
   ],
   "policy_hashes": {
-    "quactlize/dispatch/api.h": "6072f8ec565b8f01ea64fd0a06a4992114a1a35a2346d47f3686610fe2e026b5",
-    "quactlize/dispatch/binding.cpp": "622ece4babc9e2c544cea4117a8a27bdf7da8594ebc171cbd112e5cabe42dd11",
-    "quactlize/dispatch/compute.hpp": "e483e1f86890951a71b5512e8639bf1ff0fda0262b81dcb35a43876f99c77fa4",
+    "quactlize/dispatch/api.h": "a16623a99d3dba7e75ea2fe8d4985af1d126118fa314f604d38a8071432cb62b",
+    "quactlize/dispatch/binding.cpp": "3c82cd2b5e3964245dc4a1b1f54dccc63d190fe803dfef1a50f9f92a8c2a5015",
+    "quactlize/dispatch/compute.hpp": "161fe7a2a6be737edb671ab883a9e818e95b35b154879cdda03759fa3386db97",
     "quactlize/dispatch/cost.hpp": "28f7db20b5c1e16d0503a4b44bacba6e8c166645d6c04c347d4103209e9ff121",
     "quactlize/dispatch/decode.hpp": "a57e738b36f8c953d5d235898dd3d0cded795aaa2e134cbf877dc18cb18bb1cb",
     "quactlize/dispatch/jit.hpp": "16bb6337ea511e25c4f93720a40706e5eeb7732236ad2e626d5d07fa8be86da7",
     "quactlize/dispatch/moe.hpp": "c0699fe43930ca3f115e6d98729706661d8060bd563994c827d9d26f94502127",
-    "quactlize/dispatch/native.py": "e2398203e10d73ee639dc2e8407b8622512f2f148416ed9127263d4771ea5479",
+    "quactlize/dispatch/native.py": "0faa4746c656393d0160b6f333798d78f1fbe4b0b2cb5fb03a4875bbf72cb3f7",
     "quactlize/dispatch/policy.hpp": "376f3f3396589926b08c6172c36869fd56b8035e92fd0c2c49ae5af51eade4af",
     "quactlize/dispatch/smallm.hpp": "992a29ef20ad32183fb2bed17fe2fe5666a5e182cdadbd8f50ef8f5fd2f0e967",
-    "tools/build_kpack_dispatch.py": "c1725a980930a9650e1e8ae8774873f3539220d9cbe0748058c1a7bbb9e5abc6",
+    "quactlize/dispatch/smallm_matched.hpp": "159417534e468a359f21413a44370dcb716ca0338de4c75773177099ffeebdcb",
+    "tools/build_kpack_dispatch.py": "1c12b7f95d839b47ca1f7c89a1d1b82136666ecd3acccad0df3b672cbdbafbeb",
     "tools/kpack_native_policy.cpp": "c6dffe5d16145cec3cc6afce4054be524495452abc54a8cebd3dbeec5b2de940",
     "policies/kpack_zw810_heuristic_v1.hpp": "7a8c74e9d9d739dac3022329aaa19d314dc39c34b210dcbe80431a04c1ca5e8d",
     "policies/kpack_zw810_runtime_v1.hpp": "88f22bc4b1fd82036bba6b42d152f6ed9ff6e4de4dbf9d5ca55355ff9b0ffda8",
     "policies/kpack_zw810_cost_v1.hpp": "04fab1c79e942a257675801e974319f16e6824c28e976736b4db47868084754c",
-    "policies/kpack_smallm_v1.hpp": "325caff3fc7a9ac4d66da660eaacf5a45075385e0bb326f7280defd9b9fe93a6"
+    "policies/kpack_smallm_v1.hpp": "325caff3fc7a9ac4d66da660eaacf5a45075385e0bb326f7280defd9b9fe93a6",
+    "policies/kpack_smallm_matched_v1.hpp": "e226e2e15491734f3b69815437779b8b1d170e3e5e5f252789a581464c31d4b2"
   },
-  "dispatch_sha256": "2222512a72d573273dae1b96e5c45bf41909a294cbc3f625f8f75adf46118ef4",
-  "execution_sha256": "f89ac0ab6c21674b0ab679042fee31c8143ebf0cb827d933d276264aeb293665",
+  "dispatch_sha256": "88b855004c451475e79727a8bba5a7e79c1d0dd015e7b588d0b0e7c2414c0787",
+  "execution_sha256": "1122afabaa9c8b749bb88a12281887c2635155468d3048956986b3befeb9be43",
   "compiler_identity": null,
   "compiler_identities": {
-    "22537c8a2e0614c718c90ca5beabe74da7ca5b18a364c1c0c2ddb628e244f0b0": {
+    "e704644921db3b4730ccb1abfb0ae32781370ff64b519b299aa9c510e3198acd": {
       "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-      "kernel": "b0cba1f4c70292344150b5a734f683153f21155d12782affc383d1b08d9125ae",
+      "kernel": "11ae152f7d4561cb3601e611baa982181fa1418e48a9014860a9de9de6621409",
       "flags": [
         "--forward-unknown-to-host-compiler",
         "--forward-unknown-to-host-linker",
@@ -425,7 +427,7 @@
         "-DCUTE_USE_PACKED_TUPLE=1",
         "-fPIC"
       ],
-      "generator": "a9506216316ba539825ea177e3ed83606687ce7f04101a8f4f74ca7bbe43e978",
+      "generator": "5f57d2e26359866a004f9bf7f46b5059a44b69412adb339957e8f1fc6421c061",
       "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n"
     }
   },
@@ -439,16 +441,17 @@
       "quactlize/execution/metadata.cu": "ddc5c9a6e932043da0daa7386b31fcbc194495a7a7ee85727a8f8fa44520bf40",
       "quactlize/execution/moe.cu": "200af0eb6d60ba5f7035504bad7181ea4bb353592ca26cf4efe27ef65dea4b10",
       "quactlize/execution/moe.h": "279492a889d46880cc2dd179eab1a5ae039f389e7dfbaba25a0c82f63de4ab5e",
-      "quactlize/execution/q4_decode.cpp": "9cba67774e65a1528fffb89279309512ec38ad635322774fb5d841c4d4e6ba7f",
-      "quactlize/execution/q4_decode.h": "5c5db8fd859e80a5cf73016b8c70f772d0b542204e557ce0349031743eecb763",
+      "quactlize/execution/q4_decode.cpp": "8ce2d5443d22db8db9a3cfd63ed514cce6c8905b981b3fca36216a2f84ff7462",
+      "quactlize/execution/q4_decode.h": "2cce4e3229c0f6ad561a4456c7a0c0e87fe1b79718a1ba3231792c8fa9879be9",
       "quactlize/execution/q4_decode_io.cu": "f67c6cc9858c092567c99dacb578faee7691a961dbb575c73c4bdb8125b2f720",
-      "quactlize/execution/q4_decode_kernel.cuh": "df491f976abb8156af60525ea8d698ae9d9a583317fb0386e103f1836e6060db",
+      "quactlize/execution/q4_decode_kernel.cuh": "db7a7059988d03ed28aec45dc63cc16ea443177af28b45507d83f0d31c0307a9",
       "quactlize/execution/q4_s1_activation.cuh": "513cfd9c92d9805e5bf91066b9d064eb7f39953fd03b871008501f05855aab90",
-      "quactlize/execution/q4_s1_api.h": "93302a06cb0d74e9b5e6ad3ef5945b689b1d69f2cb70ec608e92b52547fb4b47",
-      "quactlize/execution/q4_s1_helpers.cuh": "561d3b42ec08ed025869f5767a86ede239223d96a62444774c349d185f92a189",
-      "quactlize/execution/q4_s1_kernel.cuh": "432cf2dc35902ec1dde0a87c49f43f6926c8342351baeea264c107be6573ff54",
-      "quactlize/execution/q4_s1_readers.cuh": "422c6c867b37e207e47db2d5413c7598fca15995cde5e7a1d4466e72e687d90a",
-      "quactlize/execution/q4_s1_validation.hpp": "888293044ebb1df4a52bc028fea6f42de1cb23d50fb6394703abfd355bba6d8f",
+      "quactlize/execution/q4_s1_api.h": "56fbe034fa931150f4f03da43cf6342f28926f3a8f903b42ce4400273cf2112f",
+      "quactlize/execution/q4_s1_helpers.cuh": "4407f5b8b16f54b41a0caadf443f0c459952b0f1dc38d0492784470a1c7e5e3d",
+      "quactlize/execution/q4_s1_kernel.cuh": "0c4c5d8fea73cd3a8ea3f31fe94450848b438df0557f9dec328c5b40e6d30f97",
+      "quactlize/execution/q4_s1_readers.cuh": "59e0bc27a9f3dfb14b2ac33f292edf9cd1595d1eb363245592d302c6c570bbe0",
+      "quactlize/execution/q4_s1_typed_activation.cuh": "7f5b92ed6b13f99dd093aa48140fc06cea30c810ff4b48d340930b006bc1f0df",
+      "quactlize/execution/q4_s1_validation.hpp": "e8b57680d9fa6f74d6e76803cf93015573d232ce6daf67aea5d9dfea4695b02d",
       "quactlize/execution/reader.hpp": "8e064fc00685890cf21805ec365ce82acc1ea926dd64fb98c02567456f4f8342",
       "quactlize/execution/simt.cpp": "233f9ed68cc60904788977c9e3e295be66136dc887fa0b73b8f407182ff16644",
       "quactlize/execution/simt.h": "d4db0c72482913894462ffd2252dd530d8e16a4f7441781c9de83fb3a08b4127",
@@ -545,7 +548,7 @@
       "quactlize/include/ppu_grouped_shipping_policy.hpp": "0bc2295c402f256c929f4398a842c8def6d8b9dab77d1264bfbdb14ac08cf195",
       "quactlize/include/ppu_kquant_measured_policy.hpp": "10ed9acc05006049e7c994937c6eca4dbe6915c74b95ee9bba300366c5f6c23f",
       "quactlize/include/ppu_kquant_measured_policy_data.inc": "7923db76de93f9db85bd0d81abb6b78594edb0ff5e52541032f6ce61dd68506a",
-      "quactlize/include/ppu_mixed_policy.hpp": "7a0e7490693090ae9f9cc8b8f8a6821fc5964e5b3e3ad185e9319d967d75dc73",
+      "quactlize/include/ppu_mixed_policy.hpp": "c76ec4162224aef1f6b79e1669a282fa74a9c4d0218f14b29b1307cf124b6a8e",
       "quactlize/include/ppu_placed_arrangement.hpp": "6217e1ba0d0c6fa94a7f1346b028ce274d27021f4605ff3d3c201239206eea80",
       "quactlize/include/ppu_q4_kpack4_shipping_policy.hpp": "349f928b5e34ac31e193c594b853ff60ee5cb689a12bb5bbeb7c27cce0054381",
       "quactlize/include/ppu_tactic_space.hpp": "e842a529294db00b639a8235e042ae36b9d2bac95ab27db527d8e5d3e3a995e9",
@@ -1114,7 +1117,7 @@
       "quactlize/integrations/llama/router.cuh": "f3374bfc5eecbeabcf780c7b4b2caf7b54cf1e5dcaab79a6e50f499c4f0c8c98",
       "policies/kpack_q4_decode_v1.json": "949969599be40229760cd96fdb25eb2c3d374805ba3436c5238c3bdda108c7cd",
       "policies/kpack_q4_decode_v1.hpp": "a6d6e834d7d70058df2113ad576936bf50bd51151fbbdf59ad42c06f9ffbc486",
-      "quactlize/execution/q4_decode_codegen.py": "9fa6d0afa36942d72fb6d969dc8cc005714c586d2c193c6e2dc4ef7b056a9089",
+      "quactlize/execution/q4_decode_codegen.py": "f81125c92f311a2b42df2f26fb3329baf75771e319bdc73b2da4fb837fa336e5",
       "quactlize/execution/simt_codegen.py": "9c5cdf58e6c82bc6c8528049141621cc7de3a97df12919b14475922189681df2",
       "policies/kpack_zw810_heuristic_v1.hpp": "7a8c74e9d9d739dac3022329aaa19d314dc39c34b210dcbe80431a04c1ca5e8d",
       "policies/kpack_zw810_runtime_v1.hpp": "88f22bc4b1fd82036bba6b42d152f6ed9ff6e4de4dbf9d5ca55355ff9b0ffda8",
@@ -1155,8 +1158,8 @@
       "libhg_wrapper.so": "fd93f23bfb05dfee0ffa48fd07d3c0cf6d8ab37d266e12f841ee056291affcd5"
     },
     "library": "libquactlize_ppu_execution.so",
-    "sha256": "f89ac0ab6c21674b0ab679042fee31c8143ebf0cb827d933d276264aeb293665",
-    "compile_seconds": 182.05657983198762,
+    "sha256": "1122afabaa9c8b749bb88a12281887c2635155468d3048956986b3befeb9be43",
+    "compile_seconds": 179.21035654842854,
     "formats": [
       8,
       10,
@@ -1646,6 +1649,19 @@
           4
         ]
       ]
+    },
+    "q4_decode_compute_v2": {
+      "compute": [
+        "f16",
+        "bf16"
+      ],
+      "bf16_storage": [
+        "f32",
+        "bf16"
+      ],
+      "bf16_arithmetic": "BF16_A_FP32_AFFINE_ACCUMULATOR_OUTPUT",
+      "bf16_selection": "FP16_GEOMETRY_INITIAL_NOT_MEASURED",
+      "device_validated": false
     },
     "simt_configs": {
       "8": [
@@ -13569,18 +13585,18 @@
     "-shared",
     "-pthread",
     "-Wl,-Bsymbolic",
-    "-I/root/autodl-tmp/kpack-bf16-model-final-20260915",
+    "-I/tmp/kpack-smallm-matched-dispatch-20260915",
     "/root/marlin_ppu/quactlize/quactlize/dispatch/binding.cpp",
     "-ldl",
     "-o",
-    "/root/autodl-tmp/kpack-bf16-model-final-20260915/libquactlize_kpack_dispatch.so"
+    "/tmp/kpack-smallm-matched-dispatch-20260915/libquactlize_kpack_dispatch.so"
   ],
   "device_validated": false,
   "heuristic_admitted": false,
-  "grouped_profile": "measured-q4-q5-single-token-otherwise-device-bounds-no-router-readback",
-  "jit_source_contract": "c9c7435e0be84b49661711af47fad4b4646b0f6d6bab7312405759094f839054",
+  "grouped_profile": "matched-smallm-explicit-compute-otherwise-legacy-bounds-no-router-readback",
+  "jit_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
   "jit_source_identity": {
-    "kernel": "b0cba1f4c70292344150b5a734f683153f21155d12782affc383d1b08d9125ae",
+    "kernel": "11ae152f7d4561cb3601e611baa982181fa1418e48a9014860a9de9de6621409",
     "flags": [
       "--forward-unknown-to-host-compiler",
       "--forward-unknown-to-host-linker",
@@ -13608,7 +13624,7 @@
       "-DCUTE_USE_PACKED_TUPLE=1",
       "-fPIC"
     ],
-    "generator": "a9506216316ba539825ea177e3ed83606687ce7f04101a8f4f74ca7bbe43e978"
+    "generator": "5f57d2e26359866a004f9bf7f46b5059a44b69412adb339957e8f1fc6421c061"
   },
   "jit_required": true,
   "decode_policy": {
@@ -13620,6 +13636,12 @@
     "sha256": "74bb03b03ebfcb0afaa114afa670efb5708413ab8cce76a623d2680a10cd0886",
     "header_sha256": "325caff3fc7a9ac4d66da660eaacf5a45075385e0bb326f7280defd9b9fe93a6",
     "admission": "EXACT_AND_BUCKET_PROPOSALS_MODEL_GATE_PENDING"
+  },
+  "smallm_matched_policy": {
+    "path": "smallm-matched-policy.json",
+    "sha256": "157b3d8d4e74813156bb149824424e76fcee733476ab2a8f977953d84b95889f",
+    "header_sha256": "e226e2e15491734f3b69815437779b8b1d170e3e5e5f252789a581464c31d4b2",
+    "admission": "MATCHED_POOL_EXPLICIT_COMPUTE_MODEL_GATE_PENDING"
   },
   "compute_contract": {
     "schema": "quactlize.explicit-compute.v1",
@@ -13633,8 +13655,20 @@
     ],
     "grouped": "ALL_LEGAL_M",
     "dense": "DECODE_M1_8",
-    "selection": "INITIAL_GEOMETRY_PROPOSALS_NOT_BF16_MEASUREMENTS",
+    "selection": "MATCHED_SMALLM_OVERRIDES_ELSE_INITIAL_COMPUTE_PROPOSALS",
     "device_validated": false
+  },
+  "moe_mixed_gate": {
+    "schema": "quactlize.moe-mixed-gate.v1",
+    "stage_cases": 80,
+    "chain_cases": 24,
+    "simt_binaries": [
+      {
+        "path": "mixed-stages",
+        "sha256": "925959c0267553db78fa684ecd56e49484ca4d7a77d8aa0b7868ae0c88296bd5",
+        "source_sha256": "558c5169dd8edb95556619af5fb35018126ab2747236b61c2d1e4e881b5308c8"
+      }
+    ]
   },
   "prefill": {
     "library": "libquactlize_ppu_prefill.so",
@@ -13644,23 +13678,31 @@
     "helper": "kpack_deepgemm_prewarm.py",
     "helper_sha256": "d614e96f0eb6696237081d7b129049183259197b70885c7fe8c00ecc42bba315"
   },
-  "moe_mixed_gate": {
-    "schema": "quactlize.moe-mixed-gate.v1",
-    "stage_cases": 80,
-    "chain_cases": 24,
-    "simt_binaries": [
-      {
-        "path": "mixed-stages",
-        "sha256": "8d7efd2b92e04cfeb023a81ea587cc3d4a8e85ddea8045f1dd3003a737a72649",
-        "source_sha256": "558c5169dd8edb95556619af5fb35018126ab2747236b61c2d1e4e881b5308c8"
-      }
-    ]
-  },
   "bf16_gate": {
     "path": "bf16/manifest.json",
-    "sha256": "01ff333bae4ea297bdc8745e2e4e1e4d3d164bb97d3022d3c0235cb6a8a20267",
+    "sha256": "11e2d08881e6c6ab10ee9a3543595592be68acfe2853102658c91958e0a455bd",
     "cases": 746,
     "modules": 40,
+    "device_validated": false
+  },
+  "local_optimization_gate": {
+    "path": "local-gates/manifest.json",
+    "sha256": "4e1e0a6bfc354275d28c96d9542f0b9eb066acf4dc8e2f8b25b90084469d6030"
+  },
+  "q4_bf16_gate": {
+    "path": "q4-bf16-gate/manifest.json",
+    "sha256": "9440254dcd307e3aa5e3174ffbbe8d0d8f1a9aed935e48b273aca098bda430ae",
+    "library": "q4-bf16-gate/libq4_selected_bf16_gate.so",
+    "denominator": {
+      "requests": 192,
+      "selected_requests": 129,
+      "declined_requests": 63,
+      "bf16_cells": 258,
+      "f16_controls": 129,
+      "overflow_negatives": 129,
+      "compiled_recipes": 40,
+      "covered_recipes": 40
+    },
     "device_validated": false
   },
   "pack": {
