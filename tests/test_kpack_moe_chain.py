@@ -14,6 +14,7 @@ def test_mixed_dispatch_phases_and_pointer_contract(tmp_path):
     result=subprocess.run([str(exe)],capture_output=True,text=True)
     assert result.returncode==0,result.stdout+result.stderr
     assert 'KPACK_MOE_MIXED_HOST PASS' in result.stdout
+    assert 'KPACK_MOE_REUSE_HOST PASS chains=1920 formats=6 tokens=1..8 splits=1/2/4/8' in result.stdout
 
 
 def test_composition_and_exact_ggml_graph(tmp_path):

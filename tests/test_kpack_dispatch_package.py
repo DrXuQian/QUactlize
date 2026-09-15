@@ -22,6 +22,7 @@ def test_missing_package_does_not_pass(tmp_path):
 
 
 def test_llama_headers_are_exact_copies():
+    from tools.sync_kpack_llama_headers import INCLUDES
     root = Path(__file__).resolve().parents[1]
     llama = Path(os.environ.get('LLAMA_SOURCE', '/root/autodl-tmp/llama-v0.3.0')) / 'ggml/src/ggml-cuda/quactlize'
     if not llama.exists():
@@ -31,8 +32,9 @@ def test_llama_headers_are_exact_copies():
         (root / "quactlize/execution/api.h", "kpack_execution.h"),
         (root / "quactlize/dispatch/api.h", "kpack_dispatch.h"),
     ):
-        text = source.read_text().replace("../runtime/abi.h", "kpack_module.h").replace(
-            "../integrations/llama/indexed.h", "kpack_indexed.h").replace('../decode/api.h', 'kpack_decode_io.h')
+        text = source.read_text()
+        for before, after in INCLUDES.items():
+            text = text.replace('"'+before+'"', '"'+after+'"')
         assert text == (llama / target).read_text()
 
 

@@ -59,6 +59,10 @@ class MoeEndpoint(C.Structure):
                                       "arrangement","scratch")] + [("scratch_bytes",C.c_uint64)]
 
 
+class MoeEndpointV3(C.Structure):
+    _fields_ = MoeEndpoint._fields_ + [("reuse_config", C.c_void_p)]
+
+
 class MoeFinish(C.Structure):
     _fields_ = [("version",C.c_uint32),("size",C.c_uint32),
                 ("weights_stride",C.c_int64),("output_stride",C.c_int64),
@@ -157,8 +161,12 @@ class Dispatch:
         return lambda: self.fn["run"](handle,call.stream)
 
     def chain(self, gate, up, down, stream, router=None, mixed=False, finish=None):
-        create=getattr(self.lib,'quactlize_kpack_dispatch_moe_create_v'+('2' if mixed else '1'))
-        create.argtypes=([C.c_void_p,C.POINTER(MoeEndpoint),C.POINTER(MoeEndpoint),C.POINTER(MoeEndpoint)] if mixed else
+        endpoint = MoeEndpointV3 if isinstance(gate, MoeEndpointV3) else MoeEndpoint
+        if mixed and any(not isinstance(e, endpoint) for e in (gate, up, down) if e is not None):
+            raise ValueError('mixed MoE endpoint versions differ')
+        version = ('3' if endpoint is MoeEndpointV3 else '2') if mixed else '1'
+        create=getattr(self.lib,'quactlize_kpack_dispatch_moe_create_v'+version)
+        create.argtypes=([C.c_void_p,C.POINTER(endpoint),C.POINTER(endpoint),C.POINTER(endpoint)] if mixed else
                          [C.c_void_p,C.c_void_p,C.c_void_p])+[C.POINTER(C.c_void_p)]
         create.restype=C.c_int
         chain=C.c_void_p()

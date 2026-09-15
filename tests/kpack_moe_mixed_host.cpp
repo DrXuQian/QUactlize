@@ -3,14 +3,14 @@
 #include <cstdio>
 
 static std::vector<int> calls;
-static qk_moe_projection_v1 part(uintptr_t base,int n,int k,int channels) {
+static qk_moe_projection_v1 part(uintptr_t base,int n,int k,int channels,int tokens=1) {
     qk_moe_projection_v1 p{};p.version=1;p.size=sizeof(p);p.shape_size=12;p.stride_size=8;
-    p.shape_offsets[0]=8;p.shape_offsets[1]=4;p.m=8;p.n=n;p.k=k;p.experts=256;p.tile_m=8;p.splits=1;
+    p.shape_offsets[0]=8;p.shape_offsets[1]=4;p.m=8*tokens;p.n=n;p.k=k;p.experts=256;p.tile_m=8;p.splits=1;
     p.a=(void*)base;p.output=(void*)(base+0x100000);p.workspace=(void*)(base+0x200000);p.workspace_bytes=0x100000;
     p.offsets=(int*)(base+0x300000);p.io.row_ids=(int*)(base+0x310000);p.rows=(int*)(base+0x203000);
     p.shapes=(void*)(base+0x200000);p.outputs=(void*)(base+0x201000);p.strides=(void*)(base+0x202000);
-    p.directory_header=(void*)(base+0x204000);p.directory_entries=(void*)(base+0x205000);p.directory_capacity=8;
-    p.io={1,sizeof(p.io),1,8,channels,0,8,k,int64_t(channels)*k,n,(int*)0x01000000,
+    p.directory_header=(void*)(base+0x204000);p.directory_entries=(void*)(base+0x205000);p.directory_capacity=p.m;
+    p.io={1,sizeof(p.io),tokens,8,channels,0,8,k,int64_t(channels)*k,n,(int*)0x01000000,
         (float*)0x02000000,(float*)(base+0x400000),(int*)(base+0x310000)};
     return p;
 }
@@ -19,7 +19,7 @@ static int stage_tc(void* h,qk_moe_plan_v1 const*,int phase,void*) {
     auto p=static_cast<qk_moe_projection_v1*>(h);calls.push_back(10+int(uintptr_t(p->a)/0x10000000)+phase*10);return 0;
 }
 static int bind_simt(qkg_call_v1 const* c,int,void* scratch,uint64_t,qk_moe_projection_v1* p) {
-    *p=part(uintptr_t(scratch),c->n,c->k,c->channels);
+    *p=part(uintptr_t(scratch),c->n,c->k,c->channels,c->rows/8);
     p->io.a=static_cast<float const*>(c->a);p->io.output=c->output;p->io.ids=c->ids;return 0;
 }
 static int select_simt(qkg_call_v1 const*,quactlize_ppu_placed_arrangement_v2 const*,qkg_q4_decode_config_v1* f,qkg_sizes_v1*) {
@@ -42,7 +42,102 @@ static int run_simt(qkg_call_v1 const* c,qkg_q4_decode_config_v1 const*,quactliz
     } else {assert(c->a==(void*)0x02000000);assert(c->output==(float*)(base+0x100000));}
     calls.push_back(50+i);return 0;
 }
+
+static int query_reuse(qkg_call_v1 const* c,qkg_simt_config_v1 const* f,
+    quactlize_ppu_placed_arrangement_v2 const* a,qkg_sizes_v1* sizes) {
+    return quactlize::execution::simt::query(*c,*f,a,*sizes);
+}
+static int run_reuse(qkg_call_v1 const* c,qkg_simt_config_v1 const* f,
+    quactlize_ppu_placed_arrangement_v2 const* a) {
+    qkg_sizes_v1 sizes{};
+    assert(query_reuse(c,f,a,&sizes)==QKG_OK);
+    assert(quactlize::execution::simt::buffers(*c,sizes)==QKG_OK);
+    int i=int(uintptr_t(c->low)/0x100000000ULL)-1;
+    assert(i>=0 && i<3 && c->rows>=8 && c->rows<=64);
+    uintptr_t base=uintptr_t(i+1)*0x10000000;
+    if (i==2) {
+        assert(c->a==(void*)base && c->a_token_stride==8*c->k);
+        assert(c->output==(float*)(base+0x400000));
+    } else {
+        assert(c->a==(void*)0x02000000 && c->output==(float*)(base+0x100000));
+    }
+    calls.push_back(50+i);return QKG_OK;
+}
+
+static void test_reuse_chains() {
+    int checked=0;
+    for (int q:{8,10,11,12,13,14}) for (int tokens=1;tokens<=8;++tokens)
+    for (int split:{1,2,4,8}) for (bool merged:{false,true}) for (unsigned mask=1;mask<8;++mask) {
+        if (merged && (mask&2)) continue;
+        Runtime r;r.device=0;r.cu=72;r.moe=std::make_shared<MoeExecution>();
+        r.moe->bind=bind_simt;r.moe->stage=stage_simt;r.moe->query_reuse=query_reuse;r.moe->reuse=run_reuse;
+        qkg_simt_config_v1 config{1,sizeof(config),q==8?1:3,8,4,4,split};
+        auto arrangement=q==8 ? q8_kpack2::arrangement() :
+            q==12 ? ppu_arrangements::q4_kpack4_transpose_v1() :
+                    ppu_arrangements::kquant_kpack_transpose_v1(q);
+        qk_moe_projection_v1 ps[3]={part(0x10000000,merged?1024:512,2048,1,tokens),
+            part(0x20000000,512,2048,1,tokens),part(0x30000000,2048,512,8,tokens)};
+        Handle handles[3];qks_moe_endpoint_v3 endpoints[3]{};qkg_call_v1 gc[3]{};
+        for (int i=0;i<3;++i) {
+            auto& e=endpoints[i];e.version=3;e.size=sizeof(e);
+            auto& p=ps[i];auto& h=handles[i];h.module=std::make_shared<Module>();h.inner=&p;
+            h.module->moe_projection=project;h.module->moe_stage=stage_tc;h.module->destroy=[](void*){};
+            if (!(mask&(1u<<i))) {e.tc_handle=&h;continue;}
+            auto& c=gc[i];c.version=1;c.size=sizeof(c);c.qtype=q;c.n=p.n;c.k=p.k;
+            c.experts=256;c.rows=8*tokens;c.mode=QKG_INDEXED;c.input_type=QKG_F32;c.topk=8;c.channels=p.io.channels;
+            c.a_row_stride=p.k;c.a_token_stride=p.io.a_token_stride;c.ids_stride=8;c.out_row_stride=p.n;
+            c.a=p.io.a;c.output=p.io.output;c.ids=p.io.ids;
+            uintptr_t weight=0x100000000ULL*(i+1);
+            c.low=(uint8_t*)weight;c.units=(uint8_t*)(weight+0x80000000);
+            if (q==11 || q==13 || q==14) c.high=(uint8_t*)(weight+0x40000000);
+            qkg_sizes_v1 sizes{};assert(query_reuse(&c,&config,&arrangement,&sizes)==QKG_OK);
+            if (sizes.workspace_bytes) {
+                c.workspace=(void*)(0x500000000ULL+i*0x1000000);c.workspace_bytes=sizes.workspace_bytes;
+            }
+            e.simt_call=&c;e.reuse_config=&config;e.arrangement=&arrangement;
+            e.scratch=p.a;e.scratch_bytes=0x400000;
+        }
+        void* chain=nullptr;
+        auto create=[&] {return quactlize_kpack_dispatch_moe_create_v3(&r,&endpoints[0],
+            merged?nullptr:&endpoints[1],&endpoints[2],&chain);};
+        assert(create()==QKS_OK && chain);
+        std::vector<int> expected{100,mask&1?50:21};
+        if (!merged) expected.push_back(mask&2?51:22);
+        expected.push_back(102);expected.push_back(mask&4?52:23);
+        if (!(mask&4)) expected.push_back(43);
+        calls.clear();assert(quactlize_kpack_dispatch_moe_run_v1(chain,nullptr)==QKS_OK);assert(calls==expected);
+        qk_llama_router_v1 router{1,sizeof(router),0,1,0,0,1e-8f,1.f,(float*)0x03000000,nullptr,(float*)0x04000000};
+        calls.clear();assert(quactlize_kpack_dispatch_moe_run_router_v1(chain,&router,nullptr)==QKS_OK);assert(calls==expected);
+        int first=(mask&1)?0:(mask&2)?1:2;
+        if (split>1) {
+            auto original=router.logits;router.logits=(float*)gc[first].workspace;
+            calls.clear();assert(quactlize_kpack_dispatch_moe_run_router_v1(chain,&router,nullptr)==QKS_MISS);assert(calls.empty());
+            router.logits=original;
+            qk_llama_moe_finish_v1 finish{1,sizeof(finish),8,2048,(float*)gc[first].workspace,(float*)0x50000000};
+            assert(quactlize_kpack_dispatch_moe_bind_finish_v1(&r,chain,&finish)==QKS_MISS);
+        }
+        quactlize_kpack_dispatch_moe_destroy_v1(chain);chain=nullptr;
+        auto query=r.moe->query_reuse;r.moe->query_reuse=nullptr;
+        assert(create()==QKS_MISS && !chain);r.moe->query_reuse=query;
+        auto run=r.moe->reuse;r.moe->reuse=nullptr;
+        assert(create()==QKS_MISS && !chain);r.moe->reuse=run;
+        auto& e=endpoints[first];e.version=2;assert(create()==QKS_INVALID && !chain);e.version=3;
+        qkg_config_v1 extra{1,sizeof(extra),16,4,1};e.simt_config=&extra;
+        assert(create()==QKS_INVALID && !chain);e.simt_config=nullptr;
+        if (split>1) {
+            auto saved=gc[first].workspace;
+            // A different projection's live scratch is not caught by the
+            // standalone reader; composition must reject it explicitly.
+            gc[first].workspace=ps[first==2?0:2].workspace;
+            assert(create()==QKS_INVALID && !chain);gc[first].workspace=saved;
+            --gc[first].workspace_bytes;assert(create()==QKS_INVALID && !chain);++gc[first].workspace_bytes;
+        }
+        ++checked;
+    }
+    std::printf("KPACK_MOE_REUSE_HOST PASS chains=%d formats=6 tokens=1..8 splits=1/2/4/8 missing-entry+alias negatives\n",checked);
+}
 int main() {
+    test_reuse_chains();
     for (bool merged:{false,true}) for (uint32_t mask=0;mask<8;++mask) {
         if (merged && (mask&2)) continue;
         Runtime r;r.device=0;r.cu=72;r.moe=std::make_shared<MoeExecution>();

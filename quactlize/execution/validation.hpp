@@ -1,7 +1,7 @@
 #pragma once
 #include "api.h"
-#include "ppu_placed_arrangement.hpp"
-#include "q8_kpack2.hpp"
+#include "../include/ppu_placed_arrangement.hpp"
+#include "../include/q8_kpack2.hpp"
 #include <limits>
 
 namespace quactlize::execution {

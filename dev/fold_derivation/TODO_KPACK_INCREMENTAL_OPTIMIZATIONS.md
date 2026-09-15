@@ -1,5 +1,20 @@
 # K-pack incremental optimization backlog
 
+## All-format SIMT coverage, 2026-09-15
+
+The request is Q2/Q3/Q4 control/Q5/Q6/Q8 SIMT, first tested on RTX5070,
+then tuned/admitted on PPU. Generic scalar support is not an optimized
+reader, and a Q4_K_M model contains non-Q4 projections. The reviewed trace
+uses Q4 SIMT gate/up, Q5 TC down and initial-policy Q8 dense TC.
+
+| Work | State | Next evidence |
+|---|---|---|
+| Canonical vector/fast-code reader for six formats | Additive `execution/simt*`; 68,640 CUDA numeric checks and 30 performance contexts pass. Full PPU execution library compiles in 73s; no format/policy change | PPU numerical/ACU/performance admission; preserve optimized Q4 incumbents |
+| Sweep options | `dev/gemv_simt/spec.py`: C4/8, P2/4/8, W2/4/8, A/metadata cooperation, S1/2/4/8; explicit invalid C*P and Q8 metadata prunes. Existing372-workload registry extends to2232 format/workload pairs | Retain old optimized Q4 and typed TC winners; do not compare F32 SIMT endpoints against bare F16 TC producers |
+| PPU-specific optimization | Source-address model covers low/high/A/units; Q5 high N/K exchange and Q2/Q3/Q6 scale-group/word boundaries are explicit | NCU on5070 guides changes; PPU ACU/timing decides admission. No cross-GPU winner transfer |
+| Callable mixed-chain endpoints | `qks_moe_endpoint_v3` accepts new explicit recipes, retains v1/v2; 1,920 host composition checks pass, including Split-K workspace aliases. Local execution and dispatcher DSOs built | Full GPU mixed-chain gate; standalone CUDA GEMV passes do not prove chain numerics |
+| Automatic selection | PENDING PPU SIMT/typed-TC measurements; existing Q4 policy unchanged | Include real Split-K reducer/required finishing; preserve base chain fusion on optional finish decline |
+
 ## Decode helper fusion, 2026-09-15
 
 The [paired M1 trace review](../../docs/KPACK_QWEN35_DECODE_TRACE_20260915.md)
@@ -13,7 +28,7 @@ not be used as decode costs.
 | Q8 shared-expert gate/up + SwiGLU | OPEN: trace shows initial TC/Split-K policy and lost native fusion; about408us added kernel time/step | Compare measured W8A16 SIMT/TC including reducers and fused postprocessing; no silent W8A8 fallback |
 | Q4 routed SwiGLU and Q5 down finishing | Weighted finish implemented; Q4 activation is still a separate kernel | Preserve mixed SIMT/TC precision and graph ownership before considering producer-epilogue activation fusion |
 | Q8 attention residual and Q6 output head | OPEN: lost fused residual on10 projections; output-head policy miss retains two casts | Cover these shapes/endpoints explicitly; do not label a fallback as a measured choice |
-| Qwen3-32B nonfinite activation | Separate numerical blocker: finite F32 SwiGLU exceeds FP16 range before Q6 down | Reference intermediate comparison and compute-range-correct solution; never clamp values merely to pass |
+| Qwen3-32B nonfinite activation | BLOCKING: actual A-copy reproduces index5613/243383.484375 -> F16 Inf; old gather also narrows, so removal is not proven causal | [Bounded first-token paired snapshots](../../QWEN3_DECODE_RANGE_DIAGNOSIS.md), then range-correct compute and original model retest. No clamp, config exclusion, fallback or relaxed tolerance; SIMT small-value passes do not close this |
 
 Local admission:99 host tests pass and production helper compilation passes.
 The [returned GPlpUf review](../../docs/KPACK_MOE_FINISH_RESULTS_20260915.md)

@@ -66,6 +66,22 @@ class Sizes(C.Structure):
     ]
 
 
+class SimtConfig(C.Structure):
+    _fields_ = [("version", C.c_uint32), ("size", C.c_uint32)] + [
+        (name, C.c_int32) for name in ("variant", "columns", "warps", "values", "split")]
+
+    def __init__(self, variant, columns, warps, values, split=1):
+        super().__init__(1, C.sizeof(type(self)), variant, columns, warps, values, split)
+
+
+def bind_simt(lib):
+    query, run = lib.quactlize_kpack_simt_query_v1, lib.quactlize_kpack_simt_run_v1
+    query.argtypes = [C.POINTER(Call), C.POINTER(SimtConfig), C.POINTER(Arrangement), C.POINTER(Sizes)]
+    run.argtypes = query.argtypes[:-1]
+    query.restype = run.restype = C.c_int
+    return query, run
+
+
 def arrangement(q):
     if q == 8:
         return Arrangement(2, 4, 8, 0, 0, 32, 32, 0, 0x51384B5032540001)

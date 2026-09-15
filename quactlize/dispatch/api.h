@@ -3,6 +3,7 @@
 #include "../integrations/llama/indexed.h"
 #include "../decode/api.h"
 #include "../execution/q4_decode.h"
+#include "../execution/simt.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -116,13 +117,33 @@ typedef struct {
 int quactlize_kpack_dispatch_moe_simt_scratch_v1(void* runtime,qkg_call_v1 const*,uint64_t*);
 int quactlize_kpack_dispatch_moe_create_v2(void* runtime,qks_moe_endpoint_v2 const* gate,
     qks_moe_endpoint_v2 const* up,qks_moe_endpoint_v2 const* down,void** chain);
+// Additive all-format register-reuse reader. Exactly one of q4_config,
+// simt_config (legacy generic) and reuse_config is present for a SIMT endpoint.
+// Recipes are explicit, not selected here. Token 1..8; canonical bytes and
+// the existing F16-activation/F32-output arithmetic contract are unchanged.
+// A Split-K SIMT call retains its own disjoint workspace from simt_query_v1,
+// in addition to the projection scratch from moe_simt_scratch_v1. Both remain
+// live until device completion. v2 callers and automatic Q4 policy are unchanged.
+typedef struct {
+    uint32_t version,size;
+    void* tc_handle;
+    qkg_call_v1 const* simt_call;
+    qkg_q4_decode_config_v1 const* q4_config;
+    qkg_config_v1 const* simt_config;
+    quactlize_ppu_placed_arrangement_v2 const* arrangement;
+    void* scratch;
+    uint64_t scratch_bytes;
+    qkg_simt_config_v1 const* reuse_config;
+} qks_moe_endpoint_v3;
+int quactlize_kpack_dispatch_moe_create_v3(void* runtime,qks_moe_endpoint_v3 const* gate,
+    qks_moe_endpoint_v3 const* up,qks_moe_endpoint_v3 const* down,void** chain);
 // Optional once-only binding outside capture. Loads the small finish module,
 // validates disjoint live inputs, and copies the immutable output contract.
 // On success run writes finish.output, not the intermediate down tensor.
 // A miss leaves the chain unchanged. No qtype/layout/config selection changes.
 int quactlize_kpack_dispatch_moe_bind_finish_v1(void* runtime,void* chain,
     qk_llama_moe_finish_v1 const*);
-// Both chain versions use the same run/router/destroy entries. Mixed chains
+// All chain versions use the same run/router/destroy entries. Mixed chains
 // retain SIMT F32 results and TC FP16 completion semantics through SwiGLU.
 int quactlize_kpack_dispatch_moe_run_v1(void* chain,void* stream);
 // Same chain, but router+preparation are one kernel. The caller must match the

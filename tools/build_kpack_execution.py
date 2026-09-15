@@ -13,7 +13,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from quactlize.runtime.compiler import FLAGS, LIBRARIES, sha
-from quactlize.execution import q4_decode_codegen
+from quactlize.execution import q4_decode_codegen, simt_codegen
 
 
 def build(sdk, output, jobs, variant="production"):
@@ -69,6 +69,7 @@ def build(sdk, output, jobs, variant="production"):
                 hashes[str(p.relative_to(ROOT))]=sha(p)
     for p in (q4_decode_codegen.POLICY, q4_decode_codegen.POLICY.with_suffix('.hpp'),
               ROOT/'quactlize/execution/q4_decode_codegen.py',
+              ROOT/'quactlize/execution/simt_codegen.py',
               ROOT/'policies/kpack_zw810_heuristic_v1.hpp',
               ROOT/'policies/kpack_zw810_runtime_v1.hpp',
               ROOT/'policies/kpack_zw810_v1.hpp'):
@@ -86,6 +87,10 @@ def build(sdk, output, jobs, variant="production"):
         p = output / name
         p.write_text(text)
         selected_sources.append((p.stem, p, []))
+    for q in simt_codegen.QTYPES:
+        p = output / f"simt_q{q}.cu"
+        p.write_text(simt_codegen.source(q))
+        selected_sources.append((p.stem, p, []))
     for name, filename, defines in (
         [("q8", source / "gemv.cu", ["-DQKG_QTYPE=8"])]
         + [(f"q{q}", gemv_source, [f"-DQKG_QTYPE={q}"]) for q in range(10, 15)]
@@ -94,6 +99,7 @@ def build(sdk, output, jobs, variant="production"):
             ("dispatch", source / "dispatch.cpp", []),
             ("q4_decode", source / "q4_decode.cpp", []),
             ("q4_decode_io", source / "q4_decode_io.cu", []),
+            ("simt_dispatch", source / "simt.cpp", []),
             ("moe_mixed", source / "moe.cu", []),
         ]
         + selected_sources
@@ -173,6 +179,10 @@ def build(sdk, output, jobs, variant="production"):
         comparison_adapters=bool(extra_sources),
         q4_decode_policy_sha256=sha(q4_decode_codegen.POLICY),
         q4_decode_configs={f'{n}x{k}':v for (n,k),v in q4_decode_codegen.recipes().items()},
+        simt_configs={str(q): [c.record() for c in simt_codegen.runtime_inventory(q)]
+                      for q in simt_codegen.QTYPES},
+        simt_arithmetic="F16_ACTIVATIONS_FP32_GROUP_AFFINE_ACCUMULATOR_OUTPUT",
+        simt_selection="EXPLICIT_CALLER_CONFIG_NO_POLICY_CHANGE",
     )
     if variant == "fp32-affine":
         manifest["gemv_pair_affine"] = "FP32_GROUP_AFFINE_NO_INTERMEDIATE_FP16_ROUNDING"

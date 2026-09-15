@@ -66,5 +66,6 @@ def test_same_parent_other_build_is_not_overwritten(tmp_path, setup):
 def test_catalog_rejects_ambiguous_parent_versions():
     with pytest.raises(ValueError, match="multiple builds"):
         build.catalog(
-            [dict(parent=dict(symbol="same")), dict(parent=dict(symbol="same"))]
+            [dict(parent=dict(symbol="same"), identity={}),
+             dict(parent=dict(symbol="same"), identity={})]
         )

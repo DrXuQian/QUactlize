@@ -201,7 +201,8 @@ def test_llama_api_mirrors_and_dense_direct_pointers():
         '#include "../runtime/abi.h"', '#include "kpack_module.h"').replace(
         '#include "../integrations/llama/indexed.h"', '#include "kpack_indexed.h"').replace(
             '#include "../decode/api.h"', '#include "kpack_decode_io.h"').replace(
-            '#include "../execution/q4_decode.h"', '#include "kpack_q4_decode.h"')
+                '#include "../execution/q4_decode.h"', '#include "kpack_q4_decode.h"').replace(
+                '#include "../execution/simt.h"', '#include "kpack_simt.h"')
     assert (llama/'quactlize/kpack_dispatch.h').read_text() == expected
     expected = (ROOT/'quactlize/decode/api.h').read_text().replace(
         '#include "../runtime/abi.h"', '#include "kpack_module.h"')
