@@ -13680,18 +13680,18 @@
   },
   "bf16_gate": {
     "path": "bf16/manifest.json",
-    "sha256": "11e2d08881e6c6ab10ee9a3543595592be68acfe2853102658c91958e0a455bd",
+    "sha256": "06d34914844e17b7543d5465c1d0fb2b7108bbc80a30c93180bb92d8b3849742",
     "cases": 746,
     "modules": 40,
     "device_validated": false
   },
   "local_optimization_gate": {
     "path": "local-gates/manifest.json",
-    "sha256": "4e1e0a6bfc354275d28c96d9542f0b9eb066acf4dc8e2f8b25b90084469d6030"
+    "sha256": "ee0d0f0200cdb42b33409b5f2e057e35ffdd240264a6d69e428686ad397c9609"
   },
   "q4_bf16_gate": {
     "path": "q4-bf16-gate/manifest.json",
-    "sha256": "9440254dcd307e3aa5e3174ffbbe8d0d8f1a9aed935e48b273aca098bda430ae",
+    "sha256": "2762a633c84959995ff4c1f560854a27526deb85f63d23ca145d7e7f3ca38b72",
     "library": "q4-bf16-gate/libq4_selected_bf16_gate.so",
     "denominator": {
       "requests": 192,
@@ -13711,5 +13711,11 @@
       "pack/libquactlize_ppu_pack.so": "b57013dc15d5ba50874480d8ae61a6143e929a1765cec352d0b3a0c29553e5fa",
       "pack/manifest.json": "d1b10d7da202d57e043d35e141ee5cef2f7544399a1f3420b523a52a43447def"
     }
+  },
+  "local_gate_repair": {
+    "source_revision": "2b633f781c405dc3ff1550cee46a8e99063cd0ac",
+    "previous_artifact_commit": "14066dae14108f54a999c957f17ee68cb6117d49",
+    "previous_manifest_sha256": "2c371d1ea5f9acf005dcf78fed6c9bd5c5c7aee8f6a79563b784bf64f0dc02ec",
+    "production_payloads_unchanged": true
   }
 }

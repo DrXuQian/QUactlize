@@ -13100,8 +13100,8 @@
     "dev/bf16_compute/build.py": "e412df6d45945233dc9643c37361b36246631586777d57aaf0241cc9caa47371",
     "dev/bf16_compute/matrix.py": "5cadcc7b0a6b0cc6dcdc6d1ea4361832df82f4d952aea08957c8ed70e2ee3fd8",
     "dev/bf16_compute/cases.py": "7382ef91096dad61ff8998176657496a8ced60583ca82ae85248ea1099d96ab6",
-    "dev/bf16_compute/fixture.py": "0526ecb0aa8e87cc3fa53ee702e957aa8934f60869019854c9e9e16858948ad1",
-    "dev/bf16_compute/moe_case.py": "f0c68d61c6cdf222fd6b1b268307a5a3dd734eee8c986216274a518f855115a7",
+    "dev/bf16_compute/fixture.py": "a7f0b89f4d1c1ac27ac761baaf38f4ed7c94af6d5881f855d7b006e098ee680e",
+    "dev/bf16_compute/moe_case.py": "7e663a1e6fac8a20b982b9846896262dcbe5aacbaab1ee6eb5a5c1e62b3836ea",
     "dev/bf16_compute/native.py": "7fed4e5d14f159b0036113610e3ac7cb6047911333e7df33d195dae38b5f36ad",
     "dev/bf16_compute/package.py": "398bd19511eff6cc25c47fc9fd7e2e9b121be05478877f2841e3e0c33bf2423d",
     "dev/bf16_compute/plan.py": "1e54b071d7f2bfdc74be1d79dd91e3541d488841f5fa879a5e95276bfde81539",
@@ -26254,5 +26254,15 @@
     },
     "simt_selection": "EXPLICIT_CALLER_CONFIG_NO_POLICY_CHANGE"
   },
-  "source_revision": "341db59927a9ac88adde4c6f6322b216efa4569e"
+  "source_revision": "341db59927a9ac88adde4c6f6322b216efa4569e",
+  "harness_repair": {
+    "source_revision": "2b633f781c405dc3ff1550cee46a8e99063cd0ac",
+    "previous_manifest_sha256": "11e2d08881e6c6ab10ee9a3543595592be68acfe2853102658c91958e0a455bd",
+    "kernel_payloads_unchanged": true,
+    "fixes": [
+      "NUMPY_SCALAR_UINT32_WIDTH",
+      "DOWN_ORACLE_USES_ACTUAL_ACTIVATION"
+    ],
+    "device_validated": false
+  }
 }

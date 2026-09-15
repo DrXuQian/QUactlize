@@ -4109,7 +4109,7 @@
     "policies/kpack_zw810_v1.hpp": "dbc5d9b3d40ad8a924d8a63526ee315a51e04f02d183df141d17d31f609bb513"
   },
   "harness": {
-    "dev/bf16_compute/fixture.py": "0526ecb0aa8e87cc3fa53ee702e957aa8934f60869019854c9e9e16858948ad1",
+    "dev/bf16_compute/fixture.py": "a7f0b89f4d1c1ac27ac761baaf38f4ed7c94af6d5881f855d7b006e098ee680e",
     "dev/bf16_fastpath/build_gate.py": "2054931ec71bf657dbf3cbdcb616ce7988ef794a6ec963ff7273e2133a9ca3b6",
     "dev/bf16_fastpath/gate.py": "bae1bfa454ac2e804eb34b2a64bc1c55ccdafa4763fa31a1f036c81504f99cb1",
     "dev/bf16_fastpath/gate_fixture.py": "2ae955a2d18f119b16f511cfa0d80f0e8269a94e411f4784d69eaa886badc320",
@@ -17287,5 +17287,10 @@
     "simt_selection": "EXPLICIT_CALLER_CONFIG_NO_POLICY_CHANGE"
   },
   "device_validated": false,
-  "performance_admitted": false
+  "performance_admitted": false,
+  "harness_repair": {
+    "source_revision": "2b633f781c405dc3ff1550cee46a8e99063cd0ac",
+    "previous_manifest_sha256": "9440254dcd307e3aa5e3174ffbbe8d0d8f1a9aed935e48b273aca098bda430ae",
+    "kernel_payload_unchanged": true
+  }
 }

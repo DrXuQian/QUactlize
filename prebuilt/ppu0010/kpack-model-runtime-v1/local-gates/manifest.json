@@ -1,8 +1,8 @@
 {
   "schema": "quactlize.local-decode-experiments.v1",
   "files": {
-    "q8/manifest.json": "0f60762654baaa2bd97eaf932ee96e6448a78e391e59779d025ec7d4226c2735",
-    "q8/q8.so": "f20ed63f0d495e8a47287ba66f3b9445b4d4042f4978b5bee639dedb8ebb03ba",
+    "q8/manifest.json": "d69a31afdc16b904429b5ba614fa9c026a9cdd83104cf7e65b3217caa84e90f9",
+    "q8/q8.so": "184f58fcea60725f3bbb94de3afc98cc02443b6d35860a95ab0d21ea85a79bdb",
     "moe/manifest.json": "c3ae3e0079e04f428a40d8a365dd175f7154831063f2b249ab9adf940fbcc357",
     "moe/bench": "275cff9e1fe408f660ae1b0b1aae6d8c6f52b2eeec58d7dba0a7aae9901eb7b7"
   },
@@ -10,13 +10,13 @@
     "libhggc_wrapper.so": "71c32cb41191458503234324360fcd3f1fa890dd5a082d465bb07328630c775e"
   },
   "harness": {
-    "dev/gemv_simt/q8_vector_run.py": "0fc4ad7a6cac4470b0b04d68fa8bce12af22e630a63dd7058880fe59a236900c",
+    "dev/gemv_simt/q8_vector_run.py": "c6559533dcf87e2428d75a5a5ef6371a938ebef2d9145d572de10e263289e8c9",
     "dev/gemv_simt/q8_vector_campaign.py": "2f27e47298e773d0e0297e724bdb7f35cc212d5406ecd9f4e2accb665df4cd89",
     "dev/gemv_simt/q8_vector_access.py": "ca0bac6cd338557eba9e7052d55dcde1690ace2ca11430a15b10449ebc2ca5ad",
     "dev/gemv_simt/run.py": "f854876e4d837e11fd07f0122474d6144fc73b617c618119f98439d017be70d9",
     "dev/gemv_simt/native.py": "70236290df4cd371bd549f3b92813fc383b84cb46f9ee1f578aab071fee33a88",
     "dev/gemv_simt/fixture.py": "d6c4bc344855ed025bbba0ef0f0e1e2f81d95abb4d3cadf8b36d6e40684e62dc",
-    "dev/bf16_compute/fixture.py": "0526ecb0aa8e87cc3fa53ee702e957aa8934f60869019854c9e9e16858948ad1",
+    "dev/bf16_compute/fixture.py": "a7f0b89f4d1c1ac27ac761baaf38f4ed7c94af6d5881f855d7b006e098ee680e",
     "dev/moe_prepare/run.py": "68a3650f7add3b8dc4eb862ed6269acee752b8d9b2287267bad42d29ad1c3ab5"
   },
   "production_selection_changed": false,
@@ -27,5 +27,12 @@
     "moe_performance": 48
   },
   "admission": "PPU_PENDING",
-  "baseline_control_warning": "NVIDIA_M1_F16_TC_GATHER_FAULT_NOT_A_PROVED_PPU_BUG"
+  "baseline_control_warning": "NVIDIA_M1_F16_TC_GATHER_FAULT_NOT_A_PROVED_PPU_BUG",
+  "repair": {
+    "source_revision": "2b633f781c405dc3ff1550cee46a8e99063cd0ac",
+    "previous_manifest_sha256": "4e1e0a6bfc354275d28c96d9542f0b9eb066acf4dc8e2f8b25b90084469d6030",
+    "q8_device_source_unchanged": true,
+    "q8_link_fixed": true,
+    "moe_payload_unchanged": true
+  }
 }
