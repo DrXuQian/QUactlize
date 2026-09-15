@@ -65,6 +65,13 @@ workspace. Q4's old endpoint and older callers remain supported.
 
 ## Next PPU model check
 
+Published source `e82a8b7`, private caller `00d24db55`, runtime artifact
+`01d8537`. The 12 ELF payloads total 23,366,792 bytes (about 22.3 MiB) and
+use Git LFS. They contain no llama binaries. The old artifact commit remains
+available; no old box results or caches need to be deleted. Local lookup,
+ABI, composition and package tests pass, and the caller adapters compile
+with the PPU SDK. This is not a new PPU model performance result.
+
 The regular model runner has a bounded performance mode:
 
 ```bash

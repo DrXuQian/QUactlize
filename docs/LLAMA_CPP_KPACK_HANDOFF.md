@@ -19,6 +19,9 @@ keeps Split-K scratch private per projection and consumes the already
 tested weighted-finish API. The new package contains only Quactlize DSOs,
 seven bounded gate parents and the helper proof, never llama binaries.
 The exact artifact and caller pins are `tools/kpack_q4_model_artifact.json`.
+Current publication: source `e82a8b7`, caller `00d24db55`, artifact `01d8537`;
+12 LFS ELF payloads total about 22.3 MiB. Only selected TC parents JIT at
+model warmup; the register-reuse SIMT bodies are already compiled.
 Whole-model speed and numeric admission remain pending; F16 activation
 overflow is a separate BF16-compute task, not fixed by selecting SIMT.
 
