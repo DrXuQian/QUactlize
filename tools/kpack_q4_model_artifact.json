@@ -1,11 +1,11 @@
 {
   "branch": "artifacts/kpack-model-runtime-v1",
-  "commit": "14066dae14108f54a999c957f17ee68cb6117d49",
+  "commit": "39d537754ce3d2568939c8e95ed17736bf434893",
   "path": "prebuilt/ppu0010/kpack-model-runtime-v1",
-  "manifest_sha256": "2c371d1ea5f9acf005dcf78fed6c9bd5c5c7aee8f6a79563b784bf64f0dc02ec",
-  "source_commit": "5a07745ef66fdfb73191c25b0b8f1fbb59672a49",
+  "manifest_sha256": "9ae853b9fb74f1a39729f0e2362e68df8acf4b48c114dee2db1d4c7c514c8a28",
+  "source_commit": "2b633f781c405dc3ff1550cee46a8e99063cd0ac",
   "llama_branch": "dev/quactlize-v0.3.0",
   "llama_ci_commit": "252ea9f52d264d63699ce065395b1b83373ce38d",
   "lfs_payloads": 56,
-  "device_admission": "PENDING_PPU_BF16_746_SELECTED_Q4_258_LOCAL_EXPERIMENTS_AND_MODEL"
+  "device_admission": "PARTIAL_PPU_PASS_PENDING_REPAIRED_BF16_CHAIN_Q8_AND_MODEL"
 }

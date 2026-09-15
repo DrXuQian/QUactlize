@@ -106,3 +106,30 @@ must explicitly record the host-harness change; do not disable source checks.
 Run the repaired BF16 gate and Q8 numerical/performance tests. Retain the
 selected-Q4 and prepare evidence above; no full tactic sweep is needed.
 BF16 whole-model precision/performance admission remains pending.
+
+Repair source: `2b633f781c405dc3ff1550cee46a8e99063cd0ac`; focused artifact:
+`39d537754ce3d2568939c8e95ed17736bf434893`. The 85 related host regressions
+pass. Package verification passes against the local PPU SDK. Only the Q8
+experimental DSO changed; the production execution hash above is identical.
+The artifact refresh records the exact old/new harness authority instead of
+disabling checksum checks. LFS transfers one new approximately 2 MB DSO.
+
+To replay the standalone closure without compiling llama or any kernels:
+
+```bash
+(
+    set -e
+    cd /sim/eec/shared/junfu.qx/quactlize
+    test "$(git branch --show-current)" = develop
+    GIT_LFS_SKIP_SMUDGE=1 git pull --ff-only origin develop
+    git submodule update --init third_party/actlize
+    unset BUNDLE
+    PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
+    CUDA_VISIBLE_DEVICES=0 L2_BYTES=67108864 \
+    bash tools/run_kpack_local_closure_box.sh
+)
+```
+
+The original results remain valid in their recorded scopes. This bounded
+replay also rechecks the inexpensive independent gates; it is not a full
+config sweep. Upload its printed `.results.tgz` path.

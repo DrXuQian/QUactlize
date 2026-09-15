@@ -9,8 +9,8 @@ binary bundle, or loader contract changes.
 Latest [PPU gate review](KPACK_LOCAL_CLOSURE_PPU_20260916.md): independent
 TC226/SIMT396/outlier8 and selected-Q4 258 pass. Full MoE has85 passes,
 two recorded failures and29 not run; the Q4 stage-oracle and Q6 NumPy-scalar
-repairs require replay. Q8's experimental DSO stopped at host loading and is
-being relinked, not a measured PPU reader regression. Existing production
+repairs require replay. Q8's experimental DSO stopped at host loading and has
+been relinked, not a measured PPU reader regression. Existing production
 DSOs and private caller remain unchanged for these repairs. Do not promote
 BF16 to the model default until complete-chain and model checks finish.
 
