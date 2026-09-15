@@ -5,6 +5,12 @@ and production Q8/prepare implementations are unchanged. Q8_0 already uses
 K-pack2: two 8-bit codes per word, one FP16 scale per 32 codes, no high plane.
 FP16 and BF16 consumers share those bytes; computation type is explicit.
 
+The [returned PPU run](KPACK_LOCAL_CLOSURE_PPU_20260916.md) now supersedes the
+pending-device entries below: independent grouped/SIMT/outlier and selected
+Q4 gates pass. Two complete-chain checks and Q8 module loading need the
+documented harness/link repairs. Prepare improves in all-SIMT cases but not
+all TC/mixed cases; production promotion and model timing remain pending.
+
 ## Completed locally
 
 | Work | Evidence | Remaining PPU check |

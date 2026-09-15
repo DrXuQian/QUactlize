@@ -1,0 +1,1003 @@
+{
+  "schema": "quactlize.local-closure-review.v1",
+  "archive": "/root/kpack-local-closure.pah3UP.results.tgz",
+  "archive_sha256": "988697a0321090cbf70d302ccc74b94ab3ddee2451e6054d054db495d4b5d021",
+  "execution_sha256": "1122afabaa9c8b749bb88a12281887c2635155468d3048956986b3befeb9be43",
+  "bf16": {
+    "expected": 746,
+    "passed": 715,
+    "failed": 2,
+    "not_run": 29,
+    "parts": [
+      {
+        "part": "grouped-q10",
+        "status": "PASS",
+        "expected": 41,
+        "completed": 41,
+        "passed": 41
+      },
+      {
+        "part": "simt-q10",
+        "status": "PASS",
+        "expected": 66,
+        "completed": 66,
+        "passed": 66
+      },
+      {
+        "part": "moe-q10",
+        "status": "PASS",
+        "expected": 18,
+        "completed": 18,
+        "passed": 18
+      },
+      {
+        "part": "grouped-q11",
+        "status": "PASS",
+        "expected": 41,
+        "completed": 41,
+        "passed": 41
+      },
+      {
+        "part": "simt-q11",
+        "status": "PASS",
+        "expected": 66,
+        "completed": 66,
+        "passed": 66
+      },
+      {
+        "part": "moe-q11",
+        "status": "PASS",
+        "expected": 18,
+        "completed": 18,
+        "passed": 18
+      },
+      {
+        "part": "grouped-q12",
+        "status": "PASS",
+        "expected": 41,
+        "completed": 41,
+        "passed": 41
+      },
+      {
+        "part": "simt-q12",
+        "status": "PASS",
+        "expected": 66,
+        "completed": 66,
+        "passed": 66
+      },
+      {
+        "part": "moe-q12",
+        "status": "FAIL",
+        "expected": 26,
+        "completed": 14,
+        "passed": 13
+      },
+      {
+        "part": "grouped-q13",
+        "status": "PASS",
+        "expected": 41,
+        "completed": 41,
+        "passed": 41
+      },
+      {
+        "part": "simt-q13",
+        "status": "PASS",
+        "expected": 66,
+        "completed": 66,
+        "passed": 66
+      },
+      {
+        "part": "moe-q13",
+        "status": "PASS",
+        "expected": 18,
+        "completed": 18,
+        "passed": 18
+      },
+      {
+        "part": "grouped-q14",
+        "status": "PASS",
+        "expected": 41,
+        "completed": 41,
+        "passed": 41
+      },
+      {
+        "part": "simt-q14",
+        "status": "PASS",
+        "expected": 66,
+        "completed": 66,
+        "passed": 66
+      },
+      {
+        "part": "moe-q14",
+        "status": "FAIL",
+        "expected": 18,
+        "completed": 1,
+        "passed": 0
+      },
+      {
+        "part": "grouped-q8",
+        "status": "PASS",
+        "expected": 21,
+        "completed": 21,
+        "passed": 21
+      },
+      {
+        "part": "simt-q8",
+        "status": "PASS",
+        "expected": 66,
+        "completed": 66,
+        "passed": 66
+      },
+      {
+        "part": "moe-q8",
+        "status": "PASS",
+        "expected": 18,
+        "completed": 18,
+        "passed": 18
+      },
+      {
+        "part": "outlier-q14",
+        "status": "PASS",
+        "expected": 8,
+        "completed": 8,
+        "passed": 8
+      }
+    ]
+  },
+  "selected_q4": {
+    "status": "PASS",
+    "denominator": {
+      "requests": 192,
+      "selected_requests": 129,
+      "declined_requests": 63,
+      "bf16_cells": 258,
+      "f16_controls": 129,
+      "overflow_negatives": 129,
+      "compiled_recipes": 40,
+      "covered_recipes": 40
+    },
+    "timing_valid": false
+  },
+  "q8": {
+    "status": "LOAD_FAILED_NOT_MEASURED",
+    "error": "undefined symbol: __hggcPopCallConfiguration"
+  },
+  "moe_prepare": {
+    "numeric_status": "PASS",
+    "numeric_contexts": 3840,
+    "passed": 48,
+    "expected": 48,
+    "median_audit": "MATCH_PRINTED_SAMPLES_WITHIN_F32_ULP_AND_DECIMAL_PRINT_ROUNDING",
+    "cases": [
+      {
+        "parameters": [
+          1,
+          512,
+          0,
+          1,
+          0,
+          0,
+          0
+        ],
+        "compute": "f16",
+        "baseline_us": 8.362188,
+        "candidate_us": 10.450624,
+        "delta_pct": 24.974755410904415,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          1,
+          512,
+          0,
+          1,
+          0,
+          1,
+          0
+        ],
+        "compute": "bf16",
+        "baseline_us": 8.374687,
+        "candidate_us": 10.385,
+        "delta_pct": 24.00463444186034,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          1,
+          512,
+          1,
+          1,
+          0,
+          0,
+          0
+        ],
+        "compute": "f16",
+        "baseline_us": 8.062187,
+        "candidate_us": 8.9475,
+        "delta_pct": 10.981052659780776,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          1,
+          512,
+          1,
+          1,
+          0,
+          1,
+          0
+        ],
+        "compute": "bf16",
+        "baseline_us": 8.066875,
+        "candidate_us": 8.882188,
+        "delta_pct": 10.106924924459593,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          1,
+          512,
+          5,
+          1,
+          0,
+          0,
+          0
+        ],
+        "compute": "f16",
+        "baseline_us": 7.272188,
+        "candidate_us": 6.445,
+        "delta_pct": -11.37467843240576,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          1,
+          512,
+          5,
+          1,
+          0,
+          1,
+          0
+        ],
+        "compute": "bf16",
+        "baseline_us": 7.279063,
+        "candidate_us": 6.44375,
+        "delta_pct": -11.475556675357812,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          1,
+          2048,
+          0,
+          1,
+          0,
+          0,
+          0
+        ],
+        "compute": "f16",
+        "baseline_us": 9.165625,
+        "candidate_us": 10.359062,
+        "delta_pct": 13.020792362768496,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          1,
+          2048,
+          0,
+          1,
+          0,
+          1,
+          0
+        ],
+        "compute": "bf16",
+        "baseline_us": 9.164688,
+        "candidate_us": 10.295625,
+        "delta_pct": 12.34015822469896,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          1,
+          2048,
+          1,
+          1,
+          0,
+          0,
+          0
+        ],
+        "compute": "f16",
+        "baseline_us": 8.073437,
+        "candidate_us": 8.960312,
+        "delta_pct": 10.985098415953454,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          1,
+          2048,
+          1,
+          1,
+          0,
+          1,
+          0
+        ],
+        "compute": "bf16",
+        "baseline_us": 8.078125,
+        "candidate_us": 8.898438,
+        "delta_pct": 10.154745067698268,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          1,
+          2048,
+          5,
+          1,
+          0,
+          0,
+          0
+        ],
+        "compute": "f16",
+        "baseline_us": 7.092188,
+        "candidate_us": 6.261875,
+        "delta_pct": -11.707430767486704,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          1,
+          2048,
+          5,
+          1,
+          0,
+          1,
+          0
+        ],
+        "compute": "bf16",
+        "baseline_us": 7.29625,
+        "candidate_us": 6.448125,
+        "delta_pct": -11.624121980469415,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          2,
+          512,
+          0,
+          1,
+          0,
+          0,
+          0
+        ],
+        "compute": "f16",
+        "baseline_us": 15.494688,
+        "candidate_us": 12.782812,
+        "delta_pct": -17.501972288825694,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          2,
+          512,
+          0,
+          1,
+          0,
+          1,
+          0
+        ],
+        "compute": "bf16",
+        "baseline_us": 15.490937,
+        "candidate_us": 12.725,
+        "delta_pct": -17.85519494398564,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          2,
+          512,
+          1,
+          1,
+          0,
+          0,
+          0
+        ],
+        "compute": "f16",
+        "baseline_us": 15.384999,
+        "candidate_us": 12.126249,
+        "delta_pct": -21.18134684311648,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          2,
+          512,
+          1,
+          1,
+          0,
+          1,
+          0
+        ],
+        "compute": "bf16",
+        "baseline_us": 15.360001,
+        "candidate_us": 12.05875,
+        "delta_pct": -21.492518131997517,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          2,
+          512,
+          5,
+          1,
+          0,
+          0,
+          0
+        ],
+        "compute": "f16",
+        "baseline_us": 15.428438,
+        "candidate_us": 6.6825,
+        "delta_pct": -56.687125423843945,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          2,
+          512,
+          5,
+          1,
+          0,
+          1,
+          0
+        ],
+        "compute": "bf16",
+        "baseline_us": 15.423437,
+        "candidate_us": 6.69125,
+        "delta_pct": -56.61634952053812,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          2,
+          2048,
+          0,
+          1,
+          0,
+          0,
+          0
+        ],
+        "compute": "f16",
+        "baseline_us": 16.024376,
+        "candidate_us": 14.100938,
+        "delta_pct": -12.003200623849574,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          2,
+          2048,
+          0,
+          1,
+          0,
+          1,
+          0
+        ],
+        "compute": "bf16",
+        "baseline_us": 15.844376,
+        "candidate_us": 13.841249,
+        "delta_pct": -12.642511134550205,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          2,
+          2048,
+          1,
+          1,
+          0,
+          0,
+          0
+        ],
+        "compute": "f16",
+        "baseline_us": 15.440937,
+        "candidate_us": 12.122499,
+        "delta_pct": -21.491169868771564,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          2,
+          2048,
+          1,
+          1,
+          0,
+          1,
+          0
+        ],
+        "compute": "bf16",
+        "baseline_us": 15.36625,
+        "candidate_us": 12.076563,
+        "delta_pct": -21.408521923045644,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          2,
+          2048,
+          5,
+          1,
+          0,
+          0,
+          0
+        ],
+        "compute": "f16",
+        "baseline_us": 15.400625,
+        "candidate_us": 6.680938,
+        "delta_pct": -56.61904630493893,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          2,
+          2048,
+          5,
+          1,
+          0,
+          1,
+          0
+        ],
+        "compute": "bf16",
+        "baseline_us": 15.379375,
+        "candidate_us": 6.683125,
+        "delta_pct": -56.544885601658066,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          4,
+          512,
+          0,
+          1,
+          0,
+          0,
+          0
+        ],
+        "compute": "f16",
+        "baseline_us": 13.487187,
+        "candidate_us": 13.447187,
+        "delta_pct": -0.2965777815640891,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          4,
+          512,
+          0,
+          1,
+          0,
+          1,
+          0
+        ],
+        "compute": "bf16",
+        "baseline_us": 13.729063,
+        "candidate_us": 13.6475,
+        "delta_pct": -0.5940900700943663,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          4,
+          512,
+          1,
+          1,
+          0,
+          0,
+          0
+        ],
+        "compute": "f16",
+        "baseline_us": 13.175312,
+        "candidate_us": 12.285,
+        "delta_pct": -6.757426313699444,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          4,
+          512,
+          1,
+          1,
+          0,
+          1,
+          0
+        ],
+        "compute": "bf16",
+        "baseline_us": 13.215937,
+        "candidate_us": 12.289062,
+        "delta_pct": -7.013312790458981,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          4,
+          512,
+          5,
+          1,
+          0,
+          0,
+          0
+        ],
+        "compute": "f16",
+        "baseline_us": 13.13875,
+        "candidate_us": 6.414062,
+        "delta_pct": -51.18209875368661,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          4,
+          512,
+          5,
+          1,
+          0,
+          1,
+          0
+        ],
+        "compute": "bf16",
+        "baseline_us": 13.187813,
+        "candidate_us": 6.430625,
+        "delta_pct": -51.23812416812401,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          4,
+          2048,
+          0,
+          1,
+          0,
+          0,
+          0
+        ],
+        "compute": "f16",
+        "baseline_us": 14.235937,
+        "candidate_us": 15.586876,
+        "delta_pct": 9.489638792304289,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          4,
+          2048,
+          0,
+          1,
+          0,
+          1,
+          0
+        ],
+        "compute": "bf16",
+        "baseline_us": 14.280937,
+        "candidate_us": 15.599062,
+        "delta_pct": 9.229961591455794,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          4,
+          2048,
+          1,
+          1,
+          0,
+          0,
+          0
+        ],
+        "compute": "f16",
+        "baseline_us": 13.16625,
+        "candidate_us": 12.284687,
+        "delta_pct": -6.6956270768062325,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          4,
+          2048,
+          1,
+          1,
+          0,
+          1,
+          0
+        ],
+        "compute": "bf16",
+        "baseline_us": 13.210938,
+        "candidate_us": 12.28625,
+        "delta_pct": -6.999412153777418,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          4,
+          2048,
+          5,
+          1,
+          0,
+          0,
+          0
+        ],
+        "compute": "f16",
+        "baseline_us": 13.1525,
+        "candidate_us": 6.405313,
+        "delta_pct": -51.29965405816386,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          4,
+          2048,
+          5,
+          1,
+          0,
+          1,
+          0
+        ],
+        "compute": "bf16",
+        "baseline_us": 13.184375,
+        "candidate_us": 6.42125,
+        "delta_pct": -51.29651576202892,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          8,
+          512,
+          0,
+          1,
+          0,
+          0,
+          0
+        ],
+        "compute": "f16",
+        "baseline_us": 35.639999,
+        "candidate_us": 20.017813,
+        "delta_pct": -43.83329528151783,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          8,
+          512,
+          0,
+          1,
+          0,
+          1,
+          0
+        ],
+        "compute": "bf16",
+        "baseline_us": 35.608437,
+        "candidate_us": 20.019688,
+        "delta_pct": -43.77824558825765,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          8,
+          512,
+          1,
+          1,
+          0,
+          0,
+          0
+        ],
+        "compute": "f16",
+        "baseline_us": 35.103752,
+        "candidate_us": 17.972813,
+        "delta_pct": -48.80087746745705,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          8,
+          512,
+          1,
+          1,
+          0,
+          1,
+          0
+        ],
+        "compute": "bf16",
+        "baseline_us": 35.112816,
+        "candidate_us": 17.967188,
+        "delta_pct": -48.83011376814665,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          8,
+          512,
+          5,
+          1,
+          0,
+          0,
+          0
+        ],
+        "compute": "f16",
+        "baseline_us": 34.881248,
+        "candidate_us": 6.231563,
+        "delta_pct": -82.134919599207,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          8,
+          512,
+          5,
+          1,
+          0,
+          1,
+          0
+        ],
+        "compute": "bf16",
+        "baseline_us": 35.212814,
+        "candidate_us": 6.435625,
+        "delta_pct": -81.72362765441012,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          8,
+          2048,
+          0,
+          1,
+          0,
+          0,
+          0
+        ],
+        "compute": "f16",
+        "baseline_us": 36.168438,
+        "candidate_us": 23.654373,
+        "delta_pct": -34.59940680877621,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          8,
+          2048,
+          0,
+          1,
+          0,
+          1,
+          0
+        ],
+        "compute": "bf16",
+        "baseline_us": 36.239063,
+        "candidate_us": 23.633123,
+        "delta_pct": -34.78550204236792,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          8,
+          2048,
+          1,
+          1,
+          0,
+          0,
+          0
+        ],
+        "compute": "f16",
+        "baseline_us": 35.084373,
+        "candidate_us": 17.969688,
+        "delta_pct": -48.7815045176951,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          8,
+          2048,
+          1,
+          1,
+          0,
+          1,
+          0
+        ],
+        "compute": "bf16",
+        "baseline_us": 35.180939,
+        "candidate_us": 17.963436,
+        "delta_pct": -48.93986200879971,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          8,
+          2048,
+          5,
+          1,
+          0,
+          0,
+          0
+        ],
+        "compute": "f16",
+        "baseline_us": 35.120621,
+        "candidate_us": 6.434688,
+        "delta_pct": -81.67831941240446,
+        "samples_per_arm": 60
+      },
+      {
+        "parameters": [
+          8,
+          2048,
+          5,
+          1,
+          0,
+          1,
+          0
+        ],
+        "compute": "bf16",
+        "baseline_us": 35.196251,
+        "candidate_us": 6.441875,
+        "delta_pct": -81.69726940519887,
+        "samples_per_arm": 60
+      }
+    ]
+  },
+  "timing_scope": "WARM_HELPER_ONLY_NO_GEMM_NO_MODEL_EXTERNAL_IDLE_AUDIT_MISSING",
+  "bf16_failures": [
+    {
+      "path": "results/bf16/moe-q14/0607-moe-q14-tokens1-mergedFalse-kindtc-computebf16.json",
+      "record": {
+        "status": "FAIL",
+        "case": {
+          "family": "moe",
+          "q": 14,
+          "tokens": 1,
+          "merged": false,
+          "kind": "tc",
+          "parent": {
+            "qtype": 14,
+            "route": "fq-grouped",
+            "tm": 8,
+            "persistent": 0,
+            "compute": "bf16",
+            "tk": 256
+          },
+          "compute": "bf16",
+          "id": "0607-moe-q14-tokens1-mergedFalse-kindtc-computebf16"
+        },
+        "device": {
+          "ordinal": 0,
+          "pci": "0000:08:00.0",
+          "visible_devices": "0"
+        },
+        "error": "Changing the dtype of a 0d array is only supported if the itemsize is unchanged"
+      }
+    },
+    {
+      "path": "results/bf16/moe-q12/0370-moe-q12-tokens8-mergedFalse-kindsimt-computebf16.json",
+      "record": {
+        "status": "FAIL",
+        "case": {
+          "family": "moe",
+          "q": 12,
+          "tokens": 8,
+          "merged": false,
+          "kind": "simt",
+          "parent": {
+            "qtype": 12,
+            "route": "fq-grouped",
+            "tm": 8,
+            "persistent": 0,
+            "compute": "bf16",
+            "tk": 256
+          },
+          "compute": "bf16",
+          "id": "0370-moe-q12-tokens8-mergedFalse-kindsimt-computebf16"
+        },
+        "device": {
+          "ordinal": 0,
+          "pci": "0000:08:00.0",
+          "visible_devices": "0"
+        },
+        "error": "typed oracle mismatch: {'cells': 32768, 'bad': 8, 'nonfinite': 0, 'relative_l1_error': 0.006694802025660676, 'tolerance': 0.005, 'output_sha256': '1d95c4dfa905fe0845673a519e4cfd3109238d9edec7d484262d4f4434f0434e', 'golden_sha256': '6e5eccf035b9b7d6bec31f4a81c10608c3c01d802bf357c2cd75bcc2c2653e12', 'first': {'index': 16754, 'got': 0.0712890625, 'want': 0.07080078125}}"
+      }
+    }
+  ]
+}

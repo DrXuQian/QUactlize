@@ -14,6 +14,17 @@ from quactlize.execution.simt_codegen import inventory
 from dev.gemv_simt.build import sha
 
 
+def link_command(platform, sdk, compiler, objects, output):
+    if platform == 'cuda':
+        return [str(compiler), '-shared', '--cudart=shared', '-Xlinker=-Bsymbolic',
+                *map(str, objects), '-o', str(output)]
+    from quactlize.runtime.compiler import LIBRARIES
+    # --as-needed drops runtime libraries seen before their referencing objects.
+    # Resolve all host symbols at link time, not through an accidental preload.
+    return ['g++', '-shared', '-Wl,-Bsymbolic', '-Wl,-z,defs', *map(str, objects),
+            f'-L{sdk}/lib', *[f'-l{name}' for name in LIBRARIES], '-o', str(output)]
+
+
 def source():
     text = '''#include "dev/gemv_simt/q8_vector.cuh"
 #include "quactlize/execution/simt_validation.hpp"
@@ -61,13 +72,11 @@ def main():
                '-DCUTLASS_USE_PACKED_TUPLE=1','-DCUTE_USE_PACKED_TUPLE=1','-Xptxas=-v',
                '-Xcompiler=-fPIC','-include',str(ROOT/'dev/gemv_cuda/compat/compiler_bridge.h')]
         inc.insert(0,ROOT/'dev/gemv_cuda/compat')
-        link=[str(compiler),'-shared','--cudart=shared','-Xlinker=-Bsymbolic']
     else:
-        from quactlize.runtime.compiler import FLAGS,LIBRARIES
+        from quactlize.runtime.compiler import FLAGS
         compiler=sdk/'bin/hgcc';flags=list(FLAGS)
         env['PATH']=str(sdk/'bin')+os.pathsep+env.get('PATH','')
         env['LD_LIBRARY_PATH']=str(sdk/'lib')+os.pathsep+env.get('LD_LIBRARY_PATH','')
-        link=['g++','-shared','-Wl,-Bsymbolic',f'-L{sdk}/lib',*[f'-l{x}' for x in LIBRARIES]]
     src=out/'q8.cu';src.write_text(source())
     paths={p for directory in inc if directory!=ROOT for p in directory.rglob('*')
            if p.is_file() and p.suffix in ('.h','.hpp','.cuh','.inc')}
@@ -84,7 +93,8 @@ def main():
         (out/'probe.cu').write_text(probe)
         commands.append([str(compiler),*flags,*[f'-I{x}' for x in inc],'-c',str(out/'probe.cu'),'-o',str(out/'probe.o')])
         subprocess.run(commands[-1],env=env,stdout=log,stderr=subprocess.STDOUT,check=True)
-        commands.append([*link,str(out/'q8.o'),str(out/'probe.o'),'-o',str(out/'q8.so')])
+        commands.append(link_command(a.platform, sdk, compiler,
+                                     [out/'q8.o', out/'probe.o'], out/'q8.so'))
         subprocess.run(commands[-1],env=env,stdout=log,stderr=subprocess.STDOUT,check=True)
     if any(sha(ROOT/p)!=v for p,v in hashes.items()): raise ValueError('source changed during compile')
     result=dict(schema='quactlize.q8-vector.v1',platform=a.platform,library='q8.so',library_sha256=sha(out/'q8.so'),

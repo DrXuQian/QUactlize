@@ -211,9 +211,11 @@ def main():
     p.add_argument('--tokens',type=int,choices=range(1,9),default=1);p.add_argument('--channels',type=int,choices=(0,1,8),default=0)
     p.add_argument('--compute',type=int,choices=(0,1),default=0);p.add_argument('--config');p.add_argument('--arm',type=int,choices=(0,1),default=1)
     p.add_argument('--l2-bytes',type=int,default=0,help='verified physical L2 bytes only when the SDK query returns zero')
-    a=p.parse_args();libs=[Library(a.bundle,i,a.compute) for i in range(2)]
-    rt=Runtime(a.sdk,libs[0].manifest['platform'])
+    a=p.parse_args()
+    manifest=json.loads((a.bundle/'manifest.json').read_text())
+    rt=Runtime(a.sdk,manifest['platform'])
     try:
+        libs=[Library(a.bundle,i,a.compute) for i in range(2)]
         identity=l2_identity(libs[0].probe(),a.l2_bytes)
         prefix='cuda' if libs[0].manifest['platform']=='cuda' else 'hggc'
         pci_fn=getattr(rt.lib,prefix+'DeviceGetPCIBusId')

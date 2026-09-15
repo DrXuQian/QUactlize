@@ -214,8 +214,21 @@ def run(root, package, sdk, point, repeats, samples):
             checked(down.produce(typed), "inspect down producer")
             sdk.synchronize(r.stream)
             actual_down = down.values()
-            gold_down, denom = down.w.dot(physical_middle, owners, "bf16", output_compute=True)
-            projections[2] = compare(actual_down, gold_down, denom)
+            # Isolate the down producer using the activation it actually read.
+            # The SwiGLU implementation may differ from NumPy by one BF16 ULP
+            # (checked above); feeding the host value here would count that
+            # already-admitted boundary difference as a GEMV error a second time.
+            # The independent whole-chain oracle below still uses expected_middle.
+            gold_down, denom = down.w.dot(got_middle, owners, "bf16", output_compute=True)
+            try:
+                projections[2] = compare(actual_down, gold_down, denom)
+            except ValueError as error:
+                raise ValueError(f"down projection repeat={repeat} input=ACTUAL_SWIGLU "
+                    f"input_sha256={digest(got_middle)} "
+                    f"host_swiglu_sha256={digest(physical_middle)} "
+                    f"swiglu_max_bf16_ulp={int(ulps.max())}: {error}") from error
+            projections[2].update(input_source="ACTUAL_SWIGLU",
+                                  input_sha256=digest(got_middle))
             checked(finish_fn(C.byref(mixed), C.byref(finish), r.stream), "inspect weighted finish")
             sdk.synchronize(r.stream)
             finished = final.read("<f4", (tokens, 512))

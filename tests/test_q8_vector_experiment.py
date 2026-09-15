@@ -53,3 +53,58 @@ def test_missing_sdk_l2_requires_verified_override():
     assert l2_identity(dict(l2_bytes=0),64*1024**2)['l2_bytes']==64*1024**2
     assert l2_identity(dict(l2_bytes=48*1024**2))['l2_source']=='RUNTIME_QUERY'
     with pytest.raises(ValueError):l2_identity(dict(l2_bytes=48*1024**2),64*1024**2)
+
+
+def test_ppu_link_retains_runtime_without_preload(tmp_path, monkeypatch):
+    import os
+    import subprocess
+    import sys
+    from dev.gemv_simt.q8_vector_build import link_command
+    from quactlize.runtime import compiler
+    monkeypatch.setattr(compiler, "LIBRARIES", ("example_runtime",))
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    runtime, caller, obj = tmp_path / "runtime.cpp", tmp_path / "caller.cpp", tmp_path / "caller.o"
+    runtime.write_text('extern "C" int launch_runtime(){return 17;}\n')
+    caller.write_text('extern "C" int launch_runtime();\nextern "C" int probe(){return launch_runtime();}\n')
+    subprocess.run(["g++", "-shared", "-fPIC", runtime, "-o", lib / "libexample_runtime.so"], check=True)
+    subprocess.run(["g++", "-c", "-fPIC", caller, "-o", obj], check=True)
+    command = link_command("ppu", tmp_path, "unused", [obj], tmp_path / "good.so")
+    subprocess.run(command, check=True)
+    subprocess.run(["g++", "-shared", "-Wl,--as-needed", f"-L{lib}", "-lexample_runtime",
+                    obj, "-o", tmp_path / "bad.so"], check=True)
+    code = 'import ctypes,sys; assert ctypes.CDLL(sys.argv[1]).probe()==17'
+    env = dict(os.environ, LD_LIBRARY_PATH=str(lib))
+    for name, succeeds in (("good.so", True), ("bad.so", False)):
+        result = subprocess.run([sys.executable, "-c", code, str(tmp_path / name)],
+                                env=env, text=True, capture_output=True)
+        assert (result.returncode == 0) == succeeds, result.stderr
+        if not succeeds:
+            assert "undefined symbol: launch_runtime" in result.stderr
+    with pytest.raises(subprocess.CalledProcessError):
+        subprocess.run(["g++", "-shared", "-Wl,-z,defs", obj, "-o", tmp_path / "missing.so"],
+                       capture_output=True, check=True)
+
+
+def test_q8_runner_loads_sdk_before_module_and_closes_on_load_failure(tmp_path, monkeypatch):
+    import json
+    import sys
+    from dev.gemv_simt import q8_vector_run as runner
+    (tmp_path / "manifest.json").write_text(json.dumps(dict(platform="ppu")))
+    calls = []
+    class Runtime:
+        def __init__(self, sdk, platform):
+            assert platform == "ppu"
+            calls.append("runtime")
+        def close(self):
+            calls.append("close")
+    def library(*args):
+        calls.append("module")
+        raise OSError("planted module failure")
+    monkeypatch.setattr(runner, "Runtime", Runtime)
+    monkeypatch.setattr(runner, "Library", library)
+    monkeypatch.setattr(sys, "argv", ["gate", "--bundle", str(tmp_path),
+                                     "--sdk", str(tmp_path), "--output", str(tmp_path / "result.json")])
+    with pytest.raises(OSError, match="planted module failure"):
+        runner.main()
+    assert calls == ["runtime", "module", "close"]

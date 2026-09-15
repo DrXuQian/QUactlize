@@ -12,11 +12,14 @@ def bf16_bits(values):
     if not np.isfinite(values).all():
         raise ValueError("BF16 fixture input must be finite")
     bits = values.view("<u4")
-    return ((bits + np.uint32(0x7fff) + ((bits >> 16) & 1)) >> 16).astype("<u2")
+    shift = np.uint32(16)
+    return ((bits + np.uint32(0x7fff) + ((bits >> shift) & np.uint32(1))) >> shift).astype("<u2")
 
 
 def bf16_float(bits):
-    return (np.asarray(bits, dtype="<u2").astype("<u4") << 16).view("<f4")
+    # NumPy 1.x can widen a uint32 scalar shifted by a Python int to int64.
+    # Keep the operation explicitly 32-bit for scalar and array bit views.
+    return (np.asarray(bits, dtype="<u2").astype("<u4") << np.uint32(16)).view("<f4")
 
 
 def round_compute(values, compute):

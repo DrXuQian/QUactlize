@@ -74,6 +74,52 @@ def test_exact_bf16_range_and_oracle_negative():
         compare(np.zeros(8), np.ones(8), np.ones(8))
 
 
+@pytest.mark.parametrize("value", [0.0, -0.0, 1.00390625, 1.01171875,
+                                   482.842712, 504.063690, 243383.484375])
+def test_bf16_scalar_and_array_conversion_have_identical_width_and_bits(value):
+    from dev.bf16_compute.fixture import bf16_bits, bf16_float, round_compute
+    scalar = np.float32(value)
+    vector = np.array([scalar], dtype="<f4")
+    for wrapped in (scalar, np.asarray(scalar)):
+        bits = bf16_bits(wrapped)
+        result = bf16_float(bits)
+        assert bits.dtype == np.dtype("<u2") and result.dtype == np.dtype("<f4")
+        assert result.shape == ()
+        assert result.view("<u4").item() == round_compute(vector, "bf16").view("<u4").item()
+    # The box failure: widening this intermediate makes a scalar F32 view invalid.
+    widened = np.left_shift(np.asarray(bf16_bits(scalar), dtype="<u4"), np.int64(16))
+    with pytest.raises(ValueError, match="0d array"):
+        widened.view("<f4")
+
+
+def test_down_oracle_uses_actual_admitted_boundary_without_relaxing_tolerance():
+    import ast
+    from dev.bf16_compute import moe_case
+    from dev.bf16_compute.fixture import Weights, bf16_bits, compare
+    # A legal one-ULP SwiGLU boundary difference is bigger than the down
+    # projection's 0.5% criterion. Different-input dots are not a kernel test.
+    host = np.array([[0.07080078125, 0.25]], dtype="f4")
+    device = np.array([[0.0712890625, 0.25]], dtype="f4")
+    assert int((bf16_bits(device).astype("i4") - bf16_bits(host)).max()) == 1
+    w = Weights.__new__(Weights)
+    w.n, w.pool_size, w.gold = 2, 1, [np.eye(2, dtype="f4")]
+    owners = np.array([0])
+    old, old_bound = w.dot(host, owners, "bf16", output_compute=True)
+    actual, bound = w.dot(device, owners, "bf16", output_compute=True)
+    with pytest.raises(ValueError, match="typed oracle mismatch"):
+        compare(actual, old, old_bound)
+    assert compare(actual, actual, bound)["tolerance"] == 0.005
+    with pytest.raises(ValueError, match="typed oracle mismatch"):
+        compare(actual[:, ::-1], actual, bound)  # Wrong output coordinates stay RED.
+    tree = ast.parse(Path(moe_case.__file__).read_text())
+    dots = {node.targets[0].elts[0].id: node.value for node in ast.walk(tree)
+            if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Tuple)
+            and isinstance(node.targets[0].elts[0], ast.Name)
+            and node.targets[0].elts[0].id in ("gold_down", "full_down")}
+    assert dots["gold_down"].args[0].id == "got_middle"
+    assert dots["full_down"].args[0].id == "expected_middle"
+
+
 def test_private_moe_ctypes_exact_c_abi(tmp_path):
     from dev.bf16_compute.native import Projection, ProjectionV2, MoePlan, MoePlanV2, MixedPlanV2
     cpp = tmp_path / "sizes.cpp"

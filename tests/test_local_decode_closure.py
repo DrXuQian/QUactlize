@@ -15,6 +15,28 @@ from tools.attach_kpack_local_gates import payload_paths
 ROOT=Path(__file__).resolve().parents[1]
 
 
+def test_returned_ppu_closure_keeps_failures_and_unexecuted_cases_separate():
+    r=json.loads((ROOT/'docs/measurements/local_closure_ppu_20260916.json').read_text())
+    b=r['bf16']
+    assert (b['expected'],b['passed'],b['failed'],b['not_run'])==(746,715,2,29)
+    assert sum(p['passed'] for p in b['parts'])==b['passed']
+    assert sum(p['completed']-p['passed'] for p in b['parts'])==b['failed']
+    assert sum(p['expected']-p['completed'] for p in b['parts'])==b['not_run']
+    assert r['q8']['status']=='LOAD_FAILED_NOT_MEASURED'
+    assert r['selected_q4']['denominator']['bf16_cells']==258
+    assert r['selected_q4']['status']=='PASS' and not r['selected_q4']['timing_valid']
+    moe=r['moe_prepare']
+    assert (moe['numeric_contexts'],moe['passed'],moe['expected'])==(3840,48,48)
+    assert len(moe['cases'])==48
+    for row in moe['cases']:
+        assert row['samples_per_arm']==60
+        assert row['delta_pct']==(row['candidate_us']/row['baseline_us']-1)*100
+    all_simt=[r for r in moe['cases'] if r['parameters'][2]==5]
+    assert len(all_simt)==16 and all(r['delta_pct']<0 for r in all_simt)
+    assert any(r['delta_pct']>0 for r in moe['cases'] if r['parameters'][2]!=5)
+    assert len(r['bf16_failures'])==2
+
+
 def test_local_evidence_keeps_control_faults_and_complete_ncu_units():
     r=json.loads(gzip.decompress((ROOT/'docs/measurements/local_optimizations_20260915.json.gz').read_bytes()))
     assert r['admission']=='NVIDIA_GUIDANCE_ONLY_PPU_AND_MODEL_PENDING'
