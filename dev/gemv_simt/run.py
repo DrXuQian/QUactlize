@@ -222,8 +222,12 @@ def performance(a, rt, lib, identity):
     if identity['l2_bytes'] and a.l2_bytes and identity['l2_bytes']!=a.l2_bytes:
         raise ValueError('L2 override differs from runtime probe')
     mode = 0 if a.mode=='dense' else 2
-    w = fixture.weights(a.qtype,a.n,a.k,1 if mode==0 else 8)
-    distinct = sum(w.planes[n].nbytes for n in ('low','high','units'))
+    w = fixture.weights(a.qtype,a.n,a.k,1 if mode==0 else a.experts)
+    resident = sum(w.planes[n].nbytes for n in ('low','high','units'))
+    active = 1 if mode==0 else len(np.unique(fixture.inputs(w,a.tokens,mode,a.channels)['ids'][:,:8]))
+    # Unselected experts do not evict the weights actually read. Size the
+    # ring by the union of active experts, not the resident allocation.
+    distinct = resident//w.experts*active
     copies = math.ceil(2.25*l2/distinct) if a.cache=='rotating' else 1
     traversals = max(1, math.ceil(32/copies))
     bench = Bench(rt,lib,w,a.tokens,mode,a.channels,1,copies)
@@ -247,6 +251,7 @@ def performance(a, rt, lib, identity):
         calls = [provider.prepare(call,c) for call in bench.calls]*traversals
         return Graph(rt,calls), error
     try:
+        replay_proof = bench.replay_and_negative(lib.candidates(a.qtype)[0])
         if a.phase=='profile':
             hits=[(arm,c,key) for arm,c,key in pool if key==a.config]
             if len(hits)!=1: raise ValueError('profile requires one exact declared config key')
@@ -273,6 +278,8 @@ def performance(a, rt, lib, identity):
             finally:
                 graph.close()
             screened.append(dict(arm=arm,key=key,error=error,samples_us=samples,median_us=statistics.median(samples)))
+            a.journal.write(json.dumps(dict(phase='screen',**screened[-1]))+'\n')
+            a.journal.flush()
             if (index+1)%16==0 or index+1==len(pool):
                 print(f'SIMT_SCREEN q={a.qtype} completed={index+1}/{len(pool)}',flush=True)
         selected = {r['key'] for arm in providers
@@ -286,6 +293,8 @@ def performance(a, rt, lib, identity):
                     samples = [graph.sample() for _ in range(a.samples)]
                     confirmed.append(dict(arm=arm,key=key,round=repeat,error=error,
                         samples_us=samples,median_us=statistics.median(samples)))
+                    a.journal.write(json.dumps(dict(phase='confirm',**confirmed[-1]))+'\n')
+                    a.journal.flush()
         finally:
             for _,_,graph,_ in graphs: graph.close()
         best = {}
@@ -301,9 +310,12 @@ def performance(a, rt, lib, identity):
             low=bench.call.low%128,high=(bench.call.high or 0)%128,units=bench.call.units%128))
         return dict(status='PASS',qtype=a.qtype,n=a.n,k=a.k,tokens=a.tokens,mode=a.mode,
             channels=a.channels,cache=a.cache,l2_bytes=l2,ring_copies=copies,ring_bytes=copies*distinct,
+            experts=w.experts,active_experts=active,resident_weight_bytes=resident,
+            allocated_ring_bytes=copies*resident,
             calls_per_graph=copies*traversals,weight_bytes=distinct,best=best,
             delta_pct=(best['new']['median_us']/best['old']['median_us']-1)*100,
             screen=screened,confirmation=confirmed,access=addresses,production_admitted=False,
+            replay_proof=replay_proof,
             scope='SIMT_FULL_F32_ENDPOINT_NOT_TC_OR_MODEL',
             q4_optimized_control=control.record if control else None,
             arithmetic=dict(new='F32_GROUP_AFFINE',old='PER_WEIGHT_F16_RECONSTRUCTION',accumulator='F32'))
@@ -345,6 +357,7 @@ if __name__=='__main__':
     p.add_argument('--tokens',type=int,choices=range(1,9),default=1)
     p.add_argument('--mode',choices=('dense','indexed'),default='dense')
     p.add_argument('--channels',type=int,choices=(1,8),default=1)
+    p.add_argument('--experts',type=int,default=8,help='resident expert count for indexed cases')
     p.add_argument('--cache',choices=('rotating','warm'),default='rotating')
     p.add_argument('--l2-bytes',type=int,default=0)
     p.add_argument('--q4-controls',type=Path)
@@ -352,4 +365,5 @@ if __name__=='__main__':
     a=p.parse_args()
     if a.rounds<2 or a.samples<3:p.error('at least two alternating rounds and three samples')
     if a.mode=='dense' and a.channels!=1:p.error('dense channels must be 1')
+    if a.experts<8 or a.experts>256:p.error('indexed experts must be in [8,256]')
     raise SystemExit(main(a))
