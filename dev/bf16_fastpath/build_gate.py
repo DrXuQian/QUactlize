@@ -128,10 +128,12 @@ def build(args):
     exports(target)
     if any(sha(ROOT / p) != h for p, h in (sources | gate_sources).items()):
         raise ValueError("source changed during gate package creation")
+    revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     manifest = dict(schema=SCHEMA, platform=args.platform, library=target.name, sha256=sha(target),
         plan=contract, source_hashes=sources, harness=gate_sources, commands=commands,
         generated={name: hashlib.sha256(text.encode()).hexdigest() for name, text in generated.items()},
-        source_revision=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+        source_revision=revision.stdout.strip() if revision.returncode == 0 else "EXPORTED_SOURCE_HASHES_ONLY",
         build_seconds=time.monotonic()-started, reused_execution=reused,
         device_validated=False, performance_admitted=False)
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
