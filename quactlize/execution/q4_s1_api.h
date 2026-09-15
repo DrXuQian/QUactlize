@@ -1,5 +1,6 @@
 #pragma once
 #include "api.h"
+#include "simt.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -30,6 +31,15 @@ typedef struct {
 int quactlize_q4_s1_query_v1(qkg_call_v1 const*, qkg_q4_s1_config_v1 const*,
     quactlize_ppu_placed_arrangement_v2 const*, qkg_sizes_v1*);
 int quactlize_q4_s1_run_v1(qkg_call_v1 const*, qkg_q4_s1_config_v1 const*,
+    quactlize_ppu_placed_arrangement_v2 const*);
+
+// Explicit compute, with F16/F32/BF16 storage and F32 output. BF16 rounds A
+// to BF16 in registers. All three BF16 readers reconstruct Q4 weights using
+// FP32 affine arithmetic and accumulate in FP32, without F16 intermediates.
+// F16 delegates to the v1 arithmetic unchanged; it rejects BF16 storage.
+int quactlize_q4_s1_query_v2(qkg_simt_call_v2 const*, qkg_q4_s1_config_v1 const*,
+    quactlize_ppu_placed_arrangement_v2 const*, qkg_sizes_v1*);
+int quactlize_q4_s1_run_v2(qkg_simt_call_v2 const*, qkg_q4_s1_config_v1 const*,
     quactlize_ppu_placed_arrangement_v2 const*);
 
 #ifdef __cplusplus

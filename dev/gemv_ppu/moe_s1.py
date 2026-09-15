@@ -86,6 +86,34 @@ extern "C" int quactlize_q4_s1_run_v1(qkg_call_v1 const* c,qkg_q4_s1_config_v1 c
     return s+'    return QKG_INVALID;\n}\n'
 
 
+def source_v2(n,k):
+    s=source(n,k)
+    s+=f'''extern "C" int quactlize_q4_s1_query_v2(qkg_simt_call_v2 const* d,qkg_q4_s1_config_v1 const* f,
+    quactlize_ppu_placed_arrangement_v2 const* a,qkg_sizes_v1* out) {{
+    if (!d || !f || !out) return QKG_INVALID;
+    if (d->call.n!={n} || d->call.k!={k}) return QKG_SHAPE;
+    qkg_sizes_v1 sizes{{}};
+    int rc=validate_v2(*d,*f,a,sizes);
+    if (rc) return rc;
+    if (!compiled(*f)) return QKG_INVALID;
+    *out=sizes;return QKG_OK;
+}}
+extern "C" int quactlize_q4_s1_run_v2(qkg_simt_call_v2 const* d,qkg_q4_s1_config_v1 const* f,
+    quactlize_ppu_placed_arrangement_v2 const* a) {{
+    qkg_sizes_v1 sizes{{}};
+    int rc=quactlize_q4_s1_query_v2(d,f,a,&sizes);
+    if (rc) return rc;
+    if (d->compute_type==QKG_COMPUTE_F16) return quactlize_q4_s1_run_v1(&d->call,f,a);
+    rc=buffers_v2(*d,sizes);
+    if (rc) return rc;
+'''
+    for r in inventory():
+        s+=f'''    if(f->reader=={r.reader} && f->variant=={r.variant} && f->warps=={r.warps} && f->values=={r.values})
+        return launch<{r.reader},{r.variant},{r.warps},{r.values},{n},{k},1>(d->call);
+'''
+    return s+'    return QKG_INVALID;\n}\n'
+
+
 def access(r,n,k,rows,input_type,bases):
     # Reuse the exact lane-address derivation of the admitted dense bodies.
     from dev.gemv_ppu import small_latency, reader_reuse

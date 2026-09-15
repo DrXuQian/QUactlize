@@ -40,7 +40,5 @@ class DecodeCompiler(Compiler):
         validate_parent(parent)
         if not parent["route"].endswith("dense"):
             raise ValueError("typed dense decode module requires a dense parent")
-        if compute_type == "bf16" and parent["ap"]:
-            raise ValueError("BF16 packed-A provider is not admitted")
         return f"#define QKD_USE_BF16_COMPUTE {int(compute_type == 'bf16')}\n" + Compiler.source(self, parent, key).replace(
             '#include "module.cuh"', '#include "dense.cuh"')

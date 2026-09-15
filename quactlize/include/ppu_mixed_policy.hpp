@@ -301,8 +301,8 @@ template <QuantMode Mode, class BaseSchedule, class TileShape,
 struct Q4KPack4MainloopPolicy {
   static_assert(std::is_same_v<Compute, cutlass::half_t> ||
                 std::is_same_v<Compute, cutlass::bfloat16_t>);
-  static_assert(APackRows == 0 || std::is_same_v<Compute, cutlass::half_t>,
-                "BF16 packed-A requires independent provider admission");
+  static_assert(APackRows == 0 || cutlass::sizeof_bits<Compute>::value == 16,
+                "packed-A publishes b16 values to its typed M8 MMA operand");
   using ElementA = Compute;
   using ElementB = cutlass::int4b_t;
   using ElementScale = cutlass::half_t;
@@ -407,8 +407,8 @@ template <QuantMode Mode, class BaseSchedule, class TileShape,
 struct KPackMainloopPolicy {
   static_assert(std::is_same_v<Compute, cutlass::half_t> ||
                 std::is_same_v<Compute, cutlass::bfloat16_t>);
-  static_assert(APackRows == 0 || std::is_same_v<Compute, cutlass::half_t>,
-                "BF16 packed-A requires independent provider admission");
+  static_assert(APackRows == 0 || cutlass::sizeof_bits<Compute>::value == 16,
+                "packed-A publishes b16 values to its typed M8 MMA operand");
   using ElementA = Compute;
   using ElementScale = cutlass::half_t;
   using ElementZero = cutlass::half_t;

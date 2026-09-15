@@ -35,7 +35,7 @@ def test_compute_is_in_cache_and_source_contract(tmp_path,monkeypatch):
     assert f16.build(parent)["key"]!=bf16.build(parent)["key"]
     with pytest.raises(ValueError): DecodeCompiler(sdk,tmp_path/"cache",compute_type="auto")
     packed=parent_tuple("q4",[12,0,8,64,256,8,16,2,1,16,-1])
-    with pytest.raises(ValueError,match="packed-A"): bf16.source(packed,"")
+    assert "#define QK_AP 1" in bf16.source(packed,"")
     grouped=GroupedComputeCompiler(sdk,tmp_path/"grouped")
     with pytest.raises(ValueError,match="grouped parent"): grouped.source(parent,"")
     parent=parent|dict(route="fq-grouped",persistent=0)

@@ -1,5 +1,5 @@
 #pragma once
-#include "q4_s1_activation.cuh"
+#include "q4_s1_typed_activation.cuh"
 
 namespace quactlize::execution::q4_s1 {
 struct ScaleZero { __half scale,zero; };
@@ -31,8 +31,8 @@ __device__ __forceinline__ float2 q4_affine_header(uint4 u,unsigned group) {
 
 // Included inside the unchanged K-pack kernel namespace by reader_reuse.py.
 // Register transport only: canonical weight bytes and FP32 dot order stay fixed.
-template<int Columns,int Input>
-__device__ __forceinline__ uint4 q4_cooperative_a_chunk(Activation<Input> a,int group,int lane) {
+template<int Columns,class A>
+__device__ __forceinline__ uint4 q4_cooperative_a_chunk(A a,int group,int lane) {
     static_assert(Columns==4 || Columns==8);
     int64_t offset=int64_t(group)*32+(lane%Columns)*(32/Columns);
     if constexpr(Columns==4) return a.load8(offset);
@@ -42,7 +42,7 @@ __device__ __forceinline__ uint4 q4_cooperative_a_chunk(Activation<Input> a,int 
     }
 }
 
-template<int Columns>
+template<int Columns,int Compute=0>
 __device__ __forceinline__ float4 q4_cooperative_a_read(uint4 chunk,int offset,int lane) {
     int const owner=(lane&~(Columns-1))+offset/(32/Columns);
     uint32_t lo=chunk.x,hi=chunk.y;
@@ -51,10 +51,10 @@ __device__ __forceinline__ float4 q4_cooperative_a_read(uint4 chunk,int offset,i
     }
     lo=__shfl_sync(0xffffffffu,lo,owner);
     hi=__shfl_sync(0xffffffffu,hi,owner);
-    return make_float4(__half2float(__ushort_as_half(uint16_t(lo))),
-                       __half2float(__ushort_as_half(uint16_t(lo>>16))),
-                       __half2float(__ushort_as_half(uint16_t(hi))),
-                       __half2float(__ushort_as_half(uint16_t(hi>>16))));
+    return make_float4(activation_value<Compute>(uint16_t(lo)),
+                       activation_value<Compute>(uint16_t(lo>>16)),
+                       activation_value<Compute>(uint16_t(hi)),
+                       activation_value<Compute>(uint16_t(hi>>16)));
 }
 
 __device__ __forceinline__ uint4 q4_cooperative_unit_read(uint4 unit,int owner) {
@@ -125,14 +125,16 @@ __device__ __forceinline__ void latency_join(uint4& u,uint4& b,uint4& a) {
                       "+r"(a.x),"+r"(a.y),"+r"(a.z),"+r"(a.w) : : "memory");
 }
 
-template<int AMode,int Input>
-__device__ __forceinline__ uint4 latency_residue_a(Activation<Input> a,unsigned g,unsigned residue) {
+template<int AMode,int Input,int Compute=0>
+__device__ __forceinline__ uint4 latency_residue_a(ComputeActivation<Input,Compute> a,unsigned g,unsigned residue) {
     if constexpr(AMode==0) {
         uint2 v=a.load4(g*32+residue*4);
         return make_uint4(v.x,v.y,0,0);
     } else {
-        return make_uint4(__half_as_ushort(a[g*32+residue]),__half_as_ushort(a[g*32+residue+8]),
-                          __half_as_ushort(a[g*32+residue+16]),__half_as_ushort(a[g*32+residue+24]));
+        return make_uint4(activation_bits<Input,Compute>(a,g*32+residue),
+                          activation_bits<Input,Compute>(a,g*32+residue+8),
+                          activation_bits<Input,Compute>(a,g*32+residue+16),
+                          activation_bits<Input,Compute>(a,g*32+residue+24));
     }
 }
 
@@ -141,7 +143,7 @@ __device__ __forceinline__ uint32_t latency_swap_half(uint32_t value,unsigned la
     return __byte_perm(value,other,(lane&bit) ? 0x3276 : 0x5410);
 }
 
-template<int AMode>
+template<int AMode,int Compute=0>
 __device__ __forceinline__ float4 latency_residue_values(uint4 raw,unsigned residue) {
     if constexpr(AMode==0) {
         uint2 v=make_uint2(raw.x,raw.y);
@@ -153,10 +155,10 @@ __device__ __forceinline__ float4 latency_residue_values(uint4 raw,unsigned resi
         v.y=latency_swap_half(v.y,residue,4);
         raw=make_uint4(v.x,v.y,v.x>>16,v.y>>16);
     }
-    return make_float4(__half2float(__ushort_as_half(uint16_t(raw.x))),
-                       __half2float(__ushort_as_half(uint16_t(raw.y))),
-                       __half2float(__ushort_as_half(uint16_t(raw.z))),
-                       __half2float(__ushort_as_half(uint16_t(raw.w))));
+    return make_float4(activation_value<Compute>(uint16_t(raw.x)),
+                       activation_value<Compute>(uint16_t(raw.y)),
+                       activation_value<Compute>(uint16_t(raw.z)),
+                       activation_value<Compute>(uint16_t(raw.w)));
 }
 
 // Reduce K and scatter N ownership at the same time. Each exchange halves

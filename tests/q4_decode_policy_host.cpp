@@ -5,6 +5,7 @@
 extern "C" int qkg_q4_decode_launch(qkg_call_v1 const&, qkg_q4_decode_config_v1 const&) {
     return 123; // A real GPU is deliberately not involved in host ABI tests.
 }
+extern "C" int qkg_q4_decode_launch_bf16(qkg_call_v1 const&, qkg_q4_decode_config_v1 const&) { return 124; }
 extern "C" int q4_decode_tc(qks_request_v1 const* r,char* out,int bytes) {
     auto s=quactlize::dispatch::select_decode_tc(*r);
     if(!s.config) return QKS_MISS;

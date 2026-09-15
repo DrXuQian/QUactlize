@@ -43,10 +43,14 @@ def query(lib,c,f=None):
     return lib.host_query(C.byref(c),C.byref(cfg),C.byref(a),C.byref(s)),s
 
 
-def test_port_is_mechanical_and_shipping_header_has_no_dev_dependency():
-    for path,body in [('q4_s1_helpers.cuh',port.helpers()),('q4_s1_readers.cuh',port.bodies())]:
-        assert (ROOT/'quactlize/execution'/path).read_text().rstrip()==body.rstrip()
+def test_typed_extension_retains_half_math_and_has_no_dev_dependency():
+    port.verify_retained_helpers()
+    for path in ('q4_s1_helpers.cuh','q4_s1_readers.cuh'):
+        body=(ROOT/'quactlize/execution'/path).read_text()
         assert '#include "dev/' not in body and 'quactlize::dev' not in body
+    current=(ROOT/'quactlize/execution/q4_s1_helpers.cuh').read_text()
+    with pytest.raises(ValueError,match='retained F16 helper'):
+        port.verify_retained_helpers(current.replace('-float(Bias)','-float(Bias)-1.f'))
     body=(ROOT/'quactlize/execution/q4_s1_kernel.cuh').read_text()
     assert 'locate(c,row)' in body and 'uint64_t(r.expert)*N*K/2' in body
     assert 'uint64_t(r.expert)*N*K/16' in body

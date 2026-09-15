@@ -56,6 +56,30 @@ inline int buffers(qkg_call_v1 const& c, qkg_sizes_v1 const& s) {
     return QKG_OK;
 }
 
+inline bool typed_valid(qkg_simt_call_v2 const& d) {
+    return d.version==2 && d.size==sizeof(d) &&
+        (d.compute_type==QKG_COMPUTE_F16 || d.compute_type==QKG_COMPUTE_BF16) &&
+        d.call.input_type>=QKG_F16 && d.call.input_type<=QKG_SIMT_BF16 &&
+        (d.call.input_type!=QKG_SIMT_BF16 || d.compute_type==QKG_COMPUTE_BF16);
+}
+
+inline qkg_call_v1 storage_call(qkg_simt_call_v2 const& d) {
+    auto c=d.call;
+    if (c.input_type==QKG_SIMT_BF16) c.input_type=QKG_F16;
+    return c;
+}
+
+inline int validate_v2(qkg_simt_call_v2 const& d,qkg_q4_s1_config_v1 const& f,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement,qkg_sizes_v1& out) {
+    if (!typed_valid(d)) return QKG_INVALID;
+    return validate(storage_call(d),f,arrangement,out);
+}
+
+inline int buffers_v2(qkg_simt_call_v2 const& d,qkg_sizes_v1 const& sizes) {
+    if (!typed_valid(d)) return QKG_INVALID;
+    return buffers(storage_call(d),sizes);
+}
+
 // Host/device callable row contract, shared by the actual kernel and tests.
 // ids/offsets point to device memory in production; no host probing occurs.
 #if defined(__CUDACC__) || defined(__HGGC__)

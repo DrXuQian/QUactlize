@@ -9,18 +9,14 @@ inline bool compute_valid(int type) {
 }
 
 // Geometry transferred to a different arithmetic contract is a proposal,
-// never a measured BF16 winner. AP1 is an FP16-only packed-A provider.
+// never a measured BF16 winner. AP1 retains its bounded dense M1 contract.
 inline Config compute_proposal(qks_request_v1 const& r, Selected donor, std::string& name) {
     Config c{};
     if (donor.config) {
         c=*donor.config;
         name=c.symbol;
-        if (c.ap) {
-            auto pos=name.find("_ap1_");
-            if (c.ap!=1 || pos==std::string::npos) return {};
-            name.replace(pos,5,"_ap0_");
-            c.ap=0;
-        }
+        if (c.ap && (c.ap!=1 || r.m!=1 || r.experts!=1 || r.route>=2 ||
+                     (r.qtype!=10 && r.qtype!=12) || c.tm!=8 || c.wm!=8)) return {};
     } else {
         // One small resource-bounded AP0 parent covers a missing shape family.
         // Resource query still decides admission; there is no runtime sweep.

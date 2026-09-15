@@ -179,8 +179,16 @@ template <
   bool Swap
 > struct MixGemm_AIU_OperandPackedA {
   using Ordinary = MixGemm_AIU_Operand<Element, false, Block_MN, Block_K, Swap>;
-  static_assert(cute::is_same_v<Element, cutlass::half_t>,
-                "packed-row A currently supports the shipping fp16 A operand only");
+  static_assert(cute::is_same_v<Element, cutlass::half_t> ||
+                cute::is_same_v<Element, cutlass::bfloat16_t>,
+                "packed-row A requires an explicit F16 or BF16 b16 operand");
+  using HalfMma = MMA_Traits<PPU0010_8x16x16_F32F16F16F32_TN>;
+  using Bf16Mma = MMA_Traits<PPU0010_8x16x16_F32BF16BF16F32_TN>;
+  static_assert(cute::is_same_v<typename HalfMma::ALayout,typename Bf16Mma::ALayout> &&
+                cute::is_same_v<typename HalfMma::BLayout,typename Bf16Mma::BLayout> &&
+                cute::is_same_v<typename HalfMma::CLayout,typename Bf16Mma::CLayout> &&
+                cute::is_same_v<typename Bf16Mma::ValTypeA,cutlass::bfloat16_t>,
+                "packed-A BF16 must preserve the proved M8 b16 register mapping");
   static_assert(Rows == 1 && Block_MN{} == 16,
                 "dense M==1 packed A retains the physical 16-row PPU0010 cube");
 
@@ -197,6 +205,8 @@ template <
       Element, Block_MN{}, AiuContElemSize{}, Swap, false, InstNum,
       kCubePitchA, kStagePitchA>;
   using SmemCopyAtomM8 = Copy_Atom<SmemCopyOpM8, Element>;
+  static_assert(SmemCopyOpM8::kLogicalRegisters == 2 && sizeof(Element) == 2,
+                "packed-A writer and typed M8 reader must agree on b16 x2 delivery");
   using SmemLayoutAtom = typename Ordinary::SmemLayoutAtom;
 };
 

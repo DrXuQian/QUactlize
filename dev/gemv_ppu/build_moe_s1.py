@@ -32,10 +32,7 @@ def build(a):
     out=a.output.resolve()
     out.mkdir(parents=True,exist_ok=False)
     started=time.monotonic()
-    if (ROOT/'quactlize/execution/q4_s1_helpers.cuh').read_text().rstrip()!=q4_s1_port.helpers().rstrip():
-        raise ValueError('helper transplant differs from frozen reader')
-    if (ROOT/'quactlize/execution/q4_s1_readers.cuh').read_text().rstrip()!=q4_s1_port.bodies().rstrip():
-        raise ValueError('reader transplant differs from frozen reader')
+    q4_s1_port.verify_retained_helpers()
     sources=[*ROOT.glob('quactlize/execution/q4_s1*'),
              ROOT/'quactlize/execution/api.h',ROOT/'quactlize/execution/validation.hpp',
              ROOT/'quactlize/include/ppu_placed_arrangement.hpp',ROOT/'quactlize/include/q8_kpack2.hpp',

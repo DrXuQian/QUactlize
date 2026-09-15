@@ -179,6 +179,12 @@ def build(sdk, output, jobs, variant="production"):
         comparison_adapters=bool(extra_sources),
         q4_decode_policy_sha256=sha(q4_decode_codegen.POLICY),
         q4_decode_configs={f'{n}x{k}':v for (n,k),v in q4_decode_codegen.recipes().items()},
+        q4_decode_compute_v2={
+            "compute": ["f16", "bf16"], "bf16_storage": ["f32", "bf16"],
+            "bf16_arithmetic": "BF16_A_FP32_AFFINE_ACCUMULATOR_OUTPUT",
+            "bf16_selection": "FP16_GEOMETRY_INITIAL_NOT_MEASURED",
+            "device_validated": False,
+        },
         simt_configs={str(q): [c.record() for c in simt_codegen.runtime_inventory(q)]
                       for q in simt_codegen.QTYPES},
         simt_arithmetic="F16_ACTIVATIONS_FP32_GROUP_AFFINE_ACCUMULATOR_OUTPUT",

@@ -30,10 +30,21 @@ def sources():
             lines += [f"    if (f.reader=={reader} && f.variant=={variant} && f.warps=={warps} && f.values=={p} && f.columns=={columns})",
                       f"        return quactlize::execution::q4_decode::launch<{reader},{variant},{warps},{p},{columns},{n},{k}>(c);"]
         lines += ["    return QKG_SHAPE;", "}", ""]
+        typed = declaration.replace(name, name + "_bf16")
+        router.append(typed + ";")
+        lines += [typed + " {"]
+        for reader, variant, warps, p, columns in values:
+            lines += [f"    if (f.reader=={reader} && f.variant=={variant} && f.warps=={warps} && f.values=={p} && f.columns=={columns})",
+                      f"        return quactlize::execution::q4_decode::launch<{reader},{variant},{warps},{p},{columns},{n},{k},1>(c);"]
+        lines += ["    return QKG_SHAPE;", "}", ""]
         output[f"q4decode_{n}_{k}.cu"] = "\n".join(lines)
     router += ['extern "C" int qkg_q4_decode_launch(qkg_call_v1 const& c, qkg_q4_decode_config_v1 const& f) {']
     for n, k in recipes():
         router.append(f"    if (c.n=={n} && c.k=={k}) return qkg_q4_decode_{n}_{k}(c,f);")
+    router += ["    return QKG_SHAPE;", "}", ""]
+    router += ['extern "C" int qkg_q4_decode_launch_bf16(qkg_call_v1 const& c, qkg_q4_decode_config_v1 const& f) {']
+    for n, k in recipes():
+        router.append(f"    if (c.n=={n} && c.k=={k}) return qkg_q4_decode_{n}_{k}_bf16(c,f);")
     router += ["    return QKG_SHAPE;", "}", ""]
     output["q4decode_router.cpp"] = "\n".join(router)
     return output

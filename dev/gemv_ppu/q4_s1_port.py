@@ -79,6 +79,28 @@ def bodies():
             + '\n'.join(row(family) for family in ('meta','medium','reuse'))+'\n}\n')
 
 
+def verify_retained_helpers(current=None):
+    """Bind unchanged code/metadata/reduction math after the typed-A extension.
+
+    BF16 register transport has independent executable coverage in
+    tests/bf16_fastpath_host.cpp; it is no longer a byte-for-byte transplant.
+    """
+    if current is None:
+        current=(ROOT/'quactlize/execution/q4_s1_helpers.cuh').read_text()
+    frozen=helpers()
+    for signature in ('template<int Slot,int Bias>',
+                      '__device__ __forceinline__ uint4 aligned_unit',
+                      '__device__ __forceinline__ float2 q4_affine_header(',
+                      '__device__ __forceinline__ float2 q4_affine_header32(',
+                      'template<int Header>\n__device__ __forceinline__ uint2 latency_fields',
+                      'template<int Header>\n__device__ __forceinline__ quactlize::execution::q4_s1::ScaleZero latency_half_header',
+                      'template<int Header>\n__device__ __forceinline__ float2 latency_affine_header',
+                      'template<int Count, int Stride, int Width>',
+                      'template<int Round,int Warps,int TileN>'):
+        if function(current,signature)!=function(frozen,signature):
+            raise ValueError('retained F16 helper differs: '+signature)
+
+
 if __name__ == '__main__':
     import sys
     sys.stdout.write(helpers() if sys.argv[1]=='helpers' else bodies())

@@ -2,8 +2,8 @@
 #include "q4_s1_helpers.cuh"
 
 namespace quactlize::execution::q4_s1 {
-template<int Input,int Header,int Loading,int AMode,int Warps,int N,int K>
-__device__ __forceinline__ void row_meta(int tile,Activation<Input> a_ptr,uint8_t const* low_ptr,uint8_t const* units_ptr,float* output) {
+template<int Input,int Header,int Loading,int AMode,int Warps,int N,int K,int Compute=0>
+__device__ __forceinline__ void row_meta(int tile,ComputeActivation<Input,Compute> a_ptr,uint8_t const* low_ptr,uint8_t const* units_ptr,float* output) {
     constexpr unsigned Width=8;
     unsigned tid=threadIdx.x,lane=tid%32,warp=tid/32,residue=lane%8;
     unsigned first=tile*Width;
@@ -19,16 +19,18 @@ __device__ __forceinline__ void row_meta(int tile,Activation<Input> a_ptr,uint8_
         unsigned g=chunk*4+lane/8;
         uint4 unit=aligned_unit(units_ptr+(size_t(g/8)*N+first+residue)*16);
         uint4 b,ab;
-        ScaleZero sz;
-        if constexpr(Loading==0) sz=latency_half_header<Header>(unit,g&7);
+        ScaleZero sz{};
+        if constexpr(Compute==0 && Loading==0) sz=latency_half_header<Header>(unit,g&7);
         b=*reinterpret_cast<uint4 const*>(low+size_t(g*8+residue)*N+first);
-        ab=latency_residue_a<AMode>(a,g,residue);
+        ab=latency_residue_a<AMode,Input,Compute>(a,g,residue);
         if constexpr(Loading==1) {
             latency_join(unit,b,ab);
-            sz=latency_half_header<Header>(unit,g&7);
+            if constexpr(Compute==0) sz=latency_half_header<Header>(unit,g&7);
         }
         uint32_t meta=uint32_t(__half_as_ushort(sz.scale))|(uint32_t(__half_as_ushort(sz.zero))<<16);
-        float4 av=latency_residue_values<AMode>(ab,residue);
+        float2 affine{};
+        if constexpr(Compute==1) affine=latency_affine_header<Header>(unit,g&7);
+        float4 av=latency_residue_values<AMode,Compute>(ab,residue);
         float act[4]={av.x,av.y,av.z,av.w};
         uint32_t words[4]={b.x,b.y,b.z,b.w};
         #pragma unroll
@@ -37,14 +39,27 @@ __device__ __forceinline__ void row_meta(int tile,Activation<Input> a_ptr,uint8_
             uint32_t s1=__shfl_sync(0xffffffffu,meta,(lane&~7)+2*p+1);
             __half2 scale=__halves2half2(__ushort_as_half(uint16_t(s0)),__ushort_as_half(uint16_t(s1)));
             __half2 zero=__halves2half2(__ushort_as_half(uint16_t(s0>>16)),__ushort_as_half(uint16_t(s1>>16)));
+            float2 sf{},zf{};
+            if constexpr(Compute==1) {
+                sf=make_float2(__shfl_sync(0xffffffffu,affine.x,(lane&~7)+2*p),
+                               __shfl_sync(0xffffffffu,affine.x,(lane&~7)+2*p+1));
+                zf=make_float2(__shfl_sync(0xffffffffu,affine.y,(lane&~7)+2*p),
+                               __shfl_sync(0xffffffffu,affine.y,(lane&~7)+2*p+1));
+            }
             #pragma unroll
             for(int slot=0;slot<4;++slot) {
                 __half2 q;
-                if(slot==0) q=codes<0,8>(words[p]);
-                else if(slot==1) q=codes<1,8>(words[p]);
-                else if(slot==2) q=codes<2,8>(words[p]);
-                else q=codes<3,8>(words[p]);
-                float2 w=__half22float2(__hfma2(q,scale,zero));
+                constexpr int Bias=Compute==0 ? 8 : 0;
+                if(slot==0) q=codes<0,Bias>(words[p]);
+                else if(slot==1) q=codes<1,Bias>(words[p]);
+                else if(slot==2) q=codes<2,Bias>(words[p]);
+                else q=codes<3,Bias>(words[p]);
+                float2 w;
+                if constexpr(Compute==0) w=__half22float2(__hfma2(q,scale,zero));
+                else {
+                    float2 const v=__half22float2(q);
+                    w=make_float2(fmaf(v.x,sf.x,zf.x),fmaf(v.y,sf.y,zf.y));
+                }
                 sums[p].x=fmaf(act[slot],w.x,sums[p].x);
                 sums[p].y=fmaf(act[slot],w.y,sums[p].y);
             }
@@ -67,8 +82,8 @@ __device__ __forceinline__ void row_meta(int tile,Activation<Input> a_ptr,uint8_
     }
 }
 
-template<int Input,int Reduction,int Unsigned,int Header,int Loading,int AMode,int Columns,int Warps,int P,int N,int K>
-__device__ __forceinline__ void row_medium(int tile,Activation<Input> a_ptr,uint8_t const* low_ptr,uint8_t const* units_ptr,float* out_ptr) {
+template<int Input,int Reduction,int Unsigned,int Header,int Loading,int AMode,int Columns,int Warps,int P,int N,int K,int Compute=0>
+__device__ __forceinline__ void row_medium(int tile,ComputeActivation<Input,Compute> a_ptr,uint8_t const* low_ptr,uint8_t const* units_ptr,float* out_ptr) {
     constexpr int Variant=4;
     constexpr bool Early=true;
     constexpr int Workers=Warps*32/Columns,Pairs=P/2;
@@ -113,8 +128,14 @@ __device__ __forceinline__ void row_medium(int tile,Activation<Input> a_ptr,uint
                     uint32_t regs[4]={raw.x,raw.y,raw.z,raw.w};
                     #pragma unroll
                     for(int h=0;h<2;++h) {
-                        float2 lo=__half22float2(__halves2half2(__ushort_as_half(uint16_t(regs[2*h])),__ushort_as_half(uint16_t(regs[2*h]>>16))));
-                        float2 hi=__half22float2(__halves2half2(__ushort_as_half(uint16_t(regs[2*h+1])),__ushort_as_half(uint16_t(regs[2*h+1]>>16))));
+                        float2 lo,hi;
+                        if constexpr(Compute==0) {
+                            lo=__half22float2(__halves2half2(__ushort_as_half(uint16_t(regs[2*h])),__ushort_as_half(uint16_t(regs[2*h]>>16))));
+                            hi=__half22float2(__halves2half2(__ushort_as_half(uint16_t(regs[2*h+1])),__ushort_as_half(uint16_t(regs[2*h+1]>>16))));
+                        } else {
+                            lo=make_float2(activation_value<Compute>(uint16_t(regs[2*h])),activation_value<Compute>(uint16_t(regs[2*h]>>16)));
+                            hi=make_float2(activation_value<Compute>(uint16_t(regs[2*h+1])),activation_value<Compute>(uint16_t(regs[2*h+1]>>16)));
+                        }
                         all_a[h][slot]=make_float4(lo.x,lo.y,hi.x,hi.y);
                     }
                 } else {
@@ -160,7 +181,7 @@ __device__ __forceinline__ void row_medium(int tile,Activation<Input> a_ptr,uint
             #pragma unroll
             for(int slot=0;slot<4;++slot) {
                 float4 av;
-                if constexpr(Variant&1) av=q4_cooperative_a_read<Columns>(a_chunk,slot*8+half*4,read_lane);
+                if constexpr(Variant&1) av=q4_cooperative_a_read<Columns,Compute>(a_chunk,slot*8+half*4,read_lane);
                 else if constexpr(Loading==1) av=all_a[half][slot];
                 else av=aligned_activation<0>(act,g*32+slot*8+half*4);
                 float ax[4]={av.x,av.y,av.z,av.w};
@@ -220,8 +241,8 @@ __device__ __forceinline__ void row_medium(int tile,Activation<Input> a_ptr,uint
     }
 }
 
-template<int Input,int Variant,int Columns,int Warps,int P,int N,int K>
-__device__ __forceinline__ void row_reuse(int tile,Activation<Input> a_ptr,uint8_t const* low_ptr,uint8_t const* units_ptr,float* out_ptr) {
+template<int Input,int Variant,int Columns,int Warps,int P,int N,int K,int Compute=0>
+__device__ __forceinline__ void row_reuse(int tile,ComputeActivation<Input,Compute> a_ptr,uint8_t const* low_ptr,uint8_t const* units_ptr,float* out_ptr) {
     constexpr bool Early=true;
     constexpr int Workers=Warps*32/Columns,Pairs=P/2;
     static_assert(((Columns==4 || Columns==8) || (Variant&3)==0) && Workers%8==0 && K%256==0);
@@ -264,7 +285,7 @@ __device__ __forceinline__ void row_reuse(int tile,Activation<Input> a_ptr,uint8
             #pragma unroll
             for(int slot=0;slot<4;++slot) {
                 float4 av;
-                if constexpr(Variant&1) av=q4_cooperative_a_read<Columns>(a_chunk,slot*8+half*4,read_lane);
+                if constexpr(Variant&1) av=q4_cooperative_a_read<Columns,Compute>(a_chunk,slot*8+half*4,read_lane);
                 else av=aligned_activation<0>(a_ptr,g*32+slot*8+half*4);
                 float ax[4]={av.x,av.y,av.z,av.w};
                 a_sum+=(av.x+av.y)+(av.z+av.w);
