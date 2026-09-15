@@ -5,10 +5,12 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import sys
+import tarfile
+import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -119,6 +121,47 @@ def run(argv, env, log):
     return log.read_text(errors='replace'), rc
 
 
+def checked_step(argv, env, log):
+    text, rc = run(argv, env, log)
+    if rc:
+        print(text[-8192:], file=sys.stderr, flush=True)
+        raise ValueError(f'{log.stem} failed rc={rc}; log={log}')
+    return text
+
+
+def export_sources(repository, commit, destination, paths):
+    if not re.fullmatch(r'[0-9a-f]{40}', commit):
+        raise ValueError('frozen source requires an exact commit')
+    destination.mkdir(parents=True, exist_ok=False)
+    with tempfile.TemporaryFile(dir=destination.parent) as stream:
+        subprocess.run(['git', '-C', str(repository), 'archive', commit, *paths],
+                       stdout=stream, check=True)
+        stream.seek(0)
+        with tarfile.open(fileobj=stream) as archive:
+            members = archive.getmembers()
+            for member in members:
+                path = PurePosixPath(member.name)
+                if path.is_absolute() or '..' in path.parts or not (member.isdir() or member.isfile()):
+                    raise ValueError('frozen source archive contains a link or unsafe member')
+            archive.extractall(destination, members=members, filter='data')
+
+
+def frozen_jit_source(repository, commit, destination):
+    """Export only source inputs; never switch the checkout or register a worktree."""
+    if not re.fullmatch(r'[0-9a-f]{40}', commit):
+        raise ValueError('frozen JIT source requires an exact commit')
+    entry = subprocess.check_output(['git', '-C', str(repository), 'ls-tree', commit,
+                                     'third_party/actlize'], text=True).strip().split()
+    if len(entry) != 4 or entry[:2] != ['160000', 'commit'] or entry[3] != 'third_party/actlize':
+        raise ValueError('frozen source lacks the exact actlize submodule')
+    export_sources(repository, commit, destination,
+                   ['quactlize', 'tools/kpack_jit.py', 'tools/verify_kpack_dispatch.py'])
+    export_sources(repository / 'third_party/actlize', entry[2], destination / 'third_party/actlize',
+                   ['include', 'tools/util/include', 'examples/common'])
+    return dict(source_commit=commit, actlize_commit=entry[2], root=str(destination),
+                scope='FROZEN_JIT_SOURCES_NO_DSO_REBUILD_NO_WORKTREE_NO_LFS')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('previous', 'llama', 'sdk', 'output'):
@@ -162,9 +205,17 @@ def main():
         model=option(original, '-m'), model_bytes=Path(option(original, '-m')).stat().st_size,
         previous=str(previous), previous_caller=receipt['llama_source_commit']))
 
-    with (results / 'verify.log').open('x') as log:
-        subprocess.run([sys.executable, str(ROOT / 'tools/verify_kpack_dispatch.py'), str(bundle),
-            '--sdk', str(args.sdk)], check=True, stdout=log, stderr=subprocess.STDOUT)
+    if digest(bundle / 'manifest.json') != pin['manifest_sha256']:
+        raise ValueError('frozen source pin does not describe this execution bundle')
+    jit_source = args.output / 'jit-source'
+    frozen = frozen_jit_source(ROOT, pin['source_commit'], jit_source)
+    save(results / 'jit-source.json', frozen)
+    print('KPACK_FIRST_NONFINITE_SOURCE ' + json.dumps(frozen), flush=True)
+    # Validate current package rules and then the original checkout/SDK contract.
+    checked_step([sys.executable, str(ROOT / 'tools/verify_kpack_dispatch.py'), str(bundle)],
+                 os.environ.copy(), results / 'verify-payload.log')
+    checked_step([sys.executable, str(jit_source / 'tools/verify_kpack_dispatch.py'), str(bundle),
+                  '--sdk', str(args.sdk)], os.environ.copy(), results / 'verify.log')
     print(f'KPACK_FIRST_NONFINITE_BUILD caller=INCREMENTAL_AONECI runtime=UNCHANGED jobs={args.jobs}', flush=True)
     _, build_rc = run([sys.executable, str(ROOT / 'tools/build_kpack_model_ci.py'),
         '--llama', str(llama), '--ncp', str(ncp), '--sdk', str(args.sdk), '--local-llama',
@@ -185,13 +236,11 @@ def main():
             'quactlize-runtime-artifact-2826cf1-46fc3096e1a1/prebuilt/ppu0010/2826cf1/runtime6-46fc3096e1a1/bundle')))
     if not Path(env['QUACTLIZE_PPU_BUNDLE'], 'manifest.json').is_file():
         raise ValueError('the existing consumer bundle is missing')
-    with (results / 'self-test.log').open('x') as log:
-        subprocess.run([original[0]], env=env | {'LLAMA_NUMERICAL_DEBUG': 'self-test'},
-                       stdout=log, stderr=subprocess.STDOUT, check=True)
+    checked_step([original[0]], env | {'LLAMA_NUMERICAL_DEBUG': 'self-test'}, results / 'self-test.log')
     if 'no_sum_overflow=1' not in (results / 'self-test.log').read_text():
         raise ValueError('loaded diagnostic tool is stale; inspect the library search path')
     native_env = env | dict(QUACTLIZE_KPACK_EXECUTION=str(bundle), QUACTLIZE_KPACK_ROUTE='auto',
-        QUACTLIZE_KPACK_PAIR_WEIGHTS='1', QUACTLIZE_KPACK_JIT_HELPER=str(ROOT / 'tools/kpack_jit.py'),
+        QUACTLIZE_KPACK_PAIR_WEIGHTS='1', QUACTLIZE_KPACK_JIT_HELPER=str(jit_source / 'tools/kpack_jit.py'),
         QUACTLIZE_KPACK_JIT_PYTHON=sys.executable,
         QUACTLIZE_KPACK_JIT_CACHE=os.environ.get('JIT_CACHE', str(previous.parent / 'kpack-model-jit-cache')),
         QUACTLIZE_KPACK_DEEPGEMM_HELPER=str(bundle / 'kpack_deepgemm_prewarm.py'))

@@ -656,6 +656,35 @@ def test_first_nonfinite_preserves_expected_nonzero_child_exit(tmp_path):
     assert log.read_text().strip() == text
 
 
+def test_first_nonfinite_preflight_error_reaches_console(tmp_path, capsys):
+    from tools.run_kpack_first_nonfinite import checked_step
+    log = tmp_path / 'verify.log'
+    with pytest.raises(ValueError, match='verify failed rc=1'):
+        checked_step([sys.executable, '-c', 'print("JIT checkout differs: kernel"); raise SystemExit(1)'],
+                     os.environ.copy(), log)
+    assert 'JIT checkout differs: kernel' in capsys.readouterr().err
+    assert 'JIT checkout differs: kernel' in log.read_text()
+
+
+def test_first_nonfinite_frozen_source_uses_exact_git_blobs(tmp_path):
+    from tools.run_kpack_first_nonfinite import frozen_jit_source
+    commit = 'd93b11867813df4723179f11ae583aa4ebdb078a'
+    before = subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True)
+    output = tmp_path / 'source'
+    receipt = frozen_jit_source(ROOT, commit, output)
+    assert receipt['actlize_commit'] == '423253c00df333ead6fb72ea623d526f24f56b5a'
+    for name in ('quactlize/runtime/moe_chain.cuh', 'quactlize/decode/compiler.py', 'tools/kpack_jit.py'):
+        expected = subprocess.check_output(['git', '-C', str(ROOT), 'show', commit+':'+name])
+        assert (output/name).read_bytes() == expected
+    assert (output/'third_party/actlize/include/cute/tensor.hpp').is_file()
+    assert not (output/'prebuilt').exists() and not (output/'.git').exists()
+    assert subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True) == before
+    with pytest.raises(FileExistsError):
+        frozen_jit_source(ROOT, commit, output)
+    with pytest.raises(ValueError, match='exact commit'):
+        frozen_jit_source(ROOT, 'develop', tmp_path/'mutable')
+
+
 def test_first_token_snapshot_does_not_masquerade_as_model_pass():
     from tools.run_kpack_first_nonfinite import snapshot_result
     header = 'LLAMA_NUMERICAL_DEBUG mode=tensors callback=1 timing_valid=0\n'

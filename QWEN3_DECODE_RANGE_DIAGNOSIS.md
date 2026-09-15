@@ -103,6 +103,15 @@ bitwise oracle. `KPACK_ACTIVATION_RANGE` prints the third FFN's three rows.
 A missing full-model fix remains open regardless of this diagnostic
 process's successful exit.
 
+The runner exports the bundle's pinned source revision and its exact actlize
+headers into the new diagnostic directory. It checks both package payloads
+and that frozen checkout's JIT contract, then uses the frozen JIT helper.
+New development headers must not change a replay of the old numerical case.
+This does not switch the active checkout, create a registered worktree,
+download LFS artifacts, rebuild the dispatcher or bypass its source checks.
+Any selected-module cache miss still follows the original JIT protocol.
+The preflight error is also printed to the console, not only `verify.log`.
+
 Fix acceptance requires locating any upstream divergence, choosing a
 compute representation that supports the actual values (not saturation),
 replaying the failed input through the real producer and Split-K reducer,
