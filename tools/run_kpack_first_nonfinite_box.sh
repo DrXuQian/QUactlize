@@ -42,8 +42,9 @@
     test -n "$RUN" && test -d "$RUN"
     stage=diagnose
     cd "$ROOT"
+    read -r -a ARMS <<< "${DIAGNOSTIC_ARMS:-native-logits reference-tensors native-tensors}"
     # The parent exists; the Python runner exclusively creates its output.
     "$PYTHON" -u tools/run_kpack_first_nonfinite.py --previous "$PREVIOUS" --llama "$LLAMA" \
-        --sdk "$SDK" --jobs "$JOBS" --output "$RUN/diagnostic" 2>&1 | tee "$RUN/console.log"
+        --sdk "$SDK" --jobs "$JOBS" --arms "${ARMS[@]}" --output "$RUN/diagnostic" 2>&1 | tee "$RUN/console.log"
     stage=complete
 )

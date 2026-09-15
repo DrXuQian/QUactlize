@@ -12,6 +12,8 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+ARMS = {'native-logits': ('logits', False), 'reference-tensors': ('tensors', True),
+        'native-tensors': ('tensors', False)}
 
 
 def save(path, value):
@@ -66,7 +68,8 @@ def result(text, rc, mode):
         # The original command requests 128 output rows per chunk, including
         # the final row that the 127-token KL scorer does not consume.
         if not re.search(r'\blogits=256\b', complete[0]):
-            raise ValueError('diagnostic did not inspect both complete chunks')
+            observed = re.findall(r'\blogits=(\d+)\b', complete[0])
+            raise ValueError(f'KL logits coverage differs: observed={observed}, expected=256; keep the original log')
         if mode == 'tensors' and not re.search(r'\bnodes=[1-9][0-9]*\b', complete[0]):
             raise ValueError('tensor callback inspected no nodes')
         return dict(verdict='NO_NONFINITE_OBSERVED', completion=complete[0])
@@ -102,6 +105,8 @@ def main():
     for name in ('previous', 'llama', 'sdk', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--jobs', type=int, default=192)
+    parser.add_argument('--arms', choices=tuple(ARMS), nargs='+', default=list(ARMS),
+                        help='rerun only these diagnostic processes; earlier results are not modified')
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     results = args.output / 'results'
@@ -113,8 +118,10 @@ def main():
     original = command(json.loads(original_path.read_text())['argv'])
     build = Path(os.environ.get('LLAMA_CI_BUILD_DIR', receipt['build'])).resolve(strict=True)
     llama = args.llama.resolve(strict=True)
-    if 'LLAMA_NUMERICAL_SELF_TEST PASS' not in (llama / 'tools/perplexity/perplexity.cpp').read_text():
-        raise ValueError('update the llama dev/quactlize-v0.3.0 branch first')
+    source = (llama / 'tools/perplexity/perplexity.cpp').read_text()
+    kl_source = source.partition('static void kl_divergence(')[2].partition('\nint llama_perplexity(')[0]
+    if 'numerical_check_logits(batch_logits, size_t(n_outputs) * n_vocab);' not in kl_source:
+        raise ValueError('update llama dev/quactlize-v0.3.0: the diagnostic must be inside the KL loop')
     for key in ('-m', '-f', '--kl-divergence-base'):
         if not Path(option(original, key)).is_file():
             raise ValueError(f'original input {key} is missing; keep the previous run directory')
@@ -167,8 +174,8 @@ def main():
     save(results / 'environment.json', {k: v for k, v in native_env.items() if k.startswith(
         ('QUACTLIZE_', 'DG_JIT_', 'CUDA_VISIBLE_', 'PPU_SDK'))})
     records = []
-    for arm, mode, reference in (('native-logits', 'logits', False),
-                                  ('reference-tensors', 'tensors', True), ('native-tensors', 'tensors', False)):
+    for arm in dict.fromkeys(args.arms):
+        mode, reference = ARMS[arm]
         print(f'KPACK_FIRST_NONFINITE_START arm={arm} token_source=ORIGINAL_CORPUS token_batch=1 callback={int(mode == "tensors")}', flush=True)
         log = results / (arm + '.log')
         dump = results / (arm + '-tensors')

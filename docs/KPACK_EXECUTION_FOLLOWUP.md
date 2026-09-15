@@ -35,6 +35,15 @@ sensitivity, not a fixed kernel or a proven event/workspace bug. A missing
 coverage/stop record is an infrastructure failure. Even an all-finite result
 is not an accuracy or performance admission.
 
+Diagnostic correction: the first caller (`cab1d3ca2`) placed the logits probe
+in ordinary PPL, not KL. Its `native-logits` completion has zero coverage and
+cannot establish finiteness. The probe now runs in the actual KL loop; a tiny
+CPU model tests both complete 256-call coverage and a planted NaN at the first
+requested logits row. This tests diagnostic wiring only, not PPU kernels.
+Set `DIAGNOSTIC_ARMS=native-logits` to rerun just that arm after updating the
+caller. Existing tensor-mode first-bad snapshots remain useful; all-finite
+tensor completions with zero logits coverage are not full-logit evidence.
+
 ## Active box candidate (2026-09-10)
 
 The next box delivery combines Q8_0 W8A16 intake with MoE adapter fusion.

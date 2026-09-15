@@ -635,6 +635,7 @@ def test_first_nonfinite_requires_complete_coverage_or_an_explicit_stop(mode):
     assert result(start + complete, 0, mode)['verdict'] == 'NO_NONFINITE_OBSERVED'
     for text, rc in ((start, 0), (start + stop, 0), (start + complete, 86),
                      (start + complete.replace('logits=256', 'logits=128'), 0),
+                     (start + complete.replace('logits=256', 'logits=0'), 0),
                      (start + stop + stop, 86), (start + stop + complete, 86),
                      (complete, 0), (start + stop.replace(reason, 'OTHER'), 86)):
         with pytest.raises(ValueError):
