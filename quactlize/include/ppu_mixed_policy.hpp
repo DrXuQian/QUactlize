@@ -296,9 +296,14 @@ template <QuantMode Mode, class BaseSchedule, class TileShape,
           class ScaleTileShape, class WarpShape, int Stages,
           bool AiuInterleaved, int APackRows = 0,
           int KPack4DeliveryN = 0,
-          class MetadataPublication = cutlass::gemm::SeparateHalfPlanes>
+          class MetadataPublication = cutlass::gemm::SeparateHalfPlanes,
+          class Compute = cutlass::half_t>
 struct Q4KPack4MainloopPolicy {
-  using ElementA = cutlass::half_t;
+  static_assert(std::is_same_v<Compute, cutlass::half_t> ||
+                std::is_same_v<Compute, cutlass::bfloat16_t>);
+  static_assert(APackRows == 0 || std::is_same_v<Compute, cutlass::half_t>,
+                "BF16 packed-A requires independent provider admission");
+  using ElementA = Compute;
   using ElementB = cutlass::int4b_t;
   using ElementScale = cutlass::half_t;
   using ElementZero = cutlass::half_t;
@@ -397,9 +402,14 @@ struct Q4KPack4MainloopPolicy {
 template <QuantMode Mode, class BaseSchedule, class TileShape,
           class ScaleTileShape, class WarpShape, int Stages,
           bool AiuInterleaved, class ElementB, class PlaneB2 = void,
-          int APackRows = 0, int KPackDeliveryN = 0>
+          int APackRows = 0, int KPackDeliveryN = 0,
+          class Compute = cutlass::half_t>
 struct KPackMainloopPolicy {
-  using ElementA = cutlass::half_t;
+  static_assert(std::is_same_v<Compute, cutlass::half_t> ||
+                std::is_same_v<Compute, cutlass::bfloat16_t>);
+  static_assert(APackRows == 0 || std::is_same_v<Compute, cutlass::half_t>,
+                "BF16 packed-A requires independent provider admission");
+  using ElementA = Compute;
   using ElementScale = cutlass::half_t;
   using ElementZero = cutlass::half_t;
   using LayoutA = cutlass::layout::RowMajor;

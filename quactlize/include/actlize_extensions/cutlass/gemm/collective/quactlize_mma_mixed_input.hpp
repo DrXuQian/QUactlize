@@ -1979,7 +1979,7 @@ private:
 
   template <class TA, class TB, class TC, class Op>
   CUTLASS_DEVICE static void transform_fragment(TA&& a, TB&& b, TC&& c, Op op) {
-    cute::transform(a, b, c, op);
+    detail::transform_metadata(a, b, c, op);
   }
 
   /// Utilities to transform B.

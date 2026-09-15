@@ -4,6 +4,7 @@
 #include "grouped_workspace.hpp"
 #include "indexed.cuh"
 #include "moe_chain.cuh"
+#include "compute_reducer.cuh"
 #include <algorithm>
 #include <limits>
 #include <memory>
@@ -16,6 +17,13 @@ constexpr int qtype = QK_QTYPE, route = QK_ROUTE;
 constexpr int tm = QK_TM, tn = QK_TN, tk = QK_TK, stages = QK_STAGES;
 constexpr bool grouped = route >= QK_GROUPED_FQ;
 constexpr bool packed = route == QK_DENSE_FQ || route == QK_GROUPED_FQ;
+#ifndef QK_USE_BF16_COMPUTE
+#define QK_USE_BF16_COMPUTE 0
+#endif
+static_assert(QK_USE_BF16_COMPUTE==0 || QK_USE_BF16_COMPUTE==1);
+static_assert(!QK_USE_BF16_COMPUTE || grouped, "dense BF16 uses the typed decode module");
+using GroupCompute=std::conditional_t<QK_USE_BF16_COMPUTE,cutlass::bfloat16_t,Half>;
+constexpr int compute_type=QK_USE_BF16_COMPUTE ? QK_COMPUTE_BF16 : QK_COMPUTE_F16;
 static_assert(qtype != 8 || (!packed && QK_AP == 0), "Q8_0 requires W8A16 with FP16 scale, no packed-A");
 using F = Format<qtype>;
 constexpr uint64_t mapping = qtype == 8 ? q8_kpack2::kMappingId : qtype == 12 ? UINT64_C(0x51344b5034540001)
@@ -129,17 +137,17 @@ template<class T> struct DenseHandle final : Handle {
 };
 
 using Dense = DenseTypes<qtype,QK_TM,QK_TN,QK_TK,QK_WM,QK_WN,QK_STAGES,QK_AP,QK_DN>;
-template<bool P, class O = Half, bool Compact = false>
-using Group = GroupedTypes<qtype,QK_TM,QK_TN,QK_TK,QK_WM,QK_WN,QK_STAGES,QK_DN,P,O,Compact>;
+template<bool P, class O = GroupCompute, bool Compact = false>
+using Group = GroupedTypes<qtype,QK_TM,QK_TN,QK_TK,QK_WM,QK_WN,QK_STAGES,QK_DN,P,O,Compact,GroupCompute>;
 
 inline uint64_t scheduler_bytes(int max_rows, int experts, bool directory, int rows) {
   return align16(directory ? quactlize::moe_directory::bounded_workspace_bytes(rows,max_rows,experts,tm)
                            : uint64_t(experts + 1) * sizeof(int));
 }
 
-template<class Shape, class Stride>
-__global__ void grouped_device_metadata(int const* offsets, Half* output,
-    Shape* shapes, Half** outputs, Stride* strides, int* rows, int n, int k, int experts) {
+template<class Shape, class Stride,class Output>
+__global__ void grouped_device_metadata(int const* offsets, Output* output,
+    Shape* shapes, Output** outputs, Stride* strides, int* rows, int n, int k, int experts) {
   int e = int(blockIdx.x)*int(blockDim.x)+int(threadIdx.x);
   if (e >= experts) return;
   int begin=offsets[e], count=offsets[e+1]-begin;
@@ -165,14 +173,15 @@ __global__ void grouped_splitk_device_metadata(int const* offsets, float* partia
 
 template<bool Persistent, bool Split = false, bool Compact = false> struct GroupedHandle final : Handle {
   static constexpr bool Directory = Persistent || Compact;
-  using Output = std::conditional_t<Split,float,Half>;
+  using Output = std::conditional_t<Split,float,GroupCompute>;
   using T = Group<Persistent,Output,Compact>;
   using K = typename T::Kernel;
   using G = typename T::Gemm;
   using Shape = moe_grouped_ppu::GroupShape;
   using DStride = moe_grouped_ppu::DStride;
   G gemm;
-  using Reduction = cutlass::gemm::device::splitk_parallel::PpuMixedInputSplitKParallelCompactReduction<2>;
+  using Reduction = std::conditional_t<QK_USE_BF16_COMPUTE,Bf16CompactReduction,
+      cutlass::gemm::device::splitk_parallel::PpuMixedInputSplitKParallelCompactReduction<2>>;
   Reduction reduction;
   int splits = 1;
   float* partials = nullptr;
@@ -215,16 +224,26 @@ template<bool Persistent, bool Split = false, bool Compact = false> struct Group
 
   int moe_stage(qk_moe_plan_v1 const& plan,int phase,hggcStream_t stream) override {
     if (!indexed.version || plan.version!=1 || plan.size!=sizeof(plan)) return QK_INVALID;
+    ComputeMoePlan<GroupCompute> typed_plan;
+    static_cast<qk_moe_plan_v1&>(typed_plan)=plan;
     switch (phase) {
       case QK_MOE_PREPARE:
+        if constexpr(QK_USE_BF16_COMPUTE) {
+        if (moe_prepare_m1_supported(plan)) moe_chain_prepare_m1<Shape,DStride><<<1,256,0,stream>>>(typed_plan);
+        else if (call.m>32) moe_chain_prepare<Shape,DStride,64><<<moe_prepare_blocks(call.experts,call.m),256,0,stream>>>(typed_plan);
+        else moe_chain_prepare<Shape,DStride><<<moe_prepare_blocks(call.experts,call.m),256,0,stream>>>(typed_plan);
+        } else {
         if (moe_prepare_m1_supported(plan)) moe_chain_prepare_m1<Shape,DStride><<<1,256,0,stream>>>(plan);
         else if (call.m>32) moe_chain_prepare<Shape,DStride,64><<<moe_prepare_blocks(call.experts,call.m),256,0,stream>>>(plan);
         else moe_chain_prepare<Shape,DStride><<<moe_prepare_blocks(call.experts,call.m),256,0,stream>>>(plan);
+        }
         break;
       case QK_MOE_PRODUCER:
         return gemm.run(stream)==cutlass::Status::kSuccess ? QK_OK : QK_RUNTIME_ERROR;
       case QK_MOE_ACTIVATE:
-        moe_chain_swiglu<<<dim3(std::min((plan.down.k+255)/256,32),call.m),256,0,stream>>>(plan);
+        if constexpr(QK_USE_BF16_COMPUTE)
+          moe_chain_swiglu_compute<<<dim3(std::min((plan.down.k+255)/256,32),call.m),256,0,stream>>>(typed_plan);
+        else moe_chain_swiglu<<<dim3(std::min((plan.down.k+255)/256,32),call.m),256,0,stream>>>(plan);
         break;
       case QK_MOE_FINISH:
         return finish_indexed(stream);
@@ -278,9 +297,9 @@ template<bool Persistent, bool Split = false, bool Compact = false> struct Group
       partials = reinterpret_cast<float*>(base + layout.partials);
       destination = partials;
       typename Reduction::Arguments reduction_args{c.m,c.n,splits,partials,
-          layout.partial_bytes,static_cast<Half*>(c.output),c.n};
+          layout.partial_bytes,static_cast<GroupCompute*>(c.output),c.n};
       if (reduction.initialize(reduction_args)!=cutlass::Status::kSuccess) return QK_INVALID;
-    } else destination = static_cast<Half*>(c.output);
+    } else destination = static_cast<GroupCompute*>(c.output);
     if (!device_only) {
       outputs.resize(size_t(c.experts)*splits); strides.resize(outputs.size());
     }
@@ -317,7 +336,7 @@ template<bool Persistent, bool Split = false, bool Compact = false> struct Group
     problem.num_groups=c.experts; problem.problem_shapes=ds;
     problem.host_problem_shapes=device_only ? nullptr : shapes.data();
     typename G::Arguments args{cutlass::gemm::GemmUniversalMode::kGrouped, problem,
-        {static_cast<Half const*>(c.a),sa,static_cast<typename T::Low const*>(c.low),sb,
+        {static_cast<GroupCompute const*>(c.a),sa,static_cast<typename T::Low const*>(c.low),sb,
          static_cast<Half const*>(c.metadata),ss,c.group_size,static_cast<Half const*>(c.zero),c.offsets_device},
         {{},static_cast<Output const**>(nullptr),typename T::Epilogue::StrideC{},dp,dd},
         cutlass::KernelHardwareInfo{c.device,c.compute_units}};
@@ -341,7 +360,7 @@ template<bool Persistent, bool Split = false, bool Compact = false> struct Group
   }
   int finish_indexed(hggcStream_t stream) {
 #define QK_FINISH(S) case S: indexed_finish<S><<<dim3(std::min((call.n+255)/256,32),call.m),256,0,stream>>>( \
-        partials,static_cast<Half const*>(call.output),indexed.output,indexed.row_ids, \
+        partials,static_cast<GroupCompute const*>(call.output),indexed.output,indexed.row_ids, \
         call.m,call.n,indexed.out_row_stride,directory.header); break
     switch (splits) { QK_FINISH(1); QK_FINISH(2); QK_FINISH(4); QK_FINISH(8); }
 #undef QK_FINISH
@@ -351,14 +370,14 @@ template<bool Persistent, bool Split = false, bool Compact = false> struct Group
     if (indexed.version) {
       Output* destination;
       if constexpr (Split) destination=partials;
-      else destination=static_cast<Half*>(call.output);
+      else destination=static_cast<GroupCompute*>(call.output);
       if (call.m>32) indexed_prepare<tm,64><<<dim3(std::min((call.k+255)/256,32),call.m),256,0,stream>>>(
-          indexed,const_cast<Half*>(static_cast<Half const*>(call.a)),
+          indexed,const_cast<GroupCompute*>(static_cast<GroupCompute const*>(call.a)),
           const_cast<int*>(call.offsets_device),const_cast<int*>(call.rows_device),
           device_shapes,device_outputs,device_strides,destination,call.m,call.n,call.k,
           call.experts,splits,directory);
       else indexed_prepare<tm><<<dim3(std::min((call.k+255)/256,32),call.m),256,0,stream>>>(
-          indexed,const_cast<Half*>(static_cast<Half const*>(call.a)),
+          indexed,const_cast<GroupCompute*>(static_cast<GroupCompute const*>(call.a)),
           const_cast<int*>(call.offsets_device),const_cast<int*>(call.rows_device),
           device_shapes,device_outputs,device_strides,destination,call.m,call.n,call.k,
           call.experts,splits,directory);
@@ -373,7 +392,7 @@ template<bool Persistent, bool Split = false, bool Compact = false> struct Group
             call.m,call.n,call.k,call.experts,splits);
       } else {
         grouped_device_metadata<<<(call.experts+127)/128,128,0,stream>>>(call.offsets_device,
-            static_cast<Half*>(call.output),device_shapes,device_outputs,device_strides,
+            static_cast<GroupCompute*>(call.output),device_shapes,device_outputs,device_strides,
             const_cast<int*>(call.rows_device),call.n,call.k,call.experts);
       }
       if (hggcGetLastError()!=hggcSuccess) return QK_RUNTIME_ERROR;
@@ -419,7 +438,7 @@ inline int query(qk_call_v1 const& c,qk_recipe_v1 const& r,qk_resources_v1& out,
                        : resource_query<typename Group<true>::Gemm>(out);
     } else if (compact) {
       status=r.split>1 ? resource_query<typename Group<false,float,true>::Gemm>(out)
-                       : resource_query<typename Group<false,Half,true>::Gemm>(out);
+                       : resource_query<typename Group<false,GroupCompute,true>::Gemm>(out);
     } else {
       status=r.split>1 ? resource_query<typename Group<false,float>::Gemm>(out)
                        : resource_query<typename Group<false>::Gemm>(out);
@@ -457,6 +476,7 @@ extern "C" int quactlize_kpack_device_v1(char* name,int capacity,int32_t* ordina
   return QK_OK;
 }
 extern "C" int quactlize_kpack_query_v1(qk_call_v1 const* c,qk_recipe_v1 const* r,qk_resources_v1* out) {
+  if constexpr(QK_USE_BF16_COMPUTE) return QK_UNSUPPORTED;
   if (!c || !r || !out) return QK_INVALID;
   try { return quactlize::runtime::query(*c,*r,*out); }
   catch (...) { return QK_RUNTIME_ERROR; }
@@ -516,15 +536,17 @@ extern "C" int quactlize_kpack_bind_llama_indexed_v1(void* handle,qk_llama_index
   return static_cast<quactlize::runtime::Handle*>(handle)->bind_indexed(*io);
 }
 extern "C" int quactlize_kpack_moe_projection_v1(void* handle,qk_moe_projection_v1* out) {
+  if constexpr(QK_USE_BF16_COMPUTE) return QK_UNSUPPORTED;
   if (!handle || !out) return QK_INVALID;
   return static_cast<quactlize::runtime::Handle*>(handle)->moe_projection(*out);
 }
 extern "C" int quactlize_kpack_moe_stage_v1(void* handle,qk_moe_plan_v1 const* plan,int phase,void* stream) {
+  if constexpr(QK_USE_BF16_COMPUTE) return QK_UNSUPPORTED;
   if (!handle || !plan) return QK_INVALID;
   return static_cast<quactlize::runtime::Handle*>(handle)->moe_stage(*plan,phase,static_cast<hggcStream_t>(stream));
 }
 
-extern "C" int quactlize_kpack_grouped_query_v2(qk_device_call_v2 const* d,
+static int qk_grouped_query(qk_device_call_v2 const* d,
     qk_recipe_v1 const* r,qk_resources_v1* out) {
   using namespace quactlize::runtime;
   if (!d || !r || !out || d->version!=2 || d->size!=sizeof(*d) ||
@@ -534,13 +556,13 @@ extern "C" int quactlize_kpack_grouped_query_v2(qk_device_call_v2 const* d,
   catch (...) { return QK_RUNTIME_ERROR; }
 }
 
-extern "C" int quactlize_kpack_grouped_prepare_v2(qk_device_call_v2 const* d,
+static int qk_grouped_prepare(qk_device_call_v2 const* d,
     qk_recipe_v1 const* r,void** handle) {
   using namespace quactlize::runtime;
   if (!handle) return QK_INVALID;
   *handle=nullptr;
   qk_resources_v1 resources{};
-  int status=quactlize_kpack_grouped_query_v2(d,r,&resources);
+  int status=qk_grouped_query(d,r,&resources);
   if (status!=QK_OK) return status;
   auto const& c=d->call;
   hggcStreamCaptureStatus capture=hggcStreamCaptureStatusNone;
@@ -580,6 +602,46 @@ extern "C" int quactlize_kpack_grouped_prepare_v2(qk_device_call_v2 const* d,
     } catch (...) { return QK_RUNTIME_ERROR; }
   }
   return QK_UNSUPPORTED;
+}
+extern "C" int quactlize_kpack_grouped_query_v2(qk_device_call_v2 const* d,
+    qk_recipe_v1 const* r,qk_resources_v1* out) {
+  if constexpr(QK_USE_BF16_COMPUTE) return QK_UNSUPPORTED;
+  return qk_grouped_query(d,r,out);
+}
+extern "C" int quactlize_kpack_grouped_prepare_v2(qk_device_call_v2 const* d,
+    qk_recipe_v1 const* r,void** handle) {
+  if constexpr(QK_USE_BF16_COMPUTE) {if(handle)*handle=nullptr;return QK_UNSUPPORTED;}
+  return qk_grouped_prepare(d,r,handle);
+}
+extern "C" qk_compute_identity_v3 const* quactlize_kpack_compute_identity_v3() {
+  static qk_compute_identity_v3 const identity{3,sizeof(identity),
+      quactlize_kpack_identity_v1(),quactlize::runtime::compute_type};
+  return &identity;
+}
+static bool qk_compute_matches(qk_compute_device_call_v3 const* d) {
+  return d && d->version==3 && d->size==sizeof(*d) &&
+      d->compute_type==quactlize::runtime::compute_type;
+}
+extern "C" int quactlize_kpack_grouped_query_v3(qk_compute_device_call_v3 const* d,
+    qk_recipe_v1 const* r,qk_resources_v1* out) {
+  if(!qk_compute_matches(d)) return QK_INVALID;
+  return qk_grouped_query(&d->device_call,r,out);
+}
+extern "C" int quactlize_kpack_grouped_prepare_v3(qk_compute_device_call_v3 const* d,
+    qk_recipe_v1 const* r,void** handle) {
+  if(handle)*handle=nullptr;
+  if(!qk_compute_matches(d)) return QK_INVALID;
+  return qk_grouped_prepare(&d->device_call,r,handle);
+}
+extern "C" int quactlize_kpack_moe_projection_v2(void* handle,qk_moe_projection_v2* out) {
+  if(!handle || !out) return QK_INVALID;
+  *out={2,sizeof(*out),{},quactlize::runtime::compute_type};
+  return static_cast<quactlize::runtime::Handle*>(handle)->moe_projection(out->projection);
+}
+extern "C" int quactlize_kpack_moe_stage_v2(void* handle,qk_moe_plan_v2 const* d,int phase,void* stream) {
+  if(!handle || !d || d->version!=2 || d->size!=sizeof(*d) ||
+      d->compute_type!=quactlize::runtime::compute_type) return QK_INVALID;
+  return static_cast<quactlize::runtime::Handle*>(handle)->moe_stage(d->plan,phase,static_cast<hggcStream_t>(stream));
 }
 extern "C" void quactlize_kpack_destroy_v1(void* handle) {
   delete static_cast<quactlize::runtime::Handle*>(handle);

@@ -64,6 +64,21 @@
 namespace cutlass
 {
 
+// Code extraction may use exact FP16 integer magic even for BF16 MMA. The
+// decoded code is bounded by 255, so this conversion is exact; metadata is
+// applied later in the named compute type. The converter's physical emission
+// index is unchanged and no BF16 value is ever read through a half_t pointer.
+template<class Compute>
+CUTLASS_DEVICE uint32_t convert_half_code_pair(uint32_t bits) {
+  static_assert(cute::is_same_v<Compute, half_t> || cute::is_same_v<Compute, bfloat16_t>);
+  if constexpr (cute::is_same_v<Compute, half_t>) return bits;
+  else {
+    auto const& source = reinterpret_cast<Array<half_t, 2> const&>(bits);
+    auto result = NumericArrayConverter<bfloat16_t, half_t, 2>::convert(source);
+    return reinterpret_cast<uint32_t const&>(result);
+  }
+}
+
 // This converter is meant to be used with data interleaved in a 32-bit register where the even elements are in the low
 // bits and the odd elemeents are in the high bits of the register. In addition, it assumes elements were originally
 // signed and had a bias of 2**(b-1) added (where b is the number of bits in the type) to make all numbers unsigned.
@@ -522,6 +537,18 @@ struct MixGemmNumericArrayConverter<half_t, uint2b_t, 64>
 
 
 
+template <int N>
+struct MixGemmNumericArrayConverter<bfloat16_t, uint2b_t, N> {
+    static_assert(N == 16 || N == 64, "uint2 BF16 retains the established converter cohorts");
+    using source_type = Array<uint2b_t, N>;
+    using result_type = Array<bfloat16_t, N>;
+    CUTLASS_DEVICE static result_type convert(source_type const& source) {
+        auto exact_codes = MixGemmNumericArrayConverter<half_t, uint2b_t, N>::convert(source);
+        return NumericArrayConverter<bfloat16_t, half_t, N>::convert(exact_codes);
+    }
+    CUTLASS_DEVICE result_type operator()(source_type const& source) { return convert(source); }
+};
+
 // ============================ W1A16 : uint1b_t -> fp16 ============================
 // Q1 base plane (high plane of Q3/Q5). bit in {0,1} UNSIGNED (affine 'zero' absorbs offset). CORRECTNESS-FIRST
 // magic-OR (0x6400|bit == fp16(1024+bit), one vectorized f16x2 sub of 1024) -- NO lop3 yet; optimize after the
@@ -656,7 +683,7 @@ using MixGemm2PlaneDefaultFrag = cute::Layout<cute::Shape<cute::_8, cute::_1, cu
 
 template <int LowBits, int HiBits, int Chunk = -1, int NChunk = 1, bool Rebase = true,
           class FragLayout = MixGemm2PlaneDefaultFrag<LowBits>,
-          int Bias = (LowBits == 4) ? 8 : 0>
+          int Bias = (LowBits == 4) ? 8 : 0, class Compute = half_t>
 struct MixGemm2Plane
 {
     static_assert(LowBits == 2 || LowBits == 4, "low plane is int2 (Q3) or int4 (Q5/Q6)");
@@ -748,7 +775,7 @@ struct MixGemm2Plane
       x |= ((hreg >> hshift(T, V)) & himask()) << (E::template bpos<T>() + LowBits);
       asm volatile("ppu.fma.rtte.f16x2 %0,%1,%2,%3;\n" : "=r"(x)
                    : "r"(x), "r"(E::template mul<T>()), "r"(E::template add<T>()));
-      h2[at(T, V)] = x;
+      h2[at(T, V)] = convert_half_code_pair<Compute>(x);
     }
 
     template <int V>

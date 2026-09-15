@@ -148,12 +148,13 @@ template <QuantMode QuantOp, class BaseSchedule,
           class TileShape, class ScaleTileShape, class WarpShape,
           int Stages, bool AiuInterleaved, int APackRows = 0,
           int KPack4DeliveryN = 0,
-          class MetadataPublication = cutlass::gemm::InterleavedHalf2>
+          class MetadataPublication = cutlass::gemm::InterleavedHalf2,
+          class Compute = cutlass::half_t>
 struct DenseQ4KPack4KernelTypes {
   using MainloopPolicy = ppu_mixed_policy::Q4KPack4MainloopPolicy<
       QuantOp, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
       Stages, AiuInterleaved, APackRows, KPack4DeliveryN,
-      MetadataPublication>;
+      MetadataPublication, Compute>;
   using ElementA = typename MainloopPolicy::ElementA;
   using ElementC = cutlass::half_t;
   using LayoutC = cutlass::layout::RowMajor;
@@ -192,12 +193,12 @@ template <QuantMode QuantOp, class BaseSchedule,
           class TileShape, class ScaleTileShape, class WarpShape,
           int Stages, bool AiuInterleaved, class ElementB,
           class PlaneB2 = void, int APackRows = 0,
-          int KPackDeliveryN = 0>
+          int KPackDeliveryN = 0, class Compute = cutlass::half_t>
 struct DenseKPackKernelTypes {
   using MainloopPolicy = ppu_mixed_policy::KPackMainloopPolicy<
       QuantOp, BaseSchedule, TileShape, ScaleTileShape, WarpShape,
       Stages, AiuInterleaved, ElementB, PlaneB2, APackRows,
-      KPackDeliveryN>;
+      KPackDeliveryN, Compute>;
   using ElementA = typename MainloopPolicy::ElementA;
   using ElementC = cutlass::half_t;
   using LayoutC = cutlass::layout::RowMajor;

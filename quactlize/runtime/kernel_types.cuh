@@ -29,7 +29,8 @@ template<> struct Format<8> {
   using High = void;
 };
 
-template<int Q, int TM, int TN, int TK, int WM, int WN, int ST, int AP, int DN>
+template<int Q, int TM, int TN, int TK, int WM, int WN, int ST, int AP, int DN,
+         class Compute = Half>
 struct DenseTypes {
   using F = Format<Q>;
   using Low = typename F::Low;
@@ -40,8 +41,9 @@ struct DenseTypes {
       ppu_group_schedule::scale_groups_v<TK, F::spec.group_size>>>;
   using Warp = cute::Shape<cute::C<WM>, cute::C<WN>, cute::C<TK>>;
   using Shipping = std::conditional_t<Q == 12,
-      fpa_intb_ppu::DenseQ4KPack4KernelTypes<F::quant_mode, Schedule, Tile, ScaleTile, Warp, ST, true, AP, DN>,
-      fpa_intb_ppu::DenseKPackKernelTypes<F::quant_mode, Schedule, Tile, ScaleTile, Warp, ST, true, Low, High, AP, DN>>;
+      fpa_intb_ppu::DenseQ4KPack4KernelTypes<F::quant_mode, Schedule, Tile, ScaleTile, Warp, ST, true, AP, DN,
+          cutlass::gemm::InterleavedHalf2, Compute>,
+      fpa_intb_ppu::DenseKPackKernelTypes<F::quant_mode, Schedule, Tile, ScaleTile, Warp, ST, true, Low, High, AP, DN, Compute>>;
   using Mainloop = typename Shipping::CollectiveMainloop;
   using PersistentKernel = cutlass::gemm::kernel::PersistentMixedInputKernel<
       cute::Shape<int,int,int,int>, Mainloop, typename Shipping::CollectiveEpilogue>;
@@ -51,7 +53,7 @@ struct DenseTypes {
 };
 
 template<int Q, int TM, int TN, int TK, int WM, int WN, int ST, int DN, bool Persistent,
-         class Output = Half, bool Compact = false>
+         class Output = Half, bool Compact = false, class Compute = Half>
 struct GroupedTypes {
   using F = Format<Q>;
   using Low = typename F::Low;
@@ -65,8 +67,8 @@ struct GroupedTypes {
   // its own factory default; do not infer this choice from PackedScale.
   using Publication = cutlass::gemm::SeparateHalfPlanes;
   using Policy = std::conditional_t<Q == 12,
-      ppu_mixed_policy::Q4KPack4MainloopPolicy<F::quant_mode, Schedule, Tile, ScaleTile, Warp, ST, true, 0, DN, Publication>,
-      ppu_mixed_policy::KPackMainloopPolicy<F::quant_mode, Schedule, Tile, ScaleTile, Warp, ST, true, Low, High, 0, DN>>;
+      ppu_mixed_policy::Q4KPack4MainloopPolicy<F::quant_mode, Schedule, Tile, ScaleTile, Warp, ST, true, 0, DN, Publication, Compute>,
+      ppu_mixed_policy::KPackMainloopPolicy<F::quant_mode, Schedule, Tile, ScaleTile, Warp, ST, true, Low, High, 0, DN, Compute>>;
   using Mainloop = typename Policy::CollectiveOp;
   using OutputEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
       cutlass::arch::PPU0010, cutlass::arch::OpClassTensorOp, Tile, Warp,

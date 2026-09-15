@@ -6,7 +6,13 @@
 #include <cstring>
 
 namespace quactlize::decode {
-using Core=runtime::DenseTypes<QK_QTYPE,QK_TM,QK_TN,QK_TK,QK_WM,QK_WN,QK_STAGES,QK_AP,QK_DN>;
+#ifndef QKD_USE_BF16_COMPUTE
+#define QKD_USE_BF16_COMPUTE 0
+#endif
+static_assert(QKD_USE_BF16_COMPUTE==0 || QKD_USE_BF16_COMPUTE==1);
+constexpr int compute_type=QKD_USE_BF16_COMPUTE ? QKD_COMPUTE_BF16 : QKD_COMPUTE_F16;
+using Compute=std::conditional_t<QKD_USE_BF16_COMPUTE,cutlass::bfloat16_t,cutlass::half_t>;
+using Core=runtime::DenseTypes<QK_QTYPE,QK_TM,QK_TN,QK_TK,QK_WM,QK_WN,QK_STAGES,QK_AP,QK_DN,Compute>;
 using F=runtime::Format<QK_QTYPE>;
 constexpr bool packed=QK_ROUTE==QK_DENSE_FQ;
 constexpr uint64_t mapping=QK_QTYPE==8?q8_kpack2::kMappingId:QK_QTYPE==12?
@@ -124,7 +130,7 @@ extern "C" int quactlize_kpack_decode_dense_device_v1(char* name,int capacity,in
   if (*cu<=0) return QK_RUNTIME_ERROR;
   std::strcpy(name,prop.name);return QK_OK;
 }
-extern "C" int quactlize_kpack_decode_dense_query_v1(qkd_dense_call_v1 const* d,qk_recipe_v1 const* r,qk_resources_v1* out) {
+static int qkd_query(qkd_dense_call_v1 const* d,qk_recipe_v1 const* r,qk_resources_v1* out) {
   using namespace quactlize::decode;
   if(!d||!r||!out)return QK_INVALID;
   int rc=validate(*d,*r);if(rc)return rc;
@@ -133,10 +139,10 @@ extern "C" int quactlize_kpack_decode_dense_query_v1(qkd_dense_call_v1 const* d,
   if(device!=d->call.device || cutlass::KernelHardwareInfo::query_device_multiprocessor_count(device)!=d->call.compute_units)return QK_INVALID;
   return d->input_type==QKD_F32?TypedHandle<float>::query(*d,*r,*out):TypedHandle<cutlass::bfloat16_t>::query(*d,*r,*out);
 }
-extern "C" int quactlize_kpack_decode_dense_prepare_v1(qkd_dense_call_v1 const* d,qk_recipe_v1 const* r,void** handle) {
+static int qkd_prepare(qkd_dense_call_v1 const* d,qk_recipe_v1 const* r,void** handle) {
   using namespace quactlize::decode;
   if(!handle)return QK_INVALID;*handle=nullptr;
-  qk_resources_v1 res{};int rc=quactlize_kpack_decode_dense_query_v1(d,r,&res);if(rc)return rc;
+  qk_resources_v1 res{};int rc=qkd_query(d,r,&res);if(rc)return rc;
   auto const& c=d->call;
   if(!c.a||!c.low||!c.metadata||!c.output||((F::spec.high_bits!=0)!=(c.high!=nullptr))||
       ((!packed && QK_QTYPE!=8)?c.zero==nullptr:c.zero!=nullptr)||
@@ -151,6 +157,32 @@ extern "C" int quactlize_kpack_decode_dense_prepare_v1(qkd_dense_call_v1 const* 
     else {auto p=std::make_unique<TypedHandle<cutlass::bfloat16_t>>();rc=p->prepare(*d,*r,res.occupancy);h=std::move(p);}
     if(rc)return rc;*handle=h.release();return QK_OK;
   } catch(...) {return QK_RUNTIME_ERROR;}
+}
+extern "C" int quactlize_kpack_decode_dense_query_v1(qkd_dense_call_v1 const* d,qk_recipe_v1 const* r,qk_resources_v1* out) {
+  if constexpr(QKD_USE_BF16_COMPUTE) return QK_UNSUPPORTED;
+  return qkd_query(d,r,out);
+}
+extern "C" int quactlize_kpack_decode_dense_prepare_v1(qkd_dense_call_v1 const* d,qk_recipe_v1 const* r,void** handle) {
+  if constexpr(QKD_USE_BF16_COMPUTE) {if(handle)*handle=nullptr;return QK_UNSUPPORTED;}
+  return qkd_prepare(d,r,handle);
+}
+extern "C" qkd_compute_identity_v2 const* quactlize_kpack_decode_dense_identity_v2() {
+  static qkd_compute_identity_v2 const identity{2,sizeof(identity),
+      quactlize_kpack_decode_dense_identity_v1(),quactlize::decode::compute_type};
+  return &identity;
+}
+static bool qkd_compute_matches(qkd_dense_call_v2 const* d) {
+  return d && d->version==2 && d->size==sizeof(*d) &&
+      d->compute_type==quactlize::decode::compute_type;
+}
+extern "C" int quactlize_kpack_decode_dense_query_v2(qkd_dense_call_v2 const* d,qk_recipe_v1 const* r,qk_resources_v1* out) {
+  if(!qkd_compute_matches(d)) return QK_INVALID;
+  return qkd_query(&d->dense,r,out);
+}
+extern "C" int quactlize_kpack_decode_dense_prepare_v2(qkd_dense_call_v2 const* d,qk_recipe_v1 const* r,void** handle) {
+  if(handle)*handle=nullptr;
+  if(!qkd_compute_matches(d)) return QK_INVALID;
+  return qkd_prepare(&d->dense,r,handle);
 }
 extern "C" int quactlize_kpack_decode_dense_run_v1(void* h,void* stream) {
   return h?static_cast<quactlize::decode::Handle*>(h)->run(static_cast<hggcStream_t>(stream)):QK_INVALID;

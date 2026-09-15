@@ -55,4 +55,9 @@ def source(q, profile="full"):
     for c, condition in zip(candidates, conditions):
         body += f"    if ({condition}) return quactlize::execution::simt::launch<"
         body += f"{q},{c.variant},{c.columns},{c.warps},{c.values}>(*c,f->split);\n"
+    body += "    return QKG_INVALID;\n}\n"
+    body += f'extern "C" int qkg_simt_launch_v2_{q}(qkg_simt_call_v2 const* c,qkg_simt_config_v1 const* f) {{\n'
+    for c, condition in zip(candidates, conditions):
+        body += f"    if ({condition}) return quactlize::execution::simt::launch_v2<"
+        body += f"{q},{c.variant},{c.columns},{c.warps},{c.values}>(*c,f->split);\n"
     return body + "    return QKG_INVALID;\n}\n"

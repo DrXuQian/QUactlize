@@ -4,9 +4,9 @@
 
 namespace quactlize::runtime {
 
-template<int TileM,int Capacity=32,class Shape,class Stride,class Output>
+template<int TileM,int Capacity=32,class Shape,class Stride,class Output,class Compute>
 __global__ void indexed_prepare(qk_llama_indexed_v1 io,
-    Half* a, int* offsets, int* rows, Shape* shapes, Output** outputs, Stride* strides,
+    Compute* a, int* offsets, int* rows, Shape* shapes, Output** outputs, Stride* strides,
     Output* destination, int m, int n, int k, int experts, int splits,
     quactlize::moe_directory::View directory) {
   static_assert(Capacity==32 || Capacity==64);
@@ -69,11 +69,11 @@ __global__ void indexed_prepare(qk_llama_indexed_v1 io,
   int r=int(blockIdx.y), to=ranks[r];
   int64_t from=int64_t(r/io.topk)*io.a_token_stride+(r%io.topk%io.channels)*io.a_row_stride;
   for (int col=int(blockIdx.x)*int(blockDim.x)+tid;col<k;col+=int(gridDim.x)*int(blockDim.x))
-    a[int64_t(to)*k+col]=Half(io.a[from+col]);
+    a[int64_t(to)*k+col]=Compute(io.a[from+col]);
 }
 
-template<int Splits>
-__global__ void indexed_finish(float const* partials, Half const* completed,
+template<int Splits,class Compute=Half>
+__global__ void indexed_finish(float const* partials, Compute const* completed,
     float* output, int const* row_ids, int m, int n, int64_t output_stride,
     quactlize::moe_directory::Header const* directory) {
   int row=int(blockIdx.y), to=row_ids[row];
@@ -86,7 +86,7 @@ __global__ void indexed_finish(float const* partials, Half const* completed,
       float sum=0.f;
       CUTLASS_PRAGMA_UNROLL
       for (int s=0;s<Splits;++s) sum+=partials[int64_t(s)*m*n+index];
-      value=float(Half(sum));  // Preserve the original reducer's FP16 boundary.
+      value=float(Compute(sum));  // Match the projection's explicit compute boundary.
     }
     if (directory->status) value=__int_as_float(0x7fffffff);
     output[int64_t(to)*output_stride+col]=value;

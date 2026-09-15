@@ -56,4 +56,23 @@ inline int buffers(qkg_call_v1 const& c, qkg_sizes_v1 const& s) {
     }
     return QKG_OK;
 }
+
+inline int query_v2(qkg_simt_call_v2 const& d, qkg_simt_config_v1 const& f,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement, qkg_sizes_v1& out) {
+    if(d.version!=2 || d.size!=sizeof(d) ||
+       (d.compute_type!=QKG_COMPUTE_F16 && d.compute_type!=QKG_COMPUTE_BF16) ||
+       d.call.input_type<QKG_F16 || d.call.input_type>QKG_SIMT_BF16 ||
+       (d.call.input_type==QKG_SIMT_BF16 && d.compute_type!=QKG_COMPUTE_BF16))
+        return QKG_INVALID;
+    auto storage=d.call;
+    // Shape/alignment/capacity depend on storage width, not its exponent bits.
+    if(storage.input_type==QKG_SIMT_BF16) storage.input_type=QKG_F16;
+    return query(storage,f,arrangement,out);
+}
+
+inline int buffers_v2(qkg_simt_call_v2 const& d, qkg_sizes_v1 const& sizes) {
+    auto storage=d.call;
+    if(storage.input_type==QKG_SIMT_BF16) storage.input_type=QKG_F16;
+    return buffers(storage,sizes);
+}
 } // namespace quactlize::execution::simt

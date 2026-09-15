@@ -2,9 +2,9 @@
 #include "simt_format.cuh"
 #include "q4_s1_validation.hpp"
 #include "simt.h"
+#include "simt_activation.cuh"
 
 namespace quactlize::execution::simt {
-using q4_s1::Activation;
 
 template<int P>
 __device__ __forceinline__ void load_words(uint16_t const* ptr,uint32_t (&out)[P/2]) {
@@ -17,36 +17,30 @@ __device__ __forceinline__ void load_words(uint16_t const* ptr,uint32_t (&out)[P
     }
 }
 
-template<int Input,int Columns,int Group>
-__device__ __forceinline__ uint4 activation_packet(Activation<Input> a,int group,int lane) {
+template<int Input,int Compute,int Columns,int Group>
+__device__ __forceinline__ uint4 activation_packet(Activation<Input,Compute> a,int group,int lane) {
     constexpr int Count=Group/Columns;
     int64_t pos=int64_t(group)*Group+(lane%Columns)*Count;
     if constexpr(Count==8) return a.load8(pos);
     else if constexpr(Count==4) {
         uint2 v=a.load4(pos);return make_uint4(v.x,v.y,0,0);
-    } else {
-        __half2_raw v;
-        if constexpr(Input==0) v=*reinterpret_cast<__half2 const*>(a.ptr+pos);
-        else {
-            float2 f=*reinterpret_cast<float2 const*>(a.ptr+pos);
-            v=__floats2half2_rn(f.x,f.y);
-        }
-        return make_uint4(uint32_t(v.x)|(uint32_t(v.y)<<16),0,0,0);
-    }
+    } else return make_uint4(a.load2(pos),0,0,0);
 }
 
-template<int Columns,int Group>
+template<int Compute,int Columns,int Group>
 __device__ __forceinline__ float2 activation_pair(uint4 packet,int offset,int lane) {
     constexpr int Count=Group/Columns;
     int owner=(lane&~(Columns-1))+offset/Count;
     int index=(offset%Count)/2;
     uint32_t value=index==0 ? packet.x : index==1 ? packet.y : index==2 ? packet.z : packet.w;
     value=__shfl_sync(0xffffffffu,value,owner);
-    return make_float2(__half2float(__ushort_as_half(uint16_t(value))),
-                       __half2float(__ushort_as_half(uint16_t(value>>16))));
+    if constexpr(Compute==1)
+        return make_float2(__uint_as_float(value<<16),__uint_as_float(value&0xffff0000u));
+    else return make_float2(__half2float(__ushort_as_half(uint16_t(value))),
+                            __half2float(__ushort_as_half(uint16_t(value>>16))));
 }
 
-template<int Q,int Input,int Variant,int Columns,int Warps,int P>
+template<int Q,int Input,int Variant,int Columns,int Warps,int P,int Compute=0>
 __global__ void register_reuse(qkg_call_v1 call,int split) {
     using F=Format<Q>;
     constexpr int TileN=Columns*P,Workers=Warps*32/Columns,Pairs=P/2;
@@ -70,7 +64,7 @@ __global__ void register_reuse(qkg_call_v1 call,int split) {
     uint16_t const* high=nullptr;
     if constexpr(F::high_bits) high=reinterpret_cast<uint16_t const*>(call.high+uint64_t(r.expert)*nk/8*F::high_bits);
     auto units=call.units+uint64_t(r.expert)*F::metadata_bytes(nk);
-    Activation<Input> a{static_cast<typename Activation<Input>::Scalar const*>(call.a)+r.a};
+    Activation<Input,Compute> a{static_cast<typename Activation<Input,Compute>::Scalar const*>(call.a)+r.a};
     float2 total[Pairs]{};
     for (int g=partition*Workers+worker;g<call.k/F::group;g+=split*Workers) {
         // K/group is divisible by the number of workers in a warp. Tail
@@ -87,7 +81,7 @@ __global__ void register_reuse(qkg_call_v1 call,int split) {
             else metadata[p]=affine<Q>(load_meta<Q>(units,call.n,col+p,g),g);
         }
         uint4 packet{};
-        if constexpr(Variant&1) packet=activation_packet<Input,Columns,F::group>(a,g,lane);
+        if constexpr(Variant&1) packet=activation_packet<Input,Compute,Columns,F::group>(a,g,lane);
         float2 dot[Pairs]{};float a_sum=0.f;
         #pragma unroll
         for (int half=0;half<2;++half) {
@@ -111,8 +105,8 @@ __global__ void register_reuse(qkg_call_v1 call,int split) {
             for (int slot=0;slot<F::group/8;++slot) {
                 float4 av;
                 if constexpr(Variant&1) {
-                    float2 x=activation_pair<Columns,F::group>(packet,slot*8+half*4,lane);
-                    float2 y=activation_pair<Columns,F::group>(packet,slot*8+half*4+2,lane);
+                    float2 x=activation_pair<Compute,Columns,F::group>(packet,slot*8+half*4,lane);
+                    float2 y=activation_pair<Compute,Columns,F::group>(packet,slot*8+half*4+2,lane);
                     av=make_float4(x.x,x.y,y.x,y.y);
                 } else av=a.values4(g*F::group+slot*8+half*4);
                 float values[4]={av.x,av.y,av.z,av.w};
@@ -176,6 +170,23 @@ int launch(qkg_call_v1 const& c,int split) {
     else register_reuse<Q,0,Variant,Columns,Warps,P><<<blocks,Warps*32,0,stream>>>(c,split);
     if (hggcGetLastError()!=hggcSuccess) return QKG_RUNTIME;
     if (split>1) register_reuse_reduce<Q><<<(int64_t(c.rows)*c.n+127)/128,128,0,stream>>>(c,split);
+    return hggcGetLastError()==hggcSuccess ? QKG_OK : QKG_RUNTIME;
+}
+
+template<int Q,int Variant,int Columns,int Warps,int P>
+int launch_v2(qkg_simt_call_v2 const& d,int split) {
+    auto const& c=d.call;
+    if(d.compute_type==QKG_COMPUTE_F16) return launch<Q,Variant,Columns,Warps,P>(c,split);
+    auto stream=static_cast<hggcStream_t>(c.stream);
+    if(hggcGetLastError()!=hggcSuccess) return QKG_RUNTIME;
+    int blocks=c.rows*split*(c.n/(Columns*P));
+    if(c.input_type==QKG_F32)
+        register_reuse<Q,1,Variant,Columns,Warps,P,1><<<blocks,Warps*32,0,stream>>>(c,split);
+    else if(c.input_type==QKG_SIMT_BF16)
+        register_reuse<Q,2,Variant,Columns,Warps,P,1><<<blocks,Warps*32,0,stream>>>(c,split);
+    else register_reuse<Q,0,Variant,Columns,Warps,P,1><<<blocks,Warps*32,0,stream>>>(c,split);
+    if(hggcGetLastError()!=hggcSuccess) return QKG_RUNTIME;
+    if(split>1) register_reuse_reduce<Q><<<(int64_t(c.rows)*c.n+127)/128,128,0,stream>>>(c,split);
     return hggcGetLastError()==hggcSuccess ? QKG_OK : QKG_RUNTIME;
 }
 } // namespace quactlize::execution::simt

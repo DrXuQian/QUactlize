@@ -523,7 +523,7 @@ private:
   // "one relation, two copies, one updated" shape that produced this session's pitch and gA faults. The default
   // FragLayout is quoted from the converter header rather than copied.
   using Cvt2Plane = cutlass::MixGemm2Plane<kLowBits, kHiBits, -1, 1, true,
-                                           cutlass::MixGemm2PlaneDefaultFrag<kLowBits>, kCvtBias>;
+                                           cutlass::MixGemm2PlaneDefaultFrag<kLowBits>, kCvtBias, ElementA>;
 
   static constexpr auto
   elements_per_smem_scale() {
@@ -1929,7 +1929,7 @@ private:
                            + HiSrc_::base(ii, k_block);
       uint32_t* out_ii = reinterpret_cast<uint32_t*>(
           raw_pointer_cast(tCrB_one(_, cute::Int<NAPC_ * ii>{}).data()));
-      cutlass::MixGemm2Plane<kLowBits, kHiBits, Chunk, NChunk, true, DeliveryL_, kCvtBias>::convert(lo_p, hi_p, out_ii);
+      cutlass::MixGemm2Plane<kLowBits, kHiBits, Chunk, NChunk, true, DeliveryL_, kCvtBias, ElementA>::convert(lo_p, hi_p, out_ii);
     });
 
     constexpr int KBM_    = decltype(cute::size<2>(tCrB_load))::value;       // copy steps per k-tile

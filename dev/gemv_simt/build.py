@@ -71,7 +71,7 @@ def build(a):
         run(f"q{q}", [compiler, *flags, *[f"-I{p}" for p in includes], "-c", source, "-o", obj])
         return obj
     print(f"SIMT_BUILD_START platform={a.platform} formats=6 "
-          f"bodies={2*sum(len(spec.inventory(q,a.profile)) for q in spec.QTYPES)} "
+          f"bodies={5*sum(len(spec.inventory(q,a.profile)) for q in spec.QTYPES)} "
           f"profile={a.profile} jobs={a.jobs}", flush=True)
     with ThreadPoolExecutor(max_workers=min(a.jobs, 6)) as pool:
         objects = list(pool.map(compile_q, spec.QTYPES))

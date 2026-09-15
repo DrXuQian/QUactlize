@@ -30,8 +30,9 @@ def test_codegen_query_and_launch_have_same_inventory():
             source = spec.source(q,profile)
             for c in spec.inventory(q,profile):
                 condition = f'f->variant=={c.variant} && f->columns=={c.columns} && f->warps=={c.warps} && f->values=={c.values}'
-                assert source.count(condition)==2
+                assert source.count(condition)==3
                 assert source.count(f'simt::launch<{q},{c.variant},{c.columns},{c.warps},{c.values}>')==1
+                assert source.count(f'simt::launch_v2<{q},{c.variant},{c.columns},{c.warps},{c.values}>')==1
 
 
 def test_execution_build_includes_the_shared_candidates():

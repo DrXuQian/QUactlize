@@ -217,11 +217,34 @@ CUTLASS_DEVICE void reload_metadata(Info const& info, Views const& views, int gr
   }
 }
 
+// The resident metadata remains FP16 for BOTH compute formats. BF16 is a
+// value conversion at the arithmetic boundary, never a reinterpretation of
+// the stored scale/zero bits. Keep the existing multiply-then-add rounding
+// sequence: each operation rounds into the compute element.
+template <class Destination, class Op>
+struct MetadataBinary {
+  Op op;
+  template <class A, class B>
+  CUTLASS_HOST_DEVICE Destination operator()(A a, B b) const {
+    if constexpr (cute::is_same_v<Destination, cutlass::bfloat16_t>)
+      return Destination(op(float(a), float(b)));
+    else return op(a, b);
+  }
+};
+
+template <class A, class B, class C, class Op>
+CUTLASS_DEVICE void transform_metadata(A&& a, B&& b, C&& c, Op op) {
+  using Element = typename cute::remove_cvref_t<C>::value_type;
+  if constexpr (cute::is_same_v<Element, cutlass::bfloat16_t>)
+    cute::transform(a, b, c, MetadataBinary<Element, Op>{op});
+  else cute::transform(a, b, c, op);
+}
+
 template <bool HasZero, class BSlice, class Info>
 CUTLASS_DEVICE void apply_metadata(BSlice&& b_slice, Info const& info) {
-  cute::transform(b_slice, cute::get<1>(info)(cute::_, cute::_, 0), b_slice, cute::multiplies{});
+  transform_metadata(b_slice, cute::get<1>(info)(cute::_, cute::_, 0), b_slice, cute::multiplies{});
   if constexpr (HasZero) {
-    cute::transform(b_slice, cute::get<3>(info)(cute::_, cute::_, 0), b_slice, cute::plus{});
+    transform_metadata(b_slice, cute::get<3>(info)(cute::_, cute::_, 0), b_slice, cute::plus{});
   }
 }
 

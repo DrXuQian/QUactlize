@@ -6,15 +6,20 @@ namespace quactlize::runtime {
 namespace moe = quactlize::moe_directory;
 
 struct MixedMoePlan : qk_moe_plan_v1 { uint32_t simt_mask=0; };
+template<class Scalar> struct ComputeMoePlan : MixedMoePlan {};
+template<class Plan> struct MoeCompute { using type=Half; };
+template<class Scalar> struct MoeCompute<ComputeMoePlan<Scalar>> { using type=Scalar; };
 CUTLASS_HOST_DEVICE uint32_t moe_simt_mask(qk_moe_plan_v1 const&) { return 0; }
 CUTLASS_HOST_DEVICE uint32_t moe_simt_mask(MixedMoePlan const& p) { return p.simt_mask; }
+template<class Scalar>
+CUTLASS_HOST_DEVICE uint32_t moe_simt_mask(ComputeMoePlan<Scalar> const& p) { return p.simt_mask; }
 
 CUTLASS_HOST_DEVICE bool moe_prepare_m1_supported(qk_moe_plan_v1 const& plan) {
   auto const& p=plan.gate;
   return p.m==8 && p.experts==256 && p.io.tokens==1 && p.io.topk==8 && p.io.channels==1;
 }
 
-template<class Shape,class Stride>
+template<class Shape,class Stride,class Compute=Half>
 CUTLASS_DEVICE void moe_m1_descriptors(qk_moe_projection_v1 const& p,
     int const* ids,int const* ranks,int begin,int count,bool valid,bool simt=false) {
   int e=int(threadIdx.x);
@@ -27,7 +32,7 @@ CUTLASS_DEVICE void moe_m1_descriptors(qk_moe_projection_v1 const& p,
   for (int s=0;s<p.splits;++s) {
     int entry=e+s*256;
     int64_t offset=(int64_t(s)*8+begin)*p.n;
-    if (p.splits==1) static_cast<Half**>(p.outputs)[entry]=static_cast<Half*>(p.output)+offset;
+    if (p.splits==1) static_cast<Compute**>(p.outputs)[entry]=static_cast<Compute*>(p.output)+offset;
     else static_cast<float**>(p.outputs)[entry]=static_cast<float*>(p.partials)+offset;
     strides[entry]=cutlass::make_cute_packed_stride(Stride{},cute::make_shape(count,p.n,1));
   }
@@ -48,15 +53,16 @@ CUTLASS_DEVICE void moe_m1_descriptors(qk_moe_projection_v1 const& p,
 // copy is independent of IDs and their expert-order permutation.
 template<class Plan>
 CUTLASS_DEVICE void moe_m1_gather(Plan const& plan,int lane,int stride) {
+  using Compute=typename MoeCompute<Plan>::type;
   auto const& p=plan.gate;
   uint32_t simt=moe_simt_mask(plan);
   if ((simt&1) && (plan.merged || (simt&2))) return;
   for (int64_t col=lane;col<p.k;col+=stride) {
-    Half value=Half(p.io.a[col]);
+    Compute value=Compute(p.io.a[col]);
     #pragma unroll
     for (int r=0;r<8;++r) {
-      if (!(simt&1)) static_cast<Half*>(p.a)[int64_t(r)*p.k+col]=value;
-      if (!plan.merged && !(simt&2)) static_cast<Half*>(plan.up.a)[int64_t(r)*p.k+col]=value;
+      if (!(simt&1)) static_cast<Compute*>(p.a)[int64_t(r)*p.k+col]=value;
+      if (!plan.merged && !(simt&2)) static_cast<Compute*>(plan.up.a)[int64_t(r)*p.k+col]=value;
     }
   }
 }
@@ -65,6 +71,7 @@ CUTLASS_DEVICE void moe_m1_gather(Plan const& plan,int lane,int stride) {
 // parallel. No other CTA polls a flag or waits for global router publication.
 template<class Shape,class Stride,class Plan=qk_moe_plan_v1>
 __global__ void moe_chain_prepare_m1(Plan plan) {
+  using Compute=typename MoeCompute<Plan>::type;
   auto const& p=plan.gate;
   __shared__ int ids[8],ranks[8];
   int tid=int(threadIdx.x);
@@ -90,15 +97,15 @@ __global__ void moe_chain_prepare_m1(Plan plan) {
   bool valid=__syncthreads_or(invalid)==0;
   if (!valid) begin=count=0;
   uint32_t simt=moe_simt_mask(plan);
-  moe_m1_descriptors<Shape,Stride>(plan.gate,ids,ranks,begin,count,valid,simt&1);
-  if (!plan.merged) moe_m1_descriptors<Shape,Stride>(plan.up,ids,ranks,begin,count,valid,simt&2);
-  moe_m1_descriptors<Shape,Stride>(plan.down,ids,ranks,begin,count,valid,simt&4);
+  moe_m1_descriptors<Shape,Stride,Compute>(plan.gate,ids,ranks,begin,count,valid,simt&1);
+  if (!plan.merged) moe_m1_descriptors<Shape,Stride,Compute>(plan.up,ids,ranks,begin,count,valid,simt&2);
+  moe_m1_descriptors<Shape,Stride,Compute>(plan.down,ids,ranks,begin,count,valid,simt&4);
   if (valid && !plan.router.version) moe_m1_gather(plan,tid,256);
 }
 
 // All participants use the production GroupShape/DStride types. Their member
 // offsets, not an assumed packed tuple representation, are checked at bind.
-template<class Shape,class Stride,int Capacity=32>
+template<class Shape,class Stride,int Capacity=32,class Compute=Half>
 CUTLASS_DEVICE void moe_descriptors(qk_moe_projection_v1 const& p,int const* ids,
     int const* ranks,int const* starts,int const* counts,
     int const* expert_starts,int const* expert_counts,bool valid) {
@@ -115,7 +122,7 @@ CUTLASS_DEVICE void moe_descriptors(qk_moe_projection_v1 const& p,int const* ids
     for (int s=warp;s<p.splits;s+=int(blockDim.x)/32) {
       int entry=e+s*p.experts;
       int64_t offset=(int64_t(s)*p.m+begin)*p.n;
-      if (p.splits==1) static_cast<Half**>(p.outputs)[entry]=static_cast<Half*>(p.output)+offset;
+      if (p.splits==1) static_cast<Compute**>(p.outputs)[entry]=static_cast<Compute*>(p.output)+offset;
       else static_cast<float**>(p.outputs)[entry]=static_cast<float*>(p.partials)+offset;
       strides[entry]=cutlass::make_cute_packed_stride(Stride{},cute::make_shape(count,p.n,1));
     }
@@ -172,6 +179,7 @@ CUTLASS_DEVICE void moe_descriptors(qk_moe_projection_v1 const& p,int const* ids
 
 template<class Shape,class Stride,int Capacity=32,class Plan=qk_moe_plan_v1>
 __global__ void moe_chain_prepare(Plan plan) {
+  using Compute=typename MoeCompute<Plan>::type;
   auto const& p=plan.gate;
   static_assert(Capacity==32 || Capacity==64);
   __shared__ int ids[Capacity], ranks[Capacity], starts[Capacity], counts[Capacity];
@@ -224,9 +232,9 @@ __global__ void moe_chain_prepare(Plan plan) {
     if (tid<32) { expert_starts[tid]=0; expert_counts[tid]=0; }
     __syncthreads();
   }
-  moe_descriptors<Shape,Stride,Capacity>(plan.gate,ids,ranks,starts,counts,expert_starts,expert_counts,valid);
-  if (!plan.merged) moe_descriptors<Shape,Stride,Capacity>(plan.up,ids,ranks,starts,counts,expert_starts,expert_counts,valid);
-  moe_descriptors<Shape,Stride,Capacity>(plan.down,ids,ranks,starts,counts,expert_starts,expert_counts,valid);
+  moe_descriptors<Shape,Stride,Capacity,Compute>(plan.gate,ids,ranks,starts,counts,expert_starts,expert_counts,valid);
+  if (!plan.merged) moe_descriptors<Shape,Stride,Capacity,Compute>(plan.up,ids,ranks,starts,counts,expert_starts,expert_counts,valid);
+  moe_descriptors<Shape,Stride,Capacity,Compute>(plan.down,ids,ranks,starts,counts,expert_starts,expert_counts,valid);
   if (!valid) return;
   uint32_t simt=moe_simt_mask(plan);
   if ((simt&1) && (plan.merged || (simt&2))) return;
@@ -235,31 +243,36 @@ __global__ void moe_chain_prepare(Plan plan) {
   int chunks=(int(gridDim.x)-1-r)/p.m+1;
   int64_t from=int64_t(r/p.io.topk)*p.io.a_token_stride+(r%p.io.topk%p.io.channels)*p.io.a_row_stride;
   for (int64_t col=int64_t(chunk)*blockDim.x+tid;col<p.k;col+=int64_t(chunks)*blockDim.x) {
-    Half value=Half(p.io.a[from+col]);
-    if (!(simt&1)) static_cast<Half*>(p.a)[int64_t(to)*p.k+col]=value;
-    if (!plan.merged && !(simt&2)) static_cast<Half*>(plan.up.a)[int64_t(to)*p.k+col]=value;
+    Compute value=Compute(p.io.a[from+col]);
+    if (!(simt&1)) static_cast<Compute*>(p.a)[int64_t(to)*p.k+col]=value;
+    if (!plan.merged && !(simt&2)) static_cast<Compute*>(plan.up.a)[int64_t(to)*p.k+col]=value;
   }
 }
 
+template<class Compute=Half>
 CUTLASS_DEVICE float moe_projection_value(qk_moe_projection_v1 const& p,int row,int col) {
   int64_t index=int64_t(row)*p.n+col;
-  if (p.splits==1) return float(static_cast<Half const*>(p.output)[index]);
+  if (p.splits==1) return float(static_cast<Compute const*>(p.output)[index]);
   float sum=0.f;
   // Ordered exactly like the original reducer. Round BEFORE the activation.
   for (int s=0;s<p.splits;++s) sum+=static_cast<float const*>(p.partials)[int64_t(s)*p.m*p.n+index];
-  return float(Half(sum));
+  return float(Compute(sum));
 }
 
 template<class Plan>
 CUTLASS_DEVICE void moe_swiglu_body(Plan const& plan) {
+  using Compute=typename MoeCompute<Plan>::type;
   int row=int(blockIdx.y), n=plan.down.k;
   uint32_t simt=moe_simt_mask(plan);
   bool valid=!static_cast<moe::Header const*>(plan.gate.directory_header)->status;
   for (int64_t col=int64_t(blockIdx.x)*blockDim.x+threadIdx.x;col<n;col+=int64_t(gridDim.x)*blockDim.x) {
     auto read=[&](qk_moe_projection_v1 const& p,int index,int c) {
-      if (simt&(1u<<index))
-        return static_cast<float const*>(p.output)[int64_t(p.io.row_ids[row])*p.n+c];
-      return moe_projection_value(p,row,c);
+      if (simt&(1u<<index)) {
+        float value=static_cast<float const*>(p.output)[int64_t(p.io.row_ids[row])*p.n+c];
+        if constexpr (std::is_same_v<Compute,cutlass::bfloat16_t>) return float(Compute(value));
+        else return value;
+      }
+      return moe_projection_value<Compute>(p,row,c);
     };
     float gate=read(plan.gate,0,int(col));
     float up=read(plan.merged ? plan.gate : plan.up,plan.merged?0:1,int(col)+(plan.merged?n:0));
@@ -267,13 +280,15 @@ CUTLASS_DEVICE void moe_swiglu_body(Plan const& plan) {
     float value=(gate/(1.f+expf(-gate)))*up;
     if (!valid) value=__int_as_float(0x7fffffff);
     if (simt&4) static_cast<float*>(plan.down.a)[int64_t(plan.down.io.row_ids[row])*n+col]=value;
-    else static_cast<Half*>(plan.down.a)[int64_t(row)*n+col]=Half(value);
+    else static_cast<Compute*>(plan.down.a)[int64_t(row)*n+col]=Compute(value);
   }
 }
 __global__ void moe_chain_swiglu(qk_moe_plan_v1 plan) { moe_swiglu_body(plan); }
 __global__ void moe_chain_swiglu_mixed(MixedMoePlan plan) { moe_swiglu_body(plan); }
+template<class Compute>
+__global__ void moe_chain_swiglu_compute(ComputeMoePlan<Compute> plan) { moe_swiglu_body(plan); }
 
-template<bool Simt>
+template<bool Simt,class Compute=Half>
 __global__ void moe_weighted_finish(qk_moe_projection_v1 p,qk_llama_moe_finish_v1 finish) {
   int token=int(blockIdx.y),col=int(blockIdx.x)*int(blockDim.x)+int(threadIdx.x);
   bool valid=!static_cast<moe::Header const*>(p.directory_header)->status;
@@ -293,8 +308,11 @@ __global__ void moe_weighted_finish(qk_moe_projection_v1 p,qk_llama_moe_finish_v
     #pragma unroll
     for (int slot=0;slot<8;++slot) {
       float value;
-      if constexpr (Simt) value=p.io.output[int64_t(token*8+slot)*p.io.out_row_stride+col];
-      else value=moe_projection_value(p,rank[slot],col);
+      if constexpr (Simt) {
+        value=p.io.output[int64_t(token*8+slot)*p.io.out_row_stride+col];
+        if constexpr (std::is_same_v<Compute,cutlass::bfloat16_t>) value=float(Compute(value));
+      }
+      else value=moe_projection_value<Compute>(p,rank[slot],col);
       float weighted=__fmul_rn(value,finish.weights[int64_t(token)*finish.weights_stride+slot]);
       result=slot ? __fadd_rn(result,weighted) : weighted;
     }

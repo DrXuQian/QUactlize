@@ -74,9 +74,27 @@ class SimtConfig(C.Structure):
         super().__init__(1, C.sizeof(type(self)), variant, columns, warps, values, split)
 
 
+class SimtCallV2(C.Structure):
+    _fields_ = [("version", C.c_uint32), ("size", C.c_uint32), ("call", Call),
+                ("compute_type", C.c_int32)]
+
+    def __init__(self, call, compute_type):
+        if compute_type not in (0, 1):
+            raise ValueError("SIMT compute must be explicit F16=0 or BF16=1")
+        super().__init__(2, C.sizeof(type(self)), call, compute_type)
+
+
 def bind_simt(lib):
     query, run = lib.quactlize_kpack_simt_query_v1, lib.quactlize_kpack_simt_run_v1
     query.argtypes = [C.POINTER(Call), C.POINTER(SimtConfig), C.POINTER(Arrangement), C.POINTER(Sizes)]
+    run.argtypes = query.argtypes[:-1]
+    query.restype = run.restype = C.c_int
+    return query, run
+
+
+def bind_simt_compute(lib):
+    query, run = lib.quactlize_kpack_simt_query_v2, lib.quactlize_kpack_simt_run_v2
+    query.argtypes = [C.POINTER(SimtCallV2), C.POINTER(SimtConfig), C.POINTER(Arrangement), C.POINTER(Sizes)]
     run.argtypes = query.argtypes[:-1]
     query.restype = run.restype = C.c_int
     return query, run

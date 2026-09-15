@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_actual_typed_device_probe_uses_the_same_sm_attribute_as_query(tmp_path):
     text = (ROOT / 'quactlize/decode/dense.cuh').read_text()
     begin = text.index('extern "C" int quactlize_kpack_decode_dense_device_v1(')
-    body = text[begin:text.index('extern "C" int quactlize_kpack_decode_dense_query_v1(', begin)]
+    body = text[begin:text.index('static int qkd_query(', begin)]
     # PPU property structure reports 1, but the explicit SM attribute is 72.
     # Compile the actual host entry, without constructing any GPU collective.
     source = r'''

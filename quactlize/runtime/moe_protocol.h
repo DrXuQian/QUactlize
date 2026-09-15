@@ -24,12 +24,25 @@ typedef struct {
   qk_llama_router_v1 router;
 } qk_moe_plan_v1;
 
+typedef struct {
+  uint32_t version,size;
+  qk_moe_projection_v1 projection;
+  int32_t compute_type;
+} qk_moe_projection_v2;
+typedef struct {
+  uint32_t version,size;
+  qk_moe_plan_v1 plan;
+  int32_t compute_type;
+} qk_moe_plan_v2;
+
 enum { QK_MOE_PREPARE=0, QK_MOE_PRODUCER=1, QK_MOE_ACTIVATE=2, QK_MOE_FINISH=3 };
 #ifdef __cplusplus
 extern "C" {
 #endif
 int quactlize_kpack_moe_projection_v1(void*, qk_moe_projection_v1*);
 int quactlize_kpack_moe_stage_v1(void*,qk_moe_plan_v1 const*,int,void*);
+int quactlize_kpack_moe_projection_v2(void*, qk_moe_projection_v2*);
+int quactlize_kpack_moe_stage_v2(void*,qk_moe_plan_v2 const*,int,void*);
 #ifdef __cplusplus
 }
 #endif

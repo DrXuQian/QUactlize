@@ -2,6 +2,7 @@
 
 #define QKG_SIMT_DECLARE(Q) \
     extern "C" int qkg_simt_launch_##Q(qkg_call_v1 const*, qkg_simt_config_v1 const*); \
+    extern "C" int qkg_simt_launch_v2_##Q(qkg_simt_call_v2 const*, qkg_simt_config_v1 const*); \
     extern "C" bool qkg_simt_supported_##Q(qkg_simt_config_v1 const*);
 QKG_SIMT_DECLARE(8)
 QKG_SIMT_DECLARE(10)
@@ -49,4 +50,36 @@ extern "C" int quactlize_kpack_simt_run_v1(qkg_call_v1 const* c,
         default: return QKG_FORMAT;
     }
 #undef QKG_SIMT_CASE
+}
+
+extern "C" int quactlize_kpack_simt_query_v2(qkg_simt_call_v2 const* d,
+    qkg_simt_config_v1 const* f, quactlize_ppu_placed_arrangement_v2 const* a,
+    qkg_sizes_v1* out) {
+    if(!d || !f || !a || !out) return QKG_INVALID;
+    *out={};
+    int rc=quactlize::execution::simt::query_v2(*d,*f,a,*out);
+    if(rc) return rc;
+    auto storage=d->call;
+    if(storage.input_type==QKG_SIMT_BF16) storage.input_type=QKG_F16;
+    return quactlize_kpack_simt_query_v1(&storage,f,a,out);
+}
+
+extern "C" int quactlize_kpack_simt_run_v2(qkg_simt_call_v2 const* d,
+    qkg_simt_config_v1 const* f, quactlize_ppu_placed_arrangement_v2 const* a) {
+    qkg_sizes_v1 sizes{};
+    int rc=quactlize_kpack_simt_query_v2(d,f,a,&sizes);
+    if(rc) return rc;
+    rc=quactlize::execution::simt::buffers_v2(*d,sizes);
+    if(rc) return rc;
+#define QKG_SIMT_CASE_V2(Q) case Q: return qkg_simt_launch_v2_##Q(d,f);
+    switch(d->call.qtype) {
+        QKG_SIMT_CASE_V2(8)
+        QKG_SIMT_CASE_V2(10)
+        QKG_SIMT_CASE_V2(11)
+        QKG_SIMT_CASE_V2(12)
+        QKG_SIMT_CASE_V2(13)
+        QKG_SIMT_CASE_V2(14)
+        default: return QKG_FORMAT;
+    }
+#undef QKG_SIMT_CASE_V2
 }

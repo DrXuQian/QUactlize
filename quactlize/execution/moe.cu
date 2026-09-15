@@ -107,3 +107,48 @@ extern "C" int quactlize_kpack_moe_weighted_finish_v1(qk_moe_plan_v1 const* plan
   else moe_weighted_finish<false><<<grid,128,0,stream>>>(plan->down,*finish);
   return hggcGetLastError()==hggcSuccess?QKG_OK:QKG_RUNTIME;
 }
+
+namespace {
+bool compute_plan_valid(qkg_moe_compute_v2 const* d) {
+  return d && d->version==2 && d->size==sizeof(*d) &&
+      (d->compute_type==QKG_COMPUTE_F16 || d->compute_type==QKG_COMPUTE_BF16) &&
+      d->plan.version==1 && d->plan.size==sizeof(d->plan) && d->simt_mask<=7 &&
+      !(d->plan.merged && (d->simt_mask&2)) && d->plan.gate.experts==256 &&
+      d->plan.gate.m>=8 && d->plan.gate.m<=64 && d->plan.gate.m%8==0;
+}
+}
+extern "C" int quactlize_kpack_moe_mixed_stage_v2(qkg_moe_compute_v2 const* d,int phase,void* opaque) {
+  using namespace quactlize::runtime;
+  if(!compute_plan_valid(d)) return QKG_INVALID;
+  if(d->compute_type==QKG_COMPUTE_F16)
+    return quactlize_kpack_moe_mixed_stage_v1(&d->plan,d->simt_mask,phase,opaque);
+  ComputeMoePlan<cutlass::bfloat16_t> plan;
+  static_cast<qk_moe_plan_v1&>(plan)=d->plan;plan.simt_mask=d->simt_mask;
+  auto stream=static_cast<hggcStream_t>(opaque);
+  if(hggcGetLastError()!=hggcSuccess) return QKG_RUNTIME;
+  if(phase==QK_MOE_PREPARE) {
+    if(moe_prepare_m1_supported(plan)) moe_chain_prepare_m1<Shape,Stride><<<1,256,0,stream>>>(plan);
+    else if(plan.gate.m>32) moe_chain_prepare<Shape,Stride,64><<<moe_prepare_blocks(256,plan.gate.m),256,0,stream>>>(plan);
+    else moe_chain_prepare<Shape,Stride><<<moe_prepare_blocks(256,plan.gate.m),256,0,stream>>>(plan);
+  } else if(phase==QK_MOE_ACTIVATE) {
+    moe_chain_swiglu_compute<<<dim3(std::min((plan.down.k+255)/256,32),plan.gate.m),256,0,stream>>>(plan);
+  } else return QKG_INVALID;
+  return hggcGetLastError()==hggcSuccess?QKG_OK:QKG_RUNTIME;
+}
+
+extern "C" int quactlize_kpack_moe_weighted_finish_v2(qkg_moe_compute_v2 const* d,
+    qk_llama_moe_finish_v1 const* finish,void* opaque) {
+  using namespace quactlize::runtime;
+  if(!compute_plan_valid(d) || !finish || finish->version!=1 || finish->size!=sizeof(*finish) ||
+      !finish->weights || !finish->output || d->plan.down.io.tokens<1 || d->plan.down.io.tokens>8 ||
+      d->plan.down.io.topk!=8 || d->plan.down.m!=d->plan.down.io.tokens*8 || d->plan.down.n<=0 ||
+      finish->weights_stride<8 || finish->output_stride<d->plan.down.n) return QKG_INVALID;
+  if(d->compute_type==QKG_COMPUTE_F16)
+    return quactlize_kpack_moe_weighted_finish_v1(&d->plan,d->simt_mask,finish,opaque);
+  auto stream=static_cast<hggcStream_t>(opaque);
+  if(hggcGetLastError()!=hggcSuccess) return QKG_RUNTIME;
+  dim3 grid((d->plan.down.n+127)/128,d->plan.down.io.tokens);
+  if(d->simt_mask&4) moe_weighted_finish<true,cutlass::bfloat16_t><<<grid,128,0,stream>>>(d->plan.down,*finish);
+  else moe_weighted_finish<false,cutlass::bfloat16_t><<<grid,128,0,stream>>>(d->plan.down,*finish);
+  return hggcGetLastError()==hggcSuccess?QKG_OK:QKG_RUNTIME;
+}
