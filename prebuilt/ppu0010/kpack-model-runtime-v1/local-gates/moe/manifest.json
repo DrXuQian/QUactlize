@@ -1,6 +1,6 @@
 {
   "source_hashes": {
-    "dev/moe_prepare/bench.cu": "e02210450158d8e0ccadec2259e534f9a93d905783bd646c18c9c5e7e58d30be",
+    "dev/moe_prepare/bench.cu": "16218fd1bb3766504c2f4a70139928a87d92a4241586fcbe0845f7f9fac89939",
     "dev/moe_prepare/build.py": "efbee95993e494ddfb27e6f337ea9ae548ec75ead49fe8d8d17462e91e331a86",
     "dev/moe_prepare/fast.cuh": "a03dfa2058aa46228e152b0a4684a2f6800dff8eb7736a88b59d9ff0a5b2ef55",
     "quactlize/include/actlize_extensions/cutlass/detail/quactlize_mixed_dtype.hpp": "4d8fdcf4dced2a7053a1cbbd8bff77cb0771430a826b24cf5b83b6a3c4c5c23f",
@@ -652,8 +652,8 @@
     "third_party/actlize/tools/util/include/cutlass/util/tensor_view_io.h": "cf97b945b249fa86b88e366295a10ddea551d73ad78ee08c11ea2afebd85fea3",
     "third_party/actlize/tools/util/include/cutlass/util/type_traits.h": "d03300cec9ccaf628156692cd68dd9dd922601607e54cc2afc7936009a77b0c0"
   },
-  "generated_sha256": "eed59b01776ae6147a525edb7d8036c0e00084c03d068483dd72ff8664ad75e8",
-  "binary_sha256": "275cff9e1fe408f660ae1b0b1aae6d8c6f52b2eeec58d7dba0a7aae9901eb7b7",
+  "generated_sha256": "f073baebd179787b6dffe3aaddbf5cce51c6ac709a76ee5658e10e35e19dd282",
+  "binary_sha256": "bfacb09b49be823aa5efa746ed51fd32aa4e9688cff0ab6f4ad024b9dbee964b",
   "commands": [
     [
       "/root/ppu-sdk/2.1.1/bin/hgcc",
@@ -687,13 +687,13 @@
       "-I/root/marlin_ppu/quactlize/third_party/actlize/include",
       "-I/root/marlin_ppu/quactlize/third_party/actlize/tools/util/include",
       "-c",
-      "/tmp/moe-prepare-ppu-final-20260915/bench.cu",
+      "/tmp/moe-prepare-ppu-ordered-gate-20260916/bench.cu",
       "-o",
-      "/tmp/moe-prepare-ppu-final-20260915/bench.o"
+      "/tmp/moe-prepare-ppu-ordered-gate-20260916/bench.o"
     ],
     [
       "g++",
-      "/tmp/moe-prepare-ppu-final-20260915/bench.o",
+      "/tmp/moe-prepare-ppu-ordered-gate-20260916/bench.o",
       "-Wl,--allow-shlib-undefined",
       "-L/root/ppu-sdk/2.1.1/lib",
       "-lhggc_wrapper",
@@ -701,7 +701,7 @@
       "-lhggc",
       "-lhg_wrapper",
       "-o",
-      "/tmp/moe-prepare-ppu-final-20260915/bench"
+      "/tmp/moe-prepare-ppu-ordered-gate-20260916/bench"
     ]
   ],
   "platform": "ppu",

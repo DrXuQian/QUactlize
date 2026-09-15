@@ -13680,14 +13680,14 @@
   },
   "bf16_gate": {
     "path": "bf16/manifest.json",
-    "sha256": "06d34914844e17b7543d5465c1d0fb2b7108bbc80a30c93180bb92d8b3849742",
+    "sha256": "adaa89f596035ea8c9bd28f00ea6e2041ead143851030198c892d7b2b7960353",
     "cases": 746,
     "modules": 40,
     "device_validated": false
   },
   "local_optimization_gate": {
     "path": "local-gates/manifest.json",
-    "sha256": "ee0d0f0200cdb42b33409b5f2e057e35ffdd240264a6d69e428686ad397c9609"
+    "sha256": "c1bc720acaf7d1a69c24b868696d1004699aa4575ada4e654a7a76a54af8855f"
   },
   "q4_bf16_gate": {
     "path": "q4-bf16-gate/manifest.json",
@@ -13717,5 +13717,12 @@
     "previous_artifact_commit": "14066dae14108f54a999c957f17ee68cb6117d49",
     "previous_manifest_sha256": "2c371d1ea5f9acf005dcf78fed6c9bd5c5c7aee8f6a79563b784bf64f0dc02ec",
     "production_payloads_unchanged": true
+  },
+  "local_gate_followup": {
+    "source_revision": "47e5c89762d6f6781c7707335827cdd88b95cbba",
+    "previous_artifact_commit": "39d537754ce3d2568939c8e95ed17736bf434893",
+    "previous_manifest_sha256": "9ae853b9fb74f1a39729f0e2362e68df8acf4b48c114dee2db1d4c7c514c8a28",
+    "production_payloads_unchanged": true,
+    "q8_payload_unchanged": true
   }
 }

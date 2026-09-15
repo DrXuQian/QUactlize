@@ -13099,13 +13099,14 @@
   "source": {
     "dev/bf16_compute/build.py": "e412df6d45945233dc9643c37361b36246631586777d57aaf0241cc9caa47371",
     "dev/bf16_compute/matrix.py": "5cadcc7b0a6b0cc6dcdc6d1ea4361832df82f4d952aea08957c8ed70e2ee3fd8",
-    "dev/bf16_compute/cases.py": "7382ef91096dad61ff8998176657496a8ced60583ca82ae85248ea1099d96ab6",
+    "dev/bf16_compute/cases.py": "992f7a6b113e96f9896cb32e0d87991009f42c80161ee5545423ba011764a45a",
     "dev/bf16_compute/fixture.py": "a7f0b89f4d1c1ac27ac761baaf38f4ed7c94af6d5881f855d7b006e098ee680e",
-    "dev/bf16_compute/moe_case.py": "7e663a1e6fac8a20b982b9846896262dcbe5aacbaab1ee6eb5a5c1e62b3836ea",
+    "dev/bf16_compute/moe_case.py": "bbf77d79a951a09b7c0db31d0979afe2f69413a9718f88c83bcd1b5df25ba28c",
     "dev/bf16_compute/native.py": "7fed4e5d14f159b0036113610e3ac7cb6047911333e7df33d195dae38b5f36ad",
     "dev/bf16_compute/package.py": "398bd19511eff6cc25c47fc9fd7e2e9b121be05478877f2841e3e0c33bf2423d",
     "dev/bf16_compute/plan.py": "1e54b071d7f2bfdc74be1d79dd91e3541d488841f5fa879a5e95276bfde81539",
-    "dev/bf16_compute/run.py": "2e4950b31bd8fb9007863958d0283575ecfe08f37823257601b5ef1b9b99ce7c"
+    "dev/bf16_compute/run.py": "2e4950b31bd8fb9007863958d0283575ecfe08f37823257601b5ef1b9b99ce7c",
+    "dev/bf16_compute/rounding_replay.py": "398b3fefd928e8a43e881a7c0a15677145c533eb38de0c597458e68a6007c3db"
   },
   "build_seconds": 423.20259990543127,
   "device_validated": false,
@@ -26264,5 +26265,13 @@
       "DOWN_ORACLE_USES_ACTUAL_ACTIVATION"
     ],
     "device_validated": false
+  },
+  "oracle_followup": {
+    "source_revision": "47e5c89762d6f6781c7707335827cdd88b95cbba",
+    "previous_manifest_sha256": "06d34914844e17b7543d5465c1d0fb2b7108bbc80a30c93180bb92d8b3849742",
+    "output_error_reference": "UNROUNDED_INDEPENDENT_F64_DOT",
+    "tolerance_unchanged": true,
+    "kernel_payloads_unchanged": true,
+    "returned_output_replay_sha256": "1d95c4dfa905fe0845673a519e4cfd3109238d9edec7d484262d4f4434f0434e"
   }
 }
