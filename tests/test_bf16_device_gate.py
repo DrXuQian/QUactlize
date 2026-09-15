@@ -117,7 +117,24 @@ def test_down_oracle_uses_actual_admitted_boundary_without_relaxing_tolerance():
             and isinstance(node.targets[0].elts[0], ast.Name)
             and node.targets[0].elts[0].id in ("gold_down", "full_down")}
     assert dots["gold_down"].args[0].id == "got_middle"
+    assert not dots["gold_down"].keywords  # No independent output rounding before error comparison.
     assert dots["full_down"].args[0].id == "expected_middle"
+    assert any(k.arg == "output_compute" and k.value.value for k in dots["full_down"].keywords)
+
+
+def test_q4_down_midpoint_replay_matches_all_returned_device_outputs():
+    from dev.bf16_compute.rounding_replay import replay
+    r = replay()
+    assert r["input_sha256"] == "1d838aaf9e4a4764a8bba0b28a34d2d1d00df4923a3bcd98e38b93bb1a306833"
+    assert r["rounded_output_sha256"] == "1d95c4dfa905fe0845673a519e4cfd3109238d9edec7d484262d4f4434f0434e"
+    assert r["separately_rounded_golden_sha256"] == "6e5eccf035b9b7d6bec31f4a81c10608c3c01d802bf357c2cd75bcc2c2653e12"
+    assert r["legacy_bad"] == [16754 + 512*i for i in range(8)]
+    assert r["legacy_error"] == pytest.approx(0.006694802025660676)
+    assert r["unrounded_reference_proof"]["bad"] == 0
+    assert r["unrounded_reference_proof"]["tolerance"] == 0.005
+    assert r["unrounded_reference_proof"]["relative_l1_error"] < 0.00374
+    assert r["native_order_f32_error"] < 1.24e-7
+    assert r["negatives"] == dict(zero="RED", column_swap="RED")
 
 
 def test_private_moe_ctypes_exact_c_abi(tmp_path):

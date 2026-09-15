@@ -15,6 +15,22 @@ from tools.attach_kpack_local_gates import payload_paths
 ROOT=Path(__file__).resolve().parents[1]
 
 
+def test_replayed_ppu_results_preserve_scope_and_midpoint_diagnosis():
+    r=json.loads((ROOT/'docs/measurements/local_closure_replay_ppu_20260916.json').read_text())
+    assert r['bf16']==dict(expected=746,passed=733,failed=1,not_run=12)
+    assert r['q8']['numeric']=='PASS' and r['q8']['contexts']==12480
+    points=r['q8']['performance']
+    assert len(points)==len({x['case'] for x in points})==50
+    assert sum(x['delta_pct']<0 for x in points)==48
+    for point in points:
+        assert point['ring_copies']*point['useful_bytes']>=2.25*point['l2_bytes']
+        assert all(len(x['round_medians'])==6 for x in point['best'].values())
+    replay=r['q4_rounding_replay']
+    assert replay['rounded_output_sha256']=='1d95c4dfa905fe0845673a519e4cfd3109238d9edec7d484262d4f4434f0434e'
+    assert replay['unrounded_reference_proof']['bad']==0 and len(replay['legacy_bad'])==8
+    assert r['moe_prepare']['status']=='NEGATIVE_CONTROL_FAIL'
+
+
 def test_returned_ppu_closure_keeps_failures_and_unexecuted_cases_separate():
     r=json.loads((ROOT/'docs/measurements/local_closure_ppu_20260916.json').read_text())
     b=r['bf16']
@@ -106,6 +122,19 @@ def test_prebuilt_entry_preserves_shell_and_does_not_compile():
     assert 'build_kpack' not in text and 'cmake' not in text and 'nvcc' not in text
     assert 'dev/bf16_fastpath/gate.py' in text and 'dev/bf16_compute/run.py' in text
     assert 'failed=$((failed+1))' in text and 'production_defaults=UNCHANGED' in text
+
+
+def test_local_closure_phase_filter_rejects_ambiguous_or_empty_requests():
+    import sys
+    text=(ROOT/'tools/run_kpack_local_closure_box.sh').read_text()
+    code=text.split('"$PYTHON" - "$LOCAL_PHASES" <<\'PY\'\n',1)[1].split('\nPY\n',1)[0]
+    for value,ok in [('moe-prepare,bf16',True),('q8',True),('q8,bf16,bf16-selected-q4',True),
+                     ('',False),('q8,q8',False),('bf16,',False),('all',False),('bf16; q8',False)]:
+        result=subprocess.run([sys.executable,'-c',code,value],capture_output=True)
+        assert (result.returncode==0)==ok
+    assert 'requested-phases.txt' in text
+    for name in ('q8','moe-prepare','bf16','bf16-selected-q4'):
+        assert f'if selected_phase {name}; then' in text
 
 
 def test_model_chain_gate_uses_requested_compute_and_matched_lookup():

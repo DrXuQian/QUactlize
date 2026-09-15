@@ -6,13 +6,15 @@ binary bundle, or loader contract changes.
 
 ## Explicit BF16 compute integration, updated 2026-09-16
 
-Latest [PPU gate review](KPACK_LOCAL_CLOSURE_PPU_20260916.md): independent
-TC226/SIMT396/outlier8 and selected-Q4 258 pass. Full MoE has85 passes,
-two recorded failures and29 not run; the Q4 stage-oracle and Q6 NumPy-scalar
-repairs require replay. Q8's experimental DSO stopped at host loading and has
-been relinked, not a measured PPU reader regression. Existing production
-DSOs and private caller remain unchanged for these repairs. Do not promote
-BF16 to the model default until complete-chain and model checks finish.
+Latest [PPU gate review](KPACK_LOCAL_CLOSURE_REPLAY_20260916.md): independent
+TC226/SIMT396/outlier8 and selected-Q4 258 pass. The full capability gate has
+733 passes, one Q4 stage comparison failure and12 unexecuted cases. Q6's18
+complete chains pass. An exact host replay of the returned Q4 output proves
+BF16 midpoint rounding, not placement/overflow; projection error now uses the
+independent unrounded dot without relaxing thresholds. Prepare's row-map
+negative needs ordered fixture publication. Q8 numeric12,480 and perf50 pass;
+its vector reader improves48/50 medians but is not yet a production default.
+Production DSOs/private caller are unchanged. BF16 model admission remains pending.
 
 The development caller now has an explicit `QUACTLIZE_KPACK_COMPUTE=bf16`
 path. The default remains `fp16` until the complete device gate is admitted.

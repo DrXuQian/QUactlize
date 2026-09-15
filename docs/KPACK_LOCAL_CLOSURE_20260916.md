@@ -5,7 +5,13 @@ and production Q8/prepare implementations are unchanged. Q8_0 already uses
 K-pack2: two 8-bit codes per word, one FP16 scale per 32 codes, no high plane.
 FP16 and BF16 consumers share those bytes; computation type is explicit.
 
-The [returned PPU run](KPACK_LOCAL_CLOSURE_PPU_20260916.md) now supersedes the
+The [latest PPU replay](KPACK_LOCAL_CLOSURE_REPLAY_20260916.md) supersedes the
+initial return: Q8 numeric12,480/perf50 and Q6 chains18 pass. The remaining
+Q4 comparison is explained by BF16 midpoint rounding with an exact returned
+output hash; prepare's negative needs an explicit fixture-copy ordering edge.
+Only MoE/BF16 need the bounded retry; neither repair changes production kernels.
+
+The [initial returned PPU run](KPACK_LOCAL_CLOSURE_PPU_20260916.md) supersedes the
 pending-device entries below: independent grouped/SIMT/outlier and selected
 Q4 gates pass. Two complete-chain checks and Q8 module loading need the
 documented harness/link repairs. Prepare improves in all-SIMT cases but not

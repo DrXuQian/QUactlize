@@ -35,7 +35,12 @@ def main():
             identity=identity,contexts=3840,log_sha256=hashlib.sha256(text.encode()).hexdigest(),
             scope='PREPARE_AND_ACTUAL_SIMT_SWIGLU_NOT_GEMM'),indent=2)+'\n')
     receipt=json.loads(numeric.read_text())
-    if receipt['identity']!=identity or receipt['status']!='PASS':raise ValueError('candidate numerical gate did not pass')
+    if receipt['identity']!=identity:
+        raise ValueError('candidate numerical receipt identity differs')
+    if receipt['status']!='PASS':
+        log=a.output/'candidate-correctness.log'
+        tail=log.read_text(errors='replace').splitlines()[-8:]
+        raise ValueError(f"candidate numerical gate failed rc={receipt['process_rc']}; log={log}\n"+'\n'.join(tail))
     if a.numeric_only:return
     cases=[(t,k,mask,1,0,bf,weak) for t in (1,2,4,8) for k in (512,2048)
            for mask in (0,1,5) for bf in (0,1) for weak in (0,)]

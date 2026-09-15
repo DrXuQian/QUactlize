@@ -47,6 +47,13 @@ template<class T> struct Buffer {
   void put(std::vector<T> const& v) {
     require(v.size()==count,"upload size");ck(cudaMemcpy(ptr,v.data(),count*sizeof(T),cudaMemcpyHostToDevice));
   }
+  void put_on_stream(std::vector<T> const& v,cudaStream_t stream) {
+    require(v.size()==count,"upload size");
+    ck(cudaMemcpyAsync(ptr,v.data(),count*sizeof(T),cudaMemcpyHostToDevice,stream));
+    // Untimed fixture update: order publication on the consumer stream and
+    // keep pageable source storage alive through DMA completion.
+    ck(cudaStreamSynchronize(stream));
+  }
   std::vector<T> get() const {
     std::vector<T> v(count);ck(cudaMemcpy(v.data(),ptr,count*sizeof(T),cudaMemcpyDeviceToHost));return v;
   }
@@ -182,10 +189,18 @@ template<class C> struct Case {
     g.guards();u.guards();d.guards();
     auto positive=out;
     // Changing only the down row map must be observable at the consumer.
-    auto map=down.map.get(),bad=map;std::swap(bad[0],bad[1]);down.map.put(bad);
+    auto map=down.map.get(),bad=map;std::swap(bad[0],bad[1]);
+    auto expected_negative=positive;
+    for(int col=0;col<n;++col)
+      std::swap(expected_negative[size_t(map[0])*n+col],expected_negative[size_t(map[1])*n+col]);
+    require(expected_negative!=positive,"row-map negative fixture is not observable");
+    down.map.put_on_stream(bad,stream);
+    require(down.map.get()==bad,"row-map negative publication differs");
     moe_chain_swiglu_compute<<<dim3((n+255)/256,tokens*8),256,0,stream>>>(p);
     ck(cudaGetLastError());ck(cudaStreamSynchronize(stream));out=d.get();
-    require(out!=positive,"wrong row-map negative accepted");d.guards();down.map.put(map);
+    require(out!=positive,"wrong row-map negative accepted");
+    require(out==expected_negative,"row-map negative has unexpected output placement");
+    d.guards();down.map.put_on_stream(map,stream);
   }
   void correctness(bool candidate_only=false) {
     std::vector<int> reference_ids;std::vector<float> reference_weights;
@@ -210,7 +225,9 @@ template<class C> struct Case {
       for(int arm=int(candidate_only);arm<2;++arm) {
         context="tokens="+std::to_string(tokens)+" k="+std::to_string(k)+" mask="+std::to_string(mask)+
             " merged="+std::to_string(merged)+" router="+std::to_string(router_mode)+
-            " arm="+std::to_string(arm)+" repeat="+std::to_string(repeat);
+            " arm="+std::to_string(arm)+" repeat="+std::to_string(repeat)+
+            " compute="+(std::is_same<C,cutlass::bfloat16_t>::value?"bf16":"f16")+
+            " weak="+std::to_string(int(weak));
         gate.reset();up.reset();down.reset();ids.put(in);weights.reset();
         // Poison/upload use the default stream; the measured stream is
         // nonblocking. Establish the edge outside graph capture/timing.
@@ -240,11 +257,11 @@ template<class C> struct Case {
       }
       if(router_mode<0 && repeat==3) {
         for(int invalid:{-1,256,in[0]}) {
-          auto bad=in;bad[1]=invalid;ids.put(bad);
+          auto bad=in;bad[1]=invalid;ids.put_on_stream(bad,stream);
           for(int arm=int(candidate_only);arm<2;++arm) {ck(cudaGraphLaunch(exec[arm],stream));ck(cudaStreamSynchronize(stream));
             require(gate.header.get()[0].status && down.header.get()[0].status,"invalid IDs not rejected");gate.guards();up.guards();down.guards();}
         }
-        ids.put(in);launch(int(candidate_only),stream);ck(cudaStreamSynchronize(stream));
+        ids.put_on_stream(in,stream);launch(int(candidate_only),stream);ck(cudaStreamSynchronize(stream));
       }
     }
     for(int a=0;a<2;++a) {ck(cudaGraphExecDestroy(exec[a]));ck(cudaGraphDestroy(graphs[a]));}

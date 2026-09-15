@@ -22,6 +22,16 @@
     cd "$ROOT"
     PYTHON=$(command -v "${PYTHON:-python3}")
     test -n "$PYTHON" && test -x "$PYTHON"
+    # Phase selection is only a retry scope; omitted phases are not admitted.
+    LOCAL_PHASES=${LOCAL_PHASES:-q8,moe-prepare,bf16,bf16-selected-q4}
+    "$PYTHON" - "$LOCAL_PHASES" <<'PY'
+import sys
+parts=sys.argv[1].split(',')
+allowed={'q8','moe-prepare','bf16','bf16-selected-q4'}
+if not parts or len(set(parts))!=len(parts) or not set(parts)<=allowed:
+    raise SystemExit('LOCAL_PHASES must be unique comma-separated gate names: '+','.join(sorted(allowed)))
+PY
+    selected_phase() { [[ ",$LOCAL_PHASES," == *",$1,"* ]]; }
     SDK=$(realpath -e -- "${PPU_SDK:-/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK}")
     test -n "$SDK" && test -r "$SDK/envsetup.sh"
     set +u
@@ -38,6 +48,7 @@
     RUN=$(mktemp -d "$RESULT_DIR/kpack-local-closure.XXXXXX")
     test -n "$RUN" && test -d "$RUN"
     mkdir "$RUN/results"
+    printf '%s\n' "$LOCAL_PHASES" > "$RUN/results/requested-phases.txt"
     # 64 MiB is the operator-verified PPU-ZW810 capacity; a positive runtime
     # query must agree. This is not a fallback for an arbitrary device.
     L2_BYTES=${L2_BYTES:-67108864}
@@ -63,25 +74,33 @@
     "$PYTHON" tools/verify_kpack_dispatch.py "$BUNDLE" --sdk "$SDK" | tee "$RUN/results/verify.log"
     "$PYTHON" -c 'import json,sys; from pathlib import Path; from tools.attach_kpack_local_gates import payload_paths; b=Path(sys.argv[1]); m=json.load(open(b/"manifest.json")); payload_paths(b,m["local_optimization_gate"],sdk=Path(sys.argv[2]),check_source=True)' "$BUNDLE" "$SDK"
     cp "$BUNDLE/manifest.json" "$RUN/results/bundle-manifest.json"
-    printf 'LOCAL_CLOSURE START no_compile=1 no_model=1 production_defaults=UNCHANGED results=%s/results\n' "$RUN"
+    printf 'LOCAL_CLOSURE START no_compile=1 no_model=1 phases=%s production_defaults=UNCHANGED results=%s/results\n' "$LOCAL_PHASES" "$RUN"
     failed=0
-    stage=q8-numeric
-    if "$PYTHON" -u dev/gemv_simt/q8_vector_run.py --bundle "$BUNDLE/local-gates/q8" --sdk "$SDK" \
-        --phase numeric --output "$RUN/results/q8-numeric.json" 2>&1 | tee "$RUN/results/q8-numeric.log"; then
-        stage=q8-performance
-        if "$PYTHON" -u dev/gemv_simt/q8_vector_campaign.py --bundle "$BUNDLE/local-gates/q8" --sdk "$SDK" \
-            --l2-bytes "$L2_BYTES" --output "$RUN/results/q8-perf" 2>&1 | tee "$RUN/results/q8-perf.log"; then :; else failed=$((failed+1)); fi
-    else failed=$((failed+1)); fi
-    stage=moe-prepare
-    if "$PYTHON" -u dev/moe_prepare/run.py --bundle "$BUNDLE/local-gates/moe" \
-        --output "$RUN/results/moe-prepare" 2>&1 | tee "$RUN/results/moe-prepare.log"; then :; else failed=$((failed+1)); fi
-    stage=bf16-capability
-    if "$PYTHON" -u dev/bf16_compute/run.py --sdk "$SDK" --package "$BUNDLE/bf16" \
-        --output "$RUN/results/bf16" --repeats 2 --samples 0 2>&1 | tee "$RUN/results/bf16.log"; then :; else failed=$((failed+1)); fi
-    stage=bf16-selected-q4
-    if "$PYTHON" -u dev/bf16_fastpath/gate.py --sdk "$SDK" --bundle "$BUNDLE/q4-bf16-gate" \
-        --output "$RUN/results/bf16-selected-q4" 2>&1 | tee "$RUN/results/bf16-selected-q4.log"; then :; else failed=$((failed+1)); fi
+    if selected_phase q8; then
+        stage=q8-numeric
+        if "$PYTHON" -u dev/gemv_simt/q8_vector_run.py --bundle "$BUNDLE/local-gates/q8" --sdk "$SDK" \
+            --phase numeric --output "$RUN/results/q8-numeric.json" 2>&1 | tee "$RUN/results/q8-numeric.log"; then
+            stage=q8-performance
+            if "$PYTHON" -u dev/gemv_simt/q8_vector_campaign.py --bundle "$BUNDLE/local-gates/q8" --sdk "$SDK" \
+                --l2-bytes "$L2_BYTES" --output "$RUN/results/q8-perf" 2>&1 | tee "$RUN/results/q8-perf.log"; then :; else failed=$((failed+1)); fi
+        else failed=$((failed+1)); fi
+    fi
+    if selected_phase moe-prepare; then
+        stage=moe-prepare
+        if "$PYTHON" -u dev/moe_prepare/run.py --bundle "$BUNDLE/local-gates/moe" \
+            --output "$RUN/results/moe-prepare" 2>&1 | tee "$RUN/results/moe-prepare.log"; then :; else failed=$((failed+1)); fi
+    fi
+    if selected_phase bf16; then
+        stage=bf16-capability
+        if "$PYTHON" -u dev/bf16_compute/run.py --sdk "$SDK" --package "$BUNDLE/bf16" \
+            --output "$RUN/results/bf16" --repeats 2 --samples 0 2>&1 | tee "$RUN/results/bf16.log"; then :; else failed=$((failed+1)); fi
+    fi
+    if selected_phase bf16-selected-q4; then
+        stage=bf16-selected-q4
+        if "$PYTHON" -u dev/bf16_fastpath/gate.py --sdk "$SDK" --bundle "$BUNDLE/q4-bf16-gate" \
+            --output "$RUN/results/bf16-selected-q4" 2>&1 | tee "$RUN/results/bf16-selected-q4.log"; then :; else failed=$((failed+1)); fi
+    fi
     stage=complete
-    printf 'LOCAL_CLOSURE DONE failures=%s production_admission=PENDING_REVIEW\n' "$failed"
+    printf 'LOCAL_CLOSURE DONE failures=%s phases=%s production_admission=PENDING_REVIEW\n' "$failed" "$LOCAL_PHASES"
     [[ "$failed" == 0 ]]
 )

@@ -186,9 +186,11 @@ def run(root, package, sdk, point, repeats, samples):
                 checked(ep.produce(typed), "inspect gate/up producer")
                 sdk.synchronize(r.stream)
                 actual = ep.values()
-                gold, denom = ep.w.dot(expanded, owners, "bf16", output_compute=True)
+                gold, denom = ep.w.dot(expanded, owners, "bf16")
                 projections[role] = compare(actual, gold, denom)
-                oracle[role] = gold
+                # The stage error uses the exact dot; composition still models
+                # the specified BF16 projection boundary before SwiGLU.
+                oracle[role] = round_compute(gold, "bf16")
             actual_gate = by_role[0].values()
             if merged:
                 physical_middle = swiglu(actual_gate[:, :512], actual_gate[:, 512:])
@@ -219,7 +221,7 @@ def run(root, package, sdk, point, repeats, samples):
             # (checked above); feeding the host value here would count that
             # already-admitted boundary difference as a GEMV error a second time.
             # The independent whole-chain oracle below still uses expected_middle.
-            gold_down, denom = down.w.dot(got_middle, owners, "bf16", output_compute=True)
+            gold_down, denom = down.w.dot(got_middle, owners, "bf16")
             try:
                 projections[2] = compare(actual_down, gold_down, denom)
             except ValueError as error:
@@ -228,6 +230,7 @@ def run(root, package, sdk, point, repeats, samples):
                     f"host_swiglu_sha256={digest(physical_middle)} "
                     f"swiglu_max_bf16_ulp={int(ulps.max())}: {error}") from error
             projections[2].update(input_source="ACTUAL_SWIGLU",
+                                  reference="UNROUNDED_F64_DOT",
                                   input_sha256=digest(got_middle))
             checked(finish_fn(C.byref(mixed), C.byref(finish), r.stream), "inspect weighted finish")
             sdk.synchronize(r.stream)

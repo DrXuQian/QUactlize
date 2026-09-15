@@ -43,7 +43,10 @@ def grouped(root, package, sdk, case, repeats, samples):
             rows = grouped_rows(case["profile"], repeat)
             owners = np.repeat(np.arange(len(rows)), rows)
             act = source(len(owners), w.k, repeat)
-            gold, denom = w.dot(act, owners, case["compute"], output_compute=True)
+            # Measure numerical error against the unrounded dot. Comparing two
+            # separately BF16-rounded dots can double the rounding error when
+            # legal FP32 accumulation orders straddle a rounding midpoint.
+            gold, denom = w.dot(act, owners, case["compute"])
             kernel.upload_a(act)
             kernel.offsets.upload(np.r_[0, rows.cumsum()].astype("<i4"))
             kernel.output.poison()
