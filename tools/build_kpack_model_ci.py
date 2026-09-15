@@ -77,12 +77,28 @@ def reusable_ncp_build(path, revision, sdk):
     return ncp
 
 
+def caller_profile(sdk):
+    return dict(GGML_CUDA='ON', GGML_USE_PPU='ON', GGML_NCP_QUACTLIZE='ON',
+        GGML_NCP_FA='ON', GGML_NCP_MOE='ON', GGML_NCP_GDN='OFF',
+        CMAKE_CUDA_COMPILER=str(sdk / 'CUDA_SDK/bin/nvcc'))
+
+
+def reusable_llama_build(path, source, sdk):
+    build = path.resolve(strict=True)
+    cache = cmake_cache(build)
+    expected = caller_profile(sdk) | dict(CMAKE_HOME_DIRECTORY=str(source), CMAKE_BUILD_TYPE='Release',
+        CMAKE_CUDA_ARCHITECTURES='OFF', LLAMA_BUILD_TESTS='ON', LLAMA_BUILD_EXAMPLES='ON', LLAMA_BUILD_SERVER='ON')
+    if any(cache.get(k) != v for k, v in expected.items()):
+        raise ValueError('llama reuse source/compiler/profile differs; no build started')
+    if '${LLAMA_BUILD_REUSE' not in (source / '.aoneci/scripts/build.sh').read_text():
+        raise ValueError('update local llama .aoneci: LLAMA_BUILD_REUSE support is required')
+    return build
+
+
 def build_receipt(llama, ncp, sdk, jobs, build=None):
     build = build or llama / 'build-ci'
     cache = cmake_cache(build)
-    expected = dict(GGML_CUDA='ON', GGML_USE_PPU='ON', GGML_NCP_QUACTLIZE='ON',
-        GGML_NCP_FA='ON', GGML_NCP_MOE='ON', GGML_NCP_GDN='OFF',
-        CMAKE_CUDA_COMPILER=str(sdk / 'CUDA_SDK/bin/nvcc'))
+    expected = caller_profile(sdk)
     if any(cache.get(k) != v for k, v in expected.items()):
         raise ValueError('joint CI CMake profile differs from the requested build')
     binary = build / 'bin'
@@ -122,9 +138,13 @@ def main():
     caller.add_argument('--llama-revision', help='build this full commit from the source object cache, ignoring its index and worktree')
     parser.add_argument('--reuse-ncp-build', type=Path,
                         help='reuse an explicit NCP checkout with a matching build/ cache; reconfigure and relink in place')
+    parser.add_argument('--reuse-llama-build', type=Path,
+                        help='continue this configured build of --local-llama, retaining completed objects')
     args = parser.parse_args()
     if args.jobs < 1:
         raise ValueError('jobs must be positive')
+    if args.reuse_llama_build and not args.local_llama:
+        raise ValueError('--reuse-llama-build requires --local-llama')
     sdk = args.sdk.resolve(strict=True)
     if not (sdk / 'CUDA_SDK/bin/nvcc').is_file():
         raise ValueError('SDK compiler is missing')
@@ -145,13 +165,14 @@ def main():
     if len(revisions) != 1 or not re.fullmatch(r'[0-9a-f]{40}', revisions[0]):
         raise ValueError('CI NCP pin is missing or ambiguous')
     reuse = reusable_ncp_build(args.reuse_ncp_build, revisions[0], sdk) if args.reuse_ncp_build else None
+    caller_build = reusable_llama_build(args.reuse_llama_build, source, sdk) if args.reuse_llama_build else None
     output = args.output.resolve()
     output.mkdir(exist_ok=False)
     llama = source if args.local_llama else output / 'llama'
     ncp = reuse or output / 'ncp_flash_lib'
     if not args.local_llama:
         clone_checkout(source, llama, llama_rev)
-    build = output / 'llama-build' if args.local_llama else llama / 'build-ci'
+    build = caller_build or (output / 'llama-build' if args.local_llama else llama / 'build-ci')
     source_state = local_source_state(llama)
     if not reuse:
         clone_checkout(args.ncp, ncp, revisions[0])
@@ -164,17 +185,20 @@ def main():
     (python_bin / 'python').symlink_to(sys.executable)
     env.update(LLAMA_CI_DIR=str(llama), NCP_LIB_DIR=str(ncp), NCP_LIB_REV=revisions[0],
         LLAMA_BUILD_DIR=str(build),
+        LLAMA_BUILD_REUSE='1' if caller_build else '0',
         PPU_NVCC=str(sdk / 'CUDA_SDK/bin/nvcc'), CUDA_HOME=str(sdk / 'CUDA_SDK'),
         JOBS=str(args.jobs), DG_JIT_CACHE_DIR=str(output / 'ncp-jit-cache'),
         PATH=str(python_bin) + os.pathsep + env['PATH'])
     print(f'KPACK_MODEL_CI source={llama_rev} ncp={revisions[0]} jobs={args.jobs} output={output}', flush=True)
     print(f'KPACK_MODEL_CI ncp_mode={"REUSE_BUILD" if reuse else "FRESH_CHECKOUT"} path={ncp}', flush=True)
+    print(f'KPACK_MODEL_CI caller_build={build} reuse={int(bool(caller_build))}', flush=True)
     subprocess.run(['bash', str(llama / '.aoneci/scripts/build.sh')], cwd=llama, env=env, check=True)
     receipt = build_receipt(llama, ncp, sdk, args.jobs, build)
     receipt['llama_source_mode'] = 'LOCAL_WORKTREE' if args.local_llama else 'PINNED_CHECKOUT'
     receipt['llama_worktree'] = source_state
     receipt['ncp_build_mode'] = 'REUSE_BUILD' if reuse else 'FRESH_CHECKOUT'
     receipt['ncp_directory'] = str(ncp)
+    receipt['llama_build_mode'] = 'REUSE_BUILD' if caller_build else 'FRESH_BUILD'
     if receipt['ncp_source_commit'] != revisions[0] or receipt['llama_source_commit'] != llama_rev:
         raise ValueError('CI build changed its pinned source')
     after = local_source_state(llama)

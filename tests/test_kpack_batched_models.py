@@ -224,7 +224,9 @@ def test_final_model_runner_uses_joint_ci_caller_and_pinned_runtime():
     assert 'if [[ -n ${LLAMA_CI_DIR:-} ]]' in text and 'CI_SOURCE_ARGS+=(--local-llama)' in text
     assert 'CI_SOURCE_ARGS+=(--llama-revision "${INFO[4]}")' in text
     assert 'git -C "$LLAMA_DIR" diff --cached --quiet' not in text
-    assert 'BUILD_DIR="$RUN/ci/llama-build"' in text
+    assert 'BUILD_DIR=$(realpath -e -- "${LLAMA_CI_BUILD_DIR:-$RUN/ci/llama-build}")' in text
+    assert 'CI_SOURCE_ARGS+=(--reuse-llama-build "$LLAMA_CI_BUILD_DIR")' in text
+    assert 'LLAMA_CI_BUILD_DIR requires LLAMA_CI_DIR' in text
     assert 'NCP_BUILD_ARGS+=(--reuse-ncp-build "$NCP_CI_DIR")' in text
     assert '$SDK/targets/x86_64-linux/lib' in text
     assert 'git -C "$LLAMA_DIR" rev-parse HEAD > "$RUN/results/llama-source.txt"' in text
@@ -419,7 +421,8 @@ def test_joint_ci_receipt_requires_hooks_libraries_and_jit_headers(tmp_path, mon
 
 
 @pytest.mark.parametrize('reuse_ncp', [False, True])
-def test_local_llama_override_uses_dirty_worktree_and_external_build(tmp_path, monkeypatch, reuse_ncp):
+@pytest.mark.parametrize('reuse_llama', [False, True])
+def test_local_llama_override_uses_dirty_worktree_and_external_build(tmp_path, monkeypatch, reuse_ncp, reuse_llama):
     from tools import build_kpack_model_ci as ci
     def repository(name):
         root = tmp_path / name
@@ -434,7 +437,7 @@ def test_local_llama_override_uses_dirty_worktree_and_external_build(tmp_path, m
     ncp_rev = ci.git(ncp, 'rev-parse', 'HEAD')
     script = llama / '.aoneci/scripts/build.sh'
     script.parent.mkdir(parents=True)
-    script.write_text('# fixture consumes ${LLAMA_BUILD_DIR}\n')
+    script.write_text('# fixture consumes ${LLAMA_BUILD_DIR} and ${LLAMA_BUILD_REUSE}\n')
     (llama / '.aoneci/NCP_LIB_VERSION').write_text(ncp_rev + '\n')
     ci.git(llama, 'add', '.')
     ci.git(llama, 'commit', '-qm', 'CI entry')
@@ -451,6 +454,18 @@ def test_local_llama_override_uses_dirty_worktree_and_external_build(tmp_path, m
     output, receipt = tmp_path / 'ci', tmp_path / 'receipt.json'
     argv = ['build_kpack_model_ci.py', '--llama', str(llama), '--ncp', str(ncp), '--sdk', str(sdk),
             '--output', str(output), '--receipt', str(receipt), '--local-llama', '--jobs', '192']
+    caller_build = old.parent if reuse_llama else output / 'llama-build'
+    if reuse_llama:
+        argv += ['--reuse-llama-build', str(caller_build)]
+        flags = ci.caller_profile(sdk) | dict(CMAKE_HOME_DIRECTORY=str(llama), CMAKE_BUILD_TYPE='Release',
+            CMAKE_CUDA_ARCHITECTURES='OFF', LLAMA_BUILD_TESTS='ON', LLAMA_BUILD_EXAMPLES='ON', LLAMA_BUILD_SERVER='ON')
+        cache = caller_build / 'CMakeCache.txt'
+        original = ''.join(f'{k}:STRING={v}\n' for k, v in flags.items())
+        for key in ('CMAKE_HOME_DIRECTORY', 'CMAKE_CUDA_COMPILER', 'GGML_NCP_MOE', 'LLAMA_BUILD_TESTS'):
+            cache.write_text(original.replace(f'{key}:STRING={flags[key]}', f'{key}:STRING=wrong'))
+            with pytest.raises(ValueError, match='llama reuse'):
+                ci.reusable_llama_build(caller_build, llama, sdk)
+        cache.write_text(original)
     if reuse_ncp:
         argv += ['--reuse-ncp-build', str(ncp)]
         (ncp / 'build').mkdir()
@@ -471,7 +486,8 @@ def test_local_llama_override_uses_dirty_worktree_and_external_build(tmp_path, m
         assert command == ['bash', str(script)]
         assert kwargs['cwd'] == llama
         assert kwargs['env']['LLAMA_CI_DIR'] == str(llama)
-        assert kwargs['env']['LLAMA_BUILD_DIR'] == str(output / 'llama-build')
+        assert kwargs['env']['LLAMA_BUILD_DIR'] == str(caller_build)
+        assert kwargs['env']['LLAMA_BUILD_REUSE'] == str(int(reuse_llama))
         assert kwargs['env']['NCP_LIB_DIR'] == str(ncp if reuse_ncp else output / 'ncp_flash_lib')
         assert kwargs['env']['JOBS'] == '192'
         assert (llama / 'source.cu').read_text() == 'local edit'
@@ -489,6 +505,8 @@ def test_local_llama_override_uses_dirty_worktree_and_external_build(tmp_path, m
     assert result['llama_worktree']['directory'] == str(llama)
     assert 'source.cu' in result['llama_worktree']['status']
     assert old.read_text() == 'previous build'
+    assert result['build'] == str(caller_build)
+    assert result['llama_build_mode'] == ('REUSE_BUILD' if reuse_llama else 'FRESH_BUILD')
     assert result['ncp_build_mode'] == ('REUSE_BUILD' if reuse_ncp else 'FRESH_CHECKOUT')
     if reuse_ncp:
         assert (ncp / 'build/completed.o').read_bytes() == b'keep completed object'

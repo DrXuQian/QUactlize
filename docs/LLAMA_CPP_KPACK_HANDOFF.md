@@ -4,9 +4,23 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
+## Caller scheduler compatibility and resume, 2026-09-15
+
+The private caller pin advances to `6d3232e08`. The scheduler test obtains
+legacy split-buffer support through the optional registry entry, matching
+the v0.3.0 loader. Its removed direct CUDA API was a compile error, not a
+compute failure. CUDA/K-pack buffer assertions and scheduler cases remain.
+
+Use `LLAMA_CI_BUILD_DIR` with `LLAMA_CI_DIR` to continue the interrupted
+caller build; `NCP_CI_DIR` independently reuses the NCP build. The same
+`.aoneci` entry validates source/compiler identity and retains objects.
+[Exact hnN1Jf recovery command](KPACK_Q4_MODEL_CLOSURE.md#scheduler-api-and-caller-build-continuation-2026-09-15).
+No runtime payload, ABI, model policy or kernel change; box completion
+remains pending.
+
 ## NCP linker correction, 2026-09-15
 
-The caller pin is now private llama `174fcb11b`. Its `.aoneci` build adds
+Private llama `174fcb11b` introduced the `.aoneci` fix that adds
 the selected SDK's `libhggc_wrapper.so` to `ncp_moe` only. That library
 owns `hggcGetDeviceProperties_v2`; the failed box link had omitted it.
 Both native SDK layouts, `targets/x86_64-linux/lib` and `lib`, are supported.

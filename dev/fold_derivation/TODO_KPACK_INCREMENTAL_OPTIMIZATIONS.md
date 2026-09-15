@@ -2,6 +2,13 @@
 
 ## CI build entry, 2026-09-15
 
+- Scheduler test compile blocker locally repaired in private llama
+  `6d3232e08`: query optional registry split-buffer support instead of
+  the direct CUDA entry removed in v0.3.0. Existing scheduler cases remain.
+  `LLAMA_CI_BUILD_DIR` resumes the matching local caller build through
+  `.aoneci` without discarding objects; `hnN1Jf` can continue alongside
+  the reused NCP build. Local 97 library/tool and 29 caller tests pass;
+  joint PPU build and model verification remain pending.
 - Link blocker diagnosed and locally repaired: `ncp_moe` omitted the SDK
   wrapper that exports `hggcGetDeviceProperties_v2`. Private llama
   `174fcb11b` links it explicitly through `.aoneci`; host negative/positive

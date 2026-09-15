@@ -90,8 +90,15 @@
         LLAMA_DIR=$(realpath -e -- "$LLAMA_CI_DIR")
         test -f "$LLAMA_DIR/.aoneci/scripts/build.sh"
         CI_SOURCE_ARGS+=(--local-llama)
+        if [[ -n ${LLAMA_CI_BUILD_DIR:-} ]]; then
+            CI_SOURCE_ARGS+=(--reuse-llama-build "$LLAMA_CI_BUILD_DIR")
+        fi
         printf 'KPACK_Q4_MODEL caller_source=LOCAL_WORKTREE path=%s local_edits=INCLUDED\n' "$LLAMA_DIR"
     else
+        if [[ -n ${LLAMA_CI_BUILD_DIR:-} ]]; then
+            printf 'LLAMA_CI_BUILD_DIR requires LLAMA_CI_DIR\n' >&2
+            false
+        fi
         LLAMA_DIR="$RESULT_DIR/llama-model-source-${INFO[4]:0:10}"
         if [[ ! -e "$LLAMA_DIR" ]]; then
             git clone --no-checkout --depth 1 --single-branch --branch dev/quactlize-v0.3.0 \
@@ -118,7 +125,7 @@
         LLAMA_DIR="$RUN/ci/llama"
         BUILD_DIR="$LLAMA_DIR/build-ci"
     else
-        BUILD_DIR="$RUN/ci/llama-build"
+        BUILD_DIR=$(realpath -e -- "${LLAMA_CI_BUILD_DIR:-$RUN/ci/llama-build}")
     fi
     export CUDA_HOME="$SDK/CUDA_SDK" DG_JIT_CACHE_DIR="$RUN/ci/ncp-jit-cache"
     unset DG_LIBRARY_ROOT GGML_NCP_FA_LIB GGML_NCP_MOE_LIB

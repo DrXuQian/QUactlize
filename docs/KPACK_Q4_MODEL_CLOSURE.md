@@ -4,6 +4,37 @@ Current scope: the private `dev/quactlize-v0.3.0` branch, canonical K-pack,
 request batch 1, prompt 2048. Q4_K_M model files can contain Q5_K, Q6_K and
 Q8_0 tensors; their actual paths must be covered, not just qtype 12.
 
+## Scheduler API and caller build continuation, 2026-09-15
+
+The `hnN1Jf` joint build reached the llama test compilation. Its scheduler
+test still called `ggml_backend_cuda_split_buffer_type`, which the v0.3.0
+CUDA backend no longer exports. Private llama `6d3232e08` uses the optional
+registry capability, as the model loader does. Ordinary CUDA and K-pack
+buffer checks and all 21 scheduler cases remain. The original error is
+locally reproduced; the corrected test passes a real C++ syntax check
+against the current headers. No compute kernel is changed.
+
+The local caller can now continue its existing build through `.aoneci`:
+
+```bash
+LLAMA_CI_DIR=/sim/eec/shared/junfu.qx/llama.cpp \
+LLAMA_CI_BUILD_DIR=/workspace/kpack-q4-model.hnN1Jf/ci/llama-build \
+NCP_CI_DIR=/workspace/kpack-q4-model.N5J9uY/ci/ncp_flash_lib \
+NCP_LIB_DIR=/sim/eec/shared/junfu.qx/ncp_flash_lib \
+PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
+JOBS=192 CUDA_VISIBLE_DEVICES=0 bash tools/run_kpack_q4_model_box.sh
+```
+
+Update both development branches first. `LLAMA_CI_BUILD_DIR` requires
+`LLAMA_CI_DIR`; the helper checks the cached source/compiler/build profile
+before setting `.aoneci`'s `LLAMA_BUILD_REUSE=1`. Completed objects are
+retained and build dependencies decide what needs recompilation. Results
+go into a new run; `caller-ci-build.json` records the actual reused build
+and `llama_build_mode=REUSE_BUILD`. Do not remove either old build or start
+a second build against it concurrently. Without the reuse variable, a
+fresh caller output remains the default. Box build/model checks are still
+pending; local 97 Quactlize and 29 caller tests do not imply model admission.
+
 ## Caller source cache retry
 
 `LLAMA_CI_DIR` uses the supplied working tree directly and bypasses the
