@@ -13603,9 +13603,9 @@
   },
   "prefill": {
     "library": "libquactlize_ppu_prefill.so",
-    "library_sha256": "1235b5b28277c6ff0457c63f70c855d49204c101e43747ae20b1b95c2d51f6bf",
+    "library_sha256": "8aa0e7ab4be9f75357491f3e588825ea95851372070c9d2ae63ea63bcccd522a",
     "receipt": "prefill-runtime.json",
-    "receipt_sha256": "b1cc8cef68cfd5193c1c2942fcd8d4c31b3be8130ca9c3bfec41c9600b4a66d9",
+    "receipt_sha256": "138dba130c70e822a6e15d66a40d4be676f0506e912ab4c2493f8c80e8b0a247",
     "helper": "kpack_deepgemm_prewarm.py",
     "helper_sha256": "d614e96f0eb6696237081d7b129049183259197b70885c7fe8c00ecc42bba315"
   },

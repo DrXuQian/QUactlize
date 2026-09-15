@@ -1,7 +1,7 @@
 {
   "schema": "quactlize.prefill-runtime.v1",
   "library": "libquactlize_ppu_prefill.so",
-  "sha256": "1235b5b28277c6ff0457c63f70c855d49204c101e43747ae20b1b95c2d51f6bf",
+  "sha256": "8aa0e7ab4be9f75357491f3e588825ea95851372070c9d2ae63ea63bcccd522a",
   "source_hashes": {
     "quactlize/include/q4_n16k64_direct_offline.hpp": "edd373684b20c70292cd0dcf8b7b81e9c50919265e6046c8b70c16631d7c18b8",
     "quactlize/include/dense_splitk_multiformat_ppu.cuh": "bb7281158ef405dbe32835120fc21bd03f0f5b9a6a4191c687074269431191f2",
@@ -576,9 +576,9 @@
     "third_party/actlize/include/cutlass/transform/threadblock/regular_tile_iterator_pitch_linear_2dthreadtile.h": "6453db5167d983d88c24e6ea94014adb2234d5f48cf0bffcc9d6ba8dc93e5003",
     "third_party/actlize/include/cutlass/transform/threadblock/vector_iterator.h": "d8766eb491ecbf7d64b6dbcb54e486a6ebe55a154f59f1b79e1baf69fecd180d",
     "third_party/actlize/include/cutlass/transform/warp/vector_fragment_iterator.h": "da629c78d173394b9a7bfaf928b63b4d5a327ad8f5937bc9cca5ce6e869bc918",
-    "quactlize/execution/api.h": "e53e1d278371de69948f512bea827ea91fc723a37a309c39dc9bb42103918c4b",
+    "quactlize/execution/api.h": "ddee15ba624b831c97a8ba2babce7af6fe4f2a32339cdddf2e0b3b159699c962",
     "quactlize/execution/reader.hpp": "8e064fc00685890cf21805ec365ce82acc1ea926dd64fb98c02567456f4f8342",
-    "quactlize/execution/validation.hpp": "71a6e82450377dadb180622463cd6c16b2e545f0d77b82eb5d49db52ee71a737",
+    "quactlize/execution/validation.hpp": "1302a38bb0bf2d659a195a0a26823717f69d20fc5f178e940660aeea6b328062",
     "quactlize/execution/dispatch.cpp": "8e461947eefd0441cd39455f30e0c5bb6cc8ce85fa2e78928768fb65897105ef",
     "quactlize/execution/gemv.cu": "ab3f27bf2c1ea441d7d55d2dd9384da0b06b42982f3e3b8ce0bb47ef5c2ee251",
     "quactlize/execution/metadata.cu": "ddc5c9a6e932043da0daa7386b31fcbc194495a7a7ee85727a8f8fa44520bf40",
@@ -592,6 +592,13 @@
     "quactlize/execution/q4_decode.cpp": "9cba67774e65a1528fffb89279309512ec38ad635322774fb5d841c4d4e6ba7f",
     "quactlize/execution/q4_decode_kernel.cuh": "df491f976abb8156af60525ea8d698ae9d9a583317fb0386e103f1836e6060db",
     "quactlize/execution/q4_decode_io.cu": "f67c6cc9858c092567c99dacb578faee7691a961dbb575c73c4bdb8125b2f720",
+    "quactlize/execution/moe.h": "b8a11c2fef4016eed86f281da2ab073c5a26baa43775ceb6cf74a14eea9ef84d",
+    "quactlize/execution/moe.cu": "2d9874bbc9f929445a459e70e1f773df90c3ff0cc17edbde81e3e0ee27423a11",
+    "quactlize/execution/simt.h": "de4e64e11a9256366ac7aef75ce2c104547ddcf1b3c9b1d47ed71747bb27120a",
+    "quactlize/execution/simt_validation.hpp": "b3b8205a0ce1a3c1c386b35c5c775045aa44f54f8741dedeb4454d0ac7a84b40",
+    "quactlize/execution/simt_format.cuh": "262fe74393b0a7bcf65e06d6b64d5246208f0dcf86280f45d9e431fe19d390b8",
+    "quactlize/execution/simt_kernel.cuh": "ae16ddde00e73175873778d2b1b7b22a48510c837930b5dfb78447f7a82a9125",
+    "quactlize/execution/simt.cpp": "f6cd98ee8e5b70bfaf06f490645d4c468b678cddbe42e6eaecc8f5d83e8c0140",
     "quactlize/dequant/api.h": "f2dcacac3088463154717cae1334d62de8460d9fdfa3c8161df2bb0a3435c93e",
     "quactlize/dequant/reader.hpp": "2bd12f5ddcc7cc355a3ee5834bf56f8901b7736bee068b5a9d1fcc0ac5e1b3fb",
     "quactlize/dequant/kernels.cu": "d8674074c418d45363c701411f6cd94d68b9a62339126f3b5fe93d94497dd8fa",
@@ -604,10 +611,10 @@
     "quactlize/dequant/expert_selection.cuh": "8180cabcb7d923913e396910bf4dad17d10ac2f50186597620df3dc6bec83a59",
     "quactlize/dequant/indexed.cu": "1c723fbe761e415f7638b8757caf16f5e404a9d51b0518138aab94c3f25abc65",
     "quactlize/dequant/indexed.h": "fafd190017a0571509106451f9ab6f1909b5fed8d19c2d08314b5564468f8915",
-    "quactlize/prefill/api.h": "b176024e019fbde3f3d316b7ba06235dfee49a66c897e93aa48c1a82aaa5e345",
-    "quactlize/prefill/layout.hpp": "940f32780d8574437859ade44a10c10a4b67ee2d9ea1dbe0a0b55641d79ec00c",
-    "quactlize/prefill/stages.cu": "b281d9a8a783259413a3e619c07217029f0e67c6844cd2d859cc930c1b26c4e8",
-    "quactlize/prefill/runtime.cpp": "822993336e9834c27dceb0725f4db8476bfb6dcb34d7003c9ff003080d60e50e"
+    "quactlize/prefill/api.h": "5ec546a91cfa03cb90e3296793ff66fb5a229c2ccf655c223b83eadf95837464",
+    "quactlize/prefill/layout.hpp": "3ff3a074d7aa6f15074837c5e3a84c6508921db79bdecac751ce8b3cea902e06",
+    "quactlize/prefill/stages.cu": "c538d738f1146e109e29e0965b51d2616482c77a5b8dab1ce5d05aeab9a11d35",
+    "quactlize/prefill/runtime.cpp": "46bc2f2cdd4735d2b847dcf4d03196178e2cd0a37fba2317b30baa9a1c042423"
   },
   "runtime": {
     "libhggc_wrapper.so": "71c32cb41191458503234324360fcd3f1fa890dd5a082d465bb07328630c775e",
@@ -651,7 +658,7 @@
       "-c",
       "/root/marlin_ppu/quactlize/quactlize/dequant/kernels.cu",
       "-o",
-      "/root/autodl-tmp/kpack-prefill-runtime-final-20260914/kernels.o"
+      "/root/autodl-tmp/kpack-prefill-loader-fix-20260915/kernels.o"
     ],
     [
       "/root/autodl-tmp/root-relocated/ppu-sdk/2.1.1/bin/hgcc",
@@ -687,7 +694,7 @@
       "-c",
       "/root/marlin_ppu/quactlize/quactlize/dequant/indexed.cu",
       "-o",
-      "/root/autodl-tmp/kpack-prefill-runtime-final-20260914/indexed.o"
+      "/root/autodl-tmp/kpack-prefill-loader-fix-20260915/indexed.o"
     ],
     [
       "/root/autodl-tmp/root-relocated/ppu-sdk/2.1.1/bin/hgcc",
@@ -723,7 +730,7 @@
       "-c",
       "/root/marlin_ppu/quactlize/quactlize/prefill/stages.cu",
       "-o",
-      "/root/autodl-tmp/kpack-prefill-runtime-final-20260914/stages.o"
+      "/root/autodl-tmp/kpack-prefill-loader-fix-20260915/stages.o"
     ],
     [
       "g++",
@@ -739,17 +746,17 @@
       "-c",
       "/root/marlin_ppu/quactlize/quactlize/prefill/runtime.cpp",
       "-o",
-      "/root/autodl-tmp/kpack-prefill-runtime-final-20260914/runtime.o"
+      "/root/autodl-tmp/kpack-prefill-loader-fix-20260915/runtime.o"
     ],
     [
       "g++",
       "-shared",
       "-pthread",
       "-Wl,-Bsymbolic",
-      "/root/autodl-tmp/kpack-prefill-runtime-final-20260914/kernels.o",
-      "/root/autodl-tmp/kpack-prefill-runtime-final-20260914/indexed.o",
-      "/root/autodl-tmp/kpack-prefill-runtime-final-20260914/stages.o",
-      "/root/autodl-tmp/kpack-prefill-runtime-final-20260914/runtime.o",
+      "/root/autodl-tmp/kpack-prefill-loader-fix-20260915/kernels.o",
+      "/root/autodl-tmp/kpack-prefill-loader-fix-20260915/indexed.o",
+      "/root/autodl-tmp/kpack-prefill-loader-fix-20260915/stages.o",
+      "/root/autodl-tmp/kpack-prefill-loader-fix-20260915/runtime.o",
       "-L/root/autodl-tmp/root-relocated/ppu-sdk/2.1.1/lib",
       "-lhggc_wrapper",
       "-lhggcrt1",
@@ -757,9 +764,9 @@
       "-lhg_wrapper",
       "-ldl",
       "-o",
-      "/root/autodl-tmp/kpack-prefill-runtime-final-20260914/libquactlize_ppu_prefill.so"
+      "/root/autodl-tmp/kpack-prefill-loader-fix-20260915/libquactlize_ppu_prefill.so"
     ]
   ],
-  "seconds": 17.969673320651054,
+  "seconds": 17.333492320030928,
   "device_admission": "PENDING_COMPOSED_RUNTIME"
 }
