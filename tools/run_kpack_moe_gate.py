@@ -18,8 +18,8 @@ import numpy as np
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from reference import gguf_kpack as ref
-from quactlize.dispatch.native import Dispatch, IndexedIO, Router, MoeEndpoint, MoeEndpointV3, Choice, Request, receipt
-from quactlize.execution.native import Call as GemvCall, Sizes as GemvSizes, bind_simt
+from quactlize.dispatch.native import Dispatch, IndexedIO, Router, MoeEndpoint, MoeEndpointV3, MoeEndpointV4, Choice, Request, receipt
+from quactlize.execution.native import Call as GemvCall, Sizes as GemvSizes, SimtCallV2, bind_simt, bind_simt_compute
 from quactlize.runtime.native import SDK, Call, checked
 from tools.kpack_warmup_fixture import prepare_expert
 from tools.run_kpack_gemv_gate import Resources
@@ -155,11 +155,12 @@ def dequant(raw,q,expert):
     return dequantize(raw[expert].reshape(-1),GGMLQuantizationType(q)).reshape(raw.shape[1],-1).astype('f8')
 
 
-def dot(raw,q,ids,act):
+def dot(raw,q,ids,act,compute=0):
+    from dev.bf16_compute.fixture import round_compute
     golden=[];denom=[]; cache={}
     for i,e in enumerate(ids.reshape(-1)):
         if int(e) not in cache: cache[int(e)]=dequant(raw,q,int(e))
-        w=cache[int(e)];a=act[i].astype('<f2').astype('f8')
+        w=cache[int(e)];a=round_compute(act[i],'bf16' if compute else 'f16').astype('f8')
         golden.append(w@a);denom.append(np.abs(w)@np.abs(a))
     return np.array(golden),np.array(denom)
 
@@ -171,8 +172,18 @@ def check(got,gold,denom):
     return err
 
 
+def automatic_smallm(dispatch, call, arrangement, compute):
+    """Use the same priority as the caller; never overwrite a matched TC ticket."""
+    matched=dispatch.query_smallm_matched(call,arrangement,compute)
+    if matched is not None:
+        return matched.base,matched.q4 if matched.base.kind==2 else None
+    legacy=dispatch.query_smallm(call,arrangement,compute if compute else None) if call.qtype!=12 else None
+    return legacy,None
+
+
 def chain_case(args,sdk,lib,merged,tokens,router_enabled,down_q=13):
     e,n,k,topk=256,512,2048,8;m=tokens*topk
+    compute=int(getattr(args,'compute','fp16')=='bf16')
     jit=dict(python=sys.executable,helper=ROOT/'tools/kpack_jit.py',sdk=args.sdk,cache=args.jit_cache) if args.jit_cache else None
     r=Resources(sdk);d=Dispatch(args.bundle,jit=jit)
     graph,instance=C.c_void_p(),C.c_void_p()
@@ -196,58 +207,64 @@ def chain_case(args,sdk,lib,merged,tokens,router_enabled,down_q=13):
             table=getattr(args,'smallm_table',False)
             endpoint_type=MoeEndpointV3 if table else MoeEndpoint
             version=3 if table else 2
+            def wrap(endpoint):
+                return MoeEndpointV4(4,C.sizeof(MoeEndpointV4),endpoint,compute) if compute else endpoint
             choice=None
-            if mixed and table and q!=12:
+            selected=q4_selected=None
+            if mixed and table:
                 gc=GemvCall(version=1,size=C.sizeof(GemvCall),qtype=q,n=nn,k=kk,experts=e,rows=m,mode=2,
                     input_type=1,channels=channels,topk=topk,a_row_stride=kk,a_token_stride=channels*kk,
                     ids_stride=topk,out_row_stride=nn,a=inp,low=planes[0],high=planes[1],units=planes[2],ids=ids,
                     output=out+16,stream=r.stream.value)
-                selected=d.query_smallm(gc,arr)
+                selected,q4_selected=automatic_smallm(d,gc,arr,compute)
                 if selected is not None and selected.kind==1:
                     execution=C.CDLL(str(args.bundle/'libquactlize_ppu_execution.so'),mode=C.RTLD_LOCAL)
-                    query_simt,run=bind_simt(execution);cfg=selected.simt
-                    sizes=GemvSizes();checked(query_simt(C.byref(gc),C.byref(cfg),C.byref(arr),C.byref(sizes)),'selected SIMT query')
+                    query_simt,run=bind_simt_compute(execution);cfg=selected.simt
+                    sizes=GemvSizes();typed=SimtCallV2(gc,compute)
+                    checked(query_simt(C.byref(typed),C.byref(cfg),C.byref(arr),C.byref(sizes)),'selected SIMT query')
                     gc.workspace_bytes=sizes.workspace_bytes
                     gc.workspace=r.alloc(sizes.workspace_bytes) if sizes.workspace_bytes else None
+                    typed=SimtCallV2(gc,compute)
                     count=d.simt_scratch(gc);scratch=r.alloc(count+512);r.fill(scratch,0xA5,count+512)
                     endpoint=endpoint_type(version,C.sizeof(endpoint_type),None,C.addressof(gc),None,None,
                         C.addressof(arr),scratch+256,count,C.addressof(cfg))
-                    parts.append(dict(run=lambda run=run,gc=gc,cfg=cfg,arr=arr:run(C.byref(gc),C.byref(cfg),C.byref(arr)),
-                        endpoint=endpoint,keep=(gc,cfg,arr,execution),out=out,n=nn,scratch=(scratch,count),
+                    parts.append(dict(run=lambda run=run,typed=typed,cfg=cfg,arr=arr:run(C.byref(typed),C.byref(cfg),C.byref(arr)),
+                        endpoint=wrap(endpoint),keep=(gc,typed,cfg,arr,execution),out=out,n=nn,scratch=(scratch,count),
                         choice=dict(route='SIMT',reader='register-reuse',policy=selected.policy,
                             recipe=[getattr(cfg,x) for x in ('variant','columns','warps','values','split')])))
                     continue
-                if selected is not None:choice=selected.tc
-            if mixed and q==12:
+                if selected is not None and selected.kind==0:choice=selected.tc
+            if mixed and q==12 and choice is None:
                 from tools.run_q4_decode_policy_gate import Config as Q4Config
                 execution=C.CDLL(str(args.bundle/'libquactlize_ppu_execution.so'),mode=C.RTLD_LOCAL)
-                select=execution.quactlize_kpack_q4_decode_select_v1
-                select.argtypes=[C.POINTER(GemvCall),C.POINTER(Arrangement),C.POINTER(Q4Config),C.POINTER(GemvSizes)]
+                select=execution.quactlize_kpack_q4_decode_select_v2
+                select.argtypes=[C.POINTER(SimtCallV2),C.POINTER(Arrangement),C.POINTER(Q4Config),C.POINTER(GemvSizes)]
                 select.restype=C.c_int
                 gc=GemvCall(version=1,size=C.sizeof(GemvCall),qtype=q,n=nn,k=kk,experts=e,rows=m,mode=2,
                     input_type=1,channels=channels,topk=topk,a_row_stride=kk,a_token_stride=channels*kk,
                     ids_stride=topk,out_row_stride=nn,a=inp,low=planes[0],high=planes[1],units=planes[2],ids=ids,
                     output=out+16,stream=r.stream.value)
-                cfg=Q4Config();sizes=GemvSizes();rc=select(C.byref(gc),C.byref(arr),C.byref(cfg),C.byref(sizes))
+                typed=SimtCallV2(gc,compute)
+                cfg=Q4Config();sizes=GemvSizes();rc=select(C.byref(typed),C.byref(arr),C.byref(cfg),C.byref(sizes))
+                if q4_selected is not None and (rc or bytes(cfg)!=bytes(q4_selected)):
+                    raise ValueError('matched Q4 recipe changed at the execution boundary')
                 if rc==0:
-                    run=execution.quactlize_kpack_q4_decode_run_v1
-                    run.argtypes=[C.POINTER(GemvCall),C.POINTER(Q4Config),C.POINTER(Arrangement)];run.restype=C.c_int
+                    run=execution.quactlize_kpack_q4_decode_run_v2
+                    run.argtypes=[C.POINTER(SimtCallV2),C.POINTER(Q4Config),C.POINTER(Arrangement)];run.restype=C.c_int
                     count=d.simt_scratch(gc);scratch=r.alloc(count+512);r.fill(scratch,0xA5,count+512)
                     endpoint=endpoint_type(version,C.sizeof(endpoint_type),None,C.addressof(gc),C.addressof(cfg),None,
                         C.addressof(arr),scratch+256,count)
-                    parts.append(dict(run=lambda run=run,gc=gc,cfg=cfg,arr=arr:run(C.byref(gc),C.byref(cfg),C.byref(arr)),
-                        endpoint=endpoint,keep=(gc,cfg,arr,execution),out=out,n=nn,scratch=(scratch,count),
-                        choice=dict(route='SIMT',recipe=[getattr(cfg,x) for x in ('reader','variant','warps','values','columns')])))
+                    parts.append(dict(run=lambda run=run,typed=typed,cfg=cfg,arr=arr:run(C.byref(typed),C.byref(cfg),C.byref(arr)),
+                        endpoint=wrap(endpoint),keep=(gc,typed,cfg,arr,execution),out=out,n=nn,scratch=(scratch,count),
+                        choice=dict(route='SIMT',policy=selected.policy if selected is not None else ('INITIAL_BF16' if compute else 'Q4_AUTO'),
+                            recipe=[getattr(cfg,x) for x in ('reader','variant','warps','values','columns')])))
                     continue
                 if rc!=24:raise ValueError(f'automatic Q4 SIMT selection rejected: {rc}')
-                query=d.lib.quactlize_kpack_dispatch_query_decode_v1
-                query.argtypes=[C.c_void_p,C.POINTER(Request),C.POINTER(Choice)];query.restype=C.c_int
-                req=Request(1,C.sizeof(Request),q,2,m,nn,kk,e,tokens,arr.mapping_id);choice=Choice()
-                rc=query(d.runtime,C.byref(req),C.byref(choice))
-                if rc==1:choice=None
-                elif rc:raise ValueError('decode TC selection: '+d.fn['error']().decode())
+                req=Request(1,C.sizeof(Request),q,2,m,nn,kk,e,tokens,arr.mapping_id)
+                choice=d.query_compute(req,compute,decode=True)
             if choice is None:
-                choice=d.query(*[request[key] for key in ('q','route','m','n','k','experts','max_rows')],arr.mapping_id)
+                req=Request(1,C.sizeof(Request),*[request[key] for key in ('q','route','m','n','k','experts','max_rows')],arr.mapping_id)
+                choice=d.query_compute(req,compute) if compute else d.query(*[request[key] for key in ('q','route','m','n','k','experts','max_rows')],arr.mapping_id)
             if choice is None:
                 raise ValueError('selected grouped parent unavailable: '+json.dumps(dict(request,reason=d.last_miss)))
             call=Call(1,C.sizeof(Call),m,nn,kk,e,arr.group_size,choice.device,choice.compute_units,arr.mapping_id,
@@ -255,9 +272,9 @@ def chain_case(args,sdk,lib,merged,tokens,router_enabled,down_q=13):
                 r.alloc((e+1)*4),r.alloc(max(16,choice.workspace_bytes)),choice.workspace_bytes,r.stream.value)
             io=IndexedIO(1,C.sizeof(IndexedIO),tokens,topk,channels,0,topk,kk,channels*kk,nn,
                          ids,inp,out+16,r.alloc(m*4))
-            run=d.prepare(choice,call,indexed=io)
+            run=d.prepare_compute(choice,call,tokens,compute,indexed=io) if compute else d.prepare(choice,call,indexed=io)
             endpoint=endpoint_type(version,C.sizeof(endpoint_type),d.handles[-1],None,None,None,None,None,0)
-            parts.append(dict(run=run,handle=d.handles[-1],endpoint=endpoint,out=out,n=nn,choice=receipt(choice)))
+            parts.append(dict(run=run,handle=d.handles[-1],endpoint=wrap(endpoint),out=out,n=nn,choice=receipt(choice)))
         router=Router(1,C.sizeof(Router),0,1,0,0,1e-8,1,route_logits,None,route_weights) if router_enabled else None
         field='endpoint' if getattr(args,'mixed',False) else 'handle'
         launch=d.chain(parts[0][field],None if merged else parts[1][field],parts[-1][field],r.stream.value,router,mixed=getattr(args,'mixed',False))
@@ -280,13 +297,17 @@ def chain_case(args,sdk,lib,merged,tokens,router_enabled,down_q=13):
             else: uo=np.frombuffer(sdk.download(parts[1]['out']+16,m*n*4),dtype='f4').reshape(m,n).copy()
             aa=np.repeat(act,topk,axis=0)
             for value,raw in ((go,gate),(uo,up)):
-                gold,denom=dot(raw,12,chosen,aa);errors.append(check(value,gold,denom))
+                gold,denom=dot(raw,12,chosen,aa,compute);errors.append(check(value,gold,denom))
+            if mixed:
+                from dev.bf16_compute.fixture import round_compute
+                go,uo=(round_compute(x,'bf16' if compute else 'f16') for x in (go,uo))
             activated=(go/(1+np.exp(-go))*uo).astype('f4')
             checked(sdk.lib.hggcMemcpy(activation,activated.ctypes.data,activated.nbytes,1),'oracle activation upload');sdk.synchronize(None)
             checked(parts[-1]['run'](),'standalone down');sdk.synchronize(r.stream)
             baseline=np.frombuffer(sdk.download(parts[-1]['out']+16,m*k*4),dtype='f4').reshape(m,k).copy()
-            gold,denom=dot(down,down_q,chosen,activated);errors.append(check(baseline,gold,denom))
+            gold,denom=dot(down,down_q,chosen,activated,compute);errors.append(check(baseline,gold,denom))
             r.fill(parts[-1]['out'],0xA5,m*k*4+32)
+            sdk.synchronize(None)  # Untimed fixture poison must precede the nonblocking stream.
             if replay==0:
                 checked(launch(),'excluded eager chain');sdk.synchronize(r.stream)
                 checked(sdk.lib.hggcStreamBeginCapture(r.stream,0),'chain capture')
@@ -295,6 +316,7 @@ def chain_case(args,sdk,lib,merged,tokens,router_enabled,down_q=13):
                 checked(sdk.lib.hggcGraphInstantiateWithFlags(C.byref(instance),graph,0),'instantiate')
             # Poison original down input: chain must produce it on device.
             r.fill(activation,0x7F,m*n*4)
+            sdk.synchronize(None)
             checked(sdk.lib.hggcGraphLaunch(instance,r.stream),'chain replay');sdk.synchronize(r.stream)
             image=sdk.download(parts[-1]['out'],m*k*4+32)
             if image[:16]!=b'\xa5'*16 or image[-16:]!=b'\xa5'*16: raise ValueError('chain output guard changed')
@@ -315,7 +337,7 @@ def chain_case(args,sdk,lib,merged,tokens,router_enabled,down_q=13):
                 if not np.allclose(actual,expected,rtol=2e-5,atol=1e-7): raise ValueError('router weights differ')
         checked(sdk.lib.hggcGraphLaunch(instance,r.stream),'excluded graph warmup');sdk.synchronize(r.stream)
         samples=r.samples(lambda:sdk.lib.hggcGraphLaunch(instance,r.stream),args.samples)
-        result=dict(status='PASS',merged=merged,tokens=tokens,router=router_enabled,down_q=down_q,
+        result=dict(status='PASS',compute='bf16' if compute else 'f16',merged=merged,tokens=tokens,router=router_enabled,down_q=down_q,
             mixed=getattr(args,'mixed',False),simt_projections=sum(p['choice'].get('route')=='SIMT' for p in parts),graph_replays=3,
             choices=[p['choice'] for p in parts],errors=errors,samples_us=samples,median_us=statistics.median(samples),
             scope='REAL_SELECTED_GPU_CHAIN',first_launch_excluded=True)
@@ -334,9 +356,11 @@ def main():
     parser.add_argument('--samples',type=int,default=11)
     parser.add_argument('--mixed',action='store_true',help='exercise automatic SIMT/TC mixed chains, not forced TC')
     parser.add_argument('--smallm-table',action='store_true',help='bounded merged-chain check of the new automatic decode table')
+    parser.add_argument('--compute',choices=('fp16','bf16'),default='fp16')
     args=parser.parse_args()
     if args.samples<3:parser.error('at least 3 samples')
     if args.smallm_table and not args.mixed:parser.error('--smallm-table requires --mixed')
+    if args.compute=='bf16' and not args.smallm_table:parser.error('BF16 selected-chain check requires --mixed --smallm-table')
     verify(args.bundle);args.output.mkdir(parents=True,exist_ok=False)
     lib,pack_identity=load_pack_library(args.pack_library)
     sdk=SDK(args.sdk);graph_bind(sdk)

@@ -94,6 +94,9 @@
         test -s "$BUNDLE/bf16/manifest.json"
         "$PYTHON" -u dev/bf16_compute/run.py --sdk "$SDK" --package "$BUNDLE/bf16" \
             --output "$RUN/results/bf16" --repeats 2 --samples 0 2>&1 | tee "$RUN/results/bf16.log"
+        stage=bf16-selected-q4
+        "$PYTHON" -u dev/bf16_fastpath/gate.py --sdk "$SDK" --bundle "$BUNDLE/q4-bf16-gate" \
+            --output "$RUN/results/bf16-selected-q4" 2>&1 | tee "$RUN/results/bf16-selected-q4.log"
     fi
     stage=caller-source
     CI_SOURCE_ARGS=()
@@ -162,14 +165,13 @@
     if [[ "$MODEL_PHASES" == all ]] && "$BUNDLE/mixed-stages" --mixed 2>&1 | tee "$RUN/results/mixed-stages.log"; then
         grep -qx 'KPACK_MOE_MIXED_STAGES PASS cells=80 PPU_GEMM_ADMISSION=NOT_TESTED' "$RUN/results/mixed-stages.log"
     elif [[ "$MODEL_PHASES" == all ]]; then failed=$((failed+1)); fi
-    GATE_ARGS=()
+    GATE_ARGS=(--smallm-table)
     if [[ "$MODEL_PHASES" == perf ]]; then
-        GATE_ARGS+=(--smallm-table)
         printf 'KPACK_Q4_MODEL accuracy=NOT_RETESTED scope=SMALLM_COMPOSITION_PLUS_PERFORMANCE\n'
     fi
     if "$PYTHON" -u tools/run_kpack_moe_gate.py --mixed --sdk "$SDK" --bundle "$BUNDLE" \
         --pack-library "$QUACTLIZE_PPU_PACK_LIBRARY" --jit-cache "$QUACTLIZE_KPACK_JIT_CACHE" \
-        --output "$RUN/results/mixed-chain" --samples 3 "${GATE_ARGS[@]}" 2>&1 | tee "$RUN/results/mixed-chain.log"; then :; else failed=$((failed+1)); fi
+        --output "$RUN/results/mixed-chain" --samples 3 --compute "$MODEL_COMPUTE" "${GATE_ARGS[@]}" 2>&1 | tee "$RUN/results/mixed-chain.log"; then :; else failed=$((failed+1)); fi
     [[ $failed == 0 ]]
 
     COMMON=(--llama "$LLAMA_DIR" --build "$BUILD_DIR" --bundle "$BUNDLE" --plan "$RUN/results/model-plan.json"

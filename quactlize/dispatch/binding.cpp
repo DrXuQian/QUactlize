@@ -2,6 +2,7 @@
 #include "compute.hpp"
 #include "decode.hpp"
 #include "smallm.hpp"
+#include "smallm_matched.hpp"
 #include "jit.hpp"
 #include "moe.hpp"
 #include "../execution/moe.h"
@@ -453,7 +454,8 @@ static int query(void* runtime,qks_request_v1 const* req,qks_choice_v1* out,int 
         if (found!=r.requests.end()) { *out=r.plans.at(found->second-1).choice; return QKS_OK; }
         auto selected=table.config ? table : decode ? select_decode_tc(*req) : select(*req);
         Config proposal{}; std::string proposal_name;
-        if (compute_type==QK_COMPUTE_BF16) {
+        if (compute_type==QK_COMPUTE_BF16 && !(table.config &&
+            (table.policy==QKS_MATCHED_EXACT || table.policy==QKS_MATCHED_BUCKET || table.policy==QKS_MATCHED_ROUTER))) {
             if (!selected.config) selected=select(*req);
             proposal=compute_proposal(*req,selected,proposal_name);
             selected={proposal.symbol ? &proposal : nullptr,QKS_COMPUTE_INITIAL};
@@ -592,6 +594,52 @@ extern "C" int quactlize_kpack_dispatch_query_smallm_v2(void* runtime,qkg_simt_c
     if (result.kind==QKS_SMALLM_SIMT &&
         quactlize::execution::simt::query_v2(*typed,result.simt,arrangement,result.sizes)!=QKG_OK)
         return QKS_MISS;
+    *out=result;return QKS_OK;
+}
+
+extern "C" int quactlize_kpack_dispatch_query_smallm_v3(void* runtime,qkg_simt_call_v2 const* typed,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement,qks_smallm_choice_v2* out) {
+    if(!out) return QKS_INVALID;
+    *out={};
+    if(!runtime || !typed || !arrangement) return QKS_INVALID;
+    auto selected=matched::select(*typed);
+    if(!selected.row) return QKS_MISS;
+    auto const& row=*selected.row;auto const& choice=matched::data::kChoices[row.choice];
+    auto const& call=typed->call;
+    qks_smallm_choice_v2 result{2,sizeof(result)};
+    result.compute_type=typed->compute_type;
+    auto& base=result.base;base.version=1;base.size=sizeof(base);base.kind=choice.kind;
+    base.policy=selected.policy;base.source_n=row.n;base.source_k=row.k;base.source_tokens=row.tokens;
+    // Validate the actual layout/shape/endpoint before loading a module.
+    qkg_simt_config_v1 control{1,sizeof(control),0,4,4,4,1};
+    int rc=quactlize::execution::simt::query_v2(*typed,control,arrangement,base.sizes);
+    if(rc!=QKG_OK) return QKS_INVALID;
+    if(choice.kind==QKS_SMALLM_SIMT) {
+        auto f=choice.reader;
+        base.simt={1,sizeof(base.simt),f.variant,f.columns,f.warps,f.values,f.split};
+        if(quactlize::execution::simt::query_v2(*typed,base.simt,arrangement,base.sizes)!=QKG_OK)
+            return QKS_MISS;
+    } else if(choice.kind==QKS_SMALLM_TC) {
+        qks_request_v1 request{1,sizeof(request),call.qtype,choice.tc.route,call.rows,call.n,call.k,
+            call.experts,smallm::tokens(call),arrangement->mapping_id};
+        // Separate tickets from earlier table/proposal queries of this shape.
+        rc=query(runtime,&request,&base.tc,20+call.channels,
+            call.mode==QKG_DENSE?QKD_F32:0,{&choice.tc,selected.policy},typed->compute_type);
+        if(rc!=QKS_OK) return rc;
+    } else {
+        try {
+            auto& r=*static_cast<Runtime*>(runtime);std::lock_guard<std::mutex> lock(r.mutex);
+            auto lib=load_moe(r);auto f=choice.reader;
+            qkg_q4_decode_config_v1 expected{1,sizeof(expected),f.reader,f.variant,f.warps,f.values,f.columns};
+            if(typed->compute_type==QK_COMPUTE_F16)
+                rc=lib->select(&call,arrangement,&result.q4,&base.sizes);
+            else {
+                if(!lib->select_compute || !lib->q4_compute) return QKS_MISS;
+                rc=lib->select_compute(typed,arrangement,&result.q4,&base.sizes);
+            }
+            if(rc!=QKG_OK || std::memcmp(&result.q4,&expected,sizeof(expected))) return QKS_MISS;
+        } catch(std::exception const& e) {last_error=e.what();return QKS_BINDING;}
+    }
     *out=result;return QKS_OK;
 }
 

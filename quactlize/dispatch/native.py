@@ -4,7 +4,7 @@ import ctypes as C
 from pathlib import Path
 
 from quactlize.runtime.native import Call, checked
-from quactlize.execution.native import Call as SimtCall, SimtConfig, SimtCallV2, Sizes, Arrangement
+from quactlize.execution.native import Call as SimtCall, SimtConfig, SimtCallV2, Sizes, Arrangement, Q4DecodeConfig
 
 
 class Request(C.Structure):
@@ -53,6 +53,11 @@ class SmallmChoice(C.Structure):
     _fields_ = [("version",C.c_uint32),("size",C.c_uint32)] + [
         (name,C.c_int32) for name in ("kind","policy","source_n","source_k","source_tokens")] + [
         ("simt",SimtConfig),("sizes",Sizes),("tc",Choice)]
+
+
+class MatchedSmallmChoice(C.Structure):
+    _fields_=[("version",C.c_uint32),("size",C.c_uint32),("base",SmallmChoice),
+              ("q4",Q4DecodeConfig),("compute_type",C.c_int32)]
 
 
 class JitOptions(C.Structure):
@@ -157,6 +162,17 @@ class Dispatch:
         rc=fn(self.runtime,C.byref(typed),C.byref(arrangement),C.byref(out))
         if rc==1:return None
         if rc:raise ValueError('small-M query: '+self.fn['error']().decode())
+        return out
+
+    def query_smallm_matched(self, call, arrangement, compute_type=0):
+        typed=SimtCallV2(call,compute_type)
+        fn=self.lib.quactlize_kpack_dispatch_query_smallm_v3
+        fn.argtypes=[C.c_void_p,C.POINTER(SimtCallV2),C.POINTER(Arrangement),C.POINTER(MatchedSmallmChoice)]
+        fn.restype=C.c_int
+        out=MatchedSmallmChoice()
+        rc=fn(self.runtime,C.byref(typed),C.byref(arrangement),C.byref(out))
+        if rc==1:return None
+        if rc:raise ValueError('matched small-M query: '+self.fn['error']().decode())
         return out
 
     def query_compute(self, request, compute_type, endpoint_type=0, decode=False):

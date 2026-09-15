@@ -53,6 +53,11 @@ class Config(C.Structure):
         super().__init__(1, C.sizeof(type(self)), columns, warps, split)
 
 
+class Q4DecodeConfig(C.Structure):
+    _fields_=[("version",C.c_uint32),("size",C.c_uint32)]+[
+        (name,C.c_int32) for name in ("reader","variant","warps","values","columns")]
+
+
 class Sizes(C.Structure):
     _fields_ = [
         (x, C.c_uint64)

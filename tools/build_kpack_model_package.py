@@ -43,16 +43,34 @@ def attach_bf16(root, package, sdk):
     print(f"MODEL_BF16_GATE_ATTACHED modules={len(gate['modules'])} cases={len(gate['cases'])} device=PENDING")
 
 
+def attach_q4_bf16(root, package, sdk):
+    from dev.bf16_fastpath.gate import verified
+    root=root.resolve(strict=True);package=package.resolve(strict=True)
+    model=verify(root,sdk=sdk);gate,library=verified(package)
+    if 'q4_bf16_gate' in model or gate['sha256']!=model['execution_sha256']:
+        raise ValueError('typed Q4 gate must reuse the model execution image exactly once')
+    destination=root/'q4-bf16-gate';destination.mkdir()
+    for source in (package/'manifest.json',library):shutil.copy2(source,destination/source.name)
+    model['q4_bf16_gate']=dict(path='q4-bf16-gate/manifest.json',sha256=sha(destination/'manifest.json'),
+        library='q4-bf16-gate/'+library.name,denominator=gate['plan']['denominator'],device_validated=False)
+    (root/'manifest.json').write_text(json.dumps(model,indent=2)+'\n')
+    verify(root,sdk=sdk)
+    print(f"MODEL_TYPED_Q4_GATE_ATTACHED BF16={gate['plan']['denominator']['bf16_cells']} execution=SAME_IMAGE device=PENDING")
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     for key in ('sdk','bundle'):p.add_argument('--'+key,type=Path,required=True)
     action=p.add_mutually_exclusive_group(required=True)
     action.add_argument('--stage-binary',type=Path)
     action.add_argument('--bf16-gate',type=Path,help='attach the bounded gate to an already built compute package')
+    action.add_argument('--q4-bf16-gate',type=Path,help='attach actual typed Q4 select/run coverage from the same execution image')
     p.add_argument('--jobs',type=int,default=8)
     a=p.parse_args();root=a.bundle.resolve(strict=True)
     if a.bf16_gate:
         attach_bf16(root,a.bf16_gate,a.sdk);return
+    if a.q4_bf16_gate:
+        attach_q4_bf16(root,a.q4_bf16_gate,a.sdk);return
     m=verify(root,sdk=a.sdk)
     if m['modules'] or 'moe_mixed_gate' in m:raise ValueError('requires a fresh JIT-only package')
     requests={tuple(r[k] for k in ('q','route','m','n','k','experts','max_rows'))

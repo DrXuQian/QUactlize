@@ -1,5 +1,26 @@
 # K-pack incremental optimization backlog
 
+## Local closure, 2026-09-16
+
+Current handoff: [local evidence and PPU entry](../../docs/KPACK_LOCAL_CLOSURE_20260916.md).
+The dated sections below retain historical states; this table takes priority.
+
+| Work | Local state | Requires box |
+| --- | --- | --- |
+| Matched FP16/BF16 exact and bucket selection | DONE: 1,842 exact/634 bucket rows, 30 open keys excluded; caller uses v3 before legacy; real TC tickets preserved | Selected mixed chains and warmed model trace/PP/TG |
+| BF16 full MoE support and fast Q4/AP1 paths | Implemented, host tested and PPU compiled; no clipping or FP16 intermediate | 746 capability cases +258 selected Q4 BF16 cells; model range correctness |
+| Q8 K-pack2 vector SIMT | NVIDIA12,480 numerical cells/50 cold perf contexts; address model and NCU reviewed; PPU binary ready | PPU old/new, real reducer, ACU before production default |
+| MoE prepare simplification | NVIDIA3,840 candidate numerical contexts; all-SIMT direct maps and shared conversion implemented; PPU binary ready | 48 helper comparisons; retain M1 mixed incumbent unless measured otherwise |
+| Old NVIDIA F16 M1 gather fault | OPEN, isolated helper carrier;46/48 old/new comparisons valid, not48 | Determine whether PPU control also fails; do not infer a PPU kernel bug |
+| Small runtime delivery | Rebuilt dispatcher/execution; seven F16 controls refreshed; prefill and packer reused; no llama bins | `.aoneci` incremental caller build and actual selected chain |
+| Qwen3-32B nonfinite | BF16 range-preserving path ready, original243383 activation preserved | Original two-chunk numerical/model replay; no clamp workaround |
+| Selection coverage debt | Explicit: N128 output-head tail, unsupported Q8 N32, unstable/cross-router M2--8 rows; Q4 large fused shortlist lacks AP1 | Targeted follow-up only; no all-config sweep |
+| Prefetch, residual/projection fusion, main productization | Deferred; current work does not change those defaults | Perf evidence where relevant; main admission remains separate |
+
+Q8/prepare optimizations are isolated experiments, not claimed TPOT gains.
+The new BF16 compute table is measured independently; unknown shapes still
+report bounded predictions/initial proposals rather than measured optima.
+
 ## Small-M integration and BF16 isolation, 2026-09-15
 
 | Work | State | Next evidence |

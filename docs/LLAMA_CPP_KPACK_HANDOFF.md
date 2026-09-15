@@ -4,7 +4,7 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
-## Explicit BF16 compute integration, 2026-09-15
+## Explicit BF16 compute integration, updated 2026-09-16
 
 The development caller now has an explicit `QUACTLIZE_KPACK_COMPUTE=bf16`
 path. The default remains `fp16` until the complete device gate is admitted.
@@ -17,7 +17,7 @@ is converted by value inside the BF16 consumer. There is no clipping.
 | Grouped TC FQ | Q2_K, Q3_K, Q4_K, Q5_K, Q6_K; all existing legal M | grouped compute v3 |
 | Grouped TC SF | Above plus Q8_0; all existing legal M | grouped compute v3; FP16 scale planes |
 | SIMT dense/indexed | All six formats; tokens 1--8 | explicit compute v2, F32 output |
-| Dense TC decode | All six; M1--8; F32 or BF16 storage | typed compute v2, AP0 |
+| Dense TC decode | All six; M1--8; F32 or BF16 storage | typed compute v2, AP0; Q2/Q4 M1 also packed-A AP1 |
 | Fused MoE | TC/SIMT/mixed, separate or merged gate/up, weighted finish | dispatcher endpoint v4 |
 
 TC uses BF16 A/B and FP32 accumulation. Fused projections round at the BF16
@@ -31,14 +31,19 @@ The new dispatcher query/prepare interfaces, module identities, catalog and
 JIT keys distinguish computation type. Old FP16 entrypoints reject BF16
 tickets. A linked MoE chain cannot mix computation types. An explicitly
 requested BF16 path never silently invokes the old FP16 K-pack fallback.
-AP1 is FP16-only; BF16 proposals use a separately compiled AP0 module. Q4's
-specialized FP16 SIMT reader is retained; BF16 currently uses the all-format
-register-reuse reader, not an unverified reinterpretation of that reader.
+Q2/Q4 M1 packed-A AP1 now has an actual BF16 writer/MMA path. Q4 specialized
+SIMT has additive `q4_decode_select_v2/run_v2` entries. Its legacy FP16
+symbols/ABI remain unchanged. BF16 uses explicit value conversion and FP32
+accumulation, never an FP16 intermediate or a pointer reinterpretation.
 
-The existing FP16 table supplies geometry proposals only. BF16 choices are
-marked `QKS_COMPUTE_INITIAL` (11), never relabeled as measured optima. Missing
-families use one resource-checked AP0 proposal. BF16 does not rank FQ/SF/full
-routes using the FP16 timing table. Fresh BF16 timing remains a separate task.
+The caller first uses the new matched table for both computation types:
+`quactlize_kpack_dispatch_query_smallm_v3` returns an exact TC ticket, generic
+SIMT recipe or specialized Q4 recipe. It must not be selected again downstream.
+Policies12/13/14 mean matched exact / bounded bucket prediction / measured
+router-profile compromise. [The table contract](KPACK_SMALLM_TABLE.md) documents
+the1,842 rows and unresolved domains. On a MISS, BF16 geometry proposals are
+still marked `QKS_COMPUTE_INITIAL` (11), never relabeled FP16 measurements.
+BF16 does not rank large-M FQ/SF/full routes using FP16 timing data.
 `tools/kpack_jit.py plan/prewarm --compute-type bf16` and runtime misses use
 the same explicit compute contract; prewarm accepts mixed grouped/decode
 parents without loading a device.
@@ -50,26 +55,23 @@ dtype/version/ticket and legacy-reader negatives. Three real BF16 JIT misses
 (Q5 grouped, Q8 grouped prefill and Q6 dense TM8) also compile and pass identity
 inspection. These results are not PPU numerical or performance admission.
 
-Current delivery pins:
+The single machine-readable delivery pin is
+[`tools/kpack_q4_model_artifact.json`](../tools/kpack_q4_model_artifact.json):
+source, artifact commit/hash, private caller commit and payload count are
+updated together. Active branches are Quactlize `develop`, private llama
+`dev/quactlize-v0.3.0`, artifact `artifacts/kpack-model-runtime-v1`. Use the
+recorded Actlize gitlink, currently `021c69300864e03926108867d318572871a44d35`.
 
-- Quactlize compute/package source: `5a74e94` on `develop`.
-- Actlize: `021c69300864e03926108867d318572871a44d35`, reachable on
-  `bf16-compute-v1` in the private fork; use the recorded gitlink.
-- Private llama caller: `773811c6bd5d28f0254a64049af4e1aeeb70621a` on
-  `dev/quactlize-v0.3.0`.
-- Runtime artifact: `8d69a6a2db140d734742721abca18f025e8ab18c` on
-  `artifacts/kpack-model-runtime-v1`, directory
-  `prebuilt/ppu0010/kpack-model-runtime-v1`.
-- Artifact manifest SHA256:
-  `28ecf8011b47cab14b80238225d85e93d3099f5e22762029104f1daf1ef467f7`.
+Runtime directory: `prebuilt/ppu0010/kpack-model-runtime-v1`. Its required
+DSOs are `libquactlize_kpack_dispatch.so`, `libquactlize_ppu_execution.so`,
+`libquactlize_ppu_prefill.so`, plus `pack/libquactlize_ppu_pack.so`. Additional
+modules/binaries are bounded device gates, not a larger production inventory.
+Duplicate execution-image paths share their LFS object. There are no llama
+binaries. Existing cache bytes and old results are preserved.
 
-The package has 53 ELF paths, about 101.6 MiB on disk, all managed by Git LFS.
-Forty TC modules belong to the bounded numerical gate, not an expanded runtime
-config inventory. The gate reuses the same execution DSO as the model; the
-duplicate path shares its LFS object. There are no llama binaries. Seven old
-FP16 control modules were replaced with source-matched builds; artifact
-`ae225b4` still preserves the previous files. Existing weight-cache bytes and
-box results are not removed or invalidated by a different compute dtype.
+Q8 vector and MoE prepare candidates are packaged under `local-gates`, not
+enabled in the runtime. [The standalone box entry](KPACK_LOCAL_CLOSURE_20260916.md)
+tests them without building llama or running models.
 
 ### Combined BF16 box run
 
@@ -78,7 +80,12 @@ SIMT 396, complete MoE chains 116, and Q6 outlier/FP16-negative cases 8.
 The default performs two correctness replays, not a config sweep. Failures
 stop model admission; other format/family children continue to report their
 results. Numerical coverage includes empty/ragged experts, later M tiles,
-Split-K, mixed projections and Q4 gate/up with Q5/Q6 down.
+Split-K, mixed projections and Q4 gate/up with Q5/Q6 down. It also checks the
+actual optimized Q4 selector/run entries:258 BF16 cells,129 nominal F16 v1/v2
+controls and129 F16 overflow negatives, including all40 compiled recipes.
+Both gates use the model execution
+image. The selected mixed-chain check uses the requested compute precision
+and the same matched-v3 lookup as the caller, not the old F16-only selector.
 
 Only after that gate passes does the runner incrementally build the caller
 through `.aoneci`, run model numerical checks, benchmark and capture Asys.

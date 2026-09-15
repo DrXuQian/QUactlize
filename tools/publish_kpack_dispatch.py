@@ -50,6 +50,19 @@ def publish(build, output, pack=None):
         paths.append(m["decode_policy"]["path"])
     if "smallm_policy" in m:
         paths.append(m["smallm_policy"]["path"])
+    if "smallm_matched_policy" in m:
+        paths.append(m["smallm_matched_policy"]["path"])
+    if "bf16_gate" in m:
+        from dev.bf16_compute.run import validate_package
+        gate = validate_package(src / 'bf16')
+        paths += ['bf16/manifest.json']
+        paths += ['bf16/' + name for name in sorted({gate['simt']['path'], gate['moe']['path']} |
+                  {r['path'] for r in gate['modules'].values()})]
+    if "local_optimization_gate" in m:
+        from tools.attach_kpack_local_gates import payload_paths
+        paths += payload_paths(src,m['local_optimization_gate'])
+    if "q4_bf16_gate" in m:
+        paths += [m['q4_bf16_gate']['path'],m['q4_bf16_gate']['library']]
     if 'prefill' in m:
         paths += prefill_paths(src, m['prefill'])
     for item in (m.get("decode_io_gate", {}).get("simt_binaries", [])+

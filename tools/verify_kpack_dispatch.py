@@ -153,6 +153,13 @@ def verify(root, *, sdk=None):
             raise ValueError('small-M policy/execution identity differs')
         for name, required in SMALLM_MODEL_EXPORTS.items():
             require_exports(root / name, required)
+    if 'smallm_matched_policy' in m:
+        receipt=m['smallm_matched_policy']
+        if (receipt.get('path')!='smallm-matched-policy.json' or (root/receipt['path']).is_symlink() or
+                sha(root/receipt['path'])!=receipt['sha256'] or
+                m['policy_hashes'].get('policies/kpack_smallm_matched_v1.hpp')!=receipt['header_sha256']):
+            raise ValueError('matched small-M policy identity differs')
+        require_exports(root/'libquactlize_kpack_dispatch.so',{'quactlize_kpack_dispatch_query_smallm_v3'})
     if 'compute_contract' in m:
         c=m['compute_contract']
         execution=m['execution_receipt'].get('simt_compute_v2',{})
@@ -176,6 +183,19 @@ def verify(root, *, sdk=None):
                 (gate.get('reused_execution') or {}).get('sha256')!=m['execution_sha256'] or
                 any(r['identity']['base_source_contract']!=m['jit_source_contract'] for r in gate['modules'].values())):
             raise ValueError('BF16 gate execution/module contract differs from model')
+    if 'local_optimization_gate' in m:
+        from tools.attach_kpack_local_gates import payload_paths
+        payload_paths(root,m['local_optimization_gate'],sdk=sdk)
+    if 'q4_bf16_gate' in m:
+        from dev.bf16_fastpath.gate import verified
+        receipt=m['q4_bf16_gate']
+        if receipt.get('path')!='q4-bf16-gate/manifest.json' or sha(root/receipt['path'])!=receipt.get('sha256'):
+            raise ValueError('typed Q4 gate receipt differs')
+        gate,library=verified(root/'q4-bf16-gate')
+        if (gate['sha256']!=m['execution_sha256'] or
+                str(library.relative_to(root))!=receipt.get('library') or
+                gate['plan']['denominator']!=receipt.get('denominator')):
+            raise ValueError('typed Q4 gate image/denominator differs from model')
     if 'moe_mixed_gate' in m:
         gate=m['moe_mixed_gate']
         if (gate.get('schema')!='quactlize.moe-mixed-gate.v1' or gate.get('stage_cases')!=80 or

@@ -4,6 +4,23 @@ Current scope: the private `dev/quactlize-v0.3.0` branch, canonical K-pack,
 request batch 1, prompt 2048. Q4_K_M model files can contain Q5_K, Q6_K and
 Q8_0 tensors; their actual paths must be covered, not just qtype 12.
 
+## Current remaining steps, 2026-09-16
+
+The older entries below retain build/debug history. The current delivery
+uses [matched FP16/BF16 selection](KPACK_SMALLM_TABLE.md) and the
+[prebuilt local closure](KPACK_LOCAL_CLOSURE_20260916.md).
+
+| Step | State |
+| --- | --- |
+| Match actual small-M measurements to both precision paths | Implemented; local exact/bucket/TC-ticket and caller tests pass |
+| Genuine BF16 TC/SIMT/MoE plus Q4/AP1 fast readers | Implemented and PPU compiled; numeric gates packaged, PPU admission pending |
+| Q8/prepare incremental optimization | NVIDIA evidence collected; isolated PPU comparison, no unconditional default change |
+| Original model numerical/range validation | Requires box; Qwen3-32B overflow is not considered fixed by host/standalone tests |
+| Warmed native vs K-pack PP2048/TG and Asys | Requires box after selected-chain gate; exclude JIT and first request |
+
+No full config campaign is required for these checks. Unsupported output-head
+tail and routing-sensitive cases remain documented; no global5% claim.
+
 ## Scheduler API and caller build continuation, 2026-09-15
 
 The `hnN1Jf` joint build reached the llama test compilation. Its scheduler

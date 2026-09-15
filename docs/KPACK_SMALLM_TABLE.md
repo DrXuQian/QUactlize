@@ -1,5 +1,58 @@
 # Small-M decode selection tables
 
+## Current matched policy, 2026-09-16
+
+The caller asks `quactlize_kpack_dispatch_query_smallm_v3` first for **both**
+FP16 and BF16 compute. This replaces cross-cohort guesses wherever the new
+matched PPU evidence is closed. Large-M/prefill selection is unchanged.
+
+Key: `(qtype, dense/indexed, N, K, experts, topk, channels, tokens, compute)`.
+The 1,842 exact rows contain 364 generic SIMT /119 specialized Q4 /436 TC
+FP16 choices and 562 generic SIMT /361 TC BF16 choices. Those are generated
+data, not hand-written branches. The caller preserves the selected recipe,
+ticket, actual Split-K and grid; it does not select again afterward.
+
+1. Exact matched hit: `MATCHED_EXACT` (12).
+2. A route-common compromise over measured expert histograms:
+   `MATCHED_ROUTER_MINIMAX` (14). There are 88 such rows; some M2--8 rows
+   exceed5%, up to64.93%. This is disclosed compromise, not universal parity.
+3. Otherwise, 634 representative buckets may predict within the same format,
+   compute precision, operator, expert/channel contract and token bucket.
+   N and K must each be within2× the donor; validate its pipeline and split.
+   Report `MATCHED_BUCKET_PREDICTED` (13), not a measured exact hit.
+4. Known open keys are excluded before bucket lookup. A MISS reaches the
+   existing selector; it never fabricates an optimized SIMT measurement.
+   Specialized shape-bound Q4 recipes are not used as generic bucket donors.
+
+The input archive has 2,972/2,988 returned points. All169,896 sealed receipts
+were hashed, complete confirmations replayed, and the review reconstructed.
+Thirty policy groups are excluded; missing output-head tail/N32 admission
+and unstable or missing routing-profile comparisons remain visible. All
+supported M1 groups in this measured pool close within5%; this is neither a
+global optimum nor model-accuracy admission. Split-K costs are full calls
+including the actual reducer; no theoretical reducer cost is added.
+
+Regenerate from compact audited evidence with:
+
+```bash
+python3 tools/fit_smallm_closure.py
+python3 -m pytest -q tests/test_smallm_matched.py
+```
+
+Files: `policies/kpack_smallm_matched_v1.{json,hpp}`,
+`quactlize/dispatch/smallm_matched.hpp`,
+`docs/measurements/smallm_matched_20260915.json.gz`.
+The host tests exercise every exact choice and every measured TC ticket in
+the real dispatcher, plus missing/bucket/compute/recipe negatives.
+
+See [local closure and one box entry](KPACK_LOCAL_CLOSURE_20260916.md).
+Q8 vector/prepare experiments are not selected by this table until PPU
+measurement. Specialized Q4 BF16 fast readers are implemented but not
+relabeled as measured F16 winners. The caller no longer routes BF16 through
+the following historical FP16-only table when a new matched hit exists.
+
+## Historical FP16 cross-cohort policy (fallback only)
+
 The automatic caller now asks one library selector for both SIMT and TC.
 This changes decode decisions for Q2_K, Q3_K, Q5_K, Q6_K and Q8_0, including
 requests absent from the exact table. Q4 keeps its existing joint SIMT/TC

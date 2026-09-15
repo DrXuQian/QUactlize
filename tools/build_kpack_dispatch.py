@@ -304,6 +304,7 @@ def main():
         ROOT / "policies/kpack_zw810_runtime_v1.hpp",
         ROOT / "policies/kpack_zw810_cost_v1.hpp",
         ROOT / "policies/kpack_smallm_v1.hpp",
+        ROOT / "policies/kpack_smallm_matched_v1.hpp",
     ]
     manifest = dict(
         schema="quactlize.kpack-native-dispatch.v1",
@@ -320,7 +321,7 @@ def main():
         host_command=command,
         device_validated=False,
         heuristic_admitted=False,
-        grouped_profile="measured-q4-q5-single-token-otherwise-device-bounds-no-router-readback",
+        grouped_profile="matched-smallm-explicit-compute-otherwise-legacy-bounds-no-router-readback",
         jit_source_contract=jit_source,
         jit_source_identity={k: jit_compiler.identity[k] for k in ("kernel", "flags", "generator")},
     )
@@ -336,10 +337,15 @@ def main():
     manifest['smallm_policy']=dict(path='smallm-policy.json',sha256=sha(smallm_policy),
         header_sha256=sha(smallm_policy.with_suffix('.hpp')),
         admission='EXACT_AND_BUCKET_PROPOSALS_MODEL_GATE_PENDING')
+    matched_policy=ROOT/'policies/kpack_smallm_matched_v1.json'
+    shutil.copy2(matched_policy,output/'smallm-matched-policy.json')
+    manifest['smallm_matched_policy']=dict(path='smallm-matched-policy.json',sha256=sha(matched_policy),
+        header_sha256=sha(matched_policy.with_suffix('.hpp')),
+        admission='MATCHED_POOL_EXPLICIT_COMPUTE_MODEL_GATE_PENDING')
     if receipt.get('simt_compute_v2'):
         manifest['compute_contract']=dict(schema='quactlize.explicit-compute.v1',
             formats=[8,10,11,12,13,14],grouped='ALL_LEGAL_M',dense='DECODE_M1_8',
-            selection='INITIAL_GEOMETRY_PROPOSALS_NOT_BF16_MEASUREMENTS',device_validated=False)
+            selection='MATCHED_SMALLM_OVERRIDES_ELSE_INITIAL_COMPUTE_PROPOSALS',device_validated=False)
     if args.prefill_runtime:
         manifest['prefill'] = attach_prefill(output, args.prefill_runtime, args.sdk)
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

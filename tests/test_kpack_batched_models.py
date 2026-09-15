@@ -243,7 +243,11 @@ def test_final_model_runner_uses_joint_ci_caller_and_pinned_runtime():
     assert receipt['llama_branch'] == 'dev/quactlize-v0.3.0'
     assert 'llama_commit' not in receipt and 'test ! -e "$BUNDLE/llama"' in text
     assert len(receipt['commit']) == len(receipt['llama_ci_commit']) == 40
-    assert len(receipt['manifest_sha256']) == 64 and receipt['lfs_payloads'] == 12
+    assert len(receipt['manifest_sha256']) == 64
+    # BF16 capability modules are a separate, bounded device gate. The
+    # publication validator checks the actual payload closure; it is no
+    # longer the historical twelve-file F16-only package.
+    assert isinstance(receipt['lfs_payloads'],int) and receipt['lfs_payloads']>0
 
 
 def test_joint_ci_checkout_preserves_dirty_source_and_nested_submodules(tmp_path):
