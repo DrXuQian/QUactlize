@@ -1,8 +1,8 @@
 {
   "branch": "artifacts/kpack-model-runtime-v1",
-  "commit": "01d8537fa07969af539386558a96fbdc753b2b2e",
+  "commit": "492b225ba9b65ebe4775340e16ee79112a449b18",
   "path": "prebuilt/ppu0010/kpack-model-runtime-v1",
-  "manifest_sha256": "5ba3bd81f73bc3a11400a435c30389b4aeed549b4e29cb1cc23447136f94ca03",
+  "manifest_sha256": "17062d76a4ceee7c261c44c52d1b3d3b1a58a6bbe4b35ec2d6e3d81de9c18d10",
   "source_commit": "e82a8b755feac318e43d7b56279004c717371d48",
   "llama_branch": "dev/quactlize-v0.3.0",
   "llama_ci_commit": "00d24db55cb07dc33aafad854b2d27afb9390062",

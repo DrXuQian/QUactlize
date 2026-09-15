@@ -15,6 +15,7 @@ from quactlize.runtime.compiler import Compiler, sha, validate_parent, source_co
 from quactlize.runtime.tuning import ROUTES, digest
 from quactlize.runtime.native import sdk_identity
 from tools.verify_kpack_dispatch import verify as verify_native
+from tools.verify_kpack_dispatch import require_exports, PREFILL_MODEL_EXPORTS
 from quactlize.execution.q4_decode_codegen import POLICY as DECODE_POLICY
 
 
@@ -25,6 +26,7 @@ def attach_prefill(output, build, sdk):
     if (receipt.get('schema') != 'quactlize.prefill-runtime.v1' or
             receipt.get('library') != library.name or sha(library) != receipt.get('sha256')):
         raise ValueError('prefill build identity differs')
+    require_exports(library, PREFILL_MODEL_EXPORTS)
     for name, expected in receipt['runtime'].items():
         if Path(name).name != name or sha(sdk / 'lib' / name) != expected:
             raise ValueError('prefill SDK runtime differs: ' + name)

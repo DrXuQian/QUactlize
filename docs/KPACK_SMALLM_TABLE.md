@@ -66,11 +66,17 @@ workspace. Q4's old endpoint and older callers remain supported.
 ## Next PPU model check
 
 Published source `e82a8b7`, private caller `00d24db55`, runtime artifact
-`01d8537`. The 12 ELF payloads total 23,366,792 bytes (about 22.3 MiB) and
+`492b225`. The 12 ELF payloads total 23,371,680 bytes (about 22.3 MiB) and
 use Git LFS. They contain no llama binaries. The old artifact commit remains
 available; no old box results or caches need to be deleted. Local lookup,
 ABI, composition and package tests pass, and the caller adapters compile
 with the PPU SDK. This is not a new PPU model performance result.
+
+This artifact corrects an older prefill DSO mistakenly included in `01d8537`.
+Its missing mandatory provider-image export caused the first native loader
+access to abort. Only prefill and its receipts change; all compute selections
+and caller code are unchanged. Packaging now validates all 43 model-loader
+symbols in the actual DSOs, in addition to checking their hashes.
 
 The regular model runner has a bounded performance mode:
 

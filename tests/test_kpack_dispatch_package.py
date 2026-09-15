@@ -2,10 +2,12 @@ import ctypes as C
 import json
 import os
 from pathlib import Path
+import subprocess
 import pytest
 from quactlize.dispatch.native import Request, Choice
 from tools.verify_kpack_dispatch import verify
 from tools.verify_kpack_dispatch import prefill_paths
+from tools.verify_kpack_dispatch import PREFILL_MODEL_EXPORTS
 from tools.build_kpack_dispatch import attach_prefill
 from quactlize.runtime.compiler import sha
 from tests import test_kpack_native_dispatch as host_tests
@@ -44,7 +46,10 @@ def test_optional_prefill_closure_is_bound_to_build_and_helper(tmp_path, fault):
     output = tmp_path/'package'; output.mkdir()
     sdk = tmp_path/'sdk'; (sdk/'lib').mkdir(parents=True)
     (sdk/'lib/libhggc_wrapper.so').write_bytes(b'sdk-runtime')
-    library = source/'libquactlize_ppu_prefill.so'; library.write_bytes(b'host-test-image')
+    library = source/'libquactlize_ppu_prefill.so'
+    stub = source/'stub.c'
+    stub.write_text('\n'.join('int '+name+'(void) {return 0;}' for name in sorted(PREFILL_MODEL_EXPORTS)))
+    subprocess.run(['cc','-shared','-fPIC',str(stub),'-o',str(library)],check=True)
     (source/'manifest.json').write_text(json.dumps(dict(schema='quactlize.prefill-runtime.v1',
         library=library.name, sha256=sha(library), runtime={'libhggc_wrapper.so':sha(sdk/'lib/libhggc_wrapper.so')})))
     receipt = attach_prefill(output, source, sdk)

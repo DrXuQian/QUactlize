@@ -4,6 +4,30 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
+## Model loader package repair, 2026-09-15
+
+Artifact `492b225` replaces `01d8537`. The latter accidentally packaged an
+older prefill DSO without the mandatory
+`quactlize_kpack_prefill_provider_image_v1` export. The current caller binds
+that entry on first execution-library access, even for a dense decode call;
+its absence aborts in `ggml_quactlize_execution_library()` before GEMM.
+File hashes alone did not detect this internally consistent old build.
+
+Only the prefill DSO and its receipts change. The dispatcher, execution
+DSO, seven GEMM parents, SIMT recipes, offline packer, policies and caller
+`00d24db55` are unchanged. The replacement DSO is 1,346,040 bytes, SHA256
+`8aa0e7ab4be9f75357491f3e588825ea95851372070c9d2ae63ea63bcccd522a`.
+The source pin remains the selection build `e82a8b7`; the independent
+prefill receipt records the rebuilt inputs. No bulk kernel rebuild is needed.
+
+Both packaging and box preflight now inspect actual dynamic exports.
+The model profile covers all 43 caller lookups (22 dispatcher, 14 execution,
+7 prefill). Host tests compile the real caller loader: removing the provider
+entry reproduces its abort, while the complete stub interface loads.
+These are loader tests, not GPU numeric or speed evidence. The fresh PPU
+DSO compiles and passes package checks; rerun the bounded model performance
+command below for device admission. Do not reuse the failed timing as data.
+
 ## Small-M exact and bucket selection, 2026-09-15
 
 The additive `quactlize_kpack_dispatch_query_smallm_v1` returns either an
@@ -19,7 +43,7 @@ keeps Split-K scratch private per projection and consumes the already
 tested weighted-finish API. The new package contains only Quactlize DSOs,
 seven bounded gate parents and the helper proof, never llama binaries.
 The exact artifact and caller pins are `tools/kpack_q4_model_artifact.json`.
-Current publication: source `e82a8b7`, caller `00d24db55`, artifact `01d8537`;
+Current publication: source `e82a8b7`, caller `00d24db55`, artifact `492b225`;
 12 LFS ELF payloads total about 22.3 MiB. Only selected TC parents JIT at
 model warmup; the register-reuse SIMT bodies are already compiled.
 Whole-model speed and numeric admission remain pending; F16 activation
