@@ -126,3 +126,63 @@ Before enabling BF16 in a production caller:
   substitute host checks for a device regression.
 - Time BF16 independently after JIT/warmup. The FP16 performance authority is
   not BF16 performance authority.
+
+## Dedicated device gate
+
+`package.py` builds a bounded inventory of 40 TC modules, a six-format SIMT
+smoke library, and the real MoE helper library. It does not build a config
+sweep. The 40 TC modules include both FQ parent identities, both small and
+large tiles, one FP16 grouped control per format, and separate FP16/BF16
+Q6 dense modules for the captured outlier shape.
+
+```sh
+python dev/bf16_compute/package.py --sdk /path/to/PPU_SDK \
+  --cache /data/bf16-cache --output /data/bf16-device-package --jobs 4
+
+CUDA_VISIBLE_DEVICES=0 python dev/bf16_compute/run.py \
+  --sdk /path/to/PPU_SDK --package /data/bf16-device-package \
+  --output /data/bf16-device-results
+```
+
+An already built execution library can replace the smoke/helper builds with
+`--execution /data/current-execution-build`. Reuse requires the original
+manifest, matching payload and source hashes, all six generic SIMT recipes,
+and the explicit BF16 exports. This is not an unchecked `.so` override.
+
+The default 746-case denominator is:
+
+| Family | Cases | Coverage |
+| --- | ---: | --- |
+| Grouped TC | 226 | Six formats, FQ/SF where defined, small/large M, compact/persistent/noncompact, S1/S2/S4/S8; six FP16 controls |
+| SIMT | 396 | Tokens 1..8, F32/BF16 input, dense/grouped/indexed shared-A and per-slot-A; FP16 controls |
+| MoE chain | 116 | Six formats, tokens 1/4/8, pure TC/pure SIMT/mixed, merged/unmerged; Q4 gate/up + Q5/Q6 down |
+| Q6 outlier | 8 | M1/N5120/K25600, S1/S2/S4/S8, BF16 positive and real FP16-overflow negative |
+
+The current v3 ordinary request becomes compact when experts <= 1024.
+Therefore the noncompact cases use experts=1025, including an active last
+expert; the gate does not relabel compact timing as ordinary execution.
+Weight data uses 17 distinct, documented expert patterns to keep fixture
+construction bounded, while active IDs, row counts, and A change on replay.
+
+The oracle starts from raw GGUF and the official GGUF dequantizer. Dyadic
+metadata makes these fixture weights exactly representable in both FP16 and
+BF16, including the TC multiply-then-add boundary. Every output is checked.
+Random non-dyadic metadata conversion has a separate host scalar gate; this
+device fixture does not claim all rounding cases have been exhausted.
+
+MoE additionally checks the prepared BF16 A bits, stable expert row map,
+individual projections, SwiGLU/down conversion, weighted-sum order, and the
+complete changed-input graph. `expf` differences may move the random SwiGLU
+oracle across one BF16 ULP; a separate exp(-482)=0 case checks exact finite
+conversion above the FP16 range. Individual dots use the existing 0.5%
+relative-L1 threshold; the complete three-projection chain uses an explicit
+2% propagation bound. Neither is a replacement for the model numerical gate.
+
+Each format/family runs in a fresh process. A numerical/runtime failure stops
+that child, not the remaining formats. `--resume` preserves successful
+children and reruns failed children only with the same package/options.
+`--family grouped --qtype 14` selects a diagnostic subset and reports its own
+denominator. Default `--repeats 2 --samples 0` verifies changing data and graph
+replay without a performance sweep; optional samples are diagnostic only and
+exclude setup/correctness/warmup. The root `summary.json` reports exact passed
+and expected counts and never promotes partial coverage to device admission.
