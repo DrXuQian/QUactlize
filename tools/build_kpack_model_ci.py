@@ -117,7 +117,9 @@ def main():
     for name in ('llama', 'ncp', 'sdk', 'output', 'receipt'):
         parser.add_argument('--' + name, required=True, type=Path)
     parser.add_argument('--jobs', type=int, default=192)
-    parser.add_argument('--local-llama', action='store_true', help='build the supplied llama worktree, including local edits')
+    caller = parser.add_mutually_exclusive_group()
+    caller.add_argument('--local-llama', action='store_true', help='build the supplied llama worktree, including local edits')
+    caller.add_argument('--llama-revision', help='build this full commit from the source object cache, ignoring its index and worktree')
     parser.add_argument('--reuse-ncp-build', type=Path,
                         help='reuse an explicit NCP checkout with a matching build/ cache; reconfigure and relink in place')
     args = parser.parse_args()
@@ -129,10 +131,14 @@ def main():
     source = args.llama.resolve(strict=True)
     if Path(git(source, 'rev-parse', '--show-toplevel')).resolve() != source:
         raise ValueError('llama source must be the checkout root')
-    llama_rev = git(source, 'rev-parse', 'HEAD')
-    pin = ((source / '.aoneci/NCP_LIB_VERSION').read_text() if args.local_llama else
-           git(source, 'show', llama_rev + ':.aoneci/NCP_LIB_VERSION'))
-    if '${LLAMA_BUILD_DIR' not in (source / '.aoneci/scripts/build.sh').read_text():
+    llama_rev = args.llama_revision or git(source, 'rev-parse', 'HEAD')
+    if not re.fullmatch(r'[0-9a-f]{40}', llama_rev):
+        raise ValueError('llama revision must be a full commit ID')
+    git(source, 'cat-file', '-e', llama_rev + '^{commit}')
+    def caller_text(path):
+        return (source / path).read_text() if args.local_llama else git(source, 'show', llama_rev + ':' + path)
+    pin = caller_text('.aoneci/NCP_LIB_VERSION')
+    if '${LLAMA_BUILD_DIR' not in caller_text('.aoneci/scripts/build.sh'):
         raise ValueError('update llama .aoneci/scripts/build.sh: LLAMA_BUILD_DIR support is required; no build started')
     revisions = [line.split('#', 1)[0].strip() for line in pin.splitlines()]
     revisions = [line for line in revisions if line]

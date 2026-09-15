@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -221,6 +222,8 @@ def test_final_model_runner_uses_joint_ci_caller_and_pinned_runtime():
     assert 'BUILD_DIR="$LLAMA_DIR/build-ci"' in text and 'BUILD_DIR="$BUNDLE/llama"' not in text
     assert 'caller-ci-build.json' in text and 'JOBS=${JOBS:-192}' in text
     assert 'if [[ -n ${LLAMA_CI_DIR:-} ]]' in text and 'CI_SOURCE_ARGS+=(--local-llama)' in text
+    assert 'CI_SOURCE_ARGS+=(--llama-revision "${INFO[4]}")' in text
+    assert 'git -C "$LLAMA_DIR" diff --cached --quiet' not in text
     assert 'BUILD_DIR="$RUN/ci/llama-build"' in text
     assert 'NCP_BUILD_ARGS+=(--reuse-ncp-build "$NCP_CI_DIR")' in text
     assert '$SDK/targets/x86_64-linux/lib' in text
@@ -308,6 +311,80 @@ def test_joint_ci_checkout_still_rejects_malformed_gitmodules(tmp_path):
     with pytest.raises(subprocess.CalledProcessError) as failure:
         clone_checkout(source, target, git(source, 'rev-parse', 'HEAD'))
     assert failure.value.returncode != 1
+
+
+@pytest.mark.parametrize('cache_state', ['no-checkout', 'staged', 'head-moved'])
+def test_pinned_caller_ignores_source_cache_index_and_head(tmp_path, monkeypatch, cache_state):
+    from tools import build_kpack_model_ci as ci
+    def repository(name):
+        path = tmp_path / name
+        subprocess.run(['git', 'init', '-q', str(path)], check=True)
+        ci.git(path, 'config', 'user.name', 'Test')
+        ci.git(path, 'config', 'user.email', 'test@example.invalid')
+        (path / 'source.cu').write_text('committed')
+        ci.git(path, 'add', '.')
+        ci.git(path, 'commit', '-qm', 'fixture')
+        return path
+    ncp, original = repository('ncp'), repository('llama')
+    ncp_rev = ci.git(ncp, 'rev-parse', 'HEAD')
+    entry = '.aoneci/scripts/build.sh'
+    script = original / entry
+    script.parent.mkdir(parents=True)
+    script.write_text('# fixture uses ${LLAMA_BUILD_DIR}\n')
+    (original / '.aoneci/NCP_LIB_VERSION').write_text(ncp_rev + '\n')
+    ci.git(original, 'add', '.')
+    ci.git(original, 'commit', '-qm', 'CI entry')
+    pin = ci.git(original, 'rev-parse', 'HEAD')
+    if cache_state == 'head-moved':
+        script.write_text('# newer source is not the requested commit\n')
+        ci.git(original, 'commit', '-qam', 'newer source')
+    source = tmp_path / ('llama-model-source-' + pin[:10])
+    subprocess.run(['git', 'clone', '--no-checkout', str(original), str(source)], check=True)
+    if cache_state == 'staged':
+        ci.git(source, 'checkout', '--detach', pin)
+        (source / entry).write_text('# staged changes must not enter the pinned build\n')
+        ci.git(source, 'add', entry)
+    else:
+        assert not (source / entry).exists()
+    # The original runner passed the worktree check and then stopped at the index check.
+    assert subprocess.run(['git', '-C', str(source), 'diff', '--quiet']).returncode == 0
+    assert subprocess.run(['git', '-C', str(source), 'diff', '--cached', '--quiet']).returncode == 1
+    before = (ci.git(source, 'status', '--porcelain'), ci.git(source, 'rev-parse', 'HEAD'),
+              ci.git(source, 'diff', '--cached', '--binary'))
+    runner = (ROOT / 'tools/run_kpack_q4_model_box.sh').read_text()
+    caller_block = 'CI_SOURCE_ARGS=()' + runner.split('CI_SOURCE_ARGS=()', 1)[1].split('    stage=ci-build', 1)[0]
+    env = dict(os.environ, RESULT_DIR=str(tmp_path), LLAMA_CI_DIR='', PIN=pin)
+    subprocess.run(['bash', '-ec', 'INFO=(unused unused unused unused "$PIN")\n' + caller_block],
+                   env=env, check=True)
+    sdk = tmp_path / 'sdk'
+    compiler = sdk / 'CUDA_SDK/bin/nvcc'
+    compiler.parent.mkdir(parents=True)
+    compiler.touch()
+    output, receipt = tmp_path / 'ci', tmp_path / 'receipt.json'
+    run = subprocess.run
+    builds = []
+    def checked_run(command, *args, **kwargs):
+        if command[0] != 'bash':
+            return run(command, *args, **kwargs)
+        builds.append(command)
+        llama = output / 'llama'
+        assert command == ['bash', str(llama / entry)]
+        assert '${LLAMA_BUILD_DIR' in (llama / entry).read_text()
+        assert ci.git(llama, 'rev-parse', 'HEAD') == pin
+        assert not ci.git(llama, 'status', '--porcelain')
+        assert kwargs['env']['LLAMA_BUILD_DIR'] == str(llama / 'build-ci')
+        return subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(ci.subprocess, 'run', checked_run)
+    monkeypatch.setattr(ci, 'build_receipt', lambda l, n, s, jobs, build: dict(
+        llama_source_commit=ci.git(l, 'rev-parse', 'HEAD'), ncp_source_commit=ncp_rev, build=str(build)))
+    monkeypatch.setattr(sys, 'argv', ['build_kpack_model_ci.py', '--llama', str(source), '--llama-revision', pin,
+        '--ncp', str(ncp), '--sdk', str(sdk), '--output', str(output), '--receipt', str(receipt)])
+    ci.main()
+    assert len(builds) == 1
+    result = json.loads(receipt.read_text())
+    assert result['llama_source_mode'] == 'PINNED_CHECKOUT' and result['llama_source_commit'] == pin
+    assert before == (ci.git(source, 'status', '--porcelain'), ci.git(source, 'rev-parse', 'HEAD'),
+                      ci.git(source, 'diff', '--cached', '--binary'))
 
 
 def test_joint_ci_receipt_requires_hooks_libraries_and_jit_headers(tmp_path, monkeypatch):

@@ -45,6 +45,10 @@ the updated `.aoneci` writes to `$RUN/ci/llama-build` via `LLAMA_BUILD_DIR`,
 not the source's old `build-ci`. The receipt records `LOCAL_WORKTREE` and
 the actual HEAD/diff instead of claiming the default pinned caller.
 The default pinned flow remains available when the variable is unset.
+Its source cache is only an object source: the explicit pinned commit
+supplies CI files and the fresh build checkout. Cache index/worktree state
+is neither required to be clean nor used as build input; local edits are
+only included through the explicit `LLAMA_CI_DIR` mode.
 
 ## Current model closure checklist, 2026-09-14
 

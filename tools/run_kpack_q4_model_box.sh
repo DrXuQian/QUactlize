@@ -84,6 +84,7 @@
     "$PYTHON" -c 'import hashlib,sys; assert hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()==sys.argv[2],"model package manifest differs"' "$BUNDLE/manifest.json" "${INFO[3]}"
     "$PYTHON" tools/verify_kpack_dispatch.py "$BUNDLE" --sdk "$SDK" | tee "$RUN/results/verify.log"
     test ! -e "$BUNDLE/llama"
+    stage=caller-source
     CI_SOURCE_ARGS=()
     if [[ -n ${LLAMA_CI_DIR:-} ]]; then
         LLAMA_DIR=$(realpath -e -- "$LLAMA_CI_DIR")
@@ -95,12 +96,14 @@
         if [[ ! -e "$LLAMA_DIR" ]]; then
             git clone --no-checkout --depth 1 --single-branch --branch dev/quactlize-v0.3.0 \
                 https://github.com/DrXuQian/llama.cpp.git "$LLAMA_DIR"
-            git -C "$LLAMA_DIR" fetch --depth 1 origin "${INFO[4]}"
-            git -C "$LLAMA_DIR" checkout --detach "${INFO[4]}"
         fi
-        test "$(git -C "$LLAMA_DIR" rev-parse HEAD)" == "${INFO[4]}"
-        git -C "$LLAMA_DIR" diff --quiet
-        git -C "$LLAMA_DIR" diff --cached --quiet
+        test "$(git -C "$LLAMA_DIR" rev-parse --show-toplevel)" == "$LLAMA_DIR"
+        if ! git -C "$LLAMA_DIR" cat-file -e "${INFO[4]}^{commit}" 2>/dev/null; then
+            git -C "$LLAMA_DIR" fetch --depth 1 origin "${INFO[4]}"
+        fi
+        git -C "$LLAMA_DIR" cat-file -e "${INFO[4]}^{commit}"
+        CI_SOURCE_ARGS+=(--llama-revision "${INFO[4]}")
+        printf 'KPACK_Q4_MODEL caller_source=PINNED_COMMIT revision=%s cache=%s\n' "${INFO[4]}" "$LLAMA_DIR"
     fi
 
     stage=ci-build
@@ -111,7 +114,7 @@
     "$PYTHON" -u tools/build_kpack_model_ci.py --llama "$LLAMA_DIR" --ncp "$NCP_SOURCE" \
         --sdk "$SDK" --output "$RUN/ci" --jobs "$JOBS" \
         "${CI_SOURCE_ARGS[@]}" "${NCP_BUILD_ARGS[@]}" --receipt "$RUN/results/caller-ci-build.json" 2>&1 | tee "$RUN/results/caller-ci-build.log"
-    if [[ ${#CI_SOURCE_ARGS[@]} == 0 ]]; then
+    if [[ -z ${LLAMA_CI_DIR:-} ]]; then
         LLAMA_DIR="$RUN/ci/llama"
         BUILD_DIR="$LLAMA_DIR/build-ci"
     else

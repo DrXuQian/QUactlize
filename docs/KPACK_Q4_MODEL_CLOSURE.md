@@ -4,6 +4,19 @@ Current scope: the private `dev/quactlize-v0.3.0` branch, canonical K-pack,
 request batch 1, prompt 2048. Q4_K_M model files can contain Q5_K, Q6_K and
 Q8_0 tensors; their actual paths must be covered, not just qtype 12.
 
+## Caller source cache retry
+
+`LLAMA_CI_DIR` uses the supplied working tree directly and bypasses the
+download-cache index checks. This is sufficient for the reported
+`stage=fetch line=103` failure; update the local caller to include the NCP
+link fix below and retain `NCP_CI_DIR` to reuse its completed objects.
+
+The default pinned-source flow now reads the NCP pin and build entry from
+the requested Git commit, then checks out that commit into the new build
+copy. A `--no-checkout` cache, staged changes or a different cache HEAD do
+not supply build inputs and are not reset. The runner passes the full
+`--llama-revision` explicitly; it cannot be combined with `--local-llama`.
+
 ## NCP runtime link repair, 2026-09-15
 
 The joint build in `kpack-q4-model.N5J9uY` reached the NCP executable link
