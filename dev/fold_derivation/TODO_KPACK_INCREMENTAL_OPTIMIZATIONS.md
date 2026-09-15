@@ -8,18 +8,20 @@ not be used as decode costs.
 
 | Work | State | Next evidence |
 |---|---|---|
-| MoE finish + routing-weight multiply + ordered top8 sum | Implemented as an additive binding, exact graph closure and slot order; retains TC FP16 completion and SIMT FP32 output | Precompiled helper gate: tokens1/2/8, S1/2/4/8, mixed-stage and replay/guard/negative checks; then matched runtime/caller and model trace |
-| M1 prepare unused SIMT descriptors | Implemented: SIMT projections no longer write TC shape/output/stride arrays; row maps and directory status remain | Same helper gate; actual selected producer composition still required. TC active-only metadata and router latency remain open |
+| MoE finish + routing-weight multiply + ordered top8 sum | GPlpUf:15 finish cells x7 replays and80 mixed-stage cells pass. TC S1 improves46--48%; SIMT S1 improves26--28%; every TC S2/S4/S8 case regresses | Enable only admitted S1 domains first; retain the base fused chain on finish decline. Parallel expert-slot/specialized-split experiment needed before enabling S>1; actual selected producer and model trace still pending |
+| M1 prepare unused SIMT descriptors | Helper correctness passes: SIMT TC descriptor arrays stay poison; row maps/status are valid. Prepare with merged SIMT gate + TC down S8 remains7.82us at tokens1 and34.95us at tokens8 | Add matched model S1/old-new prepare timing; current S8 helper cannot be compared directly with the model S1 trace. TC active-only metadata and router latency remain open |
 | Q8 shared-expert gate/up + SwiGLU | OPEN: trace shows initial TC/Split-K policy and lost native fusion; about408us added kernel time/step | Compare measured W8A16 SIMT/TC including reducers and fused postprocessing; no silent W8A8 fallback |
 | Q4 routed SwiGLU and Q5 down finishing | Weighted finish implemented; Q4 activation is still a separate kernel | Preserve mixed SIMT/TC precision and graph ownership before considering producer-epilogue activation fusion |
 | Q8 attention residual and Q6 output head | OPEN: lost fused residual on10 projections; output-head policy miss retains two casts | Cover these shapes/endpoints explicitly; do not label a fallback as a measured choice |
 | Qwen3-32B nonfinite activation | Separate numerical blocker: finite F32 SwiGLU exceeds FP16 range before Q6 down | Reference intermediate comparison and compute-range-correct solution; never clamp values merely to pass |
 
 Local admission:99 host tests pass and production helper compilation passes.
+The [returned GPlpUf review](../../docs/KPACK_MOE_FINISH_RESULTS_20260915.md)
+admits helper correctness but rejects unconditional finish fusion.
 `tools/run_kpack_moe_finish_box.sh` downloads only the small LFS proof binary;
 no GEMM rebuild, JIT or full sweep. Its timing baseline is equivalent unfused
-helper stages, not the llama binary. PPU correctness, speedup and whole-model
-admission remain pending.
+helper stages, not the llama binary. Actual selected-GEMM composition and
+whole-model admission remain pending.
 
 ## CI build entry, 2026-09-15
 
