@@ -1,5 +1,40 @@
 # K-pack execution follow-up
 
+## Qwen3-32B first-chunk nonfinite diagnosis (2026-09-15)
+
+The B1/256-context run in `kpack-q4-model.c6etoF` is not admitted: native
+PPL/KLD are NaN while the GPU reference self-comparison is finite. The first
+chunk has zero top matches; the final cumulative 49.606% means the second
+chunk contributes 126/127 matches, not that both chunks are half-correct.
+This suggests a first-use state investigation but does not prove its cause.
+The separate Qwen3.5 Q6 output-head native-policy miss remains open (T08).
+
+Use `tools/run_kpack_first_nonfinite_box.sh` with `PREVIOUS_RUN` pointing to
+the original run and `LLAMA_CI_DIR` pointing to the updated
+`dev/quactlize-v0.3.0` caller. It reads the original saved command and build
+receipt, reuses the corpus, reference logits, consumer/execution bundles and
+JIT cache, and incrementally builds the host caller through `.aoneci`.
+There is no Quactlize kernel rebuild, fresh model sweep or performance pass.
+
+The three fresh processes are native-logits, reference-tensors and
+native-tensors. Logits mode keeps the original graph/fusion configuration
+and checks CPU logits already requested by KL evaluation. Tensor mode uses
+the evaluator callback, which adds synchronization and changes graph
+partitioning/fusion. It stops at the first nonfinite computed floating-point
+tensor and records its shape, strides and input snapshots. Floating-point
+outputs/inputs up to 16 MiB each are saved for standalone replay; quantized
+weights and the whole model are not copied into the result archive. Those inputs are
+read after the node, so an in-place alias is not an independent pre-node
+oracle. Quantized resident artifacts are not read as ordinary GGUF tensors.
+Negative infinity is permitted only in named mask tensors, never NaN.
+
+Exit 86 plus `LLAMA_NUMERICAL_STOP` is a deliberate numerical finding, not a
+runner crash. All arms preserve logs, and the shell archives only results.
+If native-logits fails but native-tensors passes, classify scheduling
+sensitivity, not a fixed kernel or a proven event/workspace bug. A missing
+coverage/stop record is an infrastructure failure. Even an all-finite result
+is not an accuracy or performance admission.
+
 ## Active box candidate (2026-09-10)
 
 The next box delivery combines Q8_0 W8A16 intake with MoE adapter fusion.

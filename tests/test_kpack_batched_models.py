@@ -608,6 +608,53 @@ def test_model_numerical_metrics_bind_actual_coverage_and_reject_nonfinite():
         numerical_metrics(kld.replace('Maximum KLD', 'Missing'), metrics, 1, 256, 2, False)
 
 
+def test_first_nonfinite_reuses_read_only_original_and_reference_only_changes_placement():
+    from tools.run_kpack_first_nonfinite import command
+    argv = ['/bin/llama-perplexity', '-m', '/model.gguf', '-c', '256', '-b', '1', '-ub', '1',
+            '--chunks', '2', '-f', '/corpus.txt', '--no-warmup', '-ot', '^blk.*=CUDA0_KPACK',
+            '--kpack-cache', '/cache', '--kl-divergence', '--kl-divergence-base', '/existing-reference']
+    assert command(argv) == argv
+    reference = command(argv, True)
+    assert reference[reference.index('-ot') + 1] == '^blk.*=CUDA0'
+    assert '--kpack-cache' not in reference
+    assert reference[reference.index('--kl-divergence-base') + 1] == '/existing-reference'
+    assert '--save-all-logits' not in reference and '--no-warmup' in reference
+    for old, new in (('256', '512'), ('--no-warmup', '--warmup'), ('--kl-divergence', '--save-all-logits')):
+        with pytest.raises(ValueError):
+            command([new if x == old else x for x in argv])
+
+
+@pytest.mark.parametrize('mode', ['logits', 'tensors'])
+def test_first_nonfinite_requires_complete_coverage_or_an_explicit_stop(mode):
+    from tools.run_kpack_first_nonfinite import result
+    start = f'LLAMA_NUMERICAL_DEBUG mode={mode} callback={int(mode == "tensors")} timing_valid=0\n'
+    complete = f'LLAMA_NUMERICAL_COMPLETE mode={mode} nodes=2560 logits=256 verdict=NO_NONFINITE_OBSERVED\n'
+    reason = 'NONFINITE_TENSOR' if mode == 'tensors' else 'NONFINITE_LOGITS'
+    stop = f'LLAMA_NUMERICAL_STOP mode={mode} chunk=1 batch=129 position=128 nodes=3 logits=1 reason={reason}\n'
+    assert result(start + stop, 86, mode)['verdict'] == 'NONFINITE_FOUND'
+    assert result(start + complete, 0, mode)['verdict'] == 'NO_NONFINITE_OBSERVED'
+    for text, rc in ((start, 0), (start + stop, 0), (start + complete, 86),
+                     (start + complete.replace('logits=256', 'logits=128'), 0),
+                     (start + stop + stop, 86), (start + stop + complete, 86),
+                     (complete, 0), (start + stop.replace(reason, 'OTHER'), 86)):
+        with pytest.raises(ValueError):
+            result(text, rc, mode)
+    if mode == 'tensors':
+        with pytest.raises(ValueError):
+            result(start + complete.replace('nodes=2560', 'nodes=0'), 0, mode)
+
+
+def test_first_nonfinite_preserves_expected_nonzero_child_exit(tmp_path):
+    from tools.run_kpack_first_nonfinite import run, result
+    text = ('LLAMA_NUMERICAL_DEBUG mode=logits callback=0 timing_valid=0\n'
+            'LLAMA_NUMERICAL_STOP mode=logits chunk=1 batch=129 position=128 nodes=0 logits=1 reason=NONFINITE_LOGITS')
+    log = tmp_path / 'native-logits.log'
+    output, rc = run([sys.executable, '-c', f'print({text!r}); raise SystemExit(86)'], os.environ.copy(), log)
+    assert rc == 86 and result(output, rc, 'logits')['verdict'] == 'NONFINITE_FOUND'
+    assert json.loads(log.with_suffix('.process.json').read_text())['rc'] == 86
+    assert log.read_text().strip() == text
+
+
 def test_model_trace_reuses_reference_tokens_and_never_times_profiler(tmp_path, monkeypatch):
     from tools import run_kpack_model_validation as model
     commands = []
