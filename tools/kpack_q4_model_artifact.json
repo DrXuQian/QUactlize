@@ -5,7 +5,7 @@
   "manifest_sha256": "e6ec8f4a29d364de63b9de2dcb86fa6d0686f550b34b298cad99146ff3e83896",
   "source_commit": "d93b11867813df4723179f11ae583aa4ebdb078a",
   "llama_branch": "dev/quactlize-v0.3.0",
-  "llama_ci_commit": "bc4585dbc83ae86147e8c2168046697c6184fe5e",
+  "llama_ci_commit": "174fcb11bf102adb99ccb0966244bdb5c73162c8",
   "lfs_payloads": 12,
   "device_admission": "PENDING_MIXED_CHAIN_AND_MODEL"
 }

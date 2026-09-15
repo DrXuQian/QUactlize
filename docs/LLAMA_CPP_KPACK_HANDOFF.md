@@ -4,6 +4,22 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
+## NCP linker correction, 2026-09-15
+
+The caller pin is now private llama `174fcb11b`. Its `.aoneci` build adds
+the selected SDK's `libhggc_wrapper.so` to `ncp_moe` only. That library
+owns `hggcGetDeviceProperties_v2`; the failed box link had omitted it.
+Both native SDK layouts, `targets/x86_64-linux/lib` and `lib`, are supported.
+No API alias, runtime kernel, format or Quactlize binary changes.
+
+Set `NCP_CI_DIR=/workspace/kpack-q4-model.N5J9uY/ci/ncp_flash_lib` to
+reuse the completed NCP objects in that failed run. The helper checks
+pin/cache/compiler identity and reconfigures in place through `.aoneci`;
+the new caller still gets a fresh output. The build receipt records reuse.
+Default behavior remains an isolated fresh NCP checkout. See the
+[recovery command and local link evidence](KPACK_Q4_MODEL_CLOSURE.md#ncp-runtime-link-repair-2026-09-15).
+Box joint-build completion and model gates remain pending.
+
 ## Build entry requirement, 2026-09-15
 
 The next llama caller build must use `.aoneci/scripts/build.sh` on

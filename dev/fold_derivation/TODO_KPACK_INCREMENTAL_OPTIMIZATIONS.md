@@ -2,6 +2,12 @@
 
 ## CI build entry, 2026-09-15
 
+- Link blocker diagnosed and locally repaired: `ncp_moe` omitted the SDK
+  wrapper that exports `hggcGetDeviceProperties_v2`. Private llama
+  `174fcb11b` links it explicitly through `.aoneci`; host negative/positive
+  link tests and a real-SDK link-only probe pass. Box confirmation pending.
+  `NCP_CI_DIR` can reuse the failed run's NCP checkout/build after identity
+  checks; no FA object purge or new runtime LFS upload is required.
 - Use the private llama `.aoneci/scripts/build.sh`; preserve NCP FA/MoE ON,
   add Quactlize ON, and bind llama to the same `PPU_NVCC`.
 - NCP source located on box: `/sim/eec/shared/junfu.qx/ncp_flash_lib`.

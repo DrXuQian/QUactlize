@@ -4,6 +4,43 @@ Current scope: the private `dev/quactlize-v0.3.0` branch, canonical K-pack,
 request batch 1, prompt 2048. Q4_K_M model files can contain Q5_K, Q6_K and
 Q8_0 tensors; their actual paths must be covered, not just qtype 12.
 
+## NCP runtime link repair, 2026-09-15
+
+The joint build in `kpack-q4-model.N5J9uY` reached the NCP executable link
+step. `libncp_moe.so` referenced `hggcGetDeviceProperties_v2` but did not
+link its owner, `libhggc_wrapper.so`. The SDK exports that symbol; neither
+a missing SDK installation nor a kernel failure explains this linker error.
+
+Private llama `174fcb11b` adds a target-local dependency through
+`.aoneci/cmake/ncp-ppu-runtime.cmake`. It searches the selected compiler's
+SDK `targets/x86_64-linux/lib`, then `lib`, without changing the existing
+runtime link order or any API name. FA link dependencies are unchanged.
+Local checks reproduce the missing-symbol failure, then link and run both
+consumers after repair while retaining all object timestamps. A link-only
+probe against the real 2.1.1 SDK also passes with `--no-undefined`; its
+`DT_NEEDED` includes the wrapper. This is not a PPU numerical result.
+
+To reuse this failed build, set the **NCP checkout** path, not its `build`
+subdirectory:
+
+```bash
+NCP_CI_DIR=/workspace/kpack-q4-model.N5J9uY/ci/ncp_flash_lib \
+NCP_LIB_DIR=/sim/eec/shared/junfu.qx/ncp_flash_lib \
+PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
+JOBS=192 CUDA_VISIBLE_DEVICES=0 bash tools/run_kpack_q4_model_box.sh
+```
+
+The runner reconfigures that NCP build in place with the link repair. It
+checks the revision, submodule revisions, source/compiler paths and build
+profile before reuse; it does not clone, reset or clean that NCP checkout.
+Unchanged FA/MoE objects remain reusable. The caller build, which had not
+started in the failed run, still goes into a new output directory. The
+receipt records `ncp_build_mode=REUSE_BUILD` and the reused directory.
+Do not run two builds against this NCP directory at the same time.
+Unset `LLAMA_CI_DIR` to fetch the new pinned caller, or update your local
+`dev/quactlize-v0.3.0` branch before using the local override. No new LFS
+payloads or Quactlize kernel rebuilds are needed for this repair.
+
 ## Caller and runtime package boundary, 2026-09-15
 
 No llama executables or llama/ggml dependency libraries are published by
@@ -28,7 +65,7 @@ to the llama CMake invocation. Do not substitute a separate CMake recipe.
 
 The previous `f2a2f99` artifact used a direct CMake invocation with NCP
 FA/MoE OFF. It remains a historical functional candidate, not the requested
-CI performance baseline. A new caller/NCP package must be built and pinned
+CI performance baseline. A new caller/NCP build must be recorded
 before reporting performance under the CI configuration. The Quactlize
 mixed-chain and prefill DSOs do not need a new kernel sweep for this change.
 
@@ -163,7 +200,8 @@ llama, and it does not require the default caller commit. Its `.aoneci`
 script must support `LLAMA_BUILD_DIR` (private llama commit `bc4585dbc`);
 update that build script first if the precheck reports the feature missing.
 Output goes to `$RUN/ci/llama-build`, leaving the source's existing
-`build-ci` untouched. NCP still builds in its isolated pinned checkout.
+`build-ci` untouched. NCP builds in its isolated pinned checkout unless
+`NCP_CI_DIR` explicitly selects a matching existing build as described above.
 The result receipt says `LOCAL_WORKTREE` and records the actual source
 HEAD, working-tree status, tracked diff hash and build-script hash. Do not
 edit the caller sources while the build is running. Unset `LLAMA_CI_DIR`

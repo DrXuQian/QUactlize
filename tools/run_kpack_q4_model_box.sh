@@ -35,7 +35,7 @@
     cd "$ROOT"
     export PPU_SDK="$SDK" LC_ALL=C CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
     [[ "$CUDA_VISIBLE_DEVICES" =~ ^[0-9]+$ ]]
-    export LD_LIBRARY_PATH="$SDK/CUDA_SDK/targets/x86_64-linux/lib:$SDK/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    export LD_LIBRARY_PATH="$SDK/CUDA_SDK/targets/x86_64-linux/lib:$SDK/targets/x86_64-linux/lib:$SDK/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
     ASYS=${ASYS:-$SDK/asight/bin/asys}
     test -x "$ASYS"
@@ -104,9 +104,13 @@
     fi
 
     stage=ci-build
+    NCP_BUILD_ARGS=()
+    if [[ -n ${NCP_CI_DIR:-} ]]; then
+        NCP_BUILD_ARGS+=(--reuse-ncp-build "$NCP_CI_DIR")
+    fi
     "$PYTHON" -u tools/build_kpack_model_ci.py --llama "$LLAMA_DIR" --ncp "$NCP_SOURCE" \
         --sdk "$SDK" --output "$RUN/ci" --jobs "$JOBS" \
-        "${CI_SOURCE_ARGS[@]}" --receipt "$RUN/results/caller-ci-build.json" 2>&1 | tee "$RUN/results/caller-ci-build.log"
+        "${CI_SOURCE_ARGS[@]}" "${NCP_BUILD_ARGS[@]}" --receipt "$RUN/results/caller-ci-build.json" 2>&1 | tee "$RUN/results/caller-ci-build.log"
     if [[ ${#CI_SOURCE_ARGS[@]} == 0 ]]; then
         LLAMA_DIR="$RUN/ci/llama"
         BUILD_DIR="$LLAMA_DIR/build-ci"
