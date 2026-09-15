@@ -43,14 +43,77 @@ routes using the FP16 timing table. Fresh BF16 timing remains a separate task.
 the same explicit compute contract; prewarm accepts mixed grouped/decode
 parents without loading a device.
 
-Local gates: the full six-format execution library and both caller adapter
-translation units compile with the PPU SDK. The focused host regression suite
-passes 164 tests, including wrong dtype/version/ticket and legacy-reader
-negatives. Compile-only matrices cover all formats and grouped small/large
-tiles. These results are not PPU numerical or performance admission. The
-bounded all-format BF16 device gate must precede model numerical/Asys runs.
-The artifact pin below will be advanced only with the matching complete
-package; the previous published FP16 artifact remains reproducible.
+Local gates: the full six-format execution library, 40 device-gate TC modules
+and both caller adapter translation units compile with the PPU SDK. The
+focused host regression suite passes 164 tests, including wrong
+dtype/version/ticket and legacy-reader negatives. Three real BF16 JIT misses
+(Q5 grouped, Q8 grouped prefill and Q6 dense TM8) also compile and pass identity
+inspection. These results are not PPU numerical or performance admission.
+
+Current delivery pins:
+
+- Quactlize compute/package source: `5a74e94` on `develop`.
+- Actlize: `021c69300864e03926108867d318572871a44d35`, reachable on
+  `bf16-compute-v1` in the private fork; use the recorded gitlink.
+- Private llama caller: `773811c6bd5d28f0254a64049af4e1aeeb70621a` on
+  `dev/quactlize-v0.3.0`.
+- Runtime artifact: `8d69a6a2db140d734742721abca18f025e8ab18c` on
+  `artifacts/kpack-model-runtime-v1`, directory
+  `prebuilt/ppu0010/kpack-model-runtime-v1`.
+- Artifact manifest SHA256:
+  `28ecf8011b47cab14b80238225d85e93d3099f5e22762029104f1daf1ef467f7`.
+
+The package has 53 ELF paths, about 101.6 MiB on disk, all managed by Git LFS.
+Forty TC modules belong to the bounded numerical gate, not an expanded runtime
+config inventory. The gate reuses the same execution DSO as the model; the
+duplicate path shares its LFS object. There are no llama binaries. Seven old
+FP16 control modules were replaced with source-matched builds; artifact
+`ae225b4` still preserves the previous files. Existing weight-cache bytes and
+box results are not removed or invalidated by a different compute dtype.
+
+### Combined BF16 box run
+
+The command first runs 746 cases across all six formats: grouped TC 226,
+SIMT 396, complete MoE chains 116, and Q6 outlier/FP16-negative cases 8.
+The default performs two correctness replays, not a config sweep. Failures
+stop model admission; other format/family children continue to report their
+results. Numerical coverage includes empty/ragged experts, later M tiles,
+Split-K, mixed projections and Q4 gate/up with Q5/Q6 down.
+
+Only after that gate passes does the runner incrementally build the caller
+through `.aoneci`, run model numerical checks, benchmark and capture Asys.
+Both the MoE model and the dense model that exposed the outlier are included.
+Model warmup may JIT selected parents; first warmup/JIT is excluded from timing.
+No BF16 performance winner or model-accuracy claim is made before this run.
+
+```bash
+(
+    set -e
+    test "$(git -C /sim/eec/shared/junfu.qx/llama.cpp branch --show-current)" = dev/quactlize-v0.3.0
+    git -C /sim/eec/shared/junfu.qx/llama.cpp pull --ff-only \
+        https://github.com/DrXuQian/llama.cpp.git dev/quactlize-v0.3.0
+    cd /sim/eec/shared/junfu.qx/quactlize
+    test "$(git branch --show-current)" = develop
+    git pull --ff-only origin develop
+    git submodule update --init third_party/actlize
+
+    MODEL_COMPUTE=bf16 MODEL_PHASES=all \
+    MODEL_NAMES="qwen35-35b-q4km qwen3-32b-q4km" \
+    LLAMA_CI_DIR=/sim/eec/shared/junfu.qx/llama.cpp \
+    LLAMA_CI_BUILD_DIR=/workspace/kpack-q4-model.hnN1Jf/ci/llama-build \
+    NCP_LIB_DIR=/sim/eec/shared/junfu.qx/ncp_flash_lib \
+    NCP_CI_DIR=/workspace/kpack-q4-model.N5J9uY/ci/ncp_flash_lib \
+    PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
+    CUDA_VISIBLE_DEVICES=0 JOBS=192 \
+    bash tools/run_kpack_q4_model_box.sh
+)
+```
+
+This subshell preserves the surrounding Docker shell on failure. The runner
+prints `results=...results.tgz`; send that archive for admission review. Full
+Asys reports stay in the printed trace directory and are excluded from the
+small archive. Successful device-gate children can be resumed with the same
+package via `dev/bf16_compute/run.py --resume`; no blanket rebuild is needed.
 
 ## Combined router/finish graph repair, 2026-09-15
 
