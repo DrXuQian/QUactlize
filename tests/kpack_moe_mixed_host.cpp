@@ -64,6 +64,90 @@ static int run_reuse(qkg_call_v1 const* c,qkg_simt_config_v1 const* f,
     calls.push_back(50+i);return QKG_OK;
 }
 
+static int project_bf16(void* h,qk_moe_projection_v2* out) {
+    *out={2,sizeof(*out),*static_cast<qk_moe_projection_v1*>(h),QK_COMPUTE_BF16};return QK_OK;
+}
+static int stage_tc_bf16(void* h,qk_moe_plan_v2 const* p,int phase,void* stream) {
+    assert(p->version==2 && p->size==sizeof(*p) && p->compute_type==QK_COMPUTE_BF16);
+    return stage_tc(h,&p->plan,phase,stream);
+}
+static int select_q4_bf16(qkg_simt_call_v2 const* c,quactlize_ppu_placed_arrangement_v2 const* a,
+    qkg_q4_decode_config_v1* f,qkg_sizes_v1* s) {
+    assert(c->version==2 && c->size==sizeof(*c) && c->compute_type==QK_COMPUTE_BF16);
+    return select_simt(&c->call,a,f,s);
+}
+static int run_q4_bf16(qkg_simt_call_v2 const* c,qkg_q4_decode_config_v1 const* f,
+    quactlize_ppu_placed_arrangement_v2 const* a) {
+    assert(c->version==2 && c->size==sizeof(*c) && c->compute_type==QK_COMPUTE_BF16);
+    return run_simt(&c->call,f,a);
+}
+static int stage_mixed_bf16(qkg_moe_compute_v2 const* p,int phase,void* stream) {
+    assert(p->version==2 && p->size==sizeof(*p) && p->compute_type==QK_COMPUTE_BF16);
+    return stage_simt(&p->plan,p->simt_mask,phase,stream);
+}
+static int finish_bf16(qkg_moe_compute_v2 const* p,qk_llama_moe_finish_v1 const* f,void* stream) {
+    assert(p->version==2 && p->size==sizeof(*p) && p->compute_type==QK_COMPUTE_BF16);
+    return weighted_finish(&p->plan,p->simt_mask,f,stream);
+}
+
+static void test_q4_bf16_chains() {
+    int checked=0;
+    for(int tokens=1;tokens<=8;++tokens) for(bool merged:{false,true})
+    for(unsigned mask=0;mask<8;++mask) {
+        if(merged && (mask&2)) continue;
+        Runtime r;r.device=0;r.cu=72;r.moe=std::make_shared<MoeExecution>();
+        // Deliberately no generic or F16 producer: none is required by this chain.
+        r.moe->bind=bind_simt;r.moe->select_compute=select_q4_bf16;r.moe->q4_compute=run_q4_bf16;
+        r.moe->stage_compute=stage_mixed_bf16;r.moe->finish_compute=finish_bf16;
+        qkg_q4_decode_config_v1 cfg{1,sizeof(cfg),0,0,4,1,4};
+        qk_moe_projection_v1 ps[3]={part(0x10000000,merged?1024:512,2048,1,tokens),
+            part(0x20000000,512,2048,1,tokens),part(0x30000000,2048,512,8,tokens)};
+        Handle h[3];qks_moe_endpoint_v4 endpoints[3]{};qkg_call_v1 gc[3]{};
+        quactlize_ppu_placed_arrangement_v2 arr{};
+        for(int i=0;i<3;++i) {
+            auto& t=endpoints[i];t.version=4;t.size=sizeof(t);t.compute_type=QK_COMPUTE_BF16;
+            auto& e=t.endpoint;e.version=3;e.size=sizeof(e);
+            auto& p=ps[i];h[i].module=std::make_shared<Module>();h[i].inner=&p;
+            h[i].module->compute_type=QK_COMPUTE_BF16;
+            h[i].module->moe_projection_compute=project_bf16;h[i].module->moe_stage_compute=stage_tc_bf16;
+            h[i].module->destroy=[](void*){};
+            if(!(mask&(1u<<i))) {e.tc_handle=&h[i];continue;}
+            auto& c=gc[i];c.version=1;c.size=sizeof(c);c.qtype=12;c.n=p.n;c.k=p.k;
+            c.experts=256;c.rows=8*tokens;c.mode=QKG_INDEXED;c.input_type=QKG_F32;c.topk=8;c.channels=p.io.channels;
+            c.a_row_stride=p.k;c.a_token_stride=p.io.a_token_stride;c.ids_stride=8;c.out_row_stride=p.n;
+            c.a=p.io.a;c.output=p.io.output;c.ids=p.io.ids;c.low=(uint8_t*)(uintptr_t(i)+1);
+            e.simt_call=&c;e.q4_config=&cfg;e.arrangement=&arr;e.scratch=p.a;e.scratch_bytes=0x400000;
+        }
+        void* chain=nullptr;
+        auto create=[&] {return quactlize_kpack_dispatch_moe_create_v4(&r,&endpoints[0],
+            merged?nullptr:&endpoints[1],&endpoints[2],&chain);};
+        assert(create()==QKS_OK && chain);
+        std::vector<int> expected{mask?100:11,mask&1?50:21};
+        if(!merged) expected.push_back(mask&2?51:22);
+        expected.push_back(mask?102:31);expected.push_back(mask&4?52:23);
+        if(!(mask&4)) expected.push_back(43);
+        calls.clear();assert(quactlize_kpack_dispatch_moe_run_v1(chain,nullptr)==QKS_OK && calls==expected);
+        qk_llama_router_v1 router{1,sizeof(router),0,1,0,0,1e-8f,1.f,(float*)0x03000000,nullptr,(float*)0x04000000};
+        qk_llama_moe_finish_v1 finish{1,sizeof(finish),8,2048,(float*)0x04000000,(float*)0x50000000};
+        assert(quactlize_kpack_dispatch_moe_bind_finish_v1(&r,chain,&finish)==QKS_OK);
+        if(!(mask&4)) expected.pop_back();expected.push_back(900);
+        calls.clear();assert(quactlize_kpack_dispatch_moe_run_router_v1(chain,&router,nullptr)==QKS_OK && calls==expected);
+        quactlize_kpack_dispatch_moe_destroy_v1(chain);chain=nullptr;
+        auto saved=endpoints[2].compute_type;endpoints[2].compute_type=QK_COMPUTE_F16;
+        assert(create()==QKS_INVALID && !chain);endpoints[2].compute_type=saved;
+        if(mask) {
+            r.moe->select_compute=nullptr;assert(create()==QKS_MISS && !chain);r.moe->select_compute=select_q4_bf16;
+            r.moe->q4_compute=nullptr;assert(create()==QKS_MISS && !chain);r.moe->q4_compute=run_q4_bf16;
+            r.moe->stage_compute=nullptr;assert(create()==QKS_MISS && !chain);r.moe->stage_compute=stage_mixed_bf16;
+            int first=mask&1?0:mask&2?1:2;
+            auto bad=cfg;++bad.warps;endpoints[first].endpoint.q4_config=&bad;
+            assert(create()==QKS_INVALID && !chain);endpoints[first].endpoint.q4_config=&cfg;
+        }
+        ++checked;
+    }
+    std::printf("KPACK_MOE_BF16_Q4_HOST PASS chains=%d typed-only all masks tokens=1..8 router finish missing-entry negatives\n",checked);
+}
+
 static void test_reuse_chains() {
     int checked=0;
     for (int q:{8,10,11,12,13,14}) for (int tokens=1;tokens<=8;++tokens)
@@ -137,6 +221,7 @@ static void test_reuse_chains() {
     std::printf("KPACK_MOE_REUSE_HOST PASS chains=%d formats=6 tokens=1..8 splits=1/2/4/8 missing-entry+alias negatives\n",checked);
 }
 int main() {
+    test_q4_bf16_chains();
     test_reuse_chains();
     for (bool merged:{false,true}) for (uint32_t mask=0;mask<8;++mask) {
         if (merged && (mask&2)) continue;

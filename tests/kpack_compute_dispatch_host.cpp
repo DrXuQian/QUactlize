@@ -3,7 +3,7 @@
 #include <cassert>
 #include <cstdio>
 
-static int typed_prepares=0, stages=0, simt_runs=0, mixed_stages=0;
+static int typed_prepares=0, stages=0, simt_runs=0, mixed_stages=0,q4_runs=0;
 static int expected_compute=QK_COMPUTE_BF16;
 static int dense_prepare(qkd_dense_call_v2 const* d,qk_recipe_v1 const*,void** h) {
     assert(d->version==2 && d->size==sizeof(*d) && d->compute_type==expected_compute);
@@ -27,6 +27,11 @@ static int reuse_compute(qkg_simt_call_v2 const* d,qkg_simt_config_v1 const*,
 static int mixed_compute(qkg_moe_compute_v2 const* d,int,void*) {
     assert(d->version==2 && d->size==sizeof(*d) && d->compute_type==expected_compute);
     ++mixed_stages;return QKG_OK;
+}
+static int q4_compute(qkg_simt_call_v2 const* d,qkg_q4_decode_config_v1 const*,
+                       quactlize_ppu_placed_arrangement_v2 const*) {
+    assert(d->version==2 && d->size==sizeof(*d) && d->compute_type==expected_compute);
+    ++q4_runs;return QKG_OK;
 }
 
 int main() {
@@ -90,13 +95,16 @@ int main() {
     chain.simt_mask=chain.reuse_mask=3;
     assert(quactlize_kpack_dispatch_moe_run_v1(&chain,nullptr)==QKS_OK);
     assert(stages==8 && simt_runs==2 && mixed_stages==2);
+    chain.execution->q4_compute=q4_compute;chain.reuse_mask=1;chain.q4_mask=2;
+    assert(quactlize_kpack_dispatch_moe_run_v1(&chain,nullptr)==QKS_OK);
+    assert(stages==10 && simt_runs==3 && mixed_stages==4 && q4_runs==1);
     qks_moe_endpoint_v4 ep{4,sizeof(ep),{3,sizeof(qks_moe_endpoint_v3),&gate},QK_COMPUTE_BF16};
     auto bad=ep;bad.compute_type=QK_COMPUTE_F16;bad.endpoint.tc_handle=&down;
     void* out=nullptr;
     assert(quactlize_kpack_dispatch_moe_create_v4(&runtime,&ep,nullptr,&bad,&out)==QKS_INVALID && !out);
     qks_moe_endpoint_v4 legacy=ep;legacy.endpoint.tc_handle=nullptr;
-    qkg_call_v1 call{};qkg_q4_decode_config_v1 old_reader{};
-    legacy.endpoint.simt_call=&call;legacy.endpoint.q4_config=&old_reader;
+    qkg_call_v1 call{};qkg_config_v1 old_reader{};
+    legacy.endpoint.simt_call=&call;legacy.endpoint.simt_config=&old_reader;
     quactlize_ppu_placed_arrangement_v2 arrangement{};legacy.endpoint.arrangement=&arrangement;
     ep.endpoint.tc_handle=&down;
     assert(quactlize_kpack_dispatch_moe_create_v4(&runtime,&legacy,nullptr,&ep,&out)==QKS_MISS && !out);

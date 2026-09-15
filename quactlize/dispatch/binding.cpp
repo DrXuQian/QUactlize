@@ -79,6 +79,8 @@ struct MoeExecution {
     decltype(&quactlize_kpack_moe_weighted_finish_v1) finish=nullptr;
     decltype(&quactlize_kpack_q4_decode_select_v1) select=nullptr;
     decltype(&quactlize_kpack_q4_decode_run_v1) q4=nullptr;
+    decltype(&quactlize_kpack_q4_decode_select_v2) select_compute=nullptr;
+    decltype(&quactlize_kpack_q4_decode_run_v2) q4_compute=nullptr;
     decltype(&quactlize_kpack_gemv_query_v1) query_generic=nullptr;
     decltype(&quactlize_kpack_gemv_run_v1) generic=nullptr;
     decltype(&quactlize_kpack_simt_query_v1) query_reuse=nullptr;
@@ -181,6 +183,10 @@ std::shared_ptr<MoeExecution> load_moe(Runtime& r) {
         dlsym(lib->library,"quactlize_kpack_moe_weighted_finish_v1"));
     lib->select=symbol<decltype(lib->select)>(lib->library,"quactlize_kpack_q4_decode_select_v1");
     lib->q4=symbol<decltype(lib->q4)>(lib->library,"quactlize_kpack_q4_decode_run_v1");
+    lib->select_compute=reinterpret_cast<decltype(lib->select_compute)>(
+        dlsym(lib->library,"quactlize_kpack_q4_decode_select_v2"));
+    lib->q4_compute=reinterpret_cast<decltype(lib->q4_compute)>(
+        dlsym(lib->library,"quactlize_kpack_q4_decode_run_v2"));
     lib->query_generic=symbol<decltype(lib->query_generic)>(lib->library,"quactlize_kpack_gemv_query_v1");
     lib->generic=symbol<decltype(lib->generic)>(lib->library,"quactlize_kpack_gemv_run_v1");
     // Older execution libraries remain usable by v1/v2. Only a v3 caller
@@ -242,9 +248,15 @@ int run_mixed(MoeChain const& c,qk_moe_plan_v1 const& plan,void* stream) {
                 rc=c.execution->reuse_compute(&typed,&c.reuse_configs[i],&c.arrangements[i]);
             } else rc=c.execution->reuse(&call,&c.reuse_configs[i],&c.arrangements[i]);
         }
-        else if (c.q4_mask&(1u<<i))
-            rc=c.execution->q4(&call,&c.q4_configs[i],&c.arrangements[i]);
-        else rc=c.execution->generic(&call,&c.configs[i],&c.arrangements[i]);
+        else if (c.q4_mask&(1u<<i)) {
+            if (c.compute_type==QK_COMPUTE_BF16) {
+                qkg_simt_call_v2 typed{2,sizeof(typed),call,c.compute_type};
+                rc=c.execution->q4_compute(&typed,&c.q4_configs[i],&c.arrangements[i]);
+            } else rc=c.execution->q4(&call,&c.q4_configs[i],&c.arrangements[i]);
+        } else {
+            if (c.compute_type!=QK_COMPUTE_F16) return false;
+            rc=c.execution->generic(&call,&c.configs[i],&c.arrangements[i]);
+        }
         return rc==QKG_OK;
     };
     auto stage=[&](int phase) {
@@ -575,8 +587,8 @@ extern "C" int quactlize_kpack_dispatch_query_smallm_v2(void* runtime,qkg_simt_c
             if (rc!=QKS_OK) return rc;
         }
     }
-    // Q4's specialized FP16 reader is not a BF16 reader. The generic Q4
-    // register-reuse implementation supplies an explicit initial proposal.
+    // This ABI returns generic SIMT recipes. Specialized Q4 proposals use
+    // the execution library's explicit typed Q4 selector instead.
     if (result.kind==QKS_SMALLM_SIMT &&
         quactlize::execution::simt::query_v2(*typed,result.simt,arrangement,result.sizes)!=QKG_OK)
         return QKS_MISS;
@@ -799,7 +811,7 @@ static int create_mixed_moe(void* runtime,qks_moe_endpoint_v2 const* gate,
         (e->tc_handle && (e->q4_config || e->simt_config || reuse[i] || e->arrangement || e->scratch || e->scratch_bytes)) ||
         (e->simt_call && (!e->arrangement ||
             int(bool(e->q4_config))+int(bool(e->simt_config))+int(bool(reuse[i]))!=1))) return QKS_INVALID;
-        if (compute_type==QK_COMPUTE_BF16 && e->simt_call && !reuse[i]) return QKS_MISS;
+        if (compute_type==QK_COMPUTE_BF16 && e->simt_config) return QKS_MISS;
     }
     if (gate->tc_handle && down->tc_handle && (!up || up->tc_handle))
         return create_tc_moe(gate->tc_handle,up?up->tc_handle:nullptr,down->tc_handle,compute_type,out);
@@ -807,8 +819,7 @@ static int create_mixed_moe(void* runtime,qks_moe_endpoint_v2 const* gate,
         auto& r=*static_cast<Runtime*>(runtime);std::lock_guard<std::mutex> lock(r.mutex);
         auto c=std::make_unique<MoeChain>();c->execution=load_moe(r);
         c->compute_type=compute_type;
-        if (compute_type==QK_COMPUTE_BF16 && (!c->execution->stage_compute ||
-            !c->execution->query_reuse_compute || !c->execution->reuse_compute)) return QKS_MISS;
+        if (compute_type==QK_COMPUTE_BF16 && !c->execution->stage_compute) return QKS_MISS;
         c->plan.version=1;c->plan.size=sizeof(c->plan);c->plan.merged=up?0:1;
         qk_moe_projection_v1* parts[3]={&c->plan.gate,&c->plan.up,&c->plan.down};
         Handle** handles[3]={&c->gate,&c->up,&c->down};
@@ -825,7 +836,9 @@ static int create_mixed_moe(void* runtime,qks_moe_endpoint_v2 const* gate,
             auto e=endpoints[i];if (!e || !e->simt_call) continue;
             auto call=*e->simt_call;qkg_sizes_v1 sizes{};
             if (reuse[i]) {
-                if (!c->execution->query_reuse || !c->execution->reuse) {
+                if (compute_type==QK_COMPUTE_BF16 ?
+                    (!c->execution->query_reuse_compute || !c->execution->reuse_compute) :
+                    (!c->execution->query_reuse || !c->execution->reuse)) {
                     last_error="execution library lacks the register-reuse reader";return QKS_MISS;
                 }
                 qkg_simt_call_v2 typed{2,sizeof(typed),call,compute_type};
@@ -837,7 +850,14 @@ static int create_mixed_moe(void* runtime,qks_moe_endpoint_v2 const* gate,
                 c->reuse_mask|=1u<<i;c->reuse_configs[i]=*reuse[i];
             } else if (e->q4_config) {
                 qkg_q4_decode_config_v1 selected{};
-                int rc=c->execution->select(&call,e->arrangement,&selected,&sizes);
+                if (compute_type==QK_COMPUTE_BF16 &&
+                    (!c->execution->select_compute || !c->execution->q4_compute)) {
+                    last_error="execution library lacks the BF16 Q4 reader";return QKS_MISS;
+                }
+                qkg_simt_call_v2 typed{2,sizeof(typed),call,compute_type};
+                int rc=compute_type==QK_COMPUTE_BF16 ?
+                    c->execution->select_compute(&typed,e->arrangement,&selected,&sizes) :
+                    c->execution->select(&call,e->arrangement,&selected,&sizes);
                 if (rc!=QKG_OK) {last_error="mixed MoE Q4 selection rejected";return QKS_MISS;}
                 if (std::memcmp(&selected,e->q4_config,sizeof(selected))) return QKS_INVALID;
                 c->q4_mask|=1u<<i;c->q4_configs[i]=selected;

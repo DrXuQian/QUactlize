@@ -25,6 +25,32 @@ def test_compute_dispatch_protocol(tmp_path):
     assert 'six formats, separate tickets' in result.stdout
 
 
+def test_typed_q4_dynamic_symbols_are_optional_for_legacy_libraries(tmp_path):
+    (tmp_path/'catalog.inc').write_text('static std::vector<Image> kImages; static char kJitSource[]="";\n')
+    source=tmp_path/'load.cpp';binary=tmp_path/'load'
+    source.write_text('''#include "quactlize/dispatch/binding.cpp"
+#include <cassert>
+int main(int argc,char** argv) {
+  assert(argc==3);Runtime runtime;runtime.root=argv[1];auto e=load_moe(runtime);
+  int mask=std::atoi(argv[2]);
+  assert(e->select && e->q4);
+  assert(bool(e->select_compute)==bool(mask&1));
+  assert(bool(e->q4_compute)==bool(mask&2));
+}''')
+    subprocess.run(['g++','-std=c++17','-O1',f'-I{ROOT}',f'-I{tmp_path}',
+        str(source),'-ldl','-pthread','-o',str(binary)],check=True)
+    required=['moe_simt_query_v1','moe_simt_bind_v1','moe_mixed_stage_v1',
+              'q4_decode_select_v1','q4_decode_run_v1','gemv_query_v1','gemv_run_v1']
+    for mask in range(4):
+        directory=tmp_path/str(mask);directory.mkdir()
+        names=required+(['q4_decode_select_v2'] if mask&1 else [])+(['q4_decode_run_v2'] if mask&2 else [])
+        stub=directory/'fake.cpp'
+        # This test checks dynamic lookup only; these functions are not called.
+        stub.write_text('\n'.join(f'extern "C" void quactlize_kpack_{name}() {{}}' for name in names))
+        subprocess.run(['g++','-shared','-fPIC',str(stub),'-o',str(directory/'libquactlize_ppu_execution.so')],check=True)
+        subprocess.run([str(binary),str(directory),str(mask)],check=True)
+
+
 def test_catalog_separates_compute_and_storage():
     p=dict(symbol='same',qtype=14,route='fq-grouped',tm=8,tn=64,tk=128,
            wm=8,wn=16,stages=2,ap=0,dn=16,persistent=0)
