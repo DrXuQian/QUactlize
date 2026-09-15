@@ -26,8 +26,8 @@ def library(tmp_path_factory):
 
 def test_denominator_and_actual_selector(library):
     p = plan()
-    assert p["denominator"] == dict(requests=160, selected_requests=101, declined_requests=59,
-                                    bf16_cells=202, f16_controls=101, overflow_negatives=101)
+    assert p["denominator"] == dict(requests=192, selected_requests=129, declined_requests=63,
+        bf16_cells=258, f16_controls=129, overflow_negatives=129, compiled_recipes=40, covered_recipes=40)
     for point in p["cases"]:
         for kind in (1, 2):
             selected = library.select(point, kind)

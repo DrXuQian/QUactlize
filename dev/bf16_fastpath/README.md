@@ -92,11 +92,13 @@ For an independent NVIDIA development check, omit `--execution`, pass
 only the production-selected Q4 closure. It never substitutes NVIDIA results
 for PPU device admission. Neither command changes a production policy.
 
-The frozen auto inventory declares 160 geometry requests: 101 selected Q4
-requests, 59 expected `QKG_SHAPE` declines to TC, and 202 BF16 numerical cells
+The frozen auto inventory declares 192 geometry requests: 129 selected Q4
+requests, 63 expected `QKG_SHAPE` declines to TC, and 258 BF16 numerical cells
 (F32/BF16 input storage). Dense covers every auto-policy shape and tokens 1..8;
 indexed covers E256/top8, channels 1/8 and tokens 1..8 at N/K = 512/2048,
-512/3072, 2048/512, 3072/512. A TC decline is not a numerical pass or fallback.
+512/3072, 2048/512, 3072/512 plus merged gate/up 1024/2048 and 1024/3072.
+All 40 compiled shape/recipe combinations are covered. A TC decline is not a
+numerical pass or fallback.
 Only eight distinct expert patterns are generated on CPU; the remaining planes
 are copied D2D. Different expert IDs select different patterns.
 

@@ -8,7 +8,7 @@ from quactlize.execution.native import Call, SimtCallV2, Arrangement, Sizes, arr
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA = "quactlize.bf16-q4-selected-gate.v1"
-MOE_SHAPES = {(512, 2048), (512, 3072), (2048, 512), (3072, 512)}
+MOE_SHAPES = {(512, 2048), (512, 3072), (1024, 2048), (1024, 3072), (2048, 512), (3072, 512)}
 FIELDS = ("reader", "variant", "warps", "values", "columns")
 
 
@@ -43,12 +43,17 @@ def plan():
     if len({r["id"] for r in rows}) != len(rows):
         raise ValueError("duplicate selector requests")
     selected = sum(r["expected"] == "SELECTED" for r in rows)
+    covered = {(r["n"], r["k"], tuple(r["recipe"])) for r in rows if r["recipe"]}
+    inventory = {(n, k, tuple(c)) for (n, k), values in compiled.items() for c in values}
+    if covered != inventory:
+        raise ValueError("selected Q4 gate does not cover the complete compiled recipe inventory")
     return dict(schema=SCHEMA, cases=rows, compute="BF16", storage=["F32", "BF16"],
         controls=["F16_V1_NOMINAL", "F16_V2_EQUALS_V1", "F16_OVERFLOW_EXPECTED_RED"],
         compiled={f"{n}x{k}": [list(x) for x in recipes] for (n, k), recipes in compiled.items()},
         denominator=dict(requests=len(rows), selected_requests=selected,
             declined_requests=len(rows)-selected, bf16_cells=selected*2,
-            f16_controls=selected, overflow_negatives=selected),
+            f16_controls=selected, overflow_negatives=selected,
+            compiled_recipes=len(inventory), covered_recipes=len(covered)),
         scope="SELECTED_Q4_S1_ONLY_NOT_GENERIC_SIMT_NOT_TC_NOT_PERFORMANCE")
 
 
