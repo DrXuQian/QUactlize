@@ -51,6 +51,9 @@
     [[ "$JOBS" =~ ^[1-9][0-9]*$ ]]
     MODEL_PHASES=${MODEL_PHASES:-all}
     [[ "$MODEL_PHASES" == all || "$MODEL_PHASES" == perf ]]
+    MODEL_COMPUTE=${MODEL_COMPUTE:-fp16}
+    [[ "$MODEL_COMPUTE" == fp16 || "$MODEL_COMPUTE" == bf16 ]]
+    export QUACTLIZE_KPACK_COMPUTE="$MODEL_COMPUTE"
     # Check loader dependencies before spending time on the joint build.
     export QUACTLIZE_PPU_BUNDLE=${QUACTLIZE_PPU_BUNDLE:-/workspace/quactlize-runtime-artifact-2826cf1-46fc3096e1a1/prebuilt/ppu0010/2826cf1/runtime6-46fc3096e1a1/bundle}
     test -s "$QUACTLIZE_PPU_BUNDLE/manifest.json"
@@ -86,6 +89,12 @@
     "$PYTHON" -c 'import hashlib,sys; assert hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()==sys.argv[2],"model package manifest differs"' "$BUNDLE/manifest.json" "${INFO[3]}"
     "$PYTHON" tools/verify_kpack_dispatch.py "$BUNDLE" --sdk "$SDK" | tee "$RUN/results/verify.log"
     test ! -e "$BUNDLE/llama"
+    if [[ "$MODEL_COMPUTE" == bf16 ]]; then
+        stage=bf16-capability
+        test -s "$BUNDLE/bf16/manifest.json"
+        "$PYTHON" -u dev/bf16_compute/run.py --sdk "$SDK" --package "$BUNDLE/bf16" \
+            --output "$RUN/results/bf16" --repeats 2 --samples 0 2>&1 | tee "$RUN/results/bf16.log"
+    fi
     stage=caller-source
     CI_SOURCE_ARGS=()
     if [[ -n ${LLAMA_CI_DIR:-} ]]; then
@@ -148,7 +157,7 @@
     git -C "$LLAMA_DIR" rev-parse HEAD > "$RUN/results/llama-source.txt"
 
     stage=mixed-decode-gate
-    printf 'KPACK_Q4_MODEL caller=AONECI runtime=PREBUILT full_sweep=NONE model_prewarm=SELECTED_JIT_ONLY\n'
+    printf 'KPACK_Q4_MODEL caller=AONECI runtime=PREBUILT compute=%s full_sweep=NONE model_prewarm=SELECTED_JIT_ONLY\n' "$MODEL_COMPUTE"
     failed=0
     if [[ "$MODEL_PHASES" == all ]] && "$BUNDLE/mixed-stages" --mixed 2>&1 | tee "$RUN/results/mixed-stages.log"; then
         grep -qx 'KPACK_MOE_MIXED_STAGES PASS cells=80 PPU_GEMM_ADMISSION=NOT_TESTED' "$RUN/results/mixed-stages.log"

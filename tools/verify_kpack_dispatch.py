@@ -165,6 +165,17 @@ def verify(root, *, sdk=None):
         prefill_paths(root, m['prefill'], sdk=sdk)
     elif (root / 'libquactlize_ppu_prefill.so').exists():
         raise ValueError('unmanifested prefill runtime would arm the model loader')
+    if 'bf16_gate' in m:
+        from dev.bf16_compute.run import validate_package
+        receipt=m['bf16_gate']
+        if (receipt.get('path')!='bf16/manifest.json' or
+                sha(root/'bf16/manifest.json')!=receipt.get('sha256')):
+            raise ValueError('BF16 gate receipt differs')
+        gate=validate_package(root/'bf16')
+        if (len(gate['cases'])!=receipt.get('cases') or len(gate['modules'])!=receipt.get('modules') or
+                (gate.get('reused_execution') or {}).get('sha256')!=m['execution_sha256'] or
+                any(r['identity']['base_source_contract']!=m['jit_source_contract'] for r in gate['modules'].values())):
+            raise ValueError('BF16 gate execution/module contract differs from model')
     if 'moe_mixed_gate' in m:
         gate=m['moe_mixed_gate']
         if (gate.get('schema')!='quactlize.moe-mixed-gate.v1' or gate.get('stage_cases')!=80 or

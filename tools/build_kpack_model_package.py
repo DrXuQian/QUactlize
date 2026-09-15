@@ -16,11 +16,44 @@ from quactlize.runtime.compiler import Compiler,sha,source_contract
 from quactlize.runtime.tuning import digest
 
 
+def attach_bf16(root, package, sdk):
+    from dev.bf16_compute.run import validate_package
+    root=root.resolve(strict=True);package=package.resolve(strict=True)
+    model=verify(root,sdk=sdk)
+    if not model.get('compute_contract') or 'bf16_gate' in model:
+        raise ValueError('requires a compute-capable package without an attached BF16 gate')
+    gate=validate_package(package)
+    for record in gate['modules'].values():
+        if record['identity']['base_source_contract']!=model['jit_source_contract']:
+            raise ValueError('BF16 gate/dispatcher kernel source contracts differ')
+    if (gate.get('reused_execution') or {}).get('sha256')!=model['execution_sha256']:
+        raise ValueError('BF16 gate must validate the same execution image used by the model')
+    names={'manifest.json',gate['simt']['path'],gate['moe']['path']}
+    names.update(r['path'] for r in gate['modules'].values())
+    destination=root/'bf16';destination.mkdir()
+    for name in sorted(names):
+        source=(package/name).resolve(strict=True)
+        relative=source.relative_to(package)
+        target=destination/relative;target.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copy2(source,target)
+    validate_package(destination)
+    model['bf16_gate']=dict(path='bf16/manifest.json',sha256=sha(destination/'manifest.json'),
+        cases=len(gate['cases']),modules=len(gate['modules']),device_validated=False)
+    (root/'manifest.json').write_text(json.dumps(model,indent=2)+'\n')
+    print(f"MODEL_BF16_GATE_ATTACHED modules={len(gate['modules'])} cases={len(gate['cases'])} device=PENDING")
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    for key in ('sdk','bundle','stage-binary'):p.add_argument('--'+key,type=Path,required=True)
+    for key in ('sdk','bundle'):p.add_argument('--'+key,type=Path,required=True)
+    action=p.add_mutually_exclusive_group(required=True)
+    action.add_argument('--stage-binary',type=Path)
+    action.add_argument('--bf16-gate',type=Path,help='attach the bounded gate to an already built compute package')
     p.add_argument('--jobs',type=int,default=8)
-    a=p.parse_args();root=a.bundle.resolve(strict=True);m=verify(root,sdk=a.sdk)
+    a=p.parse_args();root=a.bundle.resolve(strict=True)
+    if a.bf16_gate:
+        attach_bf16(root,a.bf16_gate,a.sdk);return
+    m=verify(root,sdk=a.sdk)
     if m['modules'] or 'moe_mixed_gate' in m:raise ValueError('requires a fresh JIT-only package')
     requests={tuple(r[k] for k in ('q','route','m','n','k','experts','max_rows'))
         for t in (1,4,8) for merged in (False,True) for q in (12,13)
