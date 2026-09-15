@@ -51,3 +51,5 @@ prebuilt/ppu0010/kpack-model-runtime-v1/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/kpack-model-runtime-v1/modules/*/kernel.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/kpack-model-runtime-v1/mixed-stages filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/kpack-model-runtime-v1/pack/*.so filter=lfs diff=lfs merge=lfs -text
+prebuilt/ppu0010/kpack-model-runtime-v1/bf16/*.so filter=lfs diff=lfs merge=lfs -text
+prebuilt/ppu0010/kpack-model-runtime-v1/bf16/**/*.so filter=lfs diff=lfs merge=lfs -text
