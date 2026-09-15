@@ -674,6 +674,101 @@ def test_model_trace_reuses_reference_tokens_and_never_times_profiler(tmp_path, 
     assert all('--proof-only' in c and c[c.index('--proof-prompt')+1]==2048 for c in commands)
 
 
+def trace_replay_fixture(tmp_path):
+    diagnostic, previous, llama, sdk, build, bundle, cache, jit = [tmp_path / p for p in (
+        'diagnostic', 'previous', 'llama', 'sdk', 'build', 'bundle',
+        'cache/qwen35-35b-q4km', 'jit')]
+    for path in (diagnostic/'diagnostic/results', previous/'results/numerical/qwen35-35b-q4km',
+                 llama/'tests', sdk/'asight/bin', sdk/'bin', build/'bin', bundle, cache, jit):
+        path.mkdir(parents=True)
+    model = tmp_path / 'qwen35.gguf'
+    model.write_bytes(b'GGUF')
+    for path in (build/'bin/llama-server', sdk/'asight/bin/asys', sdk/'bin/hgobjdump',
+                 llama/'tests/quactlize_native.py'):
+        path.write_text('fixture')
+        path.chmod(0o755)
+    for path in (bundle/'manifest.json', previous/'results/bundle-manifest.json'):
+        path.write_text('{}')
+    values = {
+        diagnostic/'diagnostic/results/caller-ci-build.json': dict(build=str(build)),
+        diagnostic/'diagnostic/results/inputs.json': dict(previous=str(previous)),
+        diagnostic/'diagnostic/results/environment.json': dict(PPU_SDK=str(sdk),
+            CUDA_VISIBLE_DEVICES='0', QUACTLIZE_KPACK_EXECUTION=str(bundle),
+            QUACTLIZE_KPACK_JIT_CACHE=str(jit)),
+        previous/'results/model-plan.json': dict(models=[
+            dict(name='qwen35-35b-q4km', path=str(model)),
+            dict(name='qwen3-32b-q4km', path='/must-not-load.gguf')]),
+        previous/'results/numerical/qwen35-35b-q4km/b1-kpack-reference.command.json':
+            dict(argv=['/old/perplexity', '-m', str(model), '--kpack-cache', str(cache)]),
+    }
+    for path, value in values.items():
+        path.write_text(json.dumps(value))
+    return diagnostic, previous, llama, sdk, build, bundle
+
+
+def test_model_asys_reuses_diagnostic_build_without_numerical_callback(tmp_path, monkeypatch):
+    from tools import run_kpack_model_trace as trace
+    diagnostic, previous, llama, sdk, build, bundle = trace_replay_fixture(tmp_path)
+    for key in ('LLAMA_NUMERICAL_DEBUG', 'LLAMA_NUMERICAL_DUMP_DIR',
+                'GGML_CUDA_DISABLE_GRAPHS', 'GGML_CUDA_DISABLE_FUSION',
+                'QUACTLIZE_KPACK_PREFILL_POLICY', 'LLAMA_ARG_BATCH'):
+        monkeypatch.setenv(key, 'must-not-leak')
+    monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '3')
+    args, model, env, prior = trace.inputs(diagnostic, 'qwen35-35b-q4km', llama, sdk)
+    assert args.build == build and args.bundle == bundle and prior == previous
+    assert model['name'] == 'qwen35-35b-q4km' and env['CUDA_VISIBLE_DEVICES'] == '3'
+    assert env['LD_LIBRARY_PATH'].startswith(str(build/'bin') + ':')
+    assert not any(k.startswith(('LLAMA_NUMERICAL_', 'LLAMA_ARG_')) for k in env)
+    assert 'GGML_CUDA_DISABLE_GRAPHS' not in env and 'GGML_CUDA_DISABLE_FUSION' not in env
+    assert 'QUACTLIZE_KPACK_PREFILL_POLICY' not in env
+    with pytest.raises(ValueError, match='exactly one model'):
+        trace.inputs(diagnostic, 'absent', llama, sdk)
+    (bundle/'manifest.json').write_text('{"changed":true}')
+    with pytest.raises(ValueError, match='bundle differs'):
+        trace.inputs(diagnostic, 'qwen35-35b-q4km', llama, sdk)
+
+
+@pytest.mark.parametrize('fail', [False, True])
+def test_model_asys_archives_logs_not_reports_and_restores_environment(tmp_path, monkeypatch, fail):
+    import tarfile
+    from tools import run_kpack_model_trace as trace
+    diagnostic, previous, llama, sdk, build, bundle = trace_replay_fixture(tmp_path)
+    monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '0')
+    monkeypatch.setenv('LLAMA_NUMERICAL_DEBUG', 'tensors')
+    monkeypatch.setattr(trace, 'verify', lambda bundle: {})
+    monkeypatch.setattr(trace, 'inventory', lambda path: dict(eligible=['weight'], operators=['grouped']))
+    calls = []
+    def capture(args, model, output, inventory):
+        calls.append((args, model))
+        assert 'LLAMA_NUMERICAL_DEBUG' not in os.environ
+        for arm in ('reference', 'native'):
+            folder = output / arm
+            folder.mkdir()
+            for name in ('proof.asysrep', 'proof.sqlite', 'kernel-times.json'):
+                (folder/name).write_text('fixture')
+        if fail:
+            raise ValueError('mock capture failure')
+    monkeypatch.setattr(trace, 'traces', capture)
+    monkeypatch.setattr(sys, 'argv', ['trace', '--diagnostic', str(diagnostic), '--llama', str(llama),
+        '--sdk', str(sdk), '--result-root', str(tmp_path)])
+    if fail:
+        with pytest.raises(ValueError, match='mock capture failure'):
+            trace.main()
+    else:
+        assert trace.main() == 0
+    assert len(calls) == 1 and calls[0][1]['name'] == 'qwen35-35b-q4km'
+    assert os.environ['LLAMA_NUMERICAL_DEBUG'] == 'tensors'
+    archive, = tmp_path.glob('kpack-model-asys.*.results.tgz')
+    with tarfile.open(archive) as tar:
+        names = tar.getnames()
+        assert 'results/native/kernel-times.json' in names
+        assert not any(n.endswith(('.asysrep', '.sqlite')) for n in names)
+        status = json.load(tar.extractfile('results/status.json'))
+        assert status['status'] == ('INCOMPLETE' if fail else 'TRACE_PAIR_COMPLETE')
+        assert status['accuracy_admission'] == 'NOT_RETESTED'
+        assert status['performance_admission'] == 'NOT_ADMITTED_BY_PROFILER'
+
+
 def test_progress_distinguishes_per_token_from_total_time():
     source = json.loads((ROOT / "tools/kpack_batched_int4_2048.json").read_text())
     row = dict(n_kv_max=2176, pp=2048, tg=128, pl=1, n_batch=2048, n_ubatch=2048,
