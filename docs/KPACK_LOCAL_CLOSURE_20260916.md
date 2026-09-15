@@ -19,6 +19,9 @@ The table import audits all 169,896 sealed raw receipts from
 `smallm-closure.e1WvIL.results.tgz`, not just the summary. See
 [selection contract](KPACK_SMALLM_TABLE.md). Small-M excludes full dequant.
 TC comparisons already include the measured reducer; it is not added twice.
+The final combined local regression run passes327 tests covering ABI, tables,
+JIT source identity, packaging, mixed-chain composition and evidence validation.
+This does not replace a PPU numeric run.
 
 ## Q8 measurements: NVIDIA guidance only
 
