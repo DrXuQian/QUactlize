@@ -125,6 +125,13 @@ declines are not counted as device-compute passes. It reuses the exact model
 execution DSO, including dense and indexed/shared/per-slot readers and merged
 gate/up shapes. All40 compiled selected reader recipes are exercised.
 
+The corresponding NVIDIA CUDA build passed on RTX5070:258 eager BF16
+comparisons and774 changed/restored graph comparisons,129 bit-equal F16
+v1/v2 controls and129 large-value overflow negatives. Maximum BF16 relative
+L1 error was9.31e-7. The build took18.48s and the correctness-only run57.95s;
+neither is a kernel performance result. Full compact/summary/manifest evidence:
+`measurements/bf16_q4_fastpath_5070_20260916.tgz`. PPU admission remains pending.
+
 Remaining after the device return: admit/reject experimental helper/reader
 domains, then model numerical checks and warmed PP2048/TG timing with the
 matched selector. No TPOT saving is claimed by adding isolated kernel times.

@@ -1,9 +1,11 @@
 import copy
 import gzip
+import hashlib
 import json
 from pathlib import Path
 import statistics
 import subprocess
+import tarfile
 
 import pytest
 
@@ -32,6 +34,21 @@ def test_local_evidence_keeps_control_faults_and_complete_ncu_units():
         # DRAM fields contain scaled profiler units; never treat them as bytes.
         assert report['metrics']['dram__bytes_read.sum']['unit'] in ('Kbyte','Mbyte')
     assert r['reports']['q8-n2048-k512-vector']['metrics']['launch__registers_per_thread']['value']=='56'
+
+
+def test_typed_q4_cuda_evidence_covers_every_compiled_selected_recipe():
+    from dev.bf16_fastpath.gate import summarize
+    with tarfile.open(ROOT/'docs/measurements/bf16_q4_fastpath_5070_20260916.tgz') as archive:
+        assert set(archive.getnames())=={'compact.json','summary.json','manifest.json'}
+        data={n:archive.extractfile(n).read() for n in archive.getnames()}
+    compact=json.loads(data['compact.json']);result=json.loads(data['summary.json']);manifest=json.loads(data['manifest.json'])
+    assert compact['manifest_sha256']==hashlib.sha256(data['manifest.json']).hexdigest()
+    assert compact['summary_sha256']==hashlib.sha256(data['summary.json']).hexdigest()
+    assert result['manifest_sha256']==compact['manifest_sha256']
+    assert summarize(manifest,result['results'])['status']=='PASS'
+    assert compact['compiled_recipes']==compact['covered_recipes']==40
+    assert compact['bf16_eager_cells']==258 and compact['f16_v1_v2_controls']==129
+    assert compact['ppu_device_admission']=='PENDING' and not compact['performance_admitted']
 
 
 def test_local_gate_payload_set_and_no_production_admission(tmp_path):
