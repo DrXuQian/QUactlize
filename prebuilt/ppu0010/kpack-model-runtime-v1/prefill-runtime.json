@@ -1,7 +1,7 @@
 {
   "schema": "quactlize.prefill-runtime.v1",
   "library": "libquactlize_ppu_prefill.so",
-  "sha256": "5a8456b29d88b030371015006674b5a3d5f18bd1eeced27d3df188fb1978e22b",
+  "sha256": "1235b5b28277c6ff0457c63f70c855d49204c101e43747ae20b1b95c2d51f6bf",
   "source_hashes": {
     "quactlize/include/q4_n16k64_direct_offline.hpp": "edd373684b20c70292cd0dcf8b7b81e9c50919265e6046c8b70c16631d7c18b8",
     "quactlize/include/dense_splitk_multiformat_ppu.cuh": "bb7281158ef405dbe32835120fc21bd03f0f5b9a6a4191c687074269431191f2",
@@ -604,10 +604,10 @@
     "quactlize/dequant/expert_selection.cuh": "8180cabcb7d923913e396910bf4dad17d10ac2f50186597620df3dc6bec83a59",
     "quactlize/dequant/indexed.cu": "1c723fbe761e415f7638b8757caf16f5e404a9d51b0518138aab94c3f25abc65",
     "quactlize/dequant/indexed.h": "fafd190017a0571509106451f9ab6f1909b5fed8d19c2d08314b5564468f8915",
-    "quactlize/prefill/api.h": "5ec546a91cfa03cb90e3296793ff66fb5a229c2ccf655c223b83eadf95837464",
-    "quactlize/prefill/layout.hpp": "3ff3a074d7aa6f15074837c5e3a84c6508921db79bdecac751ce8b3cea902e06",
-    "quactlize/prefill/stages.cu": "c538d738f1146e109e29e0965b51d2616482c77a5b8dab1ce5d05aeab9a11d35",
-    "quactlize/prefill/runtime.cpp": "46bc2f2cdd4735d2b847dcf4d03196178e2cd0a37fba2317b30baa9a1c042423"
+    "quactlize/prefill/api.h": "b176024e019fbde3f3d316b7ba06235dfee49a66c897e93aa48c1a82aaa5e345",
+    "quactlize/prefill/layout.hpp": "940f32780d8574437859ade44a10c10a4b67ee2d9ea1dbe0a0b55641d79ec00c",
+    "quactlize/prefill/stages.cu": "b281d9a8a783259413a3e619c07217029f0e67c6844cd2d859cc930c1b26c4e8",
+    "quactlize/prefill/runtime.cpp": "822993336e9834c27dceb0725f4db8476bfb6dcb34d7003c9ff003080d60e50e"
   },
   "runtime": {
     "libhggc_wrapper.so": "71c32cb41191458503234324360fcd3f1fa890dd5a082d465bb07328630c775e",
@@ -651,7 +651,7 @@
       "-c",
       "/root/marlin_ppu/quactlize/quactlize/dequant/kernels.cu",
       "-o",
-      "/root/autodl-tmp/kpack-prefill-release-20260914/kernels.o"
+      "/root/autodl-tmp/kpack-prefill-runtime-final-20260914/kernels.o"
     ],
     [
       "/root/autodl-tmp/root-relocated/ppu-sdk/2.1.1/bin/hgcc",
@@ -687,7 +687,7 @@
       "-c",
       "/root/marlin_ppu/quactlize/quactlize/dequant/indexed.cu",
       "-o",
-      "/root/autodl-tmp/kpack-prefill-release-20260914/indexed.o"
+      "/root/autodl-tmp/kpack-prefill-runtime-final-20260914/indexed.o"
     ],
     [
       "/root/autodl-tmp/root-relocated/ppu-sdk/2.1.1/bin/hgcc",
@@ -723,7 +723,7 @@
       "-c",
       "/root/marlin_ppu/quactlize/quactlize/prefill/stages.cu",
       "-o",
-      "/root/autodl-tmp/kpack-prefill-release-20260914/stages.o"
+      "/root/autodl-tmp/kpack-prefill-runtime-final-20260914/stages.o"
     ],
     [
       "g++",
@@ -739,17 +739,17 @@
       "-c",
       "/root/marlin_ppu/quactlize/quactlize/prefill/runtime.cpp",
       "-o",
-      "/root/autodl-tmp/kpack-prefill-release-20260914/runtime.o"
+      "/root/autodl-tmp/kpack-prefill-runtime-final-20260914/runtime.o"
     ],
     [
       "g++",
       "-shared",
       "-pthread",
       "-Wl,-Bsymbolic",
-      "/root/autodl-tmp/kpack-prefill-release-20260914/kernels.o",
-      "/root/autodl-tmp/kpack-prefill-release-20260914/indexed.o",
-      "/root/autodl-tmp/kpack-prefill-release-20260914/stages.o",
-      "/root/autodl-tmp/kpack-prefill-release-20260914/runtime.o",
+      "/root/autodl-tmp/kpack-prefill-runtime-final-20260914/kernels.o",
+      "/root/autodl-tmp/kpack-prefill-runtime-final-20260914/indexed.o",
+      "/root/autodl-tmp/kpack-prefill-runtime-final-20260914/stages.o",
+      "/root/autodl-tmp/kpack-prefill-runtime-final-20260914/runtime.o",
       "-L/root/autodl-tmp/root-relocated/ppu-sdk/2.1.1/lib",
       "-lhggc_wrapper",
       "-lhggcrt1",
@@ -757,9 +757,9 @@
       "-lhg_wrapper",
       "-ldl",
       "-o",
-      "/root/autodl-tmp/kpack-prefill-release-20260914/libquactlize_ppu_prefill.so"
+      "/root/autodl-tmp/kpack-prefill-runtime-final-20260914/libquactlize_ppu_prefill.so"
     ]
   ],
-  "seconds": 17.39537427574396,
+  "seconds": 17.969673320651054,
   "device_admission": "PENDING_COMPOSED_RUNTIME"
 }
