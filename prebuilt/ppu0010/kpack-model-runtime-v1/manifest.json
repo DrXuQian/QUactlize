@@ -383,14 +383,14 @@
     "quactlize/dispatch/native.py": "8d3a598f56b7d7faf68766c66571a802c0802acc81b4a461e5539184237e1e82",
     "quactlize/dispatch/policy.hpp": "376f3f3396589926b08c6172c36869fd56b8035e92fd0c2c49ae5af51eade4af",
     "quactlize/dispatch/smallm.hpp": "992a29ef20ad32183fb2bed17fe2fe5666a5e182cdadbd8f50ef8f5fd2f0e967",
-    "tools/build_kpack_dispatch.py": "e377f83ea5c15a760184055d21f8f1c6f0e6c0a38a1de7f793ae5e912a87aa8c",
+    "tools/build_kpack_dispatch.py": "dc29762fbe3fb345508c0f27e58e50b267ed2d4a502a74daed846e7472a611f6",
     "tools/kpack_native_policy.cpp": "9d1a69c934eaa62deafd2a3010f8b38745f8766b41b77a0a709a02bde2fed83d",
     "policies/kpack_zw810_heuristic_v1.hpp": "7a8c74e9d9d739dac3022329aaa19d314dc39c34b210dcbe80431a04c1ca5e8d",
     "policies/kpack_zw810_runtime_v1.hpp": "88f22bc4b1fd82036bba6b42d152f6ed9ff6e4de4dbf9d5ca55355ff9b0ffda8",
     "policies/kpack_zw810_cost_v1.hpp": "04fab1c79e942a257675801e974319f16e6824c28e976736b4db47868084754c",
     "policies/kpack_smallm_v1.hpp": "325caff3fc7a9ac4d66da660eaacf5a45075385e0bb326f7280defd9b9fe93a6"
   },
-  "dispatch_sha256": "d76ec4cd6fb0ed4686fa811e067dac80f75113759b3949121c604ed26f876e17",
+  "dispatch_sha256": "c41a7107478ab608b3e5df5cada58cc4e88ed8c8c5a31f67a3e8a86d16299793",
   "execution_sha256": "3920cd0ed924bff8df4087ce75acea13dbfa050992379fbbe32e98fa18ccf58f",
   "compiler_identity": null,
   "compiler_identities": {
@@ -13549,18 +13549,18 @@
     "-shared",
     "-pthread",
     "-Wl,-Bsymbolic",
-    "-I/root/autodl-tmp/smallm-dispatch-20260915-v2",
+    "-I/root/autodl-tmp/kpack-router-span-dispatch-20260915",
     "/root/marlin_ppu/quactlize/quactlize/dispatch/binding.cpp",
     "-ldl",
     "-o",
-    "/root/autodl-tmp/smallm-dispatch-20260915-v2/libquactlize_kpack_dispatch.so"
+    "/root/autodl-tmp/kpack-router-span-dispatch-20260915/libquactlize_kpack_dispatch.so"
   ],
   "device_validated": false,
   "heuristic_admitted": false,
   "grouped_profile": "measured-q4-q5-single-token-otherwise-device-bounds-no-router-readback",
-  "jit_source_contract": "8c53bb6f6619ed7b29c5369be2a562ba2bf4ce1ef1597f0cc188fc3e6dd5575c",
+  "jit_source_contract": "a8ded570b2854c617a7c64896a647758e34e247617b04f9d12f1c58df65bde33",
   "jit_source_identity": {
-    "kernel": "1b48b12f9fc0471c397620da23e6d994415671925ccc173808acebbc04ff5a44",
+    "kernel": "fe11df68d92641f8c67d602980f9dc52c712edc372dae4575094f46c2d8c8dc4",
     "flags": [
       "--forward-unknown-to-host-compiler",
       "--forward-unknown-to-host-linker",
@@ -13627,5 +13627,60 @@
       "pack/libquactlize_ppu_pack.so": "b57013dc15d5ba50874480d8ae61a6143e929a1765cec352d0b3a0c29553e5fa",
       "pack/manifest.json": "d1b10d7da202d57e043d35e141ee5cef2f7544399a1f3420b523a52a43447def"
     }
+  },
+  "host_refresh": {
+    "schema": "quactlize.host-dispatch-refresh.v1",
+    "base_artifact": "492b225ba9b65ebe4775340e16ee79112a449b18",
+    "base_manifest_sha256": "17062d76a4ceee7c261c44c52d1b3d3b1a58a6bbe4b35ec2d6e3d81de9c18d10",
+    "host_command": [
+      "g++",
+      "-std=c++17",
+      "-O2",
+      "-fPIC",
+      "-shared",
+      "-pthread",
+      "-Wl,-Bsymbolic",
+      "-I/root/autodl-tmp/kpack-router-span-dispatch-20260915",
+      "/root/marlin_ppu/quactlize/quactlize/dispatch/binding.cpp",
+      "-ldl",
+      "-o",
+      "/root/autodl-tmp/kpack-router-span-dispatch-20260915/libquactlize_kpack_dispatch.so"
+    ],
+    "dispatch_sha256": "c41a7107478ab608b3e5df5cada58cc4e88ed8c8c5a31f67a3e8a86d16299793",
+    "jit_source_contract": "a8ded570b2854c617a7c64896a647758e34e247617b04f9d12f1c58df65bde33",
+    "jit_source_identity": {
+      "kernel": "fe11df68d92641f8c67d602980f9dc52c712edc372dae4575094f46c2d8c8dc4",
+      "flags": [
+        "--forward-unknown-to-host-compiler",
+        "--forward-unknown-to-host-linker",
+        "-arch=ppu_10",
+        "-x",
+        "hg",
+        "-DSWITCH_TO_HGGCRT",
+        "-std=c++17",
+        "-O3",
+        "-Xcompiler",
+        "-ftemplate-depth=8192",
+        "-Xllvm",
+        "-wno-loop-miss-transform",
+        "-Xllvm",
+        "-ppu-simt-branch=false",
+        "-Xllvm",
+        "-ppu-patch-fence-ppu=false",
+        "-Xllvm",
+        "-ppu-cg-to-kp1=true",
+        "-Xllvm",
+        "-ppu-fix-uninit=true",
+        "--expt-relaxed-constexpr",
+        "-DUSE_CLANG",
+        "-DCUTLASS_USE_PACKED_TUPLE=1",
+        "-DCUTE_USE_PACKED_TUPLE=1",
+        "-fPIC"
+      ],
+      "generator": "ff83aa9e983eca80ff4383f0998a801fb9626516351f64ef78ae77391e3d9153"
+    },
+    "caller_graph_sha256": "94fa7a2c0edd3e5b241a6ae14a2f1234d5cf8a9d6006c3fa0098eaedd61f95c4",
+    "device_compilations": 0,
+    "source_commit": "1188a8d6288cacc41f0dd60899938d4784935d7c"
   }
 }
