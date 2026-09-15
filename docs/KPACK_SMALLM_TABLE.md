@@ -65,8 +65,8 @@ workspace. Q4's old endpoint and older callers remain supported.
 
 ## Next PPU model check
 
-Published source `e82a8b7`, private caller `00d24db55`, runtime artifact
-`492b225`. The 12 ELF payloads total 23,371,680 bytes (about 22.3 MiB) and
+Selection source `e82a8b7`, graph repair `1188a8d`, private caller `4b2526dbd`,
+runtime artifact `ae225b4`. The 12 ELF payloads total about 22.3 MiB and
 use Git LFS. They contain no llama binaries. The old artifact commit remains
 available; no old box results or caches need to be deleted. Local lookup,
 ABI, composition and package tests pass, and the caller adapters compile
@@ -77,6 +77,12 @@ Its missing mandatory provider-image export caused the first native loader
 access to abort. Only prefill and its receipts change; all compute selections
 and caller code are unchanged. Packaging now validates all 43 model-loader
 symbols in the actual DSOs, in addition to checking their hashes.
+
+The caller also fixes combined router-plus-weighted-finish matching across
+the 32-node wrapper limit, using GGML's explicit-index API. All GPU payloads
+are unchanged from `492b225`; only the small host dispatcher's JIT contract
+is refreshed to match the shared caller header. Update the caller branch as
+well as Quactlize before reusing the incremental build.
 
 The regular model runner has a bounded performance mode:
 

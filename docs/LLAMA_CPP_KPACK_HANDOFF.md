@@ -4,6 +4,31 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
+## Combined router/finish graph repair, 2026-09-15
+
+Source `1188a8d`, private caller `4b2526dbd`, artifact `ae225b4` correct
+the `ggml-impl.h:730` assertion during combined MoE graph matching.
+Normalized top-8 routing, input aliases, paired gate/up, SwiGLU, down and
+weighted expert sum form 32 or more graph nodes. The old call used
+`ggml_can_fuse_subgraph`, whose stack-index wrapper requires `count < 32`.
+The matcher now supplies a vector of exact node indices to the existing
+`ggml_can_fuse_subgraph_ext`. Output-use and alias checks are unchanged;
+fusion is not disabled and the generic GGML limit is not widened.
+
+The exact caller GGML host library reproduces the old assertion. Combined
+tests now cover spans 31/32/33/34/70/71/72, tokens 1 through 8, paired and
+separate gate/up, normalized/scaled routing, weighted finish, retained input
+aliases and illegal outside consumers. Tokens outside decode scope decline.
+The focused local suite passes 188 tests. Device model admission is pending.
+
+Only caller graph code changes. The shared header participates in the current
+conservative JIT source hash, so the 807,904-byte host dispatcher is rebuilt
+with the matching contract. Every GPU ELF, including the seven prebuilt
+parents and the repaired prefill library, is byte-identical to `492b225`.
+Update both private development branches and reuse the existing `.aoneci`
+caller/NCP builds. No bulk GPU-library build or sweep is needed. Keep first
+warmup/JIT excluded from benchmark timings as before.
+
 ## Model loader package repair, 2026-09-15
 
 Artifact `492b225` replaces `01d8537`. The latter accidentally packaged an
@@ -43,7 +68,7 @@ keeps Split-K scratch private per projection and consumes the already
 tested weighted-finish API. The new package contains only Quactlize DSOs,
 seven bounded gate parents and the helper proof, never llama binaries.
 The exact artifact and caller pins are `tools/kpack_q4_model_artifact.json`.
-Current publication: source `e82a8b7`, caller `00d24db55`, artifact `492b225`;
+Selection source `e82a8b7`; current caller `4b2526dbd`, artifact `ae225b4`;
 12 LFS ELF payloads total about 22.3 MiB. Only selected TC parents JIT at
 model warmup; the register-reuse SIMT bodies are already compiled.
 Whole-model speed and numeric admission remain pending; F16 activation
