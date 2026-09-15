@@ -16,6 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from quactlize.runtime.compiler import Compiler, validate_parent, source_contract, sha
 from quactlize.decode.compiler import DecodeCompiler
+from quactlize.decode.grouped_compiler import GroupedComputeCompiler
+from types import SimpleNamespace
 from quactlize.runtime.tuning import ROUTES, digest
 
 
@@ -44,16 +46,44 @@ def inspect_modules(cache, keys, contract):
             raise ValueError("module cache path escapes entry")
         r = json.loads(receipt.read_text())
         typed = r["identity"].get("endpoints") == "decode-m1-8-f32-bf16-v1"
-        observed = r["identity"].get("base_source_contract") if typed else source_contract(r["identity"])
+        grouped_compute = r["identity"].get("endpoints") == "grouped-explicit-compute-v3"
+        observed = r["identity"].get("base_source_contract") if typed or grouped_compute else source_contract(r["identity"])
         if r.get("key") != key or observed != contract:
             raise ValueError("module source/receipt identity differs")
-        source = (DecodeCompiler if typed else Compiler).source(None, r["parent"], "")
+        source = module_source(r)
         if digest(dict(identity=r["identity"], parent=r["parent"], source=source)) != key:
             raise ValueError("module compiler key differs")
         if sha(library) != r.get("sha256"):
             raise ValueError("module payload differs")
         records.append(r | dict(path=str(library), receipt_sha256=sha(receipt)))
     return records
+
+
+def module_source(record):
+    identity=record['identity']
+    endpoint=identity.get('endpoints')
+    compute=identity.get('compute_type','f16')
+    if compute not in ('f16','bf16'):
+        raise ValueError('unknown module compute identity')
+    if endpoint=='decode-m1-8-f32-bf16-v1':
+        # Receipts made before explicit compute did not emit the dtype define.
+        source=DecodeCompiler.source(SimpleNamespace(compute_type=compute),record['parent'],'')
+        if 'compute_type' not in identity:
+            source=source.removeprefix('#define QKD_USE_BF16_COMPUTE 0\n')
+        return source
+    if endpoint=='grouped-explicit-compute-v3':
+        if not record['parent']['route'].endswith('grouped'):
+            raise ValueError('grouped compute identity names a dense parent')
+        return f"#define QK_USE_BF16_COMPUTE {int(compute=='bf16')}\n"+Compiler.source(None,record['parent'],'')
+    if compute!='f16':
+        raise ValueError('BF16 module lacks an explicit compute endpoint')
+    return Compiler.source(None,record['parent'],'')
+
+
+def compiler_for(sdk,cache,jobs,dense_io,compute_type):
+    if dense_io:return DecodeCompiler(sdk,cache,jobs,compute_type=compute_type)
+    if compute_type=='bf16':return GroupedComputeCompiler(sdk,cache,jobs,compute_type=compute_type)
+    return Compiler(sdk,cache,jobs)
 
 
 def model_requests(path, tokens, include_sf=False, tensor_pattern=None):
@@ -112,9 +142,12 @@ def main():
     plan.add_argument("--tensor-pattern", help="consumer weight-name regex; model mode only")
     plan.add_argument("--allow-misses", action="store_true", help="record uncovered families without inventing tactics")
     plan.add_argument("--output", type=Path, required=True)
+    plan.add_argument("--compute-type",choices=("f16","bf16"),default="f16",
+                      help="BF16 plans use explicit grouped or dense-decode compute; no dense prefill")
     for p in (resolve, prewarm):
         p.add_argument("--sdk", type=Path, required=True)
         p.add_argument("--cache", type=Path, required=True)
+        p.add_argument("--compute-type", choices=("f16","bf16"), default="f16")
     resolve.add_argument("--parent", required=True)
     resolve.add_argument("--source-contract", help="dispatcher source identity; check before compiling")
     resolve.add_argument("--tuple", type=int, nargs=11, required=True, dest="values")
@@ -134,9 +167,9 @@ def main():
             raise ValueError("tensor-pattern requires a model")
         requests, authority = model_requests(args.model, args.tokens, args.include_sf, args.tensor_pattern) if args.model else (args.request, {})
         args.output.mkdir(parents=True, exist_ok=False)
-        parents, selected = select_plan(args.output, requests)
+        parents, selected = select_plan(args.output, requests,compute_type=args.compute_type)
         (args.output / "plan.json").write_text(json.dumps(dict(parents=parents, requests=selected,
-                                                             authority=authority), indent=2)+"\n")
+                                                             compute_type=args.compute_type,authority=authority), indent=2)+"\n")
         misses = sum(r["status"] != "SELECTED" for r in selected)
         print(f"KPACK_JIT_PLAN parents={len(parents)} requests={len(selected)} misses={misses}")
         if misses and not args.allow_misses:
@@ -144,7 +177,7 @@ def main():
     elif args.command == "resolve":
         parent = parent_tuple(args.parent, args.values)
         print(f"KPACK_JIT_RESOLVE parent={parent['symbol']} cache={args.cache}", file=sys.stderr, flush=True)
-        compiler = (DecodeCompiler if args.dense_io else Compiler)(args.sdk, args.cache)
+        compiler = compiler_for(args.sdk,args.cache,1,args.dense_io,args.compute_type)
         contract = compiler.identity.get("base_source_contract", source_contract(compiler.identity))
         if args.source_contract and args.source_contract != contract:
             raise ValueError("JIT helper source differs from dispatcher; rebuild the small dispatcher")
@@ -153,14 +186,24 @@ def main():
               f"seconds={time.monotonic()-start:.3f} key={record['key']}", file=sys.stderr)
         print("QK_JIT_V1", record["key"], digest(record["identity"]), contract)
     else:
-        parents = json.loads(args.plan.read_text())["parents"]
+        plan_record=json.loads(args.plan.read_text())
+        parents = plan_record["parents"]
+        if plan_record.get('compute_type',args.compute_type)!=args.compute_type:
+            raise ValueError('prewarm compute type differs from its plan')
         print(f"KPACK_JIT_PREWARM start parents={len(parents)} jobs={args.jobs} cache={args.cache}", flush=True)
-        compiler = (DecodeCompiler if args.dense_io else Compiler)(args.sdk, args.cache, args.jobs)
-        contract = compiler.identity.get("base_source_contract", source_contract(compiler.identity))
-        if args.source_contract and args.source_contract != contract:
-            raise ValueError("JIT helper source differs from dispatcher; rebuild the small dispatcher")
-        records = compiler.compile_only(parents, progress=lambda n, total: print(
-            f"KPACK_JIT_PREWARM completed={n}/{total} seconds={time.monotonic()-start:.1f}", flush=True))
+        groups=[(args.dense_io,parents)]
+        if args.compute_type=='bf16' and not args.dense_io:
+            groups=[(dense,[p for p in parents if p['route'].endswith('dense')==dense]) for dense in (False,True)]
+        records=[]
+        for dense,selected in groups:
+            if not selected:continue
+            compiler = compiler_for(args.sdk,args.cache,args.jobs,dense,args.compute_type)
+            contract = compiler.identity.get("base_source_contract", source_contract(compiler.identity))
+            if args.source_contract and args.source_contract != contract:
+                raise ValueError("JIT helper source differs from dispatcher; rebuild the small dispatcher")
+            done=len(records)
+            records.extend(compiler.compile_only(selected, progress=lambda n, total: print(
+                f"KPACK_JIT_PREWARM completed={done+n}/{len(parents)} seconds={time.monotonic()-start:.1f}", flush=True)))
         if args.receipt:
             args.receipt.write_text(json.dumps(dict(modules=records, seconds=time.monotonic()-start,
                                                    device_validated=False), indent=2)+"\n")

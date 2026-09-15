@@ -65,7 +65,8 @@ def requests():
     return result
 
 
-def plan(output, inputs=None, decode=False):
+def plan(output, inputs=None, decode=False,compute_type='f16'):
+    if compute_type not in ('f16','bf16'):raise ValueError('unknown compute type')
     executable = output / "policy-query"
     subprocess.run(
         [
@@ -81,7 +82,7 @@ def plan(output, inputs=None, decode=False):
     )
     inputs = requests() if inputs is None else inputs
     lines = subprocess.check_output(
-        [str(executable)] + (["--decode"] if decode else []),
+        [str(executable)] + (["--decode"] if decode else []) + (["--bf16"] if compute_type=='bf16' else []),
         text=True,
         input="".join(" ".join(map(str, r)) + "\n" for r in inputs),
     ).splitlines()
@@ -147,7 +148,7 @@ def plan(output, inputs=None, decode=False):
 def catalog(records, jit_source=""):
     def typed(r):
         return r["identity"].get("endpoints") == "decode-m1-8-f32-bf16-v1"
-    if len({(r["parent"]["symbol"],typed(r)) for r in records}) != len(records):
+    if len({(r["parent"]["symbol"],typed(r),r['identity'].get('compute_type','f16')) for r in records}) != len(records):
         raise ValueError("catalog has multiple builds of one parent")
     rows = []
     for r in records:
@@ -159,7 +160,8 @@ def catalog(records, jit_source=""):
         rows.append(
             "  {"
             + ",".join([json.dumps(s) for s in strings] + list(map(str, values)))
-            + (",{},true" if typed(r) else "") + "},"
+            + (",{},"+str(typed(r)).lower()+",1" if r['identity'].get('compute_type')=='bf16'
+               else ",{},true" if typed(r) else "") + "},"
         )
     return ("static std::vector<Image> const kImages = {\n" + "\n".join(rows) + "\n};\n"
             + "static char const kJitSource[] = " + json.dumps(jit_source) + ";\n")
@@ -334,6 +336,10 @@ def main():
     manifest['smallm_policy']=dict(path='smallm-policy.json',sha256=sha(smallm_policy),
         header_sha256=sha(smallm_policy.with_suffix('.hpp')),
         admission='EXACT_AND_BUCKET_PROPOSALS_MODEL_GATE_PENDING')
+    if receipt.get('simt_compute_v2'):
+        manifest['compute_contract']=dict(schema='quactlize.explicit-compute.v1',
+            formats=[8,10,11,12,13,14],grouped='ALL_LEGAL_M',dense='DECODE_M1_8',
+            selection='INITIAL_GEOMETRY_PROPOSALS_NOT_BF16_MEASUREMENTS',device_validated=False)
     if args.prefill_runtime:
         manifest['prefill'] = attach_prefill(output, args.prefill_runtime, args.sdk)
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

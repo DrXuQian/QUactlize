@@ -182,6 +182,13 @@ def build(sdk, output, jobs, variant="production"):
         simt_configs={str(q): [c.record() for c in simt_codegen.runtime_inventory(q)]
                       for q in simt_codegen.QTYPES},
         simt_arithmetic="F16_ACTIVATIONS_FP32_GROUP_AFFINE_ACCUMULATOR_OUTPUT",
+        simt_compute_v2={
+            "formats": list(simt_codegen.QTYPES),
+            "compute": ["f16", "bf16"],
+            "bf16_arithmetic": "BF16_ACTIVATIONS_FP32_GROUP_AFFINE_ACCUMULATOR_OUTPUT",
+            "moe_projection_boundary": "EXPLICIT_COMPUTE_TYPE_NO_CLIP",
+            "device_validated": False,
+        },
         simt_selection="EXPLICIT_CALLER_CONFIG_NO_POLICY_CHANGE",
     )
     if variant == "fp32-affine":

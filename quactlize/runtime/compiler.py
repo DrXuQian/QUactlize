@@ -138,13 +138,15 @@ class Compiler:
         )
         self.input_stats = {
             p: (p.stat().st_mtime_ns, p.stat().st_size)
-            for p in paths + sdk_files + [Path(__file__), ROOT / "quactlize/decode/compiler.py"]
+            for p in paths + sdk_files + [Path(__file__), ROOT / "quactlize/decode/compiler.py",
+                                         ROOT / "quactlize/decode/grouped_compiler.py"]
         }
         self.identity = dict(
             sdk=self.sdk_identity,
             kernel=self.kernel_identity,
             flags=FLAGS,
-            generator=digest({"base": sha(__file__), "decode": sha(ROOT / "quactlize/decode/compiler.py")}),
+            generator=digest({"base": sha(__file__), "decode": sha(ROOT / "quactlize/decode/compiler.py"),
+                              "grouped_compute": sha(ROOT / "quactlize/decode/grouped_compiler.py")}),
             host=subprocess.check_output(["g++", "--version"], text=True),
         )
 

@@ -5,6 +5,12 @@ This changes decode decisions for Q2_K, Q3_K, Q5_K, Q6_K and Q8_0, including
 requests absent from the exact table. Q4 keeps its existing joint SIMT/TC
 table. Prefill selection is unchanged.
 
+The statements and measurements in this document describe FP16 compute.
+The additive explicit BF16 path uses independently keyed modules and labels
+transferred geometry as `QKS_COMPUTE_INITIAL`, not as these measured winners.
+It includes all six formats and MoE prefill support; see the
+[BF16 integration contract](LLAMA_CPP_KPACK_HANDOFF.md#explicit-bf16-compute-integration-2026-09-15).
+
 ## Lookup contract
 
 1. Look up `(qtype, dense/indexed, N, K, tokens, A channels)` in the exact

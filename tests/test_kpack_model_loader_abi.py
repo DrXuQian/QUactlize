@@ -8,11 +8,12 @@ import pytest
 
 from quactlize.runtime.compiler import sha
 from tools.build_kpack_dispatch import attach_prefill
-from tools.verify_kpack_dispatch import PREFILL_MODEL_EXPORTS, SMALLM_MODEL_EXPORTS, require_exports
+from tools.verify_kpack_dispatch import PREFILL_MODEL_EXPORTS, SMALLM_MODEL_EXPORTS, COMPUTE_MODEL_EXPORTS, require_exports
 
 ROOT=Path(__file__).resolve().parents[1]
 LLAMA=Path(os.environ.get('LLAMA_CI_DIR','/root/autodl-tmp/llama-v0.3.0'))
-EXPORTS=SMALLM_MODEL_EXPORTS | {'libquactlize_ppu_prefill.so':PREFILL_MODEL_EXPORTS}
+EXPORTS={name:required|COMPUTE_MODEL_EXPORTS[name] for name,required in SMALLM_MODEL_EXPORTS.items()}
+EXPORTS['libquactlize_ppu_prefill.so']=PREFILL_MODEL_EXPORTS
 MISSING='quactlize_kpack_prefill_provider_image_v1'
 
 

@@ -161,7 +161,8 @@ def run_arm(args, model, plan, inv, arm, directory, index):
         env["QUACTLIZE_KPACK_JIT_PYTHON"] = sys.executable
         env["QUACTLIZE_KPACK_JIT_CACHE"] = str(args.jit_cache)
         env["QUACTLIZE_KPACK_PAIR_WEIGHTS"] = "1"
-    save(directory / (label + ".command.json"), dict(argv=argv, devices=model["devices"]))
+    save(directory / (label + ".command.json"), dict(argv=argv, devices=model["devices"],
+        compute=env.get('QUACTLIZE_KPACK_COMPUTE','fp16') if arm=='kpack' else 'REFERENCE'))
     expected, records = sequence(plan, args.repeats), []
     started = update = time.monotonic()
     print(f"BATCHED_MODEL_START model={model['name']} arm={label} log={log}", flush=True)
@@ -232,7 +233,10 @@ def run_arm(args, model, plan, inv, arm, directory, index):
                                  f"see {log} (plan receipts require --verbosity 4)")
             if getattr(args, 'require_selected', False) and not evidence['fully_selected']:
                 raise ValueError('selected operator coverage incomplete or legacy fallback present')
-            if inv["q8"] and (not q8_plans or any(p.get("activation")!="FP16" or
+            def activation(p):
+                return 'BF16' if env.get('QUACTLIZE_KPACK_COMPUTE')=='bf16' and (
+                    p.get('op')=='grouped' or int(p['rows'])<=8) else 'FP16'
+            if inv["q8"] and (not q8_plans or any(p.get("activation")!=activation(p) or
                     p.get("route") not in ("sf", "gemv") or p.get("scale_resident")!="1" for p in q8_plans)):
                 raise ValueError("Q8_0 W8A16 compute evidence missing or activation/scale contract differs")
             evidence["plan_admission"] = "PASS"

@@ -10,8 +10,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from quactlize.runtime.compiler import Compiler, sha, source_contract
-from quactlize.decode.compiler import DecodeCompiler
 from quactlize.runtime.tuning import digest
+from tools.kpack_jit import module_source
 
 
 PREFILL_MODEL_EXPORTS = frozenset({'quactlize_kpack_dequant_v1'} | {
@@ -31,6 +31,12 @@ SMALLM_MODEL_EXPORTS = {
         'q4_decode_select_v1 q4_decode_run_v1 q4_decode_cast_v1 '
         'q4_decode_indexed_prepare_v1 q4_decode_indexed_finish_v1 '
         'moe_simt_query_v1 moe_simt_bind_v1 moe_mixed_stage_v1 moe_weighted_finish_v1').split()),
+}
+COMPUTE_MODEL_EXPORTS = {
+    'libquactlize_kpack_dispatch.so': frozenset('quactlize_kpack_dispatch_' + name for name in (
+        'query_compute_v1 prepare_compute_v1 prepare_dense_io_v2 query_smallm_v2 moe_create_v4').split()),
+    'libquactlize_ppu_execution.so': frozenset('quactlize_kpack_' + name for name in (
+        'simt_query_v2 simt_run_v2 moe_mixed_stage_v2 moe_weighted_finish_v2').split()),
 }
 
 
@@ -147,6 +153,14 @@ def verify(root, *, sdk=None):
             raise ValueError('small-M policy/execution identity differs')
         for name, required in SMALLM_MODEL_EXPORTS.items():
             require_exports(root / name, required)
+    if 'compute_contract' in m:
+        c=m['compute_contract']
+        execution=m['execution_receipt'].get('simt_compute_v2',{})
+        if (c.get('schema')!='quactlize.explicit-compute.v1' or c.get('formats')!=[8,10,11,12,13,14] or
+            execution.get('compute')!=['f16','bf16'] or execution.get('formats')!=c['formats']):
+            raise ValueError('compute host/execution contract differs')
+        for name, required in COMPUTE_MODEL_EXPORTS.items():
+            require_exports(root/name,required)
     if 'prefill' in m:
         prefill_paths(root, m['prefill'], sdk=sdk)
     elif (root / 'libquactlize_ppu_prefill.so').exists():
@@ -192,8 +206,7 @@ def verify(root, *, sdk=None):
             or sha(path) != r["sha256"]
         ):
             raise ValueError("module payload differs: " + r["key"])
-        compiler = DecodeCompiler if r["identity"].get("endpoints") == "decode-m1-8-f32-bf16-v1" else Compiler
-        source = compiler.source(None, r["parent"], "")
+        source = module_source(r)
         if (
             digest(dict(identity=r["identity"], parent=r["parent"], source=source))
             != r["key"]

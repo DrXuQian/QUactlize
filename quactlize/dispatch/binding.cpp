@@ -1,4 +1,5 @@
 #include "policy.hpp"
+#include "compute.hpp"
 #include "decode.hpp"
 #include "smallm.hpp"
 #include "jit.hpp"
@@ -29,6 +30,7 @@ struct Image {
     int qtype, route, tm, tn, tk, wm, wn, stages, ap, dn;
     std::filesystem::path path;
     bool dense_io=false;
+    int compute_type=QK_COMPUTE_F16;
 };
 // Generated from full compiler receipts, not geometry-only config names.
 #include "catalog.inc"
@@ -41,6 +43,7 @@ template<class T> T symbol(void* h,char const* name) {
 }
 struct Module {
     void* library=nullptr;
+    int compute_type=QK_COMPUTE_F16;
     decltype(&quactlize_kpack_query_v1) query=nullptr;
     decltype(&quactlize_kpack_prepare_v1) prepare=nullptr;
     decltype(&quactlize_kpack_grouped_query_v2) query_device=nullptr;
@@ -49,9 +52,15 @@ struct Module {
     decltype(&quactlize_kpack_destroy_v1) destroy=nullptr;
     decltype(&quactlize_kpack_decode_dense_query_v1) query_dense_io=nullptr;
     decltype(&quactlize_kpack_decode_dense_prepare_v1) prepare_dense_io=nullptr;
+    decltype(&quactlize_kpack_decode_dense_query_v2) query_dense_compute=nullptr;
+    decltype(&quactlize_kpack_decode_dense_prepare_v2) prepare_dense_compute=nullptr;
+    decltype(&quactlize_kpack_grouped_query_v3) query_compute=nullptr;
+    decltype(&quactlize_kpack_grouped_prepare_v3) prepare_compute=nullptr;
     decltype(&quactlize_kpack_bind_llama_indexed_v1) bind_indexed=nullptr;
     decltype(&quactlize_kpack_moe_projection_v1) moe_projection=nullptr;
     decltype(&quactlize_kpack_moe_stage_v1) moe_stage=nullptr;
+    decltype(&quactlize_kpack_moe_projection_v2) moe_projection_compute=nullptr;
+    decltype(&quactlize_kpack_moe_stage_v2) moe_stage_compute=nullptr;
     ~Module() { if (library) dlclose(library); }
 };
 struct Plan {
@@ -60,6 +69,7 @@ struct Plan {
     qk_recipe_v1 recipe;
     std::shared_ptr<Module> module;
     int endpoint_type=0;
+    int compute_type=QK_COMPUTE_F16;
 };
 struct MoeExecution {
     void* library=nullptr;
@@ -73,11 +83,15 @@ struct MoeExecution {
     decltype(&quactlize_kpack_gemv_run_v1) generic=nullptr;
     decltype(&quactlize_kpack_simt_query_v1) query_reuse=nullptr;
     decltype(&quactlize_kpack_simt_run_v1) reuse=nullptr;
+    decltype(&quactlize_kpack_simt_query_v2) query_reuse_compute=nullptr;
+    decltype(&quactlize_kpack_simt_run_v2) reuse_compute=nullptr;
+    decltype(&quactlize_kpack_moe_mixed_stage_v2) stage_compute=nullptr;
+    decltype(&quactlize_kpack_moe_weighted_finish_v2) finish_compute=nullptr;
     ~MoeExecution() { if (library) dlclose(library); }
 };
-using Key=std::tuple<int,int,int,int,int,int,int,uint64_t,int,int>;
-Key key(qks_request_v1 const& r,int decode,int endpoint_type) {
-    return {r.qtype,r.route,r.m,r.n,r.k,r.experts,r.max_rows,r.mapping_id,decode,endpoint_type};
+using Key=std::tuple<int,int,int,int,int,int,int,uint64_t,int,int,int>;
+Key key(qks_request_v1 const& r,int decode,int endpoint_type,int compute_type=QK_COMPUTE_F16) {
+    return {r.qtype,r.route,r.m,r.n,r.k,r.experts,r.max_rows,r.mapping_id,decode,endpoint_type,compute_type};
 }
 struct Runtime {
     std::filesystem::path root;
@@ -107,6 +121,7 @@ struct MoeChain {
     qkg_sizes_v1 simt_sizes[3]{};
     quactlize_ppu_placed_arrangement_v2 arrangements[3]{};
     qk_llama_moe_finish_v1 finish{};
+    int compute_type=QK_COMPUTE_F16;
 };
 
 bool overlaps_simt_workspace(MoeChain const& c,void const* pointer,uint64_t bytes) {
@@ -174,42 +189,97 @@ std::shared_ptr<MoeExecution> load_moe(Runtime& r) {
         dlsym(lib->library,"quactlize_kpack_simt_query_v1"));
     lib->reuse=reinterpret_cast<decltype(lib->reuse)>(
         dlsym(lib->library,"quactlize_kpack_simt_run_v1"));
+    lib->query_reuse_compute=reinterpret_cast<decltype(lib->query_reuse_compute)>(
+        dlsym(lib->library,"quactlize_kpack_simt_query_v2"));
+    lib->reuse_compute=reinterpret_cast<decltype(lib->reuse_compute)>(
+        dlsym(lib->library,"quactlize_kpack_simt_run_v2"));
+    lib->stage_compute=reinterpret_cast<decltype(lib->stage_compute)>(
+        dlsym(lib->library,"quactlize_kpack_moe_mixed_stage_v2"));
+    lib->finish_compute=reinterpret_cast<decltype(lib->finish_compute)>(
+        dlsym(lib->library,"quactlize_kpack_moe_weighted_finish_v2"));
     r.moe=lib;return lib;
+}
+
+bool projection_of(Handle* h,int compute_type,qk_moe_projection_v1& out) {
+    if (!h || h->module->compute_type!=compute_type) return false;
+    if (compute_type==QK_COMPUTE_BF16) {
+        qk_moe_projection_v2 typed{};
+        if (!h->module->moe_projection_compute || !h->module->moe_stage_compute ||
+            h->module->moe_projection_compute(h->inner,&typed)!=QK_OK ||
+            typed.version!=2 || typed.size!=sizeof(typed) || typed.compute_type!=compute_type) return false;
+        out=typed.projection;return true;
+    }
+    return h->module->moe_projection && h->module->moe_stage &&
+        h->module->moe_projection(h->inner,&out)==QK_OK;
+}
+
+bool tc_stage(Handle* h,qk_moe_plan_v1 const& plan,int phase,void* stream) {
+    if (h->module->compute_type==QK_COMPUTE_BF16) {
+        qk_moe_plan_v2 typed{2,sizeof(typed),plan,QK_COMPUTE_BF16};
+        return h->module->moe_stage_compute(h->inner,&typed,phase,stream)==QK_OK;
+    }
+    return h->module->moe_stage(h->inner,&plan,phase,stream)==QK_OK;
+}
+
+int weighted_finish(MoeChain const& c,qk_moe_plan_v1 const& plan,void* stream) {
+    int rc;
+    if (c.compute_type==QK_COMPUTE_BF16) {
+        qkg_moe_compute_v2 typed{2,sizeof(typed),plan,c.simt_mask,c.compute_type};
+        rc=c.execution->finish_compute(&typed,&c.finish,stream);
+    } else rc=c.execution->finish(&plan,c.simt_mask,&c.finish,stream);
+    return rc==QKG_OK ? QKS_OK : QKS_RUNTIME;
 }
 
 int run_mixed(MoeChain const& c,qk_moe_plan_v1 const& plan,void* stream) {
     auto produce=[&](int i,Handle* h) {
         if (!(c.simt_mask&(1u<<i)))
-            return h->module->moe_stage(h->inner,&plan,QK_MOE_PRODUCER,stream)==QK_OK;
+            return tc_stage(h,plan,QK_MOE_PRODUCER,stream);
         auto call=c.calls[i];call.stream=stream;
         int rc;
-        if (c.reuse_mask&(1u<<i))
-            rc=c.execution->reuse(&call,&c.reuse_configs[i],&c.arrangements[i]);
+        if (c.reuse_mask&(1u<<i)) {
+            if (c.compute_type==QK_COMPUTE_BF16) {
+                qkg_simt_call_v2 typed{2,sizeof(typed),call,c.compute_type};
+                rc=c.execution->reuse_compute(&typed,&c.reuse_configs[i],&c.arrangements[i]);
+            } else rc=c.execution->reuse(&call,&c.reuse_configs[i],&c.arrangements[i]);
+        }
         else if (c.q4_mask&(1u<<i))
             rc=c.execution->q4(&call,&c.q4_configs[i],&c.arrangements[i]);
         else rc=c.execution->generic(&call,&c.configs[i],&c.arrangements[i]);
         return rc==QKG_OK;
     };
-    if (c.execution->stage(&plan,c.simt_mask,QK_MOE_PREPARE,stream)!=QKG_OK ||
+    auto stage=[&](int phase) {
+        if (c.compute_type==QK_COMPUTE_BF16) {
+            qkg_moe_compute_v2 typed{2,sizeof(typed),plan,c.simt_mask,c.compute_type};
+            return c.execution->stage_compute(&typed,phase,stream)==QKG_OK;
+        }
+        return c.execution->stage(&plan,c.simt_mask,phase,stream)==QKG_OK;
+    };
+    if (!stage(QK_MOE_PREPARE) ||
         !produce(0,c.gate) || (!plan.merged && !produce(1,c.up)) ||
-        c.execution->stage(&plan,c.simt_mask,QK_MOE_ACTIVATE,stream)!=QKG_OK ||
+        !stage(QK_MOE_ACTIVATE) ||
         !produce(2,c.down)) return QKS_RUNTIME;
     if (c.finish.version)
-        return c.execution->finish(&plan,c.simt_mask,&c.finish,stream)==QKG_OK?QKS_OK:QKS_RUNTIME;
-    if (!(c.simt_mask&4) && c.down->module->moe_stage(c.down->inner,&plan,QK_MOE_FINISH,stream)!=QK_OK)
+        return weighted_finish(c,plan,stream);
+    if (!(c.simt_mask&4) && !tc_stage(c.down,plan,QK_MOE_FINISH,stream))
         return QKS_RUNTIME;
     return QKS_OK;
 }
 
-std::shared_ptr<Module> load(Runtime& r,Image const& image,Config const& c,bool dense_io=false) {
+std::shared_ptr<Module> load(Runtime& r,Image const& image,Config const& c,bool dense_io=false,
+                             int compute_type=QK_COMPUTE_F16) {
+    if (image.compute_type!=compute_type) throw std::runtime_error("catalog compute type differs");
     auto found=r.modules.find(image.key);
-    if (found!=r.modules.end()) return found->second;
+    if (found!=r.modules.end()) {
+        if (found->second->compute_type!=compute_type) throw std::runtime_error("cached module compute type differs");
+        return found->second;
+    }
     if (image.qtype!=c.qtype || image.route!=c.route || image.tm!=c.tm || image.tn!=c.tn ||
         image.tk!=c.tk || image.wm!=c.wm || image.wn!=c.wn || image.stages!=c.stages ||
         image.ap!=c.ap || image.dn!=c.dn || !hex_digest(image.contract) || !hex_digest(image.key))
         throw std::runtime_error("catalog parent/compiler contract differs");
     auto path=image.path.empty() ? r.root/"modules"/image.key/"kernel.so" : image.path;
     auto module=std::make_shared<Module>();
+    module->compute_type=compute_type;
     module->library=dlopen(path.c_str(),RTLD_NOW|RTLD_LOCAL);
     if (!module->library) throw std::runtime_error(dlerror());
     auto identity=symbol<decltype(&quactlize_kpack_identity_v1)>(module->library,
@@ -221,6 +291,23 @@ std::shared_ptr<Module> load(Runtime& r,Image const& image,Config const& c,bool 
         identity->wn!=c.wn || identity->stages!=c.stages || identity->ap!=c.ap ||
         identity->delivery_n!=c.dn || identity->mapping_id!=c.mapping_id)
         throw std::runtime_error("loaded parent/build identity differs");
+    if (compute_type==QK_COMPUTE_BF16) {
+        qk_identity_v1 const* parent=nullptr;
+        if (dense_io) {
+            auto typed=symbol<decltype(&quactlize_kpack_decode_dense_identity_v2)>(
+                module->library,"quactlize_kpack_decode_dense_identity_v2")();
+            if (!typed || typed->version!=2 || typed->size!=sizeof(*typed) || typed->compute_type!=compute_type)
+                throw std::runtime_error("dense compute identity differs");
+            parent=typed->parent;
+        } else {
+            auto typed=symbol<decltype(&quactlize_kpack_compute_identity_v3)>(
+                module->library,"quactlize_kpack_compute_identity_v3")();
+            if (!typed || typed->version!=3 || typed->size!=sizeof(*typed) || typed->compute_type!=compute_type)
+                throw std::runtime_error("grouped compute identity differs");
+            parent=typed->parent;
+        }
+        if (parent!=identity) throw std::runtime_error("compute identity parent differs");
+    }
     char name[128]{}; int device=-1,cu=0;
     auto probe=symbol<decltype(&quactlize_kpack_device_v1)>(module->library,
         dense_io?"quactlize_kpack_decode_dense_device_v1":"quactlize_kpack_device_v1");
@@ -237,6 +324,10 @@ std::shared_ptr<Module> load(Runtime& r,Image const& image,Config const& c,bool 
         module->prepare_dense_io=symbol<decltype(module->prepare_dense_io)>(module->library,"quactlize_kpack_decode_dense_prepare_v1");
         module->run=symbol<decltype(module->run)>(module->library,"quactlize_kpack_decode_dense_run_v1");
         module->destroy=symbol<decltype(module->destroy)>(module->library,"quactlize_kpack_decode_dense_destroy_v1");
+        if (compute_type==QK_COMPUTE_BF16) {
+            module->query_dense_compute=symbol<decltype(module->query_dense_compute)>(module->library,"quactlize_kpack_decode_dense_query_v2");
+            module->prepare_dense_compute=symbol<decltype(module->prepare_dense_compute)>(module->library,"quactlize_kpack_decode_dense_prepare_v2");
+        }
     } else {
     module->query=symbol<decltype(module->query)>(module->library,"quactlize_kpack_query_v1");
     module->prepare=symbol<decltype(module->prepare)>(module->library,"quactlize_kpack_prepare_v1");
@@ -250,17 +341,24 @@ std::shared_ptr<Module> load(Runtime& r,Image const& image,Config const& c,bool 
         dlsym(module->library,"quactlize_kpack_moe_projection_v1"));
     module->moe_stage=reinterpret_cast<decltype(module->moe_stage)>(
         dlsym(module->library,"quactlize_kpack_moe_stage_v1"));
+    if (compute_type==QK_COMPUTE_BF16) {
+        module->query_compute=symbol<decltype(module->query_compute)>(module->library,"quactlize_kpack_grouped_query_v3");
+        module->prepare_compute=symbol<decltype(module->prepare_compute)>(module->library,"quactlize_kpack_grouped_prepare_v3");
+        module->moe_projection_compute=symbol<decltype(module->moe_projection_compute)>(module->library,"quactlize_kpack_moe_projection_v2");
+        module->moe_stage_compute=symbol<decltype(module->moe_stage_compute)>(module->library,"quactlize_kpack_moe_stage_v2");
+    }
     }
     r.modules.emplace(image.key,module);
     return module;
 }
 
-Image const& jit_image(Runtime& r,Config const& config,bool dense_io=false) {
+Image const& jit_image(Runtime& r,Config const& config,bool dense_io=false,int compute_type=QK_COMPUTE_F16) {
     std::string name=config.symbol;
     if (dense_io) name+="/dense-io";
+    if (compute_type==QK_COMPUTE_BF16) name+="/bf16";
     auto found=r.jit_images.find(name);
     if (found!=r.jit_images.end()) return found->second;
-    auto receipt=compile_parent(r.jit,config,dense_io);
+    auto receipt=compile_parent(r.jit,config,dense_io,compute_type);
     std::istringstream in(receipt);
     std::string tag,build,contract,source,extra;
     if (!(in>>tag>>build>>contract>>source) || tag!="QK_JIT_V1" ||
@@ -271,7 +369,7 @@ Image const& jit_image(Runtime& r,Config const& config,bool dense_io=false) {
         path.filename()!="kernel.so" || !std::filesystem::is_regular_file(path))
         throw std::runtime_error("JIT module escapes its cache entry");
     Image resolved{config.symbol,build,contract,config.qtype,config.route,config.tm,config.tn,
-        config.tk,config.wm,config.wn,config.stages,config.ap,config.dn,path,dense_io};
+        config.tk,config.wm,config.wn,config.stages,config.ap,config.dn,path,dense_io,compute_type};
     return r.jit_images.emplace(name,std::move(resolved)).first->second;
 }
 qk_call_v1 call_for(qks_request_v1 const& req,Runtime const& r) {
@@ -331,33 +429,49 @@ extern "C" int quactlize_kpack_dispatch_enable_jit_v1(void* runtime,qks_jit_opti
 }
 
 static int query(void* runtime,qks_request_v1 const* req,qks_choice_v1* out,int decode,int endpoint_type=0,
-                 Selected table={}) {
-    if (!runtime || !req || !out || !valid(*req)) return QKS_INVALID;
+                 Selected table={},int compute_type=QK_COMPUTE_F16) {
+    if (!runtime || !req || !out || !valid(*req) || !compute_valid(compute_type)) return QKS_INVALID;
     *out={};
     if (endpoint_type && (req->route>=2 || req->experts!=1 || req->m>8)) return QKS_MISS;
+    if (compute_type==QK_COMPUTE_BF16 && req->route<2 && !endpoint_type) return QKS_MISS;
     try {
         auto& r=*static_cast<Runtime*>(runtime);
         std::lock_guard<std::mutex> lock(r.mutex);
-        auto found=r.requests.find(key(*req,decode,endpoint_type));
+        auto found=r.requests.find(key(*req,decode,endpoint_type,compute_type));
         if (found!=r.requests.end()) { *out=r.plans.at(found->second-1).choice; return QKS_OK; }
         auto selected=table.config ? table : decode ? select_decode_tc(*req) : select(*req);
+        Config proposal{}; std::string proposal_name;
+        if (compute_type==QK_COMPUTE_BF16) {
+            if (!selected.config) selected=select(*req);
+            proposal=compute_proposal(*req,selected,proposal_name);
+            selected={proposal.symbol ? &proposal : nullptr,QKS_COMPUTE_INITIAL};
+        }
         if (!selected.config) { last_error="no same-family policy choice"; return QKS_MISS; }
         auto const& config=*selected.config;
         Image const* image=nullptr;
         for (auto const& candidate : kImages)
-            if (candidate.parent==config.symbol && candidate.dense_io==(endpoint_type!=0)) { image=&candidate; break; }
-        if (!image && r.jit.enabled()) image=&jit_image(r,config,endpoint_type!=0);
+            if (candidate.parent==config.symbol && candidate.dense_io==(endpoint_type!=0) &&
+                candidate.compute_type==compute_type) { image=&candidate; break; }
+        if (!image && r.jit.enabled()) image=&jit_image(r,config,endpoint_type!=0,compute_type);
         if (!image) { last_error=std::string("selected parent not packaged: ")+config.symbol; return QKS_MISS; }
-        auto module=load(r,*image,config,endpoint_type!=0);
+        auto module=load(r,*image,config,endpoint_type!=0,compute_type);
         auto call=call_for(*req,r);
         auto rec=recipe(config,*req,1);
         qk_resources_v1 resources{};
         auto query=[&]() {
             if (endpoint_type) {
                 qkd_dense_call_v1 typed{1,sizeof(typed),call,endpoint_type,endpoint_type};
+                if (compute_type==QK_COMPUTE_BF16) {
+                    qkd_dense_call_v2 d{2,sizeof(d),typed,compute_type};
+                    return module->query_dense_compute(&d,&rec,&resources);
+                }
                 return module->query_dense_io(&typed,&rec,&resources);
             }
             qk_device_call_v2 d{2,sizeof(d),call,req->max_rows,0};
+            if (compute_type==QK_COMPUTE_BF16) {
+                qk_compute_device_call_v3 typed{3,sizeof(typed),d,compute_type};
+                return module->query_compute(&typed,&rec,&resources);
+            }
             return req->route>=2 ? module->query_device(&d,&rec,&resources) : module->query(&call,&rec,&resources);
         };
         int rc=query();
@@ -371,8 +485,8 @@ static int query(void* runtime,qks_request_v1 const* req,qks_choice_v1* out,int 
         choice.device=r.device; choice.compute_units=r.cu;
         if (image->parent.size()>=sizeof(choice.parent)) return QKS_BINDING;
         std::strcpy(choice.parent,image->parent.c_str()); std::strcpy(choice.build_key,image->key.c_str());
-        r.plans.push_back({*req,choice,rec,module,endpoint_type});
-        r.requests.emplace(key(*req,decode,endpoint_type),choice.ticket);
+        r.plans.push_back({*req,choice,rec,module,endpoint_type,compute_type});
+        r.requests.emplace(key(*req,decode,endpoint_type,compute_type),choice.ticket);
         *out=choice; return QKS_OK;
     } catch (std::exception const& e) { last_error=e.what(); return QKS_BINDING; }
 }
@@ -382,6 +496,13 @@ extern "C" int quactlize_kpack_dispatch_query_v1(void* runtime,qks_request_v1 co
 }
 extern "C" int quactlize_kpack_dispatch_query_decode_v1(void* runtime,qks_request_v1 const* req,qks_choice_v1* out) {
     return query(runtime,req,out,true);
+}
+
+extern "C" int quactlize_kpack_dispatch_query_compute_v1(void* runtime,qks_request_v1 const* req,
+    int32_t compute_type,int32_t endpoint_type,int32_t decode_policy,qks_choice_v1* out) {
+    if (!compute_valid(compute_type) || (endpoint_type!=0 && endpoint_type!=QKD_F32 && endpoint_type!=QKD_BF16) ||
+        (decode_policy!=0 && decode_policy!=1)) return QKS_INVALID;
+    return query(runtime,req,out,decode_policy,endpoint_type,{},compute_type);
 }
 
 extern "C" int quactlize_kpack_dispatch_query_smallm_v1(void* runtime,qkg_call_v1 const* call,
@@ -417,6 +538,51 @@ extern "C" int quactlize_kpack_dispatch_query_smallm_v1(void* runtime,qkg_call_v
     *out=result;return QKS_OK;
 }
 
+extern "C" int quactlize_kpack_dispatch_query_smallm_v2(void* runtime,qkg_simt_call_v2 const* typed,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement,qks_smallm_choice_v1* out) {
+    if (!runtime || !typed || !out || typed->version!=2 || typed->size!=sizeof(*typed) ||
+        !compute_valid(typed->compute_type)) return QKS_INVALID;
+    if (typed->compute_type==QK_COMPUTE_F16)
+        return quactlize_kpack_dispatch_query_smallm_v1(runtime,&typed->call,arrangement,out);
+    *out={};
+    auto const& call=typed->call;
+    qks_smallm_choice_v1 result{};
+    result.version=1;result.size=sizeof(result);result.policy=QKS_COMPUTE_INITIAL;
+    result.simt={1,sizeof(result.simt),0,4,4,4,1};
+    if (quactlize::execution::simt::query_v2(*typed,result.simt,arrangement,result.sizes)!=QKG_OK)
+        return QKS_INVALID;
+    if (call.mode!=QKG_DENSE && call.mode!=QKG_INDEXED) return QKS_MISS;
+    int tokens=call.mode==QKG_INDEXED ? call.rows/call.topk : call.rows;
+    if (tokens>8) return QKS_MISS;
+    auto donor_call=call;donor_call.input_type=QKG_F32;
+    auto selected=smallm::select(donor_call);
+    result.kind=QKS_SMALLM_SIMT;
+    result.source_n=call.n;result.source_k=call.k;result.source_tokens=tokens;
+    if (selected.row) {
+        auto const& row=*selected.row;
+        auto const& choice=smallm::data::kChoices[row.choice];
+        result.source_n=row.n;result.source_k=row.k;result.source_tokens=row.tokens;
+        if (choice.simt) {
+            auto const& f=choice.reader;
+            result.simt={1,sizeof(result.simt),f.variant,f.columns,f.warps,f.values,f.split};
+        } else if (call.input_type==QKG_F32) {
+            result.kind=QKS_SMALLM_TC;
+            qks_request_v1 r{1,sizeof(r),call.qtype,choice.tc.route,call.rows,call.n,call.k,
+                call.experts,tokens,arrangement->mapping_id};
+            int endpoint=call.mode==QKG_DENSE ? QKD_F32 : 0;
+            int rc=query(runtime,&r,&result.tc,2+call.channels,endpoint,
+                {&choice.tc,QKS_COMPUTE_INITIAL},QK_COMPUTE_BF16);
+            if (rc!=QKS_OK) return rc;
+        }
+    }
+    // Q4's specialized FP16 reader is not a BF16 reader. The generic Q4
+    // register-reuse implementation supplies an explicit initial proposal.
+    if (result.kind==QKS_SMALLM_SIMT &&
+        quactlize::execution::simt::query_v2(*typed,result.simt,arrangement,result.sizes)!=QKG_OK)
+        return QKS_MISS;
+    *out=result;return QKS_OK;
+}
+
 extern "C" int quactlize_kpack_dispatch_query_dense_io_v1(void* runtime,qks_request_v1 const* req,
     int32_t endpoint_type,int32_t decode_policy,qks_choice_v1* out) {
     if ((endpoint_type!=QKD_F32 && endpoint_type!=QKD_BF16) || (decode_policy!=0 && decode_policy!=1))
@@ -424,8 +590,8 @@ extern "C" int quactlize_kpack_dispatch_query_dense_io_v1(void* runtime,qks_requ
     return query(runtime,req,out,decode_policy!=0,endpoint_type);
 }
 
-extern "C" int quactlize_kpack_dispatch_prepare_dense_io_v1(void* runtime,qks_choice_v1 const* choice,
-    qkd_dense_call_v1 const* typed,void** out) {
+static int prepare_dense_io(void* runtime,qks_choice_v1 const* choice,
+    qkd_dense_call_v1 const* typed,int compute_type,void** out) {
     if (!out) return QKS_INVALID;*out=nullptr;
     if (!runtime || !choice || !typed || typed->version!=1 || typed->size!=sizeof(*typed)) return QKS_INVALID;
     try {
@@ -434,7 +600,8 @@ extern "C" int quactlize_kpack_dispatch_prepare_dense_io_v1(void* runtime,qks_ch
         if (!choice->ticket || choice->ticket>r.plans.size()) return QKS_INVALID;
         auto const& plan=r.plans.at(choice->ticket-1);
         auto expected=call_for(plan.request,r);auto const& call=typed->call;
-        if (!plan.endpoint_type || typed->input_type!=plan.endpoint_type || typed->output_type!=plan.endpoint_type ||
+        if (plan.compute_type!=compute_type || !plan.endpoint_type ||
+            typed->input_type!=plan.endpoint_type || typed->output_type!=plan.endpoint_type ||
             !same_choice(*choice,plan.choice) || call.version!=1 || call.size!=sizeof(call) ||
             call.m!=expected.m || call.n!=expected.n || call.k!=expected.k || call.experts!=1 ||
             call.group_size!=expected.group_size || call.mapping_id!=expected.mapping_id ||
@@ -442,14 +609,28 @@ extern "C" int quactlize_kpack_dispatch_prepare_dense_io_v1(void* runtime,qks_ch
             call.rows_host || call.rows_device || call.offsets_device || call.workspace_bytes<choice->workspace_bytes)
             return QKS_INVALID;
         auto h=std::make_unique<Handle>();h->module=plan.module;
-        int rc=h->module->prepare_dense_io(typed,&plan.recipe,&h->inner);
+        qkd_dense_call_v2 d{2,sizeof(d),*typed,compute_type};
+        int rc=compute_type==QK_COMPUTE_BF16 ? h->module->prepare_dense_compute(&d,&plan.recipe,&h->inner) :
+            h->module->prepare_dense_io(typed,&plan.recipe,&h->inner);
         if (rc!=QK_OK) {last_error="typed decode prepare failed rc="+std::to_string(rc);return QKS_RUNTIME;}
         *out=h.release();return QKS_OK;
     } catch (std::exception const& e) {last_error=e.what();return QKS_RUNTIME;}
 }
 
-extern "C" int quactlize_kpack_dispatch_prepare_v1(void* runtime,qks_choice_v1 const* choice,
-    qk_call_v1 const* call,void** out) {
+extern "C" int quactlize_kpack_dispatch_prepare_dense_io_v1(void* runtime,qks_choice_v1 const* choice,
+    qkd_dense_call_v1 const* typed,void** out) {
+    return prepare_dense_io(runtime,choice,typed,QK_COMPUTE_F16,out);
+}
+extern "C" int quactlize_kpack_dispatch_prepare_dense_io_v2(void* runtime,qks_choice_v1 const* choice,
+    qkd_dense_call_v2 const* typed,void** out) {
+    if (out) *out=nullptr;
+    if (!typed || typed->version!=2 || typed->size!=sizeof(*typed) || !compute_valid(typed->compute_type))
+        return QKS_INVALID;
+    return prepare_dense_io(runtime,choice,&typed->dense,typed->compute_type,out);
+}
+
+static int prepare_compute(void* runtime,qks_choice_v1 const* choice,
+    qk_call_v1 const* call,int compute_type,int max_rows,void** out) {
     if (!out) return QKS_INVALID;
     *out=nullptr;
     if (!runtime || !choice || !call) return QKS_INVALID;
@@ -459,14 +640,17 @@ extern "C" int quactlize_kpack_dispatch_prepare_v1(void* runtime,qks_choice_v1 c
         if (!choice->ticket || choice->ticket>r.plans.size()) return QKS_INVALID;
         auto const& plan=r.plans.at(choice->ticket-1);
         auto expected=call_for(plan.request,r);
-        if (plan.endpoint_type || !same_choice(*choice,plan.choice) || call->version!=1 || call->size!=sizeof(*call) ||
+        if (plan.compute_type!=compute_type || (max_rows>=0 && max_rows!=plan.request.max_rows) ||
+            plan.endpoint_type || !same_choice(*choice,plan.choice) || call->version!=1 || call->size!=sizeof(*call) ||
             call->m!=expected.m || call->n!=expected.n || call->k!=expected.k || call->experts!=expected.experts ||
             call->group_size!=expected.group_size || call->mapping_id!=expected.mapping_id ||
             call->device!=expected.device || call->compute_units!=expected.compute_units ||
             call->rows_host || call->rows_device || call->workspace_bytes<choice->workspace_bytes) return QKS_INVALID;
         auto handle=std::make_unique<Handle>(); handle->module=plan.module;
         qk_device_call_v2 d{2,sizeof(d),*call,plan.request.max_rows,0};
-        int rc=plan.request.route>=2 ? plan.module->prepare_device(&d,&plan.recipe,&handle->inner) :
+        qk_compute_device_call_v3 typed{3,sizeof(typed),d,compute_type};
+        int rc=compute_type==QK_COMPUTE_BF16 ? plan.module->prepare_compute(&typed,&plan.recipe,&handle->inner) :
+            plan.request.route>=2 ? plan.module->prepare_device(&d,&plan.recipe,&handle->inner) :
             plan.module->prepare(call,&plan.recipe,&handle->inner);
         if (rc!=QK_OK) {
             last_error="selected handle preparation failed rc="+std::to_string(rc)+
@@ -480,6 +664,20 @@ extern "C" int quactlize_kpack_dispatch_prepare_v1(void* runtime,qks_choice_v1 c
         }
         *out=handle.release(); return QKS_OK;
     } catch (std::exception const& e) { last_error=e.what(); return QKS_RUNTIME; }
+}
+extern "C" int quactlize_kpack_dispatch_prepare_v1(void* runtime,qks_choice_v1 const* choice,
+    qk_call_v1 const* call,void** out) {
+    return prepare_compute(runtime,choice,call,QK_COMPUTE_F16,-1,out);
+}
+extern "C" int quactlize_kpack_dispatch_prepare_compute_v1(void* runtime,qks_choice_v1 const* choice,
+    qk_compute_device_call_v3 const* typed,void** out) {
+    if (out) *out=nullptr;
+    if (!typed || typed->version!=3 || typed->size!=sizeof(*typed) ||
+        !compute_valid(typed->compute_type) || typed->device_call.version!=2 ||
+        typed->device_call.size!=sizeof(typed->device_call) || typed->device_call.reserved)
+        return QKS_INVALID;
+    return prepare_compute(runtime,choice,&typed->device_call.call,typed->compute_type,
+        typed->device_call.max_rows,out);
 }
 extern "C" int quactlize_kpack_dispatch_run_v1(void* handle,void* stream) {
     if (!handle) return QKS_INVALID;
@@ -495,17 +693,17 @@ extern "C" int quactlize_kpack_dispatch_bind_llama_indexed_v1(void* handle,qk_ll
     return rc==QK_UNSUPPORTED ? QKS_MISS : rc==QK_INVALID ? QKS_INVALID : QKS_RUNTIME;
 }
 extern "C" void quactlize_kpack_dispatch_destroy_v1(void* handle) { delete static_cast<Handle*>(handle); }
-extern "C" int quactlize_kpack_dispatch_moe_create_v1(void* gate,void* up,void* down,void** out) {
+static int create_tc_moe(void* gate,void* up,void* down,int compute_type,void** out) {
     if (!gate || !down || !out || gate==down || (up && (up==gate || up==down))) return QKS_INVALID;
     *out=nullptr;
     try {
         auto chain=std::make_unique<MoeChain>();
+        chain->compute_type=compute_type;
         chain->gate=static_cast<Handle*>(gate); chain->up=static_cast<Handle*>(up);
         chain->down=static_cast<Handle*>(down);
         chain->plan.version=1; chain->plan.size=sizeof(chain->plan); chain->plan.merged=up?0:1;
-        auto get=[](Handle* h,qk_moe_projection_v1& p) {
-            return h->module->moe_projection && h->module->moe_stage &&
-                h->module->moe_projection(h->inner,&p)==QK_OK;
+        auto get=[&](Handle* h,qk_moe_projection_v1& p) {
+            return projection_of(h,compute_type,p);
         };
         if (!get(chain->gate,chain->plan.gate) || (up && !get(chain->up,chain->plan.up)) ||
             !get(chain->down,chain->plan.down)) return QKS_MISS;
@@ -516,16 +714,19 @@ extern "C" int quactlize_kpack_dispatch_moe_create_v1(void* gate,void* up,void* 
         *out=chain.release(); return QKS_OK;
     } catch (std::exception const& e) { last_error=e.what(); return QKS_RUNTIME; }
 }
+extern "C" int quactlize_kpack_dispatch_moe_create_v1(void* gate,void* up,void* down,void** out) {
+    return create_tc_moe(gate,up,down,QK_COMPUTE_F16,out);
+}
 extern "C" int quactlize_kpack_dispatch_moe_run_v1(void* handle,void* stream) {
     if (!handle) return QKS_INVALID;
     auto& c=*static_cast<MoeChain*>(handle);
     if (c.simt_mask) return run_mixed(c,c.plan,stream);
-    auto stage=[&](Handle* h,int phase) { return h->module->moe_stage(h->inner,&c.plan,phase,stream)==QK_OK; };
+    auto stage=[&](Handle* h,int phase) { return tc_stage(h,c.plan,phase,stream); };
     if (!stage(c.gate,QK_MOE_PREPARE) || !stage(c.gate,QK_MOE_PRODUCER) ||
         (c.up && !stage(c.up,QK_MOE_PRODUCER)) || !stage(c.gate,QK_MOE_ACTIVATE) ||
         !stage(c.down,QK_MOE_PRODUCER)) return QKS_RUNTIME;
     if (c.finish.version)
-        return c.execution->finish(&c.plan,0,&c.finish,stream)==QKG_OK?QKS_OK:QKS_RUNTIME;
+        return weighted_finish(c,c.plan,stream);
     if (!stage(c.down,QK_MOE_FINISH)) return QKS_RUNTIME;
     return QKS_OK;
 }
@@ -543,12 +744,12 @@ extern "C" int quactlize_kpack_dispatch_moe_run_router_v1(void* handle,qk_llama_
     // router or retain a ready flag across graph replays.
     auto plan=c.plan; plan.router=r;
     if (c.simt_mask) return run_mixed(c,plan,stream);
-    auto stage=[&](Handle* h,int phase) { return h->module->moe_stage(h->inner,&plan,phase,stream)==QK_OK; };
+    auto stage=[&](Handle* h,int phase) { return tc_stage(h,plan,phase,stream); };
     if (!stage(c.gate,QK_MOE_PREPARE) || !stage(c.gate,QK_MOE_PRODUCER) ||
         (c.up && !stage(c.up,QK_MOE_PRODUCER)) || !stage(c.gate,QK_MOE_ACTIVATE) ||
         !stage(c.down,QK_MOE_PRODUCER)) return QKS_RUNTIME;
     if (c.finish.version)
-        return c.execution->finish(&plan,0,&c.finish,stream)==QKG_OK?QKS_OK:QKS_RUNTIME;
+        return weighted_finish(c,plan,stream);
     if (!stage(c.down,QK_MOE_FINISH)) return QKS_RUNTIME;
     return QKS_OK;
 }
@@ -568,7 +769,7 @@ extern "C" int quactlize_kpack_dispatch_moe_bind_finish_v1(void* runtime,void* h
         auto& r=*static_cast<Runtime*>(runtime);std::lock_guard<std::mutex> lock(r.mutex);
         if (r.device>=0 && r.device!=c.plan.down.device) return QKS_MISS;
         auto execution=load_moe(r);
-        if (!execution->finish) return QKS_MISS;
+        if (c.compute_type==QK_COMPUTE_BF16 ? !execution->finish_compute : !execution->finish) return QKS_MISS;
         c.execution=execution;c.finish=*finish;
         return QKS_OK;
     } catch (std::exception const& e) {last_error=e.what();return QKS_BINDING;}
@@ -586,7 +787,7 @@ extern "C" int quactlize_kpack_dispatch_moe_simt_scratch_v1(void* runtime,qkg_ca
 
 static int create_mixed_moe(void* runtime,qks_moe_endpoint_v2 const* gate,
     qks_moe_endpoint_v2 const* up,qks_moe_endpoint_v2 const* down,
-    qkg_simt_config_v1 const* const (&reuse)[3],void** out) {
+    qkg_simt_config_v1 const* const (&reuse)[3],void** out,int compute_type=QK_COMPUTE_F16) {
     if (!out) return QKS_INVALID;
     *out=nullptr;
     if (!runtime || !gate || !down || gate==down || (up && (up==gate || up==down))) return QKS_INVALID;
@@ -598,12 +799,16 @@ static int create_mixed_moe(void* runtime,qks_moe_endpoint_v2 const* gate,
         (e->tc_handle && (e->q4_config || e->simt_config || reuse[i] || e->arrangement || e->scratch || e->scratch_bytes)) ||
         (e->simt_call && (!e->arrangement ||
             int(bool(e->q4_config))+int(bool(e->simt_config))+int(bool(reuse[i]))!=1))) return QKS_INVALID;
+        if (compute_type==QK_COMPUTE_BF16 && e->simt_call && !reuse[i]) return QKS_MISS;
     }
     if (gate->tc_handle && down->tc_handle && (!up || up->tc_handle))
-        return quactlize_kpack_dispatch_moe_create_v1(gate->tc_handle,up?up->tc_handle:nullptr,down->tc_handle,out);
+        return create_tc_moe(gate->tc_handle,up?up->tc_handle:nullptr,down->tc_handle,compute_type,out);
     try {
         auto& r=*static_cast<Runtime*>(runtime);std::lock_guard<std::mutex> lock(r.mutex);
         auto c=std::make_unique<MoeChain>();c->execution=load_moe(r);
+        c->compute_type=compute_type;
+        if (compute_type==QK_COMPUTE_BF16 && (!c->execution->stage_compute ||
+            !c->execution->query_reuse_compute || !c->execution->reuse_compute)) return QKS_MISS;
         c->plan.version=1;c->plan.size=sizeof(c->plan);c->plan.merged=up?0:1;
         qk_moe_projection_v1* parts[3]={&c->plan.gate,&c->plan.up,&c->plan.down};
         Handle** handles[3]={&c->gate,&c->up,&c->down};
@@ -612,8 +817,7 @@ static int create_mixed_moe(void* runtime,qks_moe_endpoint_v2 const* gate,
         int device=r.device;
         for (int i=0;i<3;++i) if (endpoints[i] && endpoints[i]->tc_handle) {
             auto h=static_cast<Handle*>(endpoints[i]->tc_handle);*handles[i]=h;
-            if (!h->module->moe_projection || !h->module->moe_stage ||
-                h->module->moe_projection(h->inner,parts[i])!=QK_OK) return QKS_MISS;
+            if (!projection_of(h,compute_type,*parts[i])) return QKS_MISS;
             if (device>=0 && device!=parts[i]->device) return QKS_INVALID;
             device=parts[i]->device;
         }
@@ -624,7 +828,11 @@ static int create_mixed_moe(void* runtime,qks_moe_endpoint_v2 const* gate,
                 if (!c->execution->query_reuse || !c->execution->reuse) {
                     last_error="execution library lacks the register-reuse reader";return QKS_MISS;
                 }
-                if (c->execution->query_reuse(&call,reuse[i],e->arrangement,&sizes)!=QKG_OK)
+                qkg_simt_call_v2 typed{2,sizeof(typed),call,compute_type};
+                int rc=compute_type==QK_COMPUTE_BF16 ?
+                    c->execution->query_reuse_compute(&typed,reuse[i],e->arrangement,&sizes) :
+                    c->execution->query_reuse(&call,reuse[i],e->arrangement,&sizes);
+                if (rc!=QKG_OK)
                     return QKS_INVALID;
                 c->reuse_mask|=1u<<i;c->reuse_configs[i]=*reuse[i];
             } else if (e->q4_config) {
@@ -682,4 +890,24 @@ extern "C" int quactlize_kpack_dispatch_moe_create_v3(void* runtime,qks_moe_endp
         reuse[i]=e->reuse_config;
     }
     return create_mixed_moe(runtime,&endpoints[0],up?&endpoints[1]:nullptr,&endpoints[2],reuse,out);
+}
+
+extern "C" int quactlize_kpack_dispatch_moe_create_v4(void* runtime,qks_moe_endpoint_v4 const* gate,
+    qks_moe_endpoint_v4 const* up,qks_moe_endpoint_v4 const* down,void** out) {
+    if (!out) return QKS_INVALID;
+    *out=nullptr;
+    if (!runtime || !gate || !down || gate==down || (up && (up==gate || up==down))) return QKS_INVALID;
+    qks_moe_endpoint_v4 const* inputs[3]={gate,up,down};
+    qks_moe_endpoint_v2 endpoints[3]{};qkg_simt_config_v1 const* reuse[3]={};
+    int compute_type=gate->compute_type;
+    if (!compute_valid(compute_type)) return QKS_INVALID;
+    for (int i=0;i<3;++i) if (auto typed=inputs[i]) {
+        auto const& e=typed->endpoint;
+        if (typed->version!=4 || typed->size!=sizeof(*typed) || typed->compute_type!=compute_type ||
+            e.version!=3 || e.size!=sizeof(e)) return QKS_INVALID;
+        endpoints[i]={2,sizeof(endpoints[i]),e.tc_handle,e.simt_call,e.q4_config,e.simt_config,
+            e.arrangement,e.scratch,e.scratch_bytes};
+        reuse[i]=e.reuse_config;
+    }
+    return create_mixed_moe(runtime,&endpoints[0],up?&endpoints[1]:nullptr,&endpoints[2],reuse,out,compute_type);
 }

@@ -4,6 +4,54 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
+## Explicit BF16 compute integration, 2026-09-15
+
+The development caller now has an explicit `QUACTLIZE_KPACK_COMPUTE=bf16`
+path. The default remains `fp16` until the complete device gate is admitted.
+This is computation precision, not a different offline artifact. Existing
+low/high/unit bytes and disk caches are unchanged; metadata remains FP16 and
+is converted by value inside the BF16 consumer. There is no clipping.
+
+| Path | Formats / coverage | Interface |
+| --- | --- | --- |
+| Grouped TC FQ | Q2_K, Q3_K, Q4_K, Q5_K, Q6_K; all existing legal M | grouped compute v3 |
+| Grouped TC SF | Above plus Q8_0; all existing legal M | grouped compute v3; FP16 scale planes |
+| SIMT dense/indexed | All six formats; tokens 1--8 | explicit compute v2, F32 output |
+| Dense TC decode | All six; M1--8; F32 or BF16 storage | typed compute v2, AP0 |
+| Fused MoE | TC/SIMT/mixed, separate or merged gate/up, weighted finish | dispatcher endpoint v4 |
+
+TC uses BF16 A/B and FP32 accumulation. Fused projections round at the BF16
+boundary before SwiGLU and down; external llama tensors remain F32. Decode
+conversion stays in the reader or fused prepare/finish, not standalone
+gather/scatter. Ordinary prefill grouped adapters now explicitly write/read
+BF16. Dense M>8 retains the existing FQ/SF/full-BF16 routing; it is not covered
+by the new typed dense decode API.
+
+The new dispatcher query/prepare interfaces, module identities, catalog and
+JIT keys distinguish computation type. Old FP16 entrypoints reject BF16
+tickets. A linked MoE chain cannot mix computation types. An explicitly
+requested BF16 path never silently invokes the old FP16 K-pack fallback.
+AP1 is FP16-only; BF16 proposals use a separately compiled AP0 module. Q4's
+specialized FP16 SIMT reader is retained; BF16 currently uses the all-format
+register-reuse reader, not an unverified reinterpretation of that reader.
+
+The existing FP16 table supplies geometry proposals only. BF16 choices are
+marked `QKS_COMPUTE_INITIAL` (11), never relabeled as measured optima. Missing
+families use one resource-checked AP0 proposal. BF16 does not rank FQ/SF/full
+routes using the FP16 timing table. Fresh BF16 timing remains a separate task.
+`tools/kpack_jit.py plan/prewarm --compute-type bf16` and runtime misses use
+the same explicit compute contract; prewarm accepts mixed grouped/decode
+parents without loading a device.
+
+Local gates: the full six-format execution library and both caller adapter
+translation units compile with the PPU SDK. The focused host regression suite
+passes 164 tests, including wrong dtype/version/ticket and legacy-reader
+negatives. Compile-only matrices cover all formats and grouped small/large
+tiles. These results are not PPU numerical or performance admission. The
+bounded all-format BF16 device gate must precede model numerical/Asys runs.
+The artifact pin below will be advanced only with the matching complete
+package; the previous published FP16 artifact remains reproducible.
+
 ## Combined router/finish graph repair, 2026-09-15
 
 Source `1188a8d`, private caller `4b2526dbd`, artifact `ae225b4` correct

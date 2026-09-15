@@ -4,7 +4,7 @@ import ctypes as C
 from pathlib import Path
 
 from quactlize.runtime.native import Call, checked
-from quactlize.execution.native import Call as SimtCall, SimtConfig, Sizes, Arrangement
+from quactlize.execution.native import Call as SimtCall, SimtConfig, SimtCallV2, Sizes, Arrangement
 
 
 class Request(C.Structure):
@@ -33,6 +33,20 @@ class Choice(C.Structure):
 class DenseIO(C.Structure):
     _fields_ = [("version",C.c_uint32),("size",C.c_uint32),("call",Call),
                 ("input_type",C.c_int32),("output_type",C.c_int32)]
+
+
+class DenseCompute(C.Structure):
+    _fields_ = [("version",C.c_uint32),("size",C.c_uint32),("dense",DenseIO),("compute_type",C.c_int32)]
+
+
+class DeviceCall(C.Structure):
+    _fields_ = [("version",C.c_uint32),("size",C.c_uint32),("call",Call),
+                ("max_rows",C.c_int32),("reserved",C.c_int32)]
+
+
+class GroupedCompute(C.Structure):
+    _fields_ = [("version",C.c_uint32),("size",C.c_uint32),("device_call",DeviceCall),
+                ("compute_type",C.c_int32)]
 
 
 class SmallmChoice(C.Structure):
@@ -68,6 +82,11 @@ class MoeEndpoint(C.Structure):
 
 class MoeEndpointV3(C.Structure):
     _fields_ = MoeEndpoint._fields_ + [("reuse_config", C.c_void_p)]
+
+
+class MoeEndpointV4(C.Structure):
+    _fields_ = [("version",C.c_uint32),("size",C.c_uint32),("endpoint",MoeEndpointV3),
+                ("compute_type",C.c_int32)]
 
 
 class MoeFinish(C.Structure):
@@ -129,15 +148,44 @@ class Dispatch:
             raise ValueError("native query: " + self.fn["error"]().decode())
         return choice
 
-    def query_smallm(self, call, arrangement):
-        fn=self.lib.quactlize_kpack_dispatch_query_smallm_v1
-        fn.argtypes=[C.c_void_p,C.POINTER(SimtCall),C.POINTER(Arrangement),C.POINTER(SmallmChoice)]
+    def query_smallm(self, call, arrangement, compute_type=None):
+        typed=call if compute_type is None else SimtCallV2(call,compute_type)
+        fn=getattr(self.lib,'quactlize_kpack_dispatch_query_smallm_v'+('1' if compute_type is None else '2'))
+        fn.argtypes=[C.c_void_p,C.POINTER(type(typed)),C.POINTER(Arrangement),C.POINTER(SmallmChoice)]
         fn.restype=C.c_int
         out=SmallmChoice()
-        rc=fn(self.runtime,C.byref(call),C.byref(arrangement),C.byref(out))
+        rc=fn(self.runtime,C.byref(typed),C.byref(arrangement),C.byref(out))
         if rc==1:return None
         if rc:raise ValueError('small-M query: '+self.fn['error']().decode())
         return out
+
+    def query_compute(self, request, compute_type, endpoint_type=0, decode=False):
+        fn=self.lib.quactlize_kpack_dispatch_query_compute_v1
+        fn.argtypes=[C.c_void_p,C.POINTER(Request),C.c_int32,C.c_int32,C.c_int32,C.POINTER(Choice)]
+        fn.restype=C.c_int
+        out=Choice()
+        rc=fn(self.runtime,C.byref(request),compute_type,endpoint_type,int(decode),C.byref(out))
+        if rc==1:return None
+        if rc:raise ValueError('compute query: '+self.fn['error']().decode())
+        return out
+
+    def prepare_compute(self, choice, call, max_rows, compute_type, indexed=None):
+        typed=GroupedCompute(3,C.sizeof(GroupedCompute),
+            DeviceCall(2,C.sizeof(DeviceCall),call,max_rows,0),compute_type)
+        fn=self.lib.quactlize_kpack_dispatch_prepare_compute_v1
+        fn.argtypes=[C.c_void_p,C.POINTER(Choice),C.POINTER(GroupedCompute),C.POINTER(C.c_void_p)]
+        fn.restype=C.c_int
+        handle=C.c_void_p()
+        if fn(self.runtime,C.byref(choice),C.byref(typed),C.byref(handle)):
+            raise ValueError('compute prepare: '+self.fn['error']().decode())
+        self.handles.append(handle)
+        if indexed is not None:
+            bind=self.lib.quactlize_kpack_dispatch_bind_llama_indexed_v1
+            bind.argtypes=[C.c_void_p,C.POINTER(IndexedIO)];bind.restype=C.c_int
+            if bind(handle,C.byref(indexed)):
+                self.fn['destroy'](handle);self.handles.pop()
+                raise ValueError('compute indexed binding failed')
+        return lambda:self.fn['run'](handle,call.stream)
 
     def prepare(self, choice, call, indexed=None):
         h = C.c_void_p()
@@ -166,10 +214,11 @@ class Dispatch:
         if status: raise ValueError("typed native query: "+self.fn["error"]().decode())
         return choice
 
-    def prepare_dense_io(self, choice, call, endpoint_type=1):
+    def prepare_dense_io(self, choice, call, endpoint_type=1, compute_type=None):
         typed=DenseIO(1,C.sizeof(DenseIO),call,endpoint_type,endpoint_type)
-        fn=self.lib.quactlize_kpack_dispatch_prepare_dense_io_v1
-        fn.argtypes=[C.c_void_p,C.POINTER(Choice),C.POINTER(DenseIO),C.POINTER(C.c_void_p)]
+        if compute_type is not None:typed=DenseCompute(2,C.sizeof(DenseCompute),typed,compute_type)
+        fn=getattr(self.lib,'quactlize_kpack_dispatch_prepare_dense_io_v'+('1' if compute_type is None else '2'))
+        fn.argtypes=[C.c_void_p,C.POINTER(Choice),C.POINTER(type(typed)),C.POINTER(C.c_void_p)]
         fn.restype=C.c_int
         handle=C.c_void_p()
         if fn(self.runtime,C.byref(choice),C.byref(typed),C.byref(handle)):
@@ -178,10 +227,10 @@ class Dispatch:
         return lambda: self.fn["run"](handle,call.stream)
 
     def chain(self, gate, up, down, stream, router=None, mixed=False, finish=None):
-        endpoint = MoeEndpointV3 if isinstance(gate, MoeEndpointV3) else MoeEndpoint
+        endpoint = MoeEndpointV4 if isinstance(gate,MoeEndpointV4) else MoeEndpointV3 if isinstance(gate, MoeEndpointV3) else MoeEndpoint
         if mixed and any(not isinstance(e, endpoint) for e in (gate, up, down) if e is not None):
             raise ValueError('mixed MoE endpoint versions differ')
-        version = ('3' if endpoint is MoeEndpointV3 else '2') if mixed else '1'
+        version = ('4' if endpoint is MoeEndpointV4 else '3' if endpoint is MoeEndpointV3 else '2') if mixed else '1'
         create=getattr(self.lib,'quactlize_kpack_dispatch_moe_create_v'+version)
         create.argtypes=([C.c_void_p,C.POINTER(endpoint),C.POINTER(endpoint),C.POINTER(endpoint)] if mixed else
                          [C.c_void_p,C.c_void_p,C.c_void_p])+[C.POINTER(C.c_void_p)]
