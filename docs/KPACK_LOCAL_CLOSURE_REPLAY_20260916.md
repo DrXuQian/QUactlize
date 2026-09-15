@@ -128,3 +128,29 @@ DSOs, TC modules, Q8 binary, packer and caller remain unchanged.
 
 Model BF16 admission and production promotion of the new Q8/prepare readers
 remain separate follow-up work.
+
+Repair source `47e5c89762d6f6781c7707335827cdd88b95cbba`, artifact
+`b9154a339524752b725a86d727809b24df52bc6b`. Related local regression:89 tests
+pass; the later ID-negative ordering scope check also passes. The repaired
+PPU helper compiles, and package verification passes with the unchanged
+production execution hash. Only one new 1.3MiB test executable is transferred.
+
+```bash
+(
+    set -e
+    cd /sim/eec/shared/junfu.qx/quactlize
+    test "$(git branch --show-current)" = develop
+    GIT_LFS_SKIP_SMUDGE=1 git pull --ff-only origin develop
+    git submodule update --init third_party/actlize
+    unset BUNDLE
+    LOCAL_PHASES=moe-prepare,bf16 \
+    PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
+    CUDA_VISIBLE_DEVICES=0 \
+    bash tools/run_kpack_local_closure_box.sh
+)
+```
+
+Upload the printed `.results.tgz`. The selected phases run all3,840 prepare
+contexts and all746 capability cases, without repeating Q8's50 performance
+contexts or compiling on box. The preceding replay spent197 seconds in
+the BF16 gate; a roughly4--6 minute window is an estimate, not a deadline.
