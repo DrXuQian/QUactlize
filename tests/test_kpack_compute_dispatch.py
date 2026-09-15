@@ -1,6 +1,10 @@
 import ctypes as C
+import importlib
+import os
 from pathlib import Path
 import subprocess
+
+import pytest
 
 from quactlize.decode.compiler import DecodeCompiler
 from quactlize.decode.grouped_compiler import GroupedComputeCompiler
@@ -48,3 +52,24 @@ def test_module_source_matches_bf16_compilers():
         # A real compiler source method, independent of JIT source reconstruction.
         obj=cls.__new__(cls);obj.compute_type='bf16'
         assert module_source(record)==cls.source(obj,p,'')
+
+
+def test_caller_bf16_receipts_and_symbol_precision(monkeypatch):
+    caller=Path(os.environ.get('LLAMA_CI_DIR','/root/autodl-tmp/llama-v0.3.0'))
+    if not (caller/'tests/quactlize_native.py').exists():pytest.skip('private caller not installed')
+    monkeypatch.syspath_prepend(str(caller/'tests'))
+    native=importlib.import_module('quactlize_native')
+    old='void quactlize::execution::simt::register_reuse<14, 1, 3, 4, 4, 4>(qkg_call_v1, int)'
+    assert native.simt_symbol_recipe(old)==(14,1,3,4,4,4,0)
+    assert native.simt_symbol_recipe(old.replace('4>','4, 1>'))==(14,1,3,4,4,4,1)
+    line='[quactlize-plan] tensor=test op=grouped route=gemv reader=simt-reuse q=14 rows=8 n=512 k=2048 variant=3 columns=4 warps=4 values=4 split=1 policy=11 activation=BF16'
+    manifest=dict(modules=[],smallm_policy=True,compute_contract=True,execution_receipt=dict(
+        simt_compute_v2=dict(compute=['f16','bf16']),simt_configs={'14':[
+            dict(variant=3,columns=4,warps=4,values=4,split=1)]}))
+    assert native.selection(line,manifest,['grouped'])['fully_selected']
+    with pytest.raises(ValueError):native.selection(line.replace('policy=11','policy=9'),manifest,['grouped'])
+    with pytest.raises(ValueError):native.selection(line,manifest|dict(compute_contract=None),['grouped'])
+    module=dict(key='b'*64,parent=dict(symbol='tc',qtype=14,route='fq-grouped'),identity=dict(compute_type='bf16'))
+    tc='[quactlize-plan] tensor=test op=grouped route=fq q=14 rows=8 n=512 k=2048 parent=tc build='+module['key']+' split=1 grid=0 policy=11 activation=BF16'
+    assert native.selection(tc,manifest|dict(modules=[module]),['grouped'])['fully_selected']
+    with pytest.raises(ValueError):native.selection(tc.replace('activation=BF16','activation=FP16'),manifest|dict(modules=[module]),['grouped'])
