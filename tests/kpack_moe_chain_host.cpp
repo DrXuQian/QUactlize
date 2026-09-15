@@ -131,6 +131,47 @@ static void router_graph(bool merged,int fault,int tokens=1) {
   require(!quactlize::llama::match_moe_router(g,start,prefix,wi,wi).count,"wrong router IDs accepted");
   ggml_free(ctx);
 }
+
+static void finish_graph(bool merged,int tokens,int fault) {
+  auto * ctx=ggml_init({8*1024*1024,nullptr,true});
+  auto * a=ggml_new_tensor_3d(ctx,GGML_TYPE_F32,2048,1,tokens);
+  auto * ids=ggml_new_tensor_2d(ctx,GGML_TYPE_I32,8,tokens);
+  auto * w=ggml_new_tensor_3d(ctx,GGML_TYPE_Q4_K,2048,merged?1024:512,256);
+  auto * gate=ggml_mul_mat_id(ctx,w,a,ids);
+  ggml_tensor * up;
+  if (merged) {
+    auto * both=gate;
+    gate=ggml_view_3d(ctx,both,512,8,tokens,both->nb[1],both->nb[2],0);
+    up=ggml_view_3d(ctx,both,512,8,tokens,both->nb[1],both->nb[2],512*4);
+  } else up=ggml_mul_mat_id(ctx,w,a,ids);
+  auto * glu=ggml_swiglu_split(ctx,gate,up);
+  auto * down=ggml_mul_mat_id(ctx,ggml_new_tensor_3d(ctx,GGML_TYPE_Q5_K,512,2048,256),glu,ids);
+  auto * weights=ggml_new_tensor_3d(ctx,GGML_TYPE_F32,1,8,tokens);
+  auto * mul=ggml_mul(ctx,down,weights);
+  auto * g=ggml_new_graph(ctx);ggml_build_forward_expand(g,mul);
+  ggml_tensor * views[8];
+  for (int slot=0;slot<8;++slot) {
+    views[slot]=ggml_view_2d(ctx,mul,2048,tokens,mul->nb[2],size_t(slot)*mul->nb[1]+(fault==2&&slot==1?4:0));
+    ggml_build_forward_expand(g,views[slot]);
+  }
+  auto * sum=views[0];
+  for (int slot=1;slot<8;++slot) {
+    sum=fault==3&&slot==2 ? ggml_add(ctx,views[slot],sum) : ggml_add(ctx,sum,views[slot]);
+    ggml_build_forward_expand(g,sum);
+  }
+  if (fault==1) ggml_build_forward_expand(g,ggml_scale(ctx,down,2.f));
+  int found=0;
+  for (int i=0;i<g->n_nodes;++i) {
+    auto match=quactlize::llama::match_moe(g,i);
+    if (!match.count) continue;
+    require(bool(match.finish)==(fault==0 && tokens<=8),"weighted finish match disagrees");
+    if (match.finish) require(match.finish==sum && match.weights==weights &&
+        match.count==(merged?21:20),"weighted finish output/count wrong");
+    ++found;
+  }
+  require(found==(tokens<=8?1:0),"weighted finish base-chain scope differs");
+  ggml_free(ctx);
+}
 int main() {
   try {
     composition();
@@ -139,11 +180,14 @@ int main() {
       graph(merged,false,false,false,true); graph(merged,false,false,true,false);
     }
     graph(true,false,true,true,true);
+    for (bool merged:{false,true}) for (int tokens:{1,2,4,8,16})
+      for (int fault=0;fault<4;++fault) finish_graph(merged,tokens,fault);
     for (int tokens:{1,2,3,4,5,8,16,32,64,128,512,2048})
       for (bool merged:{false,true}) for (int fault=0;fault<4;++fault) router_graph(merged,fault,tokens);
     std::puts("KPACK_MOE_GRAPH_TOKEN_SCOPE PASS topk=8 fused_tokens=1..8 declined_tokens=16,32,64,128,512,2048");
     std::puts("KPACK_MOE_ROUTER_GRAPH PASS input views retained; legacy predicate RED; projection uses/IDs rejected");
     std::puts("KPACK_MOE_GRAPH PASS exact GGML separate+merged; shared consumer, wrong view, IDs, activation RED");
+    std::puts("KPACK_MOE_FINISH_GRAPH PASS tokens1..8; shared down, wrong view, reordered sum declined");
     return 0;
   } catch (std::exception const& e) { std::fprintf(stderr,"FAIL %s\n",e.what()); return 1; }
 }

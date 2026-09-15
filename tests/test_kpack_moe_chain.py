@@ -1,8 +1,9 @@
 from pathlib import Path
+import os
 import subprocess
 
 ROOT=Path(__file__).resolve().parents[1]
-LLAMA=Path('/root/llama.cpp')
+LLAMA=Path(os.environ.get('LLAMA_CI_DIR','/root/llama.cpp'))
 
 
 def test_mixed_dispatch_phases_and_pointer_contract(tmp_path):
@@ -17,7 +18,7 @@ def test_mixed_dispatch_phases_and_pointer_contract(tmp_path):
 
 def test_composition_and_exact_ggml_graph(tmp_path):
     exe=tmp_path/'moe-host'
-    library=Path('/root/autodl-tmp/q8-kpack2-llama-host/bin')
+    library=Path(os.environ.get('LLAMA_HOST_LIB_DIR','/root/autodl-tmp/q8-kpack2-llama-host/bin'))
     result=subprocess.run(['g++','-std=c++17','-O2',f'-I{ROOT}',
         f'-I{LLAMA/"ggml/include"}',f'-I{LLAMA/"ggml/src"}',
         str(ROOT/'tests/kpack_moe_chain_host.cpp'),f'-L{library}',
@@ -28,6 +29,7 @@ def test_composition_and_exact_ggml_graph(tmp_path):
     assert 'KPACK_MOE_COMPOSITION PASS' in result.stdout
     assert 'KPACK_MOE_GRAPH PASS' in result.stdout
     assert 'KPACK_MOE_GRAPH_TOKEN_SCOPE PASS' in result.stdout
+    assert 'KPACK_MOE_FINISH_GRAPH PASS' in result.stdout
 
 
 def test_moe_graph_mirror():

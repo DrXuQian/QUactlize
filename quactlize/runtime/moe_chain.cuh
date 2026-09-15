@@ -16,8 +16,11 @@ CUTLASS_HOST_DEVICE bool moe_prepare_m1_supported(qk_moe_plan_v1 const& plan) {
 
 template<class Shape,class Stride>
 CUTLASS_DEVICE void moe_m1_descriptors(qk_moe_projection_v1 const& p,
-    int const* ids,int const* ranks,int begin,int count,bool valid) {
+    int const* ids,int const* ranks,int begin,int count,bool valid,bool simt=false) {
   int e=int(threadIdx.x);
+  // SIMT producers consume original IDs and F32 rows, not TC descriptor arrays.
+  // Publish only the sorted row map and status used by the mixed activation.
+  if (!simt) {
   p.offsets[e]=begin; p.rows[e]=count;
   static_cast<Shape*>(p.shapes)[e]=cute::make_shape(count,p.n,p.k);
   auto strides=static_cast<Stride*>(p.strides);
@@ -28,13 +31,14 @@ CUTLASS_DEVICE void moe_m1_descriptors(qk_moe_projection_v1 const& p,
     else static_cast<float**>(p.outputs)[entry]=static_cast<float*>(p.partials)+offset;
     strides[entry]=cutlass::make_cute_packed_stride(Stride{},cute::make_shape(count,p.n,1));
   }
+  }
   if (e<8) {
     p.io.row_ids[valid?ranks[e]:e]=e;
     if (valid) static_cast<moe::BlockEntry*>(p.directory_entries)[ranks[e]]=
         moe::make_entry(ids[e],1,ranks[e],ranks[e]);
   }
   if (e==0) {
-    p.offsets[256]=valid?8:0;
+    if (!simt) p.offsets[256]=valid?8:0;
     *static_cast<moe::Header*>(p.directory_header)={valid?8:0,
         valid?0:int(moe::BuildStatus::InvalidArgument),p.tile_m,256};
   }
@@ -85,9 +89,10 @@ __global__ void moe_chain_prepare_m1(Plan plan) {
   if (tid<8) ranks[tid]=rank;
   bool valid=__syncthreads_or(invalid)==0;
   if (!valid) begin=count=0;
-  moe_m1_descriptors<Shape,Stride>(plan.gate,ids,ranks,begin,count,valid);
-  if (!plan.merged) moe_m1_descriptors<Shape,Stride>(plan.up,ids,ranks,begin,count,valid);
-  moe_m1_descriptors<Shape,Stride>(plan.down,ids,ranks,begin,count,valid);
+  uint32_t simt=moe_simt_mask(plan);
+  moe_m1_descriptors<Shape,Stride>(plan.gate,ids,ranks,begin,count,valid,simt&1);
+  if (!plan.merged) moe_m1_descriptors<Shape,Stride>(plan.up,ids,ranks,begin,count,valid,simt&2);
+  moe_m1_descriptors<Shape,Stride>(plan.down,ids,ranks,begin,count,valid,simt&4);
   if (valid && !plan.router.version) moe_m1_gather(plan,tid,256);
 }
 
@@ -267,4 +272,33 @@ CUTLASS_DEVICE void moe_swiglu_body(Plan const& plan) {
 }
 __global__ void moe_chain_swiglu(qk_moe_plan_v1 plan) { moe_swiglu_body(plan); }
 __global__ void moe_chain_swiglu_mixed(MixedMoePlan plan) { moe_swiglu_body(plan); }
+
+template<bool Simt>
+__global__ void moe_weighted_finish(qk_moe_projection_v1 p,qk_llama_moe_finish_v1 finish) {
+  int token=int(blockIdx.y),col=int(blockIdx.x)*int(blockDim.x)+int(threadIdx.x);
+  bool valid=!static_cast<moe::Header const*>(p.directory_header)->status;
+  __shared__ int rank[8];
+  // Restore slot order before summation, not expert-sorted order.
+  if constexpr (!Simt) {
+    int r=int(threadIdx.x);
+    if (valid && r<p.m) {
+      int slot=p.io.row_ids[r];
+      if (slot/8==token) rank[slot%8]=r;
+    }
+    __syncthreads();
+  }
+  if (col>=p.n) return;
+  float result=0.f;
+  if (valid) {
+    #pragma unroll
+    for (int slot=0;slot<8;++slot) {
+      float value;
+      if constexpr (Simt) value=p.io.output[int64_t(token*8+slot)*p.io.out_row_stride+col];
+      else value=moe_projection_value(p,rank[slot],col);
+      float weighted=__fmul_rn(value,finish.weights[int64_t(token)*finish.weights_stride+slot]);
+      result=slot ? __fadd_rn(result,weighted) : weighted;
+    }
+  } else result=__int_as_float(0x7fffffff);
+  finish.output[int64_t(token)*finish.output_stride+col]=result;
+}
 } // namespace quactlize::runtime

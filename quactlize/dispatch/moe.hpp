@@ -102,4 +102,36 @@ inline bool compatible_router(qk_moe_plan_v1 const& p,qk_llama_router_v1 const& 
   if (!moe_span(p.down.io.output,uint64_t(p.down.io.out_row_stride)*p.down.m*4,output)) return false;
   return !moe_overlap(output,weights); // Both remain graph outputs after the fused segment.
 }
+
+inline bool compatible_finish(qk_moe_plan_v1 const& p,qk_llama_moe_finish_v1 const& f,uint32_t mask) {
+  auto const& d=p.down;
+  if (f.version!=1 || f.size!=sizeof(f) || d.io.tokens<1 || d.io.tokens>8 ||
+      d.io.topk!=8 || d.m!=d.io.tokens*8 || f.weights_stride<8 || f.output_stride<d.n ||
+      uint64_t(f.weights_stride)>UINT64_MAX/4/d.io.tokens ||
+      uint64_t(f.output_stride)>UINT64_MAX/4/d.io.tokens ||
+      (uintptr_t(f.weights)|uintptr_t(f.output))%4) return false;
+  MoeSpan output,weights,ids;
+  if (!moe_span(f.output,uint64_t(f.output_stride)*4*d.io.tokens,output) ||
+      !moe_span(f.weights,uint64_t(f.weights_stride)*4*d.io.tokens,weights) ||
+      !moe_span(d.io.ids,uint64_t(d.io.ids_stride)*4*d.io.tokens,ids) ||
+      moe_overlap(output,weights) || moe_overlap(output,ids) || moe_overlap(weights,ids)) return false;
+  for (auto part:{&p.gate,p.merged?nullptr:&p.up,&d}) {
+    if (!part) continue;
+    int index=part==&p.gate?0:part==&p.up?1:2;
+    uint64_t bytes=(mask&(1u<<index))?4:2;
+    MoeSpan live[5];
+    if (!moe_span(part->workspace,part->workspace_bytes,live[0]) ||
+        !moe_span(part->output,uint64_t(part->m)*part->n*bytes,live[1]) ||
+        !moe_span(part->a,uint64_t(part->m)*part->k*bytes,live[2]) ||
+        !moe_span(part->offsets,uint64_t(part->experts+1)*4,live[3]) ||
+        !moe_span(part->io.row_ids,uint64_t(part->m)*4,live[4])) return false;
+    for (auto span:live) if (moe_overlap(output,span) || moe_overlap(weights,span)) return false;
+  }
+  if (mask&4) {
+    MoeSpan down;
+    if (!moe_span(d.io.output,uint64_t(d.io.out_row_stride)*4*d.m,down) ||
+        moe_overlap(output,down) || moe_overlap(weights,down)) return false;
+  }
+  return true;
+}
 } // namespace quactlize::dispatch

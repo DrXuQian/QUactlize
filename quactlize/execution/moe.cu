@@ -91,3 +91,19 @@ extern "C" int quactlize_kpack_moe_mixed_stage_v1(qk_moe_plan_v1 const* source,u
   } else return QKG_INVALID;
   return hggcGetLastError()==hggcSuccess?QKG_OK:QKG_RUNTIME;
 }
+
+extern "C" int quactlize_kpack_moe_weighted_finish_v1(qk_moe_plan_v1 const* plan,uint32_t mask,
+    qk_llama_moe_finish_v1 const* finish,void* opaque) {
+  using namespace quactlize::runtime;
+  if (!plan || !finish || plan->version!=1 || plan->size!=sizeof(*plan) || mask>7 ||
+      finish->version!=1 || finish->size!=sizeof(*finish) || !finish->weights || !finish->output ||
+      plan->down.io.tokens<1 || plan->down.io.tokens>8 || plan->down.io.topk!=8 ||
+      plan->down.m!=plan->down.io.tokens*8 || plan->down.n<=0 ||
+      finish->weights_stride<8 || finish->output_stride<plan->down.n) return QKG_INVALID;
+  auto stream=static_cast<hggcStream_t>(opaque);
+  if (hggcGetLastError()!=hggcSuccess) return QKG_RUNTIME;
+  dim3 grid((plan->down.n+127)/128,plan->down.io.tokens);
+  if (mask&4) moe_weighted_finish<true><<<grid,128,0,stream>>>(plan->down,*finish);
+  else moe_weighted_finish<false><<<grid,128,0,stream>>>(plan->down,*finish);
+  return hggcGetLastError()==hggcSuccess?QKG_OK:QKG_RUNTIME;
+}

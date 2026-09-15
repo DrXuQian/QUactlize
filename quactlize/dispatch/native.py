@@ -59,6 +59,12 @@ class MoeEndpoint(C.Structure):
                                       "arrangement","scratch")] + [("scratch_bytes",C.c_uint64)]
 
 
+class MoeFinish(C.Structure):
+    _fields_ = [("version",C.c_uint32),("size",C.c_uint32),
+                ("weights_stride",C.c_int64),("output_stride",C.c_int64),
+                ("weights",C.c_void_p),("output",C.c_void_p)]
+
+
 class Dispatch:
     def __init__(self, root, jit=None):
         self.lib = C.CDLL(
@@ -150,7 +156,7 @@ class Dispatch:
         self.handles.append(handle)
         return lambda: self.fn["run"](handle,call.stream)
 
-    def chain(self, gate, up, down, stream, router=None, mixed=False):
+    def chain(self, gate, up, down, stream, router=None, mixed=False, finish=None):
         create=getattr(self.lib,'quactlize_kpack_dispatch_moe_create_v'+('2' if mixed else '1'))
         create.argtypes=([C.c_void_p,C.POINTER(MoeEndpoint),C.POINTER(MoeEndpoint),C.POINTER(MoeEndpoint)] if mixed else
                          [C.c_void_p,C.c_void_p,C.c_void_p])+[C.POINTER(C.c_void_p)]
@@ -159,6 +165,11 @@ class Dispatch:
         rc=create(self.runtime,C.byref(gate),C.byref(up) if up is not None else None,C.byref(down),C.byref(chain)) if mixed else create(gate,up,down,C.byref(chain))
         if rc: raise ValueError(f"native MoE chain creation failed rc={rc}: "+self.fn['error']().decode())
         self.chains.append(chain)
+        if finish is not None:
+            bind=self.lib.quactlize_kpack_dispatch_moe_bind_finish_v1
+            bind.argtypes=[C.c_void_p,C.c_void_p,C.POINTER(MoeFinish)];bind.restype=C.c_int
+            status=bind(self.runtime,chain,C.byref(finish))
+            if status: raise ValueError(f"native MoE finish binding failed rc={status}")
         if router is not None:
             run=self.lib.quactlize_kpack_dispatch_moe_run_router_v1
             run.argtypes=[C.c_void_p,C.POINTER(Router),C.c_void_p]; run.restype=C.c_int

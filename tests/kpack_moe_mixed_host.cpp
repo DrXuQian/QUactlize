@@ -28,6 +28,10 @@ static int select_simt(qkg_call_v1 const*,quactlize_ppu_placed_arrangement_v2 co
 static int stage_simt(qk_moe_plan_v1 const*,uint32_t mask,int phase,void*) {
     assert(mask && (phase==QK_MOE_PREPARE || phase==QK_MOE_ACTIVATE));calls.push_back(100+phase);return 0;
 }
+static int weighted_finish(qk_moe_plan_v1 const*,uint32_t,qk_llama_moe_finish_v1 const* f,void*) {
+    assert(f->output==(float*)0x50000000 && f->weights==(float*)0x04000000);
+    calls.push_back(900);return 0;
+}
 static int run_simt(qkg_call_v1 const* c,qkg_q4_decode_config_v1 const*,quactlize_ppu_placed_arrangement_v2 const*) {
     int i=int(uintptr_t(c->low))-1;
     uintptr_t base=uintptr_t(i+1)*0x10000000;
@@ -39,7 +43,7 @@ static int run_simt(qkg_call_v1 const* c,qkg_q4_decode_config_v1 const*,quactliz
     calls.push_back(50+i);return 0;
 }
 int main() {
-    for (bool merged:{false,true}) for (uint32_t mask=1;mask<8;++mask) {
+    for (bool merged:{false,true}) for (uint32_t mask=0;mask<8;++mask) {
         if (merged && (mask&2)) continue;
         Runtime r;r.device=0;r.cu=72;r.moe=std::make_shared<MoeExecution>();
         r.moe->bind=bind_simt;r.moe->select=select_simt;r.moe->q4=run_simt;r.moe->stage=stage_simt;
@@ -63,20 +67,34 @@ int main() {
         void* chain=nullptr;
         auto create=[&] {return quactlize_kpack_dispatch_moe_create_v2(&r,&endpoints[0],merged?nullptr:&endpoints[1],&endpoints[2],&chain);};
         assert(create()==0 && chain);
-        std::vector<int> expected{100};
+        std::vector<int> expected{mask?100:11};
         expected.push_back(mask&1?50:21);
         if (!merged) expected.push_back(mask&2?51:22);
-        expected.push_back(102);expected.push_back(mask&4?52:23);
+        expected.push_back(mask?102:31);expected.push_back(mask&4?52:23);
         if (!(mask&4)) expected.push_back(43);
         calls.clear();assert(quactlize_kpack_dispatch_moe_run_v1(chain,nullptr)==0);assert(calls==expected);
         qk_llama_router_v1 router{1,sizeof(router),0,1,0,0,1e-8f,1.f,(float*)0x03000000,nullptr,(float*)0x04000000};
         calls.clear();assert(quactlize_kpack_dispatch_moe_run_router_v1(chain,&router,nullptr)==0);assert(calls==expected);
+        qk_llama_moe_finish_v1 finish{1,sizeof(finish),8,2048,(float*)0x04000000,(float*)0x50000000};
+        assert(quactlize_kpack_dispatch_moe_bind_finish_v1(&r,chain,&finish)==QKS_MISS);
+        r.moe->finish=weighted_finish;
+        auto bad_finish=finish;bad_finish.output=(float*)ps[2].workspace;
+        assert(quactlize_kpack_dispatch_moe_bind_finish_v1(&r,chain,&bad_finish)==QKS_MISS);
+        assert(quactlize_kpack_dispatch_moe_bind_finish_v1(&r,chain,&finish)==QKS_OK);
+        assert(quactlize_kpack_dispatch_moe_bind_finish_v1(&r,chain,&finish)==QKS_INVALID);
+        if (!(mask&4)) expected.pop_back();
+        expected.push_back(900);
+        calls.clear();assert(quactlize_kpack_dispatch_moe_run_v1(chain,nullptr)==0);assert(calls==expected);
+        calls.clear();assert(quactlize_kpack_dispatch_moe_run_router_v1(chain,&router,nullptr)==0);assert(calls==expected);
+        router.weights=(float*)0x04100000;
+        calls.clear();assert(quactlize_kpack_dispatch_moe_run_router_v1(chain,&router,nullptr)==QKS_MISS);assert(calls.empty());
         quactlize_kpack_dispatch_moe_destroy_v1(chain);chain=nullptr;
+        if (!mask) continue;
         auto altered=cfg;altered.warps=8;int first=(mask&1)?0:(mask&2)?1:2;
         endpoints[first].q4_config=&altered;assert(create()==QKS_INVALID && !chain);endpoints[first].q4_config=&cfg;
         auto saved=endpoints[first].scratch;endpoints[first].scratch=(void*)0x02000000;
         assert(create()==QKS_MISS && !chain);endpoints[first].scratch=saved;
         if (mask&4) {gc[2].channels=1;assert(create()==QKS_MISS && !chain);}
     }
-    std::puts("KPACK_MOE_MIXED_HOST PASS all masks, merged/separate, router, row/dtype pointers, aliases and wrong recipes");
+    std::puts("KPACK_MOE_MIXED_HOST PASS all masks, merged/separate, router, weighted finish, aliases and wrong recipes");
 }

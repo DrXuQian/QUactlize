@@ -6,6 +6,8 @@ from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
 FILES={
+    'quactlize/integrations/llama/indexed.h':'kpack_indexed.h',
+    'quactlize/integrations/llama/moe_graph.hpp':'moe_graph.hpp',
     'quactlize/runtime/abi.h':'kpack_module.h',
     'quactlize/execution/api.h':'kpack_execution.h',
     'quactlize/dispatch/api.h':'kpack_dispatch.h',

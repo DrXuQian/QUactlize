@@ -168,6 +168,10 @@ struct Projection {
     std::vector<float> values(float_completed.count,-77.f);
     std::copy(sums.begin(),sums.end(),values.begin()+1);float_completed.put(values);
     entries.put(std::vector<moe::BlockEntry>(entries.count,{-123,-123,-123,-123}));
+    offsets.put(std::vector<int>(offsets.count,-123));rows.put(std::vector<int>(rows.count,-123));
+    shapes.put(std::vector<Shape>(shapes.count,cute::make_shape(-123,-123,-123)));
+    strides.put(std::vector<Stride>(strides.count,cute::make_stride(int64_t(-123),cute::_1{},cute::_0{})));
+    outputs.put(std::vector<void*>(outputs.count,nullptr));
     return sums;
   }
 };
@@ -275,14 +279,17 @@ static void run(bool merged,int tokens,int topk,int experts,int sg,int su,int sd
       auto shapes=p->shapes.get(); auto strides=p->strides.get(); auto pointers=p->outputs.get();
       auto entries=p->entries.get(); auto h=p->header.get()[0];
       int begin=0,tiles=0;
+      bool sparse_simt=p->simt && moe_prepare_m1_supported(plan);
       for (int e=0;e<experts;++e) {
         int count=std::count(logical.begin(),logical.end(),e);
-        bad+=offsets[e]!=begin || rows[e]!=count;
-        bad+=cute::get<0>(shapes[e])!=count || cute::get<1>(shapes[e])!=p->p.n || cute::get<2>(shapes[e])!=p->p.k;
+        bad+=offsets[e]!=(sparse_simt?-123:begin) || rows[e]!=(sparse_simt?-123:count);
+        bad+=cute::get<0>(shapes[e])!=(sparse_simt?-123:count) ||
+             cute::get<1>(shapes[e])!=(sparse_simt?-123:p->p.n) || cute::get<2>(shapes[e])!=(sparse_simt?-123:p->p.k);
         for (int s=0;s<p->p.splits;++s) {
           void* want=p->p.splits==1 ? (void*)(static_cast<Half*>(p->p.output)+size_t(begin)*p->p.n) :
             (void*)(p->partial.ptr+(size_t(s)*m+begin)*p->p.n);
-          bad+=pointers[s*experts+e]!=want || cute::get<0>(strides[s*experts+e])!=p->p.n;
+          bad+=pointers[s*experts+e]!=(sparse_simt?nullptr:want) ||
+               cute::get<0>(strides[s*experts+e])!=(sparse_simt?-123:p->p.n);
         }
         for (int j=0;j<(count+p->p.tile_m-1)/p->p.tile_m;++j) {
           auto entry=entries[1+tiles+j];
@@ -290,7 +297,7 @@ static void run(bool merged,int tokens,int topk,int experts,int sg,int su,int sd
         }
         begin+=count; tiles+=(count+p->p.tile_m-1)/p->p.tile_m;
       }
-      bad+=offsets.back()!=m || h.num_m_blocks!=tiles || h.status || h.tile_m!=p->p.tile_m;
+      bad+=offsets.back()!=(sparse_simt?-123:m) || h.num_m_blocks!=tiles || h.status || h.tile_m!=p->p.tile_m;
       bad+=map!=ordered;
       bad+=entries.front().expert!=-123;
       for (int i=tiles+1;i<int(entries.size());++i) bad+=entries[i].expert!=-123;
@@ -351,6 +358,117 @@ static void run(bool merged,int tokens,int topk,int experts,int sg,int su,int sd
       !generic_prepare&&moe_prepare_m1_supported(plan)?"M1_FAST":"GENERAL",bad,activation_half_bad,rounding_red,gate_up_red,simt_mask);
   if (bad || !rounding_red || !gate_up_red) throw std::runtime_error("MoE chain oracle failed");
 }
+
+__global__ void weighted_rows_reference(float const* input,float const* weights,float* output,
+    int n,int64_t input_stride,int64_t weights_stride) {
+  int row=int(blockIdx.y),col=int(blockIdx.x)*256+int(threadIdx.x);
+  if (col<n) output[int64_t(row)*n+col]=__fmul_rn(input[int64_t(row)*input_stride+col],
+      weights[int64_t(row/8)*weights_stride+row%8]);
+}
+__global__ void sum_slots_reference(float const* input,float* output,int n,int64_t stride) {
+  int token=int(blockIdx.y),col=int(blockIdx.x)*128+int(threadIdx.x);
+  if (col>=n) return;
+  float sum=input[int64_t(token*8)*n+col];
+  for (int slot=1;slot<8;++slot) sum=__fadd_rn(sum,input[int64_t(token*8+slot)*n+col]);
+  output[int64_t(token)*stride+col]=sum;
+}
+
+template<class F,class G>
+static void time_finish(F baseline,G candidate,bool simt,int tokens,int n,int splits) {
+  constexpr int batch=64,samples=15;
+  cudaGraph_t graphs[2];cudaGraphExec_t instances[2];
+  for (int arm=0;arm<2;++arm) {
+    check(cudaStreamBeginCapture(cudaStreamPerThread,cudaStreamCaptureModeGlobal));
+    for (int i=0;i<batch;++i) { if (arm) candidate();else baseline(); }
+    check(cudaStreamEndCapture(cudaStreamPerThread,&graphs[arm]));
+    check(cudaGraphInstantiate(&instances[arm],graphs[arm],nullptr,nullptr,0));
+  }
+  cudaEvent_t begin,end;check(cudaEventCreate(&begin));check(cudaEventCreate(&end));
+  std::vector<float> times[2];
+  for (int round=-5;round<samples;++round) for (int turn=0;turn<2;++turn) {
+    int arm=(round+5+turn)%2;
+    check(cudaEventRecord(begin,cudaStreamPerThread));
+    check(cudaGraphLaunch(instances[arm],cudaStreamPerThread));check(cudaEventRecord(end,cudaStreamPerThread));
+    check(cudaEventSynchronize(end));float ms=0;check(cudaEventElapsedTime(&ms,begin,end));
+    if (round>=0) times[arm].push_back(ms*1000.f/batch);
+  }
+  auto a=times[0],b=times[1];std::sort(a.begin(),a.end());std::sort(b.begin(),b.end());
+  std::printf("KPACK_MOE_FINISH_PERF tokens=%d n=%d split=%d simt=%d reference_us=%.6f fused_us=%.6f baseline_kernels=%d fused_kernels=1 batch=64 samples=15 scope=RESIDENT_HELPERS_NOT_MODEL baseline=UNFUSED_STAGE_REFERENCE_NOT_LLAMA_BINARY\n",
+      tokens,n,splits,int(simt),a[7],b[7],simt?2:3);
+  for (int arm=0;arm<2;++arm) {
+    std::printf("KPACK_MOE_FINISH_SAMPLES arm=%d values=[",arm);
+    for (int i=0;i<samples;++i) std::printf("%s%.6f",i?",":"",times[arm][i]);
+    std::puts("]");check(cudaGraphExecDestroy(instances[arm]));check(cudaGraphDestroy(graphs[arm]));
+  }
+  check(cudaEventDestroy(begin));check(cudaEventDestroy(end));
+}
+
+static void weighted_finish_equivalence() {
+  size_t bad=0,order_red=0;
+  for (bool simt:{false,true}) for (int tokens:{1,2,8}) for (int splits:{1,2,4,8}) {
+    if (simt && splits!=1) continue;
+    int m=tokens*8,n=2048;
+    Projection down(m,n,512,256,8,splits,simt);
+    Buffer<float> original(size_t(m)*(n+3)),weights(tokens*11),result(size_t(tokens)*(n+5)+2),weighted(size_t(m)*n);
+    down.p.io={1,sizeof(qk_llama_indexed_v1),tokens,8,8,0,8,512,4096,n+3,nullptr,nullptr,original.ptr,down.row_ids.ptr};
+    qk_llama_moe_finish_v1 finish{1,sizeof(finish),11,n+5,weights.ptr,result.ptr+1};
+    auto launch=[&] {
+      if (simt) moe_weighted_finish<true><<<dim3((n+127)/128,tokens),128,0,cudaStreamPerThread>>>(down.p,finish);
+      else moe_weighted_finish<false><<<dim3((n+127)/128,tokens),128,0,cudaStreamPerThread>>>(down.p,finish);
+    };
+    auto reference=[&] {
+      if (!simt) {
+#define REF_FINISH(S) case S: indexed_finish<S><<<dim3((n+255)/256,m),256,0,cudaStreamPerThread>>>( \
+    down.partial.ptr,down.completed.ptr,original.ptr,down.row_ids.ptr,m,n,n+3,down.header.ptr);break
+        switch(splits) { REF_FINISH(1);REF_FINISH(2);REF_FINISH(4);REF_FINISH(8); }
+#undef REF_FINISH
+      }
+      weighted_rows_reference<<<dim3((n+255)/256,m),256,0,cudaStreamPerThread>>>(original.ptr,weights.ptr,weighted.ptr,n,n+3,11);
+      sum_slots_reference<<<dim3((n+127)/128,tokens),128,0,cudaStreamPerThread>>>(weighted.ptr,result.ptr+1,n,n+5);
+    };
+    cudaGraph_t graph;cudaGraphExec_t instance;
+    check(cudaStreamBeginCapture(cudaStreamPerThread,cudaStreamCaptureModeGlobal));launch();
+    check(cudaStreamEndCapture(cudaStreamPerThread,&graph));check(cudaGraphInstantiate(&instance,graph,nullptr,nullptr,0));
+    for (int replay=0;replay<7;++replay) {
+      auto done=down.seed(replay);
+      std::vector<int> map(m),inverse(m);
+      for (int r=0;r<m;++r) {map[r]=(r*13+replay)%m;inverse[map[r]]=r;}
+      down.row_ids.put(map);down.header.put({{m,0,8,256}});
+      std::vector<float> source(original.count,-123.f),w(weights.count,-123.f);
+      for (int r=0;r<m;++r) for (int col=0;col<n;++col) source[size_t(r)*(n+3)+col]=done[size_t(r)*n+col];
+      for (int t=0;t<tokens;++t) for (int slot=0;slot<8;++slot) w[t*11+slot]=float((slot*31+replay*7)%67-33)*.13719f;
+      original.put(source);weights.put(w);result.put(std::vector<float>(result.count,-123.f));
+      check(cudaGraphLaunch(instance,cudaStreamPerThread));check(cudaDeviceSynchronize());
+      auto got=result.get();
+      for (int t=0;t<tokens;++t) for (int col=0;col<n;++col) {
+        float want=0.f,reverse=0.f;
+        for (int slot=0;slot<8;++slot) {
+          int r=simt?t*8+slot:inverse[t*8+slot];
+          volatile float product=done[size_t(r)*n+col]*w[t*11+slot];
+          want=slot?want+product:product;
+          int rev=7-slot,rr=simt?t*8+rev:inverse[t*8+rev];
+          volatile float other=done[size_t(rr)*n+col]*w[t*11+rev];
+          reverse=slot?reverse+other:other;
+        }
+        bad+=std::memcmp(&want,&got[1+size_t(t)*(n+5)+col],sizeof(float))!=0;
+        order_red+=std::memcmp(&want,&reverse,sizeof(float))!=0;
+      }
+      bad+=got.front()!=-123.f || got.back()!=-123.f;
+      for (int t=0;t<tokens;++t) for (int col=n;col<n+5;++col) bad+=got[1+size_t(t)*(n+5)+col]!=-123.f;
+      reference();check(cudaGetLastError());check(cudaDeviceSynchronize());
+      auto baseline=result.get();bad+=std::memcmp(baseline.data(),got.data(),baseline.size()*sizeof(float))!=0;
+      if (replay==6 && benchmark_prepare && bad==0) time_finish(reference,launch,simt,tokens,n,splits);
+      if (replay==6) {
+        down.header.put({{0,1,8,256}});check(cudaGraphLaunch(instance,cudaStreamPerThread));check(cudaDeviceSynchronize());
+        got=result.get();for (int t=0;t<tokens;++t) for (int col=0;col<n;++col)
+          bad+=!std::isnan(got[1+size_t(t)*(n+5)+col]);
+      }
+    }
+    check(cudaGraphExecDestroy(instance));check(cudaGraphDestroy(graph));
+  }
+  std::printf("KPACK_MOE_WEIGHTED_FINISH cells=15 replays=7 tokens=1,2,8 completion=F16,F32 split=1,2,4,8 raw_bad=%zu order_red=%zu\n",bad,order_red);
+  if (bad || !order_red) throw std::runtime_error("weighted finish oracle failed");
+}
 int main(int argc,char** argv) {
   try {
     for (int i=1;i<argc;++i) {
@@ -361,6 +479,7 @@ int main(int argc,char** argv) {
       else throw std::runtime_error("usage: moe-chain [--benchmark] [--generic] [--multi-token]");
     }
     router_equivalence();
+    weighted_finish_equivalence();
     if (mixed_stages) {
       for (bool merged:{false,true}) for (uint32_t mask=1;mask<8;++mask) {
         if (merged && (mask&2)) continue;

@@ -12,6 +12,8 @@ int quactlize_kpack_moe_simt_bind_v1(qkg_call_v1 const*,int device,void*,uint64_
 // Shared preparation and SwiGLU only. Bits 0/1/2 name SIMT gate/up/down.
 // TC producers and final TC reduction retain their existing module entries.
 int quactlize_kpack_moe_mixed_stage_v1(qk_moe_plan_v1 const*,uint32_t,int,void*);
+int quactlize_kpack_moe_weighted_finish_v1(qk_moe_plan_v1 const*,uint32_t,
+    qk_llama_moe_finish_v1 const*,void*);
 #ifdef __cplusplus
 }
 #endif

@@ -9,7 +9,7 @@ from reference import gguf_kpack as ref
 from tools.run_kpack_moe_gate import raw_weight, cpu_planes, dot, check, chain_requests, CHAIN_CASES
 from tests.test_kpack_native_dispatch import probe, query
 from tools.run_kpack_batched_bench import command, sequence, validate_plan, parse_row
-from quactlize.dispatch.native import IndexedIO, Router
+from quactlize.dispatch.native import IndexedIO, Router, MoeFinish
 
 
 @pytest.mark.parametrize('q',[8,10,11,12,13,14])
@@ -33,6 +33,7 @@ def test_pair_gate_uses_independent_bytes(q):
 def test_bindings_match_c_abi():
     assert C.sizeof(IndexedIO)==88
     assert C.sizeof(Router)==56
+    assert C.sizeof(MoeFinish)==40
 
 
 def test_every_real_chain_request_has_a_policy_choice(probe):

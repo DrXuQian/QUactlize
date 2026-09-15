@@ -116,6 +116,12 @@ typedef struct {
 int quactlize_kpack_dispatch_moe_simt_scratch_v1(void* runtime,qkg_call_v1 const*,uint64_t*);
 int quactlize_kpack_dispatch_moe_create_v2(void* runtime,qks_moe_endpoint_v2 const* gate,
     qks_moe_endpoint_v2 const* up,qks_moe_endpoint_v2 const* down,void** chain);
+// Optional once-only binding outside capture. Loads the small finish module,
+// validates disjoint live inputs, and copies the immutable output contract.
+// On success run writes finish.output, not the intermediate down tensor.
+// A miss leaves the chain unchanged. No qtype/layout/config selection changes.
+int quactlize_kpack_dispatch_moe_bind_finish_v1(void* runtime,void* chain,
+    qk_llama_moe_finish_v1 const*);
 // Both chain versions use the same run/router/destroy entries. Mixed chains
 // retain SIMT F32 results and TC FP16 completion semantics through SwiGLU.
 int quactlize_kpack_dispatch_moe_run_v1(void* chain,void* stream);

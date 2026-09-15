@@ -64,6 +64,7 @@ struct MoeExecution {
     decltype(&quactlize_kpack_moe_simt_query_v1) query=nullptr;
     decltype(&quactlize_kpack_moe_simt_bind_v1) bind=nullptr;
     decltype(&quactlize_kpack_moe_mixed_stage_v1) stage=nullptr;
+    decltype(&quactlize_kpack_moe_weighted_finish_v1) finish=nullptr;
     decltype(&quactlize_kpack_q4_decode_select_v1) select=nullptr;
     decltype(&quactlize_kpack_q4_decode_run_v1) q4=nullptr;
     decltype(&quactlize_kpack_gemv_query_v1) query_generic=nullptr;
@@ -99,6 +100,7 @@ struct MoeChain {
     qkg_config_v1 configs[3]{};
     qkg_q4_decode_config_v1 q4_configs[3]{};
     quactlize_ppu_placed_arrangement_v2 arrangements[3]{};
+    qk_llama_moe_finish_v1 finish{};
 };
 
 std::shared_ptr<MoeExecution> load_moe(Runtime& r) {
@@ -109,6 +111,8 @@ std::shared_ptr<MoeExecution> load_moe(Runtime& r) {
     lib->query=symbol<decltype(lib->query)>(lib->library,"quactlize_kpack_moe_simt_query_v1");
     lib->bind=symbol<decltype(lib->bind)>(lib->library,"quactlize_kpack_moe_simt_bind_v1");
     lib->stage=symbol<decltype(lib->stage)>(lib->library,"quactlize_kpack_moe_mixed_stage_v1");
+    lib->finish=reinterpret_cast<decltype(lib->finish)>(
+        dlsym(lib->library,"quactlize_kpack_moe_weighted_finish_v1"));
     lib->select=symbol<decltype(lib->select)>(lib->library,"quactlize_kpack_q4_decode_select_v1");
     lib->q4=symbol<decltype(lib->q4)>(lib->library,"quactlize_kpack_q4_decode_run_v1");
     lib->query_generic=symbol<decltype(lib->query_generic)>(lib->library,"quactlize_kpack_gemv_query_v1");
@@ -129,6 +133,8 @@ int run_mixed(MoeChain const& c,qk_moe_plan_v1 const& plan,void* stream) {
         !produce(0,c.gate) || (!plan.merged && !produce(1,c.up)) ||
         c.execution->stage(&plan,c.simt_mask,QK_MOE_ACTIVATE,stream)!=QKG_OK ||
         !produce(2,c.down)) return QKS_RUNTIME;
+    if (c.finish.version)
+        return c.execution->finish(&plan,c.simt_mask,&c.finish,stream)==QKG_OK?QKS_OK:QKS_RUNTIME;
     if (!(c.simt_mask&4) && c.down->module->moe_stage(c.down->inner,&plan,QK_MOE_FINISH,stream)!=QK_OK)
         return QKS_RUNTIME;
     return QKS_OK;
@@ -422,7 +428,10 @@ extern "C" int quactlize_kpack_dispatch_moe_run_v1(void* handle,void* stream) {
     auto stage=[&](Handle* h,int phase) { return h->module->moe_stage(h->inner,&c.plan,phase,stream)==QK_OK; };
     if (!stage(c.gate,QK_MOE_PREPARE) || !stage(c.gate,QK_MOE_PRODUCER) ||
         (c.up && !stage(c.up,QK_MOE_PRODUCER)) || !stage(c.gate,QK_MOE_ACTIVATE) ||
-        !stage(c.down,QK_MOE_PRODUCER) || !stage(c.down,QK_MOE_FINISH)) return QKS_RUNTIME;
+        !stage(c.down,QK_MOE_PRODUCER)) return QKS_RUNTIME;
+    if (c.finish.version)
+        return c.execution->finish(&c.plan,0,&c.finish,stream)==QKG_OK?QKS_OK:QKS_RUNTIME;
+    if (!stage(c.down,QK_MOE_FINISH)) return QKS_RUNTIME;
     return QKS_OK;
 }
 extern "C" int quactlize_kpack_dispatch_moe_run_router_v1(void* handle,qk_llama_router_v1 const* router,void* stream) {
@@ -430,6 +439,8 @@ extern "C" int quactlize_kpack_dispatch_moe_run_router_v1(void* handle,qk_llama_
     auto& c=*static_cast<MoeChain*>(handle);
     auto const& r=*router;
     if (!compatible_router(c.plan,r,c.simt_mask)) return QKS_MISS;
+    if (c.finish.version && (c.finish.weights!=r.weights || c.finish.weights_stride!=c.plan.down.io.topk))
+        return QKS_MISS;
     // Copy the immutable host plan. Concurrent streams must not mutate its
     // router or retain a ready flag across graph replays.
     auto plan=c.plan; plan.router=r;
@@ -437,10 +448,29 @@ extern "C" int quactlize_kpack_dispatch_moe_run_router_v1(void* handle,qk_llama_
     auto stage=[&](Handle* h,int phase) { return h->module->moe_stage(h->inner,&plan,phase,stream)==QK_OK; };
     if (!stage(c.gate,QK_MOE_PREPARE) || !stage(c.gate,QK_MOE_PRODUCER) ||
         (c.up && !stage(c.up,QK_MOE_PRODUCER)) || !stage(c.gate,QK_MOE_ACTIVATE) ||
-        !stage(c.down,QK_MOE_PRODUCER) || !stage(c.down,QK_MOE_FINISH)) return QKS_RUNTIME;
+        !stage(c.down,QK_MOE_PRODUCER)) return QKS_RUNTIME;
+    if (c.finish.version)
+        return c.execution->finish(&plan,0,&c.finish,stream)==QKG_OK?QKS_OK:QKS_RUNTIME;
+    if (!stage(c.down,QK_MOE_FINISH)) return QKS_RUNTIME;
     return QKS_OK;
 }
 extern "C" void quactlize_kpack_dispatch_moe_destroy_v1(void* handle) { delete static_cast<MoeChain*>(handle); }
+
+extern "C" int quactlize_kpack_dispatch_moe_bind_finish_v1(void* runtime,void* handle,
+    qk_llama_moe_finish_v1 const* finish) {
+    if (!runtime || !handle || !finish) return QKS_INVALID;
+    auto& c=*static_cast<MoeChain*>(handle);
+    if (c.finish.version) return QKS_INVALID;
+    if (!compatible_finish(c.plan,*finish,c.simt_mask)) return QKS_MISS;
+    try {
+        auto& r=*static_cast<Runtime*>(runtime);std::lock_guard<std::mutex> lock(r.mutex);
+        if (r.device>=0 && r.device!=c.plan.down.device) return QKS_MISS;
+        auto execution=load_moe(r);
+        if (!execution->finish) return QKS_MISS;
+        c.execution=execution;c.finish=*finish;
+        return QKS_OK;
+    } catch (std::exception const& e) {last_error=e.what();return QKS_BINDING;}
+}
 
 extern "C" int quactlize_kpack_dispatch_moe_simt_scratch_v1(void* runtime,qkg_call_v1 const* call,uint64_t* bytes) {
     if (!runtime || !call || !bytes) return QKS_INVALID;

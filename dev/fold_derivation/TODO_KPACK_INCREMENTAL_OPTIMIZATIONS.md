@@ -1,5 +1,26 @@
 # K-pack incremental optimization backlog
 
+## Decode helper fusion, 2026-09-15
+
+The [paired M1 trace review](../../docs/KPACK_QWEN35_DECODE_TRACE_20260915.md)
+isolates 15 decode steps; whole-request helper totals include prefill and must
+not be used as decode costs.
+
+| Work | State | Next evidence |
+|---|---|---|
+| MoE finish + routing-weight multiply + ordered top8 sum | Implemented as an additive binding, exact graph closure and slot order; retains TC FP16 completion and SIMT FP32 output | Precompiled helper gate: tokens1/2/8, S1/2/4/8, mixed-stage and replay/guard/negative checks; then matched runtime/caller and model trace |
+| M1 prepare unused SIMT descriptors | Implemented: SIMT projections no longer write TC shape/output/stride arrays; row maps and directory status remain | Same helper gate; actual selected producer composition still required. TC active-only metadata and router latency remain open |
+| Q8 shared-expert gate/up + SwiGLU | OPEN: trace shows initial TC/Split-K policy and lost native fusion; about408us added kernel time/step | Compare measured W8A16 SIMT/TC including reducers and fused postprocessing; no silent W8A8 fallback |
+| Q4 routed SwiGLU and Q5 down finishing | Weighted finish implemented; Q4 activation is still a separate kernel | Preserve mixed SIMT/TC precision and graph ownership before considering producer-epilogue activation fusion |
+| Q8 attention residual and Q6 output head | OPEN: lost fused residual on10 projections; output-head policy miss retains two casts | Cover these shapes/endpoints explicitly; do not label a fallback as a measured choice |
+| Qwen3-32B nonfinite activation | Separate numerical blocker: finite F32 SwiGLU exceeds FP16 range before Q6 down | Reference intermediate comparison and compute-range-correct solution; never clamp values merely to pass |
+
+Local admission:99 host tests pass and production helper compilation passes.
+`tools/run_kpack_moe_finish_box.sh` downloads only the small LFS proof binary;
+no GEMM rebuild, JIT or full sweep. Its timing baseline is equivalent unfused
+helper stages, not the llama binary. PPU correctness, speedup and whole-model
+admission remain pending.
+
 ## CI build entry, 2026-09-15
 
 - Scheduler test compile blocker locally repaired in private llama
