@@ -73,10 +73,33 @@ template<class Scalar> static void matrix() {
   }
 }
 
+static void range_boundary() {
+  // Frozen first-token SwiGLU outlier, not a random small-value fixture.
+  constexpr int k=25600, tile=128, index=5613, height=16, threads=128;
+  std::vector<float> input(k,0.f);
+  input[index]=243383.484375f;
+  Input<float> tensor{input.data(),1,k,tile};
+  std::vector<Half> narrow(height*tile);
+  std::vector<cutlass::bfloat16_t> wide(height*tile);
+  for (int thread=0;thread<threads;++thread) {
+    detail::copy_decode_a<height,tile,threads,false,1,height*64,height*tile>(
+        tensor,narrow.data(),index/tile,0,thread,1);
+    detail::copy_decode_a<height,tile,threads,false,1,height*64,height*tile>(
+        tensor,wide.data(),index/tile,0,thread,1);
+  }
+  int col=index%tile;
+  int offset=col/64*height*64+read_half(height,0,col%64);
+  // This proves the existing writer's range loss; it does not admit a BF16 MMA.
+  if (narrow[offset].raw()!=0x7c00 || wide[offset].raw()!=0x486e)
+    throw std::runtime_error("range-boundary historical/counterfactual signature differs");
+  std::puts("KPACK_DECODE_RANGE LEGACY_F16_RED input=243383.484375 index=5613 narrow=0x7c00 bf16_writer=0x486e compute_fix=PENDING");
+}
+
 int main() {
   try {
     static_assert(!detail::DecodeInputTraits<cute::identity,Half>::enabled);
     matrix<float>();matrix<cutlass::bfloat16_t>();
+    range_boundary();
     std::puts("KPACK_DECODE_INPUT PASS F32+BF16 M1..8 physical_M16..256 TK64/128/256 padded+packed multi-stage guards negatives=6");
     return 0;
   } catch (std::exception const& e) {std::fprintf(stderr,"FAIL %s\n",e.what());return 1;}

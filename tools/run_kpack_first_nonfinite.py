@@ -76,6 +76,25 @@ def result(text, rc, mode):
     raise ValueError(f'incomplete diagnostic rc={rc}; inspect the full log')
 
 
+def snapshot_result(text, rc, target):
+    start = 'LLAMA_NUMERICAL_DEBUG mode=tensors callback=1 timing_valid=0'
+    if start not in text:
+        raise ValueError('snapshot requires the actual tensor callback')
+    nodes = re.findall(r'^LLAMA_NUMERICAL_TENSOR role=node-(\d+) tensor="([^"]+)"', text, re.M)
+    if not nodes or [int(n) for n, _ in nodes] != list(range(1, len(nodes) + 1)):
+        raise ValueError('missing or duplicate first-token snapshots')
+    complete = re.findall(r'^LLAMA_NUMERICAL_SNAPSHOT_COMPLETE (.+)$', text, re.M)
+    if rc == 87 and len(complete) == 1 and 'LLAMA_NUMERICAL_STOP ' not in text:
+        expected = f'chunk=1 batch=1 position=0 nodes={len(nodes)} target="{target}"'
+        if complete[0] != expected or nodes[-1][1] != target:
+            raise ValueError('snapshot target/token coverage differs')
+        return dict(verdict='SNAPSHOT_COMPLETE_NOT_ACCURACY_ADMISSION', nodes=len(nodes), target=target)
+    record = result(text, rc, 'tensors')
+    if record['verdict'] != 'NONFINITE_FOUND' or complete or not record['stop'].startswith('mode=tensors chunk=1 batch=1 position=0 '):
+        raise ValueError('snapshot did not stop in the first token')
+    return record | dict(nodes=len(nodes), target_reached=nodes[-1][1] == target)
+
+
 def run(argv, env, log):
     start = time.monotonic()
     save(log.with_suffix('.command.json'), dict(argv=argv))
@@ -107,7 +126,10 @@ def main():
     parser.add_argument('--jobs', type=int, default=192)
     parser.add_argument('--arms', choices=tuple(ARMS), nargs='+', default=list(ARMS),
                         help='rerun only these diagnostic processes; earlier results are not modified')
+    parser.add_argument('--snapshot-until', help='save first-token intermediates through this exact tensor, then stop')
     args = parser.parse_args()
+    if args.snapshot_until and any(ARMS[arm][0] != 'tensors' for arm in args.arms):
+        parser.error('--snapshot-until requires tensor arms only')
     args.output.mkdir(parents=True, exist_ok=False)
     results = args.output / 'results'
     results.mkdir()
@@ -122,6 +144,8 @@ def main():
     kl_source = source.partition('static void kl_divergence(')[2].partition('\nint llama_perplexity(')[0]
     if 'numerical_check_logits(batch_logits, size_t(n_outputs) * n_vocab);' not in kl_source:
         raise ValueError('update llama dev/quactlize-v0.3.0: the diagnostic must be inside the KL loop')
+    if args.snapshot_until and 'LLAMA_NUMERICAL_SNAPSHOT_COMPLETE' not in source:
+        raise ValueError('update the caller for first-token intermediate snapshots')
     for key in ('-m', '-f', '--kl-divergence-base'):
         if not Path(option(original, key)).is_file():
             raise ValueError(f'original input {key} is missing; keep the previous run directory')
@@ -150,7 +174,7 @@ def main():
     if build_rc:
         raise ValueError(f'incremental caller build failed rc={build_rc}; log={results / "build.log"}')
 
-    env = {k: v for k, v in os.environ.items() if not k.startswith(('LLAMA_ARG_', 'QUACTLIZE_KPACK_'))}
+    env = {k: v for k, v in os.environ.items() if not k.startswith(('LLAMA_ARG_', 'LLAMA_NUMERICAL_', 'QUACTLIZE_KPACK_'))}
     for key in ('GGML_CUDA_DISABLE_GRAPHS', 'GGML_CUDA_DISABLE_FUSION', 'DG_LIBRARY_ROOT', 'GGML_NCP_FA_LIB', 'GGML_NCP_MOE_LIB'):
         env.pop(key, None)
     env.update(LD_LIBRARY_PATH=str(build / 'bin') + ':' + env.get('LD_LIBRARY_PATH', ''),
@@ -180,11 +204,14 @@ def main():
         log = results / (arm + '.log')
         dump = results / (arm + '-tensors')
         dump.mkdir()
-        text, rc = run(command(original, reference), (env if reference else native_env) |
-                       {'LLAMA_NUMERICAL_DEBUG': mode, 'LLAMA_NUMERICAL_DUMP_DIR': str(dump)}, log)
+        arm_env = (env if reference else native_env) | {
+            'LLAMA_NUMERICAL_DEBUG': mode, 'LLAMA_NUMERICAL_DUMP_DIR': str(dump)}
+        if args.snapshot_until:
+            arm_env['LLAMA_NUMERICAL_SNAPSHOT_UNTIL'] = args.snapshot_until
+        text, rc = run(command(original, reference), arm_env, log)
         record = dict(arm=arm, mode=mode, log=str(log), process_rc=rc)
         try:
-            record.update(result(text, rc, mode))
+            record.update(snapshot_result(text, rc, args.snapshot_until) if args.snapshot_until else result(text, rc, mode))
             if not reference and '[quactlize-plan]' not in text:
                 raise ValueError('native run has no selected-plan receipt')
         except ValueError as error:
@@ -192,8 +219,17 @@ def main():
         records.append(record)
         save(results / (arm + '.json'), record)
         print('KPACK_FIRST_NONFINITE_RESULT ' + json.dumps(record), flush=True)
+    if args.snapshot_until and set(args.arms) == {'reference-tensors', 'native-tensors'} and not any(
+            r['verdict'] == 'INFRASTRUCTURE_OR_COVERAGE_FAIL' for r in records):
+        from analyze_kpack_activation_range import compare
+        comparison = compare(results, args.snapshot_until)
+        save(results / 'activation-range.json', comparison)
+        for row in comparison['rows']:
+            if row['name'] in ('ffn_gate-2', 'ffn_up-2', 'ffn_swiglu-2'):
+                print('KPACK_ACTIVATION_RANGE ' + json.dumps(row, allow_nan=False), flush=True)
     save(results / 'summary.json', dict(records=records, scope='FIRST_NONFINITE_LOCALIZATION_NOT_ROOT_CAUSE_OR_PERFORMANCE',
-        callback_changes_graph_partition=True, source_snapshots='AFTER_NODE_INPLACE_ALIAS_NOT_EXCLUDED'))
+        callback_changes_graph_partition=True, source_snapshots=(
+            'AT_PRODUCER_BEFORE_DOWNSTREAM_CONSUMERS' if args.snapshot_until else 'AFTER_NODE_INPLACE_ALIAS_NOT_EXCLUDED')))
     print(f'KPACK_FIRST_NONFINITE_DONE results={results} timing_valid=0', flush=True)
     return int(any(r['verdict'] == 'INFRASTRUCTURE_OR_COVERAGE_FAIL' for r in records))
 

@@ -2,6 +2,14 @@
 
 ## Qwen3-32B first-chunk nonfinite diagnosis (2026-09-15)
 
+Update: the uploaded first-bad snapshot contains exactly one finite F32
+SwiGLU value that overflows F16: index5613,243383.484375. The real typed
+A-copy writer reproduces the infinity locally. This establishes a range
+loss, not the origin of that outlier or a production fix. The old gather
+also narrowed to F16. [Frozen evidence and bounded paired-intermediate
+command](../QWEN3_DECODE_RANGE_DIAGNOSIS.md) replace further full-corpus
+tensor scans for this question. No clamp, fallback or relaxed gate is used.
+
 The B1/256-context run in `kpack-q4-model.c6etoF` is not admitted: native
 PPL/KLD are NaN while the GPU reference self-comparison is finite. The first
 chunk has zero top matches; the final cumulative 49.606% means the second

@@ -656,6 +656,86 @@ def test_first_nonfinite_preserves_expected_nonzero_child_exit(tmp_path):
     assert log.read_text().strip() == text
 
 
+def test_first_token_snapshot_does_not_masquerade_as_model_pass():
+    from tools.run_kpack_first_nonfinite import snapshot_result
+    header = 'LLAMA_NUMERICAL_DEBUG mode=tensors callback=1 timing_valid=0\n'
+    nodes = ('LLAMA_NUMERICAL_TENSOR role=node-1 tensor="ffn_swiglu-2"\n'
+             'LLAMA_NUMERICAL_TENSOR role=node-2 tensor="ffn_out-2"\n')
+    complete = 'LLAMA_NUMERICAL_SNAPSHOT_COMPLETE chunk=1 batch=1 position=0 nodes=2 target="ffn_out-2"\n'
+    text = header + nodes + complete
+    assert snapshot_result(text, 87, 'ffn_out-2')['verdict'] == 'SNAPSHOT_COMPLETE_NOT_ACCURACY_ADMISSION'
+    stop = 'LLAMA_NUMERICAL_STOP mode=tensors chunk=1 batch=1 position=0 nodes=2 logits=0 reason=NONFINITE_TENSOR\n'
+    assert snapshot_result(header + nodes + stop, 86, 'ffn_out-2')['verdict'] == 'NONFINITE_FOUND'
+    for bad, rc in ((text, 0), (text.replace('batch=1', 'batch=2'), 87),
+                    (text.replace('node-2', 'node-3'), 87),
+                    (text.replace('target="ffn_out-2"', 'target="wrong"'), 87),
+                    (header+nodes+stop.replace('NONFINITE_TENSOR', 'SNAPSHOT_LIMIT'), 86)):
+        with pytest.raises(ValueError):
+            snapshot_result(bad, rc, 'ffn_out-2')
+
+
+def test_paired_range_snapshots_keep_large_finite_values_and_nonfinite_failures(tmp_path):
+    import numpy as np
+    from tools.analyze_kpack_activation_range import compare, snapshots
+    for arm in ('reference-tensors', 'native-tensors'):
+        directory = tmp_path / (arm+'-tensors'); directory.mkdir()
+        rows = []
+        for node, name in enumerate(('ffn_swiglu-2', 'ffn_out-2'), 1):
+            values = np.array([1, 243383.484375] if node==1 else [3, -4], dtype='<f4')
+            if node==2 and arm=='native-tensors': values[:] = np.inf
+            (directory/f'node-{node}.bin').write_bytes(values.tobytes())
+            rows.append(f'LLAMA_NUMERICAL_TENSOR role=node-{node} tensor="{name}" op=MUL_MAT type=f32 '
+                        'ne=2,1,1,1 nb=4,8,8,8 count=2 nan=0\n')
+        (tmp_path/f'{arm}.log').write_text(''.join(rows))
+    result = compare(tmp_path, 'ffn_out-2')
+    assert result['rows'][0]['reference']['f16_new_nonfinite'] == 1
+    assert result['rows'][0]['relative_linf'] == 0
+    point = result['rows'][0]['paired_points'][-1]
+    assert point['index'] == 1
+    assert point['reference']['value'] == point['native']['value'] == 243383.484375
+    assert point['native']['f16_bits'] == '0x7c00'
+    assert point['native']['operands'] == 'MISSING_SNAPSHOT'
+    assert result['rows'][1]['native']['nonfinite'] == 2
+    assert result['rows'][1]['relative_linf'] is None
+    assert 'NOT_ACCURACY' in result['scope']
+    json.dumps(result, allow_nan=False)
+    with pytest.raises(ValueError): compare(tmp_path, 'not-present')
+    path = tmp_path/'native-tensors-tensors/node-1.bin'
+    path.write_bytes(path.read_bytes()[:4])
+    with pytest.raises(ValueError): snapshots(tmp_path, 'native-tensors')
+
+
+@pytest.mark.parametrize('reference_large', [False, True])
+def test_paired_swiglu_captures_same_index_and_independent_operands(tmp_path, reference_large):
+    import numpy as np
+    from tools.analyze_kpack_activation_range import compare
+    for arm in ('reference-tensors', 'native-tensors'):
+        directory = tmp_path / (arm+'-tensors'); directory.mkdir()
+        gate = np.array([1, 500], dtype='<f4')
+        up = np.array([2, 500 if arm=='native-tensors' or reference_large else 3], dtype='<f4')
+        product = gate / (np.float32(1) + np.exp(-gate)) * up
+        rows = []
+        for node, (name, values) in enumerate((('ffn_gate-2', gate), ('ffn_up-2', up), ('ffn_swiglu-2', product)), 1):
+            (directory/f'node-{node}.bin').write_bytes(values.tobytes())
+            op = 'GLU' if node == 3 else 'MUL_MAT'
+            rows.append(f'LLAMA_NUMERICAL_TENSOR role=node-{node} tensor="{name}" op={op} type=f32 '
+                        'ne=2,1,1,1 nb=4,8,8,8 count=2 nan=0\n')
+        (tmp_path/f'{arm}.log').write_text(''.join(rows))
+    result = compare(tmp_path, 'ffn_swiglu-2')
+    swiglu = result['rows'][-1]
+    assert swiglu['reference']['f16_new_nonfinite'] == int(reference_large)
+    assert swiglu['native']['f16_new_nonfinite'] == 1
+    point = swiglu['paired_points'][-1]
+    assert point['index'] == 1
+    for arm in ('reference', 'native'):
+        actual = point[arm]
+        assert actual['gate']['value'] == 500
+        assert actual['swiglu_recomputed_f32']['f32_bits'] == actual['f32_bits']
+    assert point['native']['value'] == 250000
+    assert point['reference']['value'] == (250000 if reference_large else 1500)
+    json.dumps(result, allow_nan=False)
+
+
 def test_model_trace_reuses_reference_tokens_and_never_times_profiler(tmp_path, monkeypatch):
     from tools import run_kpack_model_validation as model
     commands = []
