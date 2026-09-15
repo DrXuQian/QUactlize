@@ -1,5 +1,13 @@
 # K-pack incremental optimization backlog
 
+## Small-M integration and BF16 isolation, 2026-09-15
+
+| Work | State | Next evidence |
+|---|---|---|
+| Decode exact + bucket table | Generated from existing PPU SIMT/TC/model observations: 305 exact entries, 213 bucket representatives, 30 SIMT choices; Q4 unchanged | Contemporaneous model gate; cross-cohort choices are proposals, not model speedups |
+| Native caller and mixed MoE | Common library lookup, explicit register-reuse recipes, private Split-K workspace and weighted finish connected; PPU SDK adapter compilation and host regressions pass | Six selected mixed chains, then warmed Qwen3.5-35B-A3B PP/TG and Asys; see `docs/KPACK_SMALLM_TABLE.md` |
+| Genuine BF16 compute | Separate `dev/bf16-compute-v1` worktree; initial Q6 TM8 BF16 MMA compiles | TC + SIMT + MoE range/numeric gates; do not conflate BF16 IO storage with BF16 arithmetic, or clip away the overflow |
+
 ## All-format SIMT coverage, 2026-09-15
 
 The request is Q2/Q3/Q4 control/Q5/Q6/Q8 SIMT, first tested on RTX5070,
@@ -13,7 +21,7 @@ uses Q4 SIMT gate/up, Q5 TC down and initial-policy Q8 dense TC.
 | Sweep options | `dev/gemv_simt/spec.py`: C4/8, P2/4/8, W2/4/8, A/metadata cooperation, S1/2/4/8; explicit invalid C*P and Q8 metadata prunes. Existing372-workload registry extends to2232 format/workload pairs | Retain old optimized Q4 and typed TC winners; do not compare F32 SIMT endpoints against bare F16 TC producers |
 | PPU-specific optimization | Source-address model covers low/high/A/units; Q5 high N/K exchange and Q2/Q3/Q6 scale-group/word boundaries are explicit | NCU on5070 guides changes; PPU ACU/timing decides admission. No cross-GPU winner transfer |
 | Callable mixed-chain endpoints | `qks_moe_endpoint_v3` accepts new explicit recipes, retains v1/v2; 1,920 host composition checks pass, including Split-K workspace aliases. Local execution and dispatcher DSOs built | Full GPU mixed-chain gate; standalone CUDA GEMV passes do not prove chain numerics |
-| Automatic selection | PENDING PPU SIMT/typed-TC measurements; existing Q4 policy unchanged | Include real Split-K reducer/required finishing; preserve base chain fusion on optional finish decline |
+| Automatic selection | Exact + bucket tables implemented above; 200-context PPU SIMT sweep reviewed, historical TC full calls retained; existing Q4 policy unchanged | Include real Split-K reducer/required finishing; contemporaneous whole-model comparison remains pending |
 
 ## Decode helper fusion, 2026-09-15
 

@@ -18,8 +18,8 @@ import numpy as np
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from reference import gguf_kpack as ref
-from quactlize.dispatch.native import Dispatch, IndexedIO, Router, MoeEndpoint, Choice, Request, receipt
-from quactlize.execution.native import Call as GemvCall, Sizes as GemvSizes
+from quactlize.dispatch.native import Dispatch, IndexedIO, Router, MoeEndpoint, MoeEndpointV3, Choice, Request, receipt
+from quactlize.execution.native import Call as GemvCall, Sizes as GemvSizes, bind_simt
 from quactlize.runtime.native import SDK, Call, checked
 from tools.kpack_warmup_fixture import prepare_expert
 from tools.run_kpack_gemv_gate import Resources
@@ -193,6 +193,31 @@ def chain_case(args,sdk,lib,merged,tokens,router_enabled,down_q=13):
             print('KPACK_MOE_QUERY '+json.dumps(dict(request,merged=merged,router=router_enabled)),flush=True)
             out=r.alloc(m*nn*4+32);r.fill(out,0xA5,m*nn*4+32)
             mixed=getattr(args,'mixed',False)
+            table=getattr(args,'smallm_table',False)
+            endpoint_type=MoeEndpointV3 if table else MoeEndpoint
+            version=3 if table else 2
+            choice=None
+            if mixed and table and q!=12:
+                gc=GemvCall(version=1,size=C.sizeof(GemvCall),qtype=q,n=nn,k=kk,experts=e,rows=m,mode=2,
+                    input_type=1,channels=channels,topk=topk,a_row_stride=kk,a_token_stride=channels*kk,
+                    ids_stride=topk,out_row_stride=nn,a=inp,low=planes[0],high=planes[1],units=planes[2],ids=ids,
+                    output=out+16,stream=r.stream.value)
+                selected=d.query_smallm(gc,arr)
+                if selected is not None and selected.kind==1:
+                    execution=C.CDLL(str(args.bundle/'libquactlize_ppu_execution.so'),mode=C.RTLD_LOCAL)
+                    query_simt,run=bind_simt(execution);cfg=selected.simt
+                    sizes=GemvSizes();checked(query_simt(C.byref(gc),C.byref(cfg),C.byref(arr),C.byref(sizes)),'selected SIMT query')
+                    gc.workspace_bytes=sizes.workspace_bytes
+                    gc.workspace=r.alloc(sizes.workspace_bytes) if sizes.workspace_bytes else None
+                    count=d.simt_scratch(gc);scratch=r.alloc(count+512);r.fill(scratch,0xA5,count+512)
+                    endpoint=endpoint_type(version,C.sizeof(endpoint_type),None,C.addressof(gc),None,None,
+                        C.addressof(arr),scratch+256,count,C.addressof(cfg))
+                    parts.append(dict(run=lambda run=run,gc=gc,cfg=cfg,arr=arr:run(C.byref(gc),C.byref(cfg),C.byref(arr)),
+                        endpoint=endpoint,keep=(gc,cfg,arr,execution),out=out,n=nn,scratch=(scratch,count),
+                        choice=dict(route='SIMT',reader='register-reuse',policy=selected.policy,
+                            recipe=[getattr(cfg,x) for x in ('variant','columns','warps','values','split')])))
+                    continue
+                if selected is not None:choice=selected.tc
             if mixed and q==12:
                 from tools.run_q4_decode_policy_gate import Config as Q4Config
                 execution=C.CDLL(str(args.bundle/'libquactlize_ppu_execution.so'),mode=C.RTLD_LOCAL)
@@ -208,7 +233,7 @@ def chain_case(args,sdk,lib,merged,tokens,router_enabled,down_q=13):
                     run=execution.quactlize_kpack_q4_decode_run_v1
                     run.argtypes=[C.POINTER(GemvCall),C.POINTER(Q4Config),C.POINTER(Arrangement)];run.restype=C.c_int
                     count=d.simt_scratch(gc);scratch=r.alloc(count+512);r.fill(scratch,0xA5,count+512)
-                    endpoint=MoeEndpoint(2,C.sizeof(MoeEndpoint),None,C.addressof(gc),C.addressof(cfg),None,
+                    endpoint=endpoint_type(version,C.sizeof(endpoint_type),None,C.addressof(gc),C.addressof(cfg),None,
                         C.addressof(arr),scratch+256,count)
                     parts.append(dict(run=lambda run=run,gc=gc,cfg=cfg,arr=arr:run(C.byref(gc),C.byref(cfg),C.byref(arr)),
                         endpoint=endpoint,keep=(gc,cfg,arr,execution),out=out,n=nn,scratch=(scratch,count),
@@ -221,7 +246,6 @@ def chain_case(args,sdk,lib,merged,tokens,router_enabled,down_q=13):
                 rc=query(d.runtime,C.byref(req),C.byref(choice))
                 if rc==1:choice=None
                 elif rc:raise ValueError('decode TC selection: '+d.fn['error']().decode())
-            else:choice=None
             if choice is None:
                 choice=d.query(*[request[key] for key in ('q','route','m','n','k','experts','max_rows')],arr.mapping_id)
             if choice is None:
@@ -232,7 +256,7 @@ def chain_case(args,sdk,lib,merged,tokens,router_enabled,down_q=13):
             io=IndexedIO(1,C.sizeof(IndexedIO),tokens,topk,channels,0,topk,kk,channels*kk,nn,
                          ids,inp,out+16,r.alloc(m*4))
             run=d.prepare(choice,call,indexed=io)
-            endpoint=MoeEndpoint(2,C.sizeof(MoeEndpoint),d.handles[-1],None,None,None,None,None,0)
+            endpoint=endpoint_type(version,C.sizeof(endpoint_type),d.handles[-1],None,None,None,None,None,0)
             parts.append(dict(run=run,handle=d.handles[-1],endpoint=endpoint,out=out,n=nn,choice=receipt(choice)))
         router=Router(1,C.sizeof(Router),0,1,0,0,1e-8,1,route_logits,None,route_weights) if router_enabled else None
         field='endpoint' if getattr(args,'mixed',False) else 'handle'
@@ -309,8 +333,10 @@ def main():
     for key in ('sdk','bundle','pack-library','jit-cache','output'):parser.add_argument('--'+key,type=Path,required=True)
     parser.add_argument('--samples',type=int,default=11)
     parser.add_argument('--mixed',action='store_true',help='exercise automatic SIMT/TC mixed chains, not forced TC')
+    parser.add_argument('--smallm-table',action='store_true',help='bounded merged-chain check of the new automatic decode table')
     args=parser.parse_args()
     if args.samples<3:parser.error('at least 3 samples')
+    if args.smallm_table and not args.mixed:parser.error('--smallm-table requires --mixed')
     verify(args.bundle);args.output.mkdir(parents=True,exist_ok=False)
     lib,pack_identity=load_pack_library(args.pack_library)
     sdk=SDK(args.sdk);graph_bind(sdk)
@@ -328,12 +354,16 @@ def main():
         cases=[(merged,tokens,router,q) for q in ((13,12) if args.mixed else (13,))
             for tokens in ((1,4,8) if args.mixed else (1,2,3,4))
             for merged in (False,True) for router in (False,True)]
+        if args.smallm_table:
+            cases=[(True,tokens,router,13) for tokens in (1,2,8) for router in (False,True)]
         for merged,tokens,router,q in cases:
             try:result['chains'].append(chain_case(args,sdk,lib,merged,tokens,router,q))
             except Exception as error:
                 traceback.print_exc();result['failures'].append(dict(merged=merged,tokens=tokens,router=router,q=q,error=str(error)))
         if args.mixed and not any(x['simt_projections'] for x in result['chains']):
             result['failures'].append(dict(error='mixed gate executed no SIMT projection'))
+        if args.smallm_table and not any(p.get('reader')=='register-reuse' for x in result['chains'] for p in x['choices']):
+            result['failures'].append(dict(error='small-M gate executed no register-reuse projection'))
         result['status']='FAIL' if result['failures'] else 'PASS'
     finally:(args.output/'summary.json').write_text(json.dumps(result,indent=2)+'\n')
     print(f"KPACK_MOE_GATE status={result['status']} pair_formats={len(result['pairs'])}/6 chains={len(result['chains'])}/{len(cases)}",flush=True)

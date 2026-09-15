@@ -49,6 +49,8 @@
     test -n "$NCP_SOURCE" && test -f "$NCP_SOURCE/CMakeLists.txt"
     JOBS=${JOBS:-192}
     [[ "$JOBS" =~ ^[1-9][0-9]*$ ]]
+    MODEL_PHASES=${MODEL_PHASES:-all}
+    [[ "$MODEL_PHASES" == all || "$MODEL_PHASES" == perf ]]
     # Check loader dependencies before spending time on the joint build.
     export QUACTLIZE_PPU_BUNDLE=${QUACTLIZE_PPU_BUNDLE:-/workspace/quactlize-runtime-artifact-2826cf1-46fc3096e1a1/prebuilt/ppu0010/2826cf1/runtime6-46fc3096e1a1/bundle}
     test -s "$QUACTLIZE_PPU_BUNDLE/manifest.json"
@@ -148,20 +150,27 @@
     stage=mixed-decode-gate
     printf 'KPACK_Q4_MODEL caller=AONECI runtime=PREBUILT full_sweep=NONE model_prewarm=SELECTED_JIT_ONLY\n'
     failed=0
-    if "$BUNDLE/mixed-stages" --mixed 2>&1 | tee "$RUN/results/mixed-stages.log"; then
+    if [[ "$MODEL_PHASES" == all ]] && "$BUNDLE/mixed-stages" --mixed 2>&1 | tee "$RUN/results/mixed-stages.log"; then
         grep -qx 'KPACK_MOE_MIXED_STAGES PASS cells=80 PPU_GEMM_ADMISSION=NOT_TESTED' "$RUN/results/mixed-stages.log"
-    else failed=$((failed+1)); fi
+    elif [[ "$MODEL_PHASES" == all ]]; then failed=$((failed+1)); fi
+    GATE_ARGS=()
+    if [[ "$MODEL_PHASES" == perf ]]; then
+        GATE_ARGS+=(--smallm-table)
+        printf 'KPACK_Q4_MODEL accuracy=NOT_RETESTED scope=SMALLM_COMPOSITION_PLUS_PERFORMANCE\n'
+    fi
     if "$PYTHON" -u tools/run_kpack_moe_gate.py --mixed --sdk "$SDK" --bundle "$BUNDLE" \
         --pack-library "$QUACTLIZE_PPU_PACK_LIBRARY" --jit-cache "$QUACTLIZE_KPACK_JIT_CACHE" \
-        --output "$RUN/results/mixed-chain" --samples 3 2>&1 | tee "$RUN/results/mixed-chain.log"; then :; else failed=$((failed+1)); fi
+        --output "$RUN/results/mixed-chain" --samples 3 "${GATE_ARGS[@]}" 2>&1 | tee "$RUN/results/mixed-chain.log"; then :; else failed=$((failed+1)); fi
     [[ $failed == 0 ]]
 
     COMMON=(--llama "$LLAMA_DIR" --build "$BUILD_DIR" --bundle "$BUNDLE" --plan "$RUN/results/model-plan.json"
         --cache "$CACHE_DIR" --jit-cache "$QUACTLIZE_KPACK_JIT_CACHE" --logits "$RUN/logits" --corpus "$CORPUS"
         --asys "$ASYS" --inspector "$SDK/bin/hgobjdump")
-    stage=model-numerical
-    "$PYTHON" -u tools/run_kpack_model_validation.py "${COMMON[@]}" --phase numerical \
-        --output "$RUN/results/numerical" 2>&1 | tee "$RUN/results/numerical.log"
+    if [[ "$MODEL_PHASES" == all ]]; then
+        stage=model-numerical
+        "$PYTHON" -u tools/run_kpack_model_validation.py "${COMMON[@]}" --phase numerical \
+            --output "$RUN/results/numerical" 2>&1 | tee "$RUN/results/numerical.log"
+    fi
     stage=model-benchmark
     if "$PYTHON" -u tools/run_kpack_batched_bench.py --binary "$BUILD_DIR/bin/llama-batched-bench" \
         --llama-dir "$LLAMA_DIR" --bundle "$BUNDLE" --jit-cache "$QUACTLIZE_KPACK_JIT_CACHE" \
@@ -173,5 +182,5 @@
         --output "$RUN/results/trace" 2>&1 | tee "$RUN/results/trace.log"; then :; else failed=$((failed+1)); fi
     [[ $failed == 0 ]]
     stage=complete
-    printf 'KPACK_Q4_MODEL COMPLETE numerical_review=PENDING performance_vs_native=SEE_SUMMARY\n'
+    printf 'KPACK_Q4_MODEL COMPLETE phases=%s accuracy_admission=PENDING performance_vs_native=SEE_SUMMARY\n' "$MODEL_PHASES"
 )

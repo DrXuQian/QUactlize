@@ -13,7 +13,8 @@ enum { QKS_OK = 0, QKS_MISS = 1, QKS_INVALID = 2, QKS_BINDING = 3,
        QKS_RUNTIME = 4 };
 enum { QKS_RECENT = 1, QKS_HISTORICAL = 2, QKS_PREDICTED = 3,
        QKS_DEVICE_BOUNDS = 4, QKS_MEASURED_GROUPED = 5, QKS_Q8_INITIAL = 6,
-       QKS_DECODE_MEASURED = 7, QKS_COMPONENT_MEASURED = 8 };
+       QKS_DECODE_MEASURED = 7, QKS_COMPONENT_MEASURED = 8,
+       QKS_SMALLM_EXACT = 9, QKS_SMALLM_BUCKET = 10 };
 
 // Additive Q8_0/W8A16 intake capability, without a device/context or JIT.
 // Returns 1 for supported weight geometry and SF route (1=dense,3=grouped).
@@ -36,6 +37,24 @@ typedef struct {
     int32_t policy, algorithm, split, grid, device, compute_units;
     char parent[192], build_key[65];
 } qks_choice_v1;
+
+enum { QKS_SMALLM_TC = 0, QKS_SMALLM_SIMT = 1 };
+typedef struct {
+    uint32_t version,size;
+    int32_t kind,policy,source_n,source_k,source_tokens;
+    qkg_simt_config_v1 simt;
+    qkg_sizes_v1 sizes;
+    qks_choice_v1 tc;
+} qks_smallm_choice_v1;
+// Auto decode only: exact table, then same-format/operator logarithmic bucket.
+// Dense F32 endpoints M1..8, or indexed E256/top8 tokens1..8, channels1 or8.
+// No tuning or device ID readback. A TC choice may JIT/load its selected parent;
+// prepare remains outside graph capture. SIMT includes its real F32 reducer.
+// EXACT describes the request key, not a common-cohort performance guarantee.
+// BUCKET is predicted; source_* identify the donor. Q4's joint board is unchanged
+// and returns MISS here. A miss retains the caller's existing legal K-pack route.
+int quactlize_kpack_dispatch_query_smallm_v1(void* runtime,qkg_call_v1 const*,
+    quactlize_ppu_placed_arrangement_v2 const*,qks_smallm_choice_v1*);
 
 typedef struct {
     uint32_t version, size;

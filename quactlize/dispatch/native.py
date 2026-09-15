@@ -4,6 +4,7 @@ import ctypes as C
 from pathlib import Path
 
 from quactlize.runtime.native import Call, checked
+from quactlize.execution.native import Call as SimtCall, SimtConfig, Sizes, Arrangement
 
 
 class Request(C.Structure):
@@ -32,6 +33,12 @@ class Choice(C.Structure):
 class DenseIO(C.Structure):
     _fields_ = [("version",C.c_uint32),("size",C.c_uint32),("call",Call),
                 ("input_type",C.c_int32),("output_type",C.c_int32)]
+
+
+class SmallmChoice(C.Structure):
+    _fields_ = [("version",C.c_uint32),("size",C.c_uint32)] + [
+        (name,C.c_int32) for name in ("kind","policy","source_n","source_k","source_tokens")] + [
+        ("simt",SimtConfig),("sizes",Sizes),("tc",Choice)]
 
 
 class JitOptions(C.Structure):
@@ -121,6 +128,16 @@ class Dispatch:
         if rc:
             raise ValueError("native query: " + self.fn["error"]().decode())
         return choice
+
+    def query_smallm(self, call, arrangement):
+        fn=self.lib.quactlize_kpack_dispatch_query_smallm_v1
+        fn.argtypes=[C.c_void_p,C.POINTER(SimtCall),C.POINTER(Arrangement),C.POINTER(SmallmChoice)]
+        fn.restype=C.c_int
+        out=SmallmChoice()
+        rc=fn(self.runtime,C.byref(call),C.byref(arrangement),C.byref(out))
+        if rc==1:return None
+        if rc:raise ValueError('small-M query: '+self.fn['error']().decode())
+        return out
 
     def prepare(self, choice, call, indexed=None):
         h = C.c_void_p()

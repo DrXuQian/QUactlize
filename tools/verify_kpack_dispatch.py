@@ -100,6 +100,13 @@ def verify(root, *, sdk=None):
         if (path.parent != root or sha(path) != receipt["sha256"] or
             m["execution_receipt"].get("q4_decode_policy_sha256") != receipt["sha256"]):
             raise ValueError("decode policy/execution identity differs")
+    if 'smallm_policy' in m:
+        receipt=m['smallm_policy']
+        if (receipt.get('path')!='smallm-policy.json' or (root/'smallm-policy.json').is_symlink() or
+                sha(root/'smallm-policy.json')!=receipt['sha256'] or
+                m['policy_hashes'].get('policies/kpack_smallm_v1.hpp')!=receipt['header_sha256'] or
+                not m['execution_receipt'].get('simt_configs')):
+            raise ValueError('small-M policy/execution identity differs')
     if 'prefill' in m:
         prefill_paths(root, m['prefill'], sdk=sdk)
     elif (root / 'libquactlize_ppu_prefill.so').exists():

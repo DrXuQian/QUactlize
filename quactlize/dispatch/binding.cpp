@@ -1,5 +1,6 @@
 #include "policy.hpp"
 #include "decode.hpp"
+#include "smallm.hpp"
 #include "jit.hpp"
 #include "moe.hpp"
 #include "../execution/moe.h"
@@ -74,8 +75,8 @@ struct MoeExecution {
     decltype(&quactlize_kpack_simt_run_v1) reuse=nullptr;
     ~MoeExecution() { if (library) dlclose(library); }
 };
-using Key=std::tuple<int,int,int,int,int,int,int,uint64_t,bool,int>;
-Key key(qks_request_v1 const& r,bool decode,int endpoint_type) {
+using Key=std::tuple<int,int,int,int,int,int,int,uint64_t,int,int>;
+Key key(qks_request_v1 const& r,int decode,int endpoint_type) {
     return {r.qtype,r.route,r.m,r.n,r.k,r.experts,r.max_rows,r.mapping_id,decode,endpoint_type};
 }
 struct Runtime {
@@ -329,7 +330,8 @@ extern "C" int quactlize_kpack_dispatch_enable_jit_v1(void* runtime,qks_jit_opti
     } catch (std::exception const& e) { last_error=e.what(); return QKS_BINDING; }
 }
 
-static int query(void* runtime,qks_request_v1 const* req,qks_choice_v1* out,bool decode,int endpoint_type=0) {
+static int query(void* runtime,qks_request_v1 const* req,qks_choice_v1* out,int decode,int endpoint_type=0,
+                 Selected table={}) {
     if (!runtime || !req || !out || !valid(*req)) return QKS_INVALID;
     *out={};
     if (endpoint_type && (req->route>=2 || req->experts!=1 || req->m>8)) return QKS_MISS;
@@ -338,7 +340,7 @@ static int query(void* runtime,qks_request_v1 const* req,qks_choice_v1* out,bool
         std::lock_guard<std::mutex> lock(r.mutex);
         auto found=r.requests.find(key(*req,decode,endpoint_type));
         if (found!=r.requests.end()) { *out=r.plans.at(found->second-1).choice; return QKS_OK; }
-        auto selected=decode ? select_decode_tc(*req) : select(*req);
+        auto selected=table.config ? table : decode ? select_decode_tc(*req) : select(*req);
         if (!selected.config) { last_error="no same-family policy choice"; return QKS_MISS; }
         auto const& config=*selected.config;
         Image const* image=nullptr;
@@ -380,6 +382,39 @@ extern "C" int quactlize_kpack_dispatch_query_v1(void* runtime,qks_request_v1 co
 }
 extern "C" int quactlize_kpack_dispatch_query_decode_v1(void* runtime,qks_request_v1 const* req,qks_choice_v1* out) {
     return query(runtime,req,out,true);
+}
+
+extern "C" int quactlize_kpack_dispatch_query_smallm_v1(void* runtime,qkg_call_v1 const* call,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement,qks_smallm_choice_v1* out) {
+    if (!runtime || !call || !out) return QKS_INVALID;
+    *out={};
+    int rc=smallm::validate(*call,arrangement);
+    if (rc) return rc;
+    auto selected=smallm::select(*call);
+    if (!selected.row) return QKS_MISS;
+    auto const& row=*selected.row;
+    auto const& choice=smallm::data::kChoices[row.choice];
+    qks_smallm_choice_v1 result{};
+    result.version=1;result.size=sizeof(result);result.kind=choice.simt ? QKS_SMALLM_SIMT : QKS_SMALLM_TC;
+    result.policy=selected.policy;result.source_n=row.n;result.source_k=row.k;result.source_tokens=row.tokens;
+    if (choice.simt) {
+        auto f=choice.reader;
+        result.simt={1,sizeof(result.simt),f.variant,f.columns,f.warps,f.values,f.split};
+        // Use the same query implementation as execution, without loading a
+        // GPU library or compiling a TC parent that will not be used.
+        rc=quactlize::execution::simt::query(*call,result.simt,arrangement,result.sizes);
+        if (rc!=QKG_OK) return QKS_MISS;
+    } else {
+        auto const& c=*call;
+        qks_request_v1 r{1,sizeof(r),c.qtype,choice.tc.route,c.rows,c.n,c.k,c.experts,
+            smallm::tokens(c),arrangement->mapping_id};
+        // The channel discriminator keeps shared/slot-specific proposals from
+        // sharing a ticket with each other or with older selection entrypoints.
+        rc=query(runtime,&r,&result.tc,2+c.channels,c.mode==QKG_DENSE ? QKD_F32 : 0,
+                 {&choice.tc,selected.policy});
+        if (rc!=QKS_OK) return rc;
+    }
+    *out=result;return QKS_OK;
 }
 
 extern "C" int quactlize_kpack_dispatch_query_dense_io_v1(void* runtime,qks_request_v1 const* req,

@@ -4,6 +4,24 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
+## Small-M exact and bucket selection, 2026-09-15
+
+The additive `quactlize_kpack_dispatch_query_smallm_v1` returns either an
+explicit register-reuse SIMT recipe or a normal TC ticket. The library owns
+both exact and fallback decisions; llama's automatic route consumes them.
+Q4's joint board and prefill policy are unchanged. There are 305 exact keys
+and 213 bucket representatives for Q2/Q3/Q5/Q6/Q8. Both tables can choose
+SIMT; a new shape is not forced behind the old TC-only policy.
+[Contract, evidence boundaries and box command](KPACK_SMALLM_TABLE.md).
+
+The private caller also binds new SIMT recipes through mixed MoE v3,
+keeps Split-K scratch private per projection and consumes the already
+tested weighted-finish API. The new package contains only Quactlize DSOs,
+seven bounded gate parents and the helper proof, never llama binaries.
+The exact artifact and caller pins are `tools/kpack_q4_model_artifact.json`.
+Whole-model speed and numeric admission remain pending; F16 activation
+overflow is a separate BF16-compute task, not fixed by selecting SIMT.
+
 ## Caller scheduler compatibility and resume, 2026-09-15
 
 The private caller pin advances to `6d3232e08`. The scheduler test obtains

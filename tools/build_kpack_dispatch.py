@@ -299,6 +299,7 @@ def main():
         ROOT / "policies/kpack_zw810_heuristic_v1.hpp",
         ROOT / "policies/kpack_zw810_runtime_v1.hpp",
         ROOT / "policies/kpack_zw810_cost_v1.hpp",
+        ROOT / "policies/kpack_smallm_v1.hpp",
     ]
     manifest = dict(
         schema="quactlize.kpack-native-dispatch.v1",
@@ -326,6 +327,11 @@ def main():
             raise ValueError('execution uses a different Q4 decode selection table')
         shutil.copy2(DECODE_POLICY, output / 'decode-policy.json')
         manifest['decode_policy'] = dict(path='decode-policy.json', sha256=sha(DECODE_POLICY))
+    smallm_policy=ROOT/'policies/kpack_smallm_v1.json'
+    shutil.copy2(smallm_policy,output/'smallm-policy.json')
+    manifest['smallm_policy']=dict(path='smallm-policy.json',sha256=sha(smallm_policy),
+        header_sha256=sha(smallm_policy.with_suffix('.hpp')),
+        admission='EXACT_AND_BUCKET_PROPOSALS_MODEL_GATE_PENDING')
     if args.prefill_runtime:
         manifest['prefill'] = attach_prefill(output, args.prefill_runtime, args.sdk)
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

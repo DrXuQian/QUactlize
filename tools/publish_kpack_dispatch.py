@@ -48,6 +48,8 @@ def publish(build, output, pack=None):
     paths += [r["path"] for r in m["modules"]]
     if "decode_policy" in m:
         paths.append(m["decode_policy"]["path"])
+    if "smallm_policy" in m:
+        paths.append(m["smallm_policy"]["path"])
     if 'prefill' in m:
         paths += prefill_paths(src, m['prefill'])
     for item in (m.get("decode_io_gate", {}).get("simt_binaries", [])+
