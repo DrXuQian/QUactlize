@@ -99,7 +99,10 @@ stream poison race was fixed in untimed setup; no inference CPU wait was added.
 
 Compact raw samples, source/image hashes, numerical receipts and imported
 NCU metrics are in `measurements/local_optimizations_20260915.json.gz`.
-Full `.ncu-rep` files are retained locally; they are not needed by production.
+Full Q8 `.ncu-rep` files are cached on the build host. Full MoE reports remain
+in the RTX5070 WSL experiment directory; copying those two large files back
+timed out. Their imported metrics and exact report hashes are already in the
+compact receipt. No report is needed by production.
 
 ## One prebuilt box entry
 
