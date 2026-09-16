@@ -1,0 +1,21 @@
+{
+  "schema": "quactlize.q8-topology.local-validation.v1",
+  "ppu_library_sha256": "9bb8568f7e574d40357cebb374746c5241097f4d1e463fa172a4ebdaf2acb991",
+  "cuda_library_sha256": "09e1945aaafc8b5c8c4cd93ad14af1deadb86611ff34df11cd033a31aa4b072f",
+  "harness_sha256": "a80d6bb95cab72872454421f03343fb33f09bd3f8a8bbb673a529d497d440075",
+  "archive_sha256": "eefb7e05792e9f077ca1d2d35dd59f6facf6dbb025de913f37a57f5803ef4135",
+  "device": "NVIDIA GeForce RTX 5070",
+  "numeric_configurations": 290,
+  "numeric_rows_including_clones": 879,
+  "exact_ordered_reducer_comparisons": 336,
+  "changed_input_graph_controls": 296,
+  "weak_metadata_alignment_controls": 6,
+  "maximum_normalized_dot_error": 2.575121156148561e-8,
+  "numeric_status": "PASS",
+  "cold_runner_smoke_status": "PASS",
+  "cold_runner_shapes": 3,
+  "cold_runner_scope": "HARNESS_VALIDATION_NOT_PPU_PERFORMANCE",
+  "host_regressions_passed": 15,
+  "ppu_device_admission": "PENDING",
+  "production_selection_changed": false
+}
