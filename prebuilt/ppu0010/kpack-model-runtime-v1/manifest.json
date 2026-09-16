@@ -382,7 +382,7 @@
     "quactlize/dispatch/jit.hpp": "16bb6337ea511e25c4f93720a40706e5eeb7732236ad2e626d5d07fa8be86da7",
     "quactlize/dispatch/moe.hpp": "c0699fe43930ca3f115e6d98729706661d8060bd563994c827d9d26f94502127",
     "quactlize/dispatch/native.py": "cf77f4c05cef6b87dad3608bdfa90df6f9f74eebb4f4777f45cb33292ef469ea",
-    "quactlize/dispatch/policy.hpp": "376f3f3396589926b08c6172c36869fd56b8035e92fd0c2c49ae5af51eade4af",
+    "quactlize/dispatch/policy.hpp": "a7c712cb2058f639103d27560b60dc1aa6d72e7495b2544bad341c63f7c5fcb0",
     "quactlize/dispatch/q8_vector.hpp": "50339b52dcb7a1b362a2f2fc16818709fc1ed44b4d65c87484729801f33d6519",
     "quactlize/dispatch/smallm.hpp": "992a29ef20ad32183fb2bed17fe2fe5666a5e182cdadbd8f50ef8f5fd2f0e967",
     "quactlize/dispatch/smallm_matched.hpp": "159417534e468a359f21413a44370dcb716ca0338de4c75773177099ffeebdcb",
@@ -395,7 +395,7 @@
     "policies/kpack_smallm_matched_v1.hpp": "e226e2e15491734f3b69815437779b8b1d170e3e5e5f252789a581464c31d4b2",
     "policies/kpack_q8_vector_v1.hpp": "52c30b25805472754499958f2f5dcf28929873c6c709a9374749636f2fbafd62"
   },
-  "dispatch_sha256": "c413184e28a6d41752f011dec8d5102eb3d3f1f9694b357587cee4962712a41f",
+  "dispatch_sha256": "6547b92113077031c4a743bee871138e378c137d57ab75bc493cba40c8f29a16",
   "execution_sha256": "780d24dd4dc3620aa6b9eaafec22d3939426c706ca86a6cf0c5453ac13e1a9af",
   "compiler_identity": null,
   "compiler_identities": {
@@ -14671,11 +14671,11 @@
     "-shared",
     "-pthread",
     "-Wl,-Bsymbolic",
-    "-I/tmp/kpack-bf16-metadata-model-20260916",
+    "-I/tmp/kpack-dense-n-extension-20260916",
     "/root/marlin_ppu/quactlize/quactlize/dispatch/binding.cpp",
     "-ldl",
     "-o",
-    "/tmp/kpack-bf16-metadata-model-20260916/libquactlize_kpack_dispatch.so"
+    "/tmp/kpack-dense-n-extension-20260916/libquactlize_kpack_dispatch.so"
   ],
   "device_validated": false,
   "heuristic_admitted": false,
@@ -14802,5 +14802,13 @@
       "pack/libquactlize_ppu_pack.so": "b57013dc15d5ba50874480d8ae61a6143e929a1765cec352d0b3a0c29553e5fa",
       "pack/manifest.json": "d1b10d7da202d57e043d35e141ee5cef2f7544399a1f3420b523a52a43447def"
     }
+  },
+  "dispatcher_refresh": {
+    "base_manifest_sha256": "c0c829cc8414fd39e9d07f39217d3b53727626317c9cae19b1dd6c13a74906b6",
+    "changed_policy_inputs": [
+      "quactlize/dispatch/policy.hpp"
+    ],
+    "scope": "DENSE_N_EXTENSION_PREDICTED",
+    "gpu_compilations": 0
   }
 }
