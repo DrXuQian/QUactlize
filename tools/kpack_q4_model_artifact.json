@@ -1,11 +1,11 @@
 {
   "branch": "artifacts/kpack-model-runtime-v1",
-  "commit": "61cbcc43447b1f755c7b919c37d4c6a645ca4172",
+  "commit": "58a50648375403d6a6e2685ead4c50559dbd9a9b",
   "path": "prebuilt/ppu0010/kpack-model-runtime-v1",
-  "manifest_sha256": "40189c0938e87534f97b080ab0e6c5a32f880543716dfacea6563a06c3ba7a79",
-  "source_commit": "4c0d11e2719a64f16a1d5f2ff781b636b667794a",
+  "manifest_sha256": "f67c67e138793f74d39fe7965064874fb06f342932c2a29adc10772b869bdd34",
+  "source_commit": "bdaabe8c7d3dd15d3408756e27cb21ceb160c553",
   "llama_branch": "dev/quactlize-v0.3.0",
-  "llama_ci_commit": "77f19b6d54a6757c6a87ac1d491a64c499f82322",
-  "lfs_payloads": 62,
-  "device_admission": "DISPATCHER_ONLY_GPU_IMAGES_REUSED_MODEL_GATE_PENDING"
+  "llama_ci_commit": "bd7ad99f156a4656997b1a3370dc3f2bfca5872f",
+  "lfs_payloads": 63,
+  "device_admission": "CUDA_PRODUCTION_NUMERIC_PASS_PPU_ROUTER_SIMT_AND_MODEL_GATE_PENDING"
 }

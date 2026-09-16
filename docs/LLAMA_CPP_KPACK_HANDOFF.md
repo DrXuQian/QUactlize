@@ -6,6 +6,14 @@ binary bundle, or loader contract changes.
 
 ## M1 router/prepare admission repair, 2026-09-16
 
+Delivery: source `bdaabe8`, runtime artifact `58a5064`, private caller
+`bd7ad99f1`. Execution SHA256 is
+`47d75e168b71ada4cb42edf29d0a2700af0de0868d81d8a220880a9e007fa30e`.
+Only three new unique LFS objects are needed for an existing installation:
+the small execution DSO, dispatcher and router-alias probe. All are Quactlize
+payloads; no llama.cpp binary is published here. The package now has63 LFS
+paths; repeated execution payloads share the same object.
+
 The combined follow-up also promotes three measured SIMT improvements:
 Q4 BF16 indexed N1024/K2048/top8/channel1 header decoding; Q5 BF16 indexed
 N2048/K512/top8/channel8 header decoding plus unsigned indexing/static fold;
@@ -61,6 +69,31 @@ and optional ACU. Device and whole-model admission remain pending until
 those results return. No previous component PASS is relabelled as a model
 PASS. Standalone SwiGLU optimization is a separate open task, not part of
 this delivery.
+
+Current performance/trace command (existing caller/NCP build directories are
+reused; full model perplexity is not rerun in `MODEL_PHASES=perf`):
+
+```bash
+(
+    set -e
+    cd /sim/eec/shared/junfu.qx/quactlize
+    test "$(git branch --show-current)" = develop
+    GIT_LFS_SKIP_SMUDGE=1 git pull --ff-only origin develop
+    test "$(git -C /sim/eec/shared/junfu.qx/llama.cpp branch --show-current)" = dev/quactlize-v0.3.0
+    git -C /sim/eec/shared/junfu.qx/llama.cpp pull --ff-only \
+        https://github.com/DrXuQian/llama.cpp.git dev/quactlize-v0.3.0
+
+    MODEL_PHASES=perf MODEL_NAMES=qwen35-35b-q4km \
+    MODEL_COMPUTE=bf16 MODEL_ACU=1 \
+    LLAMA_CI_DIR=/sim/eec/shared/junfu.qx/llama.cpp \
+    LLAMA_CI_BUILD_DIR=/workspace/kpack-q4-model.hnN1Jf/ci/llama-build \
+    NCP_LIB_DIR=/sim/eec/shared/junfu.qx/ncp_flash_lib \
+    NCP_CI_DIR=/workspace/kpack-q4-model.N5J9uY/ci/ncp_flash_lib \
+    PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
+    CUDA_VISIBLE_DEVICES=0 JOBS=192 \
+    bash tools/run_kpack_q4_model_box.sh
+)
+```
 
 ## Dense output-head prefill continuation, 2026-09-16
 
