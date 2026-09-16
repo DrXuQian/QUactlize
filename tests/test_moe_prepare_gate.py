@@ -5,6 +5,36 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_production_prepare_promotes_only_measured_all_simt_domain(tmp_path):
+    text=(ROOT/'quactlize/execution/moe_prepare.cuh').read_text()
+    body=text[text.index('template<class Plan>\nCUTLASS_HOST_DEVICE bool admitted'):text.index('\ntemplate<class Shape,class Stride,class Plan>\nvoid launch')]
+    source=tmp_path/'admission.cpp'
+    source.write_text('''#include <cassert>
+#define CUTLASS_HOST_DEVICE
+struct IO { int tokens=1; };
+struct Projection { IO io; int n=1024,k=2048; };
+struct Router { int version=1,use_sigmoid=0,with_norm=1,delayed_softmax=0; void* bias=nullptr; };
+struct Plan { Projection gate,down; Router router; bool merged=true,supported=true; int mask=5; };
+bool supported(Plan const& p){return p.supported;}
+int moe_simt_mask(Plan const& p){return p.mask;}
+''' + body + '''
+int main(){
+  Plan p;p.down.n=2048;p.down.k=512;
+  for(int t=1;t<=8;++t){p.gate.io.tokens=t;assert(admitted(p)==(t==1||t==2||t==4||t==8));}
+  p.gate.io.tokens=1;
+  for(int m=0;m<8;++m){p.mask=m;assert(admitted(p)==(m==5));}
+  p.mask=5;p.router.bias=&p;assert(!admitted(p));p.router.bias=nullptr;
+  p.router.use_sigmoid=1;assert(!admitted(p));p.router.use_sigmoid=0;
+  p.router.with_norm=0;assert(!admitted(p));p.router.with_norm=1;
+  p.router.delayed_softmax=1;assert(!admitted(p));p.router.delayed_softmax=0;
+  p.gate.k=3072;assert(!admitted(p));p.gate.k=512;assert(admitted(p));
+  p.merged=false;assert(!admitted(p));
+}''')
+    exe=tmp_path/'admission'
+    subprocess.run(['g++','-std=c++17',source,'-o',exe],check=True)
+    subprocess.run([exe],check=True)
+
+
 def test_actual_stream_upload_body_orders_pageable_map_and_lifetime(tmp_path):
     text = (ROOT/'dev/moe_prepare/bench.cu').read_text()
     begin = text.index('  void put_on_stream(')

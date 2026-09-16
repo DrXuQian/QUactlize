@@ -128,7 +128,7 @@ def numeric(a, rt, lib):
     candidates = lib.candidates(a.qtype)
     cases = [(m, mode, ch) for m in range(1, 9) for mode, ch in ((0,1),(2,1),(2,8))]
     cases += [(7,1,1), (8,1,1)]
-    total = len(cases)*2*len(candidates)
+    total = len(cases)*sum(1 if c.variant>=4 else 2 for c in candidates)
     started = time.monotonic()
     for tokens, mode, channels in cases:
         f16 = {}
@@ -136,6 +136,8 @@ def numeric(a, rt, lib):
             bench = Bench(rt, lib, w, tokens, mode, channels, storage)
             try:
                 for config in candidates:
+                    if not storage and config.variant>=4:
+                        continue
                     try:
                         got, error = bench.correctness(config)
                     except Exception as e:
@@ -145,7 +147,9 @@ def numeric(a, rt, lib):
                     if not storage:
                         f16[config.key] = got.view('<u4').copy()
                     else:
-                        exact = bool(np.array_equal(got.view('<u4'), f16[config.key]))
+                        from dataclasses import replace
+                        control = replace(config,variant=config.variant-4).key if config.variant>=4 else config.key
+                        exact = bool(np.array_equal(got.view('<u4'), f16[control]))
                     if not exact:
                         raise ValueError('F16-exact A differs between F16/F32 endpoints')
                     row = dict(qtype=a.qtype, tokens=tokens, mode=mode, channels=channels,

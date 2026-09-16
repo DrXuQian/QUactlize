@@ -7,6 +7,7 @@ namespace quactlize::runtime { using Half=cutlass::half_t; }
 #include "../runtime/indexed.cuh"
 #include "../runtime/moe_chain.cuh"
 #include "moe.h"
+#include "moe_prepare.cuh"
 #include <algorithm>
 #include <cstring>
 
@@ -83,9 +84,7 @@ extern "C" int quactlize_kpack_moe_mixed_stage_v1(qk_moe_plan_v1 const* source,u
   auto stream=static_cast<hggcStream_t>(opaque);
   if (hggcGetLastError()!=hggcSuccess) return QKG_RUNTIME;
   if (phase==QK_MOE_PREPARE) {
-    if (moe_prepare_m1_supported(plan)) moe_chain_prepare_m1<Shape,Stride><<<1,256,0,stream>>>(plan);
-    else if (plan.gate.m>32) moe_chain_prepare<Shape,Stride,64><<<moe_prepare_blocks(256,plan.gate.m),256,0,stream>>>(plan);
-    else moe_chain_prepare<Shape,Stride><<<moe_prepare_blocks(256,plan.gate.m),256,0,stream>>>(plan);
+    prepare_detail::launch<Shape,Stride>(plan,stream);
   } else if (phase==QK_MOE_ACTIVATE) {
     moe_chain_swiglu_mixed<<<dim3(std::min((plan.down.k+255)/256,32),plan.gate.m),256,0,stream>>>(plan);
   } else return QKG_INVALID;
@@ -127,9 +126,7 @@ extern "C" int quactlize_kpack_moe_mixed_stage_v2(qkg_moe_compute_v2 const* d,in
   auto stream=static_cast<hggcStream_t>(opaque);
   if(hggcGetLastError()!=hggcSuccess) return QKG_RUNTIME;
   if(phase==QK_MOE_PREPARE) {
-    if(moe_prepare_m1_supported(plan)) moe_chain_prepare_m1<Shape,Stride><<<1,256,0,stream>>>(plan);
-    else if(plan.gate.m>32) moe_chain_prepare<Shape,Stride,64><<<moe_prepare_blocks(256,plan.gate.m),256,0,stream>>>(plan);
-    else moe_chain_prepare<Shape,Stride><<<moe_prepare_blocks(256,plan.gate.m),256,0,stream>>>(plan);
+    prepare_detail::launch<Shape,Stride>(plan,stream);
   } else if(phase==QK_MOE_ACTIVATE) {
     moe_chain_swiglu_compute<<<dim3(std::min((plan.down.k+255)/256,32),plan.gate.m),256,0,stream>>>(plan);
   } else return QKG_INVALID;

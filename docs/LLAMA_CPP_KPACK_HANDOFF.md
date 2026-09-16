@@ -6,15 +6,13 @@ binary bundle, or loader contract changes.
 
 ## Explicit BF16 compute integration, updated 2026-09-16
 
-Latest [PPU gate review](KPACK_LOCAL_CLOSURE_REPLAY_20260916.md): independent
-TC226/SIMT396/outlier8 and selected-Q4 258 pass. The full capability gate has
-733 passes, one Q4 stage comparison failure and12 unexecuted cases. Q6's18
-complete chains pass. An exact host replay of the returned Q4 output proves
-BF16 midpoint rounding, not placement/overflow; projection error now uses the
-independent unrounded dot without relaxing thresholds. Prepare's row-map
-negative needs ordered fixture publication. Q8 numeric12,480 and perf50 pass;
-its vector reader improves48/50 medians but is not yet a production default.
-Production DSOs/private caller are unchanged. BF16 model admission remains pending.
+Latest [completed replay and production integration](KPACK_DECODE_PRODUCTION_20260916.md):
+BF16 capability746/746 passes, including all116 complete MoE chains. Prepare's
+3,840-context ordered-negative gate and48 timing comparisons pass. Eleven
+matched dense Q8 SIMT choices now use the verified vector reader; TC and
+indexed choices remain unchanged. The measured merged all-SIMT prepare domain
+is enabled; TC/mixed prepare retains its incumbent. New execution and caller
+compile locally. The same-image/model box gates and BF16 model admission remain pending.
 
 The development caller now has an explicit `QUACTLIZE_KPACK_COMPUTE=bf16`
 path. The default remains `fp16` until the complete device gate is admitted.
@@ -79,9 +77,10 @@ modules/binaries are bounded device gates, not a larger production inventory.
 Duplicate execution-image paths share their LFS object. There are no llama
 binaries. Existing cache bytes and old results are preserved.
 
-Q8 vector and MoE prepare candidates are packaged under `local-gates`, not
-enabled in the runtime. [The standalone box entry](KPACK_LOCAL_CLOSURE_20260916.md)
-tests them without building llama or running models.
+The completed `local-gates` experiment remains in its historical artifact.
+The new model runtime incorporates only admitted domains and does not ship
+those experiment binaries. `MODEL_ACU=1` adds observed-recipe ACU after warmed
+whole-model timing and Asys; synthetic profile inputs are labeled explicitly.
 
 ### Combined BF16 box run
 

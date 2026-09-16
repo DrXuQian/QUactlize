@@ -8,17 +8,17 @@ The dated sections below retain historical states; this table takes priority.
 | Work | Local state | Requires box |
 | --- | --- | --- |
 | Matched FP16/BF16 exact and bucket selection | DONE: 1,842 exact/634 bucket rows, 30 open keys excluded; caller uses v3 before legacy; real TC tickets preserved | Selected mixed chains and warmed model trace/PP/TG |
-| BF16 full MoE support and fast Q4/AP1 paths | PPU independent and selected-Q4 gates PASS; Q6 chains18 PASS; capability733/746. Q4 output hash exactly reproduced by native FP32 order/BF16 midpoint rounding | Replay unrounded-dot projection oracle; remaining12 cases and model range correctness |
-| Q8 K-pack2 vector SIMT | PPU numeric12,480/perf50 PASS;48/50 candidate medians lower, real reducers included; no production change yet | Integrate measured domains while retaining two small BF16 incumbents; selected model trace and ACU |
-| MoE prepare simplification | Initial PPU3,840/48 PASS, replay exposes missing default/nonblocking-stream edge in negative fixture. Ordered upload/readback and exact row-swap negative repaired locally | Ordered-negative replay, actual selected-producer composition/model trace; retain M1 TC/mixed incumbent |
+| BF16 full MoE support and fast Q4/AP1 paths | PPU capability746/746 PASS, including116 complete chains; selected-Q4 gate258 PASS | New execution same-image gate and model range correctness |
+| Q8 K-pack2 vector SIMT | PPU numeric12,480/perf50 PASS; production overlays11 same-control dense winners; TC/indexed/different incumbents retained | Production v2 ABI replay; warmed selected model trace and ACU; indexedE16 is not exactE256 evidence |
+| MoE prepare simplification | Ordered-negative3,840-context gate and48 comparisons PASS; promoted only merged all-SIMT measured domain | Actual selected-producer composition/model trace and ACU; TC/mixed incumbent remains |
 | Old NVIDIA F16 M1 gather fault | Remains NVIDIA-specific investigation; PPU old/new48/48 PASS, not reproduced there | No PPU blocker inferred from the NVIDIA result |
 | Small runtime delivery | Rebuilt dispatcher/execution; seven F16 controls refreshed; prefill and packer reused; no llama bins | `.aoneci` incremental caller build and actual selected chain |
 | Qwen3-32B nonfinite | BF16 range-preserving path ready, original243383 activation preserved | Original two-chunk numerical/model replay; no clamp workaround |
 | Selection coverage debt | Explicit: N128 output-head tail, unsupported Q8 N32, unstable/cross-router M2--8 rows; Q4 large fused shortlist lacks AP1 | Targeted follow-up only; no all-config sweep |
 | Prefetch, residual/projection fusion, main productization | Deferred; current work does not change those defaults | Perf evidence where relevant; main admission remains separate |
 
-Q8/prepare optimizations are isolated experiments, not claimed TPOT gains.
-See [latest PPU replay and causal checks](../../docs/KPACK_LOCAL_CLOSURE_REPLAY_20260916.md).
+Q8/prepare measured domains are integrated, not claimed TPOT gains.
+See [completed replay and production handoff](../../docs/KPACK_DECODE_PRODUCTION_20260916.md).
 The new BF16 compute table is measured independently; unknown shapes still
 report bounded predictions/initial proposals rather than measured optima.
 

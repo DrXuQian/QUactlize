@@ -12,7 +12,7 @@ def test_all_formats_runtime_inventory():
     assert spec.QTYPES == (8, 10, 11, 12, 13, 14)
     for q in spec.QTYPES:
         candidates = spec.runtime_inventory(q)
-        assert len(candidates) == (120 if q==8 else 240)
+        assert len(candidates) == 240
         assert len({c.key for c in candidates}) == len(candidates)
         assert {c.split for c in candidates} == {1,2,4,8}
         assert {c.values for c in candidates} == {2,4,8}
@@ -31,8 +31,9 @@ def test_codegen_query_and_launch_have_same_inventory():
             for c in spec.inventory(q,profile):
                 condition = f'f->variant=={c.variant} && f->columns=={c.columns} && f->warps=={c.warps} && f->values=={c.values}'
                 assert source.count(condition)==3
-                assert source.count(f'simt::launch<{q},{c.variant},{c.columns},{c.warps},{c.values}>')==1
-                assert source.count(f'simt::launch_v2<{q},{c.variant},{c.columns},{c.warps},{c.values}>')==1
+                reader='simt::q8_vector' if c.variant>=4 else 'simt'
+                assert source.count(f'{reader}::launch<{q},{c.variant},{c.columns},{c.warps},{c.values}>')==1
+                assert source.count(f'{reader}::launch_v2<{q},{c.variant},{c.columns},{c.warps},{c.values}>')==1
 
 
 def test_execution_build_includes_the_shared_candidates():

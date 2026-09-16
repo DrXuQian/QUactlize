@@ -13,6 +13,8 @@ from tools.verify_kpack_dispatch import PREFILL_MODEL_EXPORTS, SMALLM_MODEL_EXPO
 ROOT=Path(__file__).resolve().parents[1]
 LLAMA=Path(os.environ.get('LLAMA_CI_DIR','/root/autodl-tmp/llama-v0.3.0'))
 EXPORTS={name:required|COMPUTE_MODEL_EXPORTS[name] for name,required in SMALLM_MODEL_EXPORTS.items()}
+EXPORTS['libquactlize_kpack_dispatch.so'] |= {'quactlize_kpack_dispatch_query_smallm_v3'}
+EXPORTS['libquactlize_ppu_execution.so'] |= {'quactlize_kpack_q4_decode_select_v2', 'quactlize_kpack_q4_decode_run_v2'}
 EXPORTS['libquactlize_ppu_prefill.so']=PREFILL_MODEL_EXPORTS
 MISSING='quactlize_kpack_prefill_provider_image_v1'
 

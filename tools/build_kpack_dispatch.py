@@ -305,6 +305,7 @@ def main():
         ROOT / "policies/kpack_zw810_cost_v1.hpp",
         ROOT / "policies/kpack_smallm_v1.hpp",
         ROOT / "policies/kpack_smallm_matched_v1.hpp",
+        ROOT / "policies/kpack_q8_vector_v1.hpp",
     ]
     manifest = dict(
         schema="quactlize.kpack-native-dispatch.v1",
@@ -342,6 +343,11 @@ def main():
     manifest['smallm_matched_policy']=dict(path='smallm-matched-policy.json',sha256=sha(matched_policy),
         header_sha256=sha(matched_policy.with_suffix('.hpp')),
         admission='MATCHED_POOL_EXPLICIT_COMPUTE_MODEL_GATE_PENDING')
+    vector_policy=ROOT/'policies/kpack_q8_vector_v1.json'
+    shutil.copy2(vector_policy,output/'q8-vector-policy.json')
+    manifest['q8_vector_policy']=dict(path='q8-vector-policy.json',sha256=sha(vector_policy),
+        header_sha256=sha(vector_policy.with_suffix('.hpp')),
+        admission='EXACT_SIMT_READER_REPLACEMENT_MODEL_GATE_PENDING')
     if receipt.get('simt_compute_v2'):
         manifest['compute_contract']=dict(schema='quactlize.explicit-compute.v1',
             formats=[8,10,11,12,13,14],grouped='ALL_LEGAL_M',dense='DECODE_M1_8',

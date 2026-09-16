@@ -23,15 +23,16 @@ class Config:
         return self.columns * self.values
 
     def record(self):
-        return asdict(self) | {"key": self.key, "reader": "REGISTER_REUSE"}
+        reader = "Q8_VECTOR" if self.variant >= 4 else "REGISTER_REUSE"
+        return asdict(self) | {"key": self.key, "reader": reader}
 
 
-def inventory(q, profile="full"):
+def inventory(q, profile="full", *, legacy=False):
     if q not in QTYPES or profile not in ("full", "smoke"):
         raise ValueError("undeclared SIMT format/profile")
     # Metadata units shared by a warp must be the same unit. Q8 has one d
     # per K32 group, unlike the paired-superblock K-quant units.
-    variants = range(2 if q == 8 else 4)
+    variants = (0, 1, 4, 5) if q == 8 and not legacy else range(2 if q == 8 else 4)
     geometry = [(c, w, p) for c, w, p in product((4, 8), (2, 4, 8), (2, 4, 8))
                 if c * p <= 32]
     if profile == "smoke":
@@ -48,16 +49,18 @@ def source(q, profile="full"):
     candidates = inventory(q, profile)
     conditions = [f"f->variant=={c.variant} && f->columns=={c.columns} && "
                   f"f->warps=={c.warps} && f->values=={c.values}" for c in candidates]
-    body = '#include "simt_kernel.cuh"\n'
+    body = '#include "simt_q8_vector.cuh"\n' if q == 8 else '#include "simt_kernel.cuh"\n'
     body += f'extern "C" bool qkg_simt_supported_{q}(qkg_simt_config_v1 const* f) {{\n'
     body += "    return " + " ||\n        ".join(f"({s})" for s in conditions) + ";\n}\n"
     body += f'extern "C" int qkg_simt_launch_{q}(qkg_call_v1 const* c,qkg_simt_config_v1 const* f) {{\n'
     for c, condition in zip(candidates, conditions):
-        body += f"    if ({condition}) return quactlize::execution::simt::launch<"
+        reader = "simt::q8_vector" if c.variant >= 4 else "simt"
+        body += f"    if ({condition}) return quactlize::execution::{reader}::launch<"
         body += f"{q},{c.variant},{c.columns},{c.warps},{c.values}>(*c,f->split);\n"
     body += "    return QKG_INVALID;\n}\n"
     body += f'extern "C" int qkg_simt_launch_v2_{q}(qkg_simt_call_v2 const* c,qkg_simt_config_v1 const* f) {{\n'
     for c, condition in zip(candidates, conditions):
-        body += f"    if ({condition}) return quactlize::execution::simt::launch_v2<"
+        reader = "simt::q8_vector" if c.variant >= 4 else "simt"
+        body += f"    if ({condition}) return quactlize::execution::{reader}::launch_v2<"
         body += f"{q},{c.variant},{c.columns},{c.warps},{c.values}>(*c,f->split);\n"
     return body + "    return QKG_INVALID;\n}\n"

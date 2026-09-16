@@ -42,11 +42,13 @@ def main():
     if source.count(marker) != 1:
         raise ValueError("benchmark router seam changed")
     generated = a.output / "bench.cu"
-    source=source.replace(marker,warp_router())
+    source=source.replace(marker,'')
     if a.platform=="ppu":source=re.sub(r"\bcuda(?=[A-Z_])","hggc",source)
     generated.write_text(source)
     paths = [ROOT / n for n in (
         "dev/moe_prepare/bench.cu", "dev/moe_prepare/fast.cuh", "dev/moe_prepare/build.py",
+        "quactlize/execution/moe_prepare.cuh",
+        "quactlize/execution/moe_router_warp.cuh",
         "quactlize/runtime/moe_chain.cuh", "quactlize/runtime/moe_protocol.h",
         "quactlize/runtime/indexed.cuh", "quactlize/integrations/llama/router.cuh",
         "quactlize/integrations/llama/indexed.h",

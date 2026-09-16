@@ -13,6 +13,13 @@ def plane_word(q, high, col, k, n):
 
 
 def pattern(q, config, n, k, storage=1, *, bases=None, warp=0, partition=0, iteration=0):
+    if q==8 and config.variant>=4:
+        from dataclasses import replace
+        from dev.gemv_simt.q8_vector_access import pattern as vector_pattern
+        if storage!=1:
+            raise ValueError('Q8 vector reader requires F32 storage')
+        return vector_pattern(replace(config,variant=config.variant-4),n,k,bases=bases,
+                              warp=warp,partition=partition,iteration=iteration)
     c = config
     group = 32 if q in (8,12,13) else 16
     low_bits = 8 if q==8 else SPECS[q].low_bits

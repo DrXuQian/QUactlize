@@ -160,6 +160,13 @@ def verify(root, *, sdk=None):
                 m['policy_hashes'].get('policies/kpack_smallm_matched_v1.hpp')!=receipt['header_sha256']):
             raise ValueError('matched small-M policy identity differs')
         require_exports(root/'libquactlize_kpack_dispatch.so',{'quactlize_kpack_dispatch_query_smallm_v3'})
+    if 'q8_vector_policy' in m:
+        receipt=m['q8_vector_policy']
+        if (receipt.get('path')!='q8-vector-policy.json' or (root/receipt['path']).is_symlink() or
+                sha(root/receipt['path'])!=receipt['sha256'] or
+                m['policy_hashes'].get('policies/kpack_q8_vector_v1.hpp')!=receipt['header_sha256'] or
+                not {4,5}<={r['variant'] for r in m['execution_receipt']['simt_configs']['8']}):
+            raise ValueError('Q8 vector policy/execution identity differs')
     if 'compute_contract' in m:
         c=m['compute_contract']
         execution=m['execution_receipt'].get('simt_compute_v2',{})

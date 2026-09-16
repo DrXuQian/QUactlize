@@ -52,6 +52,8 @@ def publish(build, output, pack=None):
         paths.append(m["smallm_policy"]["path"])
     if "smallm_matched_policy" in m:
         paths.append(m["smallm_matched_policy"]["path"])
+    if "q8_vector_policy" in m:
+        paths.append(m["q8_vector_policy"]["path"])
     if "bf16_gate" in m:
         from dev.bf16_compute.run import validate_package
         gate = validate_package(src / 'bf16')

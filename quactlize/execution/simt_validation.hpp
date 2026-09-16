@@ -5,7 +5,7 @@
 namespace quactlize::execution::simt {
 
 inline bool config_valid(qkg_simt_config_v1 const& f) {
-    return f.version==1 && f.size==sizeof(f) && f.variant>=0 && f.variant<4 &&
+    return f.version==1 && f.size==sizeof(f) && f.variant>=0 && f.variant<6 &&
         (f.columns==4 || f.columns==8) && (f.warps==2 || f.warps==4 || f.warps==8) &&
         (f.values==2 || f.values==4 || f.values==8) && f.columns*f.values<=32 &&
         (f.split==1 || f.split==2 || f.split==4 || f.split==8);
@@ -15,6 +15,7 @@ inline int query(qkg_call_v1 const& c, qkg_simt_config_v1 const& f,
     quactlize_ppu_placed_arrangement_v2 const* arrangement, qkg_sizes_v1& out) {
     if (!config_valid(f)) return QKG_INVALID;
     if (c.qtype==8 && (f.variant&2)) return QKG_INVALID;
+    if (f.variant>=4 && (c.qtype!=8 || c.input_type!=QKG_F32)) return QKG_INVALID;
     qkg_config_v1 shape{1,sizeof(shape),16,4,1};
     int rc=execution::query(c,shape,arrangement,out);
     if (rc) return rc;

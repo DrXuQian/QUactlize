@@ -18,6 +18,11 @@ int main() {
         c.rows=9;assert(simt::query(c,f,&a,sizes)==QKG_SHAPE);c.rows=8;
         f.columns=8;f.values=8;assert(simt::query(c,f,&a,sizes)==QKG_INVALID);f.values=4;
         if (q==8) {f.variant=2;assert(simt::query(c,f,&a,sizes)==QKG_INVALID);f.variant=0;}
+        f.variant=5;
+        assert(simt::query(c,f,&a,sizes)==(q==8?QKG_OK:QKG_INVALID));
+        c.input_type=QKG_F16;
+        assert(simt::query(c,f,&a,sizes)==QKG_INVALID);
+        c.input_type=QKG_F32;f.variant=0;
         c.a_row_stride=513;assert(simt::query(c,f,&a,sizes)==QKG_INVALID);c.a_row_stride=520;
         c.mode=QKG_INDEXED;c.experts=16;c.rows=64;c.channels=8;c.topk=8;
         c.a_token_stride=8*520;c.ids_stride=11;

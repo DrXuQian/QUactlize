@@ -116,7 +116,7 @@ def test_typed_c_abi_can_pick_measured_simt_without_gpu_or_jit(host_dispatch,pol
         c=Call(version=1,size=C.sizeof(Call),qtype=q,mode=mode,n=n,k=k,experts=e,topk=top,
             channels=ch,rows=m,input_type=1,a_row_stride=k,a_token_stride=k,ids_stride=top,out_row_stride=n)
         got=host_dispatch.query_smallm_matched(c,arrangement(q),compute)
-        assert got and got.compute_type==compute and got.base.policy==12 and got.base.kind==1
+        assert got and got.compute_type==compute and got.base.policy in (12,15) and got.base.kind==1
         picks.append(got.base.simt.split)
     assert len(picks)==2
 

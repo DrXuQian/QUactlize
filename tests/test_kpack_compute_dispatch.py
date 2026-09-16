@@ -88,6 +88,8 @@ def test_caller_bf16_receipts_and_symbol_precision(monkeypatch):
     old='void quactlize::execution::simt::register_reuse<14, 1, 3, 4, 4, 4>(qkg_call_v1, int)'
     assert native.simt_symbol_recipe(old)==(14,1,3,4,4,4,0)
     assert native.simt_symbol_recipe(old.replace('4>','4, 1>'))==(14,1,3,4,4,4,1)
+    vector='void quactlize::execution::simt::q8_vector::kernel<1, 1, 1, 4, 8, 4>(qkg_call_v1, int)'
+    assert native.simt_symbol_recipe(vector)==(8,1,5,4,8,4,1)
     line='[quactlize-plan] tensor=test op=grouped route=gemv reader=simt-reuse q=14 rows=8 n=512 k=2048 variant=3 columns=4 warps=4 values=4 split=1 policy=11 activation=BF16'
     manifest=dict(modules=[],smallm_policy=True,compute_contract=True,execution_receipt=dict(
         simt_compute_v2=dict(compute=['f16','bf16']),simt_configs={'14':[
@@ -99,3 +101,42 @@ def test_caller_bf16_receipts_and_symbol_precision(monkeypatch):
     tc='[quactlize-plan] tensor=test op=grouped route=fq q=14 rows=8 n=512 k=2048 parent=tc build='+module['key']+' split=1 grid=0 policy=11 activation=BF16'
     assert native.selection(tc,manifest|dict(modules=[module]),['grouped'])['fully_selected']
     with pytest.raises(ValueError):native.selection(tc.replace('activation=BF16','activation=FP16'),manifest|dict(modules=[module]),['grouped'])
+
+
+def test_model_acu_profiles_observed_recipes_after_asys(monkeypatch):
+    import copy
+    from tools.profile_kpack_model_decode import profile_plan
+    caller=Path(os.environ.get('LLAMA_CI_DIR','/root/autodl-tmp/llama-v0.3.0'))
+    if not (caller/'tests/quactlize_native.py').exists():pytest.skip('private caller not installed')
+    monkeypatch.syspath_prepend(str(caller/'tests'))
+    native=importlib.import_module('quactlize_native')
+    helpers=(native.simt_symbol_recipe,native.q4_symbol_recipe,native.q4_symbol_matches_plan)
+    common=dict(route='gemv',reader='simt-reuse',op='grouped',q='13',rows='8',n='2048',k='512',
+                variant='3',columns='4',warps='2',values='8',split='1',experts='256',channels='8',
+                topk='8',activation='FP16',tensor='down')
+    up=common|dict(tensor='up',q='12',route='gemv-q4-s1',reader='2',variant='7',columns='4',warps='8',
+                   values='8',n='1024',k='2048',channels='1')
+    dense=common|dict(tensor='dense',q='8',rows='1',op='dense',reader='simt-q8-vector',variant='5',
+                      warps='8',values='4',n='2048',k='4096',channels='1',experts='1',topk='1')
+    names=['void quactlize::execution::simt::register_reuse<13, 1, 3, 4, 2, 8>(qkg_call_v1, int)',
+           'void quactlize::execution::q4_decode::kernel<1, 2, 7, 8, 8, 4, 1024, 2048>(qkg_call_v1)',
+           'void quactlize::execution::simt::q8_vector::kernel<1, 0, 1, 4, 8, 4>(qkg_call_v1, int)',
+           'void quactlize::runtime::prepare_detail::once<Shape, Stride, 8, true, MixedMoePlan>(MixedMoePlan)']
+    selection=dict(plans=[dense,up,common,dict(dense,tensor='same-shape'),dict(dense,rows='8',tensor='M8')])
+    kernels=dict(kernels=[dict(name=n) for n in names])
+    log='[quactlize-moe] gate=up down=down merged=1 rows=8 simt_mask=5 shared_prepare=1'
+    rows=profile_plan(selection,kernels,log,helpers)
+    assert len(rows)==4 and [r['point']['kind'] for r in rows]==['simt','q4','simt','prepare']
+    assert rows[0]['tensors']==['dense','same-shape']
+    assert rows[2]['point']['channels']==8 and rows[1]['point']['channels']==1
+    for plant in ('symbol','recipe','receipt','prepare'):
+        s,k=copy.deepcopy(selection),copy.deepcopy(kernels)
+        if plant=='symbol':k['kernels'].pop(2)
+        elif plant=='recipe':s['plans'][0]['warps']='4'
+        elif plant=='receipt':del s['plans'][0]['experts']
+        else:k['kernels'].pop()
+        with pytest.raises(ValueError):profile_plan(s,k,log,helpers)
+    script=(ROOT/'tools/run_kpack_q4_model_box.sh').read_text()
+    assert script.index('stage=model-benchmark')<script.index('stage=model-trace')<script.index('stage=model-acu')
+    command=(ROOT/'tools/profile_kpack_model_decode.py').read_text()
+    assert 'acu_launch_command' in command and 'SYNTHETIC_INPUT' in command

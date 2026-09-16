@@ -4,9 +4,53 @@ from quactlize.execution.simt_codegen import inventory
 import pytest
 
 
+def test_production_q8_policy_preserves_tc_indexed_and_different_incumbents(tmp_path):
+    import copy
+    import json
+    import subprocess
+    from pathlib import Path
+    from tools.fit_kpack_q8_vector import fit, header, EVIDENCE, MATCHED, OUTPUT, ROOT
+    evidence, matched = json.loads(EVIDENCE.read_text()), json.loads(MATCHED.read_text())
+    policy = fit(evidence, matched)
+    assert len(policy['rows']) == 11 and len(policy['retained']) == 39
+    assert all(r['key'][1] == 0 and r['candidate'][0] in (4,5) and r['new_us']<r['old_us'] for r in policy['rows'])
+    assert sum(r['reason']=='KEEP_INDEXED_E16_NOT_MODEL_E256' for r in policy['retained'])==16
+    assert policy['rows'] == json.loads(OUTPUT.read_text())['rows']
+    assert header(policy) == OUTPUT.with_suffix('.hpp').read_text()
+    for mutation in ('numeric','duplicate','nan','delta'):
+        bad=copy.deepcopy(evidence)
+        if mutation=='numeric': bad['q8']['numeric']='FAIL'
+        elif mutation=='duplicate': bad['q8']['performance'][1]=bad['q8']['performance'][0]
+        elif mutation=='nan': bad['q8']['performance'][0]['best']['1']['median_us']=float('nan')
+        else: bad['q8']['performance'][0]['delta_pct']+=1
+        with pytest.raises(ValueError): fit(bad,matched)
+    source=tmp_path/'policy.cpp'
+    source.write_text('''#include "quactlize/dispatch/q8_vector.hpp"
+#include <cassert>
+int main() {
+  using quactlize::dispatch::q8_vector::select;
+  for(auto const& r:quactlize::q8_vector_data::kRows) {
+    qkg_simt_call_v2 d{};auto& c=d.call;
+    c.qtype=8;c.input_type=QKG_F32;c.mode=r.mode;c.n=r.n;c.k=r.k;c.experts=r.experts;
+    c.topk=r.topk;c.channels=r.channels;c.rows=r.tokens;d.compute_type=r.compute;
+    auto a=r.baseline;qkg_simt_config_v1 f{1,sizeof(f),a[0],a[1],a[2],a[3],a[4]};
+    auto wrong=f;wrong.variant^=1;assert(!select(d,wrong));
+    c.input_type=QKG_F16;assert(!select(d,f));c.input_type=QKG_F32;
+    c.topk=0;assert(!select(d,f));c.topk=r.topk;
+    c.experts=256;assert(!select(d,f));c.experts=r.experts;
+    assert(select(d,f));a=r.candidate;
+    assert(f.variant==a[0] && f.columns==a[1] && f.warps==a[2] && f.values==a[3] && f.split==a[4]);
+    assert(!select(d,f));
+  }
+}''')
+    exe=tmp_path/'policy'
+    subprocess.run(['g++','-std=c++17','-O2','-I'+str(ROOT),str(source),'-o',str(exe)],check=True)
+    subprocess.run([exe],check=True)
+
+
 def test_q8_inventory_keeps_all_incumbents_and_compute_types():
     text=source()
-    for c in inventory(8):
+    for c in inventory(8, legacy=True):
         for arm in range(2):
             for compute in range(2):
                 assert f'invoke<{arm},{compute},{c.variant},{c.columns},{c.warps},{c.values}>' in text
@@ -16,7 +60,7 @@ def test_q8_inventory_keeps_all_incumbents_and_compute_types():
 
 
 def test_vector_metadata_footprint_and_minimum_abi_alignment():
-    for c in inventory(8):
+    for c in inventory(8, legacy=True):
         aligned=pattern(c,256,512)
         assert aligned['metadata_vectorized']
         assert aligned['candidate_metadata_requests']==1

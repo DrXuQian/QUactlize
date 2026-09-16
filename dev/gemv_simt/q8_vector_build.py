@@ -46,7 +46,7 @@ extern "C" int q8_vector_run(qkg_simt_call_v2 const* d,qkg_simt_config_v1 const*
  int rc=query_v2(*d,*f,&a,sizes);if(rc) return rc;
  rc=buffers_v2(*d,sizes);if(rc) return rc;
 '''
-    for c in inventory(8):
+    for c in inventory(8, legacy=True):
         text += f' if(f->variant=={c.variant} && f->columns=={c.columns} && f->warps=={c.warps} && f->values=={c.values}) {{\n'
         for arm in range(2):
             for compute in range(2):
@@ -98,7 +98,7 @@ def main():
         subprocess.run(commands[-1],env=env,stdout=log,stderr=subprocess.STDOUT,check=True)
     if any(sha(ROOT/p)!=v for p,v in hashes.items()): raise ValueError('source changed during compile')
     result=dict(schema='quactlize.q8-vector.v1',platform=a.platform,library='q8.so',library_sha256=sha(out/'q8.so'),
-                source_hashes=hashes,commands=commands,compiler_sha256=sha(compiler),configs=[c.record() for c in inventory(8)],
+                source_hashes=hashes,commands=commands,compiler_sha256=sha(compiler),configs=[c.record() for c in inventory(8, legacy=True)],
                 build_seconds=time.monotonic()-start,device_validated=False,production_selection_changed=False,
                 scope='SAME_KPACK2_F32_IO_F16_OR_BF16_COMPUTE_COMPLETE_CALL')
     (out/'manifest.json').write_text(json.dumps(result,indent=2)+'\n')

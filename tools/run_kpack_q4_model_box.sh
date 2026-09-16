@@ -16,6 +16,7 @@
                 rc=1
             fi
             printf 'Full Asys files: %s/results/trace/*/{reference,native}/proof.asysrep\n' "$RUN"
+            printf 'ACU reports and raw counters: %s/results/acu/\n' "$RUN"
         fi
         printf 'runner_rc=%s stage=%s\nCurrent Docker shell is preserved.\n' "$rc" "$stage"
         exit "$rc"
@@ -39,6 +40,10 @@
     export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
     ASYS=${ASYS:-$SDK/asight/bin/asys}
     test -x "$ASYS"
+    MODEL_ACU=${MODEL_ACU:-0}
+    [[ "$MODEL_ACU" == 0 || "$MODEL_ACU" == 1 ]]
+    ACU=${ACU:-$SDK/asight/bin/acu}
+    if [[ "$MODEL_ACU" == 1 ]]; then test -x "$ACU"; fi
     "$PYTHON" -c 'import numpy, gguf, torch, pyarrow; from deep_gemm.jit_kernels.m_grouped_gemm import m_grouped_gemm_bf16_bf16_bf16_nt_nopad'
     "$PYTHON" -c 'import platform; name,version=platform.libc_ver(); assert name=="glibc" and tuple(map(int,version.split(".")[:2])) >= (2,38), "PPU SDK runtime requires glibc >= 2.38 (Ubuntu 24.04)"'
     RESULT_DIR=$(realpath -e -- "${RESULT_ROOT:-/workspace}")
@@ -89,6 +94,9 @@
     "$PYTHON" -c 'import hashlib,sys; assert hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()==sys.argv[2],"model package manifest differs"' "$BUNDLE/manifest.json" "${INFO[3]}"
     "$PYTHON" tools/verify_kpack_dispatch.py "$BUNDLE" --sdk "$SDK" | tee "$RUN/results/verify.log"
     test ! -e "$BUNDLE/llama"
+    stage=production-q8-gate
+    "$PYTHON" -u tools/run_kpack_decode_updates.py --sdk "$SDK" --bundle "$BUNDLE" \
+        --output "$RUN/results/production-q8.json" 2>&1 | tee "$RUN/results/production-q8.log"
     if [[ "$MODEL_COMPUTE" == bf16 ]]; then
         stage=bf16-capability
         test -s "$BUNDLE/bf16/manifest.json"
@@ -191,6 +199,12 @@
     stage=model-trace
     if "$PYTHON" -u tools/run_kpack_model_validation.py "${COMMON[@]}" --phase trace \
         --output "$RUN/results/trace" 2>&1 | tee "$RUN/results/trace.log"; then :; else failed=$((failed+1)); fi
+    if [[ "$MODEL_ACU" == 1 ]]; then
+        stage=model-acu
+        if "$PYTHON" -u tools/profile_kpack_model_decode.py --sdk "$SDK" --bundle "$BUNDLE" \
+            --llama "$LLAMA_DIR" --trace "$RUN/results/trace" --acu "$ACU" \
+            --output "$RUN/results/acu" 2>&1 | tee "$RUN/results/acu.log"; then :; else failed=$((failed+1)); fi
+    fi
     [[ $failed == 0 ]]
     stage=complete
     printf 'KPACK_Q4_MODEL COMPLETE phases=%s accuracy_admission=PENDING performance_vs_native=SEE_SUMMARY\n' "$MODEL_PHASES"
