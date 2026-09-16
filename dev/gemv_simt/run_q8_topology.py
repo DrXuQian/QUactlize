@@ -33,6 +33,23 @@ def save(path,data):
     path.write_text(json.dumps(data,indent=2,allow_nan=False)+'\n')
 
 
+def resolve_l2(rt, identity, verified_bytes=0):
+    """Use the scalar SDK query when the properties struct omits L2 size."""
+    properties_bytes = int(identity['l2_bytes'])
+    attribute_bytes = rt.attribute(38)  # cuda/hggcDevAttrL2CacheSize, in bytes
+    if properties_bytes > 0 and attribute_bytes > 0 and properties_bytes != attribute_bytes:
+        raise ValueError(f'L2 queries conflict: properties={properties_bytes}, attribute={attribute_bytes}')
+    actual = attribute_bytes if attribute_bytes > 0 else max(0, properties_bytes)
+    result = l2_identity(identity | dict(l2_bytes=actual), verified_bytes)
+    if result['l2_bytes'] <= 0:
+        raise ValueError(f'no positive L2 capacity: properties={properties_bytes}, attribute={attribute_bytes}; '
+                         'set L2_BYTES to independently verified bytes')
+    if actual > 0:
+        result['l2_source'] = 'DEVICE_ATTRIBUTE_38' if attribute_bytes > 0 else 'DEVICE_PROPERTIES'
+    return result | dict(properties_l2_bytes=properties_bytes, attribute_l2_bytes=attribute_bytes,
+                         verified_l2_bytes=verified_bytes)
+
+
 def wait_logged(command,log,label):
     with log.open('x') as stream:
         process=subprocess.Popen(command,stdout=stream,stderr=subprocess.STDOUT)
@@ -41,6 +58,12 @@ def wait_logged(command,log,label):
             try:process.wait(timeout=30)
             except subprocess.TimeoutExpired:
                 print(f'Q8_TOPOLOGY_WAIT {label} elapsed_s={time.monotonic()-started:.0f} log={log}',flush=True)
+    if process.returncode:
+        print(f'Q8_TOPOLOGY_CHILD_FAIL {label} rc={process.returncode} log={log}',flush=True)
+        with log.open('rb') as stream:
+            stream.seek(max(0, log.stat().st_size - 8192))
+            tail = stream.read().decode('utf-8', errors='replace').splitlines()[-40:]
+        print('\n'.join(tail),flush=True)
     return process.returncode
 
 
@@ -170,8 +193,9 @@ def child(args):
         if package['platform']=='ppu':
             from tools.run_kpack_pack_gate import device_identity
             identity.update(device_identity(rt))
-        l2=l2_identity(identity,args.l2_bytes)
-        if l2['l2_bytes']<=0:raise ValueError('verified positive L2 capacity required')
+        l2=resolve_l2(rt,identity,args.l2_bytes)
+        print(f'Q8_TOPOLOGY_L2 point={args.point} bytes={l2["l2_bytes"]} source={l2["l2_source"]} '
+              f'properties={l2["properties_l2_bytes"]} attribute={l2["attribute_l2_bytes"]}',flush=True)
         shipping=Shipping(args.shipping/'libquactlize_ppu_execution.so',0) if package['platform']=='ppu' else clone
         providers={'shipping':shipping,'clone':clone}
         providers.update({c['key']:Candidate(args.bundle,args.point,c) for c in cells})
@@ -243,6 +267,7 @@ def child(args):
                 # Numeric failure is not usable timing; later independent cells
                 # may proceed only if the context still synchronizes cleanly.
                 rt.sync();row.update(status='FAIL',error=str(e),samples_us=[]);failed.append(key)
+                print('Q8_TOPOLOGY_CELL_FAIL',json.dumps(dict(point=args.point,key=key,error=str(e))),flush=True)
             records.append(row);journal(row)
             if (i+1)%16==0 or i+1==len(cells):
                 print(f'Q8_TOPOLOGY_PROGRESS point={args.point} phase={args.phase} completed={i+1}/{len(cells)} failed={len(failed)} elapsed_s={time.monotonic()-started:.1f}',flush=True)
@@ -343,7 +368,9 @@ def collect(args):
                             raise ValueError('ACU raw export failed')
                         profile.update(status='PASS',report_sha256=sha(report),csv_sha256=sha(csv_path),
                             kernels=validate_profile(csv_path.read_text(),n,k,key,inventory(n,k)['cells']))
-                    except (OSError,ValueError,KeyError) as error:profile['error']=str(error);row['status']='FAIL'
+                    except (OSError,ValueError,KeyError) as error:
+                        profile['error']=str(error);row['status']='FAIL'
+                        print('Q8_TOPOLOGY_ACU_FAIL',json.dumps(dict(point=point,key=key,error=str(error))),flush=True)
                     row['profiles'].append(profile)
         if rc:row['status']='FAIL'
         records.append(row)

@@ -49,7 +49,7 @@
     mkdir "$RUN/results"
     : > "$RUN/console.log"
     stage=host-tests
-    "$PYTHON_BIN" -m unittest discover -s "$ROOT/tests" -p test_q8_topology.py -v 2>&1 |
+    "$PYTHON_BIN" -m unittest discover -s "$ROOT/tests" -p 'test_q8_topology*.py' -v 2>&1 |
         tee -a "$RUN/results/host-tests.log" "$RUN/console.log"
     stage=verify
     "$PYTHON_BIN" - "$CANDIDATE" "$SHIPPING" <<'PY' 2>&1 | tee -a "$RUN/results/verify.log" "$RUN/console.log"
