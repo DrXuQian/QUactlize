@@ -8,7 +8,7 @@
         rc=$?
         trap - EXIT
         if [[ -n "$RUN" && -d "$RUN/results" ]]; then
-            if tar -czf "$RUN.results.tgz" -C "$RUN" results; then
+            if tar -czf "$RUN.results.tgz" -C "$RUN" results console.log; then
                 printf '\nresults=%s.results.tgz\n' "$RUN"
             else
                 printf 'Archive failed; raw results remain at %s/results\n' "$RUN" >&2
