@@ -6,6 +6,15 @@ binary bundle, or loader contract changes.
 
 ## Explicit BF16 compute integration, updated 2026-09-16
 
+Current delivery: source `35dddc3`, private caller `a7fa485da`, runtime artifact
+`9b6c477`. The execution SHA256 is
+`780d24dd4dc3620aa6b9eaafec22d3939426c706ca86a6cf0c5453ac13e1a9af`.
+The package has 62 LFS payload paths, including eight same-config comparison
+modules. The existing six-format GPU packer is unchanged; its canonical and
+gate/up entries and Q8 coverage are checked before model execution.
+Local validation passes 247 host/tool tests plus four model-packer rejection
+tests and 34 caller tests. PPU numerics and performance are pending.
+
 Earlier [completed replay and production integration](KPACK_DECODE_PRODUCTION_20260916.md):
 the v3 BF16 capability746/746 passed, including all116 complete MoE chains. Prepare's
 3,840-context ordered-negative gate and48 timing comparisons pass. Eleven

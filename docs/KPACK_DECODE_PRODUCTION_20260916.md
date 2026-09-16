@@ -47,7 +47,7 @@ caller's `.aoneci/scripts/build.sh`. No llama executable is published here.
 The runtime refresh reuses all unchanged TC images; it does not compile a
 large sweep. The old isolated experimental bundle remains in artifact history.
 
-Delivery: source `eb01ba8`, private caller `0b22fe43e`, artifact `9ee6749`.
+Previous delivery: source `eb01ba8`, private caller `0b22fe43e`, artifact `9ee6749`.
 Execution SHA256 is `0605f190f8e48fb16a9cb0c7e09845db8344127b172f3b4e76c72d3e1307069c`.
 There are54 LFS payload paths; repeated execution paths share one object.
 Local validation:158 host/tool tests and33 caller tests pass; the real PPU SDK
@@ -60,6 +60,13 @@ must not be relabeled as this mixed-precision caller. The subsequent direct
 BF16 metadata change requires new runtime images and typed metadata APIs;
 offline bytes remain unchanged. The artifact and timings above describe the
 earlier production revision, not the pending new box run.
+
+Current direct-BF16 delivery: source `35dddc3`, caller `a7fa485da`, artifact
+`9b6c477`; the machine-readable pin is `tools/kpack_q4_model_artifact.json`.
+All changed images are compiled locally. The six-format GPU packer and offline
+cache format remain unchanged. The package includes 62 LFS payload paths and
+no caller binaries. Runtime refresh replaces seven old source-bound gate
+modules; their prior binaries remain recoverable from the previous artifact.
 
 With `MODEL_COMPUTE=bf16 MODEL_ACU=1`, order is:
 

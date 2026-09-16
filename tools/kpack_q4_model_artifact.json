@@ -1,11 +1,11 @@
 {
   "branch": "artifacts/kpack-model-runtime-v1",
-  "commit": "9ee6749b8242cd8e49fe7d24252c986b52432b3d",
+  "commit": "9b6c4772b60365bdb68c641e3d9621c3aa1aa3f0",
   "path": "prebuilt/ppu0010/kpack-model-runtime-v1",
-  "manifest_sha256": "db17d71e15a3f9e0289843478921eaaab564849c5aa7e837f948e86832ed8796",
-  "source_commit": "eb01ba8606cfe1a863a7ba4aff287a308376326f",
+  "manifest_sha256": "c0c829cc8414fd39e9d07f39217d3b53727626317c9cae19b1dd6c13a74906b6",
+  "source_commit": "35dddc354d208736a8e4dfa5750fe0e3fb9995f5",
   "llama_branch": "dev/quactlize-v0.3.0",
-  "llama_ci_commit": "0b22fe43ec952660f1a2981e05619608b6dcb12d",
-  "lfs_payloads": 54,
-  "device_admission": "COMPONENT_GATES_PASS_PRODUCTION_C_ABI_AND_MODEL_PENDING"
+  "llama_ci_commit": "a7fa485da53f0caffab9c408b83eabaf541df031",
+  "lfs_payloads": 62,
+  "device_admission": "LOCAL_GATE_PASS_DEVICE_AND_MODEL_PENDING"
 }
