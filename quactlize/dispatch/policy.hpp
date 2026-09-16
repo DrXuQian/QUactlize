@@ -119,7 +119,25 @@ inline Selected select_same_family(qks_request_v1 const& r) {
 
 inline Selected select(qks_request_v1 const& r) {
     auto exact=select_same_family(r);
-    if (exact.config || !valid(r) || r.route<2 || r.qtype==8 || r.n%512) return exact;
+    if (exact.config || !valid(r) || r.qtype==8) return exact;
+    if (r.route<2) {
+        // Extend N only, from the largest measured same-K dense family.
+        // Keep the measured M interval and recipe; real-N resource checks
+        // still decide admission. This is not a measured latency prediction.
+        Config const* donor=nullptr;
+        int donor_n=0;
+        for (auto const& knot:cost::data::kKnots) {
+            if (knot.q!=r.qtype || knot.k!=r.k || knot.experts!=1 ||
+                knot.n>=r.n || knot.n<=donor_n) continue;
+            auto source=r; source.n=knot.n;
+            auto c=cost::fixed_route(source);
+            if (!c || c->split!=1 || c->ap || r.n%c->tn ||
+                r.k%c->tk || r.k/c->tk<c->stages-1) continue;
+            donor=c; donor_n=knot.n;
+        }
+        return {donor,donor ? QKS_PREDICTED : 0};
+    }
+    if (r.n%512) return exact;
     // A paired gate/up tensor doubles N without changing K, E, M or format.
     // Only transfer from an existing N/2 family, never recursively through
     // another prediction. Its M/K/stage/split checks remain valid; require

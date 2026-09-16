@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Continue a model run stopped by the obsolete dense/BF16 evidence check."""
+"""Continue a model run after a bounded validator or dense-policy repair."""
 import argparse
 import json
 import os
@@ -19,7 +19,44 @@ from tools.run_kpack_model_validation import run
 from tools.verify_kpack_dispatch import verify
 
 
-def inputs(previous, llama, sdk):
+def check_dispatcher_refresh(old, current, original_hash):
+    allowed = {'dispatch_sha256', 'host_command', 'policy_hashes', 'dispatcher_refresh'}
+    if {k for k in old.keys() | current.keys() if old.get(k) != current.get(k)} - allowed:
+        raise ValueError('dispatcher repair changed device payloads or execution contracts')
+    before, after = old['policy_hashes'], current['policy_hashes']
+    changed = sorted(k for k in before.keys() | after.keys() if before.get(k) != after.get(k))
+    receipt = current.get('dispatcher_refresh', {})
+    if (changed != ['quactlize/dispatch/policy.hpp'] or
+            receipt != dict(base_manifest_sha256=original_hash, changed_policy_inputs=changed,
+                            scope='DENSE_N_EXTENSION_PREDICTED', gpu_compilations=0)):
+        raise ValueError('dispatcher repair is not the bounded N-extension update')
+
+
+def repaired_source(previous):
+    results = previous / 'results'
+    status = json.loads((results / 'status.json').read_text())
+    numerical = json.loads((results / 'numerical/status.json').read_text())
+    if (status.get('status') != 'FAIL' or status.get('phase') != 'numerical' or
+            any(r.get('error') != 'model numerical run has missing selected operations or a legacy fallback'
+                for r in numerical if r['status'] != 'PASS') or
+            not any(r['status'] == 'FAIL' for r in numerical)):
+        raise ValueError('prefill retry requires the saved numerical selection failure')
+    for row in numerical:
+        if row['status'] == 'PASS': continue
+        log = (results / 'numerical' / row['model'] / 'b2048-kpack-reference.log').read_text()
+        fallbacks = re.findall(r'\[quactlize\] ([^\n]*native policy miss[^\n]*)', log)
+        want = 'output.weight: native policy miss, retain legacy K-pack FQ (no same-family policy choice)'
+        if not fallbacks or any(line != want for line in fallbacks):
+            raise ValueError('prefill retry contains another unresolved fallback')
+    receipt = json.loads((results / 'continuation.json').read_text())
+    original = Path(receipt['previous']).resolve(strict=True)
+    if (original.parent != previous.parent or original == previous or
+            sha(original / 'results/bundle-manifest.json') != receipt['runtime_manifest_sha256']):
+        raise ValueError('saved continuation points to a different original run')
+    return original
+
+
+def inputs(previous, llama, sdk, repair_prefill=False):
     results = previous / 'results'
     stopped = (results / 'runner-status.txt').read_text()
     if not re.search(r'runner_rc=[1-9]\d* stage=model-numerical\b', stopped):
@@ -32,9 +69,14 @@ def inputs(previous, llama, sdk):
         raise ValueError('later-stage results already exist; preserve them for a separate continuation')
     pin = json.loads((ROOT / 'tools/kpack_q4_model_artifact.json').read_text())
     bundle = previous.parent / ('quactlize-model-artifact-' + pin['commit'][:10]) / pin['path']
-    if sha(bundle / 'manifest.json') != pin['manifest_sha256'] or sha(bundle / 'manifest.json') != sha(results / 'bundle-manifest.json'):
+    if sha(bundle / 'manifest.json') != pin['manifest_sha256']:
+        raise ValueError('selected runtime package differs from the pin')
+    current = verify(bundle, sdk=sdk)
+    if repair_prefill:
+        check_dispatcher_refresh(json.loads((results / 'bundle-manifest.json').read_text()),
+            current, sha(results / 'bundle-manifest.json'))
+    elif sha(bundle / 'manifest.json') != sha(results / 'bundle-manifest.json'):
         raise ValueError('original and selected runtime packages differ')
-    verify(bundle, sdk=sdk)
     ci = json.loads((results / 'caller-ci-build.json').read_text())
     required = {'bin/' + name for name in ('llama-server', 'llama-batched-bench', 'llama-perplexity',
         'libggml-cuda.so', 'libncp_fa.so', 'libncp_moe.so')}
@@ -58,14 +100,19 @@ def inputs(previous, llama, sdk):
 
 def continuation(args, output):
     previous, llama, sdk = args.previous.resolve(strict=True), args.llama.resolve(strict=True), args.sdk.resolve(strict=True)
-    bundle, build, gates = inputs(previous, llama, sdk)
+    latest = previous
+    repair = getattr(args, 'repair_prefill', False)
+    if repair:
+        previous = repaired_source(latest)
+    bundle, build, gates = inputs(previous, llama, sdk, repair_prefill=repair)
     result = output / 'results'
-    if any(p.is_symlink() for p in (previous / 'results').rglob('*')):
+    if any(p.is_symlink() for p in (latest / 'results').rglob('*')):
         raise ValueError('original results contain links; no recursive copy started')
-    shutil.copytree(previous / 'results', result / 'prior', ignore=shutil.ignore_patterns('*.asysrep', '*.sqlite*', '*.tgz'))
+    shutil.copytree(latest / 'results', result / 'prior', ignore=shutil.ignore_patterns('*.asysrep', '*.sqlite*', '*.tgz'))
     save(result / 'continuation.json', dict(previous=str(previous), caller_build=str(build),
         runtime_manifest_sha256=sha(bundle / 'manifest.json'), prior_gates=gates,
         validator_sha256=sha(llama / 'tests/quactlize_native.py'), compile='NONE',
+        numerical_source=str(latest), native_reexecution=repair,
         original_results='UNMODIFIED', model_admission='PENDING_RECHECK'))
     env = dict(os.environ)
     for name in ('DG_LIBRARY_ROOT', 'GGML_NCP_FA_LIB', 'GGML_NCP_MOE_LIB',
@@ -93,7 +140,7 @@ def continuation(args, output):
     validation = [sys.executable, '-u', ROOT / 'tools/run_kpack_model_validation.py']
     phases = [
         ('numerical', validation + common + ['--phase', 'numerical', '--output', result / 'numerical',
-            '--reuse-from', previous / 'results/numerical']),
+            '--reuse-from', latest / 'results/numerical'] + (['--rerun-native'] if repair else [])),
         ('benchmark', [sys.executable, '-u', ROOT / 'tools/run_kpack_batched_bench.py',
             '--binary', build / 'bin/llama-batched-bench', '--llama-dir', llama, '--bundle', bundle,
             '--jit-cache', jit, '--cache-root', cache, '--output-root', base, '--output', result / 'benchmark',
@@ -116,6 +163,7 @@ def main():
     for name in ('previous', 'llama', 'sdk', 'corpus'):
         p.add_argument('--' + name, type=Path, required=True)
     p.add_argument('--device', default='0')
+    p.add_argument('--repair-prefill', action='store_true', help='use the dispatcher-only N-extension package; rerun native calls')
     a = p.parse_args()
     if not re.fullmatch(r'\d+', a.device):
         p.error('one physical device ordinal is required')

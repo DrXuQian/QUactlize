@@ -24,14 +24,48 @@ def save(path, data):
     path.write_text(json.dumps(data, indent=2)+'\n')
 
 
+def refresh_dispatcher(base, out, sdk):
+    old = verify(base, sdk=sdk)
+    changed = sorted(name for name, value in old['policy_hashes'].items() if sha(ROOT/name) != value)
+    if changed != ['quactlize/dispatch/policy.hpp'] or 'model' in old:
+        raise ValueError('dispatcher-only refresh requires only the dense policy input to differ')
+    if any(p.is_symlink() or (not p.is_dir() and not p.is_file()) for p in base.rglob('*')):
+        raise ValueError('source package contains links or special files')
+    shutil.copytree(base, out)
+    (out/'catalog.inc').write_text(catalog(old['modules'], old['jit_source_contract']))
+    command = ['g++','-std=c++17','-O2','-fPIC','-shared','-pthread','-Wl,-Bsymbolic',
+        '-I'+str(out),str(ROOT/'quactlize/dispatch/binding.cpp'),'-ldl',
+        '-o',str(out/'libquactlize_kpack_dispatch.so')]
+    subprocess.run(command, check=True)
+    old['dispatch_sha256'] = sha(out/'libquactlize_kpack_dispatch.so')
+    old['host_command'] = command
+    for name in changed:
+        old['policy_hashes'][name] = sha(ROOT/name)
+    old['dispatcher_refresh'] = dict(base_manifest_sha256=sha(base/'manifest.json'),
+        changed_policy_inputs=changed, scope='DENSE_N_EXTENSION_PREDICTED', gpu_compilations=0)
+    save(out/'manifest.json', old)
+    verify(out, sdk=sdk)
+    for path in base.rglob('*'):
+        if path.is_file() and path.name not in ('libquactlize_kpack_dispatch.so','manifest.json'):
+            if sha(path) != sha(out/path.relative_to(base)):
+                raise ValueError('dispatcher refresh changed another payload: '+str(path))
+    print(f'MODEL_DISPATCH_REFRESH PASS GPU_IMAGES=UNCHANGED output={out}', flush=True)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    for name in ('sdk','base','execution','output'):
+    for name in ('sdk','base','output'):
         p.add_argument('--'+name, type=Path, required=True)
+    action = p.add_mutually_exclusive_group(required=True)
+    action.add_argument('--execution', type=Path)
+    action.add_argument('--dispatcher-only', action='store_true')
     a = p.parse_args()
     base, out = a.base.resolve(strict=True), a.output.resolve()
     if out.exists():
         raise ValueError('use a fresh output directory')
+    if a.dispatcher_only:
+        refresh_dispatcher(base, out, a.sdk)
+        return
     # Old execution sources intentionally differ. Validate only the reused
     # payloads here; the assembled package gets full current-source checks.
     old = json.loads((base/'manifest.json').read_text())

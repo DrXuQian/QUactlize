@@ -4,9 +4,49 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
+## Dense output-head prefill continuation, 2026-09-16
+
+`kpack-q4-resume.psr_9mu2` completed both numerical processes with finite
+metrics, but its large-M Q6 output head (N248320/K2048) retained legacy FQ.
+Decode already has a matched choice. The native dense fallback now transfers
+the largest measured same-format/same-K N family, only within its measured
+M128..4096 interval, with S1, AP0 and complete N tiles. Existing exact choices
+take priority. The recipe is marked `QKS_PREDICTED`; it is not a measured
+head latency or a 5% optimality claim. The component-cost API still returns
+MISS for unmeasured weights and does not invent SF/full-dequant costs.
+
+Only the 966,848-byte host dispatcher and package manifest change. Every GPU
+image, compute contract, offline format, packer and caller binary is unchanged.
+The machine-readable pin below identifies the current artifact. The command
+fetches it through Git LFS (one new binary object), verifies the dispatcher-only
+transition and reuses the earlier component gates. Four GPU-reference calls
+are reused; BOTH native evaluations run again with the new runtime. Warm
+benchmark, Asys and ACU follow only after numerical and selection checks pass.
+
+```bash
+(
+    set -e
+    cd /sim/eec/shared/junfu.qx/quactlize
+    test "$(git branch --show-current)" = develop
+    git pull --ff-only origin develop
+
+    PREVIOUS_RUN=/workspace/kpack-q4-resume.psr_9mu2 \
+    REPAIR_PREFILL=1 \
+    LLAMA_CI_DIR=/sim/eec/shared/junfu.qx/llama.cpp \
+    PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
+    CUDA_VISIBLE_DEVICES=0 \
+    bash tools/resume_kpack_q4_model_box.sh
+)
+```
+
+The caller checker must already include `77f19b6d5`, as in the uploaded
+continuation. No caller rebuild or full config sweep is requested. A missing
+selected parent may JIT once outside timing. Existing references, caches and
+result directories are preserved. Send the newly printed `.results.tgz`.
+
 ## Explicit BF16 compute integration, updated 2026-09-16
 
-Current delivery: source `35dddc3`, private caller `77f19b6d5`, runtime artifact
+Direct-BF16 delivery: source `35dddc3`, private caller `77f19b6d5`, runtime artifact
 `9b6c477`. The execution SHA256 is
 `780d24dd4dc3620aa6b9eaafec22d3939426c706ca86a6cf0c5453ac13e1a9af`.
 The package has 62 LFS payload paths, including eight same-config comparison

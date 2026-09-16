@@ -717,6 +717,67 @@ def continuation_fixture(tmp_path, monkeypatch):
     return resume, previous, llama, sdk, bundle, build
 
 
+@pytest.mark.parametrize('fault', [None, 'execution', 'compute', 'mapping', 'policy', 'base'])
+def test_dispatcher_only_retry_rejects_device_or_contract_changes(fault):
+    from tools.resume_kpack_q4_model import check_dispatcher_refresh
+    import copy
+    old = dict(dispatch_sha256='old', host_command=['old'], execution_sha256='same',
+        compute_contract={'metadata':'bf16'}, policy_hashes={'quactlize/dispatch/policy.hpp':'old','other':'same'},
+        smallm_matched_policy={'sha256':'same'})
+    current=copy.deepcopy(old)
+    current.update(dispatch_sha256='new',host_command=['new'],dispatcher_refresh=dict(
+        base_manifest_sha256='base', changed_policy_inputs=['quactlize/dispatch/policy.hpp'],
+        scope='DENSE_N_EXTENSION_PREDICTED', gpu_compilations=0))
+    current['policy_hashes']['quactlize/dispatch/policy.hpp']='new'
+    if fault=='execution':current['execution_sha256']='new'
+    if fault=='compute':current['compute_contract']['metadata']='f16'
+    if fault=='mapping':current['smallm_matched_policy']['sha256']='new'
+    if fault=='policy':current['policy_hashes']['other']='new'
+    if fault=='base':current['dispatcher_refresh']['base_manifest_sha256']='wrong'
+    if fault:
+        with pytest.raises(ValueError):check_dispatcher_refresh(old,current,'base')
+    else:check_dispatcher_refresh(old,current,'base')
+
+
+@pytest.mark.parametrize('fault', [None, 'numerical', 'fallback', 'origin'])
+def test_prefill_retry_accepts_only_the_uploaded_policy_failure(tmp_path, monkeypatch, fault):
+    from quactlize.runtime.compiler import sha
+    resume, original, *_ = continuation_fixture(tmp_path, monkeypatch)
+    previous=tmp_path/'retry';result=previous/'results';result.mkdir(parents=True)
+    log=result/'numerical/model';log.mkdir(parents=True)
+    (result/'status.json').write_text(json.dumps(dict(status='FAIL',phase='numerical')))
+    (result/'numerical/status.json').write_text(json.dumps([dict(model='model',status='FAIL',
+        error='NaN' if fault=='numerical' else 'model numerical run has missing selected operations or a legacy fallback')]))
+    text='[quactlize] output.weight: native policy miss, retain legacy K-pack FQ (no same-family policy choice)'
+    if fault=='fallback':text=text.replace('output.weight','blk.0.weight')
+    (log/'b2048-kpack-reference.log').write_text(text+'\n')
+    (result/'continuation.json').write_text(json.dumps(dict(previous=str(original),
+        runtime_manifest_sha256='wrong' if fault=='origin' else sha(original/'results/bundle-manifest.json'))))
+    if fault:
+        with pytest.raises(ValueError):resume.repaired_source(previous)
+    else:assert resume.repaired_source(previous)==original
+
+
+def test_changed_dispatcher_reruns_both_native_evaluations(tmp_path, monkeypatch):
+    from tools import run_kpack_model_validation as validation
+    calls=[]
+    def reused(argv, log, previous):
+        calls.append(('reused', log.name));return 'saved reference'
+    def launched(argv, log, env):
+        calls.append(('launched', log.name));return 'new native'
+    monkeypatch.setattr(validation, 'reuse_completed', reused)
+    monkeypatch.setattr(validation, 'run', launched)
+    monkeypatch.setattr(validation, 'numerical_metrics', lambda *_args: {})
+    corpus=tmp_path/'input';corpus.write_text('corpus')
+    args=SimpleNamespace(corpus=corpus,logits=tmp_path/'logits',build=tmp_path/'build',
+        cache=tmp_path/'cache',reuse_from=tmp_path/'old',rerun_native=True)
+    records=validation.numerical(args,dict(name='model',path='/model.gguf'),dict(eligible=['weight']),
+        tmp_path,({},lambda *_args:'corpus',lambda *_args:{},lambda *_args:dict(fully_selected=True)))
+    assert len(records)==6
+    assert [name for kind,name in calls if kind=='launched']==['b1-kpack-reference.log','b2048-kpack-reference.log']
+    assert len([name for kind,name in calls if kind=='reused'])==4
+
+
 @pytest.mark.parametrize('fault', [None, 'stage', 'error', 'later', 'manifest', 'binary', 'checker', 'gate', 'receipt'])
 def test_model_continuation_binds_prior_run(tmp_path, monkeypatch, fault):
     resume, previous, llama, sdk, bundle, build = continuation_fixture(tmp_path, monkeypatch)

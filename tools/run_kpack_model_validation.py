@@ -118,7 +118,8 @@ def numerical(args, model, inv, directory, helpers):
             log = directory / f'b{batch}-{phase}.log'
             print(f'KPACK_MODEL_NUMERICAL model={model["name"]} batch={batch} phase={phase}', flush=True)
             previous = getattr(args, 'reuse_from', None)
-            text = reuse_completed(argv, log, previous / model['name'] / log.name) if previous else None
+            reuse = previous and not (native and getattr(args, 'rerun_native', False))
+            text = reuse_completed(argv, log, previous / model['name'] / log.name) if reuse else None
             if text is None:
                 if previous and phase == 'reference-save' and base.exists():
                     raise ValueError('refusing to overwrite an existing reference without a completed log: ' + str(base))
@@ -175,9 +176,12 @@ def main():
         p.add_argument('--' + key, type=Path, required=True)
     p.add_argument('--phase', choices=('numerical', 'trace'), required=True)
     p.add_argument('--reuse-from', type=Path, help='recheck completed numerical calls; execute only absent calls')
+    p.add_argument('--rerun-native', action='store_true', help='reuse only reference calls after a runtime change')
     args = p.parse_args()
     if args.reuse_from and args.phase != 'numerical':
         p.error('--reuse-from is numerical-only')
+    if args.rerun_native and not args.reuse_from:
+        p.error('--rerun-native requires --reuse-from')
     if args.reuse_from:
         args.reuse_from = args.reuse_from.resolve(strict=True)
         if args.output.resolve().is_relative_to(args.reuse_from):

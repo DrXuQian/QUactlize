@@ -20,7 +20,23 @@
     export LD_LIBRARY_PATH="$SDK/CUDA_SDK/targets/x86_64-linux/lib:$SDK/targets/x86_64-linux/lib:$SDK/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     export QUACTLIZE_PPU_BUNDLE=${QUACTLIZE_PPU_BUNDLE:-/workspace/quactlize-runtime-artifact-2826cf1-46fc3096e1a1/prebuilt/ppu0010/2826cf1/runtime6-46fc3096e1a1/bundle}
     test -s "$QUACTLIZE_PPU_BUNDLE/manifest.json"
+    EXTRA=()
+    if [[ ${REPAIR_PREFILL:-0} == 1 ]]; then
+        mapfile -t PIN < <("$PYTHON" -c 'import json; m=json.load(open("tools/kpack_q4_model_artifact.json")); print(m["branch"]); print(m["commit"]); print(m["path"])')
+        [[ ${#PIN[@]} == 3 && ${PIN[0]} == artifacts/kpack-model-runtime-v1 && ${PIN[1]} =~ ^[0-9a-f]{40}$ && ${PIN[2]} == prebuilt/ppu0010/kpack-model-runtime-v1 ]]
+        ART="$(dirname "$PREVIOUS")/quactlize-model-artifact-${PIN[1]:0:10}"
+        git fetch origin "${PIN[0]}"
+        git cat-file -e "${PIN[1]}^{commit}"
+        if [[ -e $ART ]]; then
+            test -d "$ART" && test "$(git -C "$ART" rev-parse HEAD)" == "${PIN[1]}"
+        else
+            GIT_LFS_SKIP_SMUDGE=1 git worktree add --detach "$ART" "${PIN[1]}"
+        fi
+        git -C "$ART" lfs pull origin --include="${PIN[2]}/**" --exclude=""
+        EXTRA+=(--repair-prefill)
+    fi
     "$PYTHON" -u tools/resume_kpack_q4_model.py --previous "$PREVIOUS" --llama "$LLAMA" --sdk "$SDK" \
         --device "${CUDA_VISIBLE_DEVICES:-0}" \
+        "${EXTRA[@]}" \
         --corpus "${GSM8K_FILE:-/sim/eec/shared/AI_workspace/llm-models/datasets/gsm8k/main/test-00000-of-000001.parquet}"
 )

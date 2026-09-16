@@ -1,5 +1,16 @@
 # K-pack execution follow-up
 
+## Q6 output-head coverage update, 2026-09-16
+
+M1 matched decode passes in the uploaded model continuation. The remaining
+native miss was large-M N248320/K2048, not BF16 fallback or a nonfinite
+result. A dispatcher-only candidate now transfers an existing same-K dense
+recipe across N after exact selection misses (M128..4096, S1/AP0). It is
+explicitly predicted, not a measured output-head winner. The component
+cost table and all GPU images remain unchanged. Native large-M accuracy,
+timing and trace are still required; do not admit the prior legacy timing.
+Use the [bounded continuation command](LLAMA_CPP_KPACK_HANDOFF.md).
+
 ## Qwen3-32B first-chunk nonfinite diagnosis (2026-09-15)
 
 Update: the uploaded first-bad snapshot contains exactly one finite F32
