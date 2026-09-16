@@ -47,6 +47,12 @@ caller's `.aoneci/scripts/build.sh`. No llama executable is published here.
 The runtime refresh reuses all unchanged TC images; it does not compile a
 large sweep. The old isolated experimental bundle remains in artifact history.
 
+Delivery: source `eb01ba8`, private caller `0b22fe43e`, artifact `9ee6749`.
+Execution SHA256 is `0605f190f8e48fb16a9cb0c7e09845db8344127b172f3b4e76c72d3e1307069c`.
+There are54 LFS payload paths; repeated execution paths share one object.
+Local validation:158 host/tool tests and33 caller tests pass; the real PPU SDK
+compiles both the execution library and updated caller translation unit.
+
 With `MODEL_COMPUTE=bf16 MODEL_ACU=1`, order is:
 
 1. Production Q8 v2 ABI gate12,480; same-image BF16 capability746 and selected
