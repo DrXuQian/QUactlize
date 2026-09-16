@@ -202,12 +202,15 @@ template<class C> struct Case {
     require(out==expected_negative,"row-map negative has unexpected output placement");
     d.guards();down.map.put_on_stream(map,stream);
   }
-  void correctness(bool candidate_only=false) {
+  void correctness(bool candidate_only=false,int alias_offset=-1) {
+    require(alias_offset<0 || (tokens==1 && router_mode>=0 && alias_offset+8<=256),"alias scope");
     std::vector<int> reference_ids;std::vector<float> reference_weights;
     cudaStream_t stream;ck(cudaStreamCreateWithFlags(&stream,cudaStreamNonBlocking));
     cudaGraph_t graphs[2];cudaGraphExec_t exec[2];
+    if(alias_offset>=0) plan.router.weights=logits.ptr+alias_offset;
     for(int arm=0;arm<2;++arm) {ck(cudaStreamBeginCapture(stream,cudaStreamCaptureModeGlobal));
       launch(arm,stream);ck(cudaStreamEndCapture(stream,&graphs[arm]));ck(cudaGraphInstantiate(&exec[arm],graphs[arm],nullptr,nullptr,0));}
+    plan.router.weights=weights.ptr; // Separate output for the router control.
     for(int repeat=0;repeat<4;++repeat) {
       std::vector<int> in(ids.count,-123);std::vector<float> input(source.count),l(logits.count),b(bias.count);
       for(int t=0;t<tokens;++t) for(int s=0;s<8;++s) in[t*13+s]=((repeat==1?0:t*13)+s*17+repeat*7)%256;
@@ -216,25 +219,44 @@ template<class C> struct Case {
       for(size_t i=0;i<l.size();++i) l[i]=repeat==0?0.f:float(int((i*17+repeat*29)%263)-131)*.0625f;
       for(size_t i=0;i<b.size();++i) b[i]=repeat==0?0.f:float(int((i*31+repeat*17)%257)-128)*.00437f;
       source.put(input);logits.put(l);bias.put(b);
-      if(candidate_only) {
+      if(candidate_only || alias_offset>=0) {
         ids.put(in);weights.reset();
         ck(cudaDeviceSynchronize());
         if(plan.router.version) {router_control<<<tokens,32,0,stream>>>(plan);ck(cudaGetLastError());ck(cudaStreamSynchronize(stream));}
         reference_ids=ids.get();reference_weights=weights.get();
+        if(alias_offset>=0) {
+          auto aliased=plan;aliased.router.weights=logits.ptr+alias_offset;
+          router_control<<<1,32,0,stream>>>(aliased);
+          ck(cudaGetLastError());ck(cudaStreamSynchronize(stream));
+          auto after=logits.get();
+          require(ids.get()==reference_ids && !std::memcmp(after.data()+alias_offset,
+              reference_weights.data(),8*sizeof(float)),"original router snapshot alias differs");
+          for(int i=0;i<256;++i) if(i<alias_offset || i>=alias_offset+8)
+            require(std::memcmp(&after[i],&l[i],sizeof(float))==0,"original router alias guard");
+        }
       }
       for(int arm=int(candidate_only);arm<2;++arm) {
         context="tokens="+std::to_string(tokens)+" k="+std::to_string(k)+" mask="+std::to_string(mask)+
             " merged="+std::to_string(merged)+" router="+std::to_string(router_mode)+
             " arm="+std::to_string(arm)+" repeat="+std::to_string(repeat)+
             " compute="+(std::is_same<C,cutlass::bfloat16_t>::value?"bf16":"f16")+
-            " weak="+std::to_string(int(weak));
+            " weak="+std::to_string(int(weak))+" alias="+std::to_string(alias_offset);
         gate.reset();up.reset();down.reset();ids.put(in);weights.reset();
+        // As in a graph replay, the preceding projection rewrites logits.
+        // Never reuse a previous router's aliased output as its next input.
+        if(alias_offset>=0) logits.put(l);
         // Poison/upload use the default stream; the measured stream is
         // nonblocking. Establish the edge outside graph capture/timing.
         ck(cudaDeviceSynchronize());
         ck(cudaGraphLaunch(exec[arm],stream));ck(cudaStreamSynchronize(stream));
         auto got_ids=ids.get();auto got_weights=weights.get();
-        if(arm==0) {reference_ids=got_ids;reference_weights=got_weights;}
+        if(alias_offset>=0) {
+          auto after=logits.get();
+          got_weights.assign(after.begin()+alias_offset,after.begin()+alias_offset+8);
+          for(int i=0;i<256;++i) if(i<alias_offset || i>=alias_offset+8)
+            require(std::memcmp(&after[i],&l[i],sizeof(float))==0,"alias wrote outside weights");
+        }
+        if(arm==0 && alias_offset<0) {reference_ids=got_ids;reference_weights=got_weights;}
         else {require(got_ids==reference_ids,"router IDs differ");
           if(std::memcmp(got_weights.data(),reference_weights.data(),weights.count*sizeof(float))) {
             for(size_t i=0;i<weights.count;++i) if(std::memcmp(&got_weights[i],&reference_weights[i],sizeof(float))) {
@@ -304,9 +326,23 @@ int main(int argc,char** argv) {
   try {
     bool bench=argc>1 && !std::strcmp(argv[1],"--benchmark");
     bool candidate_only=argc>1 && !std::strcmp(argv[1],"--candidate-check");
+    bool alias_check=argc>1 && !std::strcmp(argv[1],"--router-alias-check");
     bool single=argc>1 && (!std::strcmp(argv[1],"--case") || !std::strcmp(argv[1],"--profile"));
     bool profile=argc>1 && !std::strcmp(argv[1],"--profile");
-    if(single) {
+    if(alias_check) {
+      bool alias_candidate=argc==3 && !std::strcmp(argv[2],"--candidate-only");
+      require(argc==2 || alias_candidate,"--router-alias-check [--candidate-only]");
+      int cases=0;
+      for(int compute=0;compute<2;++compute) for(int k:{512,2048})
+      for(bool merged:{false,true}) for(int mask:{0,1,3,4,5,7})
+      for(int router:{0,1,2}) for(int offset:{0,8,248}) {
+        if(merged&&(mask&2)) continue;
+        auto run=[&](auto tag) {Case<decltype(tag)> c(1,k,mask,merged,router,false);c.correctness(alias_candidate,offset);};
+        if(compute)run(cutlass::bfloat16_t{});else run(Half{});
+        if(++cases%36==0) {printf("MOE_ROUTER_ALIAS_PROGRESS cases=%d\n",cases);fflush(stdout);}
+      }
+      printf("MOE_ROUTER_ALIAS PASS cases=%d replays=4 arms=%d scope=M1_TOP8_LOGITS_REUSE\n",cases,alias_candidate?1:2);
+    } else if(single) {
       require(argc==9,"--case/--profile tokens K mask merged router bf16 weak_or_arm");
       int t=std::atoi(argv[2]),k=std::atoi(argv[3]),mask=std::atoi(argv[4]),merged=std::atoi(argv[5]),router=std::atoi(argv[6]),bf=std::atoi(argv[7]);
       int option=std::atoi(argv[8]);require(t>=1&&t<=8 && k>0 && mask>=0&&mask<=7 && (!merged||!(mask&2)),"case arguments");

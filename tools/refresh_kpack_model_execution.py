@@ -17,18 +17,37 @@ from quactlize.runtime.tuning import digest
 from tools.kpack_jit import module_source
 from tools.build_kpack_dispatch import catalog
 from tools.build_kpack_model_package import attach_q4_bf16
-from tools.verify_kpack_dispatch import verify, pack_paths, prefill_paths
+from tools.verify_kpack_dispatch import verify, pack_paths, prefill_paths, router_alias_paths
 
 
 def save(path, data):
     path.write_text(json.dumps(data, indent=2)+'\n')
 
 
-def refresh_dispatcher(base, out, sdk):
+def dispatcher_refresh_scope(changed, historical_caller=False):
+    scopes = {
+        ('quactlize/dispatch/policy.hpp',): 'DENSE_N_EXTENSION_PREDICTED',
+        ('quactlize/dispatch/moe.hpp',): 'M1_ROUTER_SNAPSHOT_ALIAS_ADMISSION',
+    }
+    scope = scopes.get(tuple(sorted(changed)))
+    if historical_caller or scope is None:
+        raise ValueError('dispatcher-only refresh requires one reviewed host-only change')
+    return scope
+
+
+def refresh_dispatcher(base, out, sdk, alias_gate=None):
     old = verify(base, sdk=sdk)
     changed = sorted(name for name, value in old['policy_hashes'].items() if sha(ROOT/name) != value)
-    if changed != ['quactlize/dispatch/policy.hpp'] or 'model' in old:
-        raise ValueError('dispatcher-only refresh requires only the dense policy input to differ')
+    scope = dispatcher_refresh_scope(changed, 'model' in old)
+    if alias_gate is not None:
+        alias_gate = alias_gate.resolve(strict=True)
+        gate = json.loads((alias_gate/'manifest.json').read_text())
+        if (scope != 'M1_ROUTER_SNAPSHOT_ALIAS_ADMISSION' or 'router_alias_gate' in old or
+                gate.get('platform') != 'ppu' or sha(alias_gate/'bench') != gate['binary_sha256'] or
+                any(sha(ROOT/name) != value for name,value in gate['source_hashes'].items())):
+            raise ValueError('router alias gate source/build differs')
+    if any(sha(ROOT/name) != value for name,value in old['execution_receipt']['source_hashes'].items()):
+        raise ValueError('dispatcher-only refresh cannot relabel changed GPU source')
     if any(p.is_symlink() or (not p.is_dir() and not p.is_file()) for p in base.rglob('*')):
         raise ValueError('source package contains links or special files')
     shutil.copytree(base, out)
@@ -42,7 +61,16 @@ def refresh_dispatcher(base, out, sdk):
     for name in changed:
         old['policy_hashes'][name] = sha(ROOT/name)
     old['dispatcher_refresh'] = dict(base_manifest_sha256=sha(base/'manifest.json'),
-        changed_policy_inputs=changed, scope='DENSE_N_EXTENSION_PREDICTED', gpu_compilations=0)
+        changed_policy_inputs=changed, scope=scope, gpu_compilations=0)
+    old['device_validated'] = False
+    if alias_gate is not None:
+        (out/'router-alias').mkdir()
+        for name in ('manifest.json','bench'):
+            shutil.copy2(alias_gate/name,out/'router-alias'/name)
+        old['router_alias_gate'] = dict(path='router-alias/manifest.json',
+            sha256=sha(out/'router-alias/manifest.json'),binary_sha256=sha(out/'router-alias/bench'),
+            cases=360,device_validated=False)
+        router_alias_paths(out,old['router_alias_gate'])
     save(out/'manifest.json', old)
     verify(out, sdk=sdk)
     for path in base.rglob('*'):
@@ -59,13 +87,16 @@ def main():
     action = p.add_mutually_exclusive_group(required=True)
     action.add_argument('--execution', type=Path)
     action.add_argument('--dispatcher-only', action='store_true')
+    p.add_argument('--router-alias-gate', type=Path, help='attach the bounded M1 alias proof to a host-only refresh')
     a = p.parse_args()
     base, out = a.base.resolve(strict=True), a.output.resolve()
     if out.exists():
         raise ValueError('use a fresh output directory')
     if a.dispatcher_only:
-        refresh_dispatcher(base, out, a.sdk)
+        refresh_dispatcher(base, out, a.sdk, a.router_alias_gate)
         return
+    if a.router_alias_gate:
+        raise ValueError('--router-alias-gate requires --dispatcher-only')
     # Old execution sources intentionally differ. Validate only the reused
     # payloads here; the assembled package gets full current-source checks.
     old = json.loads((base/'manifest.json').read_text())

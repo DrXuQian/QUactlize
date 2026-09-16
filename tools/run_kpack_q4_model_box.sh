@@ -94,6 +94,11 @@
     "$PYTHON" -c 'import hashlib,sys; assert hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()==sys.argv[2],"model package manifest differs"' "$BUNDLE/manifest.json" "${INFO[3]}"
     "$PYTHON" tools/verify_kpack_dispatch.py "$BUNDLE" --sdk "$SDK" | tee "$RUN/results/verify.log"
     test ! -e "$BUNDLE/llama"
+    stage=router-alias-gate
+    if "$PYTHON" -c 'import json,sys; sys.exit("router_alias_gate" not in json.load(open(sys.argv[1])))' "$BUNDLE/manifest.json"; then
+        "$BUNDLE/router-alias/bench" --router-alias-check 2>&1 | tee "$RUN/results/router-alias.log"
+        grep -qx 'MOE_ROUTER_ALIAS PASS cases=360 replays=4 arms=2 scope=M1_TOP8_LOGITS_REUSE' "$RUN/results/router-alias.log"
+    fi
     stage=production-q8-gate
     "$PYTHON" -u tools/run_kpack_decode_updates.py --sdk "$SDK" --bundle "$BUNDLE" \
         --output "$RUN/results/production-q8.json" 2>&1 | tee "$RUN/results/production-q8.log"

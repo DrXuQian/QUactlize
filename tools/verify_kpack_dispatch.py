@@ -132,6 +132,22 @@ def model_paths(root, model):
     return list(files) + list(links)
 
 
+def router_alias_paths(root, receipt):
+    root = Path(root).resolve(strict=True)
+    names = ['router-alias/manifest.json', 'router-alias/bench']
+    if (receipt.get('path') != names[0] or receipt.get('cases') != 360 or
+            receipt.get('device_validated') is not False):
+        raise ValueError('router alias gate contract differs')
+    for name, field in zip(names, ('sha256', 'binary_sha256')):
+        path = root/name
+        if path.is_symlink() or not path.resolve(strict=True).is_relative_to(root) or sha(path) != receipt.get(field):
+            raise ValueError('router alias gate payload differs: '+name)
+    build = json.loads((root/names[0]).read_text())
+    if build.get('platform') != 'ppu' or build.get('binary_sha256') != receipt['binary_sha256']:
+        raise ValueError('router alias gate build differs')
+    return names
+
+
 def verify(root, *, sdk=None):
     root = Path(root).resolve(strict=True)
     m = json.loads((root / "manifest.json").read_text())
@@ -209,6 +225,8 @@ def verify(root, *, sdk=None):
     if 'local_optimization_gate' in m:
         from tools.attach_kpack_local_gates import payload_paths
         payload_paths(root,m['local_optimization_gate'],sdk=sdk)
+    if 'router_alias_gate' in m:
+        router_alias_paths(root,m['router_alias_gate'])
     if 'q4_bf16_gate' in m:
         from dev.bf16_fastpath.gate import verified
         receipt=m['q4_bf16_gate']

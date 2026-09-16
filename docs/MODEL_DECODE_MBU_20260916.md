@@ -90,10 +90,31 @@ computing top-k a second time, but its separate launch still costs time.
 
 The caller tries `match_moe_router`, checks the full span's memory ranges,
 and calls `moe_run_router`; any decline falls back to native top-k followed
-by `moe_run`. The present trace does not record which predicate rejects
-each span. Record that exact rejection before changing alias/lifetime guards.
-This is a separate, still-open model integration issue, not fixed by Q8 GEMV
-tuning or by relabelling the ordinary prepare as fused.
+by `moe_run`. A local forty-layer graph with the actual GGML allocator
+reproduces39 rejects and one pass: dead router logits storage is reused for
+routing weights and/or later chain outputs. The whole-span check treats the
+multi-kernel chain as simultaneous reads/writes. Separately, the dispatcher
+unconditionally rejects weights/logits overlap.
+
+The bounded fix recognizes the router's completed read in the caller and
+admits weights/logits overlap in the dispatcher only for M1, top8, E256,
+channels1. Both original and optimized M1 routers snapshot all logits into
+warp registers before storing weights. Live activations, IDs, bias, scratch
+and finish-weight overlaps retain their guards. Multi-token logits overlap
+still declines: a one-warp proof cannot establish cross-warp/CTA ordering.
+The graph structure and outside-consumer checks are unchanged.
+
+Local tests cover the exact caller predicate on allocated GGML tensors,
+immutable dispatch chains and negative aliases. RTX5070 passes360 alias
+contexts, four changed-input graph replays, the optimized prepare, original
+top8 router and guards, across F16/BF16, merged/unmerged, mixed masks and
+three router modes. The historical NVIDIA F16 TC-gather baseline still
+faults with AND without aliasing; it is not counted as a passing baseline.
+The prebuilt PPU gate checks both prepare bodies in all360 contexts. No
+GEMM, prepare, offline-format or arithmetic body changes in this fix; only
+the host dispatcher and caller admission change. PPU/model confirmation
+remains pending. The acceptance target is600 fused prepares for600 decode
+chains; prefill top-k calls are a separate scope and may remain.
 
 `moe_chain_swiglu_compute<BF16>` also remains a separate launch:600 calls,
 2557996 ns total,4.263 us/call and0.171 ms/token over40 layers. For the M1,

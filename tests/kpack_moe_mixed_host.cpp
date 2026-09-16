@@ -132,6 +132,11 @@ static void test_q4_bf16_chains() {
         assert(quactlize_kpack_dispatch_moe_bind_finish_v1(&r,chain,&finish)==QKS_OK);
         if(!(mask&4)) expected.pop_back();expected.push_back(900);
         calls.clear();assert(quactlize_kpack_dispatch_moe_run_router_v1(chain,&router,nullptr)==QKS_OK && calls==expected);
+        auto snapshot=router;snapshot.logits=router.weights-8;
+        calls.clear();
+        assert(quactlize_kpack_dispatch_moe_run_router_v1(chain,&snapshot,nullptr)==(tokens==1?QKS_OK:QKS_MISS));
+        assert(calls==(tokens==1?expected:std::vector<int>{}));
+        calls.clear();assert(quactlize_kpack_dispatch_moe_run_router_v1(chain,&router,nullptr)==QKS_OK && calls==expected);
         quactlize_kpack_dispatch_moe_destroy_v1(chain);chain=nullptr;
         auto saved=endpoints[2].compute_type;endpoints[2].compute_type=QK_COMPUTE_F16;
         assert(create()==QKS_INVALID && !chain);endpoints[2].compute_type=saved;

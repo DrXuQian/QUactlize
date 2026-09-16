@@ -1,5 +1,7 @@
 #include "quactlize/dispatch/moe.hpp"
 #include "quactlize/integrations/llama/moe_graph.hpp"
+#include "ggml-alloc.h"
+#include "ggml-backend.h"
 #include <cmath>
 #include <cstdio>
 #include <stdexcept>
@@ -34,7 +36,16 @@ static void composition() {
   router_negative([](auto& r){r.weights=(float*)0x01000000;});
   router_negative([](auto& r){r.weights=(float*)0x02000000;});
   router_negative([](auto& r){r.logits=(float*)0x10200000;});
-  router_negative([](auto& r){r.weights=(float*)r.logits;});
+  for (int offset:{0,8,248}) {
+    auto inplace=router;inplace.weights=const_cast<float*>(router.logits)+offset;
+    require(compatible_router(plan,inplace),"one-token register snapshot alias rejected");
+    for (int tokens:{2,4,8}) {
+      auto multi=plan;multi.gate.m=tokens*8;multi.gate.io.tokens=tokens;
+      require(!compatible_router(multi,inplace),"multi-token cross-warp alias accepted");
+    }
+    auto channels=plan;channels.gate.io.channels=8;
+    require(!compatible_router(channels,inplace),"non-M1-prepare alias accepted");
+  }
   router_negative([](auto& r){r.clamp=0.f;});
   router_negative([](auto& r){r.delayed_softmax=1;});
   auto negative=[&](auto edit) { auto bad=plan; edit(bad); require(!compatible_moe(bad),"composition negative missed"); };
@@ -60,6 +71,53 @@ static void composition() {
     require(compatible_moe(large)==(tokens<=8),"decode 64-row boundary disagrees");
   }
   std::puts("KPACK_MOE_COMPOSITION PASS separate+merged twelve negatives RED");
+}
+
+static void router_memory_order() {
+  auto * ctx=ggml_init({8*1024*1024,nullptr,true});
+  auto * raw=ggml_new_tensor_2d(ctx,GGML_TYPE_F32,2048,1);
+  auto * input=ggml_rms_norm(ctx,raw,1e-6f);
+  auto * logits=ggml_mul_mat(ctx,ggml_new_tensor_2d(ctx,GGML_TYPE_F32,2048,256),input);
+  auto * probs=ggml_soft_max(ctx,logits);
+  auto * ids=ggml_argsort_top_k(ctx,probs,8);
+  auto * weights=ggml_get_rows(ctx,ggml_reshape_3d(ctx,probs,1,256,1),ids);
+  auto * g=ggml_new_graph(ctx);ggml_build_forward_expand(g,weights);
+  auto * a=ggml_reshape_3d(ctx,input,2048,1,1);
+  auto * both=ggml_mul_mat_id(ctx,ggml_new_tensor_3d(ctx,GGML_TYPE_Q4_K,2048,1024,256),a,ids);
+  auto * gate=ggml_view_3d(ctx,both,512,8,1,both->nb[1],both->nb[2],0);
+  auto * up=ggml_view_3d(ctx,both,512,8,1,both->nb[1],both->nb[2],512*4);
+  auto * down=ggml_mul_mat_id(ctx,ggml_new_tensor_3d(ctx,GGML_TYPE_Q5_K,512,2048,256),
+      ggml_swiglu_split(ctx,gate,up),ids);
+  ggml_build_forward_expand(g,down);
+  auto allocator=ggml_gallocr_new(ggml_backend_cpu_buffer_type());
+  require(ggml_gallocr_alloc_graph(allocator,g),"router witness allocation failed");
+  int start=-1,ii=-1,wi=-1;
+  for(int j=0;j<g->n_nodes;++j) {
+    if(g->nodes[j]==probs)start=j;
+    if(g->nodes[j]==ids)ii=j;
+    if(g->nodes[j]==weights)wi=j;
+  }
+  std::vector<ggml_op> ops;
+  for(int j=start;j<=wi;++j)ops.push_back(g->nodes[j]->op);
+  auto span=quactlize::llama::match_moe_router(g,start,ops,ii,wi);
+  require(span.count>0,"allocated router span missing");
+  int outputs[3]={ii,wi,start+span.count-1};
+  void * original_weights=weights->data;void * original_down=down->data;
+  // Reproduce the allocator's logits+32-byte reuse without executing the graph.
+  weights->data=static_cast<char*>(logits->data)+32;
+  require(!ggml_cuda_check_fusion_memory_ranges(g,start,span.count,outputs,3,false,nullptr),
+      "whole-span guard did not reject reused logits");
+  require(ggml_cuda_check_fusion_memory_ranges(g,start,span.count,outputs,3,false,logits),
+      "completed router input still blocks fusion");
+  for (auto * write:{weights,down}) {
+    void * original=write->data;write->data=input->data;
+    require(!ggml_cuda_check_fusion_memory_ranges(g,start,span.count,outputs,3,false,logits),
+        "live activation overwrite accepted");
+    write->data=original;
+  }
+  weights->data=original_weights;down->data=original_down;
+  ggml_gallocr_free(allocator);ggml_free(ctx);
+  std::puts("KPACK_MOE_ROUTER_MEMORY PASS legacy alias RED staged alias GREEN live activation overwrite RED");
 }
 static void graph(bool merged,bool extra_consumer,bool bad_view,bool same_ids,bool silu) {
   auto * ctx=ggml_init({8*1024*1024,nullptr,true});
@@ -207,6 +265,7 @@ static void finish_graph(bool merged,int tokens,int fault) {
 int main() {
   try {
     composition();
+    router_memory_order();
     for (bool merged:{false,true}) {
       graph(merged,false,false,true,true); graph(merged,true,false,true,true);
       graph(merged,false,false,false,true); graph(merged,false,false,true,false);

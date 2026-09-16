@@ -82,7 +82,10 @@ inline bool compatible_router(qk_moe_plan_v1 const& p,qk_llama_router_v1 const& 
       !moe_span(p.gate.io.ids,uint64_t(p.gate.io.tokens)*p.gate.io.ids_stride*4,ids) ||
       !moe_span(p.gate.io.a,uint64_t(p.gate.io.tokens)*p.gate.io.a_token_stride*4,input) ||
       (r.bias && !moe_span(r.bias,256*4,bias))) return false;
-  if (moe_overlap(weights,logits) || moe_overlap(weights,ids) || moe_overlap(weights,input) ||
+  // The one-token top8 prepare snapshots all logits in one warp before stores.
+  // Multi-token/multi-CTA prepares cannot overwrite another reader's logits.
+  bool snapshot=p.gate.m==8 && p.gate.io.tokens==1 && p.gate.io.topk==8 && p.gate.io.channels==1;
+  if ((!snapshot && moe_overlap(weights,logits)) || moe_overlap(weights,ids) || moe_overlap(weights,input) ||
       moe_overlap(ids,logits) || moe_overlap(ids,input) ||
       (r.bias && (moe_overlap(weights,bias) || moe_overlap(ids,bias)))) return false;
   for (auto part:{&p.gate,p.merged?nullptr:&p.up,&p.down}) {

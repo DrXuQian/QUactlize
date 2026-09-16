@@ -10,7 +10,7 @@ This follow-up does not change shipping selection or offline formats.
 | Eight observed M1 GEMM families | Full Asys mapped; W00MDq adds all three TC ACU reports and both Q8 S8 reducers | Q6 exact-parent shared-instruction attribution; do not assume all conflicts are metadata |
 | Q4/Q5 H32 metadata and unsigned index/static fold | W00MDq numeric76 PASS; Q4 H32-only -12.51%, Q5 combined -7.35%; Q5 bank conflicts16384->0 | Production composition and warmed TPOT before promotion; Q8 index-only rejected |
 | Small Q8 40%, large 60% targets | New isolated26-body topology bundle;290 cells; PPU compile and5070 numeric PASS | `run_q8_topology_box.sh`: rotating full calls, reducer included,6x15 finals and exact ACU |
-| Router + prepare model fusion | Latest native trace:585 ordinary prepares,15 fast prepares,625 native top-k calls; only15/600 decode chains take the full fast path | Identify exact caller span/alias/runtime rejection; keep correctness guards, then recheck actual model fusion counts |
+| Router + prepare model fusion | GGML allocated graph reproduces39/40 alias rejects; bounded M1 snapshot fix passes host checks and5070 candidate alias360x4; optimized prepare already exists in execution DSO | PPU old/new alias360x4 gate, then600/600 fused decode prepares; no decode native top-k. Multi-token overlap remains rejected |
 | MoE SwiGLU helper | Current BF16 body:4.263 us/call,0.171 ms/token;48 KiB activation payload, scalar load/store and expf, no weight read | Vector/read/exp instruction evidence and matched numeric timing; paired gate/up ownership required before producer fusion |
 | Production update | Deferred until candidate results; immutable shipping DSO retained | Promote only measured wins and then recheck warmed model TPOT |
 

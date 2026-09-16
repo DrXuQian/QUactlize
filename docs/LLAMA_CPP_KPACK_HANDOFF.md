@@ -4,6 +4,31 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
+## M1 router/prepare admission repair, 2026-09-16
+
+The router and chain entry must be updated together. The caller recognizes
+that logits are consumed before later chain writes; the small dispatcher
+permits routing weights to reuse logits only for the proven single-token,
+top8,256-expert register snapshot. All live-input/ID/bias/scratch/finish
+guards remain, and multi-token overlapping logits still decline safely.
+This makes the already compiled optimized all-SIMT prepare reachable; gate/up
+weight merging alone did not fuse top-k. No public ABI, GEMM recipe, offline
+format or GPU execution-library byte changes in this admission repair.
+
+Local allocated-graph and dispatcher regressions pass. RTX5070 validates
+360 alias contexts with four replays using the optimized prepare and original
+top8 control. Its historical F16 TC-gather baseline fails both aliased and
+unaliased tests; it is not promoted as a passing NVIDIA control. The PPU
+package adds a1.3MB standalone alias gate, checked before model execution.
+Model admission is pending: require the optimized prepare for every eligible
+M1 layer and count independent top-k only outside that decode scope.
+
+Use the current machine-readable pin in `tools/kpack_q4_model_artifact.json`.
+The caller needs an incremental `.aoneci` build; the old caller binary cannot
+use the new admission rule. The runtime requires only a small host-dispatcher
+refresh, not a TC sweep rebuild. Full Asys and warmed TPOT remain the final
+evidence, not a successful host pattern match.
+
 ## Dense output-head prefill continuation, 2026-09-16
 
 `kpack-q4-resume.psr_9mu2` completed both numerical processes with finite
