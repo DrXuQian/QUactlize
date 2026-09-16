@@ -9,12 +9,16 @@ def test_production_q8_policy_preserves_tc_indexed_and_different_incumbents(tmp_
     import json
     import subprocess
     from pathlib import Path
-    from tools.fit_kpack_q8_vector import fit, header, EVIDENCE, MATCHED, OUTPUT, ROOT
+    from tools.fit_kpack_q8_vector import fit, header, append_model_topology, EVIDENCE, MATCHED, MODEL, OUTPUT, ROOT
     evidence, matched = json.loads(EVIDENCE.read_text()), json.loads(MATCHED.read_text())
     policy = fit(evidence, matched)
     assert len(policy['rows']) == 11 and len(policy['retained']) == 39
     assert all(r['key'][1] == 0 and r['candidate'][0] in (4,5) and r['new_us']<r['old_us'] for r in policy['rows'])
     assert sum(r['reason']=='KEEP_INDEXED_E16_NOT_MODEL_E256' for r in policy['retained'])==16
+    model=json.loads(MODEL.read_text())
+    policy=append_model_topology(policy,matched,model)
+    assert len(policy['rows'])==12
+    assert policy['rows'][-1]['candidate']==[5,8,4,4,8]
     assert policy['rows'] == json.loads(OUTPUT.read_text())['rows']
     assert header(policy) == OUTPUT.with_suffix('.hpp').read_text()
     for mutation in ('numeric','duplicate','nan','delta'):
@@ -24,6 +28,15 @@ def test_production_q8_policy_preserves_tc_indexed_and_different_incumbents(tmp_
         elif mutation=='nan': bad['q8']['performance'][0]['best']['1']['median_us']=float('nan')
         else: bad['q8']['performance'][0]['delta_pct']+=1
         with pytest.raises(ValueError): fit(bad,matched)
+    for mutation in ('numeric','samples','scope','negative','reducer'):
+        bad=copy.deepcopy(model);r=bad['rows'][-1]
+        if mutation=='numeric':r['numeric']=[]
+        elif mutation=='samples':r['samples'][r['arm']][0][0]=float('nan')
+        elif mutation=='scope':r['arm']='v5-c4-w8-p4-s1-r0'
+        elif mutation=='negative':r['negatives']={}
+        else:
+            next(x for x in r['numeric'] if x.get('key')==r['arm'])['reducer_matched_bits']=False
+        with pytest.raises(ValueError):append_model_topology(fit(evidence,matched),matched,bad)
     source=tmp_path/'policy.cpp'
     source.write_text('''#include "quactlize/dispatch/q8_vector.hpp"
 #include <cassert>

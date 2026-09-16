@@ -48,7 +48,7 @@ def kernel_body(vector):
     file=ROOT/'quactlize/execution'/('simt_q8_vector.cuh' if vector else 'simt_kernel.cuh')
     text=file.read_text()
     start=text.index('template<int Input,int Compute,int Variant,int Columns,int Warps,int P>\n__global__ void kernel' if vector else
-                     'template<int Q,int Input,int Variant,int Columns,int Warps,int P,int Compute=0>\n__global__ void register_reuse')
+                     'template<int Q,int Input,int Variant,int Columns,int Warps,int P,int Compute=0,int Changes=0>\n__global__ void register_reuse')
     end=text.index('\ntemplate<int Q,int Variant,int Columns,int Warps,int P>\nint launch_v2' if vector else
                    '\ntemplate<int Q>\n__global__ void register_reuse_reduce',start)
     return text[start:end]
@@ -56,6 +56,12 @@ def kernel_body(vector):
 
 def candidate_body(vector):
     body=kernel_body(vector)
+    if not vector:
+        # Production retains the exact tested axes; experiments still select
+        # them explicitly instead of invoking the shape-limited shipping gate.
+        body=once(body,',int Changes=0','')
+        body=once(body,'template<int ','template<int Changes,int ')
+        return once(body,'__global__ void register_reuse','__global__ void candidate')
     body=once(body,'template<int ','template<int Changes,int ')
     body=once(body,'__global__ void '+('kernel' if vector else 'register_reuse'),
               '__global__ void candidate')

@@ -57,3 +57,4 @@ prebuilt/ppu0010/kpack-model-runtime-v1/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/kpack-model-runtime-v1/**/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/kpack-model-runtime-v1/mixed-stages filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/kpack-model-runtime-v1/local-gates/moe/bench filter=lfs diff=lfs merge=lfs -text
+prebuilt/ppu0010/kpack-model-runtime-v1/router-alias/bench filter=lfs diff=lfs merge=lfs -text

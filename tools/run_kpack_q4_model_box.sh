@@ -98,6 +98,10 @@
     if "$PYTHON" -c 'import json,sys; sys.exit("router_alias_gate" not in json.load(open(sys.argv[1])))' "$BUNDLE/manifest.json"; then
         "$BUNDLE/router-alias/bench" --router-alias-check 2>&1 | tee "$RUN/results/router-alias.log"
         grep -qx 'MOE_ROUTER_ALIAS PASS cases=360 replays=4 arms=2 scope=M1_TOP8_LOGITS_REUSE' "$RUN/results/router-alias.log"
+        stage=model-decode-gate
+        "$PYTHON" -u tools/check_kpack_model_decode_updates.py --sdk "$SDK" \
+            --library "$BUNDLE/libquactlize_ppu_execution.so" --output "$RUN/results/model-decode-gate.json" \
+            2>&1 | tee "$RUN/results/model-decode-gate.log"
     fi
     stage=production-q8-gate
     "$PYTHON" -u tools/run_kpack_decode_updates.py --sdk "$SDK" --bundle "$BUNDLE" \

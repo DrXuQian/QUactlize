@@ -330,6 +330,38 @@
       "old_us": 8.507941575611339,
       "new_us": 6.763823549537097,
       "result_sha256": "3d26d888077088ad31dc03e2a1ecb7fc3e6091323899304f2cc78109cb0122e0"
+    },
+    {
+      "key": [
+        8,
+        0,
+        2048,
+        4096,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "baseline": [
+        1,
+        4,
+        8,
+        4,
+        1
+      ],
+      "candidate": [
+        5,
+        8,
+        4,
+        4,
+        8
+      ],
+      "old_us": 12.375882443259744,
+      "new_us": 9.716470451915965,
+      "result_sha256": "59d140d023f8f6486329a05c2afca54c906dc59907b7129de92d2b436a7d3c7e",
+      "archive_sha256": "828656985400852a3328d11a73ad2b6bf843d28cb14806c22dfe195381e29af6",
+      "reducer": "ORDERED_FLOAT2_ALIGNED_M1"
     }
   ],
   "retained": [
@@ -882,6 +914,7 @@
   ],
   "archive_sha256": "74bfe0d324f550a2d9b7e83a6bc27798fc9f4ece4853a87c4b301c698363f06f",
   "scope": "EXACT_F32_IO_MEASURED_SIMT_REPLACEMENT_TC_UNCHANGED",
+  "model_evidence_sha256": "5ece12e74ce825e92f5840d5b7cf79ec1a59cf90dea63f53790200f4f68e6a41",
   "evidence_sha256": "29aac2b7af14d42320b93e32bb1322ef8cf83b18de91ceb189cc73e8ae6ca49d",
   "matched_sha256": "157b3d8d4e74813156bb149824424e76fcee733476ab2a8f977953d84b95889f"
 }

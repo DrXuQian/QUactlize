@@ -6,6 +6,29 @@ binary bundle, or loader contract changes.
 
 ## M1 router/prepare admission repair, 2026-09-16
 
+The combined follow-up also promotes three measured SIMT improvements:
+Q4 BF16 indexed N1024/K2048/top8/channel1 header decoding; Q5 BF16 indexed
+N2048/K512/top8/channel8 header decoding plus unsigned indexing/static fold;
+and Q8 FP16-compute/F32-IO dense M1/N2048/K4096 C8/W4/P4/S8 with its ordered
+paired reducer. Both indexed changes require E256 and eight routed rows.
+Other shapes, M, precisions and recipes retain their previous bodies. Q8
+selection replaces only the matching measured SIMT incumbent, never a TC
+choice. Exact samples, numerical controls and archive identities are in
+`docs/measurements/model_decode_promotions_20260916.json`.
+
+Local regression:172 host/tool tests pass. The CUDA adapter compiled from
+the actual production launch bodies passes24 independent-GGUF numerical
+checks and18 changed-input graph replays across six contexts on RTX5070,
+including the unchanged M2 controls, guards and negative controls. This is
+functional evidence, not PPU admission or cross-device performance evidence.
+
+Component medians are Q4 19.2925 -> 16.8781 us, Q5 12.1293 -> 11.2374 us
+and Q8 12.3759 -> 9.7165 us. The Q8 interval includes its reducer. These are
+not model TPOT measurements. The combined package rebuilds the small SIMT
+execution library and host dispatcher; the seven packaged TC images, full
+prefill library and GPU packer are reused byte-for-byte. The caller's trace
+parser recognizes the new bounded kernel specializations.
+
 The router and chain entry must be updated together. The caller recognizes
 that logits are consumed before later chain writes; the small dispatcher
 permits routing weights to reuse logits only for the proven single-token,
@@ -25,9 +48,19 @@ M1 layer and count independent top-k only outside that decode scope.
 
 Use the current machine-readable pin in `tools/kpack_q4_model_artifact.json`.
 The caller needs an incremental `.aoneci` build; the old caller binary cannot
-use the new admission rule. The runtime requires only a small host-dispatcher
-refresh, not a TC sweep rebuild. Full Asys and warmed TPOT remain the final
+use the new admission rule. The admission fix alone needs only a small host
+dispatcher refresh; the combined SIMT update above also replaces execution.
+Neither requires a TC sweep rebuild. Full Asys and warmed TPOT remain the final
 evidence, not a successful host pattern match.
+
+Before model execution, the box runner checks both old/new PPU router alias
+arms and the actual production SIMT v2 entry with independent GGUF oracles,
+changed-input graph replays, guards and wrong-ID/zero-A negatives. Then it
+performs the existing capability/chain gates, warmed model benchmark, Asys
+and optional ACU. Device and whole-model admission remain pending until
+those results return. No previous component PASS is relabelled as a model
+PASS. Standalone SwiGLU optimization is a separate open task, not part of
+this delivery.
 
 ## Dense output-head prefill continuation, 2026-09-16
 

@@ -35,6 +35,24 @@ def dispatcher_refresh_scope(changed, historical_caller=False):
     return scope
 
 
+def attach_router_gate(out, alias_gate):
+    alias_gate=alias_gate.resolve(strict=True)
+    old=json.loads((out/'manifest.json').read_text())
+    gate=json.loads((alias_gate/'manifest.json').read_text())
+    if ('router_alias_gate' in old or gate.get('platform')!='ppu' or
+            sha(alias_gate/'bench')!=gate['binary_sha256'] or
+            any(sha(ROOT/name)!=value for name,value in gate['source_hashes'].items())):
+        raise ValueError('router alias gate source/build differs')
+    (out/'router-alias').mkdir()
+    for name in ('manifest.json','bench'):
+        shutil.copy2(alias_gate/name,out/'router-alias'/name)
+    old['router_alias_gate']=dict(path='router-alias/manifest.json',
+        sha256=sha(out/'router-alias/manifest.json'),binary_sha256=sha(out/'router-alias/bench'),
+        cases=360,device_validated=False)
+    router_alias_paths(out,old['router_alias_gate'])
+    save(out/'manifest.json',old)
+
+
 def refresh_dispatcher(base, out, sdk, alias_gate=None):
     old = verify(base, sdk=sdk)
     changed = sorted(name for name, value in old['policy_hashes'].items() if sha(ROOT/name) != value)
@@ -95,8 +113,6 @@ def main():
     if a.dispatcher_only:
         refresh_dispatcher(base, out, a.sdk, a.router_alias_gate)
         return
-    if a.router_alias_gate:
-        raise ValueError('--router-alias-gate requires --dispatcher-only')
     # Old execution sources intentionally differ. Validate only the reused
     # payloads here; the assembled package gets full current-source checks.
     old = json.loads((base/'manifest.json').read_text())
@@ -114,7 +130,8 @@ def main():
     if source_contract(compiler.identity) != old['jit_source_contract']:
         raise ValueError('TC source changed; this operation cannot relabel old images')
     gate = json.loads((base/'bf16/manifest.json').read_text())
-    for record in gate['modules'].values():
+    gate_modules=[*gate['modules'].values(),*gate.get('matched_modules',{}).values()]
+    for record in gate_modules:
         if sha(base/'bf16'/record['path']) != record['sha256']:
             raise ValueError('BF16 gate TC payload differs')
         cls = GroupedComputeCompiler if record['parent']['route'].endswith('grouped') else DecodeCompiler
@@ -151,7 +168,7 @@ def main():
     # The gate now calls the new execution image. Its TC images and oracle
     # stay byte-identical; no previous device verdict is carried forward.
     (out/'bf16').mkdir()
-    for record in gate['modules'].values():
+    for record in gate_modules:
         copy('bf16/'+record['path'])
     shutil.copy2(library, out/'bf16'/library.name)
     gate['simt'] = gate['moe'] = dict(path=library.name, sha256=sha(library))
@@ -167,6 +184,8 @@ def main():
     subprocess.run([sys.executable, ROOT/'dev/bf16_fastpath/build_gate.py', '--platform','ppu',
                     '--sdk',a.sdk,'--execution',a.execution,'--output',q4], check=True)
     attach_q4_bf16(out, q4, a.sdk)
+    if a.router_alias_gate:
+        attach_router_gate(out,a.router_alias_gate)
     verify(out, sdk=a.sdk)
     print(f'MODEL_EXECUTION_REFRESH PASS modules={len(m["modules"])} TC_DEVICE_COMPILATIONS=0 output={out}')
 

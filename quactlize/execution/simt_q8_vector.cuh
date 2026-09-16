@@ -1,5 +1,6 @@
 #pragma once
 #include "simt_kernel.cuh"
+#include "../decode/reducer.cuh"
 
 // K-pack2 vector reader. Preserve the register-reuse FP32 affine/K order.
 namespace quactlize::execution::simt::q8_vector {
@@ -124,7 +125,18 @@ int launch_v2(qkg_simt_call_v2 const& d,int split) {
         kernel<QKG_F32,QKG_COMPUTE_BF16,Variant-4,Columns,Warps,P><<<blocks,Warps*32,0,stream>>>(d.call,split);
     else return QKG_INVALID;
     if(hggcGetLastError()!=hggcSuccess) return QKG_RUNTIME;
-    if(split>1) register_reuse_reduce<8><<<(int64_t(d.call.rows)*d.call.n+127)/128,128,0,stream>>>(d.call,split);
+    if(split>1) {
+        auto const& c=d.call;
+        // The admitted M1 S8 call includes this ordered float2 reducer.
+        // Public buffers need only four-byte alignment: keep scalar fallback.
+        bool paired=Variant==5 && Columns==8 && Warps==4 && P==4 && split==8 &&
+            d.compute_type==QKG_COMPUTE_F16 && c.mode==QKG_DENSE && c.rows==1 &&
+            c.n==2048 && c.k==4096 && c.experts==1 &&
+            !((uintptr_t(c.output)|uintptr_t(c.workspace))&7);
+        if(paired) quactlize::decode::reduce_decode<8><<<(c.n+63)/64,32,0,stream>>>(
+            static_cast<float const*>(c.workspace),c.output,c.n);
+        else register_reuse_reduce<8><<<(int64_t(c.rows)*c.n+127)/128,128,0,stream>>>(c,split);
+    }
     return hggcGetLastError()==hggcSuccess ? QKG_OK : QKG_RUNTIME;
 }
 

@@ -3,19 +3,31 @@
 ## Current decode MBU follow-up, 2026-09-16
 
 Latest scope and evidence: [current model MBU](../../docs/MODEL_DECODE_MBU_20260916.md).
-This follow-up does not change shipping selection or offline formats.
+The bounded production follow-up below changes three measured SIMT paths;
+the canonical offline formats and other selections are unchanged.
 
 | Work | Local state | Box evidence still needed |
 | --- | --- | --- |
 | Eight observed M1 GEMM families | Full Asys mapped; W00MDq adds all three TC ACU reports and both Q8 S8 reducers | Q6 exact-parent shared-instruction attribution; do not assume all conflicts are metadata |
-| Q4/Q5 H32 metadata and unsigned index/static fold | W00MDq numeric76 PASS; Q4 H32-only -12.51%, Q5 combined -7.35%; Q5 bank conflicts16384->0 | Production composition and warmed TPOT before promotion; Q8 index-only rejected |
-| Small Q8 40%, large 60% targets | New isolated26-body topology bundle;290 cells; PPU compile and5070 numeric PASS | `run_q8_topology_box.sh`: rotating full calls, reducer included,6x15 finals and exact ACU |
+| Q4/Q5 H32 metadata and unsigned index/static fold | W00MDq numeric76 PASS; Q4 H32-only -12.51%, Q5 combined -7.35%; Q5 bank conflicts16384->0; exact BF16 M1 indexed production bodies compiled | Same-image production gate, composition and warmed TPOT; Q8 index-only rejected |
+| Small Q8 40%, large 60% targets | jbNZ3k numeric879/reducer-bit336 PASS; big N2048/K4096 winner C8/W4/P4/S8+ordered paired reducer -21.49%; exact incumbent overlay compiled; two small shapes retained | Actual production full call/model/ACU; targets remain open, no blanket C8 or S8 switch |
 | Router + prepare model fusion | GGML allocated graph reproduces39/40 alias rejects; bounded M1 snapshot fix passes host checks and5070 candidate alias360x4; optimized prepare already exists in execution DSO | PPU old/new alias360x4 gate, then600/600 fused decode prepares; no decode native top-k. Multi-token overlap remains rejected |
-| MoE SwiGLU helper | Current BF16 body:4.263 us/call,0.171 ms/token;48 KiB activation payload, scalar load/store and expf, no weight read | Vector/read/exp instruction evidence and matched numeric timing; paired gate/up ownership required before producer fusion |
-| Production update | Deferred until candidate results; immutable shipping DSO retained | Promote only measured wins and then recheck warmed model TPOT |
+| MoE SwiGLU helper | Current BF16 body:4.263 us/call,0.171 ms/token;48 KiB activation payload,16 CTAs x256, no weight read; standalone optimization planned below | Vector/read/exp instruction evidence and matched numeric timing; no fusion in this task |
+| Production update | Three bounded measured wins plus router alias fix wired and PPU compiled; old immutable shipping DSO retained | Production numerical/replay gates, then recheck warmed model TPOT and selected symbols |
 
 Entry: `tools/run_kpack_model_mbu_box.sh`. Independent failures preserve the
 remaining points and valid results; no caller or broad bundle recompilation.
+
+Standalone SwiGLU plan (no producer/consumer fusion): specialize a proven
+all-SIMT identity-row path while preserving the mapped/mixed TC fallback;
+compare 32/64/128-thread blocks and scalar/float2/float4 access without
+collapsing an already small grid; share gate/up address calculation and
+pair BF16 conversions while keeping the existing BF16 rounding boundary,
+FP32 activation arithmetic, expf and multiplication order. Test tokens1..8,
+merged/unmerged ownership, strides, graph replay and large finite activations.
+Do not remove row maps based on the SIMT mask alone. Use ACU instruction and
+launch-latency evidence, not a weight-bandwidth model, for the 48 KiB M1 case.
+No SwiGLU code or performance claim is included in the current delivery.
 
 ## Local closure, 2026-09-16
 

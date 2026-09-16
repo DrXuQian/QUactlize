@@ -3,6 +3,7 @@
 #include "q4_s1_validation.hpp"
 #include "simt.h"
 #include "simt_activation.cuh"
+#include <type_traits>
 
 namespace quactlize::execution::simt {
 
@@ -40,14 +41,23 @@ __device__ __forceinline__ float2 activation_pair(uint4 packet,int offset,int la
                             __half2float(__ushort_as_half(uint16_t(value>>16))));
 }
 
-template<int Q,int Input,int Variant,int Columns,int Warps,int P,int Compute=0>
+template<int Q,int Changes>
+__device__ __forceinline__ float2 affine_selected(Meta<Format<Q>::words> const& m,int group) {
+    if constexpr((Changes&1) && (Q==12 || Q==13)) {
+        static_assert(Format<Q>::words==4 && Format<Q>::Unit::kGroups==8);
+        return q4_s1::q4_affine_header32(make_uint4(m.word[0],m.word[1],m.word[2],m.word[3]),unsigned(group)&7u);
+    } else return affine<Q>(m,group);
+}
+
+template<int Q,int Input,int Variant,int Columns,int Warps,int P,int Compute=0,int Changes=0>
 __global__ void register_reuse(qkg_call_v1 call,int split) {
     using F=Format<Q>;
     constexpr int TileN=Columns*P,Workers=Warps*32/Columns,Pairs=P/2;
     constexpr int Segments=(F::group+F::Low::kLogicalKPerDelivery-1)/F::Low::kLogicalKPerDelivery;
-    int tid=threadIdx.x,lane=tid%32,worker=tid/Columns;
-    int tile=blockIdx.x%(call.n/TileN),outer=blockIdx.x/(call.n/TileN);
-    int partition=outer%split,row=outer/split;
+    using Index=std::conditional_t<(Changes&2)!=0,unsigned,int>;
+    Index tid=threadIdx.x,lane=tid%32,worker=tid/Columns;
+    Index tile=blockIdx.x%(call.n/TileN),outer=blockIdx.x/(call.n/TileN);
+    Index partition=outer%split,row=outer/split;
     auto r=q4_s1::locate(call,row);
     bool valid=r.expert>=0 && r.expert<call.experts;
     if (!valid) {
@@ -58,7 +68,7 @@ __global__ void register_reuse(qkg_call_v1 call,int split) {
         }
         return;
     }
-    int col=tile*TileN+(tid%Columns)*P;
+    Index col=tile*TileN+(tid%Columns)*P;
     uint64_t nk=uint64_t(call.n)*call.k;
     auto low=reinterpret_cast<uint16_t const*>(call.low+uint64_t(r.expert)*nk/8*F::low_bits);
     uint16_t const* high=nullptr;
@@ -66,7 +76,7 @@ __global__ void register_reuse(qkg_call_v1 call,int split) {
     auto units=call.units+uint64_t(r.expert)*F::metadata_bytes(nk);
     Activation<Input,Compute> a{static_cast<typename Activation<Input,Compute>::Scalar const*>(call.a)+r.a};
     float2 total[Pairs]{};
-    for (int g=partition*Workers+worker;g<call.k/F::group;g+=split*Workers) {
+    for (Index g=partition*Workers+worker;g<call.k/F::group;g+=split*Workers) {
         // K/group is divisible by the number of workers in a warp. Tail
         // warps are wholly inactive, so full-mask exchanges remain legal.
         Meta<F::words> cooperative{};
@@ -77,8 +87,8 @@ __global__ void register_reuse(qkg_call_v1 call,int split) {
         #pragma unroll
         for (int p=0;p<P;++p) {
             if constexpr(Variant&2)
-                metadata[p]=affine<Q>(share_meta(cooperative,(lane%Columns)*P+p),g);
-            else metadata[p]=affine<Q>(load_meta<Q>(units,call.n,col+p,g),g);
+                metadata[p]=affine_selected<Q,Changes>(share_meta(cooperative,(lane%Columns)*P+p),g);
+            else metadata[p]=affine_selected<Q,Changes>(load_meta<Q>(units,call.n,col+p,g),g);
         }
         uint4 packet{};
         if constexpr(Variant&1) packet=activation_packet<Input,Compute,Columns,F::group>(a,g,lane);
@@ -138,8 +148,12 @@ __global__ void register_reuse(qkg_call_v1 call,int split) {
     __syncthreads();
     if (tid<32) {
         float sum=0;
-        #pragma unroll
-        for (int w=tid/TileN;w<Warps;w+=32/TileN) sum+=partial[w*TileN+tid%TileN];
+        if constexpr(Changes&2) {
+            q4_s1::q4_medium_fold<0,Warps,TileN>(sum,partial,unsigned(tid));
+        } else {
+            #pragma unroll
+            for (int w=tid/TileN;w<Warps;w+=32/TileN) sum+=partial[w*TileN+tid%TileN];
+        }
         #pragma unroll
         for (int d=TileN;d<32;d*=2) sum+=__shfl_xor_sync(0xffffffffu,sum,d);
         if (tid<TileN) {
@@ -180,6 +194,20 @@ int launch_v2(qkg_simt_call_v2 const& d,int split) {
     auto stream=static_cast<hggcStream_t>(c.stream);
     if(hggcGetLastError()!=hggcSuccess) return QKG_RUNTIME;
     int blocks=c.rows*split*(c.n/(Columns*P));
+    // Only the two independently measured BF16 M1 indexed incumbents.
+    // Keep all other shapes, compute/storage types and recipes unchanged.
+    if constexpr(Variant==3 && Columns==4 && ((Q==12 && Warps==4 && P==4) ||
+                                            (Q==13 && Warps==2 && P==8))) {
+        bool measured=c.input_type==QKG_F32 && c.mode==QKG_INDEXED && c.rows==8 &&
+            c.topk==8 && c.experts==256 && split==1 &&
+            (Q==12 ? c.n==1024 && c.k==2048 && c.channels==1 :
+                     c.n==2048 && c.k==512 && c.channels==8);
+        if(measured) {
+            register_reuse<Q,1,Variant,Columns,Warps,P,1,Q==12?1:3>
+                <<<blocks,Warps*32,0,stream>>>(c,split);
+            return hggcGetLastError()==hggcSuccess ? QKG_OK : QKG_RUNTIME;
+        }
+    }
     if(c.input_type==QKG_F32)
         register_reuse<Q,1,Variant,Columns,Warps,P,1><<<blocks,Warps*32,0,stream>>>(c,split);
     else if(c.input_type==QKG_SIMT_BF16)

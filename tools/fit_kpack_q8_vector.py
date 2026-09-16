@@ -5,11 +5,13 @@ import json
 import math
 from pathlib import Path
 import re
+import statistics
 
 ROOT = Path(__file__).resolve().parents[1]
 EVIDENCE = ROOT / 'docs/measurements/local_closure_replay_ppu_20260916.json'
 MATCHED = ROOT / 'policies/kpack_smallm_matched_v1.json'
 OUTPUT = ROOT / 'policies/kpack_q8_vector_v1.json'
+MODEL = ROOT / 'docs/measurements/model_decode_promotions_20260916.json'
 
 
 def recipe(name):
@@ -81,8 +83,43 @@ def header(policy):
     return text + '};\n}\n'
 
 
+def append_model_topology(policy, matched, evidence):
+    if evidence.get('schema') != 'quactlize.model-decode-promotions.v1':
+        raise ValueError('model reader evidence schema differs')
+    rows=[r for r in evidence['rows'] if r['name']=='q8-2048-4096']
+    if len(rows)!=1 or rows[0]['arm']!='v5-c8-w4-p4-s8-r1':
+        raise ValueError('Q8 topology winner differs')
+    r=rows[0];key=[8,0,2048,4096,1,1,1,1,0]
+    baseline=[1,4,8,4,1];candidate=[5,8,4,4,8]
+    incumbent=next((x for x in matched['exact'] if x['key']==key),None)
+    if (not incumbent or incumbent['config']['kind']!='simt' or
+            [incumbent['config'][k] for k in ('variant','columns','warps','values','split')]!=baseline or
+            any(x['key']==key for x in policy['rows'])):
+        raise ValueError('Q8 topology incumbent differs')
+    times=[]
+    for arm in ('shipping',r['arm']):
+        rounds=r['samples'][arm]
+        if len(rounds)!=6 or any(len(x)!=15 or any(not math.isfinite(v) or v<=0 for v in x) for x in rounds):
+            raise ValueError('Q8 topology confirmation differs')
+        times.append(statistics.median(statistics.median(x) for x in rounds))
+    checks=[x for x in r['numeric'] if x.get('key')==r['arm']]
+    negative=r['negatives'].get(r['arm'],{})
+    if (times[1]>=times[0] or len(checks)!=3 or {x['repeat'] for x in checks}!={0,1,2} or
+            any(not math.isfinite(x['error']) or x['error']>=.005 or
+                x.get('reducer_matched_bits') is not True for x in checks) or
+            negative.get('negative')!='ZERO_A_REJECTED' or negative.get('replays')!=3 or
+            r['cold_weight_bytes']<2.25*r['l2']['l2_bytes']):
+        raise ValueError('Q8 topology numeric/timing evidence differs')
+    policy['rows'].append(dict(key=key,baseline=baseline,candidate=candidate,
+        old_us=times[0],new_us=times[1],result_sha256=r['result_sha256'],
+        archive_sha256=r['archive_sha256'],reducer='ORDERED_FLOAT2_ALIGNED_M1'))
+    return policy
+
+
 def main():
-    result = fit(json.loads(EVIDENCE.read_text()), json.loads(MATCHED.read_text()))
+    matched=json.loads(MATCHED.read_text())
+    result = append_model_topology(fit(json.loads(EVIDENCE.read_text()),matched),matched,json.loads(MODEL.read_text()))
+    result['model_evidence_sha256'] = hashlib.sha256(MODEL.read_bytes()).hexdigest()
     result['evidence_sha256'] = hashlib.sha256(EVIDENCE.read_bytes()).hexdigest()
     result['matched_sha256'] = hashlib.sha256(MATCHED.read_bytes()).hexdigest()
     OUTPUT.write_text(json.dumps(result, indent=2) + '\n')
