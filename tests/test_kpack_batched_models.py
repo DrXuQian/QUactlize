@@ -620,6 +620,143 @@ def test_model_numerical_metrics_bind_actual_coverage_and_reject_nonfinite():
         numerical_metrics(kld.replace('Maximum KLD', 'Missing'), metrics, 1, 256, 2, False)
 
 
+@pytest.mark.parametrize('fault', [None, 'command', 'rc', 'incomplete', 'corpus', 'symlink', 'output'])
+def test_numerical_log_reuse_never_skips_validation_or_relaunches(tmp_path, fault):
+    from tools.run_kpack_model_validation import reuse_completed
+    import hashlib
+    old, new = tmp_path / 'old', tmp_path / 'new'
+    old.mkdir(); new.mkdir()
+    previous, target = old / 'b1-kpack.log', new / 'b1-kpack.log'
+    previous.write_text('completed log retained verbatim')
+    for root in (old, new): (root / 'corpus.txt').write_text('same corpus')
+    argv = ['/bin/llama-perplexity', '-m', '/model.gguf', '-f', str(old / 'corpus.txt'), '-b', '1']
+    expected = argv.copy(); expected[expected.index('-f') + 1] = str(new / 'corpus.txt')
+    if fault == 'command': argv[-1] = '128'
+    (old / 'b1-kpack.command.json').write_text(json.dumps(dict(argv=argv)))
+    if fault != 'incomplete':
+        (old / 'b1-kpack.process.json').write_text(json.dumps(dict(rc=1 if fault == 'rc' else 0)))
+    if fault == 'corpus': (new / 'corpus.txt').write_text('different corpus')
+    if fault == 'symlink':
+        previous.rename(old / 'kept.log'); previous.symlink_to(old / 'kept.log')
+    if fault == 'output': target.write_text('keep this too')
+    before = previous.read_bytes()
+    if fault:
+        with pytest.raises(ValueError): reuse_completed(expected, target, previous)
+    else:
+        assert reuse_completed(expected, target, previous) == before.decode()
+        receipt = json.loads(target.with_suffix('.reuse.json').read_text())
+        assert receipt['checks'] == 'PENDING_RECHECK' and receipt['timing'] == 'NOT_REMEASURED'
+        assert receipt['sha256'] == hashlib.sha256(before).hexdigest()
+        assert json.loads(target.with_suffix('.command.json').read_text())['argv'] == argv
+    assert previous.read_bytes() == before
+    if fault == 'output': assert target.read_text() == 'keep this too'
+    assert reuse_completed(expected, new / 'absent.log', old / 'absent.log') is None
+
+
+@pytest.mark.parametrize('fault', [None, 'metrics', 'coverage', 'selection'])
+def test_reused_numerical_calls_still_check_metrics_coverage_and_selection(tmp_path, monkeypatch, fault):
+    from tools import run_kpack_model_validation as validation
+    checked = []
+    def metrics(*_args):
+        checked.append('metrics')
+        if fault == 'metrics': raise ValueError('nonfinite numerical metrics')
+        return {}
+    def coverage(*_args):
+        checked.append('coverage')
+        if fault == 'coverage': raise ValueError('missing coverage')
+        return {}
+    def selection(*_args):
+        checked.append('selection')
+        return dict(fully_selected=fault != 'selection')
+    monkeypatch.setattr(validation, 'reuse_completed', lambda *_args: 'saved log')
+    monkeypatch.setattr(validation, 'run', lambda *_args: pytest.fail('a completed call was relaunched'))
+    monkeypatch.setattr(validation, 'numerical_metrics', metrics)
+    corpus = tmp_path / 'input'; corpus.write_text('corpus')
+    args = SimpleNamespace(corpus=corpus, logits=tmp_path / 'logits', build=tmp_path / 'build',
+        cache=tmp_path / 'cache', reuse_from=tmp_path / 'old')
+    call = lambda: validation.numerical(args, dict(name='model', path='/model.gguf'),
+        dict(eligible=['weight']), tmp_path, ({}, lambda *_args: 'corpus', coverage, selection))
+    if fault:
+        with pytest.raises(ValueError): call()
+    else:
+        assert len(call()) == 6
+        assert checked.count('metrics') == checked.count('coverage') == 6
+        assert checked.count('selection') == 2
+
+
+def continuation_fixture(tmp_path, monkeypatch):
+    from tools import resume_kpack_q4_model as resume
+    from quactlize.runtime.compiler import sha
+    previous, sdk, llama = [tmp_path / name for name in ('run', 'sdk', 'llama')]
+    result = previous / 'results'; result.mkdir(parents=True)
+    (llama / 'tests').mkdir(parents=True)
+    (llama / 'tests/quactlize_native.py').write_text('compute scope mismatch:')
+    (result / 'runner-status.txt').write_text('runner_rc=1 stage=model-numerical\n')
+    (result / 'numerical').mkdir()
+    (result / 'numerical/status.json').write_text(json.dumps([dict(status='FAIL',
+        error='explicit BF16 request fell back to FP16 compute')]))
+    root = tmp_path / 'root'; (root / 'tools').mkdir(parents=True)
+    pin = dict(commit='a'*40, path='prebuilt/ppu0010/kpack-model-runtime-v1')
+    bundle = tmp_path / 'quactlize-model-artifact-aaaaaaaaaa' / pin['path']; bundle.mkdir(parents=True)
+    for path in (bundle / 'manifest.json', result / 'bundle-manifest.json'): path.write_text('{}')
+    pin['manifest_sha256'] = sha(bundle / 'manifest.json')
+    (root / 'tools/kpack_q4_model_artifact.json').write_text(json.dumps(pin))
+    build = tmp_path / 'build'; (build / 'bin').mkdir(parents=True)
+    files = {}
+    for name in ('llama-server', 'llama-batched-bench', 'llama-perplexity', 'libggml-cuda.so', 'libncp_fa.so', 'libncp_moe.so'):
+        file = build / 'bin' / name; file.write_text('original binary')
+        files['bin/' + name] = sha(file)
+    (result / 'caller-ci-build.json').write_text(json.dumps(dict(build=str(build),
+        entry='.aoneci/scripts/build.sh', files=files)))
+    for name in ('production-q8.json', 'bf16-metadata/summary.json', 'bf16/summary.json',
+                 'bf16-selected-q4/summary.json', 'bf16-matched-prefill/summary.json', 'mixed-chain/summary.json'):
+        path = result / name; path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(dict(status='PASS')))
+    monkeypatch.setattr(resume, 'ROOT', root)
+    monkeypatch.setattr(resume, 'verify', lambda *_a, **_k: {})
+    return resume, previous, llama, sdk, bundle, build
+
+
+@pytest.mark.parametrize('fault', [None, 'stage', 'error', 'later', 'manifest', 'binary', 'checker', 'gate', 'receipt'])
+def test_model_continuation_binds_prior_run(tmp_path, monkeypatch, fault):
+    resume, previous, llama, sdk, bundle, build = continuation_fixture(tmp_path, monkeypatch)
+    result = previous / 'results'
+    if fault == 'stage': (result / 'runner-status.txt').write_text('runner_rc=1 stage=ci-build')
+    if fault == 'error': (result / 'numerical/status.json').write_text(json.dumps([dict(status='FAIL', error='NaN')]))
+    if fault == 'later': (result / 'trace').mkdir()
+    if fault == 'manifest': (result / 'bundle-manifest.json').write_text('{"changed":true}')
+    if fault == 'binary': (build / 'bin/llama-perplexity').write_text('rebuilt')
+    if fault == 'checker': (llama / 'tests/quactlize_native.py').write_text('obsolete')
+    if fault == 'gate': (result / 'bf16/summary.json').write_text('{"status":"FAIL"}')
+    if fault == 'receipt':
+        file = result / 'caller-ci-build.json'; receipt = json.loads(file.read_text()); receipt['files'] = {}
+        file.write_text(json.dumps(receipt))
+    if fault:
+        with pytest.raises(ValueError): resume.inputs(previous, llama, sdk)
+    else:
+        actual_bundle, actual_build, gates = resume.inputs(previous, llama, sdk)
+        assert actual_bundle == bundle and actual_build == build and len(gates) == 6
+
+
+def test_model_continuation_has_no_build_and_uses_fresh_outputs(tmp_path, monkeypatch):
+    resume, previous, llama, sdk, bundle, build = continuation_fixture(tmp_path, monkeypatch)
+    (sdk / 'asight/bin').mkdir(parents=True)
+    for name in ('asys', 'acu'):
+        path = sdk / 'asight/bin' / name; path.write_text('profiler fixture'); path.chmod(0o755)
+    for name in ('kpack-model-cache', 'kpack-model-jit-cache'): (tmp_path / name).mkdir()
+    output = tmp_path / 'continued'; (output / 'results').mkdir(parents=True)
+    commands = []
+    monkeypatch.delenv('CACHE_DIR', raising=False); monkeypatch.delenv('JIT_CACHE', raising=False)
+    monkeypatch.setattr(resume, 'run', lambda argv, log, env: commands.append((list(map(str, argv)), log, env)))
+    resume.continuation(SimpleNamespace(previous=previous, llama=llama, sdk=sdk, device='0', corpus=tmp_path/'corpus'), output)
+    assert [log.name for _, log, _ in commands] == ['numerical.log', 'benchmark.log', 'trace.log', 'acu.log']
+    assert '--reuse-from' in commands[0][0] and '--order' in commands[1][0]
+    assert all(env['QUACTLIZE_KPACK_COMPUTE'] == 'bf16' for _, _, env in commands)
+    assert all('build_kpack_model_ci.py' not in ' '.join(argv) for argv, _, _ in commands)
+    assert (output / 'results/prior/runner-status.txt').read_bytes() == (previous / 'results/runner-status.txt').read_bytes()
+    subprocess.run(['bash', '-n', str(ROOT / 'tools/resume_kpack_q4_model_box.sh')], check=True)
+
+
 def test_first_nonfinite_reuses_read_only_original_and_reference_only_changes_placement():
     from tools.run_kpack_first_nonfinite import command
     argv = ['/bin/llama-perplexity', '-m', '/model.gguf', '-c', '256', '-b', '1', '-ub', '1',

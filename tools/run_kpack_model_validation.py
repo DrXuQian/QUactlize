@@ -7,6 +7,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -41,6 +42,36 @@ def run(argv, log, env=None):
          timing_scope='PROCESS_INCLUDING_LOAD_JIT_NOT_INFERENCE_LATENCY'))
     if process.returncode:
         raise ValueError(f'process rc={process.returncode}; log={log}')
+    return log.read_text(errors='replace')
+
+
+def reuse_completed(argv, log, previous):
+    """Copy evidence from an identical completed call; always re-run its checks."""
+    sources = [previous, previous.with_suffix('.command.json'), previous.with_suffix('.process.json')]
+    if not any(p.exists() for p in sources):
+        return None
+    if not all(p.is_file() and not p.is_symlink() for p in sources):
+        raise ValueError('incomplete saved numerical call: ' + str(previous))
+    saved = json.loads(sources[1].read_text())['argv']
+    expected = list(map(str, argv))
+    if saved.count('-f') != 1 or expected.count('-f') != 1:
+        raise ValueError('saved numerical corpus argument differs')
+    old_at, new_at = saved.index('-f') + 1, expected.index('-f') + 1
+    if sha(saved[old_at]) != sha(expected[new_at]):
+        raise ValueError('saved numerical corpus content differs')
+    normalized = saved.copy()
+    normalized[old_at] = expected[new_at]
+    if normalized != expected or json.loads(sources[2].read_text()).get('rc') != 0:
+        raise ValueError('saved numerical command or process status differs')
+    targets = [log, log.with_suffix('.command.json'), log.with_suffix('.process.json')]
+    if any(p.exists() for p in targets):
+        raise ValueError('reused evidence output already exists')
+    for source, target in zip(sources, targets):
+        shutil.copy2(source, target)
+    save(log.with_suffix('.reuse.json'), dict(source=str(previous),
+        sha256=sha(previous), source_command_sha256=sha(sources[1]),
+        source_process_sha256=sha(sources[2]), checks='PENDING_RECHECK', timing='NOT_REMEASURED'))
+    print(f'KPACK_MODEL_REUSE log={previous} process_rc=0 checks=PENDING_RECHECK', flush=True)
     return log.read_text(errors='replace')
 
 
@@ -86,7 +117,12 @@ def numerical(args, model, inv, directory, helpers):
                 argv += ['--kl-divergence', '--kl-divergence-base', base]
             log = directory / f'b{batch}-{phase}.log'
             print(f'KPACK_MODEL_NUMERICAL model={model["name"]} batch={batch} phase={phase}', flush=True)
-            text = run(argv, log, env)
+            previous = getattr(args, 'reuse_from', None)
+            text = reuse_completed(argv, log, previous / model['name'] / log.name) if previous else None
+            if text is None:
+                if previous and phase == 'reference-save' and base.exists():
+                    raise ValueError('refusing to overwrite an existing reference without a completed log: ' + str(base))
+                text = run(argv, log, env)
             values = numerical_metrics(text, metric_patterns, batch, context, 2, phase == 'reference-save')
             record = dict(model=model['name'], phase=phase, token_batch=batch, request_batch=1,
                 coverage=logprobs(base, context, 2), metrics=values,
@@ -98,6 +134,9 @@ def numerical(args, model, inv, directory, helpers):
                 record['selection'] = evidence
             elif 'CUDA0_KPACK model buffer size' in text or '[quactlize-plan]' in text:
                 raise ValueError('GPU reference entered the K-pack route')
+            reuse_receipt = log.with_suffix('.reuse.json')
+            if reuse_receipt.exists():
+                save(reuse_receipt, dict(json.loads(reuse_receipt.read_text()), checks='REEXECUTED'))
             records.append(record)
             save(directory / 'summary.json', records)
     save(directory / 'corpus-identity.json', dict(source=str(args.corpus), source_sha256=sha(args.corpus),
@@ -135,7 +174,14 @@ def main():
     for key in ('llama', 'build', 'bundle', 'plan', 'cache', 'jit-cache', 'output', 'logits', 'corpus', 'asys', 'inspector'):
         p.add_argument('--' + key, type=Path, required=True)
     p.add_argument('--phase', choices=('numerical', 'trace'), required=True)
+    p.add_argument('--reuse-from', type=Path, help='recheck completed numerical calls; execute only absent calls')
     args = p.parse_args()
+    if args.reuse_from and args.phase != 'numerical':
+        p.error('--reuse-from is numerical-only')
+    if args.reuse_from:
+        args.reuse_from = args.reuse_from.resolve(strict=True)
+        if args.output.resolve().is_relative_to(args.reuse_from):
+            p.error('reuse output must be outside the original numerical directory')
     args.manifest = verify(args.bundle)
     args.jit_helper, args.jit_python = ROOT / 'tools/kpack_jit.py', Path(sys.executable)
     args.output.mkdir(parents=True, exist_ok=False)

@@ -23,6 +23,40 @@ tensor, operation, rows and expected/observed precision. Existing binaries,
 config selection, offline cache and completed component gates are unchanged;
 saved model logs require re-evaluation, not an automatic PASS.
 
+For the run stopped at `model-numerical` by this exact obsolete checker,
+`tools/resume_kpack_q4_model_box.sh` continues without rebuilding or fetching
+artifacts. It verifies the original runtime manifest, every recorded caller
+binary/header hash and completed component gates. Completed numerical calls
+are reused only with identical arguments and corpus content and a zero process
+exit; metrics, coverage and selection checks are rerun. Missing calls execute
+normally. Another numerical failure is not eligible for this continuation.
+
+```bash
+(
+    set -e
+    cd /sim/eec/shared/junfu.qx/quactlize
+    test "$(git branch --show-current)" = develop
+    git pull --ff-only origin develop
+    test "$(git -C /sim/eec/shared/junfu.qx/llama.cpp branch --show-current)" = dev/quactlize-v0.3.0
+    git -C /sim/eec/shared/junfu.qx/llama.cpp pull --ff-only \
+        https://github.com/DrXuQian/llama.cpp.git dev/quactlize-v0.3.0
+
+    PREVIOUS_RUN=/workspace/kpack-q4-model.WN279Q \
+    LLAMA_CI_DIR=/sim/eec/shared/junfu.qx/llama.cpp \
+    PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
+    CUDA_VISIBLE_DEVICES=0 \
+    bash tools/resume_kpack_q4_model_box.sh
+)
+```
+
+New results go to `/workspace/kpack-q4-resume.*/results`: numerical recheck,
+warm benchmark, Asys, then observed-recipe ACU. Original results are preserved
+under `prior` in the new archive; reference logits and existing caches are
+reused. Only missing reference files can be added to the old logits directory.
+An earlier runner's `ACU reports and raw counters: ...` footer is not evidence
+that ACU ran: a numerical-stage stop precedes both tracing stages. The resumed
+run prints its actual new trace/report locations and upload archive.
+
 Earlier [completed replay and production integration](KPACK_DECODE_PRODUCTION_20260916.md):
 the v3 BF16 capability746/746 passed, including all116 complete MoE chains. Prepare's
 3,840-context ordered-negative gate and48 timing comparisons pass. Eleven
