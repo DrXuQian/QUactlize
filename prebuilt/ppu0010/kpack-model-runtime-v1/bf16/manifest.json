@@ -2,7 +2,7 @@
   "schema": "quactlize.bf16-device-gate.v1",
   "modules": {
     "q8-sf-grouped-tm8-tk256-p0-bf16": {
-      "key": "fc27343a7568f6bd03d0d6a96e53bf868cbaf506422aa12fec074b069e0baa94",
+      "key": "1c8bf712973b1ceec09366909daee1ae91a195c82eea8bf952e5ba4499d4c660",
       "parent": {
         "qtype": 8,
         "route": "sf-grouped",
@@ -19,7 +19,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -47,13 +47,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "b32b6f5667c0a1ad32703cf42452351a4a990238ea1e828ee3f897241bff00db",
+      "sha256": "5e95983fb50a51a2e200caccefe829522fe9d2219c831a4a41de52289552f165",
       "path": "modules/q8-sf-grouped-tm8-tk256-p0-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -66,7 +66,7 @@
       }
     },
     "q8-sf-grouped-tm8-tk256-p0-f16": {
-      "key": "a30e0a8651b5e4c417fb8e1cedf4c584c63831073c6b24ba65d826aca849e52e",
+      "key": "c46c10c9074158d4ab3d30363c82ffda5a46f17f36dc47dd2cd71e2dc4faf37b",
       "parent": {
         "qtype": 8,
         "route": "sf-grouped",
@@ -83,7 +83,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "48162564435953b8ae2a0b55a85b02d4f15b4c0167c60a4fea4dceac50e19dcd",
+        "kernel": "be5988512fa856d897202b23de3858766ac4f129ed1e546785472e6e421d2d82",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -111,13 +111,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "f16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "8c0732a1dec1b00942a6efaf7398e6ebcef2058b88d327328dcae54f09510a33",
+      "sha256": "01b815ad24aff6ac295446420c830efb87bb57801bfc52b50ca5705485045bea",
       "path": "modules/q8-sf-grouped-tm8-tk256-p0-f16.so",
       "cache_hit": false,
       "spec": {
@@ -130,7 +130,7 @@
       }
     },
     "q8-sf-grouped-tm64-tk256-p0-bf16": {
-      "key": "8b98f8b5528bb16cee27a31f84f3fe3b45f9cf5a131d0ceef44e4cb090bd356d",
+      "key": "bdbb01f508d422a2c29ed842e39ffcfea14d875f57f1d07d7f91664a2c565687",
       "parent": {
         "qtype": 8,
         "route": "sf-grouped",
@@ -147,7 +147,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -175,13 +175,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "5849ef39662ea310025ae4cbe516d5fd58908f20a6348b68bd329244a44c5e6e",
+      "sha256": "3477ba7d944e78f6abda62db419158bc8b5c3b840d030b42b219a255794dd845",
       "path": "modules/q8-sf-grouped-tm64-tk256-p0-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -194,7 +194,7 @@
       }
     },
     "q10-fq-grouped-tm8-tk256-p0-bf16": {
-      "key": "6812e9053682ce0fbcfa041312f7f020002c475cc058df706fc2097f7524afcc",
+      "key": "01bb25e5d39af3ea5af5e993157e9974a1778da3d90d626eca8b6f6d2e8beb85",
       "parent": {
         "qtype": 10,
         "route": "fq-grouped",
@@ -211,7 +211,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -239,13 +239,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "c1814824e082ef1d31230e873fb63306dddc3a979105c9c8c56a5642607aa776",
+      "sha256": "091bcee1edad8d184e3be7efa1c386387ac837be2921b6caed7b8f7111c234ff",
       "path": "modules/q10-fq-grouped-tm8-tk256-p0-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -258,7 +258,7 @@
       }
     },
     "q10-fq-grouped-tm8-tk256-p0-f16": {
-      "key": "d804219df3de44e10902b259a95198d23ba6c25871c2129c8732f9ca127e565d",
+      "key": "5fad1f48085b82657b902069363516c652da9b236e73829f395d42d6945a3e90",
       "parent": {
         "qtype": 10,
         "route": "fq-grouped",
@@ -275,7 +275,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "48162564435953b8ae2a0b55a85b02d4f15b4c0167c60a4fea4dceac50e19dcd",
+        "kernel": "be5988512fa856d897202b23de3858766ac4f129ed1e546785472e6e421d2d82",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -303,13 +303,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "f16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "acfc8fa73366801679ff7fa586ea1ace4d0b4c828f92660e1098042e79974826",
+      "sha256": "6c9a420b1622c80141718893d59dca7221e16e63ea19dfbf8cbeedc8916722eb",
       "path": "modules/q10-fq-grouped-tm8-tk256-p0-f16.so",
       "cache_hit": false,
       "spec": {
@@ -322,7 +322,7 @@
       }
     },
     "q10-fq-grouped-tm8-tk256-p1-bf16": {
-      "key": "515a0f1427d8fb3fe500cb8b87ba7eeec1b8858cfd9f7bc545b9cfa03f302c04",
+      "key": "4a1a8635dd21efe1801056792c0408958a3508cbb8f9ec34241fa62064956ddd",
       "parent": {
         "qtype": 10,
         "route": "fq-grouped",
@@ -339,7 +339,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -367,13 +367,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "32cbe09ccaf424f51211bcabf242c84f6ce50e973f498333cfc95dc0e1a3c60f",
+      "sha256": "c301bdc3efdd76fadd68138bf8e826d77d98fdd5a03aaf4ea7fcaace4036f59b",
       "path": "modules/q10-fq-grouped-tm8-tk256-p1-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -386,7 +386,7 @@
       }
     },
     "q10-fq-grouped-tm64-tk256-p0-bf16": {
-      "key": "20a337b220468f6208d55c2e356f8461fe0bc1c3b59fe5b4584aa03106b6b36c",
+      "key": "c15962094db9f2e33b93b524fbcb0e6964b0a9e458e9aec2e0b7d442385ff1fa",
       "parent": {
         "qtype": 10,
         "route": "fq-grouped",
@@ -403,7 +403,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -431,13 +431,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "cf415d560c82d3c2d45f6fcd829606412149a67796dde1aea091e12b05c1b2a8",
+      "sha256": "ef80b497410fffc03ba1f31f4ab3a34baafdb11785f4075238299d7dfb4a7b70",
       "path": "modules/q10-fq-grouped-tm64-tk256-p0-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -450,7 +450,7 @@
       }
     },
     "q10-fq-grouped-tm64-tk256-p1-bf16": {
-      "key": "93719a5248419fd46fbd1a7bddb0e5f7b32c317c6211c8b7936207b51ee291c9",
+      "key": "e7b6c8f61d7aede86c08735cbd38c62c19095d4dedc217b3ffe0cac63e08c2ec",
       "parent": {
         "qtype": 10,
         "route": "fq-grouped",
@@ -467,7 +467,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -495,13 +495,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "ab6468365768d8f48ea4cc5ffab77534cd739e987cced7dd2224d7464fa7b1e3",
+      "sha256": "64e7c9e17a48273545ed09e217c4eff2890c1b18921ef26c799d565028324e9d",
       "path": "modules/q10-fq-grouped-tm64-tk256-p1-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -514,7 +514,7 @@
       }
     },
     "q10-sf-grouped-tm8-tk256-p0-bf16": {
-      "key": "d272f2979bbfd0555cd71d932462358d8f2e2a2bd62ea2fe63d2475bb06ac4f6",
+      "key": "9116fd30346b0cb6a3f3167a6dbbad7373656d4a5e570cdf0068995f12f3d39f",
       "parent": {
         "qtype": 10,
         "route": "sf-grouped",
@@ -531,7 +531,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -559,13 +559,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "81aad6ab1e4037bfb0476be76976889e359b077a238970f4af37ba0d41162beb",
+      "sha256": "74e6c819cd520fa512caa5526999a0361357ad5a6e5d3a60db57c3cb871d3b04",
       "path": "modules/q10-sf-grouped-tm8-tk256-p0-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -578,7 +578,7 @@
       }
     },
     "q10-sf-grouped-tm64-tk256-p0-bf16": {
-      "key": "b57b718202dde8691698a75440e742aae86333c519fe140d5e69b1f7dcce1f3a",
+      "key": "f079f13023f5bf92a63dfbe8dd41a0dccc4c4d70ba1db2a68d8801b8165f0fd2",
       "parent": {
         "qtype": 10,
         "route": "sf-grouped",
@@ -595,7 +595,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -623,13 +623,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "86d97dde4f81d60f7f44e074c893ed1f338c79c1b2a6874b42e7a27b4385a524",
+      "sha256": "dfc660d66ba905fe4166e9f9be0f52af96942de556e79a9bf94e6617bbd96be4",
       "path": "modules/q10-sf-grouped-tm64-tk256-p0-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -642,7 +642,7 @@
       }
     },
     "q11-fq-grouped-tm8-tk256-p0-bf16": {
-      "key": "9f5651f5079e1f9fdad707e73158916c64f05b3eeec2c35d569fe733b8762a5d",
+      "key": "2c33064bd42e82bb28253637b79e1e681158918579f3695cf0235364a9d58e7f",
       "parent": {
         "qtype": 11,
         "route": "fq-grouped",
@@ -659,7 +659,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -687,13 +687,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "469146afe68d108130492190634ebbcfe2dc185f3d3d3377a59ce59cf40f55ac",
+      "sha256": "47dd8d77472ec0dcfe2056802dffcd457e06641b7d8bd654c29d7d6fcc86cdfe",
       "path": "modules/q11-fq-grouped-tm8-tk256-p0-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -706,7 +706,7 @@
       }
     },
     "q11-fq-grouped-tm8-tk256-p0-f16": {
-      "key": "e5a40f0d815f01e791673ceabd48bfcca96b014858c3eb757482a1751907f8a0",
+      "key": "bec6c1f58795f3dfa5289743d547f46bd2e35a478896eb1dae07b606179eccde",
       "parent": {
         "qtype": 11,
         "route": "fq-grouped",
@@ -723,7 +723,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "48162564435953b8ae2a0b55a85b02d4f15b4c0167c60a4fea4dceac50e19dcd",
+        "kernel": "be5988512fa856d897202b23de3858766ac4f129ed1e546785472e6e421d2d82",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -751,13 +751,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "f16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "1f8284e8c5f0e468d023f61ac5b63188a451e3ce02c1b52a7d72c0e7815e1b3d",
+      "sha256": "455b6649280869e0e532b52714695b4d0c8c51ea92132f4ed3f4d16412d74757",
       "path": "modules/q11-fq-grouped-tm8-tk256-p0-f16.so",
       "cache_hit": false,
       "spec": {
@@ -770,7 +770,7 @@
       }
     },
     "q11-fq-grouped-tm8-tk256-p1-bf16": {
-      "key": "08dde464bb8655e48682635b55c2d6fc0f6b2948448e38a62b196b8871c1e733",
+      "key": "db8b300ca40ffb527b9563f2af181a00b2821e3502173bf51af95a9342d6c0fd",
       "parent": {
         "qtype": 11,
         "route": "fq-grouped",
@@ -787,7 +787,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -815,13 +815,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "3b97b7695f91238c2c4e74b485094f086932e1cf26f59fa685a6551e77594600",
+      "sha256": "112f8c43df2ea19fe8523cca3b14f0990a41105a6baa3a26ed402d2b278e2243",
       "path": "modules/q11-fq-grouped-tm8-tk256-p1-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -834,7 +834,7 @@
       }
     },
     "q11-fq-grouped-tm64-tk256-p0-bf16": {
-      "key": "dd85eaaca744dd6440d3c1d5f36fe0bdfb9d8e172d4b1c911a23431c8f67d467",
+      "key": "5abfb0e06e36b21deb0b855bb9c82be5ec08622fa6749d1703bca23d6817f5f4",
       "parent": {
         "qtype": 11,
         "route": "fq-grouped",
@@ -851,7 +851,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -879,13 +879,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "a2c4b9bdbef4280bb85fe172156e2e15c5bb7aa5b5a62e9b9101b071c3494259",
+      "sha256": "3221a28b784e547302332048f1a4e7ae562526f74c6ce51a3e3eb3da69de94c4",
       "path": "modules/q11-fq-grouped-tm64-tk256-p0-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -898,7 +898,7 @@
       }
     },
     "q11-fq-grouped-tm64-tk256-p1-bf16": {
-      "key": "bf3c6ab166e4d13c98429eddb6088784716708712c357dead0ea001ecc5b8272",
+      "key": "7f2c4e459e2db0fab53c7e9c442af5a10582a681e2fc39f78bcdd1037ce18eef",
       "parent": {
         "qtype": 11,
         "route": "fq-grouped",
@@ -915,7 +915,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -943,13 +943,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "e86e63e331b9875a985a588ca007bb45057bfeedcfede5420d6d134ef95f869e",
+      "sha256": "46b8e97d017476b2677de3d601a5c122ba90484320fcf56a4a0bd290804c6021",
       "path": "modules/q11-fq-grouped-tm64-tk256-p1-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -962,7 +962,7 @@
       }
     },
     "q11-sf-grouped-tm8-tk256-p0-bf16": {
-      "key": "802c0d731f01eca96420c06a209b70bb2dcad1da4e31f46239b3bfac9f951758",
+      "key": "b39d8c06dd2999ab13fd027e1bcf325321768efa7e8fb0739d3f0aa0245aaa15",
       "parent": {
         "qtype": 11,
         "route": "sf-grouped",
@@ -979,7 +979,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -1007,13 +1007,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "1f915cf4ab6b5164f684c34a83912490b6541c87926c3e060802759fa2523679",
+      "sha256": "a161af2cb5466e3028cec40a4a9aa1fb8421d7b90feacdd0a72a271927cf9ba7",
       "path": "modules/q11-sf-grouped-tm8-tk256-p0-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -1026,7 +1026,7 @@
       }
     },
     "q11-sf-grouped-tm64-tk256-p0-bf16": {
-      "key": "e5069f0c646392215ba5a89b41c9e7d62a1239f60820b7cd3e7e869740432f54",
+      "key": "aa1ba40fb42ee5fa819acc6395c161f1b4ba30ebdc21bb8b152e6f1021d8b131",
       "parent": {
         "qtype": 11,
         "route": "sf-grouped",
@@ -1043,7 +1043,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -1071,13 +1071,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "16a0b05fa0ffb9e5db22ff17b3a75d0ce1ac43b0ac7cb94c23d83d78ccd2b681",
+      "sha256": "3600bebf5e779896925ec90c52337f33b32b3c38c7391d5d3f122d4040314ccf",
       "path": "modules/q11-sf-grouped-tm64-tk256-p0-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -1090,7 +1090,7 @@
       }
     },
     "q12-fq-grouped-tm8-tk256-p0-bf16": {
-      "key": "54cbd1066870556dc66b0a7a8c06b92062d977a873b9d05deaf38f96b1c7b27e",
+      "key": "6458e5db625203642fe9e3f01362d9efc266dd5fd01c1b2ae67cabc4efbb425b",
       "parent": {
         "qtype": 12,
         "route": "fq-grouped",
@@ -1107,7 +1107,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -1135,13 +1135,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "d7269a2079df0d21d32e0e08e70998655e4a773f9ae099f8d02763625c04ae23",
+      "sha256": "ef75cae62bb91f174b4d787a8ced0b4b6599d75957bb5dedbcc41782ae036d16",
       "path": "modules/q12-fq-grouped-tm8-tk256-p0-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -1154,7 +1154,7 @@
       }
     },
     "q12-fq-grouped-tm8-tk256-p0-f16": {
-      "key": "e8f1ff05b7942ee20281e0464813329b6c5ebd4eff9e068a11af39177c312ed3",
+      "key": "7e19c36a931d6bd3c436bb301eb33e01254f630032e7e12926a9355f1075dc63",
       "parent": {
         "qtype": 12,
         "route": "fq-grouped",
@@ -1171,7 +1171,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "48162564435953b8ae2a0b55a85b02d4f15b4c0167c60a4fea4dceac50e19dcd",
+        "kernel": "be5988512fa856d897202b23de3858766ac4f129ed1e546785472e6e421d2d82",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -1199,13 +1199,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "f16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "8497ca0b5f570162e4b1cf9a8138f1c16fd15af2b17811ee6339e56a93aa5183",
+      "sha256": "cf56fcc7839ca2df9e826dab53ebe3530c7d95fe696eaa1ffb617dcab75f3eae",
       "path": "modules/q12-fq-grouped-tm8-tk256-p0-f16.so",
       "cache_hit": false,
       "spec": {
@@ -1218,7 +1218,7 @@
       }
     },
     "q12-fq-grouped-tm8-tk256-p1-bf16": {
-      "key": "772fe5304e37d92d462919392cbf4aa2c2164df9ad7e6e2ad110570acf5e8dfc",
+      "key": "c0b003a7f2635d6ad8f1c238c21b5993e286e923255282f6eb3e2bda7c16c16b",
       "parent": {
         "qtype": 12,
         "route": "fq-grouped",
@@ -1235,7 +1235,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -1263,13 +1263,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "941ec7479e34f07183a50bc8fb3f0a584375901ec83c2d715e0803b6ec1c58f4",
+      "sha256": "4543745336d42eac554de093008490a361a5dfe2fe646ffcb047c487f1624c55",
       "path": "modules/q12-fq-grouped-tm8-tk256-p1-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -1282,7 +1282,7 @@
       }
     },
     "q12-fq-grouped-tm64-tk256-p0-bf16": {
-      "key": "9977da970da3f44e1682829f29c964429473e134b1e0bab8cf793070724a3496",
+      "key": "30b0ed195cd54fa7d62c13337d9f8d25e19119676b416c3ef29206a60dcae48f",
       "parent": {
         "qtype": 12,
         "route": "fq-grouped",
@@ -1299,7 +1299,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -1327,13 +1327,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "2bb745cb4a5aa7920c600b66a9780edbe9aa221866d4aa61e03504b8feaa6911",
+      "sha256": "7fc25b0d309f7d0f5b3c2e65993e33cf6176fa57ec369601bfb89bca34456df5",
       "path": "modules/q12-fq-grouped-tm64-tk256-p0-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -1346,7 +1346,7 @@
       }
     },
     "q12-fq-grouped-tm64-tk256-p1-bf16": {
-      "key": "cffaffea2b845bf092fe55cfc22ce2e1955849cb1ffea5559ac27a52611739c5",
+      "key": "de6104d24a4485eacde518528ad6c15226f68945764e06bff9b6938825032f6c",
       "parent": {
         "qtype": 12,
         "route": "fq-grouped",
@@ -1363,7 +1363,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -1391,13 +1391,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "89da795e11e646a6595e6bdb314386037330e09c9862791dbb2c67769776742e",
+      "sha256": "164d0292f1a9625cb5c513f122a966e4a3e2907b67e84c68f8efeb73ac1e4d2e",
       "path": "modules/q12-fq-grouped-tm64-tk256-p1-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -1410,7 +1410,7 @@
       }
     },
     "q12-sf-grouped-tm8-tk256-p0-bf16": {
-      "key": "e3dea43aedc560c3c62f3a76bc89f69372df18738f9a973bedc38c7f6a7f040d",
+      "key": "b6ac3cff913530aa40b3b4066ce1d6baa025b2055a0dc41f6063f02bde1c294d",
       "parent": {
         "qtype": 12,
         "route": "sf-grouped",
@@ -1427,7 +1427,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -1455,13 +1455,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "c07f869b9e967f79347be0fe5f0d9c57c1c74b2d96c6f352a1a3af27bd27d3b6",
+      "sha256": "a8b9ed2ba8745dc0e4ca8b65aea6021283cc204760175b51d5d88141cf80c593",
       "path": "modules/q12-sf-grouped-tm8-tk256-p0-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -1474,7 +1474,7 @@
       }
     },
     "q12-sf-grouped-tm64-tk256-p0-bf16": {
-      "key": "114b34c897353827dd708139b17160c56906286cefcca16021a3ea1f7d3c2032",
+      "key": "c246b3f8b321bd6f1ee4578662a69c26430aa2274fc358208b1b6cbc4bb89938",
       "parent": {
         "qtype": 12,
         "route": "sf-grouped",
@@ -1491,7 +1491,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -1519,13 +1519,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "6df0c4660f6fe763a574ea62568b651098096d8f1072d98a69dbd5c769c257cb",
+      "sha256": "dff8ff2e6149cb41c1b4b2f1fd45ddc3c9f208b8d1f5dff2ee9ca57826806564",
       "path": "modules/q12-sf-grouped-tm64-tk256-p0-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -1538,7 +1538,7 @@
       }
     },
     "q13-fq-grouped-tm8-tk256-p0-bf16": {
-      "key": "0c6900d975cfd91e7e5af0423d7e1ae0ab1c9e927d8bcb0bec45dc6e7b40510b",
+      "key": "3ced04cdd462b0e0337c09b7070fdaf4785c71faf125d68366ecb8fa3b48ecb5",
       "parent": {
         "qtype": 13,
         "route": "fq-grouped",
@@ -1555,7 +1555,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -1583,13 +1583,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "238b40185add1c405afed52a6d9e08ae9e40d178077dfb0e52c4054306341597",
+      "sha256": "23ddbbb45b0d2f50ee6b9c72ee93592425b734f688429c0f4fe4c3ece0b58c10",
       "path": "modules/q13-fq-grouped-tm8-tk256-p0-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -1602,7 +1602,7 @@
       }
     },
     "q13-fq-grouped-tm8-tk256-p0-f16": {
-      "key": "19f82fef2ec26b646b399bc8c3c83efaf7303eea671991ab68cf14bbec4d9d67",
+      "key": "6ef423ac2587ccfd8070187b0a5f77923d78dbe6ffa2f8cd291914092f25b259",
       "parent": {
         "qtype": 13,
         "route": "fq-grouped",
@@ -1619,7 +1619,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "48162564435953b8ae2a0b55a85b02d4f15b4c0167c60a4fea4dceac50e19dcd",
+        "kernel": "be5988512fa856d897202b23de3858766ac4f129ed1e546785472e6e421d2d82",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -1647,13 +1647,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "f16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "48587bf5a12e76eeb374ac5c56c9c798c34222b7c17b1434091139a677718b7f",
+      "sha256": "2602ee757d0111fed808895249976bbf23a64975ca262fe312520010a2de5ff6",
       "path": "modules/q13-fq-grouped-tm8-tk256-p0-f16.so",
       "cache_hit": false,
       "spec": {
@@ -1666,7 +1666,7 @@
       }
     },
     "q13-fq-grouped-tm8-tk256-p1-bf16": {
-      "key": "73dd81b1ac6fe389aa17ee89ac453a7320d8fa1a52997323763a80685750b550",
+      "key": "d57db63d71fe4d0169958ee212a2c36c5fe174c37056b57cb6e123cc82ea5d79",
       "parent": {
         "qtype": 13,
         "route": "fq-grouped",
@@ -1683,7 +1683,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -1711,13 +1711,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "a0041ea98ab148a44f2d110449ed370faad8dc55d1aca40bd1edeab3d1e0d60e",
+      "sha256": "2c47f95f4a1876c00426ba7a6f6f999fa594a535748d97ef72a19419037695dd",
       "path": "modules/q13-fq-grouped-tm8-tk256-p1-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -1730,7 +1730,7 @@
       }
     },
     "q13-fq-grouped-tm64-tk256-p0-bf16": {
-      "key": "63f566f27674de286ee44358da7d896819102367bb3ecf95c449f310f70e3d72",
+      "key": "ca90b77f3d5c80e7a5ce18d3451be3637551352ac00dc92334aa876cb0e25e23",
       "parent": {
         "qtype": 13,
         "route": "fq-grouped",
@@ -1747,7 +1747,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -1775,13 +1775,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "8d8b967a0d82220293acd34dca83de7b347ec2a215b42e572beb704ba99cd357",
+      "sha256": "784d1d84ed8e94661a91359b3b2d28410ee4ac8f165df1f4d3b8649e6136c8a4",
       "path": "modules/q13-fq-grouped-tm64-tk256-p0-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -1794,7 +1794,7 @@
       }
     },
     "q13-fq-grouped-tm64-tk256-p1-bf16": {
-      "key": "d6e38aef874537e278441224397d54b17c69da6dca5999b53c1c5495743b6a12",
+      "key": "3e95f190a70693e10ae8e3d4a7b9b282a286bc3442c85bf32682979d14653617",
       "parent": {
         "qtype": 13,
         "route": "fq-grouped",
@@ -1811,7 +1811,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -1839,13 +1839,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "99ca87600eee26c5e9a2cb5afa9b4013b008c319e3b5ce8197c68afb1ae81d92",
+      "sha256": "b986bfe0889875a33f7df59853f108be1f371863d6252d4c43f2958a35c171a4",
       "path": "modules/q13-fq-grouped-tm64-tk256-p1-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -1858,7 +1858,7 @@
       }
     },
     "q13-sf-grouped-tm8-tk256-p0-bf16": {
-      "key": "d89d00fdaefcf53e793bd998b19a17236c82e750e7782ab6710d905232e734c0",
+      "key": "ebcf872680b92e1e10843634d462d02cbcc4e1a10478bab7f1bf12f6d8ad9c39",
       "parent": {
         "qtype": 13,
         "route": "sf-grouped",
@@ -1875,7 +1875,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -1903,13 +1903,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "3e66c5a8ce3e0f582f911dc305d55d4430e7c14b637e669987ab6d077cd356ff",
+      "sha256": "4d41a39f0a724f0f59ffe93eedfcef6dd6978e5aee6cd2afb2e8889fc2016ae5",
       "path": "modules/q13-sf-grouped-tm8-tk256-p0-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -1922,7 +1922,7 @@
       }
     },
     "q13-sf-grouped-tm64-tk256-p0-bf16": {
-      "key": "daf4e038a3b27114b295a1e0b4696597d24edd6eb4a87c505a086933f0b07300",
+      "key": "1c87bdd6addcbf5ae606a317d406d0712fdd984f600c3b2cf0c70950f092b868",
       "parent": {
         "qtype": 13,
         "route": "sf-grouped",
@@ -1939,7 +1939,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -1967,13 +1967,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "f488d0af8ad25e2f06cc2485b603278ddc2ac09f32d16652a922d3db85d0b453",
+      "sha256": "c4b3b80e42e1bfdcd0a78a52d98ebc8e951244629d8407cb645daac57e1ca08b",
       "path": "modules/q13-sf-grouped-tm64-tk256-p0-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -1986,7 +1986,7 @@
       }
     },
     "q14-fq-dense-tm8-tk128-p0-bf16": {
-      "key": "c3627252b4573504d41630e4140f07407beba85396654b08a4f2e5933426a6fc",
+      "key": "b8eeb16650b99f05f8563e82a9045fe37e93af8294b96adfe5e3539f352fd279",
       "parent": {
         "qtype": 14,
         "route": "fq-dense",
@@ -2003,7 +2003,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "74047e73fdc89c1a338bb2dc4a4a9d87a56dfe73a5fcd6972ec6a00089110434",
+        "kernel": "b0b60016f426021de7a96546c6626ea105107ebdee7a96a6a034599678e75290",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -2031,13 +2031,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "4cb3724362fc7e5721781cfc40ffb62742ec947f147dcec17f29896adb020323",
+        "generator": "a28223ec57728f3ffb512173c18929dcc9f3b24b558df518da24ae1a934030e6",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
         "endpoints": "decode-m1-8-f32-bf16-v1",
         "compute_type": "bf16",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80"
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80"
       },
-      "sha256": "93abbf61e68cec7fb1e1e120a9c93db48e1706179f7ebc47c2342f2aeabc7b7b",
+      "sha256": "6c9ce765dc84dd8b2ac3fe218ce823c7cdfa32248d7fa9680a51f5f094200ef9",
       "path": "modules/q14-fq-dense-tm8-tk128-p0-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -2050,7 +2050,7 @@
       }
     },
     "q14-fq-dense-tm8-tk128-p0-f16": {
-      "key": "fcc2c7f25fee082c75d9f2c40e46b8a7d322639a2096070d2d9e36fc8895b78a",
+      "key": "95f10f03f3f0baf3a97ae7c642cd674cffebfdc3656affb3b13b1cc03690346b",
       "parent": {
         "qtype": 14,
         "route": "fq-dense",
@@ -2067,7 +2067,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "39f7a701862e6b61a3cf5d8becece11c80c58e48eb3e25f3a0e25050504b758a",
+        "kernel": "78ab7bb7744c5832113dd512f4b7ad986e217b67dbda50c0aad3cdc94d83966a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -2095,13 +2095,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "4cb3724362fc7e5721781cfc40ffb62742ec947f147dcec17f29896adb020323",
+        "generator": "a28223ec57728f3ffb512173c18929dcc9f3b24b558df518da24ae1a934030e6",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
         "endpoints": "decode-m1-8-f32-bf16-v1",
         "compute_type": "f16",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80"
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80"
       },
-      "sha256": "89c19a7b978edef59023e1f841dae2893d25f56ddc08b99d525043df94765cc9",
+      "sha256": "ba7fb1fbfc47682e97cd66ea926ba8887ee077a36cc64ca55c48b12fd990af3e",
       "path": "modules/q14-fq-dense-tm8-tk128-p0-f16.so",
       "cache_hit": false,
       "spec": {
@@ -2114,7 +2114,7 @@
       }
     },
     "q14-fq-grouped-tm8-tk256-p0-bf16": {
-      "key": "cf634c6e712009cf122cb7e5ce91d2cbc552cacf1c293a50e2a5ebe960aa56ee",
+      "key": "b441d8f3a4664e9bd2bef368a3c9635b2bc3ec8e0dd4bbb3bad628bf0475fdf9",
       "parent": {
         "qtype": 14,
         "route": "fq-grouped",
@@ -2131,7 +2131,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -2159,13 +2159,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "2fa85b78add3e94060e52e0a65b8f42e19983e2efcf019362d8008320800f7c4",
+      "sha256": "99524e33ef9e3ce23809fa0fc97e65ded0a498c04d111cea16ace97687e69b0d",
       "path": "modules/q14-fq-grouped-tm8-tk256-p0-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -2178,7 +2178,7 @@
       }
     },
     "q14-fq-grouped-tm8-tk256-p0-f16": {
-      "key": "fe731ceaa570f232ceae5ea02f5654c0bee1ec93b741ad94dbc855258e909bc4",
+      "key": "86f8c89b7313b52d4ba5c554a73e8c9b0cd52d5a587729152ee840d79d9083cd",
       "parent": {
         "qtype": 14,
         "route": "fq-grouped",
@@ -2195,7 +2195,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "48162564435953b8ae2a0b55a85b02d4f15b4c0167c60a4fea4dceac50e19dcd",
+        "kernel": "be5988512fa856d897202b23de3858766ac4f129ed1e546785472e6e421d2d82",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -2223,13 +2223,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "f16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "60528be92be64503acd1643ce37f83d5bb4a09ce515231c8637d8bca13a6c56e",
+      "sha256": "7558bae900f2fb251e5fd130c270c465618703a67371b2429d11b3b8bda34864",
       "path": "modules/q14-fq-grouped-tm8-tk256-p0-f16.so",
       "cache_hit": false,
       "spec": {
@@ -2242,7 +2242,7 @@
       }
     },
     "q14-fq-grouped-tm8-tk256-p1-bf16": {
-      "key": "4664f7670e8dca84fd7b7394631701ffb4d1d044718a0adbab55c3a8204f49fc",
+      "key": "8cc4b28deaa74c1528156bad78a781ec105bc82d07fe5e25e360c28c47dd0060",
       "parent": {
         "qtype": 14,
         "route": "fq-grouped",
@@ -2259,7 +2259,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -2287,13 +2287,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "e65ad48f5c6ff1c0af2a3b0b2776111fddb05f43cecdb028e59ea8ff76dab86b",
+      "sha256": "0a42f23b044f66510693bae214f1edfd0841bce238cbbed4e4507bf2ada59de5",
       "path": "modules/q14-fq-grouped-tm8-tk256-p1-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -2306,7 +2306,7 @@
       }
     },
     "q14-fq-grouped-tm64-tk256-p0-bf16": {
-      "key": "c7073334064e165ab4a9ec28f91cba2e4e6e86af6362005037ac78bbc24cc51a",
+      "key": "a0bcfa5e0b655002c8f72a34a395101231871ee7626d46c63eed0405e15e64c4",
       "parent": {
         "qtype": 14,
         "route": "fq-grouped",
@@ -2323,7 +2323,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -2351,13 +2351,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "ade110136e4f3f2ce79056fcf0db750f9fe6facf058c0c3da41700d30ae701c6",
+      "sha256": "9a199a0890555b7437f77634584a70841667b651cb66c1b61fb6379e41d30c2e",
       "path": "modules/q14-fq-grouped-tm64-tk256-p0-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -2370,7 +2370,7 @@
       }
     },
     "q14-fq-grouped-tm64-tk256-p1-bf16": {
-      "key": "51c8ab106c4c37f2792843f4f1dbd10e10675a73ee1105d5b62ce6710aacca73",
+      "key": "34b8c777a67d020c8d79f040f3c65b2a99a9dbddc5c4c8e12259647cb1f222db",
       "parent": {
         "qtype": 14,
         "route": "fq-grouped",
@@ -2387,7 +2387,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -2415,13 +2415,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "6799709e8ff2703a5d1ad69ad74f6116cf86fcc3de827297fa3f09965fe5f008",
+      "sha256": "5472c2facc0a31b98a3f3cc08053929a2e05b07ae478b369418708231e0160cf",
       "path": "modules/q14-fq-grouped-tm64-tk256-p1-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -2434,7 +2434,7 @@
       }
     },
     "q14-sf-grouped-tm8-tk256-p0-bf16": {
-      "key": "60e2336162a2216a569e5540cd207293a9de7118e9425c414df363f22b6e95e1",
+      "key": "b9224a1893e4abc8dcf2e69f60f36f6c40002cc13b8253302ec9528b1f3dfdf5",
       "parent": {
         "qtype": 14,
         "route": "sf-grouped",
@@ -2451,7 +2451,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -2479,13 +2479,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "4617cf3ea42875d629643ebbb9a16478021ef00f395080e039a615027d028ae1",
+      "sha256": "822afa8e6d425542455eda067886e9b84e9b0b6076c5c3f36a7b3d26ecbd6923",
       "path": "modules/q14-sf-grouped-tm8-tk256-p0-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -2498,7 +2498,7 @@
       }
     },
     "q14-sf-grouped-tm64-tk256-p0-bf16": {
-      "key": "44280c5bc36b72939d339b7f2495b671a1188ac3dce4e2126b5ed16a70fe8e1d",
+      "key": "4b685776af39cadd3c5cd6422a624fc607f94683f93cc08a9d1c758703e51a56",
       "parent": {
         "qtype": 14,
         "route": "sf-grouped",
@@ -2515,7 +2515,7 @@
       },
       "identity": {
         "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
-        "kernel": "bd5191083429bcc891badb7f820e7204e9ae6d4dd0bf29ee9cb4ebd7b9af1e68",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
         "flags": [
           "--forward-unknown-to-host-compiler",
           "--forward-unknown-to-host-linker",
@@ -2543,13 +2543,13 @@
           "-DCUTE_USE_PACKED_TUPLE=1",
           "-fPIC"
         ],
-        "generator": "b8e5b788040a3fe1e842711700e7849aeaed6a16ca2d745c152eefc06571f805",
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
         "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
-        "base_source_contract": "6529d2c4bc4618edd17de79420407dd06ae5c59504de9bae49b741253cbacd80",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
         "compute_type": "bf16",
-        "endpoints": "grouped-explicit-compute-v3"
+        "endpoints": "grouped-explicit-compute-metadata-v4"
       },
-      "sha256": "b1ea6af59bf28864aa1db2afc6bbebdb295a4c4c80a282d068a35b02962105c0",
+      "sha256": "d076ff09cc71e922e60640f414a7e2d503b09014b5b3cae2e44ed70be00d137b",
       "path": "modules/q14-sf-grouped-tm64-tk256-p0-bf16.so",
       "cache_hit": false,
       "spec": {
@@ -2562,13 +2562,583 @@
       }
     }
   },
+  "matched_modules": {
+    "matched_q12_fq_f16": {
+      "key": "05f56f80a62f6982c854f2e0759f1878f32a7848ef479c77a97c2014bc1b8eb2",
+      "parent": {
+        "qtype": 12,
+        "route": "fq-grouped",
+        "tm": 64,
+        "tn": 128,
+        "tk": 128,
+        "wm": 64,
+        "wn": 32,
+        "stages": 2,
+        "ap": 0,
+        "dn": 16,
+        "persistent": 0,
+        "symbol": "matched_q12_fq_f16"
+      },
+      "identity": {
+        "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
+        "kernel": "be5988512fa856d897202b23de3858766ac4f129ed1e546785472e6e421d2d82",
+        "flags": [
+          "--forward-unknown-to-host-compiler",
+          "--forward-unknown-to-host-linker",
+          "-arch=ppu_10",
+          "-x",
+          "hg",
+          "-DSWITCH_TO_HGGCRT",
+          "-std=c++17",
+          "-O3",
+          "-Xcompiler",
+          "-ftemplate-depth=8192",
+          "-Xllvm",
+          "-wno-loop-miss-transform",
+          "-Xllvm",
+          "-ppu-simt-branch=false",
+          "-Xllvm",
+          "-ppu-patch-fence-ppu=false",
+          "-Xllvm",
+          "-ppu-cg-to-kp1=true",
+          "-Xllvm",
+          "-ppu-fix-uninit=true",
+          "--expt-relaxed-constexpr",
+          "-DUSE_CLANG",
+          "-DCUTLASS_USE_PACKED_TUPLE=1",
+          "-DCUTE_USE_PACKED_TUPLE=1",
+          "-fPIC"
+        ],
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
+        "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
+        "compute_type": "f16",
+        "endpoints": "grouped-explicit-compute-metadata-v4"
+      },
+      "sha256": "2d09353d992fb7880c955140ed7d461313927a73b6f465831aeed4a0781b6971",
+      "path": "modules/matched_q12_fq_f16.so",
+      "cache_hit": false,
+      "spec": {
+        "qtype": 12,
+        "route": "fq-grouped",
+        "tm": 64,
+        "tn": 128,
+        "tk": 128,
+        "wm": 64,
+        "wn": 32,
+        "stages": 2,
+        "ap": 0,
+        "dn": 16,
+        "persistent": 0,
+        "symbol": "matched_q12_fq_f16",
+        "compute": "f16"
+      }
+    },
+    "matched_q12_fq_bf16": {
+      "key": "580d25b13c9f92d1c3cf5d2417fda90c5cee43bfdcbb3ced1e355ec265771f7c",
+      "parent": {
+        "qtype": 12,
+        "route": "fq-grouped",
+        "tm": 64,
+        "tn": 128,
+        "tk": 128,
+        "wm": 64,
+        "wn": 32,
+        "stages": 2,
+        "ap": 0,
+        "dn": 16,
+        "persistent": 0,
+        "symbol": "matched_q12_fq_bf16"
+      },
+      "identity": {
+        "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
+        "flags": [
+          "--forward-unknown-to-host-compiler",
+          "--forward-unknown-to-host-linker",
+          "-arch=ppu_10",
+          "-x",
+          "hg",
+          "-DSWITCH_TO_HGGCRT",
+          "-std=c++17",
+          "-O3",
+          "-Xcompiler",
+          "-ftemplate-depth=8192",
+          "-Xllvm",
+          "-wno-loop-miss-transform",
+          "-Xllvm",
+          "-ppu-simt-branch=false",
+          "-Xllvm",
+          "-ppu-patch-fence-ppu=false",
+          "-Xllvm",
+          "-ppu-cg-to-kp1=true",
+          "-Xllvm",
+          "-ppu-fix-uninit=true",
+          "--expt-relaxed-constexpr",
+          "-DUSE_CLANG",
+          "-DCUTLASS_USE_PACKED_TUPLE=1",
+          "-DCUTE_USE_PACKED_TUPLE=1",
+          "-fPIC"
+        ],
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
+        "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
+        "compute_type": "bf16",
+        "endpoints": "grouped-explicit-compute-metadata-v4"
+      },
+      "sha256": "70ed0c4a45001f98de3060b6e5bd4d0bb1fd636145952e762bc5cfbdf6003cd1",
+      "path": "modules/matched_q12_fq_bf16.so",
+      "cache_hit": false,
+      "spec": {
+        "qtype": 12,
+        "route": "fq-grouped",
+        "tm": 64,
+        "tn": 128,
+        "tk": 128,
+        "wm": 64,
+        "wn": 32,
+        "stages": 2,
+        "ap": 0,
+        "dn": 16,
+        "persistent": 0,
+        "symbol": "matched_q12_fq_bf16",
+        "compute": "bf16"
+      }
+    },
+    "matched_q12_sf_f16": {
+      "key": "049b7027393e949193fa702f11831489d6a3150c9a91860e635092c326cccb4d",
+      "parent": {
+        "qtype": 12,
+        "route": "sf-grouped",
+        "tm": 64,
+        "tn": 128,
+        "tk": 128,
+        "wm": 64,
+        "wn": 32,
+        "stages": 2,
+        "ap": 0,
+        "dn": 16,
+        "persistent": -1,
+        "symbol": "matched_q12_sf_f16"
+      },
+      "identity": {
+        "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
+        "kernel": "be5988512fa856d897202b23de3858766ac4f129ed1e546785472e6e421d2d82",
+        "flags": [
+          "--forward-unknown-to-host-compiler",
+          "--forward-unknown-to-host-linker",
+          "-arch=ppu_10",
+          "-x",
+          "hg",
+          "-DSWITCH_TO_HGGCRT",
+          "-std=c++17",
+          "-O3",
+          "-Xcompiler",
+          "-ftemplate-depth=8192",
+          "-Xllvm",
+          "-wno-loop-miss-transform",
+          "-Xllvm",
+          "-ppu-simt-branch=false",
+          "-Xllvm",
+          "-ppu-patch-fence-ppu=false",
+          "-Xllvm",
+          "-ppu-cg-to-kp1=true",
+          "-Xllvm",
+          "-ppu-fix-uninit=true",
+          "--expt-relaxed-constexpr",
+          "-DUSE_CLANG",
+          "-DCUTLASS_USE_PACKED_TUPLE=1",
+          "-DCUTE_USE_PACKED_TUPLE=1",
+          "-fPIC"
+        ],
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
+        "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
+        "compute_type": "f16",
+        "endpoints": "grouped-explicit-compute-metadata-v4"
+      },
+      "sha256": "b85aff59cc21ab905395079bb55e7562e65894286922f874079faa00ade30c1c",
+      "path": "modules/matched_q12_sf_f16.so",
+      "cache_hit": false,
+      "spec": {
+        "qtype": 12,
+        "route": "sf-grouped",
+        "tm": 64,
+        "tn": 128,
+        "tk": 128,
+        "wm": 64,
+        "wn": 32,
+        "stages": 2,
+        "ap": 0,
+        "dn": 16,
+        "persistent": -1,
+        "symbol": "matched_q12_sf_f16",
+        "compute": "f16"
+      }
+    },
+    "matched_q12_sf_bf16": {
+      "key": "637c5de1d94993cdfbd1f90a621a0ce6e257a6f37ac9d6843aaa264c1bd2045c",
+      "parent": {
+        "qtype": 12,
+        "route": "sf-grouped",
+        "tm": 64,
+        "tn": 128,
+        "tk": 128,
+        "wm": 64,
+        "wn": 32,
+        "stages": 2,
+        "ap": 0,
+        "dn": 16,
+        "persistent": -1,
+        "symbol": "matched_q12_sf_bf16"
+      },
+      "identity": {
+        "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
+        "flags": [
+          "--forward-unknown-to-host-compiler",
+          "--forward-unknown-to-host-linker",
+          "-arch=ppu_10",
+          "-x",
+          "hg",
+          "-DSWITCH_TO_HGGCRT",
+          "-std=c++17",
+          "-O3",
+          "-Xcompiler",
+          "-ftemplate-depth=8192",
+          "-Xllvm",
+          "-wno-loop-miss-transform",
+          "-Xllvm",
+          "-ppu-simt-branch=false",
+          "-Xllvm",
+          "-ppu-patch-fence-ppu=false",
+          "-Xllvm",
+          "-ppu-cg-to-kp1=true",
+          "-Xllvm",
+          "-ppu-fix-uninit=true",
+          "--expt-relaxed-constexpr",
+          "-DUSE_CLANG",
+          "-DCUTLASS_USE_PACKED_TUPLE=1",
+          "-DCUTE_USE_PACKED_TUPLE=1",
+          "-fPIC"
+        ],
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
+        "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
+        "compute_type": "bf16",
+        "endpoints": "grouped-explicit-compute-metadata-v4"
+      },
+      "sha256": "66911af7cda2aafd38bd90a676fc14eb22c0f33c99740d02d5965f9195d20e76",
+      "path": "modules/matched_q12_sf_bf16.so",
+      "cache_hit": false,
+      "spec": {
+        "qtype": 12,
+        "route": "sf-grouped",
+        "tm": 64,
+        "tn": 128,
+        "tk": 128,
+        "wm": 64,
+        "wn": 32,
+        "stages": 2,
+        "ap": 0,
+        "dn": 16,
+        "persistent": -1,
+        "symbol": "matched_q12_sf_bf16",
+        "compute": "bf16"
+      }
+    },
+    "matched_q13_fq_f16": {
+      "key": "9d20a446a5fa93284003ca6f87a37130812fef6b570af07f53ffbd41c581cfdb",
+      "parent": {
+        "qtype": 13,
+        "route": "fq-grouped",
+        "tm": 64,
+        "tn": 128,
+        "tk": 256,
+        "wm": 64,
+        "wn": 32,
+        "stages": 2,
+        "ap": 0,
+        "dn": 16,
+        "persistent": 0,
+        "symbol": "matched_q13_fq_f16"
+      },
+      "identity": {
+        "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
+        "kernel": "be5988512fa856d897202b23de3858766ac4f129ed1e546785472e6e421d2d82",
+        "flags": [
+          "--forward-unknown-to-host-compiler",
+          "--forward-unknown-to-host-linker",
+          "-arch=ppu_10",
+          "-x",
+          "hg",
+          "-DSWITCH_TO_HGGCRT",
+          "-std=c++17",
+          "-O3",
+          "-Xcompiler",
+          "-ftemplate-depth=8192",
+          "-Xllvm",
+          "-wno-loop-miss-transform",
+          "-Xllvm",
+          "-ppu-simt-branch=false",
+          "-Xllvm",
+          "-ppu-patch-fence-ppu=false",
+          "-Xllvm",
+          "-ppu-cg-to-kp1=true",
+          "-Xllvm",
+          "-ppu-fix-uninit=true",
+          "--expt-relaxed-constexpr",
+          "-DUSE_CLANG",
+          "-DCUTLASS_USE_PACKED_TUPLE=1",
+          "-DCUTE_USE_PACKED_TUPLE=1",
+          "-fPIC"
+        ],
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
+        "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
+        "compute_type": "f16",
+        "endpoints": "grouped-explicit-compute-metadata-v4"
+      },
+      "sha256": "945c8fb5958e595996ec8dc8151daaa6d6a0eaee4f97a893ae056fa1498cc8e1",
+      "path": "modules/matched_q13_fq_f16.so",
+      "cache_hit": false,
+      "spec": {
+        "qtype": 13,
+        "route": "fq-grouped",
+        "tm": 64,
+        "tn": 128,
+        "tk": 256,
+        "wm": 64,
+        "wn": 32,
+        "stages": 2,
+        "ap": 0,
+        "dn": 16,
+        "persistent": 0,
+        "symbol": "matched_q13_fq_f16",
+        "compute": "f16"
+      }
+    },
+    "matched_q13_fq_bf16": {
+      "key": "2f4f7f501e21a2bf6fee195473fb8143b4a6d6c3450ac7c1ed34d7ac813888aa",
+      "parent": {
+        "qtype": 13,
+        "route": "fq-grouped",
+        "tm": 64,
+        "tn": 128,
+        "tk": 256,
+        "wm": 64,
+        "wn": 32,
+        "stages": 2,
+        "ap": 0,
+        "dn": 16,
+        "persistent": 0,
+        "symbol": "matched_q13_fq_bf16"
+      },
+      "identity": {
+        "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
+        "flags": [
+          "--forward-unknown-to-host-compiler",
+          "--forward-unknown-to-host-linker",
+          "-arch=ppu_10",
+          "-x",
+          "hg",
+          "-DSWITCH_TO_HGGCRT",
+          "-std=c++17",
+          "-O3",
+          "-Xcompiler",
+          "-ftemplate-depth=8192",
+          "-Xllvm",
+          "-wno-loop-miss-transform",
+          "-Xllvm",
+          "-ppu-simt-branch=false",
+          "-Xllvm",
+          "-ppu-patch-fence-ppu=false",
+          "-Xllvm",
+          "-ppu-cg-to-kp1=true",
+          "-Xllvm",
+          "-ppu-fix-uninit=true",
+          "--expt-relaxed-constexpr",
+          "-DUSE_CLANG",
+          "-DCUTLASS_USE_PACKED_TUPLE=1",
+          "-DCUTE_USE_PACKED_TUPLE=1",
+          "-fPIC"
+        ],
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
+        "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
+        "compute_type": "bf16",
+        "endpoints": "grouped-explicit-compute-metadata-v4"
+      },
+      "sha256": "819399399aa6aead64d858ff54bfedf351f55abf231eb9c23ff4477fd004370d",
+      "path": "modules/matched_q13_fq_bf16.so",
+      "cache_hit": false,
+      "spec": {
+        "qtype": 13,
+        "route": "fq-grouped",
+        "tm": 64,
+        "tn": 128,
+        "tk": 256,
+        "wm": 64,
+        "wn": 32,
+        "stages": 2,
+        "ap": 0,
+        "dn": 16,
+        "persistent": 0,
+        "symbol": "matched_q13_fq_bf16",
+        "compute": "bf16"
+      }
+    },
+    "matched_q13_sf_f16": {
+      "key": "fd8c46f4e698347c8fc2922caebdb77459c020ab982f53163e03d4146d10bbd1",
+      "parent": {
+        "qtype": 13,
+        "route": "sf-grouped",
+        "tm": 64,
+        "tn": 128,
+        "tk": 256,
+        "wm": 64,
+        "wn": 32,
+        "stages": 2,
+        "ap": 0,
+        "dn": 16,
+        "persistent": -1,
+        "symbol": "matched_q13_sf_f16"
+      },
+      "identity": {
+        "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
+        "kernel": "be5988512fa856d897202b23de3858766ac4f129ed1e546785472e6e421d2d82",
+        "flags": [
+          "--forward-unknown-to-host-compiler",
+          "--forward-unknown-to-host-linker",
+          "-arch=ppu_10",
+          "-x",
+          "hg",
+          "-DSWITCH_TO_HGGCRT",
+          "-std=c++17",
+          "-O3",
+          "-Xcompiler",
+          "-ftemplate-depth=8192",
+          "-Xllvm",
+          "-wno-loop-miss-transform",
+          "-Xllvm",
+          "-ppu-simt-branch=false",
+          "-Xllvm",
+          "-ppu-patch-fence-ppu=false",
+          "-Xllvm",
+          "-ppu-cg-to-kp1=true",
+          "-Xllvm",
+          "-ppu-fix-uninit=true",
+          "--expt-relaxed-constexpr",
+          "-DUSE_CLANG",
+          "-DCUTLASS_USE_PACKED_TUPLE=1",
+          "-DCUTE_USE_PACKED_TUPLE=1",
+          "-fPIC"
+        ],
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
+        "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
+        "compute_type": "f16",
+        "endpoints": "grouped-explicit-compute-metadata-v4"
+      },
+      "sha256": "072192d9c5f135030ea9b524ac4be6a8abb9087775b9a03a81b3a1bdd29150fc",
+      "path": "modules/matched_q13_sf_f16.so",
+      "cache_hit": false,
+      "spec": {
+        "qtype": 13,
+        "route": "sf-grouped",
+        "tm": 64,
+        "tn": 128,
+        "tk": 256,
+        "wm": 64,
+        "wn": 32,
+        "stages": 2,
+        "ap": 0,
+        "dn": 16,
+        "persistent": -1,
+        "symbol": "matched_q13_sf_f16",
+        "compute": "f16"
+      }
+    },
+    "matched_q13_sf_bf16": {
+      "key": "b4653fd4da6f43dcb42f3102cc48d4a27b95f96b277a8713717ce7e71c648f17",
+      "parent": {
+        "qtype": 13,
+        "route": "sf-grouped",
+        "tm": 64,
+        "tn": 128,
+        "tk": 256,
+        "wm": 64,
+        "wn": 32,
+        "stages": 2,
+        "ap": 0,
+        "dn": 16,
+        "persistent": -1,
+        "symbol": "matched_q13_sf_bf16"
+      },
+      "identity": {
+        "sdk": "475fedc6528411206f8e835c7a961c69ee0a8eb203e13a158dd229d0aef6048f",
+        "kernel": "96d9eee6aeef7f02765c210ba0d197dd59d86be69e5e7a8ee706203cc9bc315a",
+        "flags": [
+          "--forward-unknown-to-host-compiler",
+          "--forward-unknown-to-host-linker",
+          "-arch=ppu_10",
+          "-x",
+          "hg",
+          "-DSWITCH_TO_HGGCRT",
+          "-std=c++17",
+          "-O3",
+          "-Xcompiler",
+          "-ftemplate-depth=8192",
+          "-Xllvm",
+          "-wno-loop-miss-transform",
+          "-Xllvm",
+          "-ppu-simt-branch=false",
+          "-Xllvm",
+          "-ppu-patch-fence-ppu=false",
+          "-Xllvm",
+          "-ppu-cg-to-kp1=true",
+          "-Xllvm",
+          "-ppu-fix-uninit=true",
+          "--expt-relaxed-constexpr",
+          "-DUSE_CLANG",
+          "-DCUTLASS_USE_PACKED_TUPLE=1",
+          "-DCUTE_USE_PACKED_TUPLE=1",
+          "-fPIC"
+        ],
+        "generator": "b7f64bbb4d60d4e25a1361467f0563fbc50f31fc5bb66918401f00efd3ab87c7",
+        "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
+        "base_source_contract": "28406981c91b2ece60190b7120b0d55ccf4868b836c1e285cfad0c78b6a66d80",
+        "compute_type": "bf16",
+        "endpoints": "grouped-explicit-compute-metadata-v4"
+      },
+      "sha256": "b54fd93104f0f7667b1c92bb544d03426ab78cfb9c351b1861aa446787fbeb79",
+      "path": "modules/matched_q13_sf_bf16.so",
+      "cache_hit": false,
+      "spec": {
+        "qtype": 13,
+        "route": "sf-grouped",
+        "tm": 64,
+        "tn": 128,
+        "tk": 256,
+        "wm": 64,
+        "wn": 32,
+        "stages": 2,
+        "ap": 0,
+        "dn": 16,
+        "persistent": -1,
+        "symbol": "matched_q13_sf_bf16",
+        "compute": "bf16"
+      }
+    }
+  },
   "simt": {
     "path": "libquactlize_ppu_execution.so",
-    "sha256": "0605f190f8e48fb16a9cb0c7e09845db8344127b172f3b4e76c72d3e1307069c"
+    "sha256": "780d24dd4dc3620aa6b9eaafec22d3939426c706ca86a6cf0c5453ac13e1a9af"
   },
   "moe": {
     "path": "libquactlize_ppu_execution.so",
-    "sha256": "0605f190f8e48fb16a9cb0c7e09845db8344127b172f3b4e76c72d3e1307069c"
+    "sha256": "780d24dd4dc3620aa6b9eaafec22d3939426c706ca86a6cf0c5453ac13e1a9af"
   },
   "cases": [
     {
@@ -13102,21 +13672,23 @@
     "dev/bf16_compute/cases.py": "992f7a6b113e96f9896cb32e0d87991009f42c80161ee5545423ba011764a45a",
     "dev/bf16_compute/fixture.py": "a7f0b89f4d1c1ac27ac761baaf38f4ed7c94af6d5881f855d7b006e098ee680e",
     "dev/bf16_compute/moe_case.py": "bbf77d79a951a09b7c0db31d0979afe2f69413a9718f88c83bcd1b5df25ba28c",
-    "dev/bf16_compute/native.py": "7fed4e5d14f159b0036113610e3ac7cb6047911333e7df33d195dae38b5f36ad",
-    "dev/bf16_compute/package.py": "398bd19511eff6cc25c47fc9fd7e2e9b121be05478877f2841e3e0c33bf2423d",
+    "dev/bf16_compute/native.py": "9af61c7303051853319a81cee4402c37fcc99544cc00ec4f013a6008173eed47",
+    "dev/bf16_compute/package.py": "1905724d13b6beb126205e0d6f245774bd04db2173270e2a17f8be2300213732",
     "dev/bf16_compute/plan.py": "1e54b071d7f2bfdc74be1d79dd91e3541d488841f5fa879a5e95276bfde81539",
-    "dev/bf16_compute/run.py": "2e4950b31bd8fb9007863958d0283575ecfe08f37823257601b5ef1b9b99ce7c",
-    "dev/bf16_compute/rounding_replay.py": "398b3fefd928e8a43e881a7c0a15677145c533eb38de0c597458e68a6007c3db"
+    "dev/bf16_compute/run.py": "6b51836c8a6b61e2bd82d3907c67d4f479dc3ff6add0b3cb85bddab984432a69",
+    "dev/bf16_compute/rounding_replay.py": "398b3fefd928e8a43e881a7c0a15677145c533eb38de0c597458e68a6007c3db",
+    "dev/bf16_compute/check_metadata.py": "861570e7f3ff68e19a4d8c14f7427aca09f0e5aec89c6cf75eeb9ad4bff643f5",
+    "dev/bf16_compute/matched.py": "54fb3d2e4530e402a010bd8be9ec0f2c62efdbca58ebee7512e4602f9b9fe4e7"
   },
-  "build_seconds": 423.20259990543127,
+  "build_seconds": 511.02201338112354,
   "device_validated": false,
   "reused_execution": {
     "schema": "quactlize.kpack-execution-build.v1",
     "source_hashes": {
-      "quactlize/execution/api.h": "ddee15ba624b831c97a8ba2babce7af6fe4f2a32339cdddf2e0b3b159699c962",
+      "quactlize/execution/api.h": "997fa438055f0cc7b4d79ac85c228eef5db8d5b473975f01e5f8f577d6d5f7ab",
       "quactlize/execution/dispatch.cpp": "8e461947eefd0441cd39455f30e0c5bb6cc8ce85fa2e78928768fb65897105ef",
       "quactlize/execution/gemv.cu": "ab3f27bf2c1ea441d7d55d2dd9384da0b06b42982f3e3b8ce0bb47ef5c2ee251",
-      "quactlize/execution/metadata.cu": "ddc5c9a6e932043da0daa7386b31fcbc194495a7a7ee85727a8f8fa44520bf40",
+      "quactlize/execution/metadata.cu": "c340173b910f9dfdee7c69bf0cfff85c98ecfafac504289118c3aa1b608256bf",
       "quactlize/execution/moe.cu": "54974264fa2890fd51d6c1d3c11b60718a887e841acc05c5397f9f7c1a75f15b",
       "quactlize/execution/moe.h": "279492a889d46880cc2dd179eab1a5ae039f389e7dfbaba25a0c82f63de4ab5e",
       "quactlize/execution/moe_prepare.cuh": "972012332facbae99915e2affb5552b095237ac8bea348e682a9bf9b7372e8d2",
@@ -13147,7 +13719,7 @@
       "quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/ppu_decode_input.hpp": "95d15e9a74e7ae0d2e9c97d707cfcdcf8292652783c9572329c51aaa57c1cc5d",
       "quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_a_schedule.hpp": "a5144e9ca384d311d8f041bf4c020856e8a2a80e07a697fed029250ee8b024bc",
       "quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_argument_contract.hpp": "277cb9f5149459591687aecb89d97ec590b29493f9d1613c7f4f45d6e2265092",
-      "quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp": "522a36296da6a6dd7904e8d308dfed44b9a2d1b6aaad24e8fa5eb045b576f732",
+      "quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp": "d6e06f34f05f8a1b5c24949fc0ad35d64fd4da7f12bef335090f77ac1951518f",
       "quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp": "dcf873ae54e3c15a46abe57b26584f0ca7233783c222cdb199aaa0fd21da2fc2",
       "quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/ppu_packed_metadata_ownership.hpp": "3860e2f97a618819e58943aa654a2730b0e9f5c38b2e6ed838e86844b344e68d",
       "quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/quactlize_b_delivery_policy.hpp": "89dc064820b4fa80fef44cf63cb7319c67db6985d6f0579669db1fb2dcec8af6",
@@ -13158,8 +13730,8 @@
       "quactlize/include/actlize_extensions/cutlass/gemm/collective/marlin_load_ppu.hpp": "1c69912116b4f50e4e8ec06d4a7df3d53a40d5e97ac4dd34a5042c68c1897e87",
       "quactlize/include/actlize_extensions/cutlass/gemm/collective/marlin_mma_ppu.hpp": "decc838c1bfb82b6a02db3f80e7c4028a09f4065503780677760137dd364830b",
       "quactlize/include/actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_fold.hpp": "7af0da8446c487bd1ea648367d2f3b84874a265d3e4b35219f08a2ce428905ff",
-      "quactlize/include/actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp": "0f98c984b75543a85998acdc0412929d8127290c9e60e98c802a41ef6388980d",
-      "quactlize/include/actlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp": "f4e588484faab02c85794565928df792d899732e5dbdd5167e9c16796cfbfd74",
+      "quactlize/include/actlize_extensions/cutlass/gemm/collective/ppu_mma_aiu_mixed_input_2plane.hpp": "1cc46d667cf5c1e206a80a4948212ed30e083c6518e98a708900afed03b71b46",
+      "quactlize/include/actlize_extensions/cutlass/gemm/collective/quactlize_mma_mixed_input.hpp": "824355304f85d3b88bdf2ef5863dc9430ffa58f03e6e1d313d41e05f11d7802b",
       "quactlize/include/actlize_extensions/cutlass/gemm/device/marlin_gemm_ppu.hpp": "86bca2b52c67fc50058ea6c76f11d6c58c45fff38e14213014d785c14a3a2b70",
       "quactlize/include/actlize_extensions/cutlass/gemm/device/ppu_mixed_input_splitk_parallel.hpp": "fb8dc7643ff5e375af7b194fc930973033e42357a009b4a7fe0209462404ee3e",
       "quactlize/include/actlize_extensions/cutlass/gemm/kernel/detail/ppu_grouped_splitk_direct_epilogue.hpp": "4456aad061933ca082b5ccce3f414b8424ab0d746559f7198d1add8936cb609f",
@@ -13182,8 +13754,9 @@
       "quactlize/include/actlize_extensions/cutlass/gemm/kernel/ppu_grouped_ragged_geometry.hpp": "31518fd7a375af7730f4a514ecf04aa8de0773df43615b55c00a6ba56df23dd3",
       "quactlize/include/actlize_extensions/cutlass/gemm/kernel/ppu_moe_block_directory.hpp": "0e51d699959aa8e246a6532ad22fd01a9e09e02902dcdb8412ed7b1580755488",
       "quactlize/include/actlize_extensions/cutlass/gemm/quactlize_dispatch_policy.hpp": "c47b586ecb48997fadb3cb2fde252415f82a0fe4a7cd6a9bc88f8309fdfdac81",
+      "quactlize/include/actlize_extensions/cutlass/gguf_bfloat_scale.h": "01928f1c5eef480210d0dc7316b9e0ff9e7f9a0d220f46d4df2f0b2c54440639",
       "quactlize/include/actlize_extensions/cutlass/gguf_packed_scale.h": "2871a1ce746ad7ed23e0bdd8739fda831c27542de7c97c518329ebae3a17ce9b",
-      "quactlize/include/actlize_extensions/cutlass/quactlize_mix_gemm_convert.h": "6b331c7039ee8a910531d07ec7810abc27d88a2d7b7e8329a0398ba353a55878",
+      "quactlize/include/actlize_extensions/cutlass/quactlize_mix_gemm_convert.h": "7c1951d3deea5873e4be9a4b2245cb4a7575bdd5e367ea78f2167f5a07e4a12f",
       "quactlize/include/dense_splitk_multiformat_ppu.cuh": "bb7281158ef405dbe32835120fc21bd03f0f5b9a6a4191c687074269431191f2",
       "quactlize/include/dense_splitk_parallel_ppu.cuh": "5137af88d880fd434142130b29542f1ecb3f2f94b8a453335bac79cf5626b968",
       "quactlize/include/fold_traits.hpp": "d82eb31bd1c2430f8d3a0130075995408c0ac4658515e4cb13f44cb52e14b534",
@@ -13229,7 +13802,7 @@
       "quactlize/include/ppu_grouped_shipping_policy.hpp": "0bc2295c402f256c929f4398a842c8def6d8b9dab77d1264bfbdb14ac08cf195",
       "quactlize/include/ppu_kquant_measured_policy.hpp": "10ed9acc05006049e7c994937c6eca4dbe6915c74b95ee9bba300366c5f6c23f",
       "quactlize/include/ppu_kquant_measured_policy_data.inc": "7923db76de93f9db85bd0d81abb6b78594edb0ff5e52541032f6ce61dd68506a",
-      "quactlize/include/ppu_mixed_policy.hpp": "c76ec4162224aef1f6b79e1669a282fa74a9c4d0218f14b29b1307cf124b6a8e",
+      "quactlize/include/ppu_mixed_policy.hpp": "e6f2fd18be48818ad0bc9a6fbd64a1af281d18eb5db3ea95b5b83613607f7032",
       "quactlize/include/ppu_placed_arrangement.hpp": "6217e1ba0d0c6fa94a7f1346b028ce274d27021f4605ff3d3c201239206eea80",
       "quactlize/include/ppu_q4_kpack4_shipping_policy.hpp": "349f928b5e34ac31e193c594b853ff60ee5cb689a12bb5bbeb7c27cce0054381",
       "quactlize/include/ppu_tactic_space.hpp": "e842a529294db00b639a8235e042ae36b9d2bac95ab27db527d8e5d3e3a995e9",
@@ -13784,13 +14357,13 @@
       "third_party/actlize/tools/util/include/cutlass/util/reference/host/trmm_complex.h": "c9e479f1a79696553241dcff01106a1097acc4d4d81a2b196e17e59dfd02bf53",
       "third_party/actlize/tools/util/include/cutlass/util/tensor_view_io.h": "cf97b945b249fa86b88e366295a10ddea551d73ad78ee08c11ea2afebd85fea3",
       "third_party/actlize/tools/util/include/cutlass/util/type_traits.h": "d03300cec9ccaf628156692cd68dd9dd922601607e54cc2afc7936009a77b0c0",
-      "quactlize/runtime/abi.h": "6c21549bf015899164026b756283766cf4542e9f2f208ea719d821be5ed94b2d",
+      "quactlize/runtime/abi.h": "ad1fa5508777d38465b550a4c6a05d34a465e9241ea2c0037df7505c3f8d0e5e",
       "quactlize/runtime/compute_reducer.cuh": "62c6d8731059698e51aa67264e56138068f94221e1932eb1c4b17b3862c5d03e",
       "quactlize/runtime/grouped_workspace.hpp": "e3a2f45319edef014aeba9d9a5d445831dd2865bc5abd891248d178ac122b6ec",
       "quactlize/runtime/indexed.cuh": "929bd5e7e9e9fbd65e72301164375eb489a8bf2db8a08356fb5549d407f6fecb",
       "quactlize/runtime/indexed_rows.hpp": "826d993bc8871bb51fe881896e6e9dd634e0a4a0db5500ff0894c408022b4753",
-      "quactlize/runtime/kernel_types.cuh": "21aadb5a3b7781482f06fedf36e5490c251f32e281247f329acd4e2c1d912f54",
-      "quactlize/runtime/module.cuh": "2baf0d421c0acfb6e7da16c55bae868868a4fc64dd290af64d9434c6992ef85a",
+      "quactlize/runtime/kernel_types.cuh": "69ca2fe40b217de78dc189b67e723382ed3f5cb485e93fdf1b4d1f7e22e95c8c",
+      "quactlize/runtime/module.cuh": "0673c1bbe0aeb9b5a2741b46ef5575b25501ad9b82cede8a46f2baca4af94ff7",
       "quactlize/runtime/moe_chain.cuh": "21ce1259b5a5e30f46277a1f5ccc40452b1f14a4689dd1325bd8124d573a5682",
       "quactlize/runtime/moe_protocol.h": "687a146b7fc945c7f2279cda8f92aa71af63b600bc84d02d7eca078db626e9a2",
       "quactlize/integrations/llama/indexed.h": "26b52f8d62e2e6d43aea68bcbcfb1cd73f148ba7160cd90d37971ef27439e2ed",
@@ -13839,8 +14412,8 @@
       "libhg_wrapper.so": "fd93f23bfb05dfee0ffa48fd07d3c0cf6d8ab37d266e12f841ee056291affcd5"
     },
     "library": "libquactlize_ppu_execution.so",
-    "sha256": "0605f190f8e48fb16a9cb0c7e09845db8344127b172f3b4e76c72d3e1307069c",
-    "compile_seconds": 172.91919799149036,
+    "sha256": "780d24dd4dc3620aa6b9eaafec22d3939426c706ca86a6cf0c5453ac13e1a9af",
+    "compile_seconds": 179.61782106384635,
     "formats": [
       8,
       10,
@@ -27338,5 +27911,5 @@
     },
     "simt_selection": "EXPLICIT_CALLER_CONFIG_NO_POLICY_CHANGE"
   },
-  "source_revision": "341db59927a9ac88adde4c6f6322b216efa4569e"
+  "source_revision": "7d90f708a9c20ab735d4996dfd7214936602a0ed"
 }
