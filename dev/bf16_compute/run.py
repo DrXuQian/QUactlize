@@ -21,7 +21,7 @@ def validate_package(root):
     manifest = json.loads((root / "manifest.json").read_text())
     if manifest.get("schema") != "quactlize.bf16-device-gate.v1":
         raise ValueError("not an explicit BF16 capability package")
-    for record in [*manifest["modules"].values(), manifest["simt"], manifest["moe"]]:
+    for record in [*manifest["modules"].values(), *manifest.get("matched_modules", {}).values(), manifest["simt"], manifest["moe"]]:
         path = (root / record["path"]).resolve(strict=True)
         if root not in path.parents or sha(path) != record["sha256"]:
             raise ValueError("gate payload missing or differs: " + str(path))

@@ -38,6 +38,7 @@
 // quactlize's mainloop policies; this collective specialises CollectiveMma on one of them.
 #include "actlize_extensions/cutlass/gemm/quactlize_dispatch_policy.hpp"
 #include "actlize_extensions/cutlass/gguf_packed_scale.h"
+#include "actlize_extensions/cutlass/gguf_bfloat_scale.h"
 #include "actlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
 
 #include "cute/algorithm/functional.hpp"
@@ -1709,24 +1710,28 @@ private:
         // two bitcasts AND the per-group negate of the min term.
         uint32_t const m2 = cutlass::gguf_packed::mul2_of_words(u);
         auto const h = cutlass::gguf_packed::head_of_words(u);
-        (void)m2; (void)h;
+        auto const bh = cutlass::gguf_packed::bfloat_head_of_words(u);
+        (void)m2; (void)h; (void)bh;
         // ONE body, called from both halves with a compile-time G. The group index has to be a template argument --
         // every bit position in the unit is derived from it -- so the two halves cannot share a runtime offset.
         auto decode_group = [&] (auto source_g_, auto destination_g_) {
           constexpr int SourceG = decltype(source_g_)::value;
           constexpr int G = decltype(destination_g_)::value;
-          cutlass::gguf_packed::GroupScale sz;
-          if constexpr (kPackedPairFast) {
+          auto const sz = [&] {
+          if constexpr (cute::is_same_v<NonVoidElementScale, cutlass::bfloat16_t>) {
+            return cutlass::gguf_packed::bfloat_group_of_words<SourceG, kPackedZMul, kPackedFmt>(u, bh);
+          } else if constexpr (kPackedPairFast) {
             // BOTH FIELDS OF THE GROUP IN ONE 32-BIT LANE PAIR: one integer add carries the bias, the mask and the
             // magic OR for scale AND min together, then one ppu.sub.f16x2 and one ppu.fma.rtte.f16x2. 15 opcodes per
             // group down to ~11, and bit-identical rather than close -- l96 (A) checks that over 32768 real Q4_K
             // groups and (A0) checks each of the four identities it rests on separately. This touches only the
             // thread's OWN column, so it is independent of the constraint above.
-            sz = cutlass::gguf_packed::group_pair_of_words<SourceG, kPackedZMul, kPackedScaleBias>(u, m2);
+            return cutlass::gguf_packed::group_pair_of_words<SourceG, kPackedZMul, kPackedScaleBias>(u, m2);
           } else {
-            sz = cutlass::gguf_packed::group_of_words<
+            return cutlass::gguf_packed::group_of_words<
                 SourceG, kPackedScaleBias, kPackedHasMin, kPackedZMul, kPackedFmt>(u, h);
           }
+          }();
           // (n, group, stage): SmemLayoutScale's own modes. NOT the read side's flattened (n, 1, stage*SK+g) -- two
           // functions build a tensor called sS with DIFFERENT layouts, and using the wrong one faulted as
           // "TSM out of range" once already.

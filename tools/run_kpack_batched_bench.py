@@ -36,6 +36,10 @@ def save(path, value):
     path.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
 
 
+def expected_activation(plan, compute):
+    return 'BF16' if compute == 'bf16' and plan.get('op') == 'grouped' else 'FP16'
+
+
 def validate_plan(plan):
     for key in ("prompts", "generations"):
         values = plan[key]
@@ -233,10 +237,7 @@ def run_arm(args, model, plan, inv, arm, directory, index):
                                  f"see {log} (plan receipts require --verbosity 4)")
             if getattr(args, 'require_selected', False) and not evidence['fully_selected']:
                 raise ValueError('selected operator coverage incomplete or legacy fallback present')
-            def activation(p):
-                return 'BF16' if env.get('QUACTLIZE_KPACK_COMPUTE')=='bf16' and (
-                    p.get('op')=='grouped' or int(p['rows'])<=8) else 'FP16'
-            if inv["q8"] and (not q8_plans or any(p.get("activation")!=activation(p) or
+            if inv["q8"] and (not q8_plans or any(p.get("activation")!=expected_activation(p, env.get('QUACTLIZE_KPACK_COMPUTE')) or
                     p.get("route") not in ("sf", "gemv") or p.get("scale_resident")!="1" for p in q8_plans)):
                 raise ValueError("Q8_0 W8A16 compute evidence missing or activation/scale contract differs")
             evidence["plan_admission"] = "PASS"

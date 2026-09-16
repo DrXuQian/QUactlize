@@ -23,7 +23,9 @@ constexpr bool packed = route == QK_DENSE_FQ || route == QK_GROUPED_FQ;
 static_assert(QK_USE_BF16_COMPUTE==0 || QK_USE_BF16_COMPUTE==1);
 static_assert(!QK_USE_BF16_COMPUTE || grouped, "dense BF16 uses the typed decode module");
 using GroupCompute=std::conditional_t<QK_USE_BF16_COMPUTE,cutlass::bfloat16_t,Half>;
+using GroupMetadata=std::conditional_t<QK_QTYPE==8,Half,GroupCompute>;
 constexpr int compute_type=QK_USE_BF16_COMPUTE ? QK_COMPUTE_BF16 : QK_COMPUTE_F16;
+constexpr int metadata_type=std::is_same_v<GroupMetadata,cutlass::bfloat16_t> ? QK_METADATA_BF16 : QK_METADATA_F16;
 static_assert(qtype != 8 || (!packed && QK_AP == 0), "Q8_0 requires W8A16 with FP16 scale, no packed-A");
 using F = Format<qtype>;
 constexpr uint64_t mapping = qtype == 8 ? q8_kpack2::kMappingId : qtype == 12 ? UINT64_C(0x51344b5034540001)
@@ -138,7 +140,7 @@ template<class T> struct DenseHandle final : Handle {
 
 using Dense = DenseTypes<qtype,QK_TM,QK_TN,QK_TK,QK_WM,QK_WN,QK_STAGES,QK_AP,QK_DN>;
 template<bool P, class O = GroupCompute, bool Compact = false>
-using Group = GroupedTypes<qtype,QK_TM,QK_TN,QK_TK,QK_WM,QK_WN,QK_STAGES,QK_DN,P,O,Compact,GroupCompute>;
+using Group = GroupedTypes<qtype,QK_TM,QK_TN,QK_TK,QK_WM,QK_WN,QK_STAGES,QK_DN,P,O,Compact,GroupCompute,GroupMetadata>;
 
 inline uint64_t scheduler_bytes(int max_rows, int experts, bool directory, int rows) {
   return align16(directory ? quactlize::moe_directory::bounded_workspace_bytes(rows,max_rows,experts,tm)
@@ -337,7 +339,7 @@ template<bool Persistent, bool Split = false, bool Compact = false> struct Group
     problem.host_problem_shapes=device_only ? nullptr : shapes.data();
     typename G::Arguments args{cutlass::gemm::GemmUniversalMode::kGrouped, problem,
         {static_cast<GroupCompute const*>(c.a),sa,static_cast<typename T::Low const*>(c.low),sb,
-         static_cast<Half const*>(c.metadata),ss,c.group_size,static_cast<Half const*>(c.zero),c.offsets_device},
+         static_cast<GroupMetadata const*>(c.metadata),ss,c.group_size,static_cast<GroupMetadata const*>(c.zero),c.offsets_device},
         {{},static_cast<Output const**>(nullptr),typename T::Epilogue::StrideC{},dp,dd},
         cutlass::KernelHardwareInfo{c.device,c.compute_units}};
     args.representative_m=max_rows; args.representative_n=c.n; args.representative_k=c.k;
@@ -624,10 +626,33 @@ static bool qk_compute_matches(qk_compute_device_call_v3 const* d) {
 }
 extern "C" int quactlize_kpack_grouped_query_v3(qk_compute_device_call_v3 const* d,
     qk_recipe_v1 const* r,qk_resources_v1* out) {
+  if constexpr(quactlize::runtime::metadata_type!=QK_METADATA_F16) return QK_UNSUPPORTED;
   if(!qk_compute_matches(d)) return QK_INVALID;
   return qk_grouped_query(&d->device_call,r,out);
 }
 extern "C" int quactlize_kpack_grouped_prepare_v3(qk_compute_device_call_v3 const* d,
+    qk_recipe_v1 const* r,void** handle) {
+  if(handle)*handle=nullptr;
+  if constexpr(quactlize::runtime::metadata_type!=QK_METADATA_F16) return QK_UNSUPPORTED;
+  if(!qk_compute_matches(d)) return QK_INVALID;
+  return qk_grouped_prepare(&d->device_call,r,handle);
+}
+extern "C" qk_compute_identity_v4 const* quactlize_kpack_compute_identity_v4() {
+  static qk_compute_identity_v4 const identity{4,sizeof(identity),quactlize_kpack_identity_v1(),
+      quactlize::runtime::compute_type,quactlize::runtime::metadata_type};
+  return &identity;
+}
+static bool qk_compute_matches(qk_compute_device_call_v4 const* d) {
+  return d && d->version==4 && d->size==sizeof(*d) &&
+      d->compute_type==quactlize::runtime::compute_type &&
+      d->metadata_type==quactlize::runtime::metadata_type;
+}
+extern "C" int quactlize_kpack_grouped_query_v4(qk_compute_device_call_v4 const* d,
+    qk_recipe_v1 const* r,qk_resources_v1* out) {
+  if(!qk_compute_matches(d)) return QK_INVALID;
+  return qk_grouped_query(&d->device_call,r,out);
+}
+extern "C" int quactlize_kpack_grouped_prepare_v4(qk_compute_device_call_v4 const* d,
     qk_recipe_v1 const* r,void** handle) {
   if(handle)*handle=nullptr;
   if(!qk_compute_matches(d)) return QK_INVALID;

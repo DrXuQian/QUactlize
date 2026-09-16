@@ -15,6 +15,14 @@ from tools.run_kpack_batched_bench import command, validate_plan, sequence, pars
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize('compute', [None, 'fp16', 'bf16'])
+@pytest.mark.parametrize('op', ['dense', 'grouped'])
+@pytest.mark.parametrize('rows', [1, 8, 9, 16352])
+def test_benchmark_bf16_scope_is_grouped_only(compute, op, rows):
+    actual = bench.expected_activation(dict(op=op, rows=str(rows)), compute)
+    assert actual == ('BF16' if compute == 'bf16' and op == 'grouped' else 'FP16')
+
+
 def plan(root):
     return dict(model_root=str(root), prompts=[512], generations=[16],
                 parallel=1, batch=512, ubatch=512, models=[

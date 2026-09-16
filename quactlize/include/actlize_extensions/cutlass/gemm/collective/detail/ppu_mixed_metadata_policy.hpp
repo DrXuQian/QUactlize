@@ -217,16 +217,16 @@ CUTLASS_DEVICE void reload_metadata(Info const& info, Views const& views, int gr
   }
 }
 
-// The resident metadata remains FP16 for BOTH compute formats. BF16 is a
-// value conversion at the arithmetic boundary, never a reinterpretation of
-// the stored scale/zero bits. Keep the existing multiply-then-add rounding
-// sequence: each operation rounds into the compute element.
+// Legacy FP16 metadata has a value conversion at the BF16 arithmetic
+// boundary, never a bit reinterpretation. Typed BF16 metadata uses native
+// BF16 arithmetic. Keep multiply-then-add as two distinct rounding steps.
 template <class Destination, class Op>
 struct MetadataBinary {
   Op op;
   template <class A, class B>
   CUTLASS_HOST_DEVICE Destination operator()(A a, B b) const {
-    if constexpr (cute::is_same_v<Destination, cutlass::bfloat16_t>)
+    if constexpr (cute::is_same_v<Destination, cutlass::bfloat16_t> &&
+                  !(cute::is_same_v<A, cutlass::bfloat16_t> && cute::is_same_v<B, cutlass::bfloat16_t>))
       return Destination(op(float(a), float(b)));
     else return op(a, b);
   }

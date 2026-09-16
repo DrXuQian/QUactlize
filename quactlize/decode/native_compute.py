@@ -24,18 +24,26 @@ class GroupedComputeCall(C.Structure):
                 ("compute_type", C.c_int32)]
 
 
+class GroupedMetadataCall(C.Structure):
+    _fields_ = GroupedComputeCall._fields_ + [("metadata_type", C.c_int32)]
+
+
 class ComputeIdentity(C.Structure):
     _fields_ = [("version", C.c_uint32), ("size", C.c_uint32),
                 ("parent", C.POINTER(Identity)), ("compute_type", C.c_int32)]
 
 
+class ComputeMetadataIdentity(C.Structure):
+    _fields_ = ComputeIdentity._fields_ + [("metadata_type", C.c_int32)]
+
+
 def bind_compute(lib, grouped):
     prefix = "quactlize_kpack_grouped" if grouped else "quactlize_kpack_decode_dense"
-    version = 3 if grouped else 2
-    call = GroupedComputeCall if grouped else DenseComputeCall
-    identity = getattr(lib, "quactlize_kpack_compute_identity_v3" if grouped
+    version = 4 if grouped else 2
+    call = GroupedMetadataCall if grouped else DenseComputeCall
+    identity = getattr(lib, "quactlize_kpack_compute_identity_v4" if grouped
                        else "quactlize_kpack_decode_dense_identity_v2")
-    identity.argtypes, identity.restype = [], C.POINTER(ComputeIdentity)
+    identity.argtypes, identity.restype = [], C.POINTER(ComputeMetadataIdentity if grouped else ComputeIdentity)
     query = getattr(lib, f"{prefix}_query_v{version}")
     query.argtypes, query.restype = [C.POINTER(call), C.POINTER(Recipe), C.POINTER(Resources)], C.c_int
     prepare = getattr(lib, f"{prefix}_prepare_v{version}")

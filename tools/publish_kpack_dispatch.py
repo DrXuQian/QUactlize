@@ -60,6 +60,7 @@ def publish(build, output, pack=None):
         paths += ['bf16/manifest.json']
         paths += ['bf16/' + name for name in sorted({gate['simt']['path'], gate['moe']['path']} |
                   {r['path'] for r in gate['modules'].values()})]
+        paths += ['bf16/' + r['path'] for r in gate.get('matched_modules',{}).values()]
     if "local_optimization_gate" in m:
         from tools.attach_kpack_local_gates import payload_paths
         paths += payload_paths(src,m['local_optimization_gate'])

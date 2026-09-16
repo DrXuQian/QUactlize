@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from quactlize.decode.native_compute import (
-    DenseIO, DenseComputeCall, GroupedDeviceCall, GroupedComputeCall, ComputeIdentity, bind_compute,
+    DenseIO, DenseComputeCall, GroupedDeviceCall, GroupedMetadataCall, ComputeIdentity, ComputeMetadataIdentity, bind_compute,
 )
 from quactlize.dispatch.native import IndexedIO, Router, MoeFinish
 from quactlize.execution.native import (
@@ -103,7 +103,10 @@ class TensorCore:
         self.identity, self.query, self.prepare, self.run_fn, self.destroy = bind_compute(self.lib, self.grouped)
         identity = self.identity().contents
         parent = identity.parent.contents
-        if (identity.version != (3 if self.grouped else 2) or identity.size != C.sizeof(ComputeIdentity) or
+        self.metadata_tag = int(self.grouped and self.tag and weights.q != 8)
+        if (identity.version != (4 if self.grouped else 2) or
+                identity.size != C.sizeof(ComputeMetadataIdentity if self.grouped else ComputeIdentity) or
+                (self.grouped and identity.metadata_type != self.metadata_tag) or
                 identity.compute_type != self.tag or parent.build_key.decode() != record["key"] or
                 parent.qtype != weights.q or any(getattr(parent, name) != record["parent"][name]
                     for name in ("tm", "tn", "tk", "wm", "wn", "stages", "ap"))):
@@ -115,7 +118,10 @@ class TensorCore:
                        [C.c_char_p, C.c_int, C.POINTER(C.c_int32), C.POINTER(C.c_int32)])
         checked(dev(device_name, 256, C.byref(self.device), C.byref(self.cu)), "module device identity")
         self.arr = arrangement(weights.q)
-        self.planes = {name: r.upload(value) if value.size else None for name, value in weights.planes.items()}
+        # This common dyadic fixture is exactly representable in both types.
+        # Nondyadic metadata and the real SF producer have a separate bit gate.
+        self.planes = {name: r.upload(bf16_bits(value.astype("f4")) if self.metadata_tag and name in ("scale", "zero") else value)
+                       if value.size else None for name, value in weights.planes.items()}
         sdk.synchronize(None)
         self.offsets = Buffer(r, (weights.experts + 1) * 4) if self.grouped else None
         width = 2 if self.grouped or storage == 2 else 4
@@ -132,8 +138,8 @@ class TensorCore:
         self.call = call
         self.recipe = Recipe(1, C.sizeof(Recipe), algorithm, split, 1 if algorithm else 0)
         if self.grouped:
-            self.request = GroupedComputeCall(3, C.sizeof(GroupedComputeCall),
-                GroupedDeviceCall(2, C.sizeof(GroupedDeviceCall), call, maximum, 0), self.tag)
+            self.request = GroupedMetadataCall(4, C.sizeof(GroupedMetadataCall),
+                GroupedDeviceCall(2, C.sizeof(GroupedDeviceCall), call, maximum, 0), self.tag, self.metadata_tag)
         else:
             self.request = DenseComputeCall(2, C.sizeof(DenseComputeCall),
                 DenseIO(1, C.sizeof(DenseIO), call, storage, storage), self.tag)
@@ -163,6 +169,11 @@ class TensorCore:
         wrong.compute_type ^= 1
         if self.query(C.byref(wrong), C.byref(self.recipe), C.byref(QueryResources())) == 0:
             raise ValueError("wrong compute type was admitted")
+        if self.grouped:
+            wrong = type(self.request).from_buffer_copy(self.request)
+            wrong.metadata_type ^= 1
+            if self.query(C.byref(wrong), C.byref(self.recipe), C.byref(QueryResources())) == 0:
+                raise ValueError("wrong metadata type was admitted")
         self.handle = C.c_void_p()
         checked(self.prepare(C.byref(self.request), C.byref(self.recipe), C.byref(self.handle)), "typed prepare")
         self.receipt = dict(parent=record["parent"], compute=self.compute, algorithm=algorithm, split=split,

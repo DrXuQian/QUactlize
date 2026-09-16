@@ -23,13 +23,14 @@ def attach_bf16(root, package, sdk):
     if not model.get('compute_contract') or 'bf16_gate' in model:
         raise ValueError('requires a compute-capable package without an attached BF16 gate')
     gate=validate_package(package)
-    for record in gate['modules'].values():
+    for record in [*gate['modules'].values(),*gate.get('matched_modules',{}).values()]:
         if record['identity']['base_source_contract']!=model['jit_source_contract']:
             raise ValueError('BF16 gate/dispatcher kernel source contracts differ')
     if (gate.get('reused_execution') or {}).get('sha256')!=model['execution_sha256']:
         raise ValueError('BF16 gate must validate the same execution image used by the model')
     names={'manifest.json',gate['simt']['path'],gate['moe']['path']}
     names.update(r['path'] for r in gate['modules'].values())
+    names.update(r['path'] for r in gate.get('matched_modules',{}).values())
     destination=root/'bf16';destination.mkdir()
     for name in sorted(names):
         source=(package/name).resolve(strict=True)

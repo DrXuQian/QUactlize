@@ -297,7 +297,7 @@ template <QuantMode Mode, class BaseSchedule, class TileShape,
           bool AiuInterleaved, int APackRows = 0,
           int KPack4DeliveryN = 0,
           class MetadataPublication = cutlass::gemm::SeparateHalfPlanes,
-          class Compute = cutlass::half_t>
+          class Compute = cutlass::half_t, class Metadata = cutlass::half_t>
 struct Q4KPack4MainloopPolicy {
   static_assert(std::is_same_v<Compute, cutlass::half_t> ||
                 std::is_same_v<Compute, cutlass::bfloat16_t>);
@@ -305,8 +305,8 @@ struct Q4KPack4MainloopPolicy {
                 "packed-A publishes b16 values to its typed M8 MMA operand");
   using ElementA = Compute;
   using ElementB = cutlass::int4b_t;
-  using ElementScale = cutlass::half_t;
-  using ElementZero = cutlass::half_t;
+  using ElementScale = Metadata;
+  using ElementZero = Metadata;
   using LayoutA = cutlass::layout::RowMajor;
   using LayoutB = std::conditional_t<AiuInterleaved,
       cutlass::layout::ColumnMajorInterleaved<256>,
@@ -403,15 +403,15 @@ template <QuantMode Mode, class BaseSchedule, class TileShape,
           class ScaleTileShape, class WarpShape, int Stages,
           bool AiuInterleaved, class ElementB, class PlaneB2 = void,
           int APackRows = 0, int KPackDeliveryN = 0,
-          class Compute = cutlass::half_t>
+          class Compute = cutlass::half_t, class Metadata = cutlass::half_t>
 struct KPackMainloopPolicy {
   static_assert(std::is_same_v<Compute, cutlass::half_t> ||
                 std::is_same_v<Compute, cutlass::bfloat16_t>);
   static_assert(APackRows == 0 || cutlass::sizeof_bits<Compute>::value == 16,
                 "packed-A publishes b16 values to its typed M8 MMA operand");
   using ElementA = Compute;
-  using ElementScale = cutlass::half_t;
-  using ElementZero = cutlass::half_t;
+  using ElementScale = Metadata;
+  using ElementZero = Metadata;
   using LayoutA = cutlass::layout::RowMajor;
   using LayoutB = std::conditional_t<AiuInterleaved,
       cutlass::layout::ColumnMajorInterleaved<256>,

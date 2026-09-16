@@ -46,7 +46,7 @@ def inspect_modules(cache, keys, contract):
             raise ValueError("module cache path escapes entry")
         r = json.loads(receipt.read_text())
         typed = r["identity"].get("endpoints") == "decode-m1-8-f32-bf16-v1"
-        grouped_compute = r["identity"].get("endpoints") == "grouped-explicit-compute-v3"
+        grouped_compute = r["identity"].get("endpoints") == "grouped-explicit-compute-metadata-v4"
         observed = r["identity"].get("base_source_contract") if typed or grouped_compute else source_contract(r["identity"])
         if r.get("key") != key or observed != contract:
             raise ValueError("module source/receipt identity differs")
@@ -71,7 +71,7 @@ def module_source(record):
         if 'compute_type' not in identity:
             source=source.removeprefix('#define QKD_USE_BF16_COMPUTE 0\n')
         return source
-    if endpoint=='grouped-explicit-compute-v3':
+    if endpoint=='grouped-explicit-compute-metadata-v4':
         if not record['parent']['route'].endswith('grouped'):
             raise ValueError('grouped compute identity names a dense parent')
         return f"#define QK_USE_BF16_COMPUTE {int(compute=='bf16')}\n"+Compiler.source(None,record['parent'],'')

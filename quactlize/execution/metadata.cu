@@ -1,6 +1,7 @@
 #include <hggc_runtime.h>
 #include "validation.hpp"
 #include "gguf_scale_prepass.hpp"
+#include "../dequant/bfloat_metadata.cuh"
 
 namespace {
 using namespace quactlize::execution;
@@ -18,10 +19,11 @@ int launch(uint8_t const* units, uint16_t* scale, uint16_t* zero,
 }
 }
 
-extern "C" int quactlize_kpack_sf_prepare_v1(int q, int n, int k, int experts,
+extern "C" int quactlize_kpack_sf_prepare_v2(int q, int n, int k, int experts,
         uint8_t const* units, uint64_t unit_bytes, uint16_t* scale, uint16_t* zero,
-        uint64_t plane_bytes, quactlize_ppu_placed_arrangement_v2 const* arrangement, void* stream) {
+        uint64_t plane_bytes, quactlize_ppu_placed_arrangement_v2 const* arrangement, int metadata_type, void* stream) {
     using namespace quactlize::execution;
+    if (metadata_type != 0 && metadata_type != 1) return QKG_INVALID;
     if (q==8) return QKG_FORMAT;  // Q8 uses resident d, not a K-quant prepass.
     qkg_sizes_v1 s{};
     int const rc = sizes(q,n,k,experts,arrangement,s);
@@ -30,6 +32,7 @@ extern "C" int quactlize_kpack_sf_prepare_v1(int q, int n, int k, int experts,
     if (uint64_t(experts)*(k/256)*(uint64_t(n)/8) > uint64_t(UINT32_MAX)/32)
         return QKG_OVERFLOW;
     if (unit_bytes < s.units_bytes || plane_bytes < s.sf_plane_bytes) return QKG_CAPACITY;
+    if (metadata_type && (experts > 65535 || k/256 > 65535)) return QKG_SHAPE;
     uintptr_t const p[] = {uintptr_t(units),uintptr_t(scale),uintptr_t(zero)};
     uint64_t const b[] = {s.units_bytes,s.sf_plane_bytes,s.sf_plane_bytes};
     for (int i = 0; i < 3; ++i) {
@@ -41,6 +44,19 @@ extern "C" int quactlize_kpack_sf_prepare_v1(int q, int n, int k, int experts,
     if (hggcGetLastError() != hggcSuccess) return QKG_RUNTIME;
     using gguf_scale::KType;
     auto st = static_cast<hggcStream_t>(stream);
+    if (metadata_type) {
+        using cutlass::gguf_packed::Fmt;
+        using quactlize::dequant::launch_sf_bfloat;
+        switch (q) {
+            case 10: launch_sf_bfloat<Fmt::Q2K,0>(units,scale,zero,n,k,experts,128,st); break;
+            case 11: launch_sf_bfloat<Fmt::Q3K,-4>(units,scale,zero,n,k,experts,128,st); break;
+            case 12: launch_sf_bfloat<Fmt::Q4K,8>(units,scale,zero,n,k,experts,128,st); break;
+            case 13: launch_sf_bfloat<Fmt::Q5K,8>(units,scale,zero,n,k,experts,128,st); break;
+            case 14: launch_sf_bfloat<Fmt::Q6K,-24>(units,scale,zero,n,k,experts,128,st); break;
+            default: return QKG_FORMAT;
+        }
+        return hggcGetLastError() == hggcSuccess ? QKG_OK : QKG_RUNTIME;
+    }
     switch (q) {
         case 10: return launch<KType::Q2_K>(units,scale,zero,n,k,experts,st);
         case 11: return launch<KType::Q3_K>(units,scale,zero,n,k,experts,st);
@@ -49,4 +65,10 @@ extern "C" int quactlize_kpack_sf_prepare_v1(int q, int n, int k, int experts,
         case 14: return launch<KType::Q6_K>(units,scale,zero,n,k,experts,st);
         default: return QKG_FORMAT;
     }
+}
+
+extern "C" int quactlize_kpack_sf_prepare_v1(int q, int n, int k, int experts,
+        uint8_t const* units, uint64_t unit_bytes, uint16_t* scale, uint16_t* zero,
+        uint64_t plane_bytes, quactlize_ppu_placed_arrangement_v2 const* arrangement, void* stream) {
+    return quactlize_kpack_sf_prepare_v2(q,n,k,experts,units,unit_bytes,scale,zero,plane_bytes,arrangement,0,stream);
 }

@@ -38,6 +38,10 @@ class Call(C.Structure):
         ('output',C.c_void_p),('zero',C.c_void_p),('output_bytes',C.c_uint64),('stream',C.c_void_p)]
 
 
+class TypedCall(C.Structure):
+    _fields_ = [('version',C.c_uint32),('size',C.c_uint32),('call',Call),('metadata_type',C.c_int32)]
+
+
 def traffic(q, n, k, experts, operation):
     if q not in range(10,15) or n<=0 or n%256 or k<=0 or k%(512 if q in (11,14) else 256) or experts<=0:
         raise ValueError('unsupported dequant geometry')

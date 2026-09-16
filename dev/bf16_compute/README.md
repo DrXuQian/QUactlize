@@ -14,7 +14,7 @@ clipping is performed.
 | Path | Formats | Domain | Arithmetic / storage |
 | --- | --- | --- | --- |
 | Grouped FQ TC | Q2_K–Q6_K | Existing ordinary, persistent, compact, and Split-K legal domains; no new M limit | BF16 A/B, FP32 accumulation, BF16 final projection |
-| Grouped SF TC | Q2_K–Q6_K, Q8_0 | Same existing grouped legal domains, including prefill | BF16 A/B; existing FP16 scale/zero planes |
+| Grouped SF TC | Q2_K–Q6_K, Q8_0 | Same existing grouped legal domains, including prefill | BF16 A/B and typed BF16 metadata; Q8 original FP16 d |
 | Typed dense TC | Q2_K–Q6_K FQ/SF, Q8_0 SF | Existing decode M=1..8; AP0 | F32 or BF16 I/O; BF16 compute; FP32 accumulator and split partials |
 | Register-reuse SIMT | Q2_K–Q6_K, Q8_0 | Existing dense/indexed/grouped token limits, including 1..8 | BF16 A, original F32 group-affine weight arithmetic, FP32 accumulation/output |
 | Fused indexed/MoE helpers | TC and SIMT projections | Existing small-row helper domain, at most 64 routed rows | F32 external I/O; explicit BF16 TC projection / activation / down boundaries |
@@ -24,15 +24,24 @@ small-row fused router to prefill. A prefill caller using its ordinary grouped
 adapter must supply BF16 A and consume BF16 projection output. The existing
 full-weight-dequant + BF16 provider path is not changed here.
 
-AP1 packed-A is not admitted for BF16: its separate provider contract still
-requires FP16. BF16 compile requests for AP1 explicitly decline. BF16 M8 uses
+Dense Q2/Q4 AP1 packed-A has a typed BF16 writer and its own fastpath gate.
+Grouped remains AP0. BF16 M8 uses
 the same b16 coordinate map as FP16, with a separately named BF16 MMA
 instruction; M16 uses the already available BF16 instruction.
 
 ## Numeric boundaries
 
 - Canonical low/high planes and packed units are unchanged.
-- FP16 metadata is converted by value; it is never interpreted as BF16 bits.
+- Grouped K-quant metadata is unfolded directly from original GGUF headers
+  and integer fields into BF16. FQ and the SF producer share the same arithmetic.
+  The v4 grouped descriptor names metadata precision; old v3 cannot reinterpret
+  the changed SF planes. Legacy dense and Q8 FP16 metadata keep their contract.
+- `check_metadata.py` tests both actual model producers against nondyadic
+  raw-GGUF metadata, including rejected precisions and unchanged full-weight
+  BF16 reconstruction. It deliberately rejects FP16 intermediate rounding.
+- `matched.py` compares identical Q4/Q5 prefill geometries for both compute
+  types, FQ and SF. Eight additional modules do not expand the capability-case
+  denominator. SF prepass is not included in these resident GEMM timings.
 - Integer code extraction can reuse exact FP16 integer magic. Bounded codes
   are converted by value to BF16 in the same register positions.
 - TC rounds metadata multiplication and zero addition separately into BF16,

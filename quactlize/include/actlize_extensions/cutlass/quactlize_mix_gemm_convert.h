@@ -64,19 +64,25 @@
 namespace cutlass
 {
 
-// Code extraction may use exact FP16 integer magic even for BF16 MMA. The
-// decoded code is bounded by 255, so this conversion is exact; metadata is
-// applied later in the named compute type. The converter's physical emission
-// index is unchanged and no BF16 value is ever read through a half_t pointer.
-template<class Compute>
-CUTLASS_DEVICE uint32_t convert_half_code_pair(uint32_t bits) {
-  static_assert(cute::is_same_v<Compute, half_t> || cute::is_same_v<Compute, bfloat16_t>);
-  if constexpr (cute::is_same_v<Compute, half_t>) return bits;
-  else {
-    auto const& source = reinterpret_cast<Array<half_t, 2> const&>(bits);
-    auto result = NumericArrayConverter<bfloat16_t, half_t, 2>::convert(source);
-    return reinterpret_cast<uint32_t const&>(result);
-  }
+// Two unsigned codes at bit offsets 0 and 16. BF16 represents 128+code
+// exactly for up to seven code bits; subtract the construction and quant bias.
+template<int Bits, int Bias = 0>
+CUTLASS_HOST_DEVICE uint32_t direct_bfloat_code_pair(uint32_t codes) {
+  static_assert(Bits > 0 && Bits <= 7 && Bias >= 0 && Bias <= 128);
+  constexpr uint32_t mask = ((1u << Bits) - 1u) * 0x00010001u;
+#if defined(__HGGC_ARCH__) && (__HGGC_ARCH__ >= 100)
+  uint32_t result;
+  asm volatile("ppu.lop3.b32 %0,%1,%2,%3,%4;\n" : "=r"(result)
+               : "r"(codes), "n"(mask), "n"(0x43004300u), "n"(0xeau));
+  constexpr uint32_t bias = (0xc300u + Bias) * 0x00010001u;
+  asm volatile("ppu.fma.rtte.bf16x2 %0,%1,%2,%3;\n" : "=r"(result)
+               : "r"(result), "r"(0x3f803f80u), "r"(bias));
+  return result;
+#else
+  auto a = bfloat16_t(float(int(codes & ((1u << Bits) - 1u)) - Bias));
+  auto b = bfloat16_t(float(int((codes >> 16) & ((1u << Bits) - 1u)) - Bias));
+  return uint32_t(a.raw()) | (uint32_t(b.raw()) << 16);
+#endif
 }
 
 // This converter is meant to be used with data interleaved in a 32-bit register where the even elements are in the low
@@ -543,8 +549,25 @@ struct MixGemmNumericArrayConverter<bfloat16_t, uint2b_t, N> {
     using source_type = Array<uint2b_t, N>;
     using result_type = Array<bfloat16_t, N>;
     CUTLASS_DEVICE static result_type convert(source_type const& source) {
-        auto exact_codes = MixGemmNumericArrayConverter<half_t, uint2b_t, N>::convert(source);
-        return NumericArrayConverter<bfloat16_t, half_t, N>::convert(exact_codes);
+        result_type result;
+        auto const* input = reinterpret_cast<uint32_t const*>(&source);
+        auto* output = reinterpret_cast<uint32_t*>(&result);
+        if constexpr (N == 16) {
+            CUTLASS_PRAGMA_UNROLL
+            for (int pair = 0; pair < 8; ++pair) {
+                uint32_t bits = input[0] >> (4 * pair);
+                uint32_t codes = (bits & 3u) | (((bits >> 2) & 3u) << 16);
+                output[pair] = direct_bfloat_code_pair<2>(codes);
+            }
+        } else {
+            cute::for_each(cute::make_int_sequence<4>{}, [&](auto v) {
+                cute::for_each(cute::make_int_sequence<8>{}, [&](auto t) {
+                    constexpr int V = decltype(v)::value, T = decltype(t)::value;
+                    output[MixGemmChunkEmit<2>::at(T, V)] = direct_bfloat_code_pair<2>(input[V] >> (2 * T));
+                });
+            });
+        }
+        return result;
     }
     CUTLASS_DEVICE result_type operator()(source_type const& source) { return convert(source); }
 };
@@ -768,6 +791,12 @@ struct MixGemm2Plane
     // amortisation, cvt/mma, and WM=128 is out because accum = WM*WN/32 would be 256 registers.
     template <int T, int V>
     CUTLASS_DEVICE static void emit_one(uint32_t reg, uint32_t r8, uint32_t hreg, uint32_t* h2) {
+      if constexpr (cute::is_same_v<Compute, bfloat16_t>) {
+        uint32_t lo = (reg >> (T * LowBits)) & E::dup((1u << LowBits) - 1u);
+        uint32_t hi = ((hreg >> hshift(T, V)) & himask()) << LowBits;
+        h2[at(T, V)] = direct_bfloat_code_pair<LowBits + HiBits, Bias>(lo | hi);
+      } else {
+      static_assert(cute::is_same_v<Compute, half_t>);
       const uint32_t src = (T / kPerLevel) ? r8 : reg;        // the upper byte level of the low vreg
       uint32_t x;
       asm volatile("ppu.lop3.b32 %0,%1,%2,%3,%4;\n" : "=r"(x)
@@ -775,7 +804,8 @@ struct MixGemm2Plane
       x |= ((hreg >> hshift(T, V)) & himask()) << (E::template bpos<T>() + LowBits);
       asm volatile("ppu.fma.rtte.f16x2 %0,%1,%2,%3;\n" : "=r"(x)
                    : "r"(x), "r"(E::template mul<T>()), "r"(E::template add<T>()));
-      h2[at(T, V)] = convert_half_code_pair<Compute>(x);
+      h2[at(T, V)] = x;
+      }
     }
 
     template <int V>

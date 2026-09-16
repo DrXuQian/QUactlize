@@ -175,6 +175,14 @@ def verify(root, *, sdk=None):
             raise ValueError('compute host/execution contract differs')
         for name, required in COMPUTE_MODEL_EXPORTS.items():
             require_exports(root/name,required)
+        if 'metadata' in c:
+            if (c['metadata']!='KQUANT_DIRECT_BF16_V1_Q8_ORIGINAL_F16' or c.get('grouped_abi')!=4 or c.get('sf_abi')!=2):
+                raise ValueError('typed BF16 metadata contract differs')
+            require_exports(root/'libquactlize_kpack_dispatch.so',{
+                'quactlize_kpack_dispatch_prepare_compute_v2','quactlize_kpack_dispatch_prefill_compute_v1'})
+            require_exports(root/'libquactlize_ppu_execution.so',{'quactlize_kpack_sf_prepare_v2'})
+            if 'prefill' in m:
+                require_exports(root/'libquactlize_ppu_prefill.so',{'quactlize_kpack_dequant_v2'})
     if 'prefill' in m:
         prefill_paths(root, m['prefill'], sdk=sdk)
     elif (root / 'libquactlize_ppu_prefill.so').exists():
@@ -188,7 +196,8 @@ def verify(root, *, sdk=None):
         gate=validate_package(root/'bf16')
         if (len(gate['cases'])!=receipt.get('cases') or len(gate['modules'])!=receipt.get('modules') or
                 (gate.get('reused_execution') or {}).get('sha256')!=m['execution_sha256'] or
-                any(r['identity']['base_source_contract']!=m['jit_source_contract'] for r in gate['modules'].values())):
+                any(r['identity']['base_source_contract']!=m['jit_source_contract'] for r in
+                    [*gate['modules'].values(),*gate.get('matched_modules',{}).values()])):
             raise ValueError('BF16 gate execution/module contract differs from model')
     if 'local_optimization_gate' in m:
         from tools.attach_kpack_local_gates import payload_paths

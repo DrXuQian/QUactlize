@@ -59,6 +59,7 @@
 #include "actlize_extensions/cutlass/detail/quactlize_mixed_dtype.hpp"
 #include "actlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
 #include "actlize_extensions/cutlass/gguf_packed_scale.h"
+#include "actlize_extensions/cutlass/gguf_bfloat_scale.h"
 
 #include "cute/algorithm/functional.hpp"
 #include "cute/atom/mma_atom.hpp"
@@ -1562,11 +1563,18 @@ private:
             words[w] = word;
           }
           auto const head = cutlass::gguf_packed::head_of_words(words);
+          auto const bhead = cutlass::gguf_packed::bfloat_head_of_words(words);
           for_each(make_int_sequence<int(Scale_TileK)>{}, [&](auto g_) {
             constexpr int G = decltype(g_)::value;
             constexpr int UnitG = GroupBase + G;
-            auto const sz = cutlass::gguf_packed::group_of_words<
-                UnitG, PackedUnit::kScaleBias, PackedUnit::kHasMin, kPackedZMul, kPackedFmt>(words, head);
+            auto const sz = [&] {
+              if constexpr (cute::is_same_v<NonVoidElementScale, cutlass::bfloat16_t>) {
+                return cutlass::gguf_packed::bfloat_group_of_words<UnitG, kPackedZMul, kPackedFmt>(words, bhead);
+              } else {
+                return cutlass::gguf_packed::group_of_words<
+                    UnitG, PackedUnit::kScaleBias, PackedUnit::kHasMin, kPackedZMul, kPackedFmt>(words, head);
+              }
+            }();
             sS(n, cute::Int<G>{}, stage) = sz.scale;
             sZ(n, cute::Int<G>{}, stage) = sz.zero;
           });

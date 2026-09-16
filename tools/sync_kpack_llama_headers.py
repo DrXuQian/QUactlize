@@ -25,6 +25,7 @@ INCLUDES={
     '../dequant/api.h':'kpack_dequant.h',
     '../execution/q4_decode.h':'kpack_q4_decode.h',
     '../execution/simt.h':'kpack_simt.h',
+    'simt.h':'kpack_simt.h',
     '../include/quactlize_ppu_config.h':'quactlize_ppu_config.h',
 }
 

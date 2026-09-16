@@ -6,24 +6,30 @@ binary bundle, or loader contract changes.
 
 ## Explicit BF16 compute integration, updated 2026-09-16
 
-Latest [completed replay and production integration](KPACK_DECODE_PRODUCTION_20260916.md):
-BF16 capability746/746 passes, including all116 complete MoE chains. Prepare's
+Earlier [completed replay and production integration](KPACK_DECODE_PRODUCTION_20260916.md):
+the v3 BF16 capability746/746 passed, including all116 complete MoE chains. Prepare's
 3,840-context ordered-negative gate and48 timing comparisons pass. Eleven
 matched dense Q8 SIMT choices now use the verified vector reader; TC and
 indexed choices remain unchanged. The measured merged all-SIMT prepare domain
 is enabled; TC/mixed prepare retains its incumbent. New execution and caller
-compile locally. The same-image/model box gates and BF16 model admission remain pending.
+compile locally. These results do not admit the new direct-BF16 metadata
+implementation below; its same-image/model box gates remain pending.
 
 The development caller now has an explicit `QUACTLIZE_KPACK_COMPUTE=bf16`
-path. The default remains `fp16` until the complete device gate is admitted.
+path for grouped/MoE projections only, at every M. Ordinary dense projections,
+including M1--8, retain the FP16 policy. This caller scope does not remove the
+library's explicit dense BF16 API. The default remains `fp16`.
 This is computation precision, not a different offline artifact. Existing
-low/high/unit bytes and disk caches are unchanged; metadata remains FP16 and
-is converted by value inside the BF16 consumer. There is no clipping.
+low/high/unit bytes and disk caches are unchanged. Grouped K-quant FQ now
+unfolds scale/zero directly to BF16; SF consumes explicitly typed BF16 planes.
+Original GGUF FP16 headers are read exactly, not rounded to BF16 before the
+scale product. Q8 retains its original FP16 d plane. There is no clipping.
 
 | Path | Formats / coverage | Interface |
 | --- | --- | --- |
-| Grouped TC FQ | Q2_K, Q3_K, Q4_K, Q5_K, Q6_K; all existing legal M | grouped compute v3 |
-| Grouped TC SF | Above plus Q8_0; all existing legal M | grouped compute v3; FP16 scale planes |
+| Grouped TC FQ | Q2_K, Q3_K, Q4_K, Q5_K, Q6_K; all existing legal M | grouped compute v4; packed units, BF16 internal metadata |
+| Grouped TC SF | Above plus Q8_0; all existing legal M | grouped compute v4; typed BF16 scale/zero; Q8 original FP16 d |
+| FullyDequant | Q2_K--Q6_K | FP32 raw-GGUF reconstruction, one final BF16 rounding; unchanged |
 | SIMT dense/indexed | All six formats; tokens 1--8 | explicit compute v2, F32 output |
 | Dense TC decode | All six; M1--8; F32 or BF16 storage | typed compute v2, AP0; Q2/Q4 M1 also packed-A AP1 |
 | Fused MoE | TC/SIMT/mixed, separate or merged gate/up, weighted finish | dispatcher endpoint v4 |
@@ -51,17 +57,28 @@ Policies12/13/14 mean matched exact / bounded bucket prediction / measured
 router-profile compromise. [The table contract](KPACK_SMALLM_TABLE.md) documents
 the1,842 rows and unresolved domains. On a MISS, BF16 geometry proposals are
 still marked `QKS_COMPUTE_INITIAL` (11), never relabeled FP16 measurements.
-BF16 does not rank large-M FQ/SF/full routes using FP16 timing data.
+BF16 large-M routing now uses the F16 component ranking as an initial donor
+proposal (`predicted=1`, `F16_COMPONENT_TRANSFER`, `bf16_measured=0`), not a
+BF16 timing claim. The box workflow compares both precisions at the SAME
+Q4/Q5 prefill geometries for FQ and SF. SF expansion is excluded from that
+GEMM comparison and validated separately.
 `tools/kpack_jit.py plan/prewarm --compute-type bf16` and runtime misses use
 the same explicit compute contract; prewarm accepts mixed grouped/decode
 parents without loading a device.
 
-Local gates: the full six-format execution library, 40 device-gate TC modules
-and both caller adapter translation units compile with the PPU SDK. The
-focused host regression suite passes 164 tests, including wrong
-dtype/version/ticket and legacy-reader negatives. Three real BF16 JIT misses
-(Q5 grouped, Q8 grouped prefill and Q6 dense TM8) also compile and pass identity
-inspection. These results are not PPU numerical or performance admission.
+Direct metadata ABI: `sf_prepare_v2(..., metadata_type, stream)` and
+`dequant_v2(qzd_call_v2, arrangement)` use metadata_type=1 for BF16 SF.
+`dispatch_prepare_compute_v2` accepts `qk_compute_device_call_v4`, including
+the metadata type. Old FP16 plane APIs are retained; BF16-metadata modules
+reject their v3 entry before touching data. A matching small runtime package
+and JIT source checkout are required, not just a caller rebuild.
+
+Local gates: the full six-format execution library, 40 device-gate TC modules,
+eight same-config F16/BF16 comparison modules and both caller adapter translation
+units compile with the PPU SDK. Independent host tests cover direct BF16 code
+and metadata decoding, original-header precision, FullyDequant output rounding,
+wrong dtype/version/ticket and legacy-reader negatives. These results are not
+PPU numerical or performance admission.
 
 The single machine-readable delivery pin is
 [`tools/kpack_q4_model_artifact.json`](../tools/kpack_q4_model_artifact.json):
@@ -84,7 +101,8 @@ whole-model timing and Asys; synthetic profile inputs are labeled explicitly.
 
 ### Combined BF16 box run
 
-The command first runs 746 cases across all six formats: grouped TC 226,
+The command first checks direct SF/FullyDequant metadata, then runs 746 cases
+across all six formats: grouped TC 226,
 SIMT 396, complete MoE chains 116, and Q6 outlier/FP16-negative cases 8.
 The default performs two correctness replays, not a config sweep. Failures
 stop model admission; other format/family children continue to report their
@@ -98,7 +116,8 @@ and the same matched-v3 lookup as the caller, not the old F16-only selector.
 
 Only after that gate passes does the runner incrementally build the caller
 through `.aoneci`, run model numerical checks, benchmark and capture Asys.
-Both the MoE model and the dense model that exposed the outlier are included.
+The default model here is Qwen3.5-35B-A3B Q4_K_M. The dense Qwen3-32B outlier
+is not declared fixed by a MoE-only BF16 switch.
 Model warmup may JIT selected parents; first warmup/JIT is excluded from timing.
 No BF16 performance winner or model-accuracy claim is made before this run.
 
@@ -113,8 +132,8 @@ No BF16 performance winner or model-accuracy claim is made before this run.
     git pull --ff-only origin develop
     git submodule update --init third_party/actlize
 
-    MODEL_COMPUTE=bf16 MODEL_PHASES=all \
-    MODEL_NAMES="qwen35-35b-q4km qwen3-32b-q4km" \
+    MODEL_COMPUTE=bf16 MODEL_PHASES=all MODEL_ACU=1 \
+    MODEL_NAMES=qwen35-35b-q4km \
     LLAMA_CI_DIR=/sim/eec/shared/junfu.qx/llama.cpp \
     LLAMA_CI_BUILD_DIR=/workspace/kpack-q4-model.hnN1Jf/ci/llama-build \
     NCP_LIB_DIR=/sim/eec/shared/junfu.qx/ncp_flash_lib \

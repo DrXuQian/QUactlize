@@ -4,6 +4,7 @@
 #include "vector_kernels.cuh"
 #include "shared_kernels.cuh"
 #include "packed_kernels.cuh"
+#include "bfloat_metadata.cuh"
 #include "../execution/validation.hpp"
 #include "gguf_scale_prepass.hpp"
 
@@ -88,12 +89,21 @@ __global__ __launch_bounds__(Threads) void full_transpose(uint16_t const* __rest
 }
 
 template<KType T>
-int launch(qzd_call_v1 const& c) {
+int launch(qzd_call_v1 const& c, int metadata_type) {
     auto stream = static_cast<hggcStream_t>(c.stream);
     auto low = static_cast<uint16_t const*>(c.low);
     auto high = static_cast<uint16_t const*>(c.high);
     auto units = static_cast<uint8_t const*>(c.units);
-    if (c.operation == 0) {
+    if (c.operation == 0 && metadata_type == 1) {
+        if (c.config != 0 && !((T == KType::Q4_K || T == KType::Q5_K) && (c.config == 4 || c.config == 5)))
+            return QKG_INVALID;
+        using cutlass::gguf_packed::Fmt;
+        constexpr Fmt f = T==KType::Q2_K ? Fmt::Q2K : T==KType::Q3_K ? Fmt::Q3K :
+            T==KType::Q4_K ? Fmt::Q4K : T==KType::Q5_K ? Fmt::Q5K : Fmt::Q6K;
+        launch_sf_bfloat<f,gguf_scale::packed_unit::kCanonicalPlacedZMul<T>>(
+            units,static_cast<uint16_t*>(c.output),static_cast<uint16_t*>(c.zero),
+            c.n,c.k,c.experts,c.config==5 ? 256 : 128,stream);
+    } else if (c.operation == 0) {
         auto scale = static_cast<cutlass::half_t*>(c.output);
         auto zero = static_cast<cutlass::half_t*>(c.zero);
         if (c.config == 0) {
@@ -151,8 +161,8 @@ int launch(qzd_call_v1 const& c) {
 }
 } // namespace quactlize::dequant
 
-extern "C" int quactlize_kpack_dequant_v1(qzd_call_v1 const* call,
-        quactlize_ppu_placed_arrangement_v2 const* arrangement) {
+static int dequant(qzd_call_v1 const* call,
+        quactlize_ppu_placed_arrangement_v2 const* arrangement, int metadata_type) {
     using namespace quactlize::execution;
     using namespace quactlize::dequant;
     if (!call || call->version != 1 || call->size != sizeof(*call)) return QKG_INVALID;
@@ -182,13 +192,23 @@ extern "C" int quactlize_kpack_dequant_v1(qzd_call_v1 const* call,
     if (hggcGetLastError()!=hggcSuccess) return QKG_RUNTIME;
     using gguf_scale::KType;
     switch(c.qtype) {
-        case 10:return launch<KType::Q2_K>(c);
-        case 11:return launch<KType::Q3_K>(c);
-        case 12:return launch<KType::Q4_K>(c);
-        case 13:return launch<KType::Q5_K>(c);
-        case 14:return launch<KType::Q6_K>(c);
+        case 10:return launch<KType::Q2_K>(c,metadata_type);
+        case 11:return launch<KType::Q3_K>(c,metadata_type);
+        case 12:return launch<KType::Q4_K>(c,metadata_type);
+        case 13:return launch<KType::Q5_K>(c,metadata_type);
+        case 14:return launch<KType::Q6_K>(c,metadata_type);
         default:return QKG_FORMAT;
     }
+}
+
+extern "C" int quactlize_kpack_dequant_v1(qzd_call_v1 const* call,
+        quactlize_ppu_placed_arrangement_v2 const* arrangement) {
+    return dequant(call,arrangement,0);
+}
+extern "C" int quactlize_kpack_dequant_v2(qzd_call_v2 const* d,
+        quactlize_ppu_placed_arrangement_v2 const* arrangement) {
+    if (!d || d->version!=2 || d->size!=sizeof(*d) || (d->metadata_type!=0 && d->metadata_type!=1)) return QKG_INVALID;
+    return dequant(&d->call,arrangement,d->metadata_type);
 }
 
 extern "C" int quactlize_kpack_dequant_probe_v1(int* l2, int* sm, int* warp) {

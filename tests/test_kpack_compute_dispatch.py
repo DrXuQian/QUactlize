@@ -69,7 +69,7 @@ def test_compute_ctypes_match_c(tmp_path):
 
 
 def test_module_source_matches_bf16_compilers():
-    for route,cls,endpoint in [('fq-grouped',GroupedComputeCompiler,'grouped-explicit-compute-v3'),
+    for route,cls,endpoint in [('fq-grouped',GroupedComputeCompiler,'grouped-explicit-compute-metadata-v4'),
                                ('fq-dense',DecodeCompiler,'decode-m1-8-f32-bf16-v1')]:
         p=dict(symbol='fqg_q14_l2_tm8_tn64_tk128_wm8_wn16_s2_ap0_dn16_nonpersistent' if route.endswith('grouped') else
             'fqk_tc_q14_l2_a0_tm8_tn64_tk128_wm8_wn16_s2_bc0_ap0_dn16',qtype=14,route=route,

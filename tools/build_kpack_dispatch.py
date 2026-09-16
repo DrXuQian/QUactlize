@@ -351,6 +351,7 @@ def main():
     if receipt.get('simt_compute_v2'):
         manifest['compute_contract']=dict(schema='quactlize.explicit-compute.v1',
             formats=[8,10,11,12,13,14],grouped='ALL_LEGAL_M',dense='DECODE_M1_8',
+            metadata='KQUANT_DIRECT_BF16_V1_Q8_ORIGINAL_F16',grouped_abi=4,sf_abi=2,
             selection='MATCHED_SMALLM_OVERRIDES_ELSE_INITIAL_COMPUTE_PROPOSALS',device_validated=False)
     if args.prefill_runtime:
         manifest['prefill'] = attach_prefill(output, args.prefill_runtime, args.sdk)

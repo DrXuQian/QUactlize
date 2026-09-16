@@ -14,7 +14,7 @@ class GroupedComputeCompiler(Compiler):
         self.identity["kernel"] = digest({"base": self.kernel_identity, "compute_type": compute_type})
         self.identity["generator"] = digest({"base": self.identity["generator"], "grouped_compute": sha(__file__)})
         self.identity["compute_type"] = compute_type
-        self.identity["endpoints"] = "grouped-explicit-compute-v3"
+        self.identity["endpoints"] = "grouped-explicit-compute-metadata-v4"
         path = Path(__file__)
         self.input_stats[path] = (path.stat().st_mtime_ns, path.stat().st_size)
 

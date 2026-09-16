@@ -53,10 +53,21 @@ There are54 LFS payload paths; repeated execution paths share one object.
 Local validation:158 host/tool tests and33 caller tests pass; the real PPU SDK
 compiles both the execution library and updated caller translation unit.
 
+`MODEL_COMPUTE=bf16` now requests BF16 only for grouped/MoE projections.
+Ordinary dense, including decode, retains its FP16 policy. The earlier
+`pobxEJ` run used the broader switch (grouped plus dense M1--8); its timings
+must not be relabeled as this mixed-precision caller. The subsequent direct
+BF16 metadata change requires new runtime images and typed metadata APIs;
+offline bytes remain unchanged. The artifact and timings above describe the
+earlier production revision, not the pending new box run.
+
 With `MODEL_COMPUTE=bf16 MODEL_ACU=1`, order is:
 
 1. Production Q8 v2 ABI gate12,480; same-image BF16 capability746 and selected
-   Q4 BF16 coverage258; selected mixed-chain gate.
+   Q4 BF16 coverage258; selected mixed-chain gate. Direct SF metadata and full
+   BF16 weight expansion are bit-checked for all five K-quants. Eight extra
+   prebuilt modules compare Q4/Q5 FQ/SF at identical F16/BF16 geometries,
+   separately from SF prepass cost; ABBA three rounds, 11 samples per block.
 2. Whole-model ABBA, PP2048/TG128, one request sequence. Each process excludes
    its first complete PP/TG pass/JIT. Timings come from `llama-batched-bench`,
    not profiler callbacks. `MODEL_PHASES=all` additionally runs paired logits;

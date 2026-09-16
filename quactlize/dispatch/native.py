@@ -49,6 +49,10 @@ class GroupedCompute(C.Structure):
                 ("compute_type",C.c_int32)]
 
 
+class GroupedMetadata(C.Structure):
+    _fields_ = GroupedCompute._fields_ + [("metadata_type",C.c_int32)]
+
+
 class SmallmChoice(C.Structure):
     _fields_ = [("version",C.c_uint32),("size",C.c_uint32)] + [
         (name,C.c_int32) for name in ("kind","policy","source_n","source_k","source_tokens")] + [
@@ -185,11 +189,15 @@ class Dispatch:
         if rc:raise ValueError('compute query: '+self.fn['error']().decode())
         return out
 
-    def prepare_compute(self, choice, call, max_rows, compute_type, indexed=None):
-        typed=GroupedCompute(3,C.sizeof(GroupedCompute),
-            DeviceCall(2,C.sizeof(DeviceCall),call,max_rows,0),compute_type)
-        fn=self.lib.quactlize_kpack_dispatch_prepare_compute_v1
-        fn.argtypes=[C.c_void_p,C.POINTER(Choice),C.POINTER(GroupedCompute),C.POINTER(C.c_void_p)]
+    def prepare_compute(self, choice, call, max_rows, compute_type, indexed=None, metadata_type=0):
+        # Explicit for SF; a caller must not silently reinterpret FP16 planes.
+        # Packed FQ has no caller-expanded metadata, so infer its internal type.
+        if choice.parent.decode().startswith("fq"):
+            metadata_type=compute_type
+        typed=GroupedMetadata(4,C.sizeof(GroupedMetadata),
+            DeviceCall(2,C.sizeof(DeviceCall),call,max_rows,0),compute_type,metadata_type)
+        fn=self.lib.quactlize_kpack_dispatch_prepare_compute_v2
+        fn.argtypes=[C.c_void_p,C.POINTER(Choice),C.POINTER(GroupedMetadata),C.POINTER(C.c_void_p)]
         fn.restype=C.c_int
         handle=C.c_void_p()
         if fn(self.runtime,C.byref(choice),C.byref(typed),C.byref(handle)):

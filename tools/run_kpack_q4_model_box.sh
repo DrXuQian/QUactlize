@@ -98,6 +98,9 @@
     "$PYTHON" -u tools/run_kpack_decode_updates.py --sdk "$SDK" --bundle "$BUNDLE" \
         --output "$RUN/results/production-q8.json" 2>&1 | tee "$RUN/results/production-q8.log"
     if [[ "$MODEL_COMPUTE" == bf16 ]]; then
+        stage=bf16-metadata
+        "$PYTHON" -u dev/bf16_compute/check_metadata.py --sdk "$SDK" --bundle "$BUNDLE" \
+            --output "$RUN/results/bf16-metadata" 2>&1 | tee "$RUN/results/bf16-metadata.log"
         stage=bf16-capability
         test -s "$BUNDLE/bf16/manifest.json"
         "$PYTHON" -u dev/bf16_compute/run.py --sdk "$SDK" --package "$BUNDLE/bf16" \
@@ -105,6 +108,9 @@
         stage=bf16-selected-q4
         "$PYTHON" -u dev/bf16_fastpath/gate.py --sdk "$SDK" --bundle "$BUNDLE/q4-bf16-gate" \
             --output "$RUN/results/bf16-selected-q4" 2>&1 | tee "$RUN/results/bf16-selected-q4.log"
+        stage=bf16-matched-prefill
+        "$PYTHON" -u dev/bf16_compute/matched.py --sdk "$SDK" --package "$BUNDLE/bf16" \
+            --output "$RUN/results/bf16-matched-prefill" 2>&1 | tee "$RUN/results/bf16-matched-prefill.log"
     fi
     stage=caller-source
     CI_SOURCE_ARGS=()
@@ -168,7 +174,7 @@
     git -C "$LLAMA_DIR" rev-parse HEAD > "$RUN/results/llama-source.txt"
 
     stage=mixed-decode-gate
-    printf 'KPACK_Q4_MODEL caller=AONECI runtime=PREBUILT compute=%s full_sweep=NONE model_prewarm=SELECTED_JIT_ONLY\n' "$MODEL_COMPUTE"
+    printf 'KPACK_Q4_MODEL caller=AONECI runtime=PREBUILT grouped_compute=%s dense_policy=FP16 full_sweep=NONE model_prewarm=SELECTED_JIT_ONLY\n' "$MODEL_COMPUTE"
     failed=0
     if [[ "$MODEL_PHASES" == all ]] && "$BUNDLE/mixed-stages" --mixed 2>&1 | tee "$RUN/results/mixed-stages.log"; then
         grep -qx 'KPACK_MOE_MIXED_STAGES PASS cells=80 PPU_GEMM_ADMISSION=NOT_TESTED' "$RUN/results/mixed-stages.log"

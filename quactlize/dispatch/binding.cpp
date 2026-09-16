@@ -24,6 +24,14 @@ extern "C" int quactlize_kpack_dispatch_prefill_v1(qks_request_v1 const* r,
     if (!r || !out || !quactlize::dispatch::valid(*r)) return QKS_INVALID;
     return quactlize::dispatch::cost::query(*r,mask,*out);
 }
+extern "C" int quactlize_kpack_dispatch_prefill_compute_v1(qks_request_v1 const* r,
+        uint32_t mask,int32_t compute_type,qks_prefill_choice_v1* out) {
+    if (!r || !out || (compute_type!=QK_COMPUTE_F16 && compute_type!=QK_COMPUTE_BF16)) return QKS_INVALID;
+    if (compute_type==QK_COMPUTE_BF16 && r->route<QK_GROUPED_FQ) return QKS_MISS;
+    int rc=quactlize_kpack_dispatch_prefill_v1(r,mask,out);
+    if (rc==QKS_OK && compute_type==QK_COMPUTE_BF16) out->predicted=1;
+    return rc;
+}
 
 namespace {
 using namespace quactlize::dispatch;
@@ -56,8 +64,8 @@ struct Module {
     decltype(&quactlize_kpack_decode_dense_prepare_v1) prepare_dense_io=nullptr;
     decltype(&quactlize_kpack_decode_dense_query_v2) query_dense_compute=nullptr;
     decltype(&quactlize_kpack_decode_dense_prepare_v2) prepare_dense_compute=nullptr;
-    decltype(&quactlize_kpack_grouped_query_v3) query_compute=nullptr;
-    decltype(&quactlize_kpack_grouped_prepare_v3) prepare_compute=nullptr;
+    decltype(&quactlize_kpack_grouped_query_v4) query_compute=nullptr;
+    decltype(&quactlize_kpack_grouped_prepare_v4) prepare_compute=nullptr;
     decltype(&quactlize_kpack_bind_llama_indexed_v1) bind_indexed=nullptr;
     decltype(&quactlize_kpack_moe_projection_v1) moe_projection=nullptr;
     decltype(&quactlize_kpack_moe_stage_v1) moe_stage=nullptr;
@@ -314,9 +322,10 @@ std::shared_ptr<Module> load(Runtime& r,Image const& image,Config const& c,bool 
                 throw std::runtime_error("dense compute identity differs");
             parent=typed->parent;
         } else {
-            auto typed=symbol<decltype(&quactlize_kpack_compute_identity_v3)>(
-                module->library,"quactlize_kpack_compute_identity_v3")();
-            if (!typed || typed->version!=3 || typed->size!=sizeof(*typed) || typed->compute_type!=compute_type)
+            auto typed=symbol<decltype(&quactlize_kpack_compute_identity_v4)>(
+                module->library,"quactlize_kpack_compute_identity_v4")();
+            if (!typed || typed->version!=4 || typed->size!=sizeof(*typed) || typed->compute_type!=compute_type ||
+                typed->metadata_type!=(c.qtype==8 ? QK_METADATA_F16 : QK_METADATA_BF16))
                 throw std::runtime_error("grouped compute identity differs");
             parent=typed->parent;
         }
@@ -356,8 +365,8 @@ std::shared_ptr<Module> load(Runtime& r,Image const& image,Config const& c,bool 
     module->moe_stage=reinterpret_cast<decltype(module->moe_stage)>(
         dlsym(module->library,"quactlize_kpack_moe_stage_v1"));
     if (compute_type==QK_COMPUTE_BF16) {
-        module->query_compute=symbol<decltype(module->query_compute)>(module->library,"quactlize_kpack_grouped_query_v3");
-        module->prepare_compute=symbol<decltype(module->prepare_compute)>(module->library,"quactlize_kpack_grouped_prepare_v3");
+        module->query_compute=symbol<decltype(module->query_compute)>(module->library,"quactlize_kpack_grouped_query_v4");
+        module->prepare_compute=symbol<decltype(module->prepare_compute)>(module->library,"quactlize_kpack_grouped_prepare_v4");
         module->moe_projection_compute=symbol<decltype(module->moe_projection_compute)>(module->library,"quactlize_kpack_moe_projection_v2");
         module->moe_stage_compute=symbol<decltype(module->moe_stage_compute)>(module->library,"quactlize_kpack_moe_stage_v2");
     }
@@ -484,7 +493,8 @@ static int query(void* runtime,qks_request_v1 const* req,qks_choice_v1* out,int 
             }
             qk_device_call_v2 d{2,sizeof(d),call,req->max_rows,0};
             if (compute_type==QK_COMPUTE_BF16) {
-                qk_compute_device_call_v3 typed{3,sizeof(typed),d,compute_type};
+                qk_compute_device_call_v4 typed{4,sizeof(typed),d,compute_type,
+                    req->qtype==8 ? QK_METADATA_F16 : QK_METADATA_BF16};
                 return module->query_compute(&typed,&rec,&resources);
             }
             return req->route>=2 ? module->query_device(&d,&rec,&resources) : module->query(&call,&rec,&resources);
@@ -692,7 +702,7 @@ extern "C" int quactlize_kpack_dispatch_prepare_dense_io_v2(void* runtime,qks_ch
 }
 
 static int prepare_compute(void* runtime,qks_choice_v1 const* choice,
-    qk_call_v1 const* call,int compute_type,int max_rows,void** out) {
+    qk_call_v1 const* call,int compute_type,int max_rows,void** out,int metadata_type=-1) {
     if (!out) return QKS_INVALID;
     *out=nullptr;
     if (!runtime || !choice || !call) return QKS_INVALID;
@@ -702,6 +712,12 @@ static int prepare_compute(void* runtime,qks_choice_v1 const* choice,
         if (!choice->ticket || choice->ticket>r.plans.size()) return QKS_INVALID;
         auto const& plan=r.plans.at(choice->ticket-1);
         auto expected=call_for(plan.request,r);
+        int const metadata=compute_type==QK_COMPUTE_BF16 && plan.request.qtype!=8 ? QK_METADATA_BF16 : QK_METADATA_F16;
+        if ((metadata_type>=0 && metadata_type!=metadata) ||
+            (metadata_type<0 && metadata==QK_METADATA_BF16 && plan.request.route==QK_GROUPED_SF)) {
+            last_error="SF metadata precision differs; use prepare_compute_v2 with the typed prepass";
+            return QKS_INVALID;
+        }
         if (plan.compute_type!=compute_type || (max_rows>=0 && max_rows!=plan.request.max_rows) ||
             plan.endpoint_type || !same_choice(*choice,plan.choice) || call->version!=1 || call->size!=sizeof(*call) ||
             call->m!=expected.m || call->n!=expected.n || call->k!=expected.k || call->experts!=expected.experts ||
@@ -710,7 +726,7 @@ static int prepare_compute(void* runtime,qks_choice_v1 const* choice,
             call->rows_host || call->rows_device || call->workspace_bytes<choice->workspace_bytes) return QKS_INVALID;
         auto handle=std::make_unique<Handle>(); handle->module=plan.module;
         qk_device_call_v2 d{2,sizeof(d),*call,plan.request.max_rows,0};
-        qk_compute_device_call_v3 typed{3,sizeof(typed),d,compute_type};
+        qk_compute_device_call_v4 typed{4,sizeof(typed),d,compute_type,metadata};
         int rc=compute_type==QK_COMPUTE_BF16 ? plan.module->prepare_compute(&typed,&plan.recipe,&handle->inner) :
             plan.request.route>=2 ? plan.module->prepare_device(&d,&plan.recipe,&handle->inner) :
             plan.module->prepare(call,&plan.recipe,&handle->inner);
@@ -740,6 +756,16 @@ extern "C" int quactlize_kpack_dispatch_prepare_compute_v1(void* runtime,qks_cho
         return QKS_INVALID;
     return prepare_compute(runtime,choice,&typed->device_call.call,typed->compute_type,
         typed->device_call.max_rows,out);
+}
+extern "C" int quactlize_kpack_dispatch_prepare_compute_v2(void* runtime,qks_choice_v1 const* choice,
+    qk_compute_device_call_v4 const* typed,void** out) {
+    if (out) *out=nullptr;
+    if (!typed || typed->version!=4 || typed->size!=sizeof(*typed) ||
+        !compute_valid(typed->compute_type) || typed->device_call.version!=2 ||
+        typed->device_call.size!=sizeof(typed->device_call) || typed->device_call.reserved ||
+        (typed->metadata_type!=QK_METADATA_F16 && typed->metadata_type!=QK_METADATA_BF16)) return QKS_INVALID;
+    return prepare_compute(runtime,choice,&typed->device_call.call,typed->compute_type,
+        typed->device_call.max_rows,out,typed->metadata_type);
 }
 extern "C" int quactlize_kpack_dispatch_run_v1(void* handle,void* stream) {
     if (!handle) return QKS_INVALID;

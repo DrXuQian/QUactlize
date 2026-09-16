@@ -15,6 +15,7 @@ from dev.bf16_compute.plan import modules, serializable
 from quactlize.decode.compiler import DecodeCompiler
 from quactlize.decode.grouped_compiler import GroupedComputeCompiler
 from quactlize.runtime.compiler import FLAGS, LIBRARIES, sha
+from dev.bf16_compute.matched import parents as matched_parents
 
 
 def run(command, log):
@@ -74,6 +75,17 @@ def main():
         return parent.key, record
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         records = dict(pool.map(build, modules()))
+    def build_matched(item):
+        key, compute, parent = item
+        record = GroupedComputeCompiler(args.sdk,args.cache,compute_type=compute).build(parent)
+        destination = out / "modules" / (key + ".so")
+        shutil.copy2(record["path"],destination)
+        record["path"] = str(destination.relative_to(out))
+        record["spec"] = dict(parent,compute=compute)
+        print(f"BF16_GATE_BUILD parent={key} elapsed_s={time.monotonic()-started:.1f}",flush=True)
+        return key,record
+    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+        matched = dict(pool.map(build_matched,matched_parents()))
     reused_execution = None
     if reuse:
         source_library, reused_execution = reuse
@@ -95,7 +107,7 @@ def main():
     if any(sha(ROOT / name) != expected for name, expected in source.items()):
         raise ValueError("gate source changed during package build")
     current = {}
-    for record in records.values():
+    for record in [*records.values(), *matched.values()]:
         spec = record["spec"]
         kind = spec["route"].endswith("grouped")
         key = (kind, spec["compute"])
@@ -107,6 +119,7 @@ def main():
     if reuse:
         execution_receipt(args.execution)
     manifest = dict(schema="quactlize.bf16-device-gate.v1", modules=records,
+        matched_modules=matched,
         simt=dict(path=str(simt.relative_to(out)), sha256=sha(simt)),
         moe=dict(path=helper.name, sha256=sha(helper)), cases=serializable(),
         source=source, build_seconds=time.monotonic()-started, device_validated=False,
