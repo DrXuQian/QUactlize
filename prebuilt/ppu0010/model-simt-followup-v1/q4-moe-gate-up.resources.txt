@@ -1,0 +1,295 @@
+q4-moe-gate-up.so:	file format elf64-x86-64
+
+ELF FILE 1 (PPU 1.0) (SIMD):
+Func 1: _ZN9quactlize9execution14model_followup9candidateILi0ELi12ELi1ELi3ELi4ELi4ELi4ELi1EEEv11qkg_call_v1i
+Func 2: _ZN9quactlize9execution14model_followup9candidateILi1ELi12ELi1ELi3ELi4ELi4ELi4ELi1EEEv11qkg_call_v1i
+Func 3: _ZN9quactlize9execution14model_followup9candidateILi2ELi12ELi1ELi3ELi4ELi4ELi4ELi1EEEv11qkg_call_v1i
+Func 4: _ZN9quactlize9execution14model_followup9candidateILi3ELi12ELi1ELi3ELi4ELi4ELi4ELi1EEEv11qkg_call_v1i
+====================================================
+Func 1 _ZN9quactlize9execution14model_followup9candidateILi0ELi12ELi1ELi3ELi4ELi4ELi4ELi1EEEv11qkg_call_v1i RESOURCE INFO:
+
+INSTR OFFSETS:
+<0x1>
+FUNC:_ZN9quactlize9execution14model_followup9candidateILi0ELi12ELi1ELi3ELi4ELi4ELi4ELi1EEEv11qkg_call_v1i
+KIND:coop group     	OFFSET:0xed8 0x3208 0x3488 0x3698 0x38a8 0x3b08 0x3c08 0x3fa0 
+<0x2>
+FUNC:_ZN9quactlize9execution14model_followup9candidateILi0ELi12ELi1ELi3ELi4ELi4ELi4ELi1EEEv11qkg_call_v1i
+KIND:return         	OFFSET:0x3ff8 0x4078 
+
+SHADER ABI KERNEL CONTROL:
+grid_dim_x_en:1
+grid_dim_y_en:1
+grid_dim_z_en:1
+block_dim_en:1
+block_idx_x_en:1
+block_idx_y_en:1
+block_idx_z_en:1
+start_thread_idx_en:1
+user_sreg_num:32
+pri:0
+fwd_progress:0
+private_en:0
+stack_phys_idx_en:1
+cu_disp_en:0
+block_age_en:0
+dispatch_mode:0
+mma_en:0
+reserved_smem:0
+texture_en:0
+
+SHADER ABI KERNEL MODE:
+fp_rndmode:0
+i_rndmode:0
+fp_denorm_flush:0
+saturation:0
+exception_en:0
+relu:0
+nan:0
+vmem_ooo:0
+saturation_fp64:0
+trap_exception:0
+debug_en:0
+trap_en:1
+perf_cnt_en:0
+
+SHADER ABI KERNEL RESOURCE:
+vreg_number:66
+sreg_number:128
+shared_memory_size:2
+treg_en:0
+
+STACK SIZE:0
+
+.hg_info._ZN9quactlize9execution14model_followup9candidateILi0ELi12ELi1ELi3ELi4ELi4ELi4ELi1EEEv11qkg_call_v1i.ARGUMENT:
+<0x1> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint64  	KIND:hidden.tool.base	sreg[0:1]      	Size:0x8	attrs:14
+<0x2> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint32  	KIND:hidden.pm.size 	sreg[2]        	Size:0x4	attrs:7
+<0x3> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint64  	KIND:hidden.km.base 	sreg[4:5]      	Size:0x8	attrs:5
+<0x4> 
+KERNEL_PARAM
+INDEX:0x0   	TYPE:uint8   	KIND:global.value   	global km_base[0:159]	Size:0xa0	attrs:readonly
+<0x5> 
+KERNEL_PARAM
+INDEX:0x1   	TYPE:uint32  	KIND:sreg.value     	sreg[6]        	Size:0x4	
+====================================================
+====================================================
+Func 2 _ZN9quactlize9execution14model_followup9candidateILi1ELi12ELi1ELi3ELi4ELi4ELi4ELi1EEEv11qkg_call_v1i RESOURCE INFO:
+
+INSTR OFFSETS:
+<0x1>
+FUNC:_ZN9quactlize9execution14model_followup9candidateILi1ELi12ELi1ELi3ELi4ELi4ELi4ELi1EEEv11qkg_call_v1i
+KIND:coop group     	OFFSET:0xe00 0x3060 0x3158 0x3248 0x3330 0x3428 0x3528 0x38c0 
+<0x2>
+FUNC:_ZN9quactlize9execution14model_followup9candidateILi1ELi12ELi1ELi3ELi4ELi4ELi4ELi1EEEv11qkg_call_v1i
+KIND:return         	OFFSET:0x3918 0x3998 
+
+SHADER ABI KERNEL CONTROL:
+grid_dim_x_en:1
+grid_dim_y_en:1
+grid_dim_z_en:1
+block_dim_en:1
+block_idx_x_en:1
+block_idx_y_en:1
+block_idx_z_en:1
+start_thread_idx_en:1
+user_sreg_num:32
+pri:0
+fwd_progress:0
+private_en:0
+stack_phys_idx_en:1
+cu_disp_en:0
+block_age_en:0
+dispatch_mode:0
+mma_en:0
+reserved_smem:0
+texture_en:0
+
+SHADER ABI KERNEL MODE:
+fp_rndmode:0
+i_rndmode:0
+fp_denorm_flush:0
+saturation:0
+exception_en:0
+relu:0
+nan:0
+vmem_ooo:0
+saturation_fp64:0
+trap_exception:0
+debug_en:0
+trap_en:1
+perf_cnt_en:0
+
+SHADER ABI KERNEL RESOURCE:
+vreg_number:64
+sreg_number:128
+shared_memory_size:2
+treg_en:0
+
+STACK SIZE:0
+
+.hg_info._ZN9quactlize9execution14model_followup9candidateILi1ELi12ELi1ELi3ELi4ELi4ELi4ELi1EEEv11qkg_call_v1i.ARGUMENT:
+<0x1> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint64  	KIND:hidden.tool.base	sreg[0:1]      	Size:0x8	attrs:14
+<0x2> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint32  	KIND:hidden.pm.size 	sreg[2]        	Size:0x4	attrs:7
+<0x3> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint64  	KIND:hidden.km.base 	sreg[4:5]      	Size:0x8	attrs:5
+<0x4> 
+KERNEL_PARAM
+INDEX:0x0   	TYPE:uint8   	KIND:global.value   	global km_base[0:159]	Size:0xa0	attrs:readonly
+<0x5> 
+KERNEL_PARAM
+INDEX:0x1   	TYPE:uint32  	KIND:sreg.value     	sreg[6]        	Size:0x4	
+====================================================
+====================================================
+Func 3 _ZN9quactlize9execution14model_followup9candidateILi2ELi12ELi1ELi3ELi4ELi4ELi4ELi1EEEv11qkg_call_v1i RESOURCE INFO:
+
+INSTR OFFSETS:
+<0x1>
+FUNC:_ZN9quactlize9execution14model_followup9candidateILi2ELi12ELi1ELi3ELi4ELi4ELi4ELi1EEEv11qkg_call_v1i
+KIND:coop group     	OFFSET:0xe30 0x30e0 0x3360 0x3570 0x3780 0x39f8 0x3ad0 0x3b28 
+<0x2>
+FUNC:_ZN9quactlize9execution14model_followup9candidateILi2ELi12ELi1ELi3ELi4ELi4ELi4ELi1EEEv11qkg_call_v1i
+KIND:return         	OFFSET:0x3c38 0x3cd0 
+
+SHADER ABI KERNEL CONTROL:
+grid_dim_x_en:1
+grid_dim_y_en:1
+grid_dim_z_en:1
+block_dim_en:1
+block_idx_x_en:1
+block_idx_y_en:1
+block_idx_z_en:1
+start_thread_idx_en:1
+user_sreg_num:32
+pri:0
+fwd_progress:0
+private_en:0
+stack_phys_idx_en:1
+cu_disp_en:0
+block_age_en:0
+dispatch_mode:0
+mma_en:0
+reserved_smem:0
+texture_en:0
+
+SHADER ABI KERNEL MODE:
+fp_rndmode:0
+i_rndmode:0
+fp_denorm_flush:0
+saturation:0
+exception_en:0
+relu:0
+nan:0
+vmem_ooo:0
+saturation_fp64:0
+trap_exception:0
+debug_en:0
+trap_en:1
+perf_cnt_en:0
+
+SHADER ABI KERNEL RESOURCE:
+vreg_number:60
+sreg_number:128
+shared_memory_size:2
+treg_en:0
+
+STACK SIZE:0
+
+.hg_info._ZN9quactlize9execution14model_followup9candidateILi2ELi12ELi1ELi3ELi4ELi4ELi4ELi1EEEv11qkg_call_v1i.ARGUMENT:
+<0x1> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint64  	KIND:hidden.tool.base	sreg[0:1]      	Size:0x8	attrs:14
+<0x2> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint32  	KIND:hidden.pm.size 	sreg[2]        	Size:0x4	attrs:7
+<0x3> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint64  	KIND:hidden.km.base 	sreg[4:5]      	Size:0x8	attrs:5
+<0x4> 
+KERNEL_PARAM
+INDEX:0x0   	TYPE:uint8   	KIND:global.value   	global km_base[0:159]	Size:0xa0	attrs:readonly
+<0x5> 
+KERNEL_PARAM
+INDEX:0x1   	TYPE:uint32  	KIND:sreg.value     	sreg[6]        	Size:0x4	
+====================================================
+====================================================
+Func 4 _ZN9quactlize9execution14model_followup9candidateILi3ELi12ELi1ELi3ELi4ELi4ELi4ELi1EEEv11qkg_call_v1i RESOURCE INFO:
+
+INSTR OFFSETS:
+<0x1>
+FUNC:_ZN9quactlize9execution14model_followup9candidateILi3ELi12ELi1ELi3ELi4ELi4ELi4ELi1EEEv11qkg_call_v1i
+KIND:coop group     	OFFSET:0xdb8 0x2f78 0x3070 0x3160 0x3250 0x3340 0x3418 0x3470 
+<0x2>
+FUNC:_ZN9quactlize9execution14model_followup9candidateILi3ELi12ELi1ELi3ELi4ELi4ELi4ELi1EEEv11qkg_call_v1i
+KIND:return         	OFFSET:0x3580 0x3618 
+
+SHADER ABI KERNEL CONTROL:
+grid_dim_x_en:1
+grid_dim_y_en:1
+grid_dim_z_en:1
+block_dim_en:1
+block_idx_x_en:1
+block_idx_y_en:1
+block_idx_z_en:1
+start_thread_idx_en:1
+user_sreg_num:32
+pri:0
+fwd_progress:0
+private_en:0
+stack_phys_idx_en:1
+cu_disp_en:0
+block_age_en:0
+dispatch_mode:0
+mma_en:0
+reserved_smem:0
+texture_en:0
+
+SHADER ABI KERNEL MODE:
+fp_rndmode:0
+i_rndmode:0
+fp_denorm_flush:0
+saturation:0
+exception_en:0
+relu:0
+nan:0
+vmem_ooo:0
+saturation_fp64:0
+trap_exception:0
+debug_en:0
+trap_en:1
+perf_cnt_en:0
+
+SHADER ABI KERNEL RESOURCE:
+vreg_number:60
+sreg_number:128
+shared_memory_size:2
+treg_en:0
+
+STACK SIZE:0
+
+.hg_info._ZN9quactlize9execution14model_followup9candidateILi3ELi12ELi1ELi3ELi4ELi4ELi4ELi1EEEv11qkg_call_v1i.ARGUMENT:
+<0x1> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint64  	KIND:hidden.tool.base	sreg[0:1]      	Size:0x8	attrs:14
+<0x2> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint32  	KIND:hidden.pm.size 	sreg[2]        	Size:0x4	attrs:7
+<0x3> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint64  	KIND:hidden.km.base 	sreg[4:5]      	Size:0x8	attrs:5
+<0x4> 
+KERNEL_PARAM
+INDEX:0x0   	TYPE:uint8   	KIND:global.value   	global km_base[0:159]	Size:0xa0	attrs:readonly
+<0x5> 
+KERNEL_PARAM
+INDEX:0x1   	TYPE:uint32  	KIND:sreg.value     	sreg[6]        	Size:0x4	
+====================================================

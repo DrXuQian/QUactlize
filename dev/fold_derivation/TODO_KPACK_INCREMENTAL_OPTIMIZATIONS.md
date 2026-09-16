@@ -1,5 +1,20 @@
 # K-pack incremental optimization backlog
 
+## Current decode MBU follow-up, 2026-09-16
+
+Latest scope and evidence: [current model MBU](../../docs/MODEL_DECODE_MBU_20260916.md).
+This follow-up does not change shipping selection or offline formats.
+
+| Work | Local state | Box evidence still needed |
+| --- | --- | --- |
+| Eight observed M1 GEMM families | Full Asys mapped: 331 selected calls/token, 22.13% aggregate effective full-call weight MBU | Three missing TC ACU reports, including both Q8 S8 reducers |
+| Q4/Q5 H32 metadata and unsigned index/static fold | Five small DSOs built; Q5 H32 removes extra 16 KiB shared materialization; unchanged-clone resources match shipping | Same-config numeric/bit/graph/guard negatives, cold 6x15 timing, shipping/candidate ACU |
+| Small Q8 40%, large 60% targets | Explicit denominator; small-Q8 target 1.032 us, XOR-checked load-only reference added | Cold measurements establish feasibility; load-only is not a GEMV admission |
+| Production update | Deferred until candidate results; immutable shipping DSO retained | Promote only measured wins and then recheck warmed model TPOT |
+
+Entry: `tools/run_kpack_model_mbu_box.sh`. Independent failures preserve the
+remaining points and valid results; no caller or broad bundle recompilation.
+
 ## Local closure, 2026-09-16
 
 Current handoff: [local evidence and PPU entry](../../docs/KPACK_LOCAL_CLOSURE_20260916.md).
