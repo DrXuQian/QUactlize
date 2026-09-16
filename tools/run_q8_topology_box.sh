@@ -49,9 +49,10 @@
     mkdir "$RUN/results"
     : > "$RUN/console.log"
     stage=host-tests
-    "$PYTHON_BIN" -m unittest tests.test_q8_topology -v > "$RUN/results/host-tests.log" 2>&1
+    "$PYTHON_BIN" -m unittest discover -s "$ROOT/tests" -p test_q8_topology.py -v 2>&1 |
+        tee -a "$RUN/results/host-tests.log" "$RUN/console.log"
     stage=verify
-    "$PYTHON_BIN" - "$CANDIDATE" "$SHIPPING" > "$RUN/results/verify.log" 2>&1 <<'PY'
+    "$PYTHON_BIN" - "$CANDIDATE" "$SHIPPING" <<'PY' 2>&1 | tee -a "$RUN/results/verify.log" "$RUN/console.log"
 from pathlib import Path
 import sys
 from dev.gemv_simt.run_q8_topology import verify
@@ -63,6 +64,6 @@ PY
     printf 'Q8_TOPOLOGY FULL_CALL split=1,2,4,8 reducer=INCLUDED no_compilation=1\n'
     "$PYTHON_BIN" -u dev/gemv_simt/run_q8_topology.py --bundle "$CANDIDATE" \
         --shipping "$SHIPPING" --sdk "$SDK" --output "$RUN/results/sweep" \
-        --l2-bytes "${L2_BYTES:-0}" --acu "$ACU_BIN" 2>&1 | tee "$RUN/console.log"
+        --l2-bytes "${L2_BYTES:-0}" --acu "$ACU_BIN" 2>&1 | tee -a "$RUN/console.log"
     stage=complete
 )
