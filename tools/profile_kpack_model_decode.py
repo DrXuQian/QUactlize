@@ -5,7 +5,9 @@ Synthetic inputs match shape, compute type and C ABI, not model activations.
 ACU forced-cache replay counters are not model or rotating-weight latency.
 """
 import argparse
+import csv
 import ctypes as C
+import io
 import json
 from pathlib import Path
 import re
@@ -23,6 +25,86 @@ from tools.profile_kpack_gpu_compact import acu_launch_command, AcuRange
 
 def save(path, data):
     path.write_text(json.dumps(data,indent=2,allow_nan=False)+'\n')
+
+
+def validate_capture(job, text):
+    """One complete call, not every specialization seen in a whole request."""
+    start=text.find('"ID"')
+    if start<0:
+        raise ValueError('ACU export has no raw kernel table')
+    rows=[r for r in csv.DictReader(io.StringIO(text[start:])) if r.get('Kernel Name')]
+    p=job['point'];split=p.get('split',1)
+    if len(rows)!=1+int(split>1):
+        raise ValueError('ACU complete-call producer/reducer count differs')
+    normalize=lambda name:re.sub(r'\s+','',name)
+    # A request can contain M1 and larger-M implementations of one recipe.
+    # This child invokes just M1 through the same hash-checked production ABI.
+    observed={normalize(name) for name in job['observed_symbols']}
+    if normalize(rows[0]['Kernel Name']) not in observed:
+        raise ValueError('ACU producer is not an exact Asys-observed specialization')
+    if p['kind']=='simt':
+        routed_rows=p['tokens']*(p['topk'] if p['mode']==2 else 1)
+        blocks=routed_rows*split*p['n']//(p['columns']*p['values'])
+        if (normalize(rows[0]['Grid Size'])!=f'({blocks},1,1)' or
+                normalize(rows[0]['Block Size'])!=f'({p["warps"]*32},1,1)'):
+            raise ValueError('ACU SIMT geometry differs from the requested call')
+    if split>1:
+        paired=p['kind']=='tc' or (p['kind']=='simt' and
+            (p['q'],p['mode'],p['tokens'],p['n'],p['k'],p['experts'],p['compute'],
+             p['variant'],p['columns'],p['warps'],p['values'],split)==
+            (8,0,1,2048,4096,1,0,5,8,4,4,8))
+        if paired:
+            expected=f'voidquactlize::decode::reduce_decode<{split},float>(floatconst*,float*,int)'
+            grid,block=f'({(p["n"]+63)//64},1,1)','(32,1,1)'
+        else:
+            expected=f'voidquactlize::execution::simt::register_reuse_reduce<{p["q"]}>(qkg_call_v1,int)'
+            routed_rows=p['tokens']*(p['topk'] if p['mode']==2 else 1)
+            grid,block=f'({(routed_rows*p["n"]+127)//128},1,1)','(128,1,1)'
+        if (normalize(rows[1]['Kernel Name'])!=expected or
+                normalize(rows[1]['Grid Size'])!=grid or normalize(rows[1]['Block Size'])!=block):
+            raise ValueError('ACU exact Split-K reducer/geometry differs')
+    return [dict(kernel=r['Kernel Name'],grid=r['Grid Size'],block=r['Block Size']) for r in rows]
+
+
+def recheck(a):
+    """Re-import saved reports on the host; preserve the original verdict."""
+    m=verify(a.bundle,sdk=a.sdk)
+    previous=json.loads((a.output/'summary.json').read_text())
+    if previous.get('execution_sha256')!=m['execution_sha256'] or not previous.get('records'):
+        raise ValueError('saved ACU campaign/execution identity differs')
+    records=[]
+    for old in previous['records']:
+        row=dict(old);row.pop('error',None);row['status']='FAIL'
+        try:
+            model=old['model']
+            if Path(model).name!=model:
+                raise ValueError('invalid saved model path')
+            root=a.output/model;stem=Path(old['log']).stem
+            receipt=json.loads((root/(stem+'.json')).read_text())
+            request=json.loads((root/(stem+'.request.json')).read_text())
+            if (old['rc']!=0 or receipt.get('status')!='PASS' or receipt.get('proof',{}).get('status')!='PASS' or
+                    request!=old['job'] or receipt.get('job')!=request or
+                    receipt.get('execution_sha256')!=m['execution_sha256'] or
+                    receipt.get('manifest_sha256')!=sha(a.bundle/'manifest.json')):
+                raise ValueError('saved ACU child/request/runtime identity differs')
+            report=root/(stem+'.acurep');digest=sha(report)
+            if old.get('report_sha256',digest)!=digest:
+                raise ValueError('saved ACU report hash differs')
+            text=subprocess.check_output([a.acu,'--import',report,'--page','raw','--csv'],
+                                         text=True,stderr=subprocess.STDOUT)
+            components=validate_capture(request,text)
+            row.update(status='CAPTURED',report=str(report),report_sha256=digest,
+                       components=components)
+        except (OSError,ValueError,KeyError,subprocess.SubprocessError) as error:
+            row['error']=str(error)
+        records.append(row)
+        print(f'KPACK_MODEL_ACU_RECHECK model={old["model"]} job={Path(old.get("log", "PLAN")).stem} '
+              f'status={row["status"]}',flush=True)
+    status='PASS' if all(r['status']=='CAPTURED' for r in records) else 'FAIL'
+    save(a.output/'recheck.json',dict(status=status,records=records,
+        original_summary_sha256=sha(a.output/'summary.json'),execution_sha256=m['execution_sha256'],
+        scope='HOST_REPORT_REIMPORT_NO_GPU_EXECUTION_OR_MODEL_RETEST'))
+    return int(status!='PASS')
 
 
 def profile_plan(selection, kernels, log, helpers, matched=()):
@@ -214,15 +296,9 @@ def collect(a):
                 raw=root/(stem+'.csv')
                 with raw.open('x') as out:
                     subprocess.run([a.acu,'--import',paths[0],'--page','raw','--csv'],stdout=out,stderr=subprocess.STDOUT,check=True)
-                text=raw.read_text(errors='replace')
-                normalized=re.sub(r'\s+','',text)
-                if not all(re.sub(r'\s+','',name) in normalized for name in job['observed_symbols']):
-                    raise ValueError('ACU export lacks the exact Asys-observed producer symbol')
-                if job['point'].get('split',1)>1:
-                    reducer='reduce_decode<' if job['point']['kind']=='tc' else 'register_reuse_reduce<'
-                    if reducer not in normalized:
-                        raise ValueError('ACU export lacks the complete-call Split-K reducer')
-                row.update(status='CAPTURED',report=str(paths[0]),report_sha256=sha(paths[0]),raw_csv=str(raw))
+                components=validate_capture(job,raw.read_text(errors='replace'))
+                row.update(status='CAPTURED',report=str(paths[0]),report_sha256=sha(paths[0]),
+                           raw_csv=str(raw),components=components)
             except (OSError,ValueError,subprocess.SubprocessError) as e:
                 row['error']=str(e)
             records.append(row)
@@ -245,7 +321,12 @@ def main():
         p.add_argument('--'+name,type=Path)
     p.add_argument('--jit-cache',type=Path,default=Path('/workspace/kpack-model-jit-cache'))
     p.add_argument('--kind',choices=('all','tc','simt','q4','prepare'),default='all')
+    p.add_argument('--recheck-existing',action='store_true',help='Host-only re-import; write recheck.json without changing old results')
     a=p.parse_args()
+    if a.recheck_existing:
+        if not a.acu or a.job:
+            p.error('recheck requires --acu and cannot execute --job')
+        return recheck(a)
     if a.job:
         child(a);return 0
     if not all((a.acu,a.llama,a.trace)):

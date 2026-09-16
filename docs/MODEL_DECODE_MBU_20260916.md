@@ -1,5 +1,60 @@
 # Decode MBU: current model and bounded reader follow-up
 
+## Returned production integration: Y8Wky8
+
+Archive `kpack-q4-model.Y8Wky8.results.tgz`, SHA256
+`e7ae4e1e8408564d3059d0a872b1e7687c5b9cd94324e8ac48abbf583b121d49`,
+uses source `9ca8aa4`, caller `bd7ad99f1`, runtime artifact `58a5064`,
+execution `47d75e168b71ada4cb42edf29d0a2700af0de0868d81d8a220880a9e007fa30e`.
+The original runner stops at `model-acu`, not at model execution or numerics.
+Router alias360x4, the24 production-reader checks/18 graph replays,
+Q8 numeric12480, BF16 capability746, selected-Q4, five-format metadata,
+matched prefill and six mixed chains all pass. Full model perplexity was
+not rerun in this performance-only campaign.
+
+The warmed ABBA benchmark completes four measured samples per arm; the
+first use in each process is excluded. Recomputed medians:
+
+| Qwen3.5-35B-A3B Q4_K_M, PP2048/TG128/request batch1 | Native llama | K-pack | Latency delta |
+| --- | ---: | ---: | ---: |
+| Prefill, us/token | 140.723145 | 106.291748 | -24.4675% |
+| Decode, ms/token | 7.681504 | 7.410473 | -3.5284% |
+
+K-pack decode samples range7.387508..7.417602 ms/token. This is a same-run
+model comparison, not an isolated GEMV MBU or proof of the40%/60% targets.
+
+The completed second-request Asys evidence records600 optimized BF16
+router/prepare calls and no ordinary `moe_chain_prepare_m1`. Independent
+top-k falls from625 in the earlier trace to40; these remaining calls match
+the40 prefill layers, while all600 M1 chains use the fused prepare.
+Q4 H32 and Q5 H32/index/fold specializations each execute600 times; their
+default specializations each execute40 times for the other request phase.
+The optimized Q8 producer and ordered float2 reducer also appear.
+No generic SIMT+TC or FP16+BF16 substitution is inferred from these counts.
+
+All nine ACU children exit0 with a passing independent oracle and save their
+reports. Three stale checks, not kernels, mark the campaign red:
+
+- Q8 now uses `reduce_decode<8,float>`; the checker only allowed the old
+  `register_reuse_reduce<8>` for SIMT.
+- Q4/Q5 request-level symbol sets contain both prefill and decode bodies.
+  The checker incorrectly required both in a single profiled M1 call.
+
+All nine original `.acurep` files were re-imported locally with SDK2.1.1.
+The corrected validator checks one exact Asys-observed producer, its SIMT
+geometry, complete-call kernel count, and exact reducer split/type/geometry.
+Wrong precision/symbol, absent/extra producer, missing/wrong reducer, launch
+geometry and stale-library negatives remain rejected. The original summary
+is preserved; `recheck.json` records host-only revalidation, not a new GPU run.
+No production source or binary changes are needed for this reporting repair.
+
+The remaining helper costs are explicit:600 SwiGLU calls total2,452,414 ns
+(4.0874 us/call,0.1635 ms/token), and600 fused prepares total4,639,843 ns
+(7.7331 us/call). SwiGLU has not yet been optimized. The separate ACU prepare
+is8.4659 us under forced-cold profiler replay; do not substitute that interval
+for the model measurement. Q5 has256 shared bytes/CTA and zero measured
+shared bank conflicts, confirming the intended reader implementation.
+
 ## Returned W00MDq evidence and next Q8 round
 
 The `kpack-model-mbu.W00MDq.results.tgz` archive is complete. Its SHA-256 is

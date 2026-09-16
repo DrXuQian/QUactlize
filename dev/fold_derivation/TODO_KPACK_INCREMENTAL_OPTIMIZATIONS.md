@@ -9,11 +9,11 @@ the canonical offline formats and other selections are unchanged.
 | Work | Local state | Box evidence still needed |
 | --- | --- | --- |
 | Eight observed M1 GEMM families | Full Asys mapped; W00MDq adds all three TC ACU reports and both Q8 S8 reducers | Q6 exact-parent shared-instruction attribution; do not assume all conflicts are metadata |
-| Q4/Q5 H32 metadata and unsigned index/static fold | W00MDq numeric76 PASS; Q4 H32-only -12.51%, Q5 combined -7.35%; Q5 bank conflicts16384->0; exact BF16 M1 indexed production bodies compiled | Same-image production gate, composition and warmed TPOT; Q8 index-only rejected |
+| Q4/Q5 H32 metadata and unsigned index/static fold | W00MDq numeric76 PASS; Y8Wky8 production gate/composition PASS; optimized bodies each600 decode calls; Q5 shared256B/conflicts0 | Other shapes remain unchanged; Q8 index-only rejected |
 | Small Q8 40%, large 60% targets | jbNZ3k numeric879/reducer-bit336 PASS; big N2048/K4096 winner C8/W4/P4/S8+ordered paired reducer -21.49%; exact incumbent overlay compiled; two small shapes retained | Actual production full call/model/ACU; targets remain open, no blanket C8 or S8 switch |
-| Router + prepare model fusion | GGML allocated graph reproduces39/40 alias rejects; bounded M1 snapshot fix passes host checks and5070 candidate alias360x4; optimized prepare already exists in execution DSO | PPU old/new alias360x4 gate, then600/600 fused decode prepares; no decode native top-k. Multi-token overlap remains rejected |
-| MoE SwiGLU helper | Current BF16 body:4.263 us/call,0.171 ms/token;48 KiB activation payload,16 CTAs x256, no weight read; standalone optimization planned below | Vector/read/exp instruction evidence and matched numeric timing; no fusion in this task |
-| Production update | Three bounded measured wins plus router alias fix wired and PPU compiled; old immutable shipping DSO retained | Production numerical/replay gates, then recheck warmed model TPOT and selected symbols |
+| Router + prepare model fusion | Y8Wky8 PPU alias360x4 both arms PASS;600/600 optimized M1 prepares; only40 prefill top-k remain | Fused prepare still7.733us/call; optimize standalone work further. Multi-token overlap remains rejected |
+| MoE SwiGLU helper | Y8Wky8 BF16 body:4.087us/call,0.1635ms/token;48KiB activation payload,16 CTAs x256, no weight read; standalone optimization planned below | Vector/read/exp instruction evidence and matched numeric timing; no fusion in this task |
+| Production update | Y8Wky8 component gates/model performance PASS; TPOT7.4105 vs native7.6815ms(-3.53%), prefill-24.47%; nine ACU reports re-imported after checker repair | Per-operator MBU targets still open; this performance-only run did not repeat model perplexity |
 
 Entry: `tools/run_kpack_model_mbu_box.sh`. Independent failures preserve the
 remaining points and valid results; no caller or broad bundle recompilation.

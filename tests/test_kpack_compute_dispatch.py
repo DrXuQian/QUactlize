@@ -145,3 +145,87 @@ def test_model_acu_profiles_observed_recipes_after_asys(monkeypatch):
     assert script.index('stage=model-benchmark')<script.index('stage=model-trace')<script.index('stage=model-acu')
     command=(ROOT/'tools/profile_kpack_model_decode.py').read_text()
     assert 'acu_launch_command' in command and 'SYNTHETIC_INPUT' in command
+
+
+def test_model_acu_accepts_one_observed_specialization_and_exact_fast_reducer():
+    import copy
+    import csv
+    import io
+    from tools.profile_kpack_model_decode import validate_capture
+
+    def raw(rows):
+        stream=io.StringIO();writer=csv.writer(stream,quoting=csv.QUOTE_ALL)
+        writer.writerow(['ID','Kernel Name','Grid Size','Block Size'])
+        for i,row in enumerate(rows):writer.writerow([i,*row])
+        return stream.getvalue()
+
+    old='void quactlize::execution::simt::register_reuse<12, 1, 3, 4, 4, 4, 1, 0>(qkg_call_v1, int)'
+    new=old.replace('1, 0>','1, 1>')
+    point=dict(kind='simt',q=12,n=1024,k=2048,mode=2,tokens=1,topk=8,experts=256,
+               channels=1,compute=1,variant=3,columns=4,warps=4,values=4,split=1)
+    job=dict(point=point,observed_symbols=[old,new])
+    captured=[[new,'(512,1,1)','(128,1,1)']]
+    assert validate_capture(job,raw(captured))[0]['kernel']==new
+    for plant in ('unseen','precision','grid','extra','missing'):
+        rows=copy.deepcopy(captured)
+        if plant=='unseen':rows[0][0]=new.replace('1, 1>','1, 2>')
+        elif plant=='precision':rows[0][0]=new.replace('1, 1>','0, 1>')
+        elif plant=='grid':rows[0][1]='(64,1,1)'
+        elif plant=='extra':rows.append([old,'(512,1,1)','(128,1,1)'])
+        else:rows=[]
+        with pytest.raises(ValueError):validate_capture(job,raw(rows))
+
+    producer='void quactlize::execution::simt::q8_vector::kernel<1, 0, 1, 8, 4, 4>(qkg_call_v1, int)'
+    reducer='void quactlize::decode::reduce_decode<8, float>(float const*, float*, int)'
+    point.update(q=8,n=2048,k=4096,mode=0,topk=1,experts=1,compute=0,variant=5,columns=8,split=8)
+    job=dict(point=point,observed_symbols=[producer])
+    captured=[[producer,'(512,1,1)','(128,1,1)'],[reducer,'(32,1,1)','(32,1,1)']]
+    assert len(validate_capture(job,raw(captured)))==2
+    for plant in ('missing','wrong_split','wrong_reducer','wrong_grid','duplicate','order'):
+        rows=copy.deepcopy(captured)
+        if plant=='missing':rows.pop()
+        elif plant=='wrong_split':rows[1][0]=reducer.replace('<8,','<4,')
+        elif plant=='wrong_reducer':rows[1][0]='void quactlize::execution::simt::register_reuse_reduce<8>(qkg_call_v1, int)'
+        elif plant=='wrong_grid':rows[1][1]='(16,1,1)'
+        elif plant=='duplicate':rows.append(rows[1])
+        else:rows.reverse()
+        with pytest.raises(ValueError):validate_capture(job,raw(rows))
+    # Unchanged non-admitted geometry still requires its original reducer.
+    point['n']=512
+    captured=[[producer,'(128,1,1)','(128,1,1)'],
+              ['void quactlize::execution::simt::register_reuse_reduce<8>(qkg_call_v1, int)','(4,1,1)','(128,1,1)']]
+    assert len(validate_capture(job,raw(captured)))==2
+
+
+def test_model_acu_recheck_is_host_only_and_keeps_original_failure(tmp_path, monkeypatch):
+    import hashlib
+    import json
+    from types import SimpleNamespace
+    from tools import profile_kpack_model_decode as profile
+    bundle=tmp_path/'bundle';bundle.mkdir();(bundle/'manifest.json').write_text('{}')
+    output=tmp_path/'acu';root=output/'model';root.mkdir(parents=True)
+    symbol='void prepare()'
+    job=dict(point=dict(kind='prepare'),observed_symbols=[symbol])
+    old=dict(model='model',job=job,rc=0,status='FAIL',log='/box/acu/model/00-prepare.log',error='old symbol matcher')
+    summary=json.dumps(dict(execution_sha256='e'*64,records=[old]))
+    (output/'summary.json').write_text(summary)
+    (root/'00-prepare.request.json').write_text(json.dumps(job))
+    (root/'00-prepare.acurep').write_bytes(b'report')
+    receipt=dict(status='PASS',proof=dict(status='PASS'),job=job,execution_sha256='e'*64,
+                 manifest_sha256=hashlib.sha256(b'{}').hexdigest())
+    (root/'00-prepare.json').write_text(json.dumps(receipt))
+    monkeypatch.setattr(profile,'verify',lambda *a,**kw:dict(execution_sha256='e'*64))
+    calls=[]
+    def imported(command,**kw):
+        assert command[1:2]==['--import'] and command[-3:]==['--page','raw','--csv']
+        calls.append(command)
+        return '"ID","Kernel Name","Grid Size","Block Size"\n"0","void prepare()","(1,1,1)","(32,1,1)"\n'
+    monkeypatch.setattr(profile.subprocess,'check_output',imported)
+    args=SimpleNamespace(bundle=bundle,sdk=tmp_path,output=output,acu='acu')
+    assert profile.recheck(args)==0 and len(calls)==1
+    assert json.loads((output/'recheck.json').read_text())['status']=='PASS'
+    assert (output/'summary.json').read_text()==summary
+    receipt['execution_sha256']='f'*64
+    (root/'00-prepare.json').write_text(json.dumps(receipt))
+    assert profile.recheck(args)==1 and len(calls)==1
+    assert (output/'summary.json').read_text()==summary

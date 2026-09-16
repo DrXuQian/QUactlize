@@ -6,6 +6,28 @@ binary bundle, or loader contract changes.
 
 ## M1 router/prepare admission repair, 2026-09-16
 
+Returned `Y8Wky8`: production component gates and warmed benchmark/Asys pass.
+K-pack TPOT is7.4105 ms versus7.6815 ms native (-3.53%); prefill latency is
+-24.47%. All600 M1 chains use the optimized fused router/prepare. The final
+runner failure is a stale ACU symbol/reducer checker: all nine reports were
+captured and pass corrected host-only re-import. See the current
+[measurement review](MODEL_DECODE_MBU_20260916.md#returned-production-integration-y8wky8).
+Do not rerun the model or rebuild its libraries for this reporting error.
+The optional box-side receipt repair uses the saved reports only:
+
+```bash
+(
+    set -e
+    cd /sim/eec/shared/junfu.qx/quactlize
+    GIT_LFS_SKIP_SMUDGE=1 git pull --ff-only origin develop
+    python3 tools/profile_kpack_model_decode.py --recheck-existing \
+        --sdk /workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
+        --bundle /workspace/quactlize-model-artifact-58a5064837/prebuilt/ppu0010/kpack-model-runtime-v1 \
+        --output /workspace/kpack-q4-model.Y8Wky8/results/acu \
+        --acu /workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK/asight/bin/acu
+)
+```
+
 Delivery: source `bdaabe8`, runtime artifact `58a5064`, private caller
 `bd7ad99f1`. Execution SHA256 is
 `47d75e168b71ada4cb42edf29d0a2700af0de0868d81d8a220880a9e007fa30e`.
