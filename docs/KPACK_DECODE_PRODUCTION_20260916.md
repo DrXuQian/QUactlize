@@ -61,12 +61,15 @@ BF16 metadata change requires new runtime images and typed metadata APIs;
 offline bytes remain unchanged. The artifact and timings above describe the
 earlier production revision, not the pending new box run.
 
-Current direct-BF16 delivery: source `35dddc3`, caller `a7fa485da`, artifact
+Current direct-BF16 delivery: source `35dddc3`, caller `77f19b6d5`, artifact
 `9b6c477`; the machine-readable pin is `tools/kpack_q4_model_artifact.json`.
 All changed images are compiled locally. The six-format GPU packer and offline
 cache format remain unchanged. The package includes 62 LFS payload paths and
 no caller binaries. Runtime refresh replaces seven old source-bound gate
 modules; their prior binaries remain recoverable from the previous artifact.
+The caller update after `a7fa485da` changes only Python model-evidence checks:
+dense FP16 is valid in MoE-only BF16 mode, while grouped FP16 still fails.
+No binary refresh is required for this checker correction.
 
 With `MODEL_COMPUTE=bf16 MODEL_ACU=1`, order is:
 
