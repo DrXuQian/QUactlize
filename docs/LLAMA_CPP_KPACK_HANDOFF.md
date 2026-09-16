@@ -15,6 +15,7 @@ take priority. The recipe is marked `QKS_PREDICTED`; it is not a measured
 head latency or a 5% optimality claim. The component-cost API still returns
 MISS for unmeasured weights and does not invent SF/full-dequant costs.
 
+Delivery: source `4c0d11e`, artifact `61cbcc4`, unchanged caller `77f19b6d5`.
 Only the 966,848-byte host dispatcher and package manifest change. Every GPU
 image, compute contract, offline format, packer and caller binary is unchanged.
 The machine-readable pin below identifies the current artifact. The command
