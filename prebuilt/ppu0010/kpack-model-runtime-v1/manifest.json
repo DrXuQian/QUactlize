@@ -380,7 +380,7 @@
     "quactlize/dispatch/cost.hpp": "28f7db20b5c1e16d0503a4b44bacba6e8c166645d6c04c347d4103209e9ff121",
     "quactlize/dispatch/decode.hpp": "a57e738b36f8c953d5d235898dd3d0cded795aaa2e134cbf877dc18cb18bb1cb",
     "quactlize/dispatch/jit.hpp": "16bb6337ea511e25c4f93720a40706e5eeb7732236ad2e626d5d07fa8be86da7",
-    "quactlize/dispatch/moe.hpp": "c0699fe43930ca3f115e6d98729706661d8060bd563994c827d9d26f94502127",
+    "quactlize/dispatch/moe.hpp": "a815e81fcced7a565d0b528fe153e569088491e72b138e8309810647a789bd1c",
     "quactlize/dispatch/native.py": "cf77f4c05cef6b87dad3608bdfa90df6f9f74eebb4f4777f45cb33292ef469ea",
     "quactlize/dispatch/policy.hpp": "a7c712cb2058f639103d27560b60dc1aa6d72e7495b2544bad341c63f7c5fcb0",
     "quactlize/dispatch/q8_vector.hpp": "50339b52dcb7a1b362a2f2fc16818709fc1ed44b4d65c87484729801f33d6519",
@@ -393,10 +393,10 @@
     "policies/kpack_zw810_cost_v1.hpp": "04fab1c79e942a257675801e974319f16e6824c28e976736b4db47868084754c",
     "policies/kpack_smallm_v1.hpp": "325caff3fc7a9ac4d66da660eaacf5a45075385e0bb326f7280defd9b9fe93a6",
     "policies/kpack_smallm_matched_v1.hpp": "e226e2e15491734f3b69815437779b8b1d170e3e5e5f252789a581464c31d4b2",
-    "policies/kpack_q8_vector_v1.hpp": "52c30b25805472754499958f2f5dcf28929873c6c709a9374749636f2fbafd62"
+    "policies/kpack_q8_vector_v1.hpp": "3fe22bfbc802de36e67386732462c312fa544e160a716eb0f224aa9d2157ad04"
   },
-  "dispatch_sha256": "6547b92113077031c4a743bee871138e378c137d57ab75bc493cba40c8f29a16",
-  "execution_sha256": "780d24dd4dc3620aa6b9eaafec22d3939426c706ca86a6cf0c5453ac13e1a9af",
+  "dispatch_sha256": "737632cd7eceedc473bc42e1f1a7c0a63913f15ff554de63fb8e8eea06a1b988",
+  "execution_sha256": "47d75e168b71ada4cb42edf29d0a2700af0de0868d81d8a220880a9e007fa30e",
   "compiler_identity": null,
   "compiler_identities": {
     "c75871737203e284624428eefeb1fcfdee383e82133d4e824967738f227bd906": {
@@ -433,7 +433,13 @@
       "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n"
     }
   },
-  "reused_packages": [],
+  "reused_packages": [
+    {
+      "path": "/tmp/quactlize-local-artifact-20260916/prebuilt/ppu0010/kpack-model-runtime-v1",
+      "manifest_sha256": "40189c0938e87534f97b080ab0e6c5a32f880543716dfacea6563a06c3ba7a79",
+      "scope": "UNCHANGED_TC_PREFILL_PACK_AND_STAGE_CONTROL"
+    }
+  ],
   "execution_receipt": {
     "schema": "quactlize.kpack-execution-build.v1",
     "source_hashes": {
@@ -461,8 +467,8 @@
       "quactlize/execution/simt.h": "53ef558fc2872305c9d070d02a9d44b64bcb7fea0fa0b66fecf993bb07ca2d04",
       "quactlize/execution/simt_activation.cuh": "13c61c4a1334d080c96f44de5285c645286a019001b5919a2778f61e5da0af73",
       "quactlize/execution/simt_format.cuh": "262fe74393b0a7bcf65e06d6b64d5246208f0dcf86280f45d9e431fe19d390b8",
-      "quactlize/execution/simt_kernel.cuh": "647c1caa3942400fb245aaba57dec671dfcb377bcb5e7d4080f58b1f1310275c",
-      "quactlize/execution/simt_q8_vector.cuh": "de13cb87b36f4f78c451d987531a23fcb0d7a5595532ef18b9509fe24c4dfd12",
+      "quactlize/execution/simt_kernel.cuh": "c88f8767d7b995f77b4c211a6fbce7e4d7b4cfd804b156a081b956b971c82004",
+      "quactlize/execution/simt_q8_vector.cuh": "76ca98447cc17a85aab5eac2ae213195cafad3a0fbb7839b4d37c81f5343047c",
       "quactlize/execution/simt_validation.hpp": "552f558a4bb2982e7b5a3fc482d9cf0fc2334fc0a4788f69cba1a8169e6ace7b",
       "quactlize/execution/validation.hpp": "1302a38bb0bf2d659a195a0a26823717f69d20fc5f178e940660aeea6b328062",
       "quactlize/include/actlize_extensions/cutlass/detail/quactlize_mixed_dtype.hpp": "4d8fdcf4dced2a7053a1cbbd8bff77cb0771430a826b24cf5b83b6a3c4c5c23f",
@@ -1164,8 +1170,8 @@
       "libhg_wrapper.so": "fd93f23bfb05dfee0ffa48fd07d3c0cf6d8ab37d266e12f841ee056291affcd5"
     },
     "library": "libquactlize_ppu_execution.so",
-    "sha256": "780d24dd4dc3620aa6b9eaafec22d3939426c706ca86a6cf0c5453ac13e1a9af",
-    "compile_seconds": 179.61782106384635,
+    "sha256": "47d75e168b71ada4cb42edf29d0a2700af0de0868d81d8a220880a9e007fa30e",
+    "compile_seconds": 186.60835326835513,
     "formats": [
       8,
       10,
@@ -14671,11 +14677,11 @@
     "-shared",
     "-pthread",
     "-Wl,-Bsymbolic",
-    "-I/tmp/kpack-dense-n-extension-20260916",
+    "-I/tmp/kpack-model-tuned-package-v2-20260916",
     "/root/marlin_ppu/quactlize/quactlize/dispatch/binding.cpp",
     "-ldl",
     "-o",
-    "/tmp/kpack-dense-n-extension-20260916/libquactlize_kpack_dispatch.so"
+    "/tmp/kpack-model-tuned-package-v2-20260916/libquactlize_kpack_dispatch.so"
   ],
   "device_validated": false,
   "heuristic_admitted": false,
@@ -14731,8 +14737,8 @@
   },
   "q8_vector_policy": {
     "path": "q8-vector-policy.json",
-    "sha256": "c45e25cf24a19d984c1216c3d9b0802371d307eee977c267bcfbf4a4722df8e8",
-    "header_sha256": "52c30b25805472754499958f2f5dcf28929873c6c709a9374749636f2fbafd62",
+    "sha256": "ef01be2240c489ba04698d2e41d8125b85dc1a3b8abcddf0f471a745af7691b1",
+    "header_sha256": "3fe22bfbc802de36e67386732462c312fa544e160a716eb0f224aa9d2157ad04",
     "admission": "EXACT_SIMT_READER_REPLACEMENT_MODEL_GATE_PENDING"
   },
   "compute_contract": {
@@ -14753,6 +14759,18 @@
     "selection": "MATCHED_SMALLM_OVERRIDES_ELSE_INITIAL_COMPUTE_PROPOSALS",
     "device_validated": false
   },
+  "moe_mixed_gate": {
+    "schema": "quactlize.moe-mixed-gate.v1",
+    "stage_cases": 80,
+    "chain_cases": 24,
+    "simt_binaries": [
+      {
+        "path": "mixed-stages",
+        "sha256": "f1fbbd31a7f44ea067211cbebc1812c5945b3d7f8325f869cc1b6ffa911cdd55",
+        "source_sha256": "558c5169dd8edb95556619af5fb35018126ab2747236b61c2d1e4e881b5308c8"
+      }
+    ]
+  },
   "prefill": {
     "library": "libquactlize_ppu_prefill.so",
     "library_sha256": "a6c320fce7c9234bfd74094a451228cfbf24870fa08e7e30938b351169fd8e80",
@@ -14761,9 +14779,16 @@
     "helper": "kpack_deepgemm_prewarm.py",
     "helper_sha256": "d614e96f0eb6696237081d7b129049183259197b70885c7fe8c00ecc42bba315"
   },
+  "bf16_gate": {
+    "path": "bf16/manifest.json",
+    "sha256": "59afde44d7eb2ee74eee841302c6fde34a95b14ea99e3e7d49dc2ec8a574c562",
+    "cases": 746,
+    "modules": 40,
+    "device_validated": false
+  },
   "q4_bf16_gate": {
     "path": "q4-bf16-gate/manifest.json",
-    "sha256": "ec09455d9aa736c8d1955e88b188f196b423835f0934b43104b41f7961c156db",
+    "sha256": "2ef05d33bd84b810e56c0e3caa62d8183c06338d17f7ee32338bf0240fcb9efb",
     "library": "q4-bf16-gate/libq4_selected_bf16_gate.so",
     "denominator": {
       "requests": 192,
@@ -14777,23 +14802,11 @@
     },
     "device_validated": false
   },
-  "moe_mixed_gate": {
-    "schema": "quactlize.moe-mixed-gate.v1",
-    "stage_cases": 80,
-    "chain_cases": 24,
-    "simt_binaries": [
-      {
-        "path": "mixed-stages",
-        "sha256": "f1fbbd31a7f44ea067211cbebc1812c5945b3d7f8325f869cc1b6ffa911cdd55",
-        "source_sha256": "558c5169dd8edb95556619af5fb35018126ab2747236b61c2d1e4e881b5308c8"
-      }
-    ]
-  },
-  "bf16_gate": {
-    "path": "bf16/manifest.json",
-    "sha256": "6ef6dc9fb2576dc69fb1260e8628d0876a50c116936d27299d3baa67583b0bbb",
-    "cases": 746,
-    "modules": 40,
+  "router_alias_gate": {
+    "path": "router-alias/manifest.json",
+    "sha256": "ee0c3e39f5a212b5280205d88a6148d972ee6ace17503fdd4af0385b4e809864",
+    "binary_sha256": "6e8e398b9257ba94095a6010d33136a8727001369bcc2d3b4f00295b9dbc8bf0",
+    "cases": 360,
     "device_validated": false
   },
   "pack": {
@@ -14802,13 +14815,5 @@
       "pack/libquactlize_ppu_pack.so": "b57013dc15d5ba50874480d8ae61a6143e929a1765cec352d0b3a0c29553e5fa",
       "pack/manifest.json": "d1b10d7da202d57e043d35e141ee5cef2f7544399a1f3420b523a52a43447def"
     }
-  },
-  "dispatcher_refresh": {
-    "base_manifest_sha256": "c0c829cc8414fd39e9d07f39217d3b53727626317c9cae19b1dd6c13a74906b6",
-    "changed_policy_inputs": [
-      "quactlize/dispatch/policy.hpp"
-    ],
-    "scope": "DENSE_N_EXTENSION_PREDICTED",
-    "gpu_compilations": 0
   }
 }
