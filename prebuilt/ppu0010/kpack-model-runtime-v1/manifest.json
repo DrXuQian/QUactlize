@@ -374,8 +374,8 @@
     }
   ],
   "policy_hashes": {
-    "quactlize/dispatch/api.h": "a16623a99d3dba7e75ea2fe8d4985af1d126118fa314f604d38a8071432cb62b",
-    "quactlize/dispatch/binding.cpp": "3c82cd2b5e3964245dc4a1b1f54dccc63d190fe803dfef1a50f9f92a8c2a5015",
+    "quactlize/dispatch/api.h": "6f437ffbe16b472c117f1c7b1f41246f8afa6e1aa3e500640f8cc43fd5287f38",
+    "quactlize/dispatch/binding.cpp": "1c5fbbdc89baa3c736ee4897dde4731defaffd34d872bc379f80d55834f81332",
     "quactlize/dispatch/compute.hpp": "161fe7a2a6be737edb671ab883a9e818e95b35b154879cdda03759fa3386db97",
     "quactlize/dispatch/cost.hpp": "28f7db20b5c1e16d0503a4b44bacba6e8c166645d6c04c347d4103209e9ff121",
     "quactlize/dispatch/decode.hpp": "a57e738b36f8c953d5d235898dd3d0cded795aaa2e134cbf877dc18cb18bb1cb",
@@ -383,18 +383,20 @@
     "quactlize/dispatch/moe.hpp": "c0699fe43930ca3f115e6d98729706661d8060bd563994c827d9d26f94502127",
     "quactlize/dispatch/native.py": "0faa4746c656393d0160b6f333798d78f1fbe4b0b2cb5fb03a4875bbf72cb3f7",
     "quactlize/dispatch/policy.hpp": "376f3f3396589926b08c6172c36869fd56b8035e92fd0c2c49ae5af51eade4af",
+    "quactlize/dispatch/q8_vector.hpp": "50339b52dcb7a1b362a2f2fc16818709fc1ed44b4d65c87484729801f33d6519",
     "quactlize/dispatch/smallm.hpp": "992a29ef20ad32183fb2bed17fe2fe5666a5e182cdadbd8f50ef8f5fd2f0e967",
     "quactlize/dispatch/smallm_matched.hpp": "159417534e468a359f21413a44370dcb716ca0338de4c75773177099ffeebdcb",
-    "tools/build_kpack_dispatch.py": "1c12b7f95d839b47ca1f7c89a1d1b82136666ecd3acccad0df3b672cbdbafbeb",
+    "tools/build_kpack_dispatch.py": "1c4da4d0e848b74a4b5aeece8bc7d4838a657c01e1829052603ed511ff25f109",
     "tools/kpack_native_policy.cpp": "c6dffe5d16145cec3cc6afce4054be524495452abc54a8cebd3dbeec5b2de940",
     "policies/kpack_zw810_heuristic_v1.hpp": "7a8c74e9d9d739dac3022329aaa19d314dc39c34b210dcbe80431a04c1ca5e8d",
     "policies/kpack_zw810_runtime_v1.hpp": "88f22bc4b1fd82036bba6b42d152f6ed9ff6e4de4dbf9d5ca55355ff9b0ffda8",
     "policies/kpack_zw810_cost_v1.hpp": "04fab1c79e942a257675801e974319f16e6824c28e976736b4db47868084754c",
     "policies/kpack_smallm_v1.hpp": "325caff3fc7a9ac4d66da660eaacf5a45075385e0bb326f7280defd9b9fe93a6",
-    "policies/kpack_smallm_matched_v1.hpp": "e226e2e15491734f3b69815437779b8b1d170e3e5e5f252789a581464c31d4b2"
+    "policies/kpack_smallm_matched_v1.hpp": "e226e2e15491734f3b69815437779b8b1d170e3e5e5f252789a581464c31d4b2",
+    "policies/kpack_q8_vector_v1.hpp": "52c30b25805472754499958f2f5dcf28929873c6c709a9374749636f2fbafd62"
   },
-  "dispatch_sha256": "88b855004c451475e79727a8bba5a7e79c1d0dd015e7b588d0b0e7c2414c0787",
-  "execution_sha256": "1122afabaa9c8b749bb88a12281887c2635155468d3048956986b3befeb9be43",
+  "dispatch_sha256": "5418136739cc3eebdc9bba8304514d4609ad35990957ea9ee0afcfc152c8e451",
+  "execution_sha256": "0605f190f8e48fb16a9cb0c7e09845db8344127b172f3b4e76c72d3e1307069c",
   "compiler_identity": null,
   "compiler_identities": {
     "e704644921db3b4730ccb1abfb0ae32781370ff64b519b299aa9c510e3198acd": {
@@ -431,7 +433,13 @@
       "host": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n"
     }
   },
-  "reused_packages": [],
+  "reused_packages": [
+    {
+      "path": "/tmp/quactlize-local-artifact-20260916/prebuilt/ppu0010/kpack-model-runtime-v1",
+      "manifest_sha256": "bf68b3aa85792932e14ef51e8510def759e0953c8e8c0d777ee3f2df3182f196",
+      "scope": "UNCHANGED_TC_PREFILL_PACK_AND_STAGE_CONTROL"
+    }
+  ],
   "execution_receipt": {
     "schema": "quactlize.kpack-execution-build.v1",
     "source_hashes": {
@@ -439,8 +447,10 @@
       "quactlize/execution/dispatch.cpp": "8e461947eefd0441cd39455f30e0c5bb6cc8ce85fa2e78928768fb65897105ef",
       "quactlize/execution/gemv.cu": "ab3f27bf2c1ea441d7d55d2dd9384da0b06b42982f3e3b8ce0bb47ef5c2ee251",
       "quactlize/execution/metadata.cu": "ddc5c9a6e932043da0daa7386b31fcbc194495a7a7ee85727a8f8fa44520bf40",
-      "quactlize/execution/moe.cu": "200af0eb6d60ba5f7035504bad7181ea4bb353592ca26cf4efe27ef65dea4b10",
+      "quactlize/execution/moe.cu": "54974264fa2890fd51d6c1d3c11b60718a887e841acc05c5397f9f7c1a75f15b",
       "quactlize/execution/moe.h": "279492a889d46880cc2dd179eab1a5ae039f389e7dfbaba25a0c82f63de4ab5e",
+      "quactlize/execution/moe_prepare.cuh": "972012332facbae99915e2affb5552b095237ac8bea348e682a9bf9b7372e8d2",
+      "quactlize/execution/moe_router_warp.cuh": "82290eaf34d6537c1b1e2c8e910955b65149420d9243acef23c2c829f260c2d6",
       "quactlize/execution/q4_decode.cpp": "8ce2d5443d22db8db9a3cfd63ed514cce6c8905b981b3fca36216a2f84ff7462",
       "quactlize/execution/q4_decode.h": "2cce4e3229c0f6ad561a4456c7a0c0e87fe1b79718a1ba3231792c8fa9879be9",
       "quactlize/execution/q4_decode_io.cu": "f67c6cc9858c092567c99dacb578faee7691a961dbb575c73c4bdb8125b2f720",
@@ -454,11 +464,12 @@
       "quactlize/execution/q4_s1_validation.hpp": "e8b57680d9fa6f74d6e76803cf93015573d232ce6daf67aea5d9dfea4695b02d",
       "quactlize/execution/reader.hpp": "8e064fc00685890cf21805ec365ce82acc1ea926dd64fb98c02567456f4f8342",
       "quactlize/execution/simt.cpp": "233f9ed68cc60904788977c9e3e295be66136dc887fa0b73b8f407182ff16644",
-      "quactlize/execution/simt.h": "d4db0c72482913894462ffd2252dd530d8e16a4f7441781c9de83fb3a08b4127",
+      "quactlize/execution/simt.h": "53ef558fc2872305c9d070d02a9d44b64bcb7fea0fa0b66fecf993bb07ca2d04",
       "quactlize/execution/simt_activation.cuh": "13c61c4a1334d080c96f44de5285c645286a019001b5919a2778f61e5da0af73",
       "quactlize/execution/simt_format.cuh": "262fe74393b0a7bcf65e06d6b64d5246208f0dcf86280f45d9e431fe19d390b8",
       "quactlize/execution/simt_kernel.cuh": "647c1caa3942400fb245aaba57dec671dfcb377bcb5e7d4080f58b1f1310275c",
-      "quactlize/execution/simt_validation.hpp": "55aeb5a8fedc9c0a28659a6917ad4194bf56a0530b179cc4c42af83669caa386",
+      "quactlize/execution/simt_q8_vector.cuh": "de13cb87b36f4f78c451d987531a23fcb0d7a5595532ef18b9509fe24c4dfd12",
+      "quactlize/execution/simt_validation.hpp": "552f558a4bb2982e7b5a3fc482d9cf0fc2334fc0a4788f69cba1a8169e6ace7b",
       "quactlize/execution/validation.hpp": "1302a38bb0bf2d659a195a0a26823717f69d20fc5f178e940660aeea6b328062",
       "quactlize/include/actlize_extensions/cutlass/detail/quactlize_mixed_dtype.hpp": "4d8fdcf4dced2a7053a1cbbd8bff77cb0771430a826b24cf5b83b6a3c4c5c23f",
       "quactlize/include/actlize_extensions/cutlass/gemm/collective/detail/ppu_2plane_source_layout.hpp": "8f9236363f92459551651e0bb906fc4b70cc03b928c6250169b4df34d6d0d317",
@@ -1118,7 +1129,7 @@
       "policies/kpack_q4_decode_v1.json": "949969599be40229760cd96fdb25eb2c3d374805ba3436c5238c3bdda108c7cd",
       "policies/kpack_q4_decode_v1.hpp": "a6d6e834d7d70058df2113ad576936bf50bd51151fbbdf59ad42c06f9ffbc486",
       "quactlize/execution/q4_decode_codegen.py": "f81125c92f311a2b42df2f26fb3329baf75771e319bdc73b2da4fb837fa336e5",
-      "quactlize/execution/simt_codegen.py": "9c5cdf58e6c82bc6c8528049141621cc7de3a97df12919b14475922189681df2",
+      "quactlize/execution/simt_codegen.py": "2395233326b73b2d4c587918f98b6d57b9daea763e88d2b7536dab6d4a8e4dbe",
       "policies/kpack_zw810_heuristic_v1.hpp": "7a8c74e9d9d739dac3022329aaa19d314dc39c34b210dcbe80431a04c1ca5e8d",
       "policies/kpack_zw810_runtime_v1.hpp": "88f22bc4b1fd82036bba6b42d152f6ed9ff6e4de4dbf9d5ca55355ff9b0ffda8",
       "policies/kpack_zw810_v1.hpp": "dbc5d9b3d40ad8a924d8a63526ee315a51e04f02d183df141d17d31f609bb513"
@@ -1158,8 +1169,8 @@
       "libhg_wrapper.so": "fd93f23bfb05dfee0ffa48fd07d3c0cf6d8ab37d266e12f841ee056291affcd5"
     },
     "library": "libquactlize_ppu_execution.so",
-    "sha256": "1122afabaa9c8b749bb88a12281887c2635155468d3048956986b3befeb9be43",
-    "compile_seconds": 179.21035654842854,
+    "sha256": "0605f190f8e48fb16a9cb0c7e09845db8344127b172f3b4e76c72d3e1307069c",
+    "compile_seconds": 172.91919799149036,
     "formats": [
       8,
       10,
@@ -2744,6 +2755,1086 @@
           "split": 8,
           "key": "reuse-v1-c8-w8-p4-s8",
           "reader": "REGISTER_REUSE"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 2,
+          "values": 2,
+          "split": 1,
+          "key": "reuse-v4-c4-w2-p2-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 2,
+          "values": 2,
+          "split": 2,
+          "key": "reuse-v4-c4-w2-p2-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 2,
+          "values": 2,
+          "split": 4,
+          "key": "reuse-v4-c4-w2-p2-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 2,
+          "values": 2,
+          "split": 8,
+          "key": "reuse-v4-c4-w2-p2-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 2,
+          "values": 4,
+          "split": 1,
+          "key": "reuse-v4-c4-w2-p4-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 2,
+          "values": 4,
+          "split": 2,
+          "key": "reuse-v4-c4-w2-p4-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 2,
+          "values": 4,
+          "split": 4,
+          "key": "reuse-v4-c4-w2-p4-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 2,
+          "values": 4,
+          "split": 8,
+          "key": "reuse-v4-c4-w2-p4-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 2,
+          "values": 8,
+          "split": 1,
+          "key": "reuse-v4-c4-w2-p8-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 2,
+          "values": 8,
+          "split": 2,
+          "key": "reuse-v4-c4-w2-p8-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 2,
+          "values": 8,
+          "split": 4,
+          "key": "reuse-v4-c4-w2-p8-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 2,
+          "values": 8,
+          "split": 8,
+          "key": "reuse-v4-c4-w2-p8-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 4,
+          "values": 2,
+          "split": 1,
+          "key": "reuse-v4-c4-w4-p2-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 4,
+          "values": 2,
+          "split": 2,
+          "key": "reuse-v4-c4-w4-p2-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 4,
+          "values": 2,
+          "split": 4,
+          "key": "reuse-v4-c4-w4-p2-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 4,
+          "values": 2,
+          "split": 8,
+          "key": "reuse-v4-c4-w4-p2-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 4,
+          "values": 4,
+          "split": 1,
+          "key": "reuse-v4-c4-w4-p4-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 4,
+          "values": 4,
+          "split": 2,
+          "key": "reuse-v4-c4-w4-p4-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 4,
+          "values": 4,
+          "split": 4,
+          "key": "reuse-v4-c4-w4-p4-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 4,
+          "values": 4,
+          "split": 8,
+          "key": "reuse-v4-c4-w4-p4-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 4,
+          "values": 8,
+          "split": 1,
+          "key": "reuse-v4-c4-w4-p8-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 4,
+          "values": 8,
+          "split": 2,
+          "key": "reuse-v4-c4-w4-p8-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 4,
+          "values": 8,
+          "split": 4,
+          "key": "reuse-v4-c4-w4-p8-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 4,
+          "values": 8,
+          "split": 8,
+          "key": "reuse-v4-c4-w4-p8-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 8,
+          "values": 2,
+          "split": 1,
+          "key": "reuse-v4-c4-w8-p2-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 8,
+          "values": 2,
+          "split": 2,
+          "key": "reuse-v4-c4-w8-p2-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 8,
+          "values": 2,
+          "split": 4,
+          "key": "reuse-v4-c4-w8-p2-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 8,
+          "values": 2,
+          "split": 8,
+          "key": "reuse-v4-c4-w8-p2-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 8,
+          "values": 4,
+          "split": 1,
+          "key": "reuse-v4-c4-w8-p4-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 8,
+          "values": 4,
+          "split": 2,
+          "key": "reuse-v4-c4-w8-p4-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 8,
+          "values": 4,
+          "split": 4,
+          "key": "reuse-v4-c4-w8-p4-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 8,
+          "values": 4,
+          "split": 8,
+          "key": "reuse-v4-c4-w8-p4-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 8,
+          "values": 8,
+          "split": 1,
+          "key": "reuse-v4-c4-w8-p8-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 8,
+          "values": 8,
+          "split": 2,
+          "key": "reuse-v4-c4-w8-p8-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 8,
+          "values": 8,
+          "split": 4,
+          "key": "reuse-v4-c4-w8-p8-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 4,
+          "warps": 8,
+          "values": 8,
+          "split": 8,
+          "key": "reuse-v4-c4-w8-p8-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 8,
+          "warps": 2,
+          "values": 2,
+          "split": 1,
+          "key": "reuse-v4-c8-w2-p2-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 8,
+          "warps": 2,
+          "values": 2,
+          "split": 2,
+          "key": "reuse-v4-c8-w2-p2-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 8,
+          "warps": 2,
+          "values": 2,
+          "split": 4,
+          "key": "reuse-v4-c8-w2-p2-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 8,
+          "warps": 2,
+          "values": 2,
+          "split": 8,
+          "key": "reuse-v4-c8-w2-p2-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 8,
+          "warps": 2,
+          "values": 4,
+          "split": 1,
+          "key": "reuse-v4-c8-w2-p4-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 8,
+          "warps": 2,
+          "values": 4,
+          "split": 2,
+          "key": "reuse-v4-c8-w2-p4-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 8,
+          "warps": 2,
+          "values": 4,
+          "split": 4,
+          "key": "reuse-v4-c8-w2-p4-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 8,
+          "warps": 2,
+          "values": 4,
+          "split": 8,
+          "key": "reuse-v4-c8-w2-p4-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 8,
+          "warps": 4,
+          "values": 2,
+          "split": 1,
+          "key": "reuse-v4-c8-w4-p2-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 8,
+          "warps": 4,
+          "values": 2,
+          "split": 2,
+          "key": "reuse-v4-c8-w4-p2-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 8,
+          "warps": 4,
+          "values": 2,
+          "split": 4,
+          "key": "reuse-v4-c8-w4-p2-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 8,
+          "warps": 4,
+          "values": 2,
+          "split": 8,
+          "key": "reuse-v4-c8-w4-p2-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 8,
+          "warps": 4,
+          "values": 4,
+          "split": 1,
+          "key": "reuse-v4-c8-w4-p4-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 8,
+          "warps": 4,
+          "values": 4,
+          "split": 2,
+          "key": "reuse-v4-c8-w4-p4-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 8,
+          "warps": 4,
+          "values": 4,
+          "split": 4,
+          "key": "reuse-v4-c8-w4-p4-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 8,
+          "warps": 4,
+          "values": 4,
+          "split": 8,
+          "key": "reuse-v4-c8-w4-p4-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 8,
+          "warps": 8,
+          "values": 2,
+          "split": 1,
+          "key": "reuse-v4-c8-w8-p2-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 8,
+          "warps": 8,
+          "values": 2,
+          "split": 2,
+          "key": "reuse-v4-c8-w8-p2-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 8,
+          "warps": 8,
+          "values": 2,
+          "split": 4,
+          "key": "reuse-v4-c8-w8-p2-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 8,
+          "warps": 8,
+          "values": 2,
+          "split": 8,
+          "key": "reuse-v4-c8-w8-p2-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 8,
+          "warps": 8,
+          "values": 4,
+          "split": 1,
+          "key": "reuse-v4-c8-w8-p4-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 8,
+          "warps": 8,
+          "values": 4,
+          "split": 2,
+          "key": "reuse-v4-c8-w8-p4-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 8,
+          "warps": 8,
+          "values": 4,
+          "split": 4,
+          "key": "reuse-v4-c8-w8-p4-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 4,
+          "columns": 8,
+          "warps": 8,
+          "values": 4,
+          "split": 8,
+          "key": "reuse-v4-c8-w8-p4-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 2,
+          "values": 2,
+          "split": 1,
+          "key": "reuse-v5-c4-w2-p2-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 2,
+          "values": 2,
+          "split": 2,
+          "key": "reuse-v5-c4-w2-p2-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 2,
+          "values": 2,
+          "split": 4,
+          "key": "reuse-v5-c4-w2-p2-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 2,
+          "values": 2,
+          "split": 8,
+          "key": "reuse-v5-c4-w2-p2-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 2,
+          "values": 4,
+          "split": 1,
+          "key": "reuse-v5-c4-w2-p4-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 2,
+          "values": 4,
+          "split": 2,
+          "key": "reuse-v5-c4-w2-p4-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 2,
+          "values": 4,
+          "split": 4,
+          "key": "reuse-v5-c4-w2-p4-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 2,
+          "values": 4,
+          "split": 8,
+          "key": "reuse-v5-c4-w2-p4-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 2,
+          "values": 8,
+          "split": 1,
+          "key": "reuse-v5-c4-w2-p8-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 2,
+          "values": 8,
+          "split": 2,
+          "key": "reuse-v5-c4-w2-p8-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 2,
+          "values": 8,
+          "split": 4,
+          "key": "reuse-v5-c4-w2-p8-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 2,
+          "values": 8,
+          "split": 8,
+          "key": "reuse-v5-c4-w2-p8-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 4,
+          "values": 2,
+          "split": 1,
+          "key": "reuse-v5-c4-w4-p2-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 4,
+          "values": 2,
+          "split": 2,
+          "key": "reuse-v5-c4-w4-p2-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 4,
+          "values": 2,
+          "split": 4,
+          "key": "reuse-v5-c4-w4-p2-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 4,
+          "values": 2,
+          "split": 8,
+          "key": "reuse-v5-c4-w4-p2-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 4,
+          "values": 4,
+          "split": 1,
+          "key": "reuse-v5-c4-w4-p4-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 4,
+          "values": 4,
+          "split": 2,
+          "key": "reuse-v5-c4-w4-p4-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 4,
+          "values": 4,
+          "split": 4,
+          "key": "reuse-v5-c4-w4-p4-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 4,
+          "values": 4,
+          "split": 8,
+          "key": "reuse-v5-c4-w4-p4-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 4,
+          "values": 8,
+          "split": 1,
+          "key": "reuse-v5-c4-w4-p8-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 4,
+          "values": 8,
+          "split": 2,
+          "key": "reuse-v5-c4-w4-p8-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 4,
+          "values": 8,
+          "split": 4,
+          "key": "reuse-v5-c4-w4-p8-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 4,
+          "values": 8,
+          "split": 8,
+          "key": "reuse-v5-c4-w4-p8-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 8,
+          "values": 2,
+          "split": 1,
+          "key": "reuse-v5-c4-w8-p2-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 8,
+          "values": 2,
+          "split": 2,
+          "key": "reuse-v5-c4-w8-p2-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 8,
+          "values": 2,
+          "split": 4,
+          "key": "reuse-v5-c4-w8-p2-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 8,
+          "values": 2,
+          "split": 8,
+          "key": "reuse-v5-c4-w8-p2-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 8,
+          "values": 4,
+          "split": 1,
+          "key": "reuse-v5-c4-w8-p4-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 8,
+          "values": 4,
+          "split": 2,
+          "key": "reuse-v5-c4-w8-p4-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 8,
+          "values": 4,
+          "split": 4,
+          "key": "reuse-v5-c4-w8-p4-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 8,
+          "values": 4,
+          "split": 8,
+          "key": "reuse-v5-c4-w8-p4-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 8,
+          "values": 8,
+          "split": 1,
+          "key": "reuse-v5-c4-w8-p8-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 8,
+          "values": 8,
+          "split": 2,
+          "key": "reuse-v5-c4-w8-p8-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 8,
+          "values": 8,
+          "split": 4,
+          "key": "reuse-v5-c4-w8-p8-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 4,
+          "warps": 8,
+          "values": 8,
+          "split": 8,
+          "key": "reuse-v5-c4-w8-p8-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 8,
+          "warps": 2,
+          "values": 2,
+          "split": 1,
+          "key": "reuse-v5-c8-w2-p2-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 8,
+          "warps": 2,
+          "values": 2,
+          "split": 2,
+          "key": "reuse-v5-c8-w2-p2-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 8,
+          "warps": 2,
+          "values": 2,
+          "split": 4,
+          "key": "reuse-v5-c8-w2-p2-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 8,
+          "warps": 2,
+          "values": 2,
+          "split": 8,
+          "key": "reuse-v5-c8-w2-p2-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 8,
+          "warps": 2,
+          "values": 4,
+          "split": 1,
+          "key": "reuse-v5-c8-w2-p4-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 8,
+          "warps": 2,
+          "values": 4,
+          "split": 2,
+          "key": "reuse-v5-c8-w2-p4-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 8,
+          "warps": 2,
+          "values": 4,
+          "split": 4,
+          "key": "reuse-v5-c8-w2-p4-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 8,
+          "warps": 2,
+          "values": 4,
+          "split": 8,
+          "key": "reuse-v5-c8-w2-p4-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 8,
+          "warps": 4,
+          "values": 2,
+          "split": 1,
+          "key": "reuse-v5-c8-w4-p2-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 8,
+          "warps": 4,
+          "values": 2,
+          "split": 2,
+          "key": "reuse-v5-c8-w4-p2-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 8,
+          "warps": 4,
+          "values": 2,
+          "split": 4,
+          "key": "reuse-v5-c8-w4-p2-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 8,
+          "warps": 4,
+          "values": 2,
+          "split": 8,
+          "key": "reuse-v5-c8-w4-p2-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 8,
+          "warps": 4,
+          "values": 4,
+          "split": 1,
+          "key": "reuse-v5-c8-w4-p4-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 8,
+          "warps": 4,
+          "values": 4,
+          "split": 2,
+          "key": "reuse-v5-c8-w4-p4-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 8,
+          "warps": 4,
+          "values": 4,
+          "split": 4,
+          "key": "reuse-v5-c8-w4-p4-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 8,
+          "warps": 4,
+          "values": 4,
+          "split": 8,
+          "key": "reuse-v5-c8-w4-p4-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 8,
+          "warps": 8,
+          "values": 2,
+          "split": 1,
+          "key": "reuse-v5-c8-w8-p2-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 8,
+          "warps": 8,
+          "values": 2,
+          "split": 2,
+          "key": "reuse-v5-c8-w8-p2-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 8,
+          "warps": 8,
+          "values": 2,
+          "split": 4,
+          "key": "reuse-v5-c8-w8-p2-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 8,
+          "warps": 8,
+          "values": 2,
+          "split": 8,
+          "key": "reuse-v5-c8-w8-p2-s8",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 8,
+          "warps": 8,
+          "values": 4,
+          "split": 1,
+          "key": "reuse-v5-c8-w8-p4-s1",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 8,
+          "warps": 8,
+          "values": 4,
+          "split": 2,
+          "key": "reuse-v5-c8-w8-p4-s2",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 8,
+          "warps": 8,
+          "values": 4,
+          "split": 4,
+          "key": "reuse-v5-c8-w8-p4-s4",
+          "reader": "Q8_VECTOR"
+        },
+        {
+          "variant": 5,
+          "columns": 8,
+          "warps": 8,
+          "values": 4,
+          "split": 8,
+          "key": "reuse-v5-c8-w8-p4-s8",
+          "reader": "Q8_VECTOR"
         }
       ],
       "10": [
@@ -13585,11 +14676,11 @@
     "-shared",
     "-pthread",
     "-Wl,-Bsymbolic",
-    "-I/tmp/kpack-smallm-matched-dispatch-20260915",
+    "-I/tmp/kpack-production-vector-model-20260916",
     "/root/marlin_ppu/quactlize/quactlize/dispatch/binding.cpp",
     "-ldl",
     "-o",
-    "/tmp/kpack-smallm-matched-dispatch-20260915/libquactlize_kpack_dispatch.so"
+    "/tmp/kpack-production-vector-model-20260916/libquactlize_kpack_dispatch.so"
   ],
   "device_validated": false,
   "heuristic_admitted": false,
@@ -13643,6 +14734,12 @@
     "header_sha256": "e226e2e15491734f3b69815437779b8b1d170e3e5e5f252789a581464c31d4b2",
     "admission": "MATCHED_POOL_EXPLICIT_COMPUTE_MODEL_GATE_PENDING"
   },
+  "q8_vector_policy": {
+    "path": "q8-vector-policy.json",
+    "sha256": "c45e25cf24a19d984c1216c3d9b0802371d307eee977c267bcfbf4a4722df8e8",
+    "header_sha256": "52c30b25805472754499958f2f5dcf28929873c6c709a9374749636f2fbafd62",
+    "admission": "EXACT_SIMT_READER_REPLACEMENT_MODEL_GATE_PENDING"
+  },
   "compute_contract": {
     "schema": "quactlize.explicit-compute.v1",
     "formats": [
@@ -13680,18 +14777,14 @@
   },
   "bf16_gate": {
     "path": "bf16/manifest.json",
-    "sha256": "adaa89f596035ea8c9bd28f00ea6e2041ead143851030198c892d7b2b7960353",
+    "sha256": "8b03b554b01823d8ed7386bee742a3c95d6940a229a383fe96674921128ae95e",
     "cases": 746,
     "modules": 40,
     "device_validated": false
   },
-  "local_optimization_gate": {
-    "path": "local-gates/manifest.json",
-    "sha256": "c1bc720acaf7d1a69c24b868696d1004699aa4575ada4e654a7a76a54af8855f"
-  },
   "q4_bf16_gate": {
     "path": "q4-bf16-gate/manifest.json",
-    "sha256": "2762a633c84959995ff4c1f560854a27526deb85f63d23ca145d7e7f3ca38b72",
+    "sha256": "6d6f4b3b493c8189acba8d2dd2d05e7b4d48c9d31a6b5f15f08a69f74e79e3dd",
     "library": "q4-bf16-gate/libq4_selected_bf16_gate.so",
     "denominator": {
       "requests": 192,
@@ -13711,18 +14804,5 @@
       "pack/libquactlize_ppu_pack.so": "b57013dc15d5ba50874480d8ae61a6143e929a1765cec352d0b3a0c29553e5fa",
       "pack/manifest.json": "d1b10d7da202d57e043d35e141ee5cef2f7544399a1f3420b523a52a43447def"
     }
-  },
-  "local_gate_repair": {
-    "source_revision": "2b633f781c405dc3ff1550cee46a8e99063cd0ac",
-    "previous_artifact_commit": "14066dae14108f54a999c957f17ee68cb6117d49",
-    "previous_manifest_sha256": "2c371d1ea5f9acf005dcf78fed6c9bd5c5c7aee8f6a79563b784bf64f0dc02ec",
-    "production_payloads_unchanged": true
-  },
-  "local_gate_followup": {
-    "source_revision": "47e5c89762d6f6781c7707335827cdd88b95cbba",
-    "previous_artifact_commit": "39d537754ce3d2568939c8e95ed17736bf434893",
-    "previous_manifest_sha256": "9ae853b9fb74f1a39729f0e2362e68df8acf4b48c114dee2db1d4c7c514c8a28",
-    "production_payloads_unchanged": true,
-    "q8_payload_unchanged": true
   }
 }
