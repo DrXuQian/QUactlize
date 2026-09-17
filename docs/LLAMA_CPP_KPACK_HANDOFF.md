@@ -4,6 +4,27 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
+## Q8 hoist ZW810 candidate, 2026-09-17
+
+Runtime artifact `3935fe9aaded4c7db03d489efe376a709b5cfab1`, caller
+`4ae897c77d4b08f5c595781d933d2cd0748aa2f1`. The caller change is trace parsing
+only; no caller GPU kernel or public ABI changes. Execution SHA256:
+`3247b57f6c457b88571f18242dac0ea173144c75682aa7d14c45e0b844baa544`.
+Only one new unique 40 MB LFS object is required; unchanged TC, packer,
+prefill and dispatcher binaries are reused. No llama binaries are included.
+
+This candidate applies Q8 load hoisting only to the two existing small M1
+dense F16 recipes. All selectors and the large S8 recipe remain unchanged.
+Host tests pass and compilation is complete; PPU numerical/performance
+admission is pending. See [scope and test protocol](Q8_HOIST_ZW810.md).
+
+Run the model box script with `Q8_HOIST_AB=1 MODEL_ACU=1 MODEL_PHASES=perf
+MODEL_COMPUTE=bf16 MODEL_NAMES=qwen35-35b-q4km`. Use the existing verified
+64 MiB L2 receipt (`L2_BYTES=67108864`) when the SDK reports zero. It first
+compares immutable old/new execution libraries, then runs warmed model
+timings, Asys and ACU. Dense remains F16; MoE remains BF16. Historical
+`Y8Wky8` timings below are not a contemporaneous paired hoist model result.
+
 ## M1 router/prepare admission repair, 2026-09-16
 
 Returned `Y8Wky8`: production component gates and warmed benchmark/Asys pass.

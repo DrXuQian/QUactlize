@@ -42,6 +42,8 @@
     test -x "$ASYS"
     MODEL_ACU=${MODEL_ACU:-0}
     [[ "$MODEL_ACU" == 0 || "$MODEL_ACU" == 1 ]]
+    Q8_HOIST_AB=${Q8_HOIST_AB:-0}
+    [[ "$Q8_HOIST_AB" == 0 || "$Q8_HOIST_AB" == 1 ]]
     ACU=${ACU:-$SDK/asight/bin/acu}
     if [[ "$MODEL_ACU" == 1 ]]; then test -x "$ACU"; fi
     "$PYTHON" -c 'import numpy, gguf, torch, pyarrow; from deep_gemm.jit_kernels.m_grouped_gemm import m_grouped_gemm_bf16_bf16_bf16_nt_nopad'
@@ -184,6 +186,9 @@
     export CUDA_HOME="$SDK/CUDA_SDK" DG_JIT_CACHE_DIR="$RUN/ci/ncp-jit-cache"
     unset DG_LIBRARY_ROOT GGML_NCP_FA_LIB GGML_NCP_MOE_LIB
     export LD_LIBRARY_PATH="$BUILD_DIR/bin:$LD_LIBRARY_PATH"
+    if [[ "$Q8_HOIST_AB" == 1 ]]; then
+        "$PYTHON" -c 'import sys; sys.path.insert(0,sys.argv[1]+"/tests"); from quactlize_native import simt_symbol_recipe; assert simt_symbol_recipe("quactlize::execution::simt::q8_vector::kernel<1,0,1,4,8,4,true>")== (8,1,5,4,8,4,0), "update the llama trace parser for Q8 hoist"' "$LLAMA_DIR"
+    fi
     "$BUILD_DIR/bin/llama-batched-bench" --help > "$RUN/results/binary-help.log" 2>&1
 
     export QUACTLIZE_PPU_PACK_LIBRARY="$BUNDLE/pack/libquactlize_ppu_pack.so"

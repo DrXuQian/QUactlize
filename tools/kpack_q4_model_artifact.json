@@ -1,11 +1,11 @@
 {
   "branch": "artifacts/kpack-model-runtime-v1",
-  "commit": "58a50648375403d6a6e2685ead4c50559dbd9a9b",
+  "commit": "3935fe9aaded4c7db03d489efe376a709b5cfab1",
   "path": "prebuilt/ppu0010/kpack-model-runtime-v1",
-  "manifest_sha256": "f67c67e138793f74d39fe7965064874fb06f342932c2a29adc10772b869bdd34",
-  "source_commit": "bdaabe8c7d3dd15d3408756e27cb21ceb160c553",
+  "manifest_sha256": "977105d86ce91e1d3e9597ac5631389e4ff56b23753b8366e142169a9a133652",
+  "source_commit": "120bb6b6104ffc55b5d704077344b73ce78749c7",
   "llama_branch": "dev/quactlize-v0.3.0",
-  "llama_ci_commit": "bd7ad99f156a4656997b1a3370dc3f2bfca5872f",
+  "llama_ci_commit": "4ae897c77d4b08f5c595781d933d2cd0748aa2f1",
   "lfs_payloads": 63,
-  "device_admission": "CUDA_PRODUCTION_NUMERIC_PASS_PPU_ROUTER_SIMT_AND_MODEL_GATE_PENDING"
+  "device_admission": "HOST_BUILD_AND_CONTRACT_TESTS_PASS_PPU_Q8_HOIST_AND_MODEL_GATE_PENDING"
 }
