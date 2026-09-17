@@ -21,6 +21,10 @@
     export QUACTLIZE_PPU_BUNDLE=${QUACTLIZE_PPU_BUNDLE:-/workspace/quactlize-runtime-artifact-2826cf1-46fc3096e1a1/prebuilt/ppu0010/2826cf1/runtime6-46fc3096e1a1/bundle}
     test -s "$QUACTLIZE_PPU_BUNDLE/manifest.json"
     EXTRA=()
+    if [[ ${PERFORMANCE_ONLY:-0} == 1 ]]; then
+        EXTRA+=(--performance-only)
+        if [[ ${MODEL_ACU:-0} == 1 ]]; then EXTRA+=(--profile-acu); fi
+    fi
     if [[ ${REPAIR_PREFILL:-0} == 1 ]]; then
         mapfile -t PIN < <("$PYTHON" -c 'import json; m=json.load(open("tools/kpack_q4_model_artifact.json")); print(m["branch"]); print(m["commit"]); print(m["path"])')
         [[ ${#PIN[@]} == 3 && ( ${PIN[0]} == artifacts/kpack-model-runtime-v1 || ${PIN[0]} == artifacts/kpack-model-paired-n4-v1 ) && ${PIN[1]} =~ ^[0-9a-f]{40}$ && ${PIN[2]} == prebuilt/ppu0010/kpack-model-runtime-v1 ]]

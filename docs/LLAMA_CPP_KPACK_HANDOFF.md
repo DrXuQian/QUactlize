@@ -26,6 +26,14 @@ MODEL_NAMES=qwen35-35b-q4km L2_BYTES=67108864`. Quactlize comes from LFS;
 caller compilation stays in its `.aoneci/scripts/build.sh` on the box.
 No llama binaries are uploaded to Quactlize.
 
+Returned `y7SNPu`: all seven integrated reader gates pass with exact admitted
+M1 bits. Whole-model ABBA and reference Asys fail at model loading because
+GPU0 has 9204 MiB free while the reference allocation needs 20470.32 MiB.
+No model performance or trace result exists. Keep the runtime and caller;
+use `PERFORMANCE_ONLY=1 PREVIOUS_RUN=/workspace/kpack-q4-model.y7SNPu`
+with `tools/resume_kpack_q4_model_box.sh` on an idle GPU. This reuses the
+completed component gates and binaries, but reruns warmed model ABBA/Asys.
+
 ## Q8 hoist ZW810 candidate, 2026-09-17
 
 Runtime artifact `3935fe9aaded4c7db03d489efe376a709b5cfab1`, caller

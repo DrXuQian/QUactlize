@@ -826,6 +826,87 @@ def test_model_continuation_has_no_build_and_uses_fresh_outputs(tmp_path, monkey
     subprocess.run(['bash', '-n', str(ROOT / 'tools/resume_kpack_q4_model_box.sh')], check=True)
 
 
+def performance_continuation_fixture(tmp_path, monkeypatch):
+    resume, previous, llama, sdk, bundle, build = continuation_fixture(tmp_path, monkeypatch)
+    result=previous/'results'
+    (result/'runner-status.txt').write_text('runner_rc=1 stage=paired-model-proof\n')
+    pin_path=resume.ROOT/'tools/kpack_q4_model_artifact.json'
+    pin=json.loads(pin_path.read_text());pin['model_reader_gate']=True
+    pin_path.write_text(json.dumps(pin))
+    manifest=dict(paired_gate_up={},execution_sha256='current-execution')
+    monkeypatch.setattr(resume,'verify',lambda *_a,**_k:manifest)
+    plan=dict(models=[dict(name='qwen35-35b-q4km')],prompts=[2048],generations=[128])
+    (result/'model-plan.json').write_text(json.dumps(plan))
+    ci=json.loads((result/'caller-ci-build.json').read_text())
+    protocol=dict(plan=plan,first_pass_excluded=True,order='abba',repeats=2,
+                  production_fusion='MOE_CHAIN_AND_GPU_GATE_UP_PAIR',
+                  binary_sha256=ci['files']['bin/llama-batched-bench'])
+    path=result/'benchmark/results';path.mkdir(parents=True)
+    (path/'protocol.json').write_text(json.dumps(protocol))
+    (path/'status.json').write_text('[{"status":"FAIL","reason":"out of memory"}]')
+    for name in ('paired-integration','model-readers'):(result/name).mkdir()
+    (result/'paired-integration/summary.json').write_text('{"status":"PASS"}')
+    rows=[dict(point=name,status='PASS',rc=0,admitted_m1_bitdiff=0,
+               execution_sha256=manifest['execution_sha256'],manifest_sha256=pin['manifest_sha256'])
+          for name in ('q4-paired-routed','q5-routed-down','q8-paired-shared','q8-shared-down',
+                       'q8-ssm-out','q8-qkv','q8-attn-gate')]
+    (result/'model-readers/summary.json').write_text(json.dumps(dict(status='PASS',records=rows)))
+    return resume,previous,llama,sdk,bundle,build
+
+
+@pytest.mark.parametrize('fault',[None,'stage','warmup','plan','binary','reader-bits','reader-image',
+                                'reader-count','reader-duplicate','reader-status','paired'])
+def test_performance_resume_requires_same_artifacts_and_completed_gates(tmp_path,monkeypatch,fault):
+    resume,previous,llama,sdk,bundle,build=performance_continuation_fixture(tmp_path,monkeypatch)
+    result=previous/'results'
+    if fault=='stage':(result/'runner-status.txt').write_text('runner_rc=1 stage=model-reader-integration')
+    if fault in ('warmup','plan','binary'):
+        p=result/'benchmark/results/protocol.json';data=json.loads(p.read_text())
+        if fault=='warmup':data['first_pass_excluded']=False
+        if fault=='plan':data['plan']['prompts']=[1024]
+        if fault=='binary':data['binary_sha256']='changed'
+        p.write_text(json.dumps(data))
+    if fault and fault.startswith('reader-'):
+        p=result/'model-readers/summary.json';data=json.loads(p.read_text());rows=data['records']
+        if fault=='reader-bits':rows[0]['admitted_m1_bitdiff']=1
+        if fault=='reader-image':rows[0]['execution_sha256']='changed'
+        if fault=='reader-count':rows.pop()
+        if fault=='reader-duplicate':rows[-1]=rows[0]
+        if fault=='reader-status':rows[0]['status']='FAIL'
+        p.write_text(json.dumps(data))
+    if fault=='paired':(result/'paired-integration/summary.json').write_text('{"status":"FAIL"}')
+    if fault:
+        with pytest.raises(ValueError):resume.inputs(previous,llama,sdk,performance_only=True)
+    else:
+        found,caller,gates=resume.inputs(previous,llama,sdk,performance_only=True)
+        assert found==bundle and caller==build and len(gates)==8
+    assert json.loads((result/'benchmark/results/status.json').read_text())[0]['status']=='FAIL'
+
+
+@pytest.mark.parametrize('acu',[False,True])
+def test_performance_resume_preserves_prior_and_runs_only_model_phases(tmp_path,monkeypatch,acu):
+    resume,previous,llama,sdk,bundle,build=performance_continuation_fixture(tmp_path,monkeypatch)
+    (sdk/'asight/bin').mkdir(parents=True)
+    for name in ('asys','acu'):
+        p=sdk/'asight/bin'/name;p.write_text('host fixture');p.chmod(0o755)
+    for name in ('kpack-model-cache','kpack-model-jit-cache'):(tmp_path/name).mkdir()
+    output=tmp_path/'continued';(output/'results').mkdir(parents=True)
+    monkeypatch.delenv('CACHE_DIR',raising=False);monkeypatch.delenv('JIT_CACHE',raising=False)
+    commands=[]
+    monkeypatch.setattr(resume,'run',lambda argv,log,env:commands.append((list(map(str,argv)),log,env)))
+    resume.continuation(SimpleNamespace(previous=previous,llama=llama,sdk=sdk,device='1',
+        corpus=tmp_path/'corpus',performance_only=True,profile_acu=acu),output)
+    expected=['benchmark.log','trace.log','paired-model-proof.log']+(['acu.log'] if acu else [])
+    assert [log.name for _,log,_ in commands]==expected
+    assert all(env['CUDA_VISIBLE_DEVICES']=='1' and env['QUACTLIZE_KPACK_GATE_UP']=='1' and
+               env['QUACTLIZE_KPACK_COMPUTE']=='bf16' for _,_,env in commands)
+    assert all('build_kpack' not in ' '.join(argv) and 'run_model_gemv_integration' not in ' '.join(argv)
+               for argv,_,_ in commands)
+    assert (output/'results/prior/runner-status.txt').read_bytes()==(previous/'results/runner-status.txt').read_bytes()
+    receipt=json.loads((output/'results/continuation.json').read_text())
+    assert receipt['compile']=='NONE' and receipt['numerical_scope']=='NOT_RETESTED'
+
+
 def test_first_nonfinite_reuses_read_only_original_and_reference_only_changes_placement():
     from tools.run_kpack_first_nonfinite import command
     argv = ['/bin/llama-perplexity', '-m', '/model.gguf', '-c', '256', '-b', '1', '-ub', '1',

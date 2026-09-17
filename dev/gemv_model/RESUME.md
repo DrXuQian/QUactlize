@@ -1,6 +1,7 @@
 # Resume
 
-State: seven exact M1 candidates integrated and packaged; next action is box.
+State: seven integrated M1 readers pass the returned device gate; model
+benchmark/Asys blocked by insufficient free VRAM. Next action is model-only retry.
 Integration starts at bfa5b38; Q6 TC and all unmeasured fallbacks stay unchanged.
 See ../../docs/MODEL_GEMV_INTEGRATION_20260917.md for scope and validation.
 Integrated source: 7f3f0e087f117b7c2d186a1f9c2c8e6a15ccbbb8.
@@ -14,8 +15,17 @@ Three new unique LFS images total 44,366,872 bytes; 57 other DSOs are
 byte-identical. No model/caller binary or TC sweep is added.
 Command: run_kpack_q4_model_box.sh with MODEL_GATE_UP=1 MODEL_COMPUTE=bf16
 MODEL_PHASES=perf MODEL_NAMES=qwen35-35b-q4km L2_BYTES=67108864.
-PPU integration/model admission remains pending. Returned component samples
-below are the immutable experiment, not new whole-model performance.
+At publication, PPU integration/model admission was pending. The later update
+below closes component correctness only; whole-model performance is still absent.
+
+Update y7SNPu: integrated M1 bitdiff=0 for all seven points; 144 three-arm
+numerical rows and all other component gates pass. Model load fails for both
+reference and K-pack (9204 MiB free versus 20470/20382 MiB requested). No model
+samples or complete trace. The archive does not prove exclusive GPU use.
+Read the returned-run section in MODEL_GEMV_INTEGRATION_20260917.md.
+Use PERFORMANCE_ONLY=1 with resume_kpack_q4_model_box.sh and
+PREVIOUS_RUN=/workspace/kpack-q4-model.y7SNPu after freeing/selecting an idle GPU.
+No builds or LFS replacement. Earlier output stays untouched. Local resume tests132 PASS.
 Branch: `dev/gemv-model-tuning`.
 Baseline source: `4f181a071ebf3715f90b2898033497342f9af4ca`.
 Baseline artifact: `6a9b89a322f1ccd5cf1b724325294f7d2ae129b1`.
