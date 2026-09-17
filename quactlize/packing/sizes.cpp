@@ -2,6 +2,7 @@
 #include "gguf_unit_pack.hpp"
 #include "ppu_placed_arrangement.hpp"
 #include "q8_kpack2.hpp"
+#include "../fusion/gate_up.h"
 #include <limits>
 
 namespace {
@@ -30,6 +31,14 @@ extern "C" int quactlize_ppu_kpack_canonical_arrangement_v1(
   else if (qtype >= 10 && qtype <= 14) *out = ppu_arrangements::kquant_kpack_transpose_v1(qtype);
   else return 22;
   return 0;
+}
+
+extern "C" int quactlize_gate_up_layout_v1(int qtype, qkg_gate_up_layout_v1* out) {
+  if (!out) return 20;
+  qkg_gate_up_layout_v1 result{1,sizeof(result),QKG_GATE_UP_N4_V1,{}};
+  int rc=quactlize_ppu_kpack_canonical_arrangement_v1(qtype,&result.packing);
+  if (!rc) *out=result;
+  return rc;
 }
 
 extern "C" int quactlize_ppu_kpack_sizes_for_arrangement_v1(

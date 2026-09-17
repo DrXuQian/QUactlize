@@ -32,8 +32,9 @@ __device__ __forceinline__ float2 code_pair(uint32_t word) {
     return __half22float2(__hsub2(__half2(h),__float2half2_rn(1152.f)));
 }
 
-template<int Input,int Compute,int Variant,int Columns,int Warps,int P,bool Hoist=false>
-__global__ void kernel(qkg_call_v1 c,int split) {
+template<int Input,int Compute,int Variant,int Columns,int Warps,int P,bool Hoist=false,
+         class Finish=void,class Call=qkg_call_v1>
+__device__ __forceinline__ void kernel_body(Call c,int split) {
     constexpr int TileN=Columns*P,Workers=Warps*32/Columns,Pairs=P/2;
     static_assert(Variant==0 || Variant==1);
     int tid=threadIdx.x,lane=tid%32,worker=tid/Columns;
@@ -41,7 +42,9 @@ __global__ void kernel(qkg_call_v1 c,int split) {
     int partition=outer%split,row=outer/split;
     auto r=q4_s1::locate(c,row);
     if(r.expert<0 || r.expert>=c.experts) {
-        if(tid<TileN) {
+        if constexpr(!std::is_void_v<Finish>) {
+            Finish::template invalid<TileN>(c,row,tile,partition,split);
+        } else if(tid<TileN) {
             int n=tile*TileN+tid;
             if(split==1) c.output[r.output+n]=__int_as_float(0x7fc00000);
             else static_cast<float*>(c.workspace)[(int64_t(row)*split+partition)*c.n+n]=__int_as_float(0x7fc00000);
@@ -134,7 +137,9 @@ __global__ void kernel(qkg_call_v1 c,int split) {
     __shared__ float partial[Warps*TileN];
     if(lane<TileN) partial[(tid/32)*TileN+(lane%Columns)*P+lane/Columns]=value;
     __syncthreads();
-    if(tid<32) {
+    if constexpr(!std::is_void_v<Finish>) {
+        Finish::template finish<TileN,Warps>(c,row,tile,partition,split,partial);
+    } else if(tid<32) {
         float sum=0;q4_s1::q4_medium_fold<0,Warps,TileN>(sum,partial,tid);
         #pragma unroll
         for(int d=TileN;d<32;d*=2) sum+=__shfl_xor_sync(0xffffffffu,sum,d);
@@ -145,6 +150,11 @@ __global__ void kernel(qkg_call_v1 c,int split) {
         }
     }
 }
+template<int Input,int Compute,int Variant,int Columns,int Warps,int P,bool Hoist=false>
+__global__ void kernel(qkg_call_v1 c,int split) {
+    kernel_body<Input,Compute,Variant,Columns,Warps,P,Hoist>(c,split);
+}
+
 template<int Q,int Variant,int Columns,int Warps,int P>
 int launch_v2(qkg_simt_call_v2 const& d,int split) {
     static_assert(Q==8 && (Variant==4 || Variant==5));

@@ -49,8 +49,9 @@ __device__ __forceinline__ float2 affine_selected(Meta<Format<Q>::words> const& 
     } else return affine<Q>(m,group);
 }
 
-template<int Q,int Input,int Variant,int Columns,int Warps,int P,int Compute=0,int Changes=0>
-__global__ void register_reuse(qkg_call_v1 call,int split) {
+template<int Q,int Input,int Variant,int Columns,int Warps,int P,int Compute=0,int Changes=0,
+         class Finish=void,class Call=qkg_call_v1>
+__device__ __forceinline__ void register_reuse_body(Call call,int split) {
     using F=Format<Q>;
     constexpr int TileN=Columns*P,Workers=Warps*32/Columns,Pairs=P/2;
     constexpr int Segments=(F::group+F::Low::kLogicalKPerDelivery-1)/F::Low::kLogicalKPerDelivery;
@@ -61,7 +62,9 @@ __global__ void register_reuse(qkg_call_v1 call,int split) {
     auto r=q4_s1::locate(call,row);
     bool valid=r.expert>=0 && r.expert<call.experts;
     if (!valid) {
-        if (tid<TileN) {
+        if constexpr(!std::is_void_v<Finish>) {
+            Finish::template invalid<TileN>(call,row,tile,partition,split);
+        } else if (tid<TileN) {
             int n=tile*TileN+tid;
             if (split==1) call.output[r.output+n]=__int_as_float(0x7fc00000);
             else static_cast<float*>(call.workspace)[(int64_t(row)*split+partition)*call.n+n]=__int_as_float(0x7fc00000);
@@ -146,7 +149,9 @@ __global__ void register_reuse(qkg_call_v1 call,int split) {
     __shared__ float partial[Warps*TileN];
     if (lane<TileN) partial[(tid/32)*TileN+(lane%Columns)*P+lane/Columns]=value;
     __syncthreads();
-    if (tid<32) {
+    if constexpr(!std::is_void_v<Finish>) {
+        Finish::template finish<TileN,Warps>(call,row,tile,partition,split,partial);
+    } else if (tid<32) {
         float sum=0;
         if constexpr(Changes&2) {
             q4_s1::q4_medium_fold<0,Warps,TileN>(sum,partial,unsigned(tid));
@@ -162,6 +167,11 @@ __global__ void register_reuse(qkg_call_v1 call,int split) {
             else static_cast<float*>(call.workspace)[(int64_t(row)*split+partition)*call.n+n]=sum;
         }
     }
+}
+
+template<int Q,int Input,int Variant,int Columns,int Warps,int P,int Compute=0,int Changes=0>
+__global__ void register_reuse(qkg_call_v1 call,int split) {
+    register_reuse_body<Q,Input,Variant,Columns,Warps,P,Compute,Changes>(call,split);
 }
 
 template<int Q>

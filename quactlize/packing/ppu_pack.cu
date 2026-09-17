@@ -1,6 +1,8 @@
 #include <hggc_runtime.h>
 #include "api.h"
 #include "word_pack.hpp"
+#include "../fusion/gate_up.h"
+#include "../fusion/paired_n4.hpp"
 #include <algorithm>
 #include <limits>
 
@@ -114,5 +116,26 @@ extern "C" int quactlize_ppu_prepare_gate_up_dev_for_arrangement_v1(
   rc = disjoint(begin,bytes,5);
   if (rc) return rc;
   quactlize_pack::PairedRows raw{gate,up,single.raw_bytes/uint64_t(experts)};
+  return launch_format(raw,low,high,units,2*n,k,qtype,paired,stream);
+}
+
+extern "C" int quactlize_gate_up_pack_v1(
+    uint8_t const* gate, uint8_t const* up, uint8_t* low, uint8_t* high, uint8_t* units,
+    int n, int k, int experts, int qtype, qkg_gate_up_layout_v1 const* layout, void* stream) {
+  if (!layout || layout->version!=1 || layout->size!=sizeof(*layout) ||
+      layout->layout_id!=QKG_GATE_UP_N4_V1) return 38;
+  if (n<=0 || n>INT32_MAX/2 || n%8) return 24;
+  quactlize_ppu_kpack_sizes_v1 single{}, paired{};
+  int rc=quactlize_ppu_kpack_sizes_for_arrangement_v1(n,k,experts,qtype,&layout->packing,&single);
+  if (rc) return rc;
+  rc=quactlize_ppu_kpack_sizes_for_arrangement_v1(2*n,k,experts,qtype,&layout->packing,&paired);
+  if (rc) return rc;
+  if (!gate || !up || !low || !units || (paired.high_bytes!=0)!=(high!=nullptr) ||
+      uintptr_t(low)%2 || uintptr_t(high)%2) return 20;
+  uintptr_t begin[]={uintptr_t(gate),uintptr_t(up),uintptr_t(low),uintptr_t(high),uintptr_t(units)};
+  uint64_t bytes[]={single.raw_bytes,single.raw_bytes,paired.low_bytes,paired.high_bytes,paired.units_bytes};
+  rc=disjoint(begin,bytes,5);
+  if (rc) return rc;
+  quactlize::fusion::PairedRawRows raw{gate,up,single.raw_bytes/experts/n,n};
   return launch_format(raw,low,high,units,2*n,k,qtype,paired,stream);
 }
