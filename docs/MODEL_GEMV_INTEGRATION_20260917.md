@@ -33,8 +33,9 @@ rebuilt against the new receipts. No llama binaries enter the package.
 The caller change only recognizes new template names in trace evidence;
 there is no caller kernel, ABI or graph change.
 
-Local regressions: 280 Quactlize tests pass, one optional historical archive
-test is skipped; 37 caller tests pass. All seven exact emitted functions
+Local regressions: 280 kernel/dispatch tests and 119 model-runner tests pass,
+one optional historical archive test is skipped; 37 caller tests pass.
+All seven exact emitted functions
 match the admitted experiment's opcode counts and resource declarations,
 with zero stack allocation. This is not an instruction-schedule identity
 or a device-performance claim.
@@ -43,6 +44,10 @@ The immutable artifact and caller SHA are recorded in
 `tools/kpack_q4_model_artifact.json`. Source branch is
 `dev/gemv-model-tuning`; caller branch is
 `dev/quactlize-gate-up-v0.3.0` on the owner's fork.
+Runtime artifact commit is `7c198d6313364e96723f335c113e6275b1e1e070`.
+There are 64 LFS payload paths but only three new unique images (44,366,872
+bytes). The execution image also supplies two typed gate aliases; 57 other
+DSOs are byte-identical to the prior package.
 
 Reproduce local builds with `tools/build_kpack_execution.py` and
 `tools/build_kpack_gate_up.py`, refresh with

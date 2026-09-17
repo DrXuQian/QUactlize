@@ -247,7 +247,8 @@ def test_final_model_runner_uses_joint_ci_caller_and_pinned_runtime():
     assert 'DrXuQian/llama.cpp.git' in text and 'ggml-org/llama.cpp.git' not in text
     receipt = json.loads((ROOT/'tools/kpack_q4_model_artifact.json').read_text())
     caller_branches = {'artifacts/kpack-model-runtime-v1': 'dev/quactlize-v0.3.0',
-                      'artifacts/kpack-model-paired-n4-v1': 'dev/quactlize-gate-up-v0.3.0'}
+                      'artifacts/kpack-model-paired-n4-v1': 'dev/quactlize-gate-up-v0.3.0',
+                      'artifacts/kpack-model-readers-v1': 'dev/quactlize-gate-up-v0.3.0'}
     assert receipt['branch'] in caller_branches
     assert receipt['path'] == 'prebuilt/ppu0010/kpack-model-runtime-v1'
     assert receipt['llama_branch'] == caller_branches[receipt['branch']]
@@ -258,6 +259,11 @@ def test_final_model_runner_uses_joint_ci_caller_and_pinned_runtime():
     # publication validator checks the actual payload closure; it is no
     # longer the historical twelve-file F16-only package.
     assert isinstance(receipt['lfs_payloads'],int) and receipt['lfs_payloads']>0
+    if receipt['branch']=='artifacts/kpack-model-readers-v1':
+        assert receipt['model_reader_gate'] is True
+        assert text.index('stage=model-reader-integration') < text.index('stage=model-benchmark')
+        assert 'tools/run_model_gemv_integration.py' in text
+        assert 'update the llama reader trace parser' in text
 
 
 def test_joint_ci_checkout_preserves_dirty_source_and_nested_submodules(tmp_path):

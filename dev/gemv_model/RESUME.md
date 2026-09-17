@@ -1,8 +1,21 @@
 # Resume
 
-State: seven exact M1 candidates integrated; package publication in progress.
+State: seven exact M1 candidates integrated and packaged; next action is box.
 Integration starts at bfa5b38; Q6 TC and all unmeasured fallbacks stay unchanged.
 See ../../docs/MODEL_GEMV_INTEGRATION_20260917.md for scope and validation.
+Integrated source: 7f3f0e087f117b7c2d186a1f9c2c8e6a15ccbbb8.
+Runtime artifact: 7c198d6313364e96723f335c113e6275b1e1e070,
+`artifacts/kpack-model-readers-v1`, pinned by tools/kpack_q4_model_artifact.json.
+Caller: c3d9cdaa4bb1b3f111397edb3ab05d3935ac81b0 (trace parsing only).
+Local: 280 kernel/dispatch plus 119 model-runner tests pass/one optional skip;
+caller 37 pass; seven exact native
+functions match the admitted opcode counts/resources with zero stack.
+Three new unique LFS images total 44,366,872 bytes; 57 other DSOs are
+byte-identical. No model/caller binary or TC sweep is added.
+Command: run_kpack_q4_model_box.sh with MODEL_GATE_UP=1 MODEL_COMPUTE=bf16
+MODEL_PHASES=perf MODEL_NAMES=qwen35-35b-q4km L2_BYTES=67108864.
+PPU integration/model admission remains pending. Returned component samples
+below are the immutable experiment, not new whole-model performance.
 Branch: `dev/gemv-model-tuning`.
 Baseline source: `4f181a071ebf3715f90b2898033497342f9af4ca`.
 Baseline artifact: `6a9b89a322f1ccd5cf1b724325294f7d2ae129b1`.
