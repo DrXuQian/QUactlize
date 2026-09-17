@@ -74,7 +74,9 @@
             --output "$RUN/results/rounding" 2>&1 | tee "$RUN/results/console.log"
     else
         "$PYTHON" tools/run_kpack_gate_up.py --sdk "$SDK" --bundle "$BUNDLE" \
-            --output "$RUN/results/gate" "${RESUME[@]}" 2>&1 | tee "$RUN/results/console.log"
+            --output "$RUN/results/gate" "${RESUME[@]}" \
+            --formats "${GATE_UP_FORMATS:-8,10,11,12,13,14}" \
+            --backends "${GATE_UP_BACKENDS:-simt,tc}" 2>&1 | tee "$RUN/results/console.log"
     fi
     phase=complete
     printf 'GATE_UP_DONE timing=NOT_MEASURED production_selection=UNCHANGED\n'

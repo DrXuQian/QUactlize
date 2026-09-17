@@ -76,3 +76,86 @@ because it finished. Review the actual device projection errors and the
 activation of those projections before changing either kernel or oracle.
 All ten independently passed parts remain valid. Q3/Q6 TC performance and
 production admission remain blocked on numeric interpretation.
+
+## Second return: saved projections and rounding controls
+
+Evidence: `gate-up-paired-n4.2NfLbX.results.tgz`, SHA256
+`af9aaed0dd968ca8a00b3f934504ef38cbe1310e52977ea58696d115406932e3`.
+Source `fe77897fcbff39165c84065ce423d11960544f0b`, unchanged candidate DSO and
+runtime. Same PCI `0000:08:00.0`. All 32 saved-array hashes, six harness hashes
+and diagnostic source hash match that revision. Do not compare the historical
+harness hashes to a newer, edited checkout.
+
+| Control | Q3_K | Q6_K |
+|---|---:|---:|
+| Sparse large A, all TM/S/rounding arms | exact | exact |
+| Mixed large A, S1, projection rounding on | 0.558659% | 0.558659% |
+| Mixed large A, S1, projection rounding off | 0.001039% | 0.001098% |
+| Mixed large A, S8, projection rounding on | 0.417821% | 0.072338% |
+| Mixed large A, S8, projection rounding off | 0.000147% | 0.000147% |
+
+TM8 and TM16 give identical arrays in every paired control. All outputs are
+finite and guards pass. S8 gate/up errors before rounding are at most
+`1.026e-6` normalized; applying the activation to the saved device projections
+agrees with final output within `2.80e-12` normalized. This last comparison is
+not a claim of raw-bit agreement for small outputs across CPU/GPU exp.
+
+The four original failures are precisely Q3/Q6 × TM8/TM16, S1, mixed-large,
+rounded projections. At the actual device's worst coordinates:
+
+| Quantity | Q3 row1/channel88 | Q6 row0/channel184 |
+|---|---:|---:|
+| Wide gate dot | 1428.0048065185547 | 14279.868438720703 |
+| Wide up dot | -3808.0243530273438 | -22848.091369628906 |
+| Permitted gate BF16 bins | 1424, 1432 | 14272 |
+| Permitted up BF16 bins | -3808 | -22912, -22784 |
+| Original gold output | -5453056 | -327000064 |
+| Device output | -5422592 | -325173248 |
+
+Here "permitted" means the discrete BF16 rounding images of an independent
+F32 forward-error interval, not any real number in a wider output tolerance.
+For exact BF16 operands/products, the bound is
+`gamma_(K+S) * sum(abs(A * W))`, with `gamma_j = j*u/(1-j*u)`, `u=2^-24`.
+It conservatively includes any F32 sum tree and Split-K reduction, plus the
+F64 host summation bound and outward-rounded interval endpoints. Q3 bounds
+are approximately 0.17513/0.46682 for G/U; Q6 bounds are 1.75107/2.80116.
+Both returned values are **exact F32 products of permitted BF16 projections**.
+All permitted gates are >=32, so the F32 sigmoid denominator is exactly one;
+there is no exp approximation allowance in this check.
+
+Thus the original fixed output threshold rejects numerically permissible
+rounding outcomes. The sparse controls exclude F16 overflow on the transported
+large value. The unrounded and S8 controls localize the amplification to the
+intermediate rounding. S1 raw projections were not saved; this does not prove
+its exact accumulation order or bitwise equivalence to a CPU sum.
+
+## Narrow oracle correction and remaining coverage
+
+`tools/gate_up_rounding_oracle.py` adds an opt-in check only for large-BF16 TC
+replays with rounded projections and F32 storage/output. Normal configuration
+cells, original diagnostic, output/stride/workspace guards, and nonfinite
+checks are unchanged. The 0.005 threshold and its failures remain recorded as
+`original_verdict=FAIL` with a separate `CERTIFIED_DISCRETE_ROUNDING` report.
+Only threshold-exceeding coordinates get this exception; each must exactly
+match one permitted BF16 product. Non-saturated gates, non-exact operands,
+exceptional range, >8 possible bins, zero/sign/column mistakes, Inf/NaN and
+even a one-F32-ULP deviation from a permitted product are rejected. The same
+checker is exercised by the on-device zero-A negative.
+
+The source-bound helper is included in resume identity. This is not a kernel
+patch, threshold increase, clipping operation or production arithmetic change.
+The existing DSO, load/conversion/MMA/barrier/branch counts and selectors are
+unchanged. Historical receipts are not rewritten as PASS.
+
+Q3/Q6 TC still lack 3,040 normal configuration cells from the interrupted first
+run. Re-run those two complete parts (3,456 cells, plus replays/negatives) with:
+
+```bash
+GATE_UP_FORMATS=11,14 GATE_UP_BACKENDS=tc \
+  bash tools/run_kpack_gate_up_box.sh
+```
+
+The collector records an explicit subset with `full_inventory=false`; combine
+it with the ten previously complete parts only after reviewing its return.
+No device compilation is required. Real-shape full-call latency, integration
+and whole-model accuracy remain separate, pending admissions.

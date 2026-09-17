@@ -25,6 +25,7 @@ from dev.bf16_compute.fixture import (
 from dev.gemv_simt.native import Runtime, Graph, checked
 from quactlize.fusion.native import Library, FusionCall, Config, Call, Sizes
 from quactlize.runtime.compiler import sha, LIBRARIES
+from tools.gate_up_rounding_oracle import certify_output
 
 FORMATS = (8, 10, 11, 12, 13, 14)
 HELPERS = (
@@ -34,6 +35,7 @@ HELPERS = (
     "dev/gemv_simt/native.py",
     "tools/kpack_warmup_fixture.py",
     "reference/gguf_kpack.py",
+    "tools/gate_up_rounding_oracle.py",
 )
 
 
@@ -246,6 +248,7 @@ class Bench:
         self.compute, self.storage, self.output_type = compute, storage, output_type
         self.mode, self.m, self.rounding = mode, m, rounding
         self.channels, self.profile = channels, profile
+        self.rounding_certificates = []
         self.rows = m * 8 if mode == 2 else m
         self.a_count = m * channels
         self.a = rt.allocate(self.a_count * (w.k + 8) * (4 if storage == 1 else 2))
@@ -299,6 +302,7 @@ class Bench:
 
     def update(self, repeat, large=False):
         w = self.w
+        self.large = large
         rng = np.random.default_rng(132 + repeat)
         self.host_a = rng.integers(-7, 8, (self.a_count, w.k + 8)).astype("<f4") / 32
         if large:
@@ -326,6 +330,7 @@ class Bench:
             if self.mode == 0:
                 self.owners = np.zeros(self.rows, dtype=int)
             a_rows = np.arange(self.rows)
+        self.a_rows = a_rows
         activation = round_compute(
             self.host_a[:, : w.k], "bf16" if self.compute else "f16"
         )
@@ -355,7 +360,7 @@ class Bench:
         self.rt.fill(self.output, self.output_bytes)
         self.rt.fill(self.work, self.work_bytes + 32)
 
-    def check(self, split):
+    def check(self, split, *, certify_rounding=False):
         raw = self.rt.download(self.output, self.output_bytes)
         if not np.all(raw[:16] == 0xA5) or not np.all(raw[-16:] == 0xA5):
             raise ValueError("output guard overwritten")
@@ -388,6 +393,37 @@ class Bench:
             / max(1e-20, float(np.max(np.abs(self.gold))))
         )
         if error >= 0.005:
+            if certify_rounding and (
+                self.large
+                and self.compute == 1
+                and self.storage == 1
+                and self.output_type == 1
+                and self.rounding == 1
+            ):
+                try:
+                    certificate = certify_output(
+                        got,
+                        self.gold,
+                        self.host_a[:, : self.w.k],
+                        (self.w.gate, self.w.up),
+                        self.owners,
+                        self.a_rows,
+                        split,
+                    )
+                except ValueError as cause:
+                    raise ValueError(
+                        f"independent GGUF + SwiGLU oracle error={error}; {cause}"
+                    ) from cause
+                certificate.update(
+                    q=self.w.q,
+                    mode=self.mode,
+                    m=self.m,
+                    channels=self.channels,
+                    profile=self.profile,
+                    split=split,
+                )
+                self.rounding_certificates.append(certificate)
+                return error  # Retain the original error; never relabel it as zero.
             raise ValueError(f"independent GGUF + SwiGLU oracle error={error}")
         return error
 
@@ -422,13 +458,15 @@ def replay_checks(bench, backend):
                 bench.poison()
                 checked(rt.GraphLaunch(graph.instance, rt.stream), "large BF16 replay")
                 rt.sync()
-                bench.check(split)
+                bench.check(split, certify_rounding=backend == "tc")
                 replays += 1
             rt.fill(bench.a, bench.a_count * (bench.w.k + 8) * 4, 0)
             checked(rt.GraphLaunch(graph.instance, rt.stream), "zero-A negative")
             rt.sync()
             try:
-                bench.check(split)
+                # Exercise the same checker as the positive, including the
+                # discrete rounding path when the large replay required it.
+                bench.check(split, certify_rounding=backend == "tc")
             except ValueError as e:
                 if not str(e).startswith("independent GGUF"):
                     raise
@@ -448,6 +486,7 @@ def child(args):
     records = []
     replays = 0
     negative_controls = 0
+    rounding_certificates = []
     device = None
     receipt = identity(manifest)
     try:
@@ -510,6 +549,7 @@ def child(args):
                         new_replays, new_negatives = replay_checks(bench, args.backend)
                         replays += new_replays
                         negative_controls += new_negatives
+                        rounding_certificates.extend(bench.rounding_certificates)
                     finally:
                         bench.close()
                 print(
@@ -532,6 +572,7 @@ def child(args):
                 expected=expected,
                 replays=replays,
                 negative_controls=negative_controls,
+                rounding_certificates=rounding_certificates,
                 timing="NOT_MEASURED",
             ),
         )
@@ -548,6 +589,7 @@ def child(args):
                 records=records,
                 identity=receipt,
                 device=device,
+                rounding_certificates=rounding_certificates,
             ),
         )
         return 1
@@ -576,8 +618,8 @@ def collect(args):
     env["LD_LIBRARY_PATH"] = (
         str(args.sdk / "lib") + os.pathsep + env.get("LD_LIBRARY_PATH", "")
     )
-    for q in FORMATS:
-        for backend in ("simt", "tc"):
+    for q in args.formats:
+        for backend in args.backends:
             out = args.output / f"q{q}-{backend}.json"
             if args.resume and out.is_file():
                 previous = json.loads(out.read_text())
@@ -649,6 +691,11 @@ def collect(args):
         dict(
             status="PASS" if all(r["rc"] == 0 for r in rows) else "FAIL",
             parts=rows,
+            scope=dict(formats=args.formats, backends=args.backends),
+            full_inventory=(
+                set(args.formats) == set(FORMATS)
+                and set(args.backends) == {"simt", "tc"}
+            ),
             identity=receipt,
             timing="NOT_MEASURED",
             production_selection="UNCHANGED",
@@ -657,12 +704,37 @@ def collect(args):
     return int(any(r["rc"] for r in rows))
 
 
+def selected_csv(value, allowed):
+    cast = type(allowed[0])
+    try:
+        values = [cast(v) for v in value.split(",")]
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("invalid selection") from error
+    if not values or len(set(values)) != len(values) or not set(values) <= set(allowed):
+        raise argparse.ArgumentTypeError(
+            "selection is empty, duplicated or unsupported"
+        )
+    return values
+
+
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__)
     for name in ("sdk", "bundle", "output"):
         p.add_argument("--" + name, type=Path, required=True)
     p.add_argument("--q", type=int, choices=(8, 10, 11, 12, 13, 14))
     p.add_argument("--backend", choices=("simt", "tc"))
+    p.add_argument(
+        "--formats",
+        type=lambda x: selected_csv(x, FORMATS),
+        default=list(FORMATS),
+        help="explicit collector subset, e.g. 11,14",
+    )
+    p.add_argument(
+        "--backends",
+        type=lambda x: selected_csv(x, ("simt", "tc")),
+        default=["simt", "tc"],
+        help="explicit collector subset, e.g. tc",
+    )
     p.add_argument(
         "--resume",
         action="store_true",

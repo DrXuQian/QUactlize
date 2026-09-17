@@ -1,8 +1,10 @@
 # Paired-N4 gate/up: TC and SIMT
 
-Status: implemented, host-tested and compiled for PPU0010. Device correctness,
-performance and model admission are pending. No production selector or
-llama.cpp caller is changed by this candidate.
+Status: implemented, host-tested and compiled for PPU0010. Ten of twelve
+device format/backend parts passed; Q3/Q6 TC completion is pending after the
+[large-BF16 rounding review](GATE_UP_PAIRED_N4_REVIEW_20260917.md). Performance
+and model admission are pending. No production selector or llama.cpp caller
+is changed by this candidate.
 
 ## Offline contract
 
@@ -101,6 +103,9 @@ checks hashes, executes all six format/backend pairs in separate processes,
 prints progress and packages results. `BUNDLE` overrides the pinned candidate.
 Set `RESUME_RUN` to the previous wrapper run directory to reuse complete
 matching parts; failed/incomplete parts rerun, with earlier logs retained.
+Use `GATE_UP_FORMATS=11,14 GATE_UP_BACKENDS=tc` for the remaining two parts;
+the summary explicitly marks partial inventory. Do not resume across changed
+harness identities or reclassify old failed receipts as PASS.
 
 The numerical cohort uses N256/K2048, dense M1..8, indexed tokens1..8 with
 channels1/8, and grouped M9/17/33 with spread or single-expert routing. TC also
@@ -116,7 +121,7 @@ with unique inventory coverage and its replay/negative-control evidence.
 Local tests:
 
 ```bash
-python3 -m pytest -q tests/test_gate_up_paired.py tests/test_kpack_device_pack.py \
+python3 -m pytest -q tests/test_gate_up_paired.py tests/test_gate_up_rounding.py tests/test_kpack_device_pack.py \
   tests/test_simt_register_reuse.py tests/test_q8_topology.py
 ```
 
