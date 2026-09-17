@@ -1,0 +1,10 @@
+{
+  "branch": "artifacts/model-gemv-reader-v1",
+  "commit": "9df3eb212289d05c8dbee6368d8b63621f1c8305",
+  "path": "prebuilt/ppu0010/model-gemv-reader-v1",
+  "manifest_sha256": "f54f6f627cc62f60f81664372d31b7e29c3bf9dedd406f88db331488d64301db",
+  "scope": "MODEL_GEMV_READER_EXPERIMENT_NOT_PRODUCTION_REPLACEMENT",
+  "candidate_kernels": 68,
+  "points": 8,
+  "device_admission": "PENDING"
+}

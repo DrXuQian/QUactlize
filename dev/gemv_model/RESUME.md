@@ -16,8 +16,12 @@ the 417177600 packed bytes are generated in chunks, not a huge CPU GEMM.
 CPU host runtime loading is not admitted: its conda libstdc++ lacks the SDK's
 GLIBCXX_3.4.32 requirement. No device correctness or performance is claimed.
 
-Next: publish the independent experiment through Git LFS; run the box command
-in README. Keep candidate/production selection separate until returned gates.
+Artifact: `artifacts/model-gemv-reader-v1`, `9df3eb212289d05c8dbee6368d8b63621f1c8305`.
+Pin: `tools/kpack_model_gemv_artifact.json`. 18 host tests PASS; 68 emitted
+candidate bodies verified. The package has 38 payloads (53.6 MB including
+unchanged incumbent images and full ISA). No model or caller binary is shipped.
+Next: run the box command in README. Keep candidate/production selection
+separate until returned numerical, cold full-call timing and ACU evidence.
 
 Evidence before this task: Q4 paired loses the existing H32 specialization;
 Q8 paired does not hoist whereas the old shared reader does. These are source
