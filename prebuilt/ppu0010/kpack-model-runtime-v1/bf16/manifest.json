@@ -3134,11 +3134,11 @@
   },
   "simt": {
     "path": "libquactlize_ppu_execution.so",
-    "sha256": "0a60a15a1acadea67b17f5c5506ce3d4bd2c9d4b6647c86d1f83fc6a6e119c89"
+    "sha256": "4a7fbcbcafd91a5233c7842ff86be4c2e961725d8c210f943a194b3bf5c041dd"
   },
   "moe": {
     "path": "libquactlize_ppu_execution.so",
-    "sha256": "0a60a15a1acadea67b17f5c5506ce3d4bd2c9d4b6647c86d1f83fc6a6e119c89"
+    "sha256": "4a7fbcbcafd91a5233c7842ff86be4c2e961725d8c210f943a194b3bf5c041dd"
   },
   "cases": [
     {
@@ -13689,6 +13689,7 @@
       "quactlize/execution/dispatch.cpp": "8e461947eefd0441cd39455f30e0c5bb6cc8ce85fa2e78928768fb65897105ef",
       "quactlize/execution/gemv.cu": "ab3f27bf2c1ea441d7d55d2dd9384da0b06b42982f3e3b8ce0bb47ef5c2ee251",
       "quactlize/execution/metadata.cu": "c340173b910f9dfdee7c69bf0cfff85c98ecfafac504289118c3aa1b608256bf",
+      "quactlize/execution/model_gemv_scope.hpp": "0f396944df1134814f30a18d4c4430e9dd4c534a547a3fe63ae7c5a926294e38",
       "quactlize/execution/moe.cu": "54974264fa2890fd51d6c1d3c11b60718a887e841acc05c5397f9f7c1a75f15b",
       "quactlize/execution/moe.h": "279492a889d46880cc2dd179eab1a5ae039f389e7dfbaba25a0c82f63de4ab5e",
       "quactlize/execution/moe_prepare.cuh": "972012332facbae99915e2affb5552b095237ac8bea348e682a9bf9b7372e8d2",
@@ -13709,8 +13710,8 @@
       "quactlize/execution/simt.h": "53ef558fc2872305c9d070d02a9d44b64bcb7fea0fa0b66fecf993bb07ca2d04",
       "quactlize/execution/simt_activation.cuh": "13c61c4a1334d080c96f44de5285c645286a019001b5919a2778f61e5da0af73",
       "quactlize/execution/simt_format.cuh": "262fe74393b0a7bcf65e06d6b64d5246208f0dcf86280f45d9e431fe19d390b8",
-      "quactlize/execution/simt_kernel.cuh": "4335bf849977c6a9d1ea6e6b59f0fc714b36aed82aeb57645512f81473afe937",
-      "quactlize/execution/simt_q8_vector.cuh": "e89381e28fb60f532878a066dfd78e9f81805255819dabd575979d57f752f3a9",
+      "quactlize/execution/simt_kernel.cuh": "03bb84e6c3a060c755e779d9411ef70b6fc25ec81312ecd43b50f1a6f1420e2b",
+      "quactlize/execution/simt_q8_vector.cuh": "4a7e87d4281bbb013e4d2aaca592e97cf56296b16cbb50e3a57fc348b41a0d5b",
       "quactlize/execution/simt_validation.hpp": "552f558a4bb2982e7b5a3fc482d9cf0fc2334fc0a4788f69cba1a8169e6ace7b",
       "quactlize/execution/validation.hpp": "1302a38bb0bf2d659a195a0a26823717f69d20fc5f178e940660aeea6b328062",
       "quactlize/include/actlize_extensions/cutlass/detail/quactlize_mixed_dtype.hpp": "4d8fdcf4dced2a7053a1cbbd8bff77cb0771430a826b24cf5b83b6a3c4c5c23f",
@@ -14412,8 +14413,8 @@
       "libhg_wrapper.so": "fd93f23bfb05dfee0ffa48fd07d3c0cf6d8ab37d266e12f841ee056291affcd5"
     },
     "library": "libquactlize_ppu_execution.so",
-    "sha256": "0a60a15a1acadea67b17f5c5506ce3d4bd2c9d4b6647c86d1f83fc6a6e119c89",
-    "compile_seconds": 196.4227229692042,
+    "sha256": "4a7fbcbcafd91a5233c7842ff86be4c2e961725d8c210f943a194b3bf5c041dd",
+    "compile_seconds": 184.40102352946997,
     "formats": [
       8,
       10,
