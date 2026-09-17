@@ -246,9 +246,11 @@ def test_final_model_runner_uses_joint_ci_caller_and_pinned_runtime():
     assert '--exclude=\'*.asysrep\'' in text
     assert 'DrXuQian/llama.cpp.git' in text and 'ggml-org/llama.cpp.git' not in text
     receipt = json.loads((ROOT/'tools/kpack_q4_model_artifact.json').read_text())
-    assert receipt['branch'] == 'artifacts/kpack-model-runtime-v1'
+    caller_branches = {'artifacts/kpack-model-runtime-v1': 'dev/quactlize-v0.3.0',
+                      'artifacts/kpack-model-paired-n4-v1': 'dev/quactlize-gate-up-v0.3.0'}
+    assert receipt['branch'] in caller_branches
     assert receipt['path'] == 'prebuilt/ppu0010/kpack-model-runtime-v1'
-    assert receipt['llama_branch'] == 'dev/quactlize-v0.3.0'
+    assert receipt['llama_branch'] == caller_branches[receipt['branch']]
     assert 'llama_commit' not in receipt and 'test ! -e "$BUNDLE/llama"' in text
     assert len(receipt['commit']) == len(receipt['llama_ci_commit']) == 40
     assert len(receipt['manifest_sha256']) == 64
