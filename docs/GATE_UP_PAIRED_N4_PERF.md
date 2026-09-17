@@ -4,6 +4,10 @@ This is a component experiment, not a model/TPOT admission. The preceding
 numerical gate covered all six qtypes; this next cohort deliberately focuses
 on the two actual gate/up roles, not another Cartesian product.
 
+Returned result: [all16 points passed and show a confirmed fusion gain](GATE_UP_PAIRED_N4_PERF_REVIEW_20260917.md).
+Q8 shared selects SIMT throughout; Q4 routed benefits from per-token SIMT/TC
+choices. Production and whole-model admission remain unchanged and pending.
+
 | Role | One projection N/K | Experts | Tokens | Input/output | A compute | Projection rounding |
 |---|---|---:|---|---|---|---|
 | Q8 shared expert | 512/2048 | 1 | 1..8 | F32 | F16 | none (current shared path) |

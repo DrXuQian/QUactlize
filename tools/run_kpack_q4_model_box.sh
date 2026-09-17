@@ -61,6 +61,12 @@
     MODEL_COMPUTE=${MODEL_COMPUTE:-fp16}
     [[ "$MODEL_COMPUTE" == fp16 || "$MODEL_COMPUTE" == bf16 ]]
     export QUACTLIZE_KPACK_COMPUTE="$MODEL_COMPUTE"
+    MODEL_GATE_UP=${MODEL_GATE_UP:-0}
+    [[ "$MODEL_GATE_UP" == 0 || "$MODEL_GATE_UP" == 1 ]]
+    if [[ "$MODEL_GATE_UP" == 1 ]]; then
+        [[ "$MODEL_COMPUTE" == bf16 ]]
+    fi
+    export QUACTLIZE_KPACK_GATE_UP="$MODEL_GATE_UP"
     # Check loader dependencies before spending time on the joint build.
     export QUACTLIZE_PPU_BUNDLE=${QUACTLIZE_PPU_BUNDLE:-/workspace/quactlize-runtime-artifact-2826cf1-46fc3096e1a1/prebuilt/ppu0010/2826cf1/runtime6-46fc3096e1a1/bundle}
     test -s "$QUACTLIZE_PPU_BUNDLE/manifest.json"
@@ -82,7 +88,7 @@
 
     stage=fetch
     mapfile -t INFO < <("$PYTHON" -c 'import json,sys; m=json.load(open(sys.argv[1])); print(m["branch"]); print(m["commit"]); print(m["path"]); print(m["manifest_sha256"]); print(m["llama_ci_commit"])' "$ROOT/tools/kpack_q4_model_artifact.json")
-    [[ ${#INFO[@]} == 5 && ${INFO[0]} == artifacts/kpack-model-runtime-v1 && ${INFO[1]} =~ ^[0-9a-f]{40}$ && ${INFO[2]} == prebuilt/ppu0010/kpack-model-runtime-v1 && ${INFO[3]} =~ ^[0-9a-f]{64}$ && ${INFO[4]} =~ ^[0-9a-f]{40}$ ]]
+    [[ ${#INFO[@]} == 5 && ( ${INFO[0]} == artifacts/kpack-model-runtime-v1 || ${INFO[0]} == artifacts/kpack-model-paired-n4-v1 ) && ${INFO[1]} =~ ^[0-9a-f]{40}$ && ${INFO[2]} == prebuilt/ppu0010/kpack-model-runtime-v1 && ${INFO[3]} =~ ^[0-9a-f]{64}$ && ${INFO[4]} =~ ^[0-9a-f]{40}$ ]]
     ART="$RESULT_DIR/quactlize-model-artifact-${INFO[1]:0:10}"
     git fetch origin "${INFO[0]}"
     git cat-file -e "${INFO[1]}^{commit}"
@@ -96,6 +102,11 @@
     "$PYTHON" -c 'import hashlib,sys; assert hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()==sys.argv[2],"model package manifest differs"' "$BUNDLE/manifest.json" "${INFO[3]}"
     "$PYTHON" tools/verify_kpack_dispatch.py "$BUNDLE" --sdk "$SDK" | tee "$RUN/results/verify.log"
     test ! -e "$BUNDLE/llama"
+    if [[ "$MODEL_GATE_UP" == 1 ]]; then
+        stage=paired-integration-gate
+        "$PYTHON" -u tools/run_kpack_gate_up_integration.py --sdk "$SDK" --bundle "$BUNDLE" \
+            --output "$RUN/results/paired-integration" 2>&1 | tee "$RUN/results/paired-integration.log"
+    fi
     if [[ ${Q8_HOIST_AB:-0} == 1 ]]; then
         stage=q8-hoist-ab
         mapfile -t Q8_BASE < <("$PYTHON" -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["commit"]); print(p["path"]); print(p["manifest_sha256"])' "$ROOT/tools/kpack_q8_hoist_baseline.json")
@@ -157,7 +168,9 @@
         fi
         LLAMA_DIR="$RESULT_DIR/llama-model-source-${INFO[4]:0:10}"
         if [[ ! -e "$LLAMA_DIR" ]]; then
-            git clone --no-checkout --depth 1 --single-branch --branch dev/quactlize-v0.3.0 \
+            LLAMA_BRANCH=$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("llama_branch","dev/quactlize-v0.3.0"))' "$ROOT/tools/kpack_q4_model_artifact.json")
+            [[ "$LLAMA_BRANCH" == dev/quactlize-v0.3.0 || "$LLAMA_BRANCH" == dev/quactlize-gate-up-v0.3.0 ]]
+            git clone --no-checkout --depth 1 --single-branch --branch "$LLAMA_BRANCH" \
                 https://github.com/DrXuQian/llama.cpp.git "$LLAMA_DIR"
         fi
         test "$(git -C "$LLAMA_DIR" rev-parse --show-toplevel)" == "$LLAMA_DIR"
@@ -211,6 +224,7 @@
         grep -qx 'KPACK_MOE_MIXED_STAGES PASS cells=80 PPU_GEMM_ADMISSION=NOT_TESTED' "$RUN/results/mixed-stages.log"
     elif [[ "$MODEL_PHASES" == all ]]; then failed=$((failed+1)); fi
     GATE_ARGS=(--smallm-table)
+    if [[ "$MODEL_GATE_UP" == 1 ]]; then GATE_ARGS+=(--paired); fi
     if [[ "$MODEL_PHASES" == perf ]]; then
         printf 'KPACK_Q4_MODEL accuracy=NOT_RETESTED scope=SMALLM_COMPOSITION_PLUS_PERFORMANCE\n'
     fi
@@ -236,6 +250,10 @@
     stage=model-trace
     if "$PYTHON" -u tools/run_kpack_model_validation.py "${COMMON[@]}" --phase trace \
         --output "$RUN/results/trace" 2>&1 | tee "$RUN/results/trace.log"; then :; else failed=$((failed+1)); fi
+    if [[ "$MODEL_GATE_UP" == 1 ]]; then
+        stage=paired-model-proof
+        if "$PYTHON" tools/check_kpack_paired_model.py --results "$RUN/results"; then :; else failed=$((failed+1)); fi
+    fi
     if [[ "$MODEL_ACU" == 1 ]]; then
         stage=model-acu
         if "$PYTHON" -u tools/profile_kpack_model_decode.py --sdk "$SDK" --bundle "$BUNDLE" \

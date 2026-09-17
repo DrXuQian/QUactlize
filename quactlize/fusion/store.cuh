@@ -6,7 +6,15 @@
 namespace quactlize::fusion {
 struct DeviceCall : qkg_call_v1 {
     int compute_type, output_type, round_projection;
+    int32_t const* input_rows;
+    int32_t const* status;
 };
+
+CUTLASS_DEVICE int input_row(DeviceCall const& c, int row) {
+    if (c.status && *c.status) return -1;
+    int source = c.input_rows ? c.input_rows[row] : row;
+    return source >= 0 && source < c.rows ? source : -1;
+}
 
 CUTLASS_DEVICE float activate(DeviceCall const& c, float gate, float up) {
     if (c.round_projection) {

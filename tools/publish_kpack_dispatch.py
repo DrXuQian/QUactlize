@@ -9,7 +9,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tools.verify_kpack_dispatch import verify, prefill_paths, pack_paths, router_alias_paths
+from tools.verify_kpack_dispatch import verify, prefill_paths, pack_paths, router_alias_paths, paired_paths
 from quactlize.runtime.compiler import sha
 
 
@@ -66,6 +66,8 @@ def publish(build, output, pack=None):
         paths += payload_paths(src,m['local_optimization_gate'])
     if 'router_alias_gate' in m:
         paths += router_alias_paths(src,m['router_alias_gate'])
+    if 'paired_gate_up' in m:
+        paths += paired_paths(src,m['paired_gate_up'])
     if "q4_bf16_gate" in m:
         paths += [m['q4_bf16_gate']['path'],m['q4_bf16_gate']['library']]
     if 'prefill' in m:

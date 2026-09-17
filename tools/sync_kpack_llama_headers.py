@@ -16,6 +16,8 @@ FILES={
     'quactlize/prefill/api.h':'kpack_prefill.h',
     'quactlize/execution/q4_decode.h':'kpack_q4_decode.h',
     'quactlize/execution/simt.h':'kpack_simt.h',
+    'quactlize/fusion/gate_up.h':'kpack_gate_up.h',
+    'quactlize/fusion/llama_graph.hpp':'gate_up_graph.hpp',
 }
 INCLUDES={
     '../runtime/abi.h':'kpack_module.h',
@@ -25,6 +27,7 @@ INCLUDES={
     '../dequant/api.h':'kpack_dequant.h',
     '../execution/q4_decode.h':'kpack_q4_decode.h',
     '../execution/simt.h':'kpack_simt.h',
+    '../fusion/gate_up.h':'kpack_gate_up.h',
     'simt.h':'kpack_simt.h',
     '../include/quactlize_ppu_config.h':'quactlize_ppu_config.h',
 }

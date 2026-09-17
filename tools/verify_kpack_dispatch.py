@@ -148,6 +148,38 @@ def router_alias_paths(root, receipt):
     return names
 
 
+def paired_paths(root, receipt, *, sdk=None):
+    root=Path(root).resolve(strict=True)
+    if (receipt.get('schema')!='quactlize.paired-model.v1' or
+            receipt.get('library')!='libquactlize_ppu_gate_up.so' or
+            receipt.get('receipt')!='gate-up-runtime.json' or
+            receipt.get('layout_id')!='0x47554e3400000001' or
+            receipt.get('q8_shared')!='F16_N512_K2048_E1_T1_8' or
+            receipt.get('q4_routed')!='BF16_N512_K2048_E256_TOP8_T1_8' or
+            receipt.get('canonical_retained') is not True or receipt.get('device_validated') is not False):
+        raise ValueError('paired gate/up scope differs')
+    for name,field in ((receipt['library'],'sha256'),(receipt['receipt'],'receipt_sha256')):
+        path=root/name
+        if path.is_symlink() or not path.is_file() or sha(path)!=receipt.get(field):
+            raise ValueError('paired gate/up payload differs: '+name)
+    build=json.loads((root/receipt['receipt']).read_text())
+    if (build.get('schema')!='quactlize.gate-up-paired-n4.v1' or build.get('sha256')!=receipt['sha256'] or
+            build.get('library')!=receipt['library'] or build.get('layout_id')!=receipt['layout_id']):
+        raise ValueError('paired gate/up build differs')
+    if sdk is not None:
+        for name,h in build['runtime'].items():
+            if Path(name).name!=name or sha(Path(sdk)/'lib'/name)!=h:
+                raise ValueError('paired gate/up SDK runtime differs: '+name)
+        for name,h in build['source_hashes'].items():
+            p=(ROOT/name).resolve(strict=True)
+            if not p.is_relative_to(ROOT) or sha(p)!=h:
+                raise ValueError('paired gate/up source differs: '+name)
+    require_exports(root/receipt['library'],{'quactlize_gate_up_'+s for s in (
+        'layout_v1','select_v1','repack_v1','query_v1','run_v1','run_v2')})
+    require_exports(root/'libquactlize_kpack_dispatch.so',{'quactlize_kpack_dispatch_moe_bind_gate_up_v1'})
+    return [receipt['library'],receipt['receipt']]
+
+
 def verify(root, *, sdk=None):
     root = Path(root).resolve(strict=True)
     m = json.loads((root / "manifest.json").read_text())
@@ -210,6 +242,10 @@ def verify(root, *, sdk=None):
         prefill_paths(root, m['prefill'], sdk=sdk)
     elif (root / 'libquactlize_ppu_prefill.so').exists():
         raise ValueError('unmanifested prefill runtime would arm the model loader')
+    if 'paired_gate_up' in m:
+        paired_paths(root,m['paired_gate_up'],sdk=sdk)
+    elif (root/'libquactlize_ppu_gate_up.so').exists():
+        raise ValueError('unmanifested paired gate/up runtime')
     if 'bf16_gate' in m:
         from dev.bf16_compute.run import validate_package
         receipt=m['bf16_gate']

@@ -3,6 +3,20 @@
 #include "../execution/validation.hpp"
 
 namespace quactlize::fusion {
+inline int select(int q,int n,int k,int experts,int tokens,int compute,qkg_gate_up_config_v1* out) {
+    if(!out) return QKG_INVALID;
+    *out={};
+    if(n!=512 || k!=2048 || tokens<1 || tokens>8) return QKG_SHAPE;
+    if(q==8 && experts==1 && compute==QKG_COMPUTE_F16) {
+        *out={1,sizeof(*out),QKG_GATE_UP_SIMT,1,0,8}; return QKG_OK;
+    }
+    if(q!=12 || experts!=256 || compute!=QKG_COMPUTE_BF16) return QKG_SHAPE;
+    // M4's two finalists differ by <1%; retain the single-kernel SIMT arm.
+    if(tokens<=2 || tokens==4) *out={1,sizeof(*out),QKG_GATE_UP_SIMT,1,0,tokens==2?4:8};
+    else *out={1,sizeof(*out),QKG_GATE_UP_TC,tokens==3?2:1,tokens<=6?16:8,0};
+    return QKG_OK;
+}
+
 inline int tile_k(int q) {
     return q==11 || q==13 ? 256 : q==10 || q==14 ? 128 : 64;
 }
@@ -71,6 +85,22 @@ inline int buffers(qkg_gate_up_call_v1 const& d,qkg_sizes_v1 const& s) {
         if (!execution::span(p[i],bytes[i])) return QKG_OVERFLOW;
         for (int j=0;j<i;++j)
             if (i>=6 && execution::overlap(p[i],bytes[i],p[j],bytes[j])) return QKG_INVALID;
+    }
+    return QKG_OK;
+}
+
+inline int row_buffers(qkg_gate_up_call_v2 const& d,qkg_sizes_v1 const& sizes) {
+    if(d.version!=2 || d.size!=sizeof(d) ||
+        ((uintptr_t(d.input_rows)|uintptr_t(d.status))&3) ||
+        (d.input_rows && d.call.input.call.mode!=QKG_INDEXED)) return QKG_INVALID;
+    auto const& c=d.call.input.call;
+    uint64_t output_bytes=(uint64_t(c.rows-1)*c.out_row_stride+c.n)*(d.call.output_type==QKG_F32?4:2);
+    for(int i=0;i<2;++i) {
+        uintptr_t p=uintptr_t(i?d.status:d.input_rows);
+        uint64_t bytes=p?(i?4:uint64_t(c.rows)*4):0;
+        if(!execution::span(p,bytes)) return QKG_OVERFLOW;
+        if(execution::overlap(p,bytes,uintptr_t(c.output),output_bytes) ||
+            execution::overlap(p,bytes,uintptr_t(c.workspace),sizes.workspace_bytes)) return QKG_INVALID;
     }
     return QKG_OK;
 }

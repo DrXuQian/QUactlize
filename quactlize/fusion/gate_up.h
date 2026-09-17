@@ -1,6 +1,5 @@
 #pragma once
 #include "../execution/simt.h"
-#include "../packing/api.h"
 
 #define QKG_GATE_UP_N4_V1 UINT64_C(0x47554e3400000001)
 
@@ -48,6 +47,36 @@ int quactlize_gate_up_query_v1(qkg_gate_up_call_v1 const*, qkg_gate_up_config_v1
 // ordered reduction + projection rounding + SwiGLU + typed output store.
 int quactlize_gate_up_run_v1(qkg_gate_up_call_v1 const*, qkg_gate_up_config_v1 const*,
     qkg_gate_up_layout_v1 const*);
+
+// Indexed rows may be emitted in an existing compact order. input_rows maps
+// each output row to its original token/slot row; NULL keeps original order.
+// The caller provides a permutation of [0,rows), ready on the same stream.
+// A nonzero device status poisons output instead of consuming invalid routing.
+typedef struct {
+    uint32_t version, size;
+    qkg_gate_up_call_v1 call;
+    int32_t const * input_rows;
+    int32_t const * status;
+} qkg_gate_up_call_v2;
+int quactlize_gate_up_run_v2(qkg_gate_up_call_v2 const*, qkg_gate_up_config_v1 const*,
+    qkg_gate_up_layout_v1 const*);
+
+// Create a separate paired runtime artifact from canonical Q4/Q8 planes.
+// merged=1 means gate holds [E,2N,K], up pointers are NULL. Otherwise gate
+// and up each hold [E,N,K]. Input and output spans must be disjoint.
+typedef struct {
+    uint32_t version, size;
+    int32_t qtype, n, k, experts, merged;
+    uint8_t const * gate_low, * gate_units, * up_low, * up_units;
+    uint8_t * low, * units;
+} qkg_gate_up_repack_v1;
+int quactlize_gate_up_repack_v1(qkg_gate_up_repack_v1 const*,
+    qkg_gate_up_layout_v1 const*, void* stream);
+
+// Measured N512/K2048 cohort only. Returns QKG_SHAPE outside its exact
+// precision/operator/token scope. No timing or device work in selection.
+int quactlize_gate_up_select_v1(int qtype, int n, int k, int experts,
+    int tokens, int compute_type, qkg_gate_up_config_v1*);
 
 #ifdef __cplusplus
 }

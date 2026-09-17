@@ -199,6 +199,8 @@ def chain_case(args,sdk,lib,merged,tokens,router_enabled,down_q=13):
         assert len(weights)==len(requests)
         for (raw,q,inp,kk,channels,paired),request in zip(weights,requests):
             arr,planes,lengths=pack(r,lib,raw,q,up=paired,verify_bytes=False)
+            if paired is not None:
+                canonical_pair=(arr,planes,lengths)
             nn=raw.shape[1]*(2 if paired is not None else 1)
             assert (q,m,nn,kk,e,tokens)==tuple(request[key] for key in ('q','m','n','k','experts','max_rows'))
             print('KPACK_MOE_QUERY '+json.dumps(dict(request,merged=merged,router=router_enabled)),flush=True)
@@ -278,6 +280,27 @@ def chain_case(args,sdk,lib,merged,tokens,router_enabled,down_q=13):
         router=Router(1,C.sizeof(Router),0,1,0,0,1e-8,1,route_logits,None,route_weights) if router_enabled else None
         field='endpoint' if getattr(args,'mixed',False) else 'handle'
         launch=d.chain(parts[0][field],None if merged else parts[1][field],parts[-1][field],r.stream.value,router,mixed=getattr(args,'mixed',False))
+        paired_choice=None
+        if getattr(args,'paired',False):
+            from quactlize.fusion.native import Library as FusionLibrary, integration_entries, Repack, MoeBinding, FusionCall, Config as FusionConfig
+            fusion=FusionLibrary(args.bundle/'libquactlize_ppu_gate_up.so');entries=integration_entries(fusion)
+            layout=fusion.arrangement(12);config=FusionConfig()
+            checked(entries['select'](12,n,k,e,tokens,compute,C.byref(config)),'paired selection')
+            arr,canonical,lengths=canonical_pair
+            auxiliary=[r.alloc(size) if size else None for size in lengths]
+            repack=Repack(1,C.sizeof(Repack),12,n,k,e,1,canonical[0],canonical[2],None,None,auxiliary[0],auxiliary[2])
+            checked(entries['repack'](C.byref(repack),C.byref(layout),r.stream),'paired canonical repack')
+            call=GemvCall(version=1,size=C.sizeof(GemvCall),qtype=12,n=n,k=k,experts=e,rows=m,mode=2,
+                input_type=1,channels=1,topk=8,a_row_stride=k,a_token_stride=k,ids_stride=8,out_row_stride=n)
+            typed=FusionCall(call,compute,1,1);size=GemvSizes()
+            checked(fusion.query(C.byref(typed),C.byref(config),C.byref(layout),C.byref(size)),'paired workspace')
+            scratch=r.alloc(size.workspace_bytes) if size.workspace_bytes else None
+            binding=MoeBinding(1,C.sizeof(MoeBinding),*auxiliary,scratch,size.workspace_bytes,layout,config)
+            fn=d.lib.quactlize_kpack_dispatch_moe_bind_gate_up_v1
+            fn.argtypes=[C.c_void_p,C.c_void_p,C.POINTER(MoeBinding)];fn.restype=C.c_int
+            checked(fn(d.runtime,d.chains[-1],C.byref(binding)),'paired chain binding')
+            sdk.synchronize(r.stream)
+            paired_choice={name:getattr(config,name) for name in ('backend','split','tile_m','warps')}
         print('KPACK_MOE_SELECTED '+json.dumps(dict(merged=merged,tokens=tokens,router=router_enabled,choices=[p['choice'] for p in parts])),flush=True)
         errors=[]
         for replay in range(3):
@@ -338,6 +361,7 @@ def chain_case(args,sdk,lib,merged,tokens,router_enabled,down_q=13):
         checked(sdk.lib.hggcGraphLaunch(instance,r.stream),'excluded graph warmup');sdk.synchronize(r.stream)
         samples=r.samples(lambda:sdk.lib.hggcGraphLaunch(instance,r.stream),args.samples)
         result=dict(status='PASS',compute='bf16' if compute else 'f16',merged=merged,tokens=tokens,router=router_enabled,down_q=down_q,
+            paired_gate_up=paired_choice,
             mixed=getattr(args,'mixed',False),simt_projections=sum(p['choice'].get('route')=='SIMT' for p in parts),graph_replays=3,
             choices=[p['choice'] for p in parts],errors=errors,samples_us=samples,median_us=statistics.median(samples),
             scope='REAL_SELECTED_GPU_CHAIN',first_launch_excluded=True)
@@ -357,10 +381,12 @@ def main():
     parser.add_argument('--mixed',action='store_true',help='exercise automatic SIMT/TC mixed chains, not forced TC')
     parser.add_argument('--smallm-table',action='store_true',help='bounded merged-chain check of the new automatic decode table')
     parser.add_argument('--compute',choices=('fp16','bf16'),default='fp16')
+    parser.add_argument('--paired',action='store_true',help='paired-N4 gate/up activation with the existing selected down/router')
     args=parser.parse_args()
     if args.samples<3:parser.error('at least 3 samples')
     if args.smallm_table and not args.mixed:parser.error('--smallm-table requires --mixed')
     if args.compute=='bf16' and not args.smallm_table:parser.error('BF16 selected-chain check requires --mixed --smallm-table')
+    if args.paired and (args.compute!='bf16' or not args.smallm_table):parser.error('--paired requires BF16 mixed small-M table')
     verify(args.bundle);args.output.mkdir(parents=True,exist_ok=False)
     lib,pack_identity=load_pack_library(args.pack_library)
     sdk=SDK(args.sdk);graph_bind(sdk)
@@ -380,6 +406,8 @@ def main():
             for merged in (False,True) for router in (False,True)]
         if args.smallm_table:
             cases=[(True,tokens,router,13) for tokens in (1,2,8) for router in (False,True)]
+        if args.paired:
+            cases=[(True,tokens,router,13) for tokens in range(1,9) for router in (False,True)]
         for merged,tokens,router,q in cases:
             try:result['chains'].append(chain_case(args,sdk,lib,merged,tokens,router,q))
             except Exception as error:

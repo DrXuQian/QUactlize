@@ -41,6 +41,40 @@ class Config(C.Structure):
         super().__init__(1, C.sizeof(type(self)), backend, split, tile_m, warps)
 
 
+class MappedCall(C.Structure):
+    _fields_ = [('version',C.c_uint32),('size',C.c_uint32),('call',FusionCall),
+                ('input_rows',C.c_void_p),('status',C.c_void_p)]
+
+    def __init__(self, call, input_rows=None, status=None):
+        super().__init__(2,C.sizeof(type(self)),call,input_rows,status)
+
+
+class Repack(C.Structure):
+    _fields_ = [('version',C.c_uint32),('size',C.c_uint32)] + [
+        (name,C.c_int32) for name in ('qtype','n','k','experts','merged')] + [
+        (name,C.c_void_p) for name in ('gate_low','gate_units','up_low','up_units','low','units')]
+
+
+class MoeBinding(C.Structure):
+    _fields_ = [('version',C.c_uint32),('size',C.c_uint32)] + [
+        (name,C.c_void_p) for name in ('low','high','units','workspace')] + [
+        ('workspace_bytes',C.c_uint64),('layout',Layout),('config',Config)]
+
+
+def integration_entries(library):
+    """Additive entries; old numerical/performance packages remain loadable."""
+    functions = {}
+    signatures = {
+        'repack': [C.POINTER(Repack),C.POINTER(Layout),C.c_void_p],
+        'select': [C.c_int]*6+[C.POINTER(Config)],
+        'run': [C.POINTER(MappedCall),C.POINTER(Config),C.POINTER(Layout)],
+    }
+    for name, signature in signatures.items():
+        fn=getattr(library.lib,'quactlize_gate_up_'+name+('_v2' if name=='run' else '_v1'))
+        fn.argtypes=signature;fn.restype=C.c_int;functions[name]=fn
+    return functions
+
+
 class Library:
     def __init__(self, path):
         self.lib = C.CDLL(str(path), mode=C.RTLD_LOCAL)

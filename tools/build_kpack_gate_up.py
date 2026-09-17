@@ -28,6 +28,7 @@ def commands(sdk, output):
     ]
     sources = [
         ("dispatch", "quactlize/fusion/dispatch.cu", []),
+        ("repack", "quactlize/fusion/repack.cu", []),
         ("pack", "quactlize/packing/ppu_pack.cu", []),
         ("sizes", "quactlize/packing/sizes.cpp", []),
     ]

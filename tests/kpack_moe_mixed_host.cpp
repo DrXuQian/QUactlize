@@ -90,6 +90,19 @@ static int finish_bf16(qkg_moe_compute_v2 const* p,qk_llama_moe_finish_v1 const*
     return weighted_finish(&p->plan,p->simt_mask,f,stream);
 }
 
+static int query_paired(qkg_gate_up_call_v1 const* c,qkg_gate_up_config_v1 const* f,
+    qkg_gate_up_layout_v1 const* layout,qkg_sizes_v1* sizes) {
+    return quactlize::fusion::query(*c,*f,*layout,*sizes);
+}
+static int run_paired(qkg_gate_up_call_v2 const* c,qkg_gate_up_config_v1 const*,qkg_gate_up_layout_v1 const*) {
+    assert(c->version==2 && c->call.round_projection==1 && c->call.input.compute_type==1);
+    auto const& v=c->call.input.call;
+    assert(v.a==(void*)0x02000000 && v.output==(float*)0x30000000 && v.n==512 && v.ids==(int*)0x01000000);
+    assert(c->status==(int*)0x10204004);
+    assert(c->input_rows==(c->call.output_type==QKG_F32?nullptr:(int*)0x30310000));
+    calls.push_back(700);return 0;
+}
+
 static void test_q4_bf16_chains() {
     int checked=0;
     for(int tokens=1;tokens<=8;++tokens) for(bool merged:{false,true})
@@ -137,6 +150,17 @@ static void test_q4_bf16_chains() {
         assert(quactlize_kpack_dispatch_moe_run_router_v1(chain,&snapshot,nullptr)==(tokens==1?QKS_OK:QKS_MISS));
         assert(calls==(tokens==1?expected:std::vector<int>{}));
         calls.clear();assert(quactlize_kpack_dispatch_moe_run_router_v1(chain,&router,nullptr)==QKS_OK && calls==expected);
+        if(merged) {
+            r.moe->gate_up_query=query_paired;r.moe->gate_up_run=run_paired;
+            qks_moe_gate_up_v1 paired{};paired.version=1;paired.size=sizeof(paired);
+            paired.low=(uint8_t*)0x400000000ULL;paired.units=(uint8_t*)0x500000000ULL;
+            paired.layout={1,sizeof(paired.layout),QKG_GATE_UP_N4_V1,ppu_arrangements::q4_kpack4_transpose_v1()};
+            paired.config={1,sizeof(paired.config),QKG_GATE_UP_SIMT,1,0,8};
+            assert(quactlize_kpack_dispatch_moe_bind_gate_up_v1(&r,chain,&paired)==QKS_OK);
+            expected={100,700,mask&4?52:23,900};
+            calls.clear();assert(quactlize_kpack_dispatch_moe_run_router_v1(chain,&router,nullptr)==QKS_OK && calls==expected);
+            assert(quactlize_kpack_dispatch_moe_bind_gate_up_v1(&r,chain,&paired)==QKS_MISS);
+        }
         quactlize_kpack_dispatch_moe_destroy_v1(chain);chain=nullptr;
         auto saved=endpoints[2].compute_type;endpoints[2].compute_type=QK_COMPUTE_F16;
         assert(create()==QKS_INVALID && !chain);endpoints[2].compute_type=saved;

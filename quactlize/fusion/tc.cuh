@@ -35,8 +35,9 @@ __global__ __launch_bounds__(T::Threads) void tc_gate_up(typename T::Params p) {
     int expert=batch, begin=0, rows=c.rows;
     int64_t a_offset=0;
     if(c.mode==QKG_INDEXED) {
-        int token=batch/c.topk,slot=batch%c.topk;
-        expert=c.ids[int64_t(token)*c.ids_stride+slot];
+        int source=input_row(c,batch);
+        int token=source<0 ? 0 : source/c.topk,slot=source<0 ? 0 : source%c.topk;
+        expert=source<0 ? -1 : c.ids[int64_t(token)*c.ids_stride+slot];
         begin=batch; rows=1;
         a_offset=int64_t(token)*c.a_token_stride+(slot%c.channels)*c.a_row_stride;
     } else if(c.mode==QKG_GROUPED) {
@@ -44,14 +45,17 @@ __global__ __launch_bounds__(T::Threads) void tc_gate_up(typename T::Params p) {
         if(begin<0 || rows<0 || int64_t(begin)+rows>c.rows) return;
         a_offset=int64_t(begin)*c.a_row_stride;
     }
+    if(c.status && *c.status) expert=-1;
     constexpr int TM=size<0>(typename T::Tile{});
     int m_base=int(blockIdx.x)*TM;
     if(m_base>=rows) return;
     if(expert<0 || expert>=c.experts) {
-        for(int col=int(blockIdx.y)*32+threadIdx.x;col<(int(blockIdx.y)+1)*32 && col<c.n/2;col+=blockDim.x) {
-            if(p.split==1) output(c,begin,col,__int_as_float(0x7fc00000));
+        for(int linear=threadIdx.x;linear<TM*32;linear+=blockDim.x) {
+            int m=m_base+linear/32,col=int(blockIdx.y)*32+linear%32;
+            if(m>=rows || col>=c.n/2) continue;
+            if(p.split==1) output(c,begin+m,col,__int_as_float(0x7fc00000));
             else {
-                auto dst=static_cast<float*>(c.workspace)+(int64_t(begin)*p.split+slice)*c.n;
+                auto dst=static_cast<float*>(c.workspace)+(int64_t(begin+m)*p.split+slice)*c.n;
                 dst[PairedN4::gate(col)]=dst[PairedN4::up(col)]=__int_as_float(0x7fc00000);
             }
         }

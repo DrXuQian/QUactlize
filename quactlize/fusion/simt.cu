@@ -1,5 +1,14 @@
 #include <hggc_runtime.h>
 #include "store.cuh"
+#include "../execution/q4_s1_validation.hpp"
+
+namespace quactlize::execution::q4_s1 {
+CUTLASS_DEVICE Row locate(quactlize::fusion::DeviceCall const& c, int row) {
+    int source = quactlize::fusion::input_row(c, row);
+    if (source < 0) return {-1, 0, 0};
+    return locate(static_cast<qkg_call_v1 const&>(c), source);
+}
+}
 #include "../execution/simt_q8_vector.cuh"
 
 namespace quactlize::fusion {
