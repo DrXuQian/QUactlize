@@ -3134,11 +3134,11 @@
   },
   "simt": {
     "path": "libquactlize_ppu_execution.so",
-    "sha256": "3247b57f6c457b88571f18242dac0ea173144c75682aa7d14c45e0b844baa544"
+    "sha256": "0a60a15a1acadea67b17f5c5506ce3d4bd2c9d4b6647c86d1f83fc6a6e119c89"
   },
   "moe": {
     "path": "libquactlize_ppu_execution.so",
-    "sha256": "3247b57f6c457b88571f18242dac0ea173144c75682aa7d14c45e0b844baa544"
+    "sha256": "0a60a15a1acadea67b17f5c5506ce3d4bd2c9d4b6647c86d1f83fc6a6e119c89"
   },
   "cases": [
     {
@@ -13709,8 +13709,8 @@
       "quactlize/execution/simt.h": "53ef558fc2872305c9d070d02a9d44b64bcb7fea0fa0b66fecf993bb07ca2d04",
       "quactlize/execution/simt_activation.cuh": "13c61c4a1334d080c96f44de5285c645286a019001b5919a2778f61e5da0af73",
       "quactlize/execution/simt_format.cuh": "262fe74393b0a7bcf65e06d6b64d5246208f0dcf86280f45d9e431fe19d390b8",
-      "quactlize/execution/simt_kernel.cuh": "c88f8767d7b995f77b4c211a6fbce7e4d7b4cfd804b156a081b956b971c82004",
-      "quactlize/execution/simt_q8_vector.cuh": "541e901d8b45ec242870f173222426eb1e31bda481021a35f4c2ef5a035c7c4c",
+      "quactlize/execution/simt_kernel.cuh": "4335bf849977c6a9d1ea6e6b59f0fc714b36aed82aeb57645512f81473afe937",
+      "quactlize/execution/simt_q8_vector.cuh": "e89381e28fb60f532878a066dfd78e9f81805255819dabd575979d57f752f3a9",
       "quactlize/execution/simt_validation.hpp": "552f558a4bb2982e7b5a3fc482d9cf0fc2334fc0a4788f69cba1a8169e6ace7b",
       "quactlize/execution/validation.hpp": "1302a38bb0bf2d659a195a0a26823717f69d20fc5f178e940660aeea6b328062",
       "quactlize/include/actlize_extensions/cutlass/detail/quactlize_mixed_dtype.hpp": "4d8fdcf4dced2a7053a1cbbd8bff77cb0771430a826b24cf5b83b6a3c4c5c23f",
@@ -14412,8 +14412,8 @@
       "libhg_wrapper.so": "fd93f23bfb05dfee0ffa48fd07d3c0cf6d8ab37d266e12f841ee056291affcd5"
     },
     "library": "libquactlize_ppu_execution.so",
-    "sha256": "3247b57f6c457b88571f18242dac0ea173144c75682aa7d14c45e0b844baa544",
-    "compile_seconds": 185.92388504371047,
+    "sha256": "0a60a15a1acadea67b17f5c5506ce3d4bd2c9d4b6647c86d1f83fc6a6e119c89",
+    "compile_seconds": 196.4227229692042,
     "formats": [
       8,
       10,

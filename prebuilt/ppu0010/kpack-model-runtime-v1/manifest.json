@@ -374,8 +374,8 @@
     }
   ],
   "policy_hashes": {
-    "quactlize/dispatch/api.h": "664b7baef0754128e82ae1188d8d1e5d983adbd6e52d3ce9fb5e4df98c60fa7d",
-    "quactlize/dispatch/binding.cpp": "0e5e57e4139c2c0069f15c19ae7441fc5a880204677c5069de05846abf99d848",
+    "quactlize/dispatch/api.h": "f1f340a12f6ba52ca53bf9bece7419b7257c8100a70be334ae803e5ee9dba2d8",
+    "quactlize/dispatch/binding.cpp": "cfa8a40cddba5db4ec61bbbc169588c4508a398d687f958ffb72697d91535f58",
     "quactlize/dispatch/compute.hpp": "161fe7a2a6be737edb671ab883a9e818e95b35b154879cdda03759fa3386db97",
     "quactlize/dispatch/cost.hpp": "28f7db20b5c1e16d0503a4b44bacba6e8c166645d6c04c347d4103209e9ff121",
     "quactlize/dispatch/decode.hpp": "a57e738b36f8c953d5d235898dd3d0cded795aaa2e134cbf877dc18cb18bb1cb",
@@ -393,10 +393,12 @@
     "policies/kpack_zw810_cost_v1.hpp": "04fab1c79e942a257675801e974319f16e6824c28e976736b4db47868084754c",
     "policies/kpack_smallm_v1.hpp": "325caff3fc7a9ac4d66da660eaacf5a45075385e0bb326f7280defd9b9fe93a6",
     "policies/kpack_smallm_matched_v1.hpp": "e226e2e15491734f3b69815437779b8b1d170e3e5e5f252789a581464c31d4b2",
-    "policies/kpack_q8_vector_v1.hpp": "3fe22bfbc802de36e67386732462c312fa544e160a716eb0f224aa9d2157ad04"
+    "policies/kpack_q8_vector_v1.hpp": "3fe22bfbc802de36e67386732462c312fa544e160a716eb0f224aa9d2157ad04",
+    "quactlize/fusion/gate_up.h": "a7f71203b741cd3e2ed3a00c18dd63d9d23f90b64155aa82c1b9daf57b0ee275",
+    "quactlize/fusion/validation.hpp": "891864e924d1407160641af20ef76ecfd455e2d40fffe9ba39e500138ac6946a"
   },
-  "dispatch_sha256": "737632cd7eceedc473bc42e1f1a7c0a63913f15ff554de63fb8e8eea06a1b988",
-  "execution_sha256": "3247b57f6c457b88571f18242dac0ea173144c75682aa7d14c45e0b844baa544",
+  "dispatch_sha256": "63a8b8e34d75df8e4fdb932bcab9d424a609d957c52db43128087e7cab00187b",
+  "execution_sha256": "0a60a15a1acadea67b17f5c5506ce3d4bd2c9d4b6647c86d1f83fc6a6e119c89",
   "compiler_identity": null,
   "compiler_identities": {
     "c75871737203e284624428eefeb1fcfdee383e82133d4e824967738f227bd906": {
@@ -435,8 +437,8 @@
   },
   "reused_packages": [
     {
-      "path": "/tmp/quactlize-local-artifact-20260916/prebuilt/ppu0010/kpack-model-runtime-v1",
-      "manifest_sha256": "f67c67e138793f74d39fe7965064874fb06f342932c2a29adc10772b869bdd34",
+      "path": "/tmp/quactlize-q8-hoist-artifact-20260917/prebuilt/ppu0010/kpack-model-runtime-v1",
+      "manifest_sha256": "977105d86ce91e1d3e9597ac5631389e4ff56b23753b8366e142169a9a133652",
       "scope": "UNCHANGED_TC_PREFILL_PACK_AND_STAGE_CONTROL"
     }
   ],
@@ -467,8 +469,8 @@
       "quactlize/execution/simt.h": "53ef558fc2872305c9d070d02a9d44b64bcb7fea0fa0b66fecf993bb07ca2d04",
       "quactlize/execution/simt_activation.cuh": "13c61c4a1334d080c96f44de5285c645286a019001b5919a2778f61e5da0af73",
       "quactlize/execution/simt_format.cuh": "262fe74393b0a7bcf65e06d6b64d5246208f0dcf86280f45d9e431fe19d390b8",
-      "quactlize/execution/simt_kernel.cuh": "c88f8767d7b995f77b4c211a6fbce7e4d7b4cfd804b156a081b956b971c82004",
-      "quactlize/execution/simt_q8_vector.cuh": "541e901d8b45ec242870f173222426eb1e31bda481021a35f4c2ef5a035c7c4c",
+      "quactlize/execution/simt_kernel.cuh": "4335bf849977c6a9d1ea6e6b59f0fc714b36aed82aeb57645512f81473afe937",
+      "quactlize/execution/simt_q8_vector.cuh": "e89381e28fb60f532878a066dfd78e9f81805255819dabd575979d57f752f3a9",
       "quactlize/execution/simt_validation.hpp": "552f558a4bb2982e7b5a3fc482d9cf0fc2334fc0a4788f69cba1a8169e6ace7b",
       "quactlize/execution/validation.hpp": "1302a38bb0bf2d659a195a0a26823717f69d20fc5f178e940660aeea6b328062",
       "quactlize/include/actlize_extensions/cutlass/detail/quactlize_mixed_dtype.hpp": "4d8fdcf4dced2a7053a1cbbd8bff77cb0771430a826b24cf5b83b6a3c4c5c23f",
@@ -1170,8 +1172,8 @@
       "libhg_wrapper.so": "fd93f23bfb05dfee0ffa48fd07d3c0cf6d8ab37d266e12f841ee056291affcd5"
     },
     "library": "libquactlize_ppu_execution.so",
-    "sha256": "3247b57f6c457b88571f18242dac0ea173144c75682aa7d14c45e0b844baa544",
-    "compile_seconds": 185.92388504371047,
+    "sha256": "0a60a15a1acadea67b17f5c5506ce3d4bd2c9d4b6647c86d1f83fc6a6e119c89",
+    "compile_seconds": 196.4227229692042,
     "formats": [
       8,
       10,
@@ -14677,11 +14679,11 @@
     "-shared",
     "-pthread",
     "-Wl,-Bsymbolic",
-    "-I/tmp/kpack-q8-hoist-runtime-20260917",
-    "/tmp/quactlize-q8-hoist-20260917/quactlize/dispatch/binding.cpp",
+    "-I/tmp/gate-up-paired-task-20260917/model-bundle-r2",
+    "/tmp/quactlize-gate-up-20260917/quactlize/dispatch/binding.cpp",
     "-ldl",
     "-o",
-    "/tmp/kpack-q8-hoist-runtime-20260917/libquactlize_kpack_dispatch.so"
+    "/tmp/gate-up-paired-task-20260917/model-bundle-r2/libquactlize_kpack_dispatch.so"
   ],
   "device_validated": false,
   "heuristic_admitted": false,
@@ -14781,14 +14783,14 @@
   },
   "bf16_gate": {
     "path": "bf16/manifest.json",
-    "sha256": "75c3c51ceee473fe47a3b841083e854fbf60e6ef0762bc034c3ac229b7e67edd",
+    "sha256": "c220217e14eeac9b8fe318f497edf413720fc7db264e32df0f2dfacd8ae15a7d",
     "cases": 746,
     "modules": 40,
     "device_validated": false
   },
   "q4_bf16_gate": {
     "path": "q4-bf16-gate/manifest.json",
-    "sha256": "f06525828e225e0a1f31c11e638bc3e2ceb1d336a9c2f17a4d33525f1b2bc150",
+    "sha256": "92c030d4a335dab0026895aa519381fd5a2fee216c971989d4da061ac0a8b7ab",
     "library": "q4-bf16-gate/libq4_selected_bf16_gate.so",
     "denominator": {
       "requests": 192,
@@ -14801,6 +14803,29 @@
       "covered_recipes": 40
     },
     "device_validated": false
+  },
+  "paired_gate_up": {
+    "schema": "quactlize.paired-model.v1",
+    "library": "libquactlize_ppu_gate_up.so",
+    "sha256": "b73e9baac1bec19d4f9d1b689ce830afb86df6ea44434a40a9e8f0c2df70057b",
+    "receipt": "gate-up-runtime.json",
+    "receipt_sha256": "2ad31b92ffb89e53e7c44b0329b9acb23cecc1b9f3c85140645b2ca7b73fd962",
+    "layout_id": "0x47554e3400000001",
+    "q8_shared": "F16_N512_K2048_E1_T1_8",
+    "q4_routed": "BF16_N512_K2048_E256_TOP8_T1_8",
+    "canonical_retained": true,
+    "device_validated": false,
+    "cost_authority": "91ee820416b7f2bbae44ded371030cdb995432c4a7664403747ba4ff80001d56"
+  },
+  "dispatcher_refresh": {
+    "base_manifest_sha256": "8f2a2af3c1fd2032ab74723155dab005777207fbc73ce32901184a40fa6668b3",
+    "scope": "PAIRED_N4_AUXILIARY_SCOPED_FUSION",
+    "changed_policy_inputs": [
+      "quactlize/dispatch/api.h",
+      "quactlize/dispatch/binding.cpp"
+    ],
+    "existing_gpu_payloads": "BYTE_IDENTICAL",
+    "new_library": "libquactlize_ppu_gate_up.so"
   },
   "router_alias_gate": {
     "path": "router-alias/manifest.json",
