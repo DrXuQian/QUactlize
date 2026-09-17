@@ -1,0 +1,569 @@
+q8-shared-down.so:	file format elf64-x86-64
+
+ELF FILE 1 (PPU 1.0) (SIMD):
+Func 1: _ZN9quactlize6fusionL14reduce_gate_upENS0_10DeviceCallEi
+Func 2: _ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_0E11qkg_call_v1
+Func 3: _ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_1E11qkg_call_v1
+Func 4: _ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_2E11qkg_call_v1
+Func 5: _ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_3E11qkg_call_v1
+Func 6: _ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_4E11qkg_call_v1
+Func 7: _ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_5E11qkg_call_v1
+Func 8: _ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_6E11qkg_call_v1
+====================================================
+Func 1 _ZN9quactlize6fusionL14reduce_gate_upENS0_10DeviceCallEi RESOURCE INFO:
+
+INSTR OFFSETS:
+<0x1>
+FUNC:_ZL35__ppumathpriv_div_rte_slow_path_f32ff._ZN9quactlize6fusionL14reduce_gate_upENS0_10DeviceCallEi
+KIND:return         	OFFSET:0x488 
+<0x2>
+FUNC:_ZN9quactlize6fusionL14reduce_gate_upENS0_10DeviceCallEi
+KIND:direct call    	OFFSET:0x1218 
+<0x3>
+FUNC:_ZN9quactlize6fusionL14reduce_gate_upENS0_10DeviceCallEi
+KIND:return         	OFFSET:0x1330 0x13a0 
+
+SHADER ABI KERNEL CONTROL:
+grid_dim_x_en:1
+grid_dim_y_en:1
+grid_dim_z_en:1
+block_dim_en:1
+block_idx_x_en:1
+block_idx_y_en:1
+block_idx_z_en:1
+start_thread_idx_en:1
+user_sreg_num:32
+pri:0
+fwd_progress:0
+private_en:1
+stack_phys_idx_en:1
+cu_disp_en:0
+block_age_en:0
+dispatch_mode:0
+mma_en:0
+reserved_smem:0
+texture_en:0
+
+SHADER ABI KERNEL MODE:
+fp_rndmode:0
+i_rndmode:0
+fp_denorm_flush:0
+saturation:0
+exception_en:0
+relu:0
+nan:0
+vmem_ooo:0
+saturation_fp64:0
+trap_exception:0
+debug_en:0
+trap_en:1
+perf_cnt_en:0
+
+SHADER ABI KERNEL RESOURCE:
+vreg_number:32
+sreg_number:80
+shared_memory_size:0
+treg_en:0
+
+STACK SIZE:0
+
+.hg_info._ZN9quactlize6fusionL14reduce_gate_upENS0_10DeviceCallEi.ARGUMENT:
+<0x1> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint64  	KIND:hidden.tool.base	sreg[0:1]      	Size:0x8	attrs:14
+<0x2> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint32  	KIND:hidden.pm.size 	sreg[2]        	Size:0x4	attrs:7
+<0x3> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint64  	KIND:hidden.km.base 	sreg[4:5]      	Size:0x8	attrs:5
+<0x4> 
+KERNEL_PARAM
+INDEX:0x0   	TYPE:uint8   	KIND:global.value   	global km_base[0:191]	Size:0xc0	attrs:readonly
+<0x5> 
+KERNEL_PARAM
+INDEX:0x1   	TYPE:uint32  	KIND:sreg.value     	sreg[6]        	Size:0x4	
+====================================================
+====================================================
+Func 2 _ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_0E11qkg_call_v1 RESOURCE INFO:
+
+INSTR OFFSETS:
+<0x1>
+FUNC:_ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_0E11qkg_call_v1
+KIND:coop group     	OFFSET:0xc08 0x1f70 0x2028 
+<0x2>
+FUNC:_ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_0E11qkg_call_v1
+KIND:return         	OFFSET:0x2108 
+
+SHADER ABI KERNEL CONTROL:
+grid_dim_x_en:1
+grid_dim_y_en:1
+grid_dim_z_en:1
+block_dim_en:1
+block_idx_x_en:1
+block_idx_y_en:1
+block_idx_z_en:1
+start_thread_idx_en:1
+user_sreg_num:32
+pri:0
+fwd_progress:0
+private_en:0
+stack_phys_idx_en:1
+cu_disp_en:0
+block_age_en:0
+dispatch_mode:0
+mma_en:0
+reserved_smem:0
+texture_en:0
+
+SHADER ABI KERNEL MODE:
+fp_rndmode:0
+i_rndmode:0
+fp_denorm_flush:0
+saturation:0
+exception_en:0
+relu:0
+nan:0
+vmem_ooo:0
+saturation_fp64:0
+trap_exception:0
+debug_en:0
+trap_en:1
+perf_cnt_en:0
+
+SHADER ABI KERNEL RESOURCE:
+vreg_number:78
+sreg_number:80
+shared_memory_size:4
+treg_en:0
+
+STACK SIZE:0
+
+.hg_info._ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_0E11qkg_call_v1.ARGUMENT:
+<0x1> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint64  	KIND:hidden.tool.base	sreg[0:1]      	Size:0x8	attrs:14
+<0x2> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint32  	KIND:hidden.pm.size 	sreg[2]        	Size:0x4	attrs:7
+<0x3> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint64  	KIND:hidden.km.base 	sreg[4:5]      	Size:0x8	attrs:5
+<0x4> 
+KERNEL_PARAM
+INDEX:0x0   	TYPE:uint8   	KIND:global.value   	global km_base[0:159]	Size:0xa0	attrs:readonly
+====================================================
+====================================================
+Func 3 _ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_1E11qkg_call_v1 RESOURCE INFO:
+
+INSTR OFFSETS:
+<0x1>
+FUNC:_ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_1E11qkg_call_v1
+KIND:coop group     	OFFSET:0x438 0x1750 0x1808 
+<0x2>
+FUNC:_ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_1E11qkg_call_v1
+KIND:return         	OFFSET:0x1900 
+
+SHADER ABI KERNEL CONTROL:
+grid_dim_x_en:1
+grid_dim_y_en:1
+grid_dim_z_en:1
+block_dim_en:1
+block_idx_x_en:1
+block_idx_y_en:1
+block_idx_z_en:1
+start_thread_idx_en:1
+user_sreg_num:32
+pri:0
+fwd_progress:0
+private_en:0
+stack_phys_idx_en:1
+cu_disp_en:0
+block_age_en:0
+dispatch_mode:0
+mma_en:0
+reserved_smem:0
+texture_en:0
+
+SHADER ABI KERNEL MODE:
+fp_rndmode:0
+i_rndmode:0
+fp_denorm_flush:0
+saturation:0
+exception_en:0
+relu:0
+nan:0
+vmem_ooo:0
+saturation_fp64:0
+trap_exception:0
+debug_en:0
+trap_en:1
+perf_cnt_en:0
+
+SHADER ABI KERNEL RESOURCE:
+vreg_number:78
+sreg_number:80
+shared_memory_size:4
+treg_en:0
+
+STACK SIZE:0
+
+.hg_info._ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_1E11qkg_call_v1.ARGUMENT:
+<0x1> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint64  	KIND:hidden.tool.base	sreg[0:1]      	Size:0x8	attrs:14
+<0x2> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint32  	KIND:hidden.pm.size 	sreg[2]        	Size:0x4	attrs:7
+<0x3> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint64  	KIND:hidden.km.base 	sreg[4:5]      	Size:0x8	attrs:5
+<0x4> 
+KERNEL_PARAM
+INDEX:0x0   	TYPE:uint8   	KIND:global.value   	global km_base[0:159]	Size:0xa0	
+====================================================
+====================================================
+Func 4 _ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_2E11qkg_call_v1 RESOURCE INFO:
+
+INSTR OFFSETS:
+<0x1>
+FUNC:_ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_2E11qkg_call_v1
+KIND:coop group     	OFFSET:0xaa8 0x1f30 0x1fe8 
+<0x2>
+FUNC:_ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_2E11qkg_call_v1
+KIND:return         	OFFSET:0x20c8 
+
+SHADER ABI KERNEL CONTROL:
+grid_dim_x_en:1
+grid_dim_y_en:1
+grid_dim_z_en:1
+block_dim_en:1
+block_idx_x_en:1
+block_idx_y_en:1
+block_idx_z_en:1
+start_thread_idx_en:1
+user_sreg_num:32
+pri:0
+fwd_progress:0
+private_en:0
+stack_phys_idx_en:1
+cu_disp_en:0
+block_age_en:0
+dispatch_mode:0
+mma_en:0
+reserved_smem:0
+texture_en:0
+
+SHADER ABI KERNEL MODE:
+fp_rndmode:0
+i_rndmode:0
+fp_denorm_flush:0
+saturation:0
+exception_en:0
+relu:0
+nan:0
+vmem_ooo:0
+saturation_fp64:0
+trap_exception:0
+debug_en:0
+trap_en:1
+perf_cnt_en:0
+
+SHADER ABI KERNEL RESOURCE:
+vreg_number:60
+sreg_number:80
+shared_memory_size:4
+treg_en:0
+
+STACK SIZE:0
+
+.hg_info._ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_2E11qkg_call_v1.ARGUMENT:
+<0x1> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint64  	KIND:hidden.tool.base	sreg[0:1]      	Size:0x8	attrs:14
+<0x2> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint32  	KIND:hidden.pm.size 	sreg[2]        	Size:0x4	attrs:7
+<0x3> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint64  	KIND:hidden.km.base 	sreg[4:5]      	Size:0x8	attrs:5
+<0x4> 
+KERNEL_PARAM
+INDEX:0x0   	TYPE:uint8   	KIND:global.value   	global km_base[0:159]	Size:0xa0	attrs:readonly
+====================================================
+====================================================
+Func 5 _ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_3E11qkg_call_v1 RESOURCE INFO:
+
+INSTR OFFSETS:
+<0x1>
+FUNC:_ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_3E11qkg_call_v1
+KIND:coop group     	OFFSET:0xc08 0x1f78 0x2030 
+<0x2>
+FUNC:_ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_3E11qkg_call_v1
+KIND:return         	OFFSET:0x1f48 0x20d8 
+
+SHADER ABI KERNEL CONTROL:
+grid_dim_x_en:1
+grid_dim_y_en:1
+grid_dim_z_en:1
+block_dim_en:1
+block_idx_x_en:1
+block_idx_y_en:1
+block_idx_z_en:1
+start_thread_idx_en:1
+user_sreg_num:32
+pri:0
+fwd_progress:0
+private_en:0
+stack_phys_idx_en:1
+cu_disp_en:0
+block_age_en:0
+dispatch_mode:0
+mma_en:0
+reserved_smem:0
+texture_en:0
+
+SHADER ABI KERNEL MODE:
+fp_rndmode:0
+i_rndmode:0
+fp_denorm_flush:0
+saturation:0
+exception_en:0
+relu:0
+nan:0
+vmem_ooo:0
+saturation_fp64:0
+trap_exception:0
+debug_en:0
+trap_en:1
+perf_cnt_en:0
+
+SHADER ABI KERNEL RESOURCE:
+vreg_number:78
+sreg_number:80
+shared_memory_size:2
+treg_en:0
+
+STACK SIZE:0
+
+.hg_info._ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_3E11qkg_call_v1.ARGUMENT:
+<0x1> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint64  	KIND:hidden.tool.base	sreg[0:1]      	Size:0x8	attrs:14
+<0x2> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint32  	KIND:hidden.pm.size 	sreg[2]        	Size:0x4	attrs:7
+<0x3> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint64  	KIND:hidden.km.base 	sreg[4:5]      	Size:0x8	attrs:5
+<0x4> 
+KERNEL_PARAM
+INDEX:0x0   	TYPE:uint8   	KIND:global.value   	global km_base[0:159]	Size:0xa0	attrs:readonly
+====================================================
+====================================================
+Func 6 _ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_4E11qkg_call_v1 RESOURCE INFO:
+
+INSTR OFFSETS:
+<0x1>
+FUNC:_ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_4E11qkg_call_v1
+KIND:coop group     	OFFSET:0x438 0x1750 0x1808 
+<0x2>
+FUNC:_ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_4E11qkg_call_v1
+KIND:return         	OFFSET:0x18d0 
+
+SHADER ABI KERNEL CONTROL:
+grid_dim_x_en:1
+grid_dim_y_en:1
+grid_dim_z_en:1
+block_dim_en:1
+block_idx_x_en:1
+block_idx_y_en:1
+block_idx_z_en:1
+start_thread_idx_en:1
+user_sreg_num:32
+pri:0
+fwd_progress:0
+private_en:0
+stack_phys_idx_en:1
+cu_disp_en:0
+block_age_en:0
+dispatch_mode:0
+mma_en:0
+reserved_smem:0
+texture_en:0
+
+SHADER ABI KERNEL MODE:
+fp_rndmode:0
+i_rndmode:0
+fp_denorm_flush:0
+saturation:0
+exception_en:0
+relu:0
+nan:0
+vmem_ooo:0
+saturation_fp64:0
+trap_exception:0
+debug_en:0
+trap_en:1
+perf_cnt_en:0
+
+SHADER ABI KERNEL RESOURCE:
+vreg_number:78
+sreg_number:80
+shared_memory_size:2
+treg_en:0
+
+STACK SIZE:0
+
+.hg_info._ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_4E11qkg_call_v1.ARGUMENT:
+<0x1> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint64  	KIND:hidden.tool.base	sreg[0:1]      	Size:0x8	attrs:14
+<0x2> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint32  	KIND:hidden.pm.size 	sreg[2]        	Size:0x4	attrs:7
+<0x3> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint64  	KIND:hidden.km.base 	sreg[4:5]      	Size:0x8	attrs:5
+<0x4> 
+KERNEL_PARAM
+INDEX:0x0   	TYPE:uint8   	KIND:global.value   	global km_base[0:159]	Size:0xa0	
+====================================================
+====================================================
+Func 7 _ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_5E11qkg_call_v1 RESOURCE INFO:
+
+INSTR OFFSETS:
+<0x1>
+FUNC:_ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_5E11qkg_call_v1
+KIND:coop group     	OFFSET:0xca8 0x1f20 0x2020 0x2080 
+<0x2>
+FUNC:_ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_5E11qkg_call_v1
+KIND:return         	OFFSET:0x2108 
+
+SHADER ABI KERNEL CONTROL:
+grid_dim_x_en:1
+grid_dim_y_en:1
+grid_dim_z_en:1
+block_dim_en:1
+block_idx_x_en:1
+block_idx_y_en:1
+block_idx_z_en:1
+start_thread_idx_en:1
+user_sreg_num:32
+pri:0
+fwd_progress:0
+private_en:0
+stack_phys_idx_en:1
+cu_disp_en:0
+block_age_en:0
+dispatch_mode:0
+mma_en:0
+reserved_smem:0
+texture_en:0
+
+SHADER ABI KERNEL MODE:
+fp_rndmode:0
+i_rndmode:0
+fp_denorm_flush:0
+saturation:0
+exception_en:0
+relu:0
+nan:0
+vmem_ooo:0
+saturation_fp64:0
+trap_exception:0
+debug_en:0
+trap_en:1
+perf_cnt_en:0
+
+SHADER ABI KERNEL RESOURCE:
+vreg_number:74
+sreg_number:80
+shared_memory_size:2
+treg_en:0
+
+STACK SIZE:0
+
+.hg_info._ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_5E11qkg_call_v1.ARGUMENT:
+<0x1> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint64  	KIND:hidden.tool.base	sreg[0:1]      	Size:0x8	attrs:14
+<0x2> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint32  	KIND:hidden.pm.size 	sreg[2]        	Size:0x4	attrs:7
+<0x3> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint64  	KIND:hidden.km.base 	sreg[4:5]      	Size:0x8	attrs:5
+<0x4> 
+KERNEL_PARAM
+INDEX:0x0   	TYPE:uint8   	KIND:global.value   	global km_base[0:159]	Size:0xa0	attrs:readonly
+====================================================
+====================================================
+Func 8 _ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_6E11qkg_call_v1 RESOURCE INFO:
+
+INSTR OFFSETS:
+<0x1>
+FUNC:_ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_6E11qkg_call_v1
+KIND:coop group     	OFFSET:0xca8 0x1f20 0x2020 0x2078 
+<0x2>
+FUNC:_ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_6E11qkg_call_v1
+KIND:return         	OFFSET:0x20f0 
+
+SHADER ABI KERNEL CONTROL:
+grid_dim_x_en:1
+grid_dim_y_en:1
+grid_dim_z_en:1
+block_dim_en:1
+block_idx_x_en:1
+block_idx_y_en:1
+block_idx_z_en:1
+start_thread_idx_en:1
+user_sreg_num:32
+pri:0
+fwd_progress:0
+private_en:0
+stack_phys_idx_en:1
+cu_disp_en:0
+block_age_en:0
+dispatch_mode:0
+mma_en:0
+reserved_smem:0
+texture_en:0
+
+SHADER ABI KERNEL MODE:
+fp_rndmode:0
+i_rndmode:0
+fp_denorm_flush:0
+saturation:0
+exception_en:0
+relu:0
+nan:0
+vmem_ooo:0
+saturation_fp64:0
+trap_exception:0
+debug_en:0
+trap_en:1
+perf_cnt_en:0
+
+SHADER ABI KERNEL RESOURCE:
+vreg_number:74
+sreg_number:80
+shared_memory_size:1
+treg_en:0
+
+STACK SIZE:0
+
+.hg_info._ZN9quactlize9execution10model_gemv22point_8_2048_512_arm_6E11qkg_call_v1.ARGUMENT:
+<0x1> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint64  	KIND:hidden.tool.base	sreg[0:1]      	Size:0x8	attrs:14
+<0x2> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint32  	KIND:hidden.pm.size 	sreg[2]        	Size:0x4	attrs:7
+<0x3> 
+HIDDEN_PARAM
+INDEX:hidden	TYPE:uint64  	KIND:hidden.km.base 	sreg[4:5]      	Size:0x8	attrs:5
+<0x4> 
+KERNEL_PARAM
+INDEX:0x0   	TYPE:uint8   	KIND:global.value   	global km_base[0:159]	Size:0xa0	attrs:readonly
+====================================================
