@@ -3,6 +3,11 @@
 Prebuilt-only, eight M1 points, 68 bounded candidate specializations. This
 does not replace the model runtime, its selection table, or llama.cpp.
 
+The returned `model-gemv.mZfskR` run is [reviewed](../../docs/MODEL_GEMV_REVIEW_20260917.md):
+seven exact M1 candidates improve in all six rounds; Q6 retains TC. All 16
+ACU reports were re-imported. These are isolated results, not production or
+whole-model performance admission.
+
 | Point | Logical N × K | Contract | Incumbent |
 |---|---:|---|---|
 | Q4 routed gate/up | 512 × 2048, E256/top8 | paired-N4 + SwiGLU, BF16 | fused SIMT C4/P8/W8 |

@@ -55,3 +55,17 @@ This turn ends with host-tested, locally compiled, immutable experimental
 binaries and one box command, not an unmeasured production replacement.
 No deadline was requested. Record build wall time; device runtime estimates
 must remain advisory until the first point completes.
+
+## Returned result and remaining work
+
+`model-gemv.mZfskR` is complete. The [review](../../../docs/MODEL_GEMV_REVIEW_20260917.md)
+recomputes 2160 event samples and re-imports all 16 ACU reports. Seven exact M1
+points improve in all six rounds; retain Q6 TC. Numerics cover M1/M2/M8 but
+performance admission does not extend to M2..8. No production/caller changed.
+
+- [x] Validate source/runtime/numerical and timing denominators.
+- [x] Re-import actual ACU reports, separate DRAM/internal traffic and instruction costs.
+- [x] Record measured candidate decisions and failed hypotheses.
+- [ ] Integrate only the seven exact M1 candidates; retain fallback scope and BF16 routing.
+- [ ] Verify rebuilt integrated kernels, then repeat whole-model timing and Asys.
+- [ ] Continue MBU tuning; this round does not meet the 40%/60% objectives.
