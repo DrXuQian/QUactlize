@@ -7,6 +7,11 @@ records 19,008 configuration cells, 960 replays and 384 detected negatives.
 Performance and model admission are pending. No production selector or
 llama.cpp caller is changed by this candidate.
 
+Next device step: the [bounded full-call performance gate](GATE_UP_PAIRED_N4_PERF.md)
+compares the unchanged fusion image with exact current per-token incumbents
+on Q8 shared and Q4 routed shapes. Use `tools/run_gate_up_perf_box.sh`; its
+separate prebuilt pin does not replace the numerical or production packages.
+
 ## Offline contract
 
 For each expert, start with two raw GGUF tensors of the **same qtype**, each
