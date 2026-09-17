@@ -1,0 +1,6 @@
+{"id":"q4-h32","parent":"paired-Q4-S1-C4P8W8","change":"metadata header32","hypothesis":"reduce packed metadata decode instructions","decision":"PLANNED"}
+{"id":"q8-hoist","parent":"paired-Q8-S1-C4P8W8","change":"hoisted vector load window","hypothesis":"amortize address/load scheduling; register pressure may offset gain","decision":"PLANNED"}
+{"id":"q5-window","parent":"Q5-S1-C4P8W2-H32","change":"smaller register window and fixed shape","hypothesis":"reduce register/address pressure","decision":"PLANNED"}
+{"id":"q6-meta","parent":"Q6-generic-SIMT","change":"direct required metadata fields","hypothesis":"avoid full nine-word metadata communication","decision":"PLANNED"}
+{"id":"paired-tile16","parent":"paired-S1-TileN32","change":"half-width output tile retaining G4/U4 pairs and sequential warp fold","hypothesis":"shared M1 grid64 instead of grid32; more CTA and metadata overhead","decision":"PLANNED"}
+{"id":"initial-68-build","parent":"4f181a071ebf3715f90b2898033497342f9af4ca","change":"eight point-specific experiment libraries, three frozen TC controls","command":"python3 dev/gemv_model/build.py --jobs 8 followed by inspect_native.py","evidence":"/tmp/gemv-model-build-r3-20260917/manifest.json","build_seconds":84.8,"decision":"COMPILED_DEVICE_ADMISSION_PENDING"}
