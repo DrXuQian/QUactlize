@@ -273,10 +273,15 @@ def child(args):
         traceback.print_exc()
         return 1
     finally:
-        save(args.output, result)
-        for a in reversed(arms):
-            a.close()
-        rt.close()
+        try:
+            for a in reversed(arms):
+                a.close()
+            rt.close()
+        except Exception as error:
+            result.update(status="FAIL", cleanup_error=str(error))
+            raise
+        finally:
+            save(args.output, result)
 
 
 def collect(args):
