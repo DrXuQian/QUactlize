@@ -32,7 +32,7 @@ __device__ __forceinline__ float2 code_pair(uint32_t word) {
     return __half22float2(__hsub2(__half2(h),__float2half2_rn(1152.f)));
 }
 
-template<int Input,int Compute,int Variant,int Columns,int Warps,int P>
+template<int Input,int Compute,int Variant,int Columns,int Warps,int P,bool Hoist=false>
 __global__ void kernel(qkg_call_v1 c,int split) {
     constexpr int TileN=Columns*P,Workers=Warps*32/Columns,Pairs=P/2;
     static_assert(Variant==0 || Variant==1);
@@ -59,37 +59,70 @@ __global__ void kernel(qkg_call_v1 c,int split) {
         uint4 packet{};
         if constexpr(Variant) packet=activation_packet<Input,Compute,Columns,32>(a,g,lane);
         float2 dot[Pairs]{};
-        #pragma unroll
-        for(int half=0;half<2;++half) {
-            // Only four packed rows are live, versus eight in the generic
-            // Q8 path. Retire one K16 delivery before loading the next.
+        if constexpr(Hoist) {
+            // Expose independent loads without changing the dot-product order.
+            // A separate specialization keeps the Split-K register window small.
+            uint32_t words[2][2][4][Pairs];
             #pragma unroll
-            for(int segment=0;segment<2;++segment) {
-                uint32_t words[4][Pairs];
+            for(int half=0;half<2;++half)
                 #pragma unroll
-                for(int residue=0;residue<4;++residue)
-                    load_words<P>(low+(uint64_t(g)*16+segment*8+half*4+residue)*c.n+col,words[residue]);
-                #pragma unroll
-                for(int slot=0;slot<2;++slot) {
-                    int offset=segment*16+slot*8+half*4;
-                    float4 av;
-                    if constexpr(Variant) {
-                        float2 x=activation_pair<Compute,Columns,32>(packet,offset,lane);
-                        float2 y=activation_pair<Compute,Columns,32>(packet,offset+2,lane);
-                        av=make_float4(x.x,x.y,y.x,y.y);
-                    } else av=a.values4(g*32+offset);
-                    float values[4]={av.x,av.y,av.z,av.w};
+                for(int segment=0;segment<2;++segment)
                     #pragma unroll
-                    for(int residue=0;residue<4;++residue) {
+                    for(int residue=0;residue<4;++residue)
+                        load_words<P>(low+(uint64_t(g)*16+segment*8+half*4+residue)*c.n+col,words[half][segment][residue]);
+            #pragma unroll
+            for(int half=0;half<2;++half)
+                #pragma unroll
+                for(int segment=0;segment<2;++segment)
+                    #pragma unroll
+                    for(int slot=0;slot<2;++slot) {
+                        int offset=segment*16+slot*8+half*4;
+                        float4 av;
+                        if constexpr(Variant) {
+                            float2 x=activation_pair<Compute,Columns,32>(packet,offset,lane);
+                            float2 y=activation_pair<Compute,Columns,32>(packet,offset+2,lane);
+                            av=make_float4(x.x,x.y,y.x,y.y);
+                        } else av=a.values4(g*32+offset);
+                        float values[4]={av.x,av.y,av.z,av.w};
                         #pragma unroll
-                        for(int p=0;p<Pairs;++p) {
-                            float2 q=slot==0?code_pair<0>(words[residue][p]):code_pair<1>(words[residue][p]);
-                            dot[p].x=fmaf(values[residue],q.x,dot[p].x);
-                            dot[p].y=fmaf(values[residue],q.y,dot[p].y);
-                        }
+                        for(int residue=0;residue<4;++residue)
+                            #pragma unroll
+                            for(int p=0;p<Pairs;++p) {
+                                float2 q=slot==0?code_pair<0>(words[half][segment][residue][p]):code_pair<1>(words[half][segment][residue][p]);
+                                dot[p].x=fmaf(values[residue],q.x,dot[p].x);
+                                dot[p].y=fmaf(values[residue],q.y,dot[p].y);
+                            }
+                    }
+        } else {
+            // Keep the original narrow load window outside the hoist scope.
+            #pragma unroll
+            for(int half=0;half<2;++half)
+                #pragma unroll
+                for(int segment=0;segment<2;++segment) {
+                    uint32_t words[4][Pairs];
+                    #pragma unroll
+                    for(int residue=0;residue<4;++residue)
+                        load_words<P>(low+(uint64_t(g)*16+segment*8+half*4+residue)*c.n+col,words[residue]);
+                    #pragma unroll
+                    for(int slot=0;slot<2;++slot) {
+                        int offset=segment*16+slot*8+half*4;
+                        float4 av;
+                        if constexpr(Variant) {
+                            float2 x=activation_pair<Compute,Columns,32>(packet,offset,lane);
+                            float2 y=activation_pair<Compute,Columns,32>(packet,offset+2,lane);
+                            av=make_float4(x.x,x.y,y.x,y.y);
+                        } else av=a.values4(g*32+offset);
+                        float values[4]={av.x,av.y,av.z,av.w};
+                        #pragma unroll
+                        for(int residue=0;residue<4;++residue)
+                            #pragma unroll
+                            for(int p=0;p<Pairs;++p) {
+                                float2 q=slot==0?code_pair<0>(words[residue][p]):code_pair<1>(words[residue][p]);
+                                dot[p].x=fmaf(values[residue],q.x,dot[p].x);
+                                dot[p].y=fmaf(values[residue],q.y,dot[p].y);
+                            }
                     }
                 }
-            }
         }
         #pragma unroll
         for(int p=0;p<Pairs;++p) {total[p].x+=d[2*p]*dot[p].x;total[p].y+=d[2*p+1]*dot[p].y;}
@@ -119,11 +152,19 @@ int launch_v2(qkg_simt_call_v2 const& d,int split) {
     auto stream=static_cast<hggcStream_t>(d.call.stream);
     if(hggcGetLastError()!=hggcSuccess) return QKG_RUNTIME;
     int blocks=d.call.rows*split*(d.call.n/(Columns*P));
-    if(d.compute_type==QKG_COMPUTE_F16)
-        kernel<QKG_F32,QKG_COMPUTE_F16,Variant-4,Columns,Warps,P><<<blocks,Warps*32,0,stream>>>(d.call,split);
-    else if(d.compute_type==QKG_COMPUTE_BF16)
+    if(d.compute_type==QKG_COMPUTE_F16) {
+        auto const& c=d.call;
+        if constexpr(Variant==5 && P==4 && ((Columns==4 && Warps==8) || (Columns==8 && Warps==4))) {
+            bool hoist=split==1 && c.mode==QKG_DENSE && c.rows==1 && c.experts==1 &&
+                ((Columns==4 && c.n==512 && c.k==2048) || (Columns==8 && c.n==2048 && c.k==512));
+            if(hoist)
+                kernel<QKG_F32,QKG_COMPUTE_F16,Variant-4,Columns,Warps,P,true><<<blocks,Warps*32,0,stream>>>(c,split);
+            else
+                kernel<QKG_F32,QKG_COMPUTE_F16,Variant-4,Columns,Warps,P><<<blocks,Warps*32,0,stream>>>(c,split);
+        } else kernel<QKG_F32,QKG_COMPUTE_F16,Variant-4,Columns,Warps,P><<<blocks,Warps*32,0,stream>>>(c,split);
+    } else if(d.compute_type==QKG_COMPUTE_BF16) {
         kernel<QKG_F32,QKG_COMPUTE_BF16,Variant-4,Columns,Warps,P><<<blocks,Warps*32,0,stream>>>(d.call,split);
-    else return QKG_INVALID;
+    } else return QKG_INVALID;
     if(hggcGetLastError()!=hggcSuccess) return QKG_RUNTIME;
     if(split>1) {
         auto const& c=d.call;

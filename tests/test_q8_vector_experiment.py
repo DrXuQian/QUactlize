@@ -165,3 +165,66 @@ def test_q8_runner_loads_sdk_before_module_and_closes_on_load_failure(tmp_path, 
     with pytest.raises(OSError, match="planted module failure"):
         runner.main()
     assert calls == ["runtime", "module", "close"]
+
+
+def test_hoist_numerics_bind_the_actual_arm_and_reject_changed_bits():
+    import numpy as np
+    from tools.run_kpack_q8_hoist import numeric_pair
+    libraries = dict(baseline=object(), candidate=object())
+    class Bench:
+        bad = False
+        lib = None
+        def __init__(self): self.calls = []
+        def update(self, repeat): pass
+        def correctness(self, config):
+            self.calls.append(('correct', self.lib))
+            return np.array([2 if self.bad and self.lib is libraries['candidate'] else 1], dtype='f4'), 0
+        def replay_and_negative(self, config):
+            self.calls.append(('replay', self.lib))
+            return dict(negative='ZERO_A_REJECTED')
+        def invalid_id_negative(self, config): self.calls.append(('ids', self.lib))
+    bench = Bench()
+    assert len(numeric_pair(bench, libraries, None)) == 10
+    for lib in libraries.values():
+        assert bench.calls.count(('correct', lib)) == 4
+        assert bench.calls.count(('replay', lib)) == 1
+        assert bench.calls.count(('ids', lib)) == 1
+    bench.bad = True
+    with pytest.raises(ValueError, match='FP32 output bits'):
+        numeric_pair(bench, libraries, None)
+
+
+def test_hoist_only_accepts_one_source_change_and_no_selector_changes():
+    import copy
+    from tools.run_kpack_q8_hoist import compare_contracts, KERNEL, POINTS
+    baseline = dict(execution_receipt=dict(source_hashes={KERNEL:'old','other':'same'},
+        runtime={'wrapper':'same'}, compiler_sha256='compiler', flags=['-O3'], simt_configs=[1]), policy_hashes={'p':'a'})
+    candidate = copy.deepcopy(baseline)
+    candidate['execution_receipt']['source_hashes'][KERNEL] = 'new'
+    assert compare_contracts(baseline, candidate) == [KERNEL]
+    for plant in ('source','compiler','flags','runtime','configs','policy'):
+        bad = copy.deepcopy(candidate)
+        if plant == 'source': bad['execution_receipt']['source_hashes']['other'] = 'bad'
+        elif plant == 'policy': bad['policy_hashes']['p'] = 'bad'
+        else: bad['execution_receipt'][{'compiler':'compiler_sha256','configs':'simt_configs'}.get(plant,plant)] = 'bad'
+        with pytest.raises(ValueError): compare_contracts(baseline, bad)
+    assert [(n,k,c.split*n//c.tile_n) for n,k,c in POINTS] == [(512,2048,32),(2048,512,64),(2048,4096,512)]
+
+
+def test_hoist_keeps_dot_order_and_only_two_f16_m1_scopes():
+    from pathlib import Path
+    from dev.gemv_simt.model_followup import kernel_body, candidate_body
+    root = Path(__file__).resolve().parents[1]
+    text = (root/'quactlize/execution/simt_q8_vector.cuh').read_text()
+    assert 'bool Hoist=false' in kernel_body(True)
+    assert 'bool Hoist=false' in candidate_body(True)
+    assert 'uint32_t words[2][2][4][Pairs]' in text
+    assert 'split==1 && c.mode==QKG_DENSE && c.rows==1 && c.experts==1' in text
+    assert 'Columns==4 && c.n==512 && c.k==2048' in text
+    assert 'Columns==8 && c.n==2048 && c.k==512' in text
+    bf16 = text[text.index('} else if(d.compute_type==QKG_COMPUTE_BF16)'):]
+    assert ',P,true>' not in bf16
+    # Same low-plane addresses, code slot and FMA order; only the load window changes.
+    old = [s*8+h*4+r for h in range(2) for s in range(4) for r in range(4)]
+    hoist = [s*16+t*8+h*4+r for h in range(2) for s in range(2) for t in range(2) for r in range(4)]
+    assert old == hoist and sorted(hoist)==list(range(32))

@@ -94,6 +94,23 @@
     "$PYTHON" -c 'import hashlib,sys; assert hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()==sys.argv[2],"model package manifest differs"' "$BUNDLE/manifest.json" "${INFO[3]}"
     "$PYTHON" tools/verify_kpack_dispatch.py "$BUNDLE" --sdk "$SDK" | tee "$RUN/results/verify.log"
     test ! -e "$BUNDLE/llama"
+    if [[ ${Q8_HOIST_AB:-0} == 1 ]]; then
+        stage=q8-hoist-ab
+        mapfile -t Q8_BASE < <("$PYTHON" -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["commit"]); print(p["path"]); print(p["manifest_sha256"])' "$ROOT/tools/kpack_q8_hoist_baseline.json")
+        [[ ${#Q8_BASE[@]} == 3 && ${Q8_BASE[0]} =~ ^[0-9a-f]{40}$ && ${Q8_BASE[1]} == prebuilt/ppu0010/kpack-model-runtime-v1 && ${Q8_BASE[2]} =~ ^[0-9a-f]{64}$ ]]
+        Q8_ART="$RESULT_DIR/quactlize-model-artifact-${Q8_BASE[0]:0:10}"
+        if [[ -e "$Q8_ART" ]]; then
+            test -d "$Q8_ART" && test "$(git -C "$Q8_ART" rev-parse HEAD)" == "${Q8_BASE[0]}"
+        else
+            GIT_LFS_SKIP_SMUDGE=1 git worktree add --detach "$Q8_ART" "${Q8_BASE[0]}"
+        fi
+        git -C "$Q8_ART" lfs pull origin --include="${Q8_BASE[1]}/libquactlize_ppu_execution.so,${Q8_BASE[1]}/manifest.json" --exclude=""
+        printf 'Q8_HOIST_AB start cases=3 configs=UNCHANGED cache=ROTATING roof_gbps=%s; keep this GPU idle\n' "${PEAK_BANDWIDTH_GBPS:-2700}"
+        "$PYTHON" -u tools/run_kpack_q8_hoist.py --sdk "$SDK" --candidate "$BUNDLE" \
+            --baseline "$Q8_ART/${Q8_BASE[1]}" --output "$RUN/results/q8-hoist" \
+            --l2-bytes "${L2_BYTES:-0}" --peak-gbps "${PEAK_BANDWIDTH_GBPS:-2700}" \
+            2>&1 | tee "$RUN/results/q8-hoist.log"
+    fi
     stage=router-alias-gate
     if "$PYTHON" -c 'import json,sys; sys.exit("router_alias_gate" not in json.load(open(sys.argv[1])))' "$BUNDLE/manifest.json"; then
         "$BUNDLE/router-alias/bench" --router-alias-check 2>&1 | tee "$RUN/results/router-alias.log"

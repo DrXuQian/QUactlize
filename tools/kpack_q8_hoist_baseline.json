@@ -1,0 +1,7 @@
+{
+  "branch": "artifacts/kpack-model-runtime-v1",
+  "commit": "58a50648375403d6a6e2685ead4c50559dbd9a9b",
+  "path": "prebuilt/ppu0010/kpack-model-runtime-v1",
+  "manifest_sha256": "f67c67e138793f74d39fe7965064874fb06f342932c2a29adc10772b869bdd34",
+  "execution_sha256": "47d75e168b71ada4cb42edf29d0a2700af0de0868d81d8a220880a9e007fa30e"
+}

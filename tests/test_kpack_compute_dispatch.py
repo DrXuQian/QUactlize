@@ -95,6 +95,10 @@ def test_caller_bf16_receipts_and_symbol_precision(monkeypatch):
         assert native.simt_symbol_recipe(old.replace('4>',f'4, 1, {changes}>')) is None
     vector='void quactlize::execution::simt::q8_vector::kernel<1, 1, 1, 4, 8, 4>(qkg_call_v1, int)'
     assert native.simt_symbol_recipe(vector)==(8,1,5,4,8,4,1)
+    for hoist in ('true','false','0','1'):
+        assert native.simt_symbol_recipe(vector.replace('4>',f'4, {hoist}>'))==(8,1,5,4,8,4,1)
+    for hoist in ('2','99','true, 0'):
+        assert native.simt_symbol_recipe(vector.replace('4>',f'4, {hoist}>')) is None
     line='[quactlize-plan] tensor=test op=grouped route=gemv reader=simt-reuse q=14 rows=8 n=512 k=2048 variant=3 columns=4 warps=4 values=4 split=1 policy=11 activation=BF16'
     manifest=dict(modules=[],smallm_policy=True,compute_contract=True,execution_receipt=dict(
         simt_compute_v2=dict(compute=['f16','bf16']),simt_configs={'14':[
