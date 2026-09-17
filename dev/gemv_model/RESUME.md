@@ -1,11 +1,13 @@
 # Resume
 
-State: box results reviewed; 76 provider/point numerical gates PASS;
-seven exact M1 integration candidates, Q6 TC retained. Not production-wired.
+State: seven exact M1 candidates integrated; package publication in progress.
+Integration starts at bfa5b38; Q6 TC and all unmeasured fallbacks stay unchanged.
+See ../../docs/MODEL_GEMV_INTEGRATION_20260917.md for scope and validation.
 Branch: `dev/gemv-model-tuning`.
 Baseline source: `4f181a071ebf3715f90b2898033497342f9af4ca`.
 Baseline artifact: `6a9b89a322f1ccd5cf1b724325294f7d2ae129b1`.
-No production kernel, selection or caller changed.
+The initial experiment below did not change production. The authorized
+integration now changes exact readers/selection and caller trace parsing only.
 
 Build: `/tmp/gemv-model-build-r3-20260917`, 84.8 seconds, eight parallel jobs.
 Local: host contracts, package and emitted ISA/resource checks PASS.

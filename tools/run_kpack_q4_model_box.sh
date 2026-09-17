@@ -88,7 +88,7 @@
 
     stage=fetch
     mapfile -t INFO < <("$PYTHON" -c 'import json,sys; m=json.load(open(sys.argv[1])); print(m["branch"]); print(m["commit"]); print(m["path"]); print(m["manifest_sha256"]); print(m["llama_ci_commit"])' "$ROOT/tools/kpack_q4_model_artifact.json")
-    [[ ${#INFO[@]} == 5 && ( ${INFO[0]} == artifacts/kpack-model-runtime-v1 || ${INFO[0]} == artifacts/kpack-model-paired-n4-v1 ) && ${INFO[1]} =~ ^[0-9a-f]{40}$ && ${INFO[2]} == prebuilt/ppu0010/kpack-model-runtime-v1 && ${INFO[3]} =~ ^[0-9a-f]{64}$ && ${INFO[4]} =~ ^[0-9a-f]{40}$ ]]
+    [[ ${#INFO[@]} == 5 && ( ${INFO[0]} == artifacts/kpack-model-runtime-v1 || ${INFO[0]} == artifacts/kpack-model-paired-n4-v1 || ${INFO[0]} == artifacts/kpack-model-readers-v1 ) && ${INFO[1]} =~ ^[0-9a-f]{40}$ && ${INFO[2]} == prebuilt/ppu0010/kpack-model-runtime-v1 && ${INFO[3]} =~ ^[0-9a-f]{64}$ && ${INFO[4]} =~ ^[0-9a-f]{40}$ ]]
     ART="$RESULT_DIR/quactlize-model-artifact-${INFO[1]:0:10}"
     git fetch origin "${INFO[0]}"
     git cat-file -e "${INFO[1]}^{commit}"
@@ -106,6 +106,22 @@
         stage=paired-integration-gate
         "$PYTHON" -u tools/run_kpack_gate_up_integration.py --sdk "$SDK" --bundle "$BUNDLE" \
             --output "$RUN/results/paired-integration" 2>&1 | tee "$RUN/results/paired-integration.log"
+    fi
+    if "$PYTHON" -c 'import json,sys; sys.exit(not json.load(open(sys.argv[1])).get("model_reader_gate",False))' "$ROOT/tools/kpack_q4_model_artifact.json"; then
+        stage=model-reader-integration
+        mapfile -t READER_PIN < <("$PYTHON" -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["branch"]); print(p["commit"]); print(p["path"])' "$ROOT/tools/kpack_model_gemv_artifact.json")
+        [[ ${#READER_PIN[@]} == 3 && ${READER_PIN[0]} == artifacts/model-gemv-reader-v1 && ${READER_PIN[1]} =~ ^[0-9a-f]{40}$ && ${READER_PIN[2]} == prebuilt/ppu0010/model-gemv-reader-v1 ]]
+        READER_ART="$RESULT_DIR/quactlize-model-gemv-artifact-${READER_PIN[1]:0:12}"
+        if [[ ! -e "$READER_ART" ]]; then
+            GIT_LFS_SKIP_SMUDGE=1 git fetch origin "${READER_PIN[0]}"
+            git cat-file -e "${READER_PIN[1]}^{commit}"
+            GIT_LFS_SKIP_SMUDGE=1 git worktree add --detach "$READER_ART" "${READER_PIN[1]}"
+        fi
+        [[ $(git -C "$READER_ART" rev-parse HEAD) == "${READER_PIN[1]}" ]]
+        git -C "$READER_ART" lfs pull origin --include="${READER_PIN[2]}/*.so,${READER_PIN[2]}/*.isa.txt" --exclude=''
+        "$PYTHON" -u tools/run_model_gemv_integration.py --sdk "$SDK" --bundle "$BUNDLE" \
+            --reference "$READER_ART/${READER_PIN[2]}" --l2-bytes "${L2_BYTES:-67108864}" \
+            --output "$RUN/results/model-readers" 2>&1 | tee "$RUN/results/model-readers.log"
     fi
     if [[ ${Q8_HOIST_AB:-0} == 1 ]]; then
         stage=q8-hoist-ab
@@ -201,6 +217,9 @@
     export LD_LIBRARY_PATH="$BUILD_DIR/bin:$LD_LIBRARY_PATH"
     if [[ "$Q8_HOIST_AB" == 1 ]]; then
         "$PYTHON" -c 'import sys; sys.path.insert(0,sys.argv[1]+"/tests"); from quactlize_native import simt_symbol_recipe; assert simt_symbol_recipe("quactlize::execution::simt::q8_vector::kernel<1,0,1,4,8,4,true>")== (8,1,5,4,8,4,0), "update the llama trace parser for Q8 hoist"' "$LLAMA_DIR"
+    fi
+    if "$PYTHON" -c 'import json,sys; sys.exit(not json.load(open(sys.argv[1])).get("model_reader_gate",False))' "$ROOT/tools/kpack_q4_model_artifact.json"; then
+        "$PYTHON" -c 'import sys; sys.path.insert(0,sys.argv[1]+"/tests"); from quactlize_native import simt_symbol_recipe,paired_symbol_recipe; assert simt_symbol_recipe("quactlize::execution::simt::q8_vector::kernel_model<1,0,1,8,4,4,true,8192,2048,1>")== (8,1,5,8,4,4,0), "update the llama reader trace parser"; assert paired_symbol_recipe("quactlize::fusion::simt_gate_up_model<12,1,1,8>"), "update the llama paired trace parser"' "$LLAMA_DIR"
     fi
     "$BUILD_DIR/bin/llama-batched-bench" --help > "$RUN/results/binary-help.log" 2>&1
 

@@ -142,14 +142,22 @@
       ],
       "candidate": [
         5,
+        4,
+        2,
+        4,
+        1
+      ],
+      "old_us": 4.08705893684836,
+      "new_us": 3.7523527794024525,
+      "result_sha256": "b70d8f275cb0c3cd77a3e8ff0f19312e6d16fa230ab8bca9f49ad57d64a40f3b",
+      "archive_sha256": "0362d61e0a9c2e32786298ef59f48e79a0af2d4b84c9a7f542f66444a9ea38f9",
+      "comparison_baseline": [
+        5,
         8,
         4,
         4,
         1
-      ],
-      "old_us": 5.010294125360601,
-      "new_us": 4.834264735965167,
-      "result_sha256": "57545207cf6b9f58a1d6e0dc0a236943eb5fad0bf57e1d22b17622ccab34e50a"
+      ]
     },
     {
       "key": [
@@ -913,7 +921,88 @@
     }
   ],
   "archive_sha256": "74bfe0d324f550a2d9b7e83a6bc27798fc9f4ece4853a87c4b301c698363f06f",
-  "scope": "EXACT_F32_IO_MEASURED_SIMT_REPLACEMENT_TC_UNCHANGED",
+  "scope": "EXACT_F32_IO_MEASURED_REPLACEMENT_INCLUDING_TWO_MATCHED_TC_POINTS",
+  "tc_rows": [
+    {
+      "key": [
+        8,
+        0,
+        8192,
+        2048,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "candidate": [
+        5,
+        8,
+        4,
+        4,
+        1
+      ],
+      "old_us": 15.426110890176561,
+      "new_us": 14.59111107720269,
+      "result_sha256": "1fc84f21b7593f4eec5fd107892b5498c90b02f79ddb1247f6b8d39de29af96b",
+      "archive_sha256": "0362d61e0a9c2e32786298ef59f48e79a0af2d4b84c9a7f542f66444a9ea38f9",
+      "baseline": {
+        "symbol": "closure_q8_0_tm8_tn64_tk64_wn16_dn32",
+        "qtype": 8,
+        "route": "sf-dense",
+        "tm": 8,
+        "tn": 64,
+        "tk": 64,
+        "wm": 8,
+        "wn": 16,
+        "stages": 2,
+        "ap": 0,
+        "dn": 32,
+        "persistent": -1,
+        "split": 8
+      }
+    },
+    {
+      "key": [
+        8,
+        0,
+        4096,
+        2048,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "candidate": [
+        5,
+        4,
+        8,
+        4,
+        1
+      ],
+      "old_us": 10.740000097190633,
+      "new_us": 9.34352944878971,
+      "result_sha256": "da09d38c5457675ba43c805fa82e65804ad8224c3b9152913719a9424ae2cbd1",
+      "archive_sha256": "0362d61e0a9c2e32786298ef59f48e79a0af2d4b84c9a7f542f66444a9ea38f9",
+      "baseline": {
+        "symbol": "closure_q8_0_tm16_tn64_tk64_wn16_dn64",
+        "qtype": 8,
+        "route": "sf-dense",
+        "tm": 16,
+        "tn": 64,
+        "tk": 64,
+        "wm": 16,
+        "wn": 16,
+        "stages": 2,
+        "ap": 0,
+        "dn": 64,
+        "persistent": -1,
+        "split": 8
+      }
+    }
+  ],
+  "reader_evidence_sha256": "004b82519c1d22910246e1be078e4fa7f76c725802801f792662fe2f6c07b090",
   "model_evidence_sha256": "5ece12e74ce825e92f5840d5b7cf79ec1a59cf90dea63f53790200f4f68e6a41",
   "evidence_sha256": "29aac2b7af14d42320b93e32bb1322ef8cf83b18de91ceb189cc73e8ae6ca49d",
   "matched_sha256": "157b3d8d4e74813156bb149824424e76fcee733476ab2a8f977953d84b95889f"

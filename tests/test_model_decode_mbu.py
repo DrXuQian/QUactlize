@@ -88,12 +88,13 @@ def test_frozen_body_clones_and_isolated_changes():
         assert source.count('model_followup::candidate<')==len(p.arms)
         assert f'<<<blocks,{p.config.warps*32},0,stream>>>' in source
         assert 'split!=1' in source and 'input_type!=QKG_F32' in source
-        assert 'std::conditional_t<(Changes&2)!=0,unsigned,int>' in source
+        body=source if p.config.variant>=4 else (spec.ROOT/'quactlize/execution/simt_kernel.cuh').read_text()
+        assert 'std::conditional_t<(Changes&2)!=0,unsigned,int>' in body
         if p.q==8:
             assert 'bytes/16' in source and 'bytes/256' in source
             assert 'sum^=v.x^v.y^v.z^v.w' in source
             assert 'static_cast<uint32_t*>(c.workspace)' in source
-        else:assert 'q4_s1::q4_medium_fold<0,Warps,TileN>' in source
+        else:assert 'q4_s1::q4_medium_fold<0,Warps,TileN>' in body
     with pytest.raises(ValueError):spec.once('changed','expected','new')
 
 

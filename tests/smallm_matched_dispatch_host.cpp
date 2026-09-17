@@ -8,7 +8,7 @@ static int resource(qk_resources_v1* out) {
 }
 int main() {
   using namespace quactlize::dispatch;
-  int count=0;
+  int count=0,reader_replacements=0;
   for(auto const& row:matched::data::kExact) {
     auto const& f=matched::data::kChoices[row.choice];if(f.kind!=0)continue;
     auto const& c=f.tc;bool dense=row.mode==QKG_DENSE;compute=row.compute;
@@ -17,7 +17,7 @@ int main() {
     module->query_dense_io=[](qkd_dense_call_v1 const* d,qk_recipe_v1 const*,qk_resources_v1* out){assert(compute==0 && d->input_type==QKD_F32);return resource(out);};
     module->query_dense_compute=[](qkd_dense_call_v2 const* d,qk_recipe_v1 const*,qk_resources_v1* out){assert(compute==1 && d->compute_type==compute && d->dense.input_type==QKD_F32);return resource(out);};
     module->query_device=[](qk_device_call_v2 const*,qk_recipe_v1 const*,qk_resources_v1* out){assert(compute==0);return resource(out);};
-    module->query_compute=[](qk_compute_device_call_v3 const* d,qk_recipe_v1 const*,qk_resources_v1* out){assert(compute==1 && d->compute_type==compute);return resource(out);};
+    module->query_compute=[](qk_compute_device_call_v4 const* d,qk_recipe_v1 const*,qk_resources_v1* out){assert(compute==1 && d->compute_type==compute);return resource(out);};
     Image image{c.symbol,std::string(64,'a'),std::string(64,'b'),c.qtype,c.route,c.tm,c.tn,c.tk,c.wm,c.wn,c.stages,c.ap,c.dn,{},dense,compute};
     kImages={image};runtime.modules[image.key]=module;
     qkg_call_v1 call{};call.version=1;call.size=sizeof(call);call.mode=row.mode;call.qtype=row.q;
@@ -28,6 +28,14 @@ int main() {
       ppu_arrangements::q4_kpack4_transpose_v1():ppu_arrangements::kquant_kpack_transpose_v1(row.q);
     qkg_simt_call_v2 typed{2,sizeof(typed),call,compute};qks_smallm_choice_v2 out{};
     int rc=quactlize_kpack_dispatch_query_smallm_v3(&runtime,&typed,&arr,&out);
+    qkg_simt_config_v1 replacement{};
+    if(q8_vector::select_tc(typed,c,replacement)) {
+      assert(rc==QKS_OK && out.base.kind==QKS_SMALLM_SIMT && out.compute_type==compute);
+      assert(out.base.policy==QKS_Q8_VECTOR_MEASURED && runtime.plans.empty());
+      assert(!std::memcmp(&out.base.simt,&replacement,sizeof(replacement)));
+      assert(out.base.sizes.workspace_bytes==0);
+      ++reader_replacements;continue;
+    }
     assert(rc==QKS_OK && out.base.kind==QKS_SMALLM_TC && out.compute_type==compute);
     assert(out.base.policy==(row.router_sensitive?QKS_MATCHED_ROUTER:QKS_MATCHED_EXACT));
     assert(out.base.tc.policy==out.base.policy && std::string(out.base.tc.parent)==c.symbol);
@@ -39,5 +47,6 @@ int main() {
     assert(quactlize_kpack_dispatch_query_smallm_v3(&runtime,&typed,&arr,&again)==QKS_OK);
     assert(queries==before && !std::memcmp(&out,&again,sizeof(out)));++count;
   }
-  assert(count>500);printf("MATCHED_TC_DISPATCH PASS rows=%d exact compute/geometry/split/grid/ticket preserved\n",count);
+  assert(count>500 && reader_replacements==2);
+  printf("MATCHED_TC_DISPATCH PASS rows=%d exact compute/geometry/split/grid/ticket preserved replacements=%d\n",count,reader_replacements);
 }

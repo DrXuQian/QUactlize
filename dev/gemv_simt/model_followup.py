@@ -47,10 +47,13 @@ def once(text, old, new):
 def kernel_body(vector):
     file=ROOT/'quactlize/execution'/('simt_q8_vector.cuh' if vector else 'simt_kernel.cuh')
     text=file.read_text()
-    start=text.index('template<int Input,int Compute,int Variant,int Columns,int Warps,int P,bool Hoist=false>\n__global__ void kernel' if vector else
+    if vector:
+        start=text.index('template<int Input,int Compute,int Variant,int Columns,int Warps,int P,bool Hoist=false,')
+        end=text.index('\ntemplate<int Input,int Compute,int Variant,int Columns,int Warps,int P,bool Hoist=false>\n__global__ void kernel',start)
+        return once(text[start:end],'__device__ __forceinline__ void kernel_body','__global__ void kernel')
+    start=text.index(
                      'template<int Q,int Input,int Variant,int Columns,int Warps,int P,int Compute=0,int Changes=0>\n__global__ void register_reuse')
-    end=text.index('\ntemplate<int Q,int Variant,int Columns,int Warps,int P>\nint launch_v2' if vector else
-                   '\ntemplate<int Q>\n__global__ void register_reuse_reduce',start)
+    end=text.index('\ntemplate<',start+len('template<'))
     return text[start:end]
 
 

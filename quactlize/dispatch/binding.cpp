@@ -638,13 +638,17 @@ extern "C" int quactlize_kpack_dispatch_query_smallm_v3(void* runtime,qkg_simt_c
     qkg_simt_config_v1 control{1,sizeof(control),0,4,4,4,1};
     int rc=quactlize::execution::simt::query_v2(*typed,control,arrangement,base.sizes);
     if(rc!=QKG_OK) return QKS_INVALID;
-    if(choice.kind==QKS_SMALLM_SIMT) {
-        auto f=choice.reader;
-        base.simt={1,sizeof(base.simt),f.variant,f.columns,f.warps,f.values,f.split};
-        if(q8_vector::select(*typed,base.simt)) base.policy=QKS_Q8_VECTOR_MEASURED;
+    bool replace_tc=choice.kind==QKS_SMALLM_TC && q8_vector::select_tc(*typed,choice.tc,base.simt);
+    if(replace_tc) {base.kind=QKS_SMALLM_SIMT;base.policy=QKS_Q8_VECTOR_MEASURED;}
+    if(base.kind==QKS_SMALLM_SIMT) {
+        if(!replace_tc) {
+            auto f=choice.reader;
+            base.simt={1,sizeof(base.simt),f.variant,f.columns,f.warps,f.values,f.split};
+            if(q8_vector::select(*typed,base.simt)) base.policy=QKS_Q8_VECTOR_MEASURED;
+        }
         if(quactlize::execution::simt::query_v2(*typed,base.simt,arrangement,base.sizes)!=QKG_OK)
             return QKS_MISS;
-    } else if(choice.kind==QKS_SMALLM_TC) {
+    } else if(base.kind==QKS_SMALLM_TC) {
         qks_request_v1 request{1,sizeof(request),call.qtype,choice.tc.route,call.rows,call.n,call.k,
             call.experts,smallm::tokens(call),arrangement->mapping_id};
         // Separate tickets from earlier table/proposal queries of this shape.

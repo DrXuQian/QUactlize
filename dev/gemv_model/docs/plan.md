@@ -66,6 +66,38 @@ performance admission does not extend to M2..8. No production/caller changed.
 - [x] Validate source/runtime/numerical and timing denominators.
 - [x] Re-import actual ACU reports, separate DRAM/internal traffic and instruction costs.
 - [x] Record measured candidate decisions and failed hypotheses.
-- [ ] Integrate only the seven exact M1 candidates; retain fallback scope and BF16 routing.
+- [x] Integrate only the seven exact M1 candidates; retain fallback scope and BF16 routing.
 - [ ] Verify rebuilt integrated kernels, then repeat whole-model timing and Asys.
 - [ ] Continue MBU tuning; this round does not meet the 40%/60% objectives.
+
+## Authorized integration, 2026-09-17
+
+User requested integration after the measured review. Start source is
+`bfa5b38977a26f95a43e33448d35004f2c1449f8`; immutable runtime remains
+`6a9b89a322f1ccd5cf1b724325294f7d2ae129b1`.
+
+- Q4 paired: exact F32 endpoints/BF16 compute, logical N512/K2048,
+  E256/top8/channels1/tokens1, W8/S1, rounded projections. Use H32 + fixed shape.
+- Q5 down: exact F32 endpoints/BF16 compute N2048/K512, E256/top8/channels8,
+  tokens1, V3/C4/P8/W2/S1. Keep existing H32/index/fold, fix shape constants.
+- Shared Q8 paired: F32 endpoints/F16 compute, logical N512/K2048/E1/M1,
+  W8/S1, no projection rounding; use C4/P4 TileN16 + hoist.
+- Dense Q8 F32/F16 M1: shared-down N2048/K512 C4/P4/W2/S1 hoist;
+  SSM N2048/K4096 C8/P4/W4/S8 fixed; QKV N8192/K2048 C8/P4/W4/S1
+  hoist/fixed; attention gate N4096/K2048 C4/P4/W8/S1.
+- Preserve Q6, BF16 dense and all other M/config/shape fallbacks. Do not
+  expand the table's nearest-shape buckets using this M1-only evidence.
+
+Reuse the production bodies and generalize only the paired finish's tile
+width while retaining its exact sequential reduction. Add narrow launch
+guards; keep public ABI and canonical/paired formats unchanged. Reuse all
+TC/packer/prefill images. Refresh execution/fusion libraries and host/JIT
+receipts, not old hashes in place. Caller compute is unchanged; update only
+symbol recognition if needed for the new specialized kernels.
+
+Validation: host selection negatives (shape/M/type/config), whole-dispatch
+regressions, local PPU compile/native ISA, byte-identical reused payloads,
+integrated-device versus admitted experiment for all seven exact points,
+and existing M2/M8 fallback/paired integration controls. Box runs the gates
+then warmed PP2048/TG128 ABBA and second-request Asys. No global MBU closure
+or model TPOT claim before that result. No new timing deadline was requested.

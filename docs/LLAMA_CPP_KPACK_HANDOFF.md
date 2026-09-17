@@ -4,6 +4,28 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
+## Seven exact M1 model readers, 2026-09-17
+
+Current delivery is pinned by `tools/kpack_q4_model_artifact.json`; source
+branch `dev/gemv-model-tuning`. See
+[integration scope and gate](MODEL_GEMV_INTEGRATION_20260917.md).
+Seven measured M1 winners are integrated: routed Q4 gate/up and Q5 down,
+shared Q8 gate/up and down, Q8 SSM, QKV and attention gate. Q6 stays TC;
+SSM stays S8. Only the exact QKV/attention-gate TC parents switch to SIMT.
+Unmeasured shapes, M2..8 and nearest-shape buckets retain their old selection.
+MoE stays BF16 and dense/shared stays F16 with F32 endpoints/FP32 accumulation.
+
+The caller SHA is `c3d9cdaa4bb1b3f111397edb3ab05d3935ac81b0` on the owner's
+`dev/quactlize-gate-up-v0.3.0` branch. This change is trace parsing only;
+consumer ABI, canonical/paired bytes and caller compute are unchanged.
+Local compile/host validation is not PPU model admission. The combined box
+runner first checks the integrated readers against the immutable experiment,
+then existing composition gates, warmed model timings and second-request Asys.
+Set `MODEL_GATE_UP=1 MODEL_COMPUTE=bf16 MODEL_PHASES=perf
+MODEL_NAMES=qwen35-35b-q4km L2_BYTES=67108864`. Quactlize comes from LFS;
+caller compilation stays in its `.aoneci/scripts/build.sh` on the box.
+No llama binaries are uploaded to Quactlize.
+
 ## Q8 hoist ZW810 candidate, 2026-09-17
 
 Runtime artifact `3935fe9aaded4c7db03d489efe376a709b5cfab1`, caller

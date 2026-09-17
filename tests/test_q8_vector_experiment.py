@@ -9,7 +9,7 @@ def test_production_q8_policy_preserves_tc_indexed_and_different_incumbents(tmp_
     import json
     import subprocess
     from pathlib import Path
-    from tools.fit_kpack_q8_vector import fit, header, append_model_topology, EVIDENCE, MATCHED, MODEL, OUTPUT, ROOT
+    from tools.fit_kpack_q8_vector import fit, header, append_model_topology, append_model_readers, EVIDENCE, MATCHED, MODEL, READERS, OUTPUT, ROOT
     evidence, matched = json.loads(EVIDENCE.read_text()), json.loads(MATCHED.read_text())
     policy = fit(evidence, matched)
     assert len(policy['rows']) == 11 and len(policy['retained']) == 39
@@ -19,8 +19,22 @@ def test_production_q8_policy_preserves_tc_indexed_and_different_incumbents(tmp_
     policy=append_model_topology(policy,matched,model)
     assert len(policy['rows'])==12
     assert policy['rows'][-1]['candidate']==[5,8,4,4,8]
+    readers=json.loads(READERS.read_text())
+    previous=copy.deepcopy(policy)
+    policy=append_model_readers(policy,matched,readers)
+    assert len(policy['tc_rows'])==2
+    assert {tuple(r['key'][2:4]) for r in policy['tc_rows']}=={(8192,2048),(4096,2048)}
     assert policy['rows'] == json.loads(OUTPUT.read_text())['rows']
     assert header(policy) == OUTPUT.with_suffix('.hpp').read_text()
+    for mutation in ('compute','shape','winner','round','tc'):
+        bad=copy.deepcopy(readers);m=copy.deepcopy(matched)
+        row=next(r for r in bad['records'] if r['point']=='q8-qkv')
+        if mutation=='compute':row['compute']='BF16'
+        elif mutation=='shape':row['point_definition']['n']=4096
+        elif mutation=='winner':row['config']['split']=8
+        elif mutation=='round':row['round_deltas_pct'][0]=1.
+        else:next(r for r in m['exact'] if r['key']==[8,0,8192,2048,1,1,1,1,0])['config']['split']=4
+        with pytest.raises(ValueError):append_model_readers(copy.deepcopy(previous),m,bad)
     for mutation in ('numeric','duplicate','nan','delta'):
         bad=copy.deepcopy(evidence)
         if mutation=='numeric': bad['q8']['numeric']='FAIL'
@@ -211,7 +225,7 @@ def test_hoist_only_accepts_one_source_change_and_no_selector_changes():
     assert [(n,k,c.split*n//c.tile_n) for n,k,c in POINTS] == [(512,2048,32),(2048,512,64),(2048,4096,512)]
 
 
-def test_hoist_keeps_dot_order_and_only_two_f16_m1_scopes():
+def test_hoist_keeps_dot_order_and_retains_f16_m1_guards():
     from pathlib import Path
     from dev.gemv_simt.model_followup import kernel_body, candidate_body
     root = Path(__file__).resolve().parents[1]
@@ -220,8 +234,10 @@ def test_hoist_keeps_dot_order_and_only_two_f16_m1_scopes():
     assert 'bool Hoist=false' in candidate_body(True)
     assert 'uint32_t words[2][2][4][Pairs]' in text
     assert 'split==1 && c.mode==QKG_DENSE && c.rows==1 && c.experts==1' in text
-    assert 'Columns==4 && c.n==512 && c.k==2048' in text
-    assert 'Columns==8 && c.n==2048 && c.k==512' in text
+    assert 'Variant==5 && P==4 && Columns==4 && Warps==8' in text
+    assert 'c.n==512 && c.k==2048' in text
+    assert 'Variant==5 && Columns==8 && Warps==4 && P==4' in text
+    assert 'model_gemv::dense_m1(c,2048,512)' in text
     bf16 = text[text.index('} else if(d.compute_type==QKG_COMPUTE_BF16)'):]
     assert ',P,true>' not in bf16
     # Same low-plane addresses, code slot and FMA order; only the load window changes.

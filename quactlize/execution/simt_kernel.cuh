@@ -1,4 +1,5 @@
 #pragma once
+#include "model_gemv_scope.hpp"
 #include "simt_format.cuh"
 #include "q4_s1_validation.hpp"
 #include "simt.h"
@@ -174,6 +175,14 @@ __global__ void register_reuse(qkg_call_v1 call,int split) {
     register_reuse_body<Q,Input,Variant,Columns,Warps,P,Compute,Changes>(call,split);
 }
 
+template<int Q,int Input,int Variant,int Columns,int Warps,int P,int Compute,int Changes>
+__global__ void register_reuse_model(qkg_call_v1 c) {
+    static_assert(Q==13 && Input==QKG_F32 && Compute==QKG_COMPUTE_BF16 &&
+                  Variant==3 && Columns==4 && Warps==2 && P==8 && Changes==3);
+    c.n=2048;c.k=512;c.experts=256;c.mode=QKG_INDEXED;c.channels=8;c.topk=8;
+    register_reuse_body<Q,Input,Variant,Columns,Warps,P,Compute,Changes>(c,1);
+}
+
 template<int Q>
 __global__ void register_reuse_reduce(qkg_call_v1 c,int split) {
     int64_t i=int64_t(blockIdx.x)*blockDim.x+threadIdx.x;
@@ -213,8 +222,12 @@ int launch_v2(qkg_simt_call_v2 const& d,int split) {
             (Q==12 ? c.n==1024 && c.k==2048 && c.channels==1 :
                      c.n==2048 && c.k==512 && c.channels==8);
         if(measured) {
-            register_reuse<Q,1,Variant,Columns,Warps,P,1,Q==12?1:3>
-                <<<blocks,Warps*32,0,stream>>>(c,split);
+            if constexpr(Q==13)
+                register_reuse_model<Q,1,Variant,Columns,Warps,P,1,3>
+                    <<<blocks,Warps*32,0,stream>>>(c);
+            else
+                register_reuse<Q,1,Variant,Columns,Warps,P,1,1>
+                    <<<blocks,Warps*32,0,stream>>>(c,split);
             return hggcGetLastError()==hggcSuccess ? QKG_OK : QKG_RUNTIME;
         }
     }

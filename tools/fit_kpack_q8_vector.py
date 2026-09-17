@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Replace only contemporaneously measured Q8 SIMT incumbents, never a TC ticket."""
+"""Fit exact Q8 replacements from reviewed full-call measurements."""
 import hashlib
 import json
 import math
@@ -12,6 +12,7 @@ EVIDENCE = ROOT / 'docs/measurements/local_closure_replay_ppu_20260916.json'
 MATCHED = ROOT / 'policies/kpack_smallm_matched_v1.json'
 OUTPUT = ROOT / 'policies/kpack_q8_vector_v1.json'
 MODEL = ROOT / 'docs/measurements/model_decode_promotions_20260916.json'
+READERS = ROOT / 'docs/measurements/model_gemv_20260917.json'
 
 
 def recipe(name):
@@ -80,6 +81,14 @@ def header(policy):
         old = ','.join(map(str, r['baseline']))
         new = ','.join(map(str, r['candidate']))
         text += f'  {{{key},{{{old}}},{{{new}}}}},\n'
+    text += '};\n'
+    text += 'struct TcRow { int n,k; char const* symbol; int tm,tn,tk,wm,wn,stages,ap,dn,split; int candidate[5]; };\n'
+    text += 'inline constexpr TcRow kTcRows[] = {\n'
+    for r in policy.get('tc_rows', []):
+        c=r['baseline'];shape=','.join(map(str,(r['key'][2],r['key'][3])))
+        geometry=','.join(str(c[k]) for k in ('tm','tn','tk','wm','wn','stages','ap','dn','split'))
+        recipe=','.join(map(str,r['candidate']))
+        text += f'  {{{shape},"{c["symbol"]}",{geometry},{{{recipe}}}}},\n'
     return text + '};\n}\n'
 
 
@@ -116,15 +125,59 @@ def append_model_topology(policy, matched, evidence):
     return policy
 
 
+def append_model_readers(policy, matched, evidence):
+    if (evidence.get('schema')!='quactlize.model-gemv-review.v1' or evidence.get('status')!='PASS' or
+            evidence.get('numeric_checks')!=510 or evidence.get('event_samples')!=2160 or
+            evidence.get('reimported_reports')!=16 or len(evidence.get('records',[]))!=8):
+        raise ValueError('model reader evidence incomplete')
+    exact={tuple(r['key']):r for r in matched['exact']}
+    points={r['point']:r for r in evidence['records']}
+    if len(points)!=8 or policy.get('tc_rows'):
+        raise ValueError('duplicate model reader evidence')
+    policy['tc_rows']=[]
+    for name,n,k,recipe in (('q8-shared-down',2048,512,[5,4,2,4,1]),
+                            ('q8-qkv',8192,2048,[5,8,4,4,1]),
+                            ('q8-attn-gate',4096,2048,[5,4,8,4,1])):
+        r=points[name];p=r['point_definition'];key=[8,0,n,k,1,1,1,1,0]
+        if (r['decision']!='EXACT_M1_INTEGRATION_CANDIDATE' or r['compute']!='F16' or
+                r['input_output']!='F32' or p['q']!=8 or p['n']!=n or p['k']!=k or
+                p['mode']!=0 or p['compute']!=0 or p['channels']!=1 or p['paired'] or
+                len(r['round_deltas_pct'])!=6 or
+                any(not math.isfinite(x) or x>=0 for x in r['round_deltas_pct']) or
+                [r['config'][x] for x in ('variant','columns','warps','values','split')]!=recipe):
+            raise ValueError('model reader scope or winner differs')
+        old=r['confirmation']['incumbent'];incumbent=exact[tuple(key)]['config']
+        record=dict(key=key,candidate=recipe,old_us=r['incumbent_us'],new_us=r['candidate_us'],
+                    result_sha256=r['point_sha256'],archive_sha256=evidence['archive_sha256'])
+        if name=='q8-shared-down':
+            target=next(x for x in policy['rows'] if x['key']==key)
+            prior=[old['config'][x] for x in ('variant','columns','warps','values','split')]
+            if target['candidate']!=prior or incumbent['kind']!='simt':
+                raise ValueError('model reader prior SIMT differs')
+            target.update(record,comparison_baseline=prior)
+        else:
+            expected=old['config']
+            fields=('symbol','qtype','tm','tn','tk','wm','wn','stages','ap','dn','persistent','split')
+            if (old['kind']!='tc' or incumbent['kind']!='tc' or incumbent['route']!=1 or
+                    expected['route']!='sf-dense' or any(incumbent[x]!=expected[x] for x in fields) or
+                    incumbent['grid_mode']!=0 or incumbent['grid_b']!=0):
+                raise ValueError('model reader TC incumbent differs')
+            policy['tc_rows'].append(record|dict(baseline=expected))
+    policy['scope']='EXACT_F32_IO_MEASURED_REPLACEMENT_INCLUDING_TWO_MATCHED_TC_POINTS'
+    return policy
+
+
 def main():
     matched=json.loads(MATCHED.read_text())
     result = append_model_topology(fit(json.loads(EVIDENCE.read_text()),matched),matched,json.loads(MODEL.read_text()))
+    result = append_model_readers(result,matched,json.loads(READERS.read_text()))
+    result['reader_evidence_sha256'] = hashlib.sha256(READERS.read_bytes()).hexdigest()
     result['model_evidence_sha256'] = hashlib.sha256(MODEL.read_bytes()).hexdigest()
     result['evidence_sha256'] = hashlib.sha256(EVIDENCE.read_bytes()).hexdigest()
     result['matched_sha256'] = hashlib.sha256(MATCHED.read_bytes()).hexdigest()
     OUTPUT.write_text(json.dumps(result, indent=2) + '\n')
     OUTPUT.with_suffix('.hpp').write_text(header(result))
-    print(f"Q8_VECTOR_POLICY admitted={len(result['rows'])} retained={len(result['retained'])} TC_UNCHANGED")
+    print(f"Q8_VECTOR_POLICY admitted={len(result['rows'])} tc_replacements={len(result['tc_rows'])} retained={len(result['retained'])}")
 
 
 if __name__ == '__main__':

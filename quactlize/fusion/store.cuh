@@ -48,7 +48,7 @@ struct SimtFinish {
     }
     template<int TileN,int Warps>
     CUTLASS_DEVICE static void finish(DeviceCall const& c,int row,int tile,int partition,int split,float const* partial) {
-        static_assert(TileN == 32, "paired SIMT keeps the full-warp reduction order");
+        static_assert(TileN == 16 || TileN == 32, "paired SIMT requires complete G4/U4 pairs");
         int tid = int(threadIdx.x);
         if (split > 1) {
             if (tid < TileN) {
