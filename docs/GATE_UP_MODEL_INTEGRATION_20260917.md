@@ -1,7 +1,9 @@
 # Paired-N4 gate/up model integration
 
-Status: local compilation and host contracts pass; PPU model accuracy and
-steady-state latency remain pending. Enable explicitly with `MODEL_GATE_UP=1`
+Status: returned PPU integration gates and actual fusion execution pass;
+warmed model latency improves in the declared cohort. Model accuracy
+admission remains separate; see the [returned review](GATE_UP_MODEL_REVIEW_20260917.md).
+Enable explicitly with `MODEL_GATE_UP=1`
 in `tools/run_kpack_q4_model_box.sh`. `MODEL_COMPUTE=bf16` applies BF16 only
 to routed projections; dense/shared projections retain F16 compute and F32 I/O.
 
@@ -77,4 +79,5 @@ Box runner order:
 traces. `results/paired-model-proof.json` records observed fusion operations.
 The usual `.results.tgz` contains compact summaries and logs; profiler reports
 remain on the box. First-use packing/JIT costs are excluded from steady timing
-but are not claimed to be zero. No whole-model speedup is admitted yet.
+but are not claimed to be zero. The returned review records the measured
+model gains and the remaining accuracy/memory boundaries.
