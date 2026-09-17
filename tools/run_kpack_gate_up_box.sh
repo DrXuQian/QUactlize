@@ -67,8 +67,15 @@
     cp "$BUNDLE/manifest.json" "$RUN/results/manifest.json"
     git rev-parse HEAD | tee "$RUN/results/source.txt"
     phase=numerical
-    "$PYTHON" tools/run_kpack_gate_up.py --sdk "$SDK" --bundle "$BUNDLE" \
-        --output "$RUN/results/gate" "${RESUME[@]}" 2>&1 | tee "$RUN/results/console.log"
+    if [[ ${GATE_UP_DIAGNOSTIC:-0} == 1 ]]; then
+        test -z "${RESUME_RUN:-}"
+        phase=rounding-diagnostic
+        "$PYTHON" tools/diagnose_gate_up_rounding.py --sdk "$SDK" --bundle "$BUNDLE" \
+            --output "$RUN/results/rounding" 2>&1 | tee "$RUN/results/console.log"
+    else
+        "$PYTHON" tools/run_kpack_gate_up.py --sdk "$SDK" --bundle "$BUNDLE" \
+            --output "$RUN/results/gate" "${RESUME[@]}" 2>&1 | tee "$RUN/results/console.log"
+    fi
     phase=complete
     printf 'GATE_UP_DONE timing=NOT_MEASURED production_selection=UNCHANGED\n'
 )
