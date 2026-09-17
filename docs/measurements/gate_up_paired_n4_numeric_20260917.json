@@ -1,0 +1,78 @@
+{
+  "schema": "quactlize.gate-up-paired-n4.numeric-review.v1",
+  "verdict": "PASS_DECLARED_NUMERICAL_COHORT",
+  "library_sha256": "88f3035397da23b8dc869824874d39fc868d6db8db7682d75b00aa4f822ef7c7",
+  "manifest_sha256": "9a56eee54542adbbbc69a8b2222443214d77539510f9e588212c00adab3fb102",
+  "artifact_commit": "09a7e087f21c098c6f41eeb59a32712c7f44bbe4",
+  "artifact_path": "prebuilt/ppu0010/gate-up-paired-n4-v1",
+  "device": {"ordinal": 0, "pci": "0000:08:00.0", "visible_devices": 1},
+  "evidence": {
+    "first": {
+      "archive": "gate-up-paired-n4.mJSZYK.results.tgz",
+      "sha256": "12b3d85598297e3c40ba923c290111d987f5e059eadf31468a54ffa70111f4e4",
+      "source": "bcf1c3d7f7d3d9b410d9b1a9aba24c36f3a479f9",
+      "complete_parts_used": 10,
+      "incomplete_parts_excluded": ["q11-tc", "q14-tc"]
+    },
+    "diagnostic": {
+      "archive": "gate-up-paired-n4.2NfLbX.results.tgz",
+      "sha256": "af9aaed0dd968ca8a00b3f934504ef38cbe1310e52977ea58696d115406932e3",
+      "source": "fe77897fcbff39165c84065ce423d11960544f0b",
+      "observations": 32,
+      "counted_as_normal_configurations": false
+    },
+    "completion": {
+      "archive": "gate-up-paired-n4.r6a2ub.results.tgz",
+      "sha256": "6bc374ff73b0d95a03e2acf91e036042af661125d59dfa8d950cb743b3ee0073",
+      "source": "a8f300db18604ee4c0ff55b8408d959ab2b72497",
+      "complete_parts_used": 2
+    }
+  },
+  "scope": {
+    "n": 256,
+    "k": 2048,
+    "formats": [8, 10, 11, 12, 13, 14],
+    "compute": ["F16", "BF16"],
+    "storage": ["F32", "matching-native-16-bit"],
+    "output": ["F32", "matching-native-16-bit"],
+    "projection_rounding": [0, 1],
+    "split": [1, 2, 4, 8],
+    "simt": {"warps": [4, 8], "dense_m": [1, 2, 3, 4, 5, 6, 7, 8], "grouped_m": [9, 17, 33]},
+    "tc": {"tile_m": [8, 16], "dense_m": [1, 2, 3, 4, 5, 6, 7, 8, 65, 129], "grouped_m": [9, 17, 33, 65, 129]},
+    "grouped_experts": 8,
+    "grouped_profiles": ["spread", "single-last-expert"],
+    "indexed_tokens": [1, 2, 3, 4, 5, 6, 7, 8],
+    "indexed_experts": 8,
+    "indexed_topk": 8,
+    "indexed_channels": [1, 8],
+    "fixture": "OFFICIAL_GGUF_DYADIC_WEIGHTS_EXACT_IN_F16_AND_BF16"
+  },
+  "parts": [
+    {"q": 8, "backend": "simt", "evidence": "first", "normal_configurations": 1440, "max_normal_error": 0.000015695630336514316},
+    {"q": 8, "backend": "tc", "evidence": "first", "normal_configurations": 1728, "max_normal_error": 0.000025572831423895255},
+    {"q": 10, "backend": "simt", "evidence": "first", "normal_configurations": 1440, "max_normal_error": 0.0000001570818465536557},
+    {"q": 10, "backend": "tc", "evidence": "first", "normal_configurations": 1728, "max_normal_error": 0.000026801029159519725},
+    {"q": 11, "backend": "simt", "evidence": "first", "normal_configurations": 1440, "max_normal_error": 0.00000021478798063643397},
+    {"q": 11, "backend": "tc", "evidence": "completion", "normal_configurations": 1728, "max_normal_error": 0.000009735202492211838},
+    {"q": 12, "backend": "simt", "evidence": "first", "normal_configurations": 1440, "max_normal_error": 0.000014824478178368122},
+    {"q": 12, "backend": "tc", "evidence": "first", "normal_configurations": 1728, "max_normal_error": 0.00008305647840531562},
+    {"q": 13, "backend": "simt", "evidence": "first", "normal_configurations": 1440, "max_normal_error": 0.00008169934640522875},
+    {"q": 13, "backend": "tc", "evidence": "first", "normal_configurations": 1728, "max_normal_error": 0.00008169934640522875},
+    {"q": 14, "backend": "simt", "evidence": "first", "normal_configurations": 1440, "max_normal_error": 0.000012713588283157038},
+    {"q": 14, "backend": "tc", "evidence": "completion", "normal_configurations": 1728, "max_normal_error": 0.00004045307443365696}
+  ],
+  "per_complete_part": {"replays": 80, "detected_negatives": 32},
+  "totals": {"parts": 12, "normal_configurations": 19008, "replays": 960, "detected_negatives": 384},
+  "rounding_certificates": {
+    "q11_tc": {"replays": 6, "coordinates": 22},
+    "q14_tc": {"replays": 4, "coordinates": 17},
+    "independently_recomputed_coordinates": 39,
+    "original_failures_retained": true,
+    "original_threshold": 0.005,
+    "method": "GAMMA_K_PLUS_S_F32_BOUND_SATURATED_EXACT_BF16_PRODUCT"
+  },
+  "performance_admission": "PENDING",
+  "model_admission": "PENDING",
+  "production_selection": "UNCHANGED",
+  "immutable_build_receipt_changed": false
+}

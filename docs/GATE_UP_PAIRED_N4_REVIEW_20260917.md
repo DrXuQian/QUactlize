@@ -159,3 +159,51 @@ The collector records an explicit subset with `full_inventory=false`; combine
 it with the ten previously complete parts only after reviewing its return.
 No device compilation is required. Real-shape full-call latency, integration
 and whole-model accuracy remain separate, pending admissions.
+
+## Third return: remaining numerical coverage complete
+
+Evidence: `gate-up-paired-n4.r6a2ub.results.tgz`, SHA256
+`6bc374ff73b0d95a03e2acf91e036042af661125d59dfa8d950cb743b3ee0073`.
+Source `a8f300db18604ee4c0ff55b8408d959ab2b72497`. All seven harness hashes
+match that frozen revision. Manifest, DSO, runtime and physical device match
+the first two returns. The third summary correctly says `full_inventory=false`;
+it is a two-part run, not a new twelve-part run.
+
+| Part | Unique normal configurations | Replays | Detected negatives | Max normal relative error |
+|---|---:|---:|---:|---:|
+| Q3_K TC | 1728/1728 | 80 | 32 | 9.73520249e-6 |
+| Q6_K TC | 1728/1728 | 80 | 32 | 4.04530744e-5 |
+
+There are six Q3 and four Q6 large-BF16 replay certificates, covering 22 and
+17 threshold-exceeding coordinates respectively. Reconstructed original GGUF
+weights, repeat3 input, expert ownership and indexed input-row mapping reproduce
+all **39** recorded independent projection bounds and discrete permitted products.
+Every returned exception exactly matches a permitted product. Nine certificates
+retain original error `0.00558659217877095`; Q6 grouped/single/M17/S8 retains
+`0.005030351399066483`. These are not mislabeled as passing the original 0.005
+test. The same replay checker rejects all zero-A negatives.
+
+Combining only complete independent parts from the first and third returns:
+
+| Format | SIMT configurations | TC configurations | Numerical scope |
+|---|---:|---:|---|
+| Q2_K | 1440/1440 | 1728/1728 | PASS |
+| Q3_K | 1440/1440 | 1728/1728 | PASS, large-BF16 TC certificates retained |
+| Q4_K | 1440/1440 | 1728/1728 | PASS |
+| Q5_K | 1440/1440 | 1728/1728 | PASS |
+| Q6_K | 1440/1440 | 1728/1728 | PASS, large-BF16 TC certificates retained |
+| Q8_0 | 1440/1440 | 1728/1728 | PASS |
+
+Total: **19,008** unique normal configuration cells, **960** changing-input
+replays, **384** detected negatives. Counts exclude the discarded incomplete
+parts and the 32 diagnostic observations. Normal cases retain the original
+0.005 check. This closes the declared N256/K2048 functional cohort, not
+arbitrary shapes/weights, bitwise TC/SIMT equivalence, or whole-model accuracy.
+
+The combined evidence is recorded separately in
+`docs/measurements/gate_up_paired_n4_numeric_20260917.json`; the immutable
+prebuilt manifest is unchanged. No kernel, production selector or caller was
+modified in this review. Next is same-precision real-shape **full-call** A/B
+timing (including activation and any reducer): Q8 shared experts and Q4 routed
+experts, tokens1..8, compared with the admitted unfused path. Only measured
+winners may proceed to caller/cache integration and model accuracy/TPOT tests.
