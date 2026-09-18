@@ -55,7 +55,8 @@ Use `tools/run_kpack_tp2_box.sh`. It builds the caller through its existing
 Quactlize runtime; it does not rebuild the large runtime bundle.
 
 Required inputs are `PPU_SDK`, `LLAMA_CI_DIR`, `NCP_LIB_DIR` and
-`QUACTLIZE_PPU_BUNDLE` (the existing six-library compatibility bundle).
+`QUACTLIZE_PPU_BUNDLE` (the six-library compatibility bundle, with the Q4
+short-K update below for TP shards).
 The SDK precheck uses `PPU_SDK/include/hggc_runtime_api.h` for the native API
 and `PPU_SDK/CUDA_SDK/include/cuda_runtime_api.h` for the compatibility API.
 These are different include roots in the official 2.1.1 SDK; the runner now
@@ -106,6 +107,55 @@ performance timing.
 Upload `kpack-tp2.*.results.tgz`. Full reports remain under
 `results/trace/qwen35-122b-q4km/{reference,native}/proof.asysrep` and are
 excluded from that archive. Raw logits and model weights are also excluded.
+
+### Q4 short-K admission repair
+
+After the communication fix, `BPvql1` stops before launching the Q4 local
+shard: `q=12 N=512 K=512 E=1`, `local shard is unsupported`. This is an
+independent admission error in the old `2826cf1` compatibility library. The
+default decode selector chooses `kpack4:8x32x256:8x16:s3:S4`: K512 has only
+two K tiles, so it cannot form four nonempty partitions. K1024 also cannot
+satisfy that parent's minimum two tiles per split. Ragged partitions have the
+same problem. The existing S1 parent accepts these geometries; grouped
+admission is unaffected.
+
+The actual delivered fmt0 host queries reproduce the rejection and admit
+explicit S1. Local inspection used registration-only stubs with all device
+operations disabled: it establishes the library's host decision, not GPU
+correctness. The patch's C++ regression checks 1,620 M/N/K combinations,
+preserves every previously legal default, and does not silently substitute
+explicit invalid config names.
+
+Only `libquactlize_ppu_fmt0.so` needs rebuilding. The isolated source is
+`025c7e4d4b92330287099675a26bf2879b814f01`, branch
+`fix/q4-smallk-admission`, directly based on the published `2826cf1` source.
+Only its selector and host regression differ. Keep the current native runtime,
+JIT checkout/cache and caller/NCP build unchanged; changing the current kernel
+header tree would unnecessarily invalidate its JIT source identity.
+
+On the box, source the official SDK environment, then run:
+
+```bash
+python3 tools/build_kpack_tp2_q4.py build \
+  --base "$ORIGINAL_SIX_LIBRARY_BUNDLE" --sdk "$PPU_SDK" \
+  --output "$NEW_UPDATE_DIRECTORY" --jobs 192
+```
+
+The output directory must not exist. The tool creates a detached source tree,
+builds only fmt0, prints elapsed time every 30 seconds, runs before/after
+host queries, and copies the other five libraries byte-for-byte into
+`NEW_UPDATE_DIRECTORY/bundle`. It never overwrites the original bundle.
+Failed builds and logs are preserved. This is not a full runtime rebuild or
+a new llama binary delivery; single-library parallelism may not occupy all
+192 cores.
+
+The output uses `quactlize.ppu-compatibility-overlay.v1`, explicitly recording
+both source commits, the original manifest and every file hash. It must not be
+represented as six libraries compiled from one source. The TP2 runner verifies
+this overlay and archives its manifest. Set `QUACTLIZE_PPU_BUNDLE` to the new
+`bundle` directory and rerun `TP2_MODE=model`, reusing the `BPvql1` caller/NCP
+build. Two-device cold/hot arithmetic and 122B numerical/performance admission
+remain pending until that run passes.
 
 ### Cold fixture crash recovery
 

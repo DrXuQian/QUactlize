@@ -78,6 +78,10 @@
     mkdir "$RUN/results"
     printf 'KPACK_TP2 run=%s devices=%s jobs=%s\n' "$RUN" "$CUDA_VISIBLE_DEVICES" "$JOBS"
     git rev-parse HEAD > "$RUN/results/quactlize-source.txt"
+    cp "$QUACTLIZE_PPU_BUNDLE/manifest.json" "$RUN/results/compatibility-bundle-manifest.json"
+    if "$PYTHON" -c 'import json,sys; sys.exit(json.load(open(sys.argv[1])).get("schema") != "quactlize.ppu-compatibility-overlay.v1")' "$QUACTLIZE_PPU_BUNDLE/manifest.json"; then
+        "$PYTHON" tools/build_kpack_tp2_q4.py verify "$QUACTLIZE_PPU_BUNDLE"
+    fi
 
     if [[ $TP2_MODE == model ]]; then
         stage=model-paths

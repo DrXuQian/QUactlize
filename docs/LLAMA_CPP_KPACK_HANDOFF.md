@@ -47,6 +47,17 @@ This admits the bounded communication fix, not all TP2 arithmetic or model
 execution. Reuse the new `BPvql1` caller/NCP build for `TP2_MODE=model`; the
 six-format cold/hot, 122B numerical, warmed ABBA and Asys gates remain pending.
 
+The following cold gate rejects Q4's local N512/K512 shard before any device
+launch. Its old compatibility selector requests S4 even though K has only two
+TK256 tiles. The isolated `fix/q4-smallk-admission` source `025c7e4` switches
+only invalid default partitions to an existing S1 parent; explicit names and
+previously legal choices remain unchanged. A 1,620-case host regression passes.
+Use `tools/build_kpack_tp2_q4.py build` to rebuild only fmt0 on the box and
+produce a mixed-source overlay alongside the unchanged other five libraries.
+See [selective update and admission scope](KPACK_TP2.md#q4-short-k-admission-repair).
+Native runtime, JIT source/cache and the `ee28055` caller stay unchanged. This
+update does not yet admit two-device arithmetic or the 122B model.
+
 The first cold device gate exposed a fixture bug: GGUF kept the copied Meta
 buffer and tried to read its shards instead of the supplied raw host bytes.
 The exact scheduler helper reproduces exit 139 using only CPU-backed Meta
