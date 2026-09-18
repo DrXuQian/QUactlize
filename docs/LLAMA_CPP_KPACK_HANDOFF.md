@@ -20,9 +20,9 @@ is no inference-thread D2H wait. Old single-device caches are not accepted as
 TP shards, and existing incompatible caches are never overwritten.
 The runner now tests cold publication and fresh-process hot loading before
 model numerics, warmed ABBA and Asys. See the linked TP2 document for CACHE_ROOT.
-Caller commit: `9942e30f5c0c861bc7b98a74b966361344ce8664`. Local checks include
+Caller commit: `c2dbaf78d93e9b47e1a0cd5952fbe4f5b861a748`. Local checks include
 24 six-format TP-cache cases, malformed/foreign-layout rejections, source-change
-publication rejection, three CTest suites and 39 native-helper tests. The changed
+publication rejection, four CTest suites and 39 native-helper tests. The changed
 cache upload translation unit compiles with PPU SDK 2.1.1. No device result is
 claimed for these host checks. No llama binaries or new runtime LFS payloads
 are part of this delivery.
@@ -35,6 +35,17 @@ the same host reproduction exits 0 and verifies byte-exact GGUF contents.
 Per-case start records identify failures before a completed cell is printed.
 Reuse the failed run's caller build for this test-only increment; no runtime
 rebuild is needed. Actual two-device arithmetic/cache admission remains pending.
+
+The next cold gate reached arithmetic but failed on the first Q8 K split.
+Its test graph used static context allocation for computed tensors. Meta
+therefore classified the local products as MIRRORED and omitted all-reduce.
+The caller test now allocates inputs separately and uses the graph allocator
+for compute nodes, asserting PARTIAL/MIRRORED states before execution. A
+CPU-only build of the same test runs 72 quantized matrix cases and three F32
+chain cases. Its retained static-allocation negative matches rank0-only output
+and rejects the full-dot oracle. The host gate runs before the device gate.
+The GPU Q8/Q4-Q5 chains still use the original 2% threshold and require box
+admission; no device code, kernel selection or runtime bundle changed.
 
 ## New-machine startup recovery, 2026-09-18
 

@@ -57,6 +57,7 @@
     grep -q 'ggml_backend_meta_buffer_type_count' "$LLAMA_DIR/ggml/include/ggml-backend.h"
     grep -q 'KPACK_TP2_DEVICE PASS' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"
     grep -q 'KPACK_TP2_CACHE PASS' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"
+    grep -q 'KPACK_TP2_HOST PASS' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"
     test -n "${QUACTLIZE_PPU_BUNDLE:-}" && test -s "$QUACTLIZE_PPU_BUNDLE/manifest.json"
     ASYS=${ASYS:-$SDK/asight/bin/asys}
     test -x "$ASYS"
@@ -99,6 +100,7 @@
         2>&1 | tee "$RUN/results/caller-build.log"
     BUILD_DIR=$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["build"])' "$RUN/results/caller-ci-build.json")
     test -n "$BUILD_DIR" && test -x "$BUILD_DIR/bin/test-quactlize-scheduler"
+    test -x "$BUILD_DIR/bin/test-quactlize-tp-graph"
     export LD_LIBRARY_PATH="$BUILD_DIR/bin:$LD_LIBRARY_PATH"
     export DG_JIT_CACHE_DIR=${DG_JIT_CACHE_DIR:-$RESULT_DIR/kpack-tp2-deepgemm-jit}
     unset DG_LIBRARY_ROOT GGML_NCP_FA_LIB GGML_NCP_MOE_LIB
@@ -111,7 +113,7 @@
     unset QUACTLIZE_KPACK_PREFILL_POLICY QUACTLIZE_KPACK_GEMV_POLICY GGML_CUDA_DISABLE_GRAPHS GGML_CUDA_DISABLE_FUSION
     mkdir -p -- "$QUACTLIZE_KPACK_JIT_CACHE" "$DG_JIT_CACHE_DIR"
     stage=host-regression
-    ctest --test-dir "$BUILD_DIR" -R '^(test-quactlize-loader|test-quactlize-loader-env|test-kpack-sidecar|test-quactlize-buffer)$' \
+    ctest --test-dir "$BUILD_DIR" -R '^(test-quactlize-loader|test-quactlize-loader-env|test-kpack-sidecar|test-quactlize-buffer|test-quactlize-tp-graph)$' \
         --output-on-failure 2>&1 | tee "$RUN/results/host-tests.log"
     mkdir "$RUN/device-cache"
     stage=two-device-cache-cold

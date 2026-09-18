@@ -79,7 +79,8 @@ one additional packed model copy; mirrored weights add duplication.
 
 The sequence is:
 
-1. Runtime identity, caller build and host regressions.
+1. Runtime identity, caller build and host regressions, including the same
+   TP graph allocation/split code on CPU-backed Meta devices.
 2. `test-quactlize-scheduler --tp2-cache-write DIR`, then a new process using
    `--tp2-cache-read DIR`: 72 two-device dense/grouped cases per load
    across six formats, M1/8/32, N/K splits and three input/router replays.
@@ -126,6 +127,28 @@ run's `results/caller-ci-build.json` (`build`) and pass it as
 and uses a new run directory for cold/hot fixtures. Do not reuse the failed
 `device-cache` as a cold-write destination or delete the old evidence. The
 Quactlize runtime, NCP kernels and model-cache schema are unchanged.
+
+### K-split arithmetic gate correction
+
+Caller `c2dbaf78d` corrects the subsequent first-cell Q8 failure. The test used
+`ggml_backend_alloc_ctx_tensors` for both inputs and computed nodes. Its static
+split callback labels unnamed results MIRRORED, so Meta omitted the all-reduce
+between local K-split products and the squared output. This is a graph setup
+error; it can be reproduced without a PPU, K-pack reader or cache writer.
+
+Inputs now retain their explicit static split, while `ggml_gallocr` allocates
+compute nodes and lets Meta infer their split states. The test asserts that a
+K-split product is PARTIAL and its nonlinear consumer is MIRRORED. N-split
+products and gate/up-SwiGLU intermediates also have explicit split checks.
+
+`test-quactlize-tp-graph` compiles the same fixture source without CUDA and
+passes 72 six-format matrix cases and three F32 gate/up-down graph cases. The
+retained legacy negative has 88-91% relative error against the full result but
+0.54-1.52% against rank0's partial squared result across three input replays.
+CPU quantized GEMM requantizes A, so the host chain test uses F32 to isolate
+graph semantics; it is not a substitute for the GPU Q8 and Q4/Q5 chain gate.
+All device tolerances and the runtime bundle are unchanged. Use the failed
+run's caller build for the incremental rebuild as above.
 
 ## Remaining admission
 
