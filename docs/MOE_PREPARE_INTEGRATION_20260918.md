@@ -22,7 +22,7 @@ before stores; multi-token overlap remains rejected by the existing binding.
 
 ## Local validation and device boundary
 
--105 related host tests pass. The actual router headers execute under a host
+-268 related host and runner tests pass. The actual router headers execute under a host
  warp-collective model:40 ID/weight-bit and alias comparisons, including ties,
  signed zero, NaNs, infinities and a lane supplying all eight winners. An
  unstable-tie mutation is rejected. This is not a PPU numerical verdict.
@@ -32,6 +32,14 @@ before stores; multi-token overlap remains rejected by the existing binding.
  The paired library is rebuilt against the matching source receipt; its two
  measured paired readers retain the same inspected instructions/resources.
  Public ABI, canonical/paired formats, selectors and caller are unchanged.
+
+Runtime artifact: `artifacts/kpack-model-prepare-v1`,
+`87b996559ff64d0fd17123ab8402617075cf613a`. Manifest SHA256:
+`0bcf7ebf01ed534ea47fd73ca2dc384ac998ca4ef07f970cb8186267190aa624`.
+59 binary payloads remain byte-identical; four unique new binaries total
+44,992,056 bytes (the execution image appears twice but LFS deduplicates it).
+No llama binaries are delivered. Source integration commit:
+`3c805f1969a7af4ce19da51b28bbf386af559755`.
 
 The router gate additionally has56 special-value/alias contexts, three actual
 device implementations each: unchanged shipping router, new ordinary ID store

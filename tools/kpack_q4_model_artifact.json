@@ -1,12 +1,13 @@
 {
-  "branch": "artifacts/kpack-model-readers-v1",
-  "commit": "7c198d6313364e96723f335c113e6275b1e1e070",
+  "branch": "artifacts/kpack-model-prepare-v1",
+  "commit": "87b996559ff64d0fd17123ab8402617075cf613a",
   "path": "prebuilt/ppu0010/kpack-model-runtime-v1",
-  "manifest_sha256": "b50a47304c2d647b34c6cb81a3df3addf19a6357011ea43ca7437792fd097578",
-  "source_commit": "7f3f0e087f117b7c2d186a1f9c2c8e6a15ccbbb8",
+  "manifest_sha256": "0bcf7ebf01ed534ea47fd73ca2dc384ac998ca4ef07f970cb8186267190aa624",
+  "source_commit": "3c805f1969a7af4ce19da51b28bbf386af559755",
   "llama_branch": "dev/quactlize-gate-up-v0.3.0",
   "llama_ci_commit": "c3d9cdaa4bb1b3f111397edb3ab05d3935ac81b0",
   "model_reader_gate": true,
+  "prepare_integration_gate": true,
   "lfs_payloads": 64,
-  "device_admission": "HOST_399_CALLER_37_ISA_7_PASS_PPU_READER_INTEGRATION_AND_MODEL_PENDING"
+  "device_admission": "HOST_268_PASS_READER_ISA_7_UNCHANGED_PREPARE_AND_MODEL_PPU_PENDING"
 }

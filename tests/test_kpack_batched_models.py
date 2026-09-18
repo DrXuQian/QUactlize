@@ -265,6 +265,10 @@ def test_final_model_runner_uses_joint_ci_caller_and_pinned_runtime():
         assert text.index('stage=model-reader-integration') < text.index('stage=model-benchmark')
         assert 'tools/run_model_gemv_integration.py' in text
         assert 'update the llama reader trace parser' in text
+    if receipt['branch']=='artifacts/kpack-model-prepare-v1':
+        assert receipt['prepare_integration_gate'] is True
+        assert 'dev/moe_prepare/run_integration.py' in text
+        assert text.index('stage=prepare-integration') < text.index('stage=model-benchmark')
 
 
 def test_joint_ci_checkout_preserves_dirty_source_and_nested_submodules(tmp_path):
