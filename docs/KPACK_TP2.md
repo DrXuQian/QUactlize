@@ -13,7 +13,7 @@ Quactlize ABI changed.
 | Shards | Meta splits raw GGUF in N or K before each device packs its local tensor | 30 byte-exact host cases, six formats |
 | Paired gate/up | Upload the two sources into the local shard's gate/up segments; pack after complete coverage | Host segmented transport and delayed upload pass |
 | Compute | Existing per-device execution contexts query with local N/K; existing Meta communication and all-reduce remain unchanged | PPU compilation passes; device execution pending |
-| Cache | Single-device cache is not a TP-shard cache; TP loads use GPU pack | Explicit cache rejection; no silent layout reuse |
+| Cache | Runtime cache v3 binds local planes to logical rank, split axis, segment widths/repeats and all GGUF source files | Six-format host cold/hot and negative tests pass; two-device admission pending |
 
 Q2_K, Q3_K, Q4_K, Q5_K, Q6_K and Q8_0 keep their existing canonical layouts.
 K boundaries must preserve whole GGUF superblocks and the reader's alignment.
@@ -27,6 +27,26 @@ The Meta backend's split callback, graph redistribution, and all-reduce are
 reused. Single-device loading and ordinary TP without K-pack overrides retain
 their original paths. No CPU tensor rearrangement or CPU expert routing was
 added.
+
+## Persistent TP cache
+
+Use `--kpack-cache DIR`. First load splits raw GGUF and packs on each GPU.
+One background writer streams the final low/high/units planes into weights.bin,
+using two 8 MiB pinned slots per device. Publication follows completion. There
+is no D2H wait on the inference submission path; teardown drains the writer
+before freeing resident weights.
+
+After process exit, the next load uploads saved local planes directly to each
+device. It does not repack or split packed bytes. All shards of a tensor must
+match before any upload. A changed TP count, axis, segment map, paired-source
+order, source file identity or arrangement causes a cache miss. Logical rank,
+not physical GPU ID, determines the bytes.
+
+The three-file 122B model is supported, including gate/up sources in different
+GGUF files. Source checks use file identity and tensor metadata, not content
+hashing. Single-device v1/v2 caches remain readable but cannot be used as TP
+shards. Existing invalid or differently partitioned caches are never
+overwritten; choose a new directory to publish another partition.
 
 ## Box entry
 
@@ -52,11 +72,16 @@ The default model plan binds the exact three-shard 122B Q4_K_M model under
 `MODEL_PLAN` supplies a different TP2 plan. Devices default to `0,1`, tensor
 split to `1,1`, PP2048/TG128, NPL1. The runner prints progress and preserves
 the invoking Docker shell even on failure.
+Set `CACHE_ROOT` to the persistent parent directory. The default is
+`RESULT_ROOT/kpack-tp2-model-cache`; the runner appends the model name.
+Do not create the model subdirectory yourself. Reserve space for approximately
+one additional packed model copy; mirrored weights add duplication.
 
 The sequence is:
 
 1. Runtime identity, caller build and host regressions.
-2. `test-quactlize-scheduler --tp2`: 72 actual two-device dense/grouped cases
+2. `test-quactlize-scheduler --tp2-cache-write DIR`, then a new process using
+   `--tp2-cache-read DIR`: 72 two-device dense/grouped cases per load
    across six formats, M1/8/32, N/K splits and three input/router replays.
    Six additional merged gate/up-SwiGLU-down chains test Q4/Q5 and Q8.
    An independent GGUF-to-F32 dot oracle checks outputs; a nonlinear consumer
@@ -68,10 +93,14 @@ The sequence is:
    process. JIT and first-use latency do not count as steady-state TPOT.
 5. Separate reference/native Asys capture, after one same-process warmup.
 
-Each measured K-pack process must contain GPU pack and selected-compute
+Each measured K-pack process must contain GPU-pack or cache-upload and selected-compute
 receipts for both device ordinals, with matching local qtype/N/K/expert counts
 and no legacy fallback. Metadata receipts alone are not kernel execution
 evidence; the device gate and trace provide the additional checks.
+Hot model loads must report zero resident cache misses and only CACHE producers
+on both devices. The first numerical native process publishes the cache;
+subsequent processes reuse it. The first full PP/TG pass remains excluded from
+performance timing.
 
 Upload `kpack-tp2.*.results.tgz`. Full reports remain under
 `results/trace/qwen35-122b-q4km/{reference,native}/proof.asysrep` and are
@@ -83,5 +112,4 @@ excluded from that archive. Raw logits and model weights are also excluded.
   and successful PPU compilation are not device admission.
 - Review local-shape policy receipts and the TPOT comparison before performance
   claims; the previous 122B upload was an ordinary TP2 baseline only.
-- Add a topology-aware, multi-file persistent cache separately. This version
-  intentionally does not publish or reuse single-device sidecars for TP2.
+- Check cold publication and a fresh process's hot reload on the real 122B model.

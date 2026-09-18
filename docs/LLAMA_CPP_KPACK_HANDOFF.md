@@ -12,7 +12,20 @@ local shard on its device, and retains existing TP communication. The existing
 Quactlize runtime package is unchanged. See [TP2 scope, gates and entry](KPACK_TP2.md).
 Use `tools/run_kpack_tp2_box.sh` for the two-card 122B numerical, warmed ABBA
 and Asys run. Device/model admission is pending, not implied by host tests.
-TP persistence is explicitly disabled until the cache has topology identity.
+TP persistence now uses runtime cache v3: each logical rank's final planes are
+bound to its complete split map and all source GGUF files. First load uses GPU
+pack and background D2H; a new process directly uploads matching cached shards.
+This includes the three-file 122B model and cross-file gate/up sources. There
+is no inference-thread D2H wait. Old single-device caches are not accepted as
+TP shards, and existing incompatible caches are never overwritten.
+The runner now tests cold publication and fresh-process hot loading before
+model numerics, warmed ABBA and Asys. See the linked TP2 document for CACHE_ROOT.
+Caller commit: `e75e4d4685b8cd223702b0b9fb09c76be47e9755`. Local checks include
+24 six-format TP-cache cases, malformed/foreign-layout rejections, source-change
+publication rejection, three CTest suites and 38 native-helper tests. The changed
+cache upload translation unit compiles with PPU SDK 2.1.1. No device result is
+claimed for these host checks. No llama binaries or new runtime LFS payloads
+are part of this delivery.
 
 ## New-machine startup recovery, 2026-09-18
 

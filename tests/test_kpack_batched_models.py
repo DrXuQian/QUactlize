@@ -1216,7 +1216,7 @@ def test_other_models_keep_workload_and_preserve_122b_two_device_requirement():
             argv=command('/bench',model|dict(path='/122b.gguf'),plan,2,['blk.0.ffn_down_exps.weight'],'kpack',Path('/cache'))
             assert argv[argv.index('-sm')+1]=='tensor' and argv[argv.index('-ts')+1]=='1,1'
             assert argv[argv.index('-ot')+1].endswith('=CUDA0_KPACK')
-            assert '--kpack-cache' not in argv
+            assert argv[argv.index('--kpack-cache')+1] == '/cache'
             native=command('/bench',model|dict(path='/122b.gguf'),plan,2,['blk.0.ffn_down_exps.weight'],'reference',Path('/cache'))
             assert '-ot' not in native
         else:
@@ -1254,11 +1254,35 @@ def test_tp2_plan_and_runner_do_not_bypass_meta_or_cache_admission(tmp_path):
     script=(ROOT/'tools/run_kpack_tp2_box.sh').read_text()
     subprocess.run(['bash','-n',str(ROOT/'tools/run_kpack_tp2_box.sh')],check=True)
     assert 'build_kpack_model_ci.py' in script and 'JOBS=${JOBS:-192}' in script
-    assert 'test-quactlize-scheduler" --tp2' in script
-    assert script.index('stage=two-device-numerical')<script.index('stage=model-numerical')<script.index('stage=model-perf')
+    assert 'test-quactlize-scheduler" --tp2-cache-write' in script
+    assert 'test-quactlize-scheduler" --tp2-cache-read' in script
+    assert 'cache-disabled-for-tp' not in script
+    assert script.index('stage=two-device-cache-cold') < script.index('stage=two-device-cache-hot') < \
+        script.index('stage=model-numerical') < script.index('stage=model-perf')
     assert '--order abba --require-selected' in script
     assert 'DG_JIT_HGCC_COMPILER="$SDK/bin/hgcc"' in script
     assert 'PPU_SDK_HOME="$SDK/CUDA_SDK"' in script
+
+
+@pytest.mark.parametrize('hot', [False, True])
+@pytest.mark.parametrize('fault', [None, 'device', 'producer', 'receipt', 'count', 'miss'])
+def test_tp2_cache_evidence_proves_new_process_reload(hot, fault):
+    from tools.run_kpack_batched_bench import tp2_cache_evidence
+    producer = 'CACHE' if hot else 'GPU'
+    lines = [f'[quactlize-shard] tensor=w device={d} q=12 n=512 k=1024 experts=2 producer={producer}'
+             for d in (0, 1)]
+    receipt = '[kpack-cache] cache_uploads=2 resident_misses=0' if hot else '[kpack-cache] published: total_seconds=1'
+    if fault == 'device': lines.pop()
+    if fault == 'producer': lines[1] = lines[1].replace(producer, 'GPU' if hot else 'CACHE')
+    if fault == 'receipt': receipt = ''
+    if fault == 'count': receipt = receipt.replace('uploads=2', 'uploads=1') if hot else ''
+    if fault == 'miss': receipt = receipt.replace('misses=0', 'misses=1') if hot else ''
+    text = '\n'.join(lines + [receipt])
+    if fault:
+        with pytest.raises(ValueError): tp2_cache_evidence(text, hot)
+    else:
+        result = tp2_cache_evidence(text, hot)
+        assert result['status'] == 'PASS' and result['mode'] == ('hot' if hot else 'cold')
 
 
 @pytest.mark.parametrize('fault', [None, 'compiler-missing', 'compiler-not-executable', 'native-header', 'cuda-header'])

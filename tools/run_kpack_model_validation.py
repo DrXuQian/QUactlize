@@ -15,7 +15,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from quactlize.runtime.compiler import sha
-from tools.run_kpack_batched_bench import inventory, save, tp2_evidence
+from tools.run_kpack_batched_bench import inventory, save, tp2_evidence, tp2_cache_evidence
 from tools.verify_kpack_dispatch import verify
 
 
@@ -113,7 +113,8 @@ def numerical(args, model, inv, directory, helpers):
                 argv += ['-ts', model['tensor_split']]
                 if not native:
                     start = argv.index('-ot'); del argv[start:start+2]
-            if native and model.get('split') != 'tensor':
+            cache_hot = (args.cache / model['name'] / 'manifest.json').is_file()
+            if native:
                 argv += ['--kpack-cache', args.cache / model['name']]
             if 'devices' in model:
                 env['CUDA_VISIBLE_DEVICES'] = model['devices']
@@ -140,6 +141,7 @@ def numerical(args, model, inv, directory, helpers):
                     raise ValueError('model numerical run has missing selected operations or a legacy fallback')
                 if model.get('split') == 'tensor':
                     evidence['tp2'] = tp2_evidence(text, inv['operators'])
+                    evidence['tp2_cache'] = tp2_cache_evidence(text, cache_hot)
                 record['selection'] = evidence
             elif 'CUDA0_KPACK model buffer size' in text or '[quactlize-plan]' in text:
                 raise ValueError('GPU reference entered the K-pack route')

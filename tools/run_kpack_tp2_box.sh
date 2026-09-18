@@ -56,6 +56,7 @@
     test -f "$LLAMA_DIR/.aoneci/scripts/build.sh" && test -f "$NCP_SOURCE/CMakeLists.txt"
     grep -q 'ggml_backend_meta_buffer_type_count' "$LLAMA_DIR/ggml/include/ggml-backend.h"
     grep -q 'KPACK_TP2_DEVICE PASS' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"
+    grep -q 'KPACK_TP2_CACHE PASS' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"
     test -n "${QUACTLIZE_PPU_BUNDLE:-}" && test -s "$QUACTLIZE_PPU_BUNDLE/manifest.json"
     ASYS=${ASYS:-$SDK/asight/bin/asys}
     test -x "$ASYS"
@@ -112,12 +113,19 @@
     stage=host-regression
     ctest --test-dir "$BUILD_DIR" -R '^(test-quactlize-loader|test-quactlize-loader-env|test-kpack-sidecar|test-quactlize-buffer)$' \
         --output-on-failure 2>&1 | tee "$RUN/results/host-tests.log"
-    stage=two-device-numerical
-    "$BUILD_DIR/bin/test-quactlize-scheduler" --tp2 2>&1 | tee "$RUN/results/tp2-device.log"
-    grep -qx 'KPACK_TP2_DEVICE PASS formats=6 cases=72 chains=6 replays=3 oracle=GGUF_FP32_DOT_SQUARE allreduce=K_SPLIT' "$RUN/results/tp2-device.log"
+    mkdir "$RUN/device-cache"
+    stage=two-device-cache-cold
+    "$BUILD_DIR/bin/test-quactlize-scheduler" --tp2-cache-write "$RUN/device-cache" 2>&1 | tee "$RUN/results/tp2-device-cold.log"
+    grep -qx 'KPACK_TP2_CACHE PASS mode=cold cases=72 chains=6' "$RUN/results/tp2-device-cold.log"
+    stage=two-device-cache-hot
+    "$BUILD_DIR/bin/test-quactlize-scheduler" --tp2-cache-read "$RUN/device-cache" 2>&1 | tee "$RUN/results/tp2-device-hot.log"
+    grep -qx 'KPACK_TP2_CACHE PASS mode=hot cases=72 chains=6' "$RUN/results/tp2-device-hot.log"
 
+    CACHE_ROOT=${CACHE_ROOT:-$RESULT_DIR/kpack-tp2-model-cache}
+    mkdir -p -- "$CACHE_ROOT"
+    printf 'KPACK_TP2 cache=%s\n' "$CACHE_ROOT"
     COMMON=(--llama "$LLAMA_DIR" --build "$BUILD_DIR" --bundle "$BUNDLE" --plan "$RUN/results/model-plan.json"
-        --cache "$RUN/cache-disabled-for-tp" --jit-cache "$QUACTLIZE_KPACK_JIT_CACHE" --logits "$RUN/logits" --corpus "$CORPUS"
+        --cache "$CACHE_ROOT" --jit-cache "$QUACTLIZE_KPACK_JIT_CACHE" --logits "$RUN/logits" --corpus "$CORPUS"
         --asys "$ASYS" --inspector "$SDK/bin/hgobjdump")
     stage=model-numerical
     "$PYTHON" -u tools/run_kpack_model_validation.py "${COMMON[@]}" --phase numerical \
@@ -125,7 +133,7 @@
     stage=model-perf
     "$PYTHON" -u tools/run_kpack_batched_bench.py --binary "$BUILD_DIR/bin/llama-batched-bench" \
         --llama-dir "$LLAMA_DIR" --bundle "$BUNDLE" --jit-cache "$QUACTLIZE_KPACK_JIT_CACHE" \
-        --cache-root "$RUN/cache-disabled-for-tp" --output-root "$RESULT_DIR" --output "$RUN/results/benchmark" \
+        --cache-root "$CACHE_ROOT" --output-root "$RESULT_DIR" --output "$RUN/results/benchmark" \
         --plan "$RUN/results/model-plan.json" --order abba --require-selected --repeats "${MODEL_REPEATS:-2}" \
         2>&1 | tee "$RUN/results/benchmark.log"
     stage=model-trace

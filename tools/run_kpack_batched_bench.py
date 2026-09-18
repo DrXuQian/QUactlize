@@ -116,7 +116,7 @@ def command(binary, model, plan, repeats, names, arm, cache):
         # because its name ends in output.weight or matches another suffix.
         pattern = "^(" + "|".join(re.escape(n) for n in names) + ")$"
         argv += ["-ot", pattern + "=CUDA0" + ("_KPACK" if arm == "kpack" else "")]
-    if arm == "kpack" and model["split"] != "tensor":
+    if arm == "kpack":
         argv += ["--kpack-cache", str(cache)]
     return argv
 
@@ -137,6 +137,22 @@ def tp2_evidence(text, expected_ops):
         if p.get('selected') != '1' or not shard or any(p.get(key) != shard.get(key) for key in ('q', 'n', 'k', 'experts')):
             raise ValueError('TP2 selected geometry differs from its device-local packed shard')
     return dict(devices=2, plans=plans, shards=shards, status='PASS', scope='SHARD_AND_SELECTION_RECEIPTS')
+
+
+def tp2_cache_evidence(text, hot):
+    shards = [dict(re.findall(r"([a-z_]+)=([^\s]+)", line))
+              for line in text.splitlines() if "[quactlize-shard]" in line]
+    if {s.get('device') for s in shards} != {'0', '1'}:
+        raise ValueError('TP2 cache lacks shards on both devices')
+    if hot:
+        counts = re.findall(r'\[kpack-cache\] cache_uploads=(\d+) resident_misses=(\d+)', text)
+        if len(counts) != 1 or int(counts[0][0]) != len(shards) or counts[0][1] != '0' or \
+                any(s.get('producer') != 'CACHE' for s in shards):
+            raise ValueError('TP2 hot reload repacked a weight or missed a resident shard')
+    elif any(s.get('producer') != 'GPU' for s in shards) or '[kpack-cache] published:' not in text:
+        raise ValueError('TP2 cold load did not publish its GPU-produced shards')
+    return dict(status='PASS', mode='hot' if hot else 'cold', shards=len(shards),
+                scope='NEW_PROCESS_DISK_CACHE_NOT_INFERENCE_REUSE')
 
 
 def parse_row(line, expected, plan):
@@ -178,6 +194,7 @@ def run_arm(args, model, plan, inv, arm, directory, index):
     label = f"{index}-{arm}"
     log = directory / (label + ".log")
     cache = args.cache_root / model["name"]
+    cache_hot = (cache / "manifest.json").is_file()
     if arm == "kpack":
         cache.parent.mkdir(parents=True, exist_ok=True)
     argv = command(args.binary, model, plan, args.repeats, inv["eligible"], arm, cache)
@@ -270,6 +287,7 @@ def run_arm(args, model, plan, inv, arm, directory, index):
                 raise ValueError('selected operator coverage incomplete or legacy fallback present')
             if model['split'] == 'tensor':
                 evidence['tp2'] = tp2_evidence(text, inv['operators'])
+                evidence['tp2_cache'] = tp2_cache_evidence(text, cache_hot)
             if inv["q8"] and (not q8_plans or any(p.get("activation")!=expected_activation(p, env.get('QUACTLIZE_KPACK_COMPUTE')) or
                     p.get("route") not in ("sf", "gemv") or p.get("scale_resident")!="1" for p in q8_plans)):
                 raise ValueError("Q8_0 W8A16 compute evidence missing or activation/scale contract differs")
