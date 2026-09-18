@@ -163,7 +163,7 @@ identify the loaded PCCL extension or exercise every small collective size.
 
 Set `TP2_MODE=communication` on the existing box entry for a bounded diagnostic.
 It reuses the current `.aoneci` build and runtime package without loading a model,
-creating model caches, or capturing Asys. Seven fresh processes run:
+creating model caches, or capturing Asys. Ten fresh processes run:
 
 - Known F32 buffers of 512, 3072 and 32768 elements through the caller's unchanged
   communication entry. Values and sums are exactly representable; require zero error.
@@ -174,13 +174,52 @@ creating model caches, or capturing Asys. Seven fresh processes run:
 - Repeat the 512-element buffer and K-pack cases with `PCCL_ENABLE_EXT_KERNEL=0`
   in those child processes only. This is an extension-path control, not a proposed
   production default and not permission to ignore a failed collective.
+- Load only the SDK wrapper before the first 512-element buffer collective,
+  once LOCAL and once GLOBAL. A final K-pack process explicitly promotes the
+  wrapper to GLOBAL to restore the previous loader behavior in the same binary.
 
 The binary prints actual loaded communication/runtime library paths from
 `/proc/self/maps`, including libraries loaded with `dlopen`. Every failed child
 is retained and the remaining cases continue; each has a 180-second timeout.
-Read `results/communication/summary.json` and the seven adjacent logs. Runner
+Read `results/communication/summary.json` and the ten adjacent logs. Runner
 success means `DIAGNOSTIC_COMPLETE`, not TP2 admission. Production communication
 and kernel dispatch are unchanged. Upload the resulting small results archive.
+
+### Wrapper-scope candidate
+
+`kpack-tp2.1InYnX` completed the original seven cases. All copy and raw Q8
+cases pass. Both K-pack cases produce exact local outputs on both devices,
+synchronize successfully, then fail at their first collective. Both use the
+same SDK 2.1.1 PCCL and 13.0 runtime as the successful controls.
+
+The detailed log order matters: raw Q8 completes its first collective before
+CUDA graph preparation loads the execution libraries, wrapper and
+`/usr/local/PPU_SDK/targets/x86_64-linux/lib/libhggcrt.12.0.so`. Later raw
+collectives still pass. K-pack loads them before its first collective and
+explicitly preloads the wrapper GLOBAL. Thus coexistence of runtime versions
+alone is not a sufficient explanation. The disabled process confirms its
+environment has `PCCL_ENABLE_EXT_KERNEL=0`, but still fails at the same source
+line; the filename does not establish which optional plugin path was active.
+
+The candidate changes only the caller wrapper preload from GLOBAL to LOCAL.
+The five delivered format DSOs, the pack producer and execution DSO explicitly
+name `libhggc_wrapper.so` in DT_NEEDED. They do not need the wrapper promoted
+into unrelated libraries' global symbol lookup. No SDK files, ABI, kernel,
+collective implementation, numeric threshold or default PCCL option changes.
+
+A host ELF regression exercises the production preload function with real
+DSOs: the LOCAL candidate preserves a communication library's own dependency;
+the GLOBAL negative interposes the wrapper's same-named function; priming the
+communication call before GLOBAL loading masks that failure. An explicit
+DT_NEEDED consumer still resolves its wrapper entry in the LOCAL case. This
+proves the host binding mechanism, not PPU correctness.
+
+The box diagnostic also records RTLD_DEFAULT symbol owners. It reports
+`GLOBAL_WRAPPER_CAUSAL_CANDIDATE_PASS` only if the seven ordinary cases and
+LOCAL-only control pass, both GLOBAL controls reproduce the historical
+collective failure after clean local checks, and symbol/path receipts match.
+Otherwise it reports the unmet condition and retains all logs. Full TP2
+cold/hot, model and performance admission remain pending after this small gate.
 
 ## Remaining device admission
 

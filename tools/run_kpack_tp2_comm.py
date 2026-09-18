@@ -12,10 +12,14 @@ import subprocess
 import time
 
 
-def cases():
-    return [(arm, count, extension) for extension in ('inherited', 'disabled')
+def cases(wrapper_ab=False):
+    result = [(arm, count, extension, 'none') for extension in ('inherited', 'disabled')
             for arm, count in ((('copy', 512), ('copy', 3072), ('copy', 32768), ('raw', 512), ('kpack', 512))
                                if extension == 'inherited' else (('copy', 512), ('kpack', 512)))]
+    if wrapper_ab:
+        result += [('copy', 512, 'inherited', 'local'), ('copy', 512, 'inherited', 'global'),
+                   ('kpack', 512, 'inherited', 'global')]
+    return result
 
 
 def evidence(text, arm, count, rc):
@@ -51,10 +55,37 @@ def evidence(text, arm, count, rc):
     return dict(status=status, local_records=len(local), sum_records=len(sums),
                 local_before_collective_pass=first_locals_pass,
                 extension_invalid_function='drv_extension.cc' in text and 'invalid device function' in text,
+                wrapper_scopes=re.findall(r'^KPACK_TP2_COMM_WRAPPER scope=(\w+) path=(.+)$', text, re.M),
+                global_symbols=sorted(set(re.findall(r'^KPACK_TP2_COMM_SYMBOL (.+)$', text, re.M))),
                 libraries=sorted(set(re.findall(r'^KPACK_TP2_COMM_LIBRARY path=(.+)$', text, re.M))))
 
 
-def run(binary, output, timeout=180):
+def wrapper_verdict(results):
+    if len(results) != 10:
+        return 'NOT_RUN'
+    if [(r['arm'], r['count'], r['extension'], r['wrapper_scope']) for r in results] != cases(True):
+        return 'COVERAGE_FAILED'
+    if any(r['status'] != 'PASS' for r in results[:8]):
+        return 'CANDIDATE_NOT_ADMITTED'
+    if any(len(r['wrapper_scopes']) != 1 or r['wrapper_scopes'][0][0] != r['wrapper_scope']
+           for r in results[7:]):
+        return 'COVERAGE_FAILED'
+    if len({r['wrapper_scopes'][0][1] for r in results[7:]}) != 1:
+        return 'COVERAGE_FAILED'
+    if any(r['wrapper_scopes'] for r in results[:7]):
+        return 'COVERAGE_FAILED'
+    if not any('phase=after-wrapper name=hggcLaunchKernel library=' in s and 'libhggc_wrapper.so' not in s
+               for s in results[7]['global_symbols']):
+        return 'COVERAGE_FAILED'
+    for r in results[8:]:
+        if not (r['status'] == 'COLLECTIVE_FAILED_AFTER_LOCAL_PASS' and r['extension_invalid_function'] and
+                any('phase=after-wrapper name=hggcLaunchKernel library=' in s and 'libhggc_wrapper.so' in s
+                    for s in r['global_symbols'])):
+            return 'CANDIDATE_PASS_GLOBAL_NEGATIVE_NOT_REPRODUCED'
+    return 'GLOBAL_WRAPPER_CAUSAL_CANDIDATE_PASS'
+
+
+def run(binary, output, timeout=180, wrapper_ab=False):
     if os.environ.get('GGML_CUDA_ALLREDUCE') not in (None, 'nccl'):
         raise ValueError('communication diagnostic requires the existing NCCL path; unset GGML_CUDA_ALLREDUCE or set nccl')
     output.mkdir(parents=True, exist_ok=False)
@@ -65,9 +96,11 @@ def run(binary, output, timeout=180):
             'QUACTLIZE_KPACK_EXECUTION', 'QUACTLIZE_PPU_PACK_LIBRARY', 'QUACTLIZE_PPU_BUNDLE')
     (output / 'environment.json').write_text(json.dumps({k: base.get(k) for k in keys}, indent=2) + '\n')
     results = []
-    for arm, count, extension in cases():
-        name = f'{arm}-{count}-{extension}'
+    for arm, count, extension, scope in cases(wrapper_ab):
+        name = f'{arm}-{count}-{extension}' + (f'-wrapper-{scope}' if scope != 'none' else '')
         command = [str(binary), '--tp2-comm', arm, str(count)]
+        if scope != 'none':
+            command += [scope]
         env = dict(base)
         if extension == 'disabled':
             env['PCCL_ENABLE_EXT_KERNEL'] = '0'
@@ -86,7 +119,7 @@ def run(binary, output, timeout=180):
                 except ProcessLookupError:
                     pass
                 rc = process.wait()
-        result = dict(arm=arm, count=count, extension=extension, rc=rc,
+        result = dict(arm=arm, count=count, extension=extension, wrapper_scope=scope, rc=rc,
                       seconds=time.monotonic()-started, timeout=timed_out, command=command,
                       **evidence(log.read_text(errors='replace'), arm, count, rc))
         if timed_out:
@@ -94,8 +127,10 @@ def run(binary, output, timeout=180):
         results.append(result)
         print('KPACK_TP2_COMM_RESULT ' + json.dumps(result), flush=True)
         (output / 'summary.json').write_text(json.dumps(dict(status='RUNNING', cases=results), indent=2) + '\n')
-    (output / 'summary.json').write_text(json.dumps(dict(status='DIAGNOSTIC_COMPLETE',
+    verdict = wrapper_verdict(results)
+    (output / 'summary.json').write_text(json.dumps(dict(status='DIAGNOSTIC_COMPLETE', wrapper_verdict=verdict,
         device_admission='PENDING', production_communication='UNCHANGED', cases=results), indent=2) + '\n')
+    print(f'KPACK_TP2_WRAPPER_VERDICT verdict={verdict}', flush=True)
     print(f'KPACK_TP2_COMM_DONE cases={len(results)} verdict=DIAGNOSTIC_COMPLETE device_admission=PENDING results={output}', flush=True)
 
 
@@ -104,7 +139,8 @@ if __name__ == '__main__':
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--timeout', type=int, default=180)
+    parser.add_argument('--wrapper-ab', action='store_true', help='add local/global wrapper-only controls and the historical K-pack negative')
     args = parser.parse_args()
     if args.timeout <= 0:
         parser.error('timeout must be positive')
-    run(args.binary.resolve(strict=True), args.output, args.timeout)
+    run(args.binary.resolve(strict=True), args.output, args.timeout, args.wrapper_ab)

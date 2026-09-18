@@ -61,7 +61,7 @@
     grep -q 'KPACK_TP2_DEVICE PASS' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"
     grep -q 'KPACK_TP2_CACHE PASS' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"
     grep -q 'KPACK_TP2_HOST PASS' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"
-    if [[ $TP2_MODE == communication ]]; then grep -q -- '--tp2-comm' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"; fi
+    if [[ $TP2_MODE == communication ]]; then grep -q 'KPACK_TP2_COMM_WRAPPER' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"; fi
     test -n "${QUACTLIZE_PPU_BUNDLE:-}" && test -s "$QUACTLIZE_PPU_BUNDLE/manifest.json"
     ASYS=${ASYS:-$SDK/asight/bin/asys}
     CORPUS=${GSM8K_FILE:-/sim/eec/shared/AI_workspace/llm-models/datasets/gsm8k/main/test-00000-of-000001.parquet}
@@ -123,7 +123,7 @@
     if [[ $TP2_MODE == communication ]]; then
         stage=communication
         "$PYTHON" -u tools/run_kpack_tp2_comm.py --binary "$BUILD_DIR/bin/test-quactlize-scheduler" \
-            --output "$RUN/results/communication" 2>&1 | tee "$RUN/results/communication.log"
+            --output "$RUN/results/communication" --wrapper-ab 2>&1 | tee "$RUN/results/communication.log"
         stage=diagnostic-complete
         exit 0
     fi

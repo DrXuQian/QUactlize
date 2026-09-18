@@ -1341,6 +1341,59 @@ def test_tp2_communication_timeout_stops_only_its_own_child_and_continues(tmp_pa
     assert len(result['cases'])==7 and all(x['status']=='TIMEOUT' for x in result['cases'])
 
 
+@pytest.mark.parametrize('fault',[None,'local-fail','global-pass','kpack-global-pass','missing-symbol',
+                                  'wrong-scope','old-seven','duplicate','different-path','local-global-symbol'])
+def test_tp2_wrapper_verdict_requires_local_green_and_two_exact_global_negatives(fault):
+    from tools.run_kpack_tp2_comm import cases,wrapper_verdict
+    results=[]
+    for arm,count,extension,scope in cases(True):
+        negative=scope=='global'
+        results.append(dict(arm=arm,count=count,extension=extension,wrapper_scope=scope,
+            status='COLLECTIVE_FAILED_AFTER_LOCAL_PASS' if negative else 'PASS',
+            extension_invalid_function=negative,
+            wrapper_scopes=[(scope,'/sdk/lib/libhggc_wrapper.so')] if scope!='none' else [],
+            global_symbols=['phase=after-wrapper name=hggcLaunchKernel library='+
+                            ('/sdk/lib/libhggc_wrapper.so' if negative else 'NOT_GLOBAL')]))
+    if fault=='local-fail': results[7]['status']='SETUP_FAILED'
+    if fault=='global-pass': results[8]['status']='PASS'
+    if fault=='kpack-global-pass': results[9]['status']='PASS'
+    if fault=='missing-symbol': results[8]['global_symbols']=[]
+    if fault=='wrong-scope': results[8]['wrapper_scopes'][0]=('local','/sdk/lib/libhggc_wrapper.so')
+    if fault=='different-path': results[8]['wrapper_scopes'][0]=('global','/foreign/lib/libhggc_wrapper.so')
+    if fault=='local-global-symbol': results[7]['global_symbols']=results[8]['global_symbols']
+    if fault=='old-seven': results=results[:7]
+    if fault=='duplicate': results[8]=results[7]
+    verdict=wrapper_verdict(results)
+    assert (verdict=='GLOBAL_WRAPPER_CAUSAL_CANDIDATE_PASS')==(fault is None)
+
+
+def test_tp2_wrapper_ab_uses_one_binary_and_unchanged_producer_arguments(tmp_path,monkeypatch):
+    from tools import run_kpack_tp2_comm as comm
+    commands=[]
+    monkeypatch.delenv('GGML_CUDA_ALLREDUCE',raising=False)
+    def start(command,**kwargs):
+        commands.append(command)
+        arm,count=command[2:4]
+        scope=command[4] if len(command)==5 else 'none'
+        text=comm_fixture(arm,int(count))
+        if scope!='none':
+            text=f'KPACK_TP2_COMM_WRAPPER scope={scope} path=/sdk/lib/libhggc_wrapper.so\n'+text
+        text='KPACK_TP2_COMM_SYMBOL phase=after-wrapper name=hggcLaunchKernel library='+(
+            '/sdk/lib/libhggc_wrapper.so' if scope=='global' else 'NOT_GLOBAL')+'\n'+text
+        if scope=='global':
+            text=text.split('KPACK_TP2_COMM_SUM',1)[0]+'[drv_extension.cc:379] invalid device function\n'
+        kwargs['stdout'].write(text)
+        return SimpleNamespace(wait=lambda **kw:-6 if scope=='global' else 0)
+    monkeypatch.setattr(comm.subprocess,'Popen',start)
+    comm.run(Path('/build/bin/test-quactlize-scheduler'),tmp_path/'results',wrapper_ab=True)
+    result=json.loads((tmp_path/'results/summary.json').read_text())
+    assert len(commands)==10
+    assert commands[7][:4]==commands[8][:4]==commands[0]
+    assert commands[9][:4]==commands[4]
+    assert result['wrapper_verdict']=='GLOBAL_WRAPPER_CAUSAL_CANDIDATE_PASS'
+    assert result['device_admission']=='PENDING'
+
+
 @pytest.mark.parametrize('hot', [False, True])
 @pytest.mark.parametrize('fault', [None, 'device', 'producer', 'receipt', 'count', 'miss'])
 def test_tp2_cache_evidence_proves_new_process_reload(hot, fault):

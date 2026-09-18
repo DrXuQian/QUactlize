@@ -20,9 +20,9 @@ is no inference-thread D2H wait. Old single-device caches are not accepted as
 TP shards, and existing incompatible caches are never overwritten.
 The runner now tests cold publication and fresh-process hot loading before
 model numerics, warmed ABBA and Asys. See the linked TP2 document for CACHE_ROOT.
-Caller commit: `67cf2e581d0bb95fc8e4ed9be264f6e4245464d2`. Local checks include
+Caller commit: `ee28055efd287d8aa6c6b0fc2abfef1c5610dfe3`. Local checks include
 24 six-format TP-cache cases, malformed/foreign-layout rejections, source-change
-publication rejection, four CTest suites and 39 native-helper tests. The changed
+publication rejection, four CTest suites and 40 native-helper tests. The changed
 cache upload translation unit compiles with PPU SDK 2.1.1. No device result is
 claimed for these host checks. No llama binaries or new runtime LFS payloads
 are part of this delivery.
@@ -30,10 +30,14 @@ are part of this delivery.
 The `kpack-tp2.JFVDyR` upload confirms five host gates and first-shard cold-cache
 publication, but stops in PCCL's extension at the first 512-element F32
 all-reduce. It does not invalidate the earlier successful 122B reference run.
-Use `TP2_MODE=communication` for seven small fresh-process diagnostics, including
+Use `TP2_MODE=communication` for ten small fresh-process diagnostics, including
 raw versus K-pack Q8 with local synchronization/oracles before the unchanged
 collective, size controls, loaded-library paths, and child-only extension-off
-controls. This mode loads no model and changes no production defaults.
+controls. The loader candidate keeps the SDK wrapper LOCAL. Three additional
+arms test LOCAL/GLOBAL wrapper-only loading and restore the historical GLOBAL
+K-pack behavior. This mode loads no model and changes no communication defaults.
+The `1InYnX` evidence and host ELF binding regression are detailed in KPACK_TP2.md;
+PPU admission of the loader candidate remains pending.
 
 The first cold device gate exposed a fixture bug: GGUF kept the copied Meta
 buffer and tried to read its shards instead of the supplied raw host bytes.
@@ -2456,12 +2460,12 @@ than this exact A01 bundle. Do not resolve it from these DSOs; A07 must rebuild
 and re-admit all six libraries before llama.cpp enables that optional route.
 
 The product host floor is Ubuntu 24.04 with the bundle's admitted PPU SDK
-2.1.1-a5c56e runtime. Load the SDK wrapper first with
-`RTLD_NOW | RTLD_GLOBAL`, then load every Quactlize DSO with
+2.1.1-a5c56e runtime. The caller now loads the SDK wrapper with
+`RTLD_NOW | RTLD_LOCAL`, then loads every Quactlize DSO with
 `RTLD_NOW | RTLD_LOCAL`:
 
 ```text
-${PPU_SDK}/lib/libhggc_wrapper.so -> RTLD_NOW | RTLD_GLOBAL
+${PPU_SDK}/lib/libhggc_wrapper.so -> RTLD_NOW | RTLD_LOCAL
 absolute path to selected FMT DSO -> RTLD_NOW | RTLD_LOCAL
 ```
 
@@ -2617,6 +2621,10 @@ public ctypes ABI. It covers all five formats at dense measured shape
 NumPy FP64 oracles and planted faults. It writes a new evidence directory and
 refuses to overwrite one. Device status remains `PENDING` until this exact gate
 reports `PASS` for the published files.
+
+That historical standalone gate's global preload is not the TP2 caller load
+contract. The caller now keeps the wrapper LOCAL to its DT_NEEDED consumers;
+see KPACK_TP2.md for the communication scope controls and pending device gate.
 
 Dense fully-quantized decode/prefill:
 
@@ -2937,7 +2945,7 @@ return a nonnegative value.
    source commit `2826cf12451e02ca4590f7a44682b57d2098bfb9`. Require the strict verifier,
    selected-config oracle, and prebuilt single-device numeric gate to pass on
    those exact files before deployment.
-2. On Ubuntu 24.04, load the admitted SDK wrapper globally first. Load each
+2. On Ubuntu 24.04, keep the SDK wrapper local to its DT_NEEDED consumers. Load each
    qtype-selected FMT DSO locally, resolve symbols from its own handle, and
    require its exact build identity.
 3. Parse and structurally/source-validate the schema-v3 sidecar against the
