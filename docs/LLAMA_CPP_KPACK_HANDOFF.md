@@ -20,12 +20,21 @@ is no inference-thread D2H wait. Old single-device caches are not accepted as
 TP shards, and existing incompatible caches are never overwritten.
 The runner now tests cold publication and fresh-process hot loading before
 model numerics, warmed ABBA and Asys. See the linked TP2 document for CACHE_ROOT.
-Caller commit: `e75e4d4685b8cd223702b0b9fb09c76be47e9755`. Local checks include
+Caller commit: `9942e30f5c0c861bc7b98a74b966361344ce8664`. Local checks include
 24 six-format TP-cache cases, malformed/foreign-layout rejections, source-change
-publication rejection, three CTest suites and 38 native-helper tests. The changed
+publication rejection, three CTest suites and 39 native-helper tests. The changed
 cache upload translation unit compiles with PPU SDK 2.1.1. No device result is
 claimed for these host checks. No llama binaries or new runtime LFS payloads
 are part of this delivery.
+
+The first cold device gate exposed a fixture bug: GGUF kept the copied Meta
+buffer and tried to read its shards instead of the supplied raw host bytes.
+The exact scheduler helper reproduces exit 139 using only CPU-backed Meta
+shards. It now clears the fixture's buffer/view metadata before serialization;
+the same host reproduction exits 0 and verifies byte-exact GGUF contents.
+Per-case start records identify failures before a completed cell is printed.
+Reuse the failed run's caller build for this test-only increment; no runtime
+rebuild is needed. Actual two-device arithmetic/cache admission remains pending.
 
 ## New-machine startup recovery, 2026-09-18
 

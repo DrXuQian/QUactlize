@@ -106,6 +106,27 @@ Upload `kpack-tp2.*.results.tgz`. Full reports remain under
 `results/trace/qwen35-122b-q4km/{reference,native}/proof.asysrep` and are
 excluded from that archive. Raw logits and model weights are also excluded.
 
+### Cold fixture crash recovery
+
+Caller `9942e30f5` fixes the first `--tp2-cache-write` fixture. A GGUF tensor
+copied from a resident Meta tensor retains its buffer, and replacing `data`
+alone does not change the GGUF writer's backend-read path. Meta indexes local
+shards by the original tensor pointer; the copied tensor has no entry and
+caused a null dereference before any GEMM launch.
+
+The fixture now detaches buffer/view metadata and serializes the original host
+GGUF bytes. The original and fixed scheduler helper were exercised with real
+CPU-backed Meta buffers: exit 139 before the fix, exit 0 with byte-exact source
+contents afterwards. A host regression also rejects retaining the buffer.
+This is a test-fixture fix, not device correctness admission.
+
+After updating both TP branches, obtain the existing build path from the failed
+run's `results/caller-ci-build.json` (`build`) and pass it as
+`LLAMA_CI_BUILD_DIR`. The runner incrementally builds the changed test program
+and uses a new run directory for cold/hot fixtures. Do not reuse the failed
+`device-cache` as a cold-write destination or delete the old evidence. The
+Quactlize runtime, NCP kernels and model-cache schema are unchanged.
+
 ## Remaining admission
 
 - Run the two-ZW810 numerical, model, timing and trace checks. Local host tests
