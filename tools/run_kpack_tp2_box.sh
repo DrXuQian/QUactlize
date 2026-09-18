@@ -29,7 +29,19 @@
     cd "$ROOT"
     export PPU_SDK="$SDK" CUDA_HOME="$SDK/CUDA_SDK" PPU_SDK_HOME="$SDK/CUDA_SDK"
     export DG_JIT_HGCC_COMPILER="$SDK/bin/hgcc"
-    test -x "$DG_JIT_HGCC_COMPILER" && test -r "$CUDA_HOME/include/hggc_runtime_api.h"
+    if [[ ! -x "$DG_JIT_HGCC_COMPILER" ]]; then
+        printf 'KPACK_TP2 SDK missing executable: %s\n' "$DG_JIT_HGCC_COMPILER" >&2
+        false
+    fi
+    # The native PPU API and CUDA compatibility API have separate include roots.
+    for header in "$SDK/include/hggc_runtime_api.h" "$CUDA_HOME/include/cuda_runtime_api.h"; do
+        if [[ ! -r "$header" ]]; then
+            printf 'KPACK_TP2 SDK missing readable header: %s\n' "$header" >&2
+            false
+        fi
+    done
+    printf 'KPACK_TP2_SDK PASS compiler=%s native_include=%s cuda_include=%s\n' \
+        "$DG_JIT_HGCC_COMPILER" "$SDK/include" "$CUDA_HOME/include"
     export LD_LIBRARY_PATH="$SDK/CUDA_SDK/targets/x86_64-linux/lib:$SDK/targets/x86_64-linux/lib:$SDK/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     export LC_ALL=C OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
     export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}

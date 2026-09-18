@@ -36,6 +36,10 @@ Quactlize runtime; it does not rebuild the large runtime bundle.
 
 Required inputs are `PPU_SDK`, `LLAMA_CI_DIR`, `NCP_LIB_DIR` and
 `QUACTLIZE_PPU_BUNDLE` (the existing six-library compatibility bundle).
+The SDK precheck uses `PPU_SDK/include/hggc_runtime_api.h` for the native API
+and `PPU_SDK/CUDA_SDK/include/cuda_runtime_api.h` for the compatibility API.
+These are different include roots in the official 2.1.1 SDK; the runner now
+prints the exact missing input instead of a combined, ambiguous test failure.
 `KPACK_BUNDLE` optionally points at the pinned small native runtime already
 downloaded locally. Otherwise only that pinned artifact is fetched with LFS.
 `NCP_CI_DIR` optionally reuses a matching NCP checkout/build.

@@ -1261,6 +1261,34 @@ def test_tp2_plan_and_runner_do_not_bypass_meta_or_cache_admission(tmp_path):
     assert 'PPU_SDK_HOME="$SDK/CUDA_SDK"' in script
 
 
+@pytest.mark.parametrize('fault', [None, 'compiler-missing', 'compiler-not-executable', 'native-header', 'cuda-header'])
+def test_tp2_sdk_precheck_uses_separate_native_and_cuda_headers(tmp_path, fault):
+    sdk=tmp_path/'PPU_SDK'
+    compiler=sdk/'bin/hgcc'
+    native=sdk/'targets/x86_64-linux/include/hggc_runtime_api.h'
+    cuda=sdk/'CUDA_SDK/targets/x86_64-linux/include/cuda_runtime_api.h'
+    for path in (compiler,native,cuda): path.parent.mkdir(parents=True,exist_ok=True)
+    (sdk/'include').symlink_to('targets/x86_64-linux/include',target_is_directory=True)
+    (sdk/'CUDA_SDK/include').symlink_to('targets/x86_64-linux/include',target_is_directory=True)
+    if fault!='compiler-missing':
+        compiler.write_text('#!/bin/sh\nexit 0\n')
+        compiler.chmod(0o644 if fault=='compiler-not-executable' else 0o755)
+    if fault!='native-header':native.write_text('// Native PPU API\n')
+    if fault!='cuda-header':cuda.write_text('// CUDA compatibility API\n')
+    # The official layout does not put the native runtime API in CUDA_SDK.
+    assert not (sdk/'CUDA_SDK/include/hggc_runtime_api.h').exists()
+    script=(ROOT/'tools/run_kpack_tp2_box.sh').read_text()
+    block='    export PPU_SDK='+script.split('    export PPU_SDK=',1)[1].split('    export LD_LIBRARY_PATH=',1)[0]
+    result=subprocess.run(['bash','-euc',block],env=dict(os.environ,SDK=str(sdk)),text=True,capture_output=True)
+    if fault:
+        assert result.returncode!=0 and 'KPACK_TP2_SDK PASS' not in result.stdout
+        expected=compiler if fault.startswith('compiler-') else sdk/('include/hggc_runtime_api.h' if fault=='native-header' else 'CUDA_SDK/include/cuda_runtime_api.h')
+        assert str(expected) in result.stderr
+    else:
+        assert result.returncode==0,result.stderr
+        assert 'KPACK_TP2_SDK PASS' in result.stdout
+
+
 @pytest.mark.parametrize('fault',[None,'stage','benchmark','trace','empty-trace','binary','prepare','prepare-count'])
 def test_model_extension_reuses_only_completed_unchanged_inputs(tmp_path,monkeypatch,fault):
     resume,previous,llama,sdk,bundle,build,_=successful_extension_fixture(tmp_path,monkeypatch)
