@@ -62,7 +62,14 @@
     grep -q 'KPACK_TP2_CACHE PASS' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"
     grep -q 'KPACK_TP2_HOST PASS' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"
     if [[ $TP2_MODE == communication ]]; then grep -q 'KPACK_TP2_COMM_WRAPPER' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"; fi
-    test -n "${QUACTLIZE_PPU_BUNDLE:-}" && test -s "$QUACTLIZE_PPU_BUNDLE/manifest.json"
+    if [[ -z ${QUACTLIZE_PPU_BUNDLE:-} ]]; then
+        printf 'KPACK_TP2 missing QUACTLIZE_PPU_BUNDLE: use the six-library bundle path recorded in the previous results/communication/environment.json\n' >&2
+        false
+    fi
+    if [[ ! -s $QUACTLIZE_PPU_BUNDLE/manifest.json ]]; then
+        printf 'KPACK_TP2 missing six-library manifest: %s/manifest.json\n' "$QUACTLIZE_PPU_BUNDLE" >&2
+        false
+    fi
     ASYS=${ASYS:-$SDK/asight/bin/asys}
     CORPUS=${GSM8K_FILE:-/sim/eec/shared/AI_workspace/llm-models/datasets/gsm8k/main/test-00000-of-000001.parquet}
     if [[ $TP2_MODE == model ]]; then test -x "$ASYS" && test -s "$CORPUS"; fi

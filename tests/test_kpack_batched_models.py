@@ -1267,6 +1267,24 @@ def test_tp2_plan_and_runner_do_not_bypass_meta_or_cache_admission(tmp_path):
     assert 'PCCL_ENABLE_EXT_KERNEL=' not in script
 
 
+@pytest.mark.parametrize('state',['unset','missing','empty','present'])
+def test_tp2_legacy_bundle_precheck_names_missing_input(tmp_path,state):
+    source=(ROOT/'tools/run_kpack_tp2_box.sh').read_text()
+    start=source.index('    if [[ -z ${QUACTLIZE_PPU_BUNDLE:-} ]]')
+    block=source[start:source.index('    ASYS=',start)]
+    env=dict(os.environ)
+    env.pop('QUACTLIZE_PPU_BUNDLE',None)
+    bundle=tmp_path/'six-library'
+    if state!='unset': env['QUACTLIZE_PPU_BUNDLE']=str(bundle)
+    if state in ('empty','present'):
+        bundle.mkdir()
+        (bundle/'manifest.json').write_text('{}' if state=='present' else '')
+    result=subprocess.run(['bash','-euc',block],env=env,text=True,capture_output=True)
+    assert (result.returncode==0)==(state=='present')
+    if state=='unset': assert 'missing QUACTLIZE_PPU_BUNDLE' in result.stderr
+    if state in ('missing','empty'): assert str(bundle/'manifest.json') in result.stderr
+
+
 def comm_fixture(arm='copy', count=512):
     lines=[]
     for replay in range(3):
