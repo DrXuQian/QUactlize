@@ -25,6 +25,10 @@
         EXTRA+=(--performance-only)
         if [[ ${MODEL_ACU:-0} == 1 ]]; then EXTRA+=(--profile-acu); fi
     fi
+    if [[ -n ${MODEL_PLAN:-} ]]; then
+        [[ ${PERFORMANCE_ONLY:-0} == 1 && ${REPAIR_PREFILL:-0} == 0 ]]
+        EXTRA+=(--extend-plan "$MODEL_PLAN")
+    fi
     if [[ ${REPAIR_PREFILL:-0} == 1 ]]; then
         mapfile -t PIN < <("$PYTHON" -c 'import json; m=json.load(open("tools/kpack_q4_model_artifact.json")); print(m["branch"]); print(m["commit"]); print(m["path"])')
         [[ ${#PIN[@]} == 3 && ( ${PIN[0]} == artifacts/kpack-model-runtime-v1 || ${PIN[0]} == artifacts/kpack-model-paired-n4-v1 ) && ${PIN[1]} =~ ^[0-9a-f]{40}$ && ${PIN[2]} == prebuilt/ppu0010/kpack-model-runtime-v1 ]]

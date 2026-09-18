@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT))
 from quactlize.gguf_roles import match_role
 from quactlize.runtime.compiler import sha
 from tools.gguf_internal_shape_inventory import read_gguf_header
-from tools.resolve_kpack_batched_models import resolve_plan
+from tools.resolve_kpack_batched_models import resolve_plan, resolve_binding
 from tools.verify_kpack_dispatch import verify
 
 
@@ -61,10 +61,22 @@ def validate_plan(plan):
 
 
 def inventory(path):
-    with path.open("rb") as stream:
-        header = read_gguf_header(stream, str(path))
+    files = resolve_binding(path)
+    tensors, seen = [], set()
+    for index, file in enumerate(files):
+        with file.open("rb") as stream:
+            header = read_gguf_header(stream, str(file))
+        metadata = header['metadata']
+        if (metadata.get('split.count', 1) != len(files) or
+                metadata.get('split.no', 0) != index):
+            raise ValueError('GGUF split header disagrees with filename set: ' + str(file))
+        for tensor in header['tensors']:
+            if tensor['name'] in seen:
+                raise ValueError('duplicate tensor across GGUF shards: ' + tensor['name'])
+            seen.add(tensor['name'])
+            tensors.append(tensor)
     eligible, omitted, q8, operators = [], [], [], set()
-    for t in header["tensors"]:
+    for t in tensors:
         dims, q = t["dims_gguf"], t["qtype"]
         role = match_role(t["name"], len(dims)) if q in (8,10,11,12,13,14) else None
         if role and role[0].route_class in ("dense", "grouped") and dims[0] % (512 if q in (11,14) else 256) == 0 and dims[1] % 256 == 0:
@@ -74,8 +86,8 @@ def inventory(path):
         else:
             omitted.append(dict(name=t["name"], qtype=q))
     return dict(eligible=eligible, q8=q8, omitted=omitted, operators=sorted(operators),
-                qtypes=dict(Counter(str(t["qtype"]) for t in header["tensors"])),
-                shards=header["metadata"].get("split.count", 1))
+                qtypes=dict(Counter(str(t["qtype"]) for t in tensors)),
+                shards=len(files), files=list(map(str, files)), header_only=True)
 
 
 def sequence(plan, repeats):

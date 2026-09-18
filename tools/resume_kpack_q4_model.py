@@ -14,8 +14,9 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from quactlize.runtime.compiler import sha
-from tools.run_kpack_batched_bench import save
+from tools.run_kpack_batched_bench import save, validate_plan
 from tools.run_kpack_model_validation import run
+from tools.resolve_kpack_batched_models import resolve_plan
 from tools.verify_kpack_dispatch import verify
 
 
@@ -56,16 +57,40 @@ def repaired_source(previous):
     return original
 
 
-def inputs(previous, llama, sdk, repair_prefill=False, performance_only=False):
+def inputs(previous, llama, sdk, repair_prefill=False, performance_only=False, extend_models=False):
     results = previous / 'results'
     stopped = (results / 'runner-status.txt').read_text()
     if performance_only:
-        if repair_prefill or not re.search(
-                r'runner_rc=[1-9]\d* stage=(model-benchmark|model-trace|paired-model-proof|model-acu)\b', stopped):
-            raise ValueError('performance continuation requires completed component gates and a failed model phase')
+        allowed_status = (r'runner_rc=0 stage=complete\b' if extend_models else
+            r'runner_rc=[1-9]\d* stage=(model-benchmark|model-trace|paired-model-proof|model-acu)\b')
+        if repair_prefill or not re.search(allowed_status, stopped):
+            raise ValueError('model extension requires a successful complete run' if extend_models else
+                'performance continuation requires completed component gates and a failed model phase')
+        if extend_models:
+            for name in ('benchmark/results/status.json', 'trace/status.json'):
+                rows = json.loads((results / name).read_text())
+                if not rows or any(row.get('status') != 'PASS' for row in rows):
+                    raise ValueError('model extension requires a successful original run: ' + name)
         protocol = json.loads((results / 'benchmark/results/protocol.json').read_text())
-        if (protocol.get('plan') != json.loads((results / 'model-plan.json').read_text()) or
-                protocol.get('first_pass_excluded') is not True or protocol.get('order') != 'abba' or
+        saved_plan = json.loads((results / 'model-plan.json').read_text())
+        actual_plan = protocol.get('plan')
+        if actual_plan != saved_plan:
+            # --device changes only the physical ordinal of a single-GPU plan.
+            # Bind it to all four executed commands instead of trusting a default
+            # ordinal in the unresolved model plan.
+            def without_devices(plan):
+                return plan | dict(models=[{k:v for k,v in model.items() if k!='devices'}
+                                           for model in plan['models']])
+            if not actual_plan or without_devices(actual_plan) != without_devices(saved_plan):
+                raise ValueError('saved performance model plan differs')
+            for model in actual_plan['models']:
+                if model.get('split') != 'none' or not re.fullmatch(r'\d+', model.get('devices','')):
+                    raise ValueError('saved performance device override is not single-GPU')
+                for label in ('0-reference','1-kpack','2-kpack','3-reference'):
+                    receipt = json.loads((results/'benchmark/results'/model['name']/(label+'.command.json')).read_text())
+                    if receipt.get('devices') != model['devices']:
+                        raise ValueError('saved performance device differs from executed command')
+        if (protocol.get('first_pass_excluded') is not True or protocol.get('order') != 'abba' or
                 protocol.get('repeats') != 2 or protocol.get('production_fusion') not in
                 ('MOE_CHAIN_AND_GPU_GATE_UP_PAIR', 'MOE_CHAIN')):
             raise ValueError('saved performance protocol differs')
@@ -121,10 +146,37 @@ def inputs(previous, llama, sdk, repair_prefill=False, performance_only=False):
                     r.get('execution_sha256')!=current['execution_sha256'] for r in rows)):
                 raise ValueError('saved model reader integration is incomplete or differs')
             gates += ('model-readers/summary.json',)
+        if pin.get('prepare_integration_gate'):
+            prepare = json.loads((results / 'prepare-integration/summary.json').read_text())
+            if (prepare.get('passed') != 16 or prepare.get('expected') != 16 or
+                    prepare.get('router_edge_cases') != 56):
+                raise ValueError('saved prepare integration is incomplete')
+            gates += ('prepare-integration/summary.json',)
     for name in gates:
         if json.loads((results / name).read_text()).get('status') != 'PASS':
             raise ValueError('earlier component gate did not pass: ' + name)
     return bundle, build, {name: sha(results / name) for name in gates}
+
+
+def extension_plan(previous, source, device):
+    """Change only the models, keeping the prior single-request workload."""
+    before = json.loads((previous / 'results/model-plan.json').read_text())
+    plan = validate_plan(json.loads(source.read_text()))
+    for key in ('prompts', 'generations', 'parallel', 'batch', 'ubatch'):
+        if plan.get(key) != before.get(key):
+            raise ValueError('model extension changes workload: ' + key)
+    old_names = {model['name'] for model in before['models']}
+    if not plan['models'] or any(model['name'] in old_names for model in plan['models']):
+        raise ValueError('model extension must select new models only')
+    for model in plan['models']:
+        if model['split'] != 'none' or 'tensor_split' in model:
+            raise ValueError('model extension requires single-device K-pack; tensor parallel is not admitted')
+        model['devices'] = device
+    resolved = resolve_plan(plan)
+    old_paths = {Path(model['path']).resolve() for model in before['models'] if model.get('path')}
+    if any(Path(model['path']).resolve() in old_paths for model in resolved['models']):
+        raise ValueError('model extension aliases an already tested model')
+    return resolved
 
 
 def continuation(args, output):
@@ -132,9 +184,14 @@ def continuation(args, output):
     latest = previous
     repair = getattr(args, 'repair_prefill', False)
     performance_only = getattr(args, 'performance_only', False)
+    extend = getattr(args, 'extend_plan', None)
+    if extend and (not performance_only or repair):
+        raise ValueError('model extension requires unchanged performance-only artifacts')
     if repair:
         previous = repaired_source(latest)
-    bundle, build, gates = inputs(previous, llama, sdk, repair_prefill=repair, performance_only=performance_only)
+    bundle, build, gates = inputs(previous, llama, sdk, repair_prefill=repair,
+                                 performance_only=performance_only, extend_models=bool(extend))
+    plan = extension_plan(previous, extend, args.device) if extend else None
     result = output / 'results'
     if any(p.is_symlink() for p in (latest / 'results').rglob('*')):
         raise ValueError('original results contain links; no recursive copy started')
@@ -144,7 +201,9 @@ def continuation(args, output):
         validator_sha256=sha(llama / 'tests/quactlize_native.py'), compile='NONE',
         numerical_source=str(latest), native_reexecution=repair,
         original_results='UNMODIFIED', model_admission='PENDING_RECHECK',
-        numerical_scope='NOT_RETESTED' if performance_only else 'RECHECK_COMPLETED_CALLS'))
+        numerical_scope='NOT_RETESTED' if performance_only else 'RECHECK_COMPLETED_CALLS',
+        new_models=[model['name'] for model in plan['models']] if plan else [],
+        model_plan_source=str(extend.resolve()) if extend else None))
     env = dict(os.environ)
     for name in ('DG_LIBRARY_ROOT', 'GGML_NCP_FA_LIB', 'GGML_NCP_MOE_LIB',
                  'QUACTLIZE_KPACK_PREFILL_POLICY', 'QUACTLIZE_KPACK_GEMV_POLICY',
@@ -169,7 +228,9 @@ def continuation(args, output):
     asys, acu = sdk / 'asight/bin/asys', sdk / 'asight/bin/acu'
     if not all(p.is_file() and os.access(p, os.X_OK) for p in (asys, acu)):
         raise ValueError('Asys/ACU executable is missing')
-    model_plan = previous / 'results/model-plan.json'
+    model_plan = result / 'model-plan.json' if extend else previous / 'results/model-plan.json'
+    if extend:
+        save(model_plan, plan)
     common = ['--llama', llama, '--build', build, '--bundle', bundle, '--plan', model_plan,
         '--cache', cache, '--jit-cache', jit, '--logits', previous / 'logits', '--corpus', args.corpus,
         '--asys', asys, '--inspector', sdk / 'bin/hgobjdump']
@@ -191,14 +252,24 @@ def continuation(args, output):
         phases = phases[1:3]
         if paired:
             phases.append(('paired-model-proof', [sys.executable, ROOT/'tools/check_kpack_paired_model.py',
-                                                  '--results', result]))
+                                                  '--results', result] + (['--selected-scope'] if extend else [])))
         if getattr(args,'profile_acu',False):
             phases.append(profile)
+    failed = []
     for phase, command in phases:
         save(result / 'status.json', dict(status='RUNNING', phase=phase))
         print(f'KPACK_MODEL_CONTINUE phase={phase} compile=NONE log={result / (phase + ".log")}', flush=True)
-        run(command, result / (phase + '.log'), env)
-        save(result / 'status.json', dict(status='PASS', phase=phase))
+        try:
+            run(command, result / (phase + '.log'), env)
+            save(result / 'status.json', dict(status='PASS', phase=phase, failed_phases=failed))
+        except (ValueError, OSError, subprocess.SubprocessError) as error:
+            if not extend:
+                raise
+            failed.append(phase)
+            save(result / 'status.json', dict(status='FAIL', phase=phase, failed_phases=failed, error=str(error)))
+            print(f'KPACK_MODEL_CONTINUE FAIL phase={phase} remaining_phases_continue=1 error={error}', flush=True)
+    if failed:
+        raise ValueError('model extension failed phases: ' + ','.join(failed))
     print(f'KPACK_MODEL_CONTINUE COMPLETE Asys={result / "trace"} '
           f'ACU={result / "acu" if any(p[0]=="acu" for p in phases) else "NOT_REQUESTED"}', flush=True)
 
@@ -211,9 +282,12 @@ def main():
     p.add_argument('--repair-prefill', action='store_true', help='use the dispatcher-only N-extension package; rerun native calls')
     p.add_argument('--performance-only', action='store_true', help='reuse unchanged component gates; rerun warmed ABBA and Asys only')
     p.add_argument('--profile-acu', action='store_true', help='also run ACU after a performance-only continuation')
+    p.add_argument('--extend-plan', type=Path, help='test only new models after a successful run; same workload, no build')
     a = p.parse_args()
     if a.performance_only and a.repair_prefill:
         p.error('--performance-only cannot change the runtime')
+    if a.extend_plan and not a.performance_only:
+        p.error('--extend-plan requires --performance-only')
     if not re.fullmatch(r'\d+', a.device):
         p.error('one physical device ordinal is required')
     previous = a.previous.resolve(strict=True)

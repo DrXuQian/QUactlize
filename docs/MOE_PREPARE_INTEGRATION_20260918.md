@@ -78,3 +78,68 @@ At40 prepares/token, retaining a20% prepare reduction would save approximately
 0.063ms/token. This is a conditional component estimate, not a measured TPOT
 for the new patch. Do not credit this patch for the baseline's14.32% decode
 latency advantage over the native reference.
+
+## Returned prepare integration
+
+`kpack-q4-model.TUQKwW.results.tgz`, SHA256
+`6df2122962b29df239869d5dffd14ae3a39c1625de19b8a97f56fcec8a50bfbb`,
+completed at source `ea438cca7ef58a0afb7b218d90a1b6d6ed66591e` with the
+manifest above and unchanged caller `c3d9cdaa4bb1b3f111397edb3ab05d3935ac81b0`.
+Prepare16/16, router edges56, alias360, BF16746/746, paired and reader
+integration gates passed. This perf-only run did not rerun model perplexity.
+
+| Metric | Native reference | K-pack with prepare patch |
+|---|---:|---:|
+| Prefill us/token |143.790039|109.197998|
+| Total PP2048 ms |294.482000|223.637500|
+| Decode ms/token |7.708527|6.537199|
+
+The unprofiled ABBA medians exclude each process's first complete pass.
+The separate second-request Asys trace contains600 M1 prepares averaging
+5.868545us, versus7.884423us in the previous trace. Its modeled saving is
+0.080635ms/token at40 layers; the historical model comparison saves
+0.072285ms/token. This cross-run comparison is not a same-session patch A/B.
+The isolated prepare A/B records26.7--29.8% reductions across16 cases;
+its receipt still requires an external competing-load audit for strict
+performance admission. Do not rewrite the immutable build receipt.
+
+## Test the other two models without rebuilding
+
+Use `tools/kpack_batched_other_int4_2048.json` with the successful run above.
+It selects Qwen3-32B Q4_K_M and Qwen3.5-122B-A10B Q4_K_M, one GPU each,
+sequentially, at the same PP2048/TG128/NPL1 workload. The old broad catalog's
+122B tensor-parallel route is not admitted by K-pack and is not used here.
+The box must have enough free device memory; an OOM remains a failed model,
+not an automatic CPU-offload or tensor-parallel comparison.
+
+```bash
+(
+    set -e
+    cd /sim/eec/shared/junfu.qx/quactlize
+    git switch dev/gemv-model-tuning
+    GIT_LFS_SKIP_SMUDGE=1 git pull --ff-only origin dev/gemv-model-tuning
+    PREVIOUS_RUN=/workspace/kpack-q4-model.TUQKwW \
+    PERFORMANCE_ONLY=1 \
+    MODEL_PLAN=tools/kpack_batched_other_int4_2048.json \
+    LLAMA_CI_DIR=/sim/eec/shared/junfu.qx/llama.cpp \
+    PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
+    CUDA_VISIBLE_DEVICES=1 \
+    bash tools/resume_kpack_q4_model_box.sh
+)
+```
+
+The extension verifies the unchanged runtime/caller hashes and completed
+component gates, then writes a new result directory. No library or caller
+build, bundle fetch or component sweep is launched. First-use JIT for new
+selected shapes is still possible and is excluded by a full warmup pass.
+All GGUF shard headers are inventoried; payloads are not read for this step.
+Pure dense models are not required to emit nonexistent MoE fusion kernels;
+every actually selected paired operation still needs device evidence.
+Benchmark and Asys failures preserve independent model/phase results.
+
+Upload the printed `.results.tgz`. Full Asys reports remain under
+`<new-run>/results/trace/<model>/{reference,native}/proof.asysrep`.
+This adds performance/selection coverage only, not a new whole-model
+numerical admission or a claim that the35B-specific exact readers apply
+to every shape in32B/122B. Dense remains F16 compute with F32 endpoints;
+MoE retains BF16 compute.

@@ -1087,6 +1087,156 @@ def test_model_trace_reuses_reference_tokens_and_never_times_profiler(tmp_path, 
     assert all('--proof-only' in c and c[c.index('--proof-prompt')+1]==2048 for c in commands)
 
 
+def successful_extension_fixture(tmp_path, monkeypatch):
+    values = performance_continuation_fixture(tmp_path, monkeypatch)
+    resume, previous, llama, sdk, bundle, build = values
+    result = previous/'results'
+    (result/'runner-status.txt').write_text('runner_rc=0 stage=complete\n')
+    (result/'benchmark/results/status.json').write_text('[{"status":"PASS"}]')
+    (result/'trace').mkdir()
+    (result/'trace/status.json').write_text('[{"status":"PASS"}]')
+    old_model = fixture(tmp_path, 'original.gguf')
+    old = dict(source='original', prompts=[2048], generations=[128], parallel=1, batch=2048,
+               ubatch=2048, models=[dict(name='qwen35-35b-q4km', path=str(old_model),
+                                       devices='0', split='none')])
+    (result/'model-plan.json').write_text(json.dumps(old))
+    protocol_path=result/'benchmark/results/protocol.json'
+    protocol=json.loads(protocol_path.read_text());protocol['plan']=old
+    protocol_path.write_text(json.dumps(protocol))
+    new=json.loads((ROOT/'tools/kpack_batched_other_int4_2048.json').read_text())
+    new['model_root']=str(tmp_path/'models')
+    for model in new['models']:
+        fixture(Path(new['model_root']),model['directory']+'/weights.gguf')
+    plan_path=tmp_path/'extension.json';plan_path.write_text(json.dumps(new))
+    return (*values,plan_path)
+
+
+def test_other_models_keep_workload_and_do_not_claim_tensor_parallel():
+    plan=json.loads((ROOT/'tools/kpack_batched_other_int4_2048.json').read_text())
+    full=json.loads((ROOT/'tools/kpack_batched_models.json').read_text())
+    assert plan['prompts']==[2048] and plan['generations']==[128] and plan['parallel']==1
+    assert plan['batch']==plan['ubatch']==2048
+    assert {m['name'] for m in plan['models']}=={'qwen3-32b-q4km','qwen35-122b-q4km'}
+    for model in plan['models']:
+        assert model['split']=='none' and model['devices']=='0' and 'tensor_split' not in model
+        assert model['directory']==next(m['directory'] for m in full['models'] if m['name']==model['name'])
+
+
+@pytest.mark.parametrize('fault',[None,'stage','benchmark','trace','empty-trace','binary','prepare','prepare-count'])
+def test_model_extension_reuses_only_completed_unchanged_inputs(tmp_path,monkeypatch,fault):
+    resume,previous,llama,sdk,bundle,build,_=successful_extension_fixture(tmp_path,monkeypatch)
+    result=previous/'results'
+    if fault=='stage':(result/'runner-status.txt').write_text('runner_rc=1 stage=model-trace\n')
+    if fault in ('benchmark','trace','empty-trace'):
+        path=result/('benchmark/results/status.json' if fault=='benchmark' else 'trace/status.json')
+        path.write_text('[]' if fault=='empty-trace' else '[{"status":"FAIL"}]')
+    if fault=='binary':(build/'bin/llama-server').write_text('different binary')
+    if fault and fault.startswith('prepare'):
+        pin_path=resume.ROOT/'tools/kpack_q4_model_artifact.json'
+        pin=json.loads(pin_path.read_text());pin['prepare_integration_gate']=True
+        pin_path.write_text(json.dumps(pin))
+        (result/'prepare-integration').mkdir()
+        (result/'prepare-integration/summary.json').write_text(json.dumps(dict(
+            status='FAIL' if fault=='prepare' else 'PASS',expected=16,
+            passed=15 if fault=='prepare-count' else 16,router_edge_cases=56)))
+    if fault:
+        with pytest.raises(ValueError):resume.inputs(previous,llama,sdk,performance_only=True,extend_models=True)
+    else:
+        actual,caller,gates=resume.inputs(previous,llama,sdk,performance_only=True,extend_models=True)
+        assert actual==bundle and caller==build and len(gates)==8
+
+
+@pytest.mark.parametrize('fault',[None,'workload','existing','alias','tensor','empty'])
+def test_model_extension_changes_only_new_model_bindings(tmp_path,monkeypatch,fault):
+    resume,previous,*_,source=successful_extension_fixture(tmp_path,monkeypatch)
+    plan=json.loads(source.read_text())
+    if fault=='workload':plan['prompts']=[1024]
+    if fault=='existing':plan['models'][0]['name']='qwen35-35b-q4km'
+    if fault=='alias':plan['models'][0]['path']=str(tmp_path/'original.gguf')
+    if fault=='tensor':plan['models'][1]|=dict(split='tensor',devices='0,1',tensor_split='1,1')
+    if fault=='empty':plan['models']=[]
+    source.write_text(json.dumps(plan))
+    original=(previous/'results/model-plan.json').read_bytes()
+    if fault:
+        with pytest.raises(ValueError):resume.extension_plan(previous,source,'1')
+    else:
+        resolved=resume.extension_plan(previous,source,'1')
+        assert len(resolved['models'])==2 and all(m['devices']=='1' for m in resolved['models'])
+        assert all(Path(m['path']).is_file() for m in resolved['models'])
+    assert (previous/'results/model-plan.json').read_bytes()==original
+
+
+@pytest.mark.parametrize('fault',[None,'command','shape','split'])
+def test_original_device_override_is_bound_to_all_abba_commands(tmp_path,monkeypatch,fault):
+    resume,previous,llama,sdk,*_=successful_extension_fixture(tmp_path,monkeypatch)
+    path=previous/'results/benchmark/results/protocol.json'
+    protocol=json.loads(path.read_text());model=protocol['plan']['models'][0]
+    model['devices']='1'
+    if fault=='shape':protocol['plan']['prompts']=[1024]
+    if fault=='split':model['split']='tensor'
+    path.write_text(json.dumps(protocol))
+    directory=path.parent/model['name'];directory.mkdir()
+    for label in ('0-reference','1-kpack','2-kpack','3-reference'):
+        (directory/(label+'.command.json')).write_text(json.dumps(dict(
+            devices='0' if fault=='command' and label=='2-kpack' else '1')))
+    if fault:
+        with pytest.raises(ValueError):resume.inputs(previous,llama,sdk,performance_only=True,extend_models=True)
+    else:resume.inputs(previous,llama,sdk,performance_only=True,extend_models=True)
+
+
+@pytest.mark.parametrize('failure',[False,True])
+def test_extended_models_only_run_benchmark_and_traces_and_preserve_results(tmp_path,monkeypatch,failure):
+    resume,previous,llama,sdk,bundle,build,source=successful_extension_fixture(tmp_path,monkeypatch)
+    (sdk/'asight/bin').mkdir(parents=True)
+    for name in ('asys','acu'):
+        file=sdk/'asight/bin'/name;file.write_text('host fixture');file.chmod(0o755)
+    for name in ('kpack-model-cache','kpack-model-jit-cache'):(tmp_path/name).mkdir()
+    output=tmp_path/'extension';(output/'results').mkdir(parents=True)
+    monkeypatch.delenv('CACHE_DIR',raising=False);monkeypatch.delenv('JIT_CACHE',raising=False)
+    commands=[]
+    def run(argv,log,env):
+        commands.append((list(map(str,argv)),log,env))
+        if failure and log.name=='benchmark.log':raise ValueError('device failure')
+    monkeypatch.setattr(resume,'run',run)
+    args=SimpleNamespace(previous=previous,llama=llama,sdk=sdk,device='1',corpus=tmp_path/'corpus',
+                         performance_only=True,profile_acu=False,extend_plan=source)
+    if failure:
+        with pytest.raises(ValueError,match='failed phases: benchmark'):resume.continuation(args,output)
+    else:resume.continuation(args,output)
+    assert [log.name for _,log,_ in commands]==['benchmark.log','trace.log','paired-model-proof.log']
+    assert '--selected-scope' in commands[-1][0]
+    assert all('build_kpack' not in ' '.join(argv) and 'run_model_gemv_integration' not in ' '.join(argv)
+               for argv,_,_ in commands)
+    new=output/'results/model-plan.json'
+    assert all(str(new) in argv for argv,_,_ in commands[:2])
+    assert all(env['CUDA_VISIBLE_DEVICES']=='1' for _,_,env in commands)
+    receipt=json.loads((output/'results/continuation.json').read_text())
+    assert receipt['compile']=='NONE' and len(receipt['new_models'])==2
+    assert (output/'results/prior/model-plan.json').read_bytes()==(previous/'results/model-plan.json').read_bytes()
+
+
+@pytest.mark.parametrize('fault',[None,'count','index','duplicate','missing'])
+def test_inventory_includes_later_gguf_shards_without_reading_weights(tmp_path,monkeypatch,fault):
+    files=[fixture(tmp_path,f'weights-{i:05d}-of-00002.gguf') for i in (1,2)]
+    seen=[]
+    tensors=[dict(name='blk.0.attn_q.weight',qtype=8,dims_gguf=[2048,512]),
+             dict(name='blk.1.ffn_down_exps.weight',qtype=12,dims_gguf=[2048,512,256])]
+    def header(stream,path):
+        seen.append(path);index=files.index(Path(path))
+        return dict(metadata={'split.count':1 if fault=='count' else 2,
+                              'split.no':0 if fault=='index' else index},
+                    tensors=[tensors[0 if fault=='duplicate' else index]])
+    monkeypatch.setattr(bench,'read_gguf_header',header)
+    if fault=='missing':files[1].unlink()
+    if fault:
+        with pytest.raises(ValueError):bench.inventory(files[0])
+    else:
+        inv=bench.inventory(files[0])
+        assert inv['eligible']==[tensor['name'] for tensor in tensors]
+        assert inv['operators']==['dense','grouped'] and inv['shards']==2 and inv['header_only']
+        assert inv['q8']==[tensors[0]['name']] and seen==list(map(str,files))
+
+
 def trace_replay_fixture(tmp_path):
     diagnostic, previous, llama, sdk, build, bundle, cache, jit = [tmp_path / p for p in (
         'diagnostic', 'previous', 'llama', 'sdk', 'build', 'bundle',

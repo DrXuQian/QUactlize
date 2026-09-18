@@ -67,3 +67,26 @@ def test_model_proof_requires_both_actual_fusions(tmp_path):
                 dict(kernel_execution='PARTIAL_SHORT_REQUEST'),dict(capture_scope='FIRST_REQUEST')):
         (path/'proof.json').write_text(json.dumps(proof|bad))
         with pytest.raises(ValueError):check(tmp_path)
+
+
+@pytest.mark.parametrize('ops,paired',[(['dense'],[]),(['dense','grouped'],['grouped']),
+                                    (['dense','grouped'],['dense','grouped'])])
+@pytest.mark.parametrize('fault',[None,'compute','missing','first-use','fusion'])
+def test_extended_models_prove_their_selected_scope(tmp_path,ops,paired,fault):
+    from tools.check_kpack_paired_model import check
+    path=tmp_path/'trace/model/native';path.mkdir(parents=True)
+    proof=dict(paired_observed_ops=paired,paired_missing_ops=[],kernel_execution='PASS_SHORT_REQUEST',
+               capture_scope='SECOND_REQUEST_SAME_PROCESS_FIRST_USE_EXCLUDED',
+               expected_ops=ops,observed_ops=ops,missing_ops=[],
+               selection=dict(fully_selected=True,paired_plans=[dict(op=op) for op in paired]))
+    if fault=='compute':proof['selection']['fully_selected']=False
+    if fault=='missing':proof['observed_ops']=[]
+    if fault=='first-use':proof['capture_scope']='FIRST_REQUEST'
+    if fault=='fusion':proof['paired_missing_ops']=['dense']
+    (path/'proof.json').write_text(json.dumps(proof))
+    if fault:
+        with pytest.raises(ValueError):check(tmp_path,selected_scope=True)
+    else:
+        check(tmp_path,selected_scope=True)
+        result=json.loads((tmp_path/'paired-model-proof.json').read_text())
+        assert result['traces'][0]['paired_status']==('DEVICE_OBSERVED' if paired else 'NOT_SELECTED')
