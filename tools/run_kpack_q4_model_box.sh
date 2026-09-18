@@ -190,7 +190,7 @@
         LLAMA_DIR="$RESULT_DIR/llama-model-source-${INFO[4]:0:10}"
         if [[ ! -e "$LLAMA_DIR" ]]; then
             LLAMA_BRANCH=$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("llama_branch","dev/quactlize-v0.3.0"))' "$ROOT/tools/kpack_q4_model_artifact.json")
-            [[ "$LLAMA_BRANCH" == dev/quactlize-v0.3.0 || "$LLAMA_BRANCH" == dev/quactlize-gate-up-v0.3.0 ]]
+            [[ "$LLAMA_BRANCH" == dev/quactlize-v0.3.0 || "$LLAMA_BRANCH" == dev/quactlize-gate-up-v0.3.0 || "$LLAMA_BRANCH" == dev/quactlize-tp2-v0.3.0 ]]
             git clone --no-checkout --depth 1 --single-branch --branch "$LLAMA_BRANCH" \
                 https://github.com/DrXuQian/llama.cpp.git "$LLAMA_DIR"
         fi

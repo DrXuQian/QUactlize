@@ -15,7 +15,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from quactlize.runtime.compiler import sha
-from tools.run_kpack_batched_bench import inventory, save
+from tools.run_kpack_batched_bench import inventory, save, tp2_evidence
 from tools.verify_kpack_dispatch import verify
 
 
@@ -106,11 +106,17 @@ def numerical(args, model, inv, directory, helpers):
             if not native:
                 env = {k: v for k, v in env.items() if not k.startswith('QUACTLIZE_KPACK_')}
             argv = [args.build / 'bin/llama-perplexity', '-m', model['path'], '-ngl', 'all',
-                '-sm', 'none', '--fit', 'off', '--mmap', '-c', context, '-b', batch, '-ub', batch,
+                '-sm', model.get('split', 'none'), '--fit', 'off', '--mmap', '-c', context, '-b', batch, '-ub', batch,
                 '--chunks', 2, '-f', corpus, '--log-colors', 'off', '--verbosity', 4, '--no-warmup',
                 '-ot', pattern + '=CUDA0' + ('_KPACK' if native else '')]
-            if native:
+            if model.get('split') == 'tensor':
+                argv += ['-ts', model['tensor_split']]
+                if not native:
+                    start = argv.index('-ot'); del argv[start:start+2]
+            if native and model.get('split') != 'tensor':
                 argv += ['--kpack-cache', args.cache / model['name']]
+            if 'devices' in model:
+                env['CUDA_VISIBLE_DEVICES'] = model['devices']
             if phase == 'reference-save':
                 argv += ['--save-all-logits', base]
             else:
@@ -132,6 +138,8 @@ def numerical(args, model, inv, directory, helpers):
                 evidence = model_selection(args, text)
                 if not evidence['fully_selected']:
                     raise ValueError('model numerical run has missing selected operations or a legacy fallback')
+                if model.get('split') == 'tensor':
+                    evidence['tp2'] = tp2_evidence(text, inv['operators'])
                 record['selection'] = evidence
             elif 'CUDA0_KPACK model buffer size' in text or '[quactlize-plan]' in text:
                 raise ValueError('GPU reference entered the K-pack route')
@@ -158,8 +166,13 @@ def traces(args, model, directory, inv_path):
             '--proof-prompt', 2048, '--proof-generate', 16, '--tensor-inventory', inv_path]
         if arm == 'native':
             argv += ['--proof-tokens', directory / 'reference/proof-request/input-tokens.json']
+        if model.get('split') == 'tensor':
+            argv += ['--tensor-split', model['tensor_split']]
         print(f'KPACK_MODEL_TRACE model={model["name"]} arm={arm} first_request=EXCLUDED', flush=True)
-        run(argv, directory / f'{arm}.log')
+        if 'devices' in model:
+            run(argv, directory / f'{arm}.log', dict(os.environ, CUDA_VISIBLE_DEVICES=model['devices']))
+        else:
+            run(argv, directory / f'{arm}.log')
         record = json.loads((output / 'proof.json').read_text())
         records.append(record)
         save(directory / 'summary.json', records)

@@ -57,6 +57,9 @@ def validate_plan(plan):
         devices = m["devices"].split(",")
         if len(devices) != len(set(devices)) or (m["split"] == "none" and len(devices) != 1):
             raise ValueError("invalid model device set")
+        if m["split"] == "tensor" and (len(devices) != 2 or
+                not re.fullmatch(r"[1-9][0-9]*,[1-9][0-9]*", m.get("tensor_split", ""))):
+            raise ValueError("TP2 requires two devices and two positive split weights")
     return plan
 
 
@@ -107,17 +110,33 @@ def command(binary, model, plan, repeats, names, arm, cache):
     # default level 3 suppresses them while leaving benchmark JSON visible.
     # Use the same level in both arms without per-kernel DEBUG (level 5).
     if model["split"] == "tensor":
-        if arm != "reference":
-            raise ValueError("K-pack tensor-parallel intake is not admitted")
         argv += ["-ts", model["tensor_split"]]
-    elif names:
+    if names and (model["split"] != "tensor" or arm == "kpack"):
         # Exact names AND supported qtypes: never catch a Q8/F16 tensor merely
         # because its name ends in output.weight or matches another suffix.
         pattern = "^(" + "|".join(re.escape(n) for n in names) + ")$"
         argv += ["-ot", pattern + "=CUDA0" + ("_KPACK" if arm == "kpack" else "")]
-    if arm == "kpack":
+    if arm == "kpack" and model["split"] != "tensor":
         argv += ["--kpack-cache", str(cache)]
     return argv
+
+
+def tp2_evidence(text, expected_ops):
+    plans = [dict(re.findall(r"([a-z_]+)=([^\s]+)", line))
+             for line in text.splitlines() if "[quactlize-device-plan]" in line]
+    shards = [dict(re.findall(r"([a-z_]+)=([^\s]+)", line))
+              for line in text.splitlines() if "[quactlize-shard]" in line]
+    if {r.get('device') for r in plans} != {'0', '1'} or {r.get('device') for r in shards} != {'0', '1'}:
+        raise ValueError('TP2 lacks packed shards or selected plans on both local device ordinals')
+    for device in ('0', '1'):
+        if {r.get('op') for r in plans if r['device'] == device} != set(expected_ops):
+            raise ValueError('TP2 selected operator coverage differs on device ' + device)
+    by_weight = {(r['tensor'], r['device']): r for r in shards}
+    for p in plans:
+        shard = by_weight.get((p['tensor'], p['device']))
+        if p.get('selected') != '1' or not shard or any(p.get(key) != shard.get(key) for key in ('q', 'n', 'k', 'experts')):
+            raise ValueError('TP2 selected geometry differs from its device-local packed shard')
+    return dict(devices=2, plans=plans, shards=shards, status='PASS', scope='SHARD_AND_SELECTION_RECEIPTS')
 
 
 def parse_row(line, expected, plan):
@@ -249,6 +268,8 @@ def run_arm(args, model, plan, inv, arm, directory, index):
                                  f"see {log} (plan receipts require --verbosity 4)")
             if getattr(args, 'require_selected', False) and not evidence['fully_selected']:
                 raise ValueError('selected operator coverage incomplete or legacy fallback present')
+            if model['split'] == 'tensor':
+                evidence['tp2'] = tp2_evidence(text, inv['operators'])
             if inv["q8"] and (not q8_plans or any(p.get("activation")!=expected_activation(p, env.get('QUACTLIZE_KPACK_COMPUTE')) or
                     p.get("route") not in ("sf", "gemv") or p.get("scale_resident")!="1" for p in q8_plans)):
                 raise ValueError("Q8_0 W8A16 compute evidence missing or activation/scale contract differs")
@@ -339,8 +360,7 @@ def main():
             try:
                 inv = inventory(Path(model["path"]))
                 save(directory / "inventory.json", inv)
-                reason = ("KPACK_TP_NOT_ADMITTED" if model["split"] == "tensor" else
-                          "NO_SUPPORTED_MATRICES" if not inv["eligible"] else None)
+                reason = "NO_SUPPORTED_MATRICES" if not inv["eligible"] else None
                 arms = [] if reason else ["reference", "kpack", "kpack"] + (["reference"] if a.order == "abba" else [])
                 if reason:
                     statuses.append(dict(model=model["name"], arm="kpack", status="NOT_TESTED", reason=reason))

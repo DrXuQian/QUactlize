@@ -249,7 +249,7 @@ def test_final_model_runner_uses_joint_ci_caller_and_pinned_runtime():
     caller_branches = {'artifacts/kpack-model-runtime-v1': 'dev/quactlize-v0.3.0',
                       'artifacts/kpack-model-paired-n4-v1': 'dev/quactlize-gate-up-v0.3.0',
                       'artifacts/kpack-model-readers-v1': 'dev/quactlize-gate-up-v0.3.0',
-                      'artifacts/kpack-model-prepare-v1': 'dev/quactlize-gate-up-v0.3.0'}
+                      'artifacts/kpack-model-prepare-v1': 'dev/quactlize-tp2-v0.3.0'}
     assert receipt['branch'] in caller_branches
     assert receipt['path'] == 'prebuilt/ppu0010/kpack-model-runtime-v1'
     assert receipt['llama_branch'] == caller_branches[receipt['branch']]
@@ -1213,11 +1213,52 @@ def test_other_models_keep_workload_and_preserve_122b_two_device_requirement():
     for model in plan['models']:
         if model['name']=='qwen35-122b-q4km':
             assert model['split']=='tensor' and model['devices']=='0,1' and model['tensor_split']=='1,1'
-            with pytest.raises(ValueError,match='tensor-parallel intake is not admitted'):
-                command('/bench',model|dict(path='/122b.gguf'),plan,2,[],'kpack',Path('/cache'))
+            argv=command('/bench',model|dict(path='/122b.gguf'),plan,2,['blk.0.ffn_down_exps.weight'],'kpack',Path('/cache'))
+            assert argv[argv.index('-sm')+1]=='tensor' and argv[argv.index('-ts')+1]=='1,1'
+            assert argv[argv.index('-ot')+1].endswith('=CUDA0_KPACK')
+            assert '--kpack-cache' not in argv
+            native=command('/bench',model|dict(path='/122b.gguf'),plan,2,['blk.0.ffn_down_exps.weight'],'reference',Path('/cache'))
+            assert '-ot' not in native
         else:
             assert model['split']=='none' and model['devices']=='0' and 'tensor_split' not in model
         assert model['directory']==next(m['directory'] for m in full['models'] if m['name']==model['name'])
+
+
+@pytest.mark.parametrize('fault', [None, 'device', 'geometry', 'grouped', 'fallback', 'producer'])
+def test_tp2_requires_selected_local_geometry_on_both_devices(fault):
+    lines=[]
+    for dev in (0,1):
+        for op,experts in (('dense',1),('grouped',256)):
+            fields=f'tensor={op}.weight device={dev} q=12 n=512 k=3072 experts={experts}'
+            if not (fault=='producer' and dev==1):
+                lines.append('[quactlize-shard] '+fields+' bytes=1024 producer=GPU')
+            if fault=='device' and dev==1 or fault=='grouped' and op=='grouped' and dev==1: continue
+            if fault=='geometry' and dev==1: fields=fields.replace('k=3072','k=1536')
+            selected='0' if fault=='fallback' and dev==1 else '1'
+            lines.append('[quactlize-device-plan] '+fields+f' op={op} rows=8 selected={selected}')
+    if fault:
+        with pytest.raises(ValueError):bench.tp2_evidence('\n'.join(lines),['dense','grouped'])
+    else:
+        assert bench.tp2_evidence('\n'.join(lines),['dense','grouped'])['status']=='PASS'
+
+
+def test_tp2_plan_and_runner_do_not_bypass_meta_or_cache_admission(tmp_path):
+    source=json.loads((ROOT/'tools/kpack_batched_tp2_122b.json').read_text())
+    validate_plan(source)
+    model,=source['models']
+    assert model['filename'].endswith('00001-of-00003.gguf')
+    for index in (1,2,3):
+        fixture(tmp_path,model['directory']+'/'+model['filename'].replace('00001-of-',f'{index:05d}-of-'))
+    resolved=resolve_plan(source, model_root=tmp_path)
+    assert len(resolved['models'][0]['files'])==3
+    script=(ROOT/'tools/run_kpack_tp2_box.sh').read_text()
+    subprocess.run(['bash','-n',str(ROOT/'tools/run_kpack_tp2_box.sh')],check=True)
+    assert 'build_kpack_model_ci.py' in script and 'JOBS=${JOBS:-192}' in script
+    assert 'test-quactlize-scheduler" --tp2' in script
+    assert script.index('stage=two-device-numerical')<script.index('stage=model-numerical')<script.index('stage=model-perf')
+    assert '--order abba --require-selected' in script
+    assert 'DG_JIT_HGCC_COMPILER="$SDK/bin/hgcc"' in script
+    assert 'PPU_SDK_HOME="$SDK/CUDA_SDK"' in script
 
 
 @pytest.mark.parametrize('fault',[None,'stage','benchmark','trace','empty-trace','binary','prepare','prepare-count'])

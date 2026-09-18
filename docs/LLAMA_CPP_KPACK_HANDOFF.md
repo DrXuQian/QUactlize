@@ -4,6 +4,16 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
+## TP2 caller integration, 2026-09-18
+
+TP2 K-pack intake is implemented on the caller's
+`dev/quactlize-tp2-v0.3.0` branch. It splits raw GGUF through Meta, packs each
+local shard on its device, and retains existing TP communication. The existing
+Quactlize runtime package is unchanged. See [TP2 scope, gates and entry](KPACK_TP2.md).
+Use `tools/run_kpack_tp2_box.sh` for the two-card 122B numerical, warmed ABBA
+and Asys run. Device/model admission is pending, not implied by host tests.
+TP persistence is explicitly disabled until the cache has topology identity.
+
 ## New-machine startup recovery, 2026-09-18
 
 The `C99gWo` Qwen3-32B ABBA benchmark passed: TPOT33.3503 ->21.3962ms
@@ -17,8 +27,9 @@ that trace-only continuation finishes. The new cache path needs the updated
 caller; the Quactlize runtime package and kernel choices are unchanged.
 
 Pin DeepGEMM's compiler with `DG_JIT_HGCC_COMPILER=$PPU_SDK/bin/hgcc` on the
-new machine. K-pack TP2 remains unimplemented; 122B tensor-parallel runs at
-this point are native-only baselines, never K-pack measurements.
+new machine. The original 122B tensor-parallel upload is a native-only baseline,
+not a K-pack measurement. The later TP2 implementation and admission status are
+documented above.
 
 ## Prepare integration, 2026-09-18
 
