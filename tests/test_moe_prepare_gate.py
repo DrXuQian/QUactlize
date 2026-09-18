@@ -1,8 +1,76 @@
 """Fixture publication order; these host tests do not admit a device kernel."""
 from pathlib import Path
 import subprocess
+import json
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize('unstable_ties', [False, True])
+def test_actual_router_top8_and_logits_alias(tmp_path, unstable_ties):
+    command=['g++','-std=c++20','-O2','-pthread','-ffp-contract=off',
+             '-I'+str(ROOT),str(ROOT/'tests/moe_router_warp_host.cpp')]
+    if unstable_ties:
+        source=(ROOT/'quactlize/execution/moe_router_warp.cuh').read_text()
+        assert source.count('key[a+1]>key[a]')==1
+        source=source.replace('key[a+1]>key[a]','key[a+1]>=key[a]')
+        source=source.replace('../integrations/llama/router.cuh',
+                              str(ROOT/'quactlize/integrations/llama/router.cuh'))
+        mutant=tmp_path/'unstable.cuh';mutant.write_text(source)
+        command.append('-DQK_ROUTER_CANDIDATE="'+str(mutant)+'"')
+    binary=tmp_path/'router'
+    subprocess.run(command+['-o',str(binary)],check=True)
+    result=subprocess.run([str(binary)],capture_output=True,text=True,timeout=180)
+    if unstable_ties:
+        assert result.returncode!=0, 'non-stable top8 negative escaped'
+    else:
+        assert result.returncode==0,result.stderr
+        assert 'MOE_ROUTER_HOST PASS cases=40 ' in result.stdout
+
+
+def test_prepare_fast_scope_and_m1_publication():
+    text=(ROOT/'quactlize/execution/moe_prepare.cuh').read_text()
+    assert 'constexpr bool OneWarp=AllSimt && Capacity==8' in text
+    assert 'AllSimt && !OneWarp && plan.router.version && !plan.router.bias' in text
+    assert text.index('if (proven) publish(true)') < text.index('int mine=0')
+    assert 'if constexpr(!OneWarp) if (!proven) __syncthreads()' in text
+    assert '__match_any_sync(0xffffffff,id)' in text
+    admission=text[text.index('CUTLASS_HOST_DEVICE bool admitted'):]
+    assert '!r.delayed_softmax && !r.bias' in admission
+    assert 'r.with_norm' in admission and '!r.use_sigmoid' in admission
+
+
+def test_prepare_integration_compares_the_exact_previous_source(tmp_path):
+    from dev.moe_prepare.build import baseline_headers
+    from dev.moe_prepare.run_integration import BASELINE, CASES
+    receipt=baseline_headers(BASELINE,tmp_path)
+    assert receipt['commit']==BASELINE
+    assert len(receipt['source_hashes'])==2
+    before=subprocess.check_output(['git','show',BASELINE+':quactlize/execution/moe_prepare.cuh'],cwd=ROOT,text=True)
+    assert (tmp_path/'prepare-incumbent.cuh').read_text()==before.replace(
+        'prepare_detail','prepare_incumbent').replace('router_256_top8_warp','router_256_top8_warp_incumbent').replace(
+        '"moe_router_warp.cuh"','"router-incumbent.cuh"').replace(
+        '"../runtime/moe_chain.cuh"','"'+str(ROOT/'quactlize/runtime/moe_chain.cuh')+'"')
+    assert len(CASES)==len(set(CASES))==16
+    assert {c[0] for c in CASES}=={1,2,4,8} and {c[5] for c in CASES}=={0,1}
+    text=(ROOT/'dev/moe_prepare/bench.cu').read_text()
+    assert 'prepare_incumbent::launch<Shape,Stride>(plan,stream)' in text
+    assert 'direct|=arm==0 && prepare_incumbent::admitted(plan)' in text
+
+
+def test_prepare_integration_timing_denominators_and_negatives():
+    from dev.moe_prepare.run_integration import timing_rows
+    def row(arm,median=3,samples=None):
+        sample_text=json.dumps([3.]*60 if samples is None else samples,separators=(',',':'))
+        return f'MOE_PREPARE_TIME arm={arm} median_us={median} samples={sample_text}'
+    text=row(0)+'\n'+row(1)
+    assert len(timing_rows(text))==2
+    for bad in (row(0),text+'\n'+row(1),row(0)+'\n'+row(0),
+                row(0,4)+'\n'+row(1),row(0,samples=[3.]*59)+'\n'+row(1),
+                row(0,samples=[float('nan')]*60)+'\n'+row(1)):
+        with pytest.raises(ValueError):timing_rows(bad)
 
 
 def test_production_prepare_promotes_only_measured_all_simt_domain(tmp_path):

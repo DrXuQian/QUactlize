@@ -1,5 +1,12 @@
 # Resume
 
+Update20260918: `kpack-q4-resume.7l1wtue2.results.tgz` closes the previous
+VRAM-blocked model measurement: reference/K-pack TPOT7.713883/6.609484ms,
+prefill143.634277/109.347168us/token. Four warmed ABBA samples/arm. Both
+paired readers and the other optimized readers execute in the returned trace.
+Numerical model accuracy was not retested. This is before the separate prepare
+patch now tracked in ../moe_prepare/integration_20260918/RESUME.md.
+
 State: seven integrated M1 readers pass the returned device gate; model
 benchmark/Asys blocked by insufficient free VRAM. Next action is model-only retry.
 Integration starts at bfa5b38; Q6 TC and all unmeasured fallbacks stay unchanged.

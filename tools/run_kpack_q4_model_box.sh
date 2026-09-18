@@ -88,7 +88,7 @@
 
     stage=fetch
     mapfile -t INFO < <("$PYTHON" -c 'import json,sys; m=json.load(open(sys.argv[1])); print(m["branch"]); print(m["commit"]); print(m["path"]); print(m["manifest_sha256"]); print(m["llama_ci_commit"])' "$ROOT/tools/kpack_q4_model_artifact.json")
-    [[ ${#INFO[@]} == 5 && ( ${INFO[0]} == artifacts/kpack-model-runtime-v1 || ${INFO[0]} == artifacts/kpack-model-paired-n4-v1 || ${INFO[0]} == artifacts/kpack-model-readers-v1 ) && ${INFO[1]} =~ ^[0-9a-f]{40}$ && ${INFO[2]} == prebuilt/ppu0010/kpack-model-runtime-v1 && ${INFO[3]} =~ ^[0-9a-f]{64}$ && ${INFO[4]} =~ ^[0-9a-f]{40}$ ]]
+    [[ ${#INFO[@]} == 5 && ( ${INFO[0]} == artifacts/kpack-model-runtime-v1 || ${INFO[0]} == artifacts/kpack-model-paired-n4-v1 || ${INFO[0]} == artifacts/kpack-model-readers-v1 || ${INFO[0]} == artifacts/kpack-model-prepare-v1 ) && ${INFO[1]} =~ ^[0-9a-f]{40}$ && ${INFO[2]} == prebuilt/ppu0010/kpack-model-runtime-v1 && ${INFO[3]} =~ ^[0-9a-f]{64}$ && ${INFO[4]} =~ ^[0-9a-f]{40}$ ]]
     ART="$RESULT_DIR/quactlize-model-artifact-${INFO[1]:0:10}"
     git fetch origin "${INFO[0]}"
     git cat-file -e "${INFO[1]}^{commit}"
@@ -122,6 +122,11 @@
         "$PYTHON" -u tools/run_model_gemv_integration.py --sdk "$SDK" --bundle "$BUNDLE" \
             --reference "$READER_ART/${READER_PIN[2]}" --l2-bytes "${L2_BYTES:-67108864}" \
             --output "$RUN/results/model-readers" 2>&1 | tee "$RUN/results/model-readers.log"
+    fi
+    if "$PYTHON" -c 'import json,sys; sys.exit(not json.load(open(sys.argv[1])).get("prepare_integration_gate",False))' "$ROOT/tools/kpack_q4_model_artifact.json"; then
+        stage=prepare-integration
+        "$PYTHON" -u dev/moe_prepare/run_integration.py --bundle "$BUNDLE/router-alias" \
+            --output "$RUN/results/prepare-integration" 2>&1 | tee "$RUN/results/prepare-integration.log"
     fi
     if [[ ${Q8_HOIST_AB:-0} == 1 ]]; then
         stage=q8-hoist-ab

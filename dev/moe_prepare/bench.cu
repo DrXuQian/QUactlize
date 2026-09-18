@@ -32,6 +32,11 @@ __global__ void router_control(qk_moe_plan_v1 plan) {
   if(router.bias) quactlize::llama::router_256_top8<true>(router,io,ids);
   else quactlize::llama::router_256_top8<false>(router,io,ids);
 }
+template<bool Coalesced>
+__global__ void router_warp_control(qk_moe_plan_v1 plan) {
+  __shared__ int ids[8];
+  quactlize::llama::router_256_top8_warp<false,Coalesced>(plan.router,plan.gate.io,ids);
+}
 static std::string context;
 static void ck(cudaError_t s) { if(s!=cudaSuccess) throw std::runtime_error(context+": "+cudaGetErrorString(s)); }
 static void require(bool ok,char const* why) { if(!ok) throw std::runtime_error(context+": "+why); }
@@ -111,6 +116,12 @@ template<class C> struct Case {
         int(router==2),0,6.103515625e-5f,1.25f,logits.ptr,router==1?bias.ptr:nullptr,weights.ptr};
   }
   void launch(int arm,cudaStream_t stream) {
+#ifdef QK_PREPARE_BASELINE
+    if(arm==0 && prepare_incumbent::admitted(plan)) {
+      prepare_incumbent::launch<Shape,Stride>(plan,stream);
+      ck(cudaGetLastError());return;
+    }
+#endif
     if(arm==1 && prepare_detail::supported(plan)) {
       bool all=(mask&(merged?5:7))==(merged?5:7);
       int capacity=tokens==1?8:tokens<=4?32:64;
@@ -270,6 +281,9 @@ template<class C> struct Case {
           else require(got_ids[t*13+s]==-123,"ID stride padding");
         }
         bool direct=arm==1 && (mask&(merged?5:7))==(merged?5:7);
+#ifdef QK_PREPARE_BASELINE
+        direct|=arm==0 && prepare_incumbent::admitted(plan);
+#endif
         if(!direct) std::stable_sort(order.begin(),order.end(),[&](int x,int y){return logical[x]<logical[y];});
         check_projection(gate,plan.gate,order,logical,input,mask&1,true,direct);
         if(!merged) check_projection(up,plan.up,order,logical,input,mask&2,true,direct);
@@ -322,8 +336,56 @@ template<class C> struct Case {
   }
 };
 
+static void router_edges() {
+  Buffer<float> logits(256),weights(8);
+  Buffer<int> ids(13);
+  qk_moe_plan_v1 plan{};
+  plan.router={1,sizeof(qk_llama_router_v1),0,1,0,0,6.103515625e-5f,1.25f,logits.ptr,nullptr,weights.ptr};
+  plan.gate.io.ids=ids.ptr;plan.gate.io.ids_stride=13;
+  int cases=0;
+  for(int fixture=0;fixture<14;++fixture) for(int alias:{-1,0,8,248}) {
+    context="router-edge fixture="+std::to_string(fixture)+" alias="+std::to_string(alias);
+    std::vector<float> input(256);
+    for(int i=0;i<256;++i) {
+      if(fixture==1) input[i]=i%2 ? -0.f : 0.f;
+      if(fixture==2) input[i]=float(i%7);
+      if(fixture==3) input[i]=i%32==0 ? float(100-i/32) : -100.f;
+      if(fixture==4) input[i]=i%13==0 ? NAN : float(i%11);
+      if(fixture==5) input[i]=i==0 ? INFINITY : float(i%11);
+      if(fixture==6) input[i]=-INFINITY;
+      if(fixture==7) input[i]=i==127 ? 1000.f : -1000.f;
+      if(fixture>=8) input[i]=float((i*17+fixture*29)%263-131)*.0625f;
+    }
+    std::vector<int> expected_ids;
+    std::vector<float> expected_weights;
+    plan.router.weights=alias<0?weights.ptr:logits.ptr+alias;
+    for(int arm=0;arm<3;++arm) {
+      logits.put(input);weights.reset();ids.put(std::vector<int>(13,-123));
+      if(arm==0) router_control<<<1,32>>>(plan);
+      else if(arm==1) router_warp_control<false><<<1,32>>>(plan);
+      else router_warp_control<true><<<1,32>>>(plan);
+      ck(cudaGetLastError());ck(cudaDeviceSynchronize());
+      auto got_ids=ids.get();auto after=logits.get();auto got_weights=weights.get();
+      if(alias>=0) got_weights.assign(after.begin()+alias,after.begin()+alias+8);
+      for(int i=0;i<256;++i) if(alias<0 || i<alias || i>=alias+8)
+        require(!std::memcmp(&after[i],&input[i],sizeof(float)),"router input/alias guard");
+      for(int s=0;s<8;++s) {
+        require(got_ids[s]>=0 && got_ids[s]<256,"router ID range");
+        for(int j=0;j<s;++j) require(got_ids[s]!=got_ids[j],"router ID uniqueness");
+      }
+      for(int s=8;s<13;++s) require(got_ids[s]==-123,"router ID stride guard");
+      if(!arm) {expected_ids=got_ids;expected_weights=got_weights;}
+      else require(got_ids==expected_ids && !std::memcmp(got_weights.data(),expected_weights.data(),8*sizeof(float)),"router edge raw bits");
+      logits.guards();weights.guards();ids.guards();
+    }
+    ++cases;
+  }
+  printf("MOE_ROUTER_EDGE PASS cases=%d arms=3 scope=ORDINARY_SOFTMAX_NO_BIAS\n",cases);
+}
+
 int main(int argc,char** argv) {
   try {
+    if(argc==2 && !std::strcmp(argv[1],"--router-edge-check")) {router_edges();return 0;}
     bool bench=argc>1 && !std::strcmp(argv[1],"--benchmark");
     bool candidate_only=argc>1 && !std::strcmp(argv[1],"--candidate-check");
     bool alias_check=argc>1 && !std::strcmp(argv[1],"--router-alias-check");

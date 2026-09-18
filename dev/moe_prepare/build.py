@@ -29,12 +29,30 @@ def warp_router():
     return "namespace quactlize::llama {\n" + body + "\n}\n"
 
 
+def baseline_headers(ref, output):
+    """Keep the pre-patch production bodies; rename symbols, not arithmetic."""
+    commit=subprocess.check_output(['git','rev-parse',ref+'^{commit}'],cwd=ROOT,text=True).strip()
+    names=('quactlize/execution/moe_router_warp.cuh','quactlize/execution/moe_prepare.cuh')
+    bodies={n:subprocess.check_output(['git','show',commit+':'+n],cwd=ROOT).decode() for n in names}
+    router=bodies[names[0]].replace('router_256_top8_warp','router_256_top8_warp_incumbent')
+    router=router.replace('../integrations/llama/router.cuh',str(ROOT/'quactlize/integrations/llama/router.cuh'))
+    (output/'router-incumbent.cuh').write_text(router)
+    prepare=bodies[names[1]].replace('prepare_detail','prepare_incumbent')
+    prepare=prepare.replace('router_256_top8_warp','router_256_top8_warp_incumbent')
+    prepare=prepare.replace('"moe_router_warp.cuh"','"router-incumbent.cuh"')
+    prepare=prepare.replace('"../runtime/moe_chain.cuh"','"'+str(ROOT/'quactlize/runtime/moe_chain.cuh')+'"')
+    (output/'prepare-incumbent.cuh').write_text(prepare)
+    return dict(commit=commit,source_hashes={n:hashlib.sha256(s.encode()).hexdigest() for n,s in bodies.items()},
+                transformation='SYMBOL_NAMESPACE_AND_INCLUDE_PATHS_ONLY')
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--cuda", type=Path, default=Path("/usr/local/cuda"))
     p.add_argument("--platform", choices=("cuda","ppu"), default="cuda")
     p.add_argument("--arch", default="sm_120", choices=("sm_120", "sm_90"))
+    p.add_argument("--baseline-ref", help="compare against this immutable admitted prepare source")
     a = p.parse_args()
     a.output.mkdir(parents=True, exist_ok=False)
     source = (ROOT / "dev/moe_prepare/bench.cu").read_text()
@@ -42,7 +60,8 @@ def main():
     if source.count(marker) != 1:
         raise ValueError("benchmark router seam changed")
     generated = a.output / "bench.cu"
-    source=source.replace(marker,'')
+    baseline=baseline_headers(a.baseline_ref,a.output) if a.baseline_ref else None
+    source=source.replace(marker, '#define QK_PREPARE_BASELINE 1\n#include "prepare-incumbent.cuh"\n' if baseline else '')
     if a.platform=="ppu":source=re.sub(r"\bcuda(?=[A-Z_])","hggc",source)
     generated.write_text(source)
     paths = [ROOT / n for n in (
@@ -84,6 +103,7 @@ def main():
     receipt = dict(source_hashes=hashes, generated_sha256=sha(generated),
                    binary_sha256=sha(a.output / "bench"), commands=commands,platform=a.platform,
                    scope="PREPARE_ONLY_NOT_GEMM", device_validated=False)
+    if baseline: receipt['prepare_baseline']=baseline
     (a.output / "manifest.json").write_text(json.dumps(receipt, indent=2) + "\n")
     print("MOE_PREPARE_BUILD PASS", a.output / "bench", flush=True)
 

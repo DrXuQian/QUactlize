@@ -4,6 +4,21 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
+## Prepare integration, 2026-09-18
+
+The latest delivery on `dev/gemv-model-tuning` integrates the uploaded
+stable-top8 prepare patch; see [scope and checks](MOE_PREPARE_INTEGRATION_20260918.md).
+No caller, public ABI, format or GEMV selector changes. The caller remains
+`c3d9cdaa4bb1b3f111397edb3ab05d3935ac81b0`; keep its existing AONECI build.
+The runtime pin also enables a prepare-only16-case before/after gate and56
+router edge cases, in addition to the360-context alias gate. Do not reuse the
+old runtime's numerical receipt for this new helper.
+
+The unpatched `kpack-q4-resume.7l1wtue2` completed successfully: TPOT6.609484ms
+versus reference7.713883ms, prefill109.347168us/token versus143.634277.
+Those numbers do not include this patch. New prepare/model device results
+are pending. The full runner retains first-pass exclusion and separate Asys.
+
 ## Seven exact M1 model readers, 2026-09-17
 
 Current delivery is pinned by `tools/kpack_q4_model_artifact.json`; source
