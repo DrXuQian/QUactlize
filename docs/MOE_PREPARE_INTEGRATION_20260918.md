@@ -103,30 +103,17 @@ The isolated prepare A/B records26.7--29.8% reductions across16 cases;
 its receipt still requires an external competing-load audit for strict
 performance admission. Do not rewrite the immutable build receipt.
 
-## Test the other two models without rebuilding
+## Other-model coverage and the 122B topology correction
 
-Use `tools/kpack_batched_other_int4_2048.json` with the successful run above.
-It selects Qwen3-32B Q4_K_M and Qwen3.5-122B-A10B Q4_K_M, one GPU each,
-sequentially, at the same PP2048/TG128/NPL1 workload. The old broad catalog's
-122B tensor-parallel route is not admitted by K-pack and is not used here.
-The box must have enough free device memory; an OOM remains a failed model,
-not an automatic CPU-offload or tensor-parallel comparison.
-
-```bash
-(
-    set -e
-    cd /sim/eec/shared/junfu.qx/quactlize
-    git switch dev/gemv-model-tuning
-    GIT_LFS_SKIP_SMUDGE=1 git pull --ff-only origin dev/gemv-model-tuning
-    PREVIOUS_RUN=/workspace/kpack-q4-model.TUQKwW \
-    PERFORMANCE_ONLY=1 \
-    MODEL_PLAN=tools/kpack_batched_other_int4_2048.json \
-    LLAMA_CI_DIR=/sim/eec/shared/junfu.qx/llama.cpp \
-    PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
-    CUDA_VISIBLE_DEVICES=1 \
-    bash tools/resume_kpack_q4_model_box.sh
-)
-```
+The user requires two GPUs for Qwen3.5-122B-A10B. The earlier single-device
+122B plan and combined continuation command are withdrawn.
+`tools/kpack_batched_other_int4_2048.json` now preserves the two-device
+tensor split from the original catalog, at PP2048/TG128/NPL1. K-pack tensor
+split is not admitted: the continuation rejects this plan instead of silently
+measuring a single-device, offloaded or native-only replacement. Layer split
+is not a substitute: the user explicitly confirmed TP2 (tensor split).
+122B coverage remains blocked on K-pack TP2 integration and validation.
+Qwen3-32B remains a separate single-device dense workload.
 
 The extension verifies the unchanged runtime/caller hashes and completed
 component gates, then writes a new result directory. No library or caller
@@ -143,3 +130,25 @@ This adds performance/selection coverage only, not a new whole-model
 numerical admission or a claim that the35B-specific exact readers apply
 to every shape in32B/122B. Dense remains F16 compute with F32 endpoints;
 MoE retains BF16 compute.
+
+## New-machine NCP host-header build repair
+
+The new box stopped in DeepGEMM's host `compiler.hpp` while compiling NCP:
+`hggc_runtime_api.h` was not found. SDK2.1.1 installs its native headers at
+`targets/x86_64-linux/include`; `envsetup.sh` does not add that directory to
+the host C++ search path. The CI hook had added the native wrapper library
+but not its matching headers.
+
+Caller `5ebe4b878b3d39adbad0357e2d676f80d61a593a` adds the selected compiler
+SDK's native include directory to `ncp_moe` only. Both SDK layouts are
+supported, required headers fail closed, and other targets keep their flags.
+All37 caller host tests pass, including real C++ compile/link fixtures,
+missing-header negatives and preservation of unrelated object files.
+Separately, the official2.1.1 headers pass host C++ syntax checking with the
+explicit include path and fail without it. This is not a full NCP/device run.
+The Quactlize runtime artifact, model policy and kernel payloads are unchanged.
+
+Reuse the partial NCP checkout through `NCP_CI_DIR` and let the model runner
+fetch the new pinned caller. Leave `LLAMA_CI_DIR` and `LLAMA_CI_BUILD_DIR`
+unset for a fresh caller build. Do not erase the failed CI directory or reuse
+objects from the old SDK2.0 environment.

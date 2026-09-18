@@ -1103,22 +1103,28 @@ def successful_extension_fixture(tmp_path, monkeypatch):
     protocol_path=result/'benchmark/results/protocol.json'
     protocol=json.loads(protocol_path.read_text());protocol['plan']=old
     protocol_path.write_text(json.dumps(protocol))
-    new=json.loads((ROOT/'tools/kpack_batched_other_int4_2048.json').read_text())
-    new['model_root']=str(tmp_path/'models')
+    new=old | dict(source='extension-fixture', model_root=str(tmp_path/'models'), models=[
+        dict(name='dense-control',directory='dense',devices='0',split='none'),
+        dict(name='moe-control',directory='moe',devices='0',split='none')])
     for model in new['models']:
         fixture(Path(new['model_root']),model['directory']+'/weights.gguf')
     plan_path=tmp_path/'extension.json';plan_path.write_text(json.dumps(new))
     return (*values,plan_path)
 
 
-def test_other_models_keep_workload_and_do_not_claim_tensor_parallel():
+def test_other_models_keep_workload_and_preserve_122b_two_device_requirement():
     plan=json.loads((ROOT/'tools/kpack_batched_other_int4_2048.json').read_text())
     full=json.loads((ROOT/'tools/kpack_batched_models.json').read_text())
     assert plan['prompts']==[2048] and plan['generations']==[128] and plan['parallel']==1
     assert plan['batch']==plan['ubatch']==2048
     assert {m['name'] for m in plan['models']}=={'qwen3-32b-q4km','qwen35-122b-q4km'}
     for model in plan['models']:
-        assert model['split']=='none' and model['devices']=='0' and 'tensor_split' not in model
+        if model['name']=='qwen35-122b-q4km':
+            assert model['split']=='tensor' and model['devices']=='0,1' and model['tensor_split']=='1,1'
+            with pytest.raises(ValueError,match='tensor-parallel intake is not admitted'):
+                command('/bench',model|dict(path='/122b.gguf'),plan,2,[],'kpack',Path('/cache'))
+        else:
+            assert model['split']=='none' and model['devices']=='0' and 'tensor_split' not in model
         assert model['directory']==next(m['directory'] for m in full['models'] if m['name']==model['name'])
 
 
