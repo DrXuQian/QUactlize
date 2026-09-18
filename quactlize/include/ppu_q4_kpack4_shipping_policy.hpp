@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <cstring>
 
+#include "actlize_extensions/cutlass/gemm/kernel/ppu_fixed_splitk_partition.hpp"
+
 namespace ppu_q4_kpack4_shipping {
 
 inline constexpr char kScaleFirstPersistentName[] =
@@ -54,10 +56,21 @@ constexpr ConfigId default_config(int m, int n, int k) {
   // Decode policy is the compact form of the 20-shape closure.  It is deliberately shape-only: the one resident
   // K-pack4 byte class never changes with M.  Explicit config names remain available for a deployment registry.
   if (m <= kDecodeMaxM) {
-    if (n <= 2048) return ConfigId::DecodeN32S4;
-    if (n >= 16384 || (m == kDecodeMaxM && k >= 16384)) return ConfigId::DecodeN64S1;
-    if (n >= 7168) return ConfigId::DecodeN128S4;
-    return ConfigId::DecodeN64S4;
+    ConfigId selected = ConfigId::DecodeN64S4;
+    if (n <= 2048) selected = ConfigId::DecodeN32S4;
+    else if (n >= 16384 || (m == kDecodeMaxM && k >= 16384)) selected = ConfigId::DecodeN64S1;
+    else if (n >= 7168) selected = ConfigId::DecodeN128S4;
+    auto const& config = kConfigs[static_cast<int32_t>(selected)];
+    if (config.split > 1) {
+      auto const partition = cutlass::gemm::kernel::fixed_splitk::make_params(
+          1, k > 0 ? k / config.tile_k : 0, config.split);
+      // Small or ragged local K must use the existing unsplit parent.
+      if (k % config.tile_k || !partition.is_valid() ||
+          int(partition.k_tiles_per_split) < config.stages - 1) {
+        return ConfigId::DecodeN64S1;
+      }
+    }
+    return selected;
   }
   return ConfigId::PrefillS1;
 }

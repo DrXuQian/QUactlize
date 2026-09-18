@@ -141,3 +141,64 @@ int main() {
         [str(binary)], text=True, stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT)
     assert run_result.returncode == 0, run_result.stdout
+
+
+def test_q4_default_keeps_valid_winners_and_rejects_invalid_split_partitions(tmp_path):
+    compiler = shutil.which("c++") or shutil.which("g++")
+    if compiler is None:
+        pytest.skip("a C++17 host compiler is required")
+    source = r'''
+#include <cassert>
+#include <cstdio>
+#include <initializer_list>
+#include "ppu_q4_kpack4_shipping_policy.hpp"
+namespace q4 = ppu_q4_kpack4_shipping;
+
+bool valid(q4::Config const& c, int k) {
+  auto p = cutlass::gemm::kernel::fixed_splitk::make_params(1, k/c.tile_k, c.split);
+  return k%c.tile_k == 0 && p.is_valid() && int(p.k_tiles_per_split) >= c.stages-1;
+}
+
+q4::ConfigId previous(int m, int n, int k) {
+  if (m > q4::kDecodeMaxM) return q4::ConfigId::PrefillS1;
+  if (n <= 2048) return q4::ConfigId::DecodeN32S4;
+  if (n >= 16384 || (m == q4::kDecodeMaxM && k >= 16384)) return q4::ConfigId::DecodeN64S1;
+  return n >= 7168 ? q4::ConfigId::DecodeN128S4 : q4::ConfigId::DecodeN64S4;
+}
+
+int main() {
+  int cells=0, repairs=0;
+  for (int m : {1,2,3,4,5,6,7,8,9,32,128,4096})
+  for (int n : {256,512,1024,2048,4096,7168,8192,16384,25600})
+  for (int k : {256,512,768,1024,1280,1536,1792,2048,2304,3072,4096,5120,8192,16384,25600}) {
+    auto before=previous(m,n,k), after=q4::default_config(m,n,k);
+    assert(valid(q4::row(after),k));
+    if (valid(q4::row(before),k)) assert(after == before);
+    else { assert(after == q4::ConfigId::DecodeN64S1); ++repairs; }
+    q4::ConfigId selected{};
+    assert(q4::find_config(nullptr,m,n,k,selected) && selected == after);
+    assert(q4::find_config("",m,n,k,selected) && selected == after);
+    ++cells;
+  }
+  assert(!valid(q4::row(previous(1,512,512)),512));
+  assert(q4::default_config(1,512,512) == q4::ConfigId::DecodeN64S1);
+  assert(q4::default_config(1,256,1024) == q4::ConfigId::DecodeN64S1);
+  assert(q4::default_config(1,512,2048) == q4::ConfigId::DecodeN32S4);
+  q4::ConfigId explicit_choice{};
+  auto name=q4::row(q4::ConfigId::DecodeN32S4).name;
+  assert(q4::find_config(name,1,512,512,explicit_choice));
+  assert(explicit_choice == q4::ConfigId::DecodeN32S4);
+  assert(!valid(q4::row(explicit_choice),512));
+  assert(!q4::find_config("not-a-config",1,512,512,explicit_choice));
+  assert(repairs > 0);
+  std::printf("Q4_SMALLK_POLICY PASS cells=%d repairs=%d explicit_unchanged=1\n",cells,repairs);
+}
+'''
+    binary = tmp_path / "q4-smallk-policy"
+    result = subprocess.run([compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",
+        "-I", str(INCLUDE), "-x", "c++", "-", "-o", str(binary)],
+        input=source, text=True, capture_output=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    result = subprocess.run([str(binary)], text=True, capture_output=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Q4_SMALLK_POLICY PASS cells=1620" in result.stdout
