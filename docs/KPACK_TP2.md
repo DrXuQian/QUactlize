@@ -12,7 +12,7 @@ Quactlize ABI changed.
 | Weight placement | An explicit CUDA K-pack override becomes a Meta buffer containing one K-pack buffer per physical device | Host tests pass |
 | Shards | Meta splits raw GGUF in N or K before each device packs its local tensor | 30 byte-exact host cases, six formats |
 | Paired gate/up | Upload the two sources into the local shard's gate/up segments; pack after complete coverage | Host segmented transport and delayed upload pass |
-| Compute | Existing per-device execution contexts query with local N/K; existing Meta communication and all-reduce remain unchanged | PPU compilation passes; device execution pending |
+| Compute | Existing per-device execution contexts query with local N/K; existing Meta communication and all-reduce remain unchanged | Q8 M1 local compute and PCCL sums pass on two devices after the LOCAL loader fix; six-format/model admission pending |
 | Cache | Runtime cache v3 binds local planes to logical rank, split axis, segment widths/repeats and all GGUF source files | Six-format host cold/hot and negative tests pass; two-device admission pending |
 
 Q2_K, Q3_K, Q4_K, Q5_K, Q6_K and Q8_0 keep their existing canonical layouts.
@@ -221,10 +221,43 @@ collective failure after clean local checks, and symbol/path receipts match.
 Otherwise it reports the unmet condition and retains all logs. Full TP2
 cold/hot, model and performance admission remain pending after this small gate.
 
+### PPU wrapper-scope result, 2026-09-18
+
+`kpack-tp2.BPvql1.results.tgz` confirms
+`GLOBAL_WRAPPER_CAUSAL_CANDIDATE_PASS` using caller `ee28055efd`,
+orchestration `e4f1b79` and NCP `9bfb443835`. The caller worktree was clean;
+both caller and NCP were freshly built through `.aoneci`. All five host gates
+pass. Archive SHA256:
+`266e2c9f7976df0ff2045363bf7640f3721e3b9b8a106d2e811f47647b194e02`.
+
+| Device control | Result |
+| --- | --- |
+| Original seven controls with the LOCAL loader | All pass, both ranks and three input replays |
+| Copy plus explicit LOCAL wrapper preload | Pass |
+| Copy plus explicit GLOBAL wrapper preload | Original first-collective `invalid device function`, after exact local results |
+| K-pack plus explicit GLOBAL wrapper preload | Same first-collective failure, after exact local results |
+
+Both ordinary K-pack processes have zero local and collective error on every
+rank/replay. GLOBAL controls expose `hggcLaunchKernel`, `hggcGetFuncBySymbol`
+and `__hggcRegisterFatBinary` from the wrapper in RTLD_DEFAULT; LOCAL controls
+do not. The copy-only GLOBAL failure does not require a K-pack GEMM. This
+establishes the wrapper's global visibility as the trigger for this communication
+failure. It does not identify a specific internal PCCL binding or prove that
+runtime-version coexistence alone is the cause: successful K-pack processes
+still map both runtime versions.
+
+Retain the production LOCAL change; do not alter PCCL algorithms, disable
+collectives, patch the SDK or rebuild the Quactlize kernel bundle. Continue with
+`TP2_MODE=model`, reusing this successful run's `caller-ci-build.json` fields
+`build` and `ncp_directory` as `LLAMA_CI_BUILD_DIR` and `NCP_CI_DIR` respectively.
+The six-format device cold/hot gate, 122B numerical checks, ABBA performance and
+Asys capture are still required. `runner_rc=0` here means the diagnostic completed,
+not full TP2 admission; the two GLOBAL failures are expected negative controls.
+
 ## Remaining device admission
 
-- Run the two-ZW810 numerical, model, timing and trace checks. Local host tests
-  and successful PPU compilation are not device admission.
+- Run the six-format two-device cold/hot gate and 122B numerical, timing and
+  trace checks. The admitted Q8 communication control does not cover them.
 - Review local-shape policy receipts and the TPOT comparison before performance
   claims; the previous 122B upload was an ordinary TP2 baseline only.
 - Check cold publication and a fresh process's hot reload on the real 122B model.

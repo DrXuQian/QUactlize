@@ -36,8 +36,16 @@ collective, size controls, loaded-library paths, and child-only extension-off
 controls. The loader candidate keeps the SDK wrapper LOCAL. Three additional
 arms test LOCAL/GLOBAL wrapper-only loading and restore the historical GLOBAL
 K-pack behavior. This mode loads no model and changes no communication defaults.
-The `1InYnX` evidence and host ELF binding regression are detailed in KPACK_TP2.md;
-PPU admission of the loader candidate remains pending.
+The `1InYnX` evidence and host ELF binding regression are detailed in KPACK_TP2.md.
+The subsequent `BPvql1` box run confirms `GLOBAL_WRAPPER_CAUSAL_CANDIDATE_PASS`:
+all eight positive controls pass, including K-pack local results and PCCL sums
+on both ranks across three replays. Both explicit GLOBAL controls restore the
+original collective failure, even for copy-only inputs, and expose the wrapper's
+runtime symbols globally. Keep the LOCAL loader fix. The successful K-pack
+processes still load both runtime versions; coexistence alone is not the cause.
+This admits the bounded communication fix, not all TP2 arithmetic or model
+execution. Reuse the new `BPvql1` caller/NCP build for `TP2_MODE=model`; the
+six-format cold/hot, 122B numerical, warmed ABBA and Asys gates remain pending.
 
 The first cold device gate exposed a fixture bug: GGUF kept the copied Meta
 buffer and tried to read its shards instead of the supplied raw host bytes.
