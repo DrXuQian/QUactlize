@@ -5,7 +5,7 @@
   "manifest_sha256": "0bcf7ebf01ed534ea47fd73ca2dc384ac998ca4ef07f970cb8186267190aa624",
   "source_commit": "3c805f1969a7af4ce19da51b28bbf386af559755",
   "llama_branch": "dev/quactlize-gate-up-v0.3.0",
-  "llama_ci_commit": "5ebe4b878b3d39adbad0357e2d676f80d61a593a",
+  "llama_ci_commit": "d906245bca9ea1397a3df71207af9157438b3369",
   "model_reader_gate": true,
   "prepare_integration_gate": true,
   "lfs_payloads": 64,

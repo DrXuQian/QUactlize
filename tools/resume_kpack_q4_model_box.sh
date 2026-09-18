@@ -21,6 +21,10 @@
     export QUACTLIZE_PPU_BUNDLE=${QUACTLIZE_PPU_BUNDLE:-/workspace/quactlize-runtime-artifact-2826cf1-46fc3096e1a1/prebuilt/ppu0010/2826cf1/runtime6-46fc3096e1a1/bundle}
     test -s "$QUACTLIZE_PPU_BUNDLE/manifest.json"
     EXTRA=()
+    if [[ ${TRACE_ONLY:-0} == 1 ]]; then
+        EXTRA+=(--trace-only)
+        [[ -z ${MODEL_PLAN:-} && ${REPAIR_PREFILL:-0} == 0 ]]
+    fi
     if [[ ${PERFORMANCE_ONLY:-0} == 1 ]]; then
         EXTRA+=(--performance-only)
         if [[ ${MODEL_ACU:-0} == 1 ]]; then EXTRA+=(--profile-acu); fi

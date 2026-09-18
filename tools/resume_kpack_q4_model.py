@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Continue validated model phases without rebuilding or replacing artifacts."""
 import argparse
+from collections import Counter
 import json
 import os
 from pathlib import Path
@@ -14,7 +15,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from quactlize.runtime.compiler import sha
-from tools.run_kpack_batched_bench import save, validate_plan
+from tools.run_kpack_batched_bench import save, validate_plan, sequence, parse_row
 from tools.run_kpack_model_validation import run
 from tools.resolve_kpack_batched_models import resolve_plan
 from tools.verify_kpack_dispatch import verify
@@ -57,7 +58,43 @@ def repaired_source(previous):
     return original
 
 
-def inputs(previous, llama, sdk, repair_prefill=False, performance_only=False, extend_models=False):
+def completed_benchmark_controls(results):
+    root = results / 'benchmark/results'
+    protocol = json.loads((root / 'protocol.json').read_text())
+    plan = validate_plan(protocol['plan'])
+    status = json.loads((root / 'status.json').read_text())
+    expected = Counter((model['name'], arm) for model in plan['models']
+                       for arm in ('reference', 'kpack', 'kpack', 'reference'))
+    if Counter((r.get('model'), r.get('arm')) for r in status) != expected or any(r.get('status') != 'PASS' for r in status):
+        raise ValueError('trace-only requires every ABBA benchmark arm to have passed')
+    controls, paired = set(), False
+    for model in plan['models']:
+        for label in ('0-reference', '1-kpack', '2-kpack', '3-reference'):
+            prefix = root / model['name'] / label
+            process = json.loads(prefix.with_suffix('.process.json').read_text())
+            rows = json.loads(prefix.with_suffix('.timings.json').read_text())
+            wanted = sequence(plan, protocol['repeats'])
+            if process.get('rc') != 0 or len(rows) != len(wanted):
+                raise ValueError('trace-only benchmark process or sample count differs: ' + str(prefix))
+            for row, point in zip(rows, wanted):
+                parsed = parse_row(json.dumps({'n_kv_max': row['n_kv_max'], **row}), point, plan)
+                if row['phase'] != parsed['phase'] or row['repeat'] != parsed['repeat']:
+                    raise ValueError('trace-only warmup/sample identity differs')
+            command = json.loads(prefix.with_suffix('.command.json').read_text())
+            if command.get('devices') != model['devices']:
+                raise ValueError('trace-only device differs from executed benchmark')
+            if 'kpack' in label:
+                controls.add(command.get('compute'))
+                selected = json.loads(prefix.with_suffix('.selection.json').read_text())
+                if selected.get('plan_admission') != 'PASS' or selected.get('fully_selected') is not True:
+                    raise ValueError('trace-only requires complete selected compute coverage')
+                paired |= bool(selected.get('paired_plans'))
+    if len(controls) != 1 or not controls <= {'fp16', 'bf16'}:
+        raise ValueError('trace-only benchmark compute contract differs')
+    return controls.pop(), paired
+
+
+def inputs(previous, llama, sdk, repair_prefill=False, performance_only=False, extend_models=False, trace_only=False):
     results = previous / 'results'
     stopped = (results / 'runner-status.txt').read_text()
     if performance_only:
@@ -126,12 +163,15 @@ def inputs(previous, llama, sdk, repair_prefill=False, performance_only=False, e
     checker = (llama / 'tests/quactlize_native.py').read_text()
     if 'compute scope mismatch:' not in checker or 'or int(p["rows"]) <= 8' in checker:
         raise ValueError('pull the grouped-only BF16 checker in the supplied llama checkout')
-    gates = ('production-q8.json', 'bf16-metadata/summary.json', 'bf16/summary.json',
-        'bf16-selected-q4/summary.json', 'bf16-matched-prefill/summary.json', 'mixed-chain/summary.json')
+    compute, paired = completed_benchmark_controls(results) if trace_only else ('bf16', None)
+    gates = ('production-q8.json', 'mixed-chain/summary.json')
+    if compute == 'bf16':
+        gates += ('bf16-metadata/summary.json', 'bf16/summary.json',
+                  'bf16-selected-q4/summary.json', 'bf16-matched-prefill/summary.json')
     if performance_only:
         if protocol['binary_sha256'] != ci['files']['bin/llama-batched-bench']:
             raise ValueError('saved benchmark binary differs from caller receipt')
-        if protocol['production_fusion']=='MOE_CHAIN_AND_GPU_GATE_UP_PAIR':
+        if paired is True or (paired is None and protocol['production_fusion']=='MOE_CHAIN_AND_GPU_GATE_UP_PAIR'):
             if 'paired_gate_up' not in current:
                 raise ValueError('paired runtime is absent')
             gates += ('paired-integration/summary.json',)
@@ -184,13 +224,20 @@ def continuation(args, output):
     latest = previous
     repair = getattr(args, 'repair_prefill', False)
     performance_only = getattr(args, 'performance_only', False)
+    trace_only = getattr(args, 'trace_only', False)
     extend = getattr(args, 'extend_plan', None)
+    if trace_only and (not performance_only or repair or extend):
+        raise ValueError('trace-only requires unchanged performance-only artifacts and the original model plan')
     if extend and (not performance_only or repair):
         raise ValueError('model extension requires unchanged performance-only artifacts')
     if repair:
         previous = repaired_source(latest)
     bundle, build, gates = inputs(previous, llama, sdk, repair_prefill=repair,
-                                 performance_only=performance_only, extend_models=bool(extend))
+                                 performance_only=performance_only, extend_models=bool(extend), trace_only=trace_only)
+    if trace_only:
+        protocol = json.loads((previous / 'results/benchmark/results/protocol.json').read_text())
+        if any(model['devices'] != args.device or model['split'] != 'none' for model in protocol['plan']['models']):
+            raise ValueError('trace-only must use the original single-device benchmark ordinal')
     plan = extension_plan(previous, extend, args.device) if extend else None
     result = output / 'results'
     if any(p.is_symlink() for p in (latest / 'results').rglob('*')):
@@ -202,6 +249,7 @@ def continuation(args, output):
         numerical_source=str(latest), native_reexecution=repair,
         original_results='UNMODIFIED', model_admission='PENDING_RECHECK',
         numerical_scope='NOT_RETESTED' if performance_only else 'RECHECK_COMPLETED_CALLS',
+        benchmark_scope='REUSED_UNCHANGED' if trace_only else 'REEXECUTED',
         new_models=[model['name'] for model in plan['models']] if plan else [],
         model_plan_source=str(extend.resolve()) if extend else None))
     env = dict(os.environ)
@@ -213,6 +261,7 @@ def continuation(args, output):
     cache = Path(env.get('CACHE_DIR', str(base / 'kpack-model-cache'))).resolve(strict=True)
     jit = Path(env.get('JIT_CACHE', str(base / 'kpack-model-jit-cache'))).resolve(strict=True)
     env.update(PPU_SDK=str(sdk), CUDA_HOME=str(sdk / 'CUDA_SDK'), CUDA_VISIBLE_DEVICES=args.device,
+        DG_JIT_HGCC_COMPILER=str(sdk / 'bin/hgcc'),
         LD_LIBRARY_PATH=str(build / 'bin') + ':' + env.get('LD_LIBRARY_PATH', ''),
         DG_JIT_CACHE_DIR=str(previous / 'ci/ncp-jit-cache'),
         QUACTLIZE_KPACK_COMPUTE='bf16', QUACTLIZE_KPACK_ROUTE='auto', QUACTLIZE_KPACK_PAIR_WEIGHTS='1',
@@ -225,6 +274,10 @@ def continuation(args, output):
         protocol=json.loads((previous/'results/benchmark/results/protocol.json').read_text())
         paired=protocol['production_fusion']=='MOE_CHAIN_AND_GPU_GATE_UP_PAIR'
         env['QUACTLIZE_KPACK_GATE_UP']=str(int(paired))
+    if trace_only:
+        compute, paired = completed_benchmark_controls(previous / 'results')
+        env['QUACTLIZE_KPACK_COMPUTE'] = compute
+        env['QUACTLIZE_KPACK_GATE_UP'] = str(int(paired))
     asys, acu = sdk / 'asight/bin/asys', sdk / 'asight/bin/acu'
     if not all(p.is_file() and os.access(p, os.X_OK) for p in (asys, acu)):
         raise ValueError('Asys/ACU executable is missing')
@@ -249,8 +302,8 @@ def continuation(args, output):
     ]
     if performance_only:
         profile = phases[-1]
-        phases = phases[1:3]
-        if paired:
+        phases = phases[2:3] if trace_only else phases[1:3]
+        if paired and not trace_only:
             phases.append(('paired-model-proof', [sys.executable, ROOT/'tools/check_kpack_paired_model.py',
                                                   '--results', result] + (['--selected-scope'] if extend else [])))
         if getattr(args,'profile_acu',False):
@@ -281,9 +334,14 @@ def main():
     p.add_argument('--device', default='0')
     p.add_argument('--repair-prefill', action='store_true', help='use the dispatcher-only N-extension package; rerun native calls')
     p.add_argument('--performance-only', action='store_true', help='reuse unchanged component gates; rerun warmed ABBA and Asys only')
+    p.add_argument('--trace-only', action='store_true', help='reuse passed ABBA samples and retry Asys only; no build or benchmark')
     p.add_argument('--profile-acu', action='store_true', help='also run ACU after a performance-only continuation')
     p.add_argument('--extend-plan', type=Path, help='test only new models after a successful run; same workload, no build')
     a = p.parse_args()
+    if a.trace_only:
+        a.performance_only = True
+        if a.extend_plan or a.repair_prefill:
+            p.error('--trace-only cannot change models or the runtime')
     if a.performance_only and a.repair_prefill:
         p.error('--performance-only cannot change the runtime')
     if a.extend_plan and not a.performance_only:

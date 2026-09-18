@@ -1,5 +1,17 @@
 # K-pack incremental optimization backlog
 
+## Startup recovery, 2026-09-18
+
+| Item | Local state | Box closure |
+| --- | --- | --- |
+| Qwen3-32B cold selected JIT | Exact returned nine-parent parallel prewarm; no selector changes; host tests pass | Record cold prewarm time and subsequent cache hits |
+| Shared-filesystem weight cache publish | Manifest-last, no-replace hard-link fallback; real host fault tests pass | Cold publish then second-process hit on `/sim` |
+| Asys creation timeout | No-model preflight, one creation retry, trace-only recovery | New-machine service and GPU trace still pending; old ABBA remains valid |
+| Native DeepGEMM JIT compiler lookup | Explicit SDK compiler override in model and resume runners | Native TP2 startup; no K-pack TP2 claim |
+| K-pack TP2 intake | Not implemented | Meta backend sharded set-tensor/plane ownership and model correctness needed |
+
+Commands and exact evidence: [startup recovery](../../docs/MODEL_STARTUP_RECOVERY_20260918.md).
+
 ## Current decode MBU follow-up, 2026-09-16
 
 Latest scope and evidence: [current model MBU](../../docs/MODEL_DECODE_MBU_20260916.md).

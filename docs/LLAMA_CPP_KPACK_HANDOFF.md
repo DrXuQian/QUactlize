@@ -4,6 +4,22 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
+## New-machine startup recovery, 2026-09-18
+
+The `C99gWo` Qwen3-32B ABBA benchmark passed: TPOT33.3503 ->21.3962ms
+(-35.844%), prefill571.367 ->557.238ms. The final failure was Asys session
+creation, not model compute. See [independent fixes and commands](MODEL_STARTUP_RECOVERY_20260918.md).
+Cold JIT is moved into a parallel, recorded nine-parent prewarm. The caller
+publishes runtime caches safely on filesystems lacking `RENAME_NOREPLACE`.
+The profiler now probes session startup and can resume only trace capture,
+without repeating the valid benchmark. Preserve the old caller build until
+that trace-only continuation finishes. The new cache path needs the updated
+caller; the Quactlize runtime package and kernel choices are unchanged.
+
+Pin DeepGEMM's compiler with `DG_JIT_HGCC_COMPILER=$PPU_SDK/bin/hgcc` on the
+new machine. K-pack TP2 remains unimplemented; 122B tensor-parallel runs at
+this point are native-only baselines, never K-pack measurements.
+
 ## Prepare integration, 2026-09-18
 
 The latest delivery on `dev/gemv-model-tuning` integrates the uploaded

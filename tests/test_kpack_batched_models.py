@@ -912,6 +912,98 @@ def test_performance_resume_preserves_prior_and_runs_only_model_phases(tmp_path,
     assert receipt['compile']=='NONE' and receipt['numerical_scope']=='NOT_RETESTED'
 
 
+def trace_continuation_fixture(tmp_path, monkeypatch):
+    values = performance_continuation_fixture(tmp_path, monkeypatch)
+    resume, previous, llama, sdk, bundle, build = values
+    result = previous / 'results'
+    (result / 'runner-status.txt').write_text('runner_rc=1 stage=model-trace\n')
+    source = plan(tmp_path)
+    source['models'] = source['models'][:1]
+    (result / 'model-plan.json').write_text(json.dumps(source))
+    root = result / 'benchmark/results'
+    protocol = json.loads((root / 'protocol.json').read_text())
+    protocol.update(plan=source, production_fusion='MOE_CHAIN')
+    (root / 'protocol.json').write_text(json.dumps(protocol))
+    model, = source['models']
+    folder = root / model['name']; folder.mkdir()
+    status = []
+    for label in ('0-reference', '1-kpack', '2-kpack', '3-reference'):
+        arm = label.split('-', 1)[1]
+        status.append(dict(model=model['name'], arm=arm, status='PASS'))
+        rows = []
+        for point in sequence(source, 2):
+            pp, tg, repeat = point
+            raw = dict(n_kv_max=pp+tg, pp=pp, tg=tg, pl=1, n_batch=source['batch'],
+                       n_ubatch=source['ubatch'], flash_attn=1, is_pp_shared=0,
+                       n_kv=pp+tg, t_pp=1, t_tg=1, speed_pp=pp, speed_tg=tg)
+            rows.append(parse_row(json.dumps(raw), point, source))
+        for suffix, data in (
+            ('process', dict(rc=0)), ('timings', rows),
+            ('command', dict(devices='0', compute='fp16' if arm=='kpack' else 'REFERENCE')),
+            ('selection', dict(plan_admission='PASS', fully_selected=True, paired_plans=[])),
+        ):
+            (folder / f'{label}.{suffix}.json').write_text(json.dumps(data))
+    (root / 'status.json').write_text(json.dumps(status))
+    # This FP16 run has no BF16 or paired component admission to reuse.
+    for name in ('bf16-metadata', 'bf16', 'bf16-selected-q4', 'bf16-matched-prefill', 'paired-integration'):
+        (result / name / 'summary.json').unlink()
+    return values
+
+
+@pytest.mark.parametrize('fault', [None, 'failed-arm', 'missing-arm', 'process', 'selection',
+                                  'nan', 'warmup', 'sample-count', 'denominator', 'compute', 'device'])
+def test_trace_only_rechecks_all_saved_abba_evidence(tmp_path, monkeypatch, fault):
+    resume, previous, llama, sdk, bundle, build = trace_continuation_fixture(tmp_path, monkeypatch)
+    root = previous / 'results/benchmark/results'
+    suffix = {'failed-arm':'status', 'missing-arm':'status', 'process':'process',
+              'selection':'selection', 'compute':'command', 'device':'command'}.get(fault, 'timings')
+    file = root / ('status.json' if suffix=='status' else f'subject/1-kpack.{suffix}.json')
+    data = json.loads(file.read_text())
+    if fault=='failed-arm': data[0]['status']='FAIL'
+    if fault=='missing-arm': data.pop()
+    if fault=='process': data['rc']=15
+    if fault=='selection': data['fully_selected']=False
+    if fault=='nan': data[1]['t_pp']=float('nan')
+    if fault=='warmup': data[0]['phase']='measured'
+    if fault=='sample-count': data.pop()
+    if fault=='denominator': data[1]['speed_tg']=1
+    if fault=='compute': data['compute']='bf16'
+    if fault=='device': data['devices']='1'
+    file.write_text(json.dumps(data))
+    if fault:
+        with pytest.raises(ValueError): resume.inputs(previous, llama, sdk, performance_only=True, trace_only=True)
+    else:
+        found, caller, gates = resume.inputs(previous, llama, sdk, performance_only=True, trace_only=True)
+        assert found==bundle and caller==build and len(gates)==3
+
+
+@pytest.mark.parametrize('device', ['0', '1'])
+def test_trace_only_does_not_build_or_remeasure_benchmark(tmp_path, monkeypatch, device):
+    resume, previous, llama, sdk, bundle, build = trace_continuation_fixture(tmp_path, monkeypatch)
+    (sdk / 'asight/bin').mkdir(parents=True)
+    for name in ('asys', 'acu'):
+        file = sdk / 'asight/bin' / name; file.write_text('profiler'); file.chmod(0o755)
+    for name in ('kpack-model-cache', 'kpack-model-jit-cache'): (tmp_path / name).mkdir()
+    monkeypatch.delenv('CACHE_DIR', raising=False); monkeypatch.delenv('JIT_CACHE', raising=False)
+    calls = []
+    monkeypatch.setattr(resume, 'run', lambda argv, log, env: calls.append((list(map(str, argv)), log, env)))
+    output = tmp_path / 'continued'; (output / 'results').mkdir(parents=True)
+    args = SimpleNamespace(previous=previous, llama=llama, sdk=sdk, device=device,
+                           corpus=tmp_path/'corpus', performance_only=True, trace_only=True)
+    if device=='1':
+        with pytest.raises(ValueError, match='original single-device'): resume.continuation(args, output)
+        assert not calls
+    else:
+        resume.continuation(args, output)
+        assert [log.name for _, log, _ in calls]==['trace.log']
+        env = calls[0][2]
+        assert env['QUACTLIZE_KPACK_COMPUTE']=='fp16' and env['QUACTLIZE_KPACK_GATE_UP']=='0'
+        assert env['DG_JIT_HGCC_COMPILER']==str(sdk/'bin/hgcc')
+        receipt = json.loads((output/'results/continuation.json').read_text())
+        assert receipt['compile']=='NONE' and receipt['benchmark_scope']=='REUSED_UNCHANGED'
+        assert not (output/'results/benchmark').exists()
+
+
 def test_first_nonfinite_reuses_read_only_original_and_reference_only_changes_placement():
     from tools.run_kpack_first_nonfinite import command
     argv = ['/bin/llama-perplexity', '-m', '/model.gguf', '-c', '256', '-b', '1', '-ub', '1',

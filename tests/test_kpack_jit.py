@@ -135,6 +135,61 @@ def test_header_only_model_plan_deduplicates_and_q8_is_w8a16(tmp_path):
     assert next(r for r in proof["omitted"] if r["name"] == "output.weight")["reason"] == "OUTSIDE_CONSUMER_TENSOR_PATTERN"
 
 
+def test_recorded_model_prewarm_keeps_normal_and_typed_endpoints_and_one_pool(tmp_path, monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    import tools.prewarm_kpack_model as pre
+    barrier = threading.Barrier(2)
+    identities, built = [], []
+    def compiler(sdk, cache, jobs, dense, compute):
+        assert sdk == 'sdk' and cache == 'cache' and jobs == 2
+        identities.append((dense, compute))
+        def build(parent):
+            barrier.wait(timeout=5)
+            built.append((parent['symbol'], dense, compute))
+            return dict(parent=parent, cache_hit=True)
+        return SimpleNamespace(identity={'base_source_contract': 'contract'}, build=build)
+    monkeypatch.setattr(pre, 'compiler_for', compiler)
+    monkeypatch.setattr(pre, 'source_contract', lambda identity: 'unused')
+    module = dict(symbol='parent', tuple=[12,0,8,64,64,8,16,2,0,16,-1], dense_io=False, compute_type='f16')
+    closure = dict(schema='quactlize.model-prewarm.v1', source_contract='contract',
+                   modules=[module, module.copy(), module | {'dense_io': True}])
+    receipt = pre.prewarm(closure, 'sdk', 'cache', 2)
+    assert receipt['parents'] == receipt['workers'] == receipt['cache_hits'] == 2
+    assert set(identities) == {(False,'f16'), (True,'f16')}
+    assert set(built) == {('parent',False,'f16'), ('parent',True,'f16')}
+    closure['source_contract'] = 'foreign'
+    with pytest.raises(ValueError, match='differs from current'):
+        pre.prewarm(closure, 'sdk', 'cache', 2)
+
+
+@pytest.mark.parametrize('fault', [None, 'model', 'tokens', 'bundle', 'shape', 'grouped', 'tp'])
+def test_recorded_prewarm_is_bound_to_geometry_workload_and_runtime(tmp_path, monkeypatch, fault):
+    import tools.prewarm_kpack_model as pre
+    model_path = tmp_path/'model.gguf'
+    model_path.touch()
+    monkeypatch.setattr(pre, 'sha', lambda p: 'other' if fault=='bundle' else 'bundle')
+    monkeypatch.setattr(pre, 'inventory', lambda p: dict(eligible=['weight'], files=[str(model_path)]))
+    monkeypatch.setattr(pre, 'read_gguf_header', lambda *a: dict(tensors=[dict(
+        name='weight', qtype=12, dims_gguf=[5120, 1024 if fault!='shape' else 2048] + ([256] if fault=='grouped' else []))]))
+    model = dict(name='other' if fault=='model' else 'model', path=str(model_path), split='tensor' if fault=='tp' else 'none')
+    plan = dict(prompts=[128 if fault=='tokens' else 2048])
+    closure = dict(model='model', tokens=[1,16,2048], bundle_manifest_sha256='bundle', shapes=[[12,1024,5120]])
+    reason = pre.select_closure(model, plan, tmp_path, closure)
+    assert (reason is None) == (fault is None)
+
+
+def test_qwen32_recorded_parent_closure_is_nine_not_a_new_sweep():
+    closure = json.loads((ROOT/'tools/kpack_model_prewarm_qwen3_32b.json').read_text())
+    assert closure['tokens'] == [1,16,2048]
+    modules = closure['modules']
+    assert len(modules) == 9 and sum(m['dense_io'] for m in modules) == 3
+    assert len({(m['symbol'],m['dense_io'],m['compute_type']) for m in modules}) == 9
+    for module in modules:
+        assert module['compute_type'] == 'f16'
+        assert parent_tuple(module['symbol'],module['tuple'])['route'].endswith('dense')
+
+
 def fake_compiler(tmp):
     # Exercise the real locked/atomic cache with an inexpensive fake toolchain.
     sdk = tmp / "sdk"

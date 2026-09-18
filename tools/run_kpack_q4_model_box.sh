@@ -218,6 +218,8 @@
         BUILD_DIR=$(realpath -e -- "${LLAMA_CI_BUILD_DIR:-$RUN/ci/llama-build}")
     fi
     export CUDA_HOME="$SDK/CUDA_SDK" DG_JIT_CACHE_DIR="$RUN/ci/ncp-jit-cache"
+    export DG_JIT_HGCC_COMPILER="$SDK/bin/hgcc"
+    test -x "$DG_JIT_HGCC_COMPILER"
     unset DG_LIBRARY_ROOT GGML_NCP_FA_LIB GGML_NCP_MOE_LIB
     export LD_LIBRARY_PATH="$BUILD_DIR/bin:$LD_LIBRARY_PATH"
     if [[ "$Q8_HOIST_AB" == 1 ]]; then
@@ -260,6 +262,11 @@
     COMMON=(--llama "$LLAMA_DIR" --build "$BUILD_DIR" --bundle "$BUNDLE" --plan "$RUN/results/model-plan.json"
         --cache "$CACHE_DIR" --jit-cache "$QUACTLIZE_KPACK_JIT_CACHE" --logits "$RUN/logits" --corpus "$CORPUS"
         --asys "$ASYS" --inspector "$SDK/bin/hgobjdump")
+    stage=model-prewarm
+    "$PYTHON" -u tools/prewarm_kpack_model.py --model-plan "$RUN/results/model-plan.json" \
+        --bundle "$BUNDLE" --sdk "$SDK" --cache "$QUACTLIZE_KPACK_JIT_CACHE" \
+        --jobs "${JIT_JOBS:-$JOBS}" --output "$RUN/results/model-prewarm.json" \
+        2>&1 | tee "$RUN/results/model-prewarm.log"
     if [[ "$MODEL_PHASES" == all ]]; then
         stage=model-numerical
         "$PYTHON" -u tools/run_kpack_model_validation.py "${COMMON[@]}" --phase numerical \
