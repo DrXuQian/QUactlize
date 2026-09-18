@@ -1262,6 +1262,83 @@ def test_tp2_plan_and_runner_do_not_bypass_meta_or_cache_admission(tmp_path):
     assert '--order abba --require-selected' in script
     assert 'DG_JIT_HGCC_COMPILER="$SDK/bin/hgcc"' in script
     assert 'PPU_SDK_HOME="$SDK/CUDA_SDK"' in script
+    assert script.index('TP2_MODE == communication') < script.index('stage=two-device-cache-cold')
+    assert 'tools/run_kpack_tp2_comm.py' in script
+    assert 'PCCL_ENABLE_EXT_KERNEL=' not in script
+
+
+def comm_fixture(arm='copy', count=512):
+    lines=[]
+    for replay in range(3):
+        for rank in (0,1):
+            lines.append(f'KPACK_TP2_COMM_LOCAL arm={arm} rank={rank} replay={replay} error=0 synchronized=1 status=PASS')
+        lines.append(f'KPACK_TP2_COMM_REDUCE_BEGIN arm={arm} count={count} replay={replay}')
+        for rank in (0,1):
+            lines.append(f'KPACK_TP2_COMM_SUM arm={arm} rank={rank} replay={replay} error=0 status=PASS')
+    return '\n'.join(lines)+f'\nKPACK_TP2_COMM PASS arm={arm} count={count} replays=3\n'
+
+
+@pytest.mark.parametrize('fault',[None,'missing','duplicate','nan','tolerance','rc','fallback','shape'])
+def test_tp2_communication_requires_both_ranks_and_all_replays(fault):
+    from tools.run_kpack_tp2_comm import evidence
+    text=comm_fixture()
+    if fault=='missing': text=text.replace('rank=1 replay=2','rank=1 replay=3')
+    if fault=='duplicate': text+=text.splitlines()[0]+'\n'
+    if fault=='nan': text=text.replace('error=0','error=nan',1)
+    if fault=='tolerance': text=text.replace('error=0','error=0.5',1)
+    if fault=='fallback': text+='NCCL init failed: falling back to internal AllReduce\n'
+    if fault=='shape': text=text.replace('count=512','count=3072')
+    result=evidence(text,'copy',512,1 if fault=='rc' else 0)
+    assert (result['status']=='PASS')==(fault is None)
+
+
+def test_tp2_communication_continues_failures_and_extension_is_child_local(tmp_path,monkeypatch):
+    from tools import run_kpack_tp2_comm as comm
+    calls=[]
+    monkeypatch.delenv('GGML_CUDA_ALLREDUCE',raising=False)
+    monkeypatch.delenv('PCCL_ENABLE_EXT_KERNEL',raising=False)
+    def start(command,**kwargs):
+        calls.append((command,kwargs['env']))
+        arm,count=command[-2:]
+        if len(calls)==1:
+            kwargs['stdout'].write(comm_fixture(arm,int(count)).split('KPACK_TP2_COMM_SUM',1)[0] +
+                "[drv_extension.cc:379] PCCL ERROR invalid device function\n")
+        else: kwargs['stdout'].write(comm_fixture(arm,int(count)))
+        return SimpleNamespace(wait=lambda **kw: -6 if len(calls)==1 else 0)
+    monkeypatch.setattr(comm.subprocess,'Popen',start)
+    comm.run(Path('/build/bin/test-quactlize-scheduler'),tmp_path/'results')
+    assert len(calls)==7
+    result=json.loads((tmp_path/'results/summary.json').read_text())
+    assert result['status']=='DIAGNOSTIC_COMPLETE' and result['device_admission']=='PENDING'
+    assert result['cases'][0]['status']=='COLLECTIVE_FAILED_AFTER_LOCAL_PASS'
+    assert result['cases'][0]['extension_invalid_function']
+    assert all(x['status']=='PASS' for x in result['cases'][1:])
+    assert 'PCCL_ENABLE_EXT_KERNEL' not in os.environ
+    for index,(_,env) in enumerate(calls):
+        assert env.get('PCCL_ENABLE_EXT_KERNEL')==('0' if index>=5 else None)
+
+
+def test_tp2_communication_timeout_stops_only_its_own_child_and_continues(tmp_path,monkeypatch):
+    from tools import run_kpack_tp2_comm as comm
+    children=[]
+    killed=[]
+    monkeypatch.delenv('GGML_CUDA_ALLREDUCE',raising=False)
+    class Child:
+        def __init__(self,command,**kwargs):
+            self.pid=1000+len(children)
+            self.command=command
+            self.calls=0
+            children.append(self)
+        def wait(self,**kwargs):
+            self.calls+=1
+            if self.calls==1: raise subprocess.TimeoutExpired(self.command,1)
+            return -9
+    monkeypatch.setattr(comm.subprocess,'Popen',Child)
+    monkeypatch.setattr(comm.os,'killpg',lambda pid,sig:killed.append((pid,sig)))
+    comm.run(Path('/build/bin/test-quactlize-scheduler'),tmp_path/'results',timeout=1)
+    assert killed==[(child.pid,comm.signal.SIGKILL) for child in children]
+    result=json.loads((tmp_path/'results/summary.json').read_text())
+    assert len(result['cases'])==7 and all(x['status']=='TIMEOUT' for x in result['cases'])
 
 
 @pytest.mark.parametrize('hot', [False, True])

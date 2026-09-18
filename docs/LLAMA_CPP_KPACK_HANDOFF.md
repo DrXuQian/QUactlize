@@ -20,12 +20,20 @@ is no inference-thread D2H wait. Old single-device caches are not accepted as
 TP shards, and existing incompatible caches are never overwritten.
 The runner now tests cold publication and fresh-process hot loading before
 model numerics, warmed ABBA and Asys. See the linked TP2 document for CACHE_ROOT.
-Caller commit: `c2dbaf78d93e9b47e1a0cd5952fbe4f5b861a748`. Local checks include
+Caller commit: `67cf2e581d0bb95fc8e4ed9be264f6e4245464d2`. Local checks include
 24 six-format TP-cache cases, malformed/foreign-layout rejections, source-change
 publication rejection, four CTest suites and 39 native-helper tests. The changed
 cache upload translation unit compiles with PPU SDK 2.1.1. No device result is
 claimed for these host checks. No llama binaries or new runtime LFS payloads
 are part of this delivery.
+
+The `kpack-tp2.JFVDyR` upload confirms five host gates and first-shard cold-cache
+publication, but stops in PCCL's extension at the first 512-element F32
+all-reduce. It does not invalidate the earlier successful 122B reference run.
+Use `TP2_MODE=communication` for seven small fresh-process diagnostics, including
+raw versus K-pack Q8 with local synchronization/oracles before the unchanged
+collective, size controls, loaded-library paths, and child-only extension-off
+controls. This mode loads no model and changes no production defaults.
 
 The first cold device gate exposed a fixture bug: GGUF kept the copied Meta
 buffer and tried to read its shards instead of the supplied raw host bytes.

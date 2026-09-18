@@ -150,7 +150,39 @@ graph semantics; it is not a substitute for the GPU Q8 and Q4/Q5 chain gate.
 All device tolerances and the runtime bundle are unchanged. Use the failed
 run's caller build for the incremental rebuild as above.
 
-## Remaining admission
+## Communication failure review and small diagnostic
+
+The uploaded `kpack-tp2.JFVDyR` run used caller `c2dbaf78d` and orchestration
+`23d2e95f4`. All five host gates pass, and the first two Q8 shard cache artifacts
+publish successfully. The first K-split cell reaches the existing PCCL
+all-reduce of 512 F32 values (2048 bytes), then aborts in `drv_extension.cc:379`
+with `invalid device function` at `ncclGroupEnd`. Neither completed local
+arithmetic nor device all-reduce correctness is established by those launch
+receipts. The earlier successful 122B reference remains valid; its log does not
+identify the loaded PCCL extension or exercise every small collective size.
+
+Set `TP2_MODE=communication` on the existing box entry for a bounded diagnostic.
+It reuses the current `.aoneci` build and runtime package without loading a model,
+creating model caches, or capturing Asys. Seven fresh processes run:
+
+- Known F32 buffers of 512, 3072 and 32768 elements through the caller's unchanged
+  communication entry. Values and sums are exactly representable; require zero error.
+- Raw-GGUF Q8 and K-pack Q8 on the same local shape, K512/N512/M1 on both devices.
+  Each local result is synchronized and compared to an independent GGUF dot before
+  communication. The collective is then checked against the full dot. Three input
+  replays retain the existing 2% arithmetic tolerance.
+- Repeat the 512-element buffer and K-pack cases with `PCCL_ENABLE_EXT_KERNEL=0`
+  in those child processes only. This is an extension-path control, not a proposed
+  production default and not permission to ignore a failed collective.
+
+The binary prints actual loaded communication/runtime library paths from
+`/proc/self/maps`, including libraries loaded with `dlopen`. Every failed child
+is retained and the remaining cases continue; each has a 180-second timeout.
+Read `results/communication/summary.json` and the seven adjacent logs. Runner
+success means `DIAGNOSTIC_COMPLETE`, not TP2 admission. Production communication
+and kernel dispatch are unchanged. Upload the resulting small results archive.
+
+## Remaining device admission
 
 - Run the two-ZW810 numerical, model, timing and trace checks. Local host tests
   and successful PPU compilation are not device admission.

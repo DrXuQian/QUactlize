@@ -10,7 +10,8 @@
             printf 'runner_rc=%s stage=%s\n' "$rc" "$stage" > "$RUN/results/runner-status.txt"
             tar --exclude='*.asysrep' --exclude='*.sqlite*' --exclude='*.tgz' \
                 -czf "$RUN.results.tgz" -C "$RUN" results || rc=1
-            printf 'results=%s.results.tgz\nAsys: %s/results/trace/*/{reference,native}/proof.asysrep\n' "$RUN" "$RUN"
+            printf 'results=%s.results.tgz\n' "$RUN"
+            if [[ -d $RUN/results/trace ]]; then printf 'Asys: %s/results/trace/*/{reference,native}/proof.asysrep\n' "$RUN"; fi
         fi
         printf 'runner_rc=%s stage=%s\nCurrent Docker shell is preserved.\n' "$rc" "$stage"
         exit "$rc"
@@ -20,6 +21,8 @@
     ROOT=$(git -C "$(dirname "${BASH_SOURCE[0]}")/.." rev-parse --show-toplevel)
     test -n "$ROOT" && test -f "$ROOT/tools/kpack_batched_tp2_122b.json"
     cd "$ROOT"
+    TP2_MODE=${TP2_MODE:-model}
+    [[ $TP2_MODE == model || $TP2_MODE == communication ]]
     PYTHON=$(command -v "${PYTHON:-python3}")
     SDK=$(realpath -e -- "${PPU_SDK:-/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK}")
     test -n "$SDK" && test -r "$SDK/envsetup.sh" && test -x "$SDK/bin/hgobjdump"
@@ -58,21 +61,23 @@
     grep -q 'KPACK_TP2_DEVICE PASS' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"
     grep -q 'KPACK_TP2_CACHE PASS' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"
     grep -q 'KPACK_TP2_HOST PASS' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"
+    if [[ $TP2_MODE == communication ]]; then grep -q -- '--tp2-comm' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"; fi
     test -n "${QUACTLIZE_PPU_BUNDLE:-}" && test -s "$QUACTLIZE_PPU_BUNDLE/manifest.json"
     ASYS=${ASYS:-$SDK/asight/bin/asys}
-    test -x "$ASYS"
     CORPUS=${GSM8K_FILE:-/sim/eec/shared/AI_workspace/llm-models/datasets/gsm8k/main/test-00000-of-000001.parquet}
-    test -s "$CORPUS"
+    if [[ $TP2_MODE == model ]]; then test -x "$ASYS" && test -s "$CORPUS"; fi
     RUN=$(mktemp -d "$RESULT_DIR/kpack-tp2.XXXXXX")
     test -n "$RUN" && test -d "$RUN"
     mkdir "$RUN/results"
     printf 'KPACK_TP2 run=%s devices=%s jobs=%s\n' "$RUN" "$CUDA_VISIBLE_DEVICES" "$JOBS"
     git rev-parse HEAD > "$RUN/results/quactlize-source.txt"
 
-    stage=model-paths
-    "$PYTHON" tools/resolve_kpack_batched_models.py --plan "${MODEL_PLAN:-$ROOT/tools/kpack_batched_tp2_122b.json}" \
-        --model-root "${MODEL_ROOT:-/sim/eec/shared/AI_workspace/llm-models}" --output "$RUN/results/model-plan.json"
-    "$PYTHON" -c 'import json,os,sys; p=sys.argv[1]; m=json.load(open(p)); assert all(x["split"]=="tensor" for x in m["models"]); [x.update(devices=os.environ["CUDA_VISIBLE_DEVICES"]) for x in m["models"]]; json.dump(m,open(p,"w"),indent=2)' "$RUN/results/model-plan.json"
+    if [[ $TP2_MODE == model ]]; then
+        stage=model-paths
+        "$PYTHON" tools/resolve_kpack_batched_models.py --plan "${MODEL_PLAN:-$ROOT/tools/kpack_batched_tp2_122b.json}" \
+            --model-root "${MODEL_ROOT:-/sim/eec/shared/AI_workspace/llm-models}" --output "$RUN/results/model-plan.json"
+        "$PYTHON" -c 'import json,os,sys; p=sys.argv[1]; m=json.load(open(p)); assert all(x["split"]=="tensor" for x in m["models"]); [x.update(devices=os.environ["CUDA_VISIBLE_DEVICES"]) for x in m["models"]]; json.dump(m,open(p,"w"),indent=2)' "$RUN/results/model-plan.json"
+    fi
 
     stage=runtime
     mapfile -t PIN < <("$PYTHON" -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["branch"]); print(p["commit"]); print(p["path"]); print(p["manifest_sha256"])' tools/kpack_q4_model_artifact.json)
@@ -115,6 +120,13 @@
     stage=host-regression
     ctest --test-dir "$BUILD_DIR" -R '^(test-quactlize-loader|test-quactlize-loader-env|test-kpack-sidecar|test-quactlize-buffer|test-quactlize-tp-graph)$' \
         --output-on-failure 2>&1 | tee "$RUN/results/host-tests.log"
+    if [[ $TP2_MODE == communication ]]; then
+        stage=communication
+        "$PYTHON" -u tools/run_kpack_tp2_comm.py --binary "$BUILD_DIR/bin/test-quactlize-scheduler" \
+            --output "$RUN/results/communication" 2>&1 | tee "$RUN/results/communication.log"
+        stage=diagnostic-complete
+        exit 0
+    fi
     mkdir "$RUN/device-cache"
     stage=two-device-cache-cold
     "$BUILD_DIR/bin/test-quactlize-scheduler" --tp2-cache-write "$RUN/device-cache" 2>&1 | tee "$RUN/results/tp2-device-cold.log"
