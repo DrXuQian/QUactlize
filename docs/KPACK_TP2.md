@@ -342,6 +342,107 @@ The six-format device cold/hot gate, 122B numerical checks, ABBA performance and
 Asys capture are still required. `runner_rc=0` here means the diagnostic completed,
 not full TP2 admission; the two GLOBAL failures are expected negative controls.
 
+### Q4 local failure and CUDA control, 2026-09-19
+
+`kpack-tp2.Zu8e1e.results.tgz` (SHA256
+`8b8840ec384016c32e0636de5400648e07334f836cae92e33336c0059cf968ca`)
+isolates the current numerical failure before communication. The local shape
+is Q4_K N512/K512/E4, tokens1/top2/channels2, obtained by splitting global
+K1024. The native choice is generic SIMT v0/C4/W4/P4/S1, BF16 compute with
+F32 endpoints, policy11. This is not the previously rejected TC S4 choice.
+
+| Fresh process | Result |
+| --- | --- |
+| Raw Q4 local computation followed by PCCL | Both ranks and all three changing-input replays pass |
+| K-pack local computation | Rank0 relative error0.126439014; rank1 error0.0813996521; collective not launched |
+| Original Meta case without preceding tests/cache writer | Reproduces error0.1823166 |
+
+Among the first eight reported local outputs, only columns0 and4 are wrong;
+columns1/2/3/5/6/7 agree to F32 roundoff on both ranks. This implicates a
+four-column ownership/arithmetic seam but does not prove which seam is wrong.
+Do not change PCCL or relax the numeric threshold to address this failure.
+
+The actual llama host quantizer reproduces the uploaded raw-shard FNV hashes
+`df1668dc7ea3b843` and `a29e1d9b60fed398`, input hash`34b4409416754541`,
+and replay0 golden hashes`3b28bc5ab3c46aac` and `0947ec09749102d0`.
+Host execution of the production word/metadata packer, decoded independently,
+recovers all2,097,152 local weight values bit-exactly. Fixture activations are
+exactly representable in both F16 and BF16; the earlier activation-overflow
+failure does not explain this sample.
+
+An isolated CUDA12.8/sm_120 replay on RTX5070 includes the unchanged production
+SIMT header and GPU packer through the development CUDA adapter. It checks both
+rank shards, three changing inputs, host versus GPU packing, and F16 versus
+BF16 compute: all24 output checks pass, as do all12 low/unit byte comparisons.
+Maximum absolute dot error is8.94069672e-8; maximum relative L2 error is
+1.00766429e-7. The four core SIMT/helper source hashes match the uploaded PPU
+execution receipt. No tactic, canonical layout or production library changes.
+
+CUDA evidence is retained at `/tmp/q4-tp2-local.nUBON1/cuda-results.tgz`,
+SHA256`c0191a3ae1872dd2e7c14382d3424fcdcf64493432781b8039fb633b9796b23a`.
+The remote source/fixtures/logs are in `/home/qianxu/q4-tp2-input-nUBON1`.
+This is a source-level cross-platform control, not the PPU binary or llama
+integration. It does not prove a compiler defect or certify PPU correctness.
+The next PPU boundary is actual packed bytes versus host packing, then the
+same standalone SIMT row versus caller execution and its intermediate values.
+Keep TP2 numerical/model admission pending.
+
+### One-device PPU replay
+
+Use `tools/run_kpack_tp2_simt_box.sh` next. It needs only the selected SDK,
+one visible PPU and the existing small execution/pack package. No llama, NCP,
+six-library compatibility bundle, model, JIT, collective or performance sweep
+is involved. Both frozen rank shards run on the same device in fresh processes.
+The synthetic 1.2 MiB fixture is versioned in ordinary git, not a new library
+or an LFS bundle; see [fixture construction](../dev/gemv_simt/tp2_q4_fixture.md).
+
+```bash
+PREVIOUS_RUN=/path/to/kpack-tp2.Zu8e1e \
+PPU_SDK=/path/to/PPU_SDK CUDA_VISIBLE_DEVICES=0 JOBS=192 \
+RESULT_ROOT=/path/to/results \
+bash tools/run_kpack_tp2_simt_box.sh
+```
+
+Alternatively set `KPACK_BUNDLE` to the small runtime directory that contains
+`manifest.json`, `libquactlize_ppu_execution.so` and `pack/`. The tool verifies
+both delivered libraries and the unchanged six SIMT/helper sources against
+that manifest, uses the same compiler flags, and records SDK binary differences.
+
+Only four translation units are compiled, with up to four simultaneous jobs;
+requesting 192 jobs does not create unnecessary work. The shipped caller is
+host-only and loads the original libraries. The fresh caller contains the
+unchanged production SIMT specialization, the real GPU packer and a scalar
+canonical-reader control. These images never coexist in one process.
+
+There are 12 processes, 72 positive output cells and 12 wrong-expert negatives:
+two ranks x three inputs x two callers, with host/GPU packed planes and
+F16/BF16 compute in each; only the fresh caller also tests the scalar control.
+Each process verifies packed bytes and prelaunch hashes. A failed process is
+retained and the remaining processes continue. Incorrect outputs are dumped
+with first-error coordinates and a column-mod16 histogram. No timing is valid
+in this diagnostic.
+
+Upload the printed `q4-tp2-simt.*.results.tgz`. The final verdict distinguishes
+GPU packing, scalar canonical compute, fresh SIMT and shipped-only failures;
+`STANDALONE_NOT_REPRODUCED` means caller/environment investigation is still
+needed, not that the original failure is fixed. A complete numeric failure
+can have runner_rc=0; missing coverage returns nonzero. TP2 admission remains
+pending until the actual repair and full two-device gate pass.
+
+Local checks: all four PPU/host objects compile with SDK2.1.1; the host-only
+caller contains no device image. Final executable linkage on the local
+glibc2.35 host is unsupported by this SDK's glibc2.38/libstdc++ requirements;
+the box runner links normally on Ubuntu24.04, without suppressing unresolved
+symbols. Do not interpret object compilation as a passed PPU execution gate.
+Nine host regressions pass, including missing/duplicate/nonfinite record
+rejection and continuation after an individual process failure. The exact
+fresh diagnostic body was also compiled and run on RTX5070: all48 output
+cells pass, all12 pack comparisons are byte-exact, and all6 wrong-expert
+negatives turn red. The largest scalar-control absolute error is1.78813934e-7.
+These additional controls are retained at
+`/home/qianxu/q4-tp2-replay-control.XVE1xB/results`; they still do not run the
+shipped PPU image or establish a PPU root cause.
+
 ## Remaining device admission
 
 - Run the six-format two-device cold/hot gate and 122B numerical, timing and

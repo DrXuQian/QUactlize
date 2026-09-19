@@ -67,6 +67,16 @@ Meta case alone. It updates only the scheduler test and diagnostic tooling;
 production kernels, selection and tolerance remain unchanged. See
 [frozen row and diagnostic scope](KPACK_TP2.md#q4-grouped-numerical-follow-up-2026-09-19).
 
+The `Zu8e1e` result localizes that numerical failure before PCCL: raw Q4 passes,
+while native K-pack local outputs fail on both ranks. The identical fixture and
+SIMT source pass all24 F16/BF16 host/GPU-pack checks on RTX5070; this does not
+admit PPU or prove a compiler defect. Next run
+`tools/run_kpack_tp2_simt_box.sh`: a single PPU compares the shipped library,
+an unchanged freshly compiled SIMT row, and a scalar canonical-reader control,
+checking packed bytes separately. It builds four small objects, not llama or
+the runtime bundle. See [command and coverage](KPACK_TP2.md#one-device-ppu-replay).
+Caller source, production kernel selection and all public ABIs are unchanged.
+
 The first cold device gate exposed a fixture bug: GGUF kept the copied Meta
 buffer and tried to read its shards instead of the supplied raw host bytes.
 The exact scheduler helper reproduces exit 139 using only CPU-backed Meta
