@@ -1,0 +1,1589 @@
+{
+  "schema": "quactlize.decode-winners.v1",
+  "archives": {
+    "tp2": "5944aa7547e4dd5c9b87dae0f906102d7df5d4e39f42d7007c25731408fee075",
+    "fallback": "6a1b416f7ec91683b15ac886b0d364bcc275a5aa19ca5db8ce5d70ef46ade4c6"
+  },
+  "rows": [
+    {
+      "point": {
+        "name": "tp2-q8-qkv",
+        "q": 8,
+        "n": 6144,
+        "k": 3072,
+        "compute": 0,
+        "mode": 0,
+        "channels": 1,
+        "paired": false,
+        "tc": [
+          16,
+          64,
+          16,
+          64,
+          8
+        ]
+      },
+      "key": [
+        8,
+        0,
+        6144,
+        3072,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "config": {
+        "kind": "simt",
+        "variant": 5,
+        "columns": 8,
+        "warps": 4,
+        "values": 4,
+        "split": 8
+      },
+      "implementation": "constant-split",
+      "body": {
+        "name": "s8-vector",
+        "columns": 8,
+        "warps": 4,
+        "values": 4,
+        "split": 8,
+        "variant": 5,
+        "changes": 0,
+        "hoist": false,
+        "fixed": false,
+        "direct_meta": false,
+        "vector_reduce": true
+      },
+      "scope": "GEMV_WITH_REDUCER",
+      "automatic": true,
+      "source": "fallback",
+      "arm": "8",
+      "measurements": {
+        "reference": {
+          "median_us": 16.08312502503395,
+          "round_medians_us": [
+            16.094999387860298,
+            16.08249917626381,
+            16.07999950647354,
+            16.117500141263008,
+            16.083750873804092,
+            16.07625000178814
+          ],
+          "samples_sha256": "2371ca99016e26d1f76a0d1521bb135db046ed5232f1612ef5038d3b804da421"
+        },
+        "fallback": {
+          "median_us": 19.861250184476376,
+          "round_medians_us": [
+            19.88375000655651,
+            19.782500341534615,
+            19.863750785589218,
+            19.858749583363533,
+            19.916249439120293,
+            19.8574997484684
+          ],
+          "samples_sha256": "440c70c7aecb42ba45be2e093a2d4666f82023c319c7fae6586a2838df19b040"
+        }
+      },
+      "result_sha256": "43253049d44eaaba036e821452bf3ccc0f6518fa7814fab4fa47ca22314b319f"
+    },
+    {
+      "point": {
+        "name": "tp2-q8-attn-gate",
+        "q": 8,
+        "n": 4096,
+        "k": 3072,
+        "compute": 0,
+        "mode": 0,
+        "channels": 1,
+        "paired": false,
+        "tc": [
+          16,
+          64,
+          16,
+          64,
+          8
+        ]
+      },
+      "key": [
+        8,
+        0,
+        4096,
+        3072,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "config": {
+        "kind": "simt",
+        "variant": 5,
+        "columns": 8,
+        "warps": 4,
+        "values": 4,
+        "split": 8
+      },
+      "implementation": "constant-split",
+      "body": {
+        "name": "s8-vector",
+        "columns": 8,
+        "warps": 4,
+        "values": 4,
+        "split": 8,
+        "variant": 5,
+        "changes": 0,
+        "hoist": false,
+        "fixed": false,
+        "direct_meta": false,
+        "vector_reduce": true
+      },
+      "scope": "GEMV_WITH_REDUCER",
+      "automatic": true,
+      "source": "fallback",
+      "arm": "8",
+      "measurements": {
+        "reference": {
+          "median_us": 12.192777875396942,
+          "round_medians_us": [
+            12.208888928095499,
+            12.19444473584493,
+            12.20555520719952,
+            12.191111014948952,
+            12.176666822698381,
+            12.185555365350512
+          ],
+          "samples_sha256": "acfbf74022a9f5607b04f1cefa1e85ca95d5de1717cb41bf309cdbabcf7dc526"
+        },
+        "fallback": {
+          "median_us": 14.084445105658638,
+          "round_medians_us": [
+            14.083334141307407,
+            14.077777663866678,
+            14.085556070009867,
+            14.086667034361097,
+            14.087777998712328,
+            14.047778315014309
+          ],
+          "samples_sha256": "72bea163a1d2162c03ed2669fa4971bd0e83b7501d221991fb5cf20b3078a0c8"
+        }
+      },
+      "result_sha256": "7d44b2dd33eb4924f3a8adc0ad02f0166844d18ea4955ef1f947faa60d6c72b5"
+    },
+    {
+      "point": {
+        "name": "tp2-q8-attn-q",
+        "q": 8,
+        "n": 8192,
+        "k": 3072,
+        "compute": 0,
+        "mode": 0,
+        "channels": 1,
+        "paired": false,
+        "tc": [
+          8,
+          64,
+          16,
+          32,
+          8
+        ]
+      },
+      "key": [
+        8,
+        0,
+        8192,
+        3072,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "config": {
+        "kind": "simt",
+        "variant": 5,
+        "columns": 8,
+        "warps": 4,
+        "values": 4,
+        "split": 1
+      },
+      "implementation": "constant-split",
+      "body": {
+        "name": "hoist",
+        "columns": 8,
+        "warps": 4,
+        "values": 4,
+        "split": 1,
+        "variant": 5,
+        "changes": 0,
+        "hoist": true,
+        "fixed": false,
+        "direct_meta": false,
+        "vector_reduce": false
+      },
+      "scope": "GEMV_WITH_REDUCER",
+      "automatic": true,
+      "source": "fallback",
+      "arm": "2",
+      "measurements": {
+        "reference": {
+          "median_us": 19.317777620421516,
+          "round_medians_us": [
+            19.304444392522175,
+            19.316666656070286,
+            19.324445062213474,
+            19.318888584772747,
+            19.314444727367825,
+            19.325556026564705
+          ],
+          "samples_sha256": "4cf8ddcb7a8d7176f1977d7c54612e59d9eaa0d57cdcf2606b8f36188b2ea14c"
+        },
+        "fallback": {
+          "median_us": 19.448333316379124,
+          "round_medians_us": [
+            19.45333348380195,
+            19.42666702800327,
+            19.4433331489563,
+            19.503333502345615,
+            19.43555474281311,
+            19.45333348380195
+          ],
+          "samples_sha256": "766315a57d9c862d414ca1936afd3209f758b534a0a2bf47fa2fad60e7844df4"
+        }
+      },
+      "result_sha256": "bd874905855ccf15232dd94b3f8eaefab10380261685ff9fc245b7470d8b47d5"
+    },
+    {
+      "point": {
+        "name": "tp2-q8-out",
+        "q": 8,
+        "n": 3072,
+        "k": 4096,
+        "compute": 0,
+        "mode": 0,
+        "channels": 1,
+        "paired": false,
+        "tc": []
+      },
+      "key": [
+        8,
+        0,
+        3072,
+        4096,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "config": {
+        "kind": "simt",
+        "variant": 5,
+        "columns": 8,
+        "warps": 4,
+        "values": 4,
+        "split": 8
+      },
+      "implementation": "constant-split",
+      "body": {
+        "name": "s8-vector",
+        "columns": 8,
+        "warps": 4,
+        "values": 4,
+        "split": 8,
+        "variant": 5,
+        "changes": 0,
+        "hoist": false,
+        "fixed": false,
+        "direct_meta": false,
+        "vector_reduce": true
+      },
+      "scope": "GEMV_WITH_REDUCER",
+      "automatic": true,
+      "source": "fallback",
+      "arm": "8",
+      "measurements": {
+        "reference": {
+          "median_us": 12.225555462969673,
+          "round_medians_us": [
+            12.22333312034607,
+            12.22333312034607,
+            12.229999734295738,
+            12.213333613342709,
+            12.227777805593279,
+            12.229999734295738
+          ],
+          "samples_sha256": "0c28fa9d40b5e09b49ed559b7e7c12e5969ab39181be00c5f246638f6ae98c5c"
+        },
+        "fallback": {
+          "median_us": 12.488333301411735,
+          "round_medians_us": [
+            12.483333547910055,
+            12.498888704511854,
+            12.498888704511854,
+            12.488889197508493,
+            12.487777405314976,
+            12.485555476612515
+          ],
+          "samples_sha256": "939173870c5e70bae469b186522ca23b40730d6ce54973525228831841b036dc"
+        }
+      },
+      "result_sha256": "821bc699dcfa935b6bbd2f6727e9a66ccc3a49e8dc170a7c65779b1f2b843298"
+    },
+    {
+      "point": {
+        "name": "tp2-q8-shared-projection",
+        "q": 8,
+        "n": 1024,
+        "k": 3072,
+        "compute": 0,
+        "mode": 0,
+        "channels": 1,
+        "paired": false,
+        "tc": []
+      },
+      "key": [
+        8,
+        0,
+        1024,
+        3072,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "config": {
+        "kind": "simt",
+        "variant": 5,
+        "columns": 4,
+        "warps": 8,
+        "values": 4,
+        "split": 1
+      },
+      "implementation": "constant-split",
+      "body": {
+        "name": "c4-hoist",
+        "columns": 4,
+        "warps": 8,
+        "values": 4,
+        "split": 1,
+        "variant": 5,
+        "changes": 0,
+        "hoist": true,
+        "fixed": false,
+        "direct_meta": false,
+        "vector_reduce": false
+      },
+      "scope": "GEMV_WITH_REDUCER",
+      "automatic": true,
+      "source": "fallback",
+      "arm": "4",
+      "measurements": {
+        "reference": {
+          "median_us": 6.787826185641082,
+          "round_medians_us": [
+            6.791304634964985,
+            6.793043535688649,
+            6.797391435374385,
+            6.778260935907778,
+            6.784347736317178,
+            6.7730435858602105
+          ],
+          "samples_sha256": "a978d73824aed279b4ade9faa7e4771c6adfbfc1fd1f9c10e432077ada11cfa8"
+        },
+        "fallback": {
+          "median_us": 7.129565205263055,
+          "round_medians_us": [
+            7.135652329610742,
+            7.127825980601103,
+            7.133912781010503,
+            7.1130433808202325,
+            7.131304429925007,
+            7.104347581448763
+          ],
+          "samples_sha256": "96be56a78da4bedaeee0580c157d168ecca71acdc405db5e63682ced01947663"
+        }
+      },
+      "result_sha256": "30f7a4cd6c10e102b0d753bdc0bb11e15cb8c18d4cdbefef7c8667bfde30da33"
+    },
+    {
+      "point": {
+        "name": "tp2-q8-shared-down",
+        "q": 8,
+        "n": 3072,
+        "k": 1024,
+        "compute": 0,
+        "mode": 0,
+        "channels": 1,
+        "paired": false,
+        "tc": []
+      },
+      "key": [
+        8,
+        0,
+        3072,
+        1024,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "config": {
+        "kind": "simt",
+        "variant": 5,
+        "columns": 8,
+        "warps": 4,
+        "values": 4,
+        "split": 1
+      },
+      "implementation": "constant-split",
+      "body": {
+        "name": "hoist",
+        "columns": 8,
+        "warps": 4,
+        "values": 4,
+        "split": 1,
+        "variant": 5,
+        "changes": 0,
+        "hoist": true,
+        "fixed": false,
+        "direct_meta": false,
+        "vector_reduce": false
+      },
+      "scope": "GEMV_WITH_REDUCER",
+      "automatic": true,
+      "source": "fallback",
+      "arm": "2",
+      "measurements": {
+        "reference": {
+          "median_us": 6.213478096153425,
+          "round_medians_us": [
+            6.237391544424969,
+            6.230434645777163,
+            6.206956246624822,
+            6.205217345901158,
+            6.202608994815661,
+            6.219999945682028
+          ],
+          "samples_sha256": "29412243326ff32cce6954c5245db4afb7decb17f124d48374edd7df916a4dc5"
+        },
+        "fallback": {
+          "median_us": 6.472608641437862,
+          "round_medians_us": [
+            6.46869579087133,
+            6.471304141956827,
+            6.47217359231866,
+            6.481738842051962,
+            6.473043690557065,
+            6.480869391690129
+          ],
+          "samples_sha256": "64c2ff3dbe738374b5d727c9fd4ce9dbb83283b453be9c5c38cb5b43130e2a70"
+        }
+      },
+      "result_sha256": "9c5509cec6294be4bbc5b22ff99246c8cb8437fc2d2d383566165dcd9097467b"
+    },
+    {
+      "point": {
+        "name": "tp2-q8-attn-kv",
+        "q": 8,
+        "n": 256,
+        "k": 3072,
+        "compute": 0,
+        "mode": 0,
+        "channels": 1,
+        "paired": false,
+        "tc": []
+      },
+      "key": [
+        8,
+        0,
+        256,
+        3072,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "config": {
+        "kind": "simt",
+        "variant": 5,
+        "columns": 4,
+        "warps": 8,
+        "values": 4,
+        "split": 1
+      },
+      "implementation": "constant-split",
+      "body": {
+        "name": "c4-hoist",
+        "columns": 4,
+        "warps": 8,
+        "values": 4,
+        "split": 1,
+        "variant": 5,
+        "changes": 0,
+        "hoist": true,
+        "fixed": false,
+        "direct_meta": false,
+        "vector_reduce": false
+      },
+      "scope": "GEMV_WITH_REDUCER",
+      "automatic": true,
+      "source": "fallback",
+      "arm": "4",
+      "measurements": {
+        "reference": {
+          "median_us": 5.152044210644717,
+          "round_medians_us": [
+            5.147845376262349,
+            5.1454144288163155,
+            5.151823080705674,
+            5.152265340583759,
+            5.157790131331807,
+            5.15845302718779
+          ],
+          "samples_sha256": "3bf730fe82702cf6cb182549cf22b6f4a74b43684b10c0e1e875ea634149763c"
+        },
+        "fallback": {
+          "median_us": 5.479005654213837,
+          "round_medians_us": [
+            5.470276208213679,
+            5.469834277643025,
+            5.478895171571173,
+            5.479558067427155,
+            5.479116136856501,
+            5.4819890148731885
+          ],
+          "samples_sha256": "0ccd0cb1a9b31fb29a9e132cb872fa621075af2227c41ca47ffca2450ef82a4a"
+        }
+      },
+      "result_sha256": "8f36f570167278bc3b6f08588871d8f2c85458859025eeb99ee7b2021e5bcd48"
+    },
+    {
+      "point": {
+        "name": "tp2-q6-head",
+        "q": 14,
+        "n": 124160,
+        "k": 3072,
+        "compute": 0,
+        "mode": 0,
+        "channels": 1,
+        "paired": false,
+        "tc": [
+          16,
+          128,
+          16,
+          64,
+          1
+        ]
+      },
+      "key": [
+        14,
+        0,
+        124160,
+        3072,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "config": {
+        "symbol": "closure_q14_0_tm16_tn64_tk128_wn16_dn64",
+        "qtype": 14,
+        "route": 0,
+        "tm": 16,
+        "tn": 64,
+        "tk": 128,
+        "wm": 16,
+        "wn": 16,
+        "stages": 2,
+        "ap": 0,
+        "dn": 64,
+        "split": 1,
+        "kind": "tc",
+        "parent_persistent": -1,
+        "grid_mode": 0,
+        "grid_b": 0
+      },
+      "implementation": "existing",
+      "body": {
+        "symbol": "closure_q14_0_tm16_tn64_tk128_wn16_dn64",
+        "qtype": 14,
+        "route": "fq-dense",
+        "tm": 16,
+        "tn": 64,
+        "tk": 128,
+        "wm": 16,
+        "wn": 16,
+        "stages": 2,
+        "ap": 0,
+        "dn": 64,
+        "persistent": -1,
+        "split": 1
+      },
+      "scope": "GEMV_WITH_REDUCER",
+      "automatic": true,
+      "source": "tp2",
+      "arm": "incumbent",
+      "measurements": {
+        "incumbent": {
+          "median_us": 328.4618705511093,
+          "round_medians_us": [
+            328.4437358379364,
+            328.37626338005066,
+            328.4800052642822,
+            353.6275029182434,
+            328.157514333725,
+            353.07249426841736
+          ],
+          "samples_sha256": "0a5f94ff94b8f55afb46561d059bc8a5e961262882facff910a8f37d9114b547"
+        },
+        "3": {
+          "median_us": 369.36187744140625,
+          "round_medians_us": [
+            365.9625053405762,
+            366.15124344825745,
+            366.50124192237854,
+            372.22251296043396,
+            398.1887400150299,
+            377.0337402820587
+          ],
+          "samples_sha256": "4207382c0dffda59eaaa8e1954cc9681009a6c40bf45df26ee289eec9e73330a"
+        },
+        "2": {
+          "median_us": 387.7662569284439,
+          "round_medians_us": [
+            387.7987563610077,
+            387.7337574958801,
+            387.3549997806549,
+            386.78625226020813,
+            409.8312556743622,
+            399.7749984264374
+          ],
+          "samples_sha256": "a4489170ee251033e94ae2f9046ae3df35c1b9d011f24a106ee44174fdbc18ac"
+        }
+      },
+      "result_sha256": "4eaef2ef749c314e6888a686a605e3ddf6d61288c67c39e8708ecaacd6d1c288"
+    },
+    {
+      "point": {
+        "name": "tp2-q4-gate-up",
+        "q": 12,
+        "n": 1024,
+        "k": 3072,
+        "compute": 1,
+        "mode": 2,
+        "channels": 1,
+        "paired": false,
+        "tc": []
+      },
+      "key": [
+        12,
+        2,
+        1024,
+        3072,
+        256,
+        8,
+        1,
+        1,
+        1
+      ],
+      "config": {
+        "kind": "simt",
+        "variant": 3,
+        "columns": 4,
+        "warps": 4,
+        "values": 4,
+        "split": 1
+      },
+      "implementation": "constant-split",
+      "body": {
+        "name": "unsigned-fold-fixed",
+        "columns": 4,
+        "warps": 4,
+        "values": 4,
+        "split": 1,
+        "variant": 3,
+        "changes": 3,
+        "hoist": false,
+        "fixed": true,
+        "direct_meta": false,
+        "vector_reduce": false
+      },
+      "scope": "GEMV_WITH_REDUCER",
+      "automatic": true,
+      "source": "tp2",
+      "arm": "2",
+      "measurements": {
+        "incumbent": {
+          "median_us": 22.072727029973812,
+          "round_medians_us": [
+            22.08727236950036,
+            22.05818169044726,
+            22.077574874415543,
+            22.075150952194676,
+            22.070303107752945,
+            22.067879185532078
+          ],
+          "samples_sha256": "f2a5dcb944430b5aa00ccaa820e14527c870b123f6d13e1d326075239c81fe73"
+        },
+        "2": {
+          "median_us": 17.272121075427894,
+          "round_medians_us": [
+            17.273939017093543,
+            17.271515094872676,
+            17.27272705598311,
+            17.25939367756699,
+            17.29575792948405,
+            17.267879211541377
+          ],
+          "samples_sha256": "b2f84749124f31742e6f693e76c22491bd4bc805eb0e992f36d38ecc4b083dd2"
+        },
+        "1": {
+          "median_us": 22.73696931925687,
+          "round_medians_us": [
+            22.724848805051863,
+            22.722424882830996,
+            22.730908610604025,
+            22.74303002790971,
+            22.74666591124101,
+            22.745453950130578
+          ],
+          "samples_sha256": "462fd9a264877f110bd225d87890a6fd0d49a0d7e6bee27dbab5905928007de4"
+        }
+      },
+      "result_sha256": "628870eeb3ca6f19ce33eb7af46f0179735cc26db71438168fda5ce29b71e58b"
+    },
+    {
+      "point": {
+        "name": "tp2-q5-down",
+        "q": 13,
+        "n": 3072,
+        "k": 512,
+        "compute": 1,
+        "mode": 2,
+        "channels": 8,
+        "paired": false,
+        "tc": []
+      },
+      "key": [
+        13,
+        2,
+        3072,
+        512,
+        256,
+        8,
+        8,
+        1,
+        1
+      ],
+      "config": {
+        "kind": "simt",
+        "variant": 3,
+        "columns": 4,
+        "warps": 2,
+        "values": 8,
+        "split": 1
+      },
+      "implementation": "constant-split",
+      "body": {
+        "name": "unsigned-fold",
+        "columns": 4,
+        "warps": 2,
+        "values": 8,
+        "split": 1,
+        "variant": 3,
+        "changes": 3,
+        "hoist": false,
+        "fixed": false,
+        "direct_meta": false,
+        "vector_reduce": false
+      },
+      "scope": "GEMV_WITH_REDUCER",
+      "automatic": true,
+      "source": "fallback",
+      "arm": "1",
+      "measurements": {
+        "reference": {
+          "median_us": 14.11166704363293,
+          "round_medians_us": [
+            14.141110910309685,
+            14.106666048367819,
+            14.112222525808546,
+            14.098889297909206,
+            14.111111561457315,
+            14.112222525808546
+          ],
+          "samples_sha256": "4a7b212eef85795b3301af1ef81d535ed7d39b90741f4808c2784e66f253be53"
+        },
+        "fallback": {
+          "median_us": 14.244999322626326,
+          "round_medians_us": [
+            14.24444384045071,
+            14.245554804801941,
+            14.24333287609948,
+            14.25444417529636,
+            14.25555513964759,
+            14.23555612564087
+          ],
+          "samples_sha256": "24c51106189a7c27a80736f7f479bb7c9e08b6cceb6e287d977ff06d0402820c"
+        }
+      },
+      "result_sha256": "c9a20f37c5f9fdb93a2f5fc00e2a36babc98ac4a59a3d7faf01a55f4981b5a4a"
+    },
+    {
+      "point": {
+        "name": "tp2-q8-paired-shared",
+        "q": 8,
+        "n": 1024,
+        "k": 3072,
+        "compute": 0,
+        "mode": 0,
+        "channels": 1,
+        "paired": true,
+        "tc": []
+      },
+      "key": [
+        8,
+        0,
+        1024,
+        3072,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "config": {
+        "kind": "simt",
+        "variant": 5,
+        "columns": 4,
+        "warps": 8,
+        "values": 4,
+        "split": 1
+      },
+      "implementation": "constant-split",
+      "body": {
+        "name": "tile16",
+        "columns": 4,
+        "warps": 8,
+        "values": 4,
+        "split": 1,
+        "variant": 5,
+        "changes": 0,
+        "hoist": true,
+        "fixed": false,
+        "direct_meta": false,
+        "vector_reduce": false
+      },
+      "scope": "GATE_UP_SWIGLU",
+      "automatic": true,
+      "source": "tp2",
+      "arm": "2",
+      "measurements": {
+        "incumbent": {
+          "median_us": 11.705651879310608,
+          "round_medians_us": [
+            11.71652130458666,
+            11.706086604491524,
+            11.689565751863563,
+            11.705217154129691,
+            11.71652130458666,
+            11.700000451958697
+          ],
+          "samples_sha256": "32a8f95abd5124f22b718a31f7bcb9ac4874598fa9086427049f9f1ea8f14b45"
+        },
+        "2": {
+          "median_us": 8.635652130064758,
+          "round_medians_us": [
+            8.631304554317309,
+            8.630435103955476,
+            8.636521904364876,
+            8.634782355764639,
+            8.639999705812205,
+            8.641739254412444
+          ],
+          "samples_sha256": "59873aa0b94d70816e314f88a1dfde415c193e930baf32afb28b911f6efa7a0a"
+        },
+        "3": {
+          "median_us": 9.259565368942592,
+          "round_medians_us": [
+            9.271304244580476,
+            9.253913293714108,
+            9.26695634489474,
+            9.258261193399845,
+            9.260869544485342,
+            9.254782744075941
+          ],
+          "samples_sha256": "02205bf7f281f6d4aef0cf1f6971b824077a1e42138bd7d55cee23147f9c2716"
+        }
+      },
+      "result_sha256": "72c1a773d36c47c4313c038342be1b69a5ffcb65ed08fb1917cf6e267205e8a9"
+    },
+    {
+      "point": {
+        "name": "tp2-q4-paired-routed",
+        "q": 12,
+        "n": 512,
+        "k": 3072,
+        "compute": 1,
+        "mode": 2,
+        "channels": 1,
+        "paired": true,
+        "tc": []
+      },
+      "key": [
+        12,
+        2,
+        512,
+        3072,
+        256,
+        8,
+        1,
+        1,
+        1
+      ],
+      "config": {
+        "kind": "simt",
+        "variant": 3,
+        "columns": 4,
+        "warps": 8,
+        "values": 8,
+        "split": 1
+      },
+      "implementation": "constant-split",
+      "body": {
+        "name": "fixed",
+        "columns": 4,
+        "warps": 8,
+        "values": 8,
+        "split": 1,
+        "variant": 3,
+        "changes": 0,
+        "hoist": false,
+        "fixed": true,
+        "direct_meta": false,
+        "vector_reduce": false
+      },
+      "scope": "GATE_UP_SWIGLU",
+      "automatic": false,
+      "source": "tp2",
+      "arm": "1",
+      "measurements": {
+        "incumbent": {
+          "median_us": 23.163636525472008,
+          "round_medians_us": [
+            23.181817748329856,
+            23.14302957419193,
+            23.173334020556826,
+            23.16121260325114,
+            23.162424564361572,
+            23.16484848658244
+          ],
+          "samples_sha256": "7a4ee50fddd5ba0c6a264e6e4e65cf0a2d3bea0fd7bdf331e0b4f241e3b9552f"
+        },
+        "1": {
+          "median_us": 22.78606006593415,
+          "round_medians_us": [
+            22.81090888110074,
+            22.77818231871634,
+            22.78666604648937,
+            22.774544629183683,
+            22.796363541574188,
+            22.785454085378937
+          ],
+          "samples_sha256": "205d621dbea41b927d03130f1498d762add742d5812ca3464c7dfb24c3df1128"
+        },
+        "4": {
+          "median_us": 23.403030453306258,
+          "round_medians_us": [
+            23.39878768631906,
+            23.409697142514315,
+            23.404849298072584,
+            23.364849162824225,
+            23.401211608539928,
+            23.424242482040867
+          ],
+          "samples_sha256": "7055efd5bd8ac856db34ba64abd70b85803048b2bd6f04d961cc1a5acee4499c"
+        }
+      },
+      "result_sha256": "afdc76ba1193103857cb79fb2770b1c47e9d66e1bdedbae999b1dae7dece2063"
+    },
+    {
+      "point": {
+        "name": "q4-paired-routed",
+        "q": 12,
+        "n": 512,
+        "k": 2048,
+        "compute": 1,
+        "mode": 2,
+        "channels": 1,
+        "paired": true,
+        "tc": []
+      },
+      "key": [
+        12,
+        2,
+        512,
+        2048,
+        256,
+        8,
+        1,
+        1,
+        1
+      ],
+      "config": {
+        "kind": "simt",
+        "variant": 3,
+        "columns": 4,
+        "warps": 8,
+        "values": 8,
+        "split": 1
+      },
+      "implementation": "existing",
+      "body": {
+        "name": "clone",
+        "columns": 4,
+        "warps": 8,
+        "values": 8,
+        "split": 1,
+        "variant": 3,
+        "changes": 1,
+        "hoist": false,
+        "fixed": true,
+        "direct_meta": false,
+        "vector_reduce": false
+      },
+      "scope": "GATE_UP_SWIGLU",
+      "automatic": true,
+      "source": "tp2",
+      "arm": "incumbent",
+      "measurements": {
+        "incumbent": {
+          "median_us": 13.601874932646751,
+          "round_medians_us": [
+            13.606250286102295,
+            13.598750345408916,
+            13.603749684989452,
+            13.61124962568283,
+            13.60000018030405,
+            13.60000018030405
+          ],
+          "samples_sha256": "4260b10d5f6c0970d72f1d5c2cdebf72bb882c863b9eaa334dd6f1e1c01d5106"
+        },
+        "1": {
+          "median_us": 13.624999672174454,
+          "round_medians_us": [
+            13.627500273287296,
+            13.632499612867832,
+            13.624999672174454,
+            13.624999672174454,
+            13.621250167489052,
+            13.61874956637621
+          ],
+          "samples_sha256": "21ea7e418c5b5e5bdaee2d7b2cad605efc47fb11dff31567b9056c738dd188ee"
+        },
+        "4": {
+          "median_us": 17.041250132024288,
+          "round_medians_us": [
+            17.05249957740307,
+            17.03999936580658,
+            17.042500898241997,
+            17.031250521540642,
+            17.03999936580658,
+            17.042500898241997
+          ],
+          "samples_sha256": "7984c1dd85368e3bd3bfa511ed7048c3c8f91b235f093bd64d99387fcc1e854c"
+        }
+      },
+      "result_sha256": "c8d9db7823957860928fd6cbee0b20dc940eb141a4ee5077a77599436c653fbc"
+    },
+    {
+      "point": {
+        "name": "q5-routed-down",
+        "q": 13,
+        "n": 2048,
+        "k": 512,
+        "compute": 1,
+        "mode": 2,
+        "channels": 8,
+        "paired": false,
+        "tc": []
+      },
+      "key": [
+        13,
+        2,
+        2048,
+        512,
+        256,
+        8,
+        8,
+        1,
+        1
+      ],
+      "config": {
+        "kind": "simt",
+        "variant": 3,
+        "columns": 4,
+        "warps": 2,
+        "values": 8,
+        "split": 1
+      },
+      "implementation": "existing",
+      "body": {
+        "name": "clone",
+        "columns": 4,
+        "warps": 2,
+        "values": 8,
+        "split": 1,
+        "variant": 3,
+        "changes": 3,
+        "hoist": false,
+        "fixed": true,
+        "direct_meta": false,
+        "vector_reduce": false
+      },
+      "scope": "GEMV_WITH_REDUCER",
+      "automatic": true,
+      "source": "fallback",
+      "arm": "incumbent",
+      "measurements": {
+        "reference": {
+          "median_us": 9.432963199085659,
+          "round_medians_us": [
+            9.42740727353979,
+            9.43407416343689,
+            9.43111159183361,
+            9.433333520536069,
+            9.43703673504017,
+            9.43259287763525
+          ],
+          "samples_sha256": "c7afe4484ab807db16f968e98ed46527cab3d77876f63c07cf7658e47a6b1b00"
+        },
+        "fallback": {
+          "median_us": 9.43888889418708,
+          "round_medians_us": [
+            9.45259244353683,
+            9.42666663063897,
+            9.43555544923853,
+            9.439259767532349,
+            9.439259767532349,
+            9.43851802084181
+          ],
+          "samples_sha256": "8c96c57b2ec56db070aee6bf7683a0a394dec9b2b35abd3bd99088fcccd9a6ac"
+        }
+      },
+      "result_sha256": "d8c1599213a11f8f9b414944c2046fec03245a3de85ef0730eef545258801c43"
+    },
+    {
+      "point": {
+        "name": "q8-paired-shared",
+        "q": 8,
+        "n": 512,
+        "k": 2048,
+        "compute": 0,
+        "mode": 0,
+        "channels": 1,
+        "paired": true,
+        "tc": []
+      },
+      "key": [
+        8,
+        0,
+        512,
+        2048,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "config": {
+        "kind": "simt",
+        "variant": 5,
+        "columns": 4,
+        "warps": 8,
+        "values": 4,
+        "split": 1
+      },
+      "implementation": "constant-split",
+      "body": {
+        "name": "tile16",
+        "columns": 4,
+        "warps": 8,
+        "values": 4,
+        "split": 1,
+        "variant": 5,
+        "changes": 0,
+        "hoist": true,
+        "fixed": false,
+        "direct_meta": false,
+        "vector_reduce": false
+      },
+      "scope": "GATE_UP_SWIGLU",
+      "automatic": true,
+      "source": "tp2",
+      "arm": "2",
+      "measurements": {
+        "incumbent": {
+          "median_us": 5.331470685846665,
+          "round_medians_us": [
+            5.340588443419513,
+            5.334705990903518,
+            5.33117660704781,
+            5.329999853582943,
+            5.329411695985233,
+            5.33176476464552
+          ],
+          "samples_sha256": "551a7ae90ea2ab0a1d479fd79e0f55db6a52ca65b297d9adc14374b0056c120b"
+        },
+        "2": {
+          "median_us": 5.322352928273817,
+          "round_medians_us": [
+            5.321764770676108,
+            5.317647229222691,
+            5.316470475757823,
+            5.323529243469238,
+            5.323529243469238,
+            5.322941085871528
+          ],
+          "samples_sha256": "7adf89e16486cf0519fc4f17fe16776a8d93611d2dfaacdd7a79eb0e13008cca"
+        },
+        "1": {
+          "median_us": 5.588529302793391,
+          "round_medians_us": [
+            5.58176461388083,
+            5.581176456283121,
+            5.588235223994536,
+            5.59411767651053,
+            5.595293991705951,
+            5.5888233815922455
+          ],
+          "samples_sha256": "df2aae8f87b4fc7666df57c158d582f6f1810887633247f018c4631d3c6b5e3e"
+        }
+      },
+      "result_sha256": "67ddd54513974763840048034bc0ed5a21468d9b096b7265d9a1a105fb84fc29"
+    },
+    {
+      "point": {
+        "name": "q8-shared-down",
+        "q": 8,
+        "n": 2048,
+        "k": 512,
+        "compute": 0,
+        "mode": 0,
+        "channels": 1,
+        "paired": false,
+        "tc": []
+      },
+      "key": [
+        8,
+        0,
+        2048,
+        512,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "config": {
+        "kind": "simt",
+        "variant": 5,
+        "columns": 4,
+        "warps": 2,
+        "values": 4,
+        "split": 1
+      },
+      "implementation": "existing",
+      "body": {
+        "name": "production-fallback",
+        "columns": 4,
+        "warps": 2,
+        "values": 4,
+        "split": 1,
+        "variant": 5,
+        "changes": 0,
+        "hoist": true,
+        "fixed": false,
+        "direct_meta": false,
+        "vector_reduce": false
+      },
+      "scope": "GEMV_WITH_REDUCER",
+      "automatic": true,
+      "source": "fallback",
+      "arm": "production",
+      "measurements": {
+        "reference": {
+          "median_us": 3.9223528960171867,
+          "round_medians_us": [
+            3.9208825020229114,
+            3.923823728280909,
+            3.9223528960171867,
+            3.922646974816042,
+            3.922058817218332,
+            3.9223528960171867
+          ],
+          "samples_sha256": "c1dba0afe303b7c904ae3f7c488bba2f1891715200e9dc3ea488252df80fd4d7"
+        },
+        "fallback": {
+          "median_us": 3.870294155443416,
+          "round_medians_us": [
+            3.8694116999121273,
+            3.8714706897735596,
+            3.869117621113272,
+            3.8699998575098373,
+            3.87999985147925,
+            3.8705884533769943
+          ],
+          "samples_sha256": "49af8857a058d431ae2a101e93c1c3f03311966f3afac7ac1e25dec20686baa4"
+        }
+      },
+      "result_sha256": "cac1029c66277ef3386edb4e129a4618559606efb9b349842453b70d2c115ed4"
+    },
+    {
+      "point": {
+        "name": "q8-ssm-out",
+        "q": 8,
+        "n": 2048,
+        "k": 4096,
+        "compute": 0,
+        "mode": 0,
+        "channels": 1,
+        "paired": false,
+        "tc": []
+      },
+      "key": [
+        8,
+        0,
+        2048,
+        4096,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "config": {
+        "kind": "simt",
+        "variant": 5,
+        "columns": 8,
+        "warps": 4,
+        "values": 4,
+        "split": 8
+      },
+      "implementation": "existing",
+      "body": {
+        "name": "clone",
+        "columns": 8,
+        "warps": 4,
+        "values": 4,
+        "split": 8,
+        "variant": 5,
+        "changes": 0,
+        "hoist": false,
+        "fixed": true,
+        "direct_meta": false,
+        "vector_reduce": false
+      },
+      "scope": "GEMV_WITH_REDUCER",
+      "automatic": true,
+      "source": "fallback",
+      "arm": "incumbent",
+      "measurements": {
+        "reference": {
+          "median_us": 9.141176500741174,
+          "round_medians_us": [
+            9.1458821997923,
+            9.134117294760312,
+            9.144705884596881,
+            9.136470801690045,
+            9.137647116885466,
+            9.148235706722035
+          ],
+          "samples_sha256": "6340b731ae1170114a35e6cbe3b1190c1a652d02066a73161709423f8a82ee91"
+        },
+        "fallback": {
+          "median_us": 9.268235634354983,
+          "round_medians_us": [
+            9.261176866643568,
+            9.268235634354983,
+            9.272940895136665,
+            9.268235634354983,
+            9.275294402066399,
+            9.26235318183899
+          ],
+          "samples_sha256": "bacc4241b90082447e29ade1cb7b8d9c926fc3456ca793d5fd16cfd007b9c981"
+        }
+      },
+      "result_sha256": "11dede0f6471fb41d4ef1dbb93f820cd75ca3109d9602bb14ae032f5b66bd958"
+    },
+    {
+      "point": {
+        "name": "unseen-q8-n768-k2048",
+        "q": 8,
+        "n": 768,
+        "k": 2048,
+        "compute": 0,
+        "mode": 0,
+        "channels": 1,
+        "paired": false,
+        "tc": []
+      },
+      "key": [
+        8,
+        0,
+        768,
+        2048,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "config": {
+        "kind": "simt",
+        "variant": 5,
+        "columns": 4,
+        "warps": 8,
+        "values": 4,
+        "split": 1
+      },
+      "implementation": "existing",
+      "body": {
+        "name": "production-fallback",
+        "columns": 4,
+        "warps": 8,
+        "values": 4,
+        "split": 1,
+        "variant": 5,
+        "changes": 0,
+        "hoist": true,
+        "fixed": false,
+        "direct_meta": false,
+        "vector_reduce": false
+      },
+      "scope": "GEMV_WITH_REDUCER",
+      "automatic": true,
+      "source": "fallback",
+      "arm": "production",
+      "measurements": {
+        "reference": {
+          "median_us": 6.547252555469891,
+          "round_medians_us": [
+            6.543296379047436,
+            6.551648234273051,
+            6.547692057850597,
+            6.544176038804945,
+            6.546813053089184,
+            6.549011219988812
+          ],
+          "samples_sha256": "56656b619134441b9334d89eab3c22375e47fdeadc627472c2db27c42d91f84f"
+        },
+        "fallback": {
+          "median_us": 4.9173625615926895,
+          "round_medians_us": [
+            4.914725219810402,
+            4.916483556831276,
+            4.9178020639733955,
+            4.916923059211983,
+            4.919120898613563,
+            4.9178020639733955
+          ],
+          "samples_sha256": "033a5143b681d005c4c4de29491054556acdef3a284d12de4e8ff4a6671bc671"
+        }
+      },
+      "result_sha256": "5127e8b243643348180aa89b363c0a7d1e07cf4f9d464d56ea971eec96fd00d1"
+    },
+    {
+      "point": {
+        "name": "unseen-q8-n1536-k3072",
+        "q": 8,
+        "n": 1536,
+        "k": 3072,
+        "compute": 0,
+        "mode": 0,
+        "channels": 1,
+        "paired": false,
+        "tc": []
+      },
+      "key": [
+        8,
+        0,
+        1536,
+        3072,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "config": {
+        "kind": "simt",
+        "variant": 5,
+        "columns": 4,
+        "warps": 8,
+        "values": 4,
+        "split": 1
+      },
+      "implementation": "existing",
+      "body": {
+        "name": "production-fallback",
+        "columns": 4,
+        "warps": 8,
+        "values": 4,
+        "split": 1,
+        "variant": 5,
+        "changes": 0,
+        "hoist": true,
+        "fixed": false,
+        "direct_meta": false,
+        "vector_reduce": false
+      },
+      "scope": "GEMV_WITH_REDUCER",
+      "automatic": true,
+      "source": "fallback",
+      "arm": "production",
+      "measurements": {
+        "reference": {
+          "median_us": 10.88064524435228,
+          "round_medians_us": [
+            10.87161321793833,
+            10.865161495824013,
+            10.881935396502096,
+            10.879355092202463,
+            10.898064221105267,
+            10.89161249899095
+          ],
+          "samples_sha256": "9bfec41873f7d9c7933114ecf486ba84cc911a9a1d7f48c9836d35f84f88e647"
+        },
+        "fallback": {
+          "median_us": 8.811613244395103,
+          "round_medians_us": [
+            8.811613244395103,
+            8.811613244395103,
+            8.807741826580417,
+            8.816773852994364,
+            8.799354876241376,
+            8.814193548694734
+          ],
+          "samples_sha256": "70c67a35c1178126566ee24886c15280ec5946da1eff0259264df24143f1f6f1"
+        }
+      },
+      "result_sha256": "c9aa3bad874bd3c3a170bbb8d9cb5801160a07f065e3ec015dde91af983cb6f1"
+    }
+  ],
+  "timing": "ROTATING_M1_COMPLETE_CALL",
+  "numerical": "TOKENS_1_TO_8",
+  "admission": "COMPONENT_CONFIRMED_PRODUCTION_INTEGRATION_PENDING",
+  "idle_audit": "NO_INDEPENDENT_AUDIT",
+  "device": "PPU-ZW810",
+  "policy_tokens": [
+    1
+  ],
+  "evidence_sha256": "1c6eb20c51c1c09a7d60b2e48fa05eea6edc97e2b6f0f37a0959ac6f2882438c"
+}
