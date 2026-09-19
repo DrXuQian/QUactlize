@@ -1,0 +1,16 @@
+{
+  "schema": "quactlize.tp2-fastpaths-handoff.v1",
+  "source_commit": "9e0b64ddd1700413064fb4262f0c7d5d8b23f967",
+  "caller_branch": "dev/quactlize-tp2-fastpaths",
+  "caller_commit": "ae3b7a9610cbf235dffb098954c76173dbe84f5f",
+  "artifact_branch": "artifacts/tp2-fastpaths-v1",
+  "artifact_commit": "8697ff13fc24f42d5639d622428ad30d564f43eb",
+  "gemv_path": "prebuilt/ppu0010/tp2-fastpaths-v1",
+  "gemv_manifest_sha256": "4addcd47773099db4d636f1c0e0d51b8ac1982624edf109733e17ccca7546460",
+  "prepare_path": "prebuilt/ppu0010/tp2-prepare-v1",
+  "prepare_manifest_sha256": "d7e853205a8deafb13afbbd106aba679d5c01b3044ef702ec6c3742f6cbdc779",
+  "prepare_binary_sha256": "6383bc26e6b4b6e2e2622ead04154202f994aa680edfd30002d2b59eb5fa8af2",
+  "device_validated": false,
+  "production_replacement": false,
+  "llama_binaries_included": false
+}

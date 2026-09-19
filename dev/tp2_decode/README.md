@@ -3,6 +3,8 @@
 Source branch: `dev/tp2-fastpaths`. Caller branch in the owner's llama.cpp
 fork: `dev/quactlize-tp2-fastpaths`. The published TP2 runtime and its selectors
 are unchanged. This is a bounded candidate package, not a replacement runtime.
+`prebuilt.json` pins the LFS artifact commit, both manifest hashes and the
+matching caller source. There are no llama.cpp binaries in the artifact.
 
 ## Implemented
 
@@ -74,6 +76,13 @@ python3 -m pytest -q tests/test_tp2_fastpaths.py tests/test_moe_prepare_gate.py 
 
 After moving the verified package, use an idle single PPU and its matching SDK.
 These commands do not install a runtime or change production routing:
+
+The artifact branch is `artifacts/tp2-fastpaths-v1`. Materialize its LFS files
+from the pinned commit in a separate checkout. `GEMV_PACKAGE` is its
+`prebuilt/ppu0010/tp2-fastpaths-v1` directory and `PREPARE_BUILD` is its
+`prebuilt/ppu0010/tp2-prepare-v1` directory. Verify the manifest/binary digests
+against `prebuilt.json` before executing them. Do not check the artifact branch
+out over an active source/build checkout.
 
 ```bash
 python3 dev/gemv_model/run.py --cohort tp2 --sdk "$PPU_SDK" \
