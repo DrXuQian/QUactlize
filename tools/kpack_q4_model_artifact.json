@@ -5,9 +5,9 @@
   "manifest_sha256": "67ff68c51d1f2c914ba94a81aed43d1d8a499412e6a7043483018e0f5a5771fb",
   "source_commit": "b04cb96347beccb682dd298486394ea4e99cd7a1",
   "llama_branch": "dev/quactlize-tp2-v0.3.0",
-  "llama_ci_commit": "4a18820f16c42f2299dc4790020d61974e028490",
+  "llama_ci_commit": "e15d7b411d5900be5be348105f6107fe5a77edc9",
   "model_reader_gate": true,
   "prepare_integration_gate": true,
   "lfs_payloads": 64,
-  "device_admission": "Q4_ISOLATE_PASS_TP2_COLD72_CHAIN5_PASS_BF16_REFERENCE_PENDING"
+  "device_admission": "TP2_COLD_HOT_72_CHAIN6_PASS_SEGMENTED_MODEL_LOAD_PENDING"
 }

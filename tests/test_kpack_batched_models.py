@@ -1258,6 +1258,7 @@ def test_tp2_plan_and_runner_do_not_bypass_meta_or_cache_admission(tmp_path):
     assert 'build_kpack_model_ci.py' in script and 'JOBS=${JOBS:-192}' in script
     assert 'test-quactlize-scheduler" --tp2-cache-write' in script
     assert 'test-quactlize-scheduler" --tp2-cache-read' in script
+    assert script.count("grep -qx 'KPACK_TP2_SEGMENTED_ALL PASS formats=6 cases=6 segments=3 replays=3'") == 2
     assert 'cache-disabled-for-tp' not in script
     assert script.index('stage=two-device-cache-cold') < script.index('stage=two-device-cache-hot') < \
         script.index('stage=model-numerical') < script.index('stage=model-perf')

@@ -4,6 +4,31 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
+## TP2 segmented dense upload repair
+
+The `kpack-tp2.gXoh8e` upload passes all 72 matrix cases and 6 chains in both
+cold and hot processes. Each mode has 168 local shards; hot uses only CACHE
+producers. Q4/Q5 tokens32 maximum relative error is 0.366707% against the
+BF16 CPU reference, while its high-precision difference remains 2.670956%.
+The bound is unchanged. Q8 tokens32 is 0.361666% against its typed reference.
+122B reference self-check is clean; native aborts during weight loading,
+so no model accuracy, performance or Asys result was produced.
+
+Single-row public `set_tensor_2d` calls bypass the 2D buffer callback and use
+ordinary `set_tensor`. The caller's partial 1D writes now share the existing
+range-checked GPU staging path. This covers dense Q/K/V-style TP segments;
+the previous whole-tensor-only assumption remains confined to full intake.
+The packer, compute kernels, policy and runtime artifacts do not change.
+Only caller sources rebuild through `.aoneci/scripts/build.sh`.
+Local tests reproduce the exact old assertion, pass 24 delayed production-
+buffer cases across six formats, and reject duplicate segments. CPU Meta
+tests add six segmented local-GEMM cases. The next box run checks these in
+both cold/hot modes before the unchanged full 122B numerical/performance gates.
+Caller revision: `e15d7b411d5900be5be348105f6107fe5a77edc9`, also pinned in
+`tools/kpack_q4_model_artifact.json`. The related Python suite passes 258 tests
+and 15 subtests; four caller host CTests and the SDK production-buffer compile
+pass. New two-device segmented loading and full-model admission remain pending.
+
 ## Precision-matched TP2 CPU reference
 
 Caller `4a18820f16c42f2299dc4790020d61974e028490` uses
@@ -14,16 +39,15 @@ while dots and TP summation use FP32. The 0.02 bound is unchanged; the old
 high-precision difference is reported separately as `high_relative`.
 The box runner rejects a missing/foreign selected route or reference record.
 SIMT and single-projection oracles, production kernels, policy, runtime bundle
-and model numerical criteria remain unchanged. Re-run the standard TP2 gate;
-the previous high-precision mismatch alone is not a typed-reference pass.
+and model numerical criteria remain unchanged. `gXoh8e` confirms the two-device
+typed-reference gate; the earlier high-precision-only failure is not relabeled.
 See [the exact arithmetic contract](KPACK_TP2.md#bf16-cpu-reference).
 Local validation: 258 related Python tests, 15 subtests and the CPU TP graph
-regression pass. This is not a replacement for the two-device BF16-reference
-result or model accuracy admission.
+regression pass. Model accuracy admission is separate and still pending.
 
 ## TP2 Q4/Q5 SIMT scale repair, 2026-09-19
 
-Latest box result `kpack-tp2.SIgUYu`: 72/72 cold matrix cases and 5/6 chains
+Earlier box result `kpack-tp2.SIgUYu`: 72/72 cold matrix cases and 5/6 chains
 pass. Q4 gate/up plus Q5 down at tokens32 fails the original squared-chain
 FP32-weight/FP64-dot reference by 2.67095549%. That row uses BF16 TC, not the
 repaired SIMT reader. See `KPACK_TP2.md` and `TP2_MODE=chain` for the unchanged-

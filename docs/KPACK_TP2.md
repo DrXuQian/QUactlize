@@ -11,6 +11,34 @@ format, TC parent modules, caller and JIT source contract remain unchanged.
 The repaired runtime is artifact commit `006aa757f5`, built from `b04cb96347`;
 its exact manifest hash is recorded in the pin and integration handoff.
 
+### Current box result and segmented dense intake
+
+`kpack-tp2.gXoh8e` (Quactlize `e2b9739851`, caller `4a18820f16`) passes
+72/72 matrix cases and 6/6 chains in both cold and fresh-process hot modes,
+with three changing replays. Cold logs show 168 GPU-produced shards; hot logs
+show 168 cache-produced shards and no GPU packing. Selected BF16 TC routes on
+both ranks pass the reference parser. Q4/Q5 tokens32 has maximum relative L2
+0.0036670682 against the BF16/FP32-accumulation reference; its independently
+reported high-precision difference remains 0.026709555. Q8 tokens32 has
+typed error 0.0036166574. These are arithmetic/cache gates, not model accuracy.
+
+The 122B reference self-check passes (PPL ratio 1, same-top 100%). Native loading
+then aborts at `qz_set_raw(size == ggml_nbytes(tensor))`, before inference.
+The public `ggml_backend_tensor_set_2d` routes a single-row transfer to ordinary
+`set_tensor`. A segmented dense shard therefore bypassed K-pack's existing
+partial-range path. The caller now sends partial one-dimensional writes to
+that same path and packs only after all local bytes arrive. Whole-tensor
+intake, device kernels, dtype, policy and cache schema remain unchanged.
+
+Local production-buffer replay reproduces the old assertion and passes after
+the repair: six formats, one/three rows, forward/reverse three-piece uploads,
+24 cases with immediate source reuse and no early artifact publication.
+A duplicate segment is rejected. The CPU Meta regression also checks six
+Q/K/V-style segmented local GEMMs. The box runner adds these six cases to both
+cold/hot gates before retrying 122B numerics, ABBA and Asys. Only llama caller
+files rebuild; the Quactlize runtime/LFS payload is reused. Model admission
+and the new device segmented tests remain pending.
+
 ### BF16 CPU reference
 
 The tokens32 device chains now compare against a precision-matched CPU
@@ -34,8 +62,8 @@ Scope is the existing Q8/Q8 and Q4/Q5 tokens32 TC chains. The runner requires
 the selected BF16 TC routes on both devices before accepting their reference
 records. SIMT tokens1/8, all 72 single-projection cases and the CPU Meta test
 retain their previous oracles. No runtime kernel, tactic, ABI or binary bundle
-changes. A new cold/hot box result is required; `SIgUYu` is not retroactively
-declared a pass. Use `TP2_MODE=model` to continue through the normal complete
+changes. `gXoh8e` supplies the cold/hot device result; `SIgUYu` is not
+retroactively declared a pass. Use `TP2_MODE=model` to continue through the normal complete
 gate, or `TP2_MODE=chain` to retain the optional intermediate capture.
 
 ### Scale-field repair, 2026-09-19
@@ -83,8 +111,8 @@ and Asys. No further scale-field bisection is requested.
 | Weight placement | An explicit CUDA K-pack override becomes a Meta buffer containing one K-pack buffer per physical device | Host tests pass |
 | Shards | Meta splits raw GGUF in N or K before each device packs its local tensor | 30 byte-exact host cases, six formats |
 | Paired gate/up | Upload the two sources into the local shard's gate/up segments; pack after complete coverage | Host segmented transport and delayed upload pass |
-| Compute | Existing per-device execution contexts query with local N/K; existing Meta communication and all-reduce remain unchanged | Q8 M1 local compute and PCCL sums pass on two devices after the LOCAL loader fix; six-format/model admission pending |
-| Cache | Runtime cache v3 binds local planes to logical rank, split axis, segment widths/repeats and all GGUF source files | Six-format host cold/hot and negative tests pass; two-device admission pending |
+| Compute | Existing per-device execution contexts query with local N/K; existing Meta communication and all-reduce remain unchanged | Six-format 72 cases and 6 chains pass on both devices, cold/hot; full-model admission pending |
+| Cache | Runtime cache v3 binds local planes to logical rank, split axis, segment widths/repeats and all GGUF source files | Six-format device cold/hot passes; segmented dense follow-up pending |
 
 Q2_K, Q3_K, Q4_K, Q5_K, Q6_K and Q8_0 keep their existing canonical layouts.
 K boundaries must preserve whole GGUF superblocks and the reader's alignment.
