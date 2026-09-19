@@ -1,0 +1,8 @@
+{"id":"G01","parent":"c05900e","change":"Q8 hoist reader option across legal dimensions","hypothesis":"unmeasured local shards can use the existing vector load window","decision":"PLANNED_NOT_MEASURED"}
+{"id":"G02","parent":"c05900e","change":"parameterized fixed-shape wrappers with dynamic fallback","hypothesis":"remove model dimensions from reusable implementation capability","decision":"PLANNED_NOT_MEASURED"}
+{"id":"G03","parent":"c05900e","change":"Q5 unsigned indices and shared fold on TP2 down","hypothesis":"old optimized body can reduce TP2 index/shared overhead","decision":"PLANNED_NOT_MEASURED"}
+{"id":"G04","parent":"c05900e","change":"ordered vector reducer selected by layout and alignment","hypothesis":"full Split-K calls improve without producer geometry restrictions","decision":"PLANNED_NOT_MEASURED"}
+{"id":"G05","parent":"c05900e","change":"all-SIMT MoE prepare independent of weight N/K","hypothesis":"TP2 can reuse one-warp-per-token router/identity metadata publication","decision":"PLANNED_NOT_MEASURED"}
+{"id":"G06","parent":"c05900e","change":"shared gate/up fusion structural eligibility","hypothesis":"TP2 shared experts avoid separate gate/up and activation launches","decision":"PLANNED_NOT_MEASURED"}
+{"id":"G07","parent":"c05900e","change":"routed paired call/binding/selection use local dimensions","hypothesis":"TP2 gate/up projections can fuse activation without wrong fixed strides","decision":"PLANNED_NOT_MEASURED"}
+{"id":"G08","parent":"c05900e","change":"bounded exact and fallback candidate inventory refresh","hypothesis":"new legal reader options become selectable outside old measured families","decision":"PLANNED_NOT_MEASURED"}

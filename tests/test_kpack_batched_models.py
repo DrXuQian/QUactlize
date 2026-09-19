@@ -1696,6 +1696,107 @@ def test_model_asys_reuses_diagnostic_build_without_numerical_callback(tmp_path,
         trace.inputs(diagnostic, 'qwen35-35b-q4km', llama, sdk)
 
 
+@pytest.mark.parametrize('tp2', [False, True])
+@pytest.mark.parametrize('fault', [None, 'binary', 'runtime', 'legacy', 'devices', 'model', 'cache'])
+def test_model_asys_reuses_completed_benchmark_including_tp2(tmp_path, monkeypatch, tp2, fault):
+    from tools import run_kpack_model_trace as trace
+    _, previous, llama, sdk, bundle, build = trace_continuation_fixture(tmp_path, monkeypatch)
+    results = previous / 'results'
+    protocol_file = results / 'benchmark/results/protocol.json'
+    protocol = json.loads(protocol_file.read_text())
+    model = protocol['plan']['models'][0]
+    model['path'] = str(fixture(tmp_path))
+    if tp2:
+        model.update(devices='0,1', split='tensor', tensor_split='1,1')
+    protocol_file.write_text(json.dumps(protocol))
+    for label in ('0-reference', '1-kpack', '2-kpack', '3-reference'):
+        path = protocol_file.parent / model['name'] / (label + '.command.json')
+        value = json.loads(path.read_text()); value['devices'] = model['devices']
+        path.write_text(json.dumps(value))
+    cache, jit, legacy = [tmp_path / name for name in ('cache/subject', 'jit', 'legacy')]
+    for p in (cache, jit, legacy): p.mkdir(parents=True)
+    for p in (cache / 'manifest.json', legacy / 'manifest.json', results / 'compatibility-bundle-manifest.json'):
+        p.write_text('{}')
+    before = results / 'trace/subject/reference.command.json'
+    before.parent.mkdir(parents=True)
+    before.write_text(json.dumps(dict(argv=['python', 'never-execute-saved-command',
+        '--model', '/different.gguf' if fault == 'model' else model['path'],
+        '--binary', str(build / 'bin/llama-server'), '--bundle', str(bundle),
+        '--cache', str(cache), '--jit-cache', str(jit)])))
+    monkeypatch.setenv('QUACTLIZE_PPU_BUNDLE', str(legacy))
+    monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '3' if fault == 'devices' else model['devices'])
+    monkeypatch.setenv('LLAMA_NUMERICAL_DEBUG', 'tensors')
+    if fault == 'binary': (build / 'bin/llama-server').write_text('changed')
+    if fault == 'runtime': (bundle / 'manifest.json').write_text('{"changed":true}')
+    if fault == 'legacy': (legacy / 'manifest.json').write_text('{"changed":true}')
+    if fault == 'cache': (cache / 'manifest.json').unlink()
+    if fault:
+        with pytest.raises(ValueError): trace.benchmark_inputs(previous, 'subject', llama, sdk)
+    else:
+        args, found, env, prior = trace.benchmark_inputs(previous, 'subject', llama, sdk)
+        assert args.build == build and args.bundle == bundle and prior == previous
+        assert found == model and args.cache == cache.parent and args.jit_cache == jit
+        assert env['CUDA_VISIBLE_DEVICES'] == model['devices']
+        assert env['QUACTLIZE_KPACK_COMPUTE'] == 'fp16'
+        assert 'LLAMA_NUMERICAL_DEBUG' not in env
+
+
+@pytest.mark.parametrize('kind', ['timeout', 'runtime', 'none', 'mixed'])
+def test_model_asys_private_retry_is_only_for_session_creation(tmp_path, kind):
+    from tools.run_kpack_model_trace import session_creation_failed
+    if kind != 'none':
+        folder = tmp_path / 'reference/asys-preflight'; folder.mkdir(parents=True)
+        (folder / 'summary.json').write_text(json.dumps(dict(status='FAIL', attempts=[
+            dict(session_creation_failure=kind in ('timeout', 'mixed')),
+            dict(session_creation_failure=kind == 'timeout')])))
+    assert session_creation_failed(tmp_path) == (kind == 'timeout')
+
+
+@pytest.mark.parametrize('pid,mount_ns,pid_ns', [(15, 'new-mnt', 'new-pid'),
+    (1, 'old-mnt', 'new-pid'), (1, 'new-mnt', 'old-pid')])
+def test_private_profiler_cannot_mount_in_parent_namespace(monkeypatch, pid, mount_ns, pid_ns):
+    from tools import kpack_asys_scope as scope
+    monkeypatch.setattr(scope.os, 'getpid', lambda: pid)
+    monkeypatch.setattr(scope.os, 'readlink', lambda path: mount_ns if path.endswith('mnt') else pid_ns)
+    monkeypatch.setattr(scope.subprocess, 'run', lambda *a, **k: pytest.fail('must not mount'))
+    args = SimpleNamespace(parent_mount='old-mnt', parent_pid='old-pid')
+    with pytest.raises(ValueError, match='outside the private'): scope.enter(args)
+
+
+def test_private_profiler_rejects_paths_hidden_by_its_tmp_mount(tmp_path):
+    from tools import kpack_asys_scope as scope
+    with pytest.raises(ValueError, match='outside /tmp'):
+        scope.private_command(['/usr/bin/true'], tmp_path / 'profiler', [Path('/tmp/model.gguf')])
+    assert not (tmp_path / 'profiler').exists()
+
+
+def test_model_asys_recovers_in_private_scope_only_after_session_timeout(tmp_path, monkeypatch):
+    from tools import run_kpack_model_trace as trace
+    diagnostic, _, llama, sdk, _, _ = trace_replay_fixture(tmp_path)
+    monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '0')
+    monkeypatch.setattr(trace, 'verify', lambda bundle, **kwargs: {})
+    monkeypatch.setattr(trace, 'inventory', lambda path: dict(eligible=['weight'], operators=['grouped']))
+    calls = []
+    def capture(args, model, output, inventory):
+        calls.append('shared')
+        folder = output / 'reference/asys-preflight'; folder.mkdir(parents=True)
+        (folder / 'summary.json').write_text(json.dumps(dict(status='FAIL', attempts=[
+            dict(session_creation_failure=True)])))
+        raise ValueError('session timeout')
+    def private(args, model, output, env):
+        calls.append('private')
+        assert 'LLAMA_NUMERICAL_DEBUG' not in env
+        return output / 'private' / model['name']
+    monkeypatch.setattr(trace, 'traces', capture)
+    monkeypatch.setattr(trace, 'private_trace', private)
+    monkeypatch.setattr(sys, 'argv', ['trace', '--diagnostic', str(diagnostic), '--llama', str(llama),
+        '--sdk', str(sdk), '--result-root', str(tmp_path)])
+    assert trace.main() == 0
+    assert calls == ['shared', 'private']
+    status, = tmp_path.glob('kpack-model-asys.*/results/status.json')
+    assert json.loads(status.read_text())['reports'].endswith('/private/qwen35-35b-q4km')
+
+
 @pytest.mark.parametrize('fail', [False, True])
 def test_model_asys_archives_logs_not_reports_and_restores_environment(tmp_path, monkeypatch, fail):
     import tarfile
@@ -1703,7 +1804,7 @@ def test_model_asys_archives_logs_not_reports_and_restores_environment(tmp_path,
     diagnostic, previous, llama, sdk, build, bundle = trace_replay_fixture(tmp_path)
     monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '0')
     monkeypatch.setenv('LLAMA_NUMERICAL_DEBUG', 'tensors')
-    monkeypatch.setattr(trace, 'verify', lambda bundle: {})
+    monkeypatch.setattr(trace, 'verify', lambda bundle, **kwargs: {})
     monkeypatch.setattr(trace, 'inventory', lambda path: dict(eligible=['weight'], operators=['grouped']))
     calls = []
     def capture(args, model, output, inventory):
@@ -1732,7 +1833,7 @@ def test_model_asys_archives_logs_not_reports_and_restores_environment(tmp_path,
         assert 'results/native/kernel-times.json' in names
         assert not any(n.endswith(('.asysrep', '.sqlite')) for n in names)
         status = json.load(tar.extractfile('results/status.json'))
-        assert status['status'] == ('INCOMPLETE' if fail else 'TRACE_PAIR_COMPLETE')
+        assert status['status'] == ('FAIL' if fail else 'TRACE_PAIR_COMPLETE')
         assert status['accuracy_admission'] == 'NOT_RETESTED'
         assert status['performance_admission'] == 'NOT_ADMITTED_BY_PROFILER'
 

@@ -549,10 +549,59 @@ These additional controls are retained at
 `/home/qianxu/q4-tp2-replay-control.XVE1xB/results`; they still do not run the
 shipped PPU image or establish a PPU root cause.
 
-## Remaining device admission
+## Latest returned model run: 2026-09-19
 
-- Run the six-format two-device cold/hot gate and 122B numerical, timing and
-  trace checks. The admitted Q8 communication control does not cover them.
-- Review local-shape policy receipts and the TPOT comparison before performance
-  claims; the previous 122B upload was an ordinary TP2 baseline only.
-- Check cold publication and a fresh process's hot reload on the real 122B model.
+`kpack-tp2.om9JQj` passes all72 matrix, six chain and six segmented-upload
+cases in both cold/hot processes. The model publishes and reloads794 TP2
+shards with zero resident misses. The short likelihood runs have finite
+metrics; broader accuracy admission is still pending review.
+
+Warmed ABBA PP2048/TG128 medians are286.5222 versus228.8369 us/token prefill
+and12724.3086 versus12482.0820 us/token decode (reference versus K-pack).
+The unchanged trace phase failed before model load with `session create timeout`.
+This is not a kernel timing result and does not invalidate the completed ABBA.
+
+### Trace-only retry
+
+Update only the Python tools in both TP2 branches. No caller/DSO rebuild,
+numerical rerun, model repack or full sweep is required. Use the previous run,
+same model cache/JIT cache, same visible devices and the same six-library bundle:
+
+```bash
+QUACTLIZE_PPU_BUNDLE=/path/to/previous/six-library/bundle \
+CUDA_VISIBLE_DEVICES=0,1 python3 -u tools/run_kpack_model_trace.py \
+  --previous /path/to/kpack-tp2.om9JQj \
+  --llama /path/to/llama.cpp --sdk /path/to/PPU_SDK \
+  --model qwen35-122b-q4km --result-root /path/to/results
+```
+
+The runner verifies the completed ABBA records, caller payload hashes and
+runtime/compatibility manifests. It reapplies the saved compute/fusion
+contract, captures reference/native separately, excludes each process's first
+complete request and preserves the exact prompt tokens across arms.
+
+The selected Asys directory is now used for its frontend, service binary
+lookup and profiler libraries. The preflight records the actual running
+service executables/libraries, without killing them or deleting their locks.
+An absolute CLI path alone does not select an already-running backend version.
+
+Only a session-creation failure triggers `--profiler-scope auto` recovery:
+another attempt in a private mount/PID namespace with a fresh `/tmp`, not a
+second model benchmark. That requires container permission to use `unshare`
+and mount namespaces. The original `/tmp`, profiler processes, SDK and GPU
+state are untouched. Inputs and result directories must be outside `/tmp`.
+`--profiler-scope private` skips the known-failed shared backend;
+`--profiler-scope shared` disables the private retry. A denied namespace is
+reported, not worked around with a global service reset. Private service
+recovery still needs confirmation on the PPU box; host tests do not prove it.
+
+Upload the printed small results archive. Asys/SQLite files stay at the printed
+paths for viewing; the archive includes kernel summaries and service diagnostics,
+not those large reports or profiler scratch data. Failed captures print
+`NOT_CAPTURED` rather than a nonexistent report path.
+
+### Decode follow-up
+
+The [fast-path audit](../dev/tp2_decode/docs/plan.md) records eight classes of
+old shape restrictions, including MoE prepare and gate/up fusion admission,
+not just GEMV configurations. No new kernel/config is promoted by this audit.
