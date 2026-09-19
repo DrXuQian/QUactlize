@@ -12,6 +12,15 @@ short-K compatibility overlay and caller `f9a0dbe2f` remain reusable. No caller
 or public ABI changes, weight conversion changes, tactic substitutions, or
 TC/JIT source changes are needed.
 
+Published runtime: `artifacts/kpack-model-tp2-scale-v1` at
+`006aa757f5b995ae4d8eac772cc2106782e14e90`, built from
+`b04cb96347beccb682dd298486394ea4e99cd7a1`. The package remains
+`prebuilt/ppu0010/kpack-model-runtime-v1`; its manifest SHA-256 is
+`67ff68c51d1f2c914ba94a81aed43d1d8a499412e6a7043483018e0f5a5771fb`.
+The runner retrieves the pinned LFS payloads automatically. Its live-source
+and SDK verification passes locally. Full TP2/model device admission remains
+pending; isolated numerical evidence is not a performance measurement.
+
 The `62KWWD` result closes the isolated numerical A/B: old SIMT48/48 red,
 candidate24/24 and scalar24/24 green, 12 wrong-expert negatives red, six
 scale-bit-loss plants reproducing the complete old output bit-for-bit. The

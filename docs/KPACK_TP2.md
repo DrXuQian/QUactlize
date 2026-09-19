@@ -8,6 +8,8 @@ The orchestration branch is `dev/kpack-tp2` in Quactlize. Use its current
 requires the updated small execution and paired libraries; `87b996559f` is
 the historical failing runtime, not the repaired one. Public ABI, weight
 format, TC parent modules, caller and JIT source contract remain unchanged.
+The repaired runtime is artifact commit `006aa757f5`, built from `b04cb96347`;
+its exact manifest hash is recorded in the pin and integration handoff.
 
 ### Scale-field repair, 2026-09-19
 
@@ -21,7 +23,7 @@ the local H32 candidate instruction bytes. See
 The repair applies to every generic Q4/Q5 SIMT recipe, including indexed and
 paired gate/up consumers. It does not force a different tactic or change
 Split-K. The short-K fmt0 compatibility overlay is still required and reused.
-Local checks: 13 scale/fixture/parser tests, 43 related SIMT/reader tests, full
+Local checks: 243 model/scale/fixture/parser tests, 43 related SIMT/reader tests, full
 six-format execution and paired library builds, and live-source package/ISA
 verification. One unrelated historical prebuilt test remains stale against
 the already changed `execution/api.h`; its frozen artifact is not re-signed.
