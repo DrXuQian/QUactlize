@@ -296,7 +296,19 @@
       "expected_kernels": [
         "q8_vector::kernel<1,0,1,4,8,4,true>",
         null
-      ]
+      ],
+      "implementation": {
+        "producer": "q8-vector-hoisted",
+        "reduction": "none",
+        "changes": 0,
+        "hoist": true,
+        "fixed": false
+      },
+      "entry": {
+        "library": "libquactlize_ppu_candidate.so",
+        "symbol": "quactlize_kpack_simt_run_v2",
+        "scope": "PRODUCTION_C_ABI"
+      }
     },
     {
       "point": {
@@ -593,7 +605,19 @@
       "expected_kernels": [
         "q8_vector::kernel<1,0,1,4,8,4,true>",
         null
-      ]
+      ],
+      "implementation": {
+        "producer": "q8-vector-hoisted",
+        "reduction": "none",
+        "changes": 0,
+        "hoist": true,
+        "fixed": false
+      },
+      "entry": {
+        "library": "libquactlize_ppu_candidate.so",
+        "symbol": "quactlize_kpack_simt_run_v2",
+        "scope": "PRODUCTION_C_ABI"
+      }
     },
     {
       "point": {
@@ -890,7 +914,19 @@
       "expected_kernels": [
         "q8_vector::kernel<1,0,1,8,4,4,true>",
         null
-      ]
+      ],
+      "implementation": {
+        "producer": "q8-vector-hoisted",
+        "reduction": "none",
+        "changes": 0,
+        "hoist": true,
+        "fixed": false
+      },
+      "entry": {
+        "library": "libquactlize_ppu_candidate.so",
+        "symbol": "quactlize_kpack_simt_run_v2",
+        "scope": "PRODUCTION_C_ABI"
+      }
     },
     {
       "point": {
@@ -1119,7 +1155,19 @@
       "expected_kernels": [
         "q8_vector::kernel<1,0,1,8,4,4,false>",
         "reduce_decode_rows<8>"
-      ]
+      ],
+      "implementation": {
+        "producer": "q8-vector",
+        "reduction": "ordered-row-float2-or-scalar",
+        "changes": 0,
+        "hoist": false,
+        "fixed": false
+      },
+      "entry": {
+        "library": "libquactlize_ppu_candidate.so",
+        "symbol": "quactlize_kpack_simt_run_v2",
+        "scope": "PRODUCTION_C_ABI"
+      }
     },
     {
       "point": {
@@ -1348,7 +1396,19 @@
       "expected_kernels": [
         "q8_vector::kernel<1,0,1,4,8,4,true>",
         null
-      ]
+      ],
+      "implementation": {
+        "producer": "q8-vector-hoisted",
+        "reduction": "none",
+        "changes": 0,
+        "hoist": true,
+        "fixed": false
+      },
+      "entry": {
+        "library": "libquactlize_ppu_candidate.so",
+        "symbol": "quactlize_kpack_simt_run_v2",
+        "scope": "PRODUCTION_C_ABI"
+      }
     },
     {
       "point": {
@@ -1577,7 +1637,19 @@
       "expected_kernels": [
         "q8_vector::kernel_s1<1,0,1,4,2,4,true>",
         null
-      ]
+      ],
+      "implementation": {
+        "producer": "q8-vector-s1-hoisted",
+        "reduction": "none",
+        "changes": 0,
+        "hoist": true,
+        "fixed": false
+      },
+      "entry": {
+        "library": "libquactlize_ppu_candidate.so",
+        "symbol": "quactlize_kpack_simt_run_v2",
+        "scope": "PRODUCTION_C_ABI"
+      }
     },
     {
       "point": {
@@ -1806,7 +1878,19 @@
       "expected_kernels": [
         "q8_vector::kernel<1,0,1,4,8,4,true>",
         null
-      ]
+      ],
+      "implementation": {
+        "producer": "q8-vector-hoisted",
+        "reduction": "none",
+        "changes": 0,
+        "hoist": true,
+        "fixed": false
+      },
+      "entry": {
+        "library": "libquactlize_ppu_candidate.so",
+        "symbol": "quactlize_kpack_simt_run_v2",
+        "scope": "PRODUCTION_C_ABI"
+      }
     },
     {
       "point": {
@@ -1970,7 +2054,19 @@
       "expected_kernels": [
         "register_reuse<13,1,3,4,2,8,1,3>",
         null
-      ]
+      ],
+      "implementation": {
+        "producer": "register-reuse",
+        "reduction": "none",
+        "changes": 3,
+        "hoist": false,
+        "fixed": false
+      },
+      "entry": {
+        "library": "libquactlize_ppu_candidate.so",
+        "symbol": "quactlize_kpack_simt_run_v2",
+        "scope": "PRODUCTION_C_ABI"
+      }
     },
     {
       "point": {
@@ -2134,7 +2230,19 @@
       "expected_kernels": [
         "register_reuse_model<13,1,3,4,2,8,1,3,2048,512>",
         null
-      ]
+      ],
+      "implementation": {
+        "producer": "register-reuse-fixed",
+        "reduction": "none",
+        "changes": 3,
+        "hoist": false,
+        "fixed": true
+      },
+      "entry": {
+        "library": "libquactlize_ppu_candidate.so",
+        "symbol": "quactlize_kpack_simt_run_v2",
+        "scope": "PRODUCTION_C_ABI"
+      }
     },
     {
       "point": {
@@ -2363,7 +2471,19 @@
       "expected_kernels": [
         "q8_vector::kernel_s1<1,0,1,4,2,4,true>",
         null
-      ]
+      ],
+      "implementation": {
+        "producer": "q8-vector-s1-hoisted",
+        "reduction": "none",
+        "changes": 0,
+        "hoist": true,
+        "fixed": false
+      },
+      "entry": {
+        "library": "libquactlize_ppu_candidate.so",
+        "symbol": "quactlize_kpack_simt_run_v2",
+        "scope": "PRODUCTION_C_ABI"
+      }
     },
     {
       "point": {
@@ -2592,7 +2712,19 @@
       "expected_kernels": [
         "q8_vector::kernel_model<1,0,1,8,4,4,false,2048,4096,8>",
         "reduce_decode<8,float>"
-      ]
+      ],
+      "implementation": {
+        "producer": "q8-vector-fixed",
+        "reduction": "ordered-flat-float2-or-row-fallback",
+        "changes": 0,
+        "hoist": false,
+        "fixed": true
+      },
+      "entry": {
+        "library": "libquactlize_ppu_candidate.so",
+        "symbol": "quactlize_kpack_simt_run_v2",
+        "scope": "PRODUCTION_C_ABI"
+      }
     },
     {
       "point": {
@@ -2662,7 +2794,19 @@
       "expected_kernels": [
         "q8_vector::kernel<1,0,1,4,8,4,true>",
         null
-      ]
+      ],
+      "implementation": {
+        "producer": "q8-vector-hoisted",
+        "reduction": "none",
+        "changes": 0,
+        "hoist": true,
+        "fixed": false
+      },
+      "entry": {
+        "library": "libquactlize_ppu_candidate.so",
+        "symbol": "quactlize_kpack_simt_run_v2",
+        "scope": "PRODUCTION_C_ABI"
+      }
     },
     {
       "point": {
@@ -2732,7 +2876,19 @@
       "expected_kernels": [
         "q8_vector::kernel<1,0,1,4,8,4,true>",
         null
-      ]
+      ],
+      "implementation": {
+        "producer": "q8-vector-hoisted",
+        "reduction": "none",
+        "changes": 0,
+        "hoist": true,
+        "fixed": false
+      },
+      "entry": {
+        "library": "libquactlize_ppu_candidate.so",
+        "symbol": "quactlize_kpack_simt_run_v2",
+        "scope": "PRODUCTION_C_ABI"
+      }
     },
     {
       "point": {
@@ -2799,7 +2955,12 @@
       "expected_kernels": [
         "register_reuse<10,1,3,4,4,4,1,0>",
         "reduce_decode_rows<4>"
-      ]
+      ],
+      "entry": {
+        "library": "libquactlize_ppu_candidate.so",
+        "symbol": "quactlize_kpack_simt_run_v2",
+        "scope": "PRODUCTION_C_ABI"
+      }
     },
     {
       "point": {
@@ -2866,7 +3027,12 @@
       "expected_kernels": [
         "register_reuse<11,1,3,4,4,4,1,0>",
         "reduce_decode_rows<4>"
-      ]
+      ],
+      "entry": {
+        "library": "libquactlize_ppu_candidate.so",
+        "symbol": "quactlize_kpack_simt_run_v2",
+        "scope": "PRODUCTION_C_ABI"
+      }
     },
     {
       "point": {
@@ -2933,7 +3099,12 @@
       "expected_kernels": [
         "register_reuse<12,1,3,4,4,4,1,0>",
         "reduce_decode_rows<4>"
-      ]
+      ],
+      "entry": {
+        "library": "libquactlize_ppu_candidate.so",
+        "symbol": "quactlize_kpack_simt_run_v2",
+        "scope": "PRODUCTION_C_ABI"
+      }
     },
     {
       "point": {
@@ -3000,7 +3171,12 @@
       "expected_kernels": [
         "register_reuse<13,1,3,4,4,4,1,0>",
         "reduce_decode_rows<4>"
-      ]
+      ],
+      "entry": {
+        "library": "libquactlize_ppu_candidate.so",
+        "symbol": "quactlize_kpack_simt_run_v2",
+        "scope": "PRODUCTION_C_ABI"
+      }
     },
     {
       "point": {
@@ -3067,7 +3243,12 @@
       "expected_kernels": [
         "register_reuse<14,1,3,4,4,4,1,0>",
         "reduce_decode_rows<4>"
-      ]
+      ],
+      "entry": {
+        "library": "libquactlize_ppu_candidate.so",
+        "symbol": "quactlize_kpack_simt_run_v2",
+        "scope": "PRODUCTION_C_ABI"
+      }
     }
   ],
   "source_hashes": {
@@ -3101,7 +3282,7 @@
     "quactlize/dequant/unit16.hpp": "7212a54c31ef9103f884aa1a71729206a0adfe019af957b3e68db5de2ef28dc5",
     "quactlize/dequant/vector_kernels.cuh": "de2fae106df08ed471f9da8f0e3db6f57de736ab6567cdeadb777b527381e5ca",
     "quactlize/dispatch/api.h": "2c25b2a6d0965abb6a790bb007c1bf7f33bf5ce6a6de3159254d54d2dca22b98",
-    "quactlize/dispatch/binding.cpp": "0d6d08f8e225e8812bf092687440211107880f10ea73901117ce2ad417fb08b2",
+    "quactlize/dispatch/binding.cpp": "6e5f6a1974331e2931e773e2ebc68a2e9e9e51a57d5848564ead95b30f5ce432",
     "quactlize/dispatch/compute.hpp": "161fe7a2a6be737edb671ab883a9e818e95b35b154879cdda03759fa3386db97",
     "quactlize/dispatch/cost.hpp": "28f7db20b5c1e16d0503a4b44bacba6e8c166645d6c04c347d4103209e9ff121",
     "quactlize/dispatch/decode.hpp": "a57e738b36f8c953d5d235898dd3d0cded795aaa2e134cbf877dc18cb18bb1cb",
@@ -3109,9 +3290,11 @@
     "quactlize/dispatch/moe.hpp": "a815e81fcced7a565d0b528fe153e569088491e72b138e8309810647a789bd1c",
     "quactlize/dispatch/native.py": "cf77f4c05cef6b87dad3608bdfa90df6f9f74eebb4f4777f45cb33292ef469ea",
     "quactlize/dispatch/policy.hpp": "a7c712cb2058f639103d27560b60dc1aa6d72e7495b2544bad341c63f7c5fcb0",
-    "quactlize/dispatch/q8_vector.hpp": "431d82b81fe267d58dc6a85cb2d9d5ad0524133749c329e16d346dcb26e15c56",
     "quactlize/dispatch/smallm.hpp": "992a29ef20ad32183fb2bed17fe2fe5666a5e182cdadbd8f50ef8f5fd2f0e967",
     "quactlize/dispatch/smallm_matched.hpp": "159417534e468a359f21413a44370dcb716ca0338de4c75773177099ffeebdcb",
+    "quactlize/dispatch/effective.hpp": "c805441f6c58e83ca9aa8911196f73bc7618e3917536ffc41dd7e36096a0953b",
+    "quactlize/dispatch/selection.hpp": "cd17178069f4e9bb9f85897b67c8ff9664539584c8f6871010bea2088f5eb08c",
+    "quactlize/dispatch/planning.py": "e81af8bf66d0bd4c918d5086dacc136887eedaf7ed1a9dd1bd2433481f9a4f16",
     "quactlize/execution/api.h": "997fa438055f0cc7b4d79ac85c228eef5db8d5b473975f01e5f8f577d6d5f7ab",
     "quactlize/execution/dispatch.cpp": "8e461947eefd0441cd39455f30e0c5bb6cc8ce85fa2e78928768fb65897105ef",
     "quactlize/execution/gemv.cu": "ab3f27bf2c1ea441d7d55d2dd9384da0b06b42982f3e3b8ce0bb47ef5c2ee251",
@@ -3140,10 +3323,11 @@
     "quactlize/execution/simt_activation.cuh": "13c61c4a1334d080c96f44de5285c645286a019001b5919a2778f61e5da0af73",
     "quactlize/execution/simt_codegen.py": "2395233326b73b2d4c587918f98b6d57b9daea763e88d2b7536dab6d4a8e4dbe",
     "quactlize/execution/simt_format.cuh": "262fe74393b0a7bcf65e06d6b64d5246208f0dcf86280f45d9e431fe19d390b8",
-    "quactlize/execution/simt_kernel.cuh": "f86d601981677d9b4d90c6d44b269b14f822ea28dd4894f4f8ec5f0905e0bf77",
-    "quactlize/execution/simt_q8_vector.cuh": "aae20858c1c91a7453ae1008f894862afa65fd11108904b09a54befb14270b61",
+    "quactlize/execution/simt_kernel.cuh": "b73a0b292f8b853258ad1828bf7c71d2da78a77f75b8492d5d203d03602b11d7",
+    "quactlize/execution/simt_q8_vector.cuh": "75a61cef0b57ae3cfbe765acbed0ffd5a33353bf46f569d6c630aca73374b856",
     "quactlize/execution/simt_validation.hpp": "552f558a4bb2982e7b5a3fc482d9cf0fc2334fc0a4788f69cba1a8169e6ace7b",
     "quactlize/execution/validation.hpp": "1302a38bb0bf2d659a195a0a26823717f69d20fc5f178e940660aeea6b328062",
+    "quactlize/execution/simt_strategy.hpp": "9ecd6616c977a99d8a8e7f547e5347096e11bfc69a3118df84169e3293de1731",
     "quactlize/fusion/dispatch.cu": "c485dbda7c8c9f9f6ffa680a23576ee4199cc78b00747bd887edb3bfa7946179",
     "quactlize/fusion/gate_up.h": "a7f71203b741cd3e2ed3a00c18dd63d9d23f90b64155aa82c1b9daf57b0ee275",
     "quactlize/fusion/llama_graph.hpp": "125cbab8626650e6b670a948f2973eef24478d2c3a37d39b6ea72ee29ef3a199",
@@ -3788,15 +3972,17 @@
     "dev/gemv_model/plan.py": "2f46ec562e8863795743f5dd50e4344a37cd8b5368e3a52c78e7315e3a127c8c",
     "dev/gemv_model/run.py": "9ea2e5dfa77a5795e89326938938ca7a5767ee437631a4837b0841ddce7d89f7",
     "dev/gemv_model/source.py": "ba0ca8c03234e45d98c32c429e4e79d00a8da95a72097f6770191cdd6de53bb0",
-    "dev/tp2_decode/plan.py": "68530b80257238c9c3821740c3aec84ff0156aec4c69db3fa6c025f9d0cae5f1",
+    "dev/tp2_decode/build_fallback.py": "9e593276a7911aa304ae826e8d3dd545a3fde868884143e9002d53451e047a98",
     "dev/tp2_decode/compile_smoke.cu": "5f3d7ab7bca0045e8a42177b19a1a965243c52e776663d45713cfb6b719acad2",
     "dev/tp2_decode/fallback_plan.py": "937a5bf415563922547a481bf2fd71f93a84a88337f248d1d80a2fe17496fb1d",
-    "dev/tp2_decode/build_fallback.py": "7de50100741741d7c994ba96eb5e09a99103016d6abdcaf49a05f7ca0f4b56cf",
-    "dev/tp2_decode/run_fallback.py": "39d44f448e83640aca06bfcc4680b2944f4aa47d9700d18a99f8674e4a905503"
+    "dev/tp2_decode/plan.py": "68530b80257238c9c3821740c3aec84ff0156aec4c69db3fa6c025f9d0cae5f1",
+    "dev/tp2_decode/run_fallback.py": "05cbfb87d20979b48a30ba969912201e5fce625c860b933758ec133916d946ae",
+    "tools/kpack_selection.cpp": "4d803490780067b8b33df22816c27be2fdb921b4a843ed7d78994d261271ea4c"
   },
   "payloads": {
     "catalog.inc": "edf1b4215a1fe2d5f268fb1df31835a86ae5d4d76196a3d07ad24dc5fce64833",
-    "libquactlize_kpack_dispatch.so": "e9e516e43f629c58ce4a330d650000fad2c839169f23b167bf3d6e02e3f26b5e",
+    "libquactlize_kpack_dispatch.so": "3aef9d4f1ac240b8ed2044b45c71f93cec23d766cf926c1972bdb93feea096c8",
+    "final-selection.json": "11ca80c6643ca89d7cecc2619196f487b1af164cbb0e1358ef44ff1c51549194",
     "libquactlize_ppu_execution.so": "b1816dec751969548326ace1793fe04fb7c15f0e581aecb0d59f952526fb2bca",
     "q8-shared-down.so": "e69ed36296954d91a8bff1c287859a4fc3ef677559dfda724b273abd828e5c2b",
     "tp2-q5-down.so": "eaeb301f72620ac1718eba5e031c7817a9a79a918809c8d38d38b945a6415e1c",
@@ -3815,9 +4001,11 @@
     "q12.cu": "0699cb8350f5a65a8988895bc11efb6b0c96f46dd5bfef6d600a9c721c6392e0",
     "q14.cu": "757072d15e5a5fcd60060f3d5411dbcdd3512642040c3be429fea9fa8ac14161",
     "entry.cpp": "f5f25ba7f338aed09550c30dc2fbed1a5013961ac8e82632a29d0d7269faf6fb",
-    "fallback.so": "d6640168943528607caccf9f56619282b0fd7e5b4eb594643f4521c49594ba07",
+    "fallback.so": "c954d394d8bbc7e7a70b823d5e377e768e9e12f8017c2f7ebd06544b64da5b42",
     "isa.txt": "8c8442fe8a0995287e21574b853246d16ea6dfa04e7282718435ab55b99e34a8",
     "resources.txt": "96ca8e5e7b508f47f4a55eee952b0645abd43bd17c75e903ef6f4aeceff0dea5",
+    "libquactlize_ppu_candidate.so": "2eecd7c8c7a5c803e1379ad9bca7501441596816485db3b4fe338848e5b8aaf1",
+    "production-execution.json": "84c4ee72c6dde674f70ed47beddc21c6251c32811170810dc7a24e5546191404",
     "native-inspection.json": "aa91f18de85e0561e184d658f87ba499136835bab34a8486d2cddaa983c36440"
   },
   "runtime": {
@@ -3829,7 +4017,7 @@
   "reference_manifest_sha256": "4addcd47773099db4d636f1c0e0d51b8ac1982624edf109733e17ccca7546460",
   "result_archive_sha256": "5944aa7547e4dd5c9b87dae0f906102d7df5d4e39f42d7007c25731408fee075",
   "compiler_sha256": "fa62c590c67411c23fa4028f15fa562b39ce0cf830830d038a1ec04c59d8c76e",
-  "build_seconds": 20.954460002481937,
+  "build_seconds": 22.02129751443863,
   "selector_probe_only_no_tc_catalog": true,
   "production_replacement": false,
   "device_validated": false

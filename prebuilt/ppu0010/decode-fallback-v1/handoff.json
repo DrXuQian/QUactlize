@@ -1,0 +1,13 @@
+{
+  "source_branch": "dev/dispatch-refactor",
+  "source_commit": "c3d8b99505dedffcbbec43ce2182deff1611fae7",
+  "actlize_commit": "021c69300864e03926108867d318572871a44d35",
+  "caller_branch": "dev/quactlize-dispatch-refactor",
+  "caller_commit": "c0c2f50652ca1861a3d8ade7db7bae018e34c297",
+  "caller_changes": "TRACE_PARSER_AND_HEADER_COMMENTS_ONLY_NOT_REQUIRED_BY_COMPONENT_GATE",
+  "gemv_manifest_sha256": "d58730e0244e9f7cd205d05d17f936bf5e9e4fbdb2158dcfc69b7559a259a87b",
+  "production_execution_sha256": "2eecd7c8c7a5c803e1379ad9bca7501441596816485db3b4fe338848e5b8aaf1",
+  "prepare_manifest_sha256": "d8c10f7607a2d339054fef1b0173e14829974e26ec5dadc39e546599c0c7f113",
+  "device_admission": "PENDING",
+  "scope": "COMPONENT_GATE_NOT_MODEL_RUNTIME"
+}

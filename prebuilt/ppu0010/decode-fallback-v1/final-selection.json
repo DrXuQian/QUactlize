@@ -1,0 +1,474 @@
+{
+  "schema": "quactlize.final-selection.v1",
+  "scope": "TYPED_SMALLM_FINAL_SELECTION_NOT_FIXED_ROUTE",
+  "requests": [
+    {
+      "request": [
+        8,
+        0,
+        6144,
+        3072,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "status": 0,
+      "kind": 1,
+      "policy": 13,
+      "donor": [
+        4096,
+        2048,
+        1
+      ],
+      "workspace_bytes": 0,
+      "config": {
+        "variant": 5,
+        "columns": 4,
+        "warps": 8,
+        "values": 4,
+        "split": 1
+      },
+      "implementation": {
+        "producer": "q8-vector-hoisted",
+        "reduction": "none",
+        "changes": 0,
+        "hoist": true,
+        "fixed": false
+      }
+    },
+    {
+      "request": [
+        8,
+        0,
+        4096,
+        3072,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "status": 0,
+      "kind": 1,
+      "policy": 13,
+      "donor": [
+        4096,
+        2048,
+        1
+      ],
+      "workspace_bytes": 0,
+      "config": {
+        "variant": 5,
+        "columns": 4,
+        "warps": 8,
+        "values": 4,
+        "split": 1
+      },
+      "implementation": {
+        "producer": "q8-vector-hoisted",
+        "reduction": "none",
+        "changes": 0,
+        "hoist": true,
+        "fixed": false
+      }
+    },
+    {
+      "request": [
+        8,
+        0,
+        8192,
+        3072,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "status": 0,
+      "kind": 1,
+      "policy": 13,
+      "donor": [
+        8192,
+        2048,
+        1
+      ],
+      "workspace_bytes": 0,
+      "config": {
+        "variant": 5,
+        "columns": 8,
+        "warps": 4,
+        "values": 4,
+        "split": 1
+      },
+      "implementation": {
+        "producer": "q8-vector-hoisted",
+        "reduction": "none",
+        "changes": 0,
+        "hoist": true,
+        "fixed": false
+      }
+    },
+    {
+      "request": [
+        8,
+        0,
+        3072,
+        4096,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "status": 0,
+      "kind": 1,
+      "policy": 13,
+      "donor": [
+        2048,
+        4096,
+        1
+      ],
+      "workspace_bytes": 98304,
+      "config": {
+        "variant": 5,
+        "columns": 8,
+        "warps": 4,
+        "values": 4,
+        "split": 8
+      },
+      "implementation": {
+        "producer": "q8-vector",
+        "reduction": "ordered-row-float2-or-scalar",
+        "changes": 0,
+        "hoist": false,
+        "fixed": false
+      }
+    },
+    {
+      "request": [
+        8,
+        0,
+        1024,
+        3072,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "status": 0,
+      "kind": 1,
+      "policy": 13,
+      "donor": [
+        1024,
+        2048,
+        1
+      ],
+      "workspace_bytes": 0,
+      "config": {
+        "variant": 5,
+        "columns": 4,
+        "warps": 8,
+        "values": 4,
+        "split": 1
+      },
+      "implementation": {
+        "producer": "q8-vector-hoisted",
+        "reduction": "none",
+        "changes": 0,
+        "hoist": true,
+        "fixed": false
+      }
+    },
+    {
+      "request": [
+        8,
+        0,
+        3072,
+        1024,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "status": 0,
+      "kind": 1,
+      "policy": 13,
+      "donor": [
+        2048,
+        512,
+        1
+      ],
+      "workspace_bytes": 0,
+      "config": {
+        "variant": 5,
+        "columns": 4,
+        "warps": 2,
+        "values": 4,
+        "split": 1
+      },
+      "implementation": {
+        "producer": "q8-vector-s1-hoisted",
+        "reduction": "none",
+        "changes": 0,
+        "hoist": true,
+        "fixed": false
+      }
+    },
+    {
+      "request": [
+        8,
+        0,
+        256,
+        3072,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "status": 0,
+      "kind": 1,
+      "policy": 13,
+      "donor": [
+        512,
+        2048,
+        1
+      ],
+      "workspace_bytes": 0,
+      "config": {
+        "variant": 5,
+        "columns": 4,
+        "warps": 8,
+        "values": 4,
+        "split": 1
+      },
+      "implementation": {
+        "producer": "q8-vector-hoisted",
+        "reduction": "none",
+        "changes": 0,
+        "hoist": true,
+        "fixed": false
+      }
+    },
+    {
+      "request": [
+        13,
+        2,
+        3072,
+        512,
+        256,
+        8,
+        8,
+        1,
+        1
+      ],
+      "status": 0,
+      "kind": 1,
+      "policy": 12,
+      "donor": [
+        3072,
+        512,
+        1
+      ],
+      "workspace_bytes": 0,
+      "config": {
+        "variant": 3,
+        "columns": 4,
+        "warps": 2,
+        "values": 8,
+        "split": 1
+      },
+      "implementation": {
+        "producer": "register-reuse",
+        "reduction": "none",
+        "changes": 3,
+        "hoist": false,
+        "fixed": false
+      }
+    },
+    {
+      "request": [
+        13,
+        2,
+        2048,
+        512,
+        256,
+        8,
+        8,
+        1,
+        1
+      ],
+      "status": 0,
+      "kind": 1,
+      "policy": 12,
+      "donor": [
+        2048,
+        512,
+        1
+      ],
+      "workspace_bytes": 0,
+      "config": {
+        "variant": 3,
+        "columns": 4,
+        "warps": 2,
+        "values": 8,
+        "split": 1
+      },
+      "implementation": {
+        "producer": "register-reuse-fixed",
+        "reduction": "none",
+        "changes": 3,
+        "hoist": false,
+        "fixed": true
+      }
+    },
+    {
+      "request": [
+        8,
+        0,
+        2048,
+        512,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "status": 0,
+      "kind": 1,
+      "policy": 15,
+      "donor": [
+        2048,
+        512,
+        1
+      ],
+      "workspace_bytes": 0,
+      "config": {
+        "variant": 5,
+        "columns": 4,
+        "warps": 2,
+        "values": 4,
+        "split": 1
+      },
+      "implementation": {
+        "producer": "q8-vector-s1-hoisted",
+        "reduction": "none",
+        "changes": 0,
+        "hoist": true,
+        "fixed": false
+      }
+    },
+    {
+      "request": [
+        8,
+        0,
+        2048,
+        4096,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "status": 0,
+      "kind": 1,
+      "policy": 15,
+      "donor": [
+        2048,
+        4096,
+        1
+      ],
+      "workspace_bytes": 65536,
+      "config": {
+        "variant": 5,
+        "columns": 8,
+        "warps": 4,
+        "values": 4,
+        "split": 8
+      },
+      "implementation": {
+        "producer": "q8-vector-fixed",
+        "reduction": "ordered-flat-float2-or-row-fallback",
+        "changes": 0,
+        "hoist": false,
+        "fixed": true
+      }
+    },
+    {
+      "request": [
+        8,
+        0,
+        768,
+        2048,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "status": 0,
+      "kind": 1,
+      "policy": 13,
+      "donor": [
+        512,
+        2048,
+        1
+      ],
+      "workspace_bytes": 0,
+      "config": {
+        "variant": 5,
+        "columns": 4,
+        "warps": 8,
+        "values": 4,
+        "split": 1
+      },
+      "implementation": {
+        "producer": "q8-vector-hoisted",
+        "reduction": "none",
+        "changes": 0,
+        "hoist": true,
+        "fixed": false
+      }
+    },
+    {
+      "request": [
+        8,
+        0,
+        1536,
+        3072,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "status": 0,
+      "kind": 1,
+      "policy": 13,
+      "donor": [
+        1024,
+        2048,
+        1
+      ],
+      "workspace_bytes": 0,
+      "config": {
+        "variant": 5,
+        "columns": 4,
+        "warps": 8,
+        "values": 4,
+        "split": 1
+      },
+      "implementation": {
+        "producer": "q8-vector-hoisted",
+        "reduction": "none",
+        "changes": 0,
+        "hoist": true,
+        "fixed": false
+      }
+    }
+  ]
+}
