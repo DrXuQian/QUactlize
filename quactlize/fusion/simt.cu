@@ -20,12 +20,14 @@ __global__ void simt_gate_up(DeviceCall c,int split) {
         execution::simt::register_reuse_body<Q,Input,3,4,Warps,8,Compute,0,SimtFinish>(c,split);
 }
 
-template<int Q,int Input,int Compute,int Warps>
+template<int Q,int Input,int Compute,int Warps,int N,int K>
 __global__ void simt_gate_up_model(DeviceCall c) {
     static_assert(Input==QKG_F32 && Warps==8);
+    static_assert(N>0 && N%32==0 && K>0 && K%256==0);
+    c.n=N;c.k=K;
     if constexpr(Q==12) {
         static_assert(Compute==QKG_COMPUTE_BF16);
-        c.n=1024;c.k=2048;c.experts=256;c.mode=QKG_INDEXED;c.channels=1;c.topk=8;
+        c.experts=256;c.mode=QKG_INDEXED;c.channels=1;c.topk=8;
         execution::simt::register_reuse_body<12,1,3,4,8,8,1,1,SimtFinish>(c,1);
     } else {
         static_assert(Q==8 && Compute==QKG_COMPUTE_F16);
@@ -42,7 +44,7 @@ int simt_launch(DeviceCall const& c,qkg_gate_up_config_v1 const& f) {
                            execution::model_gemv::dense_m1(c,1024,2048) && c.round_projection==0;
         if(exact && c.output_type==QKG_F32 && f.split==1 && f.warps==8) {
             constexpr int TileN=Q==12?32:16;
-            simt_gate_up_model<Q,Input,Compute,8><<<c.rows*(c.n/TileN),256,0,stream>>>(c);
+            simt_gate_up_model<Q,Input,Compute,8,1024,2048><<<c.rows*(c.n/TileN),256,0,stream>>>(c);
             return hggcGetLastError()==hggcSuccess ? QKG_OK : QKG_RUNTIME;
         }
     }

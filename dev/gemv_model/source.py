@@ -33,7 +33,13 @@ def direct_body():
     return body
 
 
-def source(p):
+def source(p, configs=None):
+    configs = candidates(p) if configs is None else configs
+    if not configs or len({c.name for c in configs}) != len(configs):
+        raise ValueError("candidate inventory must be nonempty and unique")
+    for c in configs:
+        if c.vector_reduce and (p.paired or c.split == 1):
+            raise ValueError("row vector reducer requires unpaired Split-K partials")
     text = '''#include "quactlize/fusion/store.cuh"
 #include "quactlize/execution/q4_s1_validation.hpp"
 namespace quactlize::execution::q4_s1 {
@@ -70,12 +76,12 @@ struct Paired16Finish : quactlize::fusion::SimtFinish {
     if p.q == 14:
         text += direct_body()
     ctype = "quactlize::fusion::DeviceCall" if p.paired else "qkg_call_v1"
-    for index, c in enumerate(candidates(p)):
+    for index, c in enumerate(configs):
         text += f"__global__ void point_{p.q}_{p.physical_n}_{p.k}_arm_{index}({ctype} c) {{\n"
         if c.fixed:
             text += f"    c.n={p.physical_n};c.k={p.k};c.experts={p.experts};c.mode={p.mode};c.channels={p.channels};c.topk={8 if p.mode else 1};\n"
         finish = (",Paired16Finish" if c.tile_n == 16 else ",quactlize::fusion::SimtFinish") if p.paired else ""
-        if p.q == 8:
+        if p.q == 8 and c.variant >= 4:
             text += f"    q8_vector::kernel_body<1,{p.compute},{c.variant-4},{c.columns},{c.warps},{c.values},{str(c.hoist).lower()}{finish}>(c,{c.split});\n"
         else:
             body = "direct_metadata_body" if c.direct_meta else "register_reuse_body"
@@ -101,7 +107,7 @@ struct Paired16Finish : quactlize::fusion::SimtFinish {
     int rc=QKG_INVALID;
     switch(arm) {{
 '''
-    for index, c in enumerate(candidates(p)):
+    for index, c in enumerate(configs):
         text += f"    case {index}: {{\n"
         if p.paired:
             text += f'''        qkg_gate_up_config_v1 cfg{{1,sizeof(cfg),QKG_GATE_UP_SIMT,{c.split},0,{c.warps}}};
@@ -116,7 +122,9 @@ struct Paired16Finish : quactlize::fusion::SimtFinish {
         call.input_rows=fusion->input_rows;call.status=fusion->status;
 '''
         else:
-            a = "q8_kpack2::arrangement()" if p.q == 8 else f"ppu_arrangements::kquant_kpack_transpose_v1({p.q})"
+            a = ("q8_kpack2::arrangement()" if p.q == 8 else
+                 "ppu_arrangements::q4_kpack4_transpose_v1()" if p.q == 12 else
+                 f"ppu_arrangements::kquant_kpack_transpose_v1({p.q})")
             text += f'''        qkg_simt_config_v1 cfg{{1,sizeof(cfg),{c.variant},{c.columns},{c.warps},{c.values},{c.split}}};
         auto arrangement={a};
         rc=simt::query_v2(d,cfg,&arrangement,sizes);if(rc) return rc;
@@ -130,7 +138,13 @@ struct Paired16Finish : quactlize::fusion::SimtFinish {
         if c.split > 1:
             # Match the shipping S8 fast reduction exactly. Other shapes keep
             # the shipping generic ordered reducer, not a producer-only score.
-            if p.name == "q8-ssm-out" and c.split == 8 and c.columns == 8 and c.warps == 4 and c.values == 4:
+            if c.vector_reduce:
+                text += f'''        if(model_gemv::vector_reduction(c,{c.split}))
+            quactlize::decode::reduce_decode_rows<{c.split}><<<(int64_t(c.rows)*(c.n/2)+31)/32,32,0,stream>>>(
+                static_cast<float const*>(c.workspace),c.output,c.rows,c.n,c.out_row_stride);
+        else
+'''
+            elif p.name == "q8-ssm-out" and c.split == 8 and c.columns == 8 and c.warps == 4 and c.values == 4:
                 text += '''        if(c.rows==1 && !((uintptr_t(c.output)|uintptr_t(c.workspace))&7))
             quactlize::decode::reduce_decode<8><<<(c.n+63)/64,32,0,stream>>>(static_cast<float const*>(c.workspace),c.output,c.n);
         else

@@ -179,11 +179,12 @@ __global__ void register_reuse(qkg_call_v1 call,int split) {
     register_reuse_body<Q,Input,Variant,Columns,Warps,P,Compute,Changes>(call,split);
 }
 
-template<int Q,int Input,int Variant,int Columns,int Warps,int P,int Compute,int Changes>
+template<int Q,int Input,int Variant,int Columns,int Warps,int P,int Compute,int Changes,int N,int K>
 __global__ void register_reuse_model(qkg_call_v1 c) {
     static_assert(Q==13 && Input==QKG_F32 && Compute==QKG_COMPUTE_BF16 &&
                   Variant==3 && Columns==4 && Warps==2 && P==8 && Changes==3);
-    c.n=2048;c.k=512;c.experts=256;c.mode=QKG_INDEXED;c.channels=8;c.topk=8;
+    static_assert(N>0 && N%(Columns*P)==0 && K>0 && K%256==0);
+    c.n=N;c.k=K;c.experts=256;c.mode=QKG_INDEXED;c.channels=8;c.topk=8;
     register_reuse_body<Q,Input,Variant,Columns,Warps,P,Compute,Changes>(c,1);
 }
 
@@ -227,7 +228,7 @@ int launch_v2(qkg_simt_call_v2 const& d,int split) {
                      c.n==2048 && c.k==512 && c.channels==8);
         if(measured) {
             if constexpr(Q==13)
-                register_reuse_model<Q,1,Variant,Columns,Warps,P,1,3>
+                register_reuse_model<Q,1,Variant,Columns,Warps,P,1,3,2048,512>
                     <<<blocks,Warps*32,0,stream>>>(c);
             else
                 register_reuse<Q,1,Variant,Columns,Warps,P,1,1>

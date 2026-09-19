@@ -6,19 +6,21 @@ import numpy as np
 
 from dev.gemv_simt.native import Graph, checked
 from dev.gemv_simt.production import Library as ShippingSimt
-from dev.gemv_model.plan import candidates
+from dev.gemv_model.plan import Candidate, candidates
 from quactlize.execution.native import Call, SimtCallV2, arrangement
 from quactlize.execution.simt_codegen import Config as SimtConfig
 from quactlize.fusion.native import Library as FusionLibrary, MappedCall, FusionCall, Config as FusionConfig, Layout, integration_entries
 from quactlize.decode.native_compute import bind_compute, DenseIO, DenseComputeCall
 from quactlize.runtime.native import Call as TcCall, Recipe, Resources
+from dev.gate_up_perf.bench import Buffer
 
 
 class Provider:
     def __init__(self, bench, bundle, record, arm):
         self.b, self.arm, self.handles = bench, arm, []
         p = bench.point
-        self.config = candidates(p)[0 if arm == "incumbent" else int(arm)]
+        configs = [Candidate(**c) for c in record['candidates']] if 'candidates' in record else candidates(p)
+        self.config = configs[0 if arm == "incumbent" else int(arm)]
         self.fusion = FusionLibrary(bundle / "libquactlize_ppu_gate_up.so") if p.paired else None
         if self.fusion:
             self.layout = self.fusion.arrangement(p.q)
@@ -96,11 +98,11 @@ class Provider:
         self.handles.clear()
 
 
-def correctness(provider, repeat_controls=True):
+def correctness(provider, repeat_controls=True, token_controls=None):
     b, p, rt = provider.b, provider.b.point, provider.b.rt
     records, snapshots = [], {}
     b.mapped_call = True
-    for tokens in ((1, 2, 8) if repeat_controls else (1,)):
+    for tokens in (token_controls if token_controls is not None else ((1, 2, 8) if repeat_controls else (1,))):
         b.update(tokens, 0)
         launch = provider.prepare()
         graph = Graph(rt, [launch])
@@ -149,8 +151,59 @@ def correctness(provider, repeat_controls=True):
         if not np.isnan(b.result()).all():
             raise ValueError("upstream error status was not propagated")
     provider.close()
+    if provider.arm!='incumbent' and provider.config.vector_reduce:
+        records.extend(vector_reducer_controls(provider))
     b.update(1, 0)
     return records, snapshots
+
+
+def vector_reducer_controls(provider):
+    """Exercise the row-vector path and its public four-byte fallback untimed."""
+    b,p,rt=provider.b,provider.b.point,provider.b.rt
+    original=b.call
+    mark=len(rt.allocations)
+    records=[]
+    try:
+        for pad,out_offset,partial_offset in ((2,0,0),(2,4,0),(2,0,4),(1,0,0)):
+            stride=p.n+pad
+            b.update(3,0)
+            rows=b.rows
+            output=Buffer(rt,rows*stride*4+4)
+            partials=Buffer(rt,rows*p.n*provider.config.split*4+4)
+            def call(copy=0):
+                c=original(copy)
+                c.output=output.ptr+out_offset;c.out_row_stride=stride
+                c.workspace=partials.ptr+partial_offset;c.workspace_bytes=partials.size-partial_offset
+                return c
+            b.call=call
+            b.update(3,0)
+            launch=provider.prepare()
+            for repeat in (0,1):
+                b.update(3,repeat);output.poison();partials.poison()
+                checked(launch(),'row reducer stride/alignment control');rt.sync()
+                raw=output.read();words=raw.view('f4')
+                positions=out_offset//4+np.arange(rows)[:,None]*stride+np.arange(p.n)
+                got=words[positions]
+                error=float(np.max(np.abs(got.astype('f8')-b.gold)/np.maximum(b.denom,1e-20)))
+                if not np.isfinite(got).all() or not np.isfinite(error) or error>=.005:
+                    raise ValueError('row reducer independent oracle differs')
+                owned=np.zeros(raw.size,dtype=bool)
+                owned[(positions[...,None]*4+np.arange(4)).reshape(-1)]=True
+                if not np.all(raw[~owned]==0xA5):
+                    raise ValueError('row reducer wrote output padding')
+                partials.check_guard();b.a.check_guard()
+                raw_partials=partials.read()
+                end=partial_offset+rows*p.n*provider.config.split*4
+                if not np.all(raw_partials[:partial_offset]==0xA5) or not np.all(raw_partials[end:]==0xA5):
+                    raise ValueError('producer wrote outside partial extent')
+                records.append(dict(tokens=3,repeat=repeat,error=error,reducer_pad=pad,
+                                    output_offset=out_offset,partial_offset=partial_offset))
+            provider.close()
+    finally:
+        b.call=original
+        provider.close()
+        rt.release_after(mark)
+    return records
 
 
 def timing_graph(provider):

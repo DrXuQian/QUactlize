@@ -10,6 +10,7 @@ namespace quactlize::runtime { using Half=cutlass::half_t; }
 // INSERT_WARP_ROUTER
 #include "dev/moe_prepare/fast.cuh"
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -101,9 +102,9 @@ template<class C> struct Case {
   Buffer<float> source,logits,bias,weights;
   Buffer<int> ids;
   ComputeMoePlan<C> plan{};
-  Case(int t,int kk,int mm,int merge,int router,bool w):tokens(t),k(kk),mask(mm),merged(merge),
-      router_mode(router),weak(w),gate(t*8,merge?1024:512,kk,mm&1?1:2,w),
-      up(t*8,512,kk,mm&2?1:4,w),down(t*8,2048,512,mm&4?1:8,w),
+  Case(int t,int kk,int mm,int merge,int router,bool w,int hidden=512,int output=2048):tokens(t),k(kk),mask(mm),merged(merge),
+      router_mode(router),weak(w),gate(t*8,merge?2*hidden:hidden,kk,mm&1?1:2,w),
+      up(t*8,hidden,kk,mm&2?1:4,w),down(t*8,output,hidden,mm&4?1:8,w),
       source(size_t(t)*(kk+(w?17:0)),w),logits(t*256),bias(256),weights(t*8),ids(t*13) {
     static_cast<qk_moe_plan_v1&>(plan)={1,sizeof(qk_moe_plan_v1),uint32_t(merge),0,gate.p,up.p,down.p};
     plan.simt_mask=mask;
@@ -122,6 +123,9 @@ template<class C> struct Case {
       ck(cudaGetLastError());return;
     }
 #endif
+    if(arm==1 && prepare_detail::launch_all_simt<Shape,Stride>(plan,stream)) {
+      ck(cudaGetLastError());return;
+    }
     if(arm==1 && prepare_detail::supported(plan)) {
       bool all=(mask&(merged?5:7))==(merged?5:7);
       int capacity=tokens==1?8:tokens<=4?32:64;
@@ -386,6 +390,20 @@ static void router_edges() {
 int main(int argc,char** argv) {
   try {
     if(argc==2 && !std::strcmp(argv[1],"--router-edge-check")) {router_edges();return 0;}
+    if(argc==2 && !std::strcmp(argv[1],"--shape-check")) {
+      int cases=0;
+      for(int compute=0;compute<2;++compute) for(int t=1;t<=8;++t)
+      for(auto dims:{std::array<int,3>{512,2048,2048},{512,3072,3072},{1024,3072,3072},{256,512,1024}}) {
+        auto run=[&](auto tag) {
+          Case<decltype(tag)> c(t,dims[1],5,1,0,false,dims[0],dims[2]);
+          c.correctness();
+        };
+        if(compute)run(cutlass::bfloat16_t{});else run(Half{});
+        ++cases;
+      }
+      printf("MOE_PREPARE_SHAPES PASS cases=%d tokens=1..8 device_validated=1\n",cases);
+      return 0;
+    }
     bool bench=argc>1 && !std::strcmp(argv[1],"--benchmark");
     bool candidate_only=argc>1 && !std::strcmp(argv[1],"--candidate-check");
     bool alias_check=argc>1 && !std::strcmp(argv[1],"--router-alias-check");

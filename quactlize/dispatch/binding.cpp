@@ -866,7 +866,8 @@ extern "C" int quactlize_kpack_dispatch_moe_bind_gate_up_v1(void* runtime,void* 
     auto& c=*static_cast<MoeChain*>(handle);
     auto const& p=c.plan;
     if(c.gate_up.version || c.compute_type!=QK_COMPUTE_BF16 || !p.merged ||
-        p.gate.n!=1024 || p.gate.k!=2048 || p.down.k!=512 || p.gate.experts!=256 ||
+        p.gate.n<=0 || p.gate.k<=0 || int64_t(p.gate.n)!=2*int64_t(p.down.k) ||
+        p.gate.experts!=256 || p.down.experts!=p.gate.experts ||
         p.gate.io.tokens<1 || p.gate.io.tokens>8 || p.gate.io.topk!=8 || p.gate.io.channels!=1 ||
         source->layout.packing.bits!=4 || source->layout.packing.high_bits!=0) return QKS_MISS;
     try {
@@ -885,7 +886,7 @@ extern "C" int quactlize_kpack_dispatch_moe_bind_gate_up_v1(void* runtime,void* 
         d.input.compute_type=c.compute_type;d.round_projection=1;
         d.output_type=(c.simt_mask&4)?int(QKG_F32):int(QKG_SIMT_BF16);
         auto& v=d.input.call;v.version=1;v.size=sizeof(v);v.qtype=12;
-        v.n=512;v.k=p.gate.k;v.experts=p.gate.experts;v.rows=p.gate.m;
+        v.n=p.gate.n/2;v.k=p.gate.k;v.experts=p.gate.experts;v.rows=p.gate.m;
         v.mode=QKG_INDEXED;v.input_type=QKG_F32;v.channels=1;v.topk=8;
         v.a_row_stride=p.gate.io.a_row_stride;v.a_token_stride=p.gate.io.a_token_stride;
         v.ids_stride=p.gate.io.ids_stride;v.out_row_stride=v.n;

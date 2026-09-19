@@ -124,3 +124,11 @@ def test_native_opcodes_ignore_noninstruction_headers():
 Func 0 reader RESOURCE INFO:
 '''
     assert operations(text)=={'v.fma.f32.rtte':1,'vmem.ld.b32x4':1}
+
+
+def test_parameterized_symbols_do_not_relabel_new_dimensions_as_old_evidence():
+    from tools.inspect_model_gemv_integration import SYMBOLS, PARAMETERIZED_SYMBOLS, matches_measured
+    for point,new in PARAMETERIZED_SYMBOLS.items():
+        assert matches_measured(point,new+'(call)')
+        assert matches_measured(point,SYMBOLS[point][1]+'(call)')
+        assert not matches_measured(point,new.replace('2048','3072')+'(call)')

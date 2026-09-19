@@ -3,10 +3,17 @@
 #include "../execution/validation.hpp"
 
 namespace quactlize::fusion {
+// Structural capability; measured selection below deliberately remains exact.
+inline bool paired_shape(int q,int n,int k,int experts,int tokens,int compute) {
+    if(n<=0 || n>INT32_MAX/2 || n%256 || k<=0 || k%256 || tokens<1 || tokens>8) return false;
+    return (q==8 && experts==1 && compute==QKG_COMPUTE_F16) ||
+        (q==12 && experts==256 && compute==QKG_COMPUTE_BF16);
+}
+
 inline int select(int q,int n,int k,int experts,int tokens,int compute,qkg_gate_up_config_v1* out) {
     if(!out) return QKG_INVALID;
     *out={};
-    if(n!=512 || k!=2048 || tokens<1 || tokens>8) return QKG_SHAPE;
+    if(!paired_shape(q,n,k,experts,tokens,compute) || n!=512 || k!=2048) return QKG_SHAPE;
     if(q==8 && experts==1 && compute==QKG_COMPUTE_F16) {
         *out={1,sizeof(*out),QKG_GATE_UP_SIMT,1,0,8}; return QKG_OK;
     }

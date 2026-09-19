@@ -21,6 +21,7 @@ class Candidate:
     hoist: bool = False
     fixed: bool = False
     direct_meta: bool = False
+    vector_reduce: bool = False
 
     @property
     def tile_n(self):
@@ -127,3 +128,13 @@ def candidates(p):
 
 def inventory():
     return [dict(point=asdict(p), candidates=[asdict(c) for c in candidates(p)]) for p in POINTS]
+
+
+def cohort(name='model'):
+    if name=='tp2':
+        from dev.tp2_decode import plan
+        return plan
+    if name!='model':
+        raise ValueError('unknown GEMV cohort: '+name)
+    import sys
+    return sys.modules[__name__]

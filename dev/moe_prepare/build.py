@@ -35,6 +35,7 @@ def baseline_headers(ref, output):
     names=('quactlize/execution/moe_router_warp.cuh','quactlize/execution/moe_prepare.cuh')
     bodies={n:subprocess.check_output(['git','show',commit+':'+n],cwd=ROOT).decode() for n in names}
     router=bodies[names[0]].replace('router_256_top8_warp','router_256_top8_warp_incumbent')
+    router=router.replace('router_from_key','router_from_key_incumbent')
     router=router.replace('../integrations/llama/router.cuh',str(ROOT/'quactlize/integrations/llama/router.cuh'))
     (output/'router-incumbent.cuh').write_text(router)
     prepare=bodies[names[1]].replace('prepare_detail','prepare_incumbent')

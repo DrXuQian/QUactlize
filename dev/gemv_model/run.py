@@ -22,6 +22,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from dev.gemv_model.plan import POINTS, SCHEMA, BASE_EXECUTION, BASE_FUSION, candidates, inventory
+from dev.gemv_model.plan import cohort
 from dev.gemv_model.fixture import Bench
 from dev.gemv_model.engine import Provider, correctness, timing_graph
 from dev.gemv_model.access import access
@@ -36,10 +37,19 @@ def save(path, value):
     path.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
 
 
-def verify(bundle):
+def verify(bundle, cohort_name='model'):
+    plan = cohort(cohort_name)
     data = json.loads((bundle / "manifest.json").read_text())
-    if data.get("schema") != SCHEMA or data.get("inventory") != json.loads(json.dumps(inventory())):
+    if data.get("schema") != plan.SCHEMA or data.get("inventory") != json.loads(json.dumps(plan.inventory())):
         raise ValueError("bundle inventory differs")
+    declared = {r['point']['name']:r for r in data['inventory']}
+    names = [r['point']['name'] for r in data['records']]
+    if len(names)!=len(set(names)) or not names:
+        raise ValueError('duplicate/empty compiled point set')
+    for r in data['records']:
+        expected = declared.get(r['point']['name'])
+        if not expected or any(r[k]!=expected[k] for k in ('point','candidates')):
+            raise ValueError('compiled point differs from inventory')
     for file, digest in data["payloads"].items():
         p = bundle / file
         if p.parent != bundle or sha(p) != digest:
@@ -47,7 +57,7 @@ def verify(bundle):
     for p, digest in data["source_hashes"].items():
         if sha(ROOT / p) != digest:
             raise ValueError("compile source changed: " + p)
-    if sha(bundle / "libquactlize_ppu_execution.so") != BASE_EXECUTION or sha(bundle / "libquactlize_ppu_gate_up.so") != BASE_FUSION:
+    if sha(bundle / "libquactlize_ppu_execution.so") != plan.BASE_EXECUTION or sha(bundle / "libquactlize_ppu_gate_up.so") != plan.BASE_FUSION:
         raise ValueError("immutable incumbent changed")
     return data
 
@@ -65,9 +75,11 @@ def summarize(samples, weight_bytes, target):
 
 
 def child(args):
-    manifest = verify(args.bundle)
-    point = next(p for p in POINTS if p.name == args.point)
+    plan = cohort(args.cohort)
+    manifest = verify(args.bundle,args.cohort)
+    point = next(p for p in plan.POINTS if p.name == args.point)
     record = next(r for r in manifest["records"] if r["point"]["name"] == point.name)
+    configs = plan.candidates(point)
     rt = Runtime(args.sdk, "ppu")
     providers, graphs = {}, {}
     result = dict(status="FAIL", point=asdict(point), manifest_sha256=sha(args.bundle / "manifest.json"),
@@ -99,13 +111,13 @@ def child(args):
                           scope="ACU_KERNEL_REPLAY_CACHE_ALL_NOT_COLD_FULL_CALL_TIMING")
             save(args.output, result)
             return 0
-        keys = ["incumbent"] + [str(i) for i in range(len(candidates(point)))]
+        keys = ["incumbent"] + [str(i) for i in range(len(configs))]
         baseline_bits = None
         for key in keys:
             provider = Provider(bench, args.bundle, record, key)
             providers[key] = provider
             try:
-                proof, snapshots = correctness(provider)
+                proof, snapshots = correctness(provider,token_controls=getattr(plan,'TOKEN_CONTROLS',None))
                 if key == "incumbent":
                     baseline_bits = snapshots["m1"]
                 elif not point.tc and key == "0" and not np.array_equal(snapshots["m1"], baseline_bits):
@@ -132,7 +144,7 @@ def child(args):
                 order.reverse()
             for key in order:
                 screen[key].append(graphs[key].sample())
-        eligible = [k for k in graphs if k != "incumbent" and candidates(point)[int(k)].name not in ("clone", "generic")]
+        eligible = [k for k in graphs if k != "incumbent" and configs[int(k)].name not in ("clone", "generic")]
         if not eligible:
             raise ValueError("no candidate survived numeric gate")
         finalists = sorted(eligible, key=lambda k: statistics.median(screen[k]))[:2]
@@ -153,7 +165,7 @@ def child(args):
                      high=(bench.call().high or 0) % 128, units=bench.call().units % 128)
         result.update(status="PASS" if not result["failures"] else "PARTIAL", summary=summary, screen_us=screen,
                       best_candidate=best, candidate_within_5pct=summary[best]["delta_pct"] <= 5,
-                      access={str(i): access(point, c, bases) for i, c in enumerate(candidates(point))},
+                      access={str(i): access(point, c, bases) for i, c in enumerate(configs)},
                       scope="ROTATING_COMPLETE_CALL_NOT_MODEL_TPOT")
         save(args.output, result)
         print("MODEL_GEMV_RESULT " + json.dumps(dict(point=point.name, incumbent_us=baseline,
@@ -195,12 +207,12 @@ def logged(command, path, label, echo=False):
     return proc.returncode
 
 
-def profile_records(text, p, arm):
+def profile_records(text, p, arm, configs=None):
     offset = text.find('"ID"')
     if offset < 0:
         raise ValueError("ACU raw CSV missing")
     rows = [r for r in csv.DictReader(io.StringIO(text[offset:])) if r.get("Kernel Name")]
-    config = candidates(p)[0 if arm == "incumbent" else int(arm)]
+    config = (candidates(p) if configs is None else configs)[0 if arm == "incumbent" else int(arm)]
     split = p.tc[-1] if arm == "incumbent" and p.tc else config.split
     if len(rows) != 1 + int(split > 1):
         raise ValueError("ACU did not capture exactly the complete producer/reducer call")
@@ -213,11 +225,11 @@ def profile_records(text, p, arm):
         if rows[0]["Block Size"].replace(" ", "") != block or rows[0]["Grid Size"].replace(" ", "") != grid:
             raise ValueError("ACU candidate geometry differs")
     elif p.paired:
-        if f"simt_gate_up<{p.q},1,{p.compute},8>" not in name:
+        if not re.search(rf'simt_gate_up(?:_model)?<{p.q},1,{p.compute},8(?:,\d+,\d+)?>',name):
             raise ValueError("ACU paired incumbent differs")
     elif not p.tc:
-        marker = "q8_vector::kernel<" if p.q == 8 else "register_reuse<"
-        if marker not in name:
+        if not any(s in name for s in ('q8_vector::kernel<','q8_vector::kernel_model<',
+                                       'q8_vector::kernel_s1<','register_reuse<','register_reuse_model<')):
             raise ValueError("ACU SIMT incumbent differs")
     elif "cutlass" not in name or "kernel" not in name.lower():
         raise ValueError("ACU TC incumbent missing")
@@ -227,9 +239,11 @@ def profile_records(text, p, arm):
 
 
 def collect(args):
-    verify(args.bundle)
-    selected = [p for p in POINTS if not args.points or p.name in args.points.split(",")]
-    if not selected or (args.points and set(args.points.split(",")) - {p.name for p in POINTS}):
+    plan = cohort(args.cohort)
+    manifest = verify(args.bundle,args.cohort)
+    available = {r['point']['name'] for r in manifest['records']}
+    selected = [p for p in plan.POINTS if p.name in available and (not args.points or p.name in args.points.split(','))]
+    if not selected or (args.points and set(args.points.split(",")) - available):
         raise ValueError("unknown/empty point set")
     args.output.mkdir(parents=True, exist_ok=args.resume)
     identity = dict(manifest=sha(args.bundle / "manifest.json"), points=[p.name for p in selected],
@@ -248,7 +262,8 @@ def collect(args):
     for p in selected:
         dest, log = args.output / (p.name + ".json"), args.output / (p.name + ".log")
         cmd = [sys.executable, "-u", str(Path(__file__).resolve()), "--sdk", str(args.sdk),
-               "--bundle", str(args.bundle), "--point", p.name, "--l2-bytes", str(args.l2_bytes)]
+               "--bundle", str(args.bundle), "--point", p.name, "--l2-bytes", str(args.l2_bytes),
+               '--cohort',args.cohort]
         old = json.loads(dest.read_text()) if args.resume and dest.is_file() else {}
         rc = 0 if old.get("status") == "PASS" else logged(cmd + ["--output", str(dest)], log, "point=" + p.name, True)
         value = json.loads(dest.read_text()) if dest.is_file() else {}
@@ -263,7 +278,7 @@ def collect(args):
                     old_profile = admitted[0]
                     old_report = args.output / old_profile["report"]
                     if old_report.is_file() and sha(old_report) == old_profile["sha256"]:
-                        profile_records((args.output / old_profile["csv"]).read_text(errors="replace"), p, arm)
+                        profile_records((args.output / old_profile["csv"]).read_text(errors="replace"), p, arm,plan.candidates(p))
                         row["profiles"].append(old_profile)
                         print(f"MODEL_GEMV_RESUME point={p.name} arm={arm} profile=REUSED", flush=True)
                         continue
@@ -286,7 +301,7 @@ def collect(args):
                     rc = logged([str(args.acu), "--import", str(report), "--page", "raw", "--csv"], raw, "ACU export=" + p.name)
                     if rc:
                         raise ValueError("ACU export failed")
-                    profile.update(status="PASS", kernels=profile_records(raw.read_text(errors="replace"), p, arm),
+                    profile.update(status="PASS", kernels=profile_records(raw.read_text(errors="replace"), p, arm,plan.candidates(p)),
                                    sha256=sha(report), csv=raw.name)
                 except Exception as error:
                     profile["error"] = str(error)
@@ -314,7 +329,8 @@ def main():
         parser.add_argument("--" + k, type=Path, required=True)
     parser.add_argument("--l2-bytes", type=int, default=67108864)
     parser.add_argument("--acu", type=Path)
-    parser.add_argument("--point", choices=[p.name for p in POINTS])
+    parser.add_argument('--cohort',choices=('model','tp2'),default='model')
+    parser.add_argument("--point")
     parser.add_argument("--points")
     parser.add_argument("--profile-arm")
     parser.add_argument("--verify-only", action="store_true")
@@ -322,7 +338,7 @@ def main():
     args = parser.parse_args()
     args.sdk, args.bundle, args.output = (p.resolve() for p in (args.sdk, args.bundle, args.output))
     if args.verify_only:
-        verify(args.bundle)
+        verify(args.bundle,args.cohort)
         print("MODEL_GEMV_PACKAGE PASS prebuilt=1 production_selection_changed=0")
         return 0
     return child(args) if args.point else collect(args)

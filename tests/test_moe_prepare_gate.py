@@ -37,7 +37,7 @@ def test_prepare_fast_scope_and_m1_publication():
     assert text.index('if (proven) publish(true)') < text.index('int mine=0')
     assert 'if constexpr(!OneWarp) if (!proven) __syncthreads()' in text
     assert '__match_any_sync(0xffffffff,id)' in text
-    admission=text[text.index('CUTLASS_HOST_DEVICE bool admitted'):]
+    admission=text[text.index('CUTLASS_HOST_DEVICE bool all_simt_supported'):]
     assert '!r.delayed_softmax && !r.bias' in admission
     assert 'r.with_norm' in admission and '!r.use_sigmoid' in admission
 
@@ -75,9 +75,10 @@ def test_prepare_integration_timing_denominators_and_negatives():
 
 def test_production_prepare_promotes_only_measured_all_simt_domain(tmp_path):
     text=(ROOT/'quactlize/execution/moe_prepare.cuh').read_text()
-    body=text[text.index('template<class Plan>\nCUTLASS_HOST_DEVICE bool admitted'):text.index('\ntemplate<class Shape,class Stride,class Plan>\nvoid launch')]
+    body=text[text.index('template<class Plan>\nCUTLASS_HOST_DEVICE bool all_simt_supported'):text.index('\ntemplate<class Shape,class Stride,class Plan>\nbool launch_all_simt')]
     source=tmp_path/'admission.cpp'
     source.write_text('''#include <cassert>
+#include <cstdint>
 #define CUTLASS_HOST_DEVICE
 struct IO { int tokens=1; };
 struct Projection { IO io; int n=1024,k=2048; };

@@ -93,3 +93,24 @@ Local: audit, parameterization, host eligibility/negative tests, narrow SDK
 compile and ISA inspection. Box: PPU numerics, cold event timing, Asys/ACU and
 model replay. Do not edit the currently pinned kernel checkout before the
 unchanged-runtime trace; candidate builds belong in a separate worktree.
+
+## Implementation boundary (2026-09-19)
+
+Candidate branches: `dev/tp2-fastpaths` and `dev/quactlize-tp2-fastpaths`.
+Local completion means reusable dimension-carrying implementations, host
+boundary/negative tests, explicit bounded candidate inventories, and narrow
+PPU SDK compilation with ISA receipts. It does not mean device admission.
+No new published runtime or automatic heuristic promotion belongs to this step.
+Use existing explicit-config experiment entrypoints; do not add environment
+flags to turn unmeasured implementations into production defaults.
+
+Address contract: register readers keep lane `n = tile*Columns*P +
+(lane%Columns)*P + element`, K-worker `thread/Columns`, and canonical plane
+addresses. Changing N/K changes row/plane strides and K pass count, not lane
+ownership or packing. Hoist changes the lifetime of identical B loads. The
+unsigned/fold option changes index arithmetic and cross-warp reduction only.
+Paired fusion keeps PairedN4's gate/up lanes and derives physical N as twice
+logical N. Reducer inputs are `[row,split,N]`, outputs use their actual row
+stride; vector lanes own consecutive pairs within a row, never across splits.
+All-SIMT prepare reads router logits/IDs and publishes identity row maps; it
+does not read A or weight planes. None of these facts proves a speedup.

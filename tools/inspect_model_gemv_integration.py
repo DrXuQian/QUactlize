@@ -24,6 +24,17 @@ SYMBOLS={
     'q8-attn-gate':('execution','quactlize::execution::simt::q8_vector::kernel_s1<1,0,1,4,8,4,false>'),
 }
 
+PARAMETERIZED_SYMBOLS={
+    'q4-paired-routed':'quactlize::fusion::simt_gate_up_model<12,1,1,8,1024,2048>',
+    'q5-routed-down':'quactlize::execution::simt::register_reuse_model<13,1,3,4,2,8,1,3,2048,512>',
+    'q8-paired-shared':'quactlize::fusion::simt_gate_up_model<8,1,0,8,1024,2048>',
+}
+
+
+def matches_measured(point,name):
+    name=re.sub(r'\s+','',name)
+    return any(p+'(' in name for p in (SYMBOLS[point][1],PARAMETERIZED_SYMBOLS.get(point,'!')))
+
 
 def operations(text):
     return Counter(re.findall(r'^\s*[0-9a-f]+:\s+(?:[0-9a-f]{2}[ \t]+)+([a-z][\w.]+)\b',text,re.MULTILINE))
@@ -41,7 +52,7 @@ def inspect(args):
     old=json.loads((args.reference/'native-inspection.json').read_text())
     evidence=json.loads((ROOT/'docs/measurements/model_gemv_20260917.json').read_text())
     for point,(lib,pattern) in SYMBOLS.items():
-        matches=[s for s,n in names[lib].items() if pattern+'(' in re.sub(r'\s+','',n)]
+        matches=[s for s,n in names[lib].items() if matches_measured(point,n)]
         if len(matches)!=1:raise ValueError('missing/duplicate integrated symbol: '+point)
         symbol=matches[0];path=args.bundle/f'libquactlize_ppu_{lib}.so'
         resource_text=subprocess.check_output([args.sdk/'bin/hgobjdump','--dump-resource-usage='+symbol,path],text=True)

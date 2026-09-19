@@ -15,6 +15,7 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from dev.gemv_model.plan import POINTS, SCHEMA, BASE_SOURCE, BASE_ARTIFACT, BASE_EXECUTION, BASE_FUSION, candidates, inventory
+from dev.gemv_model.plan import cohort
 from dev.gemv_model.source import source
 from quactlize.runtime.compiler import FLAGS, LIBRARIES, sha
 from quactlize.runtime.native import sdk_identity
@@ -22,10 +23,14 @@ from quactlize.decode.compiler import DecodeCompiler
 
 
 def build(args):
+    plan = cohort(args.cohort)
+    points = [p for p in plan.POINTS if not args.points or p.name in args.points.split(',')]
+    if not points or (args.points and set(args.points.split(',')) - {p.name for p in plan.POINTS}):
+        raise ValueError('unknown/empty compile point set')
     sdk, out, base = (p.resolve(strict=True) for p in (args.sdk, args.output.parent, args.baseline))
     out = out / args.output.name
     out.mkdir(exist_ok=False)
-    for name, digest in [("execution", BASE_EXECUTION), ("gate_up", BASE_FUSION)]:
+    for name, digest in [("execution", plan.BASE_EXECUTION), ("gate_up", plan.BASE_FUSION)]:
         path = base / f"libquactlize_ppu_{name}.so"
         if sha(path) != digest:
             raise ValueError("immutable model control differs: " + name)
@@ -35,6 +40,7 @@ def build(args):
     paths = [p for folder in (ROOT / "quactlize", ROOT / "third_party/actlize/include")
              for p in folder.rglob("*") if p.is_file() and p.suffix in (".h", ".hpp", ".cuh", ".inc")]
     paths += [Path(__file__), ROOT / "dev/gemv_model/source.py", ROOT / "dev/gemv_model/plan.py"]
+    paths += [Path(plan.__file__)]
     hashes = {str(p.relative_to(ROOT)): sha(p) for p in paths}
     env = dict(os.environ)
     env["PATH"] = str(sdk / "bin") + os.pathsep + env.get("PATH", "")
@@ -44,11 +50,12 @@ def build(args):
 
     def one(p):
         src, obj, lib = [out / (p.name + suffix) for suffix in (".cu", ".o", ".so")]
-        src.write_text(source(p))
+        configs = plan.candidates(p)
+        src.write_text(source(p, configs))
         commands = [[str(sdk / "bin/hgcc"), *FLAGS, *[f"-I{x}" for x in include], "-c", str(src), "-o", str(obj)],
                     ["g++", "-shared", "-Wl,-Bsymbolic", "-Wl,-z,defs", str(obj), f"-L{sdk}/lib",
                      *[f"-l{x}" for x in LIBRARIES], "-o", str(lib)]]
-        print(f"MODEL_GEMV_BUILD point={p.name} candidates={len(candidates(p))} status=START", flush=True)
+        print(f"MODEL_GEMV_BUILD point={p.name} candidates={len(configs)} status=START", flush=True)
         with (out / (p.name + ".build.log")).open("x") as log:
             for cmd in commands:
                 subprocess.run(cmd, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
@@ -56,7 +63,7 @@ def build(args):
             with (out / (p.name + "." + suffix)).open("x") as log:
                 subprocess.run([sdk / "bin/hgobjdump", *flags, lib], env=env,
                                stdout=log, stderr=subprocess.STDOUT, check=True)
-        record = dict(point=asdict(p), candidates=[asdict(c) for c in candidates(p)],
+        record = dict(point=asdict(p), candidates=[asdict(c) for c in configs],
                       library=lib.name, sha256=sha(lib), source_sha256=sha(src), commands=commands)
         if p.tc:
             # Recompile exactly the frozen parent from unchanged source. The
@@ -68,15 +75,16 @@ def build(args):
         print(f"MODEL_GEMV_BUILD point={p.name} status=PASS elapsed_s={time.monotonic()-start:.1f}", flush=True)
         return record
 
-    with ThreadPoolExecutor(max_workers=min(args.jobs, len(POINTS))) as pool:
-        records = list(pool.map(one, POINTS))
+    with ThreadPoolExecutor(max_workers=min(args.jobs, len(points))) as pool:
+        records = list(pool.map(one, points))
     if any(sha(ROOT / p) != h for p, h in hashes.items()):
         raise ValueError("compile input changed")
     payloads = {p.name: sha(p) for p in out.iterdir() if p.suffix in (".so", ".cu", ".txt")}
-    result = dict(schema=SCHEMA, inventory=inventory(), records=records, payloads=payloads,
+    result = dict(schema=plan.SCHEMA, cohort=args.cohort, inventory=plan.inventory(),
+                  compiled_points=[p.name for p in points], records=records, payloads=payloads,
                   source_hashes=hashes, sdk=sdk_identity(sdk),
                   runtime={f"lib{x}.so": sha(sdk / "lib" / f"lib{x}.so") for x in LIBRARIES},
-                  baseline_source=BASE_SOURCE, baseline_artifact=BASE_ARTIFACT,
+                  baseline_source=plan.BASE_SOURCE, baseline_artifact=plan.BASE_ARTIFACT,
                   build_seconds=time.monotonic()-start, selector_changed=False, device_admission="PENDING")
     (out / "manifest.json").write_text(json.dumps(result, indent=2) + "\n")
     print(f"MODEL_GEMV_BUILD PASS seconds={result['build_seconds']:.1f} output={out}", flush=True)
@@ -87,6 +95,8 @@ if __name__ == "__main__":
     for name in ("sdk", "output", "baseline"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--jobs", type=int, default=8)
+    parser.add_argument('--cohort', choices=('model','tp2'), default='model')
+    parser.add_argument('--points', help='bounded comma-separated subset; full inventory remains in the receipt')
     args = parser.parse_args()
     if args.jobs < 1:
         parser.error("positive jobs required")

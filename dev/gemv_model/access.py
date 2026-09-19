@@ -22,7 +22,7 @@ def access(point, c, bases):
         result["streams"] = streams
     result.update(B_contiguous_bytes_per_k_worker_group=2*c.tile_n,
                   fast_code_dequant="LOP3/mantissa half2 extraction to exact integer codes; FP32 FMA",
-                  metadata_reader="direct Q6 d+int8" if c.direct_meta else "H32" if c.changes & 1 else "existing",
+                  metadata_reader="direct Q6 d+int8" if c.direct_meta else "H32" if point.q in (12,13) else "existing",
                   fixed_shape=c.fixed, paired_N4=point.paired,
                   hoisted_B_words_per_thread=8*c.values if point.q == 8 and c.hoist else None)
     result["aggregate_source_footprint"] = {str(s): {

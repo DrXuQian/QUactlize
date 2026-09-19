@@ -157,14 +157,16 @@ __global__ void kernel(qkg_call_v1 c,int split) {
 
 template<int Input,int Compute,int Variant,int Columns,int Warps,int P,bool Hoist,int N,int K,int Split>
 __global__ void kernel_model(qkg_call_v1 c) {
-    static_assert(Input==QKG_F32 && Compute==QKG_COMPUTE_F16);
+    static_assert(Input==QKG_F32 && (Compute==QKG_COMPUTE_F16 || Compute==QKG_COMPUTE_BF16));
+    static_assert(N>0 && N%(Columns*P)==0 && K>0 && K%256==0);
+    static_assert(Split==1 || Split==2 || Split==4 || Split==8);
     c.n=N;c.k=K;c.experts=1;c.mode=QKG_DENSE;c.channels=1;c.topk=1;
     kernel_body<Input,Compute,Variant,Columns,Warps,P,Hoist>(c,Split);
 }
 
 template<int Input,int Compute,int Variant,int Columns,int Warps,int P,bool Hoist>
 __global__ void kernel_s1(qkg_call_v1 c) {
-    static_assert(Input==QKG_F32 && Compute==QKG_COMPUTE_F16);
+    static_assert(Input==QKG_F32 && (Compute==QKG_COMPUTE_F16 || Compute==QKG_COMPUTE_BF16));
     kernel_body<Input,Compute,Variant,Columns,Warps,P,Hoist>(c,1);
 }
 

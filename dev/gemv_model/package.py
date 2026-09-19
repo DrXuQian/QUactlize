@@ -13,10 +13,10 @@ from dev.gemv_model.run import verify
 from quactlize.runtime.compiler import sha
 
 
-def package(source, destination):
+def package(source, destination, cohort_name='model'):
     source = source.resolve(strict=True)
     destination = destination.resolve()
-    manifest = verify(source)
+    manifest = verify(source,cohort_name)
     if "native-inspection.json" not in manifest["payloads"]:
         raise ValueError("native inspection missing")
     destination.mkdir(parents=True, exist_ok=False)
@@ -25,7 +25,7 @@ def package(source, destination):
         if sha(destination / file) != digest:
             raise ValueError("copied artifact differs: " + file)
     shutil.copy2(source / "manifest.json", destination / "manifest.json")
-    verify(destination)
+    verify(destination,cohort_name)
     print(json.dumps(dict(path=str(destination), manifest_sha256=sha(destination / "manifest.json"),
                           payloads=len(manifest["payloads"]),
                           bytes=sum((destination / p).stat().st_size for p in manifest["payloads"]))))
@@ -35,5 +35,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
     parser.add_argument("destination", type=Path)
+    parser.add_argument('--cohort',choices=('model','tp2'),default='model')
     args = parser.parse_args()
-    package(args.source, args.destination)
+    package(args.source, args.destination,args.cohort)

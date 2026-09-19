@@ -10,6 +10,37 @@ are host-tested. Private profiler namespace fallback is device-environment
 pending; it does not stop host profiler services. No new decode performance
 claim has been made.
 
-Next: get the unchanged-runtime trace, then implement generalization candidates
-in another worktree. Retain the old shape regressions in every relevant gate.
-Production selection must not change simply because a template can compile.
+Local implementation is complete on `dev/tp2-fastpaths`, based on 4326381,
+with caller branch `dev/quactlize-tp2-fastpaths`, based on 1bac078de. The original
+TP2 branches and runtime pin remain unchanged for trace recovery.
+
+Structural capability and measured default selection are separate. Read
+`README.md` for build/replay entrypoints. No new default selector was admitted.
+
+Local evidence (2026-09-19):
+
+- Quactlize host suite: 434 passed, 15 subtests passed (34.67 seconds).
+- Caller native/trace suite: 41 passed; graph matching covers189 graphs.
+- PPU candidate build: 17 points, 117 SIMT variants and four TC controls,
+  95.25 seconds with eight compile jobs. ISA inspection and package verification
+  pass; no device was used.
+- Prepare gate binary, Q4/Q8 production fusion TUs, BF16 Q8/fixed Q5 smoke
+  instantiations and the changed caller TU compile. Dispatcher syntax check passes.
+- Package: `/tmp/tp2-fastpaths-package-20260919`, manifest SHA256
+  `4addcd47773099db4d636f1c0e0d51b8ac1982624edf109733e17ccca7546460`.
+- Prepare: `/tmp/tp2-prepare-build-20260919-r2/bench`, SHA256
+  `6383bc26e6b4b6e2e2622ead04154202f994aa680edfd30002d2b59eb5fa8af2`.
+- Caller object: `/tmp/tp2-fastpaths-caller-final-20260919.o`, SHA256
+  `4df96eb6f82a361ec180f60c22e167c2cdc7462213d0ba764945608de3362ed4`.
+- Additional compile receipt: `/tmp/tp2-fastpaths-extra-xu0b2n4n/receipt.json`.
+
+The initial experiment wrapper used the non-Q4 arrangement constructor for
+an unpaired Q4 point. The new host query check caught it before a device run;
+the final package uses the exact Q4 registry descriptor. Discard the earlier
+`tp2-fastpaths-build-20260919` and `-r2` candidates as handoff authorities.
+No user files or old artifacts were deleted.
+
+Next requires PPU: run independent numeric controls, cold full-call comparison,
+prepare shape/alias gates and ACU. Then promote only measured scopes, compose
+the runtime with matching caller, and repeat model ABBA/Asys. The original TP2
+branches can still replay the unchanged baseline trace independently.

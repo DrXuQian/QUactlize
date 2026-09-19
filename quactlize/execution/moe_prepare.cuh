@@ -221,25 +221,40 @@ CUTLASS_HOST_DEVICE bool supported(Plan const& plan) {
       plan.down.tile_m>=tokens && (plan.merged || plan.up.tile_m>=tokens);
 }
 
-// Measured merged/all-SIMT domain. TC and mixed plans retain their incumbent.
+// No weight dimensions occur in the all-SIMT router/identity-map algorithm.
+template<class Plan>
+CUTLASS_HOST_DEVICE bool all_simt_supported(Plan const& plan) {
+  auto const& r=plan.router;
+  return supported(plan) && plan.merged && moe_simt_mask(plan)==5 &&
+      plan.gate.n>0 && plan.gate.k>0 && plan.down.n>0 && plan.down.k>0 &&
+      int64_t(plan.gate.n)==2*int64_t(plan.down.k) &&
+      r.version==1 && !r.use_sigmoid && r.with_norm && !r.delayed_softmax && !r.bias;
+}
+
+// Selection authority is narrower than implementation capability.
 template<class Plan>
 CUTLASS_HOST_DEVICE bool admitted(Plan const& plan) {
   int tokens=plan.gate.io.tokens;
-  auto const& r=plan.router;
-  return supported(plan) && plan.merged && moe_simt_mask(plan)==5 &&
+  return all_simt_supported(plan) &&
       (tokens==1 || tokens==2 || tokens==4 || tokens==8) &&
       (plan.gate.k==512 || plan.gate.k==2048) &&
-      plan.gate.n==1024 && plan.down.n==2048 && plan.down.k==512 &&
-      r.version==1 && !r.use_sigmoid && r.with_norm && !r.delayed_softmax && !r.bias;
+      plan.gate.n==1024 && plan.down.n==2048 && plan.down.k==512;
+}
+
+template<class Shape,class Stride,class Plan>
+bool launch_all_simt(Plan const& plan,hggcStream_t stream) {
+  if(!all_simt_supported(plan)) return false;
+  int tokens=plan.gate.io.tokens;
+  if(tokens==1) once<Shape,Stride,8,true><<<1,32,0,stream>>>(plan);
+  else if(tokens<=4) once<Shape,Stride,32,true><<<1,tokens*32,0,stream>>>(plan);
+  else once<Shape,Stride,64,true><<<1,256,0,stream>>>(plan);
+  return true;
 }
 
 template<class Shape,class Stride,class Plan>
 void launch(Plan const& plan,hggcStream_t stream) {
   if(admitted(plan)) {
-    int tokens=plan.gate.io.tokens;
-    if(tokens==1) once<Shape,Stride,8,true><<<1,32,0,stream>>>(plan);
-    else if(tokens<=4) once<Shape,Stride,32,true><<<1,tokens*32,0,stream>>>(plan);
-    else once<Shape,Stride,64,true><<<1,256,0,stream>>>(plan);
+    launch_all_simt<Shape,Stride>(plan,stream);
   } else if(moe_prepare_m1_supported(plan))
     moe_chain_prepare_m1<Shape,Stride><<<1,256,0,stream>>>(plan);
   else if(plan.gate.m>32)
