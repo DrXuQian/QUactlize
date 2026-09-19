@@ -2,7 +2,41 @@
 
 Follow-up: `dev/decode-fallback` updates common runtime fallback paths. See
 [`docs/fallback-20260919.md`](docs/fallback-20260919.md) for the implemented
-scope and pending device gate. The instructions below describe the immutable
+scope and pending device admission, and
+[`docs/architecture-20260919.md`](docs/architecture-20260919.md) for the independent
+architecture review and staged refactor plan. No architectural refactor has
+been mixed into the experiment.
+
+The follow-up now has its own prebuilt entrypoint and immutable pin:
+
+```bash
+PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
+RESULT_ROOT=/sim/eec/shared/junfu.qx CUDA_VISIBLE_DEVICES=0 \
+bash tools/run_decode_fallback_box.sh
+```
+
+`fallback_prebuilt.json` identifies the new artifact. This runs 18 bounded
+points: 11 known model cases against the frozen **confirmed minima**, two
+unseen Q8 shapes against old production controls, and five explicit BF16
+reducer controls. M1..8 numerical checks precede M1 cold complete-call timing;
+ACU captures both arms. Ordinary points verify the real production selector;
+the five reducer controls are explicitly not automatic policy selections.
+The actual prepare dispatcher is checked separately for shape/router/alias
+correctness and K3072 M1/M8 timing. The box does not compile or install a
+replacement runtime, and this gate does not measure model TPOT/Asys.
+
+Use `RESUME_RUN=/exact/printed/run` with the same source, SDK, physical device
+and point set to retain passed points and verified ACU captures. Failed points
+run in separate processes; a failure does not discard independent results.
+`VERIFY_ONLY=1` checks the package without GPU use. `FALLBACK_ARTIFACT_DIR`
+can select a materialized checkout at the pinned artifact commit. Keep the
+printed result archive; raw `.acurep` files stay on the box and counter CSVs
+are included in the archive. Passing correctness does not automatically
+promote a slower fallback over the frozen winner.
+
+## Previous immutable experiment
+
+The instructions below describe the immutable
 first experiment at source `3b16b5e`, not a ready-to-run package for the changed
 fallback source. The production artifact pin has not been replaced.
 

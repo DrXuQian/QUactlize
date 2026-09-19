@@ -54,6 +54,7 @@ def main():
     p.add_argument("--platform", choices=("cuda","ppu"), default="cuda")
     p.add_argument("--arch", default="sm_120", choices=("sm_120", "sm_90"))
     p.add_argument("--baseline-ref", help="compare against this immutable admitted prepare source")
+    p.add_argument("--production-candidate", action="store_true", help="test the actual current prepare dispatcher")
     a = p.parse_args()
     a.output.mkdir(parents=True, exist_ok=False)
     source = (ROOT / "dev/moe_prepare/bench.cu").read_text()
@@ -63,6 +64,9 @@ def main():
     generated = a.output / "bench.cu"
     baseline=baseline_headers(a.baseline_ref,a.output) if a.baseline_ref else None
     source=source.replace(marker, '#define QK_PREPARE_BASELINE 1\n#include "prepare-incumbent.cuh"\n' if baseline else '')
+    if a.production_candidate:
+        if not baseline:raise ValueError('production comparison requires a frozen baseline')
+        source='#define QK_PREPARE_PRODUCTION 1\n'+source
     if a.platform=="ppu":source=re.sub(r"\bcuda(?=[A-Z_])","hggc",source)
     generated.write_text(source)
     paths = [ROOT / n for n in (
@@ -103,7 +107,8 @@ def main():
         raise ValueError("source changed while compiling")
     receipt = dict(source_hashes=hashes, generated_sha256=sha(generated),
                    binary_sha256=sha(a.output / "bench"), commands=commands,platform=a.platform,
-                   scope="PREPARE_ONLY_NOT_GEMM", device_validated=False)
+                   scope="PREPARE_ONLY_NOT_GEMM", device_validated=False,
+                   production_candidate=a.production_candidate)
     if baseline: receipt['prepare_baseline']=baseline
     (a.output / "manifest.json").write_text(json.dumps(receipt, indent=2) + "\n")
     print("MOE_PREPARE_BUILD PASS", a.output / "bench", flush=True)

@@ -117,6 +117,12 @@ template<class C> struct Case {
         int(router==2),0,6.103515625e-5f,1.25f,logits.ptr,router==1?bias.ptr:nullptr,weights.ptr};
   }
   void launch(int arm,cudaStream_t stream) {
+#ifdef QK_PREPARE_PRODUCTION
+    if(arm==1) {
+      prepare_detail::launch<Shape,Stride>(plan,stream);
+      ck(cudaGetLastError());return;
+    }
+#endif
 #ifdef QK_PREPARE_BASELINE
     if(arm==0 && prepare_incumbent::admitted(plan)) {
       prepare_incumbent::launch<Shape,Stride>(plan,stream);
@@ -285,6 +291,9 @@ template<class C> struct Case {
           else require(got_ids[t*13+s]==-123,"ID stride padding");
         }
         bool direct=arm==1 && (mask&(merged?5:7))==(merged?5:7);
+#ifdef QK_PREPARE_PRODUCTION
+        direct=arm==1 && prepare_detail::all_simt_supported(plan);
+#endif
 #ifdef QK_PREPARE_BASELINE
         direct|=arm==0 && prepare_incumbent::admitted(plan);
 #endif

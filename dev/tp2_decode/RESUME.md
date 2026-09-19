@@ -82,3 +82,30 @@ artifact immutable; do not run its source verifier at this new source HEAD.
 Next: bounded table-miss/old-shape integration against frozen per-point best,
 then registry/paired-candidate work and a matching model package. The active
 production runtime pin and llama caller are unchanged by this follow-up.
+
+Source-matched handoff,2026-09-19: `tools/run_decode_fallback_box.sh` and
+`fallback_prebuilt.json` now provide the separate bounded gate. Artifact commit
+`331fc8d1690eba798073d1b6d79d96a1e15f7091` on
+`artifacts/decode-fallback-v1` contains only the component package and prepare
+gate, not a replacement model runtime or llama binaries. The GEMV manifest is
+`2a40ab32742940ef0a9c614bb0f8b83ed909f71d73ba6c0c30fb1919c9cc5e7c`.
+Eleven known points use frozen confirmed minima (independently checked against
+the returned archive), two unseen Q8 points use explicit old controls, and
+five BF16 reducer points are non-policy controls. The actual C ABI selector
+is rechecked in every ordinary child; production launchers provide the body.
+M1..8 numerics precede M1 rotating complete-call timing; both ACU arms bind
+native producer/reducer identity and geometry. Prepare uses its real dispatcher.
+
+Final local build: `/tmp/decode-fallback-gate-build-20260919-r4`,21.0 seconds,
+six jobs. Candidate and frozen-incumbent native identities pass static checks.
+119 host tests pass in34.82s. End-to-end no-device preflight passes at
+`/tmp/decode-fallback.fHq22o`. No numerical/performance device claim is made.
+Resume binds profiling requirements and retains every completed profiler arm
+and later completed point. Static compilation is not performance admission.
+
+Independent architecture review and staged TODO are in
+`docs/architecture-20260919.md`. Priority is behavior-preserving final-decision
+snapshots, an effective recipe catalog, and one selector shared by runtime and
+build/prewarm. No architecture implementation was mixed into this gate.
+The separately requested external CLI review could not start because its
+authentication expired; do not attribute this report to that external model.

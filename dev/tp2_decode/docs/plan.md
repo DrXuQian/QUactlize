@@ -1,5 +1,9 @@
 # TP2 decode fast-path generalization
 
+Architecture follow-up: [decode policy review and phased TODO](architecture-20260919.md).
+This is a read-only design review, not an implementation change or device admission.
+Freeze final-decision behavior before consolidating selection/build planning.
+
 ## Authority and scope
 
 Baseline source: `c05900e2d0fe691981ca6f768e72547536d4a588`.
