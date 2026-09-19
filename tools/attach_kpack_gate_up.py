@@ -42,9 +42,10 @@ def attach(base, fusion, output, sdk):
         old['policy_hashes'][name]=sha(ROOT/name)
     old['paired_gate_up']=dict(schema='quactlize.paired-model.v1',library=library.name,
         sha256=sha(library),receipt='gate-up-runtime.json',receipt_sha256=sha(fusion/'manifest.json'),
-        layout_id=build['layout_id'],q8_shared='F16_N512_K2048_E1_T1_8',
+        layout_id=build['layout_id'],q8_shared='F16_N512_K2048_T1_8_N1024_K3072_T1',
         q4_routed='BF16_N512_K2048_E256_TOP8_T1_8',canonical_retained=True,device_validated=False,
         cost_authority='91ee820416b7f2bbae44ded371030cdb995432c4a7664403747ba4ff80001d56')
+    old['paired_gate_up']['additional_cost_authority']=sha(ROOT/'policies/kpack_decode_winners_v1.json')
     old['dispatcher_refresh']=dict(base_manifest_sha256=sha(base/'manifest.json'),
         scope='PAIRED_N4_AUXILIARY_SCOPED_FUSION',changed_policy_inputs=sorted(allowed),
         existing_gpu_payloads='BYTE_IDENTICAL',new_library=library.name)

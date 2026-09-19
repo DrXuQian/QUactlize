@@ -1,6 +1,5 @@
 // Policy/ABI only: fake resource queries, never simulated GPU arithmetic.
 #include "quactlize/dispatch/binding.cpp"
-#include "tests/legacy_q8_overlay.hpp"
 #include <cassert>
 #include <cstdio>
 static int compute=-1,queries=0;
@@ -9,7 +8,7 @@ static int resource(qk_resources_v1* out) {
 }
 int main() {
   using namespace quactlize::dispatch;
-  int count=0,reader_replacements=0;
+  int count=0;
   for(auto const& row:matched::data::kExact) {
     auto const& f=matched::data::kChoices[row.choice];if(f.kind!=0)continue;
     auto const& c=f.tc;bool dense=row.mode==QKG_DENSE;compute=row.compute;
@@ -29,14 +28,6 @@ int main() {
       ppu_arrangements::q4_kpack4_transpose_v1():ppu_arrangements::kquant_kpack_transpose_v1(row.q);
     qkg_simt_call_v2 typed{2,sizeof(typed),call,compute};qks_smallm_choice_v2 out{};
     int rc=quactlize_kpack_dispatch_query_smallm_v3(&runtime,&typed,&arr,&out);
-    qkg_simt_config_v1 replacement{};
-    if(q8_vector::select_tc(typed,c,replacement)) {
-      assert(rc==QKS_OK && out.base.kind==QKS_SMALLM_SIMT && out.compute_type==compute);
-      assert(out.base.policy==QKS_Q8_VECTOR_MEASURED && runtime.plans.empty());
-      assert(!std::memcmp(&out.base.simt,&replacement,sizeof(replacement)));
-      assert(out.base.sizes.workspace_bytes==0);
-      ++reader_replacements;continue;
-    }
     assert(rc==QKS_OK && out.base.kind==QKS_SMALLM_TC && out.compute_type==compute);
     assert(out.base.policy==(row.router_sensitive?QKS_MATCHED_ROUTER:QKS_MATCHED_EXACT));
     assert(out.base.tc.policy==out.base.policy && std::string(out.base.tc.parent)==c.symbol);
@@ -48,6 +39,6 @@ int main() {
     assert(quactlize_kpack_dispatch_query_smallm_v3(&runtime,&typed,&arr,&again)==QKS_OK);
     assert(queries==before && !std::memcmp(&out,&again,sizeof(out)));++count;
   }
-  assert(count>500 && reader_replacements==2);
-  printf("MATCHED_TC_DISPATCH PASS rows=%d exact compute/geometry/split/grid/ticket preserved replacements=%d\n",count,reader_replacements);
+  assert(count>500);
+  printf("MATCHED_TC_DISPATCH PASS rows=%d exact compute/geometry/split/grid/ticket preserved\n",count);
 }

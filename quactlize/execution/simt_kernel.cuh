@@ -5,7 +5,7 @@
 #include "simt.h"
 #include "simt_strategy.hpp"
 #include "simt_activation.cuh"
-#include "../decode/reducer.cuh"
+#include "simt_reducer.cuh"
 #include <type_traits>
 
 namespace quactlize::execution::simt {

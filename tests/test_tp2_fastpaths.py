@@ -54,8 +54,8 @@ int main(){
 
 
 def test_actual_vector_reducer_rows_stride_and_scalar_fallback(tmp_path):
-    text = (ROOT/'quactlize/decode/reducer.cuh').read_text()
-    body = text[text.index('template<int Splits>'):text.index('template<int Splits,class Output>')]
+    text = (ROOT/'quactlize/execution/simt_reducer.cuh').read_text()
+    body = text[text.index('template<int Splits>'):text.index('} // namespace')]
     compile_run(tmp_path, '''#include "quactlize/execution/model_gemv_scope.hpp"
 #include <cassert>
 #include <vector>
@@ -171,7 +171,8 @@ int main(){
       assert(result.workspace_bytes==(split==1?0:uint64_t(c.rows)*2*n*split*4));
     }
     qkg_gate_up_config_v1 selected{};
-    assert((select(q,n,k,c.experts,t,d.input.compute_type,&selected)==QKG_OK)==(n==512 && k==2048));
+    bool measured=(n==512 && k==2048) || (q==8 && n==1024 && k==3072 && t==1);
+    assert((select(q,n,k,c.experts,t,d.input.compute_type,&selected)==QKG_OK)==measured);
   }
 }''')
 

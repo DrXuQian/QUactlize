@@ -49,7 +49,7 @@ def source(q, profile="full"):
     candidates = inventory(q, profile)
     conditions = [f"f->variant=={c.variant} && f->columns=={c.columns} && "
                   f"f->warps=={c.warps} && f->values=={c.values}" for c in candidates]
-    body = '#include "simt_q8_vector.cuh"\n' if q == 8 else '#include "simt_kernel.cuh"\n'
+    body = '#include "measured_decode.cuh"\n'
     body += f'extern "C" bool qkg_simt_supported_{q}(qkg_simt_config_v1 const* f) {{\n'
     body += "    return " + " ||\n        ".join(f"({s})" for s in conditions) + ";\n}\n"
     body += f'extern "C" int qkg_simt_launch_{q}(qkg_call_v1 const* c,qkg_simt_config_v1 const* f) {{\n'
@@ -59,6 +59,7 @@ def source(q, profile="full"):
         body += f"{q},{c.variant},{c.columns},{c.warps},{c.values}>(*c,f->split);\n"
     body += "    return QKG_INVALID;\n}\n"
     body += f'extern "C" int qkg_simt_launch_v2_{q}(qkg_simt_call_v2 const* c,qkg_simt_config_v1 const* f) {{\n'
+    body += f'    if (quactlize::execution::simt::measured_decode(*c,*f)!=quactlize::execution::simt::MeasuredDecode::None) return quactlize::execution::simt::measured_decode_launch<{q}>(*c,*f);\n'
     for c, condition in zip(candidates, conditions):
         reader = "simt::q8_vector" if c.variant >= 4 else "simt"
         body += f"    if ({condition}) return quactlize::execution::{reader}::launch_v2<"

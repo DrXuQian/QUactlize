@@ -36,6 +36,7 @@ static void emit(int q,int mode,int n,int k,int experts,int topk,int channels,in
                 <<",\"warps\":"<<f.warps<<",\"values\":"<<f.values<<",\"split\":"<<f.split<<'}';
             auto impl=quactlize::execution::simt::implementation({2,sizeof(qkg_simt_call_v2),c,compute},f);
             std::cout<<",\"implementation\":{\"producer\":"<<std::quoted(impl.producer)
+                <<",\"measured\":"<<std::quoted(impl.measured)
                 <<",\"reduction\":"<<std::quoted(impl.reduction)<<",\"changes\":"<<impl.changes
                 <<",\"hoist\":"<<(impl.hoist?"true":"false")<<",\"fixed\":"<<(impl.fixed?"true":"false")<<'}';
         } else {

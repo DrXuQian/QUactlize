@@ -3,7 +3,7 @@
 #include "quactlize/dispatch/binding.cpp"
 #include <iostream>
 
-static quactlize::smallm_matched_data::Choice const* current = nullptr;
+static quactlize::dispatch::matched::data::Choice const* current = nullptr;
 static int resources(qk_resources_v1* out) {
     *out={};out->occupancy=3;out->workspace_bytes=8192;out->shared_bytes=1234;
     return QK_OK;

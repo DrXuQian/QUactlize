@@ -12,6 +12,15 @@ CUTLASS_DEVICE Row locate(quactlize::fusion::DeviceCall const& c, int row) {
 #include "../execution/simt_q8_vector.cuh"
 
 namespace quactlize::fusion {
+// Same dynamic-dimension, constant-S1 tile16 body as the confirmed paired
+// winner. Do not replace its sequential inter-warp gate/up sum by XOR fold.
+__global__ void simt_gate_up_q8_tile16(DeviceCall c);
+#if QGU_QTYPE == 8
+__global__ void simt_gate_up_q8_tile16(DeviceCall c) {
+    execution::simt::q8_vector::kernel_body<1,0,1,4,8,4,true,SimtFinish>(c,1);
+}
+#endif
+
 template<int Q,int Input,int Compute,int Warps>
 __global__ void simt_gate_up(DeviceCall c,int split) {
     if constexpr(Q==8)
@@ -38,6 +47,14 @@ __global__ void simt_gate_up_model(DeviceCall c) {
 template<int Q,int Input,int Compute>
 int simt_launch(DeviceCall const& c,qkg_gate_up_config_v1 const& f) {
     auto stream=static_cast<hggcStream_t>(c.stream);
+    if constexpr(Q==8 && Input==QKG_F32 && Compute==QKG_COMPUTE_F16) {
+        bool selected=execution::model_gemv::dense_m1(c) &&
+            ((c.n==1024 && c.k==2048) || (c.n==2048 && c.k==3072));
+        if(selected && c.output_type==QKG_F32 && c.round_projection==0 && f.split==1 && f.warps==8) {
+            simt_gate_up_q8_tile16<<<c.rows*(c.n/16),256,0,stream>>>(c);
+            return hggcGetLastError()==hggcSuccess?QKG_OK:QKG_RUNTIME;
+        }
+    }
     if constexpr(Input==QKG_F32 && ((Q==12 && Compute==QKG_COMPUTE_BF16) ||
                                     (Q==8 && Compute==QKG_COMPUTE_F16))) {
         bool exact=Q==12 ? execution::model_gemv::indexed_m1(c,1024,2048,1) && c.round_projection==1 :

@@ -1,7 +1,7 @@
 #pragma once
 #include "compute.hpp"
 #include "decode.hpp"
-#include "effective.hpp"
+#include "smallm_matched.hpp"
 
 namespace quactlize::dispatch {
 
@@ -58,7 +58,6 @@ inline SmallMDecision select_smallm(qkg_simt_call_v2 const& typed,
     if (!selected.row) return out;
     auto const& row = *selected.row;
     auto const& original = matched::data::kChoices[row.choice];
-    auto const& replacement = effective::kReplacements[size_t(selected.row - matched::data::kExact)];
     auto& result = out.choice;
     auto& base = result.base;
     result.compute_type = typed.compute_type;
@@ -70,11 +69,7 @@ inline SmallMDecision select_smallm(qkg_simt_call_v2 const& typed,
         out.status = QKS_INVALID;
         return out;
     }
-    if (replacement.version) {
-        base.kind = QKS_SMALLM_SIMT;
-        base.simt = replacement;
-        if (selected.policy != QKS_MATCHED_BUCKET) base.policy = QKS_Q8_VECTOR_MEASURED;
-    } else if (base.kind == QKS_SMALLM_SIMT) {
+    if (base.kind == QKS_SMALLM_SIMT) {
         auto f = original.reader;
         base.simt = {1, sizeof(base.simt), f.variant, f.columns, f.warps, f.values, f.split};
     }

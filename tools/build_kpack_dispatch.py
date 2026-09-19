@@ -307,11 +307,15 @@ def main():
         ROOT / "tools/kpack_native_policy.cpp",
         ROOT / "tools/kpack_selection.cpp",
         ROOT / "quactlize/execution/simt_strategy.hpp",
+        ROOT / "quactlize/execution/measured_decode.hpp",
+        ROOT / "quactlize/execution/measured_decode.inc",
         ROOT / "policies/kpack_zw810_heuristic_v1.hpp",
         ROOT / "policies/kpack_zw810_runtime_v1.hpp",
         ROOT / "policies/kpack_zw810_cost_v1.hpp",
         ROOT / "policies/kpack_smallm_v1.hpp",
         ROOT / "policies/kpack_smallm_matched_v1.hpp",
+        ROOT / "policies/kpack_smallm_effective_v1.hpp",
+        ROOT / "policies/kpack_decode_winners_v1.json",
         ROOT / "policies/kpack_q8_vector_v1.hpp",
     ]
     manifest = dict(
@@ -357,6 +361,11 @@ def main():
     manifest['q8_vector_policy']=dict(path='q8-vector-policy.json',sha256=sha(vector_policy),
         header_sha256=sha(vector_policy.with_suffix('.hpp')),
         admission='EXACT_SIMT_READER_REPLACEMENT_MODEL_GATE_PENDING')
+    winners=ROOT/'policies/kpack_decode_winners_v1.json'
+    shutil.copy2(winners,output/'decode-winners.json')
+    manifest['decode_winners']=dict(path='decode-winners.json',sha256=sha(winners),
+        effective_header_sha256=sha(ROOT/'policies/kpack_smallm_effective_v1.hpp'),
+        admission='COMPONENT_CONFIRMED_PRODUCTION_INTEGRATION_PENDING')
     if receipt.get('simt_compute_v2'):
         manifest['compute_contract']=dict(schema='quactlize.explicit-compute.v1',
             formats=[8,10,11,12,13,14],grouped='ALL_LEGAL_M',dense='DECODE_M1_8',

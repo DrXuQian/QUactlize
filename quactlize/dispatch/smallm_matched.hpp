@@ -1,9 +1,9 @@
 #pragma once
 #include "smallm.hpp"
-#include "../../policies/kpack_smallm_matched_v1.hpp"
+#include "../../policies/kpack_smallm_effective_v1.hpp"
 
 namespace quactlize::dispatch::matched {
-namespace data=quactlize::smallm_matched_data;
+namespace data=quactlize::smallm_effective_data;
 struct Selection { data::Row const* row=nullptr; int policy=0; };
 
 inline bool domain(qkg_simt_call_v2 const& d) {
@@ -34,7 +34,8 @@ inline Selection select(qkg_simt_call_v2 const& d) {
                r.channels==c.channels && r.compute==d.compute_type;
     };
     for(auto const& r:data::kExact) if(family(r) && r.n==c.n && r.k==c.k && r.tokens==m &&
-        eligible(data::kChoices[r.choice],c)) return {&r,r.router_sensitive?QKS_MATCHED_ROUTER:QKS_MATCHED_EXACT};
+        eligible(data::kGuards[data::kGuardIndex[&r-data::kExact]],c))
+        return {&r,data::kPolicy[&r-data::kExact]};
     for(auto const& r:data::kOpen) if(family(r) && r.n==c.n && r.k==c.k && r.tokens==m) return {};
     data::Row const* donor=nullptr;int distance=INT32_MAX;
     for(auto const& b:data::kBuckets) {
@@ -42,7 +43,7 @@ inline Selection select(qkg_simt_call_v2 const& d) {
         auto const& r=data::kExact[b.row];
         if(int64_t(c.n)>int64_t(r.n)*2 || int64_t(r.n)>int64_t(c.n)*2 ||
            int64_t(c.k)>int64_t(r.k)*2 || int64_t(r.k)>int64_t(c.k)*2 ||
-           !eligible(data::kChoices[r.choice],c)) continue;
+           !eligible(data::kGuards[data::kGuardIndex[b.row]],c)) continue;
         int delta=std::abs(smallm::log2(c.n)-b.n)+std::abs(smallm::log2(c.k)-b.k);
         if(delta<distance) {distance=delta;donor=&r;}
     }

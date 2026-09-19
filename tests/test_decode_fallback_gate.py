@@ -77,6 +77,20 @@ def test_reference_incumbent_uses_exact_old_qtype_recipe_reducer_geometry():
         with pytest.raises(ValueError):profile_check(bad,r,'reference')
 
 
+def test_frozen_identity_survives_json_without_loosening_shape_scope():
+    from dataclasses import replace
+    from dev.gemv_model.plan import Point
+    for p in plan.UNSEEN+plan.REDUCERS:
+        cfg=dict(variant=1 if p.q==8 else 3,columns=4,warps=8 if p.q==8 else 4,
+                 values=2 if p.q==8 else 4,split=1 if p.q==8 else 4)
+        restored=Point(**json.loads(json.dumps(asdict(p))))
+        assert isinstance(restored.tc,list)
+        assert plan.frozen_kernel_names(restored,cfg)==plan.frozen_kernel_names(p,cfg)
+        for change in (dict(n=p.n+256),dict(k=p.k+256),dict(compute=1-p.compute),
+                       dict(mode=2),dict(channels=8),dict(paired=True),dict(tc=[8,64,16,32,8])):
+            with pytest.raises(ValueError):plan.frozen_kernel_names(replace(restored,**change),cfg)
+
+
 def test_receipt_flags_match_actual_m1_implementation():
     q8=next(p for p in plan.POINTS if p.name=='tp2-q8-qkv')
     a=plan.production_config(q8,dict(variant=5,columns=4,warps=8,values=4,split=1))

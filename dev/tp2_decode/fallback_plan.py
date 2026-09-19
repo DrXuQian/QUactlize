@@ -1,5 +1,5 @@
 """Bounded production-fallback gate, with the last confirmed minima frozen."""
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from dev.gemv_model.plan import Candidate, Point
 from dev.tp2_decode import plan as prior
 
@@ -64,6 +64,9 @@ def production_config(p,cfg):
 
 def frozen_kernel_names(p,cfg):
     """Old execution image identities, not the changed source's launcher."""
+    # JSON stores the TC tuple as a list, including [] for SIMT-only points.
+    # Normalize just that representation; keep every geometry/precision guard.
+    p=replace(p,tc=tuple(p.tc))
     v,c,w,a,s=(cfg[k] for k in FIELDS)
     if p.name=='q5-routed-down':
         if (v,c,w,a,s)!=(3,4,2,8,1):raise ValueError('frozen Q5 recipe differs')

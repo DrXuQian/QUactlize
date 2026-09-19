@@ -250,7 +250,8 @@ def test_final_model_runner_uses_joint_ci_caller_and_pinned_runtime():
                       'artifacts/kpack-model-paired-n4-v1': 'dev/quactlize-gate-up-v0.3.0',
                       'artifacts/kpack-model-readers-v1': 'dev/quactlize-gate-up-v0.3.0',
                       'artifacts/kpack-model-prepare-v1': 'dev/quactlize-tp2-v0.3.0',
-                      'artifacts/kpack-model-tp2-scale-v1': 'dev/quactlize-tp2-v0.3.0'}
+                      'artifacts/kpack-model-tp2-scale-v1': 'dev/quactlize-tp2-v0.3.0',
+                      'artifacts/kpack-model-selected-v1': 'dev/quactlize-selected-decode'}
     assert receipt['branch'] in caller_branches
     assert receipt['path'] == 'prebuilt/ppu0010/kpack-model-runtime-v1'
     assert receipt['llama_branch'] == caller_branches[receipt['branch']]
@@ -261,6 +262,9 @@ def test_final_model_runner_uses_joint_ci_caller_and_pinned_runtime():
     # publication validator checks the actual payload closure; it is no
     # longer the historical twelve-file F16-only package.
     assert isinstance(receipt['lfs_payloads'],int) and receipt['lfs_payloads']>0
+    if receipt['branch']=='artifacts/kpack-model-selected-v1':
+        assert receipt['selected_entry_gate'] is True
+        assert 'tools/run_selected_decode_numerics.py' in text
     if receipt['branch'] in ('artifacts/kpack-model-readers-v1','artifacts/kpack-model-prepare-v1',
                             'artifacts/kpack-model-tp2-scale-v1'):
         assert receipt['model_reader_gate'] is True

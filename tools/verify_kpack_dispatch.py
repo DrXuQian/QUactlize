@@ -154,7 +154,7 @@ def paired_paths(root, receipt, *, sdk=None):
             receipt.get('library')!='libquactlize_ppu_gate_up.so' or
             receipt.get('receipt')!='gate-up-runtime.json' or
             receipt.get('layout_id')!='0x47554e3400000001' or
-            receipt.get('q8_shared')!='F16_N512_K2048_E1_T1_8' or
+            receipt.get('q8_shared') not in ('F16_N512_K2048_E1_T1_8','F16_N512_K2048_T1_8_N1024_K3072_T1') or
             receipt.get('q4_routed')!='BF16_N512_K2048_E256_TOP8_T1_8' or
             receipt.get('canonical_retained') is not True or receipt.get('device_validated') is not False):
         raise ValueError('paired gate/up scope differs')
@@ -235,6 +235,11 @@ def verify(root, *, sdk=None):
         if json.loads(json.dumps(actual['required']))!=declared['required'] or not {
                 tuple(r) for r in actual['jit_required']} <= {tuple(r) for r in declared['jit_required']}:
             raise ValueError('final-selection capability closure differs')
+    if 'decode_winners' in m:
+        receipt=m['decode_winners'];path=root/'decode-winners.json'
+        if (receipt.get('path')!=path.name or path.is_symlink() or sha(path)!=receipt['sha256'] or
+                m['policy_hashes'].get('policies/kpack_smallm_effective_v1.hpp')!=receipt['effective_header_sha256']):
+            raise ValueError('decode winner catalog differs')
     if 'compute_contract' in m:
         c=m['compute_contract']
         execution=m['execution_receipt'].get('simt_compute_v2',{})

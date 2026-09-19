@@ -1,6 +1,7 @@
 #pragma once
 #include "simt.h"
 #include "model_gemv_scope.hpp"
+#include "measured_decode.hpp"
 
 namespace quactlize::execution::simt {
 // Host launcher strategy, shared with planning/explain. These are not new
@@ -37,11 +38,24 @@ struct Implementation {
     char const* reduction;
     bool hoist=false, fixed=false;
     int changes=0;
+    char const* measured="none";
 };
 
 inline Implementation implementation(qkg_simt_call_v2 const& d,qkg_simt_config_v1 const& f) {
     auto const& c=d.call;
     Implementation out{"register-reuse",f.split==1?"none":"ordered-row-float2-or-scalar"};
+    auto id=measured_decode(d,f);
+    if(id!=MeasuredDecode::None) {
+        out.producer="measured-constant-split";out.measured=measured_decode_name(id);
+        switch(id) {
+#define QDM(Id,Q,Mode,N,K,E,Top,Ch,Compute,V,C,W,P,S,Changes,Hoist,Fixed) \
+            case MeasuredDecode::Id:out.changes=Changes;out.hoist=Hoist;out.fixed=Fixed;break;
+#include "measured_decode.inc"
+#undef QDM
+            default:break;
+        }
+        return out;
+    }
     if(c.qtype==8 && f.variant>=4) {
         switch(q8_strategy(d,f.variant,f.columns,f.warps,f.values,f.split)) {
             case Q8Strategy::Generic:out.producer="q8-vector";break;

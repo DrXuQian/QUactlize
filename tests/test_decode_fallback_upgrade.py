@@ -12,14 +12,15 @@ def test_q8_bucket_inherits_its_donor_upgrade(tmp_path):
     source.write_text(r'''
 #include "quactlize/dispatch/binding.cpp"
 #include "tests/legacy_q8_overlay.hpp"
+#include "policies/kpack_smallm_matched_v1.hpp"
 #include <cassert>
 #include <cstring>
 
 int main() {
   using namespace quactlize::dispatch;
   int simt=0,tc=0,table_misses=0;
-  for(auto const& row:matched::data::kExact) {
-    auto const& choice=matched::data::kChoices[row.choice];
+  for(auto const& row:quactlize::smallm_matched_data::kExact) {
+    auto const& choice=quactlize::smallm_matched_data::kChoices[row.choice];
     qkg_simt_call_v2 d{2,sizeof(d)};auto& c=d.call;
     c.version=1;c.size=sizeof(c);c.qtype=row.q;c.input_type=QKG_F32;
     c.mode=row.mode;c.rows=row.tokens*(row.mode==QKG_INDEXED?row.topk:1);
@@ -63,7 +64,8 @@ int main() {
     if(selected.row && selected.policy==QKS_MATCHED_BUCKET) {
       auto const& donor=*selected.row;
       auto const& f=matched::data::kChoices[donor.choice];
-      if(q8_vector::select_bucket(d,donor,f,actual)) {
+      if(f.kind==QKS_SMALLM_SIMT && f.reader.variant>=4) {
+        auto r=f.reader;actual={1,sizeof(actual),r.variant,r.columns,r.warps,r.values,r.split};
         Runtime runtime; // Empty module catalog; a reader upgrade must not JIT.
         c.a_row_stride=c.k;c.a_token_stride=int64_t(c.k)*c.channels;
         c.ids_stride=c.topk;c.out_row_stride=c.n;

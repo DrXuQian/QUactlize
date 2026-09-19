@@ -58,8 +58,25 @@ def test_public_final_decisions_equal_frozen_baseline(snapshots):
     keys=case_keys();text=''.join(' '.join(map(str,k))+'\n' for k in keys)
     results=[subprocess.check_output([str(p)],input=text,text=True).splitlines() for p in snapshots]
     assert len(results[0])==len(results[1])==len(keys)
-    assert results[0]==results[1],next((k,a,b) for k,a,b in zip(keys,*results) if a!=b)
-    print(f'SELECTION_SHADOW PASS requests={len(keys)} baseline={BASELINE} public_abi=unchanged')
+    from tools.generate_decode_selection import EVIDENCE,effective
+    e=json.loads(EVIDENCE.read_text());p=effective(e)
+    promoted={tuple(w['key']) for w in e['rows'] if w['automatic'] and not w['point']['paired']}
+    exact={tuple(r['key']) for r in p['exact']}
+    changed=[]
+    for k,a,b in zip(keys,*results):
+        if a==b:continue
+        # Old exact winners and rejection behavior cannot be weakened by a
+        # bucket update. Only declared M1 evidence and its predicted neighbors
+        # may differ; test_decode_selection checks their recipes independently.
+        request=k[:9]
+        if request in exact:
+            assert request in promoted,(k,a,b)
+        else:
+            assert k[7]==1 and k[8]==0 and k[1]==0 and k[0]==8,(k,a,b)
+        assert k[9]==0,(k,a,b)
+        changed.append(k)
+    assert changed
+    print(f'SELECTION_SHADOW PASS requests={len(keys)} declared_promotions_and_neighbors={len(changed)}')
 
 
 @pytest.fixture(scope='module')
@@ -77,7 +94,7 @@ def execution_for(plan):
 
 
 def test_final_catalog_is_exact_and_checks_full_tuple(final_plan):
-    assert len(final_plan['requests'])==1842
+    assert len(final_plan['requests'])==1852
     assert all(r['status']==0 for r in final_plan['requests'])
     assert len(requirements(final_plan)['simt'])==189
     execution=execution_for(final_plan)

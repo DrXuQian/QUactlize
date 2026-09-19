@@ -160,6 +160,12 @@
         stage=diagnostic-complete
         exit 0
     fi
+    if "$PYTHON" -c 'import json,sys; sys.exit("decode_winners" not in json.load(open(sys.argv[1])))' "$BUNDLE/manifest.json"; then
+        stage=selected-entry-numerics
+        CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES%,*} "$PYTHON" -u tools/run_selected_decode_numerics.py \
+            --sdk "$SDK" --bundle "$BUNDLE" --output "$RUN/results/selected-entry-numerics" \
+            2>&1 | tee "$RUN/results/selected-entry-numerics.log"
+    fi
     mkdir "$RUN/device-cache"
     stage=two-device-cache-cold
     "$BUILD_DIR/bin/test-quactlize-scheduler" --tp2-cache-write "$RUN/device-cache" 2>&1 | tee "$RUN/results/tp2-device-cold.log"
