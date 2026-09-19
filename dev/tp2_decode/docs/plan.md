@@ -114,3 +114,46 @@ logical N. Reducer inputs are `[row,split,N]`, outputs use their actual row
 stride; vector lanes own consecutive pairs within a row, never across splits.
 All-SIMT prepare reads router logits/IDs and publishes identity row maps; it
 does not read A or weight planes. None of these facts proves a speedup.
+
+## Portable follow-up after the first device result
+
+Authority: `tp2-fastpaths.IwJJxB.results.tgz`, SHA256
+`5944aa7547e4dd5c9b87dae0f906102d7df5d4e39f42d7007c25731408fee075`.
+The old and new confirmed arms compete by minimum full-call median. Freeze
+the actual winner's DSO and recipe, not the initial generic implementation.
+
+The implementation audit distinguishes missing admission from missing code:
+Q8 vector/hoist, Q5 unsigned/fold and identity prepare were available but the
+shipping gates covered the old model's dimensions. Q4 H32 metadata is already
+generic (also a correctness fix); do not count it as a newly missing feature.
+Q6 TC is the measured winner, not an accidental fallback to replace by SIMT.
+
+The follow-up covers the eight lower-utilization TP2 points and the five old
+35B controls. Generic helpers take N/K/strides/compute from the call; fixed
+wrappers are compiler specializations with checked dimensions, not different
+packing or algorithms. No model-name test belongs in a reader/helper body.
+The measured selector may remain scoped; unsupported and unmeasured must not
+be relabelled measured. Do not change prefill or impose a universal SIMT choice.
+
+Bounded hypotheses:
+
+1. Transfer unsigned index arithmetic and the narrow P4 register window into
+   Q4 paired output, including fixed and dynamic dimensions. Compare complete
+   gate/up+SwiGLU, not only the projection's measured21.75% gain.
+2. A reusable paired finish lets each lane sum one physical G4/U4 column,
+   then exchanges partner columns by XOR4. Keep each column's sequential
+   inter-warp addition order, one owner per logical output, and existing
+   BF16 projection rounding/output typing. Compare against the old finish;
+   retain both until measured. The helper has no N/K/model constants.
+3. Transfer the Q5 P4/warp-count variants and Q8 narrow register/warp options
+   from the 35B cohort. Adjust concurrency without changing canonical bytes,
+   activation precision, or full-call reduction accounting.
+4. Test a small Q6 direct-metadata/low-register neighborhood against its
+   frozen TC winner. A lower register count alone is not admission.
+
+Every candidate has an address-footprint model and native ISA/resource
+receipt. Paired-column reduction gets a host lane-ownership/order oracle
+before device use. M1..8 changing-input, BF16 range, invalid-ID/map and guard
+controls remain mandatory; timing stays M1 with the same cold ring and six
+alternating confirmation rounds. Local work stops at a verified prebuilt
+handoff; PPU timing and model TPOT are not inferred from compilation.

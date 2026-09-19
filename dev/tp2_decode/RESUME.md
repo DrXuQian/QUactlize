@@ -44,3 +44,15 @@ Next requires PPU: run independent numeric controls, cold full-call comparison,
 prepare shape/alias gates and ACU. Then promote only measured scopes, compose
 the runtime with matching caller, and repeat model ABBA/Asys. The original TP2
 branches can still replay the unchanged baseline trace independently.
+
+Device-result update,2026-09-19: the component run has now returned in
+`/root/tp2-fastpaths.IwJJxB.results.tgz` (SHA256
+`5944aa7547e4dd5c9b87dae0f906102d7df5d4e39f42d7007c25731408fee075`).
+17 points/134 total arms/2576 numerical records and34 ACU exports pass local
+receipt review. All4590 confirmation samples recompute correctly. Prepare
+shape64/router-edge56/alias360 gates pass; K3072 M1 improves37.17%, M8 improves
+87.38%. Read `docs/results-20260919.md` and `benchmark.csv` for the complete
+table, retained incumbents, ACU evidence and limitations. No production
+selection was changed. The next action is selective M1/prepare integration
+and matched TP2 model replay, not another unrestricted sweep. Keep Q6 TC and
+the old Q4/Q5/Q8-SSM winners; Q4 projection and paired-chain gains differ.
