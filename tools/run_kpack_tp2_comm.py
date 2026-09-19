@@ -85,6 +85,93 @@ def wrapper_verdict(results):
     return 'GLOBAL_WRAPPER_CAUSAL_CANDIDATE_PASS'
 
 
+def q4_evidence(text, arm, rc):
+    if arm in ('kpack','meta'):
+        selected = re.findall(r'^\[quactlize-plan\] tensor=tp-weight op=grouped route=gemv reader=simt-reuse q=12 rows=2 n=512 k=512 variant=0 columns=4 warps=4 values=4 split=1 policy=11 activation=BF16 scale_resident=0 experts=4 channels=2 topk=2$', text, re.M)
+        devices = re.findall(r'^\[quactlize-device-plan\] tensor=tp-weight device=([01]) op=grouped q=12 rows=2 n=512 k=512 experts=4 selected=1$', text, re.M)
+        if len(selected) != 2 or sorted(devices) != ['0','1']:
+            return dict(status='SELECTION_COVERAGE_FAILED')
+    if arm == 'meta':
+        mismatch = re.findall(r'^KPACK_TP2_MISMATCH q=12 experts=4 tokens=1 split=K replay=(\d+) relative=(\S+)$', text, re.M)
+        complete = 'KPACK_TP2_SINGLE PASS q=12 experts=4 tokens=1 split=K replays=3\n'
+        status = 'PASS' if rc == 0 and text.count(complete) == 1 else 'SETUP_OR_COVERAGE_FAILED'
+        if rc != 0 and mismatch:
+            status = 'META_NUMERICAL_FAILED'
+        return dict(status=status, mismatch=mismatch)
+    result = evidence(text, arm, 1024, rc)
+    shape = 'KPACK_TP2_COMM_SHAPE q=12 n=512 global_k=1024 local_k=512 experts=4 tokens=1 topk=2\n'
+    result['weights'] = re.findall(r'^KPACK_TP2_COMM_WEIGHT rank=([01]) q=12 bytes=589824 hash=([0-9a-f]{16})$', text, re.M)
+    result['oracles'] = re.findall(r'^KPACK_TP2_COMM_ORACLE rank=([01]) replay=([012]) input_hash=([0-9a-f]{16}) ids_hash=([0-9a-f]{16}) golden_hash=([0-9a-f]{16})$', text, re.M)
+    result['local_errors'] = re.findall(r'^KPACK_TP2_COMM_LOCAL arm=\w+ rank=([01]) replay=([012]) error=(\S+) synchronized=1 status=(PASS|FAIL)$', text, re.M)
+    if (text.count(shape) != 1 or len(result['weights']) != 2 or
+            {r for r, _ in result['weights']} != {'0','1'}):
+        result['status'] = 'FIXTURE_IDENTITY_FAILED'
+    if result['status'] == 'PASS' and (len(result['oracles']) != 6 or
+            {(r,i) for r,i,*_ in result['oracles']} != {(str(r),str(i)) for r in (0,1) for i in range(3)}):
+        result['status'] = 'COVERAGE_FAILED'
+    return result
+
+
+def q4_verdict(results):
+    if [r['arm'] for r in results] != ['raw','kpack','meta']:
+        return 'COVERAGE_FAILED'
+    raw, native, meta = results
+    if raw['status'] != 'PASS':
+        return 'RAW_CONTROL_NOT_ADMITTED'
+    if (sorted(raw.get('weights',[])) != sorted(native.get('weights',[])) or
+            not native.get('oracles') or
+            any(tuple(x) not in {tuple(y) for y in raw['oracles']} for x in native['oracles'])):
+        return 'FIXTURE_IDENTITY_FAILED'
+    if native['status'] == 'LOCAL_PRODUCER_OR_ORACLE_FAILED':
+        return 'LOCAL_KPACK_PACKING_OR_COMPUTE_FAILED'
+    if native['status'] != 'PASS':
+        return 'LOCAL_OR_COLLECTIVE_NOT_ADMITTED'
+    if meta['status'] == 'META_NUMERICAL_FAILED':
+        return 'META_PATH_ONLY_FAILURE'
+    return 'FRESH_PROCESS_NOT_REPRODUCED' if meta['status'] == 'PASS' else 'META_COVERAGE_FAILED'
+
+
+def run_q4(binary, output, timeout=180):
+    if os.environ.get('GGML_CUDA_ALLREDUCE') not in (None, 'nccl'):
+        raise ValueError('keep the original PCCL path for the Q4 local diagnostic')
+    output.mkdir(parents=True, exist_ok=False)
+    env = dict(os.environ, QUACTLIZE_KPACK_COMPUTE='bf16', QUACTLIZE_KPACK_ROUTE='auto')
+    keys = ('CUDA_VISIBLE_DEVICES','PPU_SDK','LD_LIBRARY_PATH','QUACTLIZE_PPU_BUNDLE',
+            'QUACTLIZE_KPACK_EXECUTION','QUACTLIZE_KPACK_COMPUTE','QUACTLIZE_KPACK_ROUTE')
+    (output/'environment.json').write_text(json.dumps({k:env.get(k) for k in keys},indent=2)+'\n')
+    results = []
+    for arm in ('raw','kpack','meta'):
+        command = [str(binary),'--tp2-q4-meta'] if arm == 'meta' else [str(binary),'--tp2-q4-local',arm]
+        log = output/(arm+'.log')
+        print(f'KPACK_TP2_Q4_START arm={arm} log={log}',flush=True)
+        started = time.monotonic()
+        timed_out = False
+        with log.open('w') as stream:
+            process = subprocess.Popen(command,env=env,stdout=stream,stderr=subprocess.STDOUT,start_new_session=True)
+            try:
+                rc = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                try: os.killpg(process.pid,signal.SIGKILL)
+                except ProcessLookupError: pass
+                rc = process.wait()
+            except BaseException:
+                try: os.killpg(process.pid,signal.SIGKILL)
+                except ProcessLookupError: pass
+                process.wait()
+                raise
+        result = dict(arm=arm,rc=rc,timeout=timed_out,seconds=time.monotonic()-started,command=command,
+                      **q4_evidence(log.read_text(errors='replace'),arm,rc))
+        if timed_out: result['status']='TIMEOUT'
+        results.append(result)
+        (output/'summary.json').write_text(json.dumps(dict(status='RUNNING',cases=results),indent=2)+'\n')
+        print('KPACK_TP2_Q4_RESULT '+json.dumps(result),flush=True)
+    verdict = q4_verdict(results)
+    (output/'summary.json').write_text(json.dumps(dict(status='DIAGNOSTIC_COMPLETE',verdict=verdict,
+        device_admission='PENDING',scope='Q4_E4_TOP2_M1_K_SPLIT_ONLY',cases=results),indent=2)+'\n')
+    print(f'KPACK_TP2_Q4_DONE verdict={verdict} results={output}',flush=True)
+
+
 def run(binary, output, timeout=180, wrapper_ab=False):
     if os.environ.get('GGML_CUDA_ALLREDUCE') not in (None, 'nccl'):
         raise ValueError('communication diagnostic requires the existing NCCL path; unset GGML_CUDA_ALLREDUCE or set nccl')
@@ -140,7 +227,11 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--timeout', type=int, default=180)
     parser.add_argument('--wrapper-ab', action='store_true', help='add local/global wrapper-only controls and the historical K-pack negative')
+    parser.add_argument('--q4-local', action='store_true', help='isolate Q4 E4/top2 local GEMV, collective and fresh Meta graph')
     args = parser.parse_args()
     if args.timeout <= 0:
         parser.error('timeout must be positive')
-    run(args.binary.resolve(strict=True), args.output, args.timeout, args.wrapper_ab)
+    if args.q4_local and args.wrapper_ab:
+        parser.error('select one bounded diagnostic')
+    if args.q4_local: run_q4(args.binary.resolve(strict=True),args.output,args.timeout)
+    else: run(args.binary.resolve(strict=True), args.output, args.timeout, args.wrapper_ab)

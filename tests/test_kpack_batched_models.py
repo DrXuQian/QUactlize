@@ -1310,6 +1310,69 @@ def test_tp2_communication_requires_both_ranks_and_all_replays(fault):
     assert (result['status']=='PASS')==(fault is None)
 
 
+def q4_comm_fixture(arm, fail=False):
+    if arm == 'meta':
+        text = ('KPACK_TP2_MISMATCH q=12 experts=4 tokens=1 split=K replay=0 relative=0.1823166\n' if fail else
+                'KPACK_TP2_SINGLE PASS q=12 experts=4 tokens=1 split=K replays=3\n')
+    else:
+        text = 'KPACK_TP2_COMM_SHAPE q=12 n=512 global_k=1024 local_k=512 experts=4 tokens=1 topk=2\n'
+        for rank in (0,1): text += f'KPACK_TP2_COMM_WEIGHT rank={rank} q=12 bytes=589824 hash={rank:016x}\n'
+        for replay in range(1 if fail else 3):
+            for rank in (0,1):
+                text += f'KPACK_TP2_COMM_ORACLE rank={rank} replay={replay} input_hash={replay:016x} ids_hash={replay:016x} golden_hash={rank:016x}\n'
+        if fail:
+            for rank in (0,1):
+                text += f'KPACK_TP2_COMM_LOCAL_BEGIN arm={arm} rank={rank} replay=0\n'
+                text += f'KPACK_TP2_COMM_LOCAL arm={arm} rank={rank} replay=0 error=0.1 synchronized=1 status=FAIL\n'
+        else: text += comm_fixture(arm,1024)
+    if arm != 'raw':
+        for rank in (0,1):
+            text += '[quactlize-plan] tensor=tp-weight op=grouped route=gemv reader=simt-reuse q=12 rows=2 n=512 k=512 variant=0 columns=4 warps=4 values=4 split=1 policy=11 activation=BF16 scale_resident=0 experts=4 channels=2 topk=2\n'
+            text += f'[quactlize-device-plan] tensor=tp-weight device={rank} op=grouped q=12 rows=2 n=512 k=512 experts=4 selected=1\n'
+    return text
+
+
+@pytest.mark.parametrize('fault',[None,'local','meta','raw','weights','oracle','shape','selection','coverage'])
+def test_tp2_q4_local_diagnostic_separates_numeric_boundaries(fault):
+    from tools.run_kpack_tp2_comm import q4_evidence,q4_verdict
+    results=[]
+    for arm in ('raw','kpack','meta'):
+        fail = (fault=='local' and arm=='kpack') or fault==arm
+        text = q4_comm_fixture(arm,fail)
+        if arm=='kpack':
+            if fault=='weights': text=text.replace('bytes=589824 hash=0000000000000000','bytes=589824 hash=1111111111111111')
+            if fault=='oracle': text=text.replace('input_hash=0000000000000000','input_hash=1111111111111111')
+            if fault=='shape': text=text.replace('local_k=512','local_k=1024')
+            if fault=='selection': text=text.replace('variant=0','variant=3')
+            if fault=='coverage': text=text.replace('rank=1 replay=2','rank=1 replay=3')
+        results.append(dict(arm=arm,**q4_evidence(text,arm,int(fail))))
+    wanted={None:'FRESH_PROCESS_NOT_REPRODUCED','local':'LOCAL_KPACK_PACKING_OR_COMPUTE_FAILED',
+            'meta':'META_PATH_ONLY_FAILURE','raw':'RAW_CONTROL_NOT_ADMITTED',
+            'weights':'FIXTURE_IDENTITY_FAILED','oracle':'FIXTURE_IDENTITY_FAILED',
+            'shape':'LOCAL_OR_COLLECTIVE_NOT_ADMITTED','selection':'FIXTURE_IDENTITY_FAILED',
+            'coverage':'LOCAL_OR_COLLECTIVE_NOT_ADMITTED'}
+    assert q4_verdict(results)==wanted[fault]
+
+
+def test_tp2_q4_local_runner_has_three_fresh_children_and_no_policy_mutation(tmp_path,monkeypatch):
+    from tools import run_kpack_tp2_comm as comm
+    calls=[]
+    monkeypatch.delenv('GGML_CUDA_ALLREDUCE',raising=False)
+    monkeypatch.setenv('QUACTLIZE_KPACK_COMPUTE','fp16')
+    def start(command,**kwargs):
+        arm='meta' if command[-1]=='--tp2-q4-meta' else command[-1]
+        calls.append((command,kwargs['env']))
+        kwargs['stdout'].write(q4_comm_fixture(arm,arm=='kpack'))
+        return SimpleNamespace(wait=lambda **kw:int(arm=='kpack'))
+    monkeypatch.setattr(comm.subprocess,'Popen',start)
+    comm.run_q4(Path('/build/bin/test-quactlize-scheduler'),tmp_path/'results')
+    assert len(calls)==3 and os.environ['QUACTLIZE_KPACK_COMPUTE']=='fp16'
+    assert all(env['QUACTLIZE_KPACK_COMPUTE']=='bf16' and env['QUACTLIZE_KPACK_ROUTE']=='auto' for _,env in calls)
+    summary=json.loads((tmp_path/'results/summary.json').read_text())
+    assert summary['device_admission']=='PENDING'
+    assert summary['verdict']=='LOCAL_KPACK_PACKING_OR_COMPUTE_FAILED'
+
+
 def test_tp2_communication_continues_failures_and_extension_is_child_local(tmp_path,monkeypatch):
     from tools import run_kpack_tp2_comm as comm
     calls=[]

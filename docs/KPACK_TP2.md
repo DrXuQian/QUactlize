@@ -108,6 +108,44 @@ Upload `kpack-tp2.*.results.tgz`. Full reports remain under
 `results/trace/qwen35-122b-q4km/{reference,native}/proof.asysrep` and are
 excluded from that archive. Raw logits and model weights are also excluded.
 
+### Q4 grouped numerical follow-up, 2026-09-19
+
+Upload `kpack-tp2.exvMN0.results.tgz` has SHA-256
+`7f4a71f60947d2f0d4e0715b0724c40c022f321cc9302f38513ef049680101ae`.
+It uses orchestration `31cbdf9` and caller `ee28055`. The Q4 compatibility
+update now admits the small shards. The cold gate passes 42 matrix cases:
+all Q8/Q2/Q3 cases and Q4 dense M1/8/32 with both K/N splits. Those Q4 dense
+cases use the legal compatibility fallback, not an admitted native optimum.
+
+The next case fails: Q4, E4/top2, tokens1, global N512/K1024, local N512/K512,
+K split, replay0. Relative L2 error is `0.1823166` on the squared, combined
+output. Both devices select generic `simt-reuse`, variant0, columns4, warps4,
+values4, S1, policy11, BF16, channels2. This is NOT the old invalid S4 request,
+nor evidence that AllReduce itself failed. E4/top2 is outside the measured
+E256/top8 small-M table and uses the initial generic SIMT proposal. Q2/Q3 have
+passed the same generic geometry; the Q4 packing/compute boundary still needs
+separate observation. The fixture's 61 input values are exactly representable
+in both F16 and BF16, with maximum magnitude 0.234375.
+
+Use `TP2_MODE=q4-local` with `tools/run_kpack_tp2_box.sh`. It incrementally
+builds the changed scheduler test from caller `f9a0dbe2f` through AONECI and
+runs three fresh processes:
+
+1. Raw Q4 local `MUL_MAT_ID` on each rank, checked before the unchanged PCCL sum.
+2. K-pack Q4 with the exact failing generic BF16 recipe and identical raw/input/
+   router/golden hashes. Both local outputs are checked. A local failure stops
+   before AllReduce; the runner still collects the next independent process.
+3. The original one-case Meta graph with K split, AllReduce and square, without
+   the preceding 42 cases or cache writer.
+
+The tool rejects changed geometry, selection or fixture identities. Verdicts
+separate local packing/compute failure, a Meta-only failure, and a failure not
+reproduced in fresh processes. None claims a root-cause fix or device admission.
+The mode loads no model, runs no performance sweep, changes no production
+kernel or tolerance, and reuses the same runtime, JIT cache and Q4 overlay.
+Upload its `kpack-tp2.*.results.tgz`; the small logs include each rank's local
+errors, values, oracle hashes and collective results.
+
 ### Q4 short-K admission repair
 
 After the communication fix, `BPvql1` stops before launching the Q4 local

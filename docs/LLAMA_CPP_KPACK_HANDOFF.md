@@ -58,6 +58,15 @@ See [selective update and admission scope](KPACK_TP2.md#q4-short-k-admission-rep
 Native runtime, JIT source/cache and the `ee28055` caller stay unchanged. This
 update does not yet admit two-device arithmetic or the 122B model.
 
+The `exvMN0` follow-up passes 42 cold cases, including Q4 dense via the legal
+compatibility fallback, then fails Q4 E4/top2 M1 K split with relative error
+0.1823166 after all-reduce and square. Its actual native route is BF16 generic
+SIMT variant0/columns4/warps4/values4/S1, not S4. `TP2_MODE=q4-local` provides
+three fresh processes: raw and native per-rank GEMV before PCCL, then the exact
+Meta case alone. It updates only the scheduler test and diagnostic tooling;
+production kernels, selection and tolerance remain unchanged. See
+[frozen row and diagnostic scope](KPACK_TP2.md#q4-grouped-numerical-follow-up-2026-09-19).
+
 The first cold device gate exposed a fixture bug: GGUF kept the copied Meta
 buffer and tried to read its shards instead of the supplied raw host bytes.
 The exact scheduler helper reproduces exit 139 using only CPU-backed Meta
