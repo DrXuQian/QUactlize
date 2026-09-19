@@ -61,6 +61,8 @@
     grep -q 'KPACK_TP2_DEVICE PASS' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"
     grep -q 'KPACK_TP2_CACHE PASS' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"
     grep -q 'KPACK_TP2_HOST PASS' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"
+    grep -q 'KPACK_TP2_CHAIN_REFERENCE' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"
+    if [[ $TP2_MODE == model || $TP2_MODE == chain ]]; then "$PYTHON" -c 'import numpy'; fi
     if [[ $TP2_MODE == communication ]]; then grep -q 'KPACK_TP2_COMM_WRAPPER' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"; fi
     if [[ $TP2_MODE == q4-local ]]; then grep -q 'KPACK_TP2_SINGLE PASS' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"; fi
     if [[ $TP2_MODE == chain ]]; then
@@ -161,9 +163,11 @@
     stage=two-device-cache-cold
     "$BUILD_DIR/bin/test-quactlize-scheduler" --tp2-cache-write "$RUN/device-cache" 2>&1 | tee "$RUN/results/tp2-device-cold.log"
     grep -qx 'KPACK_TP2_CACHE PASS mode=cold cases=72 chains=6' "$RUN/results/tp2-device-cold.log"
+    "$PYTHON" tools/run_kpack_tp2_chain.py --check-gate-log "$RUN/results/tp2-device-cold.log"
     stage=two-device-cache-hot
     "$BUILD_DIR/bin/test-quactlize-scheduler" --tp2-cache-read "$RUN/device-cache" 2>&1 | tee "$RUN/results/tp2-device-hot.log"
     grep -qx 'KPACK_TP2_CACHE PASS mode=hot cases=72 chains=6' "$RUN/results/tp2-device-hot.log"
+    "$PYTHON" tools/run_kpack_tp2_chain.py --check-gate-log "$RUN/results/tp2-device-hot.log"
 
     CACHE_ROOT=${CACHE_ROOT:-$RESULT_DIR/kpack-tp2-model-cache}
     mkdir -p -- "$CACHE_ROOT"

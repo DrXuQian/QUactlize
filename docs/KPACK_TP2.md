@@ -11,6 +11,33 @@ format, TC parent modules, caller and JIT source contract remain unchanged.
 The repaired runtime is artifact commit `006aa757f5`, built from `b04cb96347`;
 its exact manifest hash is recorded in the pin and integration handoff.
 
+### BF16 CPU reference
+
+The tokens32 device chains now compare against a precision-matched CPU
+reference. It reads original GGUF blocks independently of K-pack placement.
+Q4/Q5 round decoded scale, zero, reader-centre correction and the separate
+weight multiply/add to BF16; Q8 keeps its raw FP16 scale and rounds the
+integer-times-scale weight to BF16. Activations are BF16, accumulation is
+FP32, and TC outputs round to BF16. Unfused SwiGLU computes in FP32, followed
+by BF16 intake for down. Each TP rank's down output rounds to BF16, converts
+to FP32, and is summed in FP32 before the final FP32 square.
+
+The 0.02 bound applies to this BF16 reference. `high_relative` and `high_error`
+separately retain the old FP32-weight/FP64-dot comparison; those values are
+not hidden or relabeled as BF16 error. Model logits/KL tests are unchanged.
+The CPU dot has sequential FP32 accumulation; it does not claim bit equality
+with every TC reduction order. Host tests distinguish FP32 from FP64 sums,
+exercise RNE ties and signed zero, and reject field-loss, wrong-expert and
+missing-rank negatives.
+
+Scope is the existing Q8/Q8 and Q4/Q5 tokens32 TC chains. The runner requires
+the selected BF16 TC routes on both devices before accepting their reference
+records. SIMT tokens1/8, all 72 single-projection cases and the CPU Meta test
+retain their previous oracles. No runtime kernel, tactic, ABI or binary bundle
+changes. A new cold/hot box result is required; `SIgUYu` is not retroactively
+declared a pass. Use `TP2_MODE=model` to continue through the normal complete
+gate, or `TP2_MODE=chain` to retain the optional intermediate capture.
+
 ### Scale-field repair, 2026-09-19
 
 Follow-up `kpack-tp2.SIgUYu` confirms all 72 cold matrix cases and five chain
@@ -18,19 +45,20 @@ cases. Q4/Q5 BF16 SIMT chains at tokens1/8 pass. The last tokens32 chain uses
 BF16 TC (Q4 gate/up TK64 and Q5 down TK256, both S1) and reports 0.0267095549
 against the high-precision, final-squared oracle. This is not the old SIMT
 field-loss signature. Host arithmetic with the present BF16 scale/zero,
-multiply/add and storage roundings predicts about 0.02659 on the same fixture;
-that closeness is a hypothesis, not a proof or a new accuracy allowance.
+multiply/add and storage roundings predicted about 0.02659 with high-precision
+dots on the same fixture. That preliminary similarity was not a device proof;
+the typed CPU reference above now uses FP32 accumulators explicitly.
 
 Use `TP2_MODE=chain` for a bounded follow-up. It captures the original graph
 and a copy retaining gate/up, SwiGLU and reduced outputs, across all three
 changing replays. Final output bits must match between arms. The independent
 GGUF oracle reports per-stage errors, BF16 arithmetic and high-precision
 references plus wrong-expert/missing-rank negatives. The mode is diagnostic
-only, leaves the 0.02 model gate unchanged and does not time kernels. Only the
+only, uses the same 0.02 bound and does not time kernels. Only the
 caller test is rebuilt; the repaired runtime and JIT parents are reused.
 The caller test entry is available at `bf14a36e4`; update the caller branch
-before selecting this mode. Local TP graph regression and eight precision
-oracle/capture tests pass, including a changed-output negative.
+before selecting this mode. The current caller pin additionally includes the
+typed CPU reference above. Its host checks include a changed-output negative.
 
 `q4-tp2-simt.62KWWD` passes the exact legacy-red/H32-green A/B. Inspection of
 the hash-identical shipped image identifies a low-word read before thread-mask

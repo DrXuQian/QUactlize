@@ -4,6 +4,23 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
+## Precision-matched TP2 CPU reference
+
+Caller `4a18820f16c42f2299dc4790020d61974e028490` uses
+`BF16_TC_FP32_ACC` for the Q8/Q8 and Q4/Q5
+tokens32 chains. Raw GGUF decode is independent of the K-pack reader. BF16
+rounding is applied at metadata, weight, activation and output boundaries,
+while dots and TP summation use FP32. The 0.02 bound is unchanged; the old
+high-precision difference is reported separately as `high_relative`.
+The box runner rejects a missing/foreign selected route or reference record.
+SIMT and single-projection oracles, production kernels, policy, runtime bundle
+and model numerical criteria remain unchanged. Re-run the standard TP2 gate;
+the previous high-precision mismatch alone is not a typed-reference pass.
+See [the exact arithmetic contract](KPACK_TP2.md#bf16-cpu-reference).
+Local validation: 258 related Python tests, 15 subtests and the CPU TP graph
+regression pass. This is not a replacement for the two-device BF16-reference
+result or model accuracy admission.
+
 ## TP2 Q4/Q5 SIMT scale repair, 2026-09-19
 
 Latest box result `kpack-tp2.SIgUYu`: 72/72 cold matrix cases and 5/6 chains
@@ -11,7 +28,8 @@ pass. Q4 gate/up plus Q5 down at tokens32 fails the original squared-chain
 FP32-weight/FP64-dot reference by 2.67095549%. That row uses BF16 TC, not the
 repaired SIMT reader. See `KPACK_TP2.md` and `TP2_MODE=chain` for the unchanged-
 runtime stage capture. BF16 rounding is a quantitatively supported hypothesis;
-full TP2/model admission remains pending, with no relaxed threshold.
+full TP2/model admission remains pending. The current typed reference above
+separates that arithmetic difference from a device implementation error.
 Caller `bf14a36e4ab02740e0a95c72f3be128b573df08d` adds only the scheduler
 test capture. The production caller, Quactlize libraries and parent choices
 are unchanged. The capture/parser passes its host positive and changed-output

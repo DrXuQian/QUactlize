@@ -25,6 +25,13 @@ def test_bf16_rounding():
         chain.bf16([float('nan')])
 
 
+def test_fp32_accumulator_is_not_fp64():
+    a = np.array([[1, 1, 1]], dtype='<f4')
+    b = np.array([[[2**24, 1, -2**24]]]*4, dtype='<f4')
+    assert chain.indexed_dot(a, b, np.array([0]), fp32=True)[0, 0] == 0
+    assert chain.indexed_dot(a, b, np.array([0]), fp32=False)[0, 0] == 1
+
+
 def test_q4_independent_fields_and_codes():
     decoded, native = chain.decode(raw_block(12), 12)
     expected = np.tile(np.repeat(np.array([1, 8], dtype='<f4'), 32), 4)[None]
@@ -97,10 +104,10 @@ def test_full_capture_parser_and_changed_graph_negative(tmp_path):
         index = np.arange(32*1024).reshape(32, 1024)
         a = (((index*13+index//31+replay*11)%61-30)/128).astype('<f4')
         ids = ((np.arange(64)+replay)%4).astype('<i4')
-        pair = chain.bf16(chain.indexed_dot(np.repeat(a, 2, axis=0), weights[0], ids))
-        middle = chain.swiglu(pair)
+        pair = chain.bf16(chain.indexed_dot(np.repeat(a, 2, axis=0), weights[0], ids, fp32=True))
+        middle = chain.swiglu(pair, fp32=True)
         down = [chain.bf16(chain.indexed_dot(chain.bf16(middle[:, r*512:(r+1)*512]),
-                weights[1][..., r*512:(r+1)*512], ids)) for r in range(2)]
+                weights[1][..., r*512:(r+1)*512], ids, fp32=True)) for r in range(2)]
         total = down[0]+down[1]
         for root in roots:
             a.tofile(root/f'input{suffix}.f32')
@@ -115,7 +122,7 @@ def test_full_capture_parser_and_changed_graph_negative(tmp_path):
     result = chain.analyze(tmp_path)
     assert result['admission'] == 'PENDING' and len(result['replays']) == 3
     assert result['retained_outputs_match_original_bits'] is True
-    assert result['replays'][0]['original_gate']['relative_l2'] > .02
+    assert result['replays'][0]['high_precision_difference']['relative_l2'] > .02
     for row in result['replays']:
         assert row['actual_vs_simulated_bf16']['max_abs'] == 0
         assert all(field['max_abs'] == 0 for field in row['stage_local_errors'].values())
@@ -124,6 +131,37 @@ def test_full_capture_parser_and_changed_graph_negative(tmp_path):
     changed.tofile(roots[1]/'result-i0.f32')
     with pytest.raises(ValueError, match='capture changed'):
         chain.analyze(tmp_path)
+
+
+def gate_log():
+    lines = []
+    for q in (8, 12):
+        lines.append(f'KPACK_TP2_BEGIN chain q={q} tokens=32 cache=cold')
+        for rank in range(2):
+            for name, qt, n, k in (('tp-weight', q, 1024, 1024), ('tp-down', 8 if q == 8 else 13, 512, 512)):
+                lines.append(f'[quactlize-plan] tensor={name} op=grouped route={"sf" if q == 8 else "fq"} '
+                    f'q={qt} rows=64 n={n} k={k} parent=example build={"a"*64} algorithm=0 split=1 '
+                    'grid=0 policy=11 prefill_choice=-1 activation=BF16 scale_resident=0')
+                lines.append(f'[quactlize-device-plan] tensor={name} device={rank} op=grouped '
+                    f'q={qt} rows=64 n={n} k={k} experts=4 selected=1')
+        for replay in range(3):
+            lines.append(f'KPACK_TP2_CHAIN_REFERENCE q={q} tokens=32 replay={replay} '
+                'oracle=BF16_TC_FP32_ACC relative=0.0001 high_relative=0.027 threshold=0.02')
+    return '\n'.join(lines)+'\n'
+
+
+def test_typed_oracle_route():
+    assert chain.check_gate_log(gate_log())['oracle'] == 'BF16_TC_FP32_ACC'
+
+
+@pytest.mark.parametrize('old,new', [
+    ('activation=BF16', 'activation=FP16'), ('route=fq', 'route=gemv'),
+    ('selected=1', 'selected=0'), ('oracle=BF16_TC_FP32_ACC', 'oracle=GGUF_FP64_DOT'),
+    ('replay=2', 'replay=1'), ('relative=0.0001', 'relative=nan'),
+    ('device=1', 'device=0'), ('prefill_choice=-1', 'prefill_choice=2')])
+def test_typed_oracle_rejects_foreign_route_or_receipt(old, new):
+    with pytest.raises(ValueError):
+        chain.check_gate_log(gate_log().replace(old, new))
 
 
 def test_diagnostic_cannot_admit_model():

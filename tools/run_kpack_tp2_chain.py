@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture the fixed TP2 Q4/Q5 chain without changing its numerical gate."""
+"""Compare the TP2 chain with independent BF16 and high-precision references."""
 
 import argparse
 import hashlib
@@ -73,28 +73,38 @@ def metric(actual, expected):
                 max_abs=float(np.max(np.abs(a-b))))
 
 
-def indexed_dot(activation, weights, ids):
-    out = np.empty((len(ids), weights.shape[1]), dtype=np.float64)
+def indexed_dot(activation, weights, ids, fp32=False):
+    dtype = np.float32 if fp32 else np.float64
+    out = np.empty((len(ids), weights.shape[1]), dtype=dtype)
     for expert in range(EXPERTS):
         rows = np.flatnonzero(ids == expert)
-        out[rows] = activation[rows].astype(np.float64) @ weights[expert].astype(np.float64).T
+        a, b = activation[rows].astype(dtype), weights[expert].astype(dtype)
+        if fp32:
+            # Sequential FP32 accumulation matches the CPU oracle, without
+            # claiming the same reduction order as every TC specialization.
+            value = np.zeros((len(rows), weights.shape[1]), dtype=np.float32)
+            for k in range(a.shape[1]):
+                value += a[:, k, None] * b[None, :, k]
+            out[rows] = value
+        else:
+            out[rows] = a @ b.T
     return out
 
 
-def swiglu(pair):
-    gate, up = np.split(pair.astype(np.float64), 2, axis=-1)
+def swiglu(pair, fp32=False):
+    gate, up = np.split(pair.astype(np.float32 if fp32 else np.float64), 2, axis=-1)
     return (gate / (1 + np.exp(-gate)) * up).astype('<f4')
 
 
 def compose(activation, ids, gate, down, rounded):
-    pair = indexed_dot(activation, gate, ids)
+    pair = indexed_dot(bf16(activation) if rounded else activation, gate, ids, fp32=rounded)
     if rounded:
         pair = bf16(pair)
-    middle = swiglu(pair)
+    middle = swiglu(pair, fp32=rounded)
     if rounded:
         middle = bf16(middle)
     partials = [indexed_dot(middle[:, rank*512:(rank+1)*512],
-                down[..., rank*512:(rank+1)*512], ids) for rank in range(2)]
+                down[..., rank*512:(rank+1)*512], ids, fp32=rounded) for rank in range(2)]
     if rounded:
         partials = [bf16(part) for part in partials]
     total = partials[0] + partials[1]
@@ -112,7 +122,7 @@ def analyze(output):
             raise ValueError('ordinary/retained fixture bytes differ')
     result = dict(status='DIAGNOSTIC_COMPLETE', admission='PENDING', timing_valid=False,
         scope='Q4_GATE_UP_Q5_DOWN_E4_TOP2_T32_TP2', threshold_unchanged=.02,
-        arithmetic_oracle='GGUF_DECODE_FP64_DOT; BF16_RNE_METADATA_MUL_ADD_AND_STORAGE', replays=[])
+        arithmetic_oracle='BF16_TC_FP32_ACC; GGUF_FP64_DOT_REPORTED_SEPARATELY', replays=[])
     for replay in range(3):
         suffix = f'-i{replay}'
         for name in (f'input{suffix}.f32', f'ids{suffix}.i32', f'result{suffix}.f32'):
@@ -137,19 +147,19 @@ def analyze(output):
             raise ValueError('all-reduce ranks disagree')
         exact = compose(activation, ids, gate, down, False)
         native = compose(activation, ids, gate_native, down_native, True)
-        dot = indexed_dot(activation, gate_native, ids)
+        dot = indexed_dot(bf16(activation), gate_native, ids, fp32=True)
         down_parts = [bf16(indexed_dot(bf16(middle[:, r*512:(r+1)*512]),
-                      down_native[..., r*512:(r+1)*512], ids)) for r in range(2)]
+                      down_native[..., r*512:(r+1)*512], ids, fp32=True)) for r in range(2)]
         # Independent coordinate negatives stay visible beside the precision
         # comparison. This diagnostic cannot promote a failed model gate.
         wrong_expert = compose(activation, (ids+1)%4, gate, down, False)
         missing_rank = compose(activation, ids, gate, np.concatenate(
             (down[..., :512], np.zeros_like(down[..., 512:])), axis=-1), False)
-        row = dict(replay=replay, original_gate=metric(actual, exact),
+        row = dict(replay=replay, high_precision_difference=metric(actual, exact),
             simulated_bf16_vs_reference=metric(native, exact),
             actual_vs_simulated_bf16=metric(actual, native),
             stage_local_errors=dict(gate_up=metric(pair, bf16(dot)),
-                swiglu=metric(middle, swiglu(pair)),
+                swiglu=metric(middle, swiglu(pair, fp32=True)),
                 down_and_reduce=metric(sums[0], down_parts[0]+down_parts[1]),
                 square=metric(actual, sums[0]*sums[0])),
             wrong_expert_negative=metric(wrong_expert, exact),
@@ -159,6 +169,32 @@ def analyze(output):
         result['replays'].append(row)
     result['retained_outputs_match_original_bits'] = True
     return result
+
+
+def check_gate_log(text, formats=(8, 12)):
+    """Do not apply a TC oracle to an unverified SIMT/fallback route."""
+    sections = re.split(r'(?=^KPACK_TP2_BEGIN (?:chain|cell) )', text, flags=re.M)
+    for q in formats:
+        blocks = [s for s in sections if re.match(rf'KPACK_TP2_BEGIN chain q={q} tokens=32 cache=', s)]
+        if len(blocks) != 1:
+            raise ValueError(f'Q{q} BF16 chain coverage differs')
+        block = blocks[0]
+        reference = re.findall(r'^KPACK_TP2_CHAIN_REFERENCE q=(\d+) tokens=32 replay=([012]) '
+            r'oracle=BF16_TC_FP32_ACC relative=(\S+) high_relative=(\S+) threshold=0.02$', block, re.M)
+        if [(int(q0), int(r)) for q0, r, _, _ in reference] != [(q, r) for r in range(3)]:
+            raise ValueError(f'Q{q} typed reference records differ')
+        if not all(np.isfinite(float(v)) and float(v) >= 0 for row in reference for v in row[2:]):
+            raise ValueError('nonfinite reference error')
+        for tensor, qt, n, k in (('tp-weight', q, 1024, 1024), ('tp-down', 8 if q == 8 else 13, 512, 512)):
+            pattern = (rf'^\[quactlize-plan\] tensor={tensor} op=grouped route=(sf|fq) q={qt} rows=64 n={n} k={k} '
+                r'parent=\S+ build=[0-9a-f]{64} algorithm=\d+ split=\d+ grid=\d+ policy=\d+ '
+                r'prefill_choice=-1 activation=BF16 scale_resident=[01]\n'
+                rf'\[quactlize-device-plan\] tensor={tensor} device=([01]) op=grouped q={qt} rows=64 '
+                rf'n={n} k={k} experts=4 selected=1$')
+            plans = re.findall(pattern, block, re.M)
+            if sorted(plans) != sorted([('sf' if q == 8 else 'fq', str(rank)) for rank in range(2)]):
+                raise ValueError(f'Q{q}/{tensor} does not use the verified BF16 TC arithmetic')
+    return dict(formats=list(formats), oracle='BF16_TC_FP32_ACC', threshold=.02)
 
 
 def run(binary, output):
@@ -193,6 +229,7 @@ def run(binary, output):
                     process.terminate()
                     process.wait()
         text = log.read_text(errors='replace')
+        check_gate_log(text, formats=(12,))
         rows = re.findall(r'^KPACK_TP2_CHAIN_CAPTURE replay=([012]) retain=([01]) relative=(\S+) threshold=0.02 admitted=0$', text, re.M)
         if rc or [(r, keep) for r, keep, _ in rows] != [(str(r), str(int(arm=='retained'))) for r in range(3)]:
             raise ValueError(f'{arm}: incomplete capture rc={rc}; see {log}')
@@ -208,7 +245,13 @@ def run(binary, output):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--binary', type=Path, required=True)
-    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--binary', type=Path)
+    parser.add_argument('--output', type=Path)
+    parser.add_argument('--check-gate-log', type=Path)
     args = parser.parse_args()
-    run(args.binary.resolve(strict=True), args.output.resolve())
+    if args.check_gate_log:
+        print('KPACK_TP2_BF16_ORACLE_ROUTE PASS '+json.dumps(check_gate_log(args.check_gate_log.read_text())))
+    else:
+        if not args.binary or not args.output:
+            parser.error('--binary and --output are required for capture')
+        run(args.binary.resolve(strict=True), args.output.resolve())
