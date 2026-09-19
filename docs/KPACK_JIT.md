@@ -1,5 +1,10 @@
 # Single-parent JIT and per-call ScaleFirst
 
+For the current small-M Auto selector, typed prewarm and inventory contract,
+see [Selection, inventory and prewarm](KPACK_SELECTION.md). The fixed-route
+`plan` commands below are not an Auto decode plan; the package/gate results
+below describe their historical revisions, not the latest model deployment.
+
 The current candidate package is `prebuilt/ppu0010/kpack-jit-v2`. Its dispatcher
 and execution libraries total approximately 1.1 MiB; it contains **no GEMM
 modules**. The existing `kpack-native-v1` package is unchanged. This is not

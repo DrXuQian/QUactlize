@@ -20,6 +20,7 @@ from dev.tp2_decode.plan import BASE_EXECUTION
 from quactlize.runtime.compiler import FLAGS,LIBRARIES,sha
 from quactlize.dispatch.native import Dispatch
 from quactlize.execution.native import Call,arrangement
+from quactlize.dispatch.planning import plan_smallm
 
 
 def shape_call(p):
@@ -47,12 +48,18 @@ def build(args):
     inputs=[p for d in ('quactlize','policies','third_party/actlize/include','dev/gemv_model','dev/tp2_decode')
             for p in (ROOT/d).rglob('*') if p.is_file() and p.suffix in ('.cu','.cuh','.h','.hpp','.inc','.cpp','.py')]
     hashes={str(p.relative_to(ROOT)):sha(p) for p in inputs}
+    hashes['tools/kpack_selection.cpp']=sha(ROOT/'tools/kpack_selection.cpp')
     start=time.monotonic()
     (out/'catalog.inc').write_text('static std::vector<Image> const kImages{};\nstatic char const kJitSource[]="";\n')
     subprocess.run(['g++','-std=c++17','-O2','-fPIC','-shared','-pthread','-Wl,-Bsymbolic',
         '-I'+str(out),str(ROOT/'quactlize/dispatch/binding.cpp'),'-ldl',
         '-o',str(out/'libquactlize_kpack_dispatch.so')],check=True)
     matched=json.loads((ROOT/'policies/kpack_smallm_matched_v1.json').read_text())
+    selected_points=[p for p in POINTS if p not in REDUCERS]
+    final_plan=plan_smallm(out,[[p.q,p.mode,p.n,p.k,p.experts,8 if p.mode else 1,p.channels,1,p.compute]
+                               for p in selected_points])
+    final_rows=dict(zip((p.name for p in selected_points),final_plan['requests']))
+    (out/'final-selection.json').write_text(json.dumps(final_plan,indent=2)+'\n')
     dispatcher=Dispatch(out);records=[];inventory={};required={'libquactlize_ppu_execution.so'}
     try:
         for p in POINTS:
@@ -67,6 +74,10 @@ def build(args):
                 b=pick.base;cfg={k:getattr(b.simt,k) for k in FIELDS}
                 selection=dict(kind=b.kind,policy=b.policy,source_n=b.source_n,
                     source_k=b.source_k,source_tokens=b.source_tokens,scope='ACTUAL_DISPATCH_C_ABI_M1')
+                final=final_rows[p.name]
+                if (final['status']!=0 or final['kind']!=b.kind or final['config']!=cfg or
+                        final['policy']!=b.policy or final['donor']!=[b.source_n,b.source_k,b.source_tokens]):
+                    raise ValueError('offline final selector differs from public ABI: '+p.name)
                 donor=[p.q,p.mode,b.source_n,b.source_k,p.experts,8 if p.mode else 1,p.channels,b.source_tokens,p.compute]
                 old=next(r['config'] for r in matched['exact'] if r['key']==donor)
                 baseline_cfg=record_config(old,'old-bucket') if old['kind']=='simt' else None
@@ -82,6 +93,11 @@ def build(args):
             record=dict(point=asdict(p),candidate=production_config(p,cfg),selection=selection,
                 reference=dict(record=previous,arm=arm,authority=authority),
                 expected_kernels=kernel_names(p,cfg))
+            if p not in REDUCERS:
+                record['implementation']=final_rows[p.name]['implementation']
+                for field in ('hoist','fixed','changes'):
+                    if record['candidate'][field]!=record['implementation'][field]:
+                        raise ValueError('profile metadata differs from actual launcher: '+p.name+'/'+field)
             records.append(record)
             inventory.setdefault(p.q,set()).add(tuple(cfg[k] for k in FIELDS[:-1]))
             print('FALLBACK_BUILD_PLAN '+json.dumps(dict(point=p.name,selection=selection,config=cfg)),flush=True)
@@ -145,9 +161,22 @@ quactlize_ppu_placed_arrangement_v2 const* a) {
         if any(name and name not in old_symbols for name in expected):
             raise ValueError('frozen incumbent identity not emitted: '+point.name)
         inspection['frozen_incumbents'][point.name]=expected
+    if args.execution:
+        from dev.bf16_compute.package import execution_receipt
+        library,receipt=execution_receipt(args.execution)
+        if receipt['runtime']!={f'lib{x}.so':sha(sdk/'lib'/f'lib{x}.so') for x in LIBRARIES}:
+            raise ValueError('production execution SDK differs')
+        for record in records:
+            q=str(record['point']['q']);cfg=record['candidate']
+            if not any(all(c[k]==cfg[k] for k in FIELDS) for c in receipt['simt_configs'][q]):
+                raise ValueError('production execution does not contain selected recipe')
+            record['entry']=dict(library='libquactlize_ppu_candidate.so',symbol='quactlize_kpack_simt_run_v2',
+                                 scope='PRODUCTION_C_ABI')
+        shutil.copy2(library,out/'libquactlize_ppu_candidate.so')
+        shutil.copy2(args.execution/'manifest.json',out/'production-execution.json')
     (out/'native-inspection.json').write_text(json.dumps(inspection,indent=2)+'\n')
     if any(sha(ROOT/p)!=h for p,h in hashes.items()):raise ValueError('build input changed')
-    payloads={p.name:sha(p) for p in out.iterdir() if p.suffix in ('.so','.cu','.cpp','.inc','.txt') or p.name in ('reference-manifest.json','native-inspection.json')}
+    payloads={p.name:sha(p) for p in out.iterdir() if p.suffix in ('.so','.cu','.cpp','.inc','.txt') or p.name in ('reference-manifest.json','native-inspection.json','final-selection.json','production-execution.json')}
     manifest=dict(schema=SCHEMA,records=records,source_hashes=hashes,payloads=payloads,
         runtime={f'lib{x}.so':sha(sdk/'lib'/f'lib{x}.so') for x in LIBRARIES},
         reference_manifest_sha256=REFERENCE_MANIFEST,result_archive_sha256=RESULT_ARCHIVE,
@@ -161,6 +190,7 @@ if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__)
     for key in ('sdk','reference','output'):p.add_argument('--'+key,type=Path,required=True)
     p.add_argument('--jobs',type=int,default=6)
+    p.add_argument('--execution',type=Path,help='source-matched full production execution library for device calls')
     a=p.parse_args()
     if a.jobs<1:p.error('positive jobs required')
     build(a)

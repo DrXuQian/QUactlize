@@ -11,6 +11,7 @@ def test_q8_bucket_inherits_its_donor_upgrade(tmp_path):
                                       'static char const kJitSource[]="";\n')
     source.write_text(r'''
 #include "quactlize/dispatch/binding.cpp"
+#include "tests/legacy_q8_overlay.hpp"
 #include <cassert>
 #include <cstring>
 
@@ -90,10 +91,8 @@ def test_bucket_upgrade_is_not_relabelled_exact():
     binding=(ROOT/'quactlize/dispatch/binding.cpp').read_text()
     body=binding.split('int quactlize_kpack_dispatch_query_smallm_v3(',1)[1].split(
         'int quactlize_kpack_dispatch_query_dense_io_v1(',1)[0]
-    assert 'q8_vector::select_bucket(*typed,row,choice,base.simt)' in body
-    assert 'if(selected.policy!=QKS_MATCHED_BUCKET) base.policy=QKS_Q8_VECTOR_MEASURED' in body
-    assert 'base.source_n=row.n;base.source_k=row.k;base.source_tokens=row.tokens' in body
-    assert 'simt::query_v2(*typed,base.simt,arrangement,base.sizes)' in body
+    assert 'select_smallm(*typed,*arrangement)' in body
+    assert 'q8_vector::' not in body
 
 
 def test_fast_reduction_is_shared_by_both_readers():
@@ -111,9 +110,9 @@ def test_fast_reduction_is_shared_by_both_readers():
 def test_q5_generic_and_q8_dynamic_optimized_paths_are_not_old_shape_only():
     simt=(ROOT/'quactlize/execution/simt_kernel.cuh').read_text()
     q8=(ROOT/'quactlize/execution/simt_q8_vector.cuh').read_text()
-    assert 'constexpr int Changes=Q==13 && Variant==3 && Columns==4 && Warps==2 && P==8 ? 3 : 0;' in simt
+    assert 'constexpr int Changes=kBf16F32Changes<Q,Variant,Columns,Warps,P>;' in simt
     assert 'register_reuse<Q,1,Variant,Columns,Warps,P,1,Changes>' in simt
-    assert q8.count('split==1 && model_gemv::dense_m1(c)')==3
+    assert 'auto strategy=q8_strategy(d,Variant,Columns,Warps,P,split);' in q8
     # Known narrow-window and constant-folded winners are still preserved.
     assert 'kernel_s1<1,0,1,4,8,4,false>' in q8
     assert 'kernel_model<1,0,1,8,4,4,false,2048,4096,8>' in q8

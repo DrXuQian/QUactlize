@@ -222,6 +222,19 @@ def verify(root, *, sdk=None):
                 m['policy_hashes'].get('policies/kpack_q8_vector_v1.hpp')!=receipt['header_sha256'] or
                 not {4,5}<={r['variant'] for r in m['execution_receipt']['simt_configs']['8']}):
             raise ValueError('Q8 vector policy/execution identity differs')
+    if 'final_selection' in m:
+        from quactlize.dispatch.planning import validate_inventory
+        receipt=m['final_selection'];path=root/'final-selection.json'
+        if receipt.get('path')!=path.name or path.is_symlink() or sha(path)!=receipt.get('sha256'):
+            raise ValueError('final-selection plan identity differs')
+        actual=validate_inventory(json.loads(path.read_text()),m['execution_receipt'],m['modules'],
+                                  jit=m.get('jit_required',False))
+        # Attached prebuilt modules can discharge earlier JIT requirements,
+        # but cannot change the declared selector/capability denominator.
+        declared=receipt['capabilities']
+        if json.loads(json.dumps(actual['required']))!=declared['required'] or not {
+                tuple(r) for r in actual['jit_required']} <= {tuple(r) for r in declared['jit_required']}:
+            raise ValueError('final-selection capability closure differs')
     if 'compute_contract' in m:
         c=m['compute_contract']
         execution=m['execution_receipt'].get('simt_compute_v2',{})

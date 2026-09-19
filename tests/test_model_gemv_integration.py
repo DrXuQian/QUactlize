@@ -11,7 +11,7 @@ ROOT=Path(__file__).resolve().parents[1]
 def test_tc_replacement_does_not_leak_to_other_domains(tmp_path):
     code=r'''
 #include "quactlize/dispatch/smallm_matched.hpp"
-#include "quactlize/dispatch/q8_vector.hpp"
+#include "tests/legacy_q8_overlay.hpp"
 #include <cassert>
 int main() {
   using namespace quactlize::dispatch;

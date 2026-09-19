@@ -3,6 +3,7 @@
 #include "simt_format.cuh"
 #include "q4_s1_validation.hpp"
 #include "simt.h"
+#include "simt_strategy.hpp"
 #include "simt_activation.cuh"
 #include "../decode/reducer.cuh"
 #include <type_traits>
@@ -240,10 +241,7 @@ int launch_v2(qkg_simt_call_v2 const& d,int split) {
     // Keep all other shapes, compute/storage types and recipes unchanged.
     if constexpr(Variant==3 && Columns==4 && ((Q==12 && Warps==4 && P==4) ||
                                             (Q==13 && Warps==2 && P==8))) {
-        bool measured=c.input_type==QKG_F32 && c.mode==QKG_INDEXED && c.rows==8 &&
-            c.topk==8 && c.experts==256 && split==1 &&
-            (Q==12 ? c.n==1024 && c.k==2048 && c.channels==1 :
-                     c.n==2048 && c.k==512 && c.channels==8);
+        bool measured=measured_reuse(d,Variant,Columns,Warps,P,split);
         if(measured) {
             if constexpr(Q==13)
                 register_reuse_model<Q,1,Variant,Columns,Warps,P,1,3,2048,512>
@@ -257,7 +255,7 @@ int launch_v2(qkg_simt_call_v2 const& d,int split) {
     // The Q5 unsigned address/fixed-order fold does not depend on model
     // dimensions. Keep the fixed incumbent above; all other Q5 BF16 shapes
     // using its reader recipe get the same optimized generic body.
-    constexpr int Changes=Q==13 && Variant==3 && Columns==4 && Warps==2 && P==8 ? 3 : 0;
+    constexpr int Changes=kBf16F32Changes<Q,Variant,Columns,Warps,P>;
     if(c.input_type==QKG_F32)
         register_reuse<Q,1,Variant,Columns,Warps,P,1,Changes><<<blocks,Warps*32,0,stream>>>(c,split);
     else if(c.input_type==QKG_SIMT_BF16)

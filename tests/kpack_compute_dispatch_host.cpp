@@ -66,7 +66,7 @@ int main() {
             auto c=compute_proposal(r,{},name);
             assert(c.qtype==q && c.route==route && c.ap==0 && c.mapping_id==map && c.split==1);
             assert(name==c.symbol && c.tm==16 && c.tk%((q==11 || q==13) ? 256 : (q==10 || q==14) ? 128 : 64)==0);
-            assert(key(r,0,0,0)!=key(r,0,0,1));
+            assert(key(r,{},0,0)!=key(r,{},0,1));
         }
     }
     Runtime runtime;runtime.device=0;runtime.cu=72;

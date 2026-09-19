@@ -28,6 +28,15 @@ from tools.run_kpack_pack_gate import device_identity
 from tools.profile_kpack_gpu_compact import AcuRange,acu_launch_command
 
 
+def candidate_entry(record):
+    entry=record.get('entry',dict(library='fallback.so',symbol='fallback_run',scope='PRODUCTION_LAUNCH_V2'))
+    allowed=(('fallback.so','fallback_run','PRODUCTION_LAUNCH_V2'),
+             ('libquactlize_ppu_candidate.so','quactlize_kpack_simt_run_v2','PRODUCTION_C_ABI'))
+    if tuple(entry.get(k) for k in ('library','symbol','scope')) not in allowed:
+        raise ValueError('candidate entry differs from compiled gate')
+    return entry
+
+
 def verify(bundle,sdk=None):
     m=json.loads((bundle/'manifest.json').read_text())
     if m.get('schema')!=SCHEMA or [r['point'] for r in m['records']]!=json.loads(json.dumps([asdict(p) for p in POINTS])):
@@ -39,6 +48,15 @@ def verify(bundle,sdk=None):
         if p.parent!=bundle or p.is_symlink() or sha(p)!=h:raise ValueError('payload differs: '+name)
     for name,h in m['source_hashes'].items():
         if sha(ROOT/name)!=h:raise ValueError('compile input differs: '+name)
+    for record in m['records']:
+        if 'entry' in record:
+            entry=candidate_entry(record)
+            if entry['library'] not in m['payloads']:raise ValueError('candidate entry payload missing')
+            if entry['scope']=='PRODUCTION_C_ABI':
+                receipt=json.loads((bundle/'production-execution.json').read_text())
+                if (m['payloads'].get('production-execution.json')!=sha(bundle/'production-execution.json') or
+                        receipt['sha256']!=m['payloads'][entry['library']]):
+                    raise ValueError('production execution receipt differs')
     if sdk and {name:sha(sdk/'lib'/name) for name in m['runtime']}!=m['runtime']:
         raise ValueError('SDK runtime differs')
     return m
@@ -48,8 +66,9 @@ class Fallback:
     def __init__(self,b,bundle,record):
         self.b,self.arm,self.handles=b,'fallback',[]
         self.config=Candidate(**record['candidate'])
-        self.lib=C.CDLL(str(bundle/'fallback.so'),mode=C.RTLD_LOCAL)
-        self.fn=self.lib.fallback_run
+        self.entry=candidate_entry(record)
+        self.lib=C.CDLL(str(bundle/self.entry['library']),mode=C.RTLD_LOCAL)
+        self.fn=getattr(self.lib,self.entry['symbol'])
         self.fn.argtypes=[C.POINTER(SimtCallV2),C.POINTER(SimtConfig),C.POINTER(Arrangement)]
         self.fn.restype=C.c_int
         if record['selection']['policy'] is not None:
@@ -64,7 +83,7 @@ class Fallback:
 
     @property
     def receipt(self):
-        return dict(kind='simt',implementation='PRODUCTION_LAUNCH_V2',config=asdict(self.config),
+        return dict(kind='simt',implementation=self.entry['scope'],config=asdict(self.config),
                     identity_scope='ALIGNED_M1_COMPLETE_CALL',
                     kernels=kernel_names(self.b.point,asdict(self.config)))
 

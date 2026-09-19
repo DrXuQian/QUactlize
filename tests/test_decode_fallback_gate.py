@@ -10,7 +10,7 @@ import pytest
 from dev.tp2_decode import fallback_plan as plan
 from dev.tp2_decode import plan as prior
 from dev.tp2_decode.build_fallback import source
-from dev.tp2_decode.run_fallback import profile_check,profile_status,checkpoint,verify
+from dev.tp2_decode.run_fallback import profile_check,profile_status,checkpoint,verify,candidate_entry
 
 
 def test_bounded_scope_uses_previous_minimum_not_always_new_candidate():
@@ -32,6 +32,15 @@ def test_candidate_calls_production_launch_not_a_copied_kernel():
         assert f'launch_v2<{q},{v},4,4,4>(d,f.split)' in text
         assert 'kernel_body' not in text and 'register_reuse_body' not in text
         assert 'c.n=' not in text and 'c.k=' not in text
+
+
+def test_production_entry_is_explicit_and_cannot_substitute_old_execution():
+    entry=dict(library='libquactlize_ppu_candidate.so',symbol='quactlize_kpack_simt_run_v2',scope='PRODUCTION_C_ABI')
+    assert candidate_entry(dict(entry=entry))==entry
+    assert candidate_entry({})['symbol']=='fallback_run'
+    for key,value in (('library','libquactlize_ppu_execution.so'),('symbol','fallback_run'),
+                      ('library','../candidate.so'),('scope','MEASURED')):
+        with pytest.raises(ValueError):candidate_entry(dict(entry=entry|{key:value}))
 
 
 def raw_csv(names,grids,blocks):

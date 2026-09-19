@@ -49,7 +49,7 @@
     git rev-parse HEAD > "$RUN/results/source.txt"
     cp dev/tp2_decode/fallback_prebuilt.json "$RUN/results/prebuilt.json"
     mapfile -t PIN < <("$PYTHON" -c 'import json; p=json.load(open("dev/tp2_decode/fallback_prebuilt.json")); print(p["artifact_branch"]); print(p["artifact_commit"]); print(p["gemv_path"]); print(p["prepare_path"])')
-    [[ ${#PIN[@]} == 4 && ${PIN[0]} == artifacts/decode-fallback-v1 && ${PIN[1]} =~ ^[0-9a-f]{40}$ ]]
+    [[ ${#PIN[@]} == 4 && ${PIN[0]} == artifacts/dispatch-refactor-v1 && ${PIN[1]} =~ ^[0-9a-f]{40}$ ]]
     [[ ${PIN[2]} == prebuilt/ppu0010/decode-fallback-v1 && ${PIN[3]} == prebuilt/ppu0010/decode-fallback-prepare-v1 ]]
     stage=fetch
     ART=${FALLBACK_ARTIFACT_DIR:-$RUN/artifact}

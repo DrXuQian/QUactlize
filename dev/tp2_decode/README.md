@@ -1,11 +1,16 @@
 # Shape-independent decode candidates
 
-Follow-up: `dev/decode-fallback` updates common runtime fallback paths. See
+Current follow-up: `dev/dispatch-refactor` combines the common fallback gate
+with the host selection refactor. See [current work record](docs/refactor-20260919.md)
+and [selection/prewarm interface](../../docs/KPACK_SELECTION.md). The old
+`dev/decode-fallback` source and artifact commits remain replayable unchanged.
+
+`dev/decode-fallback` updates common runtime fallback paths. See
 [`docs/fallback-20260919.md`](docs/fallback-20260919.md) for the implemented
 scope and pending device admission, and
 [`docs/architecture-20260919.md`](docs/architecture-20260919.md) for the independent
-architecture review and staged refactor plan. No architectural refactor has
-been mixed into the experiment.
+architecture review and staged refactor plan. Kernel arithmetic and the frozen
+reference minima are unchanged by the host refactor.
 
 The follow-up now has its own prebuilt entrypoint and immutable pin:
 
@@ -24,6 +29,12 @@ the five reducer controls are explicitly not automatic policy selections.
 The actual prepare dispatcher is checked separately for shape/router/alias
 correctness and K3072 M1/M8 timing. The box does not compile or install a
 replacement runtime, and this gate does not measure model TPOT/Asys.
+
+The refactor handoff uses `quactlize_kpack_simt_run_v2` from the freshly compiled
+full production execution DSO for the candidate, not a copied kernel or the
+narrow diagnostic wrapper. Its build receipt and exact entrypoint are bound
+in the gate manifest. `libquactlize_ppu_execution.so` in the component bundle
+is deliberately the frozen **reference**, not a library to install.
 
 Use `RESUME_RUN=/exact/printed/run` with the same source, SDK, physical device
 and point set to retain passed points and verified ACU captures. Failed points

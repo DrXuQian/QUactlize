@@ -1,7 +1,8 @@
+// Test-only pre-refactor overlay oracle; production folds its data at compile time.
 #pragma once
-#include "api.h"
-#include "../../policies/kpack_q8_vector_v1.hpp"
-#include "../execution/model_gemv_scope.hpp"
+#include "quactlize/dispatch/api.h"
+#include "policies/kpack_q8_vector_v1.hpp"
+#include "quactlize/execution/model_gemv_scope.hpp"
 #include <cstring>
 
 namespace quactlize::dispatch::q8_vector {

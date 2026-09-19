@@ -93,6 +93,10 @@ def test_caller_bf16_receipts_and_symbol_precision(monkeypatch):
         assert native.simt_symbol_recipe(promoted)==(14,1,3,4,4,4,1)
     for changes in (2,99):
         assert native.simt_symbol_recipe(old.replace('4>',f'4, 1, {changes}>')) is None
+    model=old.replace('register_reuse<','register_reuse_model<').replace('4>','4, 1, 3, 2048, 512>')
+    assert native.simt_symbol_recipe(model)==(14,1,3,4,4,4,1)
+    assert native.simt_symbol_recipe(model.replace('_model','')) is None
+    assert native.simt_symbol_recipe(model.replace('2048, 512','2048, 0')) is None
     vector='void quactlize::execution::simt::q8_vector::kernel<1, 1, 1, 4, 8, 4>(qkg_call_v1, int)'
     assert native.simt_symbol_recipe(vector)==(8,1,5,4,8,4,1)
     for hoist in ('true','false','0','1'):

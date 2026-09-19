@@ -177,27 +177,27 @@ int launch_v2(qkg_simt_call_v2 const& d,int split) {
     auto stream=static_cast<hggcStream_t>(d.call.stream);
     if(hggcGetLastError()!=hggcSuccess) return QKG_RUNTIME;
     int blocks=d.call.rows*split*(d.call.n/(Columns*P));
+    auto strategy=q8_strategy(d,Variant,Columns,Warps,P,split);
     if(d.compute_type==QKG_COMPUTE_F16) {
         auto const& c=d.call;
         if constexpr(Variant==5 && Columns==8 && Warps==4 && P==4) {
-            if(split==8 && model_gemv::dense_m1(c,2048,4096))
+            if(strategy==Q8Strategy::FixedCold)
                 kernel_model<1,0,1,8,4,4,false,2048,4096,8><<<blocks,128,0,stream>>>(c);
-            else if(split==1 && model_gemv::dense_m1(c,8192,2048))
+            else if(strategy==Q8Strategy::FixedHoisted)
                 kernel_model<1,0,1,8,4,4,true,8192,2048,1><<<blocks,128,0,stream>>>(c);
-            else if(split==1 && model_gemv::dense_m1(c))
+            else if(strategy==Q8Strategy::Hoisted)
                 kernel<1,0,1,8,4,4,true><<<blocks,128,0,stream>>>(c,split);
             else
                 kernel<1,0,1,8,4,4><<<blocks,128,0,stream>>>(c,split);
         } else if constexpr(Variant==5 && Columns==4 && Warps==2 && P==4) {
-            if(split==1 && model_gemv::dense_m1(c))
+            if(strategy==Q8Strategy::S1Hoisted)
                 kernel_s1<1,0,1,4,2,4,true><<<blocks,64,0,stream>>>(c);
             else
                 kernel<1,0,1,4,2,4><<<blocks,64,0,stream>>>(c,split);
         } else if constexpr(Variant==5 && P==4 && Columns==4 && Warps==8) {
-            bool hoist=split==1 && model_gemv::dense_m1(c);
-            if(split==1 && model_gemv::dense_m1(c,4096,2048))
+            if(strategy==Q8Strategy::S1Narrow)
                 kernel_s1<1,0,1,4,8,4,false><<<blocks,256,0,stream>>>(c);
-            else if(hoist)
+            else if(strategy==Q8Strategy::Hoisted)
                 kernel<QKG_F32,QKG_COMPUTE_F16,Variant-4,Columns,Warps,P,true><<<blocks,Warps*32,0,stream>>>(c,split);
             else
                 kernel<QKG_F32,QKG_COMPUTE_F16,Variant-4,Columns,Warps,P><<<blocks,Warps*32,0,stream>>>(c,split);
@@ -210,9 +210,7 @@ int launch_v2(qkg_simt_call_v2 const& d,int split) {
         auto const& c=d.call;
         // The admitted M1 S8 call includes this ordered float2 reducer.
         // Public buffers need only four-byte alignment: keep scalar fallback.
-        bool paired=Variant==5 && Columns==8 && Warps==4 && P==4 && split==8 &&
-            d.compute_type==QKG_COMPUTE_F16 && c.mode==QKG_DENSE && c.rows==1 &&
-            c.n==2048 && c.k==4096 && c.experts==1 &&
+        bool paired=strategy==Q8Strategy::FixedCold &&
             !((uintptr_t(c.output)|uintptr_t(c.workspace))&7);
         if(paired) quactlize::decode::reduce_decode<8><<<(c.n+63)/64,32,0,stream>>>(
             static_cast<float const*>(c.workspace),c.output,c.n);

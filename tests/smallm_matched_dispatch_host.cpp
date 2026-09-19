@@ -1,5 +1,6 @@
 // Policy/ABI only: fake resource queries, never simulated GPU arithmetic.
 #include "quactlize/dispatch/binding.cpp"
+#include "tests/legacy_q8_overlay.hpp"
 #include <cassert>
 #include <cstdio>
 static int compute=-1,queries=0;

@@ -52,7 +52,7 @@ def test_production_q8_policy_preserves_tc_indexed_and_different_incumbents(tmp_
             next(x for x in r['numeric'] if x.get('key')==r['arm'])['reducer_matched_bits']=False
         with pytest.raises(ValueError):append_model_topology(fit(evidence,matched),matched,bad)
     source=tmp_path/'policy.cpp'
-    source.write_text('''#include "quactlize/dispatch/q8_vector.hpp"
+    source.write_text('''#include "tests/legacy_q8_overlay.hpp"
 #include <cassert>
 int main() {
   using quactlize::dispatch::q8_vector::select;
@@ -233,7 +233,9 @@ def test_hoist_keeps_dot_order_and_retains_f16_m1_guards():
     assert 'bool Hoist=false' in kernel_body(True)
     assert 'bool Hoist=false' in candidate_body(True)
     assert 'uint32_t words[2][2][4][Pairs]' in text
-    assert 'split==1 && model_gemv::dense_m1(c)' in text
+    # Guards are shared with offline planning; executable exhaustive comparison
+    # against the old predicates is in test_selection_refactor.py.
+    assert 'auto strategy=q8_strategy(d,Variant,Columns,Warps,P,split);' in text
     assert 'Variant==5 && P==4 && Columns==4 && Warps==8' in text
     assert 'Variant==5 && Columns==8 && Warps==4 && P==4' in text
     scope=(root/'quactlize/execution/model_gemv_scope.hpp').read_text()
