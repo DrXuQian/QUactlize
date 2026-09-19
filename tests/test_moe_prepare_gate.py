@@ -73,7 +73,7 @@ def test_prepare_integration_timing_denominators_and_negatives():
         with pytest.raises(ValueError):timing_rows(bad)
 
 
-def test_production_prepare_promotes_only_measured_all_simt_domain(tmp_path):
+def test_production_prepare_keeps_router_contract_without_weight_shape_gate(tmp_path):
     text=(ROOT/'quactlize/execution/moe_prepare.cuh').read_text()
     body=text[text.index('template<class Plan>\nCUTLASS_HOST_DEVICE bool all_simt_supported'):text.index('\ntemplate<class Shape,class Stride,class Plan>\nbool launch_all_simt')]
     source=tmp_path/'admission.cpp'
@@ -89,15 +89,17 @@ int moe_simt_mask(Plan const& p){return p.mask;}
 ''' + body + '''
 int main(){
   Plan p;p.down.n=2048;p.down.k=512;
-  for(int t=1;t<=8;++t){p.gate.io.tokens=t;assert(admitted(p)==(t==1||t==2||t==4||t==8));}
+  for(int t=1;t<=8;++t){p.gate.io.tokens=t;assert(all_simt_supported(p));}
   p.gate.io.tokens=1;
-  for(int m=0;m<8;++m){p.mask=m;assert(admitted(p)==(m==5));}
-  p.mask=5;p.router.bias=&p;assert(!admitted(p));p.router.bias=nullptr;
-  p.router.use_sigmoid=1;assert(!admitted(p));p.router.use_sigmoid=0;
-  p.router.with_norm=0;assert(!admitted(p));p.router.with_norm=1;
-  p.router.delayed_softmax=1;assert(!admitted(p));p.router.delayed_softmax=0;
-  p.gate.k=3072;assert(!admitted(p));p.gate.k=512;assert(admitted(p));
-  p.merged=false;assert(!admitted(p));
+  for(int m=0;m<8;++m){p.mask=m;assert(all_simt_supported(p)==(m==5));}
+  p.mask=5;p.router.bias=&p;assert(!all_simt_supported(p));p.router.bias=nullptr;
+  p.router.use_sigmoid=1;assert(!all_simt_supported(p));p.router.use_sigmoid=0;
+  p.router.with_norm=0;assert(!all_simt_supported(p));p.router.with_norm=1;
+  p.router.delayed_softmax=1;assert(!all_simt_supported(p));p.router.delayed_softmax=0;
+  p.gate.k=3072;assert(all_simt_supported(p));p.gate.k=512;assert(all_simt_supported(p));
+  p.down.k=768;assert(!all_simt_supported(p));p.down.k=512;
+  p.supported=false;assert(!all_simt_supported(p));p.supported=true;
+  p.merged=false;assert(!all_simt_supported(p));
 }''')
     exe=tmp_path/'admission'
     subprocess.run(['g++','-std=c++17',source,'-o',exe],check=True)

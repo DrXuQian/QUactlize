@@ -1,5 +1,11 @@
 # Shape-independent decode candidates
 
+Follow-up: `dev/decode-fallback` updates common runtime fallback paths. See
+[`docs/fallback-20260919.md`](docs/fallback-20260919.md) for the implemented
+scope and pending device gate. The instructions below describe the immutable
+first experiment at source `3b16b5e`, not a ready-to-run package for the changed
+fallback source. The production artifact pin has not been replaced.
+
 Source branch: `dev/tp2-fastpaths`. Caller branch in the owner's llama.cpp
 fork: `dev/quactlize-tp2-fastpaths`. The published TP2 runtime and its selectors
 are unchanged. This is a bounded candidate package, not a replacement runtime.

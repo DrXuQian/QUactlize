@@ -117,6 +117,12 @@ does not read A or weight planes. None of these facts proves a speedup.
 
 ## Portable follow-up after the first device result
 
+User clarification: common optimizations must improve the **fallback**, not
+only exact-table hits. The first follow-up implements that selection/runtime
+contract; see `fallback-20260919.md`. Bucket predictions must inherit a donor's
+implementation upgrades while remaining labelled predictions. Keep measured
+exceptions instead of permanently retaining the oldest generic implementation.
+
 Authority: `tp2-fastpaths.IwJJxB.results.tgz`, SHA256
 `5944aa7547e4dd5c9b87dae0f906102d7df5d4e39f42d7007c25731408fee075`.
 The old and new confirmed arms compete by minimum full-call median. Freeze

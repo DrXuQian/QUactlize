@@ -231,16 +231,6 @@ CUTLASS_HOST_DEVICE bool all_simt_supported(Plan const& plan) {
       r.version==1 && !r.use_sigmoid && r.with_norm && !r.delayed_softmax && !r.bias;
 }
 
-// Selection authority is narrower than implementation capability.
-template<class Plan>
-CUTLASS_HOST_DEVICE bool admitted(Plan const& plan) {
-  int tokens=plan.gate.io.tokens;
-  return all_simt_supported(plan) &&
-      (tokens==1 || tokens==2 || tokens==4 || tokens==8) &&
-      (plan.gate.k==512 || plan.gate.k==2048) &&
-      plan.gate.n==1024 && plan.down.n==2048 && plan.down.k==512;
-}
-
 template<class Shape,class Stride,class Plan>
 bool launch_all_simt(Plan const& plan,hggcStream_t stream) {
   if(!all_simt_supported(plan)) return false;
@@ -253,7 +243,7 @@ bool launch_all_simt(Plan const& plan,hggcStream_t stream) {
 
 template<class Shape,class Stride,class Plan>
 void launch(Plan const& plan,hggcStream_t stream) {
-  if(admitted(plan)) {
+  if(all_simt_supported(plan)) {
     launch_all_simt<Shape,Stride>(plan,stream);
   } else if(moe_prepare_m1_supported(plan))
     moe_chain_prepare_m1<Shape,Stride><<<1,256,0,stream>>>(plan);

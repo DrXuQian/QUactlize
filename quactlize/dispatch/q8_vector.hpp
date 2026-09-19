@@ -36,4 +36,38 @@ inline bool select_tc(qkg_simt_call_v2 const& d,Config const& tc,qkg_simt_config
     }
     return false;
 }
+
+// Bucket requests inherit their donor's implementation upgrades as well as
+// its original geometry. This is a prediction, not a new measured row. Never
+// choose a donor here or cross a format/compute/operator/token family.
+template<class Row,class Choice>
+inline bool select_bucket(qkg_simt_call_v2 const& d,Row const& donor,
+                          Choice const& choice,qkg_simt_config_v1& out) {
+    auto const& c=d.call;
+    if(c.qtype!=8 || donor.q!=8 || c.input_type!=QKG_F32 ||
+       c.mode!=donor.mode || c.experts!=donor.experts || c.topk!=donor.topk ||
+       c.channels!=donor.channels || d.compute_type!=donor.compute ||
+       c.rows<=0 || c.topk<=0 || donor.tokens<=0 || c.n<=0 || c.k<=0 ||
+       donor.n<=0 || donor.k<=0 ||
+       (c.mode==QKG_INDEXED && c.rows%c.topk)) return false;
+    int tokens=c.mode==QKG_INDEXED ? c.rows/c.topk : c.rows;
+    auto bin=[](int m) {int b=0;for(--m;m>0;m>>=1)++b;return b;};
+    if(tokens>8 || donor.tokens>8 || bin(tokens)!=bin(donor.tokens) ||
+       int64_t(c.n)>int64_t(donor.n)*2 || int64_t(donor.n)>int64_t(c.n)*2 ||
+       int64_t(c.k)>int64_t(donor.k)*2 || int64_t(donor.k)>int64_t(c.k)*2)
+        return false;
+    auto source=d;
+    source.call.n=donor.n;source.call.k=donor.k;
+    source.call.rows=donor.tokens*(donor.mode==QKG_INDEXED ? donor.topk : 1);
+    qkg_simt_config_v1 candidate{};
+    bool upgraded=false;
+    if(choice.kind==QKS_SMALLM_TC) upgraded=select_tc(source,choice.tc,candidate);
+    else if(choice.kind==QKS_SMALLM_SIMT) {
+        auto const& f=choice.reader;
+        candidate={1,sizeof(candidate),f.variant,f.columns,f.warps,f.values,f.split};
+        upgraded=select(source,candidate);
+    }
+    if(upgraded) out=candidate;
+    return upgraded;
+}
 }

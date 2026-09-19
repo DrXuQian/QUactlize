@@ -56,3 +56,29 @@ table, retained incumbents, ACU evidence and limitations. No production
 selection was changed. The next action is selective M1/prepare integration
 and matched TP2 model replay, not another unrestricted sweep. Keep Q6 TC and
 the old Q4/Q5/Q8-SSM winners; Q4 projection and paired-chain gains differ.
+
+Fallback follow-up,2026-09-19, branch `dev/decode-fallback` in
+`/tmp/quactlize-tp2-fastpaths-20260919`: the user explicitly requires common
+optimizations to improve fallback, not just exact rows. Implemented donor
+upgrade inheritance in the actual small-M dispatcher, dynamic Q8 hoist within
+its recipe/precision family, Q5 generic unsigned/fold, shared row-vector
+reduction and structurally selected all-SIMT prepare. Old measured exceptions,
+precision boundaries, exclusions, scalar alignment fallback and mixed-TC
+prepare remain. See `docs/fallback-20260919.md` for exact scope.
+
+Local validation:111 tests and15 subtests pass in32.22s, including real C ABI
+bucket selection without a GPU/JIT, exact-table retention and numerical host
+mapping/guard controls. PPU real SIMT launchers compile/link in23.08s;52 kernel
+ISA entries include all six formats, three aligned row reducers and scalar
+fallbacks. Fast code decode, FP32 FMA and vector loads remain; the row reducers
+emit paired loads/stores. Production `execution/moe.cu` F16/BF16 dispatchers
+compile in11.65s. No PPU device was available and no new timing is claimed.
+
+Compile evidence: `/tmp/decode-fallback-compile-6d9ninjd/local-receipt.json`
+and its ISA/resource logs; prepare gate rebuilt under
+`/tmp/decode-fallback-prepare-20260919`. These are local compile evidence,
+not a published runtime or a source-matched box handoff. Keep the previous
+artifact immutable; do not run its source verifier at this new source HEAD.
+Next: bounded table-miss/old-shape integration against frozen per-point best,
+then registry/paired-candidate work and a matching model package. The active
+production runtime pin and llama caller are unchanged by this follow-up.

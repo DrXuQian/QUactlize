@@ -233,11 +233,12 @@ def test_hoist_keeps_dot_order_and_retains_f16_m1_guards():
     assert 'bool Hoist=false' in kernel_body(True)
     assert 'bool Hoist=false' in candidate_body(True)
     assert 'uint32_t words[2][2][4][Pairs]' in text
-    assert 'split==1 && c.mode==QKG_DENSE && c.rows==1 && c.experts==1' in text
+    assert 'split==1 && model_gemv::dense_m1(c)' in text
     assert 'Variant==5 && P==4 && Columns==4 && Warps==8' in text
-    assert 'c.n==512 && c.k==2048' in text
     assert 'Variant==5 && Columns==8 && Warps==4 && P==4' in text
-    assert 'model_gemv::dense_m1(c,2048,512)' in text
+    scope=(root/'quactlize/execution/model_gemv_scope.hpp').read_text()
+    assert 'c.input_type==QKG_F32 && c.mode==QKG_DENSE && c.rows==1' in scope
+    assert 'c.experts==1 && c.topk==1 && c.channels==1' in scope
     bf16 = text[text.index('} else if(d.compute_type==QKG_COMPUTE_BF16)'):]
     assert ',P,true>' not in bf16
     # Same low-plane addresses, code slot and FMA order; only the load window changes.

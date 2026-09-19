@@ -18,7 +18,7 @@ def compile_run(tmp_path, text):
     subprocess.run([exe], check=True)
 
 
-def test_prepare_capability_is_not_a_model_shape_or_a_promotion(tmp_path):
+def test_prepare_fallback_is_structural_not_a_model_shape(tmp_path):
     text = (ROOT/'quactlize/execution/moe_prepare.cuh').read_text()
     body = text[text.index('template<class Plan>\nCUTLASS_HOST_DEVICE bool supported'):
                 text.index('template<class Shape,class Stride,class Plan>\nbool launch_all_simt')]
@@ -34,7 +34,7 @@ int moe_simt_mask(Plan const& p){return p.mask;}
 int main(){
   Plan p;p.down.n=3072;p.down.k=512;p.gate.k=3072;
   for(int t=1;t<=8;++t){p.gate.io.tokens=t;p.gate.m=8*t;
-    assert(all_simt_supported(p));assert(!admitted(p));}
+    assert(all_simt_supported(p));}
   p.gate.io.tokens=1;p.gate.m=8;
   for(int bad=0;bad<13;++bad){auto b=p;
     switch(bad){
@@ -46,8 +46,11 @@ int main(){
       case 10:b.down.k=768;break;case 11:b.gate.n=0;break;default:b.gate.k=-256;
     }assert(!all_simt_supported(b));
   }
-  p.gate.k=2048;p.down.n=2048;assert(admitted(p));
+  p.gate.k=2048;p.down.n=2048;assert(all_simt_supported(p));
 }''')
+    launcher=text.split('void launch(Plan const& plan,hggcStream_t stream)',1)[1]
+    assert 'if(all_simt_supported(plan))' in launcher
+    assert 'admitted(' not in text
 
 
 def test_actual_vector_reducer_rows_stride_and_scalar_fallback(tmp_path):

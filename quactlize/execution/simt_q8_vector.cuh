@@ -184,18 +184,17 @@ int launch_v2(qkg_simt_call_v2 const& d,int split) {
                 kernel_model<1,0,1,8,4,4,false,2048,4096,8><<<blocks,128,0,stream>>>(c);
             else if(split==1 && model_gemv::dense_m1(c,8192,2048))
                 kernel_model<1,0,1,8,4,4,true,8192,2048,1><<<blocks,128,0,stream>>>(c);
-            else if(split==1 && model_gemv::dense_m1(c,2048,512))
+            else if(split==1 && model_gemv::dense_m1(c))
                 kernel<1,0,1,8,4,4,true><<<blocks,128,0,stream>>>(c,split);
             else
                 kernel<1,0,1,8,4,4><<<blocks,128,0,stream>>>(c,split);
         } else if constexpr(Variant==5 && Columns==4 && Warps==2 && P==4) {
-            if(split==1 && model_gemv::dense_m1(c,2048,512))
+            if(split==1 && model_gemv::dense_m1(c))
                 kernel_s1<1,0,1,4,2,4,true><<<blocks,64,0,stream>>>(c);
             else
                 kernel<1,0,1,4,2,4><<<blocks,64,0,stream>>>(c,split);
         } else if constexpr(Variant==5 && P==4 && Columns==4 && Warps==8) {
-            bool hoist=split==1 && c.mode==QKG_DENSE && c.rows==1 && c.experts==1 &&
-                c.n==512 && c.k==2048;
+            bool hoist=split==1 && model_gemv::dense_m1(c);
             if(split==1 && model_gemv::dense_m1(c,4096,2048))
                 kernel_s1<1,0,1,4,8,4,false><<<blocks,256,0,stream>>>(c);
             else if(hoist)
@@ -217,7 +216,7 @@ int launch_v2(qkg_simt_call_v2 const& d,int split) {
             !((uintptr_t(c.output)|uintptr_t(c.workspace))&7);
         if(paired) quactlize::decode::reduce_decode<8><<<(c.n+63)/64,32,0,stream>>>(
             static_cast<float const*>(c.workspace),c.output,c.n);
-        else register_reuse_reduce<8><<<(int64_t(c.rows)*c.n+127)/128,128,0,stream>>>(c,split);
+        else launch_reduction<8>(c,split,stream);
     }
     return hggcGetLastError()==hggcSuccess ? QKG_OK : QKG_RUNTIME;
 }
