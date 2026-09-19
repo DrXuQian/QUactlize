@@ -22,7 +22,34 @@ sys.path.insert(0, str(ROOT))
 from tools.run_kpack_first_nonfinite import digest, option
 from tools.run_kpack_model_validation import inventory, save, traces, run
 from tools.resume_kpack_q4_model import completed_benchmark_controls
+from tools.run_selected_decode_box import compatibility
 from tools.verify_kpack_dispatch import verify
+
+
+def resolve_paths(cli):
+    """Default to recorded inputs, not another checkout or an inherited SDK."""
+    if cli.previous:
+        cli.previous = cli.previous.resolve(strict=True)
+        results = cli.previous / 'results'
+        if cli.llama is None:
+            receipt = json.loads((results / 'caller-ci-build.json').read_text())
+            directory = receipt.get('llama_worktree', {}).get('directory')
+            if not directory:
+                raise ValueError('previous receipt has no caller worktree; supply --llama')
+            cli.llama = Path(directory)
+        if cli.sdk is None:
+            receipt = json.loads((results / 'compatibility-bundle-manifest.json').read_text())
+            directory = receipt.get('sdk')
+            if not directory:
+                raise ValueError('previous receipt has no SDK directory; supply --sdk')
+            cli.sdk = Path(directory)
+        if cli.result_root is None:
+            cli.result_root = cli.previous.parent
+    if cli.llama is None or cli.sdk is None:
+        raise ValueError('--diagnostic requires --llama and --sdk')
+    cli.sdk = cli.sdk.resolve(strict=True)
+    cli.llama = cli.llama.resolve(strict=True)
+    cli.result_root = (cli.result_root or Path('/workspace')).resolve(strict=True)
 
 
 def inputs(diagnostic, model_name, llama, sdk):
@@ -109,9 +136,7 @@ def benchmark_inputs(previous, model_name, llama, sdk):
     bundle = Path(option(command, '--bundle')).resolve(strict=True)
     if digest(bundle / 'manifest.json') != digest(results / 'bundle-manifest.json'):
         raise ValueError('runtime package differs from completed benchmark')
-    legacy = Path(os.environ.get('QUACTLIZE_PPU_BUNDLE', ''))
-    if not legacy.is_absolute() or digest(legacy / 'manifest.json') != digest(results / 'compatibility-bundle-manifest.json'):
-        raise ValueError('set QUACTLIZE_PPU_BUNDLE to the previous six-library bundle')
+    legacy = compatibility(previous, os.environ.get('QUACTLIZE_PPU_BUNDLE'))
     cache = Path(option(command, '--cache')).resolve(strict=True)
     jit = Path(option(command, '--jit-cache')).resolve(strict=True)
     if cache.name != model_name or not (cache / 'manifest.json').is_file() or not jit.is_dir():
@@ -155,7 +180,8 @@ def private_trace(args, model, directory, env):
         '--asys', args.asys, '--inspector', args.inspector]
     command = private_command(command, directory / 'profiler-tmp',
         [args.llama, args.build, args.bundle, args.cache, args.jit_cache, ROOT, Path(model['path']),
-         args.asys, args.inspector, Path(sys.executable)])
+         args.asys, args.inspector, Path(sys.executable)] +
+        [Path(env[k]) for k in ('QUACTLIZE_PPU_BUNDLE', 'DG_JIT_CACHE_DIR') if env.get(k)])
     private_env = dict(env, TMPDIR='/tmp')
     for key in ('PERFETTO_PRODUCER_SOCK_NAME', 'PERFETTO_CONSUMER_SOCK_NAME', 'ASIGHT_SESSION_FOLDER_PATH'):
         private_env.pop(key, None)
@@ -177,14 +203,14 @@ def main():
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument('--diagnostic', type=Path)
     source.add_argument('--previous', type=Path, help='completed model benchmark; TP1 or TP2, no rebuild')
-    parser.add_argument('--llama', type=Path, required=True)
-    parser.add_argument('--sdk', type=Path, required=True)
+    parser.add_argument('--llama', type=Path, help='default: previous caller worktree receipt')
+    parser.add_argument('--sdk', type=Path, help='default: previous compatibility SDK receipt')
     parser.add_argument('--model', default='qwen35-35b-q4km')
-    parser.add_argument('--result-root', type=Path, default=Path('/workspace'))
+    parser.add_argument('--result-root', type=Path, help='default: previous run parent, or /workspace for a diagnostic')
     parser.add_argument('--profiler-scope', choices=('auto', 'shared', 'private'), default='auto',
                         help='auto isolates /tmp and helper PIDs only after session creation fails')
     cli = parser.parse_args()
-    cli.sdk, cli.llama = cli.sdk.resolve(strict=True), cli.llama.resolve(strict=True)
+    resolve_paths(cli)
     args, model, env, previous = (benchmark_inputs(cli.previous, cli.model, cli.llama, cli.sdk) if cli.previous else
                                   inputs(cli.diagnostic, cli.model, cli.llama, cli.sdk))
     verify(args.bundle, sdk=cli.sdk)
@@ -211,6 +237,7 @@ def main():
         os.environ.clear()
         os.environ.update(env)
         if cli.profiler_scope == 'private':
+            reports = output / 'private' / model['name']
             reports = private_trace(args, model, output, env)
         else:
             try:
@@ -218,6 +245,7 @@ def main():
             except ValueError:
                 if cli.profiler_scope != 'auto' or not session_creation_failed(output):
                     raise
+                reports = output / 'private' / model['name']
                 reports = private_trace(args, model, output, env)
         status['status'] = 'TRACE_PAIR_COMPLETE'
     except (OSError, ValueError, subprocess.SubprocessError) as error:

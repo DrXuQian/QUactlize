@@ -1,5 +1,30 @@
 # Resume
 
+Latest returned integration,2026-09-19: `kpack-tp2.8VYueY.results.tgz`
+matches source e624e44, caller1f7da3b and the published selected runtime.
+Read `docs/selected-result-20260919.md` before the older pending statements.
+All17 selected-entry numerical points and both cold/hot TP2 gates pass.
+Current matched ABBA: native12.700852 versus selected11.239113 ms/token
+decode (-11.509%); prefill285.995361 versus228.169678 us/token (-20.219%).
+The previous K-pack model result was12.482082 ms/token. All measured selected
+plans have zero legacy fallbacks. Token-batch-1 mean KLD has increased from
+0.001708 to0.002444; finite short likelihood checks are not full accuracy
+admission. Prefill likelihood metrics match the preceding result.
+
+Only model trace failed: Asys shared session creation timed out before model
+load; no per-kernel times/MBU are available from this upload. Existing
+trace-only private namespace retry can reuse this exact run without a sweep,
+build or numerical rerun. Shared service paths differ from the selected SDK;
+the device-service PID is stale. Do not stop another profiler or delete locks.
+Namespace permission and the private capture still need box confirmation.
+
+Trace-only handoff is ready: `tools/run_kpack_model_trace.py --previous <this
+run> --model qwen35-122b-q4km --profiler-scope private`. Caller/SDK/result roots
+now default to the saved receipts; six-library discovery reuses the exact
+manifest finder. Runtime, caller binaries, model cache and JIT cache remain
+unchanged. 285 host regression checks pass; the live seven-module package
+still verifies. No compiler or GPU task was run for this orchestration change.
+
 Latest,2026-09-19: `dev/dispatch-results` now integrates the returned confirmed
 minima, not merely the earlier behavior-preserving refactor. Read
 `docs/selected-20260919.md` first; later entries below are chronological history.

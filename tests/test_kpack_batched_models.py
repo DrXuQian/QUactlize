@@ -1701,8 +1701,9 @@ def test_model_asys_reuses_diagnostic_build_without_numerical_callback(tmp_path,
 
 
 @pytest.mark.parametrize('tp2', [False, True])
+@pytest.mark.parametrize('legacy_override', [False, True])
 @pytest.mark.parametrize('fault', [None, 'binary', 'runtime', 'legacy', 'devices', 'model', 'cache'])
-def test_model_asys_reuses_completed_benchmark_including_tp2(tmp_path, monkeypatch, tp2, fault):
+def test_model_asys_reuses_completed_benchmark_including_tp2(tmp_path, monkeypatch, tp2, legacy_override, fault):
     from tools import run_kpack_model_trace as trace
     _, previous, llama, sdk, bundle, build = trace_continuation_fixture(tmp_path, monkeypatch)
     results = previous / 'results'
@@ -1719,15 +1720,19 @@ def test_model_asys_reuses_completed_benchmark_including_tp2(tmp_path, monkeypat
         path.write_text(json.dumps(value))
     cache, jit, legacy = [tmp_path / name for name in ('cache/subject', 'jit', 'legacy')]
     for p in (cache, jit, legacy): p.mkdir(parents=True)
-    for p in (cache / 'manifest.json', legacy / 'manifest.json', results / 'compatibility-bundle-manifest.json'):
-        p.write_text('{}')
+    (cache / 'manifest.json').write_text('{}')
+    for p in (legacy / 'manifest.json', results / 'compatibility-bundle-manifest.json'):
+        p.write_text('{"legacy":true}')
     before = results / 'trace/subject/reference.command.json'
     before.parent.mkdir(parents=True)
     before.write_text(json.dumps(dict(argv=['python', 'never-execute-saved-command',
         '--model', '/different.gguf' if fault == 'model' else model['path'],
         '--binary', str(build / 'bin/llama-server'), '--bundle', str(bundle),
         '--cache', str(cache), '--jit-cache', str(jit)])))
-    monkeypatch.setenv('QUACTLIZE_PPU_BUNDLE', str(legacy))
+    if legacy_override:
+        monkeypatch.setenv('QUACTLIZE_PPU_BUNDLE', str(legacy))
+    else:
+        monkeypatch.delenv('QUACTLIZE_PPU_BUNDLE', raising=False)
     monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '3' if fault == 'devices' else model['devices'])
     monkeypatch.setenv('LLAMA_NUMERICAL_DEBUG', 'tensors')
     if fault == 'binary': (build / 'bin/llama-server').write_text('changed')
@@ -1740,9 +1745,42 @@ def test_model_asys_reuses_completed_benchmark_including_tp2(tmp_path, monkeypat
         args, found, env, prior = trace.benchmark_inputs(previous, 'subject', llama, sdk)
         assert args.build == build and args.bundle == bundle and prior == previous
         assert found == model and args.cache == cache.parent and args.jit_cache == jit
+        assert env['QUACTLIZE_PPU_BUNDLE'] == str(legacy)
         assert env['CUDA_VISIBLE_DEVICES'] == model['devices']
         assert env['QUACTLIZE_KPACK_COMPUTE'] == 'fp16'
         assert 'LLAMA_NUMERICAL_DEBUG' not in env
+
+
+@pytest.mark.parametrize('override', [False, True])
+def test_model_asys_default_paths_come_from_receipts_not_environment(tmp_path, monkeypatch, override):
+    from tools.run_kpack_model_trace import resolve_paths
+    previous, llama, sdk = [tmp_path / name for name in ('prior', 'caller', 'sdk')]
+    (previous / 'results').mkdir(parents=True)
+    llama.mkdir(); sdk.mkdir()
+    (previous / 'results/caller-ci-build.json').write_text(json.dumps(
+        dict(llama_worktree=dict(directory=str(llama)))))
+    (previous / 'results/compatibility-bundle-manifest.json').write_text(json.dumps(dict(sdk=str(sdk))))
+    monkeypatch.setenv('LLAMA_CI_DIR', '/unrelated/caller')
+    monkeypatch.setenv('PPU_SDK', '/unrelated/sdk')
+    cli = SimpleNamespace(previous=previous, llama=None, sdk=None, result_root=None)
+    if override:
+        other = tmp_path / 'explicit'; other.mkdir()
+        cli.llama = cli.sdk = cli.result_root = other
+    resolve_paths(cli)
+    assert (cli.llama, cli.sdk, cli.result_root) == ((other, other, other) if override else (llama, sdk, tmp_path))
+
+
+@pytest.mark.parametrize('missing', ['caller', 'sdk', 'diagnostic'])
+def test_model_asys_missing_path_receipts_require_explicit_paths(tmp_path, missing):
+    from tools.run_kpack_model_trace import resolve_paths
+    (tmp_path / 'results').mkdir()
+    (tmp_path / 'results/caller-ci-build.json').write_text('{}')
+    (tmp_path / 'results/compatibility-bundle-manifest.json').write_text('{}')
+    cli = SimpleNamespace(previous=None if missing == 'diagnostic' else tmp_path,
+        llama=tmp_path if missing == 'sdk' else None, sdk=None, result_root=None)
+    with pytest.raises(ValueError, match={'caller': 'supply --llama', 'sdk': 'supply --sdk',
+                                         'diagnostic': '--diagnostic requires'}[missing]):
+        resolve_paths(cli)
 
 
 @pytest.mark.parametrize('kind', ['timeout', 'runtime', 'none', 'mixed'])
@@ -1799,6 +1837,32 @@ def test_model_asys_recovers_in_private_scope_only_after_session_timeout(tmp_pat
     assert calls == ['shared', 'private']
     status, = tmp_path.glob('kpack-model-asys.*/results/status.json')
     assert json.loads(status.read_text())['reports'].endswith('/private/qwen35-35b-q4km')
+
+
+def test_model_asys_private_failure_still_points_to_partial_report(tmp_path, monkeypatch, capsys):
+    from tools import run_kpack_model_trace as trace
+    diagnostic, _, llama, sdk, _, _ = trace_replay_fixture(tmp_path)
+    monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '0')
+    monkeypatch.setattr(trace, 'verify', lambda bundle, **kwargs: {})
+    monkeypatch.setattr(trace, 'inventory', lambda path: dict(eligible=['weight'], operators=['grouped']))
+    def private(args, model, output, env):
+        folder = output / 'private' / model['name'] / 'reference'
+        folder.mkdir(parents=True)
+        (folder / 'proof.asysrep').write_text('partial capture')
+        (folder / 'proof.json').write_text('{}')
+        raise ValueError('native session failed after reference')
+    monkeypatch.setattr(trace, 'private_trace', private)
+    monkeypatch.setattr(sys, 'argv', ['trace', '--diagnostic', str(diagnostic), '--llama', str(llama),
+        '--sdk', str(sdk), '--result-root', str(tmp_path), '--profiler-scope', 'private'])
+    with pytest.raises(ValueError, match='native session failed'):
+        trace.main()
+    status_file, = tmp_path.glob('kpack-model-asys.*/results/status.json')
+    status = json.loads(status_file.read_text())
+    report = Path(status['reports']) / 'reference/proof.asysrep'
+    assert status['status'] == 'FAIL' and report.is_file()
+    text = capsys.readouterr().out
+    assert 'asys_reference=' + str(report) in text
+    assert 'asys_kpack=NOT_CAPTURED' in text
 
 
 @pytest.mark.parametrize('fail', [False, True])
