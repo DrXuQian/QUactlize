@@ -66,3 +66,7 @@ prebuilt/ppu0010/tp2-fastpaths-v1/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/tp2-fastpaths-v1/*.isa.txt filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/tp2-fastpaths-v1/*.resources.txt -whitespace
 prebuilt/ppu0010/tp2-prepare-v1/bench filter=lfs diff=lfs merge=lfs -text
+prebuilt/ppu0010/decode-fallback-v1/*.so filter=lfs diff=lfs merge=lfs -text
+prebuilt/ppu0010/decode-fallback-v1/isa.txt filter=lfs diff=lfs merge=lfs -text
+prebuilt/ppu0010/decode-fallback-v1/resources.txt -whitespace
+prebuilt/ppu0010/decode-fallback-prepare-v1/bench filter=lfs diff=lfs merge=lfs -text

@@ -1,0 +1,81 @@
+{
+  "scope": "STATIC_ISA_NOT_DEVICE_PERFORMANCE",
+  "kernels": 69,
+  "expected": {
+    "tp2-q8-qkv": [
+      "q8_vector::kernel<1,0,1,4,8,4,true>",
+      null
+    ],
+    "tp2-q8-attn-gate": [
+      "q8_vector::kernel<1,0,1,4,8,4,true>",
+      null
+    ],
+    "tp2-q8-attn-q": [
+      "q8_vector::kernel<1,0,1,8,4,4,true>",
+      null
+    ],
+    "tp2-q8-out": [
+      "q8_vector::kernel<1,0,1,8,4,4,false>",
+      "reduce_decode_rows<8>"
+    ],
+    "tp2-q8-shared-projection": [
+      "q8_vector::kernel<1,0,1,4,8,4,true>",
+      null
+    ],
+    "tp2-q8-shared-down": [
+      "q8_vector::kernel_s1<1,0,1,4,2,4,true>",
+      null
+    ],
+    "tp2-q8-attn-kv": [
+      "q8_vector::kernel<1,0,1,4,8,4,true>",
+      null
+    ],
+    "tp2-q5-down": [
+      "register_reuse<13,1,3,4,2,8,1,3>",
+      null
+    ],
+    "q5-routed-down": [
+      "register_reuse_model<13,1,3,4,2,8,1,3,2048,512>",
+      null
+    ],
+    "q8-shared-down": [
+      "q8_vector::kernel_s1<1,0,1,4,2,4,true>",
+      null
+    ],
+    "q8-ssm-out": [
+      "q8_vector::kernel_model<1,0,1,8,4,4,false,2048,4096,8>",
+      "reduce_decode<8,float>"
+    ],
+    "unseen-q8-n768-k2048": [
+      "q8_vector::kernel<1,0,1,4,8,4,true>",
+      null
+    ],
+    "unseen-q8-n1536-k3072": [
+      "q8_vector::kernel<1,0,1,4,8,4,true>",
+      null
+    ],
+    "reducer-q10-bf16": [
+      "register_reuse<10,1,3,4,4,4,1,0>",
+      "reduce_decode_rows<4>"
+    ],
+    "reducer-q11-bf16": [
+      "register_reuse<11,1,3,4,4,4,1,0>",
+      "reduce_decode_rows<4>"
+    ],
+    "reducer-q12-bf16": [
+      "register_reuse<12,1,3,4,4,4,1,0>",
+      "reduce_decode_rows<4>"
+    ],
+    "reducer-q13-bf16": [
+      "register_reuse<13,1,3,4,4,4,1,0>",
+      "reduce_decode_rows<4>"
+    ],
+    "reducer-q14-bf16": [
+      "register_reuse<14,1,3,4,4,4,1,0>",
+      "reduce_decode_rows<4>"
+    ]
+  },
+  "fp32_fma": true,
+  "paired_load": true,
+  "paired_store": true
+}
