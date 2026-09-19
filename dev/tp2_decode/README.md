@@ -77,6 +77,27 @@ python3 -m pytest -q tests/test_tp2_fastpaths.py tests/test_moe_prepare_gate.py 
 After moving the verified package, use an idle single PPU and its matching SDK.
 These commands do not install a runtime or change production routing:
 
+The prebuilt runner fetches only the two pinned artifact directories through
+Git LFS, verifies source/payload/runtime identity, and runs the prepare gates
+before independent GEMV comparisons. It requires the pinned `third_party/actlize`
+submodule but does not compile anything or use a llama/NCP build directory.
+
+```bash
+PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
+RESULT_ROOT=/sim/eec/shared/junfu.qx CUDA_VISIBLE_DEVICES=0 \
+bash tools/run_tp2_fastpaths_box.sh
+```
+
+The default includes ACU for the incumbent and selected candidate at each
+point. The printed `*.results.tgz` contains summaries, logs and raw-counter CSVs;
+the larger `*.acurep` files remain under `results/sweep/` on the box. There is no
+whole-model Asys capture in this component gate. A failed independent point
+does not stop the remaining points. Use `RESUME_RUN=/exact/printed/run` with
+the same source, device and SDK to retain passed GEMV points and profiles.
+`VERIFY_ONLY=1` verifies the handoff without accessing a device;
+`TP2_ARTIFACT_DIR` may name an already materialized checkout at the pinned
+artifact commit. Prepare timing is K3072 M1/M8 and prepare-only, not GEMM or TPOT.
+
 The artifact branch is `artifacts/tp2-fastpaths-v1`. Materialize its LFS files
 from the pinned commit in a separate checkout. `GEMV_PACKAGE` is its
 `prebuilt/ppu0010/tp2-fastpaths-v1` directory and `PREPARE_BUILD` is its
