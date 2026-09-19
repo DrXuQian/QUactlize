@@ -1,5 +1,32 @@
 # Resume
 
+Latest,2026-09-19: `dev/dispatch-results` now integrates the returned confirmed
+minima, not merely the earlier behavior-preserving refactor. Read
+`docs/selected-20260919.md` first; later entries below are chronological history.
+Final selection is locally audited (1852 catalog rows,937 actual public SIMT
+queries,15 ordinary winners), generated once, and backed by the published
+execution inventory. New M1 timings do not change M2..8 rankings. Q6 head keeps
+TC; Q4 TP2 paired remains unselected pending comparable chain cost.
+
+Caller: `dev/quactlize-selected-decode`,1f7da3bd94b1fc6b9520e156456c89221fddd07f,
+own fork only. Runtime: `artifacts/kpack-model-selected-v1`,
+d8852d419a550623c4fd96c723f749c128798774. All63 ELF payload paths use LFS;
+no caller binary is included. Artifact manifest:
+5bda5fabf565c54494a358479a3ce9923bcde8d204338aede0742517491a4aab.
+The seven production TC modules and BF16 gate identities are unchanged.
+The SIMT reducer was isolated from the TC JIT contract so cached TC images
+remain reusable without source relabeling or a large recompilation.
+
+Next is device integration only, not a sweep:
+`python3 tools/run_selected_decode_box.py --previous-run <previous TP2 run>`.
+It recovers caller/NCP build directories and the exact prior compatibility
+overlay, checks the pinned caller, and performs17 selected-entry numerical
+checks, two-device/cache chains, model numerics, warm ABBA and Asys.
+New-device performance is not yet measured. Ten promoted implementations are
+instruction/resource-identical to the measured images; Q5 down has reviewed
+address-lowering differences (no floating/memory opcode changes), so its new
+image latency remains explicitly pending. No fresh PPU run was performed here.
+
 2026-09-19: baseline TP2 model/ABBA results reviewed; no candidate admitted.
 Read `docs/plan.md` for the 10 local decode shapes and eight restriction classes.
 

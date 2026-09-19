@@ -1,13 +1,15 @@
 {
-  "branch": "artifacts/kpack-model-tp2-scale-v1",
-  "commit": "006aa757f5b995ae4d8eac772cc2106782e14e90",
+  "branch": "artifacts/kpack-model-selected-v1",
+  "commit": "d8852d419a550623c4fd96c723f749c128798774",
   "path": "prebuilt/ppu0010/kpack-model-runtime-v1",
-  "manifest_sha256": "67ff68c51d1f2c914ba94a81aed43d1d8a499412e6a7043483018e0f5a5771fb",
-  "source_commit": "b04cb96347beccb682dd298486394ea4e99cd7a1",
-  "llama_branch": "dev/quactlize-tp2-v0.3.0",
-  "llama_ci_commit": "e15d7b411d5900be5be348105f6107fe5a77edc9",
-  "model_reader_gate": true,
-  "prepare_integration_gate": true,
-  "lfs_payloads": 64,
-  "device_admission": "TP2_COLD_HOT_72_CHAIN6_PASS_SEGMENTED_MODEL_LOAD_PENDING"
+  "manifest_sha256": "5bda5fabf565c54494a358479a3ce9923bcde8d204338aede0742517491a4aab",
+  "source_commit": "a94d15c45cdc75347690fc00ae1ed0d846c4c506",
+  "llama_branch": "dev/quactlize-selected-decode",
+  "llama_ci_commit": "1f7da3bd94b1fc6b9520e156456c89221fddd07f",
+  "model_reader_gate": false,
+  "prepare_integration_gate": false,
+  "selected_entry_gate": true,
+  "lfs_payloads": 63,
+  "selection_admission": "LOCAL_CATALOG1852_PUBLIC_SIMT937_CONFIRMED_ORDINARY15_PASS",
+  "device_admission": "NEW_EXECUTION_MODEL_NUMERICS_TPOT_ASYS_PENDING"
 }
