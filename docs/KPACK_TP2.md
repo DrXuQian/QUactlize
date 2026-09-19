@@ -3,9 +3,31 @@
 ## Implementation and admission
 
 The caller branch is `dev/quactlize-tp2-v0.3.0` in the owner's llama.cpp fork.
-The orchestration branch is `dev/kpack-tp2` in Quactlize. The runtime package
-remains the existing `87b996559f` artifact; no GEMM/GEMV images or public
-Quactlize ABI changed.
+The orchestration branch is `dev/kpack-tp2` in Quactlize. Use its current
+`tools/kpack_q4_model_artifact.json` runtime pin. The Q4/Q5 SIMT scale repair
+requires the updated small execution and paired libraries; `87b996559f` is
+the historical failing runtime, not the repaired one. Public ABI, weight
+format, TC parent modules, caller and JIT source contract remain unchanged.
+
+### Scale-field repair, 2026-09-19
+
+`q4-tp2-simt.62KWWD` passes the exact legacy-red/H32-green A/B. Inspection of
+the hash-identical shipped image identifies a low-word read before thread-mask
+reconvergence, so group6 reads no low scale bits. Both F16 and BF16 machine-code
+streams match the inspected legacy. The repaired production functions match
+the local H32 candidate instruction bytes. See
+[root mechanism, coverage and hashes](TP2_Q4_SIMT_FIELD_LOSS.md).
+
+The repair applies to every generic Q4/Q5 SIMT recipe, including indexed and
+paired gate/up consumers. It does not force a different tactic or change
+Split-K. The short-K fmt0 compatibility overlay is still required and reused.
+Local checks: 13 scale/fixture/parser tests, 43 related SIMT/reader tests, full
+six-format execution and paired library builds, and live-source package/ISA
+verification. One unrelated historical prebuilt test remains stale against
+the already changed `execution/api.h`; its frozen artifact is not re-signed.
+This is not full TP2 device admission. Run the default `TP2_MODE=model` entry
+below: cold/hot two-device correctness first, then 122B numerics, warmed ABBA
+and Asys. No further scale-field bisection is requested.
 
 | Boundary | Implementation | Verification |
 | --- | --- | --- |

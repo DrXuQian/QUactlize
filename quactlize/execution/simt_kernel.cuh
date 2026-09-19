@@ -44,7 +44,11 @@ __device__ __forceinline__ float2 activation_pair(uint4 packet,int offset,int la
 
 template<int Q,int Changes>
 __device__ __forceinline__ float2 affine_selected(Meta<Format<Q>::words> const& m,int group) {
-    if constexpr((Changes&1) && (Q==12 || Q==13)) {
+    // Q4/Q5 share the same four-word scale/min header. Decode its cross-word
+    // fields with fixed register operands for every recipe, not only tuned
+    // ones: the dynamic word-index path loses scale[6] bits 0..3 on PPU.
+    // Keep Changes in the kernel identity for existing measured recipes.
+    if constexpr(Q==12 || Q==13) {
         static_assert(Format<Q>::words==4 && Format<Q>::Unit::kGroups==8);
         return q4_s1::q4_affine_header32(make_uint4(m.word[0],m.word[1],m.word[2],m.word[3]),unsigned(group)&7u);
     } else return affine<Q>(m,group);

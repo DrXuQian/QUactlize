@@ -4,6 +4,31 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
+## TP2 Q4/Q5 SIMT scale repair, 2026-09-19
+
+Use the new runtime pin on `dev/kpack-tp2`; do not keep an explicit
+`KPACK_BUNDLE` pointing at the historical `87b996559f` package. The six-library
+short-K compatibility overlay and caller `f9a0dbe2f` remain reusable. No caller
+or public ABI changes, weight conversion changes, tactic substitutions, or
+TC/JIT source changes are needed.
+
+The `62KWWD` result closes the isolated numerical A/B: old SIMT48/48 red,
+candidate24/24 and scalar24/24 green, 12 wrong-expert negatives red, six
+scale-bit-loss plants reproducing the complete old output bit-for-bit. The
+actual shipped F16/BF16 instruction streams reveal a low-word read while the
+cross-word lanes are masked out, before reconvergence. This explains scale6's
+missing low nibble and N%4==0 errors. Production now always uses the existing
+fixed-register H32 extraction for Q4/Q5; the new exact Q4 function machine code
+matches the tested candidate. Other formats and the dot/reduction order stay
+unchanged. See [evidence and ISA check](TP2_Q4_SIMT_FIELD_LOSS.md).
+
+Both small execution and paired gate/up libraries are rebuilt. All seven TC
+parent modules, packer, prefill, policies and router gate are retained; the
+dispatcher and execution-bound gate receipts are refreshed without inheriting
+device validation. The next `tools/run_kpack_tp2_box.sh` default run checks
+full six-format TP2 cold/hot, then 122B accuracy, warmed ABBA and Asys. Only
+that returned result can admit the integrated TP2 model path.
+
 ## TP2 caller integration, 2026-09-18
 
 TP2 K-pack intake is implemented on the caller's
