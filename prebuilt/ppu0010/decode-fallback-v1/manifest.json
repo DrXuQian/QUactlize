@@ -27,7 +27,7 @@
         "split": 1,
         "variant": 5,
         "changes": 0,
-        "hoist": false,
+        "hoist": true,
         "fixed": false,
         "direct_meta": false,
         "vector_reduce": false
@@ -324,7 +324,7 @@
         "split": 1,
         "variant": 5,
         "changes": 0,
-        "hoist": false,
+        "hoist": true,
         "fixed": false,
         "direct_meta": false,
         "vector_reduce": false
@@ -621,7 +621,7 @@
         "split": 1,
         "variant": 5,
         "changes": 0,
-        "hoist": false,
+        "hoist": true,
         "fixed": false,
         "direct_meta": false,
         "vector_reduce": false
@@ -1141,7 +1141,7 @@
         "split": 1,
         "variant": 5,
         "changes": 0,
-        "hoist": false,
+        "hoist": true,
         "fixed": false,
         "direct_meta": false,
         "vector_reduce": false
@@ -1370,7 +1370,7 @@
         "split": 1,
         "variant": 5,
         "changes": 0,
-        "hoist": false,
+        "hoist": true,
         "fixed": false,
         "direct_meta": false,
         "vector_reduce": false
@@ -1599,7 +1599,7 @@
         "split": 1,
         "variant": 5,
         "changes": 0,
-        "hoist": false,
+        "hoist": true,
         "fixed": false,
         "direct_meta": false,
         "vector_reduce": false
@@ -1827,7 +1827,7 @@
         "values": 8,
         "split": 1,
         "variant": 3,
-        "changes": 0,
+        "changes": 3,
         "hoist": false,
         "fixed": false,
         "direct_meta": false,
@@ -1991,9 +1991,9 @@
         "values": 8,
         "split": 1,
         "variant": 3,
-        "changes": 0,
+        "changes": 3,
         "hoist": false,
-        "fixed": false,
+        "fixed": true,
         "direct_meta": false,
         "vector_reduce": false
       },
@@ -2156,7 +2156,7 @@
         "split": 1,
         "variant": 5,
         "changes": 0,
-        "hoist": false,
+        "hoist": true,
         "fixed": false,
         "direct_meta": false,
         "vector_reduce": false
@@ -2386,7 +2386,7 @@
         "variant": 5,
         "changes": 0,
         "hoist": false,
-        "fixed": false,
+        "fixed": true,
         "direct_meta": false,
         "vector_reduce": true
       },
@@ -2614,7 +2614,7 @@
         "split": 1,
         "variant": 5,
         "changes": 0,
-        "hoist": false,
+        "hoist": true,
         "fixed": false,
         "direct_meta": false,
         "vector_reduce": false
@@ -2684,7 +2684,7 @@
         "split": 1,
         "variant": 5,
         "changes": 0,
-        "hoist": false,
+        "hoist": true,
         "fixed": false,
         "direct_meta": false,
         "vector_reduce": false
@@ -2789,7 +2789,7 @@
               "hoist": false,
               "fixed": false,
               "direct_meta": false,
-              "vector_reduce": true
+              "vector_reduce": false
             }
           ]
         },
@@ -2856,7 +2856,7 @@
               "hoist": false,
               "fixed": false,
               "direct_meta": false,
-              "vector_reduce": true
+              "vector_reduce": false
             }
           ]
         },
@@ -2923,7 +2923,7 @@
               "hoist": false,
               "fixed": false,
               "direct_meta": false,
-              "vector_reduce": true
+              "vector_reduce": false
             }
           ]
         },
@@ -2990,7 +2990,7 @@
               "hoist": false,
               "fixed": false,
               "direct_meta": false,
-              "vector_reduce": true
+              "vector_reduce": false
             }
           ]
         },
@@ -3057,7 +3057,7 @@
               "hoist": false,
               "fixed": false,
               "direct_meta": false,
-              "vector_reduce": true
+              "vector_reduce": false
             }
           ]
         },
@@ -3790,9 +3790,9 @@
     "dev/gemv_model/source.py": "ba0ca8c03234e45d98c32c429e4e79d00a8da95a72097f6770191cdd6de53bb0",
     "dev/tp2_decode/plan.py": "68530b80257238c9c3821740c3aec84ff0156aec4c69db3fa6c025f9d0cae5f1",
     "dev/tp2_decode/compile_smoke.cu": "5f3d7ab7bca0045e8a42177b19a1a965243c52e776663d45713cfb6b719acad2",
-    "dev/tp2_decode/fallback_plan.py": "2c925fbfadd690df724764f2a73f0e93269222be09f52555378a6b9d529e5673",
-    "dev/tp2_decode/build_fallback.py": "9511b084e3038b0891b3122412cdcefa9b42d99e6b374c455ba1a6fedac5d3b8",
-    "dev/tp2_decode/run_fallback.py": "f4c70861626a8ded30621a3d6ba9d27f8c3aab19c382be15a5578568052a7c44"
+    "dev/tp2_decode/fallback_plan.py": "937a5bf415563922547a481bf2fd71f93a84a88337f248d1d80a2fe17496fb1d",
+    "dev/tp2_decode/build_fallback.py": "7de50100741741d7c994ba96eb5e09a99103016d6abdcaf49a05f7ca0f4b56cf",
+    "dev/tp2_decode/run_fallback.py": "39d44f448e83640aca06bfcc4680b2944f4aa47d9700d18a99f8674e4a905503"
   },
   "payloads": {
     "catalog.inc": "edf1b4215a1fe2d5f268fb1df31835a86ae5d4d76196a3d07ad24dc5fce64833",
@@ -3815,10 +3815,10 @@
     "q12.cu": "0699cb8350f5a65a8988895bc11efb6b0c96f46dd5bfef6d600a9c721c6392e0",
     "q14.cu": "757072d15e5a5fcd60060f3d5411dbcdd3512642040c3be429fea9fa8ac14161",
     "entry.cpp": "f5f25ba7f338aed09550c30dc2fbed1a5013961ac8e82632a29d0d7269faf6fb",
-    "fallback.so": "6e2a86880c6117cbf3fce98305658e968c24c56745a58809d097ed2f14ad1acf",
+    "fallback.so": "d6640168943528607caccf9f56619282b0fd7e5b4eb594643f4521c49594ba07",
     "isa.txt": "8c8442fe8a0995287e21574b853246d16ea6dfa04e7282718435ab55b99e34a8",
     "resources.txt": "96ca8e5e7b508f47f4a55eee952b0645abd43bd17c75e903ef6f4aeceff0dea5",
-    "native-inspection.json": "b07a8a9556b50bff4ae5d75089683eb2063834d94975acbe71820cb935259ec9"
+    "native-inspection.json": "aa91f18de85e0561e184d658f87ba499136835bab34a8486d2cddaa983c36440"
   },
   "runtime": {
     "libhggc_wrapper.so": "71c32cb41191458503234324360fcd3f1fa890dd5a082d465bb07328630c775e",
@@ -3829,7 +3829,7 @@
   "reference_manifest_sha256": "4addcd47773099db4d636f1c0e0d51b8ac1982624edf109733e17ccca7546460",
   "result_archive_sha256": "5944aa7547e4dd5c9b87dae0f906102d7df5d4e39f42d7007c25731408fee075",
   "compiler_sha256": "fa62c590c67411c23fa4028f15fa562b39ce0cf830830d038a1ec04c59d8c76e",
-  "build_seconds": 19.853331994265318,
+  "build_seconds": 20.954460002481937,
   "selector_probe_only_no_tc_catalog": true,
   "production_replacement": false,
   "device_validated": false
