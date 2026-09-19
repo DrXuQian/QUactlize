@@ -13,6 +13,25 @@ its exact manifest hash is recorded in the pin and integration handoff.
 
 ### Scale-field repair, 2026-09-19
 
+Follow-up `kpack-tp2.SIgUYu` confirms all 72 cold matrix cases and five chain
+cases. Q4/Q5 BF16 SIMT chains at tokens1/8 pass. The last tokens32 chain uses
+BF16 TC (Q4 gate/up TK64 and Q5 down TK256, both S1) and reports 0.0267095549
+against the high-precision, final-squared oracle. This is not the old SIMT
+field-loss signature. Host arithmetic with the present BF16 scale/zero,
+multiply/add and storage roundings predicts about 0.02659 on the same fixture;
+that closeness is a hypothesis, not a proof or a new accuracy allowance.
+
+Use `TP2_MODE=chain` for a bounded follow-up. It captures the original graph
+and a copy retaining gate/up, SwiGLU and reduced outputs, across all three
+changing replays. Final output bits must match between arms. The independent
+GGUF oracle reports per-stage errors, BF16 arithmetic and high-precision
+references plus wrong-expert/missing-rank negatives. The mode is diagnostic
+only, leaves the 0.02 model gate unchanged and does not time kernels. Only the
+caller test is rebuilt; the repaired runtime and JIT parents are reused.
+The caller test entry is available at `bf14a36e4`; update the caller branch
+before selecting this mode. Local TP graph regression and eight precision
+oracle/capture tests pass, including a changed-output negative.
+
 `q4-tp2-simt.62KWWD` passes the exact legacy-red/H32-green A/B. Inspection of
 the hash-identical shipped image identifies a low-word read before thread-mask
 reconvergence, so group6 reads no low scale bits. Both F16 and BF16 machine-code

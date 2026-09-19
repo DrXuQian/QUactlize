@@ -5,7 +5,7 @@
   "manifest_sha256": "67ff68c51d1f2c914ba94a81aed43d1d8a499412e6a7043483018e0f5a5771fb",
   "source_commit": "b04cb96347beccb682dd298486394ea4e99cd7a1",
   "llama_branch": "dev/quactlize-tp2-v0.3.0",
-  "llama_ci_commit": "f9a0dbe2fb8b1e0dd50b0aee128617530c53a76f",
+  "llama_ci_commit": "bf14a36e4ab02740e0a95c72f3be128b573df08d",
   "model_reader_gate": true,
   "prepare_integration_gate": true,
   "lfs_payloads": 64,

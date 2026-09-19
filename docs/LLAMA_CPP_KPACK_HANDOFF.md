@@ -6,6 +6,17 @@ binary bundle, or loader contract changes.
 
 ## TP2 Q4/Q5 SIMT scale repair, 2026-09-19
 
+Latest box result `kpack-tp2.SIgUYu`: 72/72 cold matrix cases and 5/6 chains
+pass. Q4 gate/up plus Q5 down at tokens32 fails the original squared-chain
+FP32-weight/FP64-dot reference by 2.67095549%. That row uses BF16 TC, not the
+repaired SIMT reader. See `KPACK_TP2.md` and `TP2_MODE=chain` for the unchanged-
+runtime stage capture. BF16 rounding is a quantitatively supported hypothesis;
+full TP2/model admission remains pending, with no relaxed threshold.
+Caller `bf14a36e4ab02740e0a95c72f3be128b573df08d` adds only the scheduler
+test capture. The production caller, Quactlize libraries and parent choices
+are unchanged. The capture/parser passes its host positive and changed-output
+negative; the independent Q4/Q5 GGUF decoder matches ggml's host decoder.
+
 Use the new runtime pin on `dev/kpack-tp2`; do not keep an explicit
 `KPACK_BUNDLE` pointing at the historical `87b996559f` package. The six-library
 short-K compatibility overlay and caller `f9a0dbe2f` remain reusable. No caller

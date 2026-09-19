@@ -22,7 +22,7 @@
     test -n "$ROOT" && test -f "$ROOT/tools/kpack_batched_tp2_122b.json"
     cd "$ROOT"
     TP2_MODE=${TP2_MODE:-model}
-    [[ $TP2_MODE == model || $TP2_MODE == communication || $TP2_MODE == q4-local ]]
+    [[ $TP2_MODE == model || $TP2_MODE == communication || $TP2_MODE == q4-local || $TP2_MODE == chain ]]
     PYTHON=$(command -v "${PYTHON:-python3}")
     SDK=$(realpath -e -- "${PPU_SDK:-/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK}")
     test -n "$SDK" && test -r "$SDK/envsetup.sh" && test -x "$SDK/bin/hgobjdump"
@@ -63,6 +63,10 @@
     grep -q 'KPACK_TP2_HOST PASS' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"
     if [[ $TP2_MODE == communication ]]; then grep -q 'KPACK_TP2_COMM_WRAPPER' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"; fi
     if [[ $TP2_MODE == q4-local ]]; then grep -q 'KPACK_TP2_SINGLE PASS' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"; fi
+    if [[ $TP2_MODE == chain ]]; then
+        grep -q -- '--tp2-chain-dump' "$LLAMA_DIR/tests/test-quactlize-scheduler.cpp"
+        "$PYTHON" -c 'import numpy'
+    fi
     if [[ -z ${QUACTLIZE_PPU_BUNDLE:-} ]]; then
         printf 'KPACK_TP2 missing QUACTLIZE_PPU_BUNDLE: use the six-library bundle path recorded in the previous results/communication/environment.json\n' >&2
         false
@@ -143,6 +147,13 @@
         stage=q4-local
         "$PYTHON" -u tools/run_kpack_tp2_comm.py --binary "$BUILD_DIR/bin/test-quactlize-scheduler" \
             --output "$RUN/results/q4-local" --q4-local 2>&1 | tee "$RUN/results/q4-local.log"
+        stage=diagnostic-complete
+        exit 0
+    fi
+    if [[ $TP2_MODE == chain ]]; then
+        stage=chain-precision
+        "$PYTHON" -u tools/run_kpack_tp2_chain.py --binary "$BUILD_DIR/bin/test-quactlize-scheduler" \
+            --output "$RUN/results/chain-precision" 2>&1 | tee "$RUN/results/chain-precision.log"
         stage=diagnostic-complete
         exit 0
     fi
