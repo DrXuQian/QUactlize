@@ -31,6 +31,24 @@ def log(arm, fixture, fail=False):
     return '\n'.join(lines)+'\n'
 
 
+def field_log(arm, fixture):
+    text=log(arm, fixture)
+    lines=[]
+    for line in text.splitlines():
+        if line.startswith('Q4_TP2_LOCAL reader=simt '):
+            line=line.replace('relative=1e-7 max_abs=8e-8 nonfinite=0 bad=0/1024 status=PASS',
+                              'relative=0.126 max_abs=0.151 nonfinite=0 bad=256/1024 status=FAIL')
+        if line.startswith('Q4_TP2_COMPLETE'):
+            if arm=='fresh':
+                lines.append('Q4_TP2_FIELD_LOSS group_mod8=6 column_mod4=0 cleared_mask=15 '
+                    'legacy_bad=0 golden_bad=256 wrong_columns=0 nonfinite=0 max_abs=8e-8 status=EXPECTED_RED')
+            line=f'Q4_TP2_COMPLETE arm={arm} cells={12 if arm=="fresh" else 4} failures=4'
+        lines.append(line)
+        if line.startswith('Q4_TP2_LOCAL reader=scalar '):
+            lines.append(line.replace('reader=scalar','reader=header32'))
+    return '\n'.join(lines)+'\n'
+
+
 class Tp2Simt(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -129,9 +147,11 @@ class Tp2Simt(unittest.TestCase):
                 Path(argv[argv.index('-o')+1]).write_bytes(b'host command contract only')
                 return dict(command=argv,rc=0,seconds=0)
             with patch.object(probe,'command',side_effect=fake):
-                probe.build(sdk,root/'build',192)
+                probe.build(sdk,root/'build',192,field_ab=True)
             shipped = next(c for c in calls if '-DQTP_SHIPPED_ONLY=1' in c)
             self.assertEqual(shipped[0],'g++')
+            self.assertNotIn('-DQTP_FIELD_AB=1',shipped)
+            self.assertEqual(sum('-DQTP_FIELD_AB=1' in c for c in calls),1)
             link = next(c for c in calls if c[-1]==str(root/'build/shipped'))
             self.assertNotIn(str(root/'build/fresh.o'),link)
             self.assertNotIn(str(root/'build/pack.o'),link)
@@ -162,6 +182,28 @@ class Tp2Simt(unittest.TestCase):
             self.assertEqual(len(calls), 12)
             self.assertEqual(summary['verdict'], 'INCOMPLETE')
             self.assertEqual(sum(c['status']=='PASS' for c in summary['cases']), 11)
+
+    def test_field_ab_requires_legacy_red_candidate_green_and_counterfactual(self):
+        rows=[dict(arm=arm,fixture=f['file'],**probe.evidence(field_log(arm,f),arm,f,1,True))
+              for arm in ('shipped','fresh') for f in self.fixtures]
+        self.assertEqual(probe.verdict(rows,True),'SCALE_FIELD_LOSS_CLOSED_IN_ISOLATE')
+        changed=copy.deepcopy(rows)
+        changed[6]['field_loss_reproduced']=False
+        self.assertEqual(probe.verdict(changed,True),'FIELD_COUNTERFACTUAL_DIFFERS')
+        changed=copy.deepcopy(rows)
+        next(c for c in changed[6]['cells'] if c['reader']=='header32')['status']='FAIL'
+        self.assertEqual(probe.verdict(changed,True),'FIELD_CANDIDATE_OR_SCALAR_FAILED')
+        f=self.fixtures[0];text=field_log('fresh',f)
+        for bad in (text.replace('cleared_mask=15','cleared_mask=31'),
+                    text.replace('legacy_bad=0','legacy_bad=1'),
+                    text.replace('golden_bad=256','golden_bad=255'),
+                    text.replace('wrong_columns=0','wrong_columns=1'),
+                    text.replace('max_abs=8e-8 status=EXPECTED_RED','max_abs=nan status=EXPECTED_RED'),
+                    text.replace('reader=header32','reader=scalar')):
+            with self.assertRaises(ValueError):
+                probe.evidence(bad,'fresh',f,1,True)
+        with self.assertRaises(ValueError):
+            probe.evidence(text,'fresh',f,1)
 
     def test_runner_uses_one_device_and_no_llama_or_jit_build(self):
         path = probe.ROOT/'tools/run_kpack_tp2_simt_box.sh'

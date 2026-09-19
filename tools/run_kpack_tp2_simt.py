@@ -90,7 +90,7 @@ def command(argv, log, timeout=180):
     return dict(command=list(map(str, argv)), rc=rc, seconds=time.monotonic()-started)
 
 
-def build(sdk, output, jobs):
+def build(sdk, output, jobs, field_ab=False):
     output.mkdir(exist_ok=False)
     source = ROOT / 'dev/gemv_simt/tp2_q4_replay.cu'
     includes = [ROOT, ROOT/'quactlize/include', ROOT/'third_party/actlize/include',
@@ -105,6 +105,8 @@ def build(sdk, output, jobs):
         ('shipped', ['g++', '-std=c++17', '-O2', '-DQTP_PPU=1', '-DQTP_SHIPPED_ONLY=1', *inc,
                      '-x', 'c++', '-c', source, '-o', output/'shipped.o']),
     ]
+    if field_ab:
+        tasks[0][1].insert(1, '-DQTP_FIELD_AB=1')
     write(output/'compile-plan.json', {name: list(map(str, argv)) for name, argv in tasks})
     def compile_one(item):
         name, argv = item
@@ -148,14 +150,14 @@ def bundle_paths(args):
     return pack, execution, manifest
 
 
-def evidence(text, arm, fixture, rc):
+def evidence(text, arm, fixture, rc, field_ab=False):
     expected = 'Q4_TP2_INPUT ' + ' '.join(f'{k}={v}' for k, v in
         zip(('raw','low','units','a','ids','golden'),fixture['field_fnv']))
     if text.splitlines().count(expected) != 1:
         raise ValueError('prelaunch input hashes differ')
     packs = re.findall(r'^Q4_TP2_PACK producer=(HOST|GPU) low_bad=(\d+) units_bad=(\d+)$', text, re.M)
     cells = []
-    for match in re.finditer(r'^Q4_TP2_LOCAL reader=(simt|scalar) producer=(HOST|GPU) compute=(F16|BF16) '
+    for match in re.finditer(r'^Q4_TP2_LOCAL reader=(simt|scalar|header32) producer=(HOST|GPU) compute=(F16|BF16) '
         r'variant=0 columns=4 warps=4 values=4 split=1 relative=(\S+) max_abs=(\S+) '
         r'nonfinite=(\d+) bad=(\d+)/1024 status=(PASS|FAIL)$',text,re.M):
         reader, producer, compute, relative, maximum, nonfinite, bad, status = match.groups()
@@ -171,22 +173,37 @@ def evidence(text, arm, fixture, rc):
             if not math.isfinite(cell[key]):
                 cell[key] = None
         cells.append(cell)
-    expected_cells = {(reader, producer, compute) for reader in (('simt','scalar') if arm=='fresh' else ('simt',))
+    readers = ('simt','scalar','header32') if field_ab else ('simt','scalar')
+    expected_cells = {(reader, producer, compute) for reader in (readers if arm=='fresh' else ('simt',))
                       for producer in ('HOST','GPU') for compute in ('F16','BF16')}
     actual = [(c['reader'],c['producer'],c['compute']) for c in cells]
     complete = re.findall(r'^Q4_TP2_COMPLETE arm=(fresh|shipped) cells=(\d+) failures=(\d+)$',text,re.M)
     negative = re.findall(r'^Q4_TP2_NEGATIVE kind=wrong_expert relative=(\S+) status=EXPECTED_RED$',text,re.M)
     failures = sum(c['status']=='FAIL' for c in cells) + sum(int(lo)>0 or int(u)>0 for _,lo,u in packs)
     if (len(actual)!=len(expected_cells) or set(actual)!=expected_cells or
+            len(re.findall(r'^Q4_TP2_LOCAL ',text,re.M))!=len(actual) or
             len(packs)!=2 or {p[0] for p in packs}!={'HOST','GPU'} or
             complete!=[(arm,str(len(expected_cells)),str(failures))] or
             len(negative)!=1 or not math.isfinite(float(negative[0])) or float(negative[0])<=.02 or
             rc!=int(failures!=0)):
         raise ValueError('missing, duplicate or inconsistent diagnostic coverage')
-    return dict(status='NUMERIC_MISMATCH' if failures else 'PASS',packs=packs,cells=cells)
+    result = dict(status='NUMERIC_MISMATCH' if failures else 'PASS',packs=packs,cells=cells)
+    if field_ab and arm=='fresh':
+        rows = re.findall(r'^Q4_TP2_FIELD_LOSS group_mod8=6 column_mod4=0 cleared_mask=15 '
+            r'legacy_bad=(\d+) golden_bad=(\d+) wrong_columns=(\d+) nonfinite=(\d+) '
+            r'max_abs=(\S+) status=(EXPECTED_RED|PATTERN_DIFFERS)$',text,re.M)
+        if len(rows)!=1:
+            raise ValueError('missing or duplicate field-loss counterfactual')
+        legacy_bad,golden_bad,wrong_columns,nonfinite,maximum,status=rows[0]
+        reproduced=(legacy_bad=='0' and golden_bad=='256' and wrong_columns=='0' and
+                    nonfinite=='0' and math.isfinite(float(maximum)) and 0<=float(maximum)<=2e-6)
+        if (status=='EXPECTED_RED')!=reproduced:
+            raise ValueError('field-loss counterfactual label disagrees with values')
+        result['field_loss_reproduced']=reproduced
+    return result
 
 
-def verdict(results):
+def verdict(results, field_ab=False):
     expected = {(arm,f'rank{rank}-replay{replay}.bin') for arm in ('shipped','fresh')
                 for rank in (0,1) for replay in range(3)}
     if (len(results)!=12 or {(r['arm'],r['fixture']) for r in results} != expected or
@@ -195,6 +212,15 @@ def verdict(results):
     for producer, name in [('HOST','HOST_TRANSFER_DIFFERED'),('GPU','GPU_PACK_BYTES_DIFFER')]:
         if any(p==producer and (int(lo) or int(u)) for r in results for p,lo,u in r['packs']):
             return name
+    if field_ab:
+        fresh=[r for r in results if r['arm']=='fresh']
+        if any(c['reader'] in ('scalar','header32') and c['status']!='PASS' for r in fresh for c in r['cells']):
+            return 'FIELD_CANDIDATE_OR_SCALAR_FAILED'
+        if not all(c['status']=='FAIL' for r in results for c in r['cells'] if c['reader']=='simt'):
+            return 'LEGACY_FAILURE_NOT_REPRODUCED'
+        if not all(r.get('field_loss_reproduced') for r in fresh):
+            return 'FIELD_COUNTERFACTUAL_DIFFERS'
+        return 'SCALE_FIELD_LOSS_CLOSED_IN_ISOLATE'
     for arm, reader, name in [('fresh','scalar','SCALAR_CANONICAL_COMPUTE_FAILED'),
                              ('fresh','simt','FRESH_SIMT_COMPUTE_FAILED'),
                              ('shipped','simt','SHIPPED_SIMT_ONLY_FAILURE')]:
@@ -221,7 +247,8 @@ def main(args):
             runtime_matches_shipped=runtime==old['runtime'],
             scope='RECORD_DIFFERENCES_NOT_A_DEVICE_ADMISSION'))
     write(out/'environment.json', {k: os.environ.get(k) for k in ('PPU_SDK','LD_LIBRARY_PATH','CUDA_VISIBLE_DEVICES')})
-    binaries = build(sdk, out/'build', args.jobs)
+    field_ab=getattr(args,'field_ab',False)
+    binaries = build(sdk, out/'build', args.jobs, field_ab=field_ab)
     if args.compile_only:
         print('Q4_TP2_SIMT COMPILED device_validated=0', flush=True)
         return 0
@@ -236,16 +263,16 @@ def main(args):
             row = dict(arm=arm,fixture=fixture['file'])
             try:
                 row.update(command(argv,case/'run.log'))
-                row.update(evidence((case/'run.log').read_text(errors='replace'), arm, fixture, row['rc']))
+                row.update(evidence((case/'run.log').read_text(errors='replace'), arm, fixture, row['rc'],field_ab))
             except Exception as e:
                 row.update(status='INFRASTRUCTURE_OR_COVERAGE_FAIL', error=str(e))
             results.append(row)
             write(out/'summary.json', dict(status='RUNNING',cases=results))
             print(f"Q4_TP2_SIMT_PROGRESS completed={len(results)}/12 arm={arm} fixture={fixture['file']} status={row['status']}",flush=True)
-    result = verdict(results)
+    result = verdict(results,field_ab)
     write(out/'summary.json', dict(status='DIAGNOSTIC_COMPLETE', verdict=result,
-        device_admission='PENDING', timing_valid=False, cells_expected=72, cases=results))
-    print(f'Q4_TP2_SIMT_DONE verdict={result} cells_expected=72 results={out}', flush=True)
+        device_admission='PENDING', timing_valid=False, cells_expected=96 if field_ab else 72, cases=results))
+    print(f'Q4_TP2_SIMT_DONE verdict={result} cells_expected={96 if field_ab else 72} results={out}', flush=True)
     return int(result=='INCOMPLETE')
 
 
@@ -257,4 +284,5 @@ if __name__ == '__main__':
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--jobs',type=int,default=4)
     parser.add_argument('--compile-only',action='store_true')
+    parser.add_argument('--field-ab',action='store_true',help='same-row H32 scale extraction and field-loss counterfactual')
     raise SystemExit(main(parser.parse_args()))

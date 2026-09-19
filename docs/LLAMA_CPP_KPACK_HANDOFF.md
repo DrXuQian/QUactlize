@@ -77,6 +77,16 @@ checking packed bytes separately. It builds four small objects, not llama or
 the runtime bundle. See [command and coverage](KPACK_TP2.md#one-device-ppu-replay).
 Caller source, production kernel selection and all public ABIs are unchanged.
 
+`7ADt8a` completes that replay: packed bytes and all scalar controls pass;
+both generic SIMT images fail identically, independently of F16/BF16. A raw
+GGUF counterfactual clearing scale group6's low nibble at `N%4==0` reconstructs
+all returned values within8.2e-8. The next same-row A/B uses
+`Q4_TP2_FIELD_AB=1` to replace only scale/min extraction with the existing
+fixed-register H32 helper and requires a matching field-loss negative. See
+[exact evidence and admission conditions](TP2_Q4_SIMT_FIELD_LOSS.md).
+No caller changes or new production runtime package are required for this
+diagnostic; full TP2 admission remains pending.
+
 The first cold device gate exposed a fixture bug: GGUF kept the copied Meta
 buffer and tried to read its shards instead of the supplied raw host bytes.
 The exact scheduler helper reproduces exit 139 using only CPU-backed Meta

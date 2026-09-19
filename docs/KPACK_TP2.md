@@ -389,6 +389,13 @@ Keep TP2 numerical/model admission pending.
 
 ### One-device PPU replay
 
+The returned `7ADt8a` replay is complete and identifies a Q4 scale-field loss:
+packing and scalar decoding pass, while both SIMT images lose group6's low
+four scale bits at every fourth N column. See
+[evidence and the same-row field A/B](TP2_Q4_SIMT_FIELD_LOSS.md).
+The next run adds `Q4_TP2_FIELD_AB=1` to the command below; it keeps the
+production libraries unchanged and tests the narrow extraction candidate.
+
 Use `tools/run_kpack_tp2_simt_box.sh` next. It needs only the selected SDK,
 one visible PPU and the existing small execution/pack package. No llama, NCP,
 six-library compatibility bundle, model, JIT, collective or performance sweep

@@ -78,6 +78,17 @@ int launch_local(qkg_simt_call_v2 const& typed,int reader) {
 #ifndef QTP_SHIPPED_ONLY
     if(reader==0) return quactlize::execution::simt::launch_v2<12,0,4,4,4>(typed,1);
     auto stream=static_cast<RT(Stream_t)>(typed.call.stream);
+#ifdef QTP_FIELD_AB
+    if(reader==2) {
+        using namespace quactlize::execution::simt;
+        int blocks=typed.call.rows*(typed.call.n/16);
+        // Exactly the failed V0/C4/W4/P4/S1 row; Changes=1 replaces only
+        // packed scale/min extraction with the existing fixed-register reader.
+        if(typed.compute_type) register_reuse<12,1,0,4,4,4,1,1><<<blocks,128,0,stream>>>(typed.call,1);
+        else register_reuse<12,1,0,4,4,4,0,1><<<blocks,128,0,stream>>>(typed.call,1);
+        return RT(GetLastError)()==RT(Success)?0:QKG_RUNTIME;
+    }
+#endif
     if(typed.compute_type) scalar_canonical<1><<<8,128,0,stream>>>(typed.call);
     else scalar_canonical<0><<<8,128,0,stream>>>(typed.call);
     return RT(GetLastError)()==RT(Success)?0:QKG_RUNTIME;
@@ -144,6 +155,11 @@ int main(int argc,char** argv) {
     c.a=da;c.ids=di;c.low=dl;c.units=du;c.output=dy;c.stream=stream;
     qkg_simt_config_v1 config{1,sizeof(config),0,4,4,4,1};
     int failures=0,cells=0;
+    std::vector<float> legacy;
+    int readers=shipped?1:2;
+#ifdef QTP_FIELD_AB
+    readers=3;
+#endif
     for(int producer=0;producer<2;++producer) {
         if(producer==0) {
             GPU(RT(MemcpyAsync)(dl,low.data(),low.size(),RT(MemcpyHostToDevice),stream));
@@ -165,7 +181,7 @@ int main(int argc,char** argv) {
         if(bad_low && !dump(std::string(argv[3])+"/low-"+std::to_string(producer)+".bin",check_low)) return 2;
         if(bad_units && !dump(std::string(argv[3])+"/units-"+std::to_string(producer)+".bin",check_units)) return 2;
         failures+=bad_low||bad_units;
-        for(int reader=0;reader<(shipped?1:2);++reader) for(int compute=0;compute<2;++compute) {
+        for(int reader=0;reader<readers;++reader) for(int compute=0;compute<2;++compute) {
             GPU(RT(MemsetAsync)(dy,0xff,got.size()*4,stream));
             qkg_simt_call_v2 typed{2,sizeof(typed),c,compute};
             int rc=0;
@@ -181,7 +197,8 @@ int main(int argc,char** argv) {
                 if(!std::isfinite(got[i])||std::abs(delta)>2e-6) {++bad;++columns[i%16];first=std::min(first,i);}
             }
             ++cells;failures+=bad!=0;
-            const char* name=reader?"scalar":"simt";
+            const char* name=reader==2?"header32":reader?"scalar":"simt";
+            if(producer==0 && reader==0 && compute==1) legacy=got;
             std::printf("Q4_TP2_LOCAL reader=%s producer=%s compute=%s variant=0 columns=4 warps=4 values=4 split=1 relative=%.9g max_abs=%.9g nonfinite=%zu bad=%zu/%zu status=%s\n",
                 name,producer?"GPU":"HOST",compute?"BF16":"F16",std::sqrt(error/denom),max_abs,nonfinite,bad,got.size(),bad?"FAIL":"PASS");
             if(bad) {
@@ -194,6 +211,34 @@ int main(int argc,char** argv) {
             }
         }
     }
+#ifdef QTP_FIELD_AB
+    // Counterfactual: zero just bits92..95 of the scale unit for N%4==0.
+    // This is raw GGUF scale[6]&~15, not a layout change or another tactic.
+    // Its complete output must reconstruct the historical SIMT failure.
+    static_assert(quactlize::execution::simt::Format<12>::Unit::bit_of(6,0)==92);
+    auto planted=units;
+    for(int e=0;e<E;++e) for(int sb=0;sb<K/256;++sb) for(int n=0;n<N;n+=4)
+        planted[((e*(K/256)+sb)*N+n)*16+11]&=0x0f;
+    GPU(RT(MemcpyAsync)(du,planted.data(),planted.size(),RT(MemcpyHostToDevice),stream));
+    GPU(RT(MemsetAsync)(dy,0xff,got.size()*4,stream));
+    qkg_simt_call_v2 counterfactual{2,sizeof(counterfactual),c,QKG_COMPUTE_BF16};
+    if(launch_local(counterfactual,2)) return 2;
+    GPU(RT(StreamSynchronize)(stream));GPU(RT(Memcpy)(got.data(),dy,got.size()*4,RT(MemcpyDeviceToHost)));
+    size_t legacy_bad=0,golden_bad=0,wrong_columns=0,nonfinite=0;double max_abs=0;
+    for(size_t i=0;i<got.size();++i) {
+        double delta=std::abs(double(got[i])-legacy[i]);
+        max_abs=std::max(max_abs,delta);
+        nonfinite+=!std::isfinite(got[i]);
+        legacy_bad+=!std::isfinite(got[i])||delta>2e-6;
+        bool red=!std::isfinite(got[i])||std::abs(double(got[i])-gold[i])>2e-6;
+        golden_bad+=red;wrong_columns+=red&&(i%4!=0);
+    }
+    bool reproduced=!legacy_bad && !nonfinite && !wrong_columns && golden_bad==256;
+    std::printf("Q4_TP2_FIELD_LOSS group_mod8=6 column_mod4=0 cleared_mask=15 legacy_bad=%zu golden_bad=%zu wrong_columns=%zu nonfinite=%zu max_abs=%.9g status=%s\n",
+        legacy_bad,golden_bad,wrong_columns,nonfinite,max_abs,reproduced?"EXPECTED_RED":"PATTERN_DIFFERS");
+    if(!dump(std::string(argv[3])+"/field-loss.bin",got)) return 2;
+    GPU(RT(MemcpyAsync)(du,units.data(),units.size(),RT(MemcpyHostToDevice),stream));
+#endif
     // Wrong-expert input must be rejected by the independent fixture oracle.
     std::swap(ids[0],ids[1]);GPU(RT(MemcpyAsync)(di,ids.data(),ids.size()*4,RT(MemcpyHostToDevice),stream));
     qkg_simt_call_v2 negative{2,sizeof(negative),c,QKG_COMPUTE_BF16};

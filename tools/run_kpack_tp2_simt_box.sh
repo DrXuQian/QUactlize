@@ -39,6 +39,11 @@
     test -n "$RUN" && test -d "$RUN"
     git rev-parse HEAD > "$RUN/source.txt"
     ARGS=()
+    case ${Q4_TP2_FIELD_AB:-0} in
+        0) ;;
+        1) ARGS+=(--field-ab) ;;
+        *) printf 'Q4_TP2_FIELD_AB must be 0 or 1\n' >&2; false ;;
+    esac
     if [[ -n ${KPACK_BUNDLE:-} ]]; then
         ARGS+=(--bundle "$KPACK_BUNDLE")
     elif [[ -n ${PREVIOUS_RUN:-} ]]; then
