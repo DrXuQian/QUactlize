@@ -53,6 +53,7 @@ template<class T> T symbol(void* h,char const* name) {
 }
 struct Module {
     void* library=nullptr;
+    int qtype=0;
     int compute_type=QK_COMPUTE_F16;
     decltype(&quactlize_kpack_query_v1) query=nullptr;
     decltype(&quactlize_kpack_prepare_v1) prepare=nullptr;
@@ -86,6 +87,8 @@ struct MoeExecution {
     void* fusion_library=nullptr;
     decltype(&quactlize_gate_up_query_v1) gate_up_query=nullptr;
     decltype(&quactlize_gate_up_run_v2) gate_up_run=nullptr;
+    decltype(&quactlize_gate_up_query_v2) gate_up_recipe_query=nullptr;
+    decltype(&quactlize_gate_up_run_v3) gate_up_recipe_run=nullptr;
     decltype(&quactlize_kpack_moe_simt_query_v1) query=nullptr;
     decltype(&quactlize_kpack_moe_simt_bind_v1) bind=nullptr;
     decltype(&quactlize_kpack_moe_mixed_stage_v1) stage=nullptr;
@@ -143,6 +146,7 @@ struct MoeChain {
     qkg_gate_up_call_v2 gate_up{};
     qkg_gate_up_layout_v1 gate_up_layout{};
     qkg_gate_up_config_v1 gate_up_config{};
+    qkg_gate_up_recipe_v2 gate_up_recipe{};
 };
 
 bool overlaps_simt_workspace(MoeChain const& c,void const* pointer,uint64_t bytes) {
@@ -301,7 +305,10 @@ int run_mixed(MoeChain const& c,qk_moe_plan_v1 const& plan,void* stream) {
     if(!stage(QK_MOE_PREPARE)) return QKS_RUNTIME;
     if(c.gate_up.version) {
         auto call=c.gate_up; call.call.input.call.stream=stream;
-        if(c.execution->gate_up_run(&call,&c.gate_up_config,&c.gate_up_layout)!=QKG_OK) return QKS_RUNTIME;
+        int rc=c.gate_up_recipe.version ?
+            c.execution->gate_up_recipe_run(&call,&c.gate_up_recipe,&c.gate_up_layout) :
+            c.execution->gate_up_run(&call,&c.gate_up_config,&c.gate_up_layout);
+        if(rc!=QKG_OK) return QKS_RUNTIME;
     } else if(!produce(0,c.gate) || (!plan.merged && !produce(1,c.up)) || !stage(QK_MOE_ACTIVATE)) {
         return QKS_RUNTIME;
     }
@@ -327,6 +334,7 @@ std::shared_ptr<Module> load(Runtime& r,Image const& image,Config const& c,bool 
         throw std::runtime_error("catalog parent/compiler contract differs");
     auto path=image.path.empty() ? r.root/"modules"/image.key/"kernel.so" : image.path;
     auto module=std::make_shared<Module>();
+    module->qtype=c.qtype;
     module->compute_type=compute_type;
     module->library=dlopen(path.c_str(),RTLD_NOW|RTLD_LOCAL);
     if (!module->library) throw std::runtime_error(dlerror());
@@ -856,8 +864,8 @@ extern "C" int quactlize_kpack_dispatch_moe_run_router_v1(void* handle,qk_llama_
 }
 extern "C" void quactlize_kpack_dispatch_moe_destroy_v1(void* handle) { delete static_cast<MoeChain*>(handle); }
 
-extern "C" int quactlize_kpack_dispatch_moe_bind_gate_up_v1(void* runtime,void* handle,
-    qks_moe_gate_up_v1 const* source) {
+static int bind_gate_up(void* runtime,void* handle,qks_moe_gate_up_v1 const* source,
+    qkg_gate_up_recipe_v2 const* selected=nullptr) {
     if(!runtime || !handle || !source || source->version!=1 || source->size!=sizeof(*source)) return QKS_INVALID;
     auto& c=*static_cast<MoeChain*>(handle);
     auto const& p=c.plan;
@@ -877,6 +885,10 @@ extern "C" int quactlize_kpack_dispatch_moe_bind_gate_up_v1(void* runtime,void* 
             e->gate_up_query=symbol<decltype(e->gate_up_query)>(e->fusion_library,"quactlize_gate_up_query_v1");
             e->gate_up_run=symbol<decltype(e->gate_up_run)>(e->fusion_library,"quactlize_gate_up_run_v2");
         }
+        if(selected && (!e->gate_up_recipe_query || !e->gate_up_recipe_run)) {
+            e->gate_up_recipe_query=symbol<decltype(e->gate_up_recipe_query)>(e->fusion_library,"quactlize_gate_up_query_v2");
+            e->gate_up_recipe_run=symbol<decltype(e->gate_up_recipe_run)>(e->fusion_library,"quactlize_gate_up_run_v3");
+        }
         qkg_gate_up_call_v2 call{}; call.version=2; call.size=sizeof(call);
         auto& d=call.call;d.version=1;d.size=sizeof(d);d.input.version=2;d.input.size=sizeof(d.input);
         d.input.compute_type=c.compute_type;d.round_projection=1;
@@ -893,6 +905,8 @@ extern "C" int quactlize_kpack_dispatch_moe_bind_gate_up_v1(void* runtime,void* 
         // Module protocol's directory Header begins with {work_count,status}.
         call.status=static_cast<int32_t const*>(p.gate.directory_header)+1;
         qkg_sizes_v1 sizes{};
+        if(selected && (!quactlize::fusion::same_config(source->config,selected->config) ||
+            e->gate_up_recipe_query(&call,selected,&source->layout,&sizes)!=QKG_OK)) return QKS_INVALID;
         if(e->gate_up_query(&d,&source->config,&source->layout,&sizes)!=QKG_OK ||
             sizes.workspace_bytes>v.workspace_bytes ||
             quactlize::fusion::buffers(d,sizes)!=QKG_OK ||
@@ -915,8 +929,47 @@ extern "C" int quactlize_kpack_dispatch_moe_bind_gate_up_v1(void* runtime,void* 
                 overlap(c.finish.output,uint64_t(p.gate.io.tokens)*c.finish.output_stride*4))) return QKS_INVALID;
         }
         c.execution=e;c.gate_up=call;c.gate_up_layout=source->layout;c.gate_up_config=source->config;
+        if(selected) c.gate_up_recipe=*selected;
         return QKS_OK;
     } catch(std::exception const& e) {last_error=e.what();return QKS_BINDING;}
+}
+
+extern "C" int quactlize_kpack_dispatch_moe_bind_gate_up_v1(void* runtime,void* handle,
+    qks_moe_gate_up_v1 const* source) {
+    return bind_gate_up(runtime,handle,source);
+}
+
+extern "C" int quactlize_kpack_dispatch_moe_select_gate_up_v2(void* handle,qkg_gate_up_recipe_v2* out) {
+    if(!handle || !out) return QKS_INVALID;
+    *out={};
+    auto const& c=*static_cast<MoeChain*>(handle);
+    auto const& p=c.plan;
+    if(c.gate_up.version || c.compute_type!=QK_COMPUTE_BF16 || !p.merged ||
+       p.gate.n<=0 || int64_t(p.gate.n)!=2*int64_t(p.down.k) ||
+       p.gate.experts!=p.down.experts) return QKS_MISS;
+    bool simt_down=c.simt_mask&4;
+    int gate_qtype=(c.simt_mask&1)?c.calls[0].qtype:c.gate?c.gate->module->qtype:0;
+    int down_qtype=simt_down?c.calls[2].qtype:c.down?c.down->module->qtype:0;
+    qkg_gate_up_request_v2 request{2,sizeof(request),QKG_GATE_UP_N4_V1,
+        gate_qtype,p.gate.n/2,p.gate.k,p.gate.experts,p.gate.io.tokens,QKG_INDEXED,
+        p.gate.io.topk,p.gate.io.channels,QKG_F32,c.compute_type,
+        simt_down?int(QKG_F32):int(QKG_SIMT_BF16),1,
+        simt_down?QKG_GATE_UP_ORIGINAL_ROWS:QKG_GATE_UP_COMPACT_ROWS,
+        simt_down?QKG_GATE_UP_SIMT_DOWN:QKG_GATE_UP_TC_DOWN,
+        down_qtype,p.down.n};
+    int rc=quactlize::fusion::select(request,out);
+    return rc==QKG_OK ? QKS_OK : rc==QKG_SHAPE ? QKS_MISS : QKS_INVALID;
+}
+
+extern "C" int quactlize_kpack_dispatch_moe_bind_gate_up_v2(void* runtime,void* handle,
+    qks_moe_gate_up_v2 const* source) {
+    if(!source || source->version!=2 || source->size!=sizeof(*source) ||
+       !quactlize::fusion::valid_recipe(source->recipe)) return QKS_INVALID;
+    qkg_gate_up_recipe_v2 expected{};
+    int rc=quactlize_kpack_dispatch_moe_select_gate_up_v2(handle,&expected);
+    if(rc!=QKS_OK) return rc;
+    if(expected.recipe_id!=source->recipe.recipe_id) return QKS_INVALID;
+    return bind_gate_up(runtime,handle,&source->binding,&source->recipe);
 }
 
 extern "C" int quactlize_kpack_dispatch_moe_bind_finish_v1(void* runtime,void* handle,

@@ -4,6 +4,7 @@
 
 #define DECL(Q) \
 extern "C" int qgu_simt_##Q(quactlize::fusion::DeviceCall const*,qkg_gate_up_config_v1 const*); \
+extern "C" int qgu_recipe_##Q(quactlize::fusion::DeviceCall const*,qkg_gate_up_recipe_v2 const*); \
 extern "C" int qgu_tc_##Q(quactlize::fusion::DeviceCall const*,qkg_gate_up_config_v1 const*,qkg_sizes_v1 const*);
 DECL(8) DECL(10) DECL(11) DECL(12) DECL(13) DECL(14)
 #undef DECL
@@ -18,7 +19,8 @@ extern "C" int quactlize_gate_up_query_v1(qkg_gate_up_call_v1 const* d,qkg_gate_
 }
 
 static int run(qkg_gate_up_call_v1 const* d,qkg_gate_up_config_v1 const* f,
-    qkg_gate_up_layout_v1 const* layout,int32_t const* input_rows,int32_t const* status) {
+    qkg_gate_up_layout_v1 const* layout,int32_t const* input_rows,int32_t const* status,
+    qkg_gate_up_recipe_v2 const* selected=nullptr) {
     qkg_sizes_v1 sizes{};
     int rc=quactlize_gate_up_query_v1(d,f,layout,&sizes);
     if(rc) return rc;
@@ -30,7 +32,9 @@ static int run(qkg_gate_up_call_v1 const* d,qkg_gate_up_config_v1 const* f,
     c.n*=2; c.compute_type=d->input.compute_type;
     c.output_type=d->output_type; c.round_projection=d->round_projection;
     c.input_rows=input_rows; c.status=status;
-#define CASE(Q) case Q: return f->backend==QKG_GATE_UP_SIMT ? qgu_simt_##Q(&c,f) : qgu_tc_##Q(&c,f,&sizes)
+    if(!selected) selected=quactlize::fusion::legacy_recipe(*d,*f);
+#define CASE(Q) case Q: return f->backend==QKG_GATE_UP_TC ? qgu_tc_##Q(&c,f,&sizes) : \
+        selected ? qgu_recipe_##Q(&c,selected) : qgu_simt_##Q(&c,f)
     switch(c.qtype) { CASE(8); CASE(10); CASE(11); CASE(12); CASE(13); CASE(14); }
 #undef CASE
     return QKG_FORMAT;
@@ -55,4 +59,29 @@ extern "C" int quactlize_gate_up_run_v2(qkg_gate_up_call_v2 const* d,qkg_gate_up
 extern "C" int quactlize_gate_up_select_v1(int q,int n,int k,int experts,
     int tokens,int compute,qkg_gate_up_config_v1* out) {
     return quactlize::fusion::select(q,n,k,experts,tokens,compute,out);
+}
+
+extern "C" int quactlize_gate_up_select_v2(qkg_gate_up_request_v2 const* request,
+    qkg_gate_up_recipe_v2* out) {
+    if(!request) return QKG_INVALID;
+    return quactlize::fusion::select(*request,out);
+}
+
+extern "C" int quactlize_gate_up_query_v2(qkg_gate_up_call_v2 const* d,qkg_gate_up_recipe_v2 const* r,
+    qkg_gate_up_layout_v1 const* layout,qkg_sizes_v1* out) {
+    if(!d || !r || !layout || !out) return QKG_INVALID;
+    qkg_sizes_v1 sizes{};
+    int rc=quactlize::fusion::query_recipe(*d,*r,*layout,sizes);
+    if(!rc) *out=sizes;
+    return rc;
+}
+
+extern "C" int quactlize_gate_up_run_v3(qkg_gate_up_call_v2 const* d,qkg_gate_up_recipe_v2 const* r,
+    qkg_gate_up_layout_v1 const* layout) {
+    qkg_sizes_v1 sizes{};
+    int rc=quactlize_gate_up_query_v2(d,r,layout,&sizes);
+    if(rc) return rc;
+    rc=quactlize::fusion::row_buffers(*d,sizes);
+    if(rc) return rc;
+    return run(&d->call,&r->config,layout,d->input_rows,d->status,r);
 }

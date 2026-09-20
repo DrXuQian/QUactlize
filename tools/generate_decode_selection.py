@@ -228,13 +228,20 @@ def implementations(evidence):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--tp2',type=Path);p.add_argument('--fallback',type=Path)
+    p.add_argument('--paired-chain',type=Path,help='import the reviewed full-chain paired result')
     p.add_argument('--check',action='store_true')
     a=p.parse_args()
+    from tools import paired_decode_selection as paired
+    if a.paired_chain:
+        if a.check:p.error('capture is not a --check operation')
+        paired.EVIDENCE.write_text(json.dumps(paired.capture(a.paired_chain),indent=2)+'\n')
     if a.tp2 or a.fallback:
         if not a.tp2 or not a.fallback or a.check:p.error('capture requires both archives')
         EVIDENCE.write_text(json.dumps(capture(a.tp2,a.fallback),indent=2)+'\n')
     e=json.loads(EVIDENCE.read_text());policy=effective(e)
-    for path,text in ((OUTPUT,header(policy)),(IMPLEMENTATIONS,implementations(e))):
+    paired_evidence=json.loads(paired.EVIDENCE.read_text())
+    for path,text in ((OUTPUT,header(policy)),(IMPLEMENTATIONS,implementations(e)),
+                      (paired.OUTPUT,paired.header(paired_evidence))):
         if a.check:
             if path.read_text()!=text:raise ValueError('stale generated selection: '+str(path))
         else:path.write_text(text)

@@ -41,6 +41,23 @@ class Config(C.Structure):
         super().__init__(1, C.sizeof(type(self)), backend, split, tile_m, warps)
 
 
+class Request(C.Structure):
+    _fields_ = [('version', C.c_uint32), ('size', C.c_uint32), ('layout_id', C.c_uint64)] + [
+        (name, C.c_int32) for name in ('qtype', 'n', 'k', 'experts', 'tokens', 'mode', 'topk',
+        'channels', 'input_type', 'compute_type', 'output_type', 'round_projection', 'row_order',
+        'consumer', 'consumer_qtype', 'consumer_n')]
+
+    def __init__(self, **kwargs):
+        super().__init__(version=2, size=C.sizeof(type(self)), layout_id=0x47554e3400000001, **kwargs)
+
+
+class Recipe(C.Structure):
+    _fields_ = [('version', C.c_uint32), ('size', C.c_uint32), ('recipe_id', C.c_uint64),
+                ('catalog_id', C.c_uint64), ('config', Config)] + [
+        (name, C.c_int32) for name in ('reader', 'variant', 'columns', 'values', 'changes',
+                                      'hoist', 'fixed_n', 'fixed_k')]
+
+
 class MappedCall(C.Structure):
     _fields_ = [('version',C.c_uint32),('size',C.c_uint32),('call',FusionCall),
                 ('input_rows',C.c_void_p),('status',C.c_void_p)]
@@ -59,6 +76,24 @@ class MoeBinding(C.Structure):
     _fields_ = [('version',C.c_uint32),('size',C.c_uint32)] + [
         (name,C.c_void_p) for name in ('low','high','units','workspace')] + [
         ('workspace_bytes',C.c_uint64),('layout',Layout),('config',Config)]
+
+
+class MoeRecipeBinding(C.Structure):
+    _fields_ = [('version', C.c_uint32), ('size', C.c_uint32), ('binding', MoeBinding), ('recipe', Recipe)]
+
+
+def recipe_entries(library):
+    signatures = {
+        'select_v2': [C.POINTER(Request), C.POINTER(Recipe)],
+        'query_v2': [C.POINTER(MappedCall), C.POINTER(Recipe), C.POINTER(Layout), C.POINTER(Sizes)],
+        'run_v3': [C.POINTER(MappedCall), C.POINTER(Recipe), C.POINTER(Layout)],
+    }
+    result = {}
+    for name, signature in signatures.items():
+        fn = getattr(library.lib, 'quactlize_gate_up_' + name)
+        fn.argtypes, fn.restype = signature, C.c_int
+        result[name] = fn
+    return result
 
 
 def integration_entries(library):

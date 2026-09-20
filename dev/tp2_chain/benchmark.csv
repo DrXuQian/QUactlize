@@ -1,3 +1,9 @@
-point,arm,scope,median_us,delta_pct,correctness,admission
-tp2-chain,unfused,FULL_MOE_CHAIN,,,PENDING,PENDING
-model35-chain,paired-shipping,FULL_MOE_CHAIN,,,PENDING,PENDING
+point,arm,incumbent,scope,median_us,delta_vs_incumbent_pct,correctness,admission
+tp2-chain,unfused,unfused,FULL_MOE_CHAIN_M1,43.366285733,0.000000,PASS,KEEP_INCUMBENT
+tp2-chain,paired-shipping,unfused,FULL_MOE_CHAIN_M1,45.222856317,4.281138,PASS,DO_NOT_PROMOTE
+tp2-chain,paired-0,unfused,FULL_MOE_CHAIN_M1,45.042284897,3.864751,PASS,DO_NOT_PROMOTE
+tp2-chain,paired-1,unfused,FULL_MOE_CHAIN_M1,39.847998960,-8.112954,PASS,CANDIDATE_FOR_INTEGRATION
+model35-chain,unfused,paired-shipping,FULL_MOE_CHAIN_M1,36.982999742,19.858698,PASS,DO_NOT_PROMOTE
+model35-chain,paired-shipping,paired-shipping,FULL_MOE_CHAIN_M1,30.855499208,0.000000,PASS,KEEP_INCUMBENT
+model35-chain,paired-0,paired-shipping,FULL_MOE_CHAIN_M1,30.880001187,0.079409,PASS,DO_NOT_PROMOTE
+model35-chain,paired-1,paired-shipping,FULL_MOE_CHAIN_M1,33.840000629,9.672511,PASS,DO_NOT_PROMOTE

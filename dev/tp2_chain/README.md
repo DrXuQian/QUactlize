@@ -1,5 +1,10 @@
 # Paired gate/up + SwiGLU: matched complete-chain experiment
 
+The experiment below is complete and reviewed in
+[result-20260920.md](docs/result-20260920.md). For the selective integration,
+current model/Asys command and resume protocol, use
+[production-handoff.md](docs/production-handoff.md).
+
 This is a development admission gate, not a production selector change.
 The four arms use the same GGUF weights, input, router, BF16 boundaries,
 prepare, Q5 down recipe and weighted finish. Only gate/up + activation differs.

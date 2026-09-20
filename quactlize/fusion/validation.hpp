@@ -1,5 +1,6 @@
 #pragma once
 #include "gate_up.h"
+#include "selection.hpp"
 #include "../execution/validation.hpp"
 
 namespace quactlize::fusion {
@@ -8,26 +9,6 @@ inline bool paired_shape(int q,int n,int k,int experts,int tokens,int compute) {
     if(n<=0 || n>INT32_MAX/2 || n%256 || k<=0 || k%256 || tokens<1 || tokens>8) return false;
     return (q==8 && experts==1 && compute==QKG_COMPUTE_F16) ||
         (q==12 && experts==256 && compute==QKG_COMPUTE_BF16);
-}
-
-inline int select(int q,int n,int k,int experts,int tokens,int compute,qkg_gate_up_config_v1* out) {
-    if(!out) return QKG_INVALID;
-    *out={};
-    if(!paired_shape(q,n,k,experts,tokens,compute)) return QKG_SHAPE;
-    // The TP2 shared pair beats even two individually optimized projections.
-    // Q4 TP2 pairing remains unselected: projection alone is a different cost.
-    if(q==8 && experts==1 && compute==QKG_COMPUTE_F16 && tokens==1 && n==1024 && k==3072) {
-        *out={1,sizeof(*out),QKG_GATE_UP_SIMT,1,0,8}; return QKG_OK;
-    }
-    if(n!=512 || k!=2048) return QKG_SHAPE;
-    if(q==8 && experts==1 && compute==QKG_COMPUTE_F16) {
-        *out={1,sizeof(*out),QKG_GATE_UP_SIMT,1,0,8}; return QKG_OK;
-    }
-    if(q!=12 || experts!=256 || compute!=QKG_COMPUTE_BF16) return QKG_SHAPE;
-    // M4's two finalists differ by <1%; retain the single-kernel SIMT arm.
-    if(tokens<=2 || tokens==4) *out={1,sizeof(*out),QKG_GATE_UP_SIMT,1,0,tokens==2?4:8};
-    else *out={1,sizeof(*out),QKG_GATE_UP_TC,tokens==3?2:1,tokens<=6?16:8,0};
-    return QKG_OK;
 }
 
 inline int tile_k(int q) {
@@ -116,5 +97,12 @@ inline int row_buffers(qkg_gate_up_call_v2 const& d,qkg_sizes_v1 const& sizes) {
             execution::overlap(p,bytes,uintptr_t(c.workspace),sizes.workspace_bytes)) return QKG_INVALID;
     }
     return QKG_OK;
+}
+
+inline int query_recipe(qkg_gate_up_call_v2 const& d,qkg_gate_up_recipe_v2 const& r,
+    qkg_gate_up_layout_v1 const& layout,qkg_sizes_v1& sizes) {
+    if(d.version!=2 || d.size!=sizeof(d) || !valid_recipe(r)) return QKG_INVALID;
+    if(!recipe_capable(d.call,r) || (r.reader==Q4Paired16Reader && d.input_rows)) return QKG_SHAPE;
+    return query(d.call,r.config,layout,sizes);
 }
 }

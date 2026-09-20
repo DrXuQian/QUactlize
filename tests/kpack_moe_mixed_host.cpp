@@ -290,7 +290,48 @@ static void test_finish_snapshot() {
     }
     std::puts("KPACK_MOE_FINISH_SNAPSHOT_HOST PASS tokens1..8 F16/BF16 lifetime missing-entry and launch-order");
 }
+static void test_paired_recipe_binding() {
+    Runtime runtime;runtime.device=0;runtime.cu=72;runtime.moe=std::make_shared<MoeExecution>();
+    auto& e=*runtime.moe;
+    e.stage_compute=[](qkg_moe_compute_v2 const*,int phase,void*) -> int {
+        assert(phase==QK_MOE_PREPARE);calls.push_back(100);return QKG_OK;
+    };
+    e.gate_up_query=[](qkg_gate_up_call_v1 const* d,qkg_gate_up_config_v1 const* f,
+        qkg_gate_up_layout_v1 const* a,qkg_sizes_v1* s) {return quactlize::fusion::query(*d,*f,*a,*s);};
+    e.gate_up_run=[](qkg_gate_up_call_v2 const*,qkg_gate_up_config_v1 const*,qkg_gate_up_layout_v1 const*) -> int {
+        assert(false && "recipe path must not re-enter legacy selection");return QKG_INVALID;
+    };
+    e.gate_up_recipe_query=[](qkg_gate_up_call_v2 const* d,qkg_gate_up_recipe_v2 const* f,
+        qkg_gate_up_layout_v1 const* a,qkg_sizes_v1* s) {return quactlize::fusion::query_recipe(*d,*f,*a,*s);};
+    e.gate_up_recipe_run=[](qkg_gate_up_call_v2 const* d,qkg_gate_up_recipe_v2 const* f,qkg_gate_up_layout_v1 const*) -> int {
+        assert(f->recipe_id==quactlize::fusion::q4_paired16_fixed.recipe_id && f->values==4);
+        assert(d->call.output_type==QKG_F32 && !d->input_rows && d->status);
+        calls.push_back(777);return QKG_OK;
+    };
+    e.reuse_compute=[](qkg_simt_call_v2 const* d,qkg_simt_config_v1 const*,quactlize_ppu_placed_arrangement_v2 const*) -> int {
+        assert(d->compute_type==QKG_COMPUTE_BF16 && d->call.qtype==13);calls.push_back(52);return QKG_OK;
+    };
+    MoeChain c;c.compute_type=QK_COMPUTE_BF16;c.simt_mask=c.reuse_mask=5;c.execution=runtime.moe;
+    c.plan={1,sizeof(c.plan),1,0,part(0x10000000,1024,3072,1),{},part(0x30000000,3072,512,8),{}};
+    c.calls[0].qtype=12;c.calls[2].qtype=13;
+    qks_moe_gate_up_v2 b{};b.version=2;b.size=sizeof(b);
+    assert(quactlize_kpack_dispatch_moe_select_gate_up_v2(&c,&b.recipe)==QKS_OK);
+    assert(b.recipe.reader==3 && b.recipe.values==4 && b.recipe.config.warps==4);
+    c.calls[0].qtype=14;
+    qkg_gate_up_recipe_v2 missing{};
+    assert(quactlize_kpack_dispatch_moe_select_gate_up_v2(&c,&missing)==QKS_MISS);
+    c.calls[0].qtype=12;
+    b.binding.version=1;b.binding.size=sizeof(b.binding);b.binding.config=b.recipe.config;
+    b.binding.low=(uint8_t*)0x100000000ULL;b.binding.units=(uint8_t*)0x200000000ULL;
+    b.binding.layout={1,sizeof(b.binding.layout),QKG_GATE_UP_N4_V1,ppu_arrangements::q4_kpack4_transpose_v1()};
+    auto wrong=b;wrong.recipe.values=8;
+    assert(quactlize_kpack_dispatch_moe_bind_gate_up_v2(&runtime,&c,&wrong)==QKS_INVALID && !c.gate_up.version);
+    assert(quactlize_kpack_dispatch_moe_bind_gate_up_v2(&runtime,&c,&b)==QKS_OK);
+    calls.clear();assert(run_mixed(c,c.plan,nullptr)==QKS_OK);assert(calls==std::vector<int>({100,777,52}));
+    std::puts("KPACK_PAIRED_RECIPE_HOST PASS exact body, consumer contract, atomic bind and no activation replay");
+}
 int main() {
+    test_paired_recipe_binding();
     test_finish_snapshot();
     test_q4_bf16_chains();
     test_reuse_chains();

@@ -50,17 +50,18 @@ def normalized_error(got, gold, denominator):
 
 
 class Bench:
-    def __init__(self, rt, bundle, manifest, point, l2, profile=False):
+    def __init__(self, rt, bundle, manifest, point, l2, profile=False, candidates=True):
         self.rt, self.point = rt, point
         self.library = C.CDLL(str(bundle / 'libquactlize_ppu_execution.so'), mode=C.RTLD_LOCAL)
         self.shipping = ShippingSimt(bundle / 'libquactlize_ppu_execution.so', 1)
         self.paired = PairedLibrary(bundle / 'libquactlize_ppu_gate_up.so')
         self.paired_run = integration_entries(self.paired)['run']
         self.layout = self.paired.arrangement(12)
-        record = next(r for r in manifest['records'] if r['point']['name'] == point.name)
-        self.candidate_lib = C.CDLL(str(bundle / record['library']), mode=C.RTLD_LOCAL)
-        self.candidate_run = function(self.candidate_lib, 'model_gemv_run',
-                                      [C.c_void_p, C.POINTER(MappedCall), C.POINTER(Layout), C.c_int])
+        if candidates:
+            record = next(r for r in manifest['records'] if r['point']['name'] == point.name)
+            self.candidate_lib = C.CDLL(str(bundle / record['library']), mode=C.RTLD_LOCAL)
+            self.candidate_run = function(self.candidate_lib, 'model_gemv_run',
+                                          [C.c_void_p, C.POINTER(MappedCall), C.POINTER(Layout), C.c_int])
         self.query = function(self.library, 'quactlize_kpack_moe_simt_query_v1',
                               [C.POINTER(Call), C.POINTER(C.c_uint64)])
         self.bind = function(self.library, 'quactlize_kpack_moe_simt_bind_v1',

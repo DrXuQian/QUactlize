@@ -1,5 +1,35 @@
 # Resume
 
+Latest review: [returned paired-chain results](docs/result-20260920.md).
+`paired-chain.HLHoKz.results.tgz` passes source/runtime/fixture/240 numeric /
+720 timing sample / four re-imported ACU checks. TP2 `paired-1` wins the
+complete chain 43.366286 -> 39.847999 us (-8.112954%, six of six rounds).
+35B keeps existing `paired-shipping` at 30.855499 us; the new candidate is
+9.672511% slower than that incumbent. The scoped development integration is now
+implemented; its production-entry/model device gates are pending. No global
+paired default. Earlier pending entries below describe historical build-time state.
+
+## Paired recipe integration, 2026-09-20
+
+- Generated semantic request -> complete recipe -> explicit cached launch.
+  Ordinary 1,852 exact / 637 bucket selections are byte-identical to the
+  baseline. Old ABI selection and its actual hidden reader choices are frozen.
+- New TP2 promotion is only Q4 logical N512/K3072, E256/top8, M1, original
+  slots, BF16 compute/F32 endpoints, Q5 SIMT down N3072. Explicit M2..8
+  capability tests do not promote those requests. N512/K2048 retains its winner.
+- Host regression: 165 passed; caller trace/selection tests: 42 passed. Both
+  modified caller translation units compile with the PPU SDK. Full caller CI
+  is deliberately left to the box through `.aoneci/scripts/build.sh`.
+- Fusion build: 16 translation units in 120.3 seconds. New TP2 paired16,
+  retained Q4 paired32, and Q8 tile16 all have identical native instruction
+  bytes and resource records to their corresponding measured bodies (3/3).
+- Package reuses ordinary execution, TC modules, packer and prefill images
+  byte-for-byte. Only the small host dispatcher and fusion library are rebuilt.
+  No caller binaries are published in Quactlize.
+- New entry: `tools/run_paired_selection_box.sh`, devices 6,7. See
+  `docs/production-handoff.md` for component/model coverage, resume and return.
+  The original experiment entry remains available separately.
+
 2026-09-20: implementing the matched paired-chain experiment after reviewing
 `dev/tp2_decode/docs/launch-trace-20260920.md`. Production remains unchanged.
 Priority TP2 N512/K3072; 35B N512/K2048 is the retained regression control.
