@@ -25,3 +25,6 @@ numerical device admission and full-call timing are separate gates.
   Payload index verified: eleven payloads including all four libraries; six
   binary/ISA payloads use LFS. Approximate package size is 42.9 MB, of which
   almost all is the unchanged frozen execution/fusion control pair.
+- Own-fork artifact push and a fresh `fetch -> scoped LFS pull -> manifest /
+  source / SDK preflight` completed successfully. Box run still pending; the
+  local verification did not create a GPU context or report performance.
