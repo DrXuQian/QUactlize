@@ -65,3 +65,6 @@ prebuilt/ppu0010/gate-up-paired-n4-v1/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/tp2-decode-focus-v1/*.so filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/tp2-decode-focus-v1/*.isa.txt filter=lfs diff=lfs merge=lfs -text
 prebuilt/ppu0010/tp2-decode-focus-v1/*.resources.txt -whitespace
+prebuilt/ppu0010/tp2-paired-chain-v1/*.so filter=lfs diff=lfs merge=lfs -text
+prebuilt/ppu0010/tp2-paired-chain-v1/*.isa.txt filter=lfs diff=lfs merge=lfs -text
+prebuilt/ppu0010/tp2-paired-chain-v1/*.resources.txt -whitespace

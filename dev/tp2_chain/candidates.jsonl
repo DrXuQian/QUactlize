@@ -1,0 +1,1 @@
+{"id":"P01","parent":"0aeffd7e977054bea05a369bc5c1a23e7380b588","change":"matched production prepare/down/finish around separate versus paired Q4 gate/up+SwiGLU","hypothesis":"eliminating activation launch and intermediate traffic wins only if paired producer cost stays controlled","decision":"PLANNED","scope":"M1_BF16_TP2_AND_35B_LOCAL_SHARDS"}

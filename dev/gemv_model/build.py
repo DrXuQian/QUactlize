@@ -97,7 +97,7 @@ if __name__ == "__main__":
     for name in ("sdk", "output", "baseline"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--jobs", type=int, default=8)
-    parser.add_argument('--cohort', choices=('model','tp2','tp2-focus'), default='model')
+    parser.add_argument('--cohort', choices=('model','tp2','tp2-focus','tp2-chain'), default='model')
     parser.add_argument('--points', help='bounded comma-separated subset; full inventory remains in the receipt')
     args = parser.parse_args()
     if args.jobs < 1:

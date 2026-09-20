@@ -1,0 +1,3 @@
+point,arm,scope,median_us,delta_pct,correctness,admission
+tp2-chain,unfused,FULL_MOE_CHAIN,,,PENDING,PENDING
+model35-chain,paired-shipping,FULL_MOE_CHAIN,,,PENDING,PENDING

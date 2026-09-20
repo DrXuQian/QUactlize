@@ -35,6 +35,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
     parser.add_argument("destination", type=Path)
-    parser.add_argument('--cohort',choices=('model','tp2','tp2-focus'),default='model')
+    parser.add_argument('--cohort',choices=('model','tp2','tp2-focus','tp2-chain'),default='model')
     args = parser.parse_args()
     package(args.source, args.destination,args.cohort)

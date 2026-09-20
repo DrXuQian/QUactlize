@@ -14,12 +14,18 @@ from quactlize.runtime.compiler import sha
 from dev.gemv_model.run import verify
 
 
-def fetch(pin, result_root):
+def fetch(pin, result_root, cohort_name='tp2-focus'):
+    paths = {'tp2-focus':'prebuilt/ppu0010/tp2-decode-focus-v1',
+             'tp2-chain':'prebuilt/ppu0010/tp2-paired-chain-v1'}
+    if cohort_name not in paths:
+        raise ValueError('unknown prebuilt experiment')
     if (not re.fullmatch(r'[0-9a-f]{40}',pin['commit']) or
-            pin['path']!='prebuilt/ppu0010/tp2-decode-focus-v1' or
+            pin['path']!=paths[cohort_name] or
+            not re.fullmatch(r'artifacts/[A-Za-z0-9][A-Za-z0-9._/-]*',pin['branch']) or
             not re.fullmatch(r'[0-9a-f]{64}',pin['manifest_sha256'])):
         raise ValueError('invalid focus artifact pin')
-    target=result_root/('quactlize-focus-artifact-'+pin['commit'][:10])
+    prefix = 'quactlize-focus-artifact-' if cohort_name=='tp2-focus' else 'quactlize-chain-artifact-'
+    target=result_root/(prefix+pin['commit'][:10])
     subprocess.run(['git','fetch','origin',pin['branch']],cwd=ROOT,check=True)
     if not target.exists():
         subprocess.run(['git','worktree','add','--detach',target,pin['commit']],cwd=ROOT,
@@ -29,7 +35,7 @@ def fetch(pin, result_root):
     subprocess.run(['git','-C',target,'lfs','pull','origin','--include='+pin['path']+'/**','--exclude='],check=True)
     bundle=target/pin['path']
     if sha(bundle/'manifest.json')!=pin['manifest_sha256']:raise ValueError('focus manifest differs')
-    verify(bundle,'tp2-focus')
+    verify(bundle,cohort_name)
     return bundle
 
 

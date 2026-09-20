@@ -1,5 +1,42 @@
 # Resume
 
+New Asys reports returned, 2026-09-20: read
+`docs/launch-trace-20260920.md`. Report hashes differ from the previous upload;
+local exports exactly match `yj9GRn` per-symbol receipts. Stable decode has
+1851 kernels/rank/token, zero independent topk/gather/scatter, 48 chain
+activations/finishes and96 all-reduces. Current chain SwiGLU is5.24 us; ordinary
+activation in the preceding trace was1.88 us. The complete helper sum increases
+despite one fewer launch. Cross-run evidence is descriptive, not repair-only A/B.
+
+The user's gate/up + SwiGLU proposal is supported by existing paired-N4 and
+SimtFinish code, including BF16 projection rounding. TP2 Q4 N512/K3072 paired
+selection remains `automatic:false` pending matched complete-chain comparison.
+Reuse the existing caller binding, do not add an architecture layer. Rank
+projection+activation versus fused paired projection under the same timing
+conditions before promotion. No production code or selection changed here.
+
+Latest return, 2026-09-20: `kpack-tp2.yj9GRn.results.tgz` passes the repaired
+public-entry/finish snapshot gates, cold/hot TP2, short model numerics, warmed
+ABBA, focused candidate comparison and private trace. Read
+`docs/launch-result-20260920.md` first. All 28 entry checks, 128 alias cases,
+25 component arms and six locally re-imported ACU reports pass. Public v1 now
+executes measured Q8 bodies; the chain covers all 48 layers, with snapshot
+prepare in 47. No new production choice is made by this result review.
+
+Devices6,7: reference12.618078 versus K-pack11.232953 ms/token (-10.9773%);
+prefill259.069092 versus203.288574 us/token (-21.5311%). Decode is effectively
+unchanged from the previous11.239113, not another demonstrated model gain.
+Q8 small K/V and shared down retain incumbents. Q5 down P4-fixed wins14.080000
+to12.835556 us (-8.838%) in all six rounds; its dynamic P4 counterpart loses,
+and this new winner is not yet in the measured model runtime. Scope is M1;
+tokens2..8 have numerical coverage, not new rankings. MBU goals remain open.
+
+Current Asys aggregate receipts prove execution/fusion, but the new actual
+reports were not included in this archive. Existing root-level reports are
+from the preceding run. Upload the new native/reference reports for current
+decode-window and TP2 critical-path attribution; no GPU rerun is needed.
+Earlier pending statements below are chronological history.
+
 2026-09-20 launch/chain repair on `dev/dispatch-launch-fix`: read
 `docs/launch-fix-20260920.md` first. Q8 public v1 now reaches the same measured
 body as v2; all 11 promoted instruction/resource comparisons are exact, and
