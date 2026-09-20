@@ -249,7 +249,49 @@ static void test_reuse_chains() {
     }
     std::printf("KPACK_MOE_REUSE_HOST PASS chains=%d formats=6 tokens=1..8 splits=1/2/4/8 missing-entry+alias negatives\n",checked);
 }
+static void test_finish_snapshot() {
+    for(int compute:{0,1}) for(int tokens=1;tokens<=8;++tokens) for(bool ids_alias:{false,true}) {
+        Runtime r;r.device=0;r.cu=72;r.moe=std::make_shared<MoeExecution>();
+        auto& e=*r.moe;
+        e.finish=[](qk_moe_plan_v1 const* p,unsigned mask,qk_llama_moe_finish_v1 const* f,void*) -> int {
+            assert(mask==5 && f->weights==p->down.outputs && f->weights_stride==8);
+            calls.push_back(900);return QKG_OK;
+        };
+        e.finish_compute=[](qkg_moe_compute_v2 const* p,qk_llama_moe_finish_v1 const* f,void*) -> int {
+            assert(p->compute_type==1 && f->weights==p->plan.down.outputs && f->weights_stride==8);
+            calls.push_back(900);return QKG_OK;
+        };
+        e.reuse=[](qkg_call_v1 const*,qkg_simt_config_v1 const*,quactlize_ppu_placed_arrangement_v2 const*) -> int {
+            calls.push_back(50);return QKG_OK;
+        };
+        e.reuse_compute=[](qkg_simt_call_v2 const* d,qkg_simt_config_v1 const*,quactlize_ppu_placed_arrangement_v2 const*) -> int {
+            assert(d->compute_type==1);calls.push_back(50);return QKG_OK;
+        };
+        e.stage=[](qk_moe_plan_v1 const*,unsigned,int phase,void*) -> int {
+            assert(phase==QK_MOE_ACTIVATE);calls.push_back(102);return QKG_OK;
+        };
+        e.stage_compute=[](qkg_moe_compute_v2 const* p,int phase,void*) -> int {
+            assert(p->compute_type==1 && phase==QK_MOE_ACTIVATE);calls.push_back(102);return QKG_OK;
+        };
+        MoeChain c;c.plan={1,sizeof(c.plan),1,0,part(0x10000000,1024,2048,1,tokens),{},
+            part(0x30000000,2048,512,8,tokens)};
+        c.compute_type=compute;c.execution=r.moe;c.simt_mask=c.reuse_mask=5;
+        auto * output=ids_alias?(float*)c.plan.gate.io.ids:(float*)0x04000000;
+        qk_llama_moe_finish_v1 f{1,sizeof(f),8,2048,(float*)0x04000000,output};
+        assert(quactlize_kpack_dispatch_moe_bind_finish_v1(&r,&c,&f)==QKS_MISS);
+        assert(!c.finish.version && !c.finish_snapshot);
+        e.prepare_finish=[](qkg_moe_compute_v2 const* p,qk_llama_moe_finish_v1 const* f,void*) -> int {
+            assert(p->simt_mask==5 && f->weights==(float*)0x04000000);
+            calls.push_back(700);return QKG_OK;
+        };
+        assert(quactlize_kpack_dispatch_moe_bind_finish_v1(&r,&c,&f)==QKS_OK && c.finish_snapshot);
+        calls.clear();assert(quactlize_kpack_dispatch_moe_run_v1(&c,nullptr)==QKS_OK);
+        assert(calls==std::vector<int>({700,50,102,50,900}));
+    }
+    std::puts("KPACK_MOE_FINISH_SNAPSHOT_HOST PASS tokens1..8 F16/BF16 lifetime missing-entry and launch-order");
+}
 int main() {
+    test_finish_snapshot();
     test_q4_bf16_chains();
     test_reuse_chains();
     for (bool merged:{false,true}) for (uint32_t mask=0;mask<8;++mask) {

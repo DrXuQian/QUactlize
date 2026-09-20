@@ -1170,7 +1170,7 @@ def test_paired_swiglu_captures_same_index_and_independent_operands(tmp_path, re
 def test_model_trace_reuses_reference_tokens_and_never_times_profiler(tmp_path, monkeypatch):
     from tools import run_kpack_model_validation as model
     commands = []
-    def fake_run(argv, log):
+    def fake_run(argv, log, env=None):
         commands.append(argv)
         output = Path(argv[argv.index('--output')+1]); output.mkdir()
         (output/'proof.json').write_text(json.dumps(dict(input_tokens_sha256='a'*64, missing_ops=[])))

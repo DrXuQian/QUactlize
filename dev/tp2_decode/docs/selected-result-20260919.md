@@ -1,5 +1,9 @@
 # Selected decode: returned TP2 model results
 
+The later [Asys audit](asys-result-20260920.md) closes capture and finds that
+ordinary F16 Q8 v1 calls bypass the promoted implementation body. Selection
+logs below prove the recipe, not that body. The measured ABBA remains valid.
+
 Reviewed archive: `/root/kpack-tp2.8VYueY.results.tgz`, SHA256
 `6031eb062043058e412fc236afbd0d01e999148a1fa2a7765fe408c565728b5a`.
 Source: `e624e44f7297d5cd9ea8bd188fcd64f4c74d3e95`.

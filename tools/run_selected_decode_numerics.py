@@ -2,6 +2,7 @@
 """Check published selected entries numerically, without a performance sweep."""
 import argparse
 import ctypes as C
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -22,7 +23,7 @@ def gate_rows():
 
 
 class SelectedProvider:
-    def __init__(self, bench, bundle, winner):
+    def __init__(self, bench, bundle, winner, entry='v2'):
         from dev.gemv_model.plan import Candidate
         from dev.gemv_simt.production import Library
         from quactlize.dispatch.native import Dispatch
@@ -48,7 +49,7 @@ class SelectedProvider:
                     raise ValueError('published ordinary selection differs')
             finally:
                 d.close()
-            self.shipping = Library(bundle/'libquactlize_ppu_execution.so', p.compute)
+            self.shipping = Library(bundle/'libquactlize_ppu_execution.so', p.compute, entry=entry)
 
     def prepare(self, copy=0):
         from quactlize.fusion.native import MappedCall, FusionCall
@@ -72,16 +73,16 @@ def run_point(args, winner):
     from dev.gemv_model.engine import correctness
     from dev.gemv_simt.native import Runtime
     rt = Runtime(args.sdk, 'ppu')
-    result = dict(point=winner['point']['name'], status='FAIL', timing_valid=False,
+    result = dict(point=winner['point']['name'], entry=args.entry, status='FAIL', timing_valid=False,
                   manifest_sha256=sha(args.bundle/'manifest.json'))
     provider = None
     try:
         # One resident copy suffices for numerics; there is no cache/timing claim.
         point = Point(**winner['point'])
         bench = Bench(rt, point, 0, profile=True)
-        provider = SelectedProvider(bench, args.bundle, winner)
-        proof, _ = correctness(provider, token_controls=range(1, 9))
-        result.update(status='PASS', controls=proof,
+        provider = SelectedProvider(bench, args.bundle, winner, args.entry)
+        proof, snapshots = correctness(provider, token_controls=range(1, 9))
+        result.update(status='PASS', controls=proof,m1_sha256=hashlib.sha256(snapshots['m1'].tobytes()).hexdigest(),
                       scope='M1_SELECTED_RECIPE_NUMERICS_T1_TO_8_NOT_M2_TO_8_RANKING')
         return 0
     except Exception as exc:
@@ -92,7 +93,12 @@ def run_point(args, winner):
         if provider:
             provider.close()
         rt.close()
-        (args.output/(winner['point']['name']+'.json')).write_text(json.dumps(result, indent=2)+'\n')
+        (args.output/(winner['point']['name']+'.'+args.entry+'.json')).write_text(json.dumps(result, indent=2)+'\n')
+
+
+def entry_checks(rows):
+    return [(w, entry) for w in rows for entry in
+            (('v1','v2') if not w['point']['paired'] and not w['point']['compute'] else ('v2',))]
 
 
 def main():
@@ -100,24 +106,40 @@ def main():
     for name in ('sdk', 'bundle', 'output'):
         parser.add_argument('--'+name, type=Path, required=True)
     parser.add_argument('--point', help=argparse.SUPPRESS)
+    parser.add_argument('--entry', choices=('v1','v2'), default='v2', help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.sdk, args.bundle, args.output = (p.resolve() for p in (args.sdk, args.bundle, args.output))
     verify(args.bundle, sdk=args.sdk)
     rows = gate_rows()
     if args.point:
+        if args.point=='moe-finish-snapshot':
+            from dev.tp2_decode.finish_gate import run
+            return run(args.sdk,args.bundle,args.output)
         return run_point(args, next(w for w in rows if w['point']['name'] == args.point))
     args.output.mkdir(parents=True, exist_ok=False)
     failures = []
-    for i, w in enumerate(rows):
-        name = w['point']['name']
+    checks=entry_checks(rows)
+    for i, (w,entry) in enumerate(checks):
+        name = w['point']['name']+'.'+entry
         command = [sys.executable, __file__, '--sdk', str(args.sdk), '--bundle', str(args.bundle),
-                   '--output', str(args.output), '--point', name]
+                   '--output', str(args.output), '--point', w['point']['name'], '--entry', entry]
         with (args.output/(name+'.log')).open('w') as log:
             rc = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT).returncode
         if rc:
             failures.append(name)
-        print(f'SELECTED_DECODE_NUMERICS point={name} rc={rc} completed={i+1}/{len(rows)} remaining_continue=1', flush=True)
-    summary = dict(status='FAIL' if failures else 'PASS', points=len(rows), failed=failures,
+        print(f'SELECTED_DECODE_NUMERICS point={name} rc={rc} completed={i+1}/{len(checks)} remaining_continue=1', flush=True)
+    for w in rows:
+        if w['point']['paired'] or w['point']['compute']:continue
+        name=w['point']['name']
+        if any(name+'.'+entry in failures for entry in ('v1','v2')):continue
+        records=[json.loads((args.output/(name+'.'+entry+'.json')).read_text()) for entry in ('v1','v2')]
+        if records[0]['m1_sha256']!=records[1]['m1_sha256']:failures.append(name+'.entry-parity')
+    with (args.output/'moe-finish-snapshot.log').open('w') as log:
+        rc=subprocess.run([sys.executable,__file__,'--sdk',str(args.sdk),'--bundle',str(args.bundle),
+                           '--output',str(args.output),'--point','moe-finish-snapshot'],stdout=log,stderr=subprocess.STDOUT).returncode
+    if rc:failures.append('moe-finish-snapshot')
+    print(f'SELECTED_DECODE_NUMERICS point=moe-finish-snapshot rc={rc}',flush=True)
+    summary = dict(status='FAIL' if failures else 'PASS', points=len(rows), entry_checks=len(checks), failed=failures,
                    performance_sweep=False, timing_valid=False,
                    manifest_sha256=sha(args.bundle/'manifest.json'))
     (args.output/'summary.json').write_text(json.dumps(summary, indent=2)+'\n')

@@ -1,5 +1,36 @@
 # Resume
 
+2026-09-20 launch/chain repair on `dev/dispatch-launch-fix`: read
+`docs/launch-fix-20260920.md` first. Q8 public v1 now reaches the same measured
+body as v2; all 11 promoted instruction/resource comparisons are exact, and
+the 1852-row / 937-public-query selection audit passes. Host allocated three-layer
+graphs reproduce and repair finish alias rejection; prepare retains routing
+weights in private all-SIMT scratch. Caller source is unchanged at `1f7da3b`.
+Execution/paired libraries and 22 explicit candidates across 3 low-MBU points
+compile locally. Production TC, prefill and packer are reused. No candidate
+ranking or new performance claim has been admitted. The next run uses physical
+6,7, with single-card checks on 6; includes 28 selected-entry checks, 128 helper
+alias cases, matched TP2/model gates, warmed ABBA and private Asys. Box validation
+is pending. Earlier statements below describe the returned baseline, not this
+unmeasured repair.
+
+Latest returned trace, 2026-09-20: `kpack-model-asys.xj6rrq9j.results.tgz`
+and both uploaded Asys reports pass capture/receipt review. Read
+`docs/asys-result-20260920.md` first. The private profiler retry is now proven;
+the older capture-pending statements below are historical.
+
+Important integration gap: ordinary F16 Q8 uses the v1 generated launcher,
+which bypasses `measured_decode`; the numerical gate exercised v2 even for
+F16. Selected geometry/zero legacy fallback is not proof of selected kernel
+body. Fix common v1/v2 implementation dispatch without changing precision,
+and add entry-level identity coverage. Q4/Q5 indexed measured bodies and all
+48 shared Q8 gate/up pairs do execute. Whole MoE-chain fusion covers only
+blk.47: 47 independent topk launches remain per rank/token. Its exact rejection
+reason is not yet established; preserve memory/consumer/concurrency guards.
+There is no gather/scatter in the sampled steady decode windows. No production
+code or artifact was changed by this trace review. Prior unprofiled ABBA remains
+the TPOT authority; do not substitute profiled or summed two-rank durations.
+
 Latest returned integration,2026-09-19: `kpack-tp2.8VYueY.results.tgz`
 matches source e624e44, caller1f7da3b and the published selected runtime.
 Read `docs/selected-result-20260919.md` before the older pending statements.

@@ -149,3 +149,87 @@ def test_instruction_comparison_is_not_only_opcode_counts():
     assert instruction_bytes(text.replace('00 01','00 02'),'a')!=instruction_bytes(text,'a')
     with pytest.raises(ValueError):instruction_bytes(text,'b')
     with pytest.raises(ValueError):instruction_bytes(text+text,'a')
+
+
+def test_actual_generated_v1_and_v2_dispatch_share_implementation(tmp_path):
+    from quactlize.execution import simt_codegen
+    stub = tmp_path/'measured_decode.cuh'
+    stub.write_text(r'''#pragma once
+#include "quactlize/execution/measured_decode.hpp"
+#include <cstring>
+inline qkg_simt_call_v2 observed{};
+inline int implementation=-1, launches=0;
+namespace quactlize::execution::simt {
+template<int Q> int measured_decode_launch(qkg_simt_call_v2 const& d,qkg_simt_config_v1 const& f) {
+    observed=d;implementation=int(measured_decode(d,f));++launches;return QKG_OK;
+}
+template<int Q,int V,int C,int W,int P> int launch_v2(qkg_simt_call_v2 const& d,int) {
+    observed=d;implementation=0;++launches;return QKG_OK;
+}
+template<int Q,int V,int C,int W,int P> int launch(qkg_call_v1 const& c,int s) {
+    return launch_v2<Q,V,C,W,P>({2,sizeof(qkg_simt_call_v2),c,QKG_COMPUTE_F16},s);
+}
+namespace q8_vector { using simt::launch;using simt::launch_v2; }
+}
+''')
+    generated=[]
+    for q in simt_codegen.QTYPES:
+        path=tmp_path/f'launch{q}.cpp'
+        path.write_text(simt_codegen.source(q))
+        generated.append(path)
+    main=tmp_path/'entry.cpp'
+    main.write_text(r'''#include "measured_decode.cuh"
+#include "quactlize/execution/simt_validation.hpp"
+#include <cassert>
+using namespace quactlize::execution;
+static void check(qkg_call_v1 c,qkg_simt_config_v1 f,int compute,bool measured) {
+    auto a=c.qtype==8?q8_kpack2::arrangement():c.qtype==12?
+        ppu_arrangements::q4_kpack4_transpose_v1():ppu_arrangements::kquant_kpack_transpose_v1(c.qtype);
+    c.version=1;c.size=sizeof(c);c.a_row_stride=c.k+8;c.a_token_stride=c.channels*c.a_row_stride;
+    c.out_row_stride=c.n+8;c.ids_stride=c.topk+3;
+    c.a=(void*)(1ull<<36);c.low=(uint8_t*)(2ull<<36);c.units=(uint8_t*)(4ull<<36);
+    c.output=(float*)(6ull<<36);c.workspace=(void*)(7ull<<36);c.workspace_bytes=1ull<<32;
+    c.ids=c.mode==QKG_INDEXED?(int32_t*)(5ull<<36):nullptr;
+    qkg_simt_call_v2 d{2,sizeof(d),c,compute};qkg_sizes_v1 sizes{};
+    assert(quactlize_kpack_simt_query_v2(&d,&f,&a,&sizes)==QKG_OK);
+    d.call.high=sizes.high_bytes?(uint8_t*)(3ull<<36):nullptr;c=d.call;
+    launches=0;
+    assert(quactlize_kpack_simt_run_v2(&d,&f,&a)==QKG_OK && launches==1);
+    assert((implementation!=0)==measured);
+    assert(observed.compute_type==compute && !memcmp(&observed.call,&c,sizeof(c)));
+    int expected=implementation;
+    if(compute==QKG_COMPUTE_F16) {
+        launches=0;implementation=-1;
+        assert(quactlize_kpack_simt_run_v1(&c,&f,&a)==QKG_OK && launches==1);
+        assert(implementation==expected && observed.compute_type==QKG_COMPUTE_F16);
+        assert(!memcmp(&observed.call,&c,sizeof(c)));
+    }
+    launches=0;
+    auto bad=c;bad.a=nullptr;
+    assert(quactlize_kpack_simt_run_v1(&bad,&f,&a)==QKG_INVALID && launches==0);
+    bad=c;bad.input_type=QKG_SIMT_BF16;
+    assert(quactlize_kpack_simt_run_v1(&bad,&f,&a)==QKG_INVALID && launches==0);
+    if(f.split>1) {
+        bad=c;bad.workspace_bytes=sizes.workspace_bytes-1;
+        assert(quactlize_kpack_simt_run_v1(&bad,&f,&a)==QKG_CAPACITY && launches==0);
+    }
+}
+int main() {
+#define QDM(Id,Q,Mode,N,K,E,Top,Ch,Compute,V,C,W,P,S,Changes,Hoist,Fixed) \
+{qkg_call_v1 c{};c.qtype=Q;c.mode=Mode;c.n=N;c.k=K;c.experts=E;c.topk=Top; \
+c.channels=Ch;c.rows=Top;c.input_type=QKG_F32; \
+check(c,{1,sizeof(qkg_simt_config_v1),V,C,W,P,S},Compute,true);}
+#include "quactlize/execution/measured_decode.inc"
+#undef QDM
+for(int q:{8,10,11,12,13,14}) for(int tokens=1;tokens<=8;++tokens) for(int mode:{0,2})
+for(int compute:{0,1}) for(int split:{1,2,4,8}) {
+    qkg_call_v1 c{};c.qtype=q;c.mode=mode;c.n=256;c.k=512;c.experts=mode?256:1;
+    c.topk=mode?8:1;c.channels=mode?8:1;c.rows=tokens*c.topk;c.input_type=QKG_F32;
+    check(c,{1,sizeof(qkg_simt_config_v1),1,4,4,4,split},compute,false);
+}
+}
+''')
+    exe=tmp_path/'entries'
+    subprocess.run(['g++','-std=c++17','-O1','-I'+str(tmp_path),'-I'+str(ROOT),
+                    ROOT/'quactlize/execution/simt.cpp',*generated,main,'-o',exe],check=True)
+    subprocess.run([exe],check=True)

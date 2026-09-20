@@ -170,11 +170,21 @@ def traces(args, model, directory, inv_path):
             argv += ['--proof-tokens', directory / 'reference/proof-request/input-tokens.json']
         if model.get('split') == 'tensor':
             argv += ['--tensor-split', model['tensor_split']]
+        env = dict(os.environ)
+        if getattr(args, 'profiler_scope', 'shared') == 'private':
+            from tools.kpack_asys_scope import private_command
+            argv = private_command(argv, directory / f'{arm}-profiler-tmp',
+                [ROOT, args.llama, args.build, args.bundle, args.cache, args.jit_cache,
+                 Path(model['path']), args.asys, args.inspector, Path(sys.executable)] +
+                [Path(env[k]) for k in ('QUACTLIZE_PPU_BUNDLE', 'DG_JIT_CACHE_DIR') if env.get(k)])
+            env['TMPDIR'] = '/tmp'
+            for key in ('PERFETTO_PRODUCER_SOCK_NAME', 'PERFETTO_CONSUMER_SOCK_NAME', 'ASIGHT_SESSION_FOLDER_PATH'):
+                env.pop(key, None)
+            print('KPACK_MODEL_ASYS private_service=1 host_services=UNTOUCHED', flush=True)
         print(f'KPACK_MODEL_TRACE model={model["name"]} arm={arm} first_request=EXCLUDED', flush=True)
         if 'devices' in model:
-            run(argv, directory / f'{arm}.log', dict(os.environ, CUDA_VISIBLE_DEVICES=model['devices']))
-        else:
-            run(argv, directory / f'{arm}.log')
+            env['CUDA_VISIBLE_DEVICES'] = model['devices']
+        run(argv, directory / f'{arm}.log', env)
         record = json.loads((output / 'proof.json').read_text())
         records.append(record)
         save(directory / 'summary.json', records)
@@ -190,6 +200,7 @@ def main():
     for key in ('llama', 'build', 'bundle', 'plan', 'cache', 'jit-cache', 'output', 'logits', 'corpus', 'asys', 'inspector'):
         p.add_argument('--' + key, type=Path, required=True)
     p.add_argument('--phase', choices=('numerical', 'trace'), required=True)
+    p.add_argument('--profiler-scope', choices=('shared','private'), default='shared')
     p.add_argument('--reuse-from', type=Path, help='recheck completed numerical calls; execute only absent calls')
     p.add_argument('--rerun-native', action='store_true', help='reuse only reference calls after a runtime change')
     args = p.parse_args()

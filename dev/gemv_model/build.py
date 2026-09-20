@@ -41,6 +41,8 @@ def build(args):
              for p in folder.rglob("*") if p.is_file() and p.suffix in (".h", ".hpp", ".cuh", ".inc")]
     paths += [Path(__file__), ROOT / "dev/gemv_model/source.py", ROOT / "dev/gemv_model/plan.py"]
     paths += [Path(plan.__file__)]
+    if args.cohort=='tp2-focus':
+        paths += [ROOT/'policies/kpack_decode_winners_v1.json']
     hashes = {str(p.relative_to(ROOT)): sha(p) for p in paths}
     env = dict(os.environ)
     env["PATH"] = str(sdk / "bin") + os.pathsep + env.get("PATH", "")
@@ -95,7 +97,7 @@ if __name__ == "__main__":
     for name in ("sdk", "output", "baseline"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--jobs", type=int, default=8)
-    parser.add_argument('--cohort', choices=('model','tp2'), default='model')
+    parser.add_argument('--cohort', choices=('model','tp2','tp2-focus'), default='model')
     parser.add_argument('--points', help='bounded comma-separated subset; full inventory remains in the receipt')
     args = parser.parse_args()
     if args.jobs < 1:

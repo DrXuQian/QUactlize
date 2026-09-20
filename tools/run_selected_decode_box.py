@@ -55,7 +55,8 @@ def environment(previous, inherited):
     defaults = dict(LLAMA_CI_DIR=receipt['llama_worktree']['directory'],
                     LLAMA_CI_BUILD_DIR=receipt['build'], NCP_CI_DIR=receipt['ncp_directory'],
                     NCP_LIB_DIR='/sim/eec/shared/junfu.qx/ncp_flash_lib', RESULT_ROOT=str(previous.parent),
-                    CUDA_VISIBLE_DEVICES='0,1', JOBS='192', TP2_MODE='model')
+                    CUDA_VISIBLE_DEVICES='6,7', JOBS='192', TP2_MODE='model',
+                    ASYS_PROFILER_SCOPE='private')
     if legacy.get('sdk'):
         defaults['PPU_SDK'] = legacy['sdk']
     env = dict(inherited)

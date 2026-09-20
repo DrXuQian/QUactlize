@@ -102,8 +102,8 @@ CUTLASS_DEVICE void descriptors(qk_moe_projection_v1 const& p,
 // At most eight top8 tokens, and TileM >= tokens: every nonempty expert has
 // exactly one M tile in every projection. Sort/prefix once, share the result.
 // All-SIMT has no expert-sized descriptor arrays and needs one warp/token.
-template<class Shape,class Stride,int Capacity,bool AllSimt,class Plan>
-__global__ void once(Plan plan) {
+template<class Shape,class Stride,int Capacity,bool AllSimt,bool Snapshot,class Plan>
+__device__ __forceinline__ void once_body(Plan plan,qk_llama_moe_finish_v1 finish={}) {
   using Compute=typename MoeCompute<Plan>::type;
   auto const& p=plan.gate;
   __shared__ int ids[Capacity],ranks[Capacity],starts[Capacity];
@@ -155,6 +155,17 @@ __global__ void once(Plan plan) {
   } else if (tid<p.m) {
     int id=p.io.ids[int64_t(tid/8)*p.io.ids_stride+tid%8];
     if constexpr(OneWarp) mine=id; else ids[tid]=id;
+  }
+  if constexpr(Snapshot) {
+    static_assert(AllSimt);
+    // One warp owns one token's router stores. SIMT has no output descriptors;
+    // that private array retains the finish weights before graph storage reuse.
+    if(warp<p.io.tokens) {
+      __syncwarp();
+      int slot=tid%32;
+      if(slot<8) static_cast<float*>(plan.down.outputs)[warp*8+slot]=
+          finish.weights[int64_t(warp)*finish.weights_stride+slot];
+    }
   }
   if constexpr(!OneWarp) if (!proven) __syncthreads();
   if constexpr(AllSimt) {
@@ -212,6 +223,16 @@ __global__ void once(Plan plan) {
   if constexpr(!AllSimt) if (valid) gather(plan,ranks);
 }
 
+template<class Shape,class Stride,int Capacity,bool AllSimt,class Plan>
+__global__ void once(Plan plan) {
+  once_body<Shape,Stride,Capacity,AllSimt,false>(plan);
+}
+
+template<class Shape,class Stride,int Capacity,class Plan>
+__global__ void once_with_finish(Plan plan,qk_llama_moe_finish_v1 finish) {
+  once_body<Shape,Stride,Capacity,true,true>(plan,finish);
+}
+
 template<class Plan>
 CUTLASS_HOST_DEVICE bool supported(Plan const& plan) {
   auto const& p=plan.gate;
@@ -238,6 +259,16 @@ bool launch_all_simt(Plan const& plan,hggcStream_t stream) {
   if(tokens==1) once<Shape,Stride,8,true><<<1,32,0,stream>>>(plan);
   else if(tokens<=4) once<Shape,Stride,32,true><<<1,tokens*32,0,stream>>>(plan);
   else once<Shape,Stride,64,true><<<1,256,0,stream>>>(plan);
+  return true;
+}
+
+template<class Shape,class Stride,class Plan>
+bool launch_with_finish(Plan const& plan,qk_llama_moe_finish_v1 const& finish,hggcStream_t stream) {
+  if(!supported(plan) || !plan.merged || moe_simt_mask(plan)!=5) return false;
+  int tokens=plan.gate.io.tokens;
+  if(tokens==1) once_with_finish<Shape,Stride,8><<<1,32,0,stream>>>(plan,finish);
+  else if(tokens<=4) once_with_finish<Shape,Stride,32><<<1,tokens*32,0,stream>>>(plan,finish);
+  else once_with_finish<Shape,Stride,64><<<1,256,0,stream>>>(plan,finish);
   return true;
 }
 

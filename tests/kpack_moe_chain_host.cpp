@@ -262,10 +262,101 @@ static void finish_graph(bool merged,int tokens,int fault) {
   require(found==(tokens<=8?1:0),"weighted finish base-chain scope differs");
   ggml_free(ctx);
 }
+
+static void multilayer_graph() {
+  auto * ctx=ggml_init({16*1024*1024,nullptr,true});
+  auto * input=ggml_new_tensor_2d(ctx,GGML_TYPE_F32,256,1);
+  auto * router_weight=ggml_new_tensor_2d(ctx,GGML_TYPE_F32,256,256);
+  auto * gate_weight=ggml_new_tensor_3d(ctx,GGML_TYPE_Q4_K,256,512,256);
+  auto * down_weight=ggml_new_tensor_3d(ctx,GGML_TYPE_Q5_K,256,256,256);
+  auto * g=ggml_new_graph(ctx);
+  std::vector<ggml_tensor*> gates,inputs,ids_list,weights_list,downs,finishes,logits_list;
+  for(int layer=0;layer<3;++layer) {
+    auto * normalized=ggml_rms_norm(ctx,input,1e-6f);
+    auto * logits=ggml_mul_mat(ctx,router_weight,normalized);
+    auto * probs=ggml_soft_max(ctx,logits);
+    auto * ids=ggml_argsort_top_k(ctx,probs,8);
+    auto * weights=ggml_get_rows(ctx,ggml_reshape_3d(ctx,probs,1,256,1),ids);
+    weights=ggml_reshape_2d(ctx,weights,8,1);
+    weights=ggml_div(ctx,weights,ggml_clamp(ctx,ggml_sum_rows(ctx,weights),6.103515625e-5f,INFINITY));
+    weights=ggml_reshape_3d(ctx,weights,1,8,1);
+    ggml_build_forward_expand(g,weights);
+    auto * both=ggml_mul_mat_id(ctx,gate_weight,ggml_reshape_3d(ctx,normalized,256,1,1),ids);
+    auto * gate=ggml_view_3d(ctx,both,256,8,1,both->nb[1],both->nb[2],0);
+    auto * up=ggml_view_3d(ctx,both,256,8,1,both->nb[1],both->nb[2],256*4);
+    auto * down=ggml_mul_mat_id(ctx,down_weight,ggml_swiglu_split(ctx,gate,up),ids);
+    auto * mul=ggml_mul(ctx,down,weights);ggml_build_forward_expand(g,mul);
+    ggml_tensor * views[8];
+    for(int slot=0;slot<8;++slot) {
+      views[slot]=ggml_view_2d(ctx,mul,256,1,mul->nb[2],slot*mul->nb[1]);
+      ggml_build_forward_expand(g,views[slot]);
+    }
+    auto * sum=views[0];
+    for(int slot=1;slot<8;++slot) {sum=ggml_add(ctx,sum,views[slot]);ggml_build_forward_expand(g,sum);}
+    auto * shared=ggml_scale(ctx,normalized,2.f);
+    input=ggml_add(ctx,input,ggml_add(ctx,sum,shared));
+    gates.push_back(both);inputs.push_back(normalized);ids_list.push_back(ids);
+    weights_list.push_back(weights);downs.push_back(down);finishes.push_back(sum);logits_list.push_back(logits);
+  }
+  ggml_build_forward_expand(g,input);
+  auto allocator=ggml_gallocr_new(ggml_backend_cpu_buffer_type());
+  require(ggml_gallocr_alloc_graph(allocator,g),"multi-layer allocation failed");
+  int matches=0,admitted=0;
+  for(int layer=0;layer<3;++layer) {
+    int start=-1;
+    for(int i=0;i<g->n_nodes;++i) if(g->nodes[i]==gates[layer]) start=i;
+    auto match=quactlize::llama::match_moe(g,start);
+    matches+=bool(match.count);
+    int router_start=-1,ids_index=-1,weights_index=-1;
+    for(int i=0;i<g->n_nodes;++i) {
+      if(g->nodes[i]->op==GGML_OP_SOFT_MAX && g->nodes[i]->src[0]==logits_list[layer]) router_start=i;
+      if(g->nodes[i]==ids_list[layer]) ids_index=i;
+      if(g->nodes[i]==weights_list[layer]) weights_index=i;
+    }
+    std::vector<ggml_op> ops;
+    for(int i=router_start;i<=weights_index;++i)ops.push_back(g->nodes[i]->op);
+    auto span=quactlize::llama::match_moe_router(g,router_start,ops,ids_index,weights_index);
+    require(span.count>0,"allocated multi-layer router span missing");
+    int graph_outputs[]={ids_index,weights_index,router_start+span.count-1};
+    require(ggml_cuda_check_fusion_memory_ranges(g,router_start,span.count,graph_outputs,3,false,logits_list[layer]),
+        "caller rejects staged multi-layer memory lifetimes");
+    qk_moe_plan_v1 plan{1,sizeof(plan),1,0,projection(0x10000000,512,256,8,1),
+        {},projection(0x30000000,256,256,8,1)};
+    plan.gate.io.a=(float*)inputs[layer]->data;plan.gate.io.ids=(int*)ids_list[layer]->data;
+    plan.gate.io.ids_stride=8;plan.down.io.ids_stride=8;
+    plan.down.io.ids=plan.gate.io.ids;plan.down.io.output=(float*)downs[layer]->data;
+    qk_llama_moe_finish_v1 finish{1,sizeof(finish),8,256,(float*)weights_list[layer]->data,(float*)finishes[layer]->data};
+    bool legacy=quactlize::dispatch::compatible_finish(plan,finish,5);
+    bool legal=quactlize::dispatch::compatible_finish(plan,finish,5,true);
+    admitted+=legal;
+    require(!legacy && legal,"allocated finish alias was not repaired by retained weights");
+    for(int fault=0;fault<5;++fault) {
+      auto bad=plan;auto f=finish;unsigned mask=5;
+      if(fault==0) mask=1;
+      if(fault==1) bad.down.outputs=const_cast<float*>(finish.weights);
+      if(fault==2) bad.down.outputs=(char*)bad.down.workspace+bad.down.workspace_bytes-16;
+      if(fault==3) f.output=(float*)bad.down.a;
+      if(fault==4) f.output=bad.down.io.output;
+      require(!quactlize::dispatch::compatible_finish(bad,f,mask,true),"finish lifetime negative missed");
+    }
+    auto overlap=[](ggml_tensor* a,ggml_tensor* b) {
+      uintptr_t x=uintptr_t(a->data),y=uintptr_t(b->data);
+      return x<y+ggml_nbytes(b) && y<x+ggml_nbytes(a);
+    };
+    std::printf("KPACK_MOE_MULTILAYER layer=%d graph_match=%d finish=%d finish_admitted=%d down_alias=%d weights_alias=%d ids_alias=%d weights_ids=%d\n",
+        layer,int(bool(match.count)),int(match.finish!=nullptr),int(legal),int(overlap(downs[layer],finishes[layer])),
+        int(overlap(weights_list[layer],finishes[layer])),int(overlap(ids_list[layer],finishes[layer])),
+        int(overlap(weights_list[layer],ids_list[layer])));
+  }
+  require(matches==3,"multi-layer graph match missing");
+  require(admitted==3,"multi-layer finish admission missing");
+  ggml_gallocr_free(allocator);ggml_free(ctx);
+}
 int main() {
   try {
     composition();
     router_memory_order();
+    multilayer_graph();
     for (bool merged:{false,true}) {
       graph(merged,false,false,true,true); graph(merged,true,false,true,true);
       graph(merged,false,false,false,true); graph(merged,false,false,true,false);

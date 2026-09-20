@@ -228,7 +228,17 @@ def profile_records(text, p, arm, configs=None):
         if not re.search(rf'simt_gate_up(?:_model)?<{p.q},1,{p.compute},8(?:,\d+,\d+)?>',name):
             raise ValueError("ACU paired incumbent differs")
     elif not p.tc:
-        if not any(s in name for s in ('q8_vector::kernel<','q8_vector::kernel_model<',
+        if 'measured_decode_kernel<' in name:
+            fields=[p.q,p.mode,p.n,p.k,p.experts,8 if p.mode else 1,p.channels,p.compute,
+                    config.variant,config.columns,config.warps,config.values,config.split,
+                    config.changes,str(config.hoist).lower(),str(config.fixed).lower()]
+            expected='measured_decode_kernel<'+','.join(map(str,fields))+'>'
+            if expected not in name:raise ValueError('ACU measured implementation differs')
+            block=f'({config.warps*32},1,1)'
+            grid=f'({(8 if p.mode else 1)*config.split*p.n//config.tile_n},1,1)'
+            if rows[0]['Block Size'].replace(' ','')!=block or rows[0]['Grid Size'].replace(' ','')!=grid:
+                raise ValueError('ACU measured geometry differs')
+        elif not any(s in name for s in ('q8_vector::kernel<','q8_vector::kernel_model<',
                                        'q8_vector::kernel_s1<','register_reuse<','register_reuse_model<')):
             raise ValueError("ACU SIMT incumbent differs")
     elif "cutlass" not in name or "kernel" not in name.lower():
@@ -329,7 +339,7 @@ def main():
         parser.add_argument("--" + k, type=Path, required=True)
     parser.add_argument("--l2-bytes", type=int, default=67108864)
     parser.add_argument("--acu", type=Path)
-    parser.add_argument('--cohort',choices=('model','tp2'),default='model')
+    parser.add_argument('--cohort',choices=('model','tp2','tp2-focus'),default='model')
     parser.add_argument("--point")
     parser.add_argument("--points")
     parser.add_argument("--profile-arm")

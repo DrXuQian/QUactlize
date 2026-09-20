@@ -178,6 +178,17 @@
     grep -qx 'KPACK_TP2_SEGMENTED_ALL PASS formats=6 cases=6 segments=3 replays=3' "$RUN/results/tp2-device-hot.log"
     "$PYTHON" tools/run_kpack_tp2_chain.py --check-gate-log "$RUN/results/tp2-device-hot.log"
 
+    # Candidate failures do not invalidate already-passed production gates.
+    # Each experiment retains its own receipts and can resume independently.
+    focus_rc=0
+    if [[ -s tools/kpack_decode_focus_artifact.json ]]; then
+        stage=decode-focus
+        CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES%,*} "$PYTHON" -u tools/run_decode_focus_box.py \
+            --sdk "$SDK" --output "$RUN/results/decode-focus" --result-root "$RESULT_DIR" \
+            2>&1 | tee "$RUN/results/decode-focus.log" || focus_rc=$?
+        printf 'focus_rc=%s production_policy=UNCHANGED\n' "$focus_rc" > "$RUN/results/decode-focus-status.txt"
+    fi
+
     CACHE_ROOT=${CACHE_ROOT:-$RESULT_DIR/kpack-tp2-model-cache}
     mkdir -p -- "$CACHE_ROOT"
     printf 'KPACK_TP2 cache=%s\n' "$CACHE_ROOT"
@@ -195,6 +206,8 @@
         2>&1 | tee "$RUN/results/benchmark.log"
     stage=model-trace
     "$PYTHON" -u tools/run_kpack_model_validation.py "${COMMON[@]}" --phase trace \
+        --profiler-scope "${ASYS_PROFILER_SCOPE:-private}" \
         --output "$RUN/results/trace" 2>&1 | tee "$RUN/results/trace.log"
     stage=complete
+    if [[ $focus_rc != 0 ]]; then stage=complete-focus-incomplete; false; fi
 )

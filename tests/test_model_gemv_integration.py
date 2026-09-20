@@ -11,13 +11,16 @@ ROOT=Path(__file__).resolve().parents[1]
 def test_tc_replacement_does_not_leak_to_other_domains(tmp_path):
     code=r'''
 #include "quactlize/dispatch/smallm_matched.hpp"
+#include "policies/kpack_smallm_matched_v1.hpp"
 #include "tests/legacy_q8_overlay.hpp"
 #include <cassert>
 int main() {
   using namespace quactlize::dispatch;
   int found=0;
-  for(auto const& row:matched::data::kExact) {
-    auto const& choice=matched::data::kChoices[row.choice];
+  // This test exercises the historical overlay, not the already-folded
+  // effective table in which these two TC donors have become SIMT choices.
+  for(auto const& row:quactlize::smallm_matched_data::kExact) {
+    auto const& choice=quactlize::smallm_matched_data::kChoices[row.choice];
     if(choice.kind!=QKS_SMALLM_TC) continue;
     qkg_simt_call_v2 d{2,sizeof(d)};auto& c=d.call;
     c.version=1;c.size=sizeof(c);c.qtype=row.q;c.input_type=QKG_F32;

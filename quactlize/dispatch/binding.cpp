@@ -102,6 +102,7 @@ struct MoeExecution {
     decltype(&quactlize_kpack_simt_run_v2) reuse_compute=nullptr;
     decltype(&quactlize_kpack_moe_mixed_stage_v2) stage_compute=nullptr;
     decltype(&quactlize_kpack_moe_weighted_finish_v2) finish_compute=nullptr;
+    decltype(&quactlize_kpack_moe_prepare_finish_v1) prepare_finish=nullptr;
     ~MoeExecution() { if (fusion_library) dlclose(fusion_library); if (library) dlclose(library); }
 };
 using Key=std::tuple<int,int,int,int,int,int,int,uint64_t,SelectionProfile,int,int,int>;
@@ -137,6 +138,7 @@ struct MoeChain {
     qkg_sizes_v1 simt_sizes[3]{};
     quactlize_ppu_placed_arrangement_v2 arrangements[3]{};
     qk_llama_moe_finish_v1 finish{};
+    bool finish_snapshot=false;
     int compute_type=QK_COMPUTE_F16;
     qkg_gate_up_call_v2 gate_up{};
     qkg_gate_up_layout_v1 gate_up_layout{};
@@ -220,6 +222,8 @@ std::shared_ptr<MoeExecution> load_moe(Runtime& r) {
         dlsym(lib->library,"quactlize_kpack_moe_mixed_stage_v2"));
     lib->finish_compute=reinterpret_cast<decltype(lib->finish_compute)>(
         dlsym(lib->library,"quactlize_kpack_moe_weighted_finish_v2"));
+    lib->prepare_finish=reinterpret_cast<decltype(lib->prepare_finish)>(
+        dlsym(lib->library,"quactlize_kpack_moe_prepare_finish_v1"));
     r.moe=lib;return lib;
 }
 
@@ -245,11 +249,16 @@ bool tc_stage(Handle* h,qk_moe_plan_v1 const& plan,int phase,void* stream) {
 }
 
 int weighted_finish(MoeChain const& c,qk_moe_plan_v1 const& plan,void* stream) {
+    auto finish=c.finish;
+    if(c.finish_snapshot) {
+        finish.weights=static_cast<float const*>(plan.down.outputs);
+        finish.weights_stride=8;
+    }
     int rc;
     if (c.compute_type==QK_COMPUTE_BF16) {
         qkg_moe_compute_v2 typed{2,sizeof(typed),plan,c.simt_mask,c.compute_type};
-        rc=c.execution->finish_compute(&typed,&c.finish,stream);
-    } else rc=c.execution->finish(&plan,c.simt_mask,&c.finish,stream);
+        rc=c.execution->finish_compute(&typed,&finish,stream);
+    } else rc=c.execution->finish(&plan,c.simt_mask,&finish,stream);
     return rc==QKG_OK ? QKS_OK : QKS_RUNTIME;
 }
 
@@ -279,6 +288,10 @@ int run_mixed(MoeChain const& c,qk_moe_plan_v1 const& plan,void* stream) {
     auto stage=[&](int phase) {
         uint32_t mask=c.simt_mask;
         if(c.gate_up.version && phase==QK_MOE_PREPARE) mask|=plan.merged?1u:3u;
+        if(c.finish_snapshot && phase==QK_MOE_PREPARE) {
+            qkg_moe_compute_v2 typed{2,sizeof(typed),plan,mask,c.compute_type};
+            return c.execution->prepare_finish(&typed,&c.finish,stream)==QKG_OK;
+        }
         if (c.compute_type==QK_COMPUTE_BF16) {
             qkg_moe_compute_v2 typed{2,sizeof(typed),plan,mask,c.compute_type};
             return c.execution->stage_compute(&typed,phase,stream)==QKG_OK;
@@ -911,7 +924,8 @@ extern "C" int quactlize_kpack_dispatch_moe_bind_finish_v1(void* runtime,void* h
     if (!runtime || !handle || !finish) return QKS_INVALID;
     auto& c=*static_cast<MoeChain*>(handle);
     if (c.finish.version) return QKS_INVALID;
-    if (!compatible_finish(c.plan,*finish,c.simt_mask)) return QKS_MISS;
+    bool snapshot=!compatible_finish(c.plan,*finish,c.simt_mask);
+    if (snapshot && !compatible_finish(c.plan,*finish,c.simt_mask,true)) return QKS_MISS;
     if (c.reuse_mask && (overlaps_simt_workspace(c,finish->weights,
             uint64_t(finish->weights_stride)*c.plan.down.io.tokens*4) ||
         overlaps_simt_workspace(c,finish->output,
@@ -921,7 +935,8 @@ extern "C" int quactlize_kpack_dispatch_moe_bind_finish_v1(void* runtime,void* h
         if (r.device>=0 && r.device!=c.plan.down.device) return QKS_MISS;
         auto execution=load_moe(r);
         if (c.compute_type==QK_COMPUTE_BF16 ? !execution->finish_compute : !execution->finish) return QKS_MISS;
-        c.execution=execution;c.finish=*finish;
+        if(snapshot && !execution->prepare_finish) return QKS_MISS;
+        c.execution=execution;c.finish=*finish;c.finish_snapshot=snapshot;
         return QKS_OK;
     } catch (std::exception const& e) {last_error=e.what();return QKS_BINDING;}
 }

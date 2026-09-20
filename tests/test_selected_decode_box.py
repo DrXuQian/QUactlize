@@ -28,7 +28,8 @@ def test_reuse_uses_receipts_and_exact_manifest_not_a_guessed_latest(tmp_path):
     assert env['QUACTLIZE_PPU_BUNDLE']==str(legacy)
     assert env['LLAMA_CI_BUILD_DIR']==str(tmp_path/'caller')
     assert env['PPU_SDK']==str(tmp_path/'sdk')
-    assert env['CUDA_VISIBLE_DEVICES']=='0,1' and env['JOBS']=='192'
+    assert env['CUDA_VISIBLE_DEVICES']=='6,7' and env['JOBS']=='192'
+    assert env['ASYS_PROFILER_SCOPE']=='private'
     assert 'PPU_SDK' in keys
     env,_=environment(previous,{'NCP_LIB_DIR':str(tmp_path/'ncp'),'PPU_SDK':'/explicit/sdk','JOBS':'64'})
     assert env['JOBS']=='64' and env['PPU_SDK']=='/explicit/sdk'

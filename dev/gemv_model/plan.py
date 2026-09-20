@@ -131,6 +131,9 @@ def inventory():
 
 
 def cohort(name='model'):
+    if name=='tp2-focus':
+        from dev.tp2_decode import focus
+        return focus
     if name=='tp2':
         from dev.tp2_decode import plan
         return plan
