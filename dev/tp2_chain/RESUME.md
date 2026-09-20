@@ -29,6 +29,19 @@ paired default. Earlier pending entries below describe historical build-time sta
 - New entry: `tools/run_paired_selection_box.sh`, devices 6,7. See
   `docs/production-handoff.md` for component/model coverage, resume and return.
   The original experiment entry remains available separately.
+- Implementation `3424f553253c09ada4320646780a8e3fba36c601`; caller
+  `905dbdd486325189f88e519470a37bbd8badb685` on
+  `DrXuQian/llama.cpp:dev/quactlize-paired-recipes`.
+- Runtime `f8af8e7e550c9fd4ab7ab216281fbae1bfed8ec6` on
+  `artifacts/kpack-paired-recipes-v2`, manifest
+  `3e325fcdbd170ee76a0f8aa19056d4cf0b4d077d31a5e7b290bc8e4c958056bd`.
+  All 79 published files are tracked; ELF payloads use LFS. Own-fork push,
+  fresh scoped LFS checkout, full source/SDK verification and the actual shell
+  entry's `VERIFY_ONLY=1 PAIRED_PHASES=components` passed (`runner_rc=0`).
+  These checks did not create a device context or measure performance.
+- Final fusion SHA-256
+  `cd80283d0b77c4a6c782b8353cd2eb4c0f29765fff843a16316a84943804af75`;
+  repeated native ISA/resource comparison remains 3/3 byte-identical.
 
 2026-09-20: implementing the matched paired-chain experiment after reviewing
 `dev/tp2_decode/docs/launch-trace-20260920.md`. Production remains unchanged.
