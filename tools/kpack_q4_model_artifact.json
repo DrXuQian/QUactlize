@@ -1,9 +1,9 @@
 {
-  "branch": "artifacts/kpack-model-selected-v1",
-  "commit": "d8852d419a550623c4fd96c723f749c128798774",
+  "branch": "artifacts/kpack-launch-fix-v1",
+  "commit": "46727e96de92c6a7da15aa12f066a31f1bed8673",
   "path": "prebuilt/ppu0010/kpack-model-runtime-v1",
-  "manifest_sha256": "5bda5fabf565c54494a358479a3ce9923bcde8d204338aede0742517491a4aab",
-  "source_commit": "a94d15c45cdc75347690fc00ae1ed0d846c4c506",
+  "manifest_sha256": "3a1608d2702447b7a038905bb7285d3fa6626371387bec3bde2c8eee2c7c20af",
+  "source_commit": "cb3a8ba24356dc8c1b8546220dcc6c77dc3b057a",
   "llama_branch": "dev/quactlize-selected-decode",
   "llama_ci_commit": "1f7da3bd94b1fc6b9520e156456c89221fddd07f",
   "model_reader_gate": false,
@@ -11,5 +11,5 @@
   "selected_entry_gate": true,
   "lfs_payloads": 63,
   "selection_admission": "LOCAL_CATALOG1852_PUBLIC_SIMT937_CONFIRMED_ORDINARY15_PASS",
-  "device_admission": "NEW_EXECUTION_MODEL_NUMERICS_TPOT_ASYS_PENDING"
+  "device_admission": "V1_V2_AND_FINISH_SNAPSHOT_MODEL_NUMERICS_TPOT_ASYS_PENDING"
 }

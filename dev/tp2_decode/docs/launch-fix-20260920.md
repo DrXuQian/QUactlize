@@ -87,3 +87,41 @@ decode, FP32 FMA and vector-load instructions in the native inspection. Narrow
 Q8 C4/P2 reduces each K worker group's contiguous B span from 32 to 16 bytes:
 it increases parallelism but may waste a 32-byte transaction sector. Its source
 footprint is reported explicitly; more CTAs is not assumed to be a win.
+
+## Handoff
+
+Implementation source: `cb3a8ba24356dc8c1b8546220dcc6c77dc3b057a`.
+Artifact: `artifacts/kpack-launch-fix-v1`,
+`46727e96de92c6a7da15aa12f066a31f1bed8673`. The model package remains at
+`prebuilt/ppu0010/kpack-model-runtime-v1`; experiments use the separate
+`prebuilt/ppu0010/tp2-decode-focus-v1` closure. Both are narrowly fetched by
+their manifest pins. All 68 ELF paths use LFS (63 model, five experiment),
+plus three ISA reports. No caller binary is included. Caller remains
+`dev/quactlize-selected-decode`, `1f7da3bd94b1fc6b9520e156456c89221fddd07f`.
+
+Run from source branch `dev/dispatch-launch-fix`:
+
+```bash
+CUDA_VISIBLE_DEVICES=6,7 JOBS=192 \
+LLAMA_CI_DIR=/sim/eec/shared/junfu.qx/llama.cpp \
+python3 -u tools/run_selected_decode_box.py \
+  --previous-run /sim/eec/shared/junfu.qx/kpack-newbox.QYl8F9/kpack-tp2.8VYueY
+```
+
+The previous run supplies exact SDK, caller build, NCP build and compatibility
+overlay paths. Overrides remain supported. No model weights/cache are removed.
+The runner reports its new run directory and results archive. Full Asys reports
+stay at `results/trace/qwen35-122b-q4km/{reference,native}/proof.asysrep`; the
+small archive contains receipts/statistics, not large Asys payloads. Focus ACU
+reports and raw CSVs are under `results/decode-focus` and included in the archive.
+
+Resume only failed experimental points with the same source/runtime/device:
+
+```bash
+CUDA_VISIBLE_DEVICES=6 python3 -u tools/run_decode_focus_box.py \
+  --sdk "$PPU_SDK" --result-root /sim/eec/shared/junfu.qx/kpack-newbox.QYl8F9 \
+  --output /absolute/new-run/results/decode-focus --resume
+```
+
+Do not reuse model ABBA timings when other GPU workloads overlap. Captures and
+component sums are diagnostic, not replacements for warmed unprofiled TPOT.
