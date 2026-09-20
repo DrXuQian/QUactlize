@@ -37,8 +37,8 @@ two tiny candidate libraries plus the exact frozen execution/fusion controls.
     set -e
     cd /sim/eec/shared/junfu.qx/quactlize
     git fetch origin dev/tp2-paired-chain
-    git switch dev/tp2-paired-chain
-    git pull --ff-only origin dev/tp2-paired-chain
+    GIT_LFS_SKIP_SMUDGE=1 git switch dev/tp2-paired-chain
+    GIT_LFS_SKIP_SMUDGE=1 git pull --ff-only origin dev/tp2-paired-chain
 
     PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \
     RESULT_ROOT=/sim/eec/shared/junfu.qx \

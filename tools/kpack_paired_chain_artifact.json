@@ -1,0 +1,12 @@
+{
+  "branch": "artifacts/tp2-paired-chain-v1",
+  "commit": "54514275e65ebdbee12f6c153e962ca7b8040732",
+  "path": "prebuilt/ppu0010/tp2-paired-chain-v1",
+  "manifest_sha256": "577c6d368175c39f21ae43f8d7675cd85267f83d968f65f186fbe4d1eccb0c0c",
+  "source_commit": "70b42cbeb9063b03383aae3eb142094aed684875",
+  "points": 2,
+  "candidate_kernels": 4,
+  "arms_per_point": 4,
+  "production_selection_changed": false,
+  "device_admission": "PENDING"
+}

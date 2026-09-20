@@ -13,9 +13,15 @@ numerical device admission and full-call timing are separate gates.
 - The complete chain runner retains the frozen execution and fusion libraries;
   BF16 range, phase 2 activation, internal pointer ownership, aliased router
   weights, and four/five-stage profile coverage have host regression tests.
-- Related host regression suite: 162 passed with the existing caller host
+- Related host regression suite: 164 passed with the existing caller host
   libraries. The caller and production selections remain unchanged.
 - Box execution is pending on devices 6,7. No production selector changes and
   no claims about numerical or performance admission from host checks.
 - Entry: `tools/run_paired_chain_box.sh`; scope, resume and return protocol are
   in this directory's README. Review complete-chain samples before promotion.
+- Source implementation: `70b42cbeb9063b03383aae3eb142094aed684875`.
+  Package: `54514275e65ebdbee12f6c153e962ca7b8040732`, manifest SHA-256
+  `577c6d368175c39f21ae43f8d7675cd85267f83d968f65f186fbe4d1eccb0c0c`.
+  Payload index verified: eleven payloads including all four libraries; six
+  binary/ISA payloads use LFS. Approximate package size is 42.9 MB, of which
+  almost all is the unchanged frozen execution/fusion control pair.
