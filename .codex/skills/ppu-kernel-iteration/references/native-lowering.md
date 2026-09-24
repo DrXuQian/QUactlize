@@ -239,3 +239,18 @@ Evidence: GDN-QSA-sm80 `docs/PPU_GDN_RESIDUAL_DELIVERY.md` (local compile-only).
 Bank-conflict elimination is a subsequent isolated experiment: bind counters
 to specific shared PCs/bank maps, preserve the paired writer/reader contract,
 and require a latency gain rather than optimizing the aggregate counter alone.
+
+The V16 device follow-up (GDN5a3ebc9, same S2048/g=-1/PPU-ZW8101.700GHz,
+site ACU) confirms the tradeoff: active warps7.08->14.12, but all-kernel time
+226.03->224.41us, effectively tied with FLA225.67us in that capture. KVD-to-TSM
+transaction bytes112->224MiB; read BC+36.36%, write BC-1.62%, transposed matrix
+loads+50% with unchanged useful MMA. Do not name BC alone as the lost speedup:
+splitting V duplicates K/P and changes request mix/granularity. Normalize
+conflicts by useful work AND request class; sampled waits are not wall time.
+More CTA-local warps with the original tile can preserve global/shared reuse,
+but still duplicate shared operands and needs an independent proof/experiment.
+PPU result fragments place adjacent columns in different lanes: packing
+BF16 stores requires a proved exchange or different paired intermediate
+layout, not a per-thread reinterpret-cast. Inspect native lowering before
+accepting that exchange. Evidence: GDN `docs/PPU_GDN_V16_ACU_20260924.md`;
+V32/8warp ownership is host-proved only, not implemented or timed.
