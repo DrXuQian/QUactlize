@@ -116,6 +116,19 @@ not a blanket fewer-barriers or higher-occupancy rule. FLA still wins223.58
 vs269.31 us; no default promotion or weak-gate speed is established. Evidence:
 GDN-QSA-sm80 `docs/PPU_WY_SPLIT_ACU_20260924.md`.
 
+For an async operand pipeline, verify the native CFG, not linear PC order
+or a copy/wait opcode count. SDK2.1.1 rotated the GDN state loop so UPDATE
+appeared at lower PCs than the copies which precede it dynamically; it also
+hoisted the K/U wait after12 of16 source-level PROJECT MMAs. Next-W retained
+16 UPDATE MMAs before its next-loop wait. A same-opcode-count wait relocation
+must fail the schedule gate. Prove old-reader retirement before issuing an
+async overwrite AND completion before consuming it: a CTA barrier alone is
+not an async-copy wait. Source guards and native branch structure are separate
+evidence; do not assert infeasible exit edges without proving predicates.
+Earlier issue/native overlap windows remain compile facts, not measured hidden
+latency; scoreboard/pipe-flush waits can still matter. Evidence and negative
+controls: GDN-QSA-sm80 `docs/PPU_WY_STATE_PIPELINE.md` (device verdict pending).
+
 Pre-AIU GDN example (local SDK2.1.1, PPU0010, B1/S2048/Hk16/Hv32/D128/C64;
 device capture20260922):
 WY and FLA state/output had equal BF16 MMA counts, but WY executed about
