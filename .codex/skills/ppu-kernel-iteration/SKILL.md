@@ -1,6 +1,6 @@
 ---
 name: ppu-kernel-iteration
-description: Run a bounded, resumable PPU kernel optimization task with measured candidate selection, ACU evidence, and a reproducible handoff. Use for overnight GEMV or MoE decode iteration; not for launching an unrestricted sweep or changing production routing without admission.
+description: Run bounded, resumable PPU kernel optimization with measured candidate selection, native codegen checks, ACU evidence, and a reproducible handoff. Use for GEMM/GEMV, attention or recurrent-kernel tuning; not for unrestricted sweeps or changing production routing without admission.
 ---
 
 # PPU kernel iteration
@@ -26,6 +26,10 @@ that repeats benchmarks is not an optimizer.
   are context, not fresh baseline timings or universal selectors.
 - Read [failure lessons](references/failure-lessons.md) when an experiment
   stalls at admission, launch, numerics or report parsing.
+- Read [native lowering and execution structure](references/native-lowering.md)
+  when porting PTX or when a reference has equal math work but much less
+  instruction/operand-delivery overhead. Successful compatibility-mode
+  compilation is not evidence of efficient native PPU execution.
 
 ## Select the right supporting skill
 
@@ -87,3 +91,14 @@ commands. Bind raw results to source, SDK/runtime, device and binary identity.
 Keep logs/reports/binaries out of source commits; publish artifacts only through
 the explicitly authorized artifact path. Never export credentials or raw chat
 history as task memory.
+
+## Retain lessons, not just results
+
+At meaningful checkpoints, distill new reusable tuning lessons into the
+relevant skill reference: observation, verified mechanism or still-open
+hypothesis, next discriminating check, and scope (SDK/target/shape/precision/
+timing protocol). Link the detailed experiment evidence instead of copying
+the work log. Keep disproven hypotheses and counterexamples visible; update
+an existing lesson rather than accumulating contradictory blanket rules.
+Do not call an unmeasured candidate a win or turn one target's behavior into
+a universal architecture claim.

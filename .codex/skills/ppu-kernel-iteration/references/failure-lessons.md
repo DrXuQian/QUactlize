@@ -13,6 +13,8 @@ every diagnostic to every kernel.
 | Profiler checker rejects a new implementation | Import saved reports; match exact producer, geometry and required reducer for that call | All symbols observed in a whole request must occur in one M1 profile |
 | Query says JIT source differs | Rebuild the small dispatcher against the candidate source and refresh the package | Disable hashes or point an old manifest at a replacement DSO |
 | Benchmark is days rather than hours | Measure wall-time fixture/build/child overhead and prune a declared inventory | Kernel duration times the cell count predicts campaign duration |
+| Port compiles but native instructions balloon | Inspect exact PTX/SDK lowering, operand delivery and resources; see [native lowering](native-lowering.md) | Compiler acceptance means efficient native support, or the hardware lacks the arithmetic capability |
+| Full API wins but ACU kernels lose | Separate event spans from per-kernel replay timing; measure same-call launch gaps before attribution | The difference of unlike measurements is measured Python overhead, or the kernels already beat the reference |
 
 SDK environment changes once caused even standalone markers and dequant to
 fail image admission. A later machine/environment passed the same production
