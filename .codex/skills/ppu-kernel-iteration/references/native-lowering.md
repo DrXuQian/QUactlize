@@ -312,3 +312,22 @@ Never trade into spill merely to hit that number. Validate the real owner map
 AND vector publishers when doubling threads; the latter cannot retain the old
 iteration stride. Evidence: GDN `docs/PPU_GDN_RESIDUAL_WARPS8.md`; device
 RAW-BIT/traffic/occupancy/latency remain separate, initially NOT_RUN.
+
+The eight-warp device follow-up (GDN dfe76c3, same S2048/g=-1/
+PPU-ZW8101.700GHz, one full site-ACU capture per arm) passes30 cases x8
+RAW-BIT and lowers state127.745->104.810us, all-kernel228.641->207.002us
+versus FLA226.969us (1.096x, NOT1.5x). Actual162regs/zero stack and3register-
+limited CTA slots still yield14.12warps/CU, near the grid ceiling14.22;
+eligible warps/WE rise0.25->0.36. Global staging remains112MiB, but shared
+matrix reads+28.57%,BC+15.13% and native dynamic instructions+9.72%.
+Memory-dependency/sync per-issue ratios also rise while latency falls. More
+issue supply can outweigh extra operand work; lower per-warp stall or fewer
+instructions is not necessary for a faster complete call. This does not
+isolate occupancy from shorter fragment work/codegen or make more warps a
+universal policy. Keep BC and instruction counts as diagnostics, not gates.
+The extra1024BF16 conversions are a zero-constant setup PC, not new recurring
+rounding. Unchanged stages contribute+1.296us variation; do not attribute it
+to changed state source. Evidence: GDN
+`docs/PPU_GDN_RESIDUAL_WARPS8_ACU_20260924.md`. Next layout test must use the
+eight-warp control and re-prove paired maps; old four-warp BC reduction is
+not admission of their combination. Default routing remains unchanged.
