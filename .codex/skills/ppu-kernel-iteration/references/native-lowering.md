@@ -254,3 +254,13 @@ BF16 stores requires a proved exchange or different paired intermediate
 layout, not a per-thread reinterpret-cast. Inspect native lowering before
 accepting that exchange. Evidence: GDN `docs/PPU_GDN_V16_ACU_20260924.md`;
 V32/8warp ownership is host-proved only, not implemented or timed.
+
+When BC elimination is required to add no work (this user's GDN experiment),
+restrict it to compile-time shared layout plus supported native matrix loads,
+including AIU.swzl/ld.swzl. No runtime unswizzle, lane exchange, extra copy,
+barrier or rearrangement kernel may be disguised as a free layout fix.
+Constexpr CuTe coordinates can still lower to dynamic address instructions;
+verify actual native lowering. Register-produced intermediates need a separate
+writer/reader proof. If the primitive cannot express the required permutation,
+report the boundary instead of relaxing the constraint. Compare BC fixes
+within the same warp geometry; more warps are a separate experiment.
