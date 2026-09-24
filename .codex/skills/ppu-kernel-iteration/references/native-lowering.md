@@ -179,3 +179,22 @@ allocation or launch overhead. Establish that attribution with one complete
 call timeline or an explicitly paired prepared-workspace/graph experiment;
 verify that the runtime supports the latter. Do not let host overhead hide
 a slower kernel or remove required work from only one timed arm.
+
+## Reassociation changes precision and workspace lifetimes
+
+Removing a materialized product is not merely a delivery variant. For GDN,
+PBV/PBDK-style materialization versus a gated residual has different BF16
+rounding boundaries; prove the real-algebra identity and admit the new
+association against an independent recurrence, while retaining RAW-BIT checks
+for old delivery-only variants. Give the algorithm a distinct API/receipt
+identity; a close oracle error cannot certify which variant actually ran.
+
+Reaudit global scratch ownership when removing a stage: the old GDN solve
+stored its inverse in future H-snapshot scratch, safe only because W/U consumed
+it before state started. In a direct P@residual recurrence, independent V-slice
+CTAs may overwrite another CTA's still-live inverse. A per-CTA barrier cannot
+repair that inter-CTA race; use separate storage or prove a different lifetime.
+Retaining a padded inverse pitch can erase the allocation-size saving even
+when W/U traffic disappears. Fewer total GEMMs may also lengthen the serial
+recurrence. Evidence: GDN-QSA-sm80 `docs/PPU_GDN_RESIDUAL.md`, SDK2.1.1 local
+algebra/layout/native checks only; device numerical/performance NOT_RUN.
