@@ -361,4 +361,37 @@ without a cap/spill. That compile fact does not imply more achieved occupancy
 at the same underfilled grid or a latency win. The new capture must compare
 the SAME eight-warp geometry, with scalar residual retained only as the
 numeric anchor; otherwise layout and occupancy gains are confounded.
-Evidence: GDN `docs/PPU_GDN_RESIDUAL_WARPS8_B_LAYOUT.md`; device pending.
+Evidence: GDN `docs/PPU_GDN_RESIDUAL_WARPS8_B_LAYOUT.md` (initial compile
+handoff); measured follow-up below.
+
+The combined8warp B-layout follow-up (GDN0273ad3, same S2048/g=-1/
+PPU-ZW8101.700GHz, one full site-ACU capture/arm) passes numerics and reduces
+BC7.979->5.882M, but all-kernel205.359->205.854us shows no speed gain.
+Report occupancy as three layers: resource capacity, grid/work supply, and
+issue readiness. Registers162->124 increase register slots3->4, but shared
+limit5,warp limit8 and grid128/72CU remain fixed; active warps14.12->14.11
+and eligible warps/WE0.36->0.34 do not improve. Do not optimize a register
+threshold alone. Native pairs show MMA inputs immediately reused as subsequent
+load destinations; per-PC compute samples rise there while aggregate TFU-WAR
+ratio0.00->0.39 increases. This supports an operand-lifetime/prefetch hypothesis,
+not proof that fewer registers caused all the loss. Distinguish newly changed
+scheduling hazards from a previously hidden bottleneck. Per-issue memory
+ratio1.74->1.71 is not measured wall time saved or an exact compute-stall
+cancellation. Keep the low-BC branch as a counterfactual and test independent
+operand lifetimes before conflating them with further layout changes.
+H/K conflicts remain legitimate targets, with H's canonical publisher and
+K's two orientations proved/accounted together; no blanket claim that BC is
+irrelevant or that eliminating it guarantees speed. Evidence: GDN
+`docs/PPU_GDN_RESIDUAL_WARPS8_B_LAYOUT_ACU_20260924.md`; defaults unchanged.
+
+In the next same-layout8warp compile screen, two/four source operand slots
+and an empty-assembly liveness constraint did not improve KH/PR native
+scheduling. Keep only the effective UPDATE edit: its B operands gain2/3
+intervening MMAs and targeted immediate input reuse falls3->0 at124regs,
+zero stack, unchanged math/traffic/barriers. This is a partial compile result,
+not global WAR elimination or a speedup. Track physical register-word writes,
+not only array names; classify both A/B load orientations and fixed per-phase
+MMA denominators. An old-native-body replacement with unchanged useful work
+must fail specifically for unchanged lookahead. Do not retain inert asm or
+deeper arrays as an optimization. Evidence: GDN
+`docs/PPU_GDN_RESIDUAL_WARPS8_OPERANDS.md`; SDK2.1.1, device pending.
