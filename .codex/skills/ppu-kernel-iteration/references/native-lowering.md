@@ -383,3 +383,15 @@ H/K conflicts remain legitimate targets, with H's canonical publisher and
 K's two orientations proved/accounted together; no blanket claim that BC is
 irrelevant or that eliminating it guarantees speed. Evidence: GDN
 `docs/PPU_GDN_RESIDUAL_WARPS8_B_LAYOUT_ACU_20260924.md`; defaults unchanged.
+
+In the next same-layout8warp compile screen, two/four source operand slots
+and an empty-assembly liveness constraint did not improve KH/PR native
+scheduling. Keep only the effective UPDATE edit: its B operands gain2/3
+intervening MMAs and targeted immediate input reuse falls3->0 at124regs,
+zero stack, unchanged math/traffic/barriers. This is a partial compile result,
+not global WAR elimination or a speedup. Track physical register-word writes,
+not only array names; classify both A/B load orientations and fixed per-phase
+MMA denominators. An old-native-body replacement with unchanged useful work
+must fail specifically for unchanged lookahead. Do not retain inert asm or
+deeper arrays as an optimization. Evidence: GDN
+`docs/PPU_GDN_RESIDUAL_WARPS8_OPERANDS.md`; SDK2.1.1, device pending.
