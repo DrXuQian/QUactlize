@@ -255,12 +255,30 @@ layout, not a per-thread reinterpret-cast. Inspect native lowering before
 accepting that exchange. Evidence: GDN `docs/PPU_GDN_V16_ACU_20260924.md`;
 V32/8warp ownership is host-proved only, not implemented or timed.
 
-When BC elimination is required to add no work (this user's GDN experiment),
-restrict it to compile-time shared layout plus supported native matrix loads,
+When BC elimination is explicitly required to add no work,
+restrict that experiment to compile-time shared layout plus supported native matrix loads,
 including AIU.swzl/ld.swzl. No runtime unswizzle, lane exchange, extra copy,
 barrier or rearrangement kernel may be disguised as a free layout fix.
 Constexpr CuTe coordinates can still lower to dynamic address instructions;
 verify actual native lowering. Register-produced intermediates need a separate
 writer/reader proof. If the primitive cannot express the required permutation,
-report the boundary instead of relaxing the constraint. Compare BC fixes
-within the same warp geometry; more warps are a separate experiment.
+report the boundary instead of relaxing the constraint. Do not elevate a
+design suggestion into a hard gate: this GDN user later clarified that added
+instructions are acceptable when the complete same-correctness ACU call is
+faster. Keep instruction/BC counts as explanations, not performance verdicts.
+Compare BC fixes within the same warp geometry; more warps are separate.
+
+For register-produced, non-published B intermediates, direct placement in
+consumer orientation can replace a transposed matrix load without adding a
+transpose operation. GDN residual/scaled-V are eligible; H snapshots also
+have a vector global-publication consumer and cannot be changed by the same
+argument. Prove BOTH consumers for externally published intermediates.
+SDK2.1.1 local compilation of a wide32x64 B-oriented cube added111 static sites
+and2registers; native16x16 microcubes plus a precomputed lane base retained
+242regs/zero spill and reduced recurring body sites899/905->897/903, despite
+whole-body sites2092->2093. Static totals alone miss setup versus recurring
+cost. These are compile facts, NOT measured performance/BC elimination.
+Evidence: GDN-QSA-sm80 `docs/PPU_GDN_RESIDUAL_B_LAYOUT.md`; native C/B traits,
+actual actlize reader simulation, unchanged global AIU planes. The bank model
+must state bank width and request phases; do not equate modeled conflict-free
+addresses with a measured whole-kernel ACU bank-conflict counter of zero.
