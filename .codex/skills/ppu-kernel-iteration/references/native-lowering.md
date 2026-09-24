@@ -348,3 +348,17 @@ the pinned b16 AIU true/false wrappers share the same bulk opcode and differ
 in coordinate argument ordering; the flag alone does not prove a physically
 transposed destination. Evidence: GDN
 `docs/PPU_GDN_RESIDUAL_BC_STATIC_20260924.md`, host-only l026; no kernel edits.
+
+Combining a proved layout with a new warp geometry still requires a new
+producer proof: reuse the physical microcubes/reader, derive the producer
+base from current owner coordinates rather than copying the old warp-index
+shortcut. GDN's eight-warp R/scaled-V combination checks both planes, all
+tails/slices/warps and fixed writer/reader denominators; the stale four-warp
+base is a constructive wrong-address/OOB negative. SDK2.1.1 local compilation
+kept math/copies/barriers and all28 old native bodies unchanged, replaced8
+transposed load sites, and naturally allocated124 rather than162 registers
+without a cap/spill. That compile fact does not imply more achieved occupancy
+at the same underfilled grid or a latency win. The new capture must compare
+the SAME eight-warp geometry, with scalar residual retained only as the
+numeric anchor; otherwise layout and occupancy gains are confounded.
+Evidence: GDN `docs/PPU_GDN_RESIDUAL_WARPS8_B_LAYOUT.md`; device pending.
