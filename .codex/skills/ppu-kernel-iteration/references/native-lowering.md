@@ -68,6 +68,21 @@ upstream PPU optimization. Evidence and four-cell compile probe:
 GDN-QSA-sm80 `docs/PPU_WY_FLA_REWRITE.md`,
 `dev/ppu/l015_swzl_address_class_compile.cu` (compile attribution only).
 
+The subsequent same-binary GDN device A/B validates the native pair's benefit,
+not universal SWZL superiority: at S2048/Hk16/Hv32/D128/C64, g=-1.0,
+PPU-ZW8101.700 GHz, state/output executed instructions fell45.0%/46.1%
+and profiled times fell17.0%/27.5%. MMA counts, main traffic and active warps
+were essentially unchanged. Many descriptor `v.mov.v2s` remain. Barrier
+instruction counts stayed fixed but absolute sync-stall counters increased
+while commit-dependency waiting decreased. After removing address work,
+recheck arrival/wait/overlap behavior; fewer instructions do not imply an
+equal latency reduction or permission to remove a required barrier. Treat
+single-issuer arrival imbalance as a hypothesis until localized, and keep
+stall-per-issue ratios separate from wall-time shares. The new dominant gap
+was the unchanged prepare stage, not the stage just optimized. Evidence:
+GDN-QSA-sm80 `docs/PPU_WY_AIU_ACU_20260924.md` (capture tool banners and scope
+recorded there; local compile SDK identity is not the box compiler identity).
+
 ## Reference implementations should guide structure, not only tile sizes
 
 When Triton is faster, compare its **selected/generated** kernel with ours:
@@ -85,7 +100,8 @@ separate implementation is proved. Fusion is not intrinsically faster: a
 large fused CTA may force unlike stages to share an unfavorable resource
 budget or materialize intermediates inefficiently.
 
-Observed GDN example (SDK2.1.1, PPU0010, B1/S2048/Hk16/Hv32/D128/C64):
+Pre-AIU GDN example (local SDK2.1.1, PPU0010, B1/S2048/Hk16/Hv32/D128/C64;
+device capture20260922):
 WY and FLA state/output had equal BF16 MMA counts, but WY executed about
 2.17x/2.35x as many native instructions. WY used SWZL loads with scalar
 descriptors; FLA used NCOM lane-address loads. The pinned actlize header
