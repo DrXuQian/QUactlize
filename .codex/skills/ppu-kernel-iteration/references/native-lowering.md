@@ -297,3 +297,18 @@ layout. Retain the counterfactual and change the next experimental axis.
 Extra wait opcodes do not prove exact cancellation of saved conflicts.
 Evidence: GDN `docs/PPU_GDN_RESIDUAL_B_LAYOUT_ACU_20260924.md`; no routing
 promotion,8-warp/original-tile follow-up remains unimplemented.
+
+That follow-up's local SDK2.1.1 eight-warp implementation makes the two traffic
+directions explicit: V32/grid128 keeps28KiB global-to-shared input perCTA/chunk,
+but shared matrix reads224->288 (+28.57%) because H/residual/scaled-V register
+reuse is split across warps. Native40->20 MMA sites times4->8warps preserve
+useful work; global staging remaining112MiB is NOT all shared traffic unchanged.
+Registers242->162/thread,0stack,shared45568B are compile facts, not a speedup.
+Do not force a128-register cutoff without checking the live grid: on the
+captured131072-register/CU target,162x256 permits roughly3 register-limited
+CTAs while grid128/72CU supplies only1.78 on average. A fourth slot at128 does
+not lift the grid ceiling; larger grids or another bottleneck may change this.
+Never trade into spill merely to hit that number. Validate the real owner map
+AND vector publishers when doubling threads; the latter cannot retain the old
+iteration stride. Evidence: GDN `docs/PPU_GDN_RESIDUAL_WARPS8.md`; device
+RAW-BIT/traffic/occupancy/latency remain separate, initially NOT_RUN.
