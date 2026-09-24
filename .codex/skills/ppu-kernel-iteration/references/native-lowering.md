@@ -100,6 +100,22 @@ separate implementation is proved. Fusion is not intrinsically faster: a
 large fused CTA may force unlike stages to share an unfavorable resource
 budget or materialize intermediates inefficiently.
 
+The next GDN split-prepare experiment (same S2048 scope, clean c2bdb5c,
+PPU-ZW8101.700 GHz, g=-1, ACU all-kernel sums) is a concrete counterexample
+to minimizing launches or total bytes in isolation. Prefix/solve/WU used
+independent resource budgets; vector publication removed the measured W/U
+KVD-store amplification512->32 MiB. But total prepare L2 stores increased
+32.25->40.25 MiB and DRAM reads24.27->40.91 MiB. Complete prepare still fell
+136.34->101.57 us; whole-call kernel sum304.99->269.31 us. Keep hierarchy
+units separate and include all split children/intermediates. The combined
+gain does not isolate publication from resource separation. State became
+the largest remaining excess, despite equal MMA, traffic and active warps
+versus FLA; its lower barrier count coexisted with more waiting. Next checks
+are generated operand/prefetch lifetimes and W/U conditioning roundtrips,
+not a blanket fewer-barriers or higher-occupancy rule. FLA still wins223.58
+vs269.31 us; no default promotion or weak-gate speed is established. Evidence:
+GDN-QSA-sm80 `docs/PPU_WY_SPLIT_ACU_20260924.md`.
+
 Pre-AIU GDN example (local SDK2.1.1, PPU0010, B1/S2048/Hk16/Hv32/D128/C64;
 device capture20260922):
 WY and FLA state/output had equal BF16 MMA counts, but WY executed about
