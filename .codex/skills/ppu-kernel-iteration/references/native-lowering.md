@@ -331,3 +331,20 @@ to changed state source. Evidence: GDN
 `docs/PPU_GDN_RESIDUAL_WARPS8_ACU_20260924.md`. Next layout test must use the
 eight-warp control and re-prove paired maps; old four-warp BC reduction is
 not admission of their combination. Default routing remains unchanged.
+
+Static BC attribution has a further boundary: native fragment/byte maps are
+not the native memory service phases. GDN eight-warps already uses
+`ldmatrix.swzl.trans`; its extra262144 trans loads are H/R/scaled-V reuse
+split across warps, not extra K-transpose. Removing trans on unchanged bytes
+fails3840/4096 H and1920/2048 R/scaled tags. R/scaled can instead be stored
+directly in B orientation; H has a second canonical vector-publication
+consumer, and K is used in both orientations. Prove all consumers.
+The empirical account4*trans+3*scalar-BF16-reads fits six captured arms,
+but a32x4B word-bank model gives identical old/B-layout scalar-store signatures
+while measured writeBC differs1048576. Exact aggregate fits are not independent
+per-PC bank proof; label inferred coefficients, broadcasts/subword rules and
+unknown TSM grouping explicitly. Also inspect a transfer atom's `Trans` flag:
+the pinned b16 AIU true/false wrappers share the same bulk opcode and differ
+in coordinate argument ordering; the flag alone does not prove a physically
+transposed destination. Evidence: GDN
+`docs/PPU_GDN_RESIDUAL_BC_STATIC_20260924.md`, host-only l026; no kernel edits.
