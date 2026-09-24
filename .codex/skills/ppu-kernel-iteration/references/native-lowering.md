@@ -282,3 +282,18 @@ Evidence: GDN-QSA-sm80 `docs/PPU_GDN_RESIDUAL_B_LAYOUT.md`; native C/B traits,
 actual actlize reader simulation, unchanged global AIU planes. The bank model
 must state bank width and request phases; do not equate modeled conflict-free
 addresses with a measured whole-kernel ACU bank-conflict counter of zero.
+
+The B-layout device follow-up (GDN3c7da09, same S2048/g=-1/PPU-ZW8101.700GHz,
+site ACU) reduced BC6.930432M->5.357568M (-22.70%) at unchanged useful MMA,
+shared-load/store counts and112MiB KVD-to-TSM bytes. The intended131072
+transposed loads became non-transposed; no stale/unused-branch explanation.
+Yet state130.484->130.334us and all-kernel230.678->232.220us show no gain;
+unmodified output accounts for most total-time variation. Eligible warps
+stay0.25 in the same WE metric; native dynamic instructions fall only0.213%.
+Memory-dependency ratios fell, but do not turn them into wall-time savings.
+A bank-layout improvement can be real without shortening the critical path.
+Do not infer all residual BC is harmless, or force promotion from a cleaner
+layout. Retain the counterfactual and change the next experimental axis.
+Extra wait opcodes do not prove exact cancellation of saved conflicts.
+Evidence: GDN `docs/PPU_GDN_RESIDUAL_B_LAYOUT_ACU_20260924.md`; no routing
+promotion,8-warp/original-tile follow-up remains unimplemented.
