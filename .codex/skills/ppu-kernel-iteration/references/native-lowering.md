@@ -197,4 +197,45 @@ repair that inter-CTA race; use separate storage or prove a different lifetime.
 Retaining a padded inverse pitch can erase the allocation-size saving even
 when W/U traffic disappears. Fewer total GEMMs may also lengthen the serial
 recurrence. Evidence: GDN-QSA-sm80 `docs/PPU_GDN_RESIDUAL.md`, SDK2.1.1 local
-algebra/layout/native checks only; device numerical/performance NOT_RUN.
+algebra/layout/native checks; the initial handoff had device results NOT_RUN.
+
+The follow-up at source1a843eb (S2048/Hk16/Hv32/D128/C64, g=-1,
+PPU-ZW8101.700GHz, site ACU, SDK2.1.1) passed30 residual device cases and
+reduced full kernel time255.226->230.584us, still behind FLA224.309us. It
+deleted47.644us of W/U but added22.365us to serial state. Compare new state
+with old/reference **W/U+state**, not state alone; no precision or auto-routing
+promotion follows. The1.5x goal remains unmet. Both state grids128x128 yield
+about7.1warps/CU, matching the grid ceiling despite capacity for16; common
+underfill can be an optimization target without explaining the between-library
+gap. Smaller independent V slices duplicate K/P delivery and need a measured
+mapping/resource tradeoff, not simply more launched CTAs.
+
+Before blaming operand delivery, compare the actual precision algorithms:
+this solve used98304 TF32 MMAs versus FLA32768 because it explicitly retained
+three high/residual products. BF16 KKT counts were equal. A single-TF32
+replacement is a separate numerical experiment, not a layout-only change.
+Source `CUTE_UNROLL` also did not eliminate all diagonal register-array loops:
+native `column[k]` delivery used196608 `ivreg` reads plus loop/pipe-flush
+machinery. Inspect that sequence before calling ordinary moves unswizzling;
+most observed solve moves loaded literal operands. BF16 conversion totals
+closed on explicit H/residual/Vnew/scaledV boundaries, so optimize their
+materialization without silently deleting required rounding. Bank-conflict
+totals and wait instruction counts are not latency attribution: the faster
+FLA state had more counted bank conflicts, and its solve more barrier opcodes.
+Evidence: `docs/PPU_GDN_RESIDUAL_ACU_20260924.md`; weak-gate timing and isolated
+register/pipeline changes remain unmeasured.
+
+Before adding explicit shared-to-register double buffering, inspect the old
+native schedule too. SDK2.1.1 already prefetched several GDN residual operand
+tiles: a two-slot source rewrite left UPDATE lookahead unchanged and altered
+KH/PR scheduling without proving longer useful overlap. Registers rose242->244
+with zero stack. Keep such a candidate distinct from next-chunk global
+prefetch and from V-slice geometry; source load-before-MMA order is not a
+performance verdict. An independent V32->V16 compile reduced registers242->98
+and shared45568->35328B, doubling target CTAs128->256 but also duplicating K/P
+delivery. Halved static MMA sites per CTA do not mean halved dynamic work.
+Both require same-math RAW-BIT device admission and full-call profiling.
+Evidence: GDN-QSA-sm80 `docs/PPU_GDN_RESIDUAL_DELIVERY.md` (local compile-only).
+Bank-conflict elimination is a subsequent isolated experiment: bind counters
+to specific shared PCs/bank maps, preserve the paired writer/reader contract,
+and require a latency gain rather than optimizing the aggregate counter alone.
