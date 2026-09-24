@@ -127,7 +127,29 @@ not an async-copy wait. Source guards and native branch structure are separate
 evidence; do not assert infeasible exit edges without proving predicates.
 Earlier issue/native overlap windows remain compile facts, not measured hidden
 latency; scoreboard/pipe-flush waits can still matter. Evidence and negative
-controls: GDN-QSA-sm80 `docs/PPU_WY_STATE_PIPELINE.md` (device verdict pending).
+controls: GDN-QSA-sm80 `docs/PPU_WY_STATE_PIPELINE.md` (local proof; measured
+follow-up below).
+
+That candidate's device follow-up (clean8eaaa56, same S2048/GVA1:2/C64,
+g=-1/1.700GHz, one full ACU capture per arm) validates a scheduling gain:
+state122.196->105.335us, whole-call kernel sum271.483->252.191us. State MMA,
+AIU counts, main traffic and occupancy limits stay fixed; instructions fall
+only0.91%, while sync/commit-stall averages fall48.55%/55.53%. TSM dependency
+increases10%; these counters are not disjoint wall-time shares. New prefetch
+ordering and one fewer barrier were combined, not independently timed.
+Unchanged phases contribute another2.431us of observed variation, which must
+not be credited to the state source change. Actual box resources are232regs
+and1956static instructions, versus local230/1880: bind each to its compiler.
+FLA still wins224.775us; preparation is now the largest combined excess.
+Evidence: `docs/PPU_WY_STATE_PIPELINE_ACU_20260924.md` in GDN-QSA-sm80.
+
+Using CUTLASS/actlize atoms in hand-written orchestration is not equivalent
+to using a mature tuned collective. A Triton reference also emits native
+MMA. Compare delivered work and materialization, not implementation language:
+this W/U pair has equal262144 MMAs but1.716x native instructions on our side,
+including avoidable-looking shared conditioning roundtrips. That is a target
+for an independent numerical/codegen experiment, not a proved free removal
+or an automatic promise of1.5x speed merely by switching to C++.
 
 Pre-AIU GDN example (local SDK2.1.1, PPU0010, B1/S2048/Hk16/Hv32/D128/C64;
 device capture20260922):
