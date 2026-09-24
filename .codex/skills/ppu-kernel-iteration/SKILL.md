@@ -29,7 +29,8 @@ that repeats benchmarks is not an optimizer.
 - Read [native lowering and execution structure](references/native-lowering.md)
   when porting PTX or when a reference has equal math work but much less
   instruction/operand-delivery overhead. Successful compatibility-mode
-  compilation is not evidence of efficient native PPU execution.
+  compilation is not evidence of efficient native PPU execution. Read its
+  AIU/SWZL producer-consumer contract before changing matrix delivery layouts.
 
 ## Select the right supporting skill
 

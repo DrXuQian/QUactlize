@@ -34,6 +34,40 @@ Generic signed layout arithmetic, scalar publication, repeated conversions
 and a poor register layout also expand code. Attribute the extra sequence to
 the actual source/IR/native lowering before naming its cause.
 
+## Keep AIU SWZL and matrix-load layout contracts paired
+
+For matrix tiles written by **AIU.swzl, use the matching ld.swzl consumer**.
+Treat the producer, physical shared layout and consumer as one contract:
+element width, cube geometry, swizzle, cube/stage byte pitch, coordinates,
+transpose and lane/register ownership. Never change just one endpoint or
+replace ld.swzl with a plain/NCOM load on the same bytes without proving a
+separate complete delivery path. Matching producer/load/MMA traits should
+not need a software unswizzle between load and MMA.
+
+For eligible regular global input tiles in a PPU port, start with this native
+pair. Retaining NVIDIA-style per-thread cp.async plus software swizzled
+destination arithmetic is an explicit alternative, not evidence that the
+native AIU pair is being used. Record why it is needed and measure the full
+delivery cost. Values produced in registers are different: AIU global loads
+do not replace their shared stores for free. Prove their producer/consumer
+layout separately, or preserve them in registers when possible.
+
+Do not confuse shared-layout placement, address operand conversion and
+post-load fragment rearrangement. A SDK2.1.1 PPU0010 compile control kept
+ld.swzl fixed: fixed cube base produced zero `v.mov.v2s`, while a warp-varying
+base produced one move whose SGPR destination was the load address. Both
+NCOM controls had zero such moves. This proves that move prepares an address,
+not that SWZL universally needs it, that all `v.mov` are layout repair, or
+that NCOM wins the complete kernel. Cube/descriptor selection still costs
+instructions even when AIU supplies the right physical layout.
+
+GDN example provenance: upstream aa04271 used NVIDIA cp.async/LDSM. Our PPU
+port1af3d5c introduced the software AIU-swizzled shared layout/SWZL adapter;
+the later WY path inherited it. It was our backend delivery choice, not an
+upstream PPU optimization. Evidence and four-cell compile probe:
+GDN-QSA-sm80 `docs/PPU_WY_FLA_REWRITE.md`,
+`dev/ppu/l015_swzl_address_class_compile.cu` (compile attribution only).
+
 ## Reference implementations should guide structure, not only tile sizes
 
 When Triton is faster, compare its **selected/generated** kernel with ours:
