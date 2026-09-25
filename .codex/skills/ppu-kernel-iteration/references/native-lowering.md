@@ -240,6 +240,18 @@ FLA state had more counted bank conflicts, and its solve more barrier opcodes.
 Evidence: `docs/PPU_GDN_RESIDUAL_ACU_20260924.md`; weak-gate timing and isolated
 register/pipeline changes remain unmeasured.
 
+For this SDK2.1.1 case, explicit row/term template indices did remove the
+indirect delivery without changing precision: diagonal sites612->405,
+ivreg sites12->0 and pipe-flush sites42->0; no diagonal backedge remains.
+Coefficient loads combine into8scalar+8two-word+24four-word operations,
+still120FP32words and120ordered RTTE FMAs. Whole solve1678->1472sites,
+84regs/zero stack, same three-product TF32 scheme. This shows a rolled
+register loop need not be fixed by a larger straight-line footprint, and
+fewer load opcodes need not mean missing data. Verify actual native indexing,
+word coverage, FMA order/contraction and resources; the retained old lowering
+under the new symbol must fail the gate. Performance remains unmeasured at
+this handoff. Evidence: GDN `docs/PPU_GDN_SOLVE_STATIC_INDEX.md`.
+
 Before adding explicit shared-to-register double buffering, inspect the old
 native schedule too. SDK2.1.1 already prefetched several GDN residual operand
 tiles: a two-slot source rewrite left UPDATE lookahead unchanged and altered
