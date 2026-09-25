@@ -343,7 +343,14 @@ The empirical account4*trans+3*scalar-BF16-reads fits six captured arms,
 but a32x4B word-bank model gives identical old/B-layout scalar-store signatures
 while measured writeBC differs1048576. Exact aggregate fits are not independent
 per-PC bank proof; label inferred coefficients, broadcasts/subword rules and
-unknown TSM grouping explicitly. Also inspect a transfer atom's `Trans` flag:
+unknown TSM grouping explicitly. The later paired-Vnew layout is a
+counterexample to the opcode-only fit:
+state read BC rises393216 with unchanged transpose/scalar-load counts,
+while the paired output's read BC falls to zero. Its16B shared-publication
+reader has different addresses despite equal instruction/byte counts;
+AIU/SWZL matrix-consumer admission does not certify that publisher's bank
+behavior. Evidence: GDN `docs/PPU_GDN_RESIDUAL_WARPS8_HV_LAYOUT_ACU_20260925.md`.
+Also inspect a transfer atom's `Trans` flag:
 the pinned b16 AIU true/false wrappers share the same bulk opcode and differ
 in coordinate argument ordering; the flag alone does not prove a physically
 transposed destination. Evidence: GDN
