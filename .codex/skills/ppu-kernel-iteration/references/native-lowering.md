@@ -143,6 +143,21 @@ and1956static instructions, versus local230/1880: bind each to its compiler.
 FLA still wins224.775us; preparation is now the largest combined excess.
 Evidence: `docs/PPU_WY_STATE_PIPELINE_ACU_20260924.md` in GDN-QSA-sm80.
 
+PPU global metadata lookahead can expose the other queue's wait. On the later
+GDN HV control (source6a102fd, sameS2048/g=-1/1.700GHz, siteACU), native gate/
+beta loads genuinely precede8UPDATE MMAs and their `vldcnt` memory samples
+fall1007->38, yet AIU `commit_group(0)` samples rise196->625 and INPUTS_READY
+sync samples3735->4094. Old metadata work sat between current AIU issue and
+completion; moving it changes that overlap window too. Added generic future-
+address/validity work raises native dynamic instructions9.38%; state89.882->
+91.944us and all-kernel187.008->189.575us show no gain. Registers122->120 do
+not lift the fixed grid ceiling (activewarps14.16->14.15); BC/math/staging stay
+fixed. Check both vector-load and AIU completion queues after such a move;
+do not equate fewer global-wait samples with saved wall time or infer an
+exact transfer between sample buckets. This is one implementation/capture,
+not a universal rejection of prefetch. Evidence/negative controls:
+GDN `docs/PPU_GDN_RESIDUAL_METADATA_ACU_20260925.md`; defaults unchanged.
+
 Using CUTLASS/actlize atoms in hand-written orchestration is not equivalent
 to using a mature tuned collective. A Triton reference also emits native
 MMA. Compare delivered work and materialization, not implementation language:
