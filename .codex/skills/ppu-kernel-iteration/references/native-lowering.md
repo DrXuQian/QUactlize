@@ -426,3 +426,22 @@ For a source gate that normalizes candidate names back to a control, first
 require the actual candidate binding: otherwise an already-old downstream
 call can pass the normalization despite the new private format. Evidence:
 GDN `docs/PPU_GDN_RESIDUAL_WARPS8_H_LAYOUT.md`; no automatic route promotion.
+
+The paired-H device follow-up (GDN14c7268,same S2048/g=-1/1.700GHz,
+one full site-ACU capture/arm) improves state104.952->95.412us and
+output45.708->44.084us; all-kernel205.732->194.466us,FLA224.350us
+(1.154x,not1.5x). BC falls22.28%/38.10%,but this is not BC-only evidence:
+state KVD/L2 store transactions fall98->66MiB while logical and L2-to-LLC
+stores remain50MiB. A16B vector store does not prove cross-lane coalescing.
+The production publisher's64B-at256B H rows become contiguous256B rows;
+128B footprint accounting matches the32MiB transaction difference, but
+label that service-granularity inference rather than per-PC measurement.
+Do not translate it into saved compulsory DRAM bytes. Both changed kernels
+and the extra2048 output AIU instructions are included; staging112/80MiB
+and useful MMA/rounding are fixed. Actual warps stay14.1/37 despite fewer
+registers. State TFU-WAR decreases while output TFU-WAR/sync increase;
+the latter does not cancel the full-call gain. Keep memory/layout/scheduling
+effects coupled until isolated. Analysis filters must select exact state
+AND output symbols when both share the candidate namespace; a former
+state-only substring can silently mix their PC samples. Evidence: GDN
+`docs/PPU_GDN_RESIDUAL_WARPS8_H_LAYOUT_ACU_20260925.md`; routing unchanged.
