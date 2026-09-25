@@ -419,7 +419,14 @@ the entire C-writer/native-B-reader/16B-publisher/output-reader chain with
 distinct tags and stale-publisher/old-output negatives. Equal allocation and
 logical bytes still do not imply equal copies:128x64->64x128 raises output
 H AIU cubes1->2 because of the native128B cube width. Price that extra copy
-instruction and measure both changed kernels, not state alone. SDK2.1.1 local
+instruction and measure both changed kernels, not state alone. This is a
+cube-geometry cost, not a universal transpose tax: a paired64x64 Vnew swap
+still occupies one AIU cube. SDK2.1.1 native compilation removed its eight
+output transpose-load sites without extra AIU instructions or staging bytes.
+Check the actual cube tiling and linked native body before assuming either
+extra traffic or a free orientation change; this does not establish speed.
+Evidence: GDN `docs/PPU_GDN_RESIDUAL_WARPS8_HV_LAYOUT.md`.
+SDK2.1.1 local
 codegen kept vector publication, zero spill and30 old bodies intact while
 reducing state/output registers124/94->122/78; performance remains pending.
 For a source gate that normalizes candidate names back to a control, first
