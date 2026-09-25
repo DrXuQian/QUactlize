@@ -394,4 +394,18 @@ not only array names; classify both A/B load orientations and fixed per-phase
 MMA denominators. An old-native-body replacement with unchanged useful work
 must fail specifically for unchanged lookahead. Do not retain inert asm or
 deeper arrays as an optimization. Evidence: GDN
-`docs/PPU_GDN_RESIDUAL_WARPS8_OPERANDS.md`; SDK2.1.1, device pending.
+`docs/PPU_GDN_RESIDUAL_WARPS8_OPERANDS.md`; SDK2.1.1, initially device pending.
+
+The UPDATE-only device follow-up (GDN0755b93, same S2048/g=-1/1.700GHz,
+one site-ACU capture/arm) confirms the changed native lead/reuse but no gain:
+state104.528->104.361us, all-kernel204.835->206.176us, FLA224.985us.
+Unchanged phases contribute+1.507us variation; do not call it source regression.
+124regs/zero stack, BC5.882M, traffic and useful math stay fixed. Targeted
+matrix-load compute samples444->379 coexist with whole-kernel3565->3620,
+TFU-WAR ratio.39->.40 and eligible warps.35->.34. Samples are not cycles;
+removing immediate input reuse is not proof of complete hardware retirement
+or kernel-wide WAR removal. Bind every phase's actual native load PCs and
+fixed denominator; do not extrapolate a local scheduling improvement into
+latency savings. Reject this as an effective speed optimization without
+declaring the untouched KH/PR/H/K paths exhausted. Evidence: GDN
+`docs/PPU_GDN_RESIDUAL_WARPS8_OPERANDS_ACU_20260925.md`; no route promotion.
