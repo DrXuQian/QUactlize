@@ -409,3 +409,20 @@ fixed denominator; do not extrapolate a local scheduling improvement into
 latency savings. Reject this as an effective speed optimization without
 declaring the untouched KH/PR/H/K paths exhausted. Evidence: GDN
 `docs/PPU_GDN_RESIDUAL_WARPS8_OPERANDS_ACU_20260925.md`; no route promotion.
+
+A register-produced tile with a global downstream consumer cannot inherit an
+internal-only B-layout fix unchanged. GDN H needs both KH and global snapshot
+publication; transposing only shared H breaks contiguous canonical stores.
+One bounded alternative changes the PRIVATE snapshot to[V,K] and pairs the
+output AIU reader, preserving public initial/final state and rounding. Prove
+the entire C-writer/native-B-reader/16B-publisher/output-reader chain with
+distinct tags and stale-publisher/old-output negatives. Equal allocation and
+logical bytes still do not imply equal copies:128x64->64x128 raises output
+H AIU cubes1->2 because of the native128B cube width. Price that extra copy
+instruction and measure both changed kernels, not state alone. SDK2.1.1 local
+codegen kept vector publication, zero spill and30 old bodies intact while
+reducing state/output registers124/94->122/78; performance remains pending.
+For a source gate that normalizes candidate names back to a control, first
+require the actual candidate binding: otherwise an already-old downstream
+call can pass the normalization despite the new private format. Evidence:
+GDN `docs/PPU_GDN_RESIDUAL_WARPS8_H_LAYOUT.md`; no automatic route promotion.
