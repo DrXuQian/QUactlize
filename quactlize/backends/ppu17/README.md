@@ -98,6 +98,14 @@ production selector or expose GPTQ through the GGUF-only public API.
 
 ## Build and local validation
 
+An isolated [GGUF Q4_K cooperative experiment](../../../tests/ppu17/gguf/README.md)
+now extends the Machete-style RS pipeline to real group32 affine metadata.
+FP16/BF16 SF numerics and an initial H800 screen have passed; see
+[scope and results](../../../docs/ppu17-gguf-cooperative.md). Its private code
+packing and diagnostic entrypoint do not alter canonical K-pack or the q17 v1
+contract. FQ packed metadata, other formats and grouped integration remain
+separate gates.
+
 Use an external build directory, not the old `build.sh`/actlize include graph:
 
 ```bash
