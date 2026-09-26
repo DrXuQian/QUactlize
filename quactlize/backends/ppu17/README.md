@@ -118,3 +118,49 @@ This backend returns compact grouped results. MoE routing, gated activations,
 Split-K, persistent grouped scheduling, full-dequant/library alternatives and
 automatic production policy are not silently supplied by the new API. They
 remain separate integration/admission work; the old implementations are intact.
+
+## Physical Hopper checks and timing
+
+`check_device.py` runs fresh one-launch numerical processes on a specified GPU
+UUID. `--suite coverage` has 300 cases; `--suite extended` has 1,020, adding
+M1–8, tile boundaries, N tails, K1024 phase wrap, ragged/empty experts and typed
+I/O. A competing GPU job stops the campaign without killing that job. Resume
+with `--resume-from OLD/summary.json` into a **fresh** output directory: the
+application, library, UUID, case inventory and retained log hashes must match.
+
+```bash
+python3 quactlize/backends/ppu17/check_device.py \
+  --bundle "$BUNDLE" --application "$VALIDATION/single-launch" \
+  --device 0 --expected-uuid "$GPU_UUID" --suite extended \
+  --output "$RESULTS/numerics"
+```
+
+For physical-device timing, `check.py` also builds a separate `benchmark`
+application. Do **not** run this application in the one-launch simulator.
+Its controller requires no other GPU jobs before starting and verifies the
+benchmark's GPU PID before admitting kernel execution. All reported GPU
+processes, clocks, temperature and power are sampled during the run. An
+observed competing job or missing telemetry invalidates timing and stops only
+our child process. The 100-ms process monitor is not a driver reservation:
+schedule no other GPU jobs until this runner exits.
+
+```bash
+python3 quactlize/backends/ppu17/run_benchmark.py \
+  --bundle "$BUNDLE" --application "$VALIDATION/benchmark" \
+  --device 0 --expected-uuid "$GPU_UUID" --qtype 12 --compute 1 \
+  --cache rotating --suite baseline --output "$RESULTS/hopper-baseline"
+```
+
+This bounded baseline uses six configs, FQ/SF, dense M1/M128 and grouped rows
+`[0,1,8,65]`, N512/K2048. It checks complete CPU dots and output guards before
+timing each weight copy. Prepared descriptors, allocation, transfers, initial
+graph upload and three warmup graphs are excluded. Eleven device-event samples
+measure graph-averaged kernel latency. Rotating weights cover more than twice
+the **queried** device L2 capacity, counting only nonempty experts; warm-cache
+timing is labeled separately. SF expansion is **not included**, so these
+numbers cannot alone choose FQ vs SF or claim end-to-end speed. There is no
+production policy update or PPU1.7 performance admission from this runner.
+
+Keep profiler/sanitizer runs separate from timing. Preserve raw logs and the
+summary's binary hashes, case identity and telemetry. The first H800 numerical
+checkpoint and outstanding gates are in `docs/ppu17-integration.md`.

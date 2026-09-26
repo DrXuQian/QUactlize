@@ -95,6 +95,9 @@ def main():
     run(command + [str(ROOT / "tests/ppu17/single_launch.cu"), "-L" + str(bundle),
                    "-lquactlize_ppu17", "-Xlinker=-rpath=" + str(bundle),
                    "-o", str(out / "single-launch")], "application-build")
+    run(command + [str(ROOT / "tests/ppu17/benchmark.cu"), "-L" + str(bundle),
+                   "-lquactlize_ppu17", "-Xlinker=-rpath=" + str(bundle),
+                   "-o", str(out / "benchmark")], "benchmark-build")
     for q in QTYPES:
         for dtype in (0, 1):
             run([str(out / "single-launch"), "--cpu-only", "--qtype", str(q), "--compute", str(dtype),
@@ -149,6 +152,9 @@ def main():
     result = {"status": "PASS", "scope": "HOST_AND_CUDA_SM90A_CODEGEN_ONLY", "bundle": str(bundle),
               "library_sha256": manifest["library_sha256"], "specializations": rows,
               "host_contract": contract_log.splitlines()[-1], "single_launch_application": str(out / "single-launch"),
+              "application_sha256": sha(out / "single-launch"),
+              "benchmark_application": str(out / "benchmark"), "benchmark_sha256": sha(out / "benchmark"),
+              "test_sources": {str(p.relative_to(ROOT)): sha(p) for p in sorted((ROOT / "tests/ppu17").glob("*.cu*"))},
               "target_negatives": 2, "codegen_negatives": 18, "exports": names,
               "device_launches": 0, "native_ppu17": "NOT_RUN", "device_numerics": "NOT_RUN", "performance": "NOT_RUN"}
     (out / "validation.json").write_text(json.dumps(result, indent=2) + "\n")
