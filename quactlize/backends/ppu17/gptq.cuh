@@ -2,6 +2,7 @@
 
 #include "target.cuh"
 #include "mixed_input_policy.cuh"
+#include "marlin_scheduler.cuh"
 #include "cute/tensor.hpp"
 #include "cutlass/cutlass.h"
 #include "cutlass/gemm/collective/collective_builder.hpp"
@@ -17,7 +18,8 @@ namespace quactlize::ppu17 {
 // K-contiguous within each N column; the offline pack is lossless. There is
 // no additive-zero plane or metadata expansion. This header does not change
 // the actlize path, canonical K-pack bytes, or the GGUF-only q17 v1 ABI.
-template<int TileN, int TileM, int TileK = 64> struct GptqScaleOnly {
+template<int TileN, int TileM, int TileK = 64,
+         class Scheduler = cutlass::gemm::StreamKScheduler, int Stages = 0> struct GptqScaleOnly {
   using T = cutlass::half_t;
   using Tile = cute::Shape<cute::Int<TileN>, cute::Int<TileM>, cute::Int<TileK>>;
   using Cluster = cute::Shape<cute::_1, cute::_1, cute::_1>;
@@ -35,10 +37,12 @@ template<int TileN, int TileM, int TileK = 64> struct GptqScaleOnly {
       cutlass::arch::Sm90, cutlass::arch::OpClassTensorOp,
       cute::tuple<cutlass::int4b_t, T>, cutlass::layout::RowMajor, 32,
       T, cutlass::layout::ColumnMajor, 8, float, Tile, Cluster,
-      cutlass::gemm::collective::StageCountAutoCarveout<sizeof(typename Epilogue::SharedStorage)>,
+      cute::conditional_t<Stages == 0,
+          cutlass::gemm::collective::StageCountAutoCarveout<sizeof(typename Epilogue::SharedStorage)>,
+          cutlass::gemm::collective::StageCount<Stages>>,
       cutlass::gemm::KernelTmaWarpSpecializedCooperativeMixedInput>::CollectiveOp;
   using Kernel = cutlass::gemm::kernel::GemmUniversal<
-      cute::Shape<int,int,int,int>, Mainloop, Epilogue, cutlass::gemm::StreamKScheduler>;
+      cute::Shape<int,int,int,int>, Mainloop, Epilogue, Scheduler>;
   using Gemm = cutlass::gemm::device::GemmUniversalAdapter<Kernel>;
 };
 

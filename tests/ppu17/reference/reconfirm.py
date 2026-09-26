@@ -28,6 +28,10 @@ def main():
         for arm in ('machete','marlin','quactlize'):
             leaders=sorted([x for x in rows if x['arm']==arm],key=lambda x:x['median_us'])[:2]
             configs.extend(f"{arm}:{x['config']}" for x in leaders)
+            for leader in leaders:
+                if 'same_math_parent' in leader:
+                    control=f"{arm}:{leader['same_math_parent']}"
+                    if control not in configs: configs.append(control)
         points.append((case['point'],configs))
     receipt={'scope':'PAIRED_HOPPER_GPTQ_RECONFIRMATION','contract':prior['contract'],
              'rounds':a.rounds,'points':points,'results':[]}

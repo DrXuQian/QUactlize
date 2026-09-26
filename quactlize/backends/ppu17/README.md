@@ -30,7 +30,9 @@ mixed-input collectives require scale groups that do not match GGUF's 16/32
 groups and cannot consume the canonical planes without an adapted producer.
 
 Only C/POD types cross the backend boundary. A translation unit must never
-include both the old actlize and this CUTLASS tree. Readers use portable format
+include both the old actlize device/CUTLASS tree and this CUTLASS tree. A shared
+integer-only scheduler core is permitted without adding legacy include roots.
+Readers use portable format
 traits and plane maps, not headers with optional legacy AIU re-exports. Host
 contract tests check metadata decoding against the existing packed-unit owner.
 Existing source hashes and cached dispatcher identities remain unchanged.
@@ -67,8 +69,17 @@ q17 v1 ABI and existing dispatcher do not yet expose GPTQ.
 See [GPTQ comparison](../../../tests/ppu17/reference/README.md). Native layouts
 may differ, but original codes, FP16 scale bits, groups and rounding may not.
 The legacy dense/grouped Marlin scheduler and standalone Marlin collective
-already exist in Quactlize. Their SM90 warpgroup/fixup adaptation is pending,
-not a missing algorithm to replace with a new naive kernel.
+already exist in Quactlize. `marlin_scheduler.cuh` now adapts the shared integer
+decomposition and reverse peers to two SM90 consumer warpgroups with FP32
+fixup. It is restricted to Cluster1/one CTA per SM and group-aligned splits.
+The grouped and standalone-mainloop ports remain incomplete.
+
+`gptq_prepacked.cuh` is an optional experimental provider reusing pinned
+Machete packing/reader/conversion on PPU CUTLASS3.6. This is a different
+private GPTQ physical layout, not a change to canonical GGUF bytes. It can
+use Stream-K or the adapted Marlin scheduler. The comparison harness is the
+only caller so far; production routing and the public GGUF-only ABI are
+unchanged. See [measured scope and open gaps](../../../docs/ppu17-gptq-baseline.md).
 
 ## Build and local validation
 

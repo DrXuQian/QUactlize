@@ -35,7 +35,13 @@ def main():
         if data['shape']!=[m,n,k] or data['dtype']!=dtype or data['cache']!='rotating':
             raise ValueError('point identity differs')
         authorities.add((receipt['reference_manifest_sha256'],receipt['importer_sha256']))
-        for arm,count in (('machete',9),('marlin',3),('quactlize',6)):
+        counts = data.get('config_counts', {'machete':9, 'marlin':3, 'quactlize':6})
+        if counts not in ({'machete':9, 'marlin':3, 'quactlize':6},
+                          {'machete':9, 'marlin':3, 'quactlize':8},
+                          {'machete':9, 'marlin':3, 'quactlize':9},
+                          {'machete':9, 'marlin':3, 'quactlize':12}):
+            raise ValueError('unknown config inventory')
+        for arm,count in counts.items():
             candidates=[r for r in data['rows'] if r['arm']==arm]
             if len(candidates)!=count or {x['config'] for x in candidates}!=set(range(count)):
                 raise ValueError('configuration denominator differs')

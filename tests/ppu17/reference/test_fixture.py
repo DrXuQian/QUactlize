@@ -55,10 +55,25 @@ class FixtureTests(unittest.TestCase):
 
 def native_pack_check(references):
     ref=Reference(references,'quactlize')
+    prepacked=json.loads((references/'manifest.json').read_text()).get('quactlize_reader')=='prepacked'
     for n,k in ((128,128),(512,512)):
         q,sc=decode_checkpoint(*synthetic_checkpoint(n,k))
         got=np.zeros(n*k//2,np.uint8)
         ref.check(ref.fn['pack'](0,n,k,q.ctypes.data,got.ctypes.data))
+        if prepacked:
+            # Independent scalar MMA lane/register formula, not the C++
+            # packer's CuTe map or the reference library's pack function.
+            nn,kk=np.meshgrid(np.arange(n),np.arange(k))
+            local_n,local_k=nn%128,kk%64
+            thread=(local_n//64)*128+(local_n%64//16)*32+(local_n%8)*4+(local_k%8)//2
+            value=(local_k%2)+(local_n%16//8)*2+(local_k%16//8)*4+(local_k//16)*8
+            offset=8192*(nn//128+(kk//64)*(n//128))+thread*32+(value//8)*8+(value%2)*4+(value%8)//2
+            decoded=(got[offset//2] >> ((offset%2)*4))&15
+            np.testing.assert_array_equal(decoded,q)
+            got[0]^=1
+            if np.array_equal((got[offset//2] >> ((offset%2)*4))&15,q):
+                raise ValueError('corrupt prepacked code was not detected')
+            continue
         flat=np.empty(n*k,np.int16)
         flat[0::2]=got&15;flat[1::2]=got>>4
         signed=np.where(flat>=8,flat-16,flat).reshape(n,k).T
@@ -68,7 +83,7 @@ def native_pack_check(references):
         self_bad=((int(got[0])&15)^8)
         if self_bad==int(q[0,0]):
             raise ValueError('corrupt native pack was not detected')
-    print('PPU17_GPTQ_HOST signed-int4 packing cases=2 PASS',flush=True)
+    print('PPU17_GPTQ_HOST '+('MMA-prepacked' if prepacked else 'signed-int4')+' packing cases=2 PASS',flush=True)
 
 
 def upstream_marlin_check(root,references):

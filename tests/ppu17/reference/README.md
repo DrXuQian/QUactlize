@@ -39,7 +39,18 @@ device headers are unmodified vLLM
 `da5e086dab31d63815acafdac9a9c5893b1c69e2`.
 Quactlize uses PPU CUTLASS3.6.0
 `023e82d03e80b4d5982f664925e15499033df314`.
-The include graphs remain separate.
+The include graphs remain separate. Marlin scheduling reuses only actlize's
+integer-only `MarlinStripeSchedulerCore` at
+`021c69300864e03926108867d318572871a44d35`; its PPU device driver is not imported.
+Initialize that submodule before building. No dependency sources are edited.
+
+`build.py --reader prepacked` selects an additional experimental GPTQ provider:
+the pinned Machete MMA-aligned packing/reader/collective is reused with **PPU
+CUTLASS3.6**, paired with Stream-K or the adapted Marlin scheduler. This is
+upstream implementation reuse, not a new algorithm. It preserves logical codes,
+group128 and scale bits, but has different private bytes from the conventional
+signed-int4 reader. Bundles are not interchangeable. Neither layout changes
+canonical GGUF/K-pack storage or the existing GGUF-only q17 public ABI.
 
 ## Build and host checks
 
@@ -77,11 +88,38 @@ python3 tests/ppu17/reference/report.py \
   --output /workspace/q17-gptq-report
 ```
 
-The six points contain18 configs each: nine pinned Machete heuristic
-schedules, three native Marlin geometries and six initial Quactlize Hopper
-GPTQ configs. A screen is not optimality proof. Reconfirmation retains the
-two measured leaders per arm; it must use a GPTQ screen, never the retired
-GGUF-subset timings.
+The conventional six-point screen contains24 configs/point: nine pinned
+Machete heuristic schedules, three native Marlin geometries, six conventional
+Quactlize Stream-K tiles, two Marlin-scheduled tiles and four stage4/8 variants.
+The optional prepacked screen contains21 configs/point (six Quactlize types
+plus three self-reset prepared-call controls). Self-reset reuses the same
+Marlin device body: initialize locks once in preparation, retain kernel-side
+FP32 fixup/lock reset, and update host params after serial workspace sharing.
+It is not enabled for Stream-K or concurrently shared workspaces.
+A screen is not optimality proof. Reconfirmation retains the two measured
+leaders per arm plus any required same-math control; it must use a GPTQ screen,
+never the retired GGUF-subset timings. Stage-count changes must preserve exact
+output bits with their tile/scheduler control.
+
+Device-free scheduler and layout checks can be compiled with CUDA12.8:
+
+```bash
+nvcc -std=c++17 -O2 --expt-relaxed-constexpr -arch=sm_90a \
+  -I. -I/path/to/pinned-ppu-cutlass/include \
+  tests/ppu17/marlin_scheduler.cu -o /workspace/q17-marlin-host
+/workspace/q17-marlin-host
+
+nvcc -std=c++17 -O2 --expt-relaxed-constexpr -arch=sm_90a \
+  -I. -I/path/to/pinned-ppu-cutlass/include \
+  -Itests/ppu17/reference/shim -I/path/to/pinned-vllm/csrc \
+  tests/ppu17/prepacked_layout.cu -o /workspace/q17-prepacked-host
+/workspace/q17-prepacked-host
+```
+
+The first covers256 work/peer cases and seven invalid inputs. The second checks
+8192 coordinates against an independent scalar WGMMA lane/register formula,
+256 aligned16-byte per-thread vectors and a stale-layout negative. These
+executables do not launch a device kernel or prove PPU1.7 numerical admission.
 
 A complete CPU FP64 dot of FP16 reconstructed weights checks every output,
 guards and nonfinite values before timing. Allocation, packing, preparation,

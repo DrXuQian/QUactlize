@@ -39,6 +39,7 @@ class Reference:
         if sha(library) != row['sha256']:
             raise ValueError('reference library hash mismatch')
         self.library = C.CDLL(str(library), mode=C.RTLD_LOCAL)
+        self.reader = manifest.get('quactlize_reader', 'conventional')
         self.fn = {}
         for name, result, arguments in (
             ('error', C.c_char_p, []), ('contract', C.c_char_p, []), ('config_count', C.c_int, []),
@@ -79,7 +80,8 @@ def check_output(torch, storage, expected, m, n):
     tolerance = .003 if storage.dtype == torch.float16 else .012
     if relative > tolerance or maximum > tolerance * max(1., float(expected.abs().max())):
         raise ValueError(f'CPU typed FP64 dot mismatch relative={relative} max_abs={maximum}')
-    return {'relative_l2': relative, 'max_abs': maximum, 'guards': 'PASS'}
+    return {'relative_l2': relative, 'max_abs': maximum, 'guards': 'PASS',
+            'output_values_sha256': hashlib.sha256(actual.numpy().tobytes()).hexdigest()}
 
 
 def child(args):
@@ -174,25 +176,42 @@ def child(args):
                     for _ in range(extra_warmups):
                         graph.replay()
                     stream.synchronize()
-                    clocks_before=device_clocks(args.device)
-                    samples = []
-                    for _ in range(11):
-                        begin.record(stream)
-                        graph.replay()
-                        end.record(stream)
-                        end.synchronize()
-                        samples.append(begin.elapsed_time(end)*1000/launches)
-                    clocks_after=device_clocks(args.device)
-                    if clocks_before!=clocks_after:
-                        raise ValueError(f'clocks changed inside measurement: {clocks_before} -> {clocks_after}')
+                    clock_attempts = []
+                    for clock_attempt in range(3):
+                        if clock_attempt:
+                            for _ in range(extra_warmups): graph.replay()
+                            stream.synchronize()
+                        clocks_before=device_clocks(args.device)
+                        samples = []
+                        for _ in range(11):
+                            begin.record(stream)
+                            graph.replay()
+                            end.record(stream)
+                            end.synchronize()
+                            samples.append(begin.elapsed_time(end)*1000/launches)
+                        clocks_after=device_clocks(args.device)
+                        clock_attempts.append({'attempt':clock_attempt, 'before':clocks_before,
+                            'after':clocks_after, 'samples_us':samples,
+                            'status':'PASS' if clocks_before==clocks_after else 'CLOCK_CHANGED'})
+                        if clocks_before==clocks_after: break
+                        print('PPU17_REFERENCE_CLOCK_REJECT '+json.dumps({'arm':arm,'config':index,
+                              **clock_attempts[-1]}),flush=True)
+                    else:
+                        raise ValueError('clocks changed in all three bounded measurement attempts')
                     proof.append(check_output(torch, storage, fixture['expected'], args.m, args.n))
                     row = {'arm': arm, 'config': index, 'status': 'PASS', 'correctness': proof,
                            'weight_bytes': weight_bytes, 'weight_copies': copies,
                            'launches_per_graph': launches, 'samples_us': samples,
-                           'median_us': statistics.median(samples), 'warmup_graphs': 4+extra_warmups,
+                           'median_us': statistics.median(samples), 'warmup_graphs': 4+extra_warmups*(clock_attempt+1),
                            'warmup_min_device_ms':250,'clocks_before':clocks_before,'clocks_after':clocks_after}
+                    row['clock_attempts'] = clock_attempts
                     row['config_detail'] = ref.fn['config_name'](index).decode()
                     row['workspace_per_copy'] = ref.fn['workspace'](plans[0])
+                    if arm == 'quactlize':
+                        if ref.reader == 'conventional' and index in (8,9,10,11):
+                            row['same_math_parent'] = 0 if index in (8,9) else 6
+                        elif ref.reader == 'prepacked' and index in (6,7,8):
+                            row['same_math_parent'] = index-3
                     rows.append(row)
                     print('PPU17_REFERENCE_CONFIG ' + json.dumps(row), flush=True)
                     graph.reset()
@@ -202,6 +221,16 @@ def child(args):
                     for plan in reversed(plans):
                         ref.fn['destroy'](plan)
             del weights
+    # Stage depth / redundant reset change delivery only. Require raw equality with the same
+    # tile/scheduler control, never with a different cross-CTA summation order.
+    for row in rows:
+        if 'same_math_parent' not in row: continue
+        parents = [x for x in rows if x['arm'] == row['arm'] and x['config'] == row['same_math_parent']]
+        if not parents: raise ValueError('stage candidate requires its same-math control in this run')
+        got = {x['output_values_sha256'] for x in row['correctness']}
+        want = {x['output_values_sha256'] for x in parents[0]['correctness']}
+        if got != want or len(got) != 1: raise ValueError('stage candidate changed output bits')
+        row['same_math_raw_equality'] = 'PASS'
     print('PPU17_BENCH ' + json.dumps({'status': 'PASS', 'rows': rows,
           'shape': [args.m, args.n, args.k], 'dtype': args.dtype,
           'l2_bytes': l2.value, 'sm_count': sms.value, 'cache': args.cache,
@@ -209,6 +238,7 @@ def child(args):
           'input_source': fixture['source'],
           'logical_codes_sha256': hashlib.sha256(fixture['q'].tobytes()).hexdigest(),
           'scale_bits_sha256': hashlib.sha256(fixture['scale'].numpy().tobytes()).hexdigest(),
+          'config_counts': {name: refs[name].fn['config_count']() for name in args.arms},
           'metadata': 'ORIGINAL_FP16_GROUP128_NO_SCALE_EXPANSION'}), flush=True)
 
 
