@@ -486,3 +486,32 @@ effects coupled until isolated. Analysis filters must select exact state
 AND output symbols when both share the candidate namespace; a former
 state-only substring can silently mix their PC samples. Evidence: GDN
 `docs/PPU_GDN_RESIDUAL_WARPS8_H_LAYOUT_ACU_20260925.md`; routing unchanged.
+
+## Quantized Hopper control: a scheduler is not the complete implementation
+
+Quactlize's existing standalone Marlin collective has a different packing,
+K-warp/CTA topology, cp.async cadence, register dequant and reduction path
+from a generic cooperative WGMMA collective using Marlin stripe scheduling.
+Reusing its pure integer scheduler does not port that complete implementation.
+The PPU001 m8n16 register maps must not be renamed into Hopper m16n8 maps.
+Prefer a proved architecture-native provider over an incomplete bring-up
+collective when restoring a representative baseline, and explicitly identify
+upstream reuse instead of claiming a new algorithm.
+
+Evidence: `docs/ppu17-gptq-baseline.md`, H800/CUDA12.8, INT4 symmetric GPTQ,
+group128, FP16 A/weights/C and FP32 accumulation/reduction, rotating weights
+>2.25x queried L2. The scheduler-only/MMA-prepacked route still lagged native
+Marlin by20–24% for M1/8,N4096,K4096. Integrating the complete pinned Marlin
+body removed that large gap in screening; all six instruction bodies match
+the reference and18 same-config comparisons are RAW-equal. This is neither
+native PPU1.7 admission nor a GGUF group16/32 performance result.
+
+Audit prepared-call resets separately: removing an unnecessary reset is safe
+only if the last peer already resets every lock, first-use initialization is
+retained, and scratch reuse is serial on the same stream. Do not apply that
+contract to Stream-K without proof. Stage4/8 variants are likewise measured
+alternatives, not universal defaults: fewer stages help short stripes in
+this small-M experiment but regress large-M calls. Preserve the old winner
+and transitively include same-math controls in confirmation. Clock-rejected
+points remain invalid; retry only missing points and bind an assembled report
+to each original receipt rather than relabelling a failed cohort complete.

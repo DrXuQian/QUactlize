@@ -55,7 +55,7 @@ class FixtureTests(unittest.TestCase):
 
 def native_pack_check(references):
     ref=Reference(references,'quactlize')
-    prepacked=json.loads((references/'manifest.json').read_text()).get('quactlize_reader')=='prepacked'
+    prepacked=ref.reader=='prepacked'
     for n,k in ((128,128),(512,512)):
         q,sc=decode_checkpoint(*synthetic_checkpoint(n,k))
         got=np.zeros(n*k//2,np.uint8)
@@ -97,17 +97,23 @@ def upstream_marlin_check(root,references):
         tree=ast.parse((paths/name).read_text())
         functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in names]
         exec(compile(ast.Module(body=functions,type_ignores=[]),str(paths/name),'exec'),env)
-    ref=Reference(references,'marlin')
-    for n,k in ((128,256),(512,512)):
-        q,scale=decode_checkpoint(*synthetic_checkpoint(n,k))
-        got=np.zeros(n*k//2,np.uint8)
-        ref.check(ref.fn['pack'](0,n,k,q.ctypes.data,got.ctypes.data))
-        expected=env['marlin_weights'](torch.from_numpy(q),k,n,4,env['get_weight_perm'](4))
-        np.testing.assert_array_equal(expected.numpy().view(np.uint8).reshape(-1),got)
-        value=torch.from_numpy(scale)
-        if not torch.equal(marlin_metadata(value),env['marlin_permute_scales'](value,k,n,128)):
-            raise ValueError('Marlin scale bits/placement differ from upstream')
-    print('PPU17_GPTQ_HOST Marlin packing/scales match upstream cases=2 PASS',flush=True)
+    manifest=json.loads((references/'manifest.json').read_text())
+    arms=['marlin']+(['quactlize_marlin'] if 'quactlize_marlin' in manifest['libraries'] else [])
+    for arm in arms:
+        ref=Reference(references,arm)
+        for n,k in ((128,256),(512,512)):
+            q,scale=decode_checkpoint(*synthetic_checkpoint(n,k))
+            got=np.zeros(n*k//2,np.uint8)
+            ref.check(ref.fn['pack'](0,n,k,q.ctypes.data,got.ctypes.data))
+            expected=env['marlin_weights'](torch.from_numpy(q),k,n,4,env['get_weight_perm'](4))
+            np.testing.assert_array_equal(expected.numpy().view(np.uint8).reshape(-1),got)
+            value=torch.from_numpy(scale)
+            if not torch.equal(marlin_metadata(value),env['marlin_permute_scales'](value,k,n,128)):
+                raise ValueError('Marlin scale bits/placement differ from upstream')
+            bad=q.copy();bad[0,0]=16
+            if ref.fn['pack'](0,n,k,bad.ctypes.data,got.ctypes.data)==0:
+                raise ValueError('out-of-range uint4 code accepted')
+        print(f'PPU17_GPTQ_HOST {arm} packing/scales match upstream cases=2 negatives=2 PASS',flush=True)
 
 
 if __name__=='__main__':

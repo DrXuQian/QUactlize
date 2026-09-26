@@ -15,7 +15,7 @@ namespace quactlize::ppu17 {
 // FP16 scale bit; it is NOT a new GGUF format or canonical K-pack replacement.
 // Keep the conventional reader as an independent baseline.
 template<int N, int M, int ClusterN = 1,
-         class Scheduler = cutlass::gemm::StreamKScheduler>
+         class Scheduler = cutlass::gemm::StreamKScheduler, int Stages = 0>
 struct PrepackedGptq {
   using T = cutlass::half_t;
   using Code = cutlass::vllm_uint4b8_t;
@@ -32,7 +32,9 @@ struct PrepackedGptq {
       cutlass::epilogue::fusion::Sm90EVT<cutlass::epilogue::fusion::Sm90AccFetch>>::CollectiveOp;
   using Mainloop = machete::MacheteCollectiveMma<cute::tuple<Code,T>, Packing, 32,
       T, cutlass::layout::ColumnMajor, 8, float, Tile, Cluster,
-      cutlass::gemm::collective::StageCountAutoCarveout<sizeof(typename Epilogue::SharedStorage)>, Schedule>;
+      std::conditional_t<Stages == 0,
+          cutlass::gemm::collective::StageCountAutoCarveout<sizeof(typename Epilogue::SharedStorage)>,
+          cutlass::gemm::collective::StageCount<Stages>>, Schedule>;
   using Kernel = cutlass::gemm::kernel::GemmUniversal<cute::Shape<int,int,int,int>, Mainloop, Epilogue, Scheduler>;
   using Gemm = cutlass::gemm::device::GemmUniversalAdapter<Kernel>;
 };

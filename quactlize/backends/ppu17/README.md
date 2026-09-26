@@ -72,7 +72,9 @@ The legacy dense/grouped Marlin scheduler and standalone Marlin collective
 already exist in Quactlize. `marlin_scheduler.cuh` now adapts the shared integer
 decomposition and reverse peers to two SM90 consumer warpgroups with FP32
 fixup. It is restricted to Cluster1/one CTA per SM and group-aligned splits.
-The grouped and standalone-mainloop ports remain incomplete.
+The grouped port remains incomplete. The complete standalone Hopper path is
+now a separate optional `gptq_marlin.cuh` provider, described below; it is not
+the old PPU001 mainloop with its MMA names changed.
 
 `gptq_prepacked.cuh` is an optional experimental provider reusing pinned
 Machete packing/reader/conversion on PPU CUTLASS3.6. This is a different
@@ -80,6 +82,19 @@ private GPTQ physical layout, not a change to canonical GGUF bytes. It can
 use Stream-K or the adapted Marlin scheduler. The comparison harness is the
 only caller so far; production routing and the public GGUF-only ABI are
 unchanged. See [measured scope and open gaps](../../../docs/ppu17-gptq-baseline.md).
+
+`gptq_marlin.cuh` reuses the pinned upstream Marlin device implementation as
+a whole: classic cp.async pipeline, vector dequant, small-M MMA/K-warp
+topology, persistent stripes, FP32 cross-CTA reduction and final lock reset.
+It reuses Quactlize's host-only classic weight map, with an independent check
+against upstream packing. FP16 group128 scales use the existing bit-preserving
+8x8 permutation. Scope is dense GPTQ, M1..8 or multiples of64, N/K multiples
+of128. Other cases are rejected, not redirected to different quantization.
+Prepared serial calls need no allocation, reset or helper launch per execute.
+This is explicit upstream reuse, not a claim of a new kernel or of native
+PPU1.7 support. The experimental `--reader aligned` comparison retains both
+this provider and all nine Machete geometries; it does not install an automatic
+production selector or expose GPTQ through the GGUF-only public API.
 
 ## Build and local validation
 

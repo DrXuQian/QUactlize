@@ -39,7 +39,7 @@ class Reference:
         if sha(library) != row['sha256']:
             raise ValueError('reference library hash mismatch')
         self.library = C.CDLL(str(library), mode=C.RTLD_LOCAL)
-        self.reader = manifest.get('quactlize_reader', 'conventional')
+        self.reader = row.get('reader', manifest.get('quactlize_reader', 'conventional'))
         self.fn = {}
         for name, result, arguments in (
             ('error', C.c_char_p, []), ('contract', C.c_char_p, []), ('config_count', C.c_int, []),
@@ -117,7 +117,7 @@ def child(args):
             ref.check(ref.fn['pack'](args.dtype, args.n, args.k,
                 fixture['q'].ctypes.data, packed.ctypes.data))
             scales = fixture['scale']
-            if arm == 'marlin':
+            if arm in ('marlin','quactlize_marlin'):
                 scales = marlin_metadata(scales)
             host = [torch.from_numpy(packed), scales]
             configs = [(i, None) for i in range(ref.fn['config_count']())]
@@ -212,6 +212,8 @@ def child(args):
                             row['same_math_parent'] = 0 if index in (8,9) else 6
                         elif ref.reader == 'prepacked' and index in (6,7,8):
                             row['same_math_parent'] = index-3
+                        elif ref.reader == 'prepacked' and index in (15,16,17,18):
+                            row['same_math_parent'] = 0 if index in (15,16) else 6
                     rows.append(row)
                     print('PPU17_REFERENCE_CONFIG ' + json.dumps(row), flush=True)
                     graph.reset()
@@ -272,11 +274,15 @@ def main():
     parser.add_argument('--n', type=int, default=512)
     parser.add_argument('--k', type=int, default=2048)
     parser.add_argument('--cache', choices=('warm', 'rotating'), default='rotating')
-    parser.add_argument('--arms', nargs='+', choices=('machete', 'marlin', 'quactlize'), default=['machete', 'marlin', 'quactlize'])
+    parser.add_argument('--arms', nargs='+', choices=('machete', 'marlin', 'quactlize','quactlize_marlin'))
     parser.add_argument('--configs', nargs='+', help='bounded reconfirmation e.g. machete:0 marlin:1 quactlize:2')
     parser.add_argument('--reverse', action='store_true')
     parser.add_argument('--child', action='store_true')
     args = parser.parse_args()
+    if args.arms is None:
+        manifest = json.loads((args.references/'manifest.json').read_text())
+        args.arms = ['machete','marlin','quactlize']
+        if 'quactlize_marlin' in manifest['libraries']: args.arms.append('quactlize_marlin')
     if args.child:
         child(args)
         return

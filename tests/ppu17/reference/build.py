@@ -34,7 +34,8 @@ def main():
     p.add_argument("--ppu-cutlass", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--compiler", type=Path, required=True)
-    p.add_argument('--reader', choices=('conventional','prepacked'), default='conventional')
+    p.add_argument('--reader', choices=('conventional','prepacked','aligned'), default='conventional',
+                   help='aligned retains the prepacked provider and adds the complete Marlin provider')
     args = p.parse_args()
     args.vllm = args.vllm.resolve(strict=True)
     args.cutlass = args.cutlass.resolve(strict=True)
@@ -61,15 +62,19 @@ def main():
     sources['mixed_input_policy.cuh'] = sha(root/'quactlize/backends/ppu17/mixed_input_policy.cuh')
     sources['target.cuh'] = sha(root/'quactlize/backends/ppu17/target.cuh')
     sources['gptq_prepacked.cuh'] = sha(root/'quactlize/backends/ppu17/gptq_prepacked.cuh')
+    sources['gptq_marlin.cuh'] = sha(root/'quactlize/backends/ppu17/gptq_marlin.cuh')
+    sources['marlin_format_ppu.hpp'] = sha(root/'quactlize/include/marlin_format_ppu.hpp')
     sources['marlin_scheduler.cuh'] = sha(root/'quactlize/backends/ppu17/marlin_scheduler.cuh')
     sources['marlin_core'] = sha(root/'third_party/actlize/include/cutlass/gemm/kernel/ppu_tile_scheduler_marlin_core.hpp')
     bound_files = {str(f): sha(f) for f in sorted(HERE.rglob('*'))
                    if f.is_file() and f.suffix in ('.cu', '.cuh', '.h', '.py')}
-    for name in ('gptq.cuh', 'gptq_prepacked.cuh', 'mixed_input_policy.cuh', 'target.cuh', 'marlin_scheduler.cuh'):
+    for name in ('gptq.cuh', 'gptq_prepacked.cuh', 'gptq_marlin.cuh', 'mixed_input_policy.cuh', 'target.cuh', 'marlin_scheduler.cuh'):
         path = root/'quactlize/backends/ppu17'/name
         bound_files[str(path)] = sha(path)
     core = root/'third_party/actlize/include/cutlass/gemm/kernel/ppu_tile_scheduler_marlin_core.hpp'
     bound_files[str(core)] = sha(core)
+    host_format = root/'quactlize/include/marlin_format_ppu.hpp'
+    bound_files[str(host_format)] = sha(host_format)
     manifest = {"schema": 2, "scope": "PHYSICAL_HOPPER_GPTQ_COMPARISON_NOT_PRODUCT",
                 "contract": CONTRACT, "ppu_cutlass": PPU_CUTLASS,
                 "actlize_integer_core": ACTLIZE,
@@ -82,19 +87,19 @@ def main():
         temp = args.output / (arm + "-tmp")
         temp.mkdir(exist_ok=True)
         library = args.output / ("lib" + arm + "_reference.so")
-        if arm == 'quactlize':
+        if arm.startswith('quactlize'):
             includes = ['-I'+str(root), '-I'+str(args.ppu_cutlass/'include')]
-            if args.reader == 'prepacked':
+            if args.reader in ('prepacked','aligned'):
                 includes += ['-I'+str(HERE/'shim'), '-I'+str(args.vllm/'csrc')]
         else:
             includes = ['-I'+str(HERE/'shim'), '-I'+str(args.vllm/'csrc'),
                         '-I'+str(args.cutlass/'include')]
         command = common + includes
-        if arm != 'marlin':
+        if arm not in ('marlin','quactlize_marlin'):
             command += ["-DCUTLASS_ENABLE_DIRECT_CUDA_DRIVER_CALL=1"]
-        source_name = 'quactlize_prepacked' if arm == 'quactlize' and args.reader == 'prepacked' else arm
+        source_name = 'quactlize_prepacked' if arm == 'quactlize' and args.reader in ('prepacked','aligned') else arm
         command += ["-shared", str(HERE / (source_name + ".cu")), "-o", str(library)]
-        if arm != "marlin":
+        if arm not in ('marlin','quactlize_marlin'):
             # CUTLASS's direct tensor-map API is supplied by the installed
             # driver at runtime; only use the toolkit stub for the link step.
             command += ["-L" + str(args.compiler.parent.parent / "lib64/stubs"), "-lcuda"]
@@ -103,10 +108,14 @@ def main():
         with (args.output / (arm + ".build.log")).open("w") as log:
             subprocess.run(command, env={**os.environ, "TMPDIR": str(temp)},
                            stdout=log, stderr=subprocess.STDOUT, check=True)
+        reader = ('marlin' if arm in ('marlin','quactlize_marlin') else
+                  'prepacked' if arm == 'machete' or args.reader in ('prepacked','aligned') else 'conventional')
         return arm, {"file": library.name, "sha256": sha(library),
-                     "seconds": time.monotonic()-began}
+                     "reader": reader, "seconds": time.monotonic()-began}
+    arms = ['marlin','machete','quactlize']
+    if args.reader == 'aligned': arms.append('quactlize_marlin')
     with ThreadPoolExecutor(max_workers=3) as pool:
-        for arm, row in pool.map(build, ("marlin", "machete", "quactlize")):
+        for arm, row in pool.map(build, arms):
             manifest["libraries"][arm] = row
             print("PPU17_REFERENCE_BUILD " + arm + " PASS", flush=True)
     if any(sha(path) != digest for path, digest in bound_files.items()):
@@ -115,7 +124,8 @@ def main():
     dependency(args.cutlass, CUTLASS)
     dependency(args.ppu_cutlass, PPU_CUTLASS)
     dependency(root/'third_party/actlize', ACTLIZE)
-    manifest['config_counts'] = {'machete': 9, 'marlin': 3, 'quactlize': 9 if args.reader == 'prepacked' else 12}
+    manifest['config_counts'] = {'machete': 9, 'marlin': 3, 'quactlize': 19 if args.reader in ('prepacked','aligned') else 12}
+    if args.reader == 'aligned': manifest['config_counts']['quactlize_marlin'] = 3
     (args.output / "manifest.json").write_text(json.dumps(manifest, indent=2)+"\n")
 
 

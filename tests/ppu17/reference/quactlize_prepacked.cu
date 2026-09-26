@@ -5,8 +5,8 @@
 
 namespace q17_reference {
 using namespace cute;
-template<int N, int M, int ClusterN, class Scheduler, bool PrepareOnce = false> struct PrepackedPlan : Plan {
-  using Types = quactlize::ppu17::PrepackedGptq<N,M,ClusterN,Scheduler>;
+template<int N, int M, int ClusterN, class Scheduler, bool PrepareOnce = false, int Stages = 0> struct PrepackedPlan : Plan {
+  using Types = quactlize::ppu17::PrepackedGptq<N,M,ClusterN,Scheduler,Stages>;
   using Gemm = typename Types::Gemm;
   typename Gemm::Arguments args;
   cudaStream_t stream;
@@ -52,7 +52,12 @@ template<int N, int M, int ClusterN, class Scheduler, bool PrepareOnce = false> 
   X(4,128,64,1,quactlize::ppu17::MarlinScheduler,marlin) \
   X(5,128,128,1,quactlize::ppu17::MarlinScheduler,marlin)
 }
-Q17_REF_EXPORT int q17_ref_config_count() { return 9; }
+// Remaining upstream default-heuristic geometries. Keep every reference
+// geometry in the candidate inventory, not only last screen's three winners.
+#define Q17_PREPACKED_EXTRA(X) \
+  X(9,128,32,2) X(10,128,256,2) X(11,256,16,1) \
+  X(12,256,32,2) X(13,256,64,2) X(14,256,128,2)
+Q17_REF_EXPORT int q17_ref_config_count() { return 19; }
 Q17_REF_EXPORT char const* q17_ref_config_name(int config) {
   switch(config) {
 #define NAME(I,N,M,C,S,TAG) case I: return #N "x" #M "x64_cluster" #C "_prepacked_cooperative_" #TAG;
@@ -61,6 +66,13 @@ Q17_REF_EXPORT char const* q17_ref_config_name(int config) {
     case 6: return "128x16x64_cluster1_prepacked_marlin_self_reset";
     case 7: return "128x64x64_cluster1_prepacked_marlin_self_reset";
     case 8: return "128x128x64_cluster1_prepacked_marlin_self_reset";
+#define NAME(I,N,M,C) case I: return #N "x" #M "x64_cluster" #C "_prepacked_cooperative_streamk";
+    Q17_PREPACKED_EXTRA(NAME)
+#undef NAME
+    case 15: return "128x16x64_cluster1_prepacked_streamk_s4";
+    case 16: return "128x16x64_cluster1_prepacked_streamk_s8";
+    case 17: return "128x16x64_cluster1_prepacked_marlin_self_reset_s4";
+    case 18: return "128x16x64_cluster1_prepacked_marlin_self_reset_s8";
   }
   return "INVALID";
 }
@@ -75,6 +87,13 @@ Q17_REF_EXPORT int q17_ref_prepare(q17_ref_call const* c, void** out) {
       case 6: *out=new q17_reference::PrepackedPlan<128,16,1,quactlize::ppu17::MarlinScheduler,true>(*c); return;
       case 7: *out=new q17_reference::PrepackedPlan<128,64,1,quactlize::ppu17::MarlinScheduler,true>(*c); return;
       case 8: *out=new q17_reference::PrepackedPlan<128,128,1,quactlize::ppu17::MarlinScheduler,true>(*c); return;
+#define MAKE(I,N,M,C) case I: *out=new q17_reference::PrepackedPlan<N,M,C,cutlass::gemm::StreamKScheduler>(*c); return;
+      Q17_PREPACKED_EXTRA(MAKE)
+#undef MAKE
+      case 15: *out=new q17_reference::PrepackedPlan<128,16,1,cutlass::gemm::StreamKScheduler,false,4>(*c); return;
+      case 16: *out=new q17_reference::PrepackedPlan<128,16,1,cutlass::gemm::StreamKScheduler,false,8>(*c); return;
+      case 17: *out=new q17_reference::PrepackedPlan<128,16,1,quactlize::ppu17::MarlinScheduler,true,4>(*c); return;
+      case 18: *out=new q17_reference::PrepackedPlan<128,16,1,quactlize::ppu17::MarlinScheduler,true,8>(*c); return;
     }
     throw std::runtime_error("unknown prepacked GPTQ config");
   });

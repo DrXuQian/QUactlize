@@ -27,9 +27,11 @@ def main():
             summary=json.loads((out/'summary.json').read_text())
             result=summary['result'][0]
             best={arm:min((x for x in result['rows'] if x['arm']==arm),key=lambda x:x['median_us'])
-                  for arm in ('machete','marlin','quactlize')}
+                  for arm in result['config_counts']}
             row['best']={arm:{'config':x['config'],'us':x['median_us']} for arm,x in best.items()}
-            row['delta_vs_faster_reference_pct']=100*(best['quactlize']['median_us']/min(
+            selected=min((x for name,x in best.items() if name.startswith('quactlize')),key=lambda x:x['median_us'])
+            row['candidate_provider']=selected['arm']
+            row['delta_vs_faster_reference_pct']=100*(selected['median_us']/min(
                 best['machete']['median_us'],best['marlin']['median_us'])-1)
             print('PPU17_REFERENCE_POINT '+json.dumps(row),flush=True)
         rows.append(row)

@@ -27,7 +27,78 @@ but not a valid proxy for the library's mature baseline. Scheduler selection
 alone cannot recover the missing producer/consumer pipeline. Establish the
 complete existing-equivalent path before a performance optimization sweep.
 
-## Current evidence (2026-09-26)
+## Complete implementation reuse (2026-09-26, aligned-v1)
+
+The optional `gptq_marlin.cuh` now integrates the **whole** pinned Hopper
+Marlin device implementation, not only its work scheduler: cp.async pipeline,
+vector dequantization, MMA/K-warp topology, persistent stripes, FP32 reduction,
+output and final lock reset. Its host packer reuses Quactlize's existing
+classic address functions, verified independently against upstream Python.
+Do not conflate this with porting the old PPU001 m8n16 register maps to SM90.
+The provider deliberately reuses upstream code rather than claiming a new
+algorithm. The optional Machete provider retains all nine upstream default
+geometries on PPU CUTLASS3.6, plus the existing Marlin-scheduler controls.
+
+All six compiled Marlin instruction bodies exactly match the separately built
+reference. All18 same-config Marlin comparisons (three configs across six
+points) have identical output bits, pass the CPU dot and guards, and survive
+repeated graph execution. Packing/scales match upstream on N128 and N512
+fixtures. PPU1.0/1.5, dependencies, canonical GGUF bytes, public ABI and product
+routing are unchanged. Native PPU1.7 compilation/performance remains UNVERIFIED.
+
+The aligned screen admits180 configurations. The first attempt's final point
+failed the clock gate; only that point was retried. `aligned-complete-screen`
+assembles five original admitted points plus the separately admitted retry,
+with matching binary/runner identities and preserved failed-attempt provenance.
+Do not call the original `cohort-aligned-v1` a complete run.
+
+| M | N | K | Best integrated provider | Integrated us | Faster reference us | Gap |
+|---:|---:|---:|---|---:|---:|---:|
+|1|512|2048|Machete/Stream-K|11.810|11.511|+2.60%|
+|8|512|2048|Machete/Stream-K|11.759|11.468|+2.54%|
+|128|512|2048|Prepacked/cooperative Marlin|10.285|12.491|-17.66%|
+|1|4096|4096|Complete Marlin|11.553|11.545|+0.07%|
+|8|4096|4096|Complete Marlin|11.521|11.512|+0.08%|
+|128|4096|4096|Prepacked/cooperative Marlin|20.790|23.994|-13.35%|
+
+These are SCREEN medians, not a strict no-slower verdict. Complete Marlin
+removes the prior20–24% large-decode deficit. The small-weight deficit remains
+open. `confirm-aligned-v1` stopped at the last point of round1 on the clock
+gate; this is not three-round confirmation. No numerical failure is reported.
+The next bounded challenge retains every winner and varies only pipeline
+depth4/8 for prepacked128x16x64, requiring same-scheduler RAW equality.
+
+### Three-round decode confirmation
+
+`build-aligned-stage-v1` adds four stage4/8 alternatives. All12 preceding
+device bodies remain instruction-identical. Do not install a blanket shallow
+pipeline: the large-M128 versions are slower and keep their existing winner.
+`cohort-aligned-stages-v1` admitted five complete points and stopped on the
+sixth point's old config7 clock gate. This is not a complete204-config screen.
+
+The four admitted decode points were then explicitly selected for three
+alternating-order confirmation rounds (`confirm-aligned-decode-v1`). All12
+fresh-process point-runs passed, including full CPU dots, guards, graphs and
+transitive same-math RAW controls. The reported config minimizes the median
+of its three round medians; no fastest-round selection is used. Units:us.
+
+| M | N | K | Provider/config | Integrated | Faster reference | Delta | Paired round delta range |
+|---:|---:|---:|---|---:|---:|---:|---:|
+|1|512|2048|Prepacked Stream-K s8 /16|11.484|11.690|-1.77%|-2.15% to -0.85%|
+|8|512|2048|Prepacked Stream-K s8 /16|11.384|11.284|+0.89%|-4.79% to +3.53%|
+|1|4096|4096|Complete Marlin /2|11.521|11.532|-0.10%|-0.30% to +0.57%|
+|8|4096|4096|Complete Marlin /2|11.285|11.264|+0.19%|-1.07% to +0.44%|
+
+This closes the large implementation deficit, not a strict every-point
+no-slower target: only the first point has a win in all three paired rounds;
+the other three cross zero. Prefill has screen evidence above but is NOT
+covered by this decode confirmation. Product selection remains unchanged.
+The final host-only follow-ups improve recursive control selection, retain
+other points after a fresh-process failure, check invalid uint4 input and
+compare encoded SASS/control words. They do not change the measured C++ DSOs;
+the immutable manifests retain their original build-time script hashes.
+
+## Historical scheduler/reader evidence (2026-09-26)
 
 - Three comparison DSOs compile with CUDA12.8 SM90a. Quactlize uses pinned
   PPU CUTLASS3.6; references use pinned vLLM and its own CUTLASS. Original
@@ -101,13 +172,13 @@ The cohort is INCOMPLETE; do not manufacture its missing value, discard the
 clock guard, or claim complete parity. No further candidates were launched
 after this bounded checkpoint. All failed/contaminated attempts are preserved.
 
-### Remaining work
+### Remaining work after implementation alignment
 
 1. Finish same-clock full-cohort confirmation of the self-reset prepared
    path, retaining the controls. Native Stream-K still requires its reset.
-2. Complete small-M Marlin mainloop reuse/adaptation, not just its scheduler:
-   CTA/K-warp topology, asynchronous staging, vector decode and FP32 fixup.
-   The original PPU001 register/MMA ownership is not a Hopper mapping.
+2. Close the remaining small-weight prepacked gap and confirm same-device
+   finalist timings. Full Marlin reuse is now implemented for the stated dense
+   GPTQ scope; grouped/dtype/shape expansion is still separate work.
 3. Reconfirm the faster-reference target per shape, then expand grouped,
    dtypes and shapes. No slow case may be hidden by the aggregate mean.
 4. Separately port the mature GGUF reader/metadata/pipeline mechanisms while

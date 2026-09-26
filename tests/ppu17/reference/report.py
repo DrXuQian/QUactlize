@@ -39,6 +39,10 @@ def main():
         if counts not in ({'machete':9, 'marlin':3, 'quactlize':6},
                           {'machete':9, 'marlin':3, 'quactlize':8},
                           {'machete':9, 'marlin':3, 'quactlize':9},
+                          {'machete':9, 'marlin':3, 'quactlize':15},
+                          {'machete':9, 'marlin':3, 'quactlize':15, 'quactlize_marlin':3},
+                          {'machete':9, 'marlin':3, 'quactlize':19},
+                          {'machete':9, 'marlin':3, 'quactlize':19, 'quactlize_marlin':3},
                           {'machete':9, 'marlin':3, 'quactlize':12}):
             raise ValueError('unknown config inventory')
         for arm,count in counts.items():
@@ -65,8 +69,10 @@ def main():
     for key in sorted(seen):
         values={r['arm']:r for r in best if (r['dtype'],r['m'],r['n'],r['k'])==key}
         ref=min(values[x]['us'] for x in ('machete','marlin'))
-        q=values['quactlize']['us']
+        candidate=min((v for name,v in values.items() if name.startswith('quactlize')),key=lambda x:x['us'])
+        q=candidate['us']
         verdict.append({'point':key,'best':values,'delta_pct':100*(q/ref-1),
+                        'candidate_provider':candidate['arm'],
                         'status':'SCREEN_WIN_REQUIRES_CONFIRMATION' if q<ref else 'TARGET_OPEN'})
     (a.output/'summary.json').write_text(json.dumps({'scope':'SCREEN_NOT_PRODUCTION_ADMISSION',
         'configurations':len(all_rows),'points':verdict,'cohort_sha256':sha(a.cohort/'summary.json')},indent=2)+'\n')

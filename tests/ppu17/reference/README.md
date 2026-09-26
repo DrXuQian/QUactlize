@@ -52,10 +52,21 @@ group128 and scale bits, but has different private bytes from the conventional
 signed-int4 reader. Bundles are not interchangeable. Neither layout changes
 canonical GGUF/K-pack storage or the existing GGUF-only q17 public ABI.
 
+`--reader aligned` additionally builds `quactlize_marlin`: the complete
+`gptq_marlin.cuh` backend provider, not just Marlin's scheduler around WGMMA.
+It instantiates unmodified pinned upstream Marlin device templates on the
+isolated PPU CUTLASS3.6 include graph and reuses Quactlize's original host-only
+classic packing map. The reference remains a separately built DSO with its
+own wrapper and CPU packing oracle. Report this as implementation reuse,
+never as a new algorithm beating itself. Both arms retain FP32 reduction.
+Scale permutation, workspace initialization and first-use exclusion match.
+Serial same-stream workspace reuse is required; concurrent use is unsupported.
+
 ## Build and host checks
 
 ```bash
 python3 tests/ppu17/reference/build.py \
+  --reader aligned \
   --vllm /path/to/pinned-vllm \
   --cutlass /path/to/pinned-reference-cutlass \
   --ppu-cutlass /path/to/pinned-ppu-cutlass \
@@ -65,6 +76,10 @@ python3 tests/ppu17/reference/build.py \
 python3 tests/ppu17/reference/test_fixture.py \
   --references /workspace/q17-gptq-build \
   --vllm /path/to/pinned-vllm
+
+python3 tests/ppu17/reference/check_marlin_codegen.py \
+  --bundle /workspace/q17-gptq-build \
+  --cuobjdump /usr/local/cuda-12.8/bin/cuobjdump
 ```
 
 Use fresh build/result directories. The host checks preserve original
@@ -91,15 +106,28 @@ python3 tests/ppu17/reference/report.py \
 The conventional six-point screen contains24 configs/point: nine pinned
 Machete heuristic schedules, three native Marlin geometries, six conventional
 Quactlize Stream-K tiles, two Marlin-scheduled tiles and four stage4/8 variants.
-The optional prepacked screen contains21 configs/point (six Quactlize types
-plus three self-reset prepared-call controls). Self-reset reuses the same
+The optional prepacked screen contains31 configs/point: all nine upstream
+Machete geometries plus three Marlin-scheduler controls and three self-reset
+variants, four bounded stage4/8 challenges, and twelve reference configurations.
+`aligned` adds the complete Marlin provider's three geometries, giving34 configs/point and204
+across the six-point cohort. Its report selects the measured best among BOTH
+Quactlize providers; this is not a production policy or an unmeasured cutoff.
+Self-reset reuses the same
 Marlin device body: initialize locks once in preparation, retain kernel-side
 FP32 fixup/lock reset, and update host params after serial workspace sharing.
 It is not enabled for Stream-K or concurrently shared workspaces.
+Stage4/8 challenges use the same128x16x64 tile and unchanged packing/math.
+Their controls are config0 (Stream-K) or config6 (self-reset Marlin), and
+config6 itself retains config3 as a control. All controls must be present.
 A screen is not optimality proof. Reconfirmation retains the two measured
 leaders per arm plus any required same-math control; it must use a GPTQ screen,
 never the retired GGUF-subset timings. Stage-count changes must preserve exact
 output bits with their tile/scheduler control.
+`reconfirm.py --points 0 1 3 4` explicitly confirms only the four decode
+points; it may reuse their admitted receipts from an otherwise incomplete
+cohort. Its completion flag applies to the printed requested subset, not the
+omitted prefill points. Fresh-process failures are preserved while the other
+requested points continue. The full default still requires a complete screen.
 
 Device-free scheduler and layout checks can be compiled with CUDA12.8:
 
