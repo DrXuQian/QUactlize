@@ -9,10 +9,29 @@ from unittest.mock import patch
 HERE = Path(__file__).resolve().parents[2] / "quactlize/backends/ppu17"
 sys.path.insert(0, str(HERE))
 from check_device import cases
-from run_benchmark import require_idle, run_point, validate_result
+from check_memory import cases as memory_cases
+from run_benchmark import benchmark_points, require_idle, run_point, validate_result
 
 
 class Runners(unittest.TestCase):
+    def test_bounded_reconfirmation(self):
+        self.assertEqual(len(benchmark_points("baseline")), 36)
+        selected = benchmark_points("baseline", [0, 1, 5])
+        self.assertEqual(len(selected), 18)
+        self.assertEqual(benchmark_points("baseline", [0, 1, 5], True), selected[::-1])
+        for invalid in ([], [0, 0], [6], [-1]):
+            with self.assertRaises(ValueError): benchmark_points("baseline", invalid)
+
+    def test_memory_coverage(self):
+        rows = memory_cases()
+        self.assertEqual(len(rows),25)
+        self.assertEqual({p["tool"] for p in rows},{"memcheck","racecheck","synccheck"})
+        for q in (8,10,11,12,13,14):
+            for compute in (0,1):
+                self.assertTrue(any(p["tool"] == "memcheck" and
+                    p["point"]["q"] == q and p["point"]["compute"] == compute and
+                    p["point"]["config"] == 5 for p in rows))
+
     def test_coverage(self):
         self.assertEqual(len(cases("coverage")), 300)
         rows = cases("extended")

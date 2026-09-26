@@ -14,10 +14,11 @@ Dependency baseline: `023e82d03e80b4d5982f664925e15499033df314`.
 | Tensor core | Real FP32-accumulating SM90 GMMA bodies, dense/grouped FQ/SF | Implemented; 96 bodies assembled, including 24 TMA bodies |
 | Scale expansion | Separate typed producer, bit-matches FQ metadata | CPU and 12 physical H800 bitwise checks PASS; PPU pending |
 | Build/ABI | Independent C boundary, explicit config inventory, fail closed | Host load/C/Python PASS; only q17_* exported |
-| Host/codegen gates | Legacy isolation, byte-map and numerical CPU tests, SM90a assembly | PASS; 5,533,890 checks, 156 bodies, 20 negative codegen/target plants |
+| Host/codegen gates | Legacy isolation, byte-map and numerical CPU tests, SM90a assembly | PASS; 5,875,034 strengthened checks, 156 bodies, 20 negative codegen/target plants |
 | Native PPU1.7 | Correct SDK target and live emitted device bodies | SDK2.1.1 rejected by target guard; capable SDK needed |
-| Device correctness | Single-launch CPU-oracle gates including tails/empty experts | H800 initial 300 PASS; extended 382/1,020 checked, remainder paused; PPU pending |
-| Pipeline/performance | TMA overlap, measured configs, no inherited ZW810 claims | Two-stage TMA implemented; guarded physical timing runner built; no timing admitted |
+| Device correctness | Single-launch CPU-oracle gates including tails/empty experts | H800 extended 1,020/1,020 PASS for baseline and affine-reuse candidate; PPU pending |
+| Memory and same-math replay | TMA/GMMA sanitizer checks; complete output-byte comparison | Both images: 25/25 sanitizer cases PASS; candidate/control 156/156 byte-exact pairs PASS |
+| Pipeline/performance | TMA overlap, measured configs, no inherited ZW810 claims | 72 same-config Q4 comparisons complete; reverse confirmation interrupted by another job; affine cache not enabled globally |
 | Production integration | Architecture-specific policy and caller admission after gates | Pending |
 
 No machine is required for the source/host/codegen work. Hardware/simulator
@@ -81,3 +82,53 @@ or native performance gates. New runner code changes no production routing.
    architecture-specific timing/policy data, keeping legacy routing untouched.
 5. Admit the explicit new backend at the production caller boundary after
    numerical/performance gates, not by replacing actlize includes globally.
+
+## Physical Hopper checkpoint — 2026-09-26 05:15 UTC
+
+This supersedes the interrupted numerical checkpoint above. The same H800
+became idle; the completed `extended-v3` baseline has 1,020/1,020 PASS. The
+metadata-reuse candidate also completed 1,020/1,020 in `affine-extended-v1`.
+No legacy kernel or production routing was changed.
+
+- `memory-v1` and `affine-memory-v1`: each has 17 memcheck, six racecheck and
+  two synccheck cases, all PASS. Bulk-copy and warpgroup-MMA checking were on.
+- `affine-replay-v1`: 156/156 baseline/candidate pairs have identical full
+  output bytes, including guards and separate scale/zero expansion. Each
+  arm also passes the independent typed CPU dot oracle.
+- Baseline library SHA256 remains `a3285663bff9d2527acf0e32585f5677bda8b41b8d568394857cb97129f12030`.
+- Experimental affine-reuse library SHA256:
+  `39847acf9a8dc62f653196d822dcb6f44c41dee297398e10d89ff0c29cf79dc8`.
+- The replay application SHA256 is
+  `84cdea5282834245d45ac76a1a385f9c39a8cc68bacf9ae28fd863afd985c224`.
+  The original numerical and benchmark binaries were not overwritten.
+- Both dtype baseline timing campaigns have 36/36 PASS. These use rotating
+  weights exceeding twice the queried 50 MiB L2, correct each weight copy,
+  exclude three warmup graphs and retain 11 event samples. GPU processes
+  were monitored; no foreign process was observed during admitted timing.
+- `profile-v1` failed with `ERR_NVGPUCTRPERM`. No hardware counters were
+  collected, and no host driver permission, clock or mode was changed.
+
+Evidence is preserved under the remote root and its local copy documented
+above. The experiment record is
+`/workspace/quactlize-ppu17-20260926/tuning-hopper/docs/plan.md`.
+These are Hopper source-validation results, not PPU1.7 native admission.
+
+## Performance decision — 2026-09-26 05:25 UTC
+
+See [the Hopper validation report](ppu17-hopper-validation.md) for the full
+measurement boundary and representative numbers. The 72-point candidate
+screen completed without observed foreign GPU work. All 36 FQ points became
+faster, but 29/36 SF points became slower, by up to 11.46%. The generic affine
+cache is therefore **not retained in the backend reader**. Its exact patch,
+compiled library and raw evidence remain in the external experiment directory.
+
+Reverse-order baseline confirmation completed ten clean points before another
+GPU job appeared at 05:23:22 UTC. The overlapping eleventh point was marked
+INVALID and our child stopped. FP16 reverse confirmation was not started.
+This is not a completed confirmation or a new production routing policy.
+The foreign job was not interrupted. Further performance work requires an
+exclusive GPU window; next optimization should scope metadata reuse to FQ.
+
+After restoring the reader, the strengthened baseline host/codegen gate also
+passed: 5,875,034 CPU checks, 156 live assembled bodies and 20 negative plants.
+Native PPU1.7 compilation, simulator correctness and performance remain open.

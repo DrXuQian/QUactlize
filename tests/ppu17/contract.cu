@@ -159,8 +159,20 @@ template <int Q> void format_contract() {
     c.scale = scales.data(); c.zero = zeros.data();
     WeightReader<Q, T, false> fq(c, 0);
     WeightReader<Q, T, true> sf(c, 0);
-    for (int col = 0; col < n; ++col) for (int kk = 0; kk < k; ++kk)
-      CHECK(fq(col, kk).raw() == sf(col, kk).raw());
+    auto check_weight = [&](int col, int kk) {
+      auto affine = F::template affine<T>(units.data(), n, col, kk / F::group_size);
+      int code = F::code(reinterpret_cast<uint16_t const *>(low.data()),
+                         reinterpret_cast<uint16_t const *>(high.data()), n, col, kk);
+      T product(float(code) * float(affine.scale));
+      T expected(float(product) + float(affine.zero));
+      CHECK(fq(col, kk).raw() == expected.raw());
+      CHECK(sf(col, kk).raw() == expected.raw());
+    };
+    for (int col = 0; col < n; ++col) for (int kk = 0; kk < k; ++kk) check_weight(col, kk);
+    // Same group, different columns; then return to a previous column. A
+    // group-only cache can pass monotone column-major loops but fails here.
+    for (int kk = 0; kk < k; kk += 17)
+      for (int col : {0,31,1,1,17,0}) check_weight(col, kk);
   };
   compare(cutlass::half_t{}); compare(cutlass::bfloat16_t{});
 }
@@ -168,14 +180,32 @@ template <int Q> void format_contract() {
 void q8_contract() {
   constexpr int n = 256, k = 256;
   std::vector<uint8_t> low(n * k);
-  std::vector<cutlass::half_t> scale(n * k / 32, cutlass::half_t(.125f));
+  std::vector<cutlass::half_t> scale(n * k / 32);
+  for (size_t i = 0; i < scale.size(); ++i) scale[i] = cutlass::half_t(float(1+i%13)/128.f);
   for (int col = 0; col < n; ++col) for (int kk = 0; kk < k; ++kk)
     Format<8>::Low::placed_put(low.data(), col, kk, n, (col + kk) % 256);
   for (int col = 0; col < n; ++col) for (int kk = 0; kk < k; ++kk) {
     CHECK(Format<8>::code(reinterpret_cast<uint16_t const *>(low.data()), nullptr, n, col, kk) == (col + kk) % 256 - 128);
     auto a = Format<8>::affine<cutlass::bfloat16_t>(reinterpret_cast<uint8_t const *>(scale.data()), n, col, kk / 32);
-    CHECK(float(a.scale) == .125f && float(a.zero) == 0.f);
+    CHECK(a.scale.raw() == cutlass::bfloat16_t(float(scale[(kk/32)*n+col])).raw() && float(a.zero) == 0.f);
   }
+  q17_call_v1 c{};
+  c.problem.n = n; c.problem.k = k;
+  c.low = low.data(); c.units = scale.data();
+  auto check_reader = [&](auto type) {
+    using T = decltype(type);
+    std::vector<T> expanded(scale.size()), zero(scale.size(), T(0.f));
+    for (size_t i=0; i<scale.size(); ++i) expanded[i] = T(float(scale[i]));
+    c.scale = expanded.data(); c.zero = zero.data();
+    WeightReader<8,T,false> fq(c,0); WeightReader<8,T,true> sf(c,0);
+    for (int kk=0; kk<k; ++kk) for (int col : {0,255,1,1,127,0}) {
+      T product(float((col+kk)%256-128)*float(T(float(scale[(kk/32)*n+col]))));
+      T expected(float(product)+float(T(0.f)));
+      CHECK(fq(col,kk).raw()==expected.raw());
+      CHECK(sf(col,kk).raw()==expected.raw());
+    }
+  };
+  check_reader(cutlass::half_t{}); check_reader(cutlass::bfloat16_t{});
 }
 
 template <int Q> void tma_address_contract() {

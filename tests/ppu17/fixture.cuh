@@ -38,6 +38,7 @@ struct Options {
   int config = 5, m = 9, n = 256, k = 512;
   bool grouped = false, sf = false, expansion = false, cpu_only = false;
   std::vector<int> rows;
+  std::string raw_output;
 };
 
 template <int Q, class T> struct Fixture {

@@ -77,12 +77,21 @@ template <int Q, class T> void test(Options const &o) {
   }
   gpu(cudaDeviceSynchronize(), "target completion");
   double max_abs = 0;
+  uint64_t output_hash = UINT64_C(14695981039346656037);
+  auto hash_bytes = [&](void const *ptr, size_t count) {
+    auto bytes = static_cast<uint8_t const *>(ptr);
+    for (size_t i = 0; i < count; ++i) {
+      output_hash ^= bytes[i]; output_hash *= UINT64_C(1099511628211);
+    }
+  };
   if (o.expansion) {
     gpu(cudaMemcpy(scale_out.data(), s.p, fixture.scale.size() * sizeof(T), cudaMemcpyDeviceToHost), "scale download");
     gpu(cudaMemcpy(zero_out.data(), z.p, fixture.zero.size() * sizeof(T), cudaMemcpyDeviceToHost), "zero download");
     if (std::memcmp(scale_out.data(), fixture.scale.data(), fixture.scale.size() * sizeof(T)) ||
         std::memcmp(zero_out.data(), fixture.zero.data(), fixture.zero.size() * sizeof(T)))
       throw std::runtime_error("expanded metadata differs from CPU typed oracle");
+    hash_bytes(scale_out.data(), scale_out.size() * sizeof(T));
+    hash_bytes(zero_out.data(), zero_out.size() * sizeof(T));
   } else {
     gpu(cudaMemcpy(output.data(), out.p, output.size(), cudaMemcpyDeviceToHost), "output download");
     for (size_t i = 0; i < output.size(); ++i) {
@@ -99,8 +108,21 @@ template <int Q, class T> void test(Options const &o) {
       if (!std::isfinite(got) || !std::isfinite(want) || std::abs(got - want) > tolerance)
         throw std::runtime_error("CPU dot oracle mismatch at row=" + std::to_string(row) + " col=" + std::to_string(col));
     }
+    hash_bytes(output.data(), output.size());
   }
-  std::printf("PPU17_CASE PASS target_launches=1 max_abs=%.9g timing=NOT_MEASURED backend=%s\n", max_abs, q17_build_target_v1());
+  if (!o.raw_output.empty()) {
+    auto file = std::fopen(o.raw_output.c_str(), "wbx");
+    if (!file) throw std::runtime_error("cannot exclusively create raw output");
+    bool ok;
+    if (o.expansion) {
+      ok = std::fwrite(scale_out.data(), sizeof(T), scale_out.size(), file) == scale_out.size();
+      ok = (std::fwrite(zero_out.data(), sizeof(T), zero_out.size(), file) == zero_out.size()) && ok;
+    } else ok = std::fwrite(output.data(), 1, output.size(), file) == output.size();
+    int rc = std::fclose(file);
+    if (!ok || rc) throw std::runtime_error("raw output write failed");
+  }
+  std::printf("PPU17_CASE PASS target_launches=1 max_abs=%.9g output_hash=0x%016llx timing=NOT_MEASURED backend=%s\n",
+      max_abs, static_cast<unsigned long long>(output_hash), q17_build_target_v1());
 }
 
 int main(int argc, char **argv) {
@@ -114,6 +136,7 @@ int main(int argc, char **argv) {
       else if (key == "--cpu-only") o.cpu_only = true;
       else {
         if (++i == argc) throw std::runtime_error("missing value for " + key);
+        if (key == "--raw-output") { o.raw_output = argv[i]; continue; }
         if (key == "--rows") {
           o.grouped = true;
           std::istringstream fields(argv[i]);

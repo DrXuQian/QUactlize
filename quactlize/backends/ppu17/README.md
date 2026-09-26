@@ -162,5 +162,36 @@ numbers cannot alone choose FQ vs SF or claim end-to-end speed. There is no
 production policy update or PPU1.7 performance admission from this runner.
 
 Keep profiler/sanitizer runs separate from timing. Preserve raw logs and the
-summary's binary hashes, case identity and telemetry. The first H800 numerical
-checkpoint and outstanding gates are in `docs/ppu17-integration.md`.
+summary's binary hashes, case identity and telemetry.
+
+```bash
+# 25 fresh-process memory, race and synchronization checks.
+python3 quactlize/backends/ppu17/check_memory.py \
+  --bundle "$BUNDLE" --application "$VALIDATION/single-launch" \
+  --sanitizer "$CUDA_ROOT/bin/compute-sanitizer" \
+  --device 0 --expected-uuid "$GPU_UUID" --output "$RESULTS/memory"
+
+# 156 same-math baseline/candidate pairs. Compare full output bytes, not
+# only checksums or a relaxed tolerance; each arm also checks the CPU oracle.
+python3 quactlize/backends/ppu17/check_replay.py \
+  --baseline "$BASELINE" --candidate "$BUNDLE" \
+  --application "$VALIDATION/single-launch" \
+  --device 0 --expected-uuid "$GPU_UUID" --output "$RESULTS/replay"
+
+# Separate forced-cold single-launch profiles; never mix these times into
+# the rotating benchmark. Host performance-counter permission is required.
+python3 quactlize/backends/ppu17/profile.py \
+  --bundle "$BUNDLE" --application "$VALIDATION/single-launch" \
+  --ncu "$CUDA_ROOT/bin/ncu" \
+  --device 0 --expected-uuid "$GPU_UUID" --output "$RESULTS/profile"
+```
+
+All result directories must be fresh. `single-launch --raw-output FILE`
+exclusively creates a full-byte result after numerical validation, including
+output guards; this option is for same-math replay, not timing. The memory
+suite explicitly enables TMA bulk-copy and warpgroup-MMA checking.
+
+Current H800 evidence and outstanding native gates are in
+`docs/ppu17-integration.md`. Hardware-counter permission failures leave
+profiling unadmitted; they do not justify changing host driver settings or
+inferring missing counters from elapsed time.

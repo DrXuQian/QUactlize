@@ -62,6 +62,16 @@ def validate_result(row):
         raise ValueError("rotating working set does not exceed two L2 capacities")
 
 
+def benchmark_points(suite, configs=None, reverse=False):
+    selected = list(range(6)) if configs is None else list(configs)
+    if not selected or len(set(selected)) != len(selected) or any(c not in range(6) for c in selected):
+        raise ValueError("configs must be a nonempty unique subset of 0..5")
+    shapes = [(1, False), (128, False), (65, True)] if suite == "baseline" else [(9, True)]
+    points = [(m, grouped, route, config) for m, grouped in shapes
+              for route in (0, 1) for config in selected]
+    return list(reversed(points)) if reverse else points
+
+
 def run_point(command, env, log, device, uuid, timeout):
     telemetry = []
     quiet = 0
@@ -137,6 +147,9 @@ def main():
     parser.add_argument("--compute", type=int, choices=(0,1), default=1)
     parser.add_argument("--cache", choices=("warm","rotating"), default="rotating")
     parser.add_argument("--suite", choices=("smoke","baseline"), default="smoke")
+    parser.add_argument("--configs", type=int, nargs="+", choices=range(6),
+                        help="bounded reconfirmation subset; default: all six configs")
+    parser.add_argument("--reverse", action="store_true", help="reverse point order for reconfirmation")
     args = parser.parse_args()
     app, bundle, out = args.application.resolve(), args.bundle.resolve(), args.output.resolve()
     manifest = json.loads((bundle/"manifest.json").read_text())
@@ -146,8 +159,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "CUDA_VISIBLE_DEVICES": args.device, "Q17_BENCH_GUARDED": "1",
            "LD_LIBRARY_PATH": str(bundle) + (":" + os.environ["LD_LIBRARY_PATH"] if os.environ.get("LD_LIBRARY_PATH") else "")}
-    shapes = [(1, False), (128, False), (65, True)] if args.suite == "baseline" else [(9, True)]
-    points = [(m, grouped, route, config) for m,grouped in shapes for route in (0,1) for config in range(6)]
+    points = benchmark_points(args.suite, args.configs, args.reverse)
     receipt = {"application_sha256":sha(app), "library_sha256":sha(lib), "runner_sha256":sha(__file__),
                "gpu_uuid":args.expected_uuid, "points":points, "results":[], "scope":"HOPPER_BASELINE_NOT_PRODUCTION_SELECTION",
                "isolation":"PRECHECK_AND_100MS_SAMPLED_PROCESS_MONITOR_NOT_DRIVER_RESERVATION"}
