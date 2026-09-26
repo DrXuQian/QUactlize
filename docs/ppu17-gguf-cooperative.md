@@ -93,7 +93,19 @@ Sanitizer admission is separate. The direct executable's scalar OOB negative
 is detected, but an undersized TMA output was not reported by the installed
 tool. Do not treat that as proof of valid output sizing. Output guards and
 host ownership checks are retained; full memory/race/synchronization coverage
-is tracked independently in the task artifact directory.
+is tracked independently in the task artifact directory. The stage4 direct
+cohort is complete:18 positive cells (three configs x two dtypes x three
+tools) plus the scalar negative, all admitted in `direct-memory-v7`. Foreign
+job interruptions were resumed with each retained log's identity checked.
+For stage8, the scalar negative and all three FP16 memcheck cases passed;
+the remaining BF16/race/sync cells were interrupted by other GPU work and
+remain pending (`stage8-memory-v2`). Do not promote the stage8 screen winner
+as a fully admitted default yet.
+
+The final build/replay script was exercised as `build-v3` (155.77s total),
+including the direct smoke executable. Its12 device instruction bodies match
+the measured `build-v2` exactly; timing receipts remain bound to `build-v2`,
+not relabeled as measurements of a new DSO.
 
 ## FQ continuation boundary
 

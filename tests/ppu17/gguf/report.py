@@ -12,6 +12,7 @@ def main():
     p.add_argument('--root',type=Path,required=True)
     p.add_argument('--remote-root',type=Path,required=True)
     p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--memory',type=Path,help='optional completed direct sanitizer receipt')
     a=p.parse_args();a.root=a.root.resolve(strict=True)
     if a.output.exists():raise ValueError('fresh report output required')
     a.output.mkdir(parents=True)
@@ -55,11 +56,21 @@ def main():
                 'clocks':r['clocks'],'admission':'SCREEN_ONLY_SEE_PAIR_CLOCK_GATE'})
     with (a.output/'benchmark.csv').open('w') as stream:
         writer=csv.DictWriter(stream,fieldnames=list(rows[0]));writer.writeheader();writer.writerows(rows)
+    memory={'status':'NOT_ATTACHED','limitation':'TMA_OUTPUT_NEGATIVE_NOT_DETECTED'}
+    if a.memory:
+        saved=json.loads(a.memory.read_text())
+        if saved['status']!='PASS' or len(saved['cases'])!=19:
+            raise ValueError('direct sanitizer cohort incomplete')
+        for record in saved['cases']:
+            if record['status']!='PASS' or sha(resolve(record['log']))!=record['log_sha256']:
+                raise ValueError('sanitizer case/log differs')
+        memory.update(status='PASS_SCOPED_3_CONFIGS_2_DTYPES_3_TOOLS_PLUS_SCALAR_NEGATIVE',
+                      receipt_sha256=sha(a.memory),library_sha256=saved['library_sha256'])
     result={'status':'CHECKPOINT_COMPLETE_NOT_PRODUCT_ADMISSION','numeric':numeric,
             'initial_points':len(screen['points']),'stage_points':len(stages['points']),
             'stage_pairs':pairs,'authority_sha256':authorities,
             'scope':'DENSE_Q4_K_RESIDENT_SF_F16_BF16_ON_H800',
-            'memory':'PARTIAL_FOREIGN_JOB_INTERRUPTION;TMA_OUTPUT_NEGATIVE_NOT_DETECTED',
+            'memory':memory,
             'not_proven':['FQ','SF_EXPANSION_COST','CANONICAL_LAYOUT_ONLY_ABLATION',
                           'MATURE_LIBRARY_GGUF_PARITY','PPU17_NATIVE','GROUPED','REAL_MODEL']}
     (a.output/'summary.json').write_text(json.dumps(result,indent=2)+'\n')
