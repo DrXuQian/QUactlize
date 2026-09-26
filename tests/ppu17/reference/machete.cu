@@ -1,6 +1,6 @@
 // Diagnostic standalone instantiation of vLLM Machete (Apache-2.0).
 // Kernel/collective/prepacked layout headers are pinned and never edited.
-// Types below match upstream MacheteKernelTemplate's W4A16 affine branch;
+// Types below match upstream MacheteKernelTemplate's GPTQ symmetric branch;
 // only the torch::Tensor host wrapper is replaced by the small C/POD boundary.
 #include "common.cuh"
 #include "cutlass/cutlass.h"
@@ -17,7 +17,7 @@ template<class T, int NTile, int MTile, int ClusterN> struct Machete {
   using Schedule = cutlass::gemm::KernelTmaWarpSpecializedCooperative;
   using Tile = Shape<Int<NTile>, Int<MTile>, _64>;
   using Cluster = Shape<Int<ClusterN>, _1, _1>;
-  using Packing = machete::PrepackedLayoutBTemplate<T, cutlass::uint4b_t, T, float,
+  using Packing = machete::PrepackedLayoutBTemplate<T, cutlass::vllm_uint4b8_t, T, float,
       cutlass::layout::ColumnMajor, Schedule>;
   using Epilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
       cutlass::arch::Sm90, cutlass::arch::OpClassTensorOp, Tile, Cluster,
@@ -28,7 +28,7 @@ template<class T, int NTile, int MTile, int ClusterN> struct Machete {
       cutlass::epilogue::fusion::Sm90EVT<cutlass::epilogue::fusion::Sm90AccFetch>>::CollectiveOp;
   using Mainloop = typename cutlass::gemm::collective::VLLMCollectiveBuilder<
       cutlass::gemm::collective::MacheteKernelTag, cutlass::arch::Sm90,
-      cutlass::arch::OpClassTensorOp, tuple<cutlass::uint4b_t, T, T>, Packing, 32,
+      cutlass::arch::OpClassTensorOp, tuple<cutlass::vllm_uint4b8_t, T>, Packing, 32,
       T, cutlass::layout::ColumnMajor, 8, float, Tile, Cluster,
       cutlass::gemm::collective::StageCountAutoCarveout<sizeof(typename Epilogue::SharedStorage)>,
       Schedule>::CollectiveOp;
@@ -43,10 +43,9 @@ template<class T, int NTile, int MTile, int ClusterN> struct Machete {
       auto stride_a = make_stride(int64_t(c.k), _1{}, int64_t(0));
       auto stride_s = make_stride(_1{}, int64_t(c.n), int64_t(0));
       typename Kernel::MainloopArguments mainloop{
-          static_cast<cutlass::uint4b_t const *>(c.b), UnusedBStride{},
+          static_cast<cutlass::vllm_uint4b8_t const *>(c.b), UnusedBStride{},
           static_cast<T const *>(c.a), stride_a,
-          static_cast<T const *>(c.scales), stride_s, 64,
-          static_cast<T const *>(c.zeros)};
+          static_cast<T const *>(c.scales), stride_s, 128};
       typename Kernel::EpilogueArguments epilogue{{}, nullptr, {}, static_cast<T *>(c.output), stride_s};
       args = typename Gemm::Arguments{cutlass::gemm::GemmUniversalMode::kGemm,
           {c.n, c.m, c.k, 1}, mainloop, epilogue};
@@ -109,15 +108,13 @@ Q17_REF_EXPORT int q17_ref_prepare(q17_ref_call const *c, void **out) {
   return q17_reference::guard([&] {
     if (!c || !out) throw std::runtime_error("null call/plan output");
     *out = nullptr; q17_reference::validate(*c);
-    *out = c->dtype == 0 ? q17_reference::prepare<cutlass::half_t>(*c)
-                        : q17_reference::prepare<cutlass::bfloat16_t>(*c);
+    *out = q17_reference::prepare<cutlass::half_t>(*c);
   });
 }
 Q17_REF_EXPORT int q17_ref_pack(int dtype, int n, int k, uint8_t const *input, uint8_t *out) {
   return q17_reference::guard([&] {
-    if (!input || !out || n<=0 || n%128 || k<=0 || k%64 || (dtype!=0 && dtype!=1))
+    if (!input || !out || n<=0 || n%128 || k<=0 || k%128 || dtype!=0)
       throw std::runtime_error("invalid Machete packing geometry");
-    if (dtype==0) q17_reference::pack<cutlass::half_t>(n,k,input,out);
-    else q17_reference::pack<cutlass::bfloat16_t>(n,k,input,out);
+    q17_reference::pack<cutlass::half_t>(n,k,input,out);
   });
 }

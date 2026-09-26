@@ -3,8 +3,9 @@
 #include <stdint.h>
 
 // Diagnostic only. All inputs are already resident and representation-specific.
-// dtype:0=F16,1=BF16. A/C are contiguous row-major; metadata group_size=64.
-// Machete zeros are additive; Marlin floating zeros are subtractive.
+// Active contract: existing GPTQ symmetric INT4, group128, desc_act=false.
+// dtype=0: FP16 A/scales/C; FP32 accumulation. zeros MUST be NULL.
+// Native packing differs, but every code and original scale bit is retained.
 struct q17_ref_call {
   int32_t dtype, config, m, n, k;
   void const *a, *b, *scales, *zeros;
@@ -13,6 +14,7 @@ struct q17_ref_call {
 
 #define Q17_REF_EXPORT extern "C" __attribute__((visibility("default")))
 Q17_REF_EXPORT char const *q17_ref_error();
+Q17_REF_EXPORT char const *q17_ref_contract();
 Q17_REF_EXPORT int q17_ref_config_count();
 Q17_REF_EXPORT char const *q17_ref_config_name(int config);
 Q17_REF_EXPORT int q17_ref_prepare(q17_ref_call const *, void **plan);

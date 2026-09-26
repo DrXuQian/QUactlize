@@ -11,7 +11,7 @@ struct Config { void const *kernel; int threads, tn, tk, tm; };
 template<vllm::ScalarTypeId D, int TM, int TN, int TK, int Threads, bool M8>
 Config config() {
   return {reinterpret_cast<void const *>(
-      marlin::Marlin<D,vllm::kU4.id(),D,D,Threads,TM,TN/16,TK/16,M8,4,4,true>),
+      marlin::Marlin<D,vllm::kU4B8.id(),D,D,Threads,TM,TN/16,TK/16,M8,4,8,false>),
       Threads,TN,TK,TM};
 }
 template<vllm::ScalarTypeId D> Config configuration(q17_ref_call const &c) {
@@ -42,11 +42,11 @@ struct Prepared : Plan {
     checked(cudaDeviceGetAttribute(&sms,cudaDevAttrMultiProcessorCount,device),"SM count");
     checked(cudaDeviceGetAttribute(&shared,cudaDevAttrMaxSharedMemoryPerBlockOptin,device),"shared limit");
     if (c.n%cfg.tn || c.k%cfg.tk) throw std::runtime_error("Marlin tile divisibility");
-    // Upstream W4A16 floating-zero cache-size formula, stages4/group64.
+    // Upstream scale-only cache-size formula, stages4/group128, no zeros.
     int a=4*cfg.tm*16*cfg.tk*2, b=4*cfg.tk*cfg.tn/2;
     int reduction=cfg.tm*16*(cfg.tn+8)*2, bias=cfg.tn*2;
-    int scales=4*((cfg.tk+63)/64)*cfg.tn*2;
-    int need=a+std::max({b,reduction,std::min(b,reduction)+bias})+2*scales;
+    int scales=4*((cfg.tk+127)/128)*cfg.tn*2;
+    int need=a+std::max({b,reduction,std::min(b,reduction)+bias})+scales;
     if (need>shared) throw std::runtime_error("Marlin shared footprint does not fit");
     checked(cudaFuncSetAttribute(cfg.kernel,cudaFuncAttributeMaxDynamicSharedMemorySize,shared),"Marlin opt-in shared");
     int scratch_m=std::min(64, ((c.m+15)/16)*16);
@@ -61,7 +61,7 @@ struct Prepared : Plan {
                *zeros=static_cast<int4 const *>(call.zeros);
     float const *a_scales=nullptr, *global_scale=nullptr;
     int const *g_idx=nullptr;
-    int groups=call.k/64, m=call.m, n=call.n, k=call.k, lda=k;
+    int groups=call.k/128, m=call.m, n=call.n, k=call.k, lda=k;
     auto locks=reinterpret_cast<int *>(static_cast<uint8_t *>(workspace)+partial_bytes);
     bool has_bias=false, atomic=false, fp32_reduce=true;
     void *args[]={&a,&b,&c,&tmp,&bias,&a_scales,&scales,&global_scale,&zeros,&g_idx,
@@ -82,14 +82,13 @@ Q17_REF_EXPORT int q17_ref_prepare(q17_ref_call const *c, void **out) {
   return q17_reference::guard([&] {
     if (!c || !out) throw std::runtime_error("null call/plan output");
     *out=nullptr; q17_reference::validate(*c);
-    auto cfg=c->dtype==0 ? q17_reference::configuration<vllm::kFloat16.id()>(*c)
-                        : q17_reference::configuration<vllm::kBFloat16.id()>(*c);
+    auto cfg=q17_reference::configuration<vllm::kFloat16.id()>(*c);
     *out=new q17_reference::Prepared(*c,cfg);
   });
 }
 Q17_REF_EXPORT int q17_ref_pack(int dtype,int n,int k,uint8_t const *input,uint8_t *out) {
   return q17_reference::guard([&] {
-    if (!input || !out || n<=0 || n%64 || k<=0 || k%16 || (dtype!=0 && dtype!=1))
+    if (!input || !out || n<=0 || n%128 || k<=0 || k%128 || dtype!=0)
       throw std::runtime_error("invalid Marlin packing geometry");
     // The pinned get_weight_perm(4,is_a_8bit=False), followed by its 16x64
     // tile permutation. No activation quantization or reference kernel edits.

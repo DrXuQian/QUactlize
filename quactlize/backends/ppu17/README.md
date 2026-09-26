@@ -21,7 +21,7 @@ No change to the existing offline K-pack bytes is required.
 
 The WGMMA producer decodes B to swizzled shared memory. It is a quantized GEMM,
 not a full-matrix dequantization followed by GEMM. Synchronous staging supplies
-a baseline. A second producer uses two raw TMA stages for A and the canonical
+a bring-up control, NOT a representative optimized Quactlize baseline. A second producer uses two raw TMA stages for A and the canonical
 B low/high planes; a stage is refilled only after its GMMA reads finish. TMA
 currently requires A storage to match the FP16/BF16 compute type and 16-byte
 global row alignment; other typed inputs use the synchronous/SIMT inventory.
@@ -51,8 +51,24 @@ challenges. They reuse a packed word and its typed affine pair, retain FP32
 in-CTA reduction, and specialize A storage without changing canonical bytes.
 They are not an automatically selected production policy. The original six
 configurations retain their indices and remain the inventory for large M and
-other formats. See [reference comparison](../../../tests/ppu17/reference/README.md)
-for the H800 Machete/Marlin protocol and its group64 compatibility boundary.
+other formats. The former common-group64 reference experiment was rejected;
+do not use those timings for product comparison or continue that optimization.
+
+## Existing GPTQ contract on Hopper
+
+`gptq.cuh` ports the existing FinegrainedScaleOnly INT4 contract, initially
+FP16 A/scales/C and group128, with FP32 accumulators. It reuses CUTLASS3.6's
+RS/TMA warp-specialized mixed-input collective and Stream-K scheduler, not
+the simplified GGUF staging kernels above. `mixed_input_policy.cuh` adapts
+one fork-local builder tag to the schedule expected by that collective.
+The header is exercised through a standalone benchmark entry; the GGUF-only
+q17 v1 ABI and existing dispatcher do not yet expose GPTQ.
+
+See [GPTQ comparison](../../../tests/ppu17/reference/README.md). Native layouts
+may differ, but original codes, FP16 scale bits, groups and rounding may not.
+The legacy dense/grouped Marlin scheduler and standalone Marlin collective
+already exist in Quactlize. Their SM90 warpgroup/fixup adaptation is pending,
+not a missing algorithm to replace with a new naive kernel.
 
 ## Build and local validation
 

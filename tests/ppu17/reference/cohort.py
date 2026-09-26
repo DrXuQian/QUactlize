@@ -1,4 +1,4 @@
-"""Twelve fixed comparison points; stop and preserve output on any failed gate."""
+"""Six GPTQ comparison points; stop and preserve output on any failed gate."""
 import argparse
 import json
 from pathlib import Path
@@ -14,13 +14,13 @@ def main():
         raise ValueError('cohort output must be fresh')
     args.output.mkdir(parents=True,exist_ok=True)
     rows=[]
-    points=[(dtype,m,n,k) for dtype in (0,1) for n,k in ((512,2048),(4096,4096)) for m in (1,8,128)]
+    points=[(0,m,n,k) for n,k in ((512,2048),(4096,4096)) for m in (1,8,128)]
     for index,(dtype,m,n,k) in enumerate(points):
         out=args.output/f'd{dtype}-m{m}-n{n}-k{k}'
         command=[sys.executable,str(Path(__file__).with_name('compare.py')),*common,
                  '--output',str(out),'--dtype',str(dtype),'--m',str(m),'--n',str(n),'--k',str(k)]
         if index%2: command+=['--reverse']
-        print(f'PPU17_REFERENCE_COHORT point={index+1}/12 dtype={dtype} shape={m}x{n}x{k}',flush=True)
+        print(f'PPU17_REFERENCE_COHORT point={index+1}/{len(points)} dtype={dtype} shape={m}x{n}x{k}',flush=True)
         rc=subprocess.run(command).returncode
         row={'point':[dtype,m,n,k],'command':command,'returncode':rc,'summary':str(out/'summary.json')}
         if not rc:
@@ -33,7 +33,8 @@ def main():
                 best['machete']['median_us'],best['marlin']['median_us'])-1)
             print('PPU17_REFERENCE_POINT '+json.dumps(row),flush=True)
         rows.append(row)
-        (args.output/'summary.json').write_text(json.dumps({'complete':len(rows)==12 and rc==0,
+        (args.output/'summary.json').write_text(json.dumps({'complete':len(rows)==len(points) and rc==0,
+            'contract':'GPTQ_SYM_INT4_G128_F16_V1',
             'scope':'SCREEN_ONLY_CONFIRMATION_REQUIRED','results':rows},indent=2)+'\n')
         if rc:
             raise SystemExit(rc)

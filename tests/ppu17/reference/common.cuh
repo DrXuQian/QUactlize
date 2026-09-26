@@ -25,9 +25,9 @@ struct Plan {
   }
 };
 inline void validate(q17_ref_call const &c) {
-  if ((c.dtype != 0 && c.dtype != 1) || c.m < 1 || c.n < 128 || c.n % 128 ||
-      c.k < 256 || c.k % 256 || !c.a || !c.b || !c.scales || !c.zeros || !c.output)
-    throw std::runtime_error("invalid common W4A16 group64 fixture");
+  if (c.dtype != 0 || c.m < 1 || c.n < 128 || c.n % 128 ||
+      c.k < 128 || c.k % 128 || !c.a || !c.b || !c.scales || c.zeros || !c.output)
+    throw std::runtime_error("requires GPTQ symmetric INT4 group128, FP16 A/scales/C, NULL additive zeros");
   int device = 0;
   checked(cudaGetDevice(&device), "current device");
   cudaDeviceProp properties{};
@@ -42,6 +42,7 @@ template<class F> int guard(F &&f) {
 }
 
 Q17_REF_EXPORT char const *q17_ref_error() { return q17_reference::last_error.c_str(); }
+Q17_REF_EXPORT char const *q17_ref_contract() { return "GPTQ_SYM_INT4_G128_F16_V1"; }
 Q17_REF_EXPORT int q17_ref_execute(void *plan) {
   return q17_reference::guard([&] {
     if (!plan) throw std::runtime_error("null reference plan");

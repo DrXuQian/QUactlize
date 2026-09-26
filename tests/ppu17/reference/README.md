@@ -1,91 +1,97 @@
-# H800 reference comparison
+# H800 GPTQ comparison
 
-This is an experimental prepared-kernel comparison, not a vLLM Python
-benchmark or a production dependency. The goal is to beat **both** references
-at each declared shape. Beating the original Quactlize baseline is not enough.
-H800 evidence does not admit native PPU1.7 execution.
+Compare Quactlize's existing **GPTQ symmetric INT4** semantics against
+Machete and Marlin, with independent CPU numerical checks. Do not adapt GGUF
+groups or generate a restricted GGUF subset to fit the reference kernels.
+The previous common-group64 GGUF experiment is superseded and its bundles
+and results are explicitly rejected by this runner.
 
-The device implementations are unmodified vLLM Machete and Marlin, pinned to
-`11ba93f3646d4c5476c3b3fd56835589701f0fb1`. Their CUTLASS dependency is v4.4.2,
-`da5e086dab31d63815acafdac9a9c5893b1c69e2`. Do not mix those headers with
-the Quactlize PPU CUTLASS3.6.0 include graph. Only the host Tensor wrappers are
-replaced by a small diagnostic C boundary. The strict host-check shim is for
-Marlin's scalar type descriptor, not a disabled-check build.
+## Fixed contract
 
-## Compared work
+- Group size128, desc_act=false, zero point8, all16 uint4 codes. The importer
+  is the existing `tools/dump_real_weights.py:unpack_gptq_expert`; it supports
+  the directly stored zero8 convention, not an inferred AutoGPTQ +1 variant.
+- Original FP16 scales [K/128,N], FP16 A/C, FP32 accumulation. Weight decode
+  is FP16((q-8)*scale). No requantization, merged groups, artificial GGUF units,
+  metadata prepass, additive-zero tensor or activation quantization.
+- Only lossless native weight/scale permutations differ. Quactlize uses
+  signed int4 K-major storage for the Hopper ScaleOnly collective; Machete
+  and Marlin use their native u4b8 packing. Original scale bits are checked.
+- The default fixture is **synthetic GPTQ-format data**, with independent,
+  arbitrary FP16 group scales. It is not a model checkpoint. An exact-shape
+  NPZ of original qweight/qzeros/scales/group_size/desc_act can instead be
+  supplied with `compare.py --weights FILE`. It is never cropped or re-quantized.
+- Dense first: M1/8/128, N512/K2048 and N4096/K4096. Grouped GPTQ and other
+  dtypes/group sizes require their own admission; this experiment does not
+  claim those ports are already complete.
 
-- Dense W4A16: M1/8/128, N512/K2048 and N4096/K4096, FP16 and BF16 A/C,
-  FP32 accumulation and FP32 Marlin cross-CTA reduction.
-- Nine unique Machete default-heuristic schedules and all three upstream
-  small/large Marlin launch geometries. Reference leaders are measured,
-  never selected to make a candidate look faster.
-- Machete supports group64/128, not arbitrary GGUF Q4 group32. The common
-  fixture uses logical group64; canonical K-pack repeats each affine pair
-  into two group32 entries. This is a common subset, **not** a claim that
-  Machete consumes general GGUF group32 or canonical K-pack bytes.
-- All16 codes, nonconstant scale/min, exact dyadic typed weights. A complete
-  CPU FP64 dot of those typed weights checks every output, including guards
-  and nonfinite values. Machete's zero is additive after scaling; Marlin's
-  floating zero is a code-domain value multiplied by scale inside the kernel.
-- Allocation, offline packing and plan creation are excluded. Required
-  per-call initialization and reduction are included. Sequential plans share
-  one scratch allocation, as a resident caller can; weights rotate across a
-  full ring exceeding2.25x the queried L2 capacity. The helper does not create
-  an independent cold scratch allocation for every weight copy.
-- Graph capture and upload are excluded. Each configuration has>=250ms of
-  device warmup,11 event samples, matching before/after SM/memory clocks and
-  a live GPU process guard. Other GPU workloads invalidate the run; they are
-  never terminated by this test. Clocks and driver settings are not modified.
+Quactlize's new `quactlize/backends/ppu17/gptq.cuh` ports the existing
+FinegrainedScaleOnly contract to PPU CUTLASS3.6.0, with an isolated host
+benchmark entry in `quactlize.cu`. The tag adapter in
+`mixed_input_policy.cuh` bridges that fork's suffixed builder policy to the
+base schedule required by its existing mixed-input collective. It changes
+neither arithmetic nor the dependency files. No actlize, GGUF ABI, canonical
+packing, production selector or PPU1.0/1.5 source is changed.
 
-The separate `cached-decode` numerical gate uses genuine different group32
-metadata, N257 tails, dense M1..8, empty/ragged experts and all three storage
-types. Common-fixture reference parity alone is not the production numeric
-gate. GEMV and grouped GEMV performance admission are separate.
+This is a prepared-kernel comparison, not a vLLM Python benchmark. Reference
+device headers are unmodified vLLM
+`11ba93f3646d4c5476c3b3fd56835589701f0fb1`, with their own CUTLASS4.4.2
+`da5e086dab31d63815acafdac9a9c5893b1c69e2`.
+Quactlize uses PPU CUTLASS3.6.0
+`023e82d03e80b4d5982f664925e15499033df314`.
+The include graphs remain separate.
 
-## Build
-
-Use clean pinned source checkouts and an external fresh output directory:
+## Build and host checks
 
 ```bash
 python3 tests/ppu17/reference/build.py \
   --vllm /path/to/pinned-vllm \
   --cutlass /path/to/pinned-reference-cutlass \
+  --ppu-cutlass /path/to/pinned-ppu-cutlass \
   --compiler /usr/local/cuda-12.8/bin/nvcc \
-  --output /workspace/q17-reference-build
-```
+  --output /workspace/q17-gptq-build
 
-No vLLM or Torch development package is linked. The CUDA driver stub is used
-only at link time; the actual installed driver must provide tensor-map APIs
-at execution. NumPy and Torch are required by the Python fixture/runner.
-
-Run CPU-only fixture checks, optionally comparing Marlin packing byte for
-byte with the pinned upstream Python functions:
-
-```bash
 python3 tests/ppu17/reference/test_fixture.py \
-  --vllm /path/to/pinned-vllm --references /workspace/q17-reference-build
+  --references /workspace/q17-gptq-build \
+  --vllm /path/to/pinned-vllm
 ```
 
-## Execute on an idle physical H800
+Use fresh build/result directories. The host checks preserve original
+quantization and reject unsupported zero conventions, group changes,
+act-order, precision changes and old comparison receipts. Native signed-int4
+packing is independently inverted; Marlin packing/scales are compared with
+the pinned upstream CPU implementation. NumPy is needed for the importer;
+Torch is needed for upstream CPU checks and device runs, not C++ compilation.
 
-`BUNDLE` is a separately built, validated PPU1.7 CUDA-source bundle. The native
-PPU compiler is not used for this reference comparison.
+## Physical H800 measurement
 
 ```bash
 python3 tests/ppu17/reference/cohort.py \
-  --references /workspace/q17-reference-build \
-  --bundle "$BUNDLE" \
+  --references /workspace/q17-gptq-build \
   --backend-source quactlize/backends/ppu17 \
-  --expected-uuid "$GPU_UUID" \
-  --output /workspace/q17-reference-screen
+  --expected-uuid GPU-REPLACE-WITH-VERIFIED-UUID \
+  --device 0 --output /workspace/q17-gptq-screen
+
+python3 tests/ppu17/reference/report.py \
+  --cohort /workspace/q17-gptq-screen \
+  --output /workspace/q17-gptq-report
 ```
 
-This screens12 points and records every configuration. `compare.py` runs
-one point; `--configs arm:index ...` is only for a declared bounded challenge.
-`reconfirm.py --previous SCREEN --rounds 3` retains the two measured leading
-configurations of each reference and challenges decode with the previous
-Quactlize leader and the two16-warp candidates. It accepts the same bundle,
-backend-source and device arguments, and requires a fresh output directory.
+The six points contain18 configs each: nine pinned Machete heuristic
+schedules, three native Marlin geometries and six initial Quactlize Hopper
+GPTQ configs. A screen is not optimality proof. Reconfirmation retains the
+two measured leaders per arm; it must use a GPTQ screen, never the retired
+GGUF-subset timings.
 
-Do not use this test to claim group32 reference support, full-model latency,
-MoE speed, native PPU1.7 readiness or an improvement on unmeasured shapes.
+A complete CPU FP64 dot of FP16 reconstructed weights checks every output,
+guards and nonfinite values before timing. Allocation, packing, preparation,
+JIT and graph upload are excluded; required workspace resets and full
+reductions remain included. Sequential plans share workspace and each arm
+rotates weights across a complete ring larger than2.25x queried L2.
+Every config has >=250ms device warmup and11 event samples at stable clocks.
+The process guard refuses pre-existing GPU workloads and stops only its own
+child if another workload appears. No driver settings or other jobs change.
+
+The goal remains to beat both measured references per shape, not merely an
+old Quactlize implementation. No performance or native PPU1.7 admission is
+implied by host compilation; physical H800 results are a separate tier.

@@ -1,4 +1,4 @@
-"""Reconfirm a bounded decode challenge against prior measured reference leaders."""
+"""Reconfirm the two measured GPTQ leaders per arm, without changing semantics."""
 import argparse
 import json
 from pathlib import Path
@@ -13,25 +13,24 @@ def main():
     p.add_argument('--rounds',type=int,choices=(1,3),default=3)
     a,common=p.parse_known_args()
     prior=json.loads((a.previous/'summary.json').read_text())
-    if not prior['complete']:
-        raise ValueError('previous cohort is incomplete')
+    if not prior['complete'] or prior.get('contract')!='GPTQ_SYM_INT4_G128_F16_V1':
+        raise ValueError('complete GPTQ cohort required; rejected GGUF-subset results cannot seed this run')
     if a.output.exists() and any(a.output.iterdir()):
         raise ValueError('reconfirmation output must be fresh')
     a.output.mkdir(parents=True,exist_ok=True)
     points=[]
     for case in prior['results']:
         dtype,m,n,k=case['point']
-        if m>8: continue
-        summary=json.loads(Path(case['summary']).read_text())
+        summary=json.loads((a.previous/f'd{dtype}-m{m}-n{n}-k{k}'/'summary.json').read_text())
         if summary['status']!='PASS': raise ValueError('previous point not admitted')
         rows=summary['result'][0]['rows']
         configs=[]
-        for arm in ('machete','marlin'):
+        for arm in ('machete','marlin','quactlize'):
             leaders=sorted([x for x in rows if x['arm']==arm],key=lambda x:x['median_us'])[:2]
             configs.extend(f"{arm}:{x['config']}" for x in leaders)
-        configs.extend('quactlize:'+str(i) for i in sorted({case['best']['quactlize']['config'],9,10}))
         points.append((case['point'],configs))
-    receipt={'scope':'PAIRED_HOPPER_DECODE_RECONFIRMATION','rounds':a.rounds,'points':points,'results':[]}
+    receipt={'scope':'PAIRED_HOPPER_GPTQ_RECONFIRMATION','contract':prior['contract'],
+             'rounds':a.rounds,'points':points,'results':[]}
     for r in range(a.rounds):
         for point,configs in (points if r%2==0 else reversed(points)):
             dtype,m,n,k=point

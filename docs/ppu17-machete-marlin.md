@@ -1,4 +1,11 @@
-# H800 Machete / Marlin comparison — target remains open
+# H800 Machete / Marlin comparison — superseded experiment
+
+The user rejected this common-group64 GGUF-subset comparison on 2026-09-26.
+It is NOT the acceptance workload and must not drive production selection.
+The replacement uses Quactlize's existing **GPTQ symmetric INT4, group128,
+FP16 scales, FP32 accumulation** contract. Only lossless native packing is
+allowed; no group merging, regenerated scales or requantization. The table
+below is retained solely as historical evidence, not an active tuning plan.
 
 Goal: outperform **both** implementations at the declared comparable shapes,
 not merely improve the initial Quactlize backend. No default production route
