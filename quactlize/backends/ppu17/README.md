@@ -45,6 +45,15 @@ features; defining `ACOMPUTE_VERSION=10700` on a PPU1.5 compiler is insufficient
 The backend is experimental until those gates pass. It is not enabled by the
 existing dispatcher or exported by the shipping six-library bundle.
 
+Q4 decode has five additional experimental configurations (indices6..10)
+for `max_rows<=8`: three4-warp N4/N8/N16 mappings and two16-warp N4/N16
+challenges. They reuse a packed word and its typed affine pair, retain FP32
+in-CTA reduction, and specialize A storage without changing canonical bytes.
+They are not an automatically selected production policy. The original six
+configurations retain their indices and remain the inventory for large M and
+other formats. See [reference comparison](../../../tests/ppu17/reference/README.md)
+for the H800 Machete/Marlin protocol and its group64 compatibility boundary.
+
 ## Build and local validation
 
 Use an external build directory, not the old `build.sh`/actlize include graph:

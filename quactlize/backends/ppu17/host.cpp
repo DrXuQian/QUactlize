@@ -16,6 +16,11 @@ constexpr q17_config_v1 configs[] = {
     {1, sizeof(q17_config_v1), Q17_WGMMA, 64, 128, 64, 128, 0},
     {1, sizeof(q17_config_v1), Q17_WGMMA, 64, 64, 128, 128, 0},
     {1, sizeof(q17_config_v1), Q17_TMA_WGMMA, 64, 64, 64, 128, 0},
+    {1, sizeof(q17_config_v1), Q17_SIMT, 1, 4, 32, 128, 4},
+    {1, sizeof(q17_config_v1), Q17_SIMT, 1, 8, 32, 128, 8},
+    {1, sizeof(q17_config_v1), Q17_SIMT, 1, 16, 32, 128, 16},
+    {1, sizeof(q17_config_v1), Q17_SIMT, 1, 4, 32, 512, 4},
+    {1, sizeof(q17_config_v1), Q17_SIMT, 1, 16, 32, 512, 16},
 };
 bool dtype(int type) { return type >= Q17_F16 && type <= Q17_F32; }
 bool same_config(q17_config_v1 const &a, q17_config_v1 const &b) {
@@ -132,7 +137,7 @@ extern "C" int q17_sizes_query_v1(q17_problem_v1 const *p, q17_sizes_v1 *out) {
 
 extern "C" int q17_config_count_v1(q17_problem_v1 const *p) {
   int status = quactlize::ppu17::validate_problem(p);
-  return status ? -status : int(sizeof(quactlize::ppu17::configs) / sizeof(q17_config_v1));
+  return status ? -status : (p->qtype == 12 && p->max_rows <= 8 ? 11 : 6);
 }
 
 extern "C" int q17_can_implement_v1(q17_problem_v1 const *p, q17_config_v1 const *c) {
@@ -143,6 +148,9 @@ extern "C" int q17_can_implement_v1(q17_problem_v1 const *p, q17_config_v1 const
     return error(Q17_INVALID, "config ABI differs");
   for (auto const &known : configs) {
     if (!same_config(known, *c)) continue;
+    if (c->engine == Q17_SIMT && c->tile_k == 32 &&
+        (p->qtype != 12 || p->max_rows > 8))
+      return error(Q17_UNSUPPORTED, "cached SIMT inventory is Q4 decode only");
     if (c->engine == Q17_TMA_WGMMA &&
         (p->input_type != p->compute_type || p->n % 8 ||
          int64_t(p->k) * p->experts / 2 > std::numeric_limits<int32_t>::max()))

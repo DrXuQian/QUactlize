@@ -10,8 +10,16 @@ import subprocess
 from check_device import arguments, gpu_identity, gpu_processes, sha
 
 
-def cases():
+def cases(suite="baseline"):
     result = []
+    if suite=="cached-decode":
+        for config in (6,7,8,9,10):
+            for tool in ("memcheck","racecheck","synccheck"):
+                for compute in (0,1):
+                    result.append({"tool":tool,"point":dict(q=12,compute=compute,config=config,
+                        route=compute,rows=[0,1,2,8,0],m=8,n=257,k=1024,
+                        input=2,output=2,phase="gemm")})
+        return result
     def add(tool, q, compute, config, storage=None, phase="gemm"):
         result.append({"tool":tool, "point":dict(q=q, compute=compute, config=config,
             route=0, rows=[0,1,8,9,63,64,65,0], m=9, n=256 if q==8 else 48,
@@ -37,6 +45,7 @@ def main():
     p.add_argument("--output",type=Path,required=True)
     p.add_argument("--expected-uuid",required=True)
     p.add_argument("--device",default="0")
+    p.add_argument("--suite",choices=("baseline","cached-decode"),default="baseline")
     a=p.parse_args()
     bundle,app,tool,out=(v.resolve() for v in (a.bundle,a.application,a.sanitizer,a.output))
     manifest=json.loads((bundle/"manifest.json").read_text())
@@ -47,7 +56,7 @@ def main():
     if gpu_processes(a.device): raise ValueError("GPU has another job")
     if out.exists() and any(out.iterdir()): raise ValueError("result directory must be fresh")
     out.mkdir(parents=True,exist_ok=True)
-    points=cases()
+    points=cases(a.suite)
     receipt={"status":"INCOMPLETE", "scope":"PHYSICAL_HOPPER_MEMORY_NOT_TIMING",
         "gpu":identity, "library_sha256":sha(library), "application_sha256":sha(app),
         "sanitizer_sha256":sha(tool), "sanitizer_version":subprocess.check_output([str(tool),"--version"],text=True),

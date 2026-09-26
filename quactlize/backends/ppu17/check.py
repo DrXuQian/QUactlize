@@ -26,10 +26,10 @@ def inspect(ptx, q):
     if ".target sm_90a" not in ptx:
         raise ValueError("wrong emitted architecture")
     bodies = entries(ptx)
-    families = {"wgmma": 0, "tma_wgmma": 0, "simt": 0, "expand_scales": 0}
+    families = {"wgmma": 0, "tma_wgmma": 0, "simt": 0, "expand_scales": 0, "q4_simt_cached": 0}
     for name, body in bodies.items():
-        family = next((f for f in ("tma_wgmma", "wgmma", "simt", "expand_scales") if f in name), None)
-        if not family or f"ILi{q}E" not in name:
+        family = next((f for f in ("q4_simt_cached", "tma_wgmma", "wgmma", "simt", "expand_scales") if f in name), None)
+        if not family or (family=="q4_simt_cached" and q!=12) or (family!="q4_simt_cached" and f"ILi{q}E" not in name):
             raise ValueError("unexpected kernel entry: " + name)
         families[family] += 1
         if "st.global" not in body:
@@ -42,11 +42,12 @@ def inspect(ptx, q):
                 raise ValueError("missing async completion wait")
         if family == "tma_wgmma" and "cp.async.bulk.tensor" not in body:
             raise ValueError("missing TMA in " + name)
-        if family == "simt" and "fma.rn.f32" not in body:
+        if family in ("simt", "q4_simt_cached") and "fma.rn.f32" not in body:
             raise ValueError("missing FP32 SIMT multiply in " + name)
         if re.search(r"\bppu\.[a-z]", body):
             raise ValueError("legacy PPU assembly leaked into SM90a source target")
-    expected = {"wgmma": 12, "tma_wgmma": 4, "simt": 8, "expand_scales": 2}
+    expected = {"wgmma": 12, "tma_wgmma": 4, "simt": 8, "expand_scales": 2,
+                "q4_simt_cached": 60 if q==12 else 0}
     if families != expected:
         raise ValueError(f"incomplete specialization coverage: {families}")
     return families
@@ -148,7 +149,7 @@ def main():
     backend = Backend(bundle, allow_source_validation=True)
     problem = backend.problem(qtype=12, m=1, n=256, k=512, experts=1, max_rows=1,
                               compute_type=1, input_type=1, output_type=2)
-    if len(backend.configs(problem)) != 6: raise ValueError("Python/C ABI differs")
+    if len(backend.configs(problem)) != 11: raise ValueError("Python/C ABI differs")
     result = {"status": "PASS", "scope": "HOST_AND_CUDA_SM90A_CODEGEN_ONLY", "bundle": str(bundle),
               "library_sha256": manifest["library_sha256"], "specializations": rows,
               "host_contract": contract_log.splitlines()[-1], "single_launch_application": str(out / "single-launch"),
@@ -158,7 +159,7 @@ def main():
               "target_negatives": 2, "codegen_negatives": 18, "exports": names,
               "device_launches": 0, "native_ppu17": "NOT_RUN", "device_numerics": "NOT_RUN", "performance": "NOT_RUN"}
     (out / "validation.json").write_text(json.dumps(result, indent=2) + "\n")
-    print("PPU17_CHECK PASS specializations=156 host_and_abi=PASS device_admission=PENDING output=" + str(out))
+    print("PPU17_CHECK PASS specializations=216 host_and_abi=PASS device_admission=PENDING output=" + str(out))
 
 
 if __name__ == "__main__":

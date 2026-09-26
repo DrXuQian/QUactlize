@@ -50,13 +50,25 @@ void api_contract() {
     bad = p; bad.experts = 2;
     CHECK(q17_config_count_v1(&bad) < 0);
     bad.operation = Q17_GROUPED; bad.max_rows = 5;
-    CHECK(q17_config_count_v1(&bad) == 6);
+    CHECK(q17_config_count_v1(&bad) == (q == 12 ? 11 : 6));
     bad.max_rows = 4;
     CHECK(q17_config_count_v1(&bad) < 0);
     bad = p; bad.struct_bytes--;
     CHECK(q17_config_count_v1(&bad) < 0);
   }
   quactlize_ppu_placed_arrangement_v2 arrangement{};
+  for (int q : {8, 10, 11, 12, 13, 14}) {
+    auto decode=problem(q);
+    decode.m=decode.max_rows=8;
+    CHECK(q17_config_count_v1(&decode)==(q==12 ? 11 : 6));
+    if(q==12) for(int i=6;i<11;++i) {
+      q17_config_v1 cached{};
+      CHECK(q17_config_get_v1(&decode,i,&cached)==0);
+      CHECK(cached.tile_n==cached.lanes_n && cached.tile_k==32);
+      auto prefill=decode; prefill.m=prefill.max_rows=9;
+      CHECK(q17_can_implement_v1(&prefill,&cached)==Q17_UNSUPPORTED);
+    }
+  }
   CHECK(q17_canonical_arrangement_v1(9, &arrangement) != 0);
   CHECK(arrangement.mapping_id == 0);
   CHECK(q17_config_count_v1(nullptr) < 0);

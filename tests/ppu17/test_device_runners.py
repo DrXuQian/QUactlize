@@ -14,6 +14,17 @@ from run_benchmark import benchmark_points, require_idle, run_point, validate_re
 
 
 class Runners(unittest.TestCase):
+    def test_cached_decode_coverage(self):
+        rows=cases("cached-decode")
+        self.assertEqual(len(rows),220)
+        self.assertEqual({p["q"] for p in rows},{12})
+        self.assertEqual({p["config"] for p in rows},{6,7,8,9,10})
+        self.assertEqual({p["m"] for p in rows if p["rows"] is None},set(range(1,9)))
+        self.assertTrue(all(p["n"]==257 for p in rows))
+        memory=memory_cases("cached-decode")
+        self.assertEqual(len(memory),30)
+        self.assertEqual({p["tool"] for p in memory},{"memcheck","racecheck","synccheck"})
+
     def test_bounded_reconfirmation(self):
         self.assertEqual(len(benchmark_points("baseline")), 36)
         selected = benchmark_points("baseline", [0, 1, 5])

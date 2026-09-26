@@ -39,6 +39,17 @@ def cases(suite):
         result.append(dict(q=q, compute=compute, config=config, route=route, rows=rows,
             m=m, n=n, k=k, input=compute if input_type is None else input_type, output=output, phase=phase))
 
+    if suite == "cached-decode":
+        for compute in (0, 1):
+            for config in (6, 7, 8, 9, 10):
+                for route in (0, 1):
+                    for m in range(1, 9):
+                        add(12, compute, config, route, m=m, n=257)
+                    for storage in (0, 1, 2):
+                        add(12, compute, config, route, rows=[0,1,2,3,4,5,6,7,8,0],
+                            n=257, k=1024, input_type=storage, output=storage)
+        return result
+
     for q in (8, 10, 11, 12, 13, 14):
         for compute in (0, 1):
             for config in range(6):
@@ -83,7 +94,7 @@ def main():
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--device", default="0")
     p.add_argument("--expected-uuid", required=True)
-    p.add_argument("--suite", choices=("coverage", "extended"), default="coverage")
+    p.add_argument("--suite", choices=("coverage", "extended", "cached-decode"), default="coverage")
     p.add_argument("--timeout", type=int, default=45)
     p.add_argument("--max-failures", type=int, default=8)
     p.add_argument("--resume-from", type=Path, help="reuse checked PASS rows from an interrupted summary")

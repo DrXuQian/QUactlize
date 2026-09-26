@@ -1,6 +1,7 @@
 #include <cuda_runtime.h>
 #include "target.cuh"
 #include "kernels.cuh"
+#include "simt_cache.cuh"
 #include "tma.cuh"
 
 #ifndef Q17_QTYPE
@@ -17,7 +18,18 @@ int launch_typed(q17_call_v1 const &c) {
   dim3 grid((c.problem.n + cfg.tile_n - 1) / cfg.tile_n,
             (c.problem.max_rows + cfg.tile_m - 1) / cfg.tile_m, c.problem.experts);
   if (cfg.engine == Q17_SIMT) {
-    if (cfg.lanes_n == 8) simt<Q, T, SF, 8><<<grid, 128, 0, stream>>>(c);
+    if (cfg.tile_k == 32) {
+      if constexpr (Q == 12) {
+        if (cfg.threads==512) {
+          if(cfg.lanes_n==4) launch_q4_cached<T,SF,4,16>(c,grid,stream);
+          else launch_q4_cached<T,SF,16,16>(c,grid,stream);
+        }
+        else if (cfg.lanes_n == 4) launch_q4_cached<T,SF,4>(c,grid,stream);
+        else if (cfg.lanes_n == 8) launch_q4_cached<T,SF,8>(c,grid,stream);
+        else launch_q4_cached<T,SF,16>(c,grid,stream);
+      } else return int(cudaErrorInvalidValue);
+    }
+    else if (cfg.lanes_n == 8) simt<Q, T, SF, 8><<<grid, 128, 0, stream>>>(c);
     else simt<Q, T, SF, 16><<<grid, 128, 0, stream>>>(c);
   } else if (cfg.tile_n == 128) {
     wgmma<Q, T, SF, 128, 64><<<grid, 128, 0, stream>>>(c);
