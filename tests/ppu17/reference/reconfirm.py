@@ -5,9 +5,12 @@ from pathlib import Path
 import subprocess
 import sys
 
+from families import FAMILIES, filter_rows
 
-def selected_configs(rows):
+
+def selected_configs(rows, family='all'):
     """Retain measured leaders and the complete same-math control chain."""
+    rows = filter_rows(rows, family)
     result = []
     for arm in sorted({row['arm'] for row in rows}):
         candidates = [row for row in rows if row['arm'] == arm]
@@ -35,6 +38,7 @@ def main():
     p.add_argument('--previous',type=Path,required=True)
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--rounds',type=int,choices=(1,3),default=3)
+    p.add_argument('--family',choices=FAMILIES,default='all')
     p.add_argument('--points',type=int,nargs='+',choices=range(6),
                    help='explicit cohort indices; omitted points are not confirmed')
     a,common=p.parse_known_args()
@@ -54,11 +58,12 @@ def main():
         summary=json.loads((a.previous/f'd{dtype}-m{m}-n{n}-k{k}'/'summary.json').read_text())
         if summary['status']!='PASS': raise ValueError('previous point not admitted')
         rows=summary['result'][0]['rows']
-        points.append((case['point'],selected_configs(rows)))
+        points.append((case['point'],selected_configs(rows, a.family)))
     if a.points is not None and len(points) != len(a.points):
         raise ValueError('requested point missing from previous cohort')
     receipt={'scope':'PAIRED_HOPPER_GPTQ_RECONFIRMATION','contract':prior['contract'],
              'rounds':a.rounds,'points':points,'results':[],
+             'family':a.family,
              'requested_point_indices':a.points or list(range(6))}
     for r in range(a.rounds):
         for point,configs in (points if r%2==0 else reversed(points)):
@@ -66,7 +71,7 @@ def main():
             out=a.output/f'r{r}-d{dtype}-m{m}-n{n}-k{k}'
             command=[sys.executable,str(Path(__file__).with_name('compare.py')),*common,
                 '--output',str(out),'--dtype',str(dtype),'--m',str(m),'--n',str(n),'--k',str(k),
-                '--configs',*configs]
+                '--family',a.family,'--configs',*configs]
             if r%2: command+=['--reverse']
             print(f'PPU17_REFERENCE_CONFIRM round={r+1}/{a.rounds} point={point}',flush=True)
             rc=subprocess.run(command).returncode

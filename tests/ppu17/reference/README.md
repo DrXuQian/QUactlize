@@ -6,6 +6,34 @@ groups or generate a restricted GGUF subset to fit the reference kernels.
 The previous common-group64 GGUF experiment is superseded and its bundles
 and results are explicitly rejected by this runner.
 
+## Independent Machete gate
+
+For **independent Machete acceptance**, pass `--family machete-streamk` to
+both `cohort.py` and `reconfirm.py`. The compiled descriptors select only the
+Machete reader/collective with Stream-K. Neither complete Marlin nor a
+prepacked-Marlin hybrid can become the winner of this gate. `--family all`
+retains the existing mixed-provider diagnostic; its result is a different
+claim.
+
+After a complete six-point screen and three-round confirmation, validate
+the separate result with:
+
+```bash
+python3 tests/ppu17/reference/machete_parity.py \
+  --screen /workspace/quactlize-ppu17-20260926/gptq-ab/results/cohort-machete-only-v1 \
+  --confirmation /workspace/quactlize-ppu17-20260926/gptq-ab/results/confirm-machete-clock-matched-v1 \
+  --output /workspace/quactlize-ppu17-20260926/gptq-ab/results/machete-replay
+```
+
+The output directory must be fresh. The gate verifies full screen inventory,
+same-math controls, per-point code/scale identity, source/binary/device
+authority, three independent rounds, matched selected clocks and complete
+call scope. It picks one config per arm by median of rounds, not the fastest
+round. `PARITY_WITHIN_5PCT` requires both the aggregate and every paired round
+to meet5%; `strict_no_slower` is reported separately. Preserve clock-rejected
+attempts and bind any retry assembly to its original receipts; never edit raw
+results to turn a failed gate green.
+
 ## Fixed contract
 
 - Group size128, desc_act=false, zero point8, all16 uint4 codes. The importer

@@ -6,6 +6,69 @@ The new comparison keeps the already-supported GPTQ symmetric INT4 contract:
 group128, desc_act=false, original FP16 scales, FP32 accumulation, FP16 A/C.
 Only native packing may differ. No GGUF metadata or requantization is added.
 
+## Independent Machete / Stream-K acceptance (2026-09-26)
+
+Machete is now an **independent** performance requirement. A complete Marlin
+winner, or the Machete reader with our Marlin scheduler, cannot satisfy it.
+`--family machete-streamk` checks the compiled config descriptors and excludes
+those alternatives before screening and finalist selection. The provider
+reuses the pinned upstream MMA-prepacked reader/collective, TMA/cooperative
+WGMMA, and PPU CUTLASS3.6's native StreamKScheduler. This is not just renaming
+a scheduling flag, nor a claim to have rewritten the upstream implementation.
+
+On idle H800 PCIe, the nine reference geometries and eleven pure Stream-K
+candidate configs passed all six screen points (120 configuration cells).
+Two finalists per arm plus required RAW-equality controls were reconfirmed
+in three alternating rounds. Both selected arms have matched1755/1593MHz
+SM/memory clocks; weights rotate through a ring larger than2.25x the queried
+50MiB L2. Report the median of three per-config medians, not the fastest round.
+
+| M | N | K | Reference Machete us | Integrated Machete us | Delta |
+|---:|---:|---:|---:|---:|---:|
+|1|512|2048|11.603|11.552|-0.44%|
+|8|512|2048|11.237|11.440|+1.81%|
+|128|512|2048|12.462|12.445|-0.13%|
+|1|4096|4096|16.034|16.282|+1.54%|
+|8|4096|4096|15.839|16.178|+2.14%|
+|128|4096|4096|24.049|23.428|-2.58%|
+
+All six points, including the worst individual paired round (+3.480%), are
+within the previously accepted5% tolerance. **Strict no-slower at every
+point/round is NOT achieved.** Full prepared calls include any required
+Stream-K reset and FP32 reduction. Packing, allocation, JIT and first use are
+excluded on both sides. Original GPTQ group128 codes/scales and FP32
+accumulation/reduction remain fixed. These are synthetic dense GPTQ fixtures,
+not real-model or grouped-GPTQ measurements, and not native PPU1.7 admission.
+
+The first confirmation had two large-M point attempts with candidate1740MHz
+versus reference1755MHz. Preserve these as clock-unmatched evidence. A bounded
+last-point retry supplied the first matched attempts for those two rounds;
+the already-matched third round and other15 points were kept. The assembly
+records source receipts/hashes and selects by clocks, never by latency.
+
+The CPU planner audit compiles `tests/ppu17/streamk_plan.cu` against each
+unchanged CUTLASS tree. At54 same-geometry points, grids, raster order,
+split factors, work counts and workspace sizes agree.26 Stream-K cases have
+a different stored `big_units` field: regular work assignment recomputes its
+per-group count, while separate-reduction peer lookup uses the stored value.
+All54 audited plans use no separate-reduction units. This is scoped planner
+evidence, not a proof of all scheduler paths or grounds to transplant modern
+SM100-related code into the PPU dependency. Cached work assignment differs
+between versions but is not established as the cause of the small timing gap.
+
+Evidence under `/workspace/quactlize-ppu17-20260926/gptq-ab`:
+
+- Immutable binaries: `build-aligned-stage-v1` (unchanged for this gate).
+- Screen: `results/cohort-machete-only-v1`.
+- Original/retry: `results/confirm-machete-only-v1`,
+  `results/confirm-machete-last-retry-v1`.
+- Admitted assembly: `results/confirm-machete-clock-matched-v1`.
+- Independent gate/table: `results/machete-only-report-v1`.
+- Planner audit: `scheduler-plan-v1`, including the unnormalized differences.
+
+No production defaults, canonical GGUF bytes, PPU1.0/1.5 or dependency sources
+changed. The table establishes this bounded H800 implementation parity only.
+
 ## Existing implementations to reuse
 
 | Existing entry | Mechanism | PPU1.7 integration status |

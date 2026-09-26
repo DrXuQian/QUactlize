@@ -10,6 +10,8 @@ import statistics
 import subprocess
 import sys
 
+from families import FAMILIES, matches_family
+
 HERE = Path(__file__).resolve().parent
 CONTRACT = 'GPTQ_SYM_INT4_G128_F16_V1'
 
@@ -121,9 +123,13 @@ def child(args):
                 scales = marlin_metadata(scales)
             host = [torch.from_numpy(packed), scales]
             configs = [(i, None) for i in range(ref.fn['config_count']())]
+            configs = [(i, c) for i, c in configs if matches_family(
+                arm, ref.fn['config_name'](i).decode(), args.family)]
             if args.configs:
                 wanted = {int(x.split(':')[1]) for x in args.configs if x.split(':')[0] == arm}
                 configs = [(i, c) for i, c in configs if i in wanted]
+            if not configs:
+                raise ValueError('no admitted configurations for requested arm/family')
             if args.reverse:
                 configs.reverse()
             weight_bytes = sum(x.numel()*x.element_size() for x in host)
@@ -237,6 +243,7 @@ def child(args):
           'shape': [args.m, args.n, args.k], 'dtype': args.dtype,
           'l2_bytes': l2.value, 'sm_count': sms.value, 'cache': args.cache,
           'scope': 'GPTQ_SYMMETRIC_FULL_PREPARED_CALL', 'contract': CONTRACT,
+          'family': args.family,
           'input_source': fixture['source'],
           'logical_codes_sha256': hashlib.sha256(fixture['q'].tobytes()).hexdigest(),
           'scale_bits_sha256': hashlib.sha256(fixture['scale'].numpy().tobytes()).hexdigest(),
@@ -250,6 +257,8 @@ def validate(row):
     if row.get('contract') != CONTRACT or row.get('scope') != 'GPTQ_SYMMETRIC_FULL_PREPARED_CALL':
         raise ValueError('wrong comparison contract; do not reuse the rejected GGUF-subset results')
     for item in row['rows']:
+        if not matches_family(item['arm'], item.get('config_detail', ''), row.get('family', 'all')):
+            raise ValueError('configuration is outside the claimed implementation family')
         samples = item['samples_us']
         if len(samples) != 11 or any(not math.isfinite(x) or x <= 0 for x in samples):
             raise ValueError('invalid device timing samples')
@@ -275,6 +284,7 @@ def main():
     parser.add_argument('--k', type=int, default=2048)
     parser.add_argument('--cache', choices=('warm', 'rotating'), default='rotating')
     parser.add_argument('--arms', nargs='+', choices=('machete', 'marlin', 'quactlize','quactlize_marlin'))
+    parser.add_argument('--family', choices=FAMILIES, default='all')
     parser.add_argument('--configs', nargs='+', help='bounded reconfirmation e.g. machete:0 marlin:1 quactlize:2')
     parser.add_argument('--reverse', action='store_true')
     parser.add_argument('--child', action='store_true')
@@ -283,6 +293,9 @@ def main():
         manifest = json.loads((args.references/'manifest.json').read_text())
         args.arms = ['machete','marlin','quactlize']
         if 'quactlize_marlin' in manifest['libraries']: args.arms.append('quactlize_marlin')
+        if args.family == 'machete-streamk': args.arms = ['machete', 'quactlize']
+    if args.family == 'machete-streamk' and set(args.arms) != {'machete', 'quactlize'}:
+        raise ValueError('Machete/Stream-K requires only machete and quactlize arms')
     if args.child:
         child(args)
         return
@@ -295,7 +308,7 @@ def main():
     command = [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:], '--child']
     env = {**os.environ, 'CUDA_VISIBLE_DEVICES': args.device, 'Q17_BENCH_GUARDED': '1'}
     result = guard.run_point(command, env, args.output/'run.log', args.device, args.expected_uuid, 900)
-    result['source_sha256'] = {name: sha(HERE/name) for name in ('compare.py', 'fixture.py')}
+    result['source_sha256'] = {name: sha(HERE/name) for name in ('compare.py', 'fixture.py', 'families.py')}
     result['reference_manifest_sha256'] = sha(args.references/'manifest.json')
     result['importer_sha256'] = sha(HERE.parents[2]/'tools/dump_real_weights.py')
     (args.output/'summary.json').write_text(json.dumps(result, indent=2)+'\n')

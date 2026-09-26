@@ -5,10 +5,13 @@ from pathlib import Path
 import subprocess
 import sys
 
+from families import FAMILIES
+
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--family',choices=FAMILIES,default='all')
     args,common=p.parse_known_args()
     if args.output.exists() and any(args.output.iterdir()):
         raise ValueError('cohort output must be fresh')
@@ -18,7 +21,7 @@ def main():
     for index,(dtype,m,n,k) in enumerate(points):
         out=args.output/f'd{dtype}-m{m}-n{n}-k{k}'
         command=[sys.executable,str(Path(__file__).with_name('compare.py')),*common,
-                 '--output',str(out),'--dtype',str(dtype),'--m',str(m),'--n',str(n),'--k',str(k)]
+                 '--output',str(out),'--family',args.family,'--dtype',str(dtype),'--m',str(m),'--n',str(n),'--k',str(k)]
         if index%2: command+=['--reverse']
         print(f'PPU17_REFERENCE_COHORT point={index+1}/{len(points)} dtype={dtype} shape={m}x{n}x{k}',flush=True)
         rc=subprocess.run(command).returncode
@@ -31,12 +34,17 @@ def main():
             row['best']={arm:{'config':x['config'],'us':x['median_us']} for arm,x in best.items()}
             selected=min((x for name,x in best.items() if name.startswith('quactlize')),key=lambda x:x['median_us'])
             row['candidate_provider']=selected['arm']
-            row['delta_vs_faster_reference_pct']=100*(selected['median_us']/min(
-                best['machete']['median_us'],best['marlin']['median_us'])-1)
+            reference_arms = ('machete',) if args.family == 'machete-streamk' else ('machete','marlin')
+            row['delta_vs_reference_pct']=100*(selected['median_us']/min(
+                best[name]['median_us'] for name in reference_arms)-1)
+            row['reference_arms']=reference_arms
+            if args.family == 'all':
+                row['delta_vs_faster_reference_pct'] = row['delta_vs_reference_pct']
             print('PPU17_REFERENCE_POINT '+json.dumps(row),flush=True)
         rows.append(row)
         (args.output/'summary.json').write_text(json.dumps({'complete':len(rows)==len(points) and rc==0,
             'contract':'GPTQ_SYM_INT4_G128_F16_V1',
+            'family':args.family,
             'scope':'SCREEN_ONLY_CONFIRMATION_REQUIRED','results':rows},indent=2)+'\n')
         if rc:
             raise SystemExit(rc)
