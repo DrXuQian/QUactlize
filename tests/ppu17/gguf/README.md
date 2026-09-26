@@ -8,7 +8,8 @@ not GPTQ group128 and not a re-quantization of GGUF weights.
 Current scope: dense Q4_K, resident ScaleFirst FP16/BF16 A/S/Z/C, FP32
 accumulation and Stream-K fixup. N must be divisible by128; K by256. Three
 cooperative tiles `(weight-N, activation-M, K)` are128x16/64/128x64, Cluster1,
-four pipeline stages. BF16 conversion is direct. Explicit pair multiply and
+four/eight pipeline stages. Configs0/1/2 are stage4;3/4/5 are the same tiles
+with stage8. BF16 conversion is direct. Explicit pair multiply and
 add retain two compute-type rounding points, including GGUF's converter bias.
 
 ## Data path and ownership
@@ -78,11 +79,21 @@ q17 bring-up library. It is an honest implementation control, **not** proof of
 an advantage over optimized Machete/Marlin, nor a layout-only ablation. A clean
 screen is not repeated confirmation or production winner admission.
 
-For a bounded memory test, wrap `run.py --single --m 65 --n 256 --k 1024`
-with `compute-sanitizer --target-processes all --tool memcheck
---error-exitcode 97 --check-bulk-copy yes --check-warpgroup-mma yes`.
-The parent still guards the actual child GPU PID. Repeat for both dtypes and
-use fresh result directories. Sanitizer results are never timing evidence.
+For bounded memory checks, use `memory.py --application BUILD/smoke
+--bundle BUILD --sanitizer /path/to/compute-sanitizer --backend-source
+quactlize/backends/ppu17 --expected-uuid UUID --output FRESH_DIR`.
+This tests direct C++ calls in both dtypes with memcheck/racecheck/synccheck,
+verifies instrumentation using a scalar OOB negative, and stops if a foreign
+job arrives. Do not treat a sanitizer banner from an outer Python wrapper as
+proof that its child was instrumented. An undersized **TMA output** allocation
+was not reported by this H800 tool: a scalar negative proves only scalar
+instrumentation. Output guards/ownership tests remain mandatory. Sanitizer
+results are never timing evidence.
+
+`stages.py` performs a one-axis stage4/8 comparison and requires identical raw
+outputs for each same-tile pair. Both it and `memory.py` accept
+`--resume-from PREVIOUS/summary.json` with a fresh output directory. Valid
+cells are retained with identity/log checks; interrupted cells are not reused.
 
 ## Remaining work
 

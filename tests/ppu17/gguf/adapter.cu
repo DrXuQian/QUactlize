@@ -20,8 +20,8 @@ struct Plan {
   virtual ~Plan() { if (workspace) cudaFree(workspace); }
   virtual void execute()=0;
 };
-template<class T, int M> struct SfPlan : Plan {
-  using Types=quactlize::ppu17::GgufQ4Sf<T,128,M,1,4>;
+template<class T, int M, int Stages=4> struct SfPlan : Plan {
+  using Types=quactlize::ppu17::GgufQ4Sf<T,128,M,1,Stages>;
   using Gemm=typename Types::Gemm;
   typename Gemm::Arguments args;
   cudaStream_t stream;
@@ -62,6 +62,9 @@ template<class T> Plan* make(q17_gguf_call const& c) {
     case 0:return new SfPlan<T,16>(c);
     case 1:return new SfPlan<T,64>(c);
     case 2:return new SfPlan<T,128>(c);
+    case 3:return new SfPlan<T,16,8>(c);
+    case 4:return new SfPlan<T,64,8>(c);
+    case 5:return new SfPlan<T,128,8>(c);
   }
   throw std::runtime_error("unknown Q4_K SF config");
 }
@@ -80,6 +83,7 @@ template<class T> void pack(int n,int k,uint8_t const* input,uint8_t* out) {
 }
 Q17_GGUF_EXPORT char const* q17_gguf_error() { return last_error.c_str(); }
 Q17_GGUF_EXPORT char const* q17_gguf_contract() { return "GGUF_Q4_K_G32_SF_PRIVATE_MMA_V1"; }
+Q17_GGUF_EXPORT int q17_gguf_config_count() { return 6; }
 Q17_GGUF_EXPORT int q17_gguf_prepare(q17_gguf_call const* c,void** out) {
   return guard([&] {
     if (!c || !out) throw std::runtime_error("null call/plan");

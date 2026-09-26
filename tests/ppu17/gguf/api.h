@@ -15,6 +15,7 @@ struct q17_gguf_call {
 #define Q17_GGUF_EXPORT extern "C" __attribute__((visibility("default")))
 Q17_GGUF_EXPORT char const* q17_gguf_error();
 Q17_GGUF_EXPORT char const* q17_gguf_contract();
+Q17_GGUF_EXPORT int q17_gguf_config_count();
 Q17_GGUF_EXPORT int q17_gguf_prepare(q17_gguf_call const*, void**);
 Q17_GGUF_EXPORT int q17_gguf_execute(void*);
 Q17_GGUF_EXPORT void q17_gguf_destroy(void*);

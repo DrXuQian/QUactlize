@@ -226,7 +226,8 @@ def main():
     p.add_argument('--timing',action='store_true');p.add_argument('--child',action='store_true')
     p.add_argument('--single',action='store_true',help='one bounded numerical shape for sanitizer')
     a=p.parse_args()
-    allowed=range(3) if a.arm=='candidate' else (0,1,2,3,4,5)
+    manifest=json.loads((a.bundle/'manifest.json').read_text())
+    allowed=range(manifest.get('config_count',3)) if a.arm=='candidate' else (0,1,2,3,4,5)
     if not a.configs or len(set(a.configs))!=len(a.configs) or any(x not in allowed for x in a.configs):
         raise ValueError('invalid config inventory')
     if a.arm!='candidate' and not a.baseline:raise ValueError('baseline bundle required')

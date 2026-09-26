@@ -515,3 +515,27 @@ this small-M experiment but regress large-M calls. Preserve the old winner
 and transitively include same-math controls in confirmation. Clock-rejected
 points remain invalid; retry only missing points and bind an assembled report
 to each original receipt rather than relabelling a failed cohort complete.
+
+## Fine GGUF groups on a Hopper prepacked collective
+
+Extending a group128/TileK64 Machete-style collective to GGUF group32 is not
+just relaxing `can_implement`. Give each raw64K stage two physical affine
+rows, count both in the TMA barrier bytes, and present a separate logical-K
+broadcast view to the MMA partition. Reuse metadata only within the two16K
+atoms belonging to that group. Explicit stage counts are needed until the
+auto-sizing helper accounts for every metadata row.
+
+Audit prologue lookahead after changing metadata cadence: the upstream call
+passed the next pipe index, harmless while metadata loaded only at atom0.
+Loading a second group inside the tile makes that index wrong. Prove both
+thread/value ownership and current-stage selection with group/stage negatives,
+then require exact one-hot decode and changed-input replays on device.
+Use explicit rounded half2/BF16x2 multiply and add if the contract has two
+rounding points; inspect actual SASS rather than assuming overloaded operators
+will preserve both vectorization and rounding.
+
+Evidence: `docs/ppu17-gguf-cooperative.md`, H800/CUDA12.8, Q4_K group32 SF,
+FP16/BF16, FP32 accumulation.108 initial numerical cells passed. The large
+win against a bring-up canonical-reader kernel changes pipeline and packing
+together; it is not proof that canonical K-pack itself must be replaced.
+It is neither FQ packed-metadata evidence nor native PPU1.7 admission.

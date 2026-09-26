@@ -67,3 +67,56 @@ race checks, and repeated finalist timing. Then add FQ packed metadata and a
 canonical-reader control on this same pipeline before any shipping-format
 decision. Other qtypes, grouped scheduling and native PPU1.7 remain open.
 See [build/replay instructions](../tests/ppu17/gguf/README.md).
+
+## Bounded stage-depth follow-up
+
+`build-v2` retains configs0/1/2 and adds only stage8 counterparts3/4/5.
+Both dtype numerical cohorts now pass108/108 cells (216 total in this build).
+All36 same-tile stage4/8 comparisons in the12-point screen produce identical
+output fingerprints, including changed-input replay.
+
+At N4096/K4096 and M1/8, the128x16x64 stage8 tile measures17.40–17.58us
+versus19.49–19.97us for the same stage4 tile, approximately10.6–12.4% lower
+in this screen. At N512/K2048 the same change is only about2–4% and needs
+repeated confirmation. At M128/N4096/K4096, BF16 tile128x128 is26.40->25.18us;
+the analogous FP16 pair has different endpoint clocks and its delta remains
+**UNRESOLVED**, not a win. No default configuration is changed.
+
+Evidence: `stage-numeric-{f16,bf16}-v1`, `stage-screen-v1` valid first three
+points retained in `stage-screen-v2`; the interrupted large-M1 timing was
+discarded and rerun. `report-v1/benchmark.csv` records all180 screen cells,
+not just the fastest row. The report counts324 numerical cells across the
+initial and stage cohorts, deliberately retesting unchanged parents; these
+are not324 independent workloads.
+
+Sanitizer admission is separate. The direct executable's scalar OOB negative
+is detected, but an undersized TMA output was not reported by the installed
+tool. Do not treat that as proof of valid output sizing. Output guards and
+host ownership checks are retained; full memory/race/synchronization coverage
+is tracked independently in the task artifact directory.
+
+## FQ continuation boundary
+
+The next provider must load original16-byte Q4 packed units (one unit per256
+codes), then produce the exact same typed group32 affine values in registers.
+It may not call an SF expansion and report only the following GEMM as FQ.
+The code packing can stay the same; metadata delivery is a separate axis.
+
+Start with explicit ownership/byte proofs before optimizing reuse. Fetching
+one whole unit every64K tile is a simple correctness control but reads that
+unit four times: per column per64K, codes32B + metadata16B, versus ideal
+packed amortization32B +4B and current SF32B +8B. It is not automatically a
+performance improvement. Reusing a256K metadata unit requires a lifetime
+that covers four operand stages, arbitrary Stream-K slice starts/ends and
+successive output tiles; it cannot borrow the ordinary operand stage release.
+Do not delete waits or change barrier byte counts based on an unproved cache.
+
+Retain the original FP16 header as source data. In BF16 compute, scale/min
+must use that header's exact value with the original integer field, then round
+to BF16. Converting the header to BF16 before multiplying, or reconstructing
+FP16 weights before BF16, changes the contract. Converter-bias correction and
+typed weight multiply/add keep their established rounding boundaries.
+
+Before format adoption, compare canonical K-pack and private MMA packing on
+the same group32 collective with identical tile/scheduler/metadata. Only this
+control can separate layout cost from the large original bring-up overhead.

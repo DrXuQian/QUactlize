@@ -46,14 +46,16 @@ def main():
             '-I'+str(ROOT),'-I'+str(a.cutlass/'include'),
             '-I'+str(HERE.parent/'reference/shim'),'-I'+str(a.vllm/'csrc')]
     receipt={'scope':'GGUF_Q4_K_GROUP32_SF_HOPPER_NOT_NATIVE_PPU17',
+             'config_count':6,
              'contract':'GGUF_Q4_K_G32_SF_PRIVATE_MMA_V1','cutlass':PPU_CUTLASS,
              'vllm':VLLM,'source_sha256':bound,'compiler_sha256':sha(a.compiler),
              'compiler_version':subprocess.check_output([str(a.compiler),'--version'],text=True),
              'builds':{}}
-    for name in ('metadata','adapter'):
-        dest=out/('metadata-host' if name=='metadata' else 'libgguf_q4_sf.so')
+    for name in ('metadata','adapter','smoke'):
+        dest=out/{'metadata':'metadata-host','adapter':'libgguf_q4_sf.so','smoke':'smoke'}[name]
         command=common+[str(HERE/(name+'.cu')),'-o',str(dest)]
         if name=='adapter':command+=['-shared','-Xcompiler=-fPIC,-fvisibility=hidden']
+        if name=='smoke':command+=['-L'+str(out),'-lgguf_q4_sf','-Xlinker','-rpath','-Xlinker','$ORIGIN']
         command+=['-L'+str(a.compiler.parent.parent/'lib64/stubs'),'-lcuda']
         (out/(name+'.command.json')).write_text(json.dumps(command,indent=2)+'\n')
         start=time.monotonic()
