@@ -10,9 +10,13 @@ import statistics
 import sys
 
 CONTRACT='GGUF_Q4_K_G32_SF_PRIVATE_MMA_V1'
+FQ_CONTRACT='GGUF_Q4_K_G32_PACKED_UNITS_PRIVATE_MMA_V1'
 class Call(C.Structure):
     _fields_=[(x,C.c_int32) for x in ('dtype','config','m','n','k')]+[
         (x,C.c_void_p) for x in ('a','b','scales','zeros','output','stream')]
+class FqCall(C.Structure):
+    _fields_=[(x,C.c_int32) for x in ('dtype','config','m','n','k')]+[
+        (x,C.c_void_p) for x in ('a','b','units','output','stream')]
 
 def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -33,7 +37,8 @@ def device_geometry():
     return values
 
 class Library:
-    def __init__(self,bundle):
+    def __init__(self,bundle,metadata='sf'):
+        self.metadata=metadata
         manifest=json.loads((bundle/'manifest.json').read_text())
         row=manifest['builds']['adapter']
         if manifest['contract']!=CONTRACT or sha(bundle/row['file'])!=row['sha256']:
@@ -50,11 +55,24 @@ class Library:
             f.restype,f.argtypes=result,arguments
             self.fn[name]=f
         if self.fn['contract']().decode()!=CONTRACT:raise ValueError('wrong library contract')
+        if metadata=='fq':
+            if manifest.get('fq_contract')!=FQ_CONTRACT:raise ValueError('FQ manifest missing')
+            contract=self.library.q17_gguf_fq_contract
+            contract.restype=C.c_char_p
+            if contract().decode()!=FQ_CONTRACT:raise ValueError('wrong FQ input contract')
+            prepare=self.library.q17_gguf_prepare_fq
+            prepare.restype=C.c_int
+            prepare.argtypes=[C.POINTER(FqCall),C.POINTER(C.c_void_p)]
+            self.fn['prepare_fq']=prepare
     def check(self,rc):
         if rc:raise ValueError(self.fn['error']().decode())
     def prepare(self,call):
         out=C.c_void_p()
-        self.check(self.fn['prepare'](C.byref(call),C.byref(out)))
+        if self.metadata=='fq':
+            fq=FqCall(call.dtype,call.config,call.m,call.n,call.k,
+                      call.a,call.b,call.scales,call.output,call.stream)
+            self.check(self.fn['prepare_fq'](C.byref(fq),C.byref(out)))
+        else:self.check(self.fn['prepare'](C.byref(call),C.byref(out)))
         return out
 
 class BringupBaseline:
@@ -96,9 +114,9 @@ def child(a):
     if os.environ.get('Q17_BENCH_GUARDED')!='1':raise ValueError('idle guard required')
     import numpy as np
     import torch
-    from fixture import make
+    from fixture import make, stale_unit_groups
     torch.set_num_threads(8)
-    lib=Library(a.bundle) if a.arm=='candidate' else BringupBaseline(a.baseline,a.backend_source)
+    lib=Library(a.bundle,a.metadata) if a.arm=='candidate' else BringupBaseline(a.baseline,a.backend_source)
     dtype=torch.float16 if a.dtype==0 else torch.bfloat16
     if torch.cuda.get_device_capability()!=(9,0):raise ValueError('physical SM90 required')
     stream=torch.cuda.Stream()
@@ -121,7 +139,8 @@ def child(a):
             act=f['a'].cuda()
             storage=torch.full((m*n+128,),-1232,dtype=dtype,device='cuda')
             out=storage[64:64+m*n]
-            host=[torch.from_numpy(packed),f['scale'],f['zero']]
+            host=([torch.from_numpy(packed),torch.from_numpy(f['units'])] if a.metadata=='fq'
+                  else [torch.from_numpy(packed),f['scale'],f['zero']])
             weight_bytes=sum(x.numel()*x.element_size() for x in host)
             copies=math.floor(2.25*l2_bytes/weight_bytes)+1 if a.timing else 1
             if copies>512:raise ValueError('bounded ring limit exceeded')
@@ -131,7 +150,8 @@ def child(a):
                 try:
                     for w in weights:
                         call=Call(a.dtype,config,m,n,k,act.data_ptr(),w[0].data_ptr(),
-                                  w[1].data_ptr(),w[2].data_ptr(),out.data_ptr(),stream.cuda_stream)
+                                  w[1].data_ptr(),None if a.metadata=='fq' else w[2].data_ptr(),
+                                  out.data_ptr(),stream.cuda_stream)
                         plans.append(lib.prepare(call))
                     def execute(i):lib.check(lib.fn['execute'](plans[i]))
                     checks=[]
@@ -145,7 +165,9 @@ def child(a):
                     negative=None
                     if not a.timing and m==9 and config==0:
                         original=weights[0][1].clone()
-                        weights[0][1][1::2].copy_(original[0::2])
+                        if a.metadata=='fq':
+                            weights[0][1].copy_(torch.from_numpy(stale_unit_groups(f['units'])))
+                        else:weights[0][1][1::2].copy_(original[0::2])
                         execute(0);stream.synchronize()
                         try:proof(torch,storage,f['expected'],m,n,a.dtype)
                         except ValueError as error:
@@ -161,7 +183,7 @@ def child(a):
                         act.copy_(f['a']*sign);out.fill_(float('nan'))
                         graph.replay();stream.synchronize()
                         checks.append(proof(torch,storage,f['expected']*sign,m,n,a.dtype))
-                    row={'arm':a.arm,'shape':[m,n,k],'dtype':a.dtype,'config':config,'status':'PASS',
+                    row={'arm':a.arm,'metadata':a.metadata,'shape':[m,n,k],'dtype':a.dtype,'config':config,'status':'PASS',
                          'proof':checks,'raw_gguf_sha256':f['raw_sha256'],
                          'workspace_per_copy':lib.fn['workspace'](plans[0]),
                          'negative':negative}
@@ -191,12 +213,12 @@ def child(a):
                 finally:
                     stream.synchronize()
                     for p in plans:lib.fn['destroy'](p)
-    print('PPU17_BENCH '+json.dumps({'status':'PASS','contract':CONTRACT,
-          'scope':'RESIDENT_SF_NOT_EXPANSION_OR_FQ','timing':a.timing,
+    print('PPU17_BENCH '+json.dumps({'status':'PASS','contract':FQ_CONTRACT if a.metadata=='fq' else CONTRACT,
+          'scope':'PACKED_UNITS_FQ_NO_SF_PREPASS' if a.metadata=='fq' else 'RESIDENT_SF_NOT_EXPANSION_OR_FQ','timing':a.timing,
           'l2_bytes':l2_bytes,'sm_count':sm_count,'rows':results}),flush=True)
 
 def validate(row):
-    if row.get('status')!='PASS' or row.get('contract')!=CONTRACT or not row.get('rows'):
+    if row.get('status')!='PASS' or row.get('contract') not in (CONTRACT,FQ_CONTRACT) or not row.get('rows'):
         raise ValueError('incomplete GGUF gate')
     for r in row['rows']:
         if r['status']!='PASS' or not r['proof']:raise ValueError('missing numerical proof')
@@ -213,6 +235,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--bundle',type=Path,required=True)
     p.add_argument('--arm',choices=('candidate','bringup-baseline'),default='candidate')
+    p.add_argument('--metadata',choices=('sf','fq'),default='sf')
     p.add_argument('--baseline',type=Path)
     p.add_argument('--backend-source',type=Path,required=True)
     p.add_argument('--output',type=Path,required=True)
@@ -231,13 +254,20 @@ def main():
     if not a.configs or len(set(a.configs))!=len(a.configs) or any(x not in allowed for x in a.configs):
         raise ValueError('invalid config inventory')
     if a.arm!='candidate' and not a.baseline:raise ValueError('baseline bundle required')
+    if a.arm!='candidate' and a.metadata!='sf':raise ValueError('bring-up control is SF only')
     if a.l2_bytes is not None and a.l2_bytes<=0:raise ValueError('positive verified L2 required')
     if a.child:return child(a)
     if a.output.exists():raise ValueError('fresh result directory required')
     a.output.mkdir(parents=True)
     sys.path.insert(0,str(a.backend_source))
     import run_benchmark as guard
-    guard.validate_result=validate
+    def exact_validate(row):
+        validate(row)
+        expected=FQ_CONTRACT if a.metadata=='fq' else CONTRACT
+        if row['contract']!=expected:raise ValueError('wrong metadata route')
+        if any(r.get('metadata','sf')!=a.metadata for r in row['rows']):
+            raise ValueError('cell metadata route differs')
+    guard.validate_result=exact_validate
     command=[sys.executable,str(Path(__file__).resolve()),*sys.argv[1:],'--child']
     try:
         result=guard.run_point(command,{**os.environ,'CUDA_VISIBLE_DEVICES':a.device,'Q17_BENCH_GUARDED':'1'},

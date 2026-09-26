@@ -539,3 +539,33 @@ FP16/BF16, FP32 accumulation.108 initial numerical cells passed. The large
 win against a bring-up canonical-reader kernel changes pipeline and packing
 together; it is not proof that canonical K-pack itself must be replaced.
 It is neither FQ packed-metadata evidence nor native PPU1.7 admission.
+
+### Packed-unit extension: coordinate ownership and shared sidebands
+
+The subsequent Q4_K FQ control kept the same code packing, math and scheduler.
+A shared per-stage group phase passed216 numeric cells but failed direct
+racecheck with RAW hazards. Do not promote numerical success over a failing
+lifetime gate, or call a small single-phase probe proof of a reused pipeline.
+One initial scalar probe was optimized to constants; inspect native LDS/STS
+before treating a synchronization probe as meaningful.
+
+When the outer scheduler already owns an absolute K start, pass that value
+through an optional collective capability and keep its cursor in registers.
+This removes shared publication instead of adding speculative fences. The
+isolated overlay must bind the exact seam and reject missing integration.
+Check nonzero slice starts as well as K=0 and ordinary stage wrap. Avoid
+inventing another scheduler solely to recover coordinates.
+
+On H800/CUDA12.8, Q4_K FQ/SF x FP16/BF16 passed432 numerical cells after
+removing the sideband; FQ passed36 direct memcheck/racecheck/synccheck cells
+plus a scalar fault negative. Scope and receipts: `docs/ppu17-gguf-cooperative.md`,
+`gguf-mainloop/fq6-memory-v1`, `fq6-screen-v1`. Exact dynamic cause of the old
+hazard is not established as a compiler or tooling defect.
+
+Packed resident size alone does not predict speed. Reading an entire16B
+unit each64K repeats its metadata four times, whereas a unit covers256K.
+The first FQ reader was11.5–44.7% slower than resident SF in24 matched
+same-tile pairs despite10% lower resident bytes. Next distinguish repeated
+traffic, field/header conversion and register pressure with bounded ablations;
+measure SF expansion separately before end-to-end selection. This is CUDA
+Hopper evidence, not a universal native PPU1.7 performance claim.

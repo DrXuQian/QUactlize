@@ -53,6 +53,7 @@
 
 #include "cutlass_extensions/cute_utils.cuh"
 #include "gguf_metadata.cuh"
+#include "gguf_q4_unit.cuh"
 
 namespace quactlize::ppu17::detail {
 
@@ -66,8 +67,17 @@ template <int GroupK, class ElementATuple_, class GmemLayoutA, int AlignmentA,
           class ElementB_, class GmemLayoutB, int AlignmentB,
           class ElementAccumulator_, class TileShape_MNK,
           class ClusterShape_MNK, class StageCountType,
-          class KernelScheduleType>
+          class KernelScheduleType, bool PackedUnits = false>
 struct GgufPrepackedCollectiveMma {
+#ifndef QUACTLIZE_PPU17_GGUF_K_COORD_HOOK
+  static_assert(!PackedUnits, "FQ requires the isolated scheduler-coordinate hook");
+#endif
+  // Each consumer receives the actual work tile's absolute K start. Keep its
+  // group cursor in registers; no shared scalar publication or stage reuse.
+  int current_k_tile_ = 0;
+  CUTLASS_DEVICE void set_k_tile_start(int first) {
+    if constexpr(PackedUnits) current_k_tile_=first;
+  }
   using Schedule = KernelScheduleType;
   static_assert(
       cute::is_same_v<Schedule, KernelTmaWarpSpecialized> ||
@@ -159,6 +169,9 @@ struct GgufPrepackedCollectiveMma {
   static constexpr int KBlocksPerGroup = GroupK / MmaK;
   using Metadata = quactlize::ppu17::GgufMetadataStage<
       size<0>(TileShape{}), size<2>(TileShape{}), GroupK, PipelineStages>;
+  static_assert(!PackedUnits || (GroupK == 32 && size<2>(TileShape{}) == 64 &&
+                                size(ClusterShape{}) == 1 && size<0>(TileShape{}) <= 128),
+                "Packed Q4 units require group32/TK64/cluster1 and TMA box <=256 uint64s");
 
   struct DispatchPolicy {
     constexpr static int Stages = PipelineStages;
@@ -229,6 +242,7 @@ struct GgufPrepackedCollectiveMma {
       cute::conditional_t<cute::is_void_v<ElementScale>, float, ElementScale>;
   using NonVoidElementZero =
       cute::conditional_t<cute::is_void_v<ElementZero>, float, ElementZero>;
+  using StorageElementScale = cute::conditional_t<PackedUnits, uint64_t, NonVoidElementScale>;
 
   // These are always MN major
   using StrideScale = cute::Stride<cute::Int<1>, int64_t, int64_t>;
@@ -285,8 +299,9 @@ struct GgufPrepackedCollectiveMma {
   // One threads per CTA are producers (1 for operand tile)
   static constexpr int NumProducerThreadEvents = 1;
 
-  using ScaleTileShape = decltype(make_shape(shape<0>(TileShape{}),
-                                             shape<1>(SmemLayoutAtomScale{})));
+  using ScaleTileShape = cute::conditional_t<PackedUnits,
+      Shape<Int<2 * size<0>(TileShape{})>, _1>,
+      decltype(make_shape(shape<0>(TileShape{}), shape<1>(SmemLayoutAtomScale{})))>;
 
   static_assert(cute::rank(SmemLayoutAtomB{}) == 2,
                 "SmemLayoutAtom must be rank 2 (M/N, K)");
@@ -311,7 +326,9 @@ struct GgufPrepackedCollectiveMma {
                     Step<_2, _1, _3>, Step<_1, _2, _3>>{}));
 
   // It is assumed that the scales and zero-points share the same smem layout
-  using SmemLayoutScale = typename Metadata::Physical;
+  using SmemLayoutScale = cute::conditional_t<PackedUnits,
+      Layout<Shape<Int<2 * size<0>(TileShape{})>, _1, Int<PipelineStages>>>,
+      typename Metadata::Physical>;
 
   // If A mn-layout and B mn-layout, transposing B matrix since WGMMA is k-major
   // only (e.g. tf32, fp32, fp8, int8).
@@ -377,7 +394,7 @@ struct GgufPrepackedCollectiveMma {
 
   // Same as upstream, should be kept the same when possible
   static constexpr auto elements_per_smem_zero() {
-    if constexpr (KernelConversionMode == ConversionMode::DirectConvert ||
+    if constexpr (PackedUnits || KernelConversionMode == ConversionMode::DirectConvert ||
                   KernelConversionMode == ConversionMode::ConvertAndScale) {
       return 0;
     } else if constexpr (KernelConversionMode ==
@@ -397,7 +414,10 @@ struct GgufPrepackedCollectiveMma {
   compute_tma_transaction_bytes_mk() {
     constexpr uint32_t baseline_bytes = cutlass::bits_to_bytes(size<0>(SmemLayoutA{}) * size<1>(SmemLayoutA{}) * static_cast<uint32_t>(cute::sizeof_bits_v<InternalElementA>));
 
-    if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
+    if constexpr (PackedUnits) {
+      return baseline_bytes + 16 * size<0>(TileShape{});
+    }
+    else if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
       return baseline_bytes;
     }
     else if constexpr (ModeHasScales) {
@@ -441,7 +461,7 @@ struct GgufPrepackedCollectiveMma {
       get_logical_ptr(static_cast<InternalElementB const*>(nullptr)),
       repeat_like(StrideB{}, int32_t(0)), StrideB{}));
   using ScaleTensor = decltype(make_tensor(
-      get_logical_ptr(static_cast<NonVoidElementScale const*>(nullptr)),
+      get_logical_ptr(static_cast<StorageElementScale const*>(nullptr)),
       repeat_like(NonVoidStrideScale{}, int32_t(0)), NonVoidStrideScale{}));
 
   using ZeroTensor = decltype(make_tensor(
@@ -499,7 +519,7 @@ struct GgufPrepackedCollectiveMma {
     struct TensorStorage : cute::aligned_struct<cute::max(SmemAlignmentA, SmemAlignmentB)> {
       cute::ArrayEngine<ElementA, cute::cosize_v<SmemLayoutA>> smem_A;
       cute::ArrayEngine<typename TiledMma::ValTypeB, cute::cosize_v<SmemLayoutB>> smem_B;
-      cute::ArrayEngine<NonVoidElementScale, scale_elements> smem_scale;
+      cute::ArrayEngine<StorageElementScale, scale_elements> smem_scale;
       cute::ArrayEngine<NonVoidElementZero, zero_elements> smem_zero;
     } tensors;
 
@@ -515,7 +535,9 @@ struct GgufPrepackedCollectiveMma {
     StrideA dA{};
     ElementB const* ptr_B = nullptr;
     StrideB dB{};
-    ElementScale const* ptr_S = nullptr;
+    // In packed mode this is the original [K/256,N,2] uint64 unit plane;
+    // no expanded scale/zero pointer is accepted by the FQ public wrapper.
+    StorageElementScale const* ptr_S = nullptr;
     NonVoidStrideScale dS{};
     int group_size = 0;
     ElementZero const* ptr_Z = nullptr;
@@ -591,16 +613,16 @@ struct GgufPrepackedCollectiveMma {
     tma_load_b = make_tma_copy_B(
         make_logical_tensor(ptr_B, make_shape(N, K, L), args.dB));
 
-    int32_t scale_k =
-        (ModeHasScales) ? (K + args.group_size - 1) / args.group_size : 0;
+    int32_t scale_k = PackedUnits ? K / 256 :
+        ((ModeHasScales) ? (K + args.group_size - 1) / args.group_size : 0);
     int32_t group_size = (ModeHasScales) ? args.group_size : 0;
 
     if constexpr (ModeHasScales) {
       tma_load_scale = make_tma_copy_scale(
-          make_logical_tensor(args.ptr_S, make_shape(M, scale_k, L), args.dS));
+          make_logical_tensor(args.ptr_S, make_shape(PackedUnits ? M * 2 : M, scale_k, L), args.dS));
     }
 
-    if constexpr (KernelConversionMode ==
+    if constexpr (!PackedUnits && KernelConversionMode ==
                   ConversionMode::ConvertAndScaleWithZero) {
       tma_load_zero = make_tma_copy_zero(
           make_logical_tensor(args.ptr_Z, make_shape(M, scale_k, L), args.dS));
@@ -637,7 +659,11 @@ struct GgufPrepackedCollectiveMma {
     constexpr int min_tma_aligned_elements_B = tma_alignment_bits / cutlass::sizeof_bits<ElementB>::value;
     implementable = implementable && cutlass::detail::check_alignment<min_tma_aligned_elements_B>(cute::make_shape(N,K,L), StrideB{});
 
-    if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
+    if constexpr (PackedUnits) {
+      implementable = implementable && K % 256 == 0 && args.group_size == 32 &&
+          args.ptr_S != nullptr && args.ptr_Z == nullptr;
+    }
+    else if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
       implementable = implementable && (args.ptr_S == nullptr);
       implementable = implementable && (args.ptr_Z == nullptr);
     } 
@@ -683,7 +709,10 @@ struct GgufPrepackedCollectiveMma {
     cute::prefetch_tma_descriptor(mainloop_params.tma_load_a.get_tma_descriptor());
     cute::prefetch_tma_descriptor(mainloop_params.tma_load_b.get_tma_descriptor());
 
-    if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
+    if constexpr (PackedUnits) {
+      cute::prefetch_tma_descriptor(mainloop_params.tma_load_scale.get_tma_descriptor());
+    }
+    else if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
       // Nothing extra to do
     } 
     else if constexpr (KernelConversionMode == ConversionMode::ConvertAndScale) {
@@ -741,7 +770,7 @@ struct GgufPrepackedCollectiveMma {
     auto make_gS_mkl = [&]() {
       auto scale_k = mainloop_params.scale_k;
       Tensor mS_mkl = mainloop_params.tma_load_scale.get_tma_tensor(
-          make_shape(M, scale_k, L));
+          make_shape(PackedUnits ? M * 2 : M, scale_k, L));
       return local_tile(mS_mkl, ScaleTileShape{}, make_coord(_, _));
     };
 
@@ -753,7 +782,9 @@ struct GgufPrepackedCollectiveMma {
       return local_tile(mZ_mkl, ScaleTileShape{}, make_coord(_, _));
     };
 
-    if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
+    if constexpr (PackedUnits) {
+      return cute::make_tuple(make_gA_mkl(), make_gB_nkl(), make_gS_mkl());
+    } else if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
       return cute::make_tuple(make_gA_mkl(), make_gB_nkl());
     } else if constexpr (KernelConversionMode ==
                          ConversionMode::ConvertAndScale) {
@@ -789,7 +820,10 @@ struct GgufPrepackedCollectiveMma {
       int thread_idx,
       uint32_t block_rank_in_cluster,
       TensorStorage& shared_tensors) {
-    if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
+    if constexpr (PackedUnits) {
+      static_assert(sizeof...(Ts) == 3, "Packed units need codes, activation, units");
+    }
+    else if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
       static_assert(sizeof... (Ts) == 2, "Direct convert needs two inputs");
     } 
     else if constexpr (KernelConversionMode == ConversionMode::ConvertAndScale) {
@@ -874,7 +908,13 @@ struct GgufPrepackedCollectiveMma {
         copy(mainloop_params.tma_load_a.with(*tma_barrier, mcast_mask_a), tAgA(_,_,_,*k_tile_iter), tAsA(_,_,_,write_stage));
         copy(mainloop_params.tma_load_b.with(*tma_barrier, mcast_mask_b), tBgB(_,_,_,*k_tile_iter), tBsB(_,_,_,write_stage));
 
-        if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
+        if constexpr (PackedUnits) {
+          auto source = get<0>(extra_input_partitions);
+          auto target = get<1>(extra_input_partitions);
+          copy(mainloop_params.tma_load_scale.with(*tma_barrier),
+               source(_,_,_,*k_tile_iter / 4), target(_,_,_,write_stage));
+        }
+        else if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
           // Nothing extra to do.
         }
         else if constexpr (ModeHasScales) {
@@ -1025,11 +1065,15 @@ struct GgufPrepackedCollectiveMma {
     // PIPELINED MAIN LOOP
     //
 
+    int unit_group_begin = 0;
     auto convert_A = [&, a_vec = Int<CONVERSION_WIDTH>{}](int k_block,
                                                           int read_stage) {
+      if constexpr(PackedUnits) {
+        if(k_block==0) unit_group_begin=(current_k_tile_++ % 4)*2;
+      }
       load_extra_info_to_registers(partitioned_extra_info,
                                    copy_partitions_extra_info, k_block,
-                                   read_stage);
+                                   read_stage, unit_group_begin);
       transform_A_kblock(tCrA_load, a_vec, tCrA_mma, partitioned_extra_info,
                          k_block);
     };
@@ -1220,7 +1264,7 @@ struct GgufPrepackedCollectiveMma {
 
       Tensor tSgS = block_tma_s.partition_S(gS);                                              // (TMA,TMA_M,TMA_K,k)
       Tensor tSsS = block_tma_s.partition_D(sS);                                              // (TMA,TMA_M,TMA_K,PIPE)
-      if constexpr (KernelConversionMode == ConversionMode::ConvertAndScale) {
+      if constexpr (PackedUnits || KernelConversionMode == ConversionMode::ConvertAndScale) {
         return cute::make_tuple(tSgS, tSsS);
       } 
       else if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero) {
@@ -1253,7 +1297,21 @@ struct GgufPrepackedCollectiveMma {
     ThreadMma const& mma_thread_slice,
     TensorStorage& shared_tensors) {
 
-    if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
+    if constexpr (PackedUnits) {
+      auto coords = make_identity_tensor(make_shape(shape<0>(TileShape{}),
+          shape<2>(TileShape{}), Int<PipelineStages>{}));
+      auto mapped = mma_thread_slice.partition_A(coords);
+      // Reuse the established typed affine fragment shape; only its delivery
+      // changes. Coordinates stay independent of the raw physical word layout.
+      auto logical = make_tensor(make_smem_ptr(static_cast<ElementScale*>(nullptr)),
+                                  typename Metadata::Logical{});
+      auto shape = mma_thread_slice.partition_fragment_A(logical(_,_,Int<0>{})).shape();
+      auto scales = make_tensor<ElementScale>(shape);
+      auto zeros = make_tensor<ElementZero>(shape);
+      auto raw = make_tensor(make_smem_ptr(shared_tensors.smem_scale.begin()), SmemLayoutScale{});
+      return cute::make_tuple(mapped, scales, raw, zeros);
+    }
+    else if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
       // nothing to do
       return cute::make_tuple();
     }
@@ -1294,7 +1352,10 @@ struct GgufPrepackedCollectiveMma {
     cute::tuple<Ts...>& partitioned_extra_info,
     int const warp_group_thread_idx) {
 
-    if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
+    if constexpr (PackedUnits) {
+      return cute::make_tuple(); // affine decode writes directly to the RF view
+    }
+    else if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
       // nothing to do
       return cute::make_tuple();
     }
@@ -1327,12 +1388,30 @@ struct GgufPrepackedCollectiveMma {
   // Load scales and zeros into registers if required
   template <class... Ts, class... Us>
   CUTLASS_DEVICE void load_extra_info_to_registers(
-      cute::tuple<Ts...> const& partitioned_mma_extra_info,
+      cute::tuple<Ts...>& partitioned_mma_extra_info,
       cute::tuple<Us...> const& tiled_copy_and_views, int k_block,
-      int read_stage) {
+      int read_stage, int group_begin) {
     if (k_block % KBlocksPerGroup == 0) {
       // One load per distinct group, reused only by MMAs within that group.
-      if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
+      if constexpr (PackedUnits) {
+        auto coords = get<0>(partitioned_mma_extra_info);
+        auto& scales = get<1>(partitioned_mma_extra_info);
+        auto raw = get<2>(partitioned_mma_extra_info);
+        auto& zeros = get<3>(partitioned_mma_extra_info);
+        CUTLASS_PRAGMA_UNROLL
+        for (int row=0; row<size<1>(scales); ++row) {
+          CUTLASS_PRAGMA_UNROLL
+          for (int value=0; value<size<0>(scales); ++value) {
+            auto coord = coords(value,row,k_block,read_stage);
+            auto const* ptr = &raw(2*get<0>(coord),0,read_stage);
+            auto unit = *reinterpret_cast<quactlize::ppu17::GgufQ4Unit const*>(ptr);
+            auto affine = unit.template affine<ElementScale>(group_begin+get<1>(coord)/32);
+            scales(value,row,k_block) = affine.scale;
+            zeros(value,row,k_block) = affine.zero;
+          }
+        }
+      }
+      else if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
         // nothing to do
       } else if constexpr (ModeHasScales) {
         auto smem_tiled_copy_S = cute::get<0>(tiled_copy_and_views);

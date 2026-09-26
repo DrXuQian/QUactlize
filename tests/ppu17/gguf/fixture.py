@@ -51,6 +51,39 @@ def decode(raw, dtype):
             'scale':scale.reshape(n,-1).T.contiguous(),
             'zero':zero.reshape(n,-1).T.contiguous(),'weight':weight}
 
+def packed_units(raw):
+    """Independent GGUF -> canonical 16B unit serializer, no production reader."""
+    n,sb,_=raw.shape
+    units=np.zeros((sb,n,16),dtype=np.uint8)
+    units[:,:,:4]=raw[:,:,:4].transpose(1,0,2)
+    for g in range(8):
+        if g<4:
+            scale=raw[:,:,4+g]&63
+            minimum=raw[:,:,8+g]&63
+        else:
+            scale=(raw[:,:,8+g]&15)|((raw[:,:,g]>>6)<<4)
+            minimum=(raw[:,:,8+g]>>4)|((raw[:,:,g+4]>>6)<<4)
+        for which,value in enumerate((scale,minimum)):
+            bit=32+(g//4)*48+which*24+(g%4)*6
+            value=value.T.astype(np.uint16)
+            units[:,:,bit//8]|=((value<<(bit%8))&255).astype(np.uint8)
+            if bit%8+6>8:
+                units[:,:,bit//8+1]|=(value>>(8-bit%8)).astype(np.uint8)
+    return units
+
+def stale_unit_groups(units):
+    """Planted wrong-cadence artifact: odd groups reuse the preceding group."""
+    out=units.copy()
+    for row in out.reshape(-1,16):
+        bits=int.from_bytes(row.tobytes(),'little')
+        for group in (1,3,5,7):
+            for minimum in (0,1):
+                target=32+(group//4)*48+minimum*24+(group%4)*6
+                source=target-6
+                bits=(bits&~(63<<target))|(((bits>>source)&63)<<target)
+        row[:]=np.frombuffer(bits.to_bytes(16,'little'),dtype=np.uint8)
+    return out
+
 def make(m,n,k,dtype, *, onehot=False):
     raw=raw_blocks(n,k)
     f=decode(raw,dtype)
@@ -62,6 +95,7 @@ def make(m,n,k,dtype, *, onehot=False):
     f['a']=a
     f['expected']=(a.double()@f['weight'].double().T).to(dtype).float()
     f['raw_sha256']=hashlib.sha256(raw.tobytes()).hexdigest()
+    f['units']=packed_units(raw)
     # The canonical low plane remains independently available as a control.
     low=np.zeros((k//4,n),dtype=np.uint16)
     for kk in range(k):

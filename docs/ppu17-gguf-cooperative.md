@@ -97,10 +97,12 @@ is tracked independently in the task artifact directory. The stage4 direct
 cohort is complete:18 positive cells (three configs x two dtypes x three
 tools) plus the scalar negative, all admitted in `direct-memory-v7`. Foreign
 job interruptions were resumed with each retained log's identity checked.
-For stage8, the scalar negative and all three FP16 memcheck cases passed;
-the remaining BF16/race/sync cells were interrupted by other GPU work and
-remain pending (`stage8-memory-v2`). Do not promote the stage8 screen winner
-as a fully admitted default yet.
+Stage8 subsequently completed19/19 in `stage8-memory-v7`, retaining only
+identity-checked passing cells. The memory gate is closed; repeated finalist
+timing and production admission are still separate. Earlier interrupted
+attempts remain preserved. The runner now remembers proven descendants after
+exit because NVML can briefly report them after `/proc` disappears; live PID
+reuse and actual foreign GPU processes are still rejected.
 
 The final build/replay script was exercised as `build-v3` (155.77s total),
 including the direct smoke executable. Its12 device instruction bodies match
@@ -132,3 +134,79 @@ typed weight multiply/add keep their established rounding boundaries.
 Before format adoption, compare canonical K-pack and private MMA packing on
 the same group32 collective with identical tile/scheduler/metadata. Only this
 control can separate layout cost from the large original bring-up overhead.
+
+## Packed-unit FQ implementation
+
+The new FQ input is the existing `[K/256,N,16B]` canonical metadata plane and
+the same private lossless code packing as SF. It has a separate diagnostic C
+entrypoint and contract; it never launches an SF prepass. The host decoder
+matches the existing canonical writer and both typed affine readers in49152
+checks. Original FP16 header values are preserved before typed scale/min
+rounding. BF16 weight conversion uses native BF16 pair arithmetic, not FP16
+weights followed by BF16 conversion. Accumulation and fixup remain FP32.
+
+Two failed designs are retained:
+
+- A512-element uint32 TMA box is invalid. The same2048 bytes are now described
+  as256 uint64 elements; this is a descriptor change, not a format change.
+- Publishing the absolute group phase in a mutable shared stage passed216
+  numeric cells, but direct racecheck reported RAW hazards on that scalar.
+  Those builds (`fq-build-v4/v5`) are **not** timing-admitted. A tiny single-
+  phase probe passing racecheck did not exonerate the reused GEMM pipeline.
+
+The admitted candidate eliminates that shared communication. The existing
+Stream-K work tile already owns the absolute K start; an optional capability
+hook passes it to the collective immediately before MMA. Each consumer keeps
+its cursor in registers. The generated build-local overlay changes only this
+call site and records the original/generated hashes. Pinned CUTLASS files,
+the scheduler, waits, barrier counts and existing backends are unchanged.
+Without the hook, an FQ instantiation fails at compile time rather than using
+an assumed zero start. The precise dynamic cause of the old shared hazard is
+not claimed to be a compiler defect or sanitizer false positive.
+
+`fq-build-v6` DSO SHA256:
+`83c499e608d950c0bb5b8d5ac7142ccac7a540796d109e9ab8d0c36d4ae3a4a7`.
+H800 admission:108 numeric cells per dtype per metadata mode,432 total;
+FQ/SF exact one-hot, typed raw-GGUF oracle, guards, metadata negatives and
+changed-input graph replay. Direct FQ memcheck/racecheck/synccheck passes36
+positive cells plus the scalar OOB negative (`fq6-memory-v1`). All24 generated
+GEMM bodies pass codegen checks with zero local-load/store spill sites and six
+rejected codegen negatives. This remains H800 CUDA evidence, not PPU1.7 native
+compiler or device admission.
+
+The focused `split-start` target forces Split-K3 at K1280 and asserts actual
+scheduler parameters for K-tile starts0/7/14. It checks exact one-hot outputs
+and guards for FP16/BF16 and stages4/8; its direct memory result is tracked
+separately from the default-scheduler cohort.
+
+The reproducible `fq-build-v7` includes this target; its24 GEMM instruction
+bodies matchv6 exactly. `fq7-split-memory-v1` passes12 positive direct tool
+cells plus the scalar negative. Timing authority remainsv6, not relabeled as
+a measurement ofv7. The build took291.42s including host proofs and all three
+direct smoke executables.
+
+### First FQ/SF rotating-weight screen
+
+`fq6-screen-v1` completed24 arms/48 configuration measurements and24 matched
+same-tile pairs: every pair has identical raw output and matched endpoint
+clocks. Timing uses the same idle/rotating-weight protocol as above. FP16
+examples (microseconds; stage8, except noted):
+
+| M/N/K | Resident SF | FQ | FQ delta |
+|---|---:|---:|---:|
+| 1/512/2048 | 11.59 | 13.93 | +20.3% |
+| 1/4096/4096 | 17.45 | 24.41 | +39.9% |
+| 8/4096/4096 | 17.28 | 24.33 | +40.8% |
+| 128/4096/4096 | 25.46 | 31.63 | +24.2% |
+
+Across both dtypes and all24 same-tile pairs, FQ is11.5–44.7% slower than
+resident SF. This is a bounded screen, not repeated finalist confirmation.
+The M128 points compare the128x128 tile only; do not mistake them for the
+best result among all three tile shapes in earlier screens.
+
+FQ reduces resident weight bytes by10% in this layout, but its first reader
+issues more metadata bytes per64K stage and decodes headers/fields during
+MMA. These are concrete optimization targets, **not** a measured attribution
+of the entire timing gap. SF expansion remains excluded, so these numbers
+alone cannot select the full FQ versus SF route. FQ is not promoted, and no
+performance parity with optimized GGUF or GPTQ libraries is claimed.

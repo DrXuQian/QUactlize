@@ -20,6 +20,10 @@ def family(pid):
         if after==owned:return owned
         owned=after
 
+def birth(pid):
+    try:return Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[19]
+    except FileNotFoundError:return None
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--application',type=Path,required=True)
@@ -31,6 +35,7 @@ def main():
     p.add_argument('--configs',type=int,nargs='+',default=[0,1,2])
     p.add_argument('--device',default='0')
     p.add_argument('--resume-from',type=Path)
+    p.add_argument('--racecheck-report',choices=('analysis','hazard'),default='analysis')
     a=p.parse_args()
     if a.output.exists():raise ValueError('fresh memory output required')
     a.output.mkdir(parents=True)
@@ -68,6 +73,7 @@ def main():
                  '--print-session-details','--error-exitcode','97','--tool',tool,
                  '--check-bulk-copy','yes','--check-warpgroup-mma','yes']
         if tool=='memcheck':command+=['--padding','128']
+        if tool=='racecheck':command+=['--racecheck-report',a.racecheck_report]
         command += [str(a.application),str(dtype),str(config)]
         if negative:command+=['scalar-negative']
         record={'tool':tool,'dtype':dtype,'config':config,'negative':negative,'command':command}
@@ -83,11 +89,21 @@ def main():
             with log.open('w') as output:
                 child=subprocess.Popen(command,env=env,stdout=output,stderr=subprocess.STDOUT,start_new_session=True)
                 start=time.monotonic()
+                owned={}
                 try:
                     while child.poll() is None:
+                        for pid in family(child.pid):owned[pid]=birth(pid)
                         snap=guard.snapshot(a.device)
-                        foreign=[x for x in snap['processes'] if x['pid'] not in family(child.pid)]
-                        if snap['uuid']!=a.expected_uuid or foreign:raise ValueError('device changed or foreign job arrived')
+                        for pid in family(child.pid):owned[pid]=birth(pid)
+                        # NVML may still report our target after it has exited
+                        # and disappeared from ps. Keep proved descendants;
+                        # reject any live reused PID with a different birth.
+                        foreign=[x for x in snap['processes'] if x['pid'] not in owned or
+                                 birth(x['pid']) not in (None,owned[x['pid']])]
+                        if snap['uuid']!=a.expected_uuid or foreign:
+                            record['foreign_processes']=foreign
+                            record['observed_uuid']=snap['uuid']
+                            raise ValueError('device changed or foreign job arrived')
                         if time.monotonic()-start>180:raise ValueError('sanitizer timeout')
                         time.sleep(.1)
                 finally:

@@ -20,20 +20,29 @@ struct Plan {
   virtual ~Plan() { if (workspace) cudaFree(workspace); }
   virtual void execute()=0;
 };
-template<class T, int M, int Stages=4> struct SfPlan : Plan {
-  using Types=quactlize::ppu17::GgufQ4Sf<T,128,M,1,Stages>;
+template<class T, int M, int Stages=4, bool PackedUnits=false> struct TypedPlan : Plan {
+  using Types=quactlize::ppu17::GgufQ4Prepacked<T,128,M,1,Stages,PackedUnits>;
   using Gemm=typename Types::Gemm;
   typename Gemm::Arguments args;
   cudaStream_t stream;
-  explicit SfPlan(q17_gguf_call const& c) : stream(static_cast<cudaStream_t>(c.stream)) {
+  explicit TypedPlan(q17_gguf_call const& c, void const* units=nullptr)
+      : stream(static_cast<cudaStream_t>(c.stream)) {
     using namespace cute;
     auto a_stride=make_stride(int64_t(c.k),_1{},int64_t(0));
     auto s_stride=make_stride(_1{},int64_t(c.n),int64_t(0));
     using UnusedStride=cutlass::detail::TagToStrideB_t<cutlass::layout::ColumnMajor>;
     typename Types::Kernel::MainloopArguments mainloop{
         static_cast<typename Types::Code const*>(c.b),UnusedStride{},
-        static_cast<T const*>(c.a),a_stride,
-        static_cast<T const*>(c.scales),s_stride,32,static_cast<T const*>(c.zeros)};
+        static_cast<T const*>(c.a),a_stride};
+    mainloop.group_size=32;
+    if constexpr(PackedUnits) {
+      mainloop.ptr_S=static_cast<uint64_t const*>(units);
+      mainloop.dS=make_stride(_1{},int64_t(2)*c.n,int64_t(0));
+    } else {
+      mainloop.ptr_S=static_cast<T const*>(c.scales);
+      mainloop.dS=s_stride;
+      mainloop.ptr_Z=static_cast<T const*>(c.zeros);
+    }
     typename Types::Kernel::EpilogueArguments epilogue{
         {},nullptr,{},static_cast<T*>(c.output),s_stride};
     args=typename Gemm::Arguments{cutlass::gemm::GemmUniversalMode::kGemm,
@@ -57,14 +66,14 @@ template<class T, int M, int Stages=4> struct SfPlan : Plan {
     check(cudaGetLastError(),"Q4_K SF full call");
   }
 };
-template<class T> Plan* make(q17_gguf_call const& c) {
+template<class T, bool PackedUnits=false> Plan* make(q17_gguf_call const& c,void const* units=nullptr) {
   switch(c.config) {
-    case 0:return new SfPlan<T,16>(c);
-    case 1:return new SfPlan<T,64>(c);
-    case 2:return new SfPlan<T,128>(c);
-    case 3:return new SfPlan<T,16,8>(c);
-    case 4:return new SfPlan<T,64,8>(c);
-    case 5:return new SfPlan<T,128,8>(c);
+    case 0:return new TypedPlan<T,16,4,PackedUnits>(c,units);
+    case 1:return new TypedPlan<T,64,4,PackedUnits>(c,units);
+    case 2:return new TypedPlan<T,128,4,PackedUnits>(c,units);
+    case 3:return new TypedPlan<T,16,8,PackedUnits>(c,units);
+    case 4:return new TypedPlan<T,64,8,PackedUnits>(c,units);
+    case 5:return new TypedPlan<T,128,8,PackedUnits>(c,units);
   }
   throw std::runtime_error("unknown Q4_K SF config");
 }
@@ -83,6 +92,7 @@ template<class T> void pack(int n,int k,uint8_t const* input,uint8_t* out) {
 }
 Q17_GGUF_EXPORT char const* q17_gguf_error() { return last_error.c_str(); }
 Q17_GGUF_EXPORT char const* q17_gguf_contract() { return "GGUF_Q4_K_G32_SF_PRIVATE_MMA_V1"; }
+Q17_GGUF_EXPORT char const* q17_gguf_fq_contract() { return "GGUF_Q4_K_G32_PACKED_UNITS_PRIVATE_MMA_V1"; }
 Q17_GGUF_EXPORT int q17_gguf_config_count() { return 6; }
 Q17_GGUF_EXPORT int q17_gguf_prepare(q17_gguf_call const* c,void** out) {
   return guard([&] {
@@ -101,6 +111,23 @@ Q17_GGUF_EXPORT int q17_gguf_prepare(q17_gguf_call const* c,void** out) {
 }
 Q17_GGUF_EXPORT int q17_gguf_execute(void* plan) {
   return guard([&] { if (!plan) throw std::runtime_error("null plan"); static_cast<Plan*>(plan)->execute(); });
+}
+Q17_GGUF_EXPORT int q17_gguf_prepare_fq(q17_gguf_fq_call const* c,void** out) {
+  return guard([&] {
+    if (!c || !out) throw std::runtime_error("null FQ call/plan");
+    *out=nullptr;
+    if (c->m<1 || c->n<128 || c->n%128 || c->k<256 || c->k%256 ||
+        !c->a || !c->b || !c->units || !c->output || uintptr_t(c->units)%16)
+      throw std::runtime_error("requires aligned Q4 packed units and private codes");
+    int device; check(cudaGetDevice(&device),"device");
+    cudaDeviceProp p{}; check(cudaGetDeviceProperties(&p,device),"properties");
+    if (p.major!=9 || p.minor!=0) throw std::runtime_error("requires physical SM90");
+    q17_gguf_call common{c->dtype,c->config,c->m,c->n,c->k,c->a,c->b,
+                         nullptr,nullptr,c->output,c->stream};
+    if (c->dtype==0) *out=make<cutlass::half_t,true>(common,c->units);
+    else if (c->dtype==1) *out=make<cutlass::bfloat16_t,true>(common,c->units);
+    else throw std::runtime_error("only FP16/BF16");
+  });
 }
 Q17_GGUF_EXPORT void q17_gguf_destroy(void* plan) { delete static_cast<Plan*>(plan); }
 Q17_GGUF_EXPORT size_t q17_gguf_workspace(void* plan) { return plan?static_cast<Plan*>(plan)->bytes:0; }

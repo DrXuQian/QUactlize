@@ -5,8 +5,9 @@ canonical K-pack bytes, runtime selectors and the shipping q17 ABI are unchanged
 It extends the pinned Machete collective to **GGUF group32 affine metadata**,
 not GPTQ group128 and not a re-quantization of GGUF weights.
 
-Current scope: dense Q4_K, resident ScaleFirst FP16/BF16 A/S/Z/C, FP32
-accumulation and Stream-K fixup. N must be divisible by128; K by256. Three
+Current scope: dense Q4_K, resident ScaleFirst or original packed-unit FQ,
+FP16/BF16 compute and output, FP32 accumulation and Stream-K fixup.
+N must be divisible by128; K by256. Three
 cooperative tiles `(weight-N, activation-M, K)` are128x16/64/128x64, Cluster1,
 four/eight pipeline stages. Configs0/1/2 are stage4;3/4/5 are the same tiles
 with stage8. BF16 conversion is direct. Explicit pair multiply and
@@ -59,6 +60,24 @@ python3 tests/ppu17/gguf/run.py \
   --dtype 1 --output /workspace/gguf-q4-bf16-numerical
 ```
 
+Add `--metadata fq --configs 0 1 2 3 4 5` to test original packed-unit FQ.
+The combined diagnostic library exports a distinct `q17_gguf_prepare_fq`
+entrypoint and `GGUF_Q4_K_G32_PACKED_UNITS_PRIVATE_MMA_V1` contract. Its input
+is `[K/256,N,16B]` canonical metadata, not raw GGUF's interleaved scale bytes
+and not SF arrays. `packed_abi.cu` checks the reader against the existing
+canonical writer. No SF expansion kernel is launched on this route.
+
+FQ uses one contiguous TMA metadata copy per64K stage. Its128 columns occupy
+256 uint64 elements (2048B); flattening into512 uint32 elements exceeds the
+TMA box dimension limit. Storage bytes are unchanged. The stage's group
+phase is derived in registers from the existing scheduler's absolute K start,
+then advances once per64K stage. No mutable shared phase is published. The
+build generates one optional coordinate hook at the pinned outer kernel's
+MMA call; its original/generated hashes are recorded and the dependency tree
+is unchanged. A missing hook rejects FQ instantiation rather than assuming K=0.
+Whole units are deliberately reloaded for each64K stage in this first FQ
+implementation. Resident bytes and issued per-stage bytes are different.
+
 The runner requires PyTorch/NumPy only for fixtures and CUDA events. Its CPU
 oracle decodes raw144-byte GGUF blocks independently, rounds each dequant step
 in the requested type and computes the dot in FP64. It exercises one-hot
@@ -95,11 +114,23 @@ outputs for each same-tile pair. Both it and `memory.py` accept
 `--resume-from PREVIOUS/summary.json` with a fresh output directory. Valid
 cells are retained with identity/log checks; interrupted cells are not reused.
 
+Use `memory.py --application BUILD/fq-smoke` for the separate packed-unit
+memory gate. `fq_compare.py` compares the same stage4/8 tiles between SF and
+FQ for the12 bounded points; pass the same bundle/backend/UUID arguments as
+`stages.py`. It requires matched raw output fingerprints, checks clocks,
+and preserves complete arms on resume. SF expansion remains excluded, so
+this is **resident SF vs complete FQ GEMM**, not an SF/FQ end-to-end decision.
+
+`memory.py --application BUILD/split-start --configs 0 3` additionally forces
+the real scheduler to Split-K3 at K1280. It asserts scheduler parameters that
+produce K-tile starts0/7/14, then checks exact one-hot outputs and guards in
+both dtypes/stage depths. This tests non-superblock-aligned starts without
+inventing a second scheduling policy or changing the measured default.
+
 ## Remaining work
 
-1. FQ: consume original packed scale/min units inside the collective. Do not
-   hide an SF expansion kernel behind an FQ label. Define metadata stage
-   ownership before attempting header reuse over successive K tiles.
+1. Confirm packed-unit FQ performance and inspect field/header decoding cost;
+   reuse across successive K tiles needs a separately proved lifetime.
 2. Canonical-reader control on this same cooperative pipeline, preserving all
    other axes, before deciding that a shipping offline format should change.
 3. Bounded stage/tile/scheduler confirmation, retaining prior winners; then

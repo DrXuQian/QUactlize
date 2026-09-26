@@ -35,27 +35,53 @@ def main():
     if out==ROOT or ROOT in out.parents or out.exists():
         raise ValueError('fresh external build directory required')
     out.mkdir(parents=True)
+    # Keep the dependency checkout immutable. Materialize one exact optional
+    # coordinate hook in this build only; preserve the scheduler and pipeline.
+    relative=Path('cutlass/gemm/kernel/sm90_gemm_tma_warpspecialized_cooperative.hpp')
+    original=a.cutlass/'include'/relative
+    text=original.read_text()
+    seam='          collective_mainloop.mma(\n'
+    if text.count(seam)!=1:raise ValueError('pinned scheduler/MMA seam differs')
+    hook=('          quactlize::ppu17::detail::KTileCoordinate<CollectiveMainloop>::set(\n'
+          '              collective_mainloop, work_tile_info.K_idx);\n')
+    overlay=out/'overlay'
+    generated=overlay/relative;generated.parent.mkdir(parents=True)
+    generated.write_text('#define QUACTLIZE_PPU17_GGUF_K_COORD_HOOK 1\n'
+        '#include "quactlize/backends/ppu17/gguf_kernel_hook.cuh"\n'+text.replace(seam,hook+seam))
     sources=list(HERE.glob('*.cu'))+list(HERE.glob('*.h'))+[Path(__file__)]
     sources+=list((ROOT/'quactlize/backends/ppu17').glob('gguf*.cuh'))
     sources.append(ROOT/'quactlize/backends/ppu17/target.cuh')
+    sources.append(ROOT/'quactlize/backends/ppu17/format.cuh')
+    sources += [ROOT/'quactlize/include'/name for name in (
+        'gguf_packed_unit.hpp','gguf_scale_layout.hpp','gguf_scale_decode.hpp',
+        'ppu_format_config.hpp','ppu_format_config.inc','kquant_kpack_offline.hpp')]
     bound={str(x):sha(x) for x in sources}
     common=[str(a.compiler),'-std=c++17','-O3','-DNDEBUG',
             '--expt-relaxed-constexpr','--extended-lambda',
             '-gencode=arch=compute_90a,code=sm_90a','-lineinfo',
             '-DCUTLASS_ENABLE_DIRECT_CUDA_DRIVER_CALL=1',
-            '-I'+str(ROOT),'-I'+str(a.cutlass/'include'),
+            '-I'+str(ROOT),'-I'+str(overlay),'-I'+str(a.cutlass/'include'),
+            '-I'+str(ROOT/'quactlize/include'),
             '-I'+str(HERE.parent/'reference/shim'),'-I'+str(a.vllm/'csrc')]
-    receipt={'scope':'GGUF_Q4_K_GROUP32_SF_HOPPER_NOT_NATIVE_PPU17',
+    receipt={'scope':'GGUF_Q4_K_GROUP32_SF_AND_FQ_HOPPER_NOT_NATIVE_PPU17',
              'config_count':6,
+             'metadata_modes':2,
+             'fq_contract':'GGUF_Q4_K_G32_PACKED_UNITS_PRIVATE_MMA_V1',
              'contract':'GGUF_Q4_K_G32_SF_PRIVATE_MMA_V1','cutlass':PPU_CUTLASS,
              'vllm':VLLM,'source_sha256':bound,'compiler_sha256':sha(a.compiler),
+             'coordinate_hook':{'original_sha256':sha(original),
+                                'generated_file':str(generated.relative_to(out)),
+                                'generated_sha256':sha(generated),'seams':1},
              'compiler_version':subprocess.check_output([str(a.compiler),'--version'],text=True),
              'builds':{}}
-    for name in ('metadata','adapter','smoke'):
-        dest=out/{'metadata':'metadata-host','adapter':'libgguf_q4_sf.so','smoke':'smoke'}[name]
+    for name in ('metadata','packed_abi','adapter','smoke','fq_smoke','split_start'):
+        dest=out/{'metadata':'metadata-host','packed_abi':'packed-abi-host',
+                  'adapter':'libgguf_q4.so','smoke':'smoke','fq_smoke':'fq-smoke',
+                  'split_start':'split-start'}[name]
         command=common+[str(HERE/(name+'.cu')),'-o',str(dest)]
         if name=='adapter':command+=['-shared','-Xcompiler=-fPIC,-fvisibility=hidden']
-        if name=='smoke':command+=['-L'+str(out),'-lgguf_q4_sf','-Xlinker','-rpath','-Xlinker','$ORIGIN']
+        if name in ('smoke','fq_smoke','split_start'):
+            command+=['-L'+str(out),'-lgguf_q4','-Xlinker','-rpath','-Xlinker','$ORIGIN']
         command+=['-L'+str(a.compiler.parent.parent/'lib64/stubs'),'-lcuda']
         (out/(name+'.command.json')).write_text(json.dumps(command,indent=2)+'\n')
         start=time.monotonic()
@@ -63,9 +89,9 @@ def main():
             subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,check=True,
                            env={**os.environ,'TMPDIR':str(out)})
         receipt['builds'][name]={'file':dest.name,'sha256':sha(dest),'seconds':time.monotonic()-start}
-        if name=='metadata':
+        if name in ('metadata','packed_abi'):
             result=subprocess.check_output([str(dest)],text=True)
-            (out/'metadata-host.log').write_text(result)
+            (out/(name+'-host.log')).write_text(result)
             print(result,flush=True,end='')
         print('GGUF_Q4_BUILD part='+name+' status=PASS',flush=True)
     if any(sha(path)!=digest for path,digest in bound.items()):
