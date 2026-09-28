@@ -249,8 +249,23 @@ still120FP32words and120ordered RTTE FMAs. Whole solve1678->1472sites,
 register loop need not be fixed by a larger straight-line footprint, and
 fewer load opcodes need not mean missing data. Verify actual native indexing,
 word coverage, FMA order/contraction and resources; the retained old lowering
-under the new symbol must fail the gate. Performance remains unmeasured at
-this handoff. Evidence: GDN `docs/PPU_GDN_SOLVE_STATIC_INDEX.md`.
+under the new symbol must fail the gate. That initial handoff was compile-only.
+Evidence: GDN `docs/PPU_GDN_SOLVE_STATIC_INDEX.md`; measured follow-up below.
+
+The PPU1.0 follow-up (actlizeLA77fee23, same S2048 scope, g=-1/-0.1,
+HGCC2.2.0-dev box, 1.700GHz, site ACU) confirms a same-precision gain:
+solve52.50/52.48->44.88/44.95us, complete4/4/7-kernel sums
+185.71/187.10->180.07/181.19us, about1.247xFLA, not1.5x. Dynamic diagonal
+indirect reads196608->0 and pipe_flush waits466944->0 close the generated-code
+mechanism; whole-solve opcodes-22.69%, same491520ordered diagonal FMAs,
+same BF16/three-productTF32 MMA,84regs/zero stack, shared capacity and BC.
+Higher sync/memory per-issue ratios coexist with lower latency; do not turn
+those changing-denominator ratios into wall-time cancellation. Three unchanged
+stages have identical opcode dictionaries but add1.62-1.99us variation, which
+is not credited to the edit. One capture per arm/gate supports confirmation,
+not automatic routing. Bind actual box compiler/dependency history, not the
+local SDK label: only4/37 box bodies match the local build. Evidence:
+actlizeLA `docs/PPU10_STATIC_SOLVE_ACU_20260928.md`.
 
 Before adding explicit shared-to-register double buffering, inspect the old
 native schedule too. SDK2.1.1 already prefetched several GDN residual operand
