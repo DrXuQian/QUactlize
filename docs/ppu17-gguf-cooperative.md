@@ -1,5 +1,8 @@
 # GGUF cooperative pipeline checkpoint
 
+Current builds use [PPU CUTLASS4.3.0](ppu17-cutlass430.md). The following
+2026-09-26 measurements belong to3.6 and are not relabeled as4.3 results.
+
 2026-09-26; isolated branch `dev/ppu17-cutlass360`, parent `ee73b4e`.
 This adapts Machete's register-dequant TMA/WGMMA pipeline to Q4_K's real
 group32 scale/min semantics. No format merging or requantization. Existing

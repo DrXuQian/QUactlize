@@ -10,7 +10,7 @@
 namespace quactlize::ppu17 {
 
 // Experimental reuse of the pinned Machete reader/collective on PPU
-// CUTLASS3.6, not on the reference's CUTLASS. No torch host API is used.
+// CUTLASS4.3, not on the reference's CUTLASS. No torch host API is used.
 // The private MMA-aligned layout preserves every original GPTQ code and
 // FP16 scale bit; it is NOT a new GGUF format or canonical K-pack replacement.
 // Keep the conventional reader as an independent baseline.

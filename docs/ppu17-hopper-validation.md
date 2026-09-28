@@ -1,5 +1,8 @@
 # PPU1.7 backend: Hopper validation, 2026-09-26
 
+Historical3.6 evidence. Current builds use [PPU CUTLASS4.3.0](ppu17-cutlass430.md)
+and require fresh device validation.
+
 This report covers the isolated `dev/ppu17-cutlass360` backend, using PPU
 CUTLASS3.6.0 revision `023e82d03e80b4d5982f664925e15499033df314` and CUDA12.8
 SM90a code on a physical H800. It does not certify native PPU1.7 or change

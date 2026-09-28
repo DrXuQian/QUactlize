@@ -5,11 +5,13 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import time
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
-PPU_CUTLASS = '023e82d03e80b4d5982f664925e15499033df314'
+sys.path.insert(0, str(ROOT / 'quactlize/backends/ppu17'))
+from dependency import REVISION as PPU_CUTLASS, require_cutlass
 VLLM = '11ba93f3646d4c5476c3b3fd56835589701f0fb1'
 
 def sha(path):
@@ -30,7 +32,8 @@ def main():
     a=p.parse_args()
     for key in ('compiler','cutlass','vllm'):
         setattr(a,key,getattr(a,key).resolve(strict=True))
-    pin(a.cutlass,PPU_CUTLASS); pin(a.vllm,VLLM)
+    dependency = require_cutlass(a.cutlass)
+    pin(a.vllm,VLLM)
     out=a.output.resolve()
     if out==ROOT or ROOT in out.parents or out.exists():
         raise ValueError('fresh external build directory required')
@@ -52,6 +55,7 @@ def main():
     sources+=list((ROOT/'quactlize/backends/ppu17').glob('gguf*.cuh'))
     sources.append(ROOT/'quactlize/backends/ppu17/target.cuh')
     sources.append(ROOT/'quactlize/backends/ppu17/format.cuh')
+    sources.append(ROOT/'quactlize/backends/ppu17/dependency.py')
     sources += [ROOT/'quactlize/include'/name for name in (
         'gguf_packed_unit.hpp','gguf_scale_layout.hpp','gguf_scale_decode.hpp',
         'ppu_format_config.hpp','ppu_format_config.inc','kquant_kpack_offline.hpp')]
@@ -68,6 +72,7 @@ def main():
              'metadata_modes':2,
              'fq_contract':'GGUF_Q4_K_G32_PACKED_UNITS_PRIVATE_MMA_V1',
              'contract':'GGUF_Q4_K_G32_SF_PRIVATE_MMA_V1','cutlass':PPU_CUTLASS,
+             'cutlass_identity':dependency,
              'vllm':VLLM,'source_sha256':bound,'compiler_sha256':sha(a.compiler),
              'coordinate_hook':{'original_sha256':sha(original),
                                 'generated_file':str(generated.relative_to(out)),
@@ -96,7 +101,7 @@ def main():
         print('GGUF_Q4_BUILD part='+name+' status=PASS',flush=True)
     if any(sha(path)!=digest for path,digest in bound.items()):
         raise ValueError('source changed during build')
-    pin(a.cutlass,PPU_CUTLASS);pin(a.vllm,VLLM)
+    require_cutlass(a.cutlass);pin(a.vllm,VLLM)
     (out/'manifest.json').write_text(json.dumps(receipt,indent=2)+'\n')
 
 if __name__=='__main__':main()

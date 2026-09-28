@@ -47,7 +47,7 @@ class Backend:
     def __init__(self, bundle, *, allow_source_validation=False):
         bundle = Path(bundle).resolve()
         self.manifest = json.loads((bundle / "manifest.json").read_text())
-        if self.manifest.get("backend") != "ppu17-cutlass360" or self.manifest.get("schema") != 1:
+        if self.manifest.get("backend") != "ppu17-cutlass430" or self.manifest.get("schema") != 1:
             raise ValueError("not a PPU1.7 backend bundle")
         if self.manifest.get("target") != "native" and not allow_source_validation:
             raise ValueError("CUDA source-validation build is not a native PPU1.7 library")

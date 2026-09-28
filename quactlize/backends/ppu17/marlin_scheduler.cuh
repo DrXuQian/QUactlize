@@ -7,7 +7,7 @@
 #include "cutlass/block_striped.h"
 #include "cutlass/workspace.h"
 // Import ONLY the device-free algebra. Do not put actlize on the SM90 include
-// search path: this header's cutlass/cutlass.h resolves to PPU CUTLASS3.6.
+// search path: this header's cutlass/cutlass.h resolves to PPU CUTLASS4.3.
 #include "../../../third_party/actlize/include/cutlass/gemm/kernel/ppu_tile_scheduler_marlin_core.hpp"
 
 namespace quactlize::ppu17 {
@@ -27,6 +27,17 @@ class CooperativeMarlinScheduler {
   using RasterOrderOptions = typename Base::RasterOrderOptions;
   using BarrierType = typename cutlass::NamedBarrierManager<1>::T;
   static constexpr bool IsDynamicPersistent = false;
+  // CUTLASS4.3 exposes scheduling pipelines for every scheduler. This fixed
+  // integer scheduler has no CLC producer or shared queue; use the upstream
+  // empty-pipeline contract, as the non-dynamic Stream-K scheduler does.
+  using Pipeline = cutlass::PipelineEmpty;
+  using ThrottlePipeline = cutlass::PipelineEmpty;
+  struct CLCResponse {};
+  struct SharedStorage {
+    CUTLASS_DEVICE typename Pipeline::SharedStorage pipeline() { return {}; }
+    CUTLASS_DEVICE typename ThrottlePipeline::SharedStorage throttle_pipeline() { return {}; }
+    CUTLASS_DEVICE CLCResponse* data() { return nullptr; }
+  };
   static constexpr int KAlignment = GroupK / cute::size<2>(TileShape{});
   static constexpr uint64_t TileElements = cute::size<0>(TileShape{}) * cute::size<1>(TileShape{});
   static constexpr uint32_t ConsumerGroups = 2;
@@ -122,6 +133,11 @@ class CooperativeMarlinScheduler {
   CUTLASS_DEVICE auto fetch_next_work(WorkTileInfo const& w) const {
     return cute::make_tuple(next_work(params_, w), true);
   }
+  template<class SchedulerPipeline, class SchedulerState>
+  CUTLASS_DEVICE auto fetch_next_work(WorkTileInfo const& w,
+      SchedulerPipeline&, SchedulerState) const {
+    return fetch_next_work(w);
+  }
   CUTLASS_HOST_DEVICE static bool requires_separate_reduction(Params const&) { return false; }
   CUTLASS_HOST_DEVICE static bool valid_warpgroup_in_work_tile(WorkTileInfo const& w) { return w.is_valid(); }
   CUTLASS_HOST_DEVICE static uint32_t get_work_k_tile_start(WorkTileInfo const& w) { return w.K_idx; }
@@ -185,8 +201,9 @@ class CooperativeMarlinScheduler {
 } // namespace quactlize::ppu17
 
 namespace cutlass::gemm::kernel::detail {
-template<class Tile, class Cluster>
-struct TileSchedulerSelector<quactlize::ppu17::MarlinScheduler, cutlass::arch::Sm90, Tile, Cluster> {
+template<class Tile, class Cluster, uint32_t SchedulerStages>
+struct TileSchedulerSelector<quactlize::ppu17::MarlinScheduler, cutlass::arch::Sm90, Tile, Cluster, SchedulerStages> {
+  static_assert(SchedulerStages == 0, "fixed Marlin scheduling has no CLC pipeline");
   using Scheduler = quactlize::ppu17::CooperativeMarlinScheduler<Tile, Cluster>;
 };
 } // namespace cutlass::gemm::kernel::detail

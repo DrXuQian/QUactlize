@@ -1,4 +1,4 @@
-// PPU CUTLASS3.6 prepared-call boundary. Reuses the upstream reader and
+// PPU CUTLASS4.3 prepared-call boundary. Reuses the upstream reader and
 // optionally our existing Marlin integer decomposition/native SM90 fixup.
 #include "common.cuh"
 #include "quactlize/backends/ppu17/gptq_prepacked.cuh"

@@ -54,19 +54,21 @@ results to turn a failed gate green.
   claim those ports are already complete.
 
 Quactlize's new `quactlize/backends/ppu17/gptq.cuh` ports the existing
-FinegrainedScaleOnly contract to PPU CUTLASS3.6.0, with an isolated host
-benchmark entry in `quactlize.cu`. The tag adapter in
-`mixed_input_policy.cuh` bridges that fork's suffixed builder policy to the
-base schedule required by its existing mixed-input collective. It changes
-neither arithmetic nor the dependency files. No actlize, GGUF ABI, canonical
+FinegrainedScaleOnly contract to PPU CUTLASS4.3.0, with an isolated host
+benchmark entry in `quactlize.cu`. The4.3 builder accepts the ordinary
+cooperative schedule and detects mixed input from the element tuple, so the
+old suffixed-schedule workaround is removed. This changes neither arithmetic
+nor dependency files. No actlize, GGUF ABI, canonical
 packing, production selector or PPU1.0/1.5 source is changed.
 
 This is a prepared-kernel comparison, not a vLLM Python benchmark. Reference
 device headers are unmodified vLLM
 `11ba93f3646d4c5476c3b3fd56835589701f0fb1`, with their own CUTLASS4.4.2
 `da5e086dab31d63815acafdac9a9c5893b1c69e2`.
-Quactlize uses PPU CUTLASS3.6.0
-`023e82d03e80b4d5982f664925e15499033df314`.
+Quactlize uses PPU CUTLASS4.3.0
+`0eb6a3b218977892e2b6cd30d59880c440e54fd6`, content-locked to the supplied
+archive by `quactlize/backends/ppu17/dependency.py`. Reference dependencies
+are unchanged. Previous3.6 timing is not evidence for this new dependency.
 The include graphs remain separate. Marlin scheduling reuses only actlize's
 integer-only `MarlinStripeSchedulerCore` at
 `021c69300864e03926108867d318572871a44d35`; its PPU device driver is not imported.
@@ -74,7 +76,7 @@ Initialize that submodule before building. No dependency sources are edited.
 
 `build.py --reader prepacked` selects an additional experimental GPTQ provider:
 the pinned Machete MMA-aligned packing/reader/collective is reused with **PPU
-CUTLASS3.6**, paired with Stream-K or the adapted Marlin scheduler. This is
+CUTLASS4.3**, paired with Stream-K or the adapted Marlin scheduler. This is
 upstream implementation reuse, not a new algorithm. It preserves logical codes,
 group128 and scale bits, but has different private bytes from the conventional
 signed-int4 reader. Bundles are not interchangeable. Neither layout changes
@@ -83,7 +85,7 @@ canonical GGUF/K-pack storage or the existing GGUF-only q17 public ABI.
 `--reader aligned` additionally builds `quactlize_marlin`: the complete
 `gptq_marlin.cuh` backend provider, not just Marlin's scheduler around WGMMA.
 It instantiates unmodified pinned upstream Marlin device templates on the
-isolated PPU CUTLASS3.6 include graph and reuses Quactlize's original host-only
+isolated PPU CUTLASS4.3 include graph and reuses Quactlize's original host-only
 classic packing map. The reference remains a separately built DSO with its
 own wrapper and CPU packing oracle. Report this as implementation reuse,
 never as a new algorithm beating itself. Both arms retain FP32 reduction.

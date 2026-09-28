@@ -1,6 +1,10 @@
 # PPU1.7 integration worklist
 
-Scope: complete independent PPU1.7 backend on PPU CUTLASS3.6.0, leaving the
+Current dependency: **PPU CUTLASS4.3.0**; see [migration and current gates](ppu17-cutlass430.md).
+The dated results below describe the retired3.6 build and are retained only
+as historical evidence. They do not admit the new dependency on hardware.
+
+Historical scope: independent PPU1.7 backend on PPU CUTLASS3.6.0, leaving the
 PPU1.0/1.5 actlize implementation and production routing unchanged.
 
 Source baseline: `fc354953671bdb2079af02507a94805f614f1496`.

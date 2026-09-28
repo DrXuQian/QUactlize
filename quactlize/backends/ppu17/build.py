@@ -9,10 +9,10 @@ import os
 from pathlib import Path
 import subprocess
 import time
+from dependency import BACKEND, REVISION, require_cutlass
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
-PINNED_CUTLASS = "023e82d03e80b4d5982f664925e15499033df314"
 QTYPES = (8, 10, 11, 12, 13, 14)
 
 
@@ -34,12 +34,7 @@ def run(command, log, *, env):
 def build(args):
     compiler = Path(args.compiler).resolve(strict=True)
     cutlass = Path(args.cutlass).resolve(strict=True)
-    revision = subprocess.check_output(["git", "-C", str(cutlass), "rev-parse", "HEAD"], text=True).strip()
-    if revision != PINNED_CUTLASS:
-        raise ValueError("CUTLASS revision differs from reviewed PPU1.7 dependency")
-    dirty = subprocess.check_output(["git", "-C", str(cutlass), "status", "--porcelain", "--", "include"], text=True)
-    if dirty:
-        raise ValueError("CUTLASS include tree is dirty; freeze the dependency first")
+    dependency = require_cutlass(cutlass)
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     if output == ROOT or ROOT in output.parents:
@@ -51,10 +46,11 @@ def build(args):
               "-I" + str(shared), "-I" + str(cutlass / "include")]
     if args.target == "native":
         common += ["-DQ17_NATIVE=1", "-DACOMPUTE_VERSION=10700"]
-    identity = {"schema": 1, "backend": "ppu17-cutlass360", "target": args.target,
+    identity = {"schema": 1, "backend": BACKEND, "target": args.target,
                 "compiler": str(compiler), "compiler_sha256": sha(compiler),
                 "compiler_version": subprocess.check_output([str(compiler), "--version"], text=True),
-                "cutlass_revision": revision, "flags": common[1:],
+                "cutlass_revision": REVISION, "cutlass": dependency, "flags": common[1:],
+                "dependency_validator_sha256": sha(HERE / "dependency.py"),
                 "source_revision": subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip(),
                 "device_admission": "PENDING", "timing_admission": "PENDING"}
     compiler_root = compiler.parent.parent
@@ -108,6 +104,9 @@ def build(args):
         + [str(p) for p in objects] + ["-o", str(library)], root / "link.log", env=env)
     if any(sha(ROOT / name) != digest for name, digest in identity["sources"].items()):
         raise ValueError("sources changed during compilation; this library is not published")
+    require_cutlass(cutlass)
+    if sha(HERE / "dependency.py") != identity["dependency_validator_sha256"]:
+        raise ValueError("dependency validator changed during compilation")
     identity.update(library=library.name, library_sha256=sha(library), build_key=key,
                     build_seconds=time.monotonic()-started, compile_admission="PASS")
     (root / "manifest.json").write_text(json.dumps(identity, indent=2) + "\n")

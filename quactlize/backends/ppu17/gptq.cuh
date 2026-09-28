@@ -1,7 +1,6 @@
 #pragma once
 
 #include "target.cuh"
-#include "mixed_input_policy.cuh"
 #include "marlin_scheduler.cuh"
 #include "cute/tensor.hpp"
 #include "cutlass/cutlass.h"
@@ -40,7 +39,7 @@ template<int TileN, int TileM, int TileK = 64,
       cute::conditional_t<Stages == 0,
           cutlass::gemm::collective::StageCountAutoCarveout<sizeof(typename Epilogue::SharedStorage)>,
           cutlass::gemm::collective::StageCount<Stages>>,
-      cutlass::gemm::KernelTmaWarpSpecializedCooperativeMixedInput>::CollectiveOp;
+      cutlass::gemm::KernelTmaWarpSpecializedCooperative>::CollectiveOp;
   using Kernel = cutlass::gemm::kernel::GemmUniversal<
       cute::Shape<int,int,int,int>, Mainloop, Epilogue, Scheduler>;
   using Gemm = cutlass::gemm::device::GemmUniversalAdapter<Kernel>;

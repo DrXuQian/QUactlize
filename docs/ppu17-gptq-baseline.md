@@ -1,5 +1,8 @@
 # Restore a representative GPTQ baseline
 
+The measured results below belong to the previous3.6 dependency. See
+[PPU CUTLASS4.3.0 migration](ppu17-cutlass430.md) for current build status.
+
 The previous synthetic common-group64 GGUF comparison was rejected by the
 user. Preserve its raw evidence but do not use it for acceptance or selectors.
 The new comparison keeps the already-supported GPTQ symmetric INT4 contract:

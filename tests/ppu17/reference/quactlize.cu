@@ -1,5 +1,5 @@
 // Diagnostic prepared-call boundary for the actual PPU1.7 GPTQ scale-only
-// collective. This TU uses only PPU CUTLASS3.6.0, never vLLM's include graph.
+// collective. This TU uses only PPU CUTLASS4.3.0, never vLLM's include graph.
 #include "common.cuh"
 #include "quactlize/backends/ppu17/gptq.cuh"
 

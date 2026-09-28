@@ -1,8 +1,15 @@
 # PPU1.7 backend
 
-This opt-in backend uses the PPU CUTLASS3.6 SM90 programming model. It does
+This opt-in backend uses the pinned PPU CUTLASS4.3.0 SM90 programming model. It does
 not replace the PPU1.0/1.5 actlize backend, its build, ABI, or policy tables.
 No change to the existing offline K-pack bytes is required.
+
+The supplied archive declares revision `0eb6a3b218977892e2b6cd30d59880c440e54fd6`.
+`dependency.py` binds its complete source-tree hash, so an extracted archive
+needs no fabricated Git commit. Keep dependency sources immutable and build
+outside that directory. CUTLASS3.6 bundles are rejected by the new loader;
+old measurements remain historical evidence, not4.3 admission. See the
+[migration status](../../../docs/ppu17-cutlass430.md).
 
 ## Contracts
 
@@ -59,10 +66,11 @@ do not use those timings for product comparison or continue that optimization.
 ## Existing GPTQ contract on Hopper
 
 `gptq.cuh` ports the existing FinegrainedScaleOnly INT4 contract, initially
-FP16 A/scales/C and group128, with FP32 accumulators. It reuses CUTLASS3.6's
+FP16 A/scales/C and group128, with FP32 accumulators. It reuses CUTLASS4.3's
 RS/TMA warp-specialized mixed-input collective and Stream-K scheduler, not
-the simplified GGUF staging kernels above. `mixed_input_policy.cuh` adapts
-one fork-local builder tag to the schedule expected by that collective.
+the simplified GGUF staging kernels above. The4.3 builder selects mixed-input
+operation from its element tuple using the ordinary cooperative schedule;
+the old suffixed-schedule workaround has been removed.
 The header is exercised through a standalone benchmark entry; the GGUF-only
 q17 v1 ABI and existing dispatcher do not yet expose GPTQ.
 
@@ -77,7 +85,7 @@ now a separate optional `gptq_marlin.cuh` provider, described below; it is not
 the old PPU001 mainloop with its MMA names changed.
 
 `gptq_prepacked.cuh` is an optional experimental provider reusing pinned
-Machete packing/reader/conversion on PPU CUTLASS3.6. This is a different
+Machete packing/reader/conversion on PPU CUTLASS4.3. This is a different
 private GPTQ physical layout, not a change to canonical GGUF bytes. It can
 use Stream-K or the adapted Marlin scheduler. The comparison harness is the
 only caller so far; production routing and the public GGUF-only ABI are
@@ -100,20 +108,20 @@ production selector or expose GPTQ through the GGUF-only public API.
 
 An isolated [GGUF Q4_K cooperative experiment](../../../tests/ppu17/gguf/README.md)
 now extends the Machete-style RS pipeline to real group32 affine metadata.
-FP16/BF16 SF numerics and an initial H800 screen have passed; see
+FP16/BF16 SF/FQ numerics and H800 screens passed on the former3.6 dependency; see
 [scope and results](../../../docs/ppu17-gguf-cooperative.md). Its private code
 packing and diagnostic entrypoint do not alter canonical K-pack or the q17 v1
-contract. FQ packed metadata, other formats and grouped integration remain
-separate gates.
+contract. The4.3 build must pass fresh device checks; other formats and grouped
+integration remain separate gates.
 
 Use an external build directory, not the old `build.sh`/actlize include graph:
 
 ```bash
 python3 quactlize/backends/ppu17/build.py \
-  --cutlass /workspace/quactlize-ppu17-20260926/cutlass \
+  --cutlass /workspace/quactlize-ppu17-cutlass430-20260928/dependency \
   --compiler /usr/local/cuda-12.8/bin/nvcc \
   --target cuda-source \
-  --output /workspace/quactlize-ppu17-20260926/build --jobs 4
+  --output /workspace/quactlize-ppu17-cutlass430-20260928/backend --jobs 4
 ```
 
 The output is a content-keyed directory with a manifest and

@@ -1,6 +1,6 @@
 # GGUF Q4_K cooperative SM90 path
 
-This is a private PPU1.7 experiment on PPU CUTLASS3.6. Existing PPU1.0/1.5,
+This is a private PPU1.7 experiment on PPU CUTLASS4.3. Existing PPU1.0/1.5,
 canonical K-pack bytes, runtime selectors and the shipping q17 ABI are unchanged.
 It extends the pinned Machete collective to **GGUF group32 affine metadata**,
 not GPTQ group128 and not a re-quantization of GGUF weights.
@@ -37,14 +37,16 @@ one-metadata-row assumption. No barrier or retirement wait is removed.
 ## Build and replay
 
 Use the same clean dependencies as the GPTQ comparison: PPU CUTLASS
-`023e82d03e80b4d5982f664925e15499033df314`, vLLM
+`0eb6a3b218977892e2b6cd30d59880c440e54fd6`, vLLM
 `11ba93f3646d4c5476c3b3fd56835589701f0fb1`. The latter supplies the pinned
 packing/converter helpers; its CUTLASS4.4 reference tree is **not** included.
+The PPU dependency is verified against the supplied4.3 archive's full content
+hash, also when extracted without `.git`. Old3.6 results are not4.3 admission.
 
 ```bash
 python3 tests/ppu17/gguf/build.py \
   --compiler /usr/local/cuda-12.8/bin/nvcc \
-  --cutlass /path/to/ppu-cutlass360 --vllm /path/to/pinned-vllm \
+  --cutlass /path/to/ppu-cutlass430 --vllm /path/to/pinned-vllm \
   --output /workspace/gguf-q4-sf-build
 
 python3 tests/ppu17/gguf/check_codegen.py \
