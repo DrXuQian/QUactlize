@@ -267,6 +267,22 @@ not automatic routing. Bind actual box compiler/dependency history, not the
 local SDK label: only4/37 box bodies match the local build. Evidence:
 actlizeLA `docs/PPU10_STATIC_SOLVE_ACU_20260928.md`.
 
+Full chunks can still pay PPU runtime-predication costs even when no lane
+ever takes a tail path. On the subsequent full-C64 GDN state experiment
+(actlizeLA41ade14, sameS2048/g=-1/-0.1, HGCC2.2.0-dev,1.700GHz), making
+the admitted extent constant removed262144`v.csel`,32768`s.min`,139264
+execution-mask operations and131072`v.mov.v2s` executions. State opcodes
+fell13.648->12.154M; complete calls174.845->168.924us /178.407->169.362us.
+BC4.440M, matrix traffic/MMA, shared46080B and roughly14.1activewarps/CU
+stayed fixed. Registers124->120 did not lift occupancy; wait instructions
+increased. This is a generated control/address simplification, not a BC or
+bandwidth-volume win. Prove full-chunk eligibility and retain generic tails,
+then verify the actual native body and dynamic counts: localSDK2.1.1 body
+sizes differed from box2.2.0-dev. Keep unchanged-stage timing variation and
+per-issue stall ratios separate from saved wall time. Both are single captures
+and remain short of1.5xFLA. Evidence and36case x8 RAW-BIT admission:
+actlizeLA `docs/PPU10_FULL_CHUNK_ACU_20260928.md`.
+
 Before adding explicit shared-to-register double buffering, inspect the old
 native schedule too. SDK2.1.1 already prefetched several GDN residual operand
 tiles: a two-slot source rewrite left UPDATE lookahead unchanged and altered
