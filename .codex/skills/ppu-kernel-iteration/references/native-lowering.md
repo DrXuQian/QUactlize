@@ -517,3 +517,86 @@ effects coupled until isolated. Analysis filters must select exact state
 AND output symbols when both share the candidate namespace; a former
 state-only substring can silently mix their PC samples. Evidence: GDN
 `docs/PPU_GDN_RESIDUAL_WARPS8_H_LAYOUT_ACU_20260925.md`; routing unchanged.
+
+## Quantized Hopper control: a scheduler is not the complete implementation
+
+Quactlize's existing standalone Marlin collective has a different packing,
+K-warp/CTA topology, cp.async cadence, register dequant and reduction path
+from a generic cooperative WGMMA collective using Marlin stripe scheduling.
+Reusing its pure integer scheduler does not port that complete implementation.
+The PPU001 m8n16 register maps must not be renamed into Hopper m16n8 maps.
+Prefer a proved architecture-native provider over an incomplete bring-up
+collective when restoring a representative baseline, and explicitly identify
+upstream reuse instead of claiming a new algorithm.
+
+Evidence: `docs/ppu17-gptq-baseline.md`, H800/CUDA12.8, INT4 symmetric GPTQ,
+group128, FP16 A/weights/C and FP32 accumulation/reduction, rotating weights
+>2.25x queried L2. The scheduler-only/MMA-prepacked route still lagged native
+Marlin by20–24% for M1/8,N4096,K4096. Integrating the complete pinned Marlin
+body removed that large gap in screening; all six instruction bodies match
+the reference and18 same-config comparisons are RAW-equal. This is neither
+native PPU1.7 admission nor a GGUF group16/32 performance result.
+
+Audit prepared-call resets separately: removing an unnecessary reset is safe
+only if the last peer already resets every lock, first-use initialization is
+retained, and scratch reuse is serial on the same stream. Do not apply that
+contract to Stream-K without proof. Stage4/8 variants are likewise measured
+alternatives, not universal defaults: fewer stages help short stripes in
+this small-M experiment but regress large-M calls. Preserve the old winner
+and transitively include same-math controls in confirmation. Clock-rejected
+points remain invalid; retry only missing points and bind an assembled report
+to each original receipt rather than relabelling a failed cohort complete.
+
+## Fine GGUF groups on a Hopper prepacked collective
+
+Extending a group128/TileK64 Machete-style collective to GGUF group32 is not
+just relaxing `can_implement`. Give each raw64K stage two physical affine
+rows, count both in the TMA barrier bytes, and present a separate logical-K
+broadcast view to the MMA partition. Reuse metadata only within the two16K
+atoms belonging to that group. Explicit stage counts are needed until the
+auto-sizing helper accounts for every metadata row.
+
+Audit prologue lookahead after changing metadata cadence: the upstream call
+passed the next pipe index, harmless while metadata loaded only at atom0.
+Loading a second group inside the tile makes that index wrong. Prove both
+thread/value ownership and current-stage selection with group/stage negatives,
+then require exact one-hot decode and changed-input replays on device.
+Use explicit rounded half2/BF16x2 multiply and add if the contract has two
+rounding points; inspect actual SASS rather than assuming overloaded operators
+will preserve both vectorization and rounding.
+
+Evidence: `docs/ppu17-gguf-cooperative.md`, H800/CUDA12.8, Q4_K group32 SF,
+FP16/BF16, FP32 accumulation.108 initial numerical cells passed. The large
+win against a bring-up canonical-reader kernel changes pipeline and packing
+together; it is not proof that canonical K-pack itself must be replaced.
+It is neither FQ packed-metadata evidence nor native PPU1.7 admission.
+
+### Packed-unit extension: coordinate ownership and shared sidebands
+
+The subsequent Q4_K FQ control kept the same code packing, math and scheduler.
+A shared per-stage group phase passed216 numeric cells but failed direct
+racecheck with RAW hazards. Do not promote numerical success over a failing
+lifetime gate, or call a small single-phase probe proof of a reused pipeline.
+One initial scalar probe was optimized to constants; inspect native LDS/STS
+before treating a synchronization probe as meaningful.
+
+When the outer scheduler already owns an absolute K start, pass that value
+through an optional collective capability and keep its cursor in registers.
+This removes shared publication instead of adding speculative fences. The
+isolated overlay must bind the exact seam and reject missing integration.
+Check nonzero slice starts as well as K=0 and ordinary stage wrap. Avoid
+inventing another scheduler solely to recover coordinates.
+
+On H800/CUDA12.8, Q4_K FQ/SF x FP16/BF16 passed432 numerical cells after
+removing the sideband; FQ passed36 direct memcheck/racecheck/synccheck cells
+plus a scalar fault negative. Scope and receipts: `docs/ppu17-gguf-cooperative.md`,
+`gguf-mainloop/fq6-memory-v1`, `fq6-screen-v1`. Exact dynamic cause of the old
+hazard is not established as a compiler or tooling defect.
+
+Packed resident size alone does not predict speed. Reading an entire16B
+unit each64K repeats its metadata four times, whereas a unit covers256K.
+The first FQ reader was11.5–44.7% slower than resident SF in24 matched
+same-tile pairs despite10% lower resident bytes. Next distinguish repeated
+traffic, field/header conversion and register pressure with bounded ablations;
+measure SF expansion separately before end-to-end selection. This is CUDA
+Hopper evidence, not a universal native PPU1.7 performance claim.

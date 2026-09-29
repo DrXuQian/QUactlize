@@ -15,6 +15,22 @@ every diagnostic to every kernel.
 | Benchmark is days rather than hours | Measure wall-time fixture/build/child overhead and prune a declared inventory | Kernel duration times the cell count predicts campaign duration |
 | Port compiles but native instructions balloon | Inspect exact PTX/SDK lowering, operand delivery and resources; see [native lowering](native-lowering.md) | Compiler acceptance means efficient native support, or the hardware lacks the arithmetic capability |
 | Full API wins but ACU kernels lose | Separate event spans from per-kernel replay timing; measure same-call launch gaps before attribution | The difference of unlike measurements is measured Python overhead, or the kernels already beat the reference |
+| A mixed-provider winner is presented as one family's parity | Bind the compiled reader/collective/scheduler and filter that family before finalist selection | A Machete reader plus Marlin scheduling proves Machete/Stream-K performance |
+
+For independent family parity, retain that reference's full relevant config
+inventory in screening and compare finalists with identical arithmetic and
+complete-call work. H800 GPTQ example: Machete's StreamKScheduler may itself
+choose data-parallel, Split-K or Stream-K decomposition; that is not a switch
+to Marlin. Keep required workspace clearing/reduction inside timing. A5%
+parity result is not strict no-slower, model admission or native PPU evidence.
+
+Stable before/after clocks per arm need not be equal BETWEEN paired arms.
+If matched clocks are part of the gate, retain the mismatched attempt and
+retry only that point, admitting the first clock-matched attempt rather than
+the fastest. Never edit failed raw receipts or recompute a campaign from a
+hand-picked fastest sample. Evidence and reproducible independent gate:
+`docs/ppu17-gptq-baseline.md`, `tests/ppu17/reference/machete_parity.py`
+(H800, GPTQ INT4/group128, FP16 A/C, FP32 accumulation/reduction,2026-09-26).
 
 SDK environment changes once caused even standalone markers and dequant to
 fail image admission. A later machine/environment passed the same production
