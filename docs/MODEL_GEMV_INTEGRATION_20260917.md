@@ -120,8 +120,8 @@ After making a device idle, resume only the model phases:
 (
     set -e
     cd /sim/eec/shared/junfu.qx/quactlize
-    git switch dev/gemv-model-tuning
-    GIT_LFS_SKIP_SMUDGE=1 git pull --ff-only origin dev/gemv-model-tuning
+    git switch develop
+    GIT_LFS_SKIP_SMUDGE=1 git pull --ff-only origin develop
     PREVIOUS_RUN=/workspace/kpack-q4-model.y7SNPu \
     LLAMA_CI_DIR=/sim/eec/shared/junfu.qx/llama.cpp \
     PPU_SDK=/workspace/ppu-sdk-2.1.1-a5c56e/PPU_SDK \

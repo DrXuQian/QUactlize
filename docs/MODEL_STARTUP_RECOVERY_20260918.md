@@ -60,7 +60,8 @@ another GPU ordinal are refused. Output is a fresh sibling directory.
 (
     set -e
     cd /sim/eec/shared/junfu.qx/quactlize
-    GIT_LFS_SKIP_SMUDGE=1 git pull --ff-only origin dev/gemv-model-tuning
+    git switch develop
+    GIT_LFS_SKIP_SMUDGE=1 git pull --ff-only origin develop
     GIT_LFS_SKIP_SMUDGE=1 git -C /sim/eec/shared/junfu.qx/llama.cpp pull --ff-only \
         https://github.com/DrXuQian/llama.cpp.git dev/quactlize-gate-up-v0.3.0
 

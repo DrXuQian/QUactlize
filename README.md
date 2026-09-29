@@ -3,6 +3,11 @@
 Low-bit weight-only GEMM kernels for the T-Head ZW810 PPU, implemented with
 CuTe and the PPU CUTLASS-3 fork in `third_party/actlize`.
 
+The maintained branches are `main` (product) and `develop` (integration).
+TP2 and the isolated PPU1.7 CUTLASS 4.3 backend are integrated on `develop`;
+PPU1.0/1.5 continue to use actlize. See [branch and build policy](docs/BRANCHES.md)
+before reusing historical prebuilt download commands.
+
 The product format is one K-packed family shared by dense, grouped/MoE,
 decode, and prefill paths:
 

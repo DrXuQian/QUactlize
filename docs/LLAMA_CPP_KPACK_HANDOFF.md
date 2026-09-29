@@ -1,5 +1,9 @@
 # llama.cpp K-pack integration handoff
 
+Quactlize development now uses `develop`, including the former TP2 and fusion
+branches. Historical artifact pins below are retained as evidence, not as
+fresh-install download instructions; see [branch policy](BRANCHES.md).
+
 This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.

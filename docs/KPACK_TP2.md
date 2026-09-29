@@ -1,10 +1,14 @@
 # K-pack TP2
 
+The Quactlize source is now integrated in `develop`; the former topic branch
+is retired. The results below are historical device evidence. Old prebuilt
+fetch commands require migration as described in [branch policy](BRANCHES.md).
+
 ## Implementation and admission
 
 The caller branch is `dev/quactlize-tp2-v0.3.0` in the owner's llama.cpp fork.
-The orchestration branch is `dev/kpack-tp2` in Quactlize. Use its current
-`tools/kpack_q4_model_artifact.json` runtime pin. The Q4/Q5 SIMT scale repair
+The historical orchestration branch was `dev/kpack-tp2` in Quactlize, with
+the runtime pin in `tools/kpack_q4_model_artifact.json`. The Q4/Q5 SIMT scale repair
 requires the updated small execution and paired libraries; `87b996559f` is
 the historical failing runtime, not the repaired one. Public ABI, weight
 format, TC parent modules, caller and JIT source contract remain unchanged.

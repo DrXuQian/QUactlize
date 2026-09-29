@@ -26,7 +26,7 @@ from tools.verify_kquant_selected_config import ArrangementV2, ConfigV4
 BASE_SOURCE = '2826cf12451e02ca4590f7a44682b57d2098bfb9'
 BASE_MANIFEST = '46fc3096e1a14b712ad5d7a50de096d2a973ad5826aa3ffe6a6764d1fc12180d'
 FIX_SOURCE = '025c7e4d4b92330287099675a26bf2879b814f01'
-FIX_BRANCH = 'fix/q4-smallk-admission'
+FIX_SOURCE_REF = 'refs/tags/archive/source-20260929/fix/q4-smallk-admission'
 Q4_LIBRARY = 'libquactlize_ppu_fmt0.so'
 DEFS = 'PPU_PACKED_SCALE=1 QUACTLIZE_DENSE_ONLY=12 PPU_PACKED_FORMAT=0'
 SCHEMA = 'quactlize.ppu-compatibility-overlay.v1'
@@ -169,7 +169,7 @@ def build(args):
     print('Q4_SMALLK baseline=EXPECTED_REJECTION explicit_S1=AVAILABLE',flush=True)
     if subprocess.run(['git','-C',str(ROOT),'cat-file','-e',FIX_SOURCE+'^{commit}'],
                       stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode:
-        git(ROOT,'fetch','origin',FIX_BRANCH)
+        git(ROOT,'fetch','origin',FIX_SOURCE_REF)
     if git(ROOT,'rev-parse',FIX_SOURCE+'^') != BASE_SOURCE:
         raise ValueError('replacement is not based on the published compatibility source')
     changed = set(git(ROOT,'diff','--name-only',BASE_SOURCE,FIX_SOURCE).splitlines())

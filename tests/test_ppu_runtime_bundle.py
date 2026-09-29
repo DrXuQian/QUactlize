@@ -12,6 +12,14 @@ from quactlize import ppu_bundle
 ROOT = pathlib.Path(__file__).parents[1]
 
 
+def test_q4_smallk_source_uses_immutable_archive_not_retired_branch():
+    from tools import build_kpack_tp2_q4 as update
+    assert update.FIX_SOURCE_REF == (
+        'refs/tags/archive/source-20260929/fix/q4-smallk-admission')
+    assert update.FIX_SOURCE == '025c7e4d4b92330287099675a26bf2879b814f01'
+    assert 'FIX_BRANCH' not in (ROOT/'tools/build_kpack_tp2_q4.py').read_text()
+
+
 def _bundle(tmp_path):
     libraries = []
     for role in ppu_bundle.LIBRARY_ROLES:
