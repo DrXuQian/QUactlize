@@ -1,5 +1,7 @@
 #include "word_pack.hpp"
 #include "api.h"
+#include "../quactlize/fusion/paired_n4.hpp"
+#include "../quactlize/fusion/validation.hpp"
 
 template <gguf_scale::KType T, class Source>
 int pack_host(Source raw, uint8_t* low, uint8_t* high, uint8_t* units,
@@ -56,4 +58,28 @@ extern "C" int host_pack_pair(int q, uint8_t const* gate, uint8_t const* up,
   if (rc) return rc;
   return pack_all(q,quactlize_pack::PairedRows{gate,up,sizes.raw_bytes/uint64_t(e)},
                   low,high,units,2*n,k,e);
+}
+
+extern "C" int host_pack_paired_n4(int q,uint8_t const* gate,uint8_t const* up,
+    uint8_t* low,uint8_t* high,uint8_t* units,int n,int k,int e) {
+  qkg_gate_up_layout_v1 layout{};
+  quactlize_ppu_kpack_sizes_v1 sizes{};
+  int rc=quactlize_gate_up_layout_v1(q,&layout);
+  if(rc) return rc;
+  rc=quactlize_ppu_kpack_sizes_for_arrangement_v1(n,k,e,q,&layout.packing,&sizes);
+  if(rc) return rc;
+  quactlize::fusion::PairedRawRows raw{gate,up,sizes.raw_bytes/e/n,n};
+  return pack_all(q,raw,low,high,units,2*n,k,e);
+}
+
+extern "C" int host_gate_up_query(qkg_gate_up_call_v1 const* d,qkg_gate_up_config_v1 const* f,
+    qkg_gate_up_layout_v1 const* layout,qkg_sizes_v1* sizes) {
+  qkg_sizes_v1 result{};
+  int rc=quactlize::fusion::query(*d,*f,*layout,result);
+  if(!rc) *sizes=result;
+  return rc;
+}
+
+extern "C" int host_gate_up_buffers(qkg_gate_up_call_v1 const* d,qkg_sizes_v1 const* s) {
+  return quactlize::fusion::buffers(*d,*s);
 }

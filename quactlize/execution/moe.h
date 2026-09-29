@@ -29,6 +29,12 @@ typedef struct {
 int quactlize_kpack_moe_mixed_stage_v2(qkg_moe_compute_v2 const*,int,void*);
 int quactlize_kpack_moe_weighted_finish_v2(qkg_moe_compute_v2 const*,
     qk_llama_moe_finish_v1 const*,void*);
+// All-SIMT merged chain only. Prepare also snapshots [token,8] finish weights
+// into the unused private down.outputs descriptor array. The final output may
+// then reuse external IDs/weights after all producers have consumed them.
+// No extra kernel or host readback. Old stage/finish entries are unchanged.
+int quactlize_kpack_moe_prepare_finish_v1(qkg_moe_compute_v2 const*,
+    qk_llama_moe_finish_v1 const*,void*);
 #ifdef __cplusplus
 }
 #endif

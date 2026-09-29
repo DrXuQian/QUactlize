@@ -15,7 +15,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from quactlize.runtime.compiler import sha
-from tools.run_kpack_batched_bench import inventory, save
+from tools.run_kpack_batched_bench import inventory, save, tp2_evidence, tp2_cache_evidence
 from tools.verify_kpack_dispatch import verify
 
 
@@ -106,11 +106,18 @@ def numerical(args, model, inv, directory, helpers):
             if not native:
                 env = {k: v for k, v in env.items() if not k.startswith('QUACTLIZE_KPACK_')}
             argv = [args.build / 'bin/llama-perplexity', '-m', model['path'], '-ngl', 'all',
-                '-sm', 'none', '--fit', 'off', '--mmap', '-c', context, '-b', batch, '-ub', batch,
+                '-sm', model.get('split', 'none'), '--fit', 'off', '--mmap', '-c', context, '-b', batch, '-ub', batch,
                 '--chunks', 2, '-f', corpus, '--log-colors', 'off', '--verbosity', 4, '--no-warmup',
                 '-ot', pattern + '=CUDA0' + ('_KPACK' if native else '')]
+            if model.get('split') == 'tensor':
+                argv += ['-ts', model['tensor_split']]
+                if not native:
+                    start = argv.index('-ot'); del argv[start:start+2]
+            cache_hot = (args.cache / model['name'] / 'manifest.json').is_file()
             if native:
                 argv += ['--kpack-cache', args.cache / model['name']]
+            if 'devices' in model:
+                env['CUDA_VISIBLE_DEVICES'] = model['devices']
             if phase == 'reference-save':
                 argv += ['--save-all-logits', base]
             else:
@@ -132,6 +139,9 @@ def numerical(args, model, inv, directory, helpers):
                 evidence = model_selection(args, text)
                 if not evidence['fully_selected']:
                     raise ValueError('model numerical run has missing selected operations or a legacy fallback')
+                if model.get('split') == 'tensor':
+                    evidence['tp2'] = tp2_evidence(text, inv['operators'])
+                    evidence['tp2_cache'] = tp2_cache_evidence(text, cache_hot)
                 record['selection'] = evidence
             elif 'CUDA0_KPACK model buffer size' in text or '[quactlize-plan]' in text:
                 raise ValueError('GPU reference entered the K-pack route')
@@ -158,8 +168,23 @@ def traces(args, model, directory, inv_path):
             '--proof-prompt', 2048, '--proof-generate', 16, '--tensor-inventory', inv_path]
         if arm == 'native':
             argv += ['--proof-tokens', directory / 'reference/proof-request/input-tokens.json']
+        if model.get('split') == 'tensor':
+            argv += ['--tensor-split', model['tensor_split']]
+        env = dict(os.environ)
+        if getattr(args, 'profiler_scope', 'shared') == 'private':
+            from tools.kpack_asys_scope import private_command
+            argv = private_command(argv, directory / f'{arm}-profiler-tmp',
+                [ROOT, args.llama, args.build, args.bundle, args.cache, args.jit_cache,
+                 Path(model['path']), args.asys, args.inspector, Path(sys.executable)] +
+                [Path(env[k]) for k in ('QUACTLIZE_PPU_BUNDLE', 'DG_JIT_CACHE_DIR') if env.get(k)])
+            env['TMPDIR'] = '/tmp'
+            for key in ('PERFETTO_PRODUCER_SOCK_NAME', 'PERFETTO_CONSUMER_SOCK_NAME', 'ASIGHT_SESSION_FOLDER_PATH'):
+                env.pop(key, None)
+            print('KPACK_MODEL_ASYS private_service=1 host_services=UNTOUCHED', flush=True)
         print(f'KPACK_MODEL_TRACE model={model["name"]} arm={arm} first_request=EXCLUDED', flush=True)
-        run(argv, directory / f'{arm}.log')
+        if 'devices' in model:
+            env['CUDA_VISIBLE_DEVICES'] = model['devices']
+        run(argv, directory / f'{arm}.log', env)
         record = json.loads((output / 'proof.json').read_text())
         records.append(record)
         save(directory / 'summary.json', records)
@@ -175,6 +200,7 @@ def main():
     for key in ('llama', 'build', 'bundle', 'plan', 'cache', 'jit-cache', 'output', 'logits', 'corpus', 'asys', 'inspector'):
         p.add_argument('--' + key, type=Path, required=True)
     p.add_argument('--phase', choices=('numerical', 'trace'), required=True)
+    p.add_argument('--profiler-scope', choices=('shared','private'), default='shared')
     p.add_argument('--reuse-from', type=Path, help='recheck completed numerical calls; execute only absent calls')
     p.add_argument('--rerun-native', action='store_true', help='reuse only reference calls after a runtime change')
     args = p.parse_args()

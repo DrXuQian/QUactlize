@@ -61,6 +61,12 @@
     MODEL_COMPUTE=${MODEL_COMPUTE:-fp16}
     [[ "$MODEL_COMPUTE" == fp16 || "$MODEL_COMPUTE" == bf16 ]]
     export QUACTLIZE_KPACK_COMPUTE="$MODEL_COMPUTE"
+    MODEL_GATE_UP=${MODEL_GATE_UP:-0}
+    [[ "$MODEL_GATE_UP" == 0 || "$MODEL_GATE_UP" == 1 ]]
+    if [[ "$MODEL_GATE_UP" == 1 ]]; then
+        [[ "$MODEL_COMPUTE" == bf16 ]]
+    fi
+    export QUACTLIZE_KPACK_GATE_UP="$MODEL_GATE_UP"
     # Check loader dependencies before spending time on the joint build.
     export QUACTLIZE_PPU_BUNDLE=${QUACTLIZE_PPU_BUNDLE:-/workspace/quactlize-runtime-artifact-2826cf1-46fc3096e1a1/prebuilt/ppu0010/2826cf1/runtime6-46fc3096e1a1/bundle}
     test -s "$QUACTLIZE_PPU_BUNDLE/manifest.json"
@@ -82,7 +88,7 @@
 
     stage=fetch
     mapfile -t INFO < <("$PYTHON" -c 'import json,sys; m=json.load(open(sys.argv[1])); print(m["branch"]); print(m["commit"]); print(m["path"]); print(m["manifest_sha256"]); print(m["llama_ci_commit"])' "$ROOT/tools/kpack_q4_model_artifact.json")
-    [[ ${#INFO[@]} == 5 && ${INFO[0]} == artifacts/kpack-model-runtime-v1 && ${INFO[1]} =~ ^[0-9a-f]{40}$ && ${INFO[2]} == prebuilt/ppu0010/kpack-model-runtime-v1 && ${INFO[3]} =~ ^[0-9a-f]{64}$ && ${INFO[4]} =~ ^[0-9a-f]{40}$ ]]
+    [[ ${#INFO[@]} == 5 && ( ${INFO[0]} == artifacts/kpack-model-runtime-v1 || ${INFO[0]} == artifacts/kpack-model-paired-n4-v1 || ${INFO[0]} == artifacts/kpack-model-readers-v1 || ${INFO[0]} == artifacts/kpack-model-prepare-v1 || ${INFO[0]} == artifacts/kpack-model-tp2-scale-v1 || ${INFO[0]} == artifacts/kpack-model-selected-v1 ) && ${INFO[1]} =~ ^[0-9a-f]{40}$ && ${INFO[2]} == prebuilt/ppu0010/kpack-model-runtime-v1 && ${INFO[3]} =~ ^[0-9a-f]{64}$ && ${INFO[4]} =~ ^[0-9a-f]{40}$ ]]
     ART="$RESULT_DIR/quactlize-model-artifact-${INFO[1]:0:10}"
     git fetch origin "${INFO[0]}"
     git cat-file -e "${INFO[1]}^{commit}"
@@ -96,6 +102,37 @@
     "$PYTHON" -c 'import hashlib,sys; assert hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()==sys.argv[2],"model package manifest differs"' "$BUNDLE/manifest.json" "${INFO[3]}"
     "$PYTHON" tools/verify_kpack_dispatch.py "$BUNDLE" --sdk "$SDK" | tee "$RUN/results/verify.log"
     test ! -e "$BUNDLE/llama"
+    if "$PYTHON" -c 'import json,sys; sys.exit("decode_winners" not in json.load(open(sys.argv[1])))' "$BUNDLE/manifest.json"; then
+        stage=selected-entry-numerics
+        "$PYTHON" -u tools/run_selected_decode_numerics.py --sdk "$SDK" --bundle "$BUNDLE" \
+            --output "$RUN/results/selected-entry-numerics" 2>&1 | tee "$RUN/results/selected-entry-numerics.log"
+    fi
+    if [[ "$MODEL_GATE_UP" == 1 ]]; then
+        stage=paired-integration-gate
+        "$PYTHON" -u tools/run_kpack_gate_up_integration.py --sdk "$SDK" --bundle "$BUNDLE" \
+            --output "$RUN/results/paired-integration" 2>&1 | tee "$RUN/results/paired-integration.log"
+    fi
+    if "$PYTHON" -c 'import json,sys; sys.exit(not json.load(open(sys.argv[1])).get("model_reader_gate",False))' "$ROOT/tools/kpack_q4_model_artifact.json"; then
+        stage=model-reader-integration
+        mapfile -t READER_PIN < <("$PYTHON" -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["branch"]); print(p["commit"]); print(p["path"])' "$ROOT/tools/kpack_model_gemv_artifact.json")
+        [[ ${#READER_PIN[@]} == 3 && ${READER_PIN[0]} == artifacts/model-gemv-reader-v1 && ${READER_PIN[1]} =~ ^[0-9a-f]{40}$ && ${READER_PIN[2]} == prebuilt/ppu0010/model-gemv-reader-v1 ]]
+        READER_ART="$RESULT_DIR/quactlize-model-gemv-artifact-${READER_PIN[1]:0:12}"
+        if [[ ! -e "$READER_ART" ]]; then
+            GIT_LFS_SKIP_SMUDGE=1 git fetch origin "${READER_PIN[0]}"
+            git cat-file -e "${READER_PIN[1]}^{commit}"
+            GIT_LFS_SKIP_SMUDGE=1 git worktree add --detach "$READER_ART" "${READER_PIN[1]}"
+        fi
+        [[ $(git -C "$READER_ART" rev-parse HEAD) == "${READER_PIN[1]}" ]]
+        git -C "$READER_ART" lfs pull origin --include="${READER_PIN[2]}/*.so,${READER_PIN[2]}/*.isa.txt" --exclude=''
+        "$PYTHON" -u tools/run_model_gemv_integration.py --sdk "$SDK" --bundle "$BUNDLE" \
+            --reference "$READER_ART/${READER_PIN[2]}" --l2-bytes "${L2_BYTES:-67108864}" \
+            --output "$RUN/results/model-readers" 2>&1 | tee "$RUN/results/model-readers.log"
+    fi
+    if "$PYTHON" -c 'import json,sys; sys.exit(not json.load(open(sys.argv[1])).get("prepare_integration_gate",False))' "$ROOT/tools/kpack_q4_model_artifact.json"; then
+        stage=prepare-integration
+        "$PYTHON" -u dev/moe_prepare/run_integration.py --bundle "$BUNDLE/router-alias" \
+            --output "$RUN/results/prepare-integration" 2>&1 | tee "$RUN/results/prepare-integration.log"
+    fi
     if [[ ${Q8_HOIST_AB:-0} == 1 ]]; then
         stage=q8-hoist-ab
         mapfile -t Q8_BASE < <("$PYTHON" -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p["commit"]); print(p["path"]); print(p["manifest_sha256"])' "$ROOT/tools/kpack_q8_hoist_baseline.json")
@@ -157,7 +194,9 @@
         fi
         LLAMA_DIR="$RESULT_DIR/llama-model-source-${INFO[4]:0:10}"
         if [[ ! -e "$LLAMA_DIR" ]]; then
-            git clone --no-checkout --depth 1 --single-branch --branch dev/quactlize-v0.3.0 \
+            LLAMA_BRANCH=$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("llama_branch","dev/quactlize-v0.3.0"))' "$ROOT/tools/kpack_q4_model_artifact.json")
+            [[ "$LLAMA_BRANCH" == dev/quactlize-v0.3.0 || "$LLAMA_BRANCH" == dev/quactlize-gate-up-v0.3.0 || "$LLAMA_BRANCH" == dev/quactlize-tp2-v0.3.0 ]]
+            git clone --no-checkout --depth 1 --single-branch --branch "$LLAMA_BRANCH" \
                 https://github.com/DrXuQian/llama.cpp.git "$LLAMA_DIR"
         fi
         test "$(git -C "$LLAMA_DIR" rev-parse --show-toplevel)" == "$LLAMA_DIR"
@@ -184,10 +223,15 @@
         BUILD_DIR=$(realpath -e -- "${LLAMA_CI_BUILD_DIR:-$RUN/ci/llama-build}")
     fi
     export CUDA_HOME="$SDK/CUDA_SDK" DG_JIT_CACHE_DIR="$RUN/ci/ncp-jit-cache"
+    export DG_JIT_HGCC_COMPILER="$SDK/bin/hgcc"
+    test -x "$DG_JIT_HGCC_COMPILER"
     unset DG_LIBRARY_ROOT GGML_NCP_FA_LIB GGML_NCP_MOE_LIB
     export LD_LIBRARY_PATH="$BUILD_DIR/bin:$LD_LIBRARY_PATH"
     if [[ "$Q8_HOIST_AB" == 1 ]]; then
         "$PYTHON" -c 'import sys; sys.path.insert(0,sys.argv[1]+"/tests"); from quactlize_native import simt_symbol_recipe; assert simt_symbol_recipe("quactlize::execution::simt::q8_vector::kernel<1,0,1,4,8,4,true>")== (8,1,5,4,8,4,0), "update the llama trace parser for Q8 hoist"' "$LLAMA_DIR"
+    fi
+    if "$PYTHON" -c 'import json,sys; sys.exit(not json.load(open(sys.argv[1])).get("model_reader_gate",False))' "$ROOT/tools/kpack_q4_model_artifact.json"; then
+        "$PYTHON" -c 'import sys; sys.path.insert(0,sys.argv[1]+"/tests"); from quactlize_native import simt_symbol_recipe,paired_symbol_recipe; assert simt_symbol_recipe("quactlize::execution::simt::q8_vector::kernel_model<1,0,1,8,4,4,true,8192,2048,1>")== (8,1,5,8,4,4,0), "update the llama reader trace parser"; assert paired_symbol_recipe("quactlize::fusion::simt_gate_up_model<12,1,1,8>"), "update the llama paired trace parser"' "$LLAMA_DIR"
     fi
     "$BUILD_DIR/bin/llama-batched-bench" --help > "$RUN/results/binary-help.log" 2>&1
 
@@ -211,6 +255,7 @@
         grep -qx 'KPACK_MOE_MIXED_STAGES PASS cells=80 PPU_GEMM_ADMISSION=NOT_TESTED' "$RUN/results/mixed-stages.log"
     elif [[ "$MODEL_PHASES" == all ]]; then failed=$((failed+1)); fi
     GATE_ARGS=(--smallm-table)
+    if [[ "$MODEL_GATE_UP" == 1 ]]; then GATE_ARGS+=(--paired); fi
     if [[ "$MODEL_PHASES" == perf ]]; then
         printf 'KPACK_Q4_MODEL accuracy=NOT_RETESTED scope=SMALLM_COMPOSITION_PLUS_PERFORMANCE\n'
     fi
@@ -222,6 +267,11 @@
     COMMON=(--llama "$LLAMA_DIR" --build "$BUILD_DIR" --bundle "$BUNDLE" --plan "$RUN/results/model-plan.json"
         --cache "$CACHE_DIR" --jit-cache "$QUACTLIZE_KPACK_JIT_CACHE" --logits "$RUN/logits" --corpus "$CORPUS"
         --asys "$ASYS" --inspector "$SDK/bin/hgobjdump")
+    stage=model-prewarm
+    "$PYTHON" -u tools/prewarm_kpack_model.py --model-plan "$RUN/results/model-plan.json" \
+        --bundle "$BUNDLE" --sdk "$SDK" --cache "$QUACTLIZE_KPACK_JIT_CACHE" \
+        --jobs "${JIT_JOBS:-$JOBS}" --output "$RUN/results/model-prewarm.json" \
+        2>&1 | tee "$RUN/results/model-prewarm.log"
     if [[ "$MODEL_PHASES" == all ]]; then
         stage=model-numerical
         "$PYTHON" -u tools/run_kpack_model_validation.py "${COMMON[@]}" --phase numerical \
@@ -236,6 +286,10 @@
     stage=model-trace
     if "$PYTHON" -u tools/run_kpack_model_validation.py "${COMMON[@]}" --phase trace \
         --output "$RUN/results/trace" 2>&1 | tee "$RUN/results/trace.log"; then :; else failed=$((failed+1)); fi
+    if [[ "$MODEL_GATE_UP" == 1 ]]; then
+        stage=paired-model-proof
+        if "$PYTHON" tools/check_kpack_paired_model.py --results "$RUN/results"; then :; else failed=$((failed+1)); fi
+    fi
     if [[ "$MODEL_ACU" == 1 ]]; then
         stage=model-acu
         if "$PYTHON" -u tools/profile_kpack_model_decode.py --sdk "$SDK" --bundle "$BUNDLE" \

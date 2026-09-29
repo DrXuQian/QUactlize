@@ -246,9 +246,16 @@ def test_final_model_runner_uses_joint_ci_caller_and_pinned_runtime():
     assert '--exclude=\'*.asysrep\'' in text
     assert 'DrXuQian/llama.cpp.git' in text and 'ggml-org/llama.cpp.git' not in text
     receipt = json.loads((ROOT/'tools/kpack_q4_model_artifact.json').read_text())
-    assert receipt['branch'] == 'artifacts/kpack-model-runtime-v1'
+    caller_branches = {'artifacts/kpack-model-runtime-v1': 'dev/quactlize-v0.3.0',
+                      'artifacts/kpack-model-paired-n4-v1': 'dev/quactlize-gate-up-v0.3.0',
+                      'artifacts/kpack-model-readers-v1': 'dev/quactlize-gate-up-v0.3.0',
+                      'artifacts/kpack-model-prepare-v1': 'dev/quactlize-tp2-v0.3.0',
+                      'artifacts/kpack-model-tp2-scale-v1': 'dev/quactlize-tp2-v0.3.0',
+                      'artifacts/kpack-model-selected-v1': 'dev/quactlize-selected-decode',
+                      'artifacts/kpack-launch-fix-v1': 'dev/quactlize-selected-decode'}
+    assert receipt['branch'] in caller_branches
     assert receipt['path'] == 'prebuilt/ppu0010/kpack-model-runtime-v1'
-    assert receipt['llama_branch'] == 'dev/quactlize-v0.3.0'
+    assert receipt['llama_branch'] == caller_branches[receipt['branch']]
     assert 'llama_commit' not in receipt and 'test ! -e "$BUNDLE/llama"' in text
     assert len(receipt['commit']) == len(receipt['llama_ci_commit']) == 40
     assert len(receipt['manifest_sha256']) == 64
@@ -256,6 +263,19 @@ def test_final_model_runner_uses_joint_ci_caller_and_pinned_runtime():
     # publication validator checks the actual payload closure; it is no
     # longer the historical twelve-file F16-only package.
     assert isinstance(receipt['lfs_payloads'],int) and receipt['lfs_payloads']>0
+    if receipt['branch'] in ('artifacts/kpack-model-selected-v1','artifacts/kpack-launch-fix-v1'):
+        assert receipt['selected_entry_gate'] is True
+        assert 'tools/run_selected_decode_numerics.py' in text
+    if receipt['branch'] in ('artifacts/kpack-model-readers-v1','artifacts/kpack-model-prepare-v1',
+                            'artifacts/kpack-model-tp2-scale-v1'):
+        assert receipt['model_reader_gate'] is True
+        assert text.index('stage=model-reader-integration') < text.index('stage=model-benchmark')
+        assert 'tools/run_model_gemv_integration.py' in text
+        assert 'update the llama reader trace parser' in text
+    if receipt['branch'] in ('artifacts/kpack-model-prepare-v1','artifacts/kpack-model-tp2-scale-v1'):
+        assert receipt['prepare_integration_gate'] is True
+        assert 'dev/moe_prepare/run_integration.py' in text
+        assert text.index('stage=prepare-integration') < text.index('stage=model-benchmark')
 
 
 def test_joint_ci_checkout_preserves_dirty_source_and_nested_submodules(tmp_path):
@@ -818,6 +838,179 @@ def test_model_continuation_has_no_build_and_uses_fresh_outputs(tmp_path, monkey
     subprocess.run(['bash', '-n', str(ROOT / 'tools/resume_kpack_q4_model_box.sh')], check=True)
 
 
+def performance_continuation_fixture(tmp_path, monkeypatch):
+    resume, previous, llama, sdk, bundle, build = continuation_fixture(tmp_path, monkeypatch)
+    result=previous/'results'
+    (result/'runner-status.txt').write_text('runner_rc=1 stage=paired-model-proof\n')
+    pin_path=resume.ROOT/'tools/kpack_q4_model_artifact.json'
+    pin=json.loads(pin_path.read_text());pin['model_reader_gate']=True
+    pin_path.write_text(json.dumps(pin))
+    manifest=dict(paired_gate_up={},execution_sha256='current-execution')
+    monkeypatch.setattr(resume,'verify',lambda *_a,**_k:manifest)
+    plan=dict(models=[dict(name='qwen35-35b-q4km')],prompts=[2048],generations=[128])
+    (result/'model-plan.json').write_text(json.dumps(plan))
+    ci=json.loads((result/'caller-ci-build.json').read_text())
+    protocol=dict(plan=plan,first_pass_excluded=True,order='abba',repeats=2,
+                  production_fusion='MOE_CHAIN_AND_GPU_GATE_UP_PAIR',
+                  binary_sha256=ci['files']['bin/llama-batched-bench'])
+    path=result/'benchmark/results';path.mkdir(parents=True)
+    (path/'protocol.json').write_text(json.dumps(protocol))
+    (path/'status.json').write_text('[{"status":"FAIL","reason":"out of memory"}]')
+    for name in ('paired-integration','model-readers'):(result/name).mkdir()
+    (result/'paired-integration/summary.json').write_text('{"status":"PASS"}')
+    rows=[dict(point=name,status='PASS',rc=0,admitted_m1_bitdiff=0,
+               execution_sha256=manifest['execution_sha256'],manifest_sha256=pin['manifest_sha256'])
+          for name in ('q4-paired-routed','q5-routed-down','q8-paired-shared','q8-shared-down',
+                       'q8-ssm-out','q8-qkv','q8-attn-gate')]
+    (result/'model-readers/summary.json').write_text(json.dumps(dict(status='PASS',records=rows)))
+    return resume,previous,llama,sdk,bundle,build
+
+
+@pytest.mark.parametrize('fault',[None,'stage','warmup','plan','binary','reader-bits','reader-image',
+                                'reader-count','reader-duplicate','reader-status','paired'])
+def test_performance_resume_requires_same_artifacts_and_completed_gates(tmp_path,monkeypatch,fault):
+    resume,previous,llama,sdk,bundle,build=performance_continuation_fixture(tmp_path,monkeypatch)
+    result=previous/'results'
+    if fault=='stage':(result/'runner-status.txt').write_text('runner_rc=1 stage=model-reader-integration')
+    if fault in ('warmup','plan','binary'):
+        p=result/'benchmark/results/protocol.json';data=json.loads(p.read_text())
+        if fault=='warmup':data['first_pass_excluded']=False
+        if fault=='plan':data['plan']['prompts']=[1024]
+        if fault=='binary':data['binary_sha256']='changed'
+        p.write_text(json.dumps(data))
+    if fault and fault.startswith('reader-'):
+        p=result/'model-readers/summary.json';data=json.loads(p.read_text());rows=data['records']
+        if fault=='reader-bits':rows[0]['admitted_m1_bitdiff']=1
+        if fault=='reader-image':rows[0]['execution_sha256']='changed'
+        if fault=='reader-count':rows.pop()
+        if fault=='reader-duplicate':rows[-1]=rows[0]
+        if fault=='reader-status':rows[0]['status']='FAIL'
+        p.write_text(json.dumps(data))
+    if fault=='paired':(result/'paired-integration/summary.json').write_text('{"status":"FAIL"}')
+    if fault:
+        with pytest.raises(ValueError):resume.inputs(previous,llama,sdk,performance_only=True)
+    else:
+        found,caller,gates=resume.inputs(previous,llama,sdk,performance_only=True)
+        assert found==bundle and caller==build and len(gates)==8
+    assert json.loads((result/'benchmark/results/status.json').read_text())[0]['status']=='FAIL'
+
+
+@pytest.mark.parametrize('acu',[False,True])
+def test_performance_resume_preserves_prior_and_runs_only_model_phases(tmp_path,monkeypatch,acu):
+    resume,previous,llama,sdk,bundle,build=performance_continuation_fixture(tmp_path,monkeypatch)
+    (sdk/'asight/bin').mkdir(parents=True)
+    for name in ('asys','acu'):
+        p=sdk/'asight/bin'/name;p.write_text('host fixture');p.chmod(0o755)
+    for name in ('kpack-model-cache','kpack-model-jit-cache'):(tmp_path/name).mkdir()
+    output=tmp_path/'continued';(output/'results').mkdir(parents=True)
+    monkeypatch.delenv('CACHE_DIR',raising=False);monkeypatch.delenv('JIT_CACHE',raising=False)
+    commands=[]
+    monkeypatch.setattr(resume,'run',lambda argv,log,env:commands.append((list(map(str,argv)),log,env)))
+    resume.continuation(SimpleNamespace(previous=previous,llama=llama,sdk=sdk,device='1',
+        corpus=tmp_path/'corpus',performance_only=True,profile_acu=acu),output)
+    expected=['benchmark.log','trace.log','paired-model-proof.log']+(['acu.log'] if acu else [])
+    assert [log.name for _,log,_ in commands]==expected
+    assert all(env['CUDA_VISIBLE_DEVICES']=='1' and env['QUACTLIZE_KPACK_GATE_UP']=='1' and
+               env['QUACTLIZE_KPACK_COMPUTE']=='bf16' for _,_,env in commands)
+    assert all('build_kpack' not in ' '.join(argv) and 'run_model_gemv_integration' not in ' '.join(argv)
+               for argv,_,_ in commands)
+    assert (output/'results/prior/runner-status.txt').read_bytes()==(previous/'results/runner-status.txt').read_bytes()
+    receipt=json.loads((output/'results/continuation.json').read_text())
+    assert receipt['compile']=='NONE' and receipt['numerical_scope']=='NOT_RETESTED'
+
+
+def trace_continuation_fixture(tmp_path, monkeypatch):
+    values = performance_continuation_fixture(tmp_path, monkeypatch)
+    resume, previous, llama, sdk, bundle, build = values
+    result = previous / 'results'
+    (result / 'runner-status.txt').write_text('runner_rc=1 stage=model-trace\n')
+    source = plan(tmp_path)
+    source['models'] = source['models'][:1]
+    (result / 'model-plan.json').write_text(json.dumps(source))
+    root = result / 'benchmark/results'
+    protocol = json.loads((root / 'protocol.json').read_text())
+    protocol.update(plan=source, production_fusion='MOE_CHAIN')
+    (root / 'protocol.json').write_text(json.dumps(protocol))
+    model, = source['models']
+    folder = root / model['name']; folder.mkdir()
+    status = []
+    for label in ('0-reference', '1-kpack', '2-kpack', '3-reference'):
+        arm = label.split('-', 1)[1]
+        status.append(dict(model=model['name'], arm=arm, status='PASS'))
+        rows = []
+        for point in sequence(source, 2):
+            pp, tg, repeat = point
+            raw = dict(n_kv_max=pp+tg, pp=pp, tg=tg, pl=1, n_batch=source['batch'],
+                       n_ubatch=source['ubatch'], flash_attn=1, is_pp_shared=0,
+                       n_kv=pp+tg, t_pp=1, t_tg=1, speed_pp=pp, speed_tg=tg)
+            rows.append(parse_row(json.dumps(raw), point, source))
+        for suffix, data in (
+            ('process', dict(rc=0)), ('timings', rows),
+            ('command', dict(devices='0', compute='fp16' if arm=='kpack' else 'REFERENCE')),
+            ('selection', dict(plan_admission='PASS', fully_selected=True, paired_plans=[])),
+        ):
+            (folder / f'{label}.{suffix}.json').write_text(json.dumps(data))
+    (root / 'status.json').write_text(json.dumps(status))
+    # This FP16 run has no BF16 or paired component admission to reuse.
+    for name in ('bf16-metadata', 'bf16', 'bf16-selected-q4', 'bf16-matched-prefill', 'paired-integration'):
+        (result / name / 'summary.json').unlink()
+    return values
+
+
+@pytest.mark.parametrize('fault', [None, 'failed-arm', 'missing-arm', 'process', 'selection',
+                                  'nan', 'warmup', 'sample-count', 'denominator', 'compute', 'device'])
+def test_trace_only_rechecks_all_saved_abba_evidence(tmp_path, monkeypatch, fault):
+    resume, previous, llama, sdk, bundle, build = trace_continuation_fixture(tmp_path, monkeypatch)
+    root = previous / 'results/benchmark/results'
+    suffix = {'failed-arm':'status', 'missing-arm':'status', 'process':'process',
+              'selection':'selection', 'compute':'command', 'device':'command'}.get(fault, 'timings')
+    file = root / ('status.json' if suffix=='status' else f'subject/1-kpack.{suffix}.json')
+    data = json.loads(file.read_text())
+    if fault=='failed-arm': data[0]['status']='FAIL'
+    if fault=='missing-arm': data.pop()
+    if fault=='process': data['rc']=15
+    if fault=='selection': data['fully_selected']=False
+    if fault=='nan': data[1]['t_pp']=float('nan')
+    if fault=='warmup': data[0]['phase']='measured'
+    if fault=='sample-count': data.pop()
+    if fault=='denominator': data[1]['speed_tg']=1
+    if fault=='compute': data['compute']='bf16'
+    if fault=='device': data['devices']='1'
+    file.write_text(json.dumps(data))
+    if fault:
+        with pytest.raises(ValueError): resume.inputs(previous, llama, sdk, performance_only=True, trace_only=True)
+    else:
+        found, caller, gates = resume.inputs(previous, llama, sdk, performance_only=True, trace_only=True)
+        assert found==bundle and caller==build and len(gates)==3
+
+
+@pytest.mark.parametrize('device', ['0', '1'])
+def test_trace_only_does_not_build_or_remeasure_benchmark(tmp_path, monkeypatch, device):
+    resume, previous, llama, sdk, bundle, build = trace_continuation_fixture(tmp_path, monkeypatch)
+    (sdk / 'asight/bin').mkdir(parents=True)
+    for name in ('asys', 'acu'):
+        file = sdk / 'asight/bin' / name; file.write_text('profiler'); file.chmod(0o755)
+    for name in ('kpack-model-cache', 'kpack-model-jit-cache'): (tmp_path / name).mkdir()
+    monkeypatch.delenv('CACHE_DIR', raising=False); monkeypatch.delenv('JIT_CACHE', raising=False)
+    calls = []
+    monkeypatch.setattr(resume, 'run', lambda argv, log, env: calls.append((list(map(str, argv)), log, env)))
+    output = tmp_path / 'continued'; (output / 'results').mkdir(parents=True)
+    args = SimpleNamespace(previous=previous, llama=llama, sdk=sdk, device=device,
+                           corpus=tmp_path/'corpus', performance_only=True, trace_only=True)
+    if device=='1':
+        with pytest.raises(ValueError, match='original single-device'): resume.continuation(args, output)
+        assert not calls
+    else:
+        resume.continuation(args, output)
+        assert [log.name for _, log, _ in calls]==['trace.log']
+        env = calls[0][2]
+        assert env['QUACTLIZE_KPACK_COMPUTE']=='fp16' and env['QUACTLIZE_KPACK_GATE_UP']=='0'
+        assert env['DG_JIT_HGCC_COMPILER']==str(sdk/'bin/hgcc')
+        receipt = json.loads((output/'results/continuation.json').read_text())
+        assert receipt['compile']=='NONE' and receipt['benchmark_scope']=='REUSED_UNCHANGED'
+        assert not (output/'results/benchmark').exists()
+
+
 def test_first_nonfinite_reuses_read_only_original_and_reference_only_changes_placement():
     from tools.run_kpack_first_nonfinite import command
     argv = ['/bin/llama-perplexity', '-m', '/model.gguf', '-c', '256', '-b', '1', '-ub', '1',
@@ -978,7 +1171,7 @@ def test_paired_swiglu_captures_same_index_and_independent_operands(tmp_path, re
 def test_model_trace_reuses_reference_tokens_and_never_times_profiler(tmp_path, monkeypatch):
     from tools import run_kpack_model_validation as model
     commands = []
-    def fake_run(argv, log):
+    def fake_run(argv, log, env=None):
         commands.append(argv)
         output = Path(argv[argv.index('--output')+1]); output.mkdir()
         (output/'proof.json').write_text(json.dumps(dict(input_tokens_sha256='a'*64, missing_ops=[])))
@@ -991,6 +1184,467 @@ def test_model_trace_reuses_reference_tokens_and_never_times_profiler(tmp_path, 
     assert '--proof-tokens' not in ref
     assert candidate[candidate.index('--proof-tokens')+1] == tmp_path/'reference/proof-request/input-tokens.json'
     assert all('--proof-only' in c and c[c.index('--proof-prompt')+1]==2048 for c in commands)
+
+
+def successful_extension_fixture(tmp_path, monkeypatch):
+    values = performance_continuation_fixture(tmp_path, monkeypatch)
+    resume, previous, llama, sdk, bundle, build = values
+    result = previous/'results'
+    (result/'runner-status.txt').write_text('runner_rc=0 stage=complete\n')
+    (result/'benchmark/results/status.json').write_text('[{"status":"PASS"}]')
+    (result/'trace').mkdir()
+    (result/'trace/status.json').write_text('[{"status":"PASS"}]')
+    old_model = fixture(tmp_path, 'original.gguf')
+    old = dict(source='original', prompts=[2048], generations=[128], parallel=1, batch=2048,
+               ubatch=2048, models=[dict(name='qwen35-35b-q4km', path=str(old_model),
+                                       devices='0', split='none')])
+    (result/'model-plan.json').write_text(json.dumps(old))
+    protocol_path=result/'benchmark/results/protocol.json'
+    protocol=json.loads(protocol_path.read_text());protocol['plan']=old
+    protocol_path.write_text(json.dumps(protocol))
+    new=old | dict(source='extension-fixture', model_root=str(tmp_path/'models'), models=[
+        dict(name='dense-control',directory='dense',devices='0',split='none'),
+        dict(name='moe-control',directory='moe',devices='0',split='none')])
+    for model in new['models']:
+        fixture(Path(new['model_root']),model['directory']+'/weights.gguf')
+    plan_path=tmp_path/'extension.json';plan_path.write_text(json.dumps(new))
+    return (*values,plan_path)
+
+
+def test_other_models_keep_workload_and_preserve_122b_two_device_requirement():
+    plan=json.loads((ROOT/'tools/kpack_batched_other_int4_2048.json').read_text())
+    full=json.loads((ROOT/'tools/kpack_batched_models.json').read_text())
+    assert plan['prompts']==[2048] and plan['generations']==[128] and plan['parallel']==1
+    assert plan['batch']==plan['ubatch']==2048
+    assert {m['name'] for m in plan['models']}=={'qwen3-32b-q4km','qwen35-122b-q4km'}
+    for model in plan['models']:
+        if model['name']=='qwen35-122b-q4km':
+            assert model['split']=='tensor' and model['devices']=='0,1' and model['tensor_split']=='1,1'
+            argv=command('/bench',model|dict(path='/122b.gguf'),plan,2,['blk.0.ffn_down_exps.weight'],'kpack',Path('/cache'))
+            assert argv[argv.index('-sm')+1]=='tensor' and argv[argv.index('-ts')+1]=='1,1'
+            assert argv[argv.index('-ot')+1].endswith('=CUDA0_KPACK')
+            assert argv[argv.index('--kpack-cache')+1] == '/cache'
+            native=command('/bench',model|dict(path='/122b.gguf'),plan,2,['blk.0.ffn_down_exps.weight'],'reference',Path('/cache'))
+            assert '-ot' not in native
+        else:
+            assert model['split']=='none' and model['devices']=='0' and 'tensor_split' not in model
+        assert model['directory']==next(m['directory'] for m in full['models'] if m['name']==model['name'])
+
+
+@pytest.mark.parametrize('fault', [None, 'device', 'geometry', 'grouped', 'fallback', 'producer'])
+def test_tp2_requires_selected_local_geometry_on_both_devices(fault):
+    lines=[]
+    for dev in (0,1):
+        for op,experts in (('dense',1),('grouped',256)):
+            fields=f'tensor={op}.weight device={dev} q=12 n=512 k=3072 experts={experts}'
+            if not (fault=='producer' and dev==1):
+                lines.append('[quactlize-shard] '+fields+' bytes=1024 producer=GPU')
+            if fault=='device' and dev==1 or fault=='grouped' and op=='grouped' and dev==1: continue
+            if fault=='geometry' and dev==1: fields=fields.replace('k=3072','k=1536')
+            selected='0' if fault=='fallback' and dev==1 else '1'
+            lines.append('[quactlize-device-plan] '+fields+f' op={op} rows=8 selected={selected}')
+    if fault:
+        with pytest.raises(ValueError):bench.tp2_evidence('\n'.join(lines),['dense','grouped'])
+    else:
+        assert bench.tp2_evidence('\n'.join(lines),['dense','grouped'])['status']=='PASS'
+
+
+def test_tp2_plan_and_runner_do_not_bypass_meta_or_cache_admission(tmp_path):
+    source=json.loads((ROOT/'tools/kpack_batched_tp2_122b.json').read_text())
+    validate_plan(source)
+    model,=source['models']
+    assert model['filename'].endswith('00001-of-00003.gguf')
+    for index in (1,2,3):
+        fixture(tmp_path,model['directory']+'/'+model['filename'].replace('00001-of-',f'{index:05d}-of-'))
+    resolved=resolve_plan(source, model_root=tmp_path)
+    assert len(resolved['models'][0]['files'])==3
+    script=(ROOT/'tools/run_kpack_tp2_box.sh').read_text()
+    subprocess.run(['bash','-n',str(ROOT/'tools/run_kpack_tp2_box.sh')],check=True)
+    assert 'build_kpack_model_ci.py' in script and 'JOBS=${JOBS:-192}' in script
+    assert 'test-quactlize-scheduler" --tp2-cache-write' in script
+    assert 'test-quactlize-scheduler" --tp2-cache-read' in script
+    assert script.count("grep -qx 'KPACK_TP2_SEGMENTED_ALL PASS formats=6 cases=6 segments=3 replays=3'") == 2
+    assert 'cache-disabled-for-tp' not in script
+    assert script.index('stage=two-device-cache-cold') < script.index('stage=two-device-cache-hot') < \
+        script.index('stage=model-numerical') < script.index('stage=model-perf')
+    assert '--order abba --require-selected' in script
+    assert 'DG_JIT_HGCC_COMPILER="$SDK/bin/hgcc"' in script
+    assert 'PPU_SDK_HOME="$SDK/CUDA_SDK"' in script
+    assert script.index('TP2_MODE == communication') < script.index('stage=two-device-cache-cold')
+    assert 'tools/run_kpack_tp2_comm.py' in script
+    assert 'PCCL_ENABLE_EXT_KERNEL=' not in script
+
+
+@pytest.mark.parametrize('state',['unset','missing','empty','present'])
+def test_tp2_legacy_bundle_precheck_names_missing_input(tmp_path,state):
+    source=(ROOT/'tools/run_kpack_tp2_box.sh').read_text()
+    start=source.index('    if [[ -z ${QUACTLIZE_PPU_BUNDLE:-} ]]')
+    block=source[start:source.index('    ASYS=',start)]
+    env=dict(os.environ)
+    env.pop('QUACTLIZE_PPU_BUNDLE',None)
+    bundle=tmp_path/'six-library'
+    if state!='unset': env['QUACTLIZE_PPU_BUNDLE']=str(bundle)
+    if state in ('empty','present'):
+        bundle.mkdir()
+        (bundle/'manifest.json').write_text('{}' if state=='present' else '')
+    result=subprocess.run(['bash','-euc',block],env=env,text=True,capture_output=True)
+    assert (result.returncode==0)==(state=='present')
+    if state=='unset': assert 'missing QUACTLIZE_PPU_BUNDLE' in result.stderr
+    if state in ('missing','empty'): assert str(bundle/'manifest.json') in result.stderr
+
+
+def comm_fixture(arm='copy', count=512):
+    lines=[]
+    for replay in range(3):
+        for rank in (0,1):
+            lines.append(f'KPACK_TP2_COMM_LOCAL arm={arm} rank={rank} replay={replay} error=0 synchronized=1 status=PASS')
+        lines.append(f'KPACK_TP2_COMM_REDUCE_BEGIN arm={arm} count={count} replay={replay}')
+        for rank in (0,1):
+            lines.append(f'KPACK_TP2_COMM_SUM arm={arm} rank={rank} replay={replay} error=0 status=PASS')
+    return '\n'.join(lines)+f'\nKPACK_TP2_COMM PASS arm={arm} count={count} replays=3\n'
+
+
+@pytest.mark.parametrize('fault',[None,'missing','duplicate','nan','tolerance','rc','fallback','shape'])
+def test_tp2_communication_requires_both_ranks_and_all_replays(fault):
+    from tools.run_kpack_tp2_comm import evidence
+    text=comm_fixture()
+    if fault=='missing': text=text.replace('rank=1 replay=2','rank=1 replay=3')
+    if fault=='duplicate': text+=text.splitlines()[0]+'\n'
+    if fault=='nan': text=text.replace('error=0','error=nan',1)
+    if fault=='tolerance': text=text.replace('error=0','error=0.5',1)
+    if fault=='fallback': text+='NCCL init failed: falling back to internal AllReduce\n'
+    if fault=='shape': text=text.replace('count=512','count=3072')
+    result=evidence(text,'copy',512,1 if fault=='rc' else 0)
+    assert (result['status']=='PASS')==(fault is None)
+
+
+def q4_comm_fixture(arm, fail=False):
+    if arm == 'meta':
+        text = ('KPACK_TP2_MISMATCH q=12 experts=4 tokens=1 split=K replay=0 relative=0.1823166\n' if fail else
+                'KPACK_TP2_SINGLE PASS q=12 experts=4 tokens=1 split=K replays=3\n')
+    else:
+        text = 'KPACK_TP2_COMM_SHAPE q=12 n=512 global_k=1024 local_k=512 experts=4 tokens=1 topk=2\n'
+        for rank in (0,1): text += f'KPACK_TP2_COMM_WEIGHT rank={rank} q=12 bytes=589824 hash={rank:016x}\n'
+        for replay in range(1 if fail else 3):
+            for rank in (0,1):
+                text += f'KPACK_TP2_COMM_ORACLE rank={rank} replay={replay} input_hash={replay:016x} ids_hash={replay:016x} golden_hash={rank:016x}\n'
+        if fail:
+            for rank in (0,1):
+                text += f'KPACK_TP2_COMM_LOCAL_BEGIN arm={arm} rank={rank} replay=0\n'
+                text += f'KPACK_TP2_COMM_LOCAL arm={arm} rank={rank} replay=0 error=0.1 synchronized=1 status=FAIL\n'
+        else: text += comm_fixture(arm,1024)
+    if arm != 'raw':
+        for rank in (0,1):
+            text += '[quactlize-plan] tensor=tp-weight op=grouped route=gemv reader=simt-reuse q=12 rows=2 n=512 k=512 variant=0 columns=4 warps=4 values=4 split=1 policy=11 activation=BF16 scale_resident=0 experts=4 channels=2 topk=2\n'
+            text += f'[quactlize-device-plan] tensor=tp-weight device={rank} op=grouped q=12 rows=2 n=512 k=512 experts=4 selected=1\n'
+    return text
+
+
+@pytest.mark.parametrize('fault',[None,'local','meta','raw','weights','oracle','shape','selection','coverage'])
+def test_tp2_q4_local_diagnostic_separates_numeric_boundaries(fault):
+    from tools.run_kpack_tp2_comm import q4_evidence,q4_verdict
+    results=[]
+    for arm in ('raw','kpack','meta'):
+        fail = (fault=='local' and arm=='kpack') or fault==arm
+        text = q4_comm_fixture(arm,fail)
+        if arm=='kpack':
+            if fault=='weights': text=text.replace('bytes=589824 hash=0000000000000000','bytes=589824 hash=1111111111111111')
+            if fault=='oracle': text=text.replace('input_hash=0000000000000000','input_hash=1111111111111111')
+            if fault=='shape': text=text.replace('local_k=512','local_k=1024')
+            if fault=='selection': text=text.replace('variant=0','variant=3')
+            if fault=='coverage': text=text.replace('rank=1 replay=2','rank=1 replay=3')
+        results.append(dict(arm=arm,**q4_evidence(text,arm,int(fail))))
+    wanted={None:'FRESH_PROCESS_NOT_REPRODUCED','local':'LOCAL_KPACK_PACKING_OR_COMPUTE_FAILED',
+            'meta':'META_PATH_ONLY_FAILURE','raw':'RAW_CONTROL_NOT_ADMITTED',
+            'weights':'FIXTURE_IDENTITY_FAILED','oracle':'FIXTURE_IDENTITY_FAILED',
+            'shape':'LOCAL_OR_COLLECTIVE_NOT_ADMITTED','selection':'FIXTURE_IDENTITY_FAILED',
+            'coverage':'LOCAL_OR_COLLECTIVE_NOT_ADMITTED'}
+    assert q4_verdict(results)==wanted[fault]
+
+
+def test_tp2_q4_local_runner_has_three_fresh_children_and_no_policy_mutation(tmp_path,monkeypatch):
+    from tools import run_kpack_tp2_comm as comm
+    calls=[]
+    monkeypatch.delenv('GGML_CUDA_ALLREDUCE',raising=False)
+    monkeypatch.setenv('QUACTLIZE_KPACK_COMPUTE','fp16')
+    def start(command,**kwargs):
+        arm='meta' if command[-1]=='--tp2-q4-meta' else command[-1]
+        calls.append((command,kwargs['env']))
+        kwargs['stdout'].write(q4_comm_fixture(arm,arm=='kpack'))
+        return SimpleNamespace(wait=lambda **kw:int(arm=='kpack'))
+    monkeypatch.setattr(comm.subprocess,'Popen',start)
+    comm.run_q4(Path('/build/bin/test-quactlize-scheduler'),tmp_path/'results')
+    assert len(calls)==3 and os.environ['QUACTLIZE_KPACK_COMPUTE']=='fp16'
+    assert all(env['QUACTLIZE_KPACK_COMPUTE']=='bf16' and env['QUACTLIZE_KPACK_ROUTE']=='auto' for _,env in calls)
+    summary=json.loads((tmp_path/'results/summary.json').read_text())
+    assert summary['device_admission']=='PENDING'
+    assert summary['verdict']=='LOCAL_KPACK_PACKING_OR_COMPUTE_FAILED'
+
+
+def test_tp2_communication_continues_failures_and_extension_is_child_local(tmp_path,monkeypatch):
+    from tools import run_kpack_tp2_comm as comm
+    calls=[]
+    monkeypatch.delenv('GGML_CUDA_ALLREDUCE',raising=False)
+    monkeypatch.delenv('PCCL_ENABLE_EXT_KERNEL',raising=False)
+    def start(command,**kwargs):
+        calls.append((command,kwargs['env']))
+        arm,count=command[-2:]
+        if len(calls)==1:
+            kwargs['stdout'].write(comm_fixture(arm,int(count)).split('KPACK_TP2_COMM_SUM',1)[0] +
+                "[drv_extension.cc:379] PCCL ERROR invalid device function\n")
+        else: kwargs['stdout'].write(comm_fixture(arm,int(count)))
+        return SimpleNamespace(wait=lambda **kw: -6 if len(calls)==1 else 0)
+    monkeypatch.setattr(comm.subprocess,'Popen',start)
+    comm.run(Path('/build/bin/test-quactlize-scheduler'),tmp_path/'results')
+    assert len(calls)==7
+    result=json.loads((tmp_path/'results/summary.json').read_text())
+    assert result['status']=='DIAGNOSTIC_COMPLETE' and result['device_admission']=='PENDING'
+    assert result['cases'][0]['status']=='COLLECTIVE_FAILED_AFTER_LOCAL_PASS'
+    assert result['cases'][0]['extension_invalid_function']
+    assert all(x['status']=='PASS' for x in result['cases'][1:])
+    assert 'PCCL_ENABLE_EXT_KERNEL' not in os.environ
+    for index,(_,env) in enumerate(calls):
+        assert env.get('PCCL_ENABLE_EXT_KERNEL')==('0' if index>=5 else None)
+
+
+def test_tp2_communication_timeout_stops_only_its_own_child_and_continues(tmp_path,monkeypatch):
+    from tools import run_kpack_tp2_comm as comm
+    children=[]
+    killed=[]
+    monkeypatch.delenv('GGML_CUDA_ALLREDUCE',raising=False)
+    class Child:
+        def __init__(self,command,**kwargs):
+            self.pid=1000+len(children)
+            self.command=command
+            self.calls=0
+            children.append(self)
+        def wait(self,**kwargs):
+            self.calls+=1
+            if self.calls==1: raise subprocess.TimeoutExpired(self.command,1)
+            return -9
+    monkeypatch.setattr(comm.subprocess,'Popen',Child)
+    monkeypatch.setattr(comm.os,'killpg',lambda pid,sig:killed.append((pid,sig)))
+    comm.run(Path('/build/bin/test-quactlize-scheduler'),tmp_path/'results',timeout=1)
+    assert killed==[(child.pid,comm.signal.SIGKILL) for child in children]
+    result=json.loads((tmp_path/'results/summary.json').read_text())
+    assert len(result['cases'])==7 and all(x['status']=='TIMEOUT' for x in result['cases'])
+
+
+@pytest.mark.parametrize('fault',[None,'local-fail','global-pass','kpack-global-pass','missing-symbol',
+                                  'wrong-scope','old-seven','duplicate','different-path','local-global-symbol'])
+def test_tp2_wrapper_verdict_requires_local_green_and_two_exact_global_negatives(fault):
+    from tools.run_kpack_tp2_comm import cases,wrapper_verdict
+    results=[]
+    for arm,count,extension,scope in cases(True):
+        negative=scope=='global'
+        results.append(dict(arm=arm,count=count,extension=extension,wrapper_scope=scope,
+            status='COLLECTIVE_FAILED_AFTER_LOCAL_PASS' if negative else 'PASS',
+            extension_invalid_function=negative,
+            wrapper_scopes=[(scope,'/sdk/lib/libhggc_wrapper.so')] if scope!='none' else [],
+            global_symbols=['phase=after-wrapper name=hggcLaunchKernel library='+
+                            ('/sdk/lib/libhggc_wrapper.so' if negative else 'NOT_GLOBAL')]))
+    if fault=='local-fail': results[7]['status']='SETUP_FAILED'
+    if fault=='global-pass': results[8]['status']='PASS'
+    if fault=='kpack-global-pass': results[9]['status']='PASS'
+    if fault=='missing-symbol': results[8]['global_symbols']=[]
+    if fault=='wrong-scope': results[8]['wrapper_scopes'][0]=('local','/sdk/lib/libhggc_wrapper.so')
+    if fault=='different-path': results[8]['wrapper_scopes'][0]=('global','/foreign/lib/libhggc_wrapper.so')
+    if fault=='local-global-symbol': results[7]['global_symbols']=results[8]['global_symbols']
+    if fault=='old-seven': results=results[:7]
+    if fault=='duplicate': results[8]=results[7]
+    verdict=wrapper_verdict(results)
+    assert (verdict=='GLOBAL_WRAPPER_CAUSAL_CANDIDATE_PASS')==(fault is None)
+
+
+def test_tp2_wrapper_ab_uses_one_binary_and_unchanged_producer_arguments(tmp_path,monkeypatch):
+    from tools import run_kpack_tp2_comm as comm
+    commands=[]
+    monkeypatch.delenv('GGML_CUDA_ALLREDUCE',raising=False)
+    def start(command,**kwargs):
+        commands.append(command)
+        arm,count=command[2:4]
+        scope=command[4] if len(command)==5 else 'none'
+        text=comm_fixture(arm,int(count))
+        if scope!='none':
+            text=f'KPACK_TP2_COMM_WRAPPER scope={scope} path=/sdk/lib/libhggc_wrapper.so\n'+text
+        text='KPACK_TP2_COMM_SYMBOL phase=after-wrapper name=hggcLaunchKernel library='+(
+            '/sdk/lib/libhggc_wrapper.so' if scope=='global' else 'NOT_GLOBAL')+'\n'+text
+        if scope=='global':
+            text=text.split('KPACK_TP2_COMM_SUM',1)[0]+'[drv_extension.cc:379] invalid device function\n'
+        kwargs['stdout'].write(text)
+        return SimpleNamespace(wait=lambda **kw:-6 if scope=='global' else 0)
+    monkeypatch.setattr(comm.subprocess,'Popen',start)
+    comm.run(Path('/build/bin/test-quactlize-scheduler'),tmp_path/'results',wrapper_ab=True)
+    result=json.loads((tmp_path/'results/summary.json').read_text())
+    assert len(commands)==10
+    assert commands[7][:4]==commands[8][:4]==commands[0]
+    assert commands[9][:4]==commands[4]
+    assert result['wrapper_verdict']=='GLOBAL_WRAPPER_CAUSAL_CANDIDATE_PASS'
+    assert result['device_admission']=='PENDING'
+
+
+@pytest.mark.parametrize('hot', [False, True])
+@pytest.mark.parametrize('fault', [None, 'device', 'producer', 'receipt', 'count', 'miss'])
+def test_tp2_cache_evidence_proves_new_process_reload(hot, fault):
+    from tools.run_kpack_batched_bench import tp2_cache_evidence
+    producer = 'CACHE' if hot else 'GPU'
+    lines = [f'[quactlize-shard] tensor=w device={d} q=12 n=512 k=1024 experts=2 producer={producer}'
+             for d in (0, 1)]
+    receipt = '[kpack-cache] cache_uploads=2 resident_misses=0' if hot else '[kpack-cache] published: total_seconds=1'
+    if fault == 'device': lines.pop()
+    if fault == 'producer': lines[1] = lines[1].replace(producer, 'GPU' if hot else 'CACHE')
+    if fault == 'receipt': receipt = ''
+    if fault == 'count': receipt = receipt.replace('uploads=2', 'uploads=1') if hot else ''
+    if fault == 'miss': receipt = receipt.replace('misses=0', 'misses=1') if hot else ''
+    text = '\n'.join(lines + [receipt])
+    if fault:
+        with pytest.raises(ValueError): tp2_cache_evidence(text, hot)
+    else:
+        result = tp2_cache_evidence(text, hot)
+        assert result['status'] == 'PASS' and result['mode'] == ('hot' if hot else 'cold')
+
+
+@pytest.mark.parametrize('fault', [None, 'compiler-missing', 'compiler-not-executable', 'native-header', 'cuda-header'])
+def test_tp2_sdk_precheck_uses_separate_native_and_cuda_headers(tmp_path, fault):
+    sdk=tmp_path/'PPU_SDK'
+    compiler=sdk/'bin/hgcc'
+    native=sdk/'targets/x86_64-linux/include/hggc_runtime_api.h'
+    cuda=sdk/'CUDA_SDK/targets/x86_64-linux/include/cuda_runtime_api.h'
+    for path in (compiler,native,cuda): path.parent.mkdir(parents=True,exist_ok=True)
+    (sdk/'include').symlink_to('targets/x86_64-linux/include',target_is_directory=True)
+    (sdk/'CUDA_SDK/include').symlink_to('targets/x86_64-linux/include',target_is_directory=True)
+    if fault!='compiler-missing':
+        compiler.write_text('#!/bin/sh\nexit 0\n')
+        compiler.chmod(0o644 if fault=='compiler-not-executable' else 0o755)
+    if fault!='native-header':native.write_text('// Native PPU API\n')
+    if fault!='cuda-header':cuda.write_text('// CUDA compatibility API\n')
+    # The official layout does not put the native runtime API in CUDA_SDK.
+    assert not (sdk/'CUDA_SDK/include/hggc_runtime_api.h').exists()
+    script=(ROOT/'tools/run_kpack_tp2_box.sh').read_text()
+    block='    export PPU_SDK='+script.split('    export PPU_SDK=',1)[1].split('    export LD_LIBRARY_PATH=',1)[0]
+    result=subprocess.run(['bash','-euc',block],env=dict(os.environ,SDK=str(sdk)),text=True,capture_output=True)
+    if fault:
+        assert result.returncode!=0 and 'KPACK_TP2_SDK PASS' not in result.stdout
+        expected=compiler if fault.startswith('compiler-') else sdk/('include/hggc_runtime_api.h' if fault=='native-header' else 'CUDA_SDK/include/cuda_runtime_api.h')
+        assert str(expected) in result.stderr
+    else:
+        assert result.returncode==0,result.stderr
+        assert 'KPACK_TP2_SDK PASS' in result.stdout
+
+
+@pytest.mark.parametrize('fault',[None,'stage','benchmark','trace','empty-trace','binary','prepare','prepare-count'])
+def test_model_extension_reuses_only_completed_unchanged_inputs(tmp_path,monkeypatch,fault):
+    resume,previous,llama,sdk,bundle,build,_=successful_extension_fixture(tmp_path,monkeypatch)
+    result=previous/'results'
+    if fault=='stage':(result/'runner-status.txt').write_text('runner_rc=1 stage=model-trace\n')
+    if fault in ('benchmark','trace','empty-trace'):
+        path=result/('benchmark/results/status.json' if fault=='benchmark' else 'trace/status.json')
+        path.write_text('[]' if fault=='empty-trace' else '[{"status":"FAIL"}]')
+    if fault=='binary':(build/'bin/llama-server').write_text('different binary')
+    if fault and fault.startswith('prepare'):
+        pin_path=resume.ROOT/'tools/kpack_q4_model_artifact.json'
+        pin=json.loads(pin_path.read_text());pin['prepare_integration_gate']=True
+        pin_path.write_text(json.dumps(pin))
+        (result/'prepare-integration').mkdir()
+        (result/'prepare-integration/summary.json').write_text(json.dumps(dict(
+            status='FAIL' if fault=='prepare' else 'PASS',expected=16,
+            passed=15 if fault=='prepare-count' else 16,router_edge_cases=56)))
+    if fault:
+        with pytest.raises(ValueError):resume.inputs(previous,llama,sdk,performance_only=True,extend_models=True)
+    else:
+        actual,caller,gates=resume.inputs(previous,llama,sdk,performance_only=True,extend_models=True)
+        assert actual==bundle and caller==build and len(gates)==8
+
+
+@pytest.mark.parametrize('fault',[None,'workload','existing','alias','tensor','empty'])
+def test_model_extension_changes_only_new_model_bindings(tmp_path,monkeypatch,fault):
+    resume,previous,*_,source=successful_extension_fixture(tmp_path,monkeypatch)
+    plan=json.loads(source.read_text())
+    if fault=='workload':plan['prompts']=[1024]
+    if fault=='existing':plan['models'][0]['name']='qwen35-35b-q4km'
+    if fault=='alias':plan['models'][0]['path']=str(tmp_path/'original.gguf')
+    if fault=='tensor':plan['models'][1]|=dict(split='tensor',devices='0,1',tensor_split='1,1')
+    if fault=='empty':plan['models']=[]
+    source.write_text(json.dumps(plan))
+    original=(previous/'results/model-plan.json').read_bytes()
+    if fault:
+        with pytest.raises(ValueError):resume.extension_plan(previous,source,'1')
+    else:
+        resolved=resume.extension_plan(previous,source,'1')
+        assert len(resolved['models'])==2 and all(m['devices']=='1' for m in resolved['models'])
+        assert all(Path(m['path']).is_file() for m in resolved['models'])
+    assert (previous/'results/model-plan.json').read_bytes()==original
+
+
+@pytest.mark.parametrize('fault',[None,'command','shape','split'])
+def test_original_device_override_is_bound_to_all_abba_commands(tmp_path,monkeypatch,fault):
+    resume,previous,llama,sdk,*_=successful_extension_fixture(tmp_path,monkeypatch)
+    path=previous/'results/benchmark/results/protocol.json'
+    protocol=json.loads(path.read_text());model=protocol['plan']['models'][0]
+    model['devices']='1'
+    if fault=='shape':protocol['plan']['prompts']=[1024]
+    if fault=='split':model['split']='tensor'
+    path.write_text(json.dumps(protocol))
+    directory=path.parent/model['name'];directory.mkdir()
+    for label in ('0-reference','1-kpack','2-kpack','3-reference'):
+        (directory/(label+'.command.json')).write_text(json.dumps(dict(
+            devices='0' if fault=='command' and label=='2-kpack' else '1')))
+    if fault:
+        with pytest.raises(ValueError):resume.inputs(previous,llama,sdk,performance_only=True,extend_models=True)
+    else:resume.inputs(previous,llama,sdk,performance_only=True,extend_models=True)
+
+
+@pytest.mark.parametrize('failure',[False,True])
+def test_extended_models_only_run_benchmark_and_traces_and_preserve_results(tmp_path,monkeypatch,failure):
+    resume,previous,llama,sdk,bundle,build,source=successful_extension_fixture(tmp_path,monkeypatch)
+    (sdk/'asight/bin').mkdir(parents=True)
+    for name in ('asys','acu'):
+        file=sdk/'asight/bin'/name;file.write_text('host fixture');file.chmod(0o755)
+    for name in ('kpack-model-cache','kpack-model-jit-cache'):(tmp_path/name).mkdir()
+    output=tmp_path/'extension';(output/'results').mkdir(parents=True)
+    monkeypatch.delenv('CACHE_DIR',raising=False);monkeypatch.delenv('JIT_CACHE',raising=False)
+    commands=[]
+    def run(argv,log,env):
+        commands.append((list(map(str,argv)),log,env))
+        if failure and log.name=='benchmark.log':raise ValueError('device failure')
+    monkeypatch.setattr(resume,'run',run)
+    args=SimpleNamespace(previous=previous,llama=llama,sdk=sdk,device='1',corpus=tmp_path/'corpus',
+                         performance_only=True,profile_acu=False,extend_plan=source)
+    if failure:
+        with pytest.raises(ValueError,match='failed phases: benchmark'):resume.continuation(args,output)
+    else:resume.continuation(args,output)
+    assert [log.name for _,log,_ in commands]==['benchmark.log','trace.log','paired-model-proof.log']
+    assert '--selected-scope' in commands[-1][0]
+    assert all('build_kpack' not in ' '.join(argv) and 'run_model_gemv_integration' not in ' '.join(argv)
+               for argv,_,_ in commands)
+    new=output/'results/model-plan.json'
+    assert all(str(new) in argv for argv,_,_ in commands[:2])
+    assert all(env['CUDA_VISIBLE_DEVICES']=='1' for _,_,env in commands)
+    receipt=json.loads((output/'results/continuation.json').read_text())
+    assert receipt['compile']=='NONE' and len(receipt['new_models'])==2
+    assert (output/'results/prior/model-plan.json').read_bytes()==(previous/'results/model-plan.json').read_bytes()
+
+
+@pytest.mark.parametrize('fault',[None,'count','index','duplicate','missing'])
+def test_inventory_includes_later_gguf_shards_without_reading_weights(tmp_path,monkeypatch,fault):
+    files=[fixture(tmp_path,f'weights-{i:05d}-of-00002.gguf') for i in (1,2)]
+    seen=[]
+    tensors=[dict(name='blk.0.attn_q.weight',qtype=8,dims_gguf=[2048,512]),
+             dict(name='blk.1.ffn_down_exps.weight',qtype=12,dims_gguf=[2048,512,256])]
+    def header(stream,path):
+        seen.append(path);index=files.index(Path(path))
+        return dict(metadata={'split.count':1 if fault=='count' else 2,
+                              'split.no':0 if fault=='index' else index},
+                    tensors=[tensors[0 if fault=='duplicate' else index]])
+    monkeypatch.setattr(bench,'read_gguf_header',header)
+    if fault=='missing':files[1].unlink()
+    if fault:
+        with pytest.raises(ValueError):bench.inventory(files[0])
+    else:
+        inv=bench.inventory(files[0])
+        assert inv['eligible']==[tensor['name'] for tensor in tensors]
+        assert inv['operators']==['dense','grouped'] and inv['shards']==2 and inv['header_only']
+        assert inv['q8']==[tensors[0]['name']] and seen==list(map(str,files))
 
 
 def trace_replay_fixture(tmp_path):
@@ -1047,6 +1701,171 @@ def test_model_asys_reuses_diagnostic_build_without_numerical_callback(tmp_path,
         trace.inputs(diagnostic, 'qwen35-35b-q4km', llama, sdk)
 
 
+@pytest.mark.parametrize('tp2', [False, True])
+@pytest.mark.parametrize('legacy_override', [False, True])
+@pytest.mark.parametrize('fault', [None, 'binary', 'runtime', 'legacy', 'devices', 'model', 'cache'])
+def test_model_asys_reuses_completed_benchmark_including_tp2(tmp_path, monkeypatch, tp2, legacy_override, fault):
+    from tools import run_kpack_model_trace as trace
+    _, previous, llama, sdk, bundle, build = trace_continuation_fixture(tmp_path, monkeypatch)
+    results = previous / 'results'
+    protocol_file = results / 'benchmark/results/protocol.json'
+    protocol = json.loads(protocol_file.read_text())
+    model = protocol['plan']['models'][0]
+    model['path'] = str(fixture(tmp_path))
+    if tp2:
+        model.update(devices='0,1', split='tensor', tensor_split='1,1')
+    protocol_file.write_text(json.dumps(protocol))
+    for label in ('0-reference', '1-kpack', '2-kpack', '3-reference'):
+        path = protocol_file.parent / model['name'] / (label + '.command.json')
+        value = json.loads(path.read_text()); value['devices'] = model['devices']
+        path.write_text(json.dumps(value))
+    cache, jit, legacy = [tmp_path / name for name in ('cache/subject', 'jit', 'legacy')]
+    for p in (cache, jit, legacy): p.mkdir(parents=True)
+    (cache / 'manifest.json').write_text('{}')
+    for p in (legacy / 'manifest.json', results / 'compatibility-bundle-manifest.json'):
+        p.write_text('{"legacy":true}')
+    before = results / 'trace/subject/reference.command.json'
+    before.parent.mkdir(parents=True)
+    before.write_text(json.dumps(dict(argv=['python', 'never-execute-saved-command',
+        '--model', '/different.gguf' if fault == 'model' else model['path'],
+        '--binary', str(build / 'bin/llama-server'), '--bundle', str(bundle),
+        '--cache', str(cache), '--jit-cache', str(jit)])))
+    if legacy_override:
+        monkeypatch.setenv('QUACTLIZE_PPU_BUNDLE', str(legacy))
+    else:
+        monkeypatch.delenv('QUACTLIZE_PPU_BUNDLE', raising=False)
+    monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '3' if fault == 'devices' else model['devices'])
+    monkeypatch.setenv('LLAMA_NUMERICAL_DEBUG', 'tensors')
+    if fault == 'binary': (build / 'bin/llama-server').write_text('changed')
+    if fault == 'runtime': (bundle / 'manifest.json').write_text('{"changed":true}')
+    if fault == 'legacy': (legacy / 'manifest.json').write_text('{"changed":true}')
+    if fault == 'cache': (cache / 'manifest.json').unlink()
+    if fault:
+        with pytest.raises(ValueError): trace.benchmark_inputs(previous, 'subject', llama, sdk)
+    else:
+        args, found, env, prior = trace.benchmark_inputs(previous, 'subject', llama, sdk)
+        assert args.build == build and args.bundle == bundle and prior == previous
+        assert found == model and args.cache == cache.parent and args.jit_cache == jit
+        assert env['QUACTLIZE_PPU_BUNDLE'] == str(legacy)
+        assert env['CUDA_VISIBLE_DEVICES'] == model['devices']
+        assert env['QUACTLIZE_KPACK_COMPUTE'] == 'fp16'
+        assert 'LLAMA_NUMERICAL_DEBUG' not in env
+
+
+@pytest.mark.parametrize('override', [False, True])
+def test_model_asys_default_paths_come_from_receipts_not_environment(tmp_path, monkeypatch, override):
+    from tools.run_kpack_model_trace import resolve_paths
+    previous, llama, sdk = [tmp_path / name for name in ('prior', 'caller', 'sdk')]
+    (previous / 'results').mkdir(parents=True)
+    llama.mkdir(); sdk.mkdir()
+    (previous / 'results/caller-ci-build.json').write_text(json.dumps(
+        dict(llama_worktree=dict(directory=str(llama)))))
+    (previous / 'results/compatibility-bundle-manifest.json').write_text(json.dumps(dict(sdk=str(sdk))))
+    monkeypatch.setenv('LLAMA_CI_DIR', '/unrelated/caller')
+    monkeypatch.setenv('PPU_SDK', '/unrelated/sdk')
+    cli = SimpleNamespace(previous=previous, llama=None, sdk=None, result_root=None)
+    if override:
+        other = tmp_path / 'explicit'; other.mkdir()
+        cli.llama = cli.sdk = cli.result_root = other
+    resolve_paths(cli)
+    assert (cli.llama, cli.sdk, cli.result_root) == ((other, other, other) if override else (llama, sdk, tmp_path))
+
+
+@pytest.mark.parametrize('missing', ['caller', 'sdk', 'diagnostic'])
+def test_model_asys_missing_path_receipts_require_explicit_paths(tmp_path, missing):
+    from tools.run_kpack_model_trace import resolve_paths
+    (tmp_path / 'results').mkdir()
+    (tmp_path / 'results/caller-ci-build.json').write_text('{}')
+    (tmp_path / 'results/compatibility-bundle-manifest.json').write_text('{}')
+    cli = SimpleNamespace(previous=None if missing == 'diagnostic' else tmp_path,
+        llama=tmp_path if missing == 'sdk' else None, sdk=None, result_root=None)
+    with pytest.raises(ValueError, match={'caller': 'supply --llama', 'sdk': 'supply --sdk',
+                                         'diagnostic': '--diagnostic requires'}[missing]):
+        resolve_paths(cli)
+
+
+@pytest.mark.parametrize('kind', ['timeout', 'runtime', 'none', 'mixed'])
+def test_model_asys_private_retry_is_only_for_session_creation(tmp_path, kind):
+    from tools.run_kpack_model_trace import session_creation_failed
+    if kind != 'none':
+        folder = tmp_path / 'reference/asys-preflight'; folder.mkdir(parents=True)
+        (folder / 'summary.json').write_text(json.dumps(dict(status='FAIL', attempts=[
+            dict(session_creation_failure=kind in ('timeout', 'mixed')),
+            dict(session_creation_failure=kind == 'timeout')])))
+    assert session_creation_failed(tmp_path) == (kind == 'timeout')
+
+
+@pytest.mark.parametrize('pid,mount_ns,pid_ns', [(15, 'new-mnt', 'new-pid'),
+    (1, 'old-mnt', 'new-pid'), (1, 'new-mnt', 'old-pid')])
+def test_private_profiler_cannot_mount_in_parent_namespace(monkeypatch, pid, mount_ns, pid_ns):
+    from tools import kpack_asys_scope as scope
+    monkeypatch.setattr(scope.os, 'getpid', lambda: pid)
+    monkeypatch.setattr(scope.os, 'readlink', lambda path: mount_ns if path.endswith('mnt') else pid_ns)
+    monkeypatch.setattr(scope.subprocess, 'run', lambda *a, **k: pytest.fail('must not mount'))
+    args = SimpleNamespace(parent_mount='old-mnt', parent_pid='old-pid')
+    with pytest.raises(ValueError, match='outside the private'): scope.enter(args)
+
+
+def test_private_profiler_rejects_paths_hidden_by_its_tmp_mount(tmp_path):
+    from tools import kpack_asys_scope as scope
+    with pytest.raises(ValueError, match='outside /tmp'):
+        scope.private_command(['/usr/bin/true'], tmp_path / 'profiler', [Path('/tmp/model.gguf')])
+    assert not (tmp_path / 'profiler').exists()
+
+
+def test_model_asys_recovers_in_private_scope_only_after_session_timeout(tmp_path, monkeypatch):
+    from tools import run_kpack_model_trace as trace
+    diagnostic, _, llama, sdk, _, _ = trace_replay_fixture(tmp_path)
+    monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '0')
+    monkeypatch.setattr(trace, 'verify', lambda bundle, **kwargs: {})
+    monkeypatch.setattr(trace, 'inventory', lambda path: dict(eligible=['weight'], operators=['grouped']))
+    calls = []
+    def capture(args, model, output, inventory):
+        calls.append('shared')
+        folder = output / 'reference/asys-preflight'; folder.mkdir(parents=True)
+        (folder / 'summary.json').write_text(json.dumps(dict(status='FAIL', attempts=[
+            dict(session_creation_failure=True)])))
+        raise ValueError('session timeout')
+    def private(args, model, output, env):
+        calls.append('private')
+        assert 'LLAMA_NUMERICAL_DEBUG' not in env
+        return output / 'private' / model['name']
+    monkeypatch.setattr(trace, 'traces', capture)
+    monkeypatch.setattr(trace, 'private_trace', private)
+    monkeypatch.setattr(sys, 'argv', ['trace', '--diagnostic', str(diagnostic), '--llama', str(llama),
+        '--sdk', str(sdk), '--result-root', str(tmp_path)])
+    assert trace.main() == 0
+    assert calls == ['shared', 'private']
+    status, = tmp_path.glob('kpack-model-asys.*/results/status.json')
+    assert json.loads(status.read_text())['reports'].endswith('/private/qwen35-35b-q4km')
+
+
+def test_model_asys_private_failure_still_points_to_partial_report(tmp_path, monkeypatch, capsys):
+    from tools import run_kpack_model_trace as trace
+    diagnostic, _, llama, sdk, _, _ = trace_replay_fixture(tmp_path)
+    monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '0')
+    monkeypatch.setattr(trace, 'verify', lambda bundle, **kwargs: {})
+    monkeypatch.setattr(trace, 'inventory', lambda path: dict(eligible=['weight'], operators=['grouped']))
+    def private(args, model, output, env):
+        folder = output / 'private' / model['name'] / 'reference'
+        folder.mkdir(parents=True)
+        (folder / 'proof.asysrep').write_text('partial capture')
+        (folder / 'proof.json').write_text('{}')
+        raise ValueError('native session failed after reference')
+    monkeypatch.setattr(trace, 'private_trace', private)
+    monkeypatch.setattr(sys, 'argv', ['trace', '--diagnostic', str(diagnostic), '--llama', str(llama),
+        '--sdk', str(sdk), '--result-root', str(tmp_path), '--profiler-scope', 'private'])
+    with pytest.raises(ValueError, match='native session failed'):
+        trace.main()
+    status_file, = tmp_path.glob('kpack-model-asys.*/results/status.json')
+    status = json.loads(status_file.read_text())
+    report = Path(status['reports']) / 'reference/proof.asysrep'
+    assert status['status'] == 'FAIL' and report.is_file()
+    text = capsys.readouterr().out
+    assert 'asys_reference=' + str(report) in text
+    assert 'asys_kpack=NOT_CAPTURED' in text
+
+
 @pytest.mark.parametrize('fail', [False, True])
 def test_model_asys_archives_logs_not_reports_and_restores_environment(tmp_path, monkeypatch, fail):
     import tarfile
@@ -1054,7 +1873,7 @@ def test_model_asys_archives_logs_not_reports_and_restores_environment(tmp_path,
     diagnostic, previous, llama, sdk, build, bundle = trace_replay_fixture(tmp_path)
     monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '0')
     monkeypatch.setenv('LLAMA_NUMERICAL_DEBUG', 'tensors')
-    monkeypatch.setattr(trace, 'verify', lambda bundle: {})
+    monkeypatch.setattr(trace, 'verify', lambda bundle, **kwargs: {})
     monkeypatch.setattr(trace, 'inventory', lambda path: dict(eligible=['weight'], operators=['grouped']))
     calls = []
     def capture(args, model, output, inventory):
@@ -1083,7 +1902,7 @@ def test_model_asys_archives_logs_not_reports_and_restores_environment(tmp_path,
         assert 'results/native/kernel-times.json' in names
         assert not any(n.endswith(('.asysrep', '.sqlite')) for n in names)
         status = json.load(tar.extractfile('results/status.json'))
-        assert status['status'] == ('INCOMPLETE' if fail else 'TRACE_PAIR_COMPLETE')
+        assert status['status'] == ('FAIL' if fail else 'TRACE_PAIR_COMPLETE')
         assert status['accuracy_admission'] == 'NOT_RETESTED'
         assert status['performance_admission'] == 'NOT_ADMITTED_BY_PROFILER'
 

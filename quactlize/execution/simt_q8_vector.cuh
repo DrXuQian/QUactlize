@@ -32,8 +32,9 @@ __device__ __forceinline__ float2 code_pair(uint32_t word) {
     return __half22float2(__hsub2(__half2(h),__float2half2_rn(1152.f)));
 }
 
-template<int Input,int Compute,int Variant,int Columns,int Warps,int P,bool Hoist=false>
-__global__ void kernel(qkg_call_v1 c,int split) {
+template<int Input,int Compute,int Variant,int Columns,int Warps,int P,bool Hoist=false,
+         class Finish=void,class Call=qkg_call_v1>
+__device__ __forceinline__ void kernel_body(Call c,int split) {
     constexpr int TileN=Columns*P,Workers=Warps*32/Columns,Pairs=P/2;
     static_assert(Variant==0 || Variant==1);
     int tid=threadIdx.x,lane=tid%32,worker=tid/Columns;
@@ -41,7 +42,9 @@ __global__ void kernel(qkg_call_v1 c,int split) {
     int partition=outer%split,row=outer/split;
     auto r=q4_s1::locate(c,row);
     if(r.expert<0 || r.expert>=c.experts) {
-        if(tid<TileN) {
+        if constexpr(!std::is_void_v<Finish>) {
+            Finish::template invalid<TileN>(c,row,tile,partition,split);
+        } else if(tid<TileN) {
             int n=tile*TileN+tid;
             if(split==1) c.output[r.output+n]=__int_as_float(0x7fc00000);
             else static_cast<float*>(c.workspace)[(int64_t(row)*split+partition)*c.n+n]=__int_as_float(0x7fc00000);
@@ -134,7 +137,9 @@ __global__ void kernel(qkg_call_v1 c,int split) {
     __shared__ float partial[Warps*TileN];
     if(lane<TileN) partial[(tid/32)*TileN+(lane%Columns)*P+lane/Columns]=value;
     __syncthreads();
-    if(tid<32) {
+    if constexpr(!std::is_void_v<Finish>) {
+        Finish::template finish<TileN,Warps>(c,row,tile,partition,split,partial);
+    } else if(tid<32) {
         float sum=0;q4_s1::q4_medium_fold<0,Warps,TileN>(sum,partial,tid);
         #pragma unroll
         for(int d=TileN;d<32;d*=2) sum+=__shfl_xor_sync(0xffffffffu,sum,d);
@@ -145,6 +150,26 @@ __global__ void kernel(qkg_call_v1 c,int split) {
         }
     }
 }
+template<int Input,int Compute,int Variant,int Columns,int Warps,int P,bool Hoist=false>
+__global__ void kernel(qkg_call_v1 c,int split) {
+    kernel_body<Input,Compute,Variant,Columns,Warps,P,Hoist>(c,split);
+}
+
+template<int Input,int Compute,int Variant,int Columns,int Warps,int P,bool Hoist,int N,int K,int Split>
+__global__ void kernel_model(qkg_call_v1 c) {
+    static_assert(Input==QKG_F32 && (Compute==QKG_COMPUTE_F16 || Compute==QKG_COMPUTE_BF16));
+    static_assert(N>0 && N%(Columns*P)==0 && K>0 && K%256==0);
+    static_assert(Split==1 || Split==2 || Split==4 || Split==8);
+    c.n=N;c.k=K;c.experts=1;c.mode=QKG_DENSE;c.channels=1;c.topk=1;
+    kernel_body<Input,Compute,Variant,Columns,Warps,P,Hoist>(c,Split);
+}
+
+template<int Input,int Compute,int Variant,int Columns,int Warps,int P,bool Hoist>
+__global__ void kernel_s1(qkg_call_v1 c) {
+    static_assert(Input==QKG_F32 && (Compute==QKG_COMPUTE_F16 || Compute==QKG_COMPUTE_BF16));
+    kernel_body<Input,Compute,Variant,Columns,Warps,P,Hoist>(c,1);
+}
+
 template<int Q,int Variant,int Columns,int Warps,int P>
 int launch_v2(qkg_simt_call_v2 const& d,int split) {
     static_assert(Q==8 && (Variant==4 || Variant==5));
@@ -152,12 +177,27 @@ int launch_v2(qkg_simt_call_v2 const& d,int split) {
     auto stream=static_cast<hggcStream_t>(d.call.stream);
     if(hggcGetLastError()!=hggcSuccess) return QKG_RUNTIME;
     int blocks=d.call.rows*split*(d.call.n/(Columns*P));
+    auto strategy=q8_strategy(d,Variant,Columns,Warps,P,split);
     if(d.compute_type==QKG_COMPUTE_F16) {
         auto const& c=d.call;
-        if constexpr(Variant==5 && P==4 && ((Columns==4 && Warps==8) || (Columns==8 && Warps==4))) {
-            bool hoist=split==1 && c.mode==QKG_DENSE && c.rows==1 && c.experts==1 &&
-                ((Columns==4 && c.n==512 && c.k==2048) || (Columns==8 && c.n==2048 && c.k==512));
-            if(hoist)
+        if constexpr(Variant==5 && Columns==8 && Warps==4 && P==4) {
+            if(strategy==Q8Strategy::FixedCold)
+                kernel_model<1,0,1,8,4,4,false,2048,4096,8><<<blocks,128,0,stream>>>(c);
+            else if(strategy==Q8Strategy::FixedHoisted)
+                kernel_model<1,0,1,8,4,4,true,8192,2048,1><<<blocks,128,0,stream>>>(c);
+            else if(strategy==Q8Strategy::Hoisted)
+                kernel<1,0,1,8,4,4,true><<<blocks,128,0,stream>>>(c,split);
+            else
+                kernel<1,0,1,8,4,4><<<blocks,128,0,stream>>>(c,split);
+        } else if constexpr(Variant==5 && Columns==4 && Warps==2 && P==4) {
+            if(strategy==Q8Strategy::S1Hoisted)
+                kernel_s1<1,0,1,4,2,4,true><<<blocks,64,0,stream>>>(c);
+            else
+                kernel<1,0,1,4,2,4><<<blocks,64,0,stream>>>(c,split);
+        } else if constexpr(Variant==5 && P==4 && Columns==4 && Warps==8) {
+            if(strategy==Q8Strategy::S1Narrow)
+                kernel_s1<1,0,1,4,8,4,false><<<blocks,256,0,stream>>>(c);
+            else if(strategy==Q8Strategy::Hoisted)
                 kernel<QKG_F32,QKG_COMPUTE_F16,Variant-4,Columns,Warps,P,true><<<blocks,Warps*32,0,stream>>>(c,split);
             else
                 kernel<QKG_F32,QKG_COMPUTE_F16,Variant-4,Columns,Warps,P><<<blocks,Warps*32,0,stream>>>(c,split);
@@ -170,13 +210,11 @@ int launch_v2(qkg_simt_call_v2 const& d,int split) {
         auto const& c=d.call;
         // The admitted M1 S8 call includes this ordered float2 reducer.
         // Public buffers need only four-byte alignment: keep scalar fallback.
-        bool paired=Variant==5 && Columns==8 && Warps==4 && P==4 && split==8 &&
-            d.compute_type==QKG_COMPUTE_F16 && c.mode==QKG_DENSE && c.rows==1 &&
-            c.n==2048 && c.k==4096 && c.experts==1 &&
+        bool paired=strategy==Q8Strategy::FixedCold &&
             !((uintptr_t(c.output)|uintptr_t(c.workspace))&7);
         if(paired) quactlize::decode::reduce_decode<8><<<(c.n+63)/64,32,0,stream>>>(
             static_cast<float const*>(c.workspace),c.output,c.n);
-        else register_reuse_reduce<8><<<(int64_t(c.rows)*c.n+127)/128,128,0,stream>>>(c,split);
+        else launch_reduction<8>(c,split,stream);
     }
     return hggcGetLastError()==hggcSuccess ? QKG_OK : QKG_RUNTIME;
 }

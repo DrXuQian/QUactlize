@@ -5,16 +5,18 @@ from dataclasses import replace
 from dev.gemv_simt.native import checked
 from quactlize.execution.native import (
     SimtCallV2, SimtConfig, Q4DecodeConfig, Sizes, Arrangement, arrangement,
-    bind_simt_compute,
+    bind_simt, bind_simt_compute,
 )
 from quactlize.execution.simt_codegen import inventory
 
 
 class Library:
-    def __init__(self, path, compute=0, arm=None):
+    def __init__(self, path, compute=0, arm=None, *, entry='v2'):
+        if entry not in ('v1', 'v2') or (entry == 'v1' and compute != 0):
+            raise ValueError('SIMT v1 requires F16 compute; explicit entry must be v1 or v2')
         self.lib = C.CDLL(str(path.resolve(strict=True)), mode=C.RTLD_LOCAL)
-        self.compute, self.arm = compute, arm
-        self.query, self.run = bind_simt_compute(self.lib)
+        self.compute, self.arm, self.entry = compute, arm, entry
+        self.query, self.run = (bind_simt if entry == 'v1' else bind_simt_compute)(self.lib)
 
     def configs(self):
         return inventory(8, legacy=True)
@@ -23,7 +25,8 @@ class Library:
         if self.arm == 1:
             config = replace(config, variant=config.variant + 4)
         f = SimtConfig(config.variant, config.columns, config.warps, config.values, config.split)
-        d, a, s = SimtCallV2(call, self.compute), arrangement(call.qtype), Sizes()
+        d = call if self.entry == 'v1' else SimtCallV2(call, self.compute)
+        a, s = arrangement(call.qtype), Sizes()
         checked(self.query(C.byref(d), C.byref(f), C.byref(a), C.byref(s)), 'production SIMT query')
         if s.workspace_bytes > call.workspace_bytes:
             raise ValueError('production SIMT workspace is too small')

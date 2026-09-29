@@ -47,11 +47,13 @@ def test_regenerate_all_and_keep_unresolved_visible(policy,evidence):
 
 
 def test_every_exact_choice_matches_source_table(probe,policy):
+    from tools.generate_decode_selection import effective,EVIDENCE
+    policy=effective(json.loads(EVIDENCE.read_text()))
     keys=[r['key'] for r in policy['exact']]
     assert len(keys)==len(set(map(tuple,keys)))
     for r,line in zip(policy['exact'],query(probe,keys)):
         f=line.split();q,mode,n,k,e,top,ch,m,compute=r['key'];c=r['config']
-        assert f[:4]==[str(14 if r['status']=='ROUTER_SENSITIVE_PARETO' else 12),str(n),str(k),str(m)]
+        assert f[:4]==[str(r['policy']),str(n),str(k),str(m)]
         assert int(f[4])=={'tc':0,'simt':1,'q4':2}[c['kind']]
         if c['kind']=='tc':assert f[5:]==[c['symbol'],str(c['split'])]
         else:assert list(map(int,f[5:]))==[c.get('reader',0),c['variant'],c['columns'],c['warps'],c['values'],c.get('split',1)]

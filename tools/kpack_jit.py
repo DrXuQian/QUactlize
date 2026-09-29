@@ -132,7 +132,11 @@ def main():
     inspect.add_argument("--cache", type=Path, required=True)
     inspect.add_argument("--source-contract", required=True)
     inspect.add_argument("--keys", nargs="+", required=True)
-    plan = sub.add_parser("plan", help="use the actual C++ heuristic for explicit model requests")
+    plan = sub.add_parser("plan", help="plan fixed FQ/SF TC routes; use plan-smallm for Auto decode")
+    smallm_plan = sub.add_parser('plan-smallm',help='pure final Auto decode selector; no GPU or compilation of kernels')
+    smallm_plan.add_argument('--request',nargs=9,type=int,action='append',required=True,
+        metavar=('Q','MODE','N','K','EXPERTS','TOPK','CHANNELS','TOKENS','COMPUTE'))
+    smallm_plan.add_argument('--output',type=Path,required=True)
     inputs = plan.add_mutually_exclusive_group(required=True)
     inputs.add_argument("--request", nargs=7, type=int, action="append",
                       metavar=("Q", "ROUTE", "M", "N", "K", "EXPERTS", "MAX_ROWS"))
@@ -159,7 +163,18 @@ def main():
     prewarm.add_argument("--dense-io", action="store_true", help="plan must contain dense decode parents only")
     args = parser.parse_args()
     start = time.monotonic()
-    if args.command == "inspect":
+    if args.command == 'plan-smallm':
+        from quactlize.dispatch.planning import plan_smallm,requirements
+        args.output.mkdir(parents=True,exist_ok=False)
+        value=plan_smallm(args.output,args.request)
+        (args.output/'plan.json').write_text(json.dumps(value,indent=2)+'\n')
+        need=requirements(value)
+        print(f'KPACK_SELECTION_PLAN requests={len(value["requests"])} tc={len(need["tc"])} '
+              f'simt={len(need["simt"])} q4={len(need["q4"])} '
+              f'misses={sum(r["status"]!=0 for r in value["requests"])}')
+        if any(row['status'] != 0 for row in value['requests']):
+            raise ValueError('Auto decode requests outside policy coverage; see plan.json')
+    elif args.command == "inspect":
         print(json.dumps(dict(modules=inspect_modules(args.cache, args.keys, args.source_contract))))
     elif args.command == "plan":
         from tools.build_kpack_dispatch import plan as select_plan
@@ -187,6 +202,24 @@ def main():
         print("QK_JIT_V1", record["key"], digest(record["identity"]), contract)
     else:
         plan_record=json.loads(args.plan.read_text())
+        from quactlize.dispatch.planning import SCHEMA,prewarm_groups
+        if plan_record.get('schema')==SCHEMA:
+            if args.compute_type!='f16' or args.dense_io:
+                raise ValueError('typed final plan owns per-request compute/endpoints; do not override them')
+            groups=prewarm_groups(plan_record)
+            records=[]
+            for compute,dense,parents in groups:
+                compiler=compiler_for(args.sdk,args.cache,args.jobs,dense,compute)
+                contract=compiler.identity.get('base_source_contract',source_contract(compiler.identity))
+                if args.source_contract and args.source_contract!=contract:
+                    raise ValueError('JIT helper source differs from dispatcher; rebuild the small dispatcher')
+                records.extend(compiler.compile_only(parents,progress=lambda n,total:print(
+                    f'KPACK_SELECTION_PREWARM compute={compute} dense_io={int(dense)} completed={n}/{total}',flush=True)))
+            if args.receipt:
+                args.receipt.write_text(json.dumps(dict(modules=records,seconds=time.monotonic()-start,
+                    selection_schema=SCHEMA,device_validated=False),indent=2)+'\n')
+            print(f'KPACK_SELECTION_PREWARM PASS parents={len(records)} simt_jit=0 device_validation=PENDING')
+            return
         parents = plan_record["parents"]
         if plan_record.get('compute_type',args.compute_type)!=args.compute_type:
             raise ValueError('prewarm compute type differs from its plan')

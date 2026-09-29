@@ -2,6 +2,7 @@
 """Validate a native dispatch package before allowing model execution."""
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -148,6 +149,59 @@ def router_alias_paths(root, receipt):
     return names
 
 
+def paired_paths(root, receipt, *, sdk=None):
+    root=Path(root).resolve(strict=True)
+    recipe_api=receipt.get('schema')=='quactlize.paired-model.v2'
+    if (receipt.get('schema') not in ('quactlize.paired-model.v1','quactlize.paired-model.v2') or
+            receipt.get('library')!='libquactlize_ppu_gate_up.so' or
+            receipt.get('receipt')!='gate-up-runtime.json' or
+            receipt.get('layout_id')!='0x47554e3400000001' or
+            receipt.get('q8_shared') not in ('F16_N512_K2048_E1_T1_8','F16_N512_K2048_T1_8_N1024_K3072_T1') or
+            receipt.get('q4_routed')!=('GENERATED_PAIRED_SELECTION_V2' if recipe_api else 'BF16_N512_K2048_E256_TOP8_T1_8') or
+            receipt.get('canonical_retained') is not True or receipt.get('device_validated') is not False):
+        raise ValueError('paired gate/up scope differs')
+    for name,field in ((receipt['library'],'sha256'),(receipt['receipt'],'receipt_sha256')):
+        path=root/name
+        if path.is_symlink() or not path.is_file() or sha(path)!=receipt.get(field):
+            raise ValueError('paired gate/up payload differs: '+name)
+    build=json.loads((root/receipt['receipt']).read_text())
+    if (build.get('schema')!='quactlize.gate-up-paired-n4.v1' or build.get('sha256')!=receipt['sha256'] or
+            build.get('library')!=receipt['library'] or build.get('layout_id')!=receipt['layout_id']):
+        raise ValueError('paired gate/up build differs')
+    if sdk is not None:
+        for name,h in build['runtime'].items():
+            if Path(name).name!=name or sha(Path(sdk)/'lib'/name)!=h:
+                raise ValueError('paired gate/up SDK runtime differs: '+name)
+        for name,h in build['source_hashes'].items():
+            p=(ROOT/name).resolve(strict=True)
+            if not p.is_relative_to(ROOT) or sha(p)!=h:
+                raise ValueError('paired gate/up source differs: '+name)
+    require_exports(root/receipt['library'],{'quactlize_gate_up_'+s for s in (
+        'layout_v1','select_v1','repack_v1','query_v1','run_v1','run_v2')})
+    require_exports(root/'libquactlize_kpack_dispatch.so',{'quactlize_kpack_dispatch_moe_bind_gate_up_v1'})
+    paths=[receipt['library'],receipt['receipt']]
+    if recipe_api:
+        from tools import paired_decode_selection as paired
+        selection=receipt.get('selection',{})
+        paired.validate(selection)
+        expected=hashlib.sha256(paired.header(selection).encode()).hexdigest()
+        if build['source_hashes'].get('quactlize/fusion/recipes.inc')!=expected:
+            raise ValueError('paired catalog differs from compiled implementations')
+        require_exports(root/receipt['library'],{'quactlize_gate_up_'+s for s in ('select_v2','query_v2','run_v3')})
+        require_exports(root/'libquactlize_kpack_dispatch.so',{
+            'quactlize_kpack_dispatch_moe_select_gate_up_v2','quactlize_kpack_dispatch_moe_bind_gate_up_v2'})
+        control=receipt.get('control')
+        if control:
+            if control.get('path')!='paired-control/libquactlize_ppu_gate_up.so' or control.get('receipt')!='paired-control/manifest.json':
+                raise ValueError('invalid paired control path')
+            for field,digest in (('path','sha256'),('receipt','receipt_sha256')):
+                p=root/control[field]
+                if p.is_symlink() or not p.is_file() or sha(p)!=control[digest]:
+                    raise ValueError('paired frozen control differs')
+                paths.append(control[field])
+    return paths
+
+
 def verify(root, *, sdk=None):
     root = Path(root).resolve(strict=True)
     m = json.loads((root / "manifest.json").read_text())
@@ -190,6 +244,24 @@ def verify(root, *, sdk=None):
                 m['policy_hashes'].get('policies/kpack_q8_vector_v1.hpp')!=receipt['header_sha256'] or
                 not {4,5}<={r['variant'] for r in m['execution_receipt']['simt_configs']['8']}):
             raise ValueError('Q8 vector policy/execution identity differs')
+    if 'final_selection' in m:
+        from quactlize.dispatch.planning import validate_inventory
+        receipt=m['final_selection'];path=root/'final-selection.json'
+        if receipt.get('path')!=path.name or path.is_symlink() or sha(path)!=receipt.get('sha256'):
+            raise ValueError('final-selection plan identity differs')
+        actual=validate_inventory(json.loads(path.read_text()),m['execution_receipt'],m['modules'],
+                                  jit=m.get('jit_required',False))
+        # Attached prebuilt modules can discharge earlier JIT requirements,
+        # but cannot change the declared selector/capability denominator.
+        declared=receipt['capabilities']
+        if json.loads(json.dumps(actual['required']))!=declared['required'] or not {
+                tuple(r) for r in actual['jit_required']} <= {tuple(r) for r in declared['jit_required']}:
+            raise ValueError('final-selection capability closure differs')
+    if 'decode_winners' in m:
+        receipt=m['decode_winners'];path=root/'decode-winners.json'
+        if (receipt.get('path')!=path.name or path.is_symlink() or sha(path)!=receipt['sha256'] or
+                m['policy_hashes'].get('policies/kpack_smallm_effective_v1.hpp')!=receipt['effective_header_sha256']):
+            raise ValueError('decode winner catalog differs')
     if 'compute_contract' in m:
         c=m['compute_contract']
         execution=m['execution_receipt'].get('simt_compute_v2',{})
@@ -210,6 +282,10 @@ def verify(root, *, sdk=None):
         prefill_paths(root, m['prefill'], sdk=sdk)
     elif (root / 'libquactlize_ppu_prefill.so').exists():
         raise ValueError('unmanifested prefill runtime would arm the model loader')
+    if 'paired_gate_up' in m:
+        paired_paths(root,m['paired_gate_up'],sdk=sdk)
+    elif (root/'libquactlize_ppu_gate_up.so').exists():
+        raise ValueError('unmanifested paired gate/up runtime')
     if 'bf16_gate' in m:
         from dev.bf16_compute.run import validate_package
         receipt=m['bf16_gate']

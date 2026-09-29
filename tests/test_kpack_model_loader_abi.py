@@ -13,9 +13,14 @@ from tools.verify_kpack_dispatch import PREFILL_MODEL_EXPORTS, SMALLM_MODEL_EXPO
 ROOT=Path(__file__).resolve().parents[1]
 LLAMA=Path(os.environ.get('LLAMA_CI_DIR','/root/autodl-tmp/llama-v0.3.0'))
 EXPORTS={name:required|COMPUTE_MODEL_EXPORTS[name] for name,required in SMALLM_MODEL_EXPORTS.items()}
-EXPORTS['libquactlize_kpack_dispatch.so'] |= {'quactlize_kpack_dispatch_query_smallm_v3'}
-EXPORTS['libquactlize_ppu_execution.so'] |= {'quactlize_kpack_q4_decode_select_v2', 'quactlize_kpack_q4_decode_run_v2'}
-EXPORTS['libquactlize_ppu_prefill.so']=PREFILL_MODEL_EXPORTS
+EXPORTS['libquactlize_kpack_dispatch.so'] -= {'quactlize_kpack_dispatch_prepare_compute_v1'}
+EXPORTS['libquactlize_kpack_dispatch.so'] |= {'quactlize_kpack_dispatch_query_smallm_v3',
+    'quactlize_kpack_dispatch_prepare_compute_v2','quactlize_kpack_dispatch_prefill_compute_v1',
+    'quactlize_kpack_dispatch_moe_bind_gate_up_v1'}
+EXPORTS['libquactlize_ppu_execution.so'] |= {'quactlize_kpack_q4_decode_select_v2', 'quactlize_kpack_q4_decode_run_v2',
+    'quactlize_kpack_sf_prepare_v2'}
+EXPORTS['libquactlize_ppu_prefill.so']=PREFILL_MODEL_EXPORTS|{'quactlize_kpack_dequant_v2'}
+EXPORTS['libquactlize_ppu_gate_up.so']={'quactlize_gate_up_'+s for s in ('layout_v1','select_v1','repack_v1','query_v1','run_v1')}
 MISSING='quactlize_kpack_prefill_provider_image_v1'
 
 
@@ -44,7 +49,7 @@ def test_profile_covers_every_actual_caller_lookup():
     if not source.exists():pytest.skip('companion caller source is not installed')
     text=source.read_text()
     for tag,name in [('host','libquactlize_kpack_dispatch.so'),('device','libquactlize_ppu_execution.so'),
-                     ('prefill','libquactlize_ppu_prefill.so')]:
+                     ('prefill','libquactlize_ppu_prefill.so'),('fusion','libquactlize_ppu_gate_up.so')]:
         requested=set(re.findall(r'QZ_BIND\([^,]+,\s*'+tag+r',\s*"([^"]+)"\)',text))
         requested.update(re.findall(r'dlsym\('+tag+r',\s*"([^"]+)"\)',text))
         assert requested==EXPORTS[name]
@@ -72,3 +77,14 @@ def test_actual_loader_old_prefill_red_current_green(loader,tmp_path,missing):
     else:
         assert result.returncode==0,result.stderr
         for name,required in EXPORTS.items():require_exports(tmp_path/name,required)
+
+
+@pytest.mark.parametrize('missing',[None,'quactlize_gate_up_run_v1','quactlize_kpack_dispatch_moe_bind_gate_up_v1'])
+def test_paired_loader_is_explicit_and_fail_closed(loader,tmp_path,missing):
+    for name,required in EXPORTS.items():stub(tmp_path/name,required-{missing})
+    env=dict(os.environ,QUACTLIZE_KPACK_EXECUTION=str(tmp_path),QUACTLIZE_KPACK_GATE_UP='1')
+    result=subprocess.run([str(loader)],env=env,capture_output=True,text=True)
+    assert result.returncode==(86 if missing else 0),result.stderr
+    if missing:assert missing in result.stderr
+    env['QUACTLIZE_KPACK_GATE_UP']='0'
+    assert subprocess.run([str(loader)],env=env,capture_output=True).returncode==0

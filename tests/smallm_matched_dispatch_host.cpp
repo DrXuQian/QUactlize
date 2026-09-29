@@ -17,7 +17,7 @@ int main() {
     module->query_dense_io=[](qkd_dense_call_v1 const* d,qk_recipe_v1 const*,qk_resources_v1* out){assert(compute==0 && d->input_type==QKD_F32);return resource(out);};
     module->query_dense_compute=[](qkd_dense_call_v2 const* d,qk_recipe_v1 const*,qk_resources_v1* out){assert(compute==1 && d->compute_type==compute && d->dense.input_type==QKD_F32);return resource(out);};
     module->query_device=[](qk_device_call_v2 const*,qk_recipe_v1 const*,qk_resources_v1* out){assert(compute==0);return resource(out);};
-    module->query_compute=[](qk_compute_device_call_v3 const* d,qk_recipe_v1 const*,qk_resources_v1* out){assert(compute==1 && d->compute_type==compute);return resource(out);};
+    module->query_compute=[](qk_compute_device_call_v4 const* d,qk_recipe_v1 const*,qk_resources_v1* out){assert(compute==1 && d->compute_type==compute);return resource(out);};
     Image image{c.symbol,std::string(64,'a'),std::string(64,'b'),c.qtype,c.route,c.tm,c.tn,c.tk,c.wm,c.wn,c.stages,c.ap,c.dn,{},dense,compute};
     kImages={image};runtime.modules[image.key]=module;
     qkg_call_v1 call{};call.version=1;call.size=sizeof(call);call.mode=row.mode;call.qtype=row.q;
@@ -39,5 +39,6 @@ int main() {
     assert(quactlize_kpack_dispatch_query_smallm_v3(&runtime,&typed,&arr,&again)==QKS_OK);
     assert(queries==before && !std::memcmp(&out,&again,sizeof(out)));++count;
   }
-  assert(count>500);printf("MATCHED_TC_DISPATCH PASS rows=%d exact compute/geometry/split/grid/ticket preserved\n",count);
+  assert(count>500);
+  printf("MATCHED_TC_DISPATCH PASS rows=%d exact compute/geometry/split/grid/ticket preserved\n",count);
 }

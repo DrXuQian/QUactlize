@@ -1,0 +1,2372 @@
+{
+  "status": "PASS",
+  "scope": "ROTATING_COMPLETE_M1_CALL_NOT_MODEL_TPOT",
+  "source": "2d8e5030afbbe757ab6759c0d2a37440310f1a32",
+  "manifest_sha256": "f54f6f627cc62f60f81664372d31b7e29c3bf9dedd406f88db331488d64301db",
+  "device": {
+    "ordinal": 0,
+    "pci": "0000:08:00.0",
+    "visible_devices": "0"
+  },
+  "runtime": {
+    "libhggc_wrapper.so": "71c32cb41191458503234324360fcd3f1fa890dd5a082d465bb07328630c775e",
+    "libhggcrt1.so": "f4765821e374712a5d9a21cb7276101067ff7da56f9e3c55366ffe88c1997e9f",
+    "libhggc.so": "4acb6f71da458fbef346db163e5c04a1bdc341c8c560158412ec2c9618c1525a",
+    "libhg_wrapper.so": "fd93f23bfb05dfee0ffa48fd07d3c0cf6d8ab37d266e12f841ee056291affcd5"
+  },
+  "providers": 76,
+  "numeric_checks": 510,
+  "event_samples": 2160,
+  "reimported_reports": 16,
+  "reimported_kernels": 20,
+  "idle_admission": "NOT_INDEPENDENTLY_PROVEN",
+  "production_changed": false,
+  "records": [
+    {
+      "point": "q4-paired-routed",
+      "input_output": "F32",
+      "compute": "BF16",
+      "incumbent_us": 16.860000789165497,
+      "candidate_us": 13.610625173896551,
+      "candidate": "h32-fixed",
+      "arm": "3",
+      "config": {
+        "name": "h32-fixed",
+        "columns": 4,
+        "warps": 8,
+        "values": 8,
+        "split": 1,
+        "variant": 3,
+        "changes": 1,
+        "hoist": false,
+        "fixed": true,
+        "direct_meta": false
+      },
+      "delta_pct": -19.272689579926027,
+      "round_deltas_pct": [
+        -19.335949126002117,
+        -19.392368286485684,
+        -19.15540803570086,
+        -19.33402505194244,
+        -19.239328236947895,
+        -19.231915218937022
+      ],
+      "candidate_MBU_pct": 25.680329071413887,
+      "target_MBU_pct": 40,
+      "max_numeric_error": 0.001298823656087647,
+      "point_sha256": "31c421594410d30d5c8490e2e1fa4193434dccd0df63059e46b3b94efb237846",
+      "decision": "EXACT_M1_INTEGRATION_CANDIDATE",
+      "fixture": {
+        "raw_sha256": {
+          "13": "5300f9fe07f0298525258503f3ed28bdfb323fdaa9aa1a510b557833fec671ff",
+          "18": "2e0af566da96341642e01133ea00841bb105a96d427708e4cd81590925c3a0c6",
+          "42": "5e36bb263c1f3860be6ccccb0834e812799a2a284cc36345a1f96c6534d92a14",
+          "47": "a4e90338ff054717c84a6af8d2e106eab28e66fbbd48ea2387fa4aa5f95af4e9",
+          "71": "90f7b819c80fd617ebe2f226ab6fba7d11c073ff27ddc1b1a5f6dfd469320eb1",
+          "76": "aa0e2b5bda7d6ad3a96a0ef3796168e6627b1a226928e7cb5175940f2327a860",
+          "100": "82dc96b0e19ec6112990aa2c9b568afdbf147e24fd7c87408d40ea067f4ee66e",
+          "105": "df98b00eab5afce193f9845e3fb47033a6323a8d95cc69cd07c4c7b26cf66d4c",
+          "129": "c8972e7298ee539cb9d87aeb61fac79de0f04b0aa19bc827a7e89960c27f4a8a",
+          "134": "68acc9147201b0c89d0001bdfaab872b230f88bb9a3b040c89030b77717fda9a",
+          "158": "d1f3987674f12dca443a2be3e87c50aacbf48e90439596bdd6248c90ea0d59e0",
+          "163": "08c757335ab6d471dee7e66628e92e3a3d66afcf311eef5c7ed530886bdcec9b",
+          "187": "ed119696ea31674d16fdf6194ff00239879d52395212e3198ea401cf14094f52",
+          "192": "03a186d5bcc19c03003d1b0d66a40d1883a364dd551ed802302f7d9f06eddef8",
+          "216": "f83ae9944b7a72ba61808c7a5a144d4d3281973e190cb79453b3cedc33c181eb",
+          "245": "7c3c9074b610c42938aac16233e76d8f96cfe5a36f12e708dfb8e0f5dd1c7180"
+        },
+        "category_sha256": "b402458a8b821d2228bd190248089c4b411f2eda7a9a3448bd7fdb822d93ad40",
+        "active_experts_per_call": 8,
+        "address_space_experts": 256,
+        "physical_weight_bytes_per_call": 9437184,
+        "l2_bytes": 67108864,
+        "copies": 16,
+        "rotating_active_bytes": 150994944,
+        "oracle": "OFFICIAL_GGUF_NONUNIFORM_METADATA_FACTOR_DOT_FP32_ACCUM",
+        "cache_scope": "COLD_ACTIVE_WEIGHT_RING"
+      },
+      "profiles": [
+        {
+          "arm": "incumbent",
+          "report_sha256": "8840033897f8302356d587f4c2f023382f761e5638a6ce0293bfb1fa03d20888",
+          "csv_sha256": "01b80eee0413e3aaf65ed6e5d3e449dfa1a323b2f02b2b5340e1d5150a505a28",
+          "components": [
+            {
+              "block": "(256,1,1)",
+              "grid": "(256,1,1)",
+              "metrics": {
+                "ppu__time_duration.sum": 18242.352941,
+                "dram__bytes_read.sum": 9487488,
+                "dram__bytes_write.sum": 192,
+                "derived__l2_bytes_pipe_l1_total": 18534656,
+                "derived__kvd_transactions_pipe_l2_total": 289316,
+                "ws__inst_executed_op_vmem_ld.sum": 26624,
+                "pu__inst_executed.sum": 6381056,
+                "launch__registers_per_thread": 94,
+                "launch__shared_mem_per_block": 1024,
+                "cu__warps_active.avg.pct_of_peak_sustained_active": 43.303535,
+                "cu__inst_executed_pipe_falu_fp32.avg": 9646.222222,
+                "cu__inst_executed_pipe_salu.avg": 18296.888889,
+                "derived__tsm_bank_conflicts_total": 0,
+                "pu__we_average_warps_issue_stalled_vmem_pipe_busy_per_issue_active.ratio": 0.001126,
+                "pu__we_average_warps_issue_stalled_vmem_dependency_per_issue_active.ratio": 0.821863,
+                "pu__we_average_warps_issue_stalled_inst_fetch_per_issue_active.ratio": 0.621478,
+                "pu__we_average_warps_issue_stalled_compute_dependency_per_issue_active.ratio": 0.485182
+              },
+              "kernel_role": "producer",
+              "kernel_name_sha256": "2b2b07265bf8b940813b9c2172066028059cb39fd42cd5984f367dc8e037f866"
+            }
+          ]
+        },
+        {
+          "arm": "3",
+          "report_sha256": "d5859346831961451179f0029951eb73aee51f4bb6d24597cec1c39182fc1ce9",
+          "csv_sha256": "cf1c4db27e685cdda35e4c0ddcdb40ee32c005371a718c27741b17b42f98efd1",
+          "components": [
+            {
+              "block": "(256,1,1)",
+              "grid": "(256,1,1)",
+              "metrics": {
+                "ppu__time_duration.sum": 15180,
+                "dram__bytes_read.sum": 9482112,
+                "dram__bytes_write.sum": 192,
+                "derived__l2_bytes_pipe_l1_total": 18587776,
+                "derived__kvd_transactions_pipe_l2_total": 290146,
+                "ws__inst_executed_op_vmem_ld.sum": 26624,
+                "pu__inst_executed.sum": 4606720,
+                "launch__registers_per_thread": 94,
+                "launch__shared_mem_per_block": 1024,
+                "cu__warps_active.avg.pct_of_peak_sustained_active": 43.113963,
+                "cu__inst_executed_pipe_falu_fp32.avg": 9646.222222,
+                "cu__inst_executed_pipe_salu.avg": 3580.444444,
+                "derived__tsm_bank_conflicts_total": 0,
+                "pu__we_average_warps_issue_stalled_vmem_pipe_busy_per_issue_active.ratio": 0.037575,
+                "pu__we_average_warps_issue_stalled_vmem_dependency_per_issue_active.ratio": 1.271755,
+                "pu__we_average_warps_issue_stalled_inst_fetch_per_issue_active.ratio": 0.674403,
+                "pu__we_average_warps_issue_stalled_compute_dependency_per_issue_active.ratio": 0.383348
+              },
+              "kernel_role": "producer",
+              "kernel_name_sha256": "6ea00b555effd8b4e72bb791dd7936a3b7647f534cfce05d3813249e9832c7b3"
+            }
+          ]
+        }
+      ],
+      "point_definition": {
+        "name": "q4-paired-routed",
+        "q": 12,
+        "n": 512,
+        "k": 2048,
+        "compute": 1,
+        "mode": 2,
+        "channels": 1,
+        "paired": true,
+        "tc": []
+      },
+      "confirmation": {
+        "2": {
+          "median_us": 14.040624722838402,
+          "round_medians_us": [
+            14.034999534487724,
+            14.047499746084213,
+            14.04624991118908,
+            14.031250029802322,
+            14.047499746084213,
+            14.026249758899212
+          ],
+          "modeled_weight_MBU_pct": 24.893859086255425,
+          "target_MBU_pct": 40,
+          "target_met": false,
+          "arm": "2",
+          "name": "h32-unsigned",
+          "kind": "simt",
+          "config": {
+            "name": "h32-unsigned",
+            "columns": 4,
+            "warps": 8,
+            "values": 8,
+            "split": 1,
+            "variant": 3,
+            "changes": 3,
+            "hoist": false,
+            "fixed": false,
+            "direct_meta": false
+          },
+          "scope": "PAIRED_GATE_UP_PLUS_SWIGLU",
+          "delta_pct": -16.7222771907512
+        },
+        "3": {
+          "median_us": 13.610625173896551,
+          "round_medians_us": [
+            13.605000451207161,
+            13.597499579191208,
+            13.616249896585941,
+            13.596249744296074,
+            13.616249896585941,
+            13.617499731481075
+          ],
+          "modeled_weight_MBU_pct": 25.680329071413887,
+          "target_MBU_pct": 40,
+          "target_met": false,
+          "arm": "3",
+          "name": "h32-fixed",
+          "kind": "simt",
+          "config": {
+            "name": "h32-fixed",
+            "columns": 4,
+            "warps": 8,
+            "values": 8,
+            "split": 1,
+            "variant": 3,
+            "changes": 1,
+            "hoist": false,
+            "fixed": true,
+            "direct_meta": false
+          },
+          "scope": "PAIRED_GATE_UP_PLUS_SWIGLU",
+          "delta_pct": -19.272689579926027
+        },
+        "incumbent": {
+          "median_us": 16.860000789165497,
+          "round_medians_us": [
+            16.866249963641167,
+            16.868749633431435,
+            16.842499375343323,
+            16.85499958693981,
+            16.860000789165497,
+            16.860000789165497
+          ],
+          "modeled_weight_MBU_pct": 20.731038966376786,
+          "target_MBU_pct": 40,
+          "target_met": false,
+          "arm": "incumbent",
+          "name": "incumbent",
+          "kind": "simt",
+          "config": {
+            "name": "clone",
+            "columns": 4,
+            "warps": 8,
+            "values": 8,
+            "split": 1,
+            "variant": 3,
+            "changes": 0,
+            "hoist": false,
+            "fixed": false,
+            "direct_meta": false
+          },
+          "scope": "PAIRED_GATE_UP_PLUS_SWIGLU",
+          "delta_pct": 0
+        }
+      },
+      "winner_source_access": {
+        "qtype": 12,
+        "config": "reuse-v3-c4-w8-p8-s1",
+        "shape": [
+          1024,
+          2048
+        ],
+        "input_storage": "F32",
+        "actual_bases_mod128": {
+          "A": 0,
+          "low": 0,
+          "high": 0,
+          "units": 0
+        },
+        "warp": 0,
+        "partition": 0,
+        "iteration": 0,
+        "low_word_group_reuse": 1,
+        "high_word_group_reuse": null,
+        "note": "Packed words may be requested by several scale-group workers. Duplicate lane bytes are not DRAM bytes.",
+        "scope": "SOURCE_LOAD_FOOTPRINT_NOT_HARDWARE_COUNTERS",
+        "B_contiguous_bytes_per_k_worker_group": 64,
+        "fast_code_dequant": "LOP3/mantissa half2 extraction to exact integer codes; FP32 FMA",
+        "metadata_reader": "H32",
+        "fixed_shape": true,
+        "paired_N4": true,
+        "hoisted_B_words_per_thread": null,
+        "aggregate_source_footprint": {
+          "32": {
+            "lane_bytes": 5632,
+            "unique_bytes": 5632,
+            "sector_bytes": 6656
+          },
+          "64": {
+            "lane_bytes": 5632,
+            "unique_bytes": 5632,
+            "sector_bytes": 6656
+          },
+          "128": {
+            "lane_bytes": 5632,
+            "unique_bytes": 5632,
+            "sector_bytes": 10752
+          }
+        }
+      }
+    },
+    {
+      "point": "q5-routed-down",
+      "input_output": "F32",
+      "compute": "BF16",
+      "incumbent_us": 11.072592602835762,
+      "candidate_us": 9.420740383642691,
+      "candidate": "fixed",
+      "arm": "1",
+      "config": {
+        "name": "fixed",
+        "columns": 4,
+        "warps": 2,
+        "values": 8,
+        "split": 1,
+        "variant": 3,
+        "changes": 3,
+        "hoist": false,
+        "fixed": true,
+        "direct_meta": false
+      },
+      "delta_pct": -14.918387034035918,
+      "round_deltas_pct": [
+        -14.908000662052245,
+        -14.957520376583023,
+        -14.917389213668441,
+        -14.752129499234456,
+        -14.900015824948165,
+        -14.959521519900488
+      ],
+      "candidate_MBU_pct": 22.673251370527968,
+      "target_MBU_pct": 40,
+      "max_numeric_error": 1.5655806402142767e-7,
+      "point_sha256": "59d8beb862121f32e2ba8fef46f84f78da0f668c5c74cf3359e31e7c58ee2b36",
+      "decision": "EXACT_M1_INTEGRATION_CANDIDATE",
+      "fixture": {
+        "raw_sha256": {
+          "13": "655311efa428b54fd9fedeaafb6e0c4d5a9c1531f3e35f28012b3a1812c9f32c",
+          "18": "73bc0518a279490c75115f1b526b3f475e60f43255b04f5d0f0c4500e5014d92",
+          "42": "efd83e147a4bb239c0665ef0ced6f2a7cb52f697646c1ead55cdbd46b2560c2c",
+          "47": "83d92690046d248f2068de8d31a10b246ca45368a83924e3f086a5729d6caf70",
+          "71": "9ac8a08aa4dde498d3b3d3edac4e9fe3daa15b94656e728e23ea2820b1c41033",
+          "76": "e21bff6900d814afd786e5eb049d41dd04ffd71ce4771846dc49ef1423a31e4d",
+          "100": "f280cb5ab804445606d49716db6532c6260a8cfe772b1c4832d67947fb31e8fe",
+          "105": "b49653b1a856508a1c39d2a3de2310c961e10827373803cd835b0e7d6f4fc650",
+          "129": "274471a9e11a32f1d2f604119e6007d74ce6b6243838a0441599ee23e355d3c9",
+          "134": "8ca3af45a8a4feae4bd6b0c3faf21cefd0cddeadfa97f31683f9871701db6e21",
+          "158": "2e8a332f8a7cde8a1addd42fe1aa5f6466896a72792b949fcc50e83cab8c4328",
+          "163": "be3beba53a36e2b8f6b4381557bf957241676a94601ee2bdd32e9da21227a4d2",
+          "187": "03b498f7e8a3c74a8cf5d3e7f681ed3ac0924d7c65e1ca40292e9efee3f217ab",
+          "192": "1a4b0a3f5559f0c0d50809c0a09b7e8a32ec0b7788c69addc90e564aa2a64317",
+          "216": "5d09d9bcc38b8848a5628a40b1dbf38049efbd5cb8324936fdeaf18dcca2cf39",
+          "245": "e2ad40a89d02f76d7a4b67c5804ee3f36af03f448b90593fb7686ce592d04a5e"
+        },
+        "category_sha256": "35ade1b5896f2a0e16fc0d657cf4039542266236d4c62cdbbf39b8a9a1c33be4",
+        "active_experts_per_call": 8,
+        "address_space_experts": 256,
+        "physical_weight_bytes_per_call": 5767168,
+        "l2_bytes": 67108864,
+        "copies": 27,
+        "rotating_active_bytes": 155713536,
+        "oracle": "OFFICIAL_GGUF_NONUNIFORM_METADATA_FACTOR_DOT_FP32_ACCUM",
+        "cache_scope": "COLD_ACTIVE_WEIGHT_RING"
+      },
+      "profiles": [
+        {
+          "arm": "incumbent",
+          "report_sha256": "f4e3a3616f2931afb932aeabca15d9c20b352cb4e7e5e506fe116b397e312589",
+          "csv_sha256": "f21832682f269f230b375762825b82475d4ecbe57c4ec1c7e8e8d044c76c8792",
+          "components": [
+            {
+              "block": "(64,1,1)",
+              "grid": "(512,1,1)",
+              "metrics": {
+                "ppu__time_duration.sum": 14115.294118,
+                "dram__bytes_read.sum": 5808512,
+                "dram__bytes_write.sum": 192,
+                "derived__l2_bytes_pipe_l1_total": 12151808,
+                "derived__kvd_transactions_pipe_l2_total": 189584,
+                "ws__inst_executed_op_vmem_ld.sum": 20480,
+                "pu__inst_executed.sum": 2984448,
+                "launch__registers_per_thread": 114,
+                "launch__shared_mem_per_block": 256,
+                "cu__warps_active.avg.pct_of_peak_sustained_active": 21.974456,
+                "cu__inst_executed_pipe_falu_fp32.avg": 4778.666667,
+                "cu__inst_executed_pipe_salu.avg": 3662.222222,
+                "derived__tsm_bank_conflicts_total": 0,
+                "pu__we_average_warps_issue_stalled_vmem_pipe_busy_per_issue_active.ratio": 0.00613,
+                "pu__we_average_warps_issue_stalled_vmem_dependency_per_issue_active.ratio": 0.713312,
+                "pu__we_average_warps_issue_stalled_inst_fetch_per_issue_active.ratio": 1.08661,
+                "pu__we_average_warps_issue_stalled_compute_dependency_per_issue_active.ratio": 0.205199
+              },
+              "kernel_role": "producer",
+              "kernel_name_sha256": "fd1f45f4a820a4265a53525f8a3be190267fb1975213b9f80dbcc773ffd8b13f"
+            }
+          ]
+        },
+        {
+          "arm": "1",
+          "report_sha256": "491d0c86dfe782a9ccc9844a6b3bf0590f7211855e3a761e70d2175137ab4df3",
+          "csv_sha256": "b1ff6aec0ebe63468393a87c695ba86c8ccaf31f522aa0ca437aa0fd07fca927",
+          "components": [
+            {
+              "block": "(64,1,1)",
+              "grid": "(512,1,1)",
+              "metrics": {
+                "ppu__time_duration.sum": 12130.588235,
+                "dram__bytes_read.sum": 5803520,
+                "dram__bytes_write.sum": 192,
+                "derived__l2_bytes_pipe_l1_total": 12151936,
+                "derived__kvd_transactions_pipe_l2_total": 189586,
+                "ws__inst_executed_op_vmem_ld.sum": 20480,
+                "pu__inst_executed.sum": 2408448,
+                "launch__registers_per_thread": 216,
+                "launch__shared_mem_per_block": 256,
+                "cu__warps_active.avg.pct_of_peak_sustained_active": 21.896718,
+                "cu__inst_executed_pipe_falu_fp32.avg": 4778.666667,
+                "cu__inst_executed_pipe_salu.avg": 1180.444444,
+                "derived__tsm_bank_conflicts_total": 0,
+                "pu__we_average_warps_issue_stalled_vmem_pipe_busy_per_issue_active.ratio": 0.103636,
+                "pu__we_average_warps_issue_stalled_vmem_dependency_per_issue_active.ratio": 0.85162,
+                "pu__we_average_warps_issue_stalled_inst_fetch_per_issue_active.ratio": 0.811667,
+                "pu__we_average_warps_issue_stalled_compute_dependency_per_issue_active.ratio": 0.154217
+              },
+              "kernel_role": "producer",
+              "kernel_name_sha256": "8d44550a658c668eb99359e967e42b95db09571860380973dda0b40eabf83c60"
+            }
+          ]
+        }
+      ],
+      "point_definition": {
+        "name": "q5-routed-down",
+        "q": 13,
+        "n": 2048,
+        "k": 512,
+        "compute": 1,
+        "mode": 2,
+        "channels": 8,
+        "paired": false,
+        "tc": []
+      },
+      "confirmation": {
+        "1": {
+          "median_us": 9.420740383642691,
+          "round_medians_us": [
+            9.41999974074187,
+            9.41703716913859,
+            9.42148102654351,
+            9.43851802084181,
+            9.42592598773815,
+            9.41555588333695
+          ],
+          "modeled_weight_MBU_pct": 22.673251370527968,
+          "target_MBU_pct": 40,
+          "target_met": false,
+          "arm": "1",
+          "name": "fixed",
+          "kind": "simt",
+          "config": {
+            "name": "fixed",
+            "columns": 4,
+            "warps": 2,
+            "values": 8,
+            "split": 1,
+            "variant": 3,
+            "changes": 3,
+            "hoist": false,
+            "fixed": true,
+            "direct_meta": false
+          },
+          "scope": "GEMV_INCLUDING_SPLITK_REDUCTION",
+          "delta_pct": -14.918387034035918
+        },
+        "3": {
+          "median_us": 9.458518690533108,
+          "round_medians_us": [
+            9.451851800636009,
+            9.457778047632289,
+            9.459259333433929,
+            9.45407372933847,
+            9.46370319083885,
+            9.46370319083885
+          ],
+          "modeled_weight_MBU_pct": 22.582692047603896,
+          "target_MBU_pct": 40,
+          "target_met": false,
+          "arm": "3",
+          "name": "p4-fixed",
+          "kind": "simt",
+          "config": {
+            "name": "p4-fixed",
+            "columns": 4,
+            "warps": 2,
+            "values": 4,
+            "split": 1,
+            "variant": 3,
+            "changes": 3,
+            "hoist": false,
+            "fixed": true,
+            "direct_meta": false
+          },
+          "scope": "GEMV_INCLUDING_SPLITK_REDUCTION",
+          "delta_pct": -14.577199488846714
+        },
+        "incumbent": {
+          "median_us": 11.072592602835762,
+          "round_medians_us": [
+            11.0703706741333,
+            11.073333245736581,
+            11.073333245736581,
+            11.071851959934941,
+            11.076295817339862,
+            11.071851959934941
+          ],
+          "modeled_weight_MBU_pct": 19.290767977872754,
+          "target_MBU_pct": 40,
+          "target_met": false,
+          "arm": "incumbent",
+          "name": "incumbent",
+          "kind": "simt",
+          "config": {
+            "name": "clone",
+            "columns": 4,
+            "warps": 2,
+            "values": 8,
+            "split": 1,
+            "variant": 3,
+            "changes": 3,
+            "hoist": false,
+            "fixed": false,
+            "direct_meta": false
+          },
+          "scope": "GEMV_INCLUDING_SPLITK_REDUCTION",
+          "delta_pct": 0
+        }
+      },
+      "winner_source_access": {
+        "qtype": 13,
+        "config": "reuse-v3-c4-w2-p8-s1",
+        "shape": [
+          2048,
+          512
+        ],
+        "input_storage": "F32",
+        "actual_bases_mod128": {
+          "A": 0,
+          "low": 0,
+          "high": 0,
+          "units": 0
+        },
+        "warp": 0,
+        "partition": 0,
+        "iteration": 0,
+        "low_word_group_reuse": 1,
+        "high_word_group_reuse": 4,
+        "note": "Packed words may be requested by several scale-group workers. Duplicate lane bytes are not DRAM bytes.",
+        "scope": "SOURCE_LOAD_FOOTPRINT_NOT_HARDWARE_COUNTERS",
+        "B_contiguous_bytes_per_k_worker_group": 64,
+        "fast_code_dequant": "LOP3/mantissa half2 extraction to exact integer codes; FP32 FMA",
+        "metadata_reader": "H32",
+        "fixed_shape": true,
+        "paired_N4": false,
+        "hoisted_B_words_per_thread": null,
+        "aggregate_source_footprint": {
+          "32": {
+            "lane_bytes": 9728,
+            "unique_bytes": 6656,
+            "sector_bytes": 7680
+          },
+          "64": {
+            "lane_bytes": 9728,
+            "unique_bytes": 6656,
+            "sector_bytes": 7680
+          },
+          "128": {
+            "lane_bytes": 9728,
+            "unique_bytes": 6656,
+            "sector_bytes": 12800
+          }
+        }
+      }
+    },
+    {
+      "point": "q8-paired-shared",
+      "input_output": "F32",
+      "compute": "F16",
+      "incumbent_us": 7.271764690385146,
+      "candidate_us": 5.31941170201582,
+      "candidate": "tile16-w8-hoist",
+      "arm": "10",
+      "config": {
+        "name": "tile16-w8-hoist",
+        "columns": 4,
+        "warps": 8,
+        "values": 4,
+        "split": 1,
+        "variant": 5,
+        "changes": 0,
+        "hoist": true,
+        "fixed": false,
+        "direct_meta": false
+      },
+      "delta_pct": -26.84840711293588,
+      "round_deltas_pct": [
+        -26.87798072934119,
+        -26.88389654753429,
+        -26.71576516608657,
+        -26.815053127977517,
+        -26.93458152701782,
+        -26.762162965544455
+      ],
+      "candidate_MBU_pct": 15.514274780337237,
+      "target_MBU_pct": 40,
+      "max_numeric_error": 2.965171334716131e-8,
+      "point_sha256": "fc002951091eee21d2e9e3c5ed362518f1d818c5f783b8f60419991a0a9bb187",
+      "decision": "EXACT_M1_INTEGRATION_CANDIDATE",
+      "fixture": {
+        "raw_sha256": {
+          "0": "d7a9ed732f353c520d3df9eb101f985d4e6d2175556755b4b347dfc24eab0ffa"
+        },
+        "category_sha256": "b402458a8b821d2228bd190248089c4b411f2eda7a9a3448bd7fdb822d93ad40",
+        "active_experts_per_call": 1,
+        "address_space_experts": 1,
+        "physical_weight_bytes_per_call": 2228224,
+        "l2_bytes": 67108864,
+        "copies": 68,
+        "rotating_active_bytes": 151519232,
+        "oracle": "OFFICIAL_GGUF_NONUNIFORM_METADATA_FACTOR_DOT_FP32_ACCUM",
+        "cache_scope": "COLD_ACTIVE_WEIGHT_RING"
+      },
+      "profiles": [
+        {
+          "arm": "incumbent",
+          "report_sha256": "ecbbd6e61bb680f9d04182431c123c3f462aa77c32fe37dd8ff90ac47ec0a26e",
+          "csv_sha256": "222c5ed60999ec6b1e0f5cf101ac388117bfdd722eaed9622cf4914ae2bac9b9",
+          "components": [
+            {
+              "block": "(256,1,1)",
+              "grid": "(32,1,1)",
+              "metrics": {
+                "ppu__time_duration.sum": 9497.647059,
+                "dram__bytes_read.sum": 2253824,
+                "dram__bytes_write.sum": 192,
+                "derived__l2_bytes_pipe_l1_total": 4734080,
+                "derived__kvd_transactions_pipe_l2_total": 73842,
+                "ws__inst_executed_op_vmem_ld.sum": 4864,
+                "pu__inst_executed.sum": 380384,
+                "launch__registers_per_thread": 78,
+                "launch__shared_mem_per_block": 1024,
+                "cu__warps_active.avg.pct_of_peak_sustained_active": 5.337283,
+                "cu__inst_executed_pipe_falu_fp32.avg": 978.222222,
+                "cu__inst_executed_pipe_salu.avg": 448.444444,
+                "derived__tsm_bank_conflicts_total": 0,
+                "pu__we_average_warps_issue_stalled_vmem_pipe_busy_per_issue_active.ratio": 0,
+                "pu__we_average_warps_issue_stalled_vmem_dependency_per_issue_active.ratio": 1.329664,
+                "pu__we_average_warps_issue_stalled_inst_fetch_per_issue_active.ratio": 2.037883,
+                "pu__we_average_warps_issue_stalled_compute_dependency_per_issue_active.ratio": 0.084722
+              },
+              "kernel_role": "producer",
+              "kernel_name_sha256": "701d210dce24014fecc58856e17b1c8da5d9bf85e2978304d7fc26d69277051c"
+            }
+          ]
+        },
+        {
+          "arm": "10",
+          "report_sha256": "e226b016a73f3221fbb96cbca835cc395ad42e3a18b17b8f2f92dd604c2af23a",
+          "csv_sha256": "92bf71efcdac423bc4bdda71d044b87cff99829331b22917c3d543877491fcda",
+          "components": [
+            {
+              "block": "(256,1,1)",
+              "grid": "(64,1,1)",
+              "metrics": {
+                "ppu__time_duration.sum": 6767.647059,
+                "dram__bytes_read.sum": 2248704,
+                "dram__bytes_write.sum": 192,
+                "derived__l2_bytes_pipe_l1_total": 9473792,
+                "derived__kvd_transactions_pipe_l2_total": 147772,
+                "ws__inst_executed_op_vmem_ld.sum": 9728,
+                "pu__inst_executed.sum": 467392,
+                "launch__registers_per_thread": 78,
+                "launch__shared_mem_per_block": 512,
+                "cu__warps_active.avg.pct_of_peak_sustained_active": 10.812739,
+                "cu__inst_executed_pipe_falu_fp32.avg": 996.444444,
+                "cu__inst_executed_pipe_salu.avg": 633.777778,
+                "derived__tsm_bank_conflicts_total": 0,
+                "pu__we_average_warps_issue_stalled_vmem_pipe_busy_per_issue_active.ratio": 0.701443,
+                "pu__we_average_warps_issue_stalled_vmem_dependency_per_issue_active.ratio": 0.016472,
+                "pu__we_average_warps_issue_stalled_inst_fetch_per_issue_active.ratio": 2.177457,
+                "pu__we_average_warps_issue_stalled_compute_dependency_per_issue_active.ratio": 0.434109
+              },
+              "kernel_role": "producer",
+              "kernel_name_sha256": "260a53ab7734efd00801b192caba936322faa881b9c1e623ac39f2616e1c916f"
+            }
+          ]
+        }
+      ],
+      "point_definition": {
+        "name": "q8-paired-shared",
+        "q": 8,
+        "n": 512,
+        "k": 2048,
+        "compute": 0,
+        "mode": 0,
+        "channels": 1,
+        "paired": true,
+        "tc": []
+      },
+      "confirmation": {
+        "3": {
+          "median_us": 6.173235309474609,
+          "round_medians_us": [
+            6.1682353124899025,
+            6.175882237799027,
+            6.169999785283032,
+            6.17294101154103,
+            6.173529607408187,
+            6.177647148861604
+          ],
+          "modeled_weight_MBU_pct": 13.36848681082246,
+          "target_MBU_pct": 40,
+          "target_met": false,
+          "arm": "3",
+          "name": "hoist-fixed",
+          "kind": "simt",
+          "config": {
+            "name": "hoist-fixed",
+            "columns": 4,
+            "warps": 8,
+            "values": 8,
+            "split": 1,
+            "variant": 5,
+            "changes": 0,
+            "hoist": true,
+            "fixed": true,
+            "direct_meta": false
+          },
+          "scope": "PAIRED_GATE_UP_PLUS_SWIGLU",
+          "delta_pct": -15.106778446269464
+        },
+        "10": {
+          "median_us": 5.31941170201582,
+          "round_medians_us": [
+            5.31941170201582,
+            5.31941170201582,
+            5.326470469727235,
+            5.318823544418111,
+            5.315294160562403,
+            5.323529243469238
+          ],
+          "modeled_weight_MBU_pct": 15.514274780337237,
+          "target_MBU_pct": 40,
+          "target_met": false,
+          "arm": "10",
+          "name": "tile16-w8-hoist",
+          "kind": "simt",
+          "config": {
+            "name": "tile16-w8-hoist",
+            "columns": 4,
+            "warps": 8,
+            "values": 4,
+            "split": 1,
+            "variant": 5,
+            "changes": 0,
+            "hoist": true,
+            "fixed": false,
+            "direct_meta": false
+          },
+          "scope": "PAIRED_GATE_UP_PLUS_SWIGLU",
+          "delta_pct": -26.84840711293588
+        },
+        "incumbent": {
+          "median_us": 7.271764690385146,
+          "round_medians_us": [
+            7.274705697508419,
+            7.275294293375576,
+            7.268235087394714,
+            7.267646929797004,
+            7.274705697508419,
+            7.268823683261871
+          ],
+          "modeled_weight_MBU_pct": 11.348939126692756,
+          "target_MBU_pct": 40,
+          "target_met": false,
+          "arm": "incumbent",
+          "name": "incumbent",
+          "kind": "simt",
+          "config": {
+            "name": "clone",
+            "columns": 4,
+            "warps": 8,
+            "values": 8,
+            "split": 1,
+            "variant": 5,
+            "changes": 0,
+            "hoist": false,
+            "fixed": false,
+            "direct_meta": false
+          },
+          "scope": "PAIRED_GATE_UP_PLUS_SWIGLU",
+          "delta_pct": 0
+        }
+      },
+      "winner_source_access": {
+        "qtype": 8,
+        "config": "reuse-v1-c4-w8-p4-s1",
+        "shape": [
+          1024,
+          2048
+        ],
+        "input_storage": "F32",
+        "actual_bases_mod128": {
+          "A": 0,
+          "low": 0,
+          "high": 0,
+          "units": 0
+        },
+        "warp": 0,
+        "partition": 0,
+        "iteration": 0,
+        "low_word_group_reuse": 0.5,
+        "high_word_group_reuse": null,
+        "note": "Packed words may be requested by several scale-group workers. Duplicate lane bytes are not DRAM bytes.",
+        "scope": "SOURCE_LOAD_FOOTPRINT_NOT_HARDWARE_COUNTERS",
+        "metadata_vectorized": true,
+        "baseline_metadata_requests": 4,
+        "candidate_metadata_requests": 1,
+        "packed_b_live_words_per_thread": {
+          "baseline": 16,
+          "candidate": 8
+        },
+        "dot_order": "half,segment,slot,residue; identical logical K order to baseline",
+        "accumulator": "FP32",
+        "weight_format": "UNCHANGED_Q8_KPACK2",
+        "caveat": "Source footprint/live ranges, not emitted ISA or measured DRAM transactions",
+        "B_contiguous_bytes_per_k_worker_group": 32,
+        "fast_code_dequant": "LOP3/mantissa half2 extraction to exact integer codes; FP32 FMA",
+        "metadata_reader": "existing",
+        "fixed_shape": false,
+        "paired_N4": true,
+        "hoisted_B_words_per_thread": 32,
+        "aggregate_source_footprint": {
+          "32": {
+            "lane_bytes": 5376,
+            "unique_bytes": 5376,
+            "sector_bytes": 6400
+          },
+          "64": {
+            "lane_bytes": 5376,
+            "unique_bytes": 5376,
+            "sector_bytes": 10752
+          },
+          "128": {
+            "lane_bytes": 5376,
+            "unique_bytes": 5376,
+            "sector_bytes": 19456
+          }
+        }
+      }
+    },
+    {
+      "point": "q8-shared-down",
+      "input_output": "F32",
+      "compute": "F16",
+      "incumbent_us": 4.08705893684836,
+      "candidate_us": 3.7523527794024525,
+      "candidate": "c4w2",
+      "arm": "6",
+      "config": {
+        "name": "c4w2",
+        "columns": 4,
+        "warps": 2,
+        "values": 4,
+        "split": 1,
+        "variant": 5,
+        "changes": 0,
+        "hoist": true,
+        "fixed": false,
+        "direct_meta": false
+      },
+      "delta_pct": -8.189413527371547,
+      "round_deltas_pct": [
+        -8.210508655722236,
+        -8.018725220645628,
+        -8.201915829846707,
+        -8.349515104129157,
+        -7.9806881132655665,
+        -8.29198944477021
+      ],
+      "candidate_MBU_pct": 10.996675907956192,
+      "target_MBU_pct": 40,
+      "max_numeric_error": 0,
+      "point_sha256": "b70d8f275cb0c3cd77a3e8ff0f19312e6d16fa230ab8bca9f49ad57d64a40f3b",
+      "decision": "EXACT_M1_INTEGRATION_CANDIDATE",
+      "fixture": {
+        "raw_sha256": {
+          "0": "32b1e72df36007ae267100e0cdd3c88fd8e87398776ac58da36bb769ed78c3d5"
+        },
+        "category_sha256": "35ade1b5896f2a0e16fc0d657cf4039542266236d4c62cdbbf39b8a9a1c33be4",
+        "active_experts_per_call": 1,
+        "address_space_experts": 1,
+        "physical_weight_bytes_per_call": 1114112,
+        "l2_bytes": 67108864,
+        "copies": 136,
+        "rotating_active_bytes": 151519232,
+        "oracle": "OFFICIAL_GGUF_NONUNIFORM_METADATA_FACTOR_DOT_FP32_ACCUM",
+        "cache_scope": "COLD_ACTIVE_WEIGHT_RING"
+      },
+      "profiles": [
+        {
+          "arm": "incumbent",
+          "report_sha256": "b32bc9ebd1b0e3cfc187b4628883ff47e056221792905c05e522b7c90eeb5d25",
+          "csv_sha256": "4f59ce2301390da13b41d52a62e39b4551b51ce0ffa00f42550aafd93f7e1024",
+          "components": [
+            {
+              "block": "(128,1,1)",
+              "grid": "(64,1,1)",
+              "metrics": {
+                "ppu__time_duration.sum": 5895.882353,
+                "dram__bytes_read.sum": 1125760,
+                "dram__bytes_write.sum": 192,
+                "derived__l2_bytes_pipe_l1_total": 2383872,
+                "derived__kvd_transactions_pipe_l2_total": 36992,
+                "ws__inst_executed_op_vmem_ld.sum": 4608,
+                "pu__inst_executed.sum": 239424,
+                "launch__registers_per_thread": 78,
+                "launch__shared_mem_per_block": 512,
+                "cu__warps_active.avg.pct_of_peak_sustained_active": 5.550541,
+                "cu__inst_executed_pipe_falu_fp32.avg": 483.555556,
+                "cu__inst_executed_pipe_salu.avg": 424,
+                "derived__tsm_bank_conflicts_total": 0,
+                "pu__we_average_warps_issue_stalled_vmem_pipe_busy_per_issue_active.ratio": 0.009481,
+                "pu__we_average_warps_issue_stalled_vmem_dependency_per_issue_active.ratio": 0.383591,
+                "pu__we_average_warps_issue_stalled_inst_fetch_per_issue_active.ratio": 2.601364,
+                "pu__we_average_warps_issue_stalled_compute_dependency_per_issue_active.ratio": 0.095951
+              },
+              "kernel_role": "producer",
+              "kernel_name_sha256": "463a31630bdb5ade8d6e9a5193e776f5633273cfa3bfc701c01f7fe4cd6a8718"
+            }
+          ]
+        },
+        {
+          "arm": "6",
+          "report_sha256": "25adb6b279746c75dd704c88b3a1eac47f93e399f31022be99a10b7d698a819b",
+          "csv_sha256": "d07f4e0a158b770f385a8eda8f08e5e8185a694afcb411a84c590d87da9b2088",
+          "components": [
+            {
+              "block": "(64,1,1)",
+              "grid": "(128,1,1)",
+              "metrics": {
+                "ppu__time_duration.sum": 5315.882353,
+                "dram__bytes_read.sum": 1133312,
+                "dram__bytes_write.sum": 192,
+                "derived__l2_bytes_pipe_l1_total": 4638720,
+                "derived__kvd_transactions_pipe_l2_total": 72192,
+                "ws__inst_executed_op_vmem_ld.sum": 4864,
+                "pu__inst_executed.sum": 228864,
+                "launch__registers_per_thread": 74,
+                "launch__shared_mem_per_block": 128,
+                "cu__warps_active.avg.pct_of_peak_sustained_active": 5.503116,
+                "cu__inst_executed_pipe_falu_fp32.avg": 487.111111,
+                "cu__inst_executed_pipe_salu.avg": 296.888889,
+                "derived__tsm_bank_conflicts_total": 0,
+                "pu__we_average_warps_issue_stalled_vmem_pipe_busy_per_issue_active.ratio": 0,
+                "pu__we_average_warps_issue_stalled_vmem_dependency_per_issue_active.ratio": 0.38747,
+                "pu__we_average_warps_issue_stalled_inst_fetch_per_issue_active.ratio": 1.849129,
+                "pu__we_average_warps_issue_stalled_compute_dependency_per_issue_active.ratio": 0.082403
+              },
+              "kernel_role": "producer",
+              "kernel_name_sha256": "93a4353b5144bd8bdd49a826aa7292b6b02c19b0936a7e2eb2158b87dc7bc879"
+            }
+          ]
+        }
+      ],
+      "point_definition": {
+        "name": "q8-shared-down",
+        "q": 8,
+        "n": 2048,
+        "k": 512,
+        "compute": 0,
+        "mode": 0,
+        "channels": 1,
+        "paired": false,
+        "tc": []
+      },
+      "confirmation": {
+        "5": {
+          "median_us": 3.7616177955094505,
+          "round_medians_us": [
+            3.760588081444011,
+            3.7655882975634407,
+            3.755000145996318,
+            3.762058913707733,
+            3.7667646127588608,
+            3.761176677311168
+          ],
+          "modeled_weight_MBU_pct": 10.969590652369547,
+          "target_MBU_pct": 40,
+          "target_met": false,
+          "arm": "5",
+          "name": "c4w4",
+          "kind": "simt",
+          "config": {
+            "name": "c4w4",
+            "columns": 4,
+            "warps": 4,
+            "values": 4,
+            "split": 1,
+            "variant": 5,
+            "changes": 0,
+            "hoist": true,
+            "fixed": false,
+            "direct_meta": false
+          },
+          "scope": "GEMV_INCLUDING_SPLITK_REDUCTION",
+          "delta_pct": -7.962722005419998
+        },
+        "6": {
+          "median_us": 3.7523527794024525,
+          "round_medians_us": [
+            3.755000145996318,
+            3.755000145996318,
+            3.749411772279178,
+            3.748235457083758,
+            3.7541174713303063,
+            3.7505880874745987
+          ],
+          "modeled_weight_MBU_pct": 10.996675907956192,
+          "target_MBU_pct": 40,
+          "target_met": false,
+          "arm": "6",
+          "name": "c4w2",
+          "kind": "simt",
+          "config": {
+            "name": "c4w2",
+            "columns": 4,
+            "warps": 2,
+            "values": 4,
+            "split": 1,
+            "variant": 5,
+            "changes": 0,
+            "hoist": true,
+            "fixed": false,
+            "direct_meta": false
+          },
+          "scope": "GEMV_INCLUDING_SPLITK_REDUCTION",
+          "delta_pct": -8.189413527371547
+        },
+        "incumbent": {
+          "median_us": 4.08705893684836,
+          "round_medians_us": [
+            4.090882399502923,
+            4.0823527995277855,
+            4.084411789389217,
+            4.089706084307502,
+            4.07970609033809,
+            4.089706084307502
+          ],
+          "modeled_weight_MBU_pct": 10.096112643588821,
+          "target_MBU_pct": 40,
+          "target_met": false,
+          "arm": "incumbent",
+          "name": "incumbent",
+          "kind": "simt",
+          "config": {
+            "name": "clone",
+            "columns": 8,
+            "warps": 4,
+            "values": 4,
+            "split": 1,
+            "variant": 5,
+            "changes": 0,
+            "hoist": true,
+            "fixed": false,
+            "direct_meta": false
+          },
+          "scope": "GEMV_INCLUDING_SPLITK_REDUCTION",
+          "delta_pct": 0
+        }
+      },
+      "winner_source_access": {
+        "qtype": 8,
+        "config": "reuse-v1-c4-w2-p4-s1",
+        "shape": [
+          2048,
+          512
+        ],
+        "input_storage": "F32",
+        "actual_bases_mod128": {
+          "A": 0,
+          "low": 0,
+          "high": 0,
+          "units": 0
+        },
+        "warp": 0,
+        "partition": 0,
+        "iteration": 0,
+        "low_word_group_reuse": 0.5,
+        "high_word_group_reuse": null,
+        "note": "Packed words may be requested by several scale-group workers. Duplicate lane bytes are not DRAM bytes.",
+        "scope": "SOURCE_LOAD_FOOTPRINT_NOT_HARDWARE_COUNTERS",
+        "metadata_vectorized": true,
+        "baseline_metadata_requests": 4,
+        "candidate_metadata_requests": 1,
+        "packed_b_live_words_per_thread": {
+          "baseline": 16,
+          "candidate": 8
+        },
+        "dot_order": "half,segment,slot,residue; identical logical K order to baseline",
+        "accumulator": "FP32",
+        "weight_format": "UNCHANGED_Q8_KPACK2",
+        "caveat": "Source footprint/live ranges, not emitted ISA or measured DRAM transactions",
+        "B_contiguous_bytes_per_k_worker_group": 32,
+        "fast_code_dequant": "LOP3/mantissa half2 extraction to exact integer codes; FP32 FMA",
+        "metadata_reader": "existing",
+        "fixed_shape": false,
+        "paired_N4": false,
+        "hoisted_B_words_per_thread": 32,
+        "aggregate_source_footprint": {
+          "32": {
+            "lane_bytes": 5376,
+            "unique_bytes": 5376,
+            "sector_bytes": 6400
+          },
+          "64": {
+            "lane_bytes": 5376,
+            "unique_bytes": 5376,
+            "sector_bytes": 10752
+          },
+          "128": {
+            "lane_bytes": 5376,
+            "unique_bytes": 5376,
+            "sector_bytes": 19456
+          }
+        }
+      }
+    },
+    {
+      "point": "q8-ssm-out",
+      "input_output": "F32",
+      "compute": "F16",
+      "incumbent_us": 9.313529466881473,
+      "candidate_us": 9.051764712614172,
+      "candidate": "s8-fixed",
+      "arm": "1",
+      "config": {
+        "name": "s8-fixed",
+        "columns": 8,
+        "warps": 4,
+        "values": 4,
+        "split": 8,
+        "variant": 5,
+        "changes": 0,
+        "hoist": false,
+        "fixed": true,
+        "direct_meta": false
+      },
+      "delta_pct": -2.81058598888988,
+      "round_deltas_pct": [
+        -2.693477199508798,
+        -2.8412688586056722,
+        -3.0291597639323653,
+        -2.7317632745088916,
+        -2.828999864500681,
+        -2.653188034301479
+      ],
+      "candidate_MBU_pct": 36.46882897864492,
+      "target_MBU_pct": 40,
+      "max_numeric_error": 0,
+      "point_sha256": "5b4f129aab2174b0d89143b26505e20a39edac210bcaf655971d78936597e3a3",
+      "decision": "EXACT_M1_INTEGRATION_CANDIDATE",
+      "fixture": {
+        "raw_sha256": {
+          "0": "8b98fdc64933f115a711a54718d8afd9cc4f6bf4399774840b63cf11e6a88c81"
+        },
+        "category_sha256": "d6e8826f13d9fa4ecd31065334922ea2f5f6fe963961619fe31015fc4748662e",
+        "active_experts_per_call": 1,
+        "address_space_experts": 1,
+        "physical_weight_bytes_per_call": 8912896,
+        "l2_bytes": 67108864,
+        "copies": 17,
+        "rotating_active_bytes": 151519232,
+        "oracle": "OFFICIAL_GGUF_NONUNIFORM_METADATA_FACTOR_DOT_FP32_ACCUM",
+        "cache_scope": "COLD_ACTIVE_WEIGHT_RING"
+      },
+      "profiles": [
+        {
+          "arm": "incumbent",
+          "report_sha256": "42f7d8e8c124d1cd8e728885af46ce1822d870f8a9513e2ecbf563900c2b1d9f",
+          "csv_sha256": "32dfa8b71d076eff8cde7de6015be21d979fc0cdfbcc72d586570cfe62f6064e",
+          "components": [
+            {
+              "block": "(128,1,1)",
+              "grid": "(512,1,1)",
+              "metrics": {
+                "ppu__time_duration.sum": 8641.176471,
+                "dram__bytes_read.sum": 8938880,
+                "dram__bytes_write.sum": 192,
+                "derived__l2_bytes_pipe_l1_total": 18958336,
+                "derived__kvd_transactions_pipe_l2_total": 295936,
+                "ws__inst_executed_op_vmem_ld.sum": 36864,
+                "pu__inst_executed.sum": 1902592,
+                "launch__registers_per_thread": 60,
+                "launch__shared_mem_per_block": 512,
+                "cu__warps_active.avg.pct_of_peak_sustained_active": 41.853525,
+                "cu__inst_executed_pipe_falu_fp32.avg": 3868.444444,
+                "cu__inst_executed_pipe_salu.avg": 3448.888889,
+                "derived__tsm_bank_conflicts_total": 0,
+                "pu__we_average_warps_issue_stalled_vmem_pipe_busy_per_issue_active.ratio": 0.01866,
+                "pu__we_average_warps_issue_stalled_vmem_dependency_per_issue_active.ratio": 2.544956,
+                "pu__we_average_warps_issue_stalled_inst_fetch_per_issue_active.ratio": 0.851509,
+                "pu__we_average_warps_issue_stalled_compute_dependency_per_issue_active.ratio": 0.197374
+              },
+              "kernel_role": "producer",
+              "kernel_name_sha256": "291844f4184c1028479965766a655c273f045ba60401fe085ea38d18e41cf72d"
+            },
+            {
+              "block": "(32,1,1)",
+              "grid": "(32,1,1)",
+              "metrics": {
+                "ppu__time_duration.sum": 1483.529412,
+                "dram__bytes_read.sum": 66560,
+                "dram__bytes_write.sum": 0,
+                "derived__l2_bytes_pipe_l1_total": 73728,
+                "derived__kvd_transactions_pipe_l2_total": 1152,
+                "ws__inst_executed_op_vmem_ld.sum": 256,
+                "pu__inst_executed.sum": 1952,
+                "launch__registers_per_thread": 36,
+                "launch__shared_mem_per_block": 0,
+                "cu__warps_active.avg.pct_of_peak_sustained_active": 0.694845,
+                "cu__inst_executed_pipe_falu_fp32.avg": 7.111111,
+                "cu__inst_executed_pipe_salu.avg": 1.777778,
+                "derived__tsm_bank_conflicts_total": 0,
+                "pu__we_average_warps_issue_stalled_vmem_pipe_busy_per_issue_active.ratio": 0,
+                "pu__we_average_warps_issue_stalled_vmem_dependency_per_issue_active.ratio": 3.918545,
+                "pu__we_average_warps_issue_stalled_inst_fetch_per_issue_active.ratio": 6.95082,
+                "pu__we_average_warps_issue_stalled_compute_dependency_per_issue_active.ratio": 0.147541
+              },
+              "kernel_role": "reducer",
+              "kernel_name_sha256": "fcd06112a4fe08220edb21238e60f4a40d3d3e31e7941f0d24095897f6d645fe"
+            }
+          ]
+        },
+        {
+          "arm": "1",
+          "report_sha256": "57a6391e6aac16a5d3f77b2e431cfec055ff738fcfb6d51621728eefa2e10417",
+          "csv_sha256": "3693e1e62c48a61a4fad7a8f9476268bbadd6aaa6ff091ef7e7537c135863cea",
+          "components": [
+            {
+              "block": "(128,1,1)",
+              "grid": "(512,1,1)",
+              "metrics": {
+                "ppu__time_duration.sum": 8238.823529,
+                "dram__bytes_read.sum": 8936704,
+                "dram__bytes_write.sum": 192,
+                "derived__l2_bytes_pipe_l1_total": 18958336,
+                "derived__kvd_transactions_pipe_l2_total": 295936,
+                "ws__inst_executed_op_vmem_ld.sum": 36864,
+                "pu__inst_executed.sum": 1593856,
+                "launch__registers_per_thread": 60,
+                "launch__shared_mem_per_block": 512,
+                "cu__warps_active.avg.pct_of_peak_sustained_active": 41.778785,
+                "cu__inst_executed_pipe_falu_fp32.avg": 3868.444444,
+                "cu__inst_executed_pipe_salu.avg": 874.666667,
+                "derived__tsm_bank_conflicts_total": 0,
+                "pu__we_average_warps_issue_stalled_vmem_pipe_busy_per_issue_active.ratio": 0.18691,
+                "pu__we_average_warps_issue_stalled_vmem_dependency_per_issue_active.ratio": 3.897513,
+                "pu__we_average_warps_issue_stalled_inst_fetch_per_issue_active.ratio": 0.776475,
+                "pu__we_average_warps_issue_stalled_compute_dependency_per_issue_active.ratio": 0.108138
+              },
+              "kernel_role": "producer",
+              "kernel_name_sha256": "63c015be8ac5734c42c348abaa797f90e644e8fde0bf4210d8b0f3f0473748a7"
+            },
+            {
+              "block": "(32,1,1)",
+              "grid": "(32,1,1)",
+              "metrics": {
+                "ppu__time_duration.sum": 1490,
+                "dram__bytes_read.sum": 66560,
+                "dram__bytes_write.sum": 0,
+                "derived__l2_bytes_pipe_l1_total": 73728,
+                "derived__kvd_transactions_pipe_l2_total": 1152,
+                "ws__inst_executed_op_vmem_ld.sum": 256,
+                "pu__inst_executed.sum": 1952,
+                "launch__registers_per_thread": 36,
+                "launch__shared_mem_per_block": 0,
+                "cu__warps_active.avg.pct_of_peak_sustained_active": 0.694846,
+                "cu__inst_executed_pipe_falu_fp32.avg": 7.111111,
+                "cu__inst_executed_pipe_salu.avg": 1.777778,
+                "derived__tsm_bank_conflicts_total": 0,
+                "pu__we_average_warps_issue_stalled_vmem_pipe_busy_per_issue_active.ratio": 0,
+                "pu__we_average_warps_issue_stalled_vmem_dependency_per_issue_active.ratio": 5.98002,
+                "pu__we_average_warps_issue_stalled_inst_fetch_per_issue_active.ratio": 6.96209,
+                "pu__we_average_warps_issue_stalled_compute_dependency_per_issue_active.ratio": 0.147541
+              },
+              "kernel_role": "reducer",
+              "kernel_name_sha256": "fcd06112a4fe08220edb21238e60f4a40d3d3e31e7941f0d24095897f6d645fe"
+            }
+          ]
+        }
+      ],
+      "point_definition": {
+        "name": "q8-ssm-out",
+        "q": 8,
+        "n": 2048,
+        "k": 4096,
+        "compute": 0,
+        "mode": 0,
+        "channels": 1,
+        "paired": false,
+        "tc": []
+      },
+      "confirmation": {
+        "1": {
+          "median_us": 9.051764712614172,
+          "round_medians_us": [
+            9.052941027809592,
+            9.051764712614172,
+            9.038823492386761,
+            9.048234890489017,
+            9.051764712614172,
+            9.064705932841582
+          ],
+          "modeled_weight_MBU_pct": 36.46882897864492,
+          "target_MBU_pct": 40,
+          "target_met": false,
+          "arm": "1",
+          "name": "s8-fixed",
+          "kind": "simt",
+          "config": {
+            "name": "s8-fixed",
+            "columns": 8,
+            "warps": 4,
+            "values": 4,
+            "split": 8,
+            "variant": 5,
+            "changes": 0,
+            "hoist": false,
+            "fixed": true,
+            "direct_meta": false
+          },
+          "scope": "GEMV_INCLUDING_SPLITK_REDUCTION",
+          "delta_pct": -2.81058598888988
+        },
+        "8": {
+          "median_us": 11.635294293656068,
+          "round_medians_us": [
+            11.639999992707196,
+            11.63294122499578,
+            11.637647362316356,
+            11.582352659281563,
+            11.609411414931802,
+            11.649411390809451
+          ],
+          "modeled_weight_MBU_pct": 28.371199810497632,
+          "target_MBU_pct": 40,
+          "target_met": false,
+          "arm": "8",
+          "name": "c4w8-s1",
+          "kind": "simt",
+          "config": {
+            "name": "c4w8-s1",
+            "columns": 4,
+            "warps": 8,
+            "values": 4,
+            "split": 1,
+            "variant": 5,
+            "changes": 0,
+            "hoist": false,
+            "fixed": false,
+            "direct_meta": false
+          },
+          "scope": "GEMV_INCLUDING_SPLITK_REDUCTION",
+          "delta_pct": 24.92894702304529
+        },
+        "incumbent": {
+          "median_us": 9.313529466881473,
+          "round_medians_us": [
+            9.303529472912059,
+            9.316470693139468,
+            9.321176830460043,
+            9.302353157716638,
+            9.31529437794405,
+            9.311764555818895
+          ],
+          "modeled_weight_MBU_pct": 35.44384118105892,
+          "target_MBU_pct": 40,
+          "target_met": false,
+          "arm": "incumbent",
+          "name": "incumbent",
+          "kind": "simt",
+          "config": {
+            "name": "clone",
+            "columns": 8,
+            "warps": 4,
+            "values": 4,
+            "split": 8,
+            "variant": 5,
+            "changes": 0,
+            "hoist": false,
+            "fixed": false,
+            "direct_meta": false
+          },
+          "scope": "GEMV_INCLUDING_SPLITK_REDUCTION",
+          "delta_pct": 0
+        }
+      },
+      "winner_source_access": {
+        "qtype": 8,
+        "config": "reuse-v1-c8-w4-p4-s8",
+        "shape": [
+          2048,
+          4096
+        ],
+        "input_storage": "F32",
+        "actual_bases_mod128": {
+          "A": 0,
+          "low": 0,
+          "high": 0,
+          "units": 0
+        },
+        "warp": 0,
+        "partition": 0,
+        "iteration": 0,
+        "low_word_group_reuse": 0.5,
+        "high_word_group_reuse": null,
+        "note": "Packed words may be requested by several scale-group workers. Duplicate lane bytes are not DRAM bytes.",
+        "scope": "SOURCE_LOAD_FOOTPRINT_NOT_HARDWARE_COUNTERS",
+        "metadata_vectorized": true,
+        "baseline_metadata_requests": 4,
+        "candidate_metadata_requests": 1,
+        "packed_b_live_words_per_thread": {
+          "baseline": 16,
+          "candidate": 8
+        },
+        "dot_order": "half,segment,slot,residue; identical logical K order to baseline",
+        "accumulator": "FP32",
+        "weight_format": "UNCHANGED_Q8_KPACK2",
+        "caveat": "Source footprint/live ranges, not emitted ISA or measured DRAM transactions",
+        "B_contiguous_bytes_per_k_worker_group": 64,
+        "fast_code_dequant": "LOP3/mantissa half2 extraction to exact integer codes; FP32 FMA",
+        "metadata_reader": "existing",
+        "fixed_shape": true,
+        "paired_N4": false,
+        "hoisted_B_words_per_thread": null,
+        "aggregate_source_footprint": {
+          "32": {
+            "lane_bytes": 4864,
+            "unique_bytes": 4864,
+            "sector_bytes": 4864
+          },
+          "64": {
+            "lane_bytes": 4864,
+            "unique_bytes": 4864,
+            "sector_bytes": 4864
+          },
+          "128": {
+            "lane_bytes": 4864,
+            "unique_bytes": 4864,
+            "sector_bytes": 9216
+          }
+        }
+      }
+    },
+    {
+      "point": "q8-qkv",
+      "input_output": "F32",
+      "compute": "F16",
+      "incumbent_us": 15.426110890176561,
+      "candidate_us": 14.59111107720269,
+      "candidate": "s1-hoist-fixed",
+      "arm": "6",
+      "config": {
+        "name": "s1-hoist-fixed",
+        "columns": 8,
+        "warps": 4,
+        "values": 4,
+        "split": 1,
+        "variant": 5,
+        "changes": 0,
+        "hoist": true,
+        "fixed": true,
+        "direct_meta": false
+      },
+      "delta_pct": -5.412899070404087,
+      "round_deltas_pct": [
+        -5.432669972715387,
+        -5.167572281370436,
+        -5.543953008073377,
+        -5.345428168745869,
+        -5.6306691731248915,
+        -5.257096535721528
+      ],
+      "candidate_MBU_pct": 45.24772068592123,
+      "target_MBU_pct": 60,
+      "max_numeric_error": 0,
+      "point_sha256": "1fc84f21b7593f4eec5fd107892b5498c90b02f79ddb1247f6b8d39de29af96b",
+      "decision": "EXACT_M1_INTEGRATION_CANDIDATE",
+      "fixture": {
+        "raw_sha256": {
+          "0": "8c29c86dd9b8625a9ed32490650d008fab947240033764ed2363a1082ad4adbc"
+        },
+        "category_sha256": "b402458a8b821d2228bd190248089c4b411f2eda7a9a3448bd7fdb822d93ad40",
+        "active_experts_per_call": 1,
+        "address_space_experts": 1,
+        "physical_weight_bytes_per_call": 17825792,
+        "l2_bytes": 67108864,
+        "copies": 9,
+        "rotating_active_bytes": 160432128,
+        "oracle": "OFFICIAL_GGUF_NONUNIFORM_METADATA_FACTOR_DOT_FP32_ACCUM",
+        "cache_scope": "COLD_ACTIVE_WEIGHT_RING"
+      },
+      "profiles": [
+        {
+          "arm": "incumbent",
+          "report_sha256": "cb466676f36eca311439fbbc4ae6911f30a8c62ac2c571d77fb9b7acf905d9ff",
+          "csv_sha256": "f5e1fcd147f8842b1d4ca787fcb2ae5fcb727a5e90ad63e3f3ad5e34007cf57a",
+          "components": [
+            {
+              "block": "(128,1,1)",
+              "grid": "(1,128,8)",
+              "metrics": {
+                "ppu__time_duration.sum": 14520,
+                "dram__bytes_read.sum": 17842816,
+                "dram__bytes_write.sum": 256,
+                "derived__l2_bytes_pipe_l1_total": 23152640,
+                "derived__kvd_transactions_pipe_l2_total": 361472,
+                "ws__inst_executed_op_vmem_ld.sum": 10240,
+                "pu__inst_executed.sum": 5399552,
+                "launch__registers_per_thread": 54,
+                "launch__shared_mem_per_block": 12832,
+                "cu__warps_active.avg.pct_of_peak_sustained_active": 82.680138,
+                "cu__inst_executed_pipe_falu_fp32.avg": 0,
+                "cu__inst_executed_pipe_salu.avg": 32113.777778,
+                "derived__tsm_bank_conflicts_total": 221184,
+                "pu__we_average_warps_issue_stalled_vmem_pipe_busy_per_issue_active.ratio": 0.000054,
+                "pu__we_average_warps_issue_stalled_vmem_dependency_per_issue_active.ratio": 0.30066,
+                "pu__we_average_warps_issue_stalled_inst_fetch_per_issue_active.ratio": 0.543269,
+                "pu__we_average_warps_issue_stalled_compute_dependency_per_issue_active.ratio": 0.189033
+              },
+              "kernel_role": "producer",
+              "kernel_name_sha256": "2f13678b6de79bc11f7f9eb789d1fd9a26e0cebecbfb0f7e63229971bf667074"
+            },
+            {
+              "block": "(32,1,1)",
+              "grid": "(128,1,1)",
+              "metrics": {
+                "ppu__time_duration.sum": 1738.823529,
+                "dram__bytes_read.sum": 263168,
+                "dram__bytes_write.sum": 0,
+                "derived__l2_bytes_pipe_l1_total": 294912,
+                "derived__kvd_transactions_pipe_l2_total": 4608,
+                "ws__inst_executed_op_vmem_ld.sum": 1024,
+                "pu__inst_executed.sum": 7808,
+                "launch__registers_per_thread": 36,
+                "launch__shared_mem_per_block": 0,
+                "cu__warps_active.avg.pct_of_peak_sustained_active": 2.654057,
+                "cu__inst_executed_pipe_falu_fp32.avg": 28.444444,
+                "cu__inst_executed_pipe_salu.avg": 7.111111,
+                "derived__tsm_bank_conflicts_total": 0,
+                "pu__we_average_warps_issue_stalled_vmem_pipe_busy_per_issue_active.ratio": 0,
+                "pu__we_average_warps_issue_stalled_vmem_dependency_per_issue_active.ratio": 5.464908,
+                "pu__we_average_warps_issue_stalled_inst_fetch_per_issue_active.ratio": 6.687628,
+                "pu__we_average_warps_issue_stalled_compute_dependency_per_issue_active.ratio": 0.128202
+              },
+              "kernel_role": "reducer",
+              "kernel_name_sha256": "fcd06112a4fe08220edb21238e60f4a40d3d3e31e7941f0d24095897f6d645fe"
+            }
+          ]
+        },
+        {
+          "arm": "6",
+          "report_sha256": "9a1d3bfac01e2d36e59018723940087233708346d6b6943e4f3ae743887bf56d",
+          "csv_sha256": "bc7b9726b184d96783cf333de3637e8972b9330f5bc8dbbc7320896fad9c0cab",
+          "components": [
+            {
+              "block": "(128,1,1)",
+              "grid": "(256,1,1)",
+              "metrics": {
+                "ppu__time_duration.sum": 15735.882353,
+                "dram__bytes_read.sum": 17841408,
+                "dram__bytes_write.sum": 192,
+                "derived__l2_bytes_pipe_l1_total": 36465408,
+                "derived__kvd_transactions_pipe_l2_total": 569484,
+                "ws__inst_executed_op_vmem_ld.sum": 73728,
+                "pu__inst_executed.sum": 2700800,
+                "launch__registers_per_thread": 78,
+                "launch__shared_mem_per_block": 512,
+                "cu__warps_active.avg.pct_of_peak_sustained_active": 21.412736,
+                "cu__inst_executed_pipe_falu_fp32.avg": 7566.222222,
+                "cu__inst_executed_pipe_salu.avg": 736,
+                "derived__tsm_bank_conflicts_total": 0,
+                "pu__we_average_warps_issue_stalled_vmem_pipe_busy_per_issue_active.ratio": 0.624135,
+                "pu__we_average_warps_issue_stalled_vmem_dependency_per_issue_active.ratio": 1.35456,
+                "pu__we_average_warps_issue_stalled_inst_fetch_per_issue_active.ratio": 0.452141,
+                "pu__we_average_warps_issue_stalled_compute_dependency_per_issue_active.ratio": 0.048336
+              },
+              "kernel_role": "producer",
+              "kernel_name_sha256": "c179960b299173bfec0789fa86e21d6126bce80eab827f8ace6c4319478e81c7"
+            }
+          ]
+        }
+      ],
+      "point_definition": {
+        "name": "q8-qkv",
+        "q": 8,
+        "n": 8192,
+        "k": 2048,
+        "compute": 0,
+        "mode": 0,
+        "channels": 1,
+        "paired": false,
+        "tc": [
+          8,
+          64,
+          16,
+          32,
+          8
+        ]
+      },
+      "confirmation": {
+        "3": {
+          "median_us": 15.729444722334545,
+          "round_medians_us": [
+            15.743333432409498,
+            15.7277782758077,
+            15.711110499170092,
+            15.712221463521322,
+            15.761110517713758,
+            15.73111116886139
+          ],
+          "modeled_weight_MBU_pct": 41.97316117466417,
+          "target_MBU_pct": 60,
+          "target_met": false,
+          "arm": "3",
+          "name": "s2",
+          "kind": "simt",
+          "config": {
+            "name": "s2",
+            "columns": 8,
+            "warps": 4,
+            "values": 4,
+            "split": 2,
+            "variant": 5,
+            "changes": 0,
+            "hoist": false,
+            "fixed": false,
+            "direct_meta": false
+          },
+          "scope": "GEMV_INCLUDING_SPLITK_REDUCTION",
+          "delta_pct": 1.966366210625048
+        },
+        "6": {
+          "median_us": 14.59111107720269,
+          "round_medians_us": [
+            14.583332671059502,
+            14.61999946170383,
+            14.576666884952122,
+            14.598889483345879,
+            14.581110742357042,
+            14.61777753300137
+          ],
+          "modeled_weight_MBU_pct": 45.24772068592123,
+          "target_MBU_pct": 60,
+          "target_met": false,
+          "arm": "6",
+          "name": "s1-hoist-fixed",
+          "kind": "simt",
+          "config": {
+            "name": "s1-hoist-fixed",
+            "columns": 8,
+            "warps": 4,
+            "values": 4,
+            "split": 1,
+            "variant": 5,
+            "changes": 0,
+            "hoist": true,
+            "fixed": true,
+            "direct_meta": false
+          },
+          "scope": "GEMV_INCLUDING_SPLITK_REDUCTION",
+          "delta_pct": -5.412899070404087
+        },
+        "incumbent": {
+          "median_us": 15.426110890176561,
+          "round_medians_us": [
+            15.421110722753737,
+            15.416666865348816,
+            15.432222021950615,
+            15.423332651456198,
+            15.451111727290684,
+            15.428889128896925
+          ],
+          "modeled_weight_MBU_pct": 42.798507233533954,
+          "target_MBU_pct": 60,
+          "target_met": false,
+          "arm": "incumbent",
+          "name": "incumbent",
+          "kind": "tc",
+          "config": {
+            "symbol": "closure_q8_0_tm8_tn64_tk64_wn16_dn32",
+            "qtype": 8,
+            "route": "sf-dense",
+            "tm": 8,
+            "tn": 64,
+            "tk": 64,
+            "wm": 8,
+            "wn": 16,
+            "stages": 2,
+            "ap": 0,
+            "dn": 32,
+            "persistent": -1,
+            "split": 8
+          },
+          "scope": "GEMV_INCLUDING_SPLITK_REDUCTION",
+          "delta_pct": 0
+        }
+      },
+      "winner_source_access": {
+        "qtype": 8,
+        "config": "reuse-v1-c8-w4-p4-s1",
+        "shape": [
+          8192,
+          2048
+        ],
+        "input_storage": "F32",
+        "actual_bases_mod128": {
+          "A": 0,
+          "low": 0,
+          "high": 0,
+          "units": 0
+        },
+        "warp": 0,
+        "partition": 0,
+        "iteration": 0,
+        "low_word_group_reuse": 0.5,
+        "high_word_group_reuse": null,
+        "note": "Packed words may be requested by several scale-group workers. Duplicate lane bytes are not DRAM bytes.",
+        "scope": "SOURCE_LOAD_FOOTPRINT_NOT_HARDWARE_COUNTERS",
+        "metadata_vectorized": true,
+        "baseline_metadata_requests": 4,
+        "candidate_metadata_requests": 1,
+        "packed_b_live_words_per_thread": {
+          "baseline": 16,
+          "candidate": 8
+        },
+        "dot_order": "half,segment,slot,residue; identical logical K order to baseline",
+        "accumulator": "FP32",
+        "weight_format": "UNCHANGED_Q8_KPACK2",
+        "caveat": "Source footprint/live ranges, not emitted ISA or measured DRAM transactions",
+        "B_contiguous_bytes_per_k_worker_group": 64,
+        "fast_code_dequant": "LOP3/mantissa half2 extraction to exact integer codes; FP32 FMA",
+        "metadata_reader": "existing",
+        "fixed_shape": true,
+        "paired_N4": false,
+        "hoisted_B_words_per_thread": 32,
+        "aggregate_source_footprint": {
+          "32": {
+            "lane_bytes": 4864,
+            "unique_bytes": 4864,
+            "sector_bytes": 4864
+          },
+          "64": {
+            "lane_bytes": 4864,
+            "unique_bytes": 4864,
+            "sector_bytes": 4864
+          },
+          "128": {
+            "lane_bytes": 4864,
+            "unique_bytes": 4864,
+            "sector_bytes": 9216
+          }
+        }
+      }
+    },
+    {
+      "point": "q8-attn-gate",
+      "input_output": "F32",
+      "compute": "F16",
+      "incumbent_us": 10.740000097190633,
+      "candidate_us": 9.34352944878971,
+      "candidate": "c4w8-s1",
+      "arm": "8",
+      "config": {
+        "name": "c4w8-s1",
+        "columns": 4,
+        "warps": 8,
+        "values": 4,
+        "split": 1,
+        "variant": 5,
+        "changes": 0,
+        "hoist": false,
+        "fixed": false,
+        "direct_meta": false
+      },
+      "delta_pct": -13.002519886067898,
+      "round_deltas_pct": [
+        -12.647222770548105,
+        -13.378442244953192,
+        -12.71009441930816,
+        -13.0515523060304,
+        -13.096672076713222,
+        -12.685660988819702
+      ],
+      "candidate_MBU_pct": 35.330038939623485,
+      "target_MBU_pct": 40,
+      "max_numeric_error": 0,
+      "point_sha256": "da09d38c5457675ba43c805fa82e65804ad8224c3b9152913719a9424ae2cbd1",
+      "decision": "EXACT_M1_INTEGRATION_CANDIDATE",
+      "fixture": {
+        "raw_sha256": {
+          "0": "a2feb758edab4a9b8e1f69e2532c5af420c5112b1a9f7b6b524e7e3a1a618301"
+        },
+        "category_sha256": "b402458a8b821d2228bd190248089c4b411f2eda7a9a3448bd7fdb822d93ad40",
+        "active_experts_per_call": 1,
+        "address_space_experts": 1,
+        "physical_weight_bytes_per_call": 8912896,
+        "l2_bytes": 67108864,
+        "copies": 17,
+        "rotating_active_bytes": 151519232,
+        "oracle": "OFFICIAL_GGUF_NONUNIFORM_METADATA_FACTOR_DOT_FP32_ACCUM",
+        "cache_scope": "COLD_ACTIVE_WEIGHT_RING"
+      },
+      "profiles": [
+        {
+          "arm": "incumbent",
+          "report_sha256": "5dc571edae8ce02463d37b90a8ff7a1d6be180042fa2d64316fd823ff4b87343",
+          "csv_sha256": "23313b34345f973f51d1f5468f778e6cfcea612e084af2e5a9ae5d29ec33c4ef",
+          "components": [
+            {
+              "block": "(128,1,1)",
+              "grid": "(1,64,8)",
+              "metrics": {
+                "ppu__time_duration.sum": 10550.588235,
+                "dram__bytes_read.sum": 8929792,
+                "dram__bytes_write.sum": 256,
+                "derived__l2_bytes_pipe_l1_total": 11814912,
+                "derived__kvd_transactions_pipe_l2_total": 184320,
+                "ws__inst_executed_op_vmem_ld.sum": 5120,
+                "pu__inst_executed.sum": 2648576,
+                "launch__registers_per_thread": 64,
+                "launch__shared_mem_per_block": 12832,
+                "cu__warps_active.avg.pct_of_peak_sustained_active": 42.1561,
+                "cu__inst_executed_pipe_falu_fp32.avg": 0,
+                "cu__inst_executed_pipe_salu.avg": 15324.444444,
+                "derived__tsm_bank_conflicts_total": 110592,
+                "pu__we_average_warps_issue_stalled_vmem_pipe_busy_per_issue_active.ratio": 0.000039,
+                "pu__we_average_warps_issue_stalled_vmem_dependency_per_issue_active.ratio": 0.276134,
+                "pu__we_average_warps_issue_stalled_inst_fetch_per_issue_active.ratio": 0.667138,
+                "pu__we_average_warps_issue_stalled_compute_dependency_per_issue_active.ratio": 0.242042
+              },
+              "kernel_role": "producer",
+              "kernel_name_sha256": "d3f31daba34bef255e1fa2a705682e62ae1c0ca9a746e628f3d3ae840284eb3f"
+            },
+            {
+              "block": "(32,1,1)",
+              "grid": "(64,1,1)",
+              "metrics": {
+                "ppu__time_duration.sum": 1452.941176,
+                "dram__bytes_read.sum": 132096,
+                "dram__bytes_write.sum": 0,
+                "derived__l2_bytes_pipe_l1_total": 147456,
+                "derived__kvd_transactions_pipe_l2_total": 2304,
+                "ws__inst_executed_op_vmem_ld.sum": 512,
+                "pu__inst_executed.sum": 3904,
+                "launch__registers_per_thread": 36,
+                "launch__shared_mem_per_block": 0,
+                "cu__warps_active.avg.pct_of_peak_sustained_active": 1.389623,
+                "cu__inst_executed_pipe_falu_fp32.avg": 14.222222,
+                "cu__inst_executed_pipe_salu.avg": 3.555556,
+                "derived__tsm_bank_conflicts_total": 0,
+                "pu__we_average_warps_issue_stalled_vmem_pipe_busy_per_issue_active.ratio": 0,
+                "pu__we_average_warps_issue_stalled_vmem_dependency_per_issue_active.ratio": 5.976691,
+                "pu__we_average_warps_issue_stalled_inst_fetch_per_issue_active.ratio": 6.307633,
+                "pu__we_average_warps_issue_stalled_compute_dependency_per_issue_active.ratio": 0.149078
+              },
+              "kernel_role": "reducer",
+              "kernel_name_sha256": "fcd06112a4fe08220edb21238e60f4a40d3d3e31e7941f0d24095897f6d645fe"
+            }
+          ]
+        },
+        {
+          "arm": "8",
+          "report_sha256": "e9d2394d2b543abb13890384b5a46795de80dd577aa16305064b0afb10d5a547",
+          "csv_sha256": "761dc27f43344bf6f87fcaad992225843766cfd326151b3ada8cdbe402e062ef",
+          "components": [
+            {
+              "block": "(256,1,1)",
+              "grid": "(256,1,1)",
+              "metrics": {
+                "ppu__time_duration.sum": 10127.647059,
+                "dram__bytes_read.sum": 8946432,
+                "dram__bytes_write.sum": 192,
+                "derived__l2_bytes_pipe_l1_total": 36366208,
+                "derived__kvd_transactions_pipe_l2_total": 567934,
+                "ws__inst_executed_op_vmem_ld.sum": 38912,
+                "pu__inst_executed.sum": 1799424,
+                "launch__registers_per_thread": 60,
+                "launch__shared_mem_per_block": 512,
+                "cu__warps_active.avg.pct_of_peak_sustained_active": 42.963033,
+                "cu__inst_executed_pipe_falu_fp32.avg": 3886.222222,
+                "cu__inst_executed_pipe_salu.avg": 2364.444444,
+                "derived__tsm_bank_conflicts_total": 0,
+                "pu__we_average_warps_issue_stalled_vmem_pipe_busy_per_issue_active.ratio": 0.521592,
+                "pu__we_average_warps_issue_stalled_vmem_dependency_per_issue_active.ratio": 3.023994,
+                "pu__we_average_warps_issue_stalled_inst_fetch_per_issue_active.ratio": 1.158188,
+                "pu__we_average_warps_issue_stalled_compute_dependency_per_issue_active.ratio": 0.716406
+              },
+              "kernel_role": "producer",
+              "kernel_name_sha256": "3cf37e14e230a8c85d8ee130ec0196a322670d8a5fa67037bd4130a1a3235064"
+            }
+          ]
+        }
+      ],
+      "point_definition": {
+        "name": "q8-attn-gate",
+        "q": 8,
+        "n": 4096,
+        "k": 2048,
+        "compute": 0,
+        "mode": 0,
+        "channels": 1,
+        "paired": false,
+        "tc": [
+          16,
+          64,
+          16,
+          64,
+          8
+        ]
+      },
+      "confirmation": {
+        "2": {
+          "median_us": 10.311176233431873,
+          "round_medians_us": [
+            10.359999888083514,
+            10.31411745968987,
+            10.29999992426704,
+            10.33882358494927,
+            10.2976472938762,
+            10.308235007173876
+          ],
+          "modeled_weight_MBU_pct": 32.01451044827982,
+          "target_MBU_pct": 40,
+          "target_met": false,
+          "arm": "2",
+          "name": "s4",
+          "kind": "simt",
+          "config": {
+            "name": "s4",
+            "columns": 8,
+            "warps": 4,
+            "values": 4,
+            "split": 4,
+            "variant": 5,
+            "changes": 0,
+            "hoist": false,
+            "fixed": false,
+            "direct_meta": false
+          },
+          "scope": "GEMV_INCLUDING_SPLITK_REDUCTION",
+          "delta_pct": -3.9927733694428147
+        },
+        "8": {
+          "median_us": 9.34352944878971,
+          "round_medians_us": [
+            9.336470681078294,
+            9.338823311469135,
+            9.348235586110283,
+            9.365882067119374,
+            9.35999961460338,
+            9.336470681078294
+          ],
+          "modeled_weight_MBU_pct": 35.330038939623485,
+          "target_MBU_pct": 40,
+          "target_met": false,
+          "arm": "8",
+          "name": "c4w8-s1",
+          "kind": "simt",
+          "config": {
+            "name": "c4w8-s1",
+            "columns": 4,
+            "warps": 8,
+            "values": 4,
+            "split": 1,
+            "variant": 5,
+            "changes": 0,
+            "hoist": false,
+            "fixed": false,
+            "direct_meta": false
+          },
+          "scope": "GEMV_INCLUDING_SPLITK_REDUCTION",
+          "delta_pct": -13.002519886067898
+        },
+        "incumbent": {
+          "median_us": 10.740000097190633,
+          "round_medians_us": [
+            10.68823565455044,
+            10.78117682653315,
+            10.709411957684685,
+            10.771764551892,
+            10.77058823669658,
+            10.692940915332121
+          ],
+          "modeled_weight_MBU_pct": 30.736243600743418,
+          "target_MBU_pct": 40,
+          "target_met": false,
+          "arm": "incumbent",
+          "name": "incumbent",
+          "kind": "tc",
+          "config": {
+            "symbol": "closure_q8_0_tm16_tn64_tk64_wn16_dn64",
+            "qtype": 8,
+            "route": "sf-dense",
+            "tm": 16,
+            "tn": 64,
+            "tk": 64,
+            "wm": 16,
+            "wn": 16,
+            "stages": 2,
+            "ap": 0,
+            "dn": 64,
+            "persistent": -1,
+            "split": 8
+          },
+          "scope": "GEMV_INCLUDING_SPLITK_REDUCTION",
+          "delta_pct": 0
+        }
+      },
+      "winner_source_access": {
+        "qtype": 8,
+        "config": "reuse-v1-c4-w8-p4-s1",
+        "shape": [
+          4096,
+          2048
+        ],
+        "input_storage": "F32",
+        "actual_bases_mod128": {
+          "A": 0,
+          "low": 0,
+          "high": 0,
+          "units": 0
+        },
+        "warp": 0,
+        "partition": 0,
+        "iteration": 0,
+        "low_word_group_reuse": 0.5,
+        "high_word_group_reuse": null,
+        "note": "Packed words may be requested by several scale-group workers. Duplicate lane bytes are not DRAM bytes.",
+        "scope": "SOURCE_LOAD_FOOTPRINT_NOT_HARDWARE_COUNTERS",
+        "metadata_vectorized": true,
+        "baseline_metadata_requests": 4,
+        "candidate_metadata_requests": 1,
+        "packed_b_live_words_per_thread": {
+          "baseline": 16,
+          "candidate": 8
+        },
+        "dot_order": "half,segment,slot,residue; identical logical K order to baseline",
+        "accumulator": "FP32",
+        "weight_format": "UNCHANGED_Q8_KPACK2",
+        "caveat": "Source footprint/live ranges, not emitted ISA or measured DRAM transactions",
+        "B_contiguous_bytes_per_k_worker_group": 32,
+        "fast_code_dequant": "LOP3/mantissa half2 extraction to exact integer codes; FP32 FMA",
+        "metadata_reader": "existing",
+        "fixed_shape": false,
+        "paired_N4": false,
+        "hoisted_B_words_per_thread": null,
+        "aggregate_source_footprint": {
+          "32": {
+            "lane_bytes": 5376,
+            "unique_bytes": 5376,
+            "sector_bytes": 6400
+          },
+          "64": {
+            "lane_bytes": 5376,
+            "unique_bytes": 5376,
+            "sector_bytes": 10752
+          },
+          "128": {
+            "lane_bytes": 5376,
+            "unique_bytes": 5376,
+            "sector_bytes": 19456
+          }
+        }
+      }
+    },
+    {
+      "point": "q6-output",
+      "input_output": "F32",
+      "compute": "F16",
+      "incumbent_us": 417.05311834812164,
+      "candidate_us": 421.8406230211258,
+      "candidate": "direct-c4p8",
+      "arm": "5",
+      "config": {
+        "name": "direct-c4p8",
+        "columns": 4,
+        "warps": 4,
+        "values": 8,
+        "split": 1,
+        "variant": 3,
+        "changes": 0,
+        "hoist": false,
+        "fixed": false,
+        "direct_meta": true
+      },
+      "delta_pct": 1.1479364288095262,
+      "round_deltas_pct": [
+        2.5439441900749538,
+        -5.4189931401318,
+        -4.514960608457552,
+        2.2072689492125708,
+        6.37524272517378,
+        8.43510596114536
+      ],
+      "candidate_MBU_pct": 36.627629912846096,
+      "target_MBU_pct": 60,
+      "max_numeric_error": 0,
+      "point_sha256": "6af0088a78bdd33e7e155ef681d05b62fc4eaf0514f09c75420f8a057c5d34bf",
+      "decision": "RETAIN_INCUMBENT",
+      "fixture": {
+        "raw_sha256": {
+          "0": "1ccb055ff1aaa13090e17ecb423f55e31dd90e203c7d6736952b666352f5d3a7"
+        },
+        "category_sha256": "b402458a8b821d2228bd190248089c4b411f2eda7a9a3448bd7fdb822d93ad40",
+        "active_experts_per_call": 1,
+        "address_space_experts": 1,
+        "physical_weight_bytes_per_call": 417177600,
+        "l2_bytes": 67108864,
+        "copies": 2,
+        "rotating_active_bytes": 834355200,
+        "oracle": "OFFICIAL_GGUF_NONUNIFORM_METADATA_FACTOR_DOT_FP32_ACCUM",
+        "cache_scope": "COLD_ACTIVE_WEIGHT_RING"
+      },
+      "profiles": [
+        {
+          "arm": "incumbent",
+          "report_sha256": "35fdf89e07908946d7ef4f24eef2b3fe614fa0662a91fb6672e67d580ed05722",
+          "csv_sha256": "1b886ec64b5bc69f9fed1c099d538ab784261b875461eed8917e247253f1cc4d",
+          "components": [
+            {
+              "block": "(128,1,1)",
+              "grid": "(1,3880,1)",
+              "metrics": {
+                "ppu__time_duration.sum": 389859.411765,
+                "dram__bytes_read.sum": 418960768,
+                "dram__bytes_write.sum": 37209408,
+                "derived__l2_bytes_pipe_l1_total": 1861725952,
+                "derived__kvd_transactions_pipe_l2_total": 29088892,
+                "ws__inst_executed_op_vmem_ld.sum": 2126240,
+                "pu__inst_executed.sum": 188226560,
+                "launch__registers_per_thread": 114,
+                "launch__shared_mem_per_block": 29312,
+                "cu__warps_active.avg.pct_of_peak_sustained_active": 48.008363,
+                "cu__inst_executed_pipe_falu_fp32.avg": 1940,
+                "cu__inst_executed_pipe_salu.avg": 462043.333333,
+                "derived__tsm_bank_conflicts_total": 16332472,
+                "pu__we_average_warps_issue_stalled_vmem_pipe_busy_per_issue_active.ratio": 0.032246,
+                "pu__we_average_warps_issue_stalled_vmem_dependency_per_issue_active.ratio": 0.122788,
+                "pu__we_average_warps_issue_stalled_inst_fetch_per_issue_active.ratio": 0.135858,
+                "pu__we_average_warps_issue_stalled_compute_dependency_per_issue_active.ratio": 0.266979
+              },
+              "kernel_role": "producer",
+              "kernel_name_sha256": "8c8e8e6b84acd2ff9fa81bd2adc9c066d4f69129982b47874103f2f62caba19d"
+            }
+          ]
+        },
+        {
+          "arm": "5",
+          "report_sha256": "c1b530aa69b7678a378c0b105c286a0eae891ed0827315c0bf80759699b55b09",
+          "csv_sha256": "d619b54a0c73afc9f5977b1f6773a46394de63f7988a2f344a5a4e2991d180d2",
+          "components": [
+            {
+              "block": "(128,1,1)",
+              "grid": "(7760,1,1)",
+              "metrics": {
+                "ppu__time_duration.sum": 389265.882353,
+                "dram__bytes_read.sum": 417244416,
+                "dram__bytes_write.sum": 818240,
+                "derived__l2_bytes_pipe_l1_total": 823256192,
+                "derived__kvd_transactions_pipe_l2_total": 12863090,
+                "ws__inst_executed_op_vmem_ld.sum": 4097280,
+                "pu__inst_executed.sum": 187535920,
+                "launch__registers_per_thread": 112,
+                "launch__shared_mem_per_block": 512,
+                "cu__warps_active.avg.pct_of_peak_sustained_active": 48.415931,
+                "cu__inst_executed_pipe_falu_fp32.avg": 294880,
+                "cu__inst_executed_pipe_salu.avg": 70271.111111,
+                "derived__tsm_bank_conflicts_total": 0,
+                "pu__we_average_warps_issue_stalled_vmem_pipe_busy_per_issue_active.ratio": 0.017684,
+                "pu__we_average_warps_issue_stalled_vmem_dependency_per_issue_active.ratio": 0.856122,
+                "pu__we_average_warps_issue_stalled_inst_fetch_per_issue_active.ratio": 0.021134,
+                "pu__we_average_warps_issue_stalled_compute_dependency_per_issue_active.ratio": 0.248884
+              },
+              "kernel_role": "producer",
+              "kernel_name_sha256": "aabbedfd297c511475586e3246d58c65b4f7e554daa3382f8774749e0f8f461b"
+            }
+          ]
+        }
+      ],
+      "point_definition": {
+        "name": "q6-output",
+        "q": 14,
+        "n": 248320,
+        "k": 2048,
+        "compute": 0,
+        "mode": 0,
+        "channels": 1,
+        "paired": false,
+        "tc": [
+          16,
+          128,
+          16,
+          64,
+          1
+        ]
+      },
+      "confirmation": {
+        "2": {
+          "median_us": 529.8787653446198,
+          "round_medians_us": [
+            492.00373888015747,
+            492.37000942230225,
+            540.0287508964539,
+            540.0375127792358,
+            553.0924797058105,
+            519.7287797927856
+          ],
+          "modeled_weight_MBU_pct": 29.159542206174784,
+          "target_MBU_pct": 60,
+          "target_met": false,
+          "arm": "2",
+          "name": "direct-fixed",
+          "kind": "simt",
+          "config": {
+            "name": "direct-fixed",
+            "columns": 8,
+            "warps": 4,
+            "values": 4,
+            "split": 1,
+            "variant": 3,
+            "changes": 0,
+            "hoist": false,
+            "fixed": true,
+            "direct_meta": true
+          },
+          "scope": "GEMV_INCLUDING_SPLITK_REDUCTION",
+          "delta_pct": 27.05306399419378
+        },
+        "5": {
+          "median_us": 421.8406230211258,
+          "round_medians_us": [
+            403.0900001525879,
+            406.8875014781952,
+            411.3137423992157,
+            434.1662526130676,
+            432.3675036430359,
+            443.84250044822693
+          ],
+          "modeled_weight_MBU_pct": 36.627629912846096,
+          "target_MBU_pct": 60,
+          "target_met": false,
+          "arm": "5",
+          "name": "direct-c4p8",
+          "kind": "simt",
+          "config": {
+            "name": "direct-c4p8",
+            "columns": 4,
+            "warps": 4,
+            "values": 8,
+            "split": 1,
+            "variant": 3,
+            "changes": 0,
+            "hoist": false,
+            "fixed": false,
+            "direct_meta": true
+          },
+          "scope": "GEMV_INCLUDING_SPLITK_REDUCTION",
+          "delta_pct": 1.1479364288095262
+        },
+        "incumbent": {
+          "median_us": 417.05311834812164,
+          "round_medians_us": [
+            393.09000968933105,
+            430.2000105381012,
+            430.76249957084656,
+            424.78999495506287,
+            406.45501017570496,
+            409.3162417411804
+          ],
+          "modeled_weight_MBU_pct": 37.04809181962519,
+          "target_MBU_pct": 60,
+          "target_met": false,
+          "arm": "incumbent",
+          "name": "incumbent",
+          "kind": "tc",
+          "config": {
+            "symbol": "closure_q14_0_tm16_tn64_tk128_wn16_dn64",
+            "qtype": 14,
+            "route": "fq-dense",
+            "tm": 16,
+            "tn": 64,
+            "tk": 128,
+            "wm": 16,
+            "wn": 16,
+            "stages": 2,
+            "ap": 0,
+            "dn": 64,
+            "persistent": -1,
+            "split": 1
+          },
+          "scope": "GEMV_INCLUDING_SPLITK_REDUCTION",
+          "delta_pct": 0
+        }
+      },
+      "winner_source_access": {
+        "qtype": 14,
+        "config": "reuse-v3-c4-w4-p8-s1",
+        "shape": [
+          248320,
+          2048
+        ],
+        "input_storage": "F32",
+        "actual_bases_mod128": {
+          "A": 0,
+          "low": 0,
+          "high": 0,
+          "units": 0
+        },
+        "warp": 0,
+        "partition": 0,
+        "iteration": 0,
+        "low_word_group_reuse": 2,
+        "high_word_group_reuse": 4,
+        "note": "Packed words may be requested by several scale-group workers. Duplicate lane bytes are not DRAM bytes.",
+        "scope": "SOURCE_LOAD_FOOTPRINT_NOT_HARDWARE_COUNTERS",
+        "B_contiguous_bytes_per_k_worker_group": 64,
+        "fast_code_dequant": "LOP3/mantissa half2 extraction to exact integer codes; FP32 FMA",
+        "metadata_reader": "direct Q6 d+int8",
+        "fixed_shape": false,
+        "paired_N4": false,
+        "hoisted_B_words_per_thread": null,
+        "aggregate_source_footprint": {
+          "32": {
+            "lane_bytes": 9472,
+            "unique_bytes": 3904,
+            "sector_bytes": 5888
+          },
+          "64": {
+            "lane_bytes": 9472,
+            "unique_bytes": 3904,
+            "sector_bytes": 7936
+          },
+          "128": {
+            "lane_bytes": 9472,
+            "unique_bytes": 3904,
+            "sector_bytes": 15104
+          }
+        }
+      }
+    }
+  ],
+  "schema": "quactlize.model-gemv-review.v1",
+  "archive": "model-gemv.mZfskR.results.tgz",
+  "archive_sha256": "0362d61e0a9c2e32786298ef59f48e79a0af2d4b84c9a7f542f66444a9ea38f9",
+  "artifact": "9df3eb212289d05c8dbee6368d8b63621f1c8305",
+  "baseline_execution_sha256": "0a60a15a1acadea67b17f5c5506ce3d4bd2c9d4b6647c86d1f83fc6a6e119c89",
+  "baseline_fusion_sha256": "b73e9baac1bec19d4f9d1b689ce830afb86df6ea44434a40a9e8f0c2df70057b"
+}

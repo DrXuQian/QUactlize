@@ -1,0 +1,11 @@
+{
+  "schema": "quactlize.paired-selection-handoff.v1",
+  "branch": "artifacts/kpack-paired-recipes-v2",
+  "commit": "f8af8e7e550c9fd4ab7ab216281fbae1bfed8ec6",
+  "path": "prebuilt/ppu0010/kpack-model-runtime-v1",
+  "manifest_sha256": "3e325fcdbd170ee76a0f8aa19056d4cf0b4d077d31a5e7b290bc8e4c958056bd",
+  "source_commit": "3424f553253c09ada4320646780a8e3fba36c601",
+  "llama_branch": "dev/quactlize-paired-recipes",
+  "llama_commit": "905dbdd486325189f88e519470a37bbd8badb685",
+  "device_admission": "PENDING_PRODUCTION_ENTRY_AND_MODEL_GATE"
+}

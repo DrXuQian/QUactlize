@@ -1,0 +1,3 @@
+scope,case,arm,latency_us,evidence,admission
+unprofiled_model,qwen35-35b-q4km-pp2048-tg128,baseline,6609.484375,kpack-q4-resume.7l1wtue2.results.tgz,PASS_TIMING_ONLY
+asys_kernel,prepare-m1,baseline,7.884423333333333,kpack-q4-resume.7l1wtue2.results.tgz,PROFILER_NOT_WALL_LATENCY

@@ -4,6 +4,258 @@ This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.
 
+## TP2 segmented dense upload repair
+
+The `kpack-tp2.gXoh8e` upload passes all 72 matrix cases and 6 chains in both
+cold and hot processes. Each mode has 168 local shards; hot uses only CACHE
+producers. Q4/Q5 tokens32 maximum relative error is 0.366707% against the
+BF16 CPU reference, while its high-precision difference remains 2.670956%.
+The bound is unchanged. Q8 tokens32 is 0.361666% against its typed reference.
+122B reference self-check is clean; native aborts during weight loading,
+so no model accuracy, performance or Asys result was produced.
+
+Single-row public `set_tensor_2d` calls bypass the 2D buffer callback and use
+ordinary `set_tensor`. The caller's partial 1D writes now share the existing
+range-checked GPU staging path. This covers dense Q/K/V-style TP segments;
+the previous whole-tensor-only assumption remains confined to full intake.
+The packer, compute kernels, policy and runtime artifacts do not change.
+Only caller sources rebuild through `.aoneci/scripts/build.sh`.
+Local tests reproduce the exact old assertion, pass 24 delayed production-
+buffer cases across six formats, and reject duplicate segments. CPU Meta
+tests add six segmented local-GEMM cases. The next box run checks these in
+both cold/hot modes before the unchanged full 122B numerical/performance gates.
+Caller revision: `e15d7b411d5900be5be348105f6107fe5a77edc9`, also pinned in
+`tools/kpack_q4_model_artifact.json`. The related Python suite passes 258 tests
+and 15 subtests; four caller host CTests and the SDK production-buffer compile
+pass. New two-device segmented loading and full-model admission remain pending.
+
+## Precision-matched TP2 CPU reference
+
+Caller `4a18820f16c42f2299dc4790020d61974e028490` uses
+`BF16_TC_FP32_ACC` for the Q8/Q8 and Q4/Q5
+tokens32 chains. Raw GGUF decode is independent of the K-pack reader. BF16
+rounding is applied at metadata, weight, activation and output boundaries,
+while dots and TP summation use FP32. The 0.02 bound is unchanged; the old
+high-precision difference is reported separately as `high_relative`.
+The box runner rejects a missing/foreign selected route or reference record.
+SIMT and single-projection oracles, production kernels, policy, runtime bundle
+and model numerical criteria remain unchanged. `gXoh8e` confirms the two-device
+typed-reference gate; the earlier high-precision-only failure is not relabeled.
+See [the exact arithmetic contract](KPACK_TP2.md#bf16-cpu-reference).
+Local validation: 258 related Python tests, 15 subtests and the CPU TP graph
+regression pass. Model accuracy admission is separate and still pending.
+
+## TP2 Q4/Q5 SIMT scale repair, 2026-09-19
+
+Earlier box result `kpack-tp2.SIgUYu`: 72/72 cold matrix cases and 5/6 chains
+pass. Q4 gate/up plus Q5 down at tokens32 fails the original squared-chain
+FP32-weight/FP64-dot reference by 2.67095549%. That row uses BF16 TC, not the
+repaired SIMT reader. See `KPACK_TP2.md` and `TP2_MODE=chain` for the unchanged-
+runtime stage capture. BF16 rounding is a quantitatively supported hypothesis;
+full TP2/model admission remains pending. The current typed reference above
+separates that arithmetic difference from a device implementation error.
+Caller `bf14a36e4ab02740e0a95c72f3be128b573df08d` adds only the scheduler
+test capture. The production caller, Quactlize libraries and parent choices
+are unchanged. The capture/parser passes its host positive and changed-output
+negative; the independent Q4/Q5 GGUF decoder matches ggml's host decoder.
+
+Use the new runtime pin on `dev/kpack-tp2`; do not keep an explicit
+`KPACK_BUNDLE` pointing at the historical `87b996559f` package. The six-library
+short-K compatibility overlay and caller `f9a0dbe2f` remain reusable. No caller
+or public ABI changes, weight conversion changes, tactic substitutions, or
+TC/JIT source changes are needed.
+
+Published runtime: `artifacts/kpack-model-tp2-scale-v1` at
+`006aa757f5b995ae4d8eac772cc2106782e14e90`, built from
+`b04cb96347beccb682dd298486394ea4e99cd7a1`. The package remains
+`prebuilt/ppu0010/kpack-model-runtime-v1`; its manifest SHA-256 is
+`67ff68c51d1f2c914ba94a81aed43d1d8a499412e6a7043483018e0f5a5771fb`.
+The runner retrieves the pinned LFS payloads automatically. Its live-source
+and SDK verification passes locally. Full TP2/model device admission remains
+pending; isolated numerical evidence is not a performance measurement.
+
+The `62KWWD` result closes the isolated numerical A/B: old SIMT48/48 red,
+candidate24/24 and scalar24/24 green, 12 wrong-expert negatives red, six
+scale-bit-loss plants reproducing the complete old output bit-for-bit. The
+actual shipped F16/BF16 instruction streams reveal a low-word read while the
+cross-word lanes are masked out, before reconvergence. This explains scale6's
+missing low nibble and N%4==0 errors. Production now always uses the existing
+fixed-register H32 extraction for Q4/Q5; the new exact Q4 function machine code
+matches the tested candidate. Other formats and the dot/reduction order stay
+unchanged. See [evidence and ISA check](TP2_Q4_SIMT_FIELD_LOSS.md).
+
+Both small execution and paired gate/up libraries are rebuilt. All seven TC
+parent modules, packer, prefill, policies and router gate are retained; the
+dispatcher and execution-bound gate receipts are refreshed without inheriting
+device validation. The next `tools/run_kpack_tp2_box.sh` default run checks
+full six-format TP2 cold/hot, then 122B accuracy, warmed ABBA and Asys. Only
+that returned result can admit the integrated TP2 model path.
+
+## TP2 caller integration, 2026-09-18
+
+TP2 K-pack intake is implemented on the caller's
+`dev/quactlize-tp2-v0.3.0` branch. It splits raw GGUF through Meta, packs each
+local shard on its device, and retains existing TP communication. The existing
+Quactlize runtime package is unchanged. See [TP2 scope, gates and entry](KPACK_TP2.md).
+Use `tools/run_kpack_tp2_box.sh` for the two-card 122B numerical, warmed ABBA
+and Asys run. Device/model admission is pending, not implied by host tests.
+TP persistence now uses runtime cache v3: each logical rank's final planes are
+bound to its complete split map and all source GGUF files. First load uses GPU
+pack and background D2H; a new process directly uploads matching cached shards.
+This includes the three-file 122B model and cross-file gate/up sources. There
+is no inference-thread D2H wait. Old single-device caches are not accepted as
+TP shards, and existing incompatible caches are never overwritten.
+The runner now tests cold publication and fresh-process hot loading before
+model numerics, warmed ABBA and Asys. See the linked TP2 document for CACHE_ROOT.
+Caller commit: `ee28055efd287d8aa6c6b0fc2abfef1c5610dfe3`. Local checks include
+24 six-format TP-cache cases, malformed/foreign-layout rejections, source-change
+publication rejection, four CTest suites and 40 native-helper tests. The changed
+cache upload translation unit compiles with PPU SDK 2.1.1. No device result is
+claimed for these host checks. No llama binaries or new runtime LFS payloads
+are part of this delivery.
+
+The `kpack-tp2.JFVDyR` upload confirms five host gates and first-shard cold-cache
+publication, but stops in PCCL's extension at the first 512-element F32
+all-reduce. It does not invalidate the earlier successful 122B reference run.
+Use `TP2_MODE=communication` for ten small fresh-process diagnostics, including
+raw versus K-pack Q8 with local synchronization/oracles before the unchanged
+collective, size controls, loaded-library paths, and child-only extension-off
+controls. The loader candidate keeps the SDK wrapper LOCAL. Three additional
+arms test LOCAL/GLOBAL wrapper-only loading and restore the historical GLOBAL
+K-pack behavior. This mode loads no model and changes no communication defaults.
+The `1InYnX` evidence and host ELF binding regression are detailed in KPACK_TP2.md.
+The subsequent `BPvql1` box run confirms `GLOBAL_WRAPPER_CAUSAL_CANDIDATE_PASS`:
+all eight positive controls pass, including K-pack local results and PCCL sums
+on both ranks across three replays. Both explicit GLOBAL controls restore the
+original collective failure, even for copy-only inputs, and expose the wrapper's
+runtime symbols globally. Keep the LOCAL loader fix. The successful K-pack
+processes still load both runtime versions; coexistence alone is not the cause.
+This admits the bounded communication fix, not all TP2 arithmetic or model
+execution. Reuse the new `BPvql1` caller/NCP build for `TP2_MODE=model`; the
+six-format cold/hot, 122B numerical, warmed ABBA and Asys gates remain pending.
+
+The following cold gate rejects Q4's local N512/K512 shard before any device
+launch. Its old compatibility selector requests S4 even though K has only two
+TK256 tiles. The isolated `fix/q4-smallk-admission` source `025c7e4` switches
+only invalid default partitions to an existing S1 parent; explicit names and
+previously legal choices remain unchanged. A 1,620-case host regression passes.
+Use `tools/build_kpack_tp2_q4.py build` to rebuild only fmt0 on the box and
+produce a mixed-source overlay alongside the unchanged other five libraries.
+See [selective update and admission scope](KPACK_TP2.md#q4-short-k-admission-repair).
+Native runtime, JIT source/cache and the `ee28055` caller stay unchanged. This
+update does not yet admit two-device arithmetic or the 122B model.
+
+The `exvMN0` follow-up passes 42 cold cases, including Q4 dense via the legal
+compatibility fallback, then fails Q4 E4/top2 M1 K split with relative error
+0.1823166 after all-reduce and square. Its actual native route is BF16 generic
+SIMT variant0/columns4/warps4/values4/S1, not S4. `TP2_MODE=q4-local` provides
+three fresh processes: raw and native per-rank GEMV before PCCL, then the exact
+Meta case alone. It updates only the scheduler test and diagnostic tooling;
+production kernels, selection and tolerance remain unchanged. See
+[frozen row and diagnostic scope](KPACK_TP2.md#q4-grouped-numerical-follow-up-2026-09-19).
+
+The `Zu8e1e` result localizes that numerical failure before PCCL: raw Q4 passes,
+while native K-pack local outputs fail on both ranks. The identical fixture and
+SIMT source pass all24 F16/BF16 host/GPU-pack checks on RTX5070; this does not
+admit PPU or prove a compiler defect. Next run
+`tools/run_kpack_tp2_simt_box.sh`: a single PPU compares the shipped library,
+an unchanged freshly compiled SIMT row, and a scalar canonical-reader control,
+checking packed bytes separately. It builds four small objects, not llama or
+the runtime bundle. See [command and coverage](KPACK_TP2.md#one-device-ppu-replay).
+Caller source, production kernel selection and all public ABIs are unchanged.
+
+`7ADt8a` completes that replay: packed bytes and all scalar controls pass;
+both generic SIMT images fail identically, independently of F16/BF16. A raw
+GGUF counterfactual clearing scale group6's low nibble at `N%4==0` reconstructs
+all returned values within8.2e-8. The next same-row A/B uses
+`Q4_TP2_FIELD_AB=1` to replace only scale/min extraction with the existing
+fixed-register H32 helper and requires a matching field-loss negative. See
+[exact evidence and admission conditions](TP2_Q4_SIMT_FIELD_LOSS.md).
+No caller changes or new production runtime package are required for this
+diagnostic; full TP2 admission remains pending.
+
+The first cold device gate exposed a fixture bug: GGUF kept the copied Meta
+buffer and tried to read its shards instead of the supplied raw host bytes.
+The exact scheduler helper reproduces exit 139 using only CPU-backed Meta
+shards. It now clears the fixture's buffer/view metadata before serialization;
+the same host reproduction exits 0 and verifies byte-exact GGUF contents.
+Per-case start records identify failures before a completed cell is printed.
+Reuse the failed run's caller build for this test-only increment; no runtime
+rebuild is needed. Actual two-device arithmetic/cache admission remains pending.
+
+The next cold gate reached arithmetic but failed on the first Q8 K split.
+Its test graph used static context allocation for computed tensors. Meta
+therefore classified the local products as MIRRORED and omitted all-reduce.
+The caller test now allocates inputs separately and uses the graph allocator
+for compute nodes, asserting PARTIAL/MIRRORED states before execution. A
+CPU-only build of the same test runs 72 quantized matrix cases and three F32
+chain cases. Its retained static-allocation negative matches rank0-only output
+and rejects the full-dot oracle. The host gate runs before the device gate.
+The GPU Q8/Q4-Q5 chains still use the original 2% threshold and require box
+admission; no device code, kernel selection or runtime bundle changed.
+
+## New-machine startup recovery, 2026-09-18
+
+The `C99gWo` Qwen3-32B ABBA benchmark passed: TPOT33.3503 ->21.3962ms
+(-35.844%), prefill571.367 ->557.238ms. The final failure was Asys session
+creation, not model compute. See [independent fixes and commands](MODEL_STARTUP_RECOVERY_20260918.md).
+Cold JIT is moved into a parallel, recorded nine-parent prewarm. The caller
+publishes runtime caches safely on filesystems lacking `RENAME_NOREPLACE`.
+The profiler now probes session startup and can resume only trace capture,
+without repeating the valid benchmark. Preserve the old caller build until
+that trace-only continuation finishes. The new cache path needs the updated
+caller; the Quactlize runtime package and kernel choices are unchanged.
+
+Pin DeepGEMM's compiler with `DG_JIT_HGCC_COMPILER=$PPU_SDK/bin/hgcc` on the
+new machine. The original 122B tensor-parallel upload is a native-only baseline,
+not a K-pack measurement. The later TP2 implementation and admission status are
+documented above.
+
+## Prepare integration, 2026-09-18
+
+The latest delivery on `dev/gemv-model-tuning` integrates the uploaded
+stable-top8 prepare patch; see [scope and checks](MOE_PREPARE_INTEGRATION_20260918.md).
+No caller, public ABI, format or GEMV selector changes. The caller remains
+`c3d9cdaa4bb1b3f111397edb3ab05d3935ac81b0`; keep its existing AONECI build.
+The runtime pin also enables a prepare-only16-case before/after gate and56
+router edge cases, in addition to the360-context alias gate. Do not reuse the
+old runtime's numerical receipt for this new helper.
+
+The unpatched `kpack-q4-resume.7l1wtue2` completed successfully: TPOT6.609484ms
+versus reference7.713883ms, prefill109.347168us/token versus143.634277.
+Those numbers do not include this patch. New prepare/model device results
+are pending. The full runner retains first-pass exclusion and separate Asys.
+
+## Seven exact M1 model readers, 2026-09-17
+
+Current delivery is pinned by `tools/kpack_q4_model_artifact.json`; source
+branch `dev/gemv-model-tuning`. See
+[integration scope and gate](MODEL_GEMV_INTEGRATION_20260917.md).
+Seven measured M1 winners are integrated: routed Q4 gate/up and Q5 down,
+shared Q8 gate/up and down, Q8 SSM, QKV and attention gate. Q6 stays TC;
+SSM stays S8. Only the exact QKV/attention-gate TC parents switch to SIMT.
+Unmeasured shapes, M2..8 and nearest-shape buckets retain their old selection.
+MoE stays BF16 and dense/shared stays F16 with F32 endpoints/FP32 accumulation.
+
+The caller SHA is `c3d9cdaa4bb1b3f111397edb3ab05d3935ac81b0` on the owner's
+`dev/quactlize-gate-up-v0.3.0` branch. This change is trace parsing only;
+consumer ABI, canonical/paired bytes and caller compute are unchanged.
+Local compile/host validation is not PPU model admission. The combined box
+runner first checks the integrated readers against the immutable experiment,
+then existing composition gates, warmed model timings and second-request Asys.
+Set `MODEL_GATE_UP=1 MODEL_COMPUTE=bf16 MODEL_PHASES=perf
+MODEL_NAMES=qwen35-35b-q4km L2_BYTES=67108864`. Quactlize comes from LFS;
+caller compilation stays in its `.aoneci/scripts/build.sh` on the box.
+No llama binaries are uploaded to Quactlize.
+
+Returned `y7SNPu`: all seven integrated reader gates pass with exact admitted
+M1 bits. Whole-model ABBA and reference Asys fail at model loading because
+GPU0 has 9204 MiB free while the reference allocation needs 20470.32 MiB.
+No model performance or trace result exists. Keep the runtime and caller;
+use `PERFORMANCE_ONLY=1 PREVIOUS_RUN=/workspace/kpack-q4-model.y7SNPu`
+with `tools/resume_kpack_q4_model_box.sh` on an idle GPU. This reuses the
+completed component gates and binaries, but reruns warmed model ABBA/Asys.
+
 ## Q8 hoist ZW810 candidate, 2026-09-17
 
 Runtime artifact `3935fe9aaded4c7db03d489efe376a709b5cfab1`, caller
@@ -2343,12 +2595,12 @@ than this exact A01 bundle. Do not resolve it from these DSOs; A07 must rebuild
 and re-admit all six libraries before llama.cpp enables that optional route.
 
 The product host floor is Ubuntu 24.04 with the bundle's admitted PPU SDK
-2.1.1-a5c56e runtime. Load the SDK wrapper first with
-`RTLD_NOW | RTLD_GLOBAL`, then load every Quactlize DSO with
+2.1.1-a5c56e runtime. The caller now loads the SDK wrapper with
+`RTLD_NOW | RTLD_LOCAL`, then loads every Quactlize DSO with
 `RTLD_NOW | RTLD_LOCAL`:
 
 ```text
-${PPU_SDK}/lib/libhggc_wrapper.so -> RTLD_NOW | RTLD_GLOBAL
+${PPU_SDK}/lib/libhggc_wrapper.so -> RTLD_NOW | RTLD_LOCAL
 absolute path to selected FMT DSO -> RTLD_NOW | RTLD_LOCAL
 ```
 
@@ -2504,6 +2756,10 @@ public ctypes ABI. It covers all five formats at dense measured shape
 NumPy FP64 oracles and planted faults. It writes a new evidence directory and
 refuses to overwrite one. Device status remains `PENDING` until this exact gate
 reports `PASS` for the published files.
+
+That historical standalone gate's global preload is not the TP2 caller load
+contract. The caller now keeps the wrapper LOCAL to its DT_NEEDED consumers;
+see KPACK_TP2.md for the communication scope controls and pending device gate.
 
 Dense fully-quantized decode/prefill:
 
@@ -2824,7 +3080,7 @@ return a nonnegative value.
    source commit `2826cf12451e02ca4590f7a44682b57d2098bfb9`. Require the strict verifier,
    selected-config oracle, and prebuilt single-device numeric gate to pass on
    those exact files before deployment.
-2. On Ubuntu 24.04, load the admitted SDK wrapper globally first. Load each
+2. On Ubuntu 24.04, keep the SDK wrapper local to its DT_NEEDED consumers. Load each
    qtype-selected FMT DSO locally, resolve symbols from its own handle, and
    require its exact build identity.
 3. Parse and structurally/source-validate the schema-v3 sidecar against the

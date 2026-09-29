@@ -1,8 +1,11 @@
 #pragma once
+#include "model_gemv_scope.hpp"
 #include "simt_format.cuh"
 #include "q4_s1_validation.hpp"
 #include "simt.h"
+#include "simt_strategy.hpp"
 #include "simt_activation.cuh"
+#include "simt_reducer.cuh"
 #include <type_traits>
 
 namespace quactlize::execution::simt {
@@ -43,14 +46,19 @@ __device__ __forceinline__ float2 activation_pair(uint4 packet,int offset,int la
 
 template<int Q,int Changes>
 __device__ __forceinline__ float2 affine_selected(Meta<Format<Q>::words> const& m,int group) {
-    if constexpr((Changes&1) && (Q==12 || Q==13)) {
+    // Q4/Q5 share the same four-word scale/min header. Decode its cross-word
+    // fields with fixed register operands for every recipe, not only tuned
+    // ones: the dynamic word-index path loses scale[6] bits 0..3 on PPU.
+    // Keep Changes in the kernel identity for existing measured recipes.
+    if constexpr(Q==12 || Q==13) {
         static_assert(Format<Q>::words==4 && Format<Q>::Unit::kGroups==8);
         return q4_s1::q4_affine_header32(make_uint4(m.word[0],m.word[1],m.word[2],m.word[3]),unsigned(group)&7u);
     } else return affine<Q>(m,group);
 }
 
-template<int Q,int Input,int Variant,int Columns,int Warps,int P,int Compute=0,int Changes=0>
-__global__ void register_reuse(qkg_call_v1 call,int split) {
+template<int Q,int Input,int Variant,int Columns,int Warps,int P,int Compute=0,int Changes=0,
+         class Finish=void,class Call=qkg_call_v1>
+__device__ __forceinline__ void register_reuse_body(Call call,int split) {
     using F=Format<Q>;
     constexpr int TileN=Columns*P,Workers=Warps*32/Columns,Pairs=P/2;
     constexpr int Segments=(F::group+F::Low::kLogicalKPerDelivery-1)/F::Low::kLogicalKPerDelivery;
@@ -61,7 +69,9 @@ __global__ void register_reuse(qkg_call_v1 call,int split) {
     auto r=q4_s1::locate(call,row);
     bool valid=r.expert>=0 && r.expert<call.experts;
     if (!valid) {
-        if (tid<TileN) {
+        if constexpr(!std::is_void_v<Finish>) {
+            Finish::template invalid<TileN>(call,row,tile,partition,split);
+        } else if (tid<TileN) {
             int n=tile*TileN+tid;
             if (split==1) call.output[r.output+n]=__int_as_float(0x7fc00000);
             else static_cast<float*>(call.workspace)[(int64_t(row)*split+partition)*call.n+n]=__int_as_float(0x7fc00000);
@@ -146,7 +156,9 @@ __global__ void register_reuse(qkg_call_v1 call,int split) {
     __shared__ float partial[Warps*TileN];
     if (lane<TileN) partial[(tid/32)*TileN+(lane%Columns)*P+lane/Columns]=value;
     __syncthreads();
-    if (tid<32) {
+    if constexpr(!std::is_void_v<Finish>) {
+        Finish::template finish<TileN,Warps>(call,row,tile,partition,split,partial);
+    } else if (tid<32) {
         float sum=0;
         if constexpr(Changes&2) {
             q4_s1::q4_medium_fold<0,Warps,TileN>(sum,partial,unsigned(tid));
@@ -164,6 +176,20 @@ __global__ void register_reuse(qkg_call_v1 call,int split) {
     }
 }
 
+template<int Q,int Input,int Variant,int Columns,int Warps,int P,int Compute=0,int Changes=0>
+__global__ void register_reuse(qkg_call_v1 call,int split) {
+    register_reuse_body<Q,Input,Variant,Columns,Warps,P,Compute,Changes>(call,split);
+}
+
+template<int Q,int Input,int Variant,int Columns,int Warps,int P,int Compute,int Changes,int N,int K>
+__global__ void register_reuse_model(qkg_call_v1 c) {
+    static_assert(Q==13 && Input==QKG_F32 && Compute==QKG_COMPUTE_BF16 &&
+                  Variant==3 && Columns==4 && Warps==2 && P==8 && Changes==3);
+    static_assert(N>0 && N%(Columns*P)==0 && K>0 && K%256==0);
+    c.n=N;c.k=K;c.experts=256;c.mode=QKG_INDEXED;c.channels=8;c.topk=8;
+    register_reuse_body<Q,Input,Variant,Columns,Warps,P,Compute,Changes>(c,1);
+}
+
 template<int Q>
 __global__ void register_reuse_reduce(qkg_call_v1 c,int split) {
     int64_t i=int64_t(blockIdx.x)*blockDim.x+threadIdx.x;
@@ -172,6 +198,23 @@ __global__ void register_reuse_reduce(qkg_call_v1 c,int split) {
     float sum=0;
     for (int s=0;s<split;++s) sum+=static_cast<float const*>(c.workspace)[(row*split+s)*c.n+col];
     c.output[row*c.out_row_stride+col]=sum;
+}
+
+// A property of the partial/output layout, not of a measured N/K or qtype.
+// Keep ordered FP32 additions and the public four-byte alignment fallback.
+template<int Q>
+void launch_reduction(qkg_call_v1 const& c,int split,hggcStream_t stream) {
+    if(split==1) return;
+    if(model_gemv::vector_reduction(c,split)) {
+        auto partial=static_cast<float const*>(c.workspace);
+        auto blocks=(int64_t(c.rows)*(c.n/2)+31)/32;
+        if(split==2) quactlize::decode::reduce_decode_rows<2><<<blocks,32,0,stream>>>(
+            partial,c.output,c.rows,c.n,c.out_row_stride);
+        else if(split==4) quactlize::decode::reduce_decode_rows<4><<<blocks,32,0,stream>>>(
+            partial,c.output,c.rows,c.n,c.out_row_stride);
+        else quactlize::decode::reduce_decode_rows<8><<<blocks,32,0,stream>>>(
+            partial,c.output,c.rows,c.n,c.out_row_stride);
+    } else register_reuse_reduce<Q><<<(int64_t(c.rows)*c.n+127)/128,128,0,stream>>>(c,split);
 }
 
 template<int Q,int Variant,int Columns,int Warps,int P>
@@ -183,7 +226,7 @@ int launch(qkg_call_v1 const& c,int split) {
         register_reuse<Q,1,Variant,Columns,Warps,P><<<blocks,Warps*32,0,stream>>>(c,split);
     else register_reuse<Q,0,Variant,Columns,Warps,P><<<blocks,Warps*32,0,stream>>>(c,split);
     if (hggcGetLastError()!=hggcSuccess) return QKG_RUNTIME;
-    if (split>1) register_reuse_reduce<Q><<<(int64_t(c.rows)*c.n+127)/128,128,0,stream>>>(c,split);
+    launch_reduction<Q>(c,split,stream);
     return hggcGetLastError()==hggcSuccess ? QKG_OK : QKG_RUNTIME;
 }
 
@@ -198,23 +241,28 @@ int launch_v2(qkg_simt_call_v2 const& d,int split) {
     // Keep all other shapes, compute/storage types and recipes unchanged.
     if constexpr(Variant==3 && Columns==4 && ((Q==12 && Warps==4 && P==4) ||
                                             (Q==13 && Warps==2 && P==8))) {
-        bool measured=c.input_type==QKG_F32 && c.mode==QKG_INDEXED && c.rows==8 &&
-            c.topk==8 && c.experts==256 && split==1 &&
-            (Q==12 ? c.n==1024 && c.k==2048 && c.channels==1 :
-                     c.n==2048 && c.k==512 && c.channels==8);
+        bool measured=measured_reuse(d,Variant,Columns,Warps,P,split);
         if(measured) {
-            register_reuse<Q,1,Variant,Columns,Warps,P,1,Q==12?1:3>
-                <<<blocks,Warps*32,0,stream>>>(c,split);
+            if constexpr(Q==13)
+                register_reuse_model<Q,1,Variant,Columns,Warps,P,1,3,2048,512>
+                    <<<blocks,Warps*32,0,stream>>>(c);
+            else
+                register_reuse<Q,1,Variant,Columns,Warps,P,1,1>
+                    <<<blocks,Warps*32,0,stream>>>(c,split);
             return hggcGetLastError()==hggcSuccess ? QKG_OK : QKG_RUNTIME;
         }
     }
+    // The Q5 unsigned address/fixed-order fold does not depend on model
+    // dimensions. Keep the fixed incumbent above; all other Q5 BF16 shapes
+    // using its reader recipe get the same optimized generic body.
+    constexpr int Changes=kBf16F32Changes<Q,Variant,Columns,Warps,P>;
     if(c.input_type==QKG_F32)
-        register_reuse<Q,1,Variant,Columns,Warps,P,1><<<blocks,Warps*32,0,stream>>>(c,split);
+        register_reuse<Q,1,Variant,Columns,Warps,P,1,Changes><<<blocks,Warps*32,0,stream>>>(c,split);
     else if(c.input_type==QKG_SIMT_BF16)
         register_reuse<Q,2,Variant,Columns,Warps,P,1><<<blocks,Warps*32,0,stream>>>(c,split);
     else register_reuse<Q,0,Variant,Columns,Warps,P,1><<<blocks,Warps*32,0,stream>>>(c,split);
     if(hggcGetLastError()!=hggcSuccess) return QKG_RUNTIME;
-    if(split>1) register_reuse_reduce<Q><<<(int64_t(c.rows)*c.n+127)/128,128,0,stream>>>(c,split);
+    launch_reduction<Q>(c,split,stream);
     return hggcGetLastError()==hggcSuccess ? QKG_OK : QKG_RUNTIME;
 }
 } // namespace quactlize::execution::simt

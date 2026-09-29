@@ -106,7 +106,8 @@ inline bool compatible_router(qk_moe_plan_v1 const& p,qk_llama_router_v1 const& 
   return !moe_overlap(output,weights); // Both remain graph outputs after the fused segment.
 }
 
-inline bool compatible_finish(qk_moe_plan_v1 const& p,qk_llama_moe_finish_v1 const& f,uint32_t mask) {
+inline bool compatible_finish(qk_moe_plan_v1 const& p,qk_llama_moe_finish_v1 const& f,uint32_t mask,
+                              bool snapshot=false) {
   auto const& d=p.down;
   if (f.version!=1 || f.size!=sizeof(f) || d.io.tokens<1 || d.io.tokens>8 ||
       d.io.topk!=8 || d.m!=d.io.tokens*8 || f.weights_stride<8 || f.output_stride<d.n ||
@@ -117,7 +118,17 @@ inline bool compatible_finish(qk_moe_plan_v1 const& p,qk_llama_moe_finish_v1 con
   if (!moe_span(f.output,uint64_t(f.output_stride)*4*d.io.tokens,output) ||
       !moe_span(f.weights,uint64_t(f.weights_stride)*4*d.io.tokens,weights) ||
       !moe_span(d.io.ids,uint64_t(d.io.ids_stride)*4*d.io.tokens,ids) ||
-      moe_overlap(output,weights) || moe_overlap(output,ids) || moe_overlap(weights,ids)) return false;
+      (!snapshot && (moe_overlap(output,weights) || moe_overlap(output,ids))) ||
+      moe_overlap(weights,ids)) return false;
+  if(snapshot) {
+    MoeSpan retained,workspace;
+    if(mask!=5 || !p.merged || p.gate.io.channels!=1 || p.gate.io.topk!=8 ||
+        p.gate.io.tokens!=d.io.tokens || p.gate.m!=d.m || p.gate.experts!=256 || d.experts!=256 ||
+        p.gate.tile_m<d.io.tokens || d.tile_m<d.io.tokens ||
+        !moe_span(d.outputs,uint64_t(d.io.tokens)*8*4,retained) ||
+        !moe_span(d.workspace,d.workspace_bytes,workspace) ||
+        retained.begin<workspace.begin || retained.end>workspace.end) return false;
+  }
   for (auto part:{&p.gate,p.merged?nullptr:&p.up,&d}) {
     if (!part) continue;
     int index=part==&p.gate?0:part==&p.up?1:2;

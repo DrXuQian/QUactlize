@@ -1,11 +1,15 @@
 {
-  "branch": "artifacts/kpack-model-runtime-v1",
-  "commit": "3935fe9aaded4c7db03d489efe376a709b5cfab1",
+  "branch": "artifacts/kpack-launch-fix-v1",
+  "commit": "46727e96de92c6a7da15aa12f066a31f1bed8673",
   "path": "prebuilt/ppu0010/kpack-model-runtime-v1",
-  "manifest_sha256": "977105d86ce91e1d3e9597ac5631389e4ff56b23753b8366e142169a9a133652",
-  "source_commit": "120bb6b6104ffc55b5d704077344b73ce78749c7",
-  "llama_branch": "dev/quactlize-v0.3.0",
-  "llama_ci_commit": "4ae897c77d4b08f5c595781d933d2cd0748aa2f1",
+  "manifest_sha256": "3a1608d2702447b7a038905bb7285d3fa6626371387bec3bde2c8eee2c7c20af",
+  "source_commit": "cb3a8ba24356dc8c1b8546220dcc6c77dc3b057a",
+  "llama_branch": "dev/quactlize-selected-decode",
+  "llama_ci_commit": "1f7da3bd94b1fc6b9520e156456c89221fddd07f",
+  "model_reader_gate": false,
+  "prepare_integration_gate": false,
+  "selected_entry_gate": true,
   "lfs_payloads": 63,
-  "device_admission": "HOST_BUILD_AND_CONTRACT_TESTS_PASS_PPU_Q8_HOIST_AND_MODEL_GATE_PENDING"
+  "selection_admission": "LOCAL_CATALOG1852_PUBLIC_SIMT937_CONFIRMED_ORDINARY15_PASS",
+  "device_admission": "V1_V2_AND_FINISH_SNAPSHOT_MODEL_NUMERICS_TPOT_ASYS_PENDING"
 }

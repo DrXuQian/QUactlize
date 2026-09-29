@@ -115,6 +115,25 @@ bool compute_plan_valid(qkg_moe_compute_v2 const* d) {
       !(d->plan.merged && (d->simt_mask&2)) && d->plan.gate.experts==256 &&
       d->plan.gate.m>=8 && d->plan.gate.m<=64 && d->plan.gate.m%8==0;
 }
+
+template<class Compute>
+int prepare_finish(qkg_moe_compute_v2 const& d,qk_llama_moe_finish_v1 const& finish,hggcStream_t stream) {
+  quactlize::runtime::ComputeMoePlan<Compute> plan;
+  static_cast<qk_moe_plan_v1&>(plan)=d.plan;plan.simt_mask=d.simt_mask;
+  if(!quactlize::runtime::prepare_detail::launch_with_finish<Shape,Stride>(plan,finish,stream)) return QKG_SHAPE;
+  return hggcGetLastError()==hggcSuccess?QKG_OK:QKG_RUNTIME;
+}
+}
+extern "C" int quactlize_kpack_moe_prepare_finish_v1(qkg_moe_compute_v2 const* d,
+    qk_llama_moe_finish_v1 const* finish,void* opaque) {
+  if(!compute_plan_valid(d) || !finish || finish->version!=1 || finish->size!=sizeof(*finish) ||
+      !finish->weights || finish->weights_stride<8 || !d->plan.down.outputs ||
+      (uintptr_t(finish->weights)|uintptr_t(d->plan.down.outputs))%4 ||
+      d->simt_mask!=5 || !d->plan.merged) return QKG_INVALID;
+  if(hggcGetLastError()!=hggcSuccess) return QKG_RUNTIME;
+  auto stream=static_cast<hggcStream_t>(opaque);
+  return d->compute_type==QKG_COMPUTE_BF16 ?
+      prepare_finish<cutlass::bfloat16_t>(*d,*finish,stream):prepare_finish<cutlass::half_t>(*d,*finish,stream);
 }
 extern "C" int quactlize_kpack_moe_mixed_stage_v2(qkg_moe_compute_v2 const* d,int phase,void* opaque) {
   using namespace quactlize::runtime;

@@ -1,0 +1,8 @@
+{
+  "branch": "artifacts/gate-up-paired-n4-v1",
+  "commit": "09a7e087f21c098c6f41eeb59a32712c7f44bbe4",
+  "path": "prebuilt/ppu0010/gate-up-paired-n4-v1",
+  "manifest_sha256": "9a56eee54542adbbbc69a8b2222443214d77539510f9e588212c00adab3fb102",
+  "library_sha256": "88f3035397da23b8dc869824874d39fc868d6db8db7682d75b00aa4f822ef7c7",
+  "device_admission": "PENDING"
+}

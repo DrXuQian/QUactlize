@@ -17,6 +17,7 @@ from quactlize.runtime.native import sdk_identity
 from tools.verify_kpack_dispatch import verify as verify_native
 from tools.verify_kpack_dispatch import require_exports, PREFILL_MODEL_EXPORTS
 from quactlize.execution.q4_decode_codegen import POLICY as DECODE_POLICY
+from quactlize.dispatch.planning import plan_smallm, validate_inventory
 
 
 def attach_prefill(output, build, sdk):
@@ -231,8 +232,11 @@ def main():
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     parents, selected = plan(output)
+    final_selection = plan_smallm(output)
+    (output/'final-selection.json').write_text(json.dumps(final_selection,indent=2)+'\n')
     (output / "plan.json").write_text(
-        json.dumps(dict(parents=parents, requests=selected), indent=2) + "\n"
+        json.dumps(dict(parents=parents, requests=selected,
+                        scope='FIXED_ROUTE_TC_CLOSURE',smallm='final-selection.json'), indent=2) + "\n"
     )
     print(
         f"KPACK_DISPATCH_PLAN requests={len(selected)} parents={len(parents)} "
@@ -295,16 +299,28 @@ def main():
     for name, value in receipt["runtime"].items():
         if sha(args.sdk / "lib" / name) != value:
             raise ValueError(f"execution SDK runtime differs: {name}")
+    capabilities=validate_inventory(final_selection,receipt,records,jit=True)
     shutil.copy2(execution, output / execution.name)
     source_paths = [
         *sorted((ROOT / "quactlize/dispatch").glob("*")),
         Path(__file__),
         ROOT / "tools/kpack_native_policy.cpp",
+        ROOT / "tools/kpack_selection.cpp",
+        ROOT / "quactlize/execution/simt_strategy.hpp",
+        ROOT / "quactlize/execution/measured_decode.hpp",
+        ROOT / "quactlize/execution/measured_decode.inc",
+        ROOT / "quactlize/fusion/gate_up.h",
+        ROOT / "quactlize/fusion/validation.hpp",
+        ROOT / "quactlize/fusion/selection.hpp",
+        ROOT / "quactlize/fusion/recipes.inc",
+        ROOT / "policies/kpack_gate_up_selection_v2.json",
         ROOT / "policies/kpack_zw810_heuristic_v1.hpp",
         ROOT / "policies/kpack_zw810_runtime_v1.hpp",
         ROOT / "policies/kpack_zw810_cost_v1.hpp",
         ROOT / "policies/kpack_smallm_v1.hpp",
         ROOT / "policies/kpack_smallm_matched_v1.hpp",
+        ROOT / "policies/kpack_smallm_effective_v1.hpp",
+        ROOT / "policies/kpack_decode_winners_v1.json",
         ROOT / "policies/kpack_q8_vector_v1.hpp",
     ]
     manifest = dict(
@@ -325,8 +341,10 @@ def main():
         grouped_profile="matched-smallm-explicit-compute-otherwise-legacy-bounds-no-router-readback",
         jit_source_contract=jit_source,
         jit_source_identity={k: jit_compiler.identity[k] for k in ("kernel", "flags", "generator")},
+        final_selection=dict(path='final-selection.json',sha256=sha(output/'final-selection.json'),
+                             capabilities=capabilities),
     )
-    if args.jit_only:
+    if args.jit_only or capabilities['jit_required']:
         manifest["jit_required"] = True
     if receipt.get('q4_decode_policy_sha256'):
         if sha(DECODE_POLICY) != receipt['q4_decode_policy_sha256']:
@@ -348,6 +366,11 @@ def main():
     manifest['q8_vector_policy']=dict(path='q8-vector-policy.json',sha256=sha(vector_policy),
         header_sha256=sha(vector_policy.with_suffix('.hpp')),
         admission='EXACT_SIMT_READER_REPLACEMENT_MODEL_GATE_PENDING')
+    winners=ROOT/'policies/kpack_decode_winners_v1.json'
+    shutil.copy2(winners,output/'decode-winners.json')
+    manifest['decode_winners']=dict(path='decode-winners.json',sha256=sha(winners),
+        effective_header_sha256=sha(ROOT/'policies/kpack_smallm_effective_v1.hpp'),
+        admission='COMPONENT_CONFIRMED_PRODUCTION_INTEGRATION_PENDING')
     if receipt.get('simt_compute_v2'):
         manifest['compute_contract']=dict(schema='quactlize.explicit-compute.v1',
             formats=[8,10,11,12,13,14],grouped='ALL_LEGAL_M',dense='DECODE_M1_8',

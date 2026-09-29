@@ -30,10 +30,11 @@ def test_codegen_query_and_launch_have_same_inventory():
             source = spec.source(q,profile)
             for c in spec.inventory(q,profile):
                 condition = f'f->variant=={c.variant} && f->columns=={c.columns} && f->warps=={c.warps} && f->values=={c.values}'
-                assert source.count(condition)==3
+                assert source.count(condition)==2
                 reader='simt::q8_vector' if c.variant>=4 else 'simt'
-                assert source.count(f'{reader}::launch<{q},{c.variant},{c.columns},{c.warps},{c.values}>')==1
+                assert f'{reader}::launch<' not in source
                 assert source.count(f'{reader}::launch_v2<{q},{c.variant},{c.columns},{c.warps},{c.values}>')==1
+            assert f'return qkg_simt_launch_v2_{q}(&d,f);' in source
 
 
 def test_execution_build_includes_the_shared_candidates():

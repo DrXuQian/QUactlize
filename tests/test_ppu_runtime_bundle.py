@@ -49,6 +49,53 @@ def test_runtime_bundle_manifest_binds_all_six_files(tmp_path):
     assert ppu_bundle.verify_bundle(tmp_path, inspect_binaries=False) == expected
 
 
+@pytest.mark.parametrize('fault', [None,'other-library','q4-bytes','format','source',
+                                  'base-receipt','duplicate','extra-file','symlink'])
+def test_q4_smallk_overlay_preserves_five_libraries_and_records_mixed_sources(tmp_path, monkeypatch, fault):
+    from tools import build_kpack_tp2_q4 as update
+    original = _bundle(tmp_path)
+    text = (tmp_path/'manifest.json').read_text()
+    monkeypatch.setattr(update,'BASE_SOURCE',original['source']['commit'])
+    monkeypatch.setattr(update,'BASE_MANIFEST',hashlib.sha256(text.encode()).hexdigest())
+    (tmp_path/update.Q4_LIBRARY).write_bytes(b'new-q4-selector')
+    entries = [dict(e,source_commit=update.FIX_SOURCE if e['role']=='fmt0' else update.BASE_SOURCE,
+                    size=(tmp_path/e['filename']).stat().st_size,sha256=update.sha(tmp_path/e['filename']))
+               for e in original['libraries']]
+    record = dict(schema=update.SCHEMA,base_manifest=original,base_manifest_text=text,
+                  base_manifest_sha256=update.BASE_MANIFEST,replacement_source=update.FIX_SOURCE,
+                  definitions=update.DEFS,libraries=entries,device_admission='PENDING')
+    if fault=='other-library':
+        p=tmp_path/entries[0]['filename'];p.write_bytes(b'changed-default')
+        entries[0].update(size=p.stat().st_size,sha256=update.sha(p))
+    if fault=='q4-bytes': (tmp_path/update.Q4_LIBRARY).write_bytes(b'bad')
+    if fault=='format': entries[1]['packed_format']=3
+    if fault=='source': entries[1]['source_commit']=update.BASE_SOURCE
+    if fault=='base-receipt': record['base_manifest_text']+=' '
+    if fault=='duplicate': entries[-1]=dict(entries[0])
+    if fault=='extra-file': (tmp_path/'stale.so').write_bytes(b'wrong')
+    if fault=='symlink':
+        p=tmp_path/update.Q4_LIBRARY;p.unlink();p.symlink_to(entries[0]['filename'])
+    (tmp_path/'manifest.json').write_text(json.dumps(record))
+    if fault:
+        with pytest.raises(ValueError): update.verify_overlay(tmp_path)
+    else:
+        assert update.verify_overlay(tmp_path)==record
+        # The overlay must never impersonate a single-source six-library build.
+        with pytest.raises(ppu_bundle.BundleError):
+            ppu_bundle.verify_bundle(tmp_path,inspect_binaries=False)
+
+
+def test_q4_smallk_query_receipt_ignores_sdk_messages_but_rejects_ambiguity():
+    from tools import build_kpack_tp2_q4 as update
+    record = dict(status='PASS', scope='HOST_QUERY_ONLY_NO_KERNEL_LAUNCH')
+    line = update.QUERY_PREFIX + json.dumps(record)
+    assert update.parse_query_output('SDK registration message\n'+line+'\n') == record
+    for invalid in ('SDK message', line+'\n'+line,
+                    update.QUERY_PREFIX+json.dumps(dict(record,status='FAIL'))):
+        with pytest.raises(ValueError):
+            update.parse_query_output(invalid)
+
+
 def test_runtime_bundle_requires_loader_facing_arrangement_v2_exports():
     assert {
         "quactlize_ppu_canonical_arrangement_v2",

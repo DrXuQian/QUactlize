@@ -95,6 +95,10 @@ def test_cache_only_never_constructs_compiler_and_relocates_payload(
 def test_default_cache_miss_stops_before_sdk_or_compiler(tmp_path, monkeypatch):
     model, base = inputs()
     plan = gate.make_plan(model, base)
+    # Isolate cache-miss ordering from the historical calibration's source pin.
+    for name in model['authority']['receipt']['sources']:
+        path=gate.ROOT/name
+        if path.is_file():model['authority']['receipt']['sources'][name]=gate.sha(path)
 
     def forbidden(*args, **kwargs):
         raise AssertionError("cache miss attempted device work or compilation")

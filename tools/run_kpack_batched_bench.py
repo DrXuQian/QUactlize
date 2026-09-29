@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT))
 from quactlize.gguf_roles import match_role
 from quactlize.runtime.compiler import sha
 from tools.gguf_internal_shape_inventory import read_gguf_header
-from tools.resolve_kpack_batched_models import resolve_plan
+from tools.resolve_kpack_batched_models import resolve_plan, resolve_binding
 from tools.verify_kpack_dispatch import verify
 
 
@@ -57,14 +57,29 @@ def validate_plan(plan):
         devices = m["devices"].split(",")
         if len(devices) != len(set(devices)) or (m["split"] == "none" and len(devices) != 1):
             raise ValueError("invalid model device set")
+        if m["split"] == "tensor" and (len(devices) != 2 or
+                not re.fullmatch(r"[1-9][0-9]*,[1-9][0-9]*", m.get("tensor_split", ""))):
+            raise ValueError("TP2 requires two devices and two positive split weights")
     return plan
 
 
 def inventory(path):
-    with path.open("rb") as stream:
-        header = read_gguf_header(stream, str(path))
+    files = resolve_binding(path)
+    tensors, seen = [], set()
+    for index, file in enumerate(files):
+        with file.open("rb") as stream:
+            header = read_gguf_header(stream, str(file))
+        metadata = header['metadata']
+        if (metadata.get('split.count', 1) != len(files) or
+                metadata.get('split.no', 0) != index):
+            raise ValueError('GGUF split header disagrees with filename set: ' + str(file))
+        for tensor in header['tensors']:
+            if tensor['name'] in seen:
+                raise ValueError('duplicate tensor across GGUF shards: ' + tensor['name'])
+            seen.add(tensor['name'])
+            tensors.append(tensor)
     eligible, omitted, q8, operators = [], [], [], set()
-    for t in header["tensors"]:
+    for t in tensors:
         dims, q = t["dims_gguf"], t["qtype"]
         role = match_role(t["name"], len(dims)) if q in (8,10,11,12,13,14) else None
         if role and role[0].route_class in ("dense", "grouped") and dims[0] % (512 if q in (11,14) else 256) == 0 and dims[1] % 256 == 0:
@@ -74,8 +89,8 @@ def inventory(path):
         else:
             omitted.append(dict(name=t["name"], qtype=q))
     return dict(eligible=eligible, q8=q8, omitted=omitted, operators=sorted(operators),
-                qtypes=dict(Counter(str(t["qtype"]) for t in header["tensors"])),
-                shards=header["metadata"].get("split.count", 1))
+                qtypes=dict(Counter(str(t["qtype"]) for t in tensors)),
+                shards=len(files), files=list(map(str, files)), header_only=True)
 
 
 def sequence(plan, repeats):
@@ -95,10 +110,8 @@ def command(binary, model, plan, repeats, names, arm, cache):
     # default level 3 suppresses them while leaving benchmark JSON visible.
     # Use the same level in both arms without per-kernel DEBUG (level 5).
     if model["split"] == "tensor":
-        if arm != "reference":
-            raise ValueError("K-pack tensor-parallel intake is not admitted")
         argv += ["-ts", model["tensor_split"]]
-    elif names:
+    if names and (model["split"] != "tensor" or arm == "kpack"):
         # Exact names AND supported qtypes: never catch a Q8/F16 tensor merely
         # because its name ends in output.weight or matches another suffix.
         pattern = "^(" + "|".join(re.escape(n) for n in names) + ")$"
@@ -106,6 +119,40 @@ def command(binary, model, plan, repeats, names, arm, cache):
     if arm == "kpack":
         argv += ["--kpack-cache", str(cache)]
     return argv
+
+
+def tp2_evidence(text, expected_ops):
+    plans = [dict(re.findall(r"([a-z_]+)=([^\s]+)", line))
+             for line in text.splitlines() if "[quactlize-device-plan]" in line]
+    shards = [dict(re.findall(r"([a-z_]+)=([^\s]+)", line))
+              for line in text.splitlines() if "[quactlize-shard]" in line]
+    if {r.get('device') for r in plans} != {'0', '1'} or {r.get('device') for r in shards} != {'0', '1'}:
+        raise ValueError('TP2 lacks packed shards or selected plans on both local device ordinals')
+    for device in ('0', '1'):
+        if {r.get('op') for r in plans if r['device'] == device} != set(expected_ops):
+            raise ValueError('TP2 selected operator coverage differs on device ' + device)
+    by_weight = {(r['tensor'], r['device']): r for r in shards}
+    for p in plans:
+        shard = by_weight.get((p['tensor'], p['device']))
+        if p.get('selected') != '1' or not shard or any(p.get(key) != shard.get(key) for key in ('q', 'n', 'k', 'experts')):
+            raise ValueError('TP2 selected geometry differs from its device-local packed shard')
+    return dict(devices=2, plans=plans, shards=shards, status='PASS', scope='SHARD_AND_SELECTION_RECEIPTS')
+
+
+def tp2_cache_evidence(text, hot):
+    shards = [dict(re.findall(r"([a-z_]+)=([^\s]+)", line))
+              for line in text.splitlines() if "[quactlize-shard]" in line]
+    if {s.get('device') for s in shards} != {'0', '1'}:
+        raise ValueError('TP2 cache lacks shards on both devices')
+    if hot:
+        counts = re.findall(r'\[kpack-cache\] cache_uploads=(\d+) resident_misses=(\d+)', text)
+        if len(counts) != 1 or int(counts[0][0]) != len(shards) or counts[0][1] != '0' or \
+                any(s.get('producer') != 'CACHE' for s in shards):
+            raise ValueError('TP2 hot reload repacked a weight or missed a resident shard')
+    elif any(s.get('producer') != 'GPU' for s in shards) or '[kpack-cache] published:' not in text:
+        raise ValueError('TP2 cold load did not publish its GPU-produced shards')
+    return dict(status='PASS', mode='hot' if hot else 'cold', shards=len(shards),
+                scope='NEW_PROCESS_DISK_CACHE_NOT_INFERENCE_REUSE')
 
 
 def parse_row(line, expected, plan):
@@ -147,6 +194,7 @@ def run_arm(args, model, plan, inv, arm, directory, index):
     label = f"{index}-{arm}"
     log = directory / (label + ".log")
     cache = args.cache_root / model["name"]
+    cache_hot = (cache / "manifest.json").is_file()
     if arm == "kpack":
         cache.parent.mkdir(parents=True, exist_ok=True)
     argv = command(args.binary, model, plan, args.repeats, inv["eligible"], arm, cache)
@@ -237,6 +285,9 @@ def run_arm(args, model, plan, inv, arm, directory, index):
                                  f"see {log} (plan receipts require --verbosity 4)")
             if getattr(args, 'require_selected', False) and not evidence['fully_selected']:
                 raise ValueError('selected operator coverage incomplete or legacy fallback present')
+            if model['split'] == 'tensor':
+                evidence['tp2'] = tp2_evidence(text, inv['operators'])
+                evidence['tp2_cache'] = tp2_cache_evidence(text, cache_hot)
             if inv["q8"] and (not q8_plans or any(p.get("activation")!=expected_activation(p, env.get('QUACTLIZE_KPACK_COMPUTE')) or
                     p.get("route") not in ("sf", "gemv") or p.get("scale_resident")!="1" for p in q8_plans)):
                 raise ValueError("Q8_0 W8A16 compute evidence missing or activation/scale contract differs")
@@ -327,8 +378,7 @@ def main():
             try:
                 inv = inventory(Path(model["path"]))
                 save(directory / "inventory.json", inv)
-                reason = ("KPACK_TP_NOT_ADMITTED" if model["split"] == "tensor" else
-                          "NO_SUPPORTED_MATRICES" if not inv["eligible"] else None)
+                reason = "NO_SUPPORTED_MATRICES" if not inv["eligible"] else None
                 arms = [] if reason else ["reference", "kpack", "kpack"] + (["reference"] if a.order == "abba" else [])
                 if reason:
                     statuses.append(dict(model=model["name"], arm="kpack", status="NOT_TESTED", reason=reason))

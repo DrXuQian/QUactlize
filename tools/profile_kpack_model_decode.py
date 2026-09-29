@@ -161,8 +161,9 @@ def profile_plan(selection, kernels, log, helpers, matched=()):
     if not rows:
         raise ValueError('completed trace contains no selected M1 compute call')
     # Match actual merged chain records, not an assumed Q4 model topology.
-    prepare_names = [n for n in names if 'quactlize::runtime::prepare_detail::once<' in n and
-                     re.search(r',\s*8,\s*true,',n)]
+    prepare_names = [n for n in names if
+                     ('quactlize::runtime::prepare_detail::once<' in n and re.search(r',\s*8,\s*true,',n)) or
+                     ('quactlize::runtime::prepare_detail::once_with_finish<' in n and re.search(r',\s*8,',n))]
     for line in log.splitlines():
         if '[quactlize-moe]' not in line:
             continue

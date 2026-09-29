@@ -22,7 +22,8 @@ def build(sdk, output):
             raise ValueError(f"missing SDK input: {path}")
     output.mkdir(parents=True, exist_ok=False)
     source = ROOT / "quactlize/packing"
-    includes = [source, ROOT / "quactlize/include", ROOT / "third_party/actlize/include"]
+    includes = [source, ROOT / "quactlize/fusion", ROOT / "quactlize/execution",
+                ROOT / "quactlize/include", ROOT / "third_party/actlize/include"]
     env = dict(os.environ)
     env["LD_LIBRARY_PATH"] = str(sdk / "lib") + os.pathsep + env.get("LD_LIBRARY_PATH", "")
     env["PATH"] = str(sdk / "bin") + os.pathsep + env.get("PATH", "")
