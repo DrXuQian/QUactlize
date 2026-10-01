@@ -31,7 +31,12 @@ template <int Q, class T> struct TmaTile {
   static_assert(sizeof(Shared) < 48 * 1024, "static shared memory must fit without a launch-time attribute change");
 };
 
-template <int Q, class T, bool SF, class TmaA, class TmaLow, class TmaHigh, bool Pdl = false>
+// PrefetchB is an internal experimental contract, NOT the public PDL v1
+// policy: low/high and their descriptors must be immutable and already ready
+// before any predecessor starts. Only the first raw B tile is independent;
+// units, SF metadata, A and grouped offsets still require the grid wait.
+template <int Q, class T, bool SF, class TmaA, class TmaLow, class TmaHigh,
+          bool Pdl = false, bool PrefetchB = false>
 __global__ __launch_bounds__(128) void tma_wgmma(
     q17_call_v1 c, CUTLASS_GRID_CONSTANT TmaA const tma_a,
     CUTLASS_GRID_CONSTANT TmaLow const tma_low, CUTLASS_GRID_CONSTANT TmaHigh const tma_high) {
@@ -39,11 +44,17 @@ __global__ __launch_bounds__(128) void tma_wgmma(
   using Tile = TmaTile<Q, T>;
   using F = Format<Q>;
   using Barrier = cutlass::arch::ClusterTransactionBarrier;
+  static_assert(!PrefetchB || Pdl, "early B requires explicit dependent launch");
   __shared__ typename Tile::Shared shared;
-  wait_for_predecessors<Pdl>();
-  auto rows = row_range(c, blockIdx.z);
+  RowRange rows;
+  if constexpr (!PrefetchB) {
+    wait_for_predecessors<Pdl>();
+    rows = row_range(c, blockIdx.z);
+  }
   int mb = int(blockIdx.y) * 64, nb = int(blockIdx.x) * 64;
-  if (mb >= rows.size || nb >= c.problem.n) return;
+  if constexpr (!PrefetchB) {
+    if (mb >= rows.size || nb >= c.problem.n) return;
+  }
   auto s_a = make_tensor(make_smem_ptr(shared.a.data()), typename Tile::ALayout{});
   auto s_low = make_tensor(make_smem_ptr(shared.low.data()), typename Tile::LowLayout{});
   auto s_high = make_tensor(make_smem_ptr(shared.high.data()), typename Tile::HighLayout{});
@@ -58,6 +69,43 @@ __global__ __launch_bounds__(128) void tma_wgmma(
   }
   __syncthreads();
 
+  if constexpr (PrefetchB) {
+    // Separate transaction lifetime: ready[0] must never wait for A bytes
+    // on a CTA which later discovers that its expert/tile is empty.
+    __shared__ __align__(16) uint64_t b_ready;
+    if (threadIdx.x == 0) {
+      Barrier::init(&b_ready, 1);
+      cutlass::arch::fence_barrier_init();
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+      constexpr int bytes = 64 * Tile::low_words * 2
+          + (F::high_bits ? 64 * Tile::high_words * 2 : 0);
+      Barrier::arrive_and_expect_tx(&b_ready, bytes);
+      int lg = int(blockIdx.z) * (c.problem.k / F::Low::kPack) + F::Low::physical_kgroup(0);
+      auto gl = local_tile(domain_offset(make_coord(nb, lg), m_low),
+                           make_shape(_64{}, Int<Tile::low_words>{}), make_coord(0, 0));
+      auto [tl_g, tl_s] = tma_partition(tma_low, Int<0>{}, Layout<_1>{},
+            group_modes<0, 2>(s_low(_, _, 0)), group_modes<0, 2>(gl));
+      copy(tma_low.with(b_ready), tl_g, tl_s);
+      if constexpr (F::high_bits) {
+        int hg = int(blockIdx.z) * (c.problem.k / (16 / Tile::high_bits)) + F::High::physical_kgroup(0);
+        auto gh = local_tile(domain_offset(make_coord(nb, hg), m_high),
+                             make_shape(_64{}, _8{}), make_coord(0, 0));
+        auto [th_g, th_s] = tma_partition(tma_high, Int<0>{}, Layout<_1>{},
+              group_modes<0, 2>(s_high(_, _, 0)), group_modes<0, 2>(gh));
+        copy(tma_high.with(b_ready), th_g, th_s);
+      }
+    }
+    wait_for_predecessors<Pdl>();
+    // Drain speculative B even for empty experts before shared storage can
+    // be retired/reused. No activation transaction has been issued yet.
+    Barrier::wait(&b_ready, 0);
+    __syncthreads();
+    rows = row_range(c, blockIdx.z);
+    if (mb >= rows.size || nb >= c.problem.n) return;
+  }
+
   auto issue = [&](int iteration, int stage) {
     if (threadIdx.x != 0) return;
     int kb = iteration * 64;
@@ -68,6 +116,15 @@ __global__ __launch_bounds__(128) void tma_wgmma(
                          make_shape(_64{}, Int<Tile::low_words>{}), make_coord(0, 0));
     auto [ta_g, ta_s] = tma_partition(tma_a, Int<0>{}, Layout<_1>{},
           group_modes<0, 2>(s_a(_, _, stage)), group_modes<0, 2>(ga));
+    if constexpr (PrefetchB) {
+      if (iteration == 0) {
+        // B0 has its own completed transaction. The ordinary phase0 now
+        // expects only A0; subsequent stage refills keep the original bytes.
+        Barrier::arrive_and_expect_tx(&shared.ready[stage], 64 * 64 * sizeof(T));
+        copy(tma_a.with(shared.ready[stage]), ta_g, ta_s);
+        return;
+      }
+    }
     auto [tl_g, tl_s] = tma_partition(tma_low, Int<0>{}, Layout<_1>{},
           group_modes<0, 2>(s_low(_, _, stage)), group_modes<0, 2>(gl));
     constexpr int bytes = 64 * 64 * sizeof(T) + 64 * Tile::low_words * 2
@@ -132,7 +189,7 @@ __global__ __launch_bounds__(128) void tma_wgmma(
   }
 }
 
-template <int Q, class T, bool SF, bool Pdl = false>
+template <int Q, class T, bool SF, bool Pdl = false, bool PrefetchB = false>
 std::function<int()> prepare_tma(q17_call_v1 const &c) {
   using namespace cute;
   using Tile = TmaTile<Q, T>;
@@ -149,7 +206,7 @@ std::function<int()> prepare_tma(q17_call_v1 const &c) {
   auto th = make_tma_atom(SM90_TMA_LOAD{}, high, typename Tile::HighLayout{}(_, _, 0), make_shape(_64{}, _8{}));
   return [c, ta, tl, th] {
     dim3 grid((c.problem.n + 63) / 64, (c.problem.max_rows + 63) / 64, c.problem.experts);
-    return enqueue_kernel<Pdl>(tma_wgmma<Q, T, SF, decltype(ta), decltype(tl), decltype(th), Pdl>,
+    return enqueue_kernel<Pdl>(tma_wgmma<Q, T, SF, decltype(ta), decltype(tl), decltype(th), Pdl, PrefetchB>,
                               grid, 128, 0, static_cast<cudaStream_t>(c.stream), c, ta, tl, th);
   };
 }

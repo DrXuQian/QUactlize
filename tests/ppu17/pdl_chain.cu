@@ -2,11 +2,15 @@
 #include "fixture.cuh"
 #include "launch.cuh"
 #include <memory>
+#if defined(Q17_TEST_WEIGHT_PREFETCH)
+#include "tma.cuh"
+#endif
 
 namespace {
 struct ChainOptions : Options {
   int replays = 3;
   bool negative = false;
+  bool prefetch = false;
 };
 
 __host__ __device__ float activation_value(int row, int k, int epoch) {
@@ -164,9 +168,22 @@ template <int Q, class T> void test(ChainOptions const &o) {
   q17_launch_options_v1 options{1, sizeof(options), 1, 0};
   std::vector<std::vector<uint8_t>> baseline(2);
   int comparisons = 0;
-  for (bool graph : {false, true}) for (bool pdl : {false, true}) {
+  for (bool graph : {false, true}) for (int arm = 0; arm < (o.prefetch ? 3 : 2); ++arm) {
+    bool pdl = arm != 0;
     q17_plan_v1 *raw = nullptr;
-    check(pdl ? q17_prepare_with_options_v1(&c, &options, &raw) : q17_prepare_v1(&c, &raw), "prepare chain");
+    if (arm == 2) {
+#if defined(Q17_TEST_WEIGHT_PREFETCH)
+      if (c.config.engine != Q17_TMA_WGMMA) throw std::runtime_error("prefetch test requires TMA config");
+      // Test-only invocation: low/high were fully uploaded before this
+      // chain. No production ABI silently adopts the stronger lifetime.
+      raw = new q17_plan_v1{c.device, o.sf ? prepare_tma<Q,T,true,true,true>(c)
+                                         : prepare_tma<Q,T,false,true,true>(c)};
+#else
+      throw std::runtime_error("prefetch test was not compiled");
+#endif
+    } else {
+      check(pdl ? q17_prepare_with_options_v1(&c, &options, &raw) : q17_prepare_v1(&c, &raw), "prepare chain");
+    }
     std::unique_ptr<q17_plan_v1, decltype(&q17_destroy_v1)> plan(raw, q17_destroy_v1);
     auto enqueue = [&](int epoch) {
       auto producer = pdl ? produce_inputs<true> : produce_inputs<false>;
@@ -221,8 +238,8 @@ template <int Q, class T> void test(ChainOptions const &o) {
     }
   }
   gpu(cudaStreamDestroy(stream), "stream destroy");
-  std::printf("PPU17_PDL_CHAIN PASS q=%d compute=%d input=%d output=%d config=%d route=%d grouped=%d comparisons=%d raw_equal=1 cpu_oracle=PASS stream=PASS graph=PASS timing=NOT_MEASURED backend=%s\n",
-      Q, o.compute, o.input, o.output, o.config, p.route, o.grouped, comparisons, q17_build_target_v1());
+  std::printf("PPU17_PDL_CHAIN PASS q=%d compute=%d input=%d output=%d config=%d route=%d grouped=%d comparisons=%d raw_equal=1 cpu_oracle=PASS stream=PASS graph=PASS timing=NOT_MEASURED prefetch=%d m=%d n=%d k=%d backend=%s\n",
+      Q, o.compute, o.input, o.output, o.config, p.route, o.grouped, comparisons, o.prefetch, m, o.n, o.k, q17_build_target_v1());
 }
 } // namespace
 
@@ -236,6 +253,7 @@ int main(int argc, char **argv) {
       else if (key == "--grouped") o.grouped = true;
       else if (key == "--sf") o.sf = true;
       else if (key == "--negative-missing-wait") o.negative = true;
+      else if (key == "--prefetch") o.prefetch = true;
       else {
         if (++i == argc) throw std::runtime_error("missing value for " + key);
         if (key == "--rows") {
