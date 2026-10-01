@@ -3,7 +3,8 @@
 This is an opt-in dependency protocol on the CUTLASS 4.3 backend, not a new
 weight format, tactic, or production default. PPU1.0/1.5 are unchanged.
 The first implementation does **not** move weight loads ahead of the wait.
-Physical dependent-chain correctness must pass before that optimization.
+The separately gated [first-B-tile experiment](ppu17-pdl-prefetch.md) now
+passes physical H800 correctness, but is not a public/default route.
 
 ## Interface and implementation
 
@@ -176,12 +177,14 @@ cooperative GPTQ/prepacked/GGUF provider chains. **No kernel performance was
 measured**; the 60s/559s suite wall times are diagnostic execution time, not
 latency or a speedup. Native PPU1.7 remains a separate pending gate.
 
-After physical correctness:
+Follow-up status after physical correctness:
 
-1. Move a bounded first weight tile ahead of the dependency wait. Keep
-   activation, fresh SF metadata and unready routing reads behind it.
-2. Split TMA A/B issue while preserving exact transaction bytes and stage
-   lifetime; keep the existing WGMMA completion protocol.
+1. Experimental first-B-tile staging and split A/B transaction accounting
+   are implemented and pass 96 physical cases. Activation, fresh SF metadata
+   and unready routing remain behind the wait; ordinary device code is equal.
+2. Complete-chain tests did not establish broad additional prefetch benefit.
+   SF's PDL edge causes a large regression in this controlled H800 cohort;
+   keep it ordinary pending a matched measurement. See the experiment report.
 3. Extend to admitted PPU1.7 MoE auxiliary kernels as those paths are ported.
    The current compact-grouped API does not silently supply a full MoE chain.
 4. Compare ordinary, protocol-only and early-weight-load variants with the

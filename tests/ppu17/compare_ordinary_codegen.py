@@ -1,7 +1,7 @@
 """Compare encoded ordinary SM90a device bodies against the pre-PDL parent.
 
-Only the added final `Pdl=false` template argument is normalized. Instruction
-encodings (including scheduling control words) must match; no timing claim.
+Only trailing disabled PDL/prefetch policy tags are matched to an existing
+parent symbol. Instruction encodings and scheduling words must match.
 """
 import argparse
 import hashlib
@@ -11,7 +11,7 @@ import re
 import subprocess
 
 
-def bodies(inspector, obj, added_argument=False):
+def bodies(inspector, obj):
     text = subprocess.check_output([str(inspector), "--dump-sass", str(obj)], text=True)
     chunks = re.split(r"Function\s*:\s*", text)[1:]
     symbols = [chunk.splitlines()[0].strip() for chunk in chunks]
@@ -20,10 +20,6 @@ def bodies(inspector, obj, added_argument=False):
     for chunk, name in zip(chunks, names):
         if "ACQBULK" in chunk or "PREEXIT" in chunk:
             continue
-        if added_argument:
-            name, count = re.subn(r", false>\(", ">(", name, count=1)
-            if count != 1:
-                raise ValueError("missing ordinary policy tag: " + name)
         # c++filt separates adjacent closing template brackets with spaces.
         name = re.sub(r"\s+(?=>)", "", name)
         words = re.findall(r"/\* 0x([0-9a-f]{16}) \*/", chunk)
@@ -31,6 +27,26 @@ def bodies(inspector, obj, added_argument=False):
             raise ValueError("missing or duplicate encoded body: " + name)
         result[name] = hashlib.sha256("".join(words).encode()).hexdigest()
     return result
+
+
+def match_parent(candidate, parent):
+    """Accept only known disabled policy additions, never instruction changes."""
+    matched = {}
+    for name, digest in candidate.items():
+        choices = [name]
+        # TMA may add Pdl=false followed by PrefetchB=false. Other families
+        # add at most Pdl=false. Each normalized name must actually exist in
+        # the parent; do not blindly erase dtype/arithmetic boolean tags.
+        for _ in range(2 if "::tma_wgmma<" in name else 1):
+            shorter, count = re.subn(r", false>\(", ">(", choices[-1], count=1)
+            if not count:
+                break
+            choices.append(shorter)
+        present = [choice for choice in choices if choice in parent]
+        if len(present) != 1 or present[0] in matched:
+            raise ValueError("missing/ambiguous/duplicate parent symbol: " + name)
+        matched[present[0]] = digest
+    return matched
 
 
 def main():
@@ -49,7 +65,7 @@ def main():
     rows = []
     for q in (8, 10, 11, 12, 13, 14):
         parent = bodies(args.cuobjdump, args.baseline / f"q{q}.o")
-        candidate = bodies(args.cuobjdump, args.candidate / f"q{q}.o", True)
+        candidate = match_parent(bodies(args.cuobjdump, args.candidate / f"q{q}.o"), parent)
         if set(parent) != set(candidate):
             raise ValueError("ordinary inventory differs for q=" + str(q))
         expected = 86 if q == 12 else 26

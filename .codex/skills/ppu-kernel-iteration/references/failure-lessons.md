@@ -16,6 +16,7 @@ every diagnostic to every kernel.
 | Port compiles but native instructions balloon | Inspect exact PTX/SDK lowering, operand delivery and resources; see [native lowering](native-lowering.md) | Compiler acceptance means efficient native support, or the hardware lacks the arithmetic capability |
 | Full API wins but ACU kernels lose | Separate event spans from per-kernel replay timing; measure same-call launch gaps before attribution | The difference of unlike measurements is measured Python overhead, or the kernels already beat the reference |
 | A mixed-provider winner is presented as one family's parity | Bind the compiled reader/collective/scheduler and filter that family before finalist selection | A Machete reader plus Marlin scheduling proves Machete/Stream-K performance |
+| Correct PDL graph is slower than ordinary/direct launch | Retain ordinary, protocol-only and early-load arms; change one dependency edge or resource policy and inspect the graph timeline | All kernels should enable PDL, or a longer kernel interval is entirely time waiting at the dependency instruction |
 
 For independent family parity, retain that reference's full relevant config
 inventory in screening and compare finalists with identical arithmetic and
@@ -49,3 +50,13 @@ host analysis; do not reset devices, kill another workload or rewrite the SDK.
 Keep diagnostics small: the exact first bad cell, immediate runtime code,
 source/binary identity, and saved detailed logs are more useful than thousands
 of repeated warnings. A CPU/profiler receipt is not device admission.
+
+On physical H800 / CUDA12.8 SM90a / driver595.71.05, a fixed Q4
+GEMM -> SF -> TMA GEMM graph regressed even without early weight loads.
+Making only SF ordinary restored the baseline; target shared/L1 carveout25
+removed much, but not all, of the slowdown. The target device bodies were
+unchanged in the resource-policy control. This isolates an edge/resource
+interaction, not its hardware mechanism; counters or a phase-instrumented
+kernel are still needed before claiming L1 misses or dependency-wait cycles.
+Treat carveout as a controlled diagnostic, not a universal preset. Keep native
+PPU1.7 status separate. Evidence: `docs/ppu17-pdl-prefetch.md` (2026-10-01).
