@@ -125,9 +125,10 @@ if a foreign GPU job appears. Each result binds the binary and retained log.
 Local artifacts: `/workspace/quactlize-ppu17-pdl-20261001/`.
 Source parent: `63a6cd11d2dedb945e8ed9cadae920c86b9eeefd`.
 
-The local implementation covers the protocol, optional ABI, compile checks
-and physical-chain test entrypoint. H800 chain numerics, native PPU1.7
-codegen/numerics and performance remain pending; no route is promoted.
+The implementation covers the protocol, optional ABI, compile checks and
+physical-chain test entrypoint. The physical H800 chain gate passed on
+2026-10-01 as recorded below. Native PPU1.7 codegen/numerics and performance
+remain pending; no route is promoted.
 
 Local checks on 2026-10-01 (CUDA 12.8, no GPU launches):
 
@@ -144,6 +145,36 @@ Local checks on 2026-10-01 (CUDA 12.8, no GPU launches):
 The first cooperative prepacked build exposed the missing `is_last_tile`
 adapter method. Its failed logs are retained alongside the passing rebuild.
 These checks do not establish a PDL speedup or native PPU1.7 admission.
+
+### Physical H800 chain result
+
+Implementation: `8e8bc0065dc538366641522c34ed9df5d2ef1012`. Reused the exact
+CUDA 12.8 local-gate library and application on an idle H800 PCIe 80GB,
+driver 595.71.05; no rebuild or arithmetic change. The controller monitored
+GPU process isolation throughout both suites.
+
+| Suite | Cases | Ordinary/PDL × stream/graph comparisons | Missing-wait negative | Result |
+|---|---:|---:|---|---|
+| Smoke | 52 | 1,248 | EXPECTED_RED; waited control PASS | PASS |
+| Coverage | 476 | 11,424 | EXPECTED_RED; waited control PASS | PASS |
+
+All comparisons passed the independent CPU oracle, output guards and raw
+equality against ordinary execution. Coverage contains 76 cases each for
+Q8/Q2/Q3/Q5/Q6 and 96 for Q4. The negative read the old marker `-1`, while
+the waited control and completed producer returned 42. This verifies that
+the device exposed the omitted dependency; overlap is not guaranteed on
+every other launch.
+
+Evidence retained locally under
+`/workspace/quactlize-ppu17-pdl-20261001/h800-19641/{smoke,coverage}/` and
+remotely under `/workspace/q17-pdl-h800-20261001/{smoke,coverage}/`.
+Every downloaded log matched its recorded SHA256. Coverage summary SHA256:
+`bf5b9ba86dc6b1e7d889b78f0ea744683104fb1763e3869c57199c1a8fd8ead4`.
+
+This gate covers the q17 prepared SIMT/WGMMA/TMA paths, not the experimental
+cooperative GPTQ/prepacked/GGUF provider chains. **No kernel performance was
+measured**; the 60s/559s suite wall times are diagnostic execution time, not
+latency or a speedup. Native PPU1.7 remains a separate pending gate.
 
 After physical correctness:
 
