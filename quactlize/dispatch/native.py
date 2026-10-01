@@ -1,0 +1,318 @@
+"""Offline device-gate bindings for the production C++ selector."""
+
+import ctypes as C
+from pathlib import Path
+
+from quactlize.runtime.native import Call, checked
+from quactlize.execution.native import Call as SimtCall, SimtConfig, SimtCallV2, Sizes, Arrangement, Q4DecodeConfig
+
+
+class Request(C.Structure):
+    _fields_ = (
+        [("version", C.c_uint32), ("size", C.c_uint32)]
+        + [
+            (x, C.c_int32)
+            for x in ("qtype", "route", "m", "n", "k", "experts", "max_rows")
+        ]
+        + [("mapping_id", C.c_uint64)]
+    )
+
+
+class Choice(C.Structure):
+    _fields_ = (
+        [("version", C.c_uint32), ("size", C.c_uint32)]
+        + [(x, C.c_uint64) for x in ("ticket", "workspace_bytes", "shared_bytes")]
+        + [
+            (x, C.c_int32)
+            for x in ("policy", "algorithm", "split", "grid", "device", "compute_units")
+        ]
+        + [("parent", C.c_char * 192), ("build_key", C.c_char * 65)]
+    )
+
+
+class DenseIO(C.Structure):
+    _fields_ = [("version",C.c_uint32),("size",C.c_uint32),("call",Call),
+                ("input_type",C.c_int32),("output_type",C.c_int32)]
+
+
+class DenseCompute(C.Structure):
+    _fields_ = [("version",C.c_uint32),("size",C.c_uint32),("dense",DenseIO),("compute_type",C.c_int32)]
+
+
+class DeviceCall(C.Structure):
+    _fields_ = [("version",C.c_uint32),("size",C.c_uint32),("call",Call),
+                ("max_rows",C.c_int32),("reserved",C.c_int32)]
+
+
+class GroupedCompute(C.Structure):
+    _fields_ = [("version",C.c_uint32),("size",C.c_uint32),("device_call",DeviceCall),
+                ("compute_type",C.c_int32)]
+
+
+class GroupedMetadata(C.Structure):
+    _fields_ = GroupedCompute._fields_ + [("metadata_type",C.c_int32)]
+
+
+class SmallmChoice(C.Structure):
+    _fields_ = [("version",C.c_uint32),("size",C.c_uint32)] + [
+        (name,C.c_int32) for name in ("kind","policy","source_n","source_k","source_tokens")] + [
+        ("simt",SimtConfig),("sizes",Sizes),("tc",Choice)]
+
+
+class MatchedSmallmChoice(C.Structure):
+    _fields_=[("version",C.c_uint32),("size",C.c_uint32),("base",SmallmChoice),
+              ("q4",Q4DecodeConfig),("compute_type",C.c_int32)]
+
+
+class JitOptions(C.Structure):
+    _fields_ = [("version", C.c_uint32), ("size", C.c_uint32)] + [
+        (name, C.c_char_p) for name in ("python", "helper", "sdk", "cache")]
+
+
+class IndexedIO(C.Structure):
+    _fields_ = [("version",C.c_uint32),("size",C.c_uint32)] + [
+        (name,C.c_int32) for name in ("tokens","topk","channels","reserved")] + [
+        (name,C.c_int64) for name in ("ids_stride","a_row_stride","a_token_stride","out_row_stride")] + [
+        (name,C.c_void_p) for name in ("ids","a","output","row_ids")]
+
+
+class Router(C.Structure):
+    _fields_ = [("version",C.c_uint32),("size",C.c_uint32)] + [
+        (name,C.c_int32) for name in ("use_sigmoid","with_norm","delayed_softmax","reserved")] + [
+        ("clamp",C.c_float),("scale",C.c_float)] + [
+        (name,C.c_void_p) for name in ("logits","bias","weights")]
+
+
+class MoeEndpoint(C.Structure):
+    _fields_ = [("version",C.c_uint32),("size",C.c_uint32)] + [
+        (name,C.c_void_p) for name in ("tc_handle","simt_call","q4_config","simt_config",
+                                      "arrangement","scratch")] + [("scratch_bytes",C.c_uint64)]
+
+
+class MoeEndpointV3(C.Structure):
+    _fields_ = MoeEndpoint._fields_ + [("reuse_config", C.c_void_p)]
+
+
+class MoeEndpointV4(C.Structure):
+    _fields_ = [("version",C.c_uint32),("size",C.c_uint32),("endpoint",MoeEndpointV3),
+                ("compute_type",C.c_int32)]
+
+
+class MoeFinish(C.Structure):
+    _fields_ = [("version",C.c_uint32),("size",C.c_uint32),
+                ("weights_stride",C.c_int64),("output_stride",C.c_int64),
+                ("weights",C.c_void_p),("output",C.c_void_p)]
+
+
+class Dispatch:
+    def __init__(self, root, jit=None):
+        self.lib = C.CDLL(
+            str(Path(root).resolve() / "libquactlize_kpack_dispatch.so"),
+            mode=C.RTLD_LOCAL,
+        )
+        types = {
+            "open": ([C.c_char_p, C.POINTER(C.c_void_p)], C.c_int),
+            "query": ([C.c_void_p, C.POINTER(Request), C.POINTER(Choice)], C.c_int),
+            "prepare": (
+                [C.c_void_p, C.POINTER(Choice), C.POINTER(Call), C.POINTER(C.c_void_p)],
+                C.c_int,
+            ),
+            "run": ([C.c_void_p, C.c_void_p], C.c_int),
+            "destroy": ([C.c_void_p], None),
+            "close": ([C.c_void_p], None),
+            "error": ([], C.c_char_p),
+        }
+        self.fn = {}
+        for name, (args, result) in types.items():
+            f = getattr(self.lib, "quactlize_kpack_dispatch_" + name + "_v1")
+            f.argtypes, f.restype = args, result
+            self.fn[name] = f
+        self.runtime = C.c_void_p()
+        self.handles = []
+        self.chains = []
+        self.last_miss = None
+        checked(
+            self.fn["open"](str(Path(root).resolve()).encode(), C.byref(self.runtime)),
+            "dispatch open",
+        )
+        if jit:
+            enable = self.lib.quactlize_kpack_dispatch_enable_jit_v1
+            enable.argtypes = [C.c_void_p, C.POINTER(JitOptions)]
+            enable.restype = C.c_int
+            options = JitOptions(1, C.sizeof(JitOptions), *[
+                str(Path(jit[name]).resolve()).encode() for name in ("python", "helper", "sdk", "cache")])
+            if enable(self.runtime, C.byref(options)):
+                self.close()
+                raise ValueError("JIT setup: " + self.fn["error"]().decode())
+
+    def query(self, q, route, m, n, k, experts, max_rows, mapping):
+        r = Request(1, C.sizeof(Request), q, route, m, n, k, experts, max_rows, mapping)
+        choice = Choice()
+        rc = self.fn["query"](self.runtime, C.byref(r), C.byref(choice))
+        self.last_miss = None
+        if rc == 1:
+            self.last_miss = self.fn["error"]().decode()
+            return None
+        if rc:
+            raise ValueError("native query: " + self.fn["error"]().decode())
+        return choice
+
+    def query_smallm(self, call, arrangement, compute_type=None):
+        typed=call if compute_type is None else SimtCallV2(call,compute_type)
+        fn=getattr(self.lib,'quactlize_kpack_dispatch_query_smallm_v'+('1' if compute_type is None else '2'))
+        fn.argtypes=[C.c_void_p,C.POINTER(type(typed)),C.POINTER(Arrangement),C.POINTER(SmallmChoice)]
+        fn.restype=C.c_int
+        out=SmallmChoice()
+        rc=fn(self.runtime,C.byref(typed),C.byref(arrangement),C.byref(out))
+        if rc==1:return None
+        if rc:raise ValueError('small-M query: '+self.fn['error']().decode())
+        return out
+
+    def query_smallm_matched(self, call, arrangement, compute_type=0):
+        typed=SimtCallV2(call,compute_type)
+        fn=self.lib.quactlize_kpack_dispatch_query_smallm_v3
+        fn.argtypes=[C.c_void_p,C.POINTER(SimtCallV2),C.POINTER(Arrangement),C.POINTER(MatchedSmallmChoice)]
+        fn.restype=C.c_int
+        out=MatchedSmallmChoice()
+        rc=fn(self.runtime,C.byref(typed),C.byref(arrangement),C.byref(out))
+        if rc==1:return None
+        if rc:raise ValueError('matched small-M query: '+self.fn['error']().decode())
+        return out
+
+    def query_compute(self, request, compute_type, endpoint_type=0, decode=False):
+        fn=self.lib.quactlize_kpack_dispatch_query_compute_v1
+        fn.argtypes=[C.c_void_p,C.POINTER(Request),C.c_int32,C.c_int32,C.c_int32,C.POINTER(Choice)]
+        fn.restype=C.c_int
+        out=Choice()
+        rc=fn(self.runtime,C.byref(request),compute_type,endpoint_type,int(decode),C.byref(out))
+        if rc==1:return None
+        if rc:raise ValueError('compute query: '+self.fn['error']().decode())
+        return out
+
+    def prepare_compute(self, choice, call, max_rows, compute_type, indexed=None, metadata_type=0):
+        # Explicit for SF; a caller must not silently reinterpret FP16 planes.
+        # Packed FQ has no caller-expanded metadata, so infer its internal type.
+        if choice.parent.decode().startswith("fq"):
+            metadata_type=compute_type
+        typed=GroupedMetadata(4,C.sizeof(GroupedMetadata),
+            DeviceCall(2,C.sizeof(DeviceCall),call,max_rows,0),compute_type,metadata_type)
+        fn=self.lib.quactlize_kpack_dispatch_prepare_compute_v2
+        fn.argtypes=[C.c_void_p,C.POINTER(Choice),C.POINTER(GroupedMetadata),C.POINTER(C.c_void_p)]
+        fn.restype=C.c_int
+        handle=C.c_void_p()
+        if fn(self.runtime,C.byref(choice),C.byref(typed),C.byref(handle)):
+            raise ValueError('compute prepare: '+self.fn['error']().decode())
+        self.handles.append(handle)
+        if indexed is not None:
+            bind=self.lib.quactlize_kpack_dispatch_bind_llama_indexed_v1
+            bind.argtypes=[C.c_void_p,C.POINTER(IndexedIO)];bind.restype=C.c_int
+            if bind(handle,C.byref(indexed)):
+                self.fn['destroy'](handle);self.handles.pop()
+                raise ValueError('compute indexed binding failed')
+        return lambda:self.fn['run'](handle,call.stream)
+
+    def prepare(self, choice, call, indexed=None):
+        h = C.c_void_p()
+        rc = self.fn["prepare"](
+            self.runtime, C.byref(choice), C.byref(call), C.byref(h)
+        )
+        if rc:
+            raise ValueError("native prepare: " + self.fn["error"]().decode())
+        self.handles.append(h)
+        if indexed is not None:
+            bind=self.lib.quactlize_kpack_dispatch_bind_llama_indexed_v1
+            bind.argtypes=[C.c_void_p,C.POINTER(IndexedIO)]; bind.restype=C.c_int
+            rc=bind(h,C.byref(indexed))
+            if rc:
+                self.fn["destroy"](h); self.handles.pop()
+                raise ValueError(f"native indexed binding failed rc={rc}")
+        return lambda: self.fn["run"](h, call.stream)
+
+    def query_dense_io(self, request, endpoint_type=1, decode=False):
+        fn=self.lib.quactlize_kpack_dispatch_query_dense_io_v1
+        fn.argtypes=[C.c_void_p,C.POINTER(Request),C.c_int32,C.c_int32,C.POINTER(Choice)]
+        fn.restype=C.c_int
+        choice=Choice()
+        status=fn(self.runtime,C.byref(request),endpoint_type,int(decode),C.byref(choice))
+        if status==1: return None
+        if status: raise ValueError("typed native query: "+self.fn["error"]().decode())
+        return choice
+
+    def prepare_dense_io(self, choice, call, endpoint_type=1, compute_type=None):
+        typed=DenseIO(1,C.sizeof(DenseIO),call,endpoint_type,endpoint_type)
+        if compute_type is not None:typed=DenseCompute(2,C.sizeof(DenseCompute),typed,compute_type)
+        fn=getattr(self.lib,'quactlize_kpack_dispatch_prepare_dense_io_v'+('1' if compute_type is None else '2'))
+        fn.argtypes=[C.c_void_p,C.POINTER(Choice),C.POINTER(type(typed)),C.POINTER(C.c_void_p)]
+        fn.restype=C.c_int
+        handle=C.c_void_p()
+        if fn(self.runtime,C.byref(choice),C.byref(typed),C.byref(handle)):
+            raise ValueError("typed native prepare: "+self.fn["error"]().decode())
+        self.handles.append(handle)
+        return lambda: self.fn["run"](handle,call.stream)
+
+    def chain(self, gate, up, down, stream, router=None, mixed=False, finish=None):
+        endpoint = MoeEndpointV4 if isinstance(gate,MoeEndpointV4) else MoeEndpointV3 if isinstance(gate, MoeEndpointV3) else MoeEndpoint
+        if mixed and any(not isinstance(e, endpoint) for e in (gate, up, down) if e is not None):
+            raise ValueError('mixed MoE endpoint versions differ')
+        version = ('4' if endpoint is MoeEndpointV4 else '3' if endpoint is MoeEndpointV3 else '2') if mixed else '1'
+        create=getattr(self.lib,'quactlize_kpack_dispatch_moe_create_v'+version)
+        create.argtypes=([C.c_void_p,C.POINTER(endpoint),C.POINTER(endpoint),C.POINTER(endpoint)] if mixed else
+                         [C.c_void_p,C.c_void_p,C.c_void_p])+[C.POINTER(C.c_void_p)]
+        create.restype=C.c_int
+        chain=C.c_void_p()
+        rc=create(self.runtime,C.byref(gate),C.byref(up) if up is not None else None,C.byref(down),C.byref(chain)) if mixed else create(gate,up,down,C.byref(chain))
+        if rc: raise ValueError(f"native MoE chain creation failed rc={rc}: "+self.fn['error']().decode())
+        self.chains.append(chain)
+        if finish is not None:
+            bind=self.lib.quactlize_kpack_dispatch_moe_bind_finish_v1
+            bind.argtypes=[C.c_void_p,C.c_void_p,C.POINTER(MoeFinish)];bind.restype=C.c_int
+            status=bind(self.runtime,chain,C.byref(finish))
+            if status: raise ValueError(f"native MoE finish binding failed rc={status}")
+        if router is not None:
+            run=self.lib.quactlize_kpack_dispatch_moe_run_router_v1
+            run.argtypes=[C.c_void_p,C.POINTER(Router),C.c_void_p]; run.restype=C.c_int
+            return lambda: run(chain,C.byref(router),stream)
+        run=self.lib.quactlize_kpack_dispatch_moe_run_v1
+        run.argtypes=[C.c_void_p,C.c_void_p]; run.restype=C.c_int
+        return lambda: run(chain,stream)
+
+    def simt_scratch(self, call):
+        fn=self.lib.quactlize_kpack_dispatch_moe_simt_scratch_v1
+        fn.argtypes=[C.c_void_p,C.c_void_p,C.POINTER(C.c_uint64)];fn.restype=C.c_int
+        size=C.c_uint64()
+        if fn(self.runtime,C.byref(call),C.byref(size)):
+            raise ValueError('mixed MoE scratch: '+self.fn['error']().decode())
+        return size.value
+
+    def close(self):
+        if self.chains:
+            destroy=self.lib.quactlize_kpack_dispatch_moe_destroy_v1
+            destroy.argtypes=[C.c_void_p]; destroy.restype=None
+            for chain in self.chains: destroy(chain)
+            self.chains.clear()
+        for h in self.handles:
+            self.fn["destroy"](h)
+        self.handles.clear()
+        if self.runtime:
+            self.fn["close"](self.runtime)
+            self.runtime = None
+
+
+def receipt(choice):
+    return {
+        k: (
+            getattr(choice, k).decode()
+            if k in ("parent", "build_key")
+            else getattr(choice, k)
+        )
+        for k in (
+            "parent",
+            "build_key",
+            "policy",
+            "algorithm",
+            "split",
+            "grid",
+            "shared_bytes",
+            "workspace_bytes",
+        )
+    }

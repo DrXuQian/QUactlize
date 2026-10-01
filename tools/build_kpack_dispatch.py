@@ -1,0 +1,329 @@
+#!/usr/bin/env python3
+"""Build the C++ selector and only its selected PPU parent closure."""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from quactlize.runtime.compiler import Compiler, sha, validate_parent, source_contract
+from quactlize.runtime.identity import ROUTES, digest
+from quactlize.runtime.native import sdk_identity
+from tools.verify_kpack_dispatch import verify as verify_native
+from tools.verify_kpack_dispatch import require_exports, PREFILL_MODEL_EXPORTS
+from quactlize.execution.q4_decode_codegen import POLICY as DECODE_POLICY
+from quactlize.dispatch.planning import plan_smallm, validate_inventory
+
+
+def attach_prefill(output, build, sdk):
+    build = Path(build).resolve(strict=True)
+    receipt = json.loads((build / 'manifest.json').read_text())
+    library = build / 'libquactlize_ppu_prefill.so'
+    if (receipt.get('schema') != 'quactlize.prefill-runtime.v1' or
+            receipt.get('library') != library.name or sha(library) != receipt.get('sha256')):
+        raise ValueError('prefill build identity differs')
+    require_exports(library, PREFILL_MODEL_EXPORTS)
+    for name, expected in receipt['runtime'].items():
+        if Path(name).name != name or sha(sdk / 'lib' / name) != expected:
+            raise ValueError('prefill SDK runtime differs: ' + name)
+    result = {}
+    for field, source, name in (
+            ('library', library, library.name),
+            ('receipt', build / 'manifest.json', 'prefill-runtime.json'),
+            ('helper', ROOT / 'tools/kpack_deepgemm_prewarm.py', 'kpack_deepgemm_prewarm.py')):
+        shutil.copy2(source, output / name)
+        result[field], result[field + '_sha256'] = name, sha(output / name)
+    return result
+
+
+def requests():
+    result = []
+    dense = [
+        (1024, 5120),
+        (5120, 8192),
+        (5120, 25600),
+        (8192, 5120),
+        (25600, 5120),
+        (512, 2048),
+        (2048, 512),
+        (3072, 512),
+    ]
+    grouped = [(512, 2048), (2048, 512), (512, 3072), (3072, 512)]
+    for q in (8, 10, 11, 12, 13, 14):
+        for route in ((1,) if q == 8 else (0, 1)):
+            for n, k in dense:
+                for m in (1, 4, 8, 64, 128, 256, 512, 1024, 2048, 4096):
+                    result.append((q, route, m, n, k, 1, m))
+        for route in ((3,) if q == 8 else (2, 3)):
+            for n, k in grouped:
+                for tokens in (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096):
+                    result.append((q, route, tokens * 8, n, k, 256, tokens))
+    return result
+
+
+def plan(output, inputs=None, decode=False,compute_type='f16'):
+    if compute_type not in ('f16','bf16'):raise ValueError('unknown compute type')
+    executable = output / "policy-query"
+    subprocess.run(
+        [
+            "g++",
+            "-std=c++17",
+            "-O2",
+            f"-I{ROOT}",
+            str(ROOT / "tools/kpack_native_policy.cpp"),
+            "-o",
+            str(executable),
+        ],
+        check=True,
+    )
+    inputs = requests() if inputs is None else inputs
+    lines = subprocess.check_output(
+        [str(executable)] + (["--decode"] if decode else []) + (["--bf16"] if compute_type=='bf16' else []),
+        text=True,
+        input="".join(" ".join(map(str, r)) + "\n" for r in inputs),
+    ).splitlines()
+    if len(lines) != len(inputs):
+        raise ValueError("native policy omitted requests")
+    parents = {}
+    selected = []
+    for req, line in zip(inputs, lines):
+        if line == "MISS":
+            selected.append(dict(request=req, status="FALLBACK_REQUIRED"))
+            continue
+        p = line.split()
+        values = list(map(int, p[1:]))
+        (
+            q,
+            route,
+            tm,
+            tn,
+            tk,
+            wm,
+            wn,
+            stages,
+            ap,
+            dn,
+            persistent,
+            split,
+            grid_mode,
+            grid_b,
+            kind,
+        ) = values
+        parent = dict(
+            symbol=p[0],
+            qtype=q,
+            route=ROUTES[route],
+            tm=tm,
+            tn=tn,
+            tk=tk,
+            wm=wm,
+            wn=wn,
+            stages=stages,
+            ap=ap,
+            dn=dn,
+            persistent=persistent,
+        )
+        validate_parent(parent)
+        if p[0] in parents and parents[p[0]] != parent:
+            raise ValueError("symbol aliases different parent tuples")
+        parents[p[0]] = parent
+        selected.append(
+            dict(
+                request=req,
+                status="SELECTED",
+                parent=p[0],
+                split=split,
+                grid_mode=grid_mode,
+                grid_b=grid_b,
+                policy=kind,
+            )
+        )
+    return sorted(parents.values(), key=lambda p: p["symbol"]), selected
+
+
+def catalog(records, jit_source=""):
+    def typed(r):
+        return r["identity"].get("endpoints") == "decode-m1-8-f32-bf16-v1"
+    if len({(r["parent"]["symbol"],typed(r),r['identity'].get('compute_type','f16')) for r in records}) != len(records):
+        raise ValueError("catalog has multiple builds of one parent")
+    rows = []
+    for r in records:
+        p = r["parent"]
+        strings = [p["symbol"], r["key"], digest(r["identity"])]
+        values = [p["qtype"], ROUTES.index(p["route"])] + [
+            p[f] for f in ("tm", "tn", "tk", "wm", "wn", "stages", "ap", "dn")
+        ]
+        rows.append(
+            "  {"
+            + ",".join([json.dumps(s) for s in strings] + list(map(str, values)))
+            + (",{},"+str(typed(r)).lower()+",1" if r['identity'].get('compute_type')=='bf16'
+               else ",{},true" if typed(r) else "") + "},"
+        )
+    return ("static std::vector<Image> const kImages = {\n" + "\n".join(rows) + "\n};\n"
+            + "static char const kJitSource[] = " + json.dumps(jit_source) + ";\n")
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--sdk", type=Path, required=True)
+    p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--cache", type=Path)
+    p.add_argument("--jobs", type=int, default=8)
+    p.add_argument("--plan-only", action="store_true")
+    p.add_argument("--jit-only", action="store_true", help="small dispatcher, no precompiled GEMM modules")
+    p.add_argument("--prefill-runtime", type=Path, help="verified per-call dequant + BF16 provider runtime")
+    p.add_argument("--execution-bundle", type=Path, required=True)
+    args = p.parse_args()
+    if args.jobs < 1:
+        p.error('--jobs must be positive')
+    output = args.output.resolve()
+    output.mkdir(parents=True, exist_ok=False)
+    parents, selected = plan(output)
+    final_selection = plan_smallm(output)
+    (output/'final-selection.json').write_text(json.dumps(final_selection,indent=2)+'\n')
+    (output / "plan.json").write_text(
+        json.dumps(dict(parents=parents, requests=selected,
+                        scope='FIXED_ROUTE_TC_CLOSURE',smallm='final-selection.json'), indent=2) + "\n"
+    )
+    print(
+        f"KPACK_DISPATCH_PLAN requests={len(selected)} parents={len(parents)} "
+        f"misses={sum(r['status']=='FALLBACK_REQUIRED' for r in selected)}",
+        flush=True,
+    )
+    if args.plan_only:
+        return
+    compiler = None
+    if args.jit_only:
+        records = []
+    else:
+        compiler = Compiler(args.sdk, args.cache or output / "modules", args.jobs)
+        records = compiler.compile_only(
+            parents, progress=lambda *x: print("KPACK_DISPATCH_BUILD", *x, flush=True)
+        )
+    for r in records:
+        target = output / "modules" / r["key"] / "kernel.so"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if Path(r["path"]).resolve() != target:
+            shutil.copy2(r["path"], target)
+        r["path"] = str(target.relative_to(output))
+    jit_compiler = compiler or Compiler(args.sdk, args.cache or output / "modules", args.jobs)
+    jit_source = source_contract(jit_compiler.identity)
+    (output / "catalog.inc").write_text(catalog(records, jit_source))
+    host = output / "libquactlize_kpack_dispatch.so"
+    command = [
+        "g++",
+        "-std=c++17",
+        "-O2",
+        "-fPIC",
+        "-shared",
+        "-pthread",
+        "-Wl,-Bsymbolic",
+        f"-I{output}",
+        str(ROOT / "quactlize/dispatch/binding.cpp"),
+        "-ldl",
+        "-o",
+        str(host),
+    ]
+    subprocess.run(command, check=True)
+    execution = args.execution_bundle.resolve() / "libquactlize_ppu_execution.so"
+    receipt = json.loads((args.execution_bundle / "manifest.json").read_text())
+    if receipt.get("schema") != "quactlize.kpack-execution-build.v1" or sha(
+        execution
+    ) != receipt.get("sha256"):
+        raise ValueError("execution payload identity differs")
+    for name, value in receipt["runtime"].items():
+        if sha(args.sdk / "lib" / name) != value:
+            raise ValueError(f"execution SDK runtime differs: {name}")
+    capabilities=validate_inventory(final_selection,receipt,records,jit=True)
+    shutil.copy2(execution, output / execution.name)
+    source_paths = [
+        *sorted((ROOT / "quactlize/dispatch").glob("*")),
+        Path(__file__),
+        ROOT / "tools/kpack_native_policy.cpp",
+        ROOT / "tools/kpack_selection.cpp",
+        ROOT / "quactlize/execution/simt_strategy.hpp",
+        ROOT / "quactlize/execution/measured_decode.hpp",
+        ROOT / "quactlize/execution/measured_decode.inc",
+        ROOT / "quactlize/fusion/gate_up.h",
+        ROOT / "quactlize/fusion/validation.hpp",
+        ROOT / "quactlize/fusion/selection.hpp",
+        ROOT / "quactlize/fusion/recipes.inc",
+        ROOT / "policies/kpack_gate_up_selection_v2.json",
+        ROOT / "policies/kpack_zw810_heuristic_v1.hpp",
+        ROOT / "policies/kpack_zw810_runtime_v1.hpp",
+        ROOT / "policies/kpack_zw810_cost_v1.hpp",
+        ROOT / "policies/kpack_smallm_v1.hpp",
+        ROOT / "policies/kpack_smallm_matched_v1.hpp",
+        ROOT / "policies/kpack_smallm_effective_v1.hpp",
+        ROOT / "policies/kpack_decode_winners_v1.json",
+        ROOT / "policies/kpack_q8_vector_v1.hpp",
+    ]
+    manifest = dict(
+        schema="quactlize.kpack-native-dispatch.v1",
+        modules=records,
+        policy_hashes={
+            str(f.relative_to(ROOT)): sha(f) for f in source_paths if f.is_file()
+        },
+        dispatch_sha256=sha(host),
+        execution_sha256=sha(execution),
+        compiler_identity=compiler.identity if compiler else None,
+        compiler_identities={digest(r["identity"]): r["identity"] for r in records},
+        execution_receipt=receipt,
+        host_command=command,
+        device_validated=False,
+        heuristic_admitted=False,
+        grouped_profile="matched-smallm-explicit-compute-otherwise-legacy-bounds-no-router-readback",
+        jit_source_contract=jit_source,
+        jit_source_identity={k: jit_compiler.identity[k] for k in ("kernel", "flags", "generator")},
+        final_selection=dict(path='final-selection.json',sha256=sha(output/'final-selection.json'),
+                             capabilities=capabilities),
+    )
+    if args.jit_only or capabilities['jit_required']:
+        manifest["jit_required"] = True
+    if receipt.get('q4_decode_policy_sha256'):
+        if sha(DECODE_POLICY) != receipt['q4_decode_policy_sha256']:
+            raise ValueError('execution uses a different Q4 decode selection table')
+        shutil.copy2(DECODE_POLICY, output / 'decode-policy.json')
+        manifest['decode_policy'] = dict(path='decode-policy.json', sha256=sha(DECODE_POLICY))
+    smallm_policy=ROOT/'policies/kpack_smallm_v1.json'
+    shutil.copy2(smallm_policy,output/'smallm-policy.json')
+    manifest['smallm_policy']=dict(path='smallm-policy.json',sha256=sha(smallm_policy),
+        header_sha256=sha(smallm_policy.with_suffix('.hpp')),
+        admission='EXACT_AND_BUCKET_PROPOSALS_MODEL_GATE_PENDING')
+    matched_policy=ROOT/'policies/kpack_smallm_matched_v1.json'
+    shutil.copy2(matched_policy,output/'smallm-matched-policy.json')
+    manifest['smallm_matched_policy']=dict(path='smallm-matched-policy.json',sha256=sha(matched_policy),
+        header_sha256=sha(matched_policy.with_suffix('.hpp')),
+        admission='MATCHED_POOL_EXPLICIT_COMPUTE_MODEL_GATE_PENDING')
+    vector_policy=ROOT/'policies/kpack_q8_vector_v1.json'
+    shutil.copy2(vector_policy,output/'q8-vector-policy.json')
+    manifest['q8_vector_policy']=dict(path='q8-vector-policy.json',sha256=sha(vector_policy),
+        header_sha256=sha(vector_policy.with_suffix('.hpp')),
+        admission='EXACT_SIMT_READER_REPLACEMENT_MODEL_GATE_PENDING')
+    winners=ROOT/'policies/kpack_decode_winners_v1.json'
+    shutil.copy2(winners,output/'decode-winners.json')
+    manifest['decode_winners']=dict(path='decode-winners.json',sha256=sha(winners),
+        effective_header_sha256=sha(ROOT/'policies/kpack_smallm_effective_v1.hpp'),
+        admission='COMPONENT_CONFIRMED_PRODUCTION_INTEGRATION_PENDING')
+    if receipt.get('simt_compute_v2'):
+        manifest['compute_contract']=dict(schema='quactlize.explicit-compute.v1',
+            formats=[8,10,11,12,13,14],grouped='ALL_LEGAL_M',dense='DECODE_M1_8',
+            metadata='KQUANT_DIRECT_BF16_V1_Q8_ORIGINAL_F16',grouped_abi=4,sf_abi=2,
+            selection='MATCHED_SMALLM_OVERRIDES_ELSE_INITIAL_COMPUTE_PROPOSALS',device_validated=False)
+    if args.prefill_runtime:
+        manifest['prefill'] = attach_prefill(output, args.prefill_runtime, args.sdk)
+    (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    verify_native(output)
+    print(
+        f"KPACK_DISPATCH_BUILD COMPILED modules={len(records)} root={output} device_validated=0",
+        flush=True,
+    )
+
+
+if __name__ == "__main__":
+    main()

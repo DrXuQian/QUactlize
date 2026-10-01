@@ -1,0 +1,1811 @@
+/***************************************************************************************************
+ * Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD. All rights reserved. 
+ * Copyright (c) 2023 - 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ * list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ * this list of conditions and the following disclaimer in the documentation
+ * and/or other materials provided with the distribution.
+ *
+ * 3. Neither the name of the copyright holder nor the names of its
+ * contributors may be used to endorse or promote products derived from
+ * this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ **************************************************************************************************/
+
+#pragma once
+
+
+#include "cutlass/cutlass.h"
+#include "cutlass/gemm/dispatch_policy.hpp"
+// quactlize's mainloop policies; this collective specialises CollectiveMma on one of them.
+#include "actlize_extensions/cutlass/gemm/quactlize_dispatch_policy.hpp"
+#include "actlize_extensions/cutlass/detail/quactlize_mixed_dtype.hpp"
+#include "actlize_extensions/cutlass/quactlize_mix_gemm_convert.h"
+#include "actlize_extensions/cutlass/gguf_packed_scale.h"
+#include "actlize_extensions/cutlass/gguf_bfloat_scale.h"
+
+#include "cute/algorithm/functional.hpp"
+#include "cute/atom/mma_atom.hpp"
+#include "cute/algorithm/gemm.hpp"
+#include "cute/tensor_predicate.hpp"
+#include "cute/numeric/arithmetic_tuple.hpp"
+
+#include "cutlass/gemm/collective/collective_mma.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_metadata_policy.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_argument_contract.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_packed_metadata_ownership.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_a_schedule.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_decode_input.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_mixed_pipeline.hpp"
+#include "actlize_extensions/cutlass/gemm/collective/detail/ppu_2plane_source_layout.hpp"
+#include "cutlass/detail/collective.hpp"
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+namespace cutlass::gemm::collective {
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+// Transport wrapper: hands this mainloop the SECOND plane's three B-side atoms through the EXISTING single
+// template parameters, because CollectiveMma's parameter list is fixed by its primary template.
+// A dedicated wrapper is required -- do NOT use cute::is_tuple: a cute Layout (which SmemLayoutAtomB_ is) is
+// itself tuple-like, so is_tuple would be a false positive.
+// BPlanes MOVED to actlize_extensions/cutlass/detail/quactlize_mixed_dtype.hpp on 2026-08-06. It is the ABI
+// between the builder and this collective, not part of this collective: quactlize_mma_builder.inl NAMES it while
+// selecting atoms, so leaving it here made the builder -- which every consumer needs -- depend on the two-plane
+// header, which only Q3/Q5/Q6 consumers need. Found by the compiler the moment the umbrella stopped listing this
+// file unconditionally; a grep for the mainloop tags had missed it.
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
+template <
+  typename Arch,
+  int Stages,
+  class kContinous,
+  class KernelSchedule,
+  int ArtifactLowFold_,
+  int ArtifactHighFold_,
+  int ArtifactTileK_,
+  int LowKPack_,
+  int HighKPack_,
+  int KPackDeliveryN_,
+  int BChunk_,
+  class TileShapePair_,
+  class ElementAOptionalTuple,
+  class StrideA_,
+  class ElementBOptionalTuple,
+  class StrideB_,
+  class TiledMma_,
+  class GmemTiledCopyA_,
+  class SmemLayoutAtomA_,
+  class SmemCopyAtomA_,
+  class TransformA_,
+  class GmemTiledCopyB_,
+  class SmemLayoutAtomB_,
+  class SmemCopyAtomB_,
+  class TransformB_>
+struct CollectiveMma<
+    Arch,
+    MainloopPPUAiuMixedInput2Plane<Stages, kContinous, KernelSchedule,
+                                  ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_,
+                                  LowKPack_, HighKPack_, KPackDeliveryN_, BChunk_>,
+    TileShapePair_,
+    ElementAOptionalTuple,
+    StrideA_,
+    ElementBOptionalTuple,
+    StrideB_,
+    TiledMma_,
+    GmemTiledCopyA_,
+    SmemLayoutAtomA_,
+    SmemCopyAtomA_,
+    TransformA_,
+    GmemTiledCopyB_,
+    SmemLayoutAtomB_,
+    SmemCopyAtomB_,
+    TransformB_>
+{
+private:
+  enum class ConversionMode {
+    DirectConvert,
+    ConvertAndScale,
+    ConvertAndScaleWithZero
+  };
+  using ScaleA = detail::deduce_mixed_width_dtype_t<1, ElementAOptionalTuple>;
+  using ScaleB = detail::deduce_mixed_width_dtype_t<1, ElementBOptionalTuple>;
+  // NoZero at index 2 means ScaleOnly with the second plane still at index 3 -- see detail::NoZero.
+  using ZeroA = detail::strip_no_zero_t<detail::deduce_mixed_width_dtype_t<2, ElementAOptionalTuple>>;
+  using ZeroB = detail::strip_no_zero_t<detail::deduce_mixed_width_dtype_t<2, ElementBOptionalTuple>>;
+  using TileShape_Scale = detail::deduce_mixed_width_dtype_t<1, TileShapePair_>;
+public:
+  //
+  // Type Aliases
+  //
+  using DispatchPolicy = MainloopPPUAiuMixedInput2Plane<Stages, kContinous, KernelSchedule,
+                                                       ArtifactLowFold_, ArtifactHighFold_, ArtifactTileK_,
+                                                       LowKPack_, HighKPack_, KPackDeliveryN_, BChunk_>;
+  using MetadataPublication = typename DispatchPolicy::MetadataPublication;
+  using TileShape = detail::deduce_mixed_width_dtype_t<0, TileShapePair_>;
+  using ScaleTileShape = cute::conditional_t<cute::is_void_v<TileShape_Scale>,
+      decltype(make_shape(shape<1>(TileShape{}), Int<1>{})), TileShape_Scale>;
+  using ElementA = detail::deduce_mixed_width_dtype_t<0, ElementAOptionalTuple>;
+  using ElementB = detail::deduce_mixed_width_dtype_t<0, ElementBOptionalTuple>;
+  // The SECOND B plane rides the 4th member of the B element tuple:
+  //     cute::tuple<ElementB, ElementScale, ElementZero, PlaneB2>
+  // Unlike the single-plane mainloop this is MANDATORY -- this collective exists only for the 2-plane case.
+  using PlaneB2 = detail::deduce_mixed_width_dtype_t<3, ElementBOptionalTuple>;
+  static_assert(!cute::is_void_v<PlaneB2>,
+    "2-plane mainloop: pass the high plane as the 4th member of the B element tuple");
+  static constexpr bool IsATransformed = cute::is_tuple<ElementAOptionalTuple>::value;
+  using ElementScale = cute::conditional_t<IsATransformed, ScaleA, ScaleB>;
+  using ElementZero = cute::conditional_t<IsATransformed, ZeroA, ZeroB>;
+  // For cases where we can't have a void type, we can use this to allow the code to compile when the scale / zero is void.
+  using NonVoidElementScale = cute::conditional_t<cute::is_void_v<ElementScale>, float, ElementScale>;
+  using NonVoidElementZero = cute::conditional_t<cute::is_void_v<ElementZero>, float, ElementZero>;
+
+  using StrideA = StrideA_;
+  using StrideB = StrideB_;
+  // These are always MN major
+  using StrideScale = cute::Stride<cute::Int<1>, int64_t, int64_t>;
+  // For cases where we can't have a void scale, we can use this to allow the code to compile when the scale is void.
+  using NonVoidStrideScale = cute::conditional_t<cute::is_void_v<StrideScale>, cute::Stride<_1, int64_t, int64_t>, StrideScale>;
+
+  static_assert((IsATransformed && cutlass::gemm::detail::is_k_major<StrideA>()) ||
+                (!IsATransformed && cutlass::gemm::detail::is_k_major<StrideB>()),
+                "The transformed type must be K-major.");
+
+  static_assert(( IsATransformed && (sizeof(ElementB) == 2)) ||
+                (!IsATransformed && (sizeof(ElementA) == 2)) ||
+                (cutlass::gemm::detail::is_k_major<StrideA>() &&
+                 cutlass::gemm::detail::is_k_major<StrideB>()),
+                "The unscaled element must be 2 bytes OR both inputs must be K-major");
+
+  static_assert(cutlass::gemm::detail::is_mn_major<NonVoidStrideScale>(),
+    "Scale must be MN major [Col Major if A is scaled, Row Major if B is scaled].");
+
+  using TiledMma = TiledMma_;
+  using ElementAccumulator = typename TiledMma::ValTypeC;
+
+  using GmemTiledCopyA = GmemTiledCopyA_;
+  using GmemTiledCopyB  = bplane_first_t<GmemTiledCopyB_>;
+  using GmemTiledCopyB2 = bplane_second_t<GmemTiledCopyB_>;
+  static_assert(!cute::is_void_v<GmemTiledCopyB2>,
+    "2-plane mainloop: GmemTiledCopyB must be BPlanes<plane0,plane1>");
+
+  constexpr static int Scale_TileN = shape<0>(ScaleTileShape{});
+  constexpr static int Scale_TileK = shape<1>(ScaleTileShape{});
+  using MetadataPolicy = detail::MixedMetadataPolicy<ElementScale, Scale_TileK,
+      !cute::is_void_v<ElementZero>, detail::SplitMetadataAddress>;
+  using PipelineDriver = detail::MixedPipelineDriver;
+  // The two-plane path first exposed the silent truncation at (64,128,128) w64x64 gs16: the old (16,8)x8 layout
+  // asked a 64-thread CTA for 128 logical slots and loaded only four of eight groups. All mixed collectives now use
+  // the same H-capped plan; a wider value layout is extra 16-byte atom iterations, not a wider cp.async instruction.
+  constexpr static int Scale_NumThreads = size(TiledMma{});
+  using ScaleCopyPlan = typename MetadataPolicy::template ScaleCopy<Scale_TileN, Scale_NumThreads>;
+  using Scale_GmemCopyThrLayoutH = Int<ScaleCopyPlan::thread_layout_h>;
+  using Scale_GmemCopyThrLayoutW = Int<ScaleCopyPlan::thread_layout_w>;
+  using GmemTiledCopyScale = decltype(
+    make_tiled_copy(Copy_Atom<PPU_CP_ASYNC_CACHEGLOBAL<cute::uint128_t>, NonVoidElementScale>{},
+                    Layout<Shape <Scale_GmemCopyThrLayoutH, Scale_GmemCopyThrLayoutW>>{},
+                    Layout<Shape <Int<ScaleCopyPlan::values_per_thread>,_1>>{}));
+  using GmemTiledCopyZero = decltype(
+    make_tiled_copy(Copy_Atom<PPU_CP_ASYNC_CACHEGLOBAL<cute::uint128_t>, NonVoidElementZero>{},
+                    Layout<Shape <Scale_GmemCopyThrLayoutH, Scale_GmemCopyThrLayoutW>>{},
+                    Layout<Shape <Int<ScaleCopyPlan::values_per_thread>,_1>>{}));
+
+  using SmemLayoutAtomA = SmemLayoutAtomA_;
+  using SmemLayoutAtomB  = bplane_first_t<SmemLayoutAtomB_>;
+  using SmemLayoutAtomB2 = bplane_second_t<SmemLayoutAtomB_>;
+  static_assert(!cute::is_void_v<SmemLayoutAtomB2>,
+    "2-plane mainloop: SmemLayoutAtomB must be BPlanes<plane0,plane1>");
+
+  using SmemCopyAtomA = SmemCopyAtomA_;
+  using SmemCopyAtomB  = bplane_first_t<SmemCopyAtomB_>;
+  using SmemCopyAtomB2 = bplane_second_t<SmemCopyAtomB_>;
+  static_assert(!cute::is_void_v<SmemCopyAtomB2>,
+    "2-plane mainloop: SmemCopyAtomB must be BPlanes<plane0,plane1>");
+  using SmemCopyAtomScale = Copy_Atom<cute::DefaultCopy, NonVoidElementScale>;
+
+  // We must ensure the type to be scaled goes to RF
+  static constexpr bool SwapAB = IsATransformed;
+  using InternalSmemLayoutAtomA = cute::conditional_t<!SwapAB, SmemLayoutAtomA, SmemLayoutAtomB>;
+  using InternalSmemLayoutAtomB = cute::conditional_t<!SwapAB, SmemLayoutAtomB, SmemLayoutAtomA>;
+  using InternalSmemCopyAtomA   = cute::conditional_t<!SwapAB, SmemCopyAtomA, SmemCopyAtomB>;
+  using InternalSmemCopyAtomB   = cute::conditional_t<!SwapAB, SmemCopyAtomB, SmemCopyAtomA>;
+  // TMA converts f32 input to tf32 when copying from GMEM to SMEM
+  // For all other types, cast to size equivalent uint type to avoid any rounding by TMA.
+  // static constexpr bool ConvertF32toTF32A = cute::is_same_v<float, ElementA>;
+  // static constexpr bool ConvertF32toTF32B = cute::is_same_v<float, ElementB>;
+  // using ConvertedElementA = cute::conditional_t<ConvertF32toTF32A, tfloat32_t, uint_bit_t<sizeof_bits_v<ElementA>>>;
+  // using ConvertedElementB = cute::conditional_t<ConvertF32toTF32B, tfloat32_t, uint_bit_t<sizeof_bits_v<ElementB>>>;
+  // using InternalElementA = cute::conditional_t<!SwapAB, ConvertedElementA, ConvertedElementB>;
+  // using InternalElementB = cute::conditional_t<!SwapAB, ConvertedElementB, ConvertedElementA>;
+
+  using RealInternalElementA = cute::conditional_t<!SwapAB, ElementA, ElementB>;
+  using DecodeInputTraits = detail::DecodeInputTraits<TransformA_, RealInternalElementA>;
+  using GlobalElementA = typename DecodeInputTraits::SourceElement;
+  static constexpr bool kDecodeInput = DecodeInputTraits::enabled;
+  using ArgumentElementA = cute::conditional_t<kDecodeInput,GlobalElementA,ElementA>;
+  static_assert(!kDecodeInput || !SwapAB,"decode input conversion requires ordinary A");
+  using RealInternalElementB = cute::conditional_t<!SwapAB, ElementB, ElementA>;
+  static constexpr int kLowBits = cutlass::sizeof_bits<RealInternalElementB>::value;
+  static constexpr int kHiBits  = cutlass::sizeof_bits<PlaneB2>::value;
+  static_assert((kLowBits == 2 && kHiBits == 1) || (kLowBits == 4 && kHiBits == 2) || (kLowBits == 4 && kHiBits == 1),
+                "2-plane mainloop supports Q3 (int2+int1), Q6 (int4+int2) and Q5 (int4+int1)");
+  static constexpr bool kKPackTranspose = DispatchPolicy::KPackTranspose;
+  static_assert(kKPackTranspose, "this collective accepts canonical K-pack only");
+  using BDeliveryPolicy = typename DispatchPolicy::BDelivery;
+  static constexpr int kLowKPack = DispatchPolicy::LowKPack;
+  static constexpr int kHighKPack = DispatchPolicy::HighKPack;
+  static constexpr int kSafeLowKPack = kLowKPack > 0 ? kLowKPack : 1;
+  static constexpr int kSafeHighKPack = kHighKPack > 0 ? kHighKPack : 1;
+  static constexpr int kKPackScheduledDeliveryN =
+      kKPackTranspose ? DispatchPolicy::KPackDeliveryN : 0;
+  static constexpr int kKPackResolvedDeliveryN =
+      kKPackTranspose ? int(size<0>(InternalSmemLayoutAtomB{})) : 0;
+  static_assert(!kKPackTranspose ||
+                    (kLowKPack * kLowBits == 16 &&
+                     kHighKPack * kHiBits == 16),
+                "each two-plane K-pack word must be exactly one b16 transport");
+  static_assert(
+      !kKPackTranspose ||
+          std::is_same_v<
+              BDeliveryPolicy,
+              detail::quactlize_b_delivery::ProductionBDelivery>,
+      "the shipping two-plane K-pack schedule must retain its matched AIU/TSM B delivery");
+  using BTransportElement = cute::conditional_t<
+      kKPackTranspose, cutlass::half_t, RealInternalElementB>;
+  using B2TransportElement = cute::conditional_t<
+      kKPackTranspose, cutlass::half_t, PlaneB2>;
+
+  // THE SAME PACKED SCALE CHANNEL AS THE SINGLE-PLANE COLLECTIVE. PPU_PACKED_FORMAT selects the artifact trait;
+  // plane widths additionally have to match that format so a Q4-selected broad build cannot reinterpret Q5's fp16
+  // scale plane merely because both formats have eight groups. Dense and grouped both select this collective through
+  // CollectiveBuilder, so this one channel serves both shapes.
+#if defined(PPU_PACKED_FORMAT)
+  static constexpr cutlass::gguf_packed::Fmt kPackedFmt = cutlass::gguf_packed::Fmt(PPU_PACKED_FORMAT);
+#else
+  static constexpr cutlass::gguf_packed::Fmt kPackedFmt = cutlass::gguf_packed::Fmt::Q4K;
+#endif
+  using PackedUnit = cutlass::gguf_packed::Unit<kPackedFmt>;
+  static constexpr int kPackedSbBytes = PackedUnit::kSbBytes;
+  static constexpr int kPackedSbPerUnit = PackedUnit::kSbPerUnit;
+  static constexpr int kPackedScaleUnit = PackedUnit::kUnitTotal;
+  static constexpr bool kPackedFormatMatchesPlanes =
+      (kPackedFmt == cutlass::gguf_packed::Fmt::Q5K && kLowBits == 4 && kHiBits == 1) ||
+      (kPackedFmt == cutlass::gguf_packed::Fmt::Q3K && kLowBits == 2 && kHiBits == 1) ||
+      (kPackedFmt == cutlass::gguf_packed::Fmt::Q6K && kLowBits == 4 && kHiBits == 2);
+  static constexpr bool kPackedTileDividesSb = PackedUnit::kGroups % int(Scale_TileK) == 0;
+  static constexpr bool kPackedScaleOn =
+#if defined(PPU_PACKED_SCALE) && (PPU_PACKED_SCALE != 0)
+      kPackedFormatMatchesPlanes && kPackedTileDividesSb;
+#else
+      false;
+#endif
+
+  // A copyable unit owns one or two complete superblocks of ONE column. Q3 consumes one 256-K tile per superblock;
+  // Q6 deliberately retains its validated 128-K weight tactic and therefore consumes two tiles per superblock.
+  // These are derived delivery counts, not raw tactic coordinates: the pair index and the sub-range decoded from it
+  // follow from (groups in a superblock, groups in this tile, superblocks in a copyable unit).
+  static_assert(!kPackedFormatMatchesPlanes || kPackedTileDividesSb,
+                "a packed k-tile must cover an integral group run inside its superblock");
+  static constexpr int kPackedTilesPerSb = kPackedTileDividesSb ? PackedUnit::kGroups / int(Scale_TileK) : 1;
+  static constexpr int kPackedTilesPerUnit = kPackedSbPerUnit * kPackedTilesPerSb;
+
+  using PackedMetadataOwnership = detail::PackedMetadataColumnOwnership<
+      int(Scale_TileN), int(Scale_NumThreads)>;
+  static constexpr int kPackedOwnerThreads = PackedMetadataOwnership::owner_threads;
+  static constexpr int kPackedColsPerThread = PackedMetadataOwnership::columns_per_thread;
+
+  // Q5 is one legal 16-byte cp.async per column; Q3/Q6 are seven/nine 4-byte copies of their byte-neutral 28/36-byte
+  // paired units. The value tile remains exactly one complete column. If owners < TileN, CuTe carries additional
+  // columns in the slice rest mode, so pre-publication decode still reads only transactions issued by that owner.
+  static_assert(!kPackedScaleOn || (kPackedScaleUnit % 4 == 0),
+                "the selected two-plane packed unit must divide into legal 4/8/16-byte cp.async transfers");
+  static constexpr int kPackedCopyBytes = (kPackedScaleUnit % 16 == 0) ? 16
+                                        : (kPackedScaleUnit % 8 == 0) ? 8 : 4;
+  using PackedCopyElem = cute::conditional_t<kPackedCopyBytes == 16, cute::uint128_t,
+                         cute::conditional_t<kPackedCopyBytes == 8, uint64_t, uint32_t>>;
+  using GmemTiledCopyScalePacked = decltype(
+      make_tiled_copy(Copy_Atom<PPU_CP_ASYNC_CACHEGLOBAL<PackedCopyElem>, uint8_t>{},
+                      Layout<Shape<Int<kPackedOwnerThreads>, _1>>{},
+                      // One column is one value tile. Additional columns owned
+                      // by a narrow CTA live in the partition rest mode.
+                      Layout<Shape<_1, Int<kPackedScaleUnit>>>{}));
+  using SmemLayoutScaleRawStaged =
+      Layout<Shape<Int<Scale_TileN>, Int<kPackedScaleUnit>, Int<DispatchPolicy::Stages>>,
+             Stride<Int<kPackedScaleUnit>, _1, Int<Scale_TileN * kPackedScaleUnit>>>;
+
+  // Typed BChunk on the 2-plane path. Same field as the fold collective, and the same reason it is a
+  // constexpr bool: a preprocessor branch leaves the other branch un-type-checked, which is how an int1-only
+  // emitter got instantiated for uint2b_t and produced 576 errors.
+  static constexpr int kBChunkMode = DispatchPolicy::BChunk;
+  // Chunking needs MixGemmChunkEmit for the LOW plane, which covers int1/int2/int4, so every supported pair qualifies.
+  static constexpr bool kBChunk = (kBChunkMode != 0);
+  static_assert(!kKPackTranspose || !kBChunk,
+                "K-pack two-plane functionality first closes the full-fragment converter path");
+  using InternalStrideA  = cute::conditional_t<!SwapAB, StrideA, StrideB>;
+  using InternalStrideB  = cute::conditional_t<!SwapAB, StrideB, StrideA>;
+
+  using TransformA = TransformA_;
+  using TransformB = TransformB_;
+  using InternalTransformA  = cute::conditional_t<!SwapAB, TransformA, TransformB>;
+  using InternalTransformB  = cute::conditional_t<!SwapAB, TransformB, TransformA>;
+  using ArchTag = Arch;
+
+  using SmemLayoutAtomScale = Layout<Shape<_8, _1>>;
+
+  static_assert(rank(InternalSmemLayoutAtomA{}) == 2, "SmemLayoutAtom must be rank 2 (M/N, K)");
+  static_assert((size<0>(TileShape{}) % size<0>(InternalSmemLayoutAtomA{})) == 0, "SmemLayoutAtom must evenly divide tile shape.");
+  static_assert((size<2>(TileShape{}) % size<1>(InternalSmemLayoutAtomA{})) == 0, "SmemLayoutAtom must evenly divide tile shape.");
+
+  static_assert(rank(InternalSmemLayoutAtomB{}) == 2, "SmemLayoutAtom must be rank 2 (M/N, K)");
+  static constexpr int P1Fold = DispatchPolicy::ArtifactLowFold;
+  static constexpr int P2Fold = DispatchPolicy::ArtifactHighFold;
+  static constexpr int ArtifactTileK = DispatchPolicy::ArtifactTileK;
+  static constexpr int P1ArtifactBytes = P1Fold * ArtifactTileK * kLowBits / 8;
+  static constexpr int P2ArtifactBytes = P2Fold * ArtifactTileK * kHiBits / 8;
+  static constexpr int P1ExpectedAtomK = kKPackTranspose
+      ? ArtifactTileK / kSafeLowKPack
+      : (P1ArtifactBytes > 128 ? 128 : P1ArtifactBytes) * 8 / kLowBits;
+  static constexpr int P2ExpectedAtomK = kKPackTranspose
+      ? ArtifactTileK / kSafeHighKPack
+      : (P2ArtifactBytes > 128 ? 128 : P2ArtifactBytes) * 8 / kHiBits;
+  static_assert(P1Fold >= 1 && P2Fold >= 1 && ArtifactTileK >= 1,
+                "two-plane artifact geometry must carry positive folds and TileK");
+  static_assert((size<1>(TileShape{}) % P1Fold) == 0 &&
+                (size<1>(TileShape{}) % P2Fold) == 0,
+                "each artifact fold must divide TileShape.N");
+  static_assert((size<1>(TileShape{}) % (P1Fold * size<0>(InternalSmemLayoutAtomB{}))) == 0,
+                "plane 1 copy atom must tile the folded physical N extent");
+  static_assert((P1Fold * size<2>(TileShape{})) % size<1>(InternalSmemLayoutAtomB{}) == 0,
+                "plane 1 artifact copy K must tile the full folded tactic K span");
+  static_assert(size<1>(InternalSmemLayoutAtomB{}) == P1ExpectedAtomK,
+                "plane 1 copy atom K must come from F1 * ArtifactTileK with the AIU 128-B cap");
+
+  static_assert(rank(SmemLayoutAtomScale{}) == 2, "SmemLayoutAtomScale must be rank 2");
+  static_assert((size<0>(TileShape{}) % size<0>(SmemLayoutAtomScale{})) == 0, "SmemLayoutAtomScale must equal the tile shape.");
+  static_assert((size<2>(TileShape{}) % size<1>(SmemLayoutAtomScale{})) == 0, "SmemLayoutAtomScale must evenly divide tile k shape.");
+
+  // m8 changes the logical fragment only.  The matched AIU-write/swzl-read pair remains a physical 16-row cube.
+  // Allocate that full cube per stage and give the MMA a first-eight-row view with the physical stage pitch.
+  static constexpr int LogicalTileM = int(size<0>(TileShape{}));
+  static constexpr int PhysicalATileM = LogicalTileM < 16 ? 16 : LogicalTileM;
+  using SmemLayoutACompact = decltype(tile_to_shape(
+      InternalSmemLayoutAtomA{},
+      make_shape(shape<0>(TileShape{}), shape<2>(TileShape{}), Int<DispatchPolicy::Stages>{})));
+  using SmemLayoutAPhysicalStage = decltype(tile_to_shape(
+      InternalSmemLayoutAtomA{},
+      make_shape(Int<PhysicalATileM>{}, shape<2>(TileShape{}))));
+  using SmemLayoutAPhysical = decltype(tile_to_shape(
+      InternalSmemLayoutAtomA{},
+      make_shape(Int<PhysicalATileM>{}, shape<2>(TileShape{}), Int<DispatchPolicy::Stages>{})));
+  using SmemLayoutALogicalStage = decltype(tile_to_shape(
+      InternalSmemLayoutAtomA{},
+      make_shape(shape<0>(TileShape{}), shape<2>(TileShape{}))));
+  using SmemLayoutALogicalPitched = decltype(append(
+      SmemLayoutALogicalStage{},
+      make_layout(Int<DispatchPolicy::Stages>{}, Int<cute::cosize_v<SmemLayoutAPhysicalStage>>{})));
+  using SmemLayoutA = cute::conditional_t<LogicalTileM == PhysicalATileM,
+      SmemLayoutACompact, SmemLayoutALogicalPitched>;
+  static_assert(size<0>(SmemLayoutA{}) == LogicalTileM,
+                "two-plane A MMA view must expose exactly the logical TileM");
+  static_assert(size<0>(SmemLayoutAPhysical{}) == PhysicalATileM,
+                "two-plane A physical view must retain the 16-row AIU cube floor");
+  static_assert(LogicalTileM != 8 ||
+                    cute::cosize_v<SmemLayoutAPhysical> >= 16 * int(size<2>(TileShape{})) * DispatchPolicy::Stages,
+                "two-plane TM8 must pay for complete 16-row A cubes in every stage");
+  static constexpr int LogicalTileN = decltype(size<1>(TileShape{}))::value;
+  static constexpr int LogicalTileK = decltype(size<2>(TileShape{}))::value;
+  using SmemShapeB = cute::conditional_t<kKPackTranspose,
+      Shape<Int<LogicalTileN>, Int<LogicalTileK / kSafeLowKPack>,
+            Int<DispatchPolicy::Stages>>,
+      Shape<Int<LogicalTileN / P1Fold>, Int<P1Fold * LogicalTileK>,
+            Int<DispatchPolicy::Stages>>>;
+  using SmemLayoutB = decltype(tile_to_shape(
+      InternalSmemLayoutAtomB{}, SmemShapeB{}));
+  // The fold-in-N LOGICAL view the MMA fragment must be partitioned from when P1Fold > 1: (n'=(f,g), k) -> phys
+  // (g, f*TKe + k). Partitioning the PHYSICAL shape would give MMA_N = Ng and MMA_K = P1Fold*TKe/16, mismatching the
+  // accumulator's N and A's MMA_K. Verified in the single-plane fold collective, whose comment block this mirrors.
+  using FoldSmemLayoutB_MmaView = decltype(make_layout(
+      make_shape (make_shape(Int<P1Fold>{}, Int<LogicalTileN / P1Fold>{}), Int<LogicalTileK>{}),
+      make_stride(make_stride(Int<LogicalTileK>{}, Int<P1Fold * LogicalTileK>{}), _1{})));
+  using KPackSmemLayoutB_MmaView = Layout<
+      Shape<Int<LogicalTileN>, Int<LogicalTileK>>,
+      Stride<Int<LogicalTileK>, _1>>;
+  using SmemLayoutB_MmaView = cute::conditional_t<kKPackTranspose,
+      KPackSmemLayoutB_MmaView, FoldSmemLayoutB_MmaView>;
+
+  // The atoms now describe one resident artifact cube, so atomK/T can be fractional and can also be hidden by the
+  // operand's 128-B cap. The dispatch policy is the source of truth; these assertions make the atom an independent
+  // witness instead of trying to reconstruct the policy from it.
+  static_assert((size<1>(TileShape{}) % (P2Fold * size<0>(SmemLayoutAtomB2{}))) == 0,
+                "plane 2 copy atom must tile the folded physical N extent");
+  static_assert((P2Fold * size<2>(TileShape{})) % size<1>(SmemLayoutAtomB2{}) == 0,
+                "plane 2 artifact copy K must tile the full folded tactic K span");
+  static_assert(size<1>(SmemLayoutAtomB2{}) == P2ExpectedAtomK,
+                "plane 2 copy atom K must come from F2 * ArtifactTileK with the AIU 128-B cap");
+  using SmemShapeB2 = cute::conditional_t<kKPackTranspose,
+      Shape<Int<LogicalTileN>, Int<LogicalTileK / kSafeHighKPack>,
+            Int<DispatchPolicy::Stages>>,
+      Shape<Int<LogicalTileN / P2Fold>, Int<P2Fold * LogicalTileK>,
+            Int<DispatchPolicy::Stages>>>;
+  using SmemLayoutB2 = decltype(tile_to_shape(
+      SmemLayoutAtomB2{}, SmemShapeB2{}));
+
+  static_assert((P1Fold * kLowBits) % (P2Fold * kHiBits) == 0,
+                "plane delivery ratio must be integral");
+  static constexpr int ArtifactP2Div =
+      (P1Fold * kLowBits) / (P2Fold * kHiBits);
+  static_assert(ArtifactP2Div >= 1,
+                "plane 2 must not need more copy steps than plane 1");
+
+  // It is assumed that the scales and zero-points share the same smem layout
+  using SmemLayoutScale = decltype(tile_to_shape(
+    SmemLayoutAtomScale{},
+    make_shape(shape<0>(ScaleTileShape{}), shape<1>(ScaleTileShape{}), Int<DispatchPolicy::Stages>{})));
+
+  static_assert(DispatchPolicy::Stages >= 2, "CpAsync mainloop must have at least 2 stages in the pipeline.");
+
+private:
+  static constexpr ConversionMode
+  get_conversion_mode() {
+    if constexpr (cute::is_void_v<ElementScale>) {
+      return ConversionMode::DirectConvert;
+    }
+    else if constexpr (cute::is_void_v<ElementZero>) {
+      return ConversionMode::ConvertAndScale;
+    }
+    else {
+      return ConversionMode::ConvertAndScaleWithZero;
+    }
+  }
+
+  static constexpr ConversionMode KernelConversionMode = get_conversion_mode();
+  static constexpr bool ModeHasScales = KernelConversionMode == ConversionMode::ConvertAndScale ||
+                                        KernelConversionMode == ConversionMode::ConvertAndScaleWithZero;
+
+  // THE CONVERTER'S ADDITIVE BIAS, decided by the mode -- plan #20 phase 1.
+  //
+  // A 2-plane operand is a symmetric GGUF k-quant (Q3_K dl*(c-4), Q6_K d*sc*(c-32)) whose bias is a CONSTANT, so it can
+  // live either in the zero channel or in the converter's `add` immediate. With a zero channel present, leave it there
+  // and keep the shipped constants byte-for-byte (int4's -8, int2's 0). With ConvertAndScale there is no zero channel
+  // left to hold it, so the converter must own it: kSymBias2Plane, quoted from the converter header, not restated.
+  //
+  // Safety of making this mode-driven rather than a new template parameter, checked rather than assumed: every VERIFYING
+  // 2-plane caller today is ScaleZero (test_lowbit_grouped, test_q3_bconcat_real, test_q65_bconcat_real), and the only
+  // ScaleOnly 2-plane callers are bench rows (test_q3_bconcat_bench), where the value of an fp16 immediate cannot move
+  // the instruction count and so cannot move the time. Q5_K has a min channel and therefore never runs ScaleOnly.
+  static constexpr int kCvtBias = (KernelConversionMode == ConversionMode::ConvertAndScale)
+                                ? cutlass::kSymBias2Plane<kLowBits, kHiBits>
+                                : ((kLowBits == 4) ? 8 : 0);
+
+  // ONE alias, so BOTH conversion sites (the unchunked full delivery and the chunked transform) are biased by
+  // construction. It used to sit above, defaulted, while only the chunked site named the bias -- i.e. the same
+  // "one relation, two copies, one updated" shape that produced this session's pitch and gA faults. The default
+  // FragLayout is quoted from the converter header rather than copied.
+  using Cvt2Plane = cutlass::MixGemm2Plane<kLowBits, kHiBits, -1, 1, true,
+                                           cutlass::MixGemm2PlaneDefaultFrag<kLowBits>, kCvtBias, ElementA>;
+
+  static constexpr auto
+  elements_per_smem_scale() {
+    if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
+      return 0;
+    }
+    else if constexpr (ModeHasScales) {
+      return cute::cosize_v<SmemLayoutScale>;
+    }
+    else {
+      static_assert(cutlass::detail::dependent_false<KernelSchedule>,
+                    "Conversion mode not handled in scale smem allocation");
+    }
+  }
+
+  static constexpr auto
+  elements_per_smem_zero() {
+    if constexpr (KernelConversionMode == ConversionMode::DirectConvert ||
+                  KernelConversionMode == ConversionMode::ConvertAndScale ) {
+      return 0;
+    }
+    else if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero) {
+      return cute::cosize_v<SmemLayoutScale>;
+    }
+    else {
+      static_assert(cutlass::detail::dependent_false<KernelSchedule>,
+                    "Conversion mode not handled in zero smem allocation");
+    }
+  }
+
+public:
+  // Type-level witness used by the dense/grouped launchers: packed bytes must never silently enter the fp16 path.
+  static constexpr bool is_packed_scale = kPackedScaleOn;
+  static constexpr int packed_scale_copy_threads = kPackedOwnerThreads;
+  static constexpr int packed_scale_columns_per_thread = kPackedColsPerThread;
+
+  struct SharedStorage
+  {
+    static constexpr int scale_elements = elements_per_smem_scale();
+    static constexpr int zero_elements = elements_per_smem_zero();
+    cute::ArrayEngine<RealInternalElementA, cute::cosize_v<SmemLayoutAPhysical>> smem_a;
+    cute::ArrayEngine<BTransportElement, cute::cosize_v<SmemLayoutB>> smem_b;
+    cute::ArrayEngine<B2TransportElement, cute::cosize_v<SmemLayoutB2>> smem_b2;   // 2nd bit plane
+    cute::ArrayEngine<NonVoidElementScale, scale_elements> smem_scale;
+    cute::ArrayEngine<NonVoidElementZero, zero_elements> smem_zero;
+    // Last so an off/default instantiation has no effect on the preceding members' alignment.
+    cute::ArrayEngine<uint8_t, kPackedScaleOn ? int(cute::cosize(SmemLayoutScaleRawStaged{})) : 0> smem_scale_raw;
+  };
+  // Host side kernel arguments
+  struct Arguments {
+    ArgumentElementA const* ptr_A = nullptr;
+    StrideA dA{};
+    ElementB const* ptr_B = nullptr;
+    StrideB dB{};
+    ElementScale const* ptr_S = nullptr;
+    NonVoidStrideScale dS{};
+    int group_size = 0;
+    ElementZero const* ptr_Z = nullptr;
+    int const* group_row_offsets = nullptr;   // ragged grouped: per-expert cumulative A row start; null=uniform
+    // 2nd bit plane. Deliberately LAST so callers' positional brace-init of the fields above is unchanged; set it
+    // separately (args.mainloop.ptr_B2 = ...).
+    PlaneB2 const* ptr_B2 = nullptr;
+    // PER-PLANE N-FOLD: plane 2 may be folded harder than plane 1, in which case its PHYSICAL buffer is
+    // (N/P2Fold) rows x (K*P2Fold) codes and its row pitch differs from dB. Leave dB2_valid false to reuse dB, which
+    // is correct exactly when the two planes share a fold factor (P2Fold == 1) -- the pre-existing behaviour.
+    StrideB dB2{};
+    bool dB2_valid = false;
+  };
+
+  template <class ProblemShape>
+  static bool can_implement(ProblemShape const& problem_shape,
+                            Arguments const& args) {
+    auto mnkl = append<4>(problem_shape, Int<1>{});
+    int64_t const N = int64_t(get<1>(mnkl));
+    int64_t const K = int64_t(get<2>(mnkl));
+    int64_t const L = int64_t(get<3>(mnkl));
+    auto const& dB = [&]() -> auto const& {
+      if constexpr (SwapAB) return args.dA;
+      else return args.dB;
+    }();
+    detail::MixedArgumentContract c{};
+    c.n = N; c.k = K; c.l = L;
+    c.group_size = args.group_size;
+    c.tile_k = int64_t(size<2>(TileShape{}));
+    c.scale_tile_k = int64_t(Scale_TileK);
+    c.static_group_size = DispatchPolicy::StaticGroupSize;
+    c.low_fold = P1Fold;
+    c.high_fold = P2Fold;
+    c.low_bits = kLowBits;
+    c.high_bits = kHiBits;
+    c.interleave = int(kContinous{});
+    c.has_scales = ModeHasScales;
+    c.two_plane = true;
+    c.packed_scale = kPackedScaleOn;
+    c.packed_tiles_per_unit = kPackedScaleOn ? kPackedTilesPerUnit : 1;
+    c.dB2_valid = args.dB2_valid;
+    c.ptr_Z_nonnull = args.ptr_Z != nullptr;
+    c.dB0 = int64_t(get<0>(dB));
+    c.dB1 = int64_t(get<1>(dB));
+    c.dBL = int64_t(get<2>(dB));
+    c.dB20 = int64_t(get<0>(args.dB2));
+    c.dB21 = int64_t(get<1>(args.dB2));
+    c.dB2L = int64_t(get<2>(args.dB2));
+    c.dS0 = int64_t(get<0>(args.dS));
+    c.dS1 = int64_t(get<1>(args.dS));
+    c.dSL = int64_t(get<2>(args.dS));
+    return detail::mixed_arguments_supported(c);
+  }
+
+  // Device side kernel params
+  struct Params {
+    GmemTiledCopyScale gmem_tiled_copy_scale;
+    GmemTiledCopyScalePacked gmem_tiled_copy_scale_packed;
+    GmemTiledCopyZero gmem_tiled_copy_zero;
+
+    GlobalElementA const* ptr_A = nullptr;
+    InternalStrideA dA{};
+    RealInternalElementB const* ptr_B = nullptr;
+    InternalStrideB dB{};
+    PlaneB2 const* ptr_B2 = nullptr;
+    StrideB dB2{};
+    bool dB2_valid = false;
+
+    NonVoidElementScale const* ptr_S = nullptr;
+    NonVoidStrideScale dS{};
+    NonVoidElementZero const* ptr_Z = nullptr;
+
+    int group_size = 0;
+    int64_t scale_k = 0;
+    int reload_factor = 0;
+    int const* group_row_offsets = nullptr;
+  };
+
+  GmemTiledCopyA gmem_tiled_copy_A;
+  GmemTiledCopyB gmem_tiled_copy_B;
+  GmemTiledCopyB2 gmem_tiled_copy_B2;   // 2nd plane (carries its own AIU desc_)
+  int64_t scale_residue_n = 0;
+  int64_t scale_residue_k = 0;
+  bool scale_valid = true;
+  bool scale_valid_pk = true;
+  // Per-thread pipeline state for the unit that THIS thread copied into each stage. The decoder runs before the CTA
+  // publication barrier, so retaining the tile-within-unit coordinate locally preserves the same-thread ownership
+  // guarantee as the raw bytes themselves.
+  int packed_tile_in_unit[DispatchPolicy::Stages] = {};
+  //
+  // Methods
+  //
+
+
+  template <class ProblemShape>
+  static Params
+  to_underlying_arguments(ProblemShape const& problem_shape, Arguments const& args, void* workspace) {
+    Params p;
+    if constexpr (!SwapAB) {
+      p.ptr_A = reinterpret_cast<GlobalElementA const*>(args.ptr_A);
+      p.ptr_B = reinterpret_cast<RealInternalElementB const*>(args.ptr_B);
+      p.dA = args.dA;
+      p.dB = args.dB;
+    }
+    else {
+      p.ptr_A = reinterpret_cast<RealInternalElementA const*>(args.ptr_B);
+      p.ptr_B = reinterpret_cast<RealInternalElementB const*>(args.ptr_A);
+      p.dA = args.dB;
+      p.dB = args.dA;
+    }
+    // Bit-plane concat only makes sense with the narrow operand as B; the 2nd plane rides the same dB.
+    static_assert(!SwapAB, "2-plane mainloop requires the narrow operand to be B (SwapAB=false)");
+    p.ptr_B2 = args.ptr_B2;
+    p.dB2 = args.dB2;
+    p.dB2_valid = args.dB2_valid;
+    p.group_row_offsets = args.group_row_offsets;
+
+    if constexpr (ModeHasScales) {
+      // Assign the TYPE, do not rebuild the layout. This site had the thread/value layouts written out a second time,
+      // so capping ThrH at the CTA size above made the rebuilt type diverge from GmemTiledCopyScale and the assignment
+      // stopped compiling. One definition, one use.
+      p.gmem_tiled_copy_scale = GmemTiledCopyScale{};
+      p.gmem_tiled_copy_scale_packed = GmemTiledCopyScalePacked{};
+      p.ptr_S = reinterpret_cast<NonVoidElementScale const*>(args.ptr_S);
+      p.dS = detail::lower_metadata_stride(args.dS);
+      if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero) {
+        p.gmem_tiled_copy_zero = GmemTiledCopyZero{};
+        p.ptr_Z = reinterpret_cast<NonVoidElementZero const*>(args.ptr_Z);
+      }
+      p.group_size = args.group_size;
+      p.scale_k = (get<2>(problem_shape) + args.group_size - 1) / args.group_size;
+      p.reload_factor = (args.group_size + size<2>(TileShape{}) - 1) / size<2>(TileShape{});
+    }
+    return p;
+  }
+
+  /// Set up the data needed by this collective for load and mma.
+  /// Returns a tuple of tensors. The collective and the kernel layer have the contract.
+  /// Returned tuple must contain at least two elements, with the first two elements being gA & gB.
+  /// The rest of the tensors can be specified as needed by this collective.
+  template <class ProblemShape_MNKL, class BlockCoord_MNKL>
+  CUTLASS_DEVICE auto
+  load_init(ProblemShape_MNKL const& problem_shape_MNKL, BlockCoord_MNKL const& blk_coord_mnkl, Params const& mainloop_params) {
+    using X = Underscore;
+    // Separate out problem shape for convenience
+    auto [M,N,K,L] = problem_shape_MNKL;
+    auto [m_coord, n_coord, _, l_coord] = blk_coord_mnkl;
+
+    // A init
+    using TilerA = typename GmemTiledCopyA::Tiler_MN;
+    gmem_tiled_copy_A.desc_.template init<RealInternalElementA, false, get<0>(TilerA{}), get<1>(TilerA{})>(nullptr, M, K, mainloop_params.dA);
+    auto a_expert_base = detail::mixed_a_expert_base(
+        mainloop_params.ptr_A, mainloop_params.dA,
+        mainloop_params.group_row_offsets, l_coord);
+    Tensor mA_mkl = make_tensor(make_gmem_ptr(a_expert_base),
+                                make_shape(M,K,cute::Int<1>{}), mainloop_params.dA);                            // (m,k,1)
+    auto mA_mk = [&] {
+      if constexpr (kDecodeInput) return mA_mkl(_,_,0);
+      else return make_mix_tensor_like(mA_mkl(_,_,0));
+    }();                                                                                                    // (m,k)
+    auto gA_logical = local_tile(
+        mA_mk, TileShape{}, take<0,3>(blk_coord_mnkl), Step<_1, X,_1>{});                                       // (BLK_M,BLK_K,k)
+    auto gA = [&] {
+      if constexpr (LogicalTileM == PhysicalATileM) {
+        return gA_logical;
+      } else {
+        auto physical_m = make_layout(Int<PhysicalATileM>{}, stride<0>(gA_logical.layout()));
+        return make_tensor(gA_logical.data(), replace<0>(gA_logical.layout(), physical_m));
+      }
+    }();                                                                                                       // (A_PHYS_M,BLK_K,k)
+
+    // B init (include init aiu desc)
+    auto mB_nk = load_init_B(mainloop_params, N, K, L, l_coord);                                                // (n,k)
+    // PER-PLANE N-FOLD: same as plane 2 -- a folded gmem tensor is (N/P1Fold, K*P1Fold) physically, so the per-CTA
+    // tile must be cut with the folded tiler or copy.hpp's size<1>(src) == size<1>(dst) fires.
+    using FoldTilerB1 = Shape<Int<size<0>(TileShape{})>,
+                              Int<size<1>(TileShape{}) / P1Fold>,
+                              Int<P1Fold * size<2>(TileShape{})>>;
+    using KPackTilerB1 = Shape<Int<size<0>(TileShape{})>,
+                               Int<size<1>(TileShape{})>,
+                               Int<size<2>(TileShape{}) / kSafeLowKPack>>;
+    using TilerB1 = cute::conditional_t<kKPackTranspose,
+        KPackTilerB1, FoldTilerB1>;
+    Tensor gB = local_tile(mB_nk, TilerB1{}, take<0,3>(blk_coord_mnkl), Step< X,_1,_1>{});                    // (BLK_N_phys,BLK_K_phys,k)
+
+    // Plane 2: same tiling as gB, appended LAST to the returned tuple. Safe because both kernels only index
+    // get<0>/get<1>, static_assert size>=2, and forward the tail opaquely.
+    auto mB2_nk = load_init_B2(mainloop_params, N, K, L, l_coord);
+    // PER-PLANE N-FOLD: plane 2's gmem tensor is PHYSICALLY (N/P2Fold, K*P2Fold), so it must be cut with the folded
+    // tiler. Cutting it with TileShape gives a (TileN, TileK) gmem tile against a (TileN/P2Fold, P2Fold*TileK) smem
+    // tile -- the copy's `size<1>(src) == size<1>(dst)` static_assert then fires, which is exactly how the box build
+    // failed. The single-plane fold collective carries the same FoldTilerB for the same reason (there the symptom was
+    // an AIU descriptor built for the unfolded shape -> "TSM out of range" at runtime, which is worse than a compile
+    // error). P2Fold == 1 reproduces TileShape exactly.
+    using FoldTilerB2 = Shape<Int<size<0>(TileShape{})>,
+                              Int<size<1>(TileShape{}) / P2Fold>,
+                              Int<P2Fold * size<2>(TileShape{})>>;
+    using KPackTilerB2 = Shape<Int<size<0>(TileShape{})>,
+                               Int<size<1>(TileShape{})>,
+                               Int<size<2>(TileShape{}) / kSafeHighKPack>>;
+    using TilerB2 = cute::conditional_t<kKPackTranspose,
+        KPackTilerB2, FoldTilerB2>;
+    Tensor gB2 = local_tile(mB2_nk, TilerB2{}, take<0,3>(blk_coord_mnkl), Step< X,_1,_1>{});
+
+    if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
+      return cute::make_tuple(gA, gB, gB2);
+    }
+    else if constexpr (ModeHasScales) {
+      auto scale_k = mainloop_params.scale_k;
+      Tensor gS = detail::make_metadata_tile<ScaleTileShape>(
+          mainloop_params.ptr_S, mainloop_params.dS,
+          N, scale_k, L, l_coord, n_coord);                                           // (BLK_N, 1, scale_k)
+
+      // init scale_residue_n
+      scale_residue_n = detail::mixed_logical_n_residue(
+          N, int(size<1>(TileShape{})), n_coord);
+
+      // [copyable-unit,N,bytes] packed metadata, kept in the tuple even for an off instantiation so macro selection
+      // does not change the function's deduced return type. Plane 2 remains the final tuple member by contract.
+      int const packed_tiles_ = scale_k / int(Scale_TileK);
+      int const packed_units_ = packed_tiles_ / kPackedTilesPerUnit;
+      Tensor mSp = make_tensor(make_gmem_ptr(reinterpret_cast<uint8_t const*>(mainloop_params.ptr_S)),
+                               make_shape(N, Int<kPackedScaleUnit>{}, packed_units_, L),
+                               make_stride(Int<kPackedScaleUnit>{}, _1{},
+                                           Int<kPackedScaleUnit>{} * N,
+                                           Int<kPackedScaleUnit>{} * N * packed_units_));
+      Tensor gSp = local_tile(mSp(_,_,_,l_coord), Shape<Int<Scale_TileN>, Int<kPackedScaleUnit>>{},
+                              make_coord(n_coord, 0, _));
+
+      if constexpr (KernelConversionMode == ConversionMode::ConvertAndScale) {
+        return cute::make_tuple(gA, gB, gS, gSp, gB2);
+      }
+      else if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero) {
+        Tensor gZ = detail::make_metadata_tile<ScaleTileShape>(
+            mainloop_params.ptr_Z, mainloop_params.dS,
+            N, scale_k, L, l_coord, n_coord);
+        return cute::make_tuple(gA, gB, gS, gZ, gSp, gB2);
+      }
+      else {
+        static_assert(cutlass::detail::dependent_false<KernelSchedule>,
+                      "Conversion mode not handled in load_init");
+      }
+    }
+    else {
+      static_assert(cutlass::detail::dependent_false<KernelSchedule>,
+                    "load_init requires direct conversion or scale metadata");
+    }
+  }
+
+  /// Perform a collective-scoped matrix multiply-accumulate
+  template <
+    class... Ts,
+    class FrgTensorC,
+    class KTileIterator
+  >
+  CUTLASS_DEVICE void
+  operator() (
+      Params const& mainloop_params,
+      cute::tuple<Ts...> const& load_inputs,
+      FrgTensorC &accum,
+      KTileIterator k_tile_iter, int k_tile_count,
+      int thread_idx,
+      char *smem_buf)
+  {
+
+    static_assert(is_rmem<FrgTensorC>::value, "C tensor must be rmem resident.");
+    static_assert(rank(SmemLayoutA{}) == 3,
+      "MainloopPPUCpAsync must have a pipeline mode in the smem layout.");
+    static_assert(rank(SmemLayoutB{}) == 3,
+      "MainloopPPUCpAsync must have a pipeline mode in the smem layout.");
+
+    int warp_idx = canonical_warp_idx_sync();
+    int aiu_warp_group_thread_idx = warp_idx * 32;
+
+    Tensor gA = get<0>(load_inputs);
+    Tensor gB = get<1>(load_inputs);
+    Tensor gB2 = get<sizeof...(Ts) - 1>(load_inputs);      // plane 2 is tuple_cat'd last by load_init
+    auto k_iter_shape = cute::shape<2>(gB);
+    auto k_iter_shape_b2 = cute::shape<2>(gB2);
+
+    // Construct shared memory tiles
+    SharedStorage& storage = *reinterpret_cast<SharedStorage*>(smem_buf);
+    Tensor sA = make_tensor(make_smem_ptr(storage.smem_a.begin()), SmemLayoutA{}); // (BLK_M_LOGICAL,BLK_K,PIPE)
+    Tensor sA_physical = make_tensor(
+        make_smem_ptr(storage.smem_a.begin()), SmemLayoutAPhysical{});              // (BLK_M_PHYSICAL,BLK_K,PIPE)
+    Tensor sB = make_tensor(make_smem_ptr(storage.smem_b.begin()), SmemLayoutB{}); // (BLK_N,BLK_K,PIPE)
+    Tensor sB2 = make_tensor(make_smem_ptr(storage.smem_b2.begin()), SmemLayoutB2{}); // 2nd plane
+
+    // The fp16 scale/zero tile and packed raw tile use different logical copy layouts.  Construct an in-range slice for
+    // every physical thread, but let exactly one physical owner publish each destination; surplus threads only consume.
+    bool const scale_copy_owner =
+        (ScaleCopyPlan::thread_slots == Scale_NumThreads) ||
+        ScaleCopyPlan::owns_physical_thread(thread_idx);
+    bool const packed_copy_owner =
+        (kPackedOwnerThreads == Scale_NumThreads) ||
+        PackedMetadataOwnership::owns_physical_thread(thread_idx);
+    auto extra_input_partitions = partition_extra_inputs(
+        mainloop_params, load_inputs, storage,
+        ScaleCopyPlan::logical_slot(thread_idx),
+        PackedMetadataOwnership::copy_owner(thread_idx),
+        scale_copy_owner);
+
+    CUTE_STATIC_ASSERT_V(size<0>(gA) == size<0>(sA_physical));                 // BLK_M_PHYSICAL
+    CUTE_STATIC_ASSERT_V(size<1>(gA) == size<1>(sA_physical));                 // BLK_K
+    CUTE_STATIC_ASSERT_V(size<0>(sA) == size<0>(TileShape{}));                 // BLK_M_LOGICAL
+    CUTE_STATIC_ASSERT_V(size<0>(gB) == size<0>(sB));                          // BLK_N
+    CUTE_STATIC_ASSERT_V(size<1>(gB) == size<1>(sB));                          // BLK_K
+    // PER-PLANE N-FOLD: sB's K extent is the PHYSICAL folded run (P1Fold * BLK_K) while sA's is the real BLK_K, so the
+    // equality only holds unfolded. Assert the folded relation instead of dropping the check -- it still catches a
+    // mismatched B operand Block_K, which is what it was there for.
+    static_assert(size<1>(SmemLayoutB{}) ==
+                      (kKPackTranspose
+                           ? size<2>(TileShape{}) / kSafeLowKPack
+                           : P1Fold * size<2>(TileShape{})),
+                  "sB's physical K must match the selected fold/K-pack provider");
+    CUTE_STATIC_ASSERT_V(Int<DispatchPolicy::Stages>{} == size<2>(sA));        // PIPE
+    CUTE_STATIC_ASSERT_V(Int<DispatchPolicy::Stages>{} == size<2>(sA_physical)); // PIPE
+    CUTE_STATIC_ASSERT_V(Int<DispatchPolicy::Stages>{} == size<2>(sB));        // PIPE
+
+    // Partition the copying of A and B tiles across the threads
+    auto gmem_thr_copy_A = gmem_tiled_copy_A.get_slice(thread_idx);
+    auto gmem_thr_copy_B = gmem_tiled_copy_B.get_slice(thread_idx);
+
+    Tensor tAgA = gmem_thr_copy_A.partition_S(gA);                             // (ACPY,ACPY_M,ACPY_K,k)
+    Tensor tAsA = gmem_thr_copy_A.partition_D(sA_physical);                    // (ACPY,ACPY_M_PHYS,ACPY_K,PIPE)
+    Tensor tBgB = gmem_thr_copy_B.partition_S(gB);                             // (BCPY,BCPY_N,BCPY_K,k)
+    Tensor tBsB = gmem_thr_copy_B.partition_D(sB);                             // (BCPY,BCPY_N,BCPY_K,PIPE)
+
+    auto gmem_thr_copy_B2 = gmem_tiled_copy_B2.get_slice(thread_idx);
+    Tensor tB2gB2 = gmem_thr_copy_B2.partition_S(gB2);
+    Tensor tB2sB2 = gmem_thr_copy_B2.partition_D(sB2);
+
+    // Start async loads for all pipes but the last
+    CUTLASS_PRAGMA_UNROLL
+    for (int k_pipe = 0; k_pipe < DispatchPolicy::Stages-1; ++k_pipe) {
+      auto k_iter_crd    = cute::idx2crd(*k_tile_iter, k_iter_shape);
+      auto k_iter_crd_b2 = cute::idx2crd(*k_tile_iter, k_iter_shape_b2);
+      if constexpr (kDecodeInput) {
+        detail::copy_decode_a<PhysicalATileM,int(size<2>(TileShape{})),int(size(TiledMma{})),false,0,0,0>(
+            gA,storage.smem_a.begin(),int(*k_tile_iter),k_pipe,thread_idx,gmem_tiled_copy_A.desc_.dim_h);
+        copy_aiu(gmem_tiled_copy_B,tBgB(_,_,_,k_iter_crd),tBsB(_,_,_,k_pipe),warp_idx);
+      } else {
+        copy_aiu(
+          gmem_tiled_copy_A, tAgA(_,_,_,*k_tile_iter), tAsA(_,_,_,k_pipe),
+          gmem_tiled_copy_B, tBgB(_,_,_,k_iter_crd), tBsB(_,_,_,k_pipe),warp_idx);
+      }
+      copy_aiu(gmem_tiled_copy_B2, tB2gB2(_,_,_,k_iter_crd_b2), tB2sB2(_,_,_,k_pipe), warp_idx);
+      copy_async_extra_info(mainloop_params, extra_input_partitions, *k_tile_iter, k_pipe,
+                            scale_copy_owner, packed_copy_owner);
+      cp_async_fence();
+      --k_tile_count;
+      if (k_tile_count > 0) { ++k_tile_iter; }
+    }
+
+    //
+    // MMA Atom partitioning
+    //
+
+    // Tile MMA compute thread partitions and allocate accumulators
+    TiledMma tiled_mma;
+    auto thr_mma = tiled_mma.get_thread_slice(thread_idx);
+    Tensor tCrA     = thr_mma.partition_fragment_A(sA(_,_,0));                // (MMA,MMA_M,MMA_K)
+    // PER-PLANE N-FOLD: the MMA must see B through the fold-in-N LOGICAL view, not the physical smem shape. At
+    // P1Fold == 1 SmemLayoutB_MmaView is the plain row-major (TN, TK) and this is the previous expression.
+    Tensor tCrB_mma = thr_mma.partition_fragment_B(
+        make_tensor(sB(_,_,0).data(), SmemLayoutB_MmaView{}));                 // (MMA,MMA_N,MMA_K) ordinary N x K
+    // typed BChunk: one k-atom of converted B, reused across atoms, instead of tCrB_mma's MMA_K atoms held at once:
+    // 4*MMA_N*MMA_K fp16 registers -> 4*MMA_N. Declared unconditionally and dead-code-eliminated when kBChunk is
+    // false, because the mainloop lambda captures it by reference.
+    Tensor tCrB_one = make_fragment_like(tCrB_mma(_,_,Int<0>{}));
+
+    CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(accum));                    // MMA_M
+    CUTE_STATIC_ASSERT_V(size<1>(tCrB_mma) == size<2>(accum));                // MMA_N
+    CUTE_STATIC_ASSERT_V(size<2>(tCrA) == size<2>(tCrB_mma));                 // MMA_K
+
+    //
+    // Copy Atom retiling
+    //
+
+    using warpOnM = decltype(get<1>(tiled_mma.get_thr_layout_vmnk().shape()));
+    using warpOnN = decltype(get<2>(tiled_mma.get_thr_layout_vmnk().shape()));
+    using PermutationM = decltype(tiled_mma.template permutation_mnk<0>());
+    using PermutationN = decltype(tiled_mma.template permutation_mnk<1>());
+
+    // The B-only int8 shadow atom stays m16 when the compute atom is m8.  Preserve the number of M warps, not the
+    // main atom's eight-row permutation; otherwise the shadow loader is instantiated with an illegal half-height M.
+    static constexpr int MainInstM = size<0>(typename TiledMma::AtomShape_MNK{});
+    static_assert(MainInstM == 8 || MainInstM == 16, "the B shadow loader only supports the m8 and m16 families");
+    static_assert(PermutationM{} == warpOnM{} * Int<MainInstM>{},
+                  "main-M permutation must cover one compute atom per M warp");
+    using ShadowPermutationM = Int<warpOnM() * 16>;
+
+    using TiledMma_S8 = TiledMMA<
+#if defined(__HGGC_ARCH__) && __HGGC_ARCH__ == 100
+        MMA_Atom<PPU0010_16x16x32_S32S8S8S32_TN>,
+#else
+        MMA_Atom<PPU0015_16x16x32_S32S8S8S32_TN>,
+#endif
+        Layout<Shape<warpOnM, warpOnN,_1>>,
+        Tile<ShadowPermutationM, PermutationN, _32>>;
+
+    using TiledMma_KPack = TiledMMA<
+        MMA_Atom<PPU0010_16x16x16_F32F16F16F32_TN>,
+        Layout<Shape<warpOnM, warpOnN, _1>>,
+        Tile<ShadowPermutationM, PermutationN, _16>>;
+    using TiledMma_BLoad = cute::conditional_t<
+        kKPackTranspose, TiledMma_KPack, TiledMma_S8>;
+
+    TiledMma_BLoad tiled_mma_s8;
+    auto thr_mma_s8 = tiled_mma_s8.get_thread_slice(thread_idx);
+
+    auto smem_tiled_copy_A = make_tiled_copy_A(SmemCopyAtomA{}, tiled_mma);
+    auto smem_thr_copy_A   = smem_tiled_copy_A.get_thread_slice(aiu_warp_group_thread_idx);
+    Tensor tCsA            = smem_thr_copy_A.partition_S(make_mix_tensor_like(sA));                // (CPY,CPY_M,CPY_K,PIPE)
+    Tensor tCrA_copy_view  = smem_thr_copy_A.retile_D(tCrA);                                       // (CPY,CPY_M,CPY_K)
+
+    CUTE_STATIC_ASSERT_V(size<1>(tCsA) == size<1>(tCrA_copy_view));            // CPY_M
+    CUTE_STATIC_ASSERT_V(size<2>(tCsA) == size<2>(tCrA_copy_view));            // CPY_K
+
+    auto sB_s8 = [&] {
+      return sB;
+    }();
+    Tensor tCrB_load =thr_mma_s8.partition_fragment_B(sB_s8(_,_,0));
+
+    auto smem_tiled_copy_B = make_tiled_copy_B(SmemCopyAtomB{}, tiled_mma_s8);
+    auto smem_thr_copy_B   = smem_tiled_copy_B.get_thread_slice(aiu_warp_group_thread_idx);
+    Tensor tCsB            = smem_thr_copy_B.partition_S(make_mix_tensor_like(sB_s8));             // (CPY,CPY_N,CPY_K,PIPE)
+    Tensor tCrB_copy_view  = smem_thr_copy_B.retile_D(tCrB_load);                                  // (CPY,CPY_N,CPY_K)
+
+    // Plane 2: its own swzl atom (different CUBE_W, since its byte extent is 2x/4x smaller for the same Block_K).
+    auto sB2_s8 = [&] {
+      return sB2;
+    }();
+    Tensor tCrB2_load = thr_mma_s8.partition_fragment_B(sB2_s8(_,_,0));
+    auto smem_tiled_copy_B2 = make_tiled_copy_B(SmemCopyAtomB2{}, tiled_mma_s8);
+    auto smem_thr_copy_B2   = smem_tiled_copy_B2.get_thread_slice(aiu_warp_group_thread_idx);
+    Tensor tCsB2            = smem_thr_copy_B2.partition_S(make_mix_tensor_like(sB2_s8));
+    Tensor tCrB2_copy_view  = smem_thr_copy_B2.retile_D(tCrB2_load);
+    CUTE_STATIC_ASSERT_V(size<1>(tCsB) == size<1>(tCrB_copy_view));            // CPY_N
+    CUTE_STATIC_ASSERT_V(size<2>(tCsB) == size<2>(tCrB_copy_view));            // CPY_K
+
+    // extra inputs partition and retile
+    auto partitioned_extra_info = partition_extra_mma_info(tiled_mma, storage, thread_idx);
+    auto copy_partitions_extra_info = retile_extra_mma_info(tiled_mma, partitioned_extra_info, thread_idx);
+
+    //
+    // PIPELINED MAIN LOOP
+    //
+
+    // Size of the register pipeline
+    auto K_BLOCK_MAX = size<2>(tCrB_copy_view);
+    CUTE_STATIC_ASSERT_V(size<2>(tCrB_mma) % size<2>(tCrB_copy_view) == _0{});
+    auto K_ATOM_PER_COPY = size<2>(tCrB_mma) / size<2>(tCrB_copy_view);
+    CUTE_STATIC_ASSERT_V(K_BLOCK_MAX * K_ATOM_PER_COPY == size<2>(tCrB_mma));
+    auto A_BLOCK_MAX = size<2>(tCrA_copy_view);
+    auto MMA_K_ATOMS = size<2>(tCrA);
+    using ARegisterSchedule = detail::MixedARegisterSchedule<
+        decltype(MMA_K_ATOMS)::value, decltype(A_BLOCK_MAX)::value,
+        decltype(K_BLOCK_MAX)::value>;
+    static_assert(ARegisterSchedule::BAtomsPerCopy ==
+                      decltype(K_ATOM_PER_COPY)::value,
+                  "B delivery and MMA atom partitions must agree");
+    // ONE plane-2 k_block feeds P2_DIV plane-1 k_blocks: plane 2 is the DENSER plane (same BYTES per copy, 2x the
+    // codes at half the bit width), so its CPY_K is P2_DIV times smaller. transform_B_kblock derives the same
+    // ratio to pick which half of the plane-2 registers a given plane-1 k_block owns.
+    static_assert(decltype(cute::size<2>(tCrB_copy_view))::value %
+                      decltype(cute::size<2>(tCrB2_copy_view))::value == 0,
+                  "plane copy-view ratio must be integral");
+    constexpr int P2_DIV = ArtifactP2Div;
+    static_assert(decltype(cute::size<2>(tCrB_copy_view))::value /
+                      decltype(cute::size<2>(tCrB2_copy_view))::value == P2_DIV,
+                  "copy views must preserve the artifact-derived P2_DIV");
+    static_assert(!kBChunk || decltype(K_ATOM_PER_COPY)::value
+                              * (decltype(cute::size<1>(tCrB_mma))::value / decltype(cute::size<1>(tCrB_copy_view))::value)
+                              == Cvt2Plane::kAtoms,
+        "typed BChunk (2-plane): K_ATOM_PER_COPY * (MMA_N / CPY_N) must be the kAtoms one int2 delivery carries");
+
+    int initial_read_stage = 0;
+    Tensor tCsA_p = tCsA(_,_,_,initial_read_stage);
+    Tensor tCsB_p = tCsB(_,_,_,initial_read_stage);
+    auto bind_read = [&] (int stage) {
+      tCsA_p = tCsA(_,_,_,stage);
+      tCsB_p = tCsB(_,_,_,stage);
+    };
+    auto publish = [&] (int stage) {
+      packed_decode_stage<kPackedScaleOn>(storage, stage, packed_tile_in_unit[stage],
+                                          thread_idx, scale_residue_n);
+    };
+    auto prepare = [&] (auto k_block, int read_stage, auto is_prime) {
+      copy_B_and_extra_info(smem_tiled_copy_B, tCsB, tCrB_copy_view,
+          partitioned_extra_info, copy_partitions_extra_info, k_block, read_stage);
+      // Plane 2's smem->rmem swzl read. WITHOUT this the plane-2 registers stay untouched (read as zero), the
+      // converter's high-bit OR contributes nothing, and D degenerates to the low plane exactly -- which is what
+      // the controlled-input probe measured (rung1 got == exp-4 for high=ALL ONES, decoded index identically 0).
+      constexpr int kP2Slot = decltype(k_block)::value / P2_DIV;
+      // The original prologue loaded plane 2 even in chunk mode; steady-state chunk preparation deliberately does
+      // not, because consume() rereads the immutable consume stage. Preserve that exact prime/steady-state split.
+      if constexpr (!kBChunk || decltype(is_prime)::value) {
+        copy(smem_tiled_copy_B2, tCsB2(_,_,Int<kP2Slot>{},read_stage), tCrB2_copy_view(_,_,Int<kP2Slot>{}));
+      }
+      detail::prepare_mixed_a_for_b<ARegisterSchedule>(
+          smem_tiled_copy_A, tCsA_p, tCrA_copy_view, k_block, is_prime);
+      // Chunked: the mma loop converts each atom just before its gemm, so there is nothing to do for the whole step.
+      if constexpr (!kBChunk) {
+        transform_B_kblock<RealInternalElementB>(tCrB_copy_view, tCrB2_copy_view, tCrB_mma, partitioned_extra_info,
+          k_block, K_ATOM_PER_COPY, copy_partitions_extra_info, read_stage);
+      }
+    };
+    auto prefetch = [&] (auto k_tile, int write_stage) {
+          auto k_iter_crd    = cute::idx2crd(k_tile, k_iter_shape);
+          auto k_iter_crd_b2 = cute::idx2crd(k_tile, k_iter_shape_b2);
+          if constexpr (kDecodeInput) {
+            detail::copy_decode_a<PhysicalATileM,int(size<2>(TileShape{})),int(size(TiledMma{})),false,0,0,0>(
+                gA,storage.smem_a.begin(),int(k_tile),write_stage,thread_idx,gmem_tiled_copy_A.desc_.dim_h);
+            copy_aiu(gmem_tiled_copy_B,tBgB(_,_,_,k_iter_crd),tBsB(_,_,_,write_stage),warp_idx);
+          } else {
+            copy_aiu(
+              gmem_tiled_copy_A, tAgA(_,_,_,k_tile), tAsA(_,_,_,write_stage),
+              gmem_tiled_copy_B, tBgB(_,_,_,k_iter_crd), tBsB(_,_,_,write_stage),warp_idx);
+          }
+          copy_aiu(gmem_tiled_copy_B2, tB2gB2(_,_,_,k_iter_crd_b2), tB2sB2(_,_,_,write_stage), warp_idx);
+          copy_async_extra_info(mainloop_params, extra_input_partitions, k_tile, write_stage,
+                                scale_copy_owner, packed_copy_owner);
+    };
+    auto consume = [&] (auto k_block, int b_consume_stage) {
+        if constexpr (kBChunk) {
+          // Plane 2, read HERE from the stage this iteration actually consumes -- see the skipped prefetch above.
+          // Idempotent and cheap (one swzl read of a slot that serves P2_DIV k_blocks), and it removes the hazard
+          // rather than reasoning about when the clobber is survivable.
+          constexpr int kP2Slot = decltype(k_block)::value / P2_DIV;
+          copy(smem_tiled_copy_B2, tCsB2(_,_,Int<kP2Slot>{}, b_consume_stage), tCrB2_copy_view(_,_,Int<kP2Slot>{}));
+          // for_each, not a for loop: the chunk must be a TEMPLATE argument so the emission gate stays compile-time.
+          for_each(make_int_sequence<decltype(K_ATOM_PER_COPY)::value>{}, [&] (auto k_loop) {
+            constexpr int kChunk = decltype(k_loop)::value;
+            auto atom_idx = k_block * K_ATOM_PER_COPY + k_loop;
+            transform_B_atom<RealInternalElementB, kChunk, decltype(K_ATOM_PER_COPY)::value,
+                             decltype(tCrB_mma.layout())>(
+                tCrB_copy_view, tCrB2_copy_view, tCrB_one, partitioned_extra_info, k_block, atom_idx,
+                copy_partitions_extra_info, b_consume_stage);
+            cute::transform(tCrA(_,_,atom_idx), TransformA{});
+            cute::transform(tCrB_one, TransformB{});
+            cute::gemm(tiled_mma, tCrA(_,_,atom_idx), tCrB_one, accum);
+          });
+        } else {
+          CUTLASS_PRAGMA_UNROLL
+          for (int k_loop = 0; k_loop < K_ATOM_PER_COPY; k_loop++) {
+            auto atom_idx = k_block * K_ATOM_PER_COPY + k_loop;
+            // Transform before compute
+            cute::transform(tCrA(_,_,atom_idx), TransformA{});
+            cute::transform(tCrB_mma(_,_,atom_idx), TransformB{});
+            // gemm for one tiled_mma atom on K
+            cute::gemm(tiled_mma, tCrA(_,_,atom_idx), tCrB_mma(_,_,atom_idx), accum);
+          }
+        }
+        detail::finish_mixed_a_after_consume<ARegisterSchedule>(
+            smem_tiled_copy_A, tCsA_p, tCrA_copy_view, k_block);
+    };
+
+    detail::run_mixed_pipeline<DispatchPolicy::Stages>(K_BLOCK_MAX, k_tile_iter, k_tile_count,
+        bind_read, publish, prepare, prefetch, consume);
+  }
+
+private:
+  CUTLASS_DEVICE
+  auto load_init_B(Params const& mainloop_params, int N, int K, int L, int l_coord) {
+    {
+      using TilerB = typename GmemTiledCopyB::Tiler_MN;
+      using Transport = cutlass::half_t;
+      int const physical_k = K / kSafeLowKPack;
+      auto physical_stride =
+          make_stride(_1{}, int64_t(N), int64_t(N) * physical_k);
+      Tensor mB_nkl = make_tensor(
+          make_gmem_ptr(reinterpret_cast<Transport const*>(mainloop_params.ptr_B)),
+          make_shape(N, physical_k, L), physical_stride);
+      auto mB_nk = mB_nkl(_,_,l_coord);
+      auto const* expert_base = reinterpret_cast<uint8_t const*>(
+          raw_pointer_cast(mB_nk.data()));
+      gmem_tiled_copy_B.desc_.template init<
+          Transport, true, get<0>(TilerB{}), get<1>(TilerB{})>(
+              const_cast<uint8_t*>(expert_base), N, physical_k,
+              take<0,2>(physical_stride));
+      return make_mix_tensor_like(mB_nk);
+    }
+  }
+
+  // Plane 2's gmem tensor + AIU descriptor. Exact mirror of load_init_B; note the per-expert L-stride uses
+  // PlaneB2's OWN bit width, since the interleaved desc treats that byte count as the plane stride.
+  CUTLASS_DEVICE
+  auto load_init_B2(Params const& mainloop_params, int N, int K, int L, int l_coord) {
+    {
+      using TilerB2 = typename GmemTiledCopyB2::Tiler_MN;
+      using Transport = cutlass::half_t;
+      int const physical_k = K / kSafeHighKPack;
+      auto physical_stride =
+          make_stride(_1{}, int64_t(N), int64_t(N) * physical_k);
+      Tensor mB_nkl = make_tensor(
+          make_gmem_ptr(reinterpret_cast<Transport const*>(mainloop_params.ptr_B2)),
+          make_shape(N, physical_k, L), physical_stride);
+      auto mB_nk = mB_nkl(_,_,l_coord);
+      auto const* expert_base = reinterpret_cast<uint8_t const*>(
+          raw_pointer_cast(mB_nk.data()));
+      gmem_tiled_copy_B2.desc_.template init<
+          Transport, true, get<0>(TilerB2{}), get<1>(TilerB2{})>(
+              const_cast<uint8_t*>(expert_base), N, physical_k,
+              take<0,2>(physical_stride));
+      return make_mix_tensor_like(mB_nk);
+    }
+  }
+
+  template <class... Ts>
+  CUTLASS_DEVICE
+  auto copy_async_extra_info(
+        Params const& mainloop_params,
+        cute::tuple<Ts...>& extra_input_partitions,
+        int k_idx,
+        int write_stage,
+        bool scale_copy_owner,
+        bool packed_copy_owner) {
+    if constexpr (ModeHasScales) {
+      auto tSgS = get<0>(extra_input_partitions);
+      auto tSsS = get<1>(extra_input_partitions);
+      auto tScS = get<2>(extra_input_partitions);
+      static constexpr int kPkG =
+          (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero) ? 5 : 3;
+      static constexpr int kPkC = kPkG + 2;
+      // per-column path
+      if constexpr(DispatchPolicy::StaticGroupSize == -1) {
+        if constexpr (kPackedScaleOn) {
+          if (packed_copy_owner) {
+            packed_tile_in_unit[write_stage] = 0;
+            detail::copy_packed_metadata_if<kPackedColsPerThread>(
+                mainloop_params.gmem_tiled_copy_scale_packed, scale_valid_pk, scale_residue_n,
+                get<kPkG>(extra_input_partitions)(_,_,_,0),
+                get<kPkG + 1>(extra_input_partitions)(_,_,_,write_stage),
+                get<kPkC>(extra_input_partitions));
+          }
+        } else if (scale_copy_owner) {
+          copy(mainloop_params.gmem_tiled_copy_scale, tSgS(_,_,_,0), tSsS(_,_,_,write_stage));
+        }
+        if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero && !kPackedScaleOn) {
+          auto tZgZ = get<3>(extra_input_partitions);
+          auto tZsZ = get<4>(extra_input_partitions);
+          if (scale_copy_owner) {
+            copy(mainloop_params.gmem_tiled_copy_zero, tZgZ(_,_,_,0), tZsZ(_,_,_,write_stage));
+          }
+        }
+      }
+      else {
+        int scale_load_k;
+        // specific group-wise path
+        if constexpr (DispatchPolicy::StaticGroupSize > 0) {
+          constexpr int reload_factor = (DispatchPolicy::StaticGroupSize + size<2>(TileShape{}) - 1) / size<2>(TileShape{});
+          scale_load_k = k_idx / reload_factor;
+        }
+        // default path
+        else {
+          scale_load_k = k_idx / mainloop_params.reload_factor; // This will always be 0 when group_size == K.
+        }
+        if ((kPackedScaleOn || scale_valid) &&
+            (scale_load_k * Scale_TileK < scale_residue_k)) {
+          if constexpr (kPackedScaleOn) {
+            if (packed_copy_owner) {
+              packed_tile_in_unit[write_stage] = scale_load_k % kPackedTilesPerUnit;
+              detail::copy_packed_metadata_if<kPackedColsPerThread>(
+                  mainloop_params.gmem_tiled_copy_scale_packed, scale_valid_pk, scale_residue_n,
+                  get<kPkG>(extra_input_partitions)(_,_,_,scale_load_k / kPackedTilesPerUnit),
+                  get<kPkG + 1>(extra_input_partitions)(_,_,_,write_stage),
+                  get<kPkC>(extra_input_partitions));
+            }
+          } else if (scale_copy_owner) {
+            copy(mainloop_params.gmem_tiled_copy_scale,
+                 tSgS(_,_,_,scale_load_k), tSsS(_,_,_,write_stage));
+          }
+          if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero && !kPackedScaleOn) {
+            auto tZgZ = get<3>(extra_input_partitions);
+            auto tZsZ = get<4>(extra_input_partitions);
+            if (scale_copy_owner) {
+              copy(mainloop_params.gmem_tiled_copy_zero,
+                   tZgZ(_,_,_,scale_load_k), tZsZ(_,_,_,write_stage));
+            }
+          }
+        }
+      }
+    }
+  }
+
+  template <class... Ts>
+  CUTLASS_DEVICE
+  auto partition_extra_inputs(
+        Params const& mainloop_params,
+        cute::tuple<Ts...> const& load_inputs,
+        SharedStorage& shared_tensors,
+        int const scale_thread_idx,
+        int const packed_thread_idx,
+        bool scale_copy_owner) {
+    if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
+      return cute::tuple{};
+    }
+    else if constexpr (ModeHasScales) {
+      Tensor sS = make_tensor(make_smem_ptr(shared_tensors.smem_scale.begin()), SmemLayoutScale{});
+      Tensor gS = get<2>(load_inputs);
+      // Construct identity layout for sS
+      constexpr static Tensor cS = make_identity_tensor(make_shape(size<0>(sS), size<1>(sS)));
+
+      auto gmem_thr_copy_scale = mainloop_params.gmem_tiled_copy_scale.get_slice(scale_thread_idx);
+
+      Tensor tSgS = gmem_thr_copy_scale.partition_S(gS);
+      Tensor tSsS = gmem_thr_copy_scale.partition_D(sS);
+      Tensor tScS = gmem_thr_copy_scale.partition_S(cS);
+
+      static constexpr int kPackedLoadIdx =
+          (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero) ? 4 : 3;
+      Tensor sSraw = make_tensor(make_smem_ptr(shared_tensors.smem_scale_raw.begin()),
+                                 SmemLayoutScaleRawStaged{});
+      auto gmem_thr_copy_raw = mainloop_params.gmem_tiled_copy_scale_packed.get_slice(
+          packed_thread_idx);
+      Tensor tSgSp = gmem_thr_copy_raw.partition_S(cute::get<kPackedLoadIdx>(load_inputs));
+      Tensor tSsSp = gmem_thr_copy_raw.partition_D(sSraw);
+      Tensor cSp = make_identity_tensor(make_shape(Int<Scale_TileN>{}, Int<kPackedScaleUnit>{}));
+      Tensor tScSp = gmem_thr_copy_raw.partition_S(cSp);
+      // Ordinary fp16 metadata still needs predicated-copy destination initialization. Packed metadata is a total
+      // decode-owner write: valid columns are decoded and invalid N-tail columns are zeroed below by that same owner.
+      if constexpr (!kPackedScaleOn) {
+        if (scale_copy_owner) clear(tSsS);
+      }
+      // init scale_residue_k
+      if constexpr (kPackedScaleOn)
+        scale_residue_k = int64_t(mainloop_params.scale_k / int(Scale_TileK)) * int64_t(Scale_TileK);
+      else
+        scale_residue_k = mainloop_params.scale_k - get<1>(tScS(0,0,0));
+      scale_valid = get<0>(tScS(0,0,0)) < scale_residue_n;
+      if constexpr (kPackedScaleOn) {
+        scale_valid_pk = get<0>(tScSp(0,0,0)) < scale_residue_n;
+      }
+
+      if constexpr (KernelConversionMode == ConversionMode::ConvertAndScale) {
+        return cute::make_tuple(tSgS, tSsS, tScS, tSgSp, tSsSp, tScSp);
+      }
+      else if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero) {
+        Tensor sZ  = make_tensor(make_smem_ptr(shared_tensors.smem_zero.begin()), SmemLayoutScale{});
+        Tensor gZ = get<3>(load_inputs);
+
+        auto gmem_thr_copy_zero = mainloop_params.gmem_tiled_copy_zero.get_slice(scale_thread_idx);
+
+        Tensor tZgZ = gmem_thr_copy_zero.partition_S(gZ);
+        Tensor tZsZ = gmem_thr_copy_zero.partition_D(sZ);
+        if constexpr (!kPackedScaleOn) {
+          if (scale_copy_owner) clear(tZsZ);
+        }
+
+        return cute::make_tuple(tSgS, tSsS, tScS, tZgZ, tZsZ, tSgSp, tSsSp, tScSp);
+      }
+      else {
+        static_assert(cutlass::detail::dependent_false<KernelSchedule>,
+                      "Conversion mode not handled for input partitioning");
+      }
+    }
+    else {
+      static_assert(cutlass::detail::dependent_false<KernelSchedule>,
+                    "Input partitioning requires direct conversion or scale metadata");
+    }
+  }
+
+  // ONE entry point for the scale/zero register fragment, shared by all three collectives so the construction cannot
+  // drift between them. The body is the plain cute idiom, deliberately.
+  //
+  // AN EARLIER VERSION OF THIS FUNCTION HAND-ASSEMBLED A STRIDE-0 "BROADCAST" LAYOUT here, on the theory that the
+  // fragment materialised a 4x replication of each scale (32 half slots holding 8 distinct values). acu says that is
+  // a NO-OP: the slots are register-resident, the loop is fully unrolled and the equalities are provable, so the
+  // compiler had already coalesced them -- and it had CSE'd the copy's filtered iterations down to the 8 distinct
+  // addresses too. Measured registers were IDENTICAL either way (and 186 against estimates of 176/164, i.e. above
+  // both, so the fragment is buried under address arithmetic anyway).
+  //
+  // It was reverted for a second reason that outlives the measurement: that version replaced a one-line cute idiom
+  // with a hand-built stride tuple that hardcoded "mode 2 is MMA_K" by position. Less cute-native, rank-fragile, and
+  // it bought nothing. A cute layout describes what the PROGRAM asks for; whether the hardware does it is a codegen
+  // question, and for register-resident provably-equal values the compiler wins first. Check that a cute-level
+  // redundancy survives to the ISA before trading idiom for it.
+  template <class TiledMma, class STensor>
+  CUTLASS_DEVICE
+  // (j) TAKES AN ALREADY RANK-2 TILE. The scale copy view now carries (group, stage) as two modes rather than one
+  // flattened one, so slicing "mode 2" inside here would mean this helper knowing the view's rank. The caller owns the
+  // rank; this owns the fragment. scale_fragment_layout below does the same, so the two still stay in step by
+  // construction (make_fragment_like<T>(t) is make_tensor<T>(make_layout_like(t.layout()))).
+  static auto make_scale_fragment(TiledMma const& thr_mma, STensor const& sS_tile) {
+    return MetadataPolicy::make_fragment(thr_mma, sS_tile);
+  }
+
+  // The same layout, HOST-callable, for the compile-time witness below (make_scale_fragment is CUTLASS_DEVICE and
+  // cannot appear even unevaluated in a host constexpr context). make_fragment_like<T>(t) is
+  // make_tensor<T>(make_layout_like(t.layout())), so these two stay in step by construction.
+  template <class TiledMma, class STensor>
+  CUTE_HOST_DEVICE static constexpr auto scale_fragment_layout(TiledMma const& thr_mma, STensor const& sS) {
+    return MetadataPolicy::fragment_layout(thr_mma, sS(_,_,Int<0>{}));
+  }
+
+  // Kept from the reverted work because it has independent value: it is what let a STALE submodule be distinguished
+  // from an inert change. cosize is the scale fragment's real register footprint in halves.
+  static constexpr int scale_frag_cosize() {
+    if constexpr (ModeHasScales) {
+      return cute::cosize_v<decltype(scale_fragment_layout(
+          TiledMma{}.get_thread_slice(0),
+          make_tensor(make_smem_ptr((NonVoidElementScale*)nullptr), SmemLayoutScale{})(_,_,Int<0>{})))>;
+    } else {
+      return 0;
+    }
+  }
+
+  // PACKED UNIT -> THE EXISTING FP16 SHARED PLANES. The code/min bit positions and arithmetic are the same actlize
+  // gguf_packed helpers the single-plane collective calls; this collective adds only transport/publication around
+  // its mandatory second B plane. One thread decodes the exact column it copied, after cp_async_wait and before the
+  // publishing CTA barrier. A paired staging unit is split only AFTER it lands; each branch below reconstructs the
+  // selected superblock's own word array, so Q3's second 14-byte share need not begin on a 32-bit boundary.
+  static constexpr int kPackedUnitWords = (kPackedSbBytes + 3) / 4;
+  // The two-plane converter's emitted integer and the GGUF code's centre are separate facts:
+  // Q5 emits q-8 for an uncentred q; Q3 emits q for q-4; Q6 emits q-8 for q-32.
+  static constexpr int kPackedZMul =
+      kPackedFmt == cutlass::gguf_packed::Fmt::Q5K ? 8 :
+      kPackedFmt == cutlass::gguf_packed::Fmt::Q3K ? -4 :
+      kPackedFmt == cutlass::gguf_packed::Fmt::Q6K ? -24 : 0;
+  static_assert(!kPackedScaleOn || KernelConversionMode == ConversionMode::ConvertAndScaleWithZero,
+                "two-plane packed formats publish their code-centre correction through the zero plane");
+
+  template <bool On, class Storage>
+  CUTLASS_DEVICE static void
+  packed_decode_stage(Storage& storage, int stage, int tile_in_unit, int thread_idx, int64_t residue_n) {
+    if constexpr (On) {
+      if (thread_idx >= kPackedOwnerThreads) return;
+      Tensor sRaw = make_tensor(make_smem_ptr(storage.smem_scale_raw.begin()), SmemLayoutScaleRawStaged{});
+      Tensor sS = make_tensor(make_smem_ptr(storage.smem_scale.begin()), SmemLayoutScale{});
+      Tensor sZ = make_tensor(make_smem_ptr(storage.smem_zero.begin()), SmemLayoutScale{});
+      // A CTA may have fewer threads than N columns. Each owner decodes the same strided column set its one TiledCopy
+      // slice issued; using the shared ownership type here prevents transport and publication from drifting.
+      for_each(make_int_sequence<kPackedColsPerThread>{}, [&](auto sub_) {
+        constexpr int Sub = decltype(sub_)::value;
+        int const n = PackedMetadataOwnership::column(thread_idx, Sub);
+        // PACKED METADATA TOTAL-OVERWRITE CONTRACT.  The current K tile consumes all Scale_TileK groups in this
+        // shared stage.  Its column owner writes either decoded values or the complete zero tail, never a predicated
+        // hole that depends on an earlier clear issued through another ownership map.
+        if (int64_t(n) >= residue_n) {
+          for_each(make_int_sequence<int(Scale_TileK)>{}, [&](auto g_) {
+            constexpr int G = decltype(g_)::value;
+            sS(n, cute::Int<G>{}, stage) = NonVoidElementScale{};
+            sZ(n, cute::Int<G>{}, stage) = NonVoidElementZero{};
+          });
+          return;
+        }
+        uint8_t const* paired = reinterpret_cast<uint8_t const*>(
+            &sRaw(n, cute::Int<0>{}, stage));
+        // The tile coordinate is runtime pipeline state, while group bit positions must remain compile-time constants.
+        // Enumerating the at-most-four positions gives both: one branch executes, and every selected group is a template
+        // argument to the same shared decoder used by the single-plane collective.
+        for_each(make_int_sequence<kPackedTilesPerUnit>{}, [&](auto tile_) {
+          constexpr int Tile = decltype(tile_)::value;
+          if (tile_in_unit != Tile) return;
+          constexpr int Sb = Tile / kPackedTilesPerSb;
+          constexpr int GroupBase = (Tile % kPackedTilesPerSb) * int(Scale_TileK);
+          uint8_t const* unit = paired + Sb * kPackedSbBytes;
+          uint32_t words[kPackedUnitWords];
+          CUTLASS_PRAGMA_UNROLL
+          for (int w = 0; w < kPackedUnitWords; ++w) {
+            uint32_t word = 0;
+            CUTLASS_PRAGMA_UNROLL
+            for (int b = 0; b < 4; ++b) {
+              int const idx = 4 * w + b;
+              if (idx < kPackedSbBytes) word |= uint32_t(unit[idx]) << (8 * b);
+            }
+            words[w] = word;
+          }
+          auto const head = cutlass::gguf_packed::head_of_words(words);
+          auto const bhead = cutlass::gguf_packed::bfloat_head_of_words(words);
+          for_each(make_int_sequence<int(Scale_TileK)>{}, [&](auto g_) {
+            constexpr int G = decltype(g_)::value;
+            constexpr int UnitG = GroupBase + G;
+            auto const sz = [&] {
+              if constexpr (cute::is_same_v<NonVoidElementScale, cutlass::bfloat16_t>) {
+                return cutlass::gguf_packed::bfloat_group_of_words<UnitG, kPackedZMul, kPackedFmt>(words, bhead);
+              } else {
+                return cutlass::gguf_packed::group_of_words<
+                    UnitG, PackedUnit::kScaleBias, PackedUnit::kHasMin, kPackedZMul, kPackedFmt>(words, head);
+              }
+            }();
+            sS(n, cute::Int<G>{}, stage) = sz.scale;
+            sZ(n, cute::Int<G>{}, stage) = sz.zero;
+          });
+        });
+      });
+    }
+  }
+
+  /// Utilities for partitioning extra inputs for loading from smem in the mainloop.
+  template <class TiledMma>
+  CUTLASS_DEVICE
+  auto partition_extra_mma_info(
+    TiledMma const& tiled_mma,
+    SharedStorage& storage,
+    int thread_idx) {
+
+    if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
+      // noting to do
+      return cute::tuple{};
+    }
+    else if constexpr (ModeHasScales) {
+      auto thr_mma = tiled_mma.get_thread_slice(thread_idx);
+      auto smem_tiled_copy_S   = make_tiled_copy_B(SmemCopyAtomScale{}, tiled_mma);
+      auto smem_thr_copy_S     = smem_tiled_copy_S.get_thread_slice(thread_idx);
+
+      using SmemCopyLayoutScale = decltype(tile_to_shape(SmemLayoutAtomScale{},
+          make_shape(shape<0>(ScaleTileShape{}), Int<1>{}, Int<Scale_TileK>{}, Int<DispatchPolicy::Stages>{})));
+      Tensor sS   = make_tensor(make_smem_ptr(storage.smem_scale.begin()), SmemCopyLayoutScale{});
+      Tensor tCsS = smem_thr_copy_S.partition_S(sS);
+      Tensor tCrS = make_scale_fragment(thr_mma, sS(_,_,Int<0>{},Int<0>{}));
+
+      if constexpr (KernelConversionMode == ConversionMode::ConvertAndScale) {
+        return cute::make_tuple(tCsS, tCrS);
+      }
+      else if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero) {
+        Tensor sZ   = make_tensor(make_smem_ptr(storage.smem_zero.begin()), SmemCopyLayoutScale{});
+        Tensor tCsZ = smem_thr_copy_S.partition_S(sZ);
+        Tensor tCrZ = make_scale_fragment(thr_mma, sZ(_,_,Int<0>{},Int<0>{}));
+        return cute::make_tuple(tCsS, tCrS, tCsZ, tCrZ);
+      }
+      else {
+        static_assert(cutlass::detail::dependent_false<KernelSchedule>,
+                      "Conversion mode not handled while partitioning scale fragments");
+      }
+    }
+    else {
+      static_assert(cutlass::detail::dependent_false<KernelSchedule>,
+                    "Scale-fragment partitioning requires direct conversion or scale metadata");
+    }
+  }
+
+  /// Returns the tiled copy and copy views for the extra inputs.
+  template <class TiledMma, class... Ts>
+  CUTLASS_DEVICE
+  auto retile_extra_mma_info(
+    TiledMma const& tiled_mma,
+    cute::tuple<Ts...>& partitioned_extra_info,
+    int const thread_idx) {
+
+    if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
+      // noting to do
+      return cute::tuple{};
+    }
+    else if constexpr (ModeHasScales) {
+      auto smem_tiled_copy_S = make_tiled_copy_B(SmemCopyAtomScale{}, tiled_mma);
+      auto smem_thr_copy_S   = smem_tiled_copy_S.get_thread_slice(thread_idx);
+      Tensor tCrS_copy_view  = smem_thr_copy_S.retile_D(cute::get<1>(partitioned_extra_info));        // (CPY,CPY_N,CPY_K)
+
+      if constexpr (KernelConversionMode == ConversionMode::ConvertAndScale) {
+        return cute::make_tuple(smem_tiled_copy_S, tCrS_copy_view);
+      }
+      else if constexpr (KernelConversionMode == ConversionMode::ConvertAndScaleWithZero) {
+        Tensor tCrZ_copy_view  = smem_thr_copy_S.retile_D(cute::get<3>(partitioned_extra_info));      // (CPY,CPY_N,CPY_K)
+        return cute::make_tuple(smem_tiled_copy_S, tCrS_copy_view, tCrZ_copy_view);
+      }
+      else {
+        static_assert(cutlass::detail::dependent_false<KernelSchedule>,
+                      "Conversion mode not handled while retiling scale fragments");
+      }
+    }
+    else {
+      static_assert(cutlass::detail::dependent_false<KernelSchedule>,
+                    "Scale-fragment retiling requires direct conversion or scale metadata");
+    }
+  }
+
+  /// Utilities to copy B and extra inputs from smem to RF
+  template <class SmemTiledCopy,
+            class TensorSmemView,
+            class TensorCopyView,
+            class... Ts,
+            class... Us
+            >
+  CUTLASS_DEVICE
+  void copy_B_and_extra_info(
+    SmemTiledCopy const& smem_tiled_copy_B,
+    TensorSmemView const& tCsB,
+    TensorCopyView& tCrB_copy_view,
+    cute::tuple<Ts...> const& partitioned_mma_extra_info,
+    cute::tuple<Us...> const& tiled_copy_and_views,
+    int k_block,
+    int read_stage) {
+
+    copy(smem_tiled_copy_B, tCsB(_,_,k_block,read_stage), tCrB_copy_view(_,_,k_block));
+
+    // COARSE scale path: gs spans >= one full B copy step (Scale_TileK <= K_BLOCK_MAX), so one scale group
+    // covers >=1 whole copy steps -> load it here, once per GroupK steps. The FINE case (gs < copy-step K, e.g.
+    // gs=32 with a 64-K single-step copy -> Scale_TileK > K_BLOCK_MAX) makes GroupK=0 (a div-by-zero) and one
+    // group can't cover the whole step; there the scale is loaded PER mma-atom in transform_B_kblock instead.
+    constexpr int KBM_ = decltype(cute::size<2>(tCrB_copy_view))::value;
+    using ScalePolicy = typename MetadataPolicy::template Coarse<KBM_>;
+    if constexpr (ScalePolicy::active) {
+     if (ScalePolicy::starts_group(k_block)) {
+      // We are starting a new group k-tile so copy the scale
+      if constexpr (KernelConversionMode == ConversionMode::DirectConvert) {
+        // nothing to do
+      }
+      else if constexpr (ModeHasScales) {
+        MetadataPolicy::reload(partitioned_mma_extra_info, tiled_copy_and_views,
+                               ScalePolicy::group(k_block), read_stage);
+      }
+      else {
+        static_assert(cutlass::detail::dependent_false<KernelSchedule>,
+                      "COARSE scale copy requires a scale-bearing conversion mode");
+      }
+     }
+    }
+  }
+  /// Utilities to transform B.
+  // FINE-grained scale (gs < B-copy-step K, i.e. Scale_TileK > K_BLOCK_MAX): a single copy step's K_ATOM_PER_COPY
+  // mma atoms straddle MORE than one scale group, so one pre-loaded scale reg can't cover the step (and the coarse
+  // GroupK = K_BLOCK_MAX/Scale_TileK is 0). Here each mma atom reloads ITS group's scale straight from smem:
+  // atom `a` (0..mma_K_atoms) belongs to group a/(mma_K_atoms/Scale_TileK), at smem slot read_stage*Scale_TileK+g.
+  // This needs tiled_copy_and_views (smem_tiled_copy_S + reg-copy dst views) + read_stage, so both are passed in.
+  template <typename RealInternalElementB,
+            class TCrB_load,
+            class TCrB2_load,
+            class TCrB_mma,
+            int K_ATOM_PER_COPY,
+            class... Ts,
+            class CopyViews>
+  CUTLASS_DEVICE
+  void transform_B_kblock(
+    TCrB_load const& tCrB_load,
+    TCrB2_load const& tCrB2_load,
+    TCrB_mma& tCrB_mma,
+    cute::tuple<Ts...> const& partitioned_extra_info,
+    int const k_block,
+    cute::Int<K_ATOM_PER_COPY> k_atom,
+    CopyViews const& tiled_copy_and_views,
+    int const read_stage) {
+
+    static_assert(decltype(cute::size<2>(tCrB_load))::value %
+                      decltype(cute::size<2>(tCrB2_load))::value == 0,
+                  "plane copy-view ratio must be integral");
+    constexpr int P2_DIV_ = ArtifactP2Div;
+    static_assert(decltype(cute::size<2>(tCrB_load))::value /
+                      decltype(cute::size<2>(tCrB2_load))::value == P2_DIV_,
+                  "transform_B_kblock must use the artifact-derived P2_DIV");
+
+    // ---- TWO-PLANE convert -------------------------------------------------------------------------------
+    // Plane 2 is DENSER (more elements per uint32), so its copy view has FEWER K steps: one plane-2 step serves
+    // P2_DIV plane-1 k_blocks. (int2 low / int1 high at the same Block_K: sB_s8 is [N][64] int8 while sB2_s8 is
+    // [N][32], hence P2_DIV == 2.) Within plane 2's step, plane-1 k_block kb uses the vreg pair starting at
+    // 2*(kb % P2_DIV) -- the tensor-level twin of the verified per-register rule (hi reg = lo reg v >> 1).
+    Tensor cvt_in  = recast<RealInternalElementB>(tCrB_load(_, _, k_block));
+    Tensor cvt_hi  = recast<PlaneB2>(tCrB2_load(_, _, k_block / P2_DIV_));
+
+    // Write through the TENSOR, exactly like the single-plane convert_tensor does (`out(_, ii)`), NOT through a
+    // linear pointer: tCrB_mma's fragment layout is not contiguous with the stride a linear walk would assume, so
+    // a linear write scatters the fp16 into the wrong register slots (symptom: |D| 30-100x too large with random
+    // signs, which cannot come from wrong BITS since q = low + 4*high is bounded by 7).
+    // Mode-0 of cvt_in is one CPY_VEC chunk (64 low codes = 4 vregs); mode-1 is the chunk count.
+    Tensor cvt_out = [&] {
+      {
+        // The physical m16 b16 loader and the logical compute fragment share
+        // converter cohort order but not necessarily the rest-mode N stride.
+        // Preserve the loader's within-cohort order and root each cohort at
+        // the compute fragment's own N stride (the same proved seam as Q4).
+        auto dst_n_stride = compact_col_major(
+            shape<1>(cvt_in.layout()), stride<1>(tCrB_mma.layout()));
+        auto dst_layout = make_layout(
+            shape(cvt_in.layout()),
+            make_stride(stride<0>(cvt_in.layout()), dst_n_stride));
+        return make_tensor(
+            tCrB_mma(_, _, k_block * K_ATOM_PER_COPY).data(), dst_layout);
+      }
+    }();
+    constexpr int NumIter = decltype(cute::size<1>(cvt_in))::value;
+    // A delivery is 16 B/thread either way, so each plane's chunk holds 128/bits codes -- 64 low + 128 high for Q3,
+    // 32 + 64 for Q6, 32 + 128 for Q5. Derived from the widths instead of asserting Q3's two literals.
+    static_assert(decltype(cute::size<0>(cvt_in))::value == 128 / kLowBits,
+      "a low-plane delivery is 128/LowBits codes");
+    static_assert(decltype(cute::size<0>(cvt_hi))::value == 128 / kHiBits,
+      "a high-plane delivery is 128/HiBits codes -- it is the sparser plane, so it covers more of them");
+    CUTLASS_PRAGMA_UNROLL
+    for (int ii = 0; ii < NumIter; ++ii) {
+      uint32_t const* lo_p = reinterpret_cast<uint32_t const*>(raw_pointer_cast(cvt_in(_, ii).data()));
+      uint32_t*       o_p  = reinterpret_cast<uint32_t*>(raw_pointer_cast(cvt_out(_, ii).data()));
+      constexpr int N2_ = decltype(cute::size<1>(cvt_hi))::value;
+      using HiSrc_ = HiPlaneSrc<N2_, NumIter, P2_DIV_>;                 // (d): ONE definition, shared with the chunked path
+      uint32_t const* hi_p = reinterpret_cast<uint32_t const*>(raw_pointer_cast(cvt_hi(_, HiSrc_::slot(ii)).data()))
+                           + HiSrc_::base(ii, k_block);
+      Cvt2Plane::convert(lo_p, hi_p, o_p);                     // the full delivery, kOut/2 half2
+    }
+
+    constexpr int MMA_KA_ = decltype(cute::size<2>(tCrB_mma))::value;   // total mma-K atoms in the tile
+    static_assert(MMA_KA_ % K_ATOM_PER_COPY == 0,
+                  "an artifact copy step must carry an integral number of MMA atoms");
+    constexpr int KBM_    = MMA_KA_ / K_ATOM_PER_COPY;                  // K_BLOCK_MAX (copy steps)
+    static_assert(KBM_ * K_ATOM_PER_COPY == MMA_KA_,
+                  "copy steps and atoms per copy must cover the complete tactic tile");
+    using FinePolicy = typename MetadataPolicy::template Fine<KBM_, MMA_KA_>;
+    constexpr bool FINE = FinePolicy::active;
+    constexpr int APG_  = FinePolicy::atoms_per_group;
+
+    // ONE per-atom scale rule (apply_scale_atom below), looped over this copy step's atoms. This block used to be
+    // four hand-rolled copies of the FINE / APG_ / reload-at-group-boundary logic -- and two of them used a LOCAL
+    // `auto tCrS`, which make_fragment_like makes OWNING, so it snapshots stale rmem after a reload. The chunked path
+    // added below needs the same rule for a single atom, and one rule with two implementations is where the next
+    // divergence comes from; the fold collective was de-duplicated the same way for the same reason.
+    CUTLASS_PRAGMA_UNROLL
+    for (int i = 0; i < K_ATOM_PER_COPY; ++i) {
+      int const atom_idx = k_block * K_ATOM_PER_COPY + i;
+      apply_scale_atom<FINE, APG_>(tCrB_mma(_, _, atom_idx), partitioned_extra_info,
+                                   tiled_copy_and_views, atom_idx, read_stage);
+    }
+  }
+
+  // ONE place for the per-atom scale rule -- transform_B_kblock loops its atoms and calls this, transform_B_atom calls
+  // it once. Always reads get<1>/get<3>(info) directly rather than a local snapshot, which is correct with and without
+  // a reload (without one, they are the same object).
+  template <bool FINE, int APG, class BSlice, class... Ts, class CopyViews>
+  CUTLASS_DEVICE
+  void apply_scale_atom(BSlice&& b_slice,
+                        cute::tuple<Ts...> const& info,
+                        CopyViews const& views,
+                        int const atom_idx,
+                        int const read_stage) {
+    if constexpr (ModeHasScales) {
+      if constexpr (FINE) {
+        // (j) the group boundary and the group index from ONE object, and (group, stage) as COORDINATES -- the flat
+        // `read_stage * Scale_TileK + atom_idx / APG` used to be written here and again in the COARSE path.
+        using Split = detail::ScaleSplit<APG, int(Scale_TileK)>;
+        if (Split::in_group(atom_idx) == 0) {              // reload only at a scale group's first atom
+          MetadataPolicy::reload(info, views, Split::group(atom_idx), read_stage);
+        }
+      }
+      MetadataPolicy::apply(b_slice, info);
+    }
+  }
+
+  template <class RealB, int Chunk, int NChunk, class FragL,
+            class TCrB_load, class TCrB2_load, class TCrB_one, class... Ts, class CopyViews>
+  CUTLASS_DEVICE
+  void transform_B_atom(
+    TCrB_load const& tCrB_load,
+    TCrB2_load const& tCrB2_load,
+    TCrB_one& tCrB_one,
+    cute::tuple<Ts...> const& partitioned_extra_info,
+    int const k_block,
+    int const atom_idx,
+    CopyViews const& tiled_copy_and_views,
+    int const read_stage) {
+
+    static_assert(decltype(cute::size<2>(tCrB_load))::value %
+                      decltype(cute::size<2>(tCrB2_load))::value == 0,
+                  "plane copy-view ratio must be integral");
+    constexpr int P2_DIV_ = ArtifactP2Div;
+    static_assert(decltype(cute::size<2>(tCrB_load))::value /
+                      decltype(cute::size<2>(tCrB2_load))::value == P2_DIV_,
+                  "transform_B_atom must use the artifact-derived P2_DIV");
+    // raw_pointer_cast FIRST -- these are SUBBYTE tensors, so .data() is a cute::subbyte_iterator and
+    // reinterpret_cast from that class type is ill-formed (exactly how the fold build failed on the box).
+    Tensor cvt_in = recast<RealB>(tCrB_load(_, _, k_block));
+    Tensor cvt_hi = recast<PlaneB2>(tCrB2_load(_, _, k_block / P2_DIV_));
+    constexpr int NumIter = decltype(cute::size<1>(cvt_in))::value;          // CPY_N -- NOT MMA_N in general
+    constexpr int MMA_N_ = decltype(cute::size(tCrB_one))::value / 8;        // 8 fp16 per mma B atom
+    constexpr int NAPC_  = MMA_N_ / NumIter;                                 // n-atoms carried by one delivery
+    static_assert(NAPC_ >= 1 && MMA_N_ == NAPC_ * NumIter, "tCrB_one's n extent must be a multiple of CPY_N");
+    static_assert(NChunk * NAPC_ == Cvt2Plane::kAtoms,
+        "a delivery is kAtoms mma atoms; K_ATOM_PER_COPY * NAPC must account for all of them");
+    using DeliveryL_ = decltype(cute::make_layout(
+        cute::make_shape (cute::shape<0>(FragL{}), cute::Int<NAPC_>{}, cute::Int<NChunk>{}),
+        cute::make_stride(cute::stride<0>(FragL{}), cute::stride<1>(FragL{}), cute::stride<2>(FragL{}))));
+    // ONE loop, over DELIVERIES -- each has its own source pointer pair, which is a genuine source-side fact and not a
+    // destination computation.
+    //
+    // (h) THE DESTINATION BASE IS A SLICE, NOT AN OFFSET. This used to be `out + 4 * NAPC_ * ii` -- a hand-multiplied
+    // half2 stride, the last such expression in the B chain. Delivery ii owns tCrB_one's n-atoms [ii*NAPC, +NAPC), so
+    // slicing mode 1 at n-atom NAPC_*ii and taking .data() gives the same pointer with cute supplying the stride. The
+    // arithmetic that remains is a COORDINATE, which is the caller's business; strides are not.
+    cute::for_each(cute::make_int_sequence<NumIter>{}, [&] (auto ii_) {
+      constexpr int ii = decltype(ii_)::value;
+      uint32_t const* lo_p = reinterpret_cast<uint32_t const*>(raw_pointer_cast(cvt_in(_, cute::Int<ii>{}).data()));
+      constexpr int N2_ = decltype(cute::size<1>(cvt_hi))::value;
+      using HiSrc_ = HiPlaneSrc<N2_, NumIter, P2_DIV_>;                 // (d): the SAME object the unchunked path uses
+      uint32_t const* hi_p = reinterpret_cast<uint32_t const*>(
+                                 raw_pointer_cast(cvt_hi(_, cute::Int<HiSrc_::slot(ii)>{}).data()))
+                           + HiSrc_::base(ii, k_block);
+      uint32_t* out_ii = reinterpret_cast<uint32_t*>(
+          raw_pointer_cast(tCrB_one(_, cute::Int<NAPC_ * ii>{}).data()));
+      cutlass::MixGemm2Plane<kLowBits, kHiBits, Chunk, NChunk, true, DeliveryL_, kCvtBias, ElementA>::convert(lo_p, hi_p, out_ii);
+    });
+
+    constexpr int KBM_    = decltype(cute::size<2>(tCrB_load))::value;       // copy steps per k-tile
+    constexpr int MMA_KA_ = NChunk * KBM_;                                   // total mma-K atoms in the tile
+    static_assert(MMA_KA_ % KBM_ == 0 && MMA_KA_ / KBM_ == NChunk,
+                  "chunk copy steps must cover every MMA atom exactly once");
+    using FinePolicy = typename MetadataPolicy::template Fine<KBM_, MMA_KA_>;
+    constexpr bool FINE = FinePolicy::active;
+    constexpr int APG_  = FinePolicy::atoms_per_group;
+    apply_scale_atom<FINE, APG_>(tCrB_one, partitioned_extra_info, tiled_copy_and_views, atom_idx, read_stage);
+  }
+
+  /// Utilities for transforming the A operand prior to issuing tensor cell math.
+  template <class EngineIn,
+            class EngineOut,
+            class TensorLayout,
+            int ConversionVectorWidth = cosize_v<TensorLayout>>
+  CUTLASS_DEVICE void
+  convert_tensor(
+    Tensor<EngineIn,TensorLayout> const& in,
+    Tensor<EngineOut,TensorLayout>& out,
+    cute::Int<ConversionVectorWidth> width = {}) {
+
+    /// This is an element-wise conversion where we expect both tensors to have the same layout.
+    /// As a result, we can cast as a cutlass array to use the fast numeric converters without
+    /// worrying about indexing into the layout.
+    constexpr int N = size(TensorLayout{});
+    // constexpr int N = cosize_v<TensorLayout>;
+
+    /// The inputs must be backed by registers & be statically sized.
+    static_assert(is_rmem<EngineIn>::value, "Input tensor for A conversion must come from registers");
+    static_assert(is_rmem<EngineOut>::value, "Output tensor for A conversion must come from registers");
+    static_assert(is_static_v<TensorLayout>, "Tensor layout for the conversion must be static");
+    // static_assert(cosize_v<TensorLayout> == size(TensorLayout{}), "Cosize and size of the layout must be equal.");
+    static_assert(N % ConversionVectorWidth == 0, "Conversion vector width must divide cosize of the tensor layout.");
+
+    using SrcType = typename EngineIn::value_type;
+    using DstType = typename EngineOut::value_type;
+
+    using SrcArray = cutlass::Array<SrcType, ConversionVectorWidth>;
+    using DstArray = cutlass::Array<DstType, ConversionVectorWidth>;
+
+    // constexpr cutlass::FloatRoundStyle RoundStyle = cutlass::FloatRoundStyle::round_to_nearest;
+    // using Converter = cutlass::NumericArrayConverter<DstType, SrcType, ConversionVectorWidth, RoundStyle>;
+
+    // SrcType int8_t consider as uint8_t
+    using Converter = cutlass::MixGemmNumericArrayConverter<DstType, SrcType, ConversionVectorWidth>;
+
+    constexpr int NumIterations = N / ConversionVectorWidth;
+
+    CUTLASS_PRAGMA_UNROLL
+    for (int ii = 0; ii < NumIterations; ++ii) {
+      SrcArray const* src_array_ptr = reinterpret_cast<SrcArray const*>(raw_pointer_cast(in(_, ii).data()));
+      DstArray* dst_array_ptr = reinterpret_cast<DstArray*>(raw_pointer_cast(out(_, ii).data()));
+      *dst_array_ptr = Converter::convert(*src_array_ptr);
+    }
+  }
+
+};
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
+} // namespace cutlass::gemm::collective
+
+/////////////////////////////////////////////////////////////////////////////////////////////////

@@ -132,7 +132,7 @@ template <> struct Traits<KType::Q6_K> {
 //   Q4_K/Q5_K  8*6 + 8*6 = 96 = 12 bytes      Q3_K  16*6 = 96 = 12 bytes
 //   Q2_K      16*4 + 16*4 = 128 = 16 bytes    Q6_K  16*8 = 128 = 16 bytes
 // so "every bit claimed exactly once" is both necessary and sufficient, and it is strictly stronger than the
-// injectivity check the plan asked for: it catches a miss as well as a collision. A silently non-injective map is
+// injectivity alone: it catches a miss as well as a collision. A silently non-injective map is
 // the failure mode that cost rung 5, so it is asserted, not tested.
 template <class F, KType T>
 CUTE_HOST_DEVICE constexpr void claim_bits(int* used) {

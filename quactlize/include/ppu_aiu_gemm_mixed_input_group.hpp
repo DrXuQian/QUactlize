@@ -25,6 +25,7 @@
 #include "cutlass/utils.h"
 #include "cutlass/gemm/dispatch_policy.hpp"
 #include "cutlass/gemm/kernel/tile_scheduler.hpp"
+#include "grouped_schedule_decode.hpp"
 #include "cutlass/gemm/kernel/gemm_universal.hpp"
 #include "cute/tensor.hpp"
 
@@ -84,23 +85,10 @@ public:
   };
   static constexpr int SharedStorageSize = sizeof(SharedStorage);
   static constexpr uint32_t MaxThreadsPerBlock = cute::size(TiledMma{});
-  // PPU_MAXREG: cap registers per thread by asking __launch_bounds__ for more resident blocks. device_kernel.h
-  // passes MinBlocksPerMultiprocessor straight into __launch_bounds__, so the compiler must fit
-  // 131072 / (blocks * threads) registers. Expressed as a REGISTER target and converted here, because the block
-  // count that implies depends on MaxThreadsPerBlock -- 10 blocks means 102 registers at 128 threads and 51 at 256,
-  // and hardcoding the block count would silently over-constrain the wider tiles.
-  //
-  // Whether it pays is a separate question: at S=1 the grid supplies 4 blocks/CU for a 16x64 tile while 106
-  // registers already allow 9, so registers are NOT the binding limit there. Measured, not assumed.
-#if defined(PPU_MAXREG) && (PPU_MAXREG > 0)
-  static constexpr uint32_t MinBlocksPerMultiprocessor =
-      (131072u / (uint32_t(PPU_MAXREG) * MaxThreadsPerBlock)) > 0
-          ? (131072u / (uint32_t(PPU_MAXREG) * MaxThreadsPerBlock)) : 1u;
-#else
+  // Ordinary launch-bound policy for the selected grouped schedule.
   static constexpr uint32_t MinBlocksPerMultiprocessor = 1;
-#endif
   static constexpr uint32_t NumMmaWarpGroups = 1;
-  static constexpr int MinWorkspaceAlignment = 16;   // [Q1] array_group takes this from an outer scope; define locally
+  static constexpr int MinWorkspaceAlignment = 16;
 
   struct Arguments {
     GemmUniversalMode mode{};
@@ -109,7 +97,6 @@ public:
     EpilogueArguments epilogue{};
     KernelHardwareInfo hw_info{};
     TileSchedulerArguments scheduler{};
-    int probe = 0;   // debug: 0=normal; 1=ROUTING probe (skip GEMM, write expert+1 to every output element)
     int const* group_M = nullptr;   // device [L] per-expert M_e; O(L) decode of blockIdx.x -> (expert,m_tile)
     int mtiles_uniform = 0;         // >0: 3D grid's per-expert M-tile bound; 0: flat ragged grid, scan group_M
     // Mainloop/epilogue need one representative shape for their uniform N/K strides. Device-only grouped callers
@@ -137,7 +124,6 @@ public:
     KernelHardwareInfo hw_info;
     TileSchedulerParams scheduler;
     void* workspace;
-    int probe = 0;
     int const* group_M = nullptr;
     int mtiles_uniform = 0;
     int representative_n = 0;
@@ -174,13 +160,50 @@ public:
       problem_shapes,
       CollectiveMainloop::to_underlying_arguments(rep_mnkl, args.mainloop, /*workspace=*/nullptr),
       CollectiveEpilogue::to_underlying_arguments(rep_mnkl, args.epilogue, /*workspace=*/nullptr),
-      hw_info, scheduler, workspace, args.probe, args.group_M, args.mtiles_uniform, rep_n,
+      hw_info, scheduler, workspace, args.group_M, args.mtiles_uniform, rep_n,
       args.splitk < 1 ? 1 : args.splitk
     };
   }
 
   static bool can_implement(Arguments const& args) {
-    return args.mode == GemmUniversalMode::kGrouped || args.mode == GemmUniversalMode::kArray;
+    if (args.mode != GemmUniversalMode::kGrouped &&
+        args.mode != GemmUniversalMode::kArray) {
+      return false;
+    }
+    // Two equally valid launch contracts reach this kernel:
+    //
+    //   * host wrappers provide the exact host mirror and may select the flat
+    //     ragged grid; and
+    //   * the asynchronous production C ABI owns only device-resident shapes.
+    //     It supplies representative M/N/K plus a conservative per-expert
+    //     m-tile bound, so get_grid_shape uses the 3-D path and the kernel
+    //     trims each expert from problem_shapes on device.
+    //
+    // The latter contract was already implemented in get_grid_shape and
+    // operator(), but this old unconditional host-mirror guard rejected it
+    // before either could run.  Require every value actually consumed by the
+    // device-only path; do not weaken admission to a bare null bypass.
+    bool const has_host_geometry =
+        args.problem_shape.host_problem_shapes != nullptr;
+    bool const has_device_geometry =
+        !has_host_geometry && args.problem_shape.problem_shapes != nullptr &&
+        args.representative_m > 0 && args.representative_n > 0 &&
+        args.representative_k > 0 && args.mtiles_uniform > 0;
+    if (args.problem_shape.groups() <= 0 ||
+        args.problem_shape.problem_shapes == nullptr ||
+        (!has_host_geometry && !has_device_geometry)) {
+      return false;
+    }
+    auto host0 = args.problem_shape.get_host_problem_shape(0);
+    int const rep_m = args.representative_m > 0
+        ? args.representative_m : int(get<0>(host0));
+    int const rep_n = args.representative_n > 0
+        ? args.representative_n : int(get<1>(host0));
+    int const rep_k = args.representative_k > 0
+        ? args.representative_k : int(get<2>(host0));
+    auto rep_mnkl = cute::make_shape(
+        rep_m, rep_n, rep_k, args.problem_shape.groups());
+    return CollectiveMainloop::can_implement(rep_mnkl, args.mainloop);
   }
   static int get_workspace_size(Arguments const& args) {
     // GroupScheduler workspace only (epilogue needs none on this path).
@@ -208,21 +231,17 @@ public:
     if (params.mtiles_uniform > 0) {
       return dim3(params.mtiles_uniform, int(cute::ceil_div(params.representative_n, TN)), L * S);
     }
-    int total_m_tiles = 0, N = 1, mt0 = -1, mt_max = 0; bool uni = true;
+    int total_m_tiles = 0, N = 1;
     for (int e = 0; e < L; ++e) {
       auto ps = params.problem_shape.get_host_problem_shape(e);
       int const mte = int(cute::ceil_div(int(cute::get<0>(ps)), TM));
-      total_m_tiles += mte;  N = int(cute::get<1>(ps));  mt_max = mte > mt_max ? mte : mt_max;
-      if (mt0 < 0) mt0 = mte; else if (mte != mt0) uni = false;
+      total_m_tiles += mte;
+      N = int(cute::get<1>(ps));
     }
     int const Nt = int(cute::ceil_div(N, TN));
-    bool const force3d = std::getenv("MOEG_FORCE3D") != nullptr;   // diagnostic: force 3D Mmax grid for ragged
-    // UNIFORM (or forced): 3D grid (mt_max, N_tiles, L), blockIdx.z=expert, O(1) decode. small experts' extra
-    // m-tiles early-exit (idle). RAGGED default: flat grid (total,N,1), no idle blocks but O(L) decode scan.
     // THE SLICE LIVES ON z. The ragged (flat) path leaves z unused, so it is free there; the uniform path already
     // spends z on the expert, so the two are packed as z = expert*S + slice -- the same packing
     // ppu_aiu_gemm_parallel.hpp uses for (l, slice).
-    if (uni || force3d) return dim3(uni ? mt0 : mt_max, Nt, L * S);
     return dim3(total_m_tiles, Nt, S);
   }
   static dim3 get_block_shape() { return dim3(MaxThreadsPerBlock, 1, 1); }
@@ -253,7 +272,8 @@ public:
       // 3D grid (M-tile bound, N_tiles, L) -> expert = blockIdx.z (O(1)), m_idx = blockIdx.x. The normal host
       // path selects it for uniform shapes; device-only callers may supply Mmax and let the guard below trim it.
       // z = expert*S + slice
-      expert = int(blockIdx.z) / S;  slice = int(blockIdx.z) % S;  m_idx = flat;
+      auto const decoded = quactlize::grouped_schedule::decode_uniform_z(int(blockIdx.z), S);
+      expert = decoded.expert;  slice = decoded.slice;  m_idx = flat;
     } else {
       // A (O(log L) ragged): binary-search the m-tile prefix [L+1] (written by launch into the scheduler-unused
       // workspace) for the largest e with prefix[e] <= flat. Replaces the O(L) linear scan (the ~5% the flat
@@ -278,8 +298,9 @@ public:
     Tensor gA = get<0>(load_inputs);
     Tensor gB = get<1>(load_inputs);
 
-    auto m_max = M - size<0>(gA) * m_idx;
-    auto n_max = N - size<0>(gB) * n_idx;
+    // gA/gB describe physical transfer shapes; output residue follows the logical CTA tile.
+    auto m_max = M - size<0>(blk_shape) * m_idx;
+    auto n_max = N - size<1>(blk_shape) * n_idx;
     auto k_res = K - size<1>(gA) * size<2>(gA);
     auto residue_mnk = make_tuple(m_max, n_max, k_res);
 
@@ -292,12 +313,7 @@ public:
     auto k_tile_iter  = cute::make_splitk_coord_iterator(shape<2>(gA), slice, S);
     int  k_tile_count = (size<2>(gA) + S - 1) / S;
 
-    if (params.probe == 1) {
-      // ROUTING PROBE: skip the GEMM, tag every output element with (expert+1). See test_moe_grouped_probe.
-      cute::fill(accumulators, ElementCompute(expert + 1));
-    } else {
-      collective_mainloop(params.mainloop, load_inputs, accumulators, k_tile_iter, k_tile_count, thread_idx, smem_buf);
-    }
+    collective_mainloop(params.mainloop, load_inputs, accumulators, k_tile_iter, k_tile_count, thread_idx, smem_buf);
 
     // EACH SLICE WRITES ITS OWN D PLANE, e + slice*L, so the S partials are contiguous for the merge. The L
     // EXTENT has to grow with them or the epilogue's own bounds check would reject the shifted coordinate -- the

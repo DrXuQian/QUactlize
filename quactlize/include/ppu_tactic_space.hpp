@@ -1,12 +1,9 @@
-// Host-readable description of the finite arrangement/tactic search domain shared by fpA dense and grouped GEMM.
-//
-// Keep this header free of CUTLASS/HGGC includes: dev/fold_derivation/emit_tactic_space.cpp compiles it with the host
-// compiler and prints EVERY candidate, including exclusions.  The two launchers also name their own rule wrapper and
-// static-assert the kernel part, so the emitter is not a transcription of constraints hidden in device-only code.
+// Shared host-readable legality and resource limits for canonical K-pack kernels.
 #pragma once
 
 #include <array>
 #include <cstdint>
+#include <type_traits>
 
 #include "ppu_format_config.hpp"
 
@@ -16,40 +13,40 @@ namespace ppu_tactics {
 // same named limit; a literal in either place is exactly how an emitted "legal" tactic can become an unlaunchable
 // compiled tactic.
 inline constexpr int64_t kBlockSmemBytes = 262144;
+// The runtime rejects a dynamic-shared attribute request equal to the nominal
+// 256-KiB block capacity.  Treat the boundary as exclusive everywhere so a
+// host-emitted row cannot disagree with its compiled launch guard.
+constexpr bool fits_block_smem(int64_t bytes) {
+  return bytes >= 0 && bytes < kBlockSmemBytes;
+}
+static_assert(fits_block_smem(kBlockSmemBytes - 1));
+static_assert(!fits_block_smem(kBlockSmemBytes));
 // Every emitted kernel must serve every runtime group size in the shared dispatch ladder. Sixteen is the smallest
-// supported group and therefore the worst case for both metadata footprint and scale-copy thread coverage.
+// supported group and therefore the worst case for metadata footprint.
 inline constexpr int kMinimumRuntimeGroupSize = 16;
 
-enum class Format { I1, I2, I4, Q3_K, Q5_K, Q6_K };
+enum class Format { I1, I2, I4, I8, Q3_K, Q5_K, Q6_K };
 
 struct FormatSpec {
   Format format;
   char const* name;
   int low_bits;
   int high_bits;
-};
+  // Metadata residency is part of format legality, not a heuristic.  The
+  // historical low-bit families keep the conservative runtime ladder
+  // (gs16, scale+zero); Q8_0 is fixed gs32 ScaleOnly and therefore owns one
+  // fp16 metadata plane.
+  int minimum_group_size;
+  int metadata_planes;
 
-// The finite domain for the 025 sweep. Artifact folds are derived from (bits, ArtifactTileK), never selected. The
-// consumer's TacticTileK is independent: it changes kernel geometry without changing stored bytes. Stage and split-K
-// are tactic axes too; Stage=2 is used below as the existence test because it is the shallowest supported pipeline.
-inline constexpr std::array<FormatSpec, 6> kFormats{{
-    {Format::I1, "i1", 1, 0},
-    {Format::I2, "i2", 2, 0},
-    {Format::I4, "i4", 4, 0},
-    {Format::Q3_K, ppu_formats::for_qtype(11).name,
-                   ppu_formats::for_qtype(11).low_bits, ppu_formats::for_qtype(11).high_bits},
-    {Format::Q5_K, ppu_formats::for_qtype(13).name,
-                   ppu_formats::for_qtype(13).low_bits, ppu_formats::for_qtype(13).high_bits},
-    {Format::Q6_K, ppu_formats::for_qtype(14).name,
-                   ppu_formats::for_qtype(14).low_bits, ppu_formats::for_qtype(14).high_bits},
-}};
-inline constexpr std::array<int, 4> kTileK{{32, 64, 128, 256}};
-inline constexpr std::array<int, 5> kTileM{{16, 32, 64, 128, 256}};
-inline constexpr std::array<int, 4> kTileN{{16, 32, 64, 128}};
-inline constexpr std::array<int, 3> kWarpM{{16, 32, 64}};
-// WN=128 is deliberate.  The current MoE generator omits it, but it is the delivery escape for an int1 plane at TK32;
-// whether the remaining constraints reject a row must be printed, not encoded by leaving the axis out.
-inline constexpr std::array<int, 4> kWarpN{{16, 32, 64, 128}};
+  constexpr FormatSpec(Format format_, char const* name_, int low_bits_,
+                       int high_bits_,
+                       int minimum_group_size_ = kMinimumRuntimeGroupSize,
+                       int metadata_planes_ = 2)
+      : format(format_), name(name_), low_bits(low_bits_),
+        high_bits(high_bits_), minimum_group_size(minimum_group_size_),
+        metadata_planes(metadata_planes_) {}
+};
 
 constexpr int fold_for(int bits, int tile_k) {
   int const run = tile_k * bits / 8;
@@ -70,18 +67,19 @@ enum class Exclusion {
   HighFoldDoesNotDivideTileN,
   LowDelivery,
   HighDelivery,
-  ScaleCopyCoverage,
   MinimumStageSmem,
-  CompactAUnavailable,
-  CompactARowExtent,
+  EpilogueSharedStorage,
   ProducerWarpN,
   ProducerMap,
+  ProducerConsumerLayout,
+  BChunkUnsupportedBits,
 };
 
 constexpr char const* exclusion_clause(Exclusion e) {
   switch (e) {
     case Exclusion::None: return "";
-    case Exclusion::AtomAlignment: return "tile and warp extents must be multiples of the 16x16x16 MMA atom";
+    case Exclusion::AtomAlignment:
+      return "tile and warp extents must align to the selected m8n16k16 or m16n16k16 MMA atom";
     case Exclusion::WarpDoesNotDivideTile: return "warp shape must divide tile shape";
     case Exclusion::TooManyWarps: return "tile needs more than the 32-warp block limit";
     case Exclusion::AccumulatorRegisters: return "the fp32 accumulator alone exceeds the 192-register sweep ceiling";
@@ -92,12 +90,14 @@ constexpr char const* exclusion_clause(Exclusion e) {
     case Exclusion::HighFoldDoesNotDivideTileN: return "ArtifactHighFold does not divide TacticTileN";
     case Exclusion::LowDelivery: return "the low plane over-delivers the warp fragment";
     case Exclusion::HighDelivery: return "the high plane over-delivers the warp fragment";
-    case Exclusion::ScaleCopyCoverage: return "the conservative gs16 scale copy needs more thread slots than the CTA has";
     case Exclusion::MinimumStageSmem: return "the conservative gs16 scale+zero footprint exceeds the 256KB block limit";
-    case Exclusion::CompactAUnavailable: return "the selected folded or two-plane collective has no compact-A reader";
-    case Exclusion::CompactARowExtent: return "compact-A capacity must be positive, no larger than TileM, and divide TileM";
+    case Exclusion::EpilogueSharedStorage:
+      return "the fp32 epilogue shared tile reaches or exceeds the usable 256KB dynamic-shared limit";
     case Exclusion::ProducerWarpN: return "the offline producer exposes only consumer-validated WarpN values through 64";
-    case Exclusion::ProducerMap: return "the Q6 two-plane inverse at TileK=256 is incomplete";
+    case Exclusion::ProducerMap: return "the Q6 offline producer inverse at ArtifactTileK=256 is incomplete";
+    case Exclusion::ProducerConsumerLayout:
+      return "the tactic's folded B reader does not decode the canonical resident artifact byte map";
+    case Exclusion::BChunkUnsupportedBits: return "single-plane BChunk requires a 1- or 2-bit format";
   }
   return "unknown exclusion";
 }
@@ -110,11 +110,12 @@ struct Candidate {
   union { int tactic_tile_k; int tk; };
   int wm, wn;
   int artifact_tile_k;
+  int b_chunk;
 
   constexpr Candidate(FormatSpec spec_, int tm_, int tn_, int tactic_tile_k_, int wm_, int wn_,
-                      int artifact_tile_k_ = 0)
+                      int artifact_tile_k_ = 0, int b_chunk_ = 0)
       : spec(spec_), tm(tm_), tn(tn_), tactic_tile_k(tactic_tile_k_), wm(wm_), wn(wn_),
-        artifact_tile_k(artifact_tile_k_ > 0 ? artifact_tile_k_ : tactic_tile_k_) {}
+        artifact_tile_k(artifact_tile_k_ > 0 ? artifact_tile_k_ : tactic_tile_k_), b_chunk(b_chunk_) {}
 };
 
 constexpr int artifact_low_fold(Candidate c) {
@@ -131,6 +132,24 @@ constexpr bool artifact_run_is_exact(int bits, int artifact_tile_k) {
   return bytes >= 32 || (bytes > 0 && 32 % bytes == 0);
 }
 
+// Q6 is the only registered 4+2-bit format. KernelPolicyGuard deliberately carries the physical plane tuple rather
+// than a GGUF qtype, so kernel exclusions must recognize this pair instead of trusting Candidate::spec.format.
+constexpr bool has_q6_plane_pair(Candidate c) {
+  return c.spec.low_bits == 4 && c.spec.high_bits == 2;
+}
+
+// Mirror GetMmaInstForShape's deliberately narrow first m8 exposure without importing CUTLASS into this host-only
+// header.  In particular, (TM=16,WM=8) must not become "two m8 atoms": the device selector falls back to m16 there.
+constexpr int instruction_m(Candidate c) {
+  return c.tm == 8 && c.wm == 8 ? 8 : 16;
+}
+
+// The logical m8 tile still uses the AIU's physical 16-row A cube and .padz supplies rows 8..15.  Billing only TM
+// rows here would admit tactics whose generated kernel needs more shared memory than the host model promised.
+constexpr int physical_a_rows(Candidate c) {
+  return c.tm < 16 ? 16 : c.tm;
+}
+
 // This is the actual CTA warp count for the current PPU0010 builder, not a performance proxy. get_tiled_mma tiles one
 // 32-thread MMA atom by Layout<Shape<TileM/WarpM, TileN/WarpN, _1>>, and both dense and grouped kernels launch
 // cute::size(TiledMma{}) threads. Each launcher static-asserts this expression against its instantiated TiledMma so a
@@ -139,19 +158,17 @@ constexpr int cta_warps(Candidate c) {
   return (c.tm / c.wm) * (c.tn / c.wn);
 }
 
-constexpr int scale_copy_thread_slots(Candidate c, int group_size = kMinimumRuntimeGroupSize) {
-  return (c.tn / 8) * ((c.tactic_tile_k + group_size - 1) / group_size);
-}
-
-constexpr bool scale_copy_thread_coverage(Candidate c, int group_size = kMinimumRuntimeGroupSize) {
-  return int64_t(scale_copy_thread_slots(c, group_size)) <= int64_t(32) * cta_warps(c);
-}
-
 // These are kernel constraints, shared by the two launcher static_asserts and the host emitter.  They are kept apart
 // from artifact reachability: a template may be a legal consumer while the shipping *_for_tile producer cannot yet
 // make bytes for it.
 constexpr Exclusion common_kernel_exclusion(Candidate c) {
-  if (c.tm % 16 || c.tn % 16 || c.tactic_tile_k % 16 || c.wm % 16 || c.wn % 16)
+  // The two-plane collective owns its own mode gate and supports every registered pair.  For a single plane,
+  // only int1/int2 have a chunk emitter; keeping this coarse avoids doubling dense/grouped int4 without copying
+  // the collective's TiledMma-dependent effectiveness predicate into this host-only header.
+  if (c.b_chunk != 0 && c.spec.high_bits == 0 && c.spec.low_bits != 1 && c.spec.low_bits != 2)
+    return Exclusion::BChunkUnsupportedBits;
+  int const inst_m = instruction_m(c);
+  if (c.tm % inst_m || c.tn % 16 || c.tactic_tile_k % 16 || c.wm % inst_m || c.wn % 16)
     return Exclusion::AtomAlignment;
   if (c.wm > c.tm || c.wn > c.tn || c.tm % c.wm || c.tn % c.wn)
     return Exclusion::WarpDoesNotDivideTile;
@@ -173,35 +190,7 @@ constexpr Exclusion common_kernel_exclusion(Candidate c) {
   if (int64_t(c.wn) * c.tactic_tile_k * c.spec.low_bits < 4096) return Exclusion::LowDelivery;
   if (c.spec.high_bits && int64_t(c.wn) * c.tactic_tile_k * c.spec.high_bits < 4096)
     return Exclusion::HighDelivery;
-  // Match MetadataPolicy::ScaleCopyCoverage conservatively over the whole runtime group-size ladder. A row that
-  // only works at gs32/64/128 is not a legal compiled tactic because the same instantiation is reachable at gs16.
-  if (!scale_copy_thread_coverage(c)) return Exclusion::ScaleCopyCoverage;
   return Exclusion::None;
-}
-
-// THE DENSE AND GROUPED KERNEL PREDICATES ARE THE SAME PREDICATE, and this function exists only so the two
-// routes keep separate names at the call sites.
-//
-// It used to carry one extra clause -- `if (cta_warps(c) < 4) return DenseSubFourWarpDeviceAbort;` -- recording
-// that on 2026-08-04 the tested dense sub-four-warp instantiations aborted on ppu001. That clause was a
-// CATEGORY ERROR and it was removed on 2026-08-05: it stated a MEMORY OF AN OBSERVATION inside the file that
-// defines what is LEGAL. A constraint the kernel can express belongs in the kernel as a static_assert, where the
-// compiler can refute it; a host-side list of things that once failed is a second source of truth that outlives
-// the code it was drawn from, and this one did. What it excluded was the measured optimum: (64,64,64) w64x32 is
-// two warps and is the recorded int4 65.0% winner, against 60.6% for the best row the clause left reachable.
-//
-// The evidence that retired it: the dense route now has 61 assert( sites of which 61 are static_assert, so the
-// observed `Assertion 'false' failed` is unreachable in today's code; ci/check_route_admits.py compiles the
-// two-warp row with a planted device-body static_assert as its control and finds no error; and codex reran that
-// probe independently and reported no source-level basis for keeping the clause. The likely mechanism of the
-// original aborts was the then-unimplemented ordinary COARSE scale path, whose selection
-// (ppu_mma_aiu_multistage_mixed_input.hpp: "COARSE is a relation between the scale tile and the ACTUAL retiled B
-// copy view") turns on fragment geometry and so co-varies with warp shape -- a correlation, not a warp-count law.
-//
-// If a two-warp row does fail on hardware, express the real condition as a static_assert with a name. Do not
-// reinstate a remembered observation.
-constexpr Exclusion dense_kernel_exclusion(Candidate c) {
-  return common_kernel_exclusion(c);
 }
 
 constexpr Exclusion common_non_smem_exclusion(Candidate c) {
@@ -211,160 +200,60 @@ constexpr Exclusion common_non_smem_exclusion(Candidate c) {
   return Exclusion::None;
 }
 
-constexpr Exclusion dense_non_smem_exclusion(Candidate c) {
-  if (auto const e = dense_kernel_exclusion(c); e != Exclusion::None) return e;
-  if ((c.wm * c.wn) / 32 > 192)
-    return Exclusion::AccumulatorRegisters;
-  return Exclusion::None;
-}
-
 constexpr int64_t common_per_stage_smem(Candidate c, int a_rows) {
   return int64_t(a_rows) * c.tactic_tile_k * 2
        + int64_t(c.tn) * c.tactic_tile_k * (c.spec.low_bits + c.spec.high_bits) / 8
-       + int64_t(c.tn) * (c.tactic_tile_k / kMinimumRuntimeGroupSize) * 2 * 2;
+       + int64_t(c.tn) *
+             ((c.tactic_tile_k + c.spec.minimum_group_size - 1) /
+              c.spec.minimum_group_size) *
+             2 * c.spec.metadata_planes;
 }
 
-constexpr Exclusion common_topology_exclusion_with_a_rows(Candidate c, int stages, int a_rows) {
-  if (auto const e = common_non_smem_exclusion(c); e != Exclusion::None) return e;
-
-  // Match moe_ok's conservative stage-2 existence test exactly. Fold cancels from B bytes; scale+zero is sized for
-  // the smallest runtime group (16), because a too-loose filter produces a fake winner when initialize fails. A is
-  // parameterised separately: ordinary kernels pass TileM, compact small-M specialisations pass their row capacity.
-  if (common_per_stage_smem(c, a_rows) * stages > kBlockSmemBytes) return Exclusion::MinimumStageSmem;
-  return Exclusion::None;
+// The PPU vectorized epilogue stages one fp32 accumulator for every element
+// in its exact shared output tile.  Its M extent is one MMA instruction per
+// M-warp, not necessarily the logical CTA TileM.  This mirrors
+// CollectiveBuilder's SmemM/SmemLayoutO derivation without importing CUTLASS
+// into this host-readable tactic authority.
+constexpr int64_t epilogue_smem(Candidate c) {
+  int const warp_on_m = c.tm / c.wm;
+  return int64_t(warp_on_m) * instruction_m(c) * c.tn * 4;
 }
 
 constexpr Exclusion common_topology_exclusion(Candidate c, int stages = 2) {
-  return common_topology_exclusion_with_a_rows(c, stages, c.tm);
-}
+  if (auto const e = common_non_smem_exclusion(c); e != Exclusion::None) return e;
 
-constexpr Exclusion dense_topology_exclusion_with_a_rows(Candidate c, int stages, int a_rows) {
-  if (auto const e = dense_non_smem_exclusion(c); e != Exclusion::None) return e;
-  if (common_per_stage_smem(c, a_rows) * stages > kBlockSmemBytes) return Exclusion::MinimumStageSmem;
+  // A request of exactly 256 KiB is not launchable: the adapter must publish
+  // it through hggcFuncAttributeMaxDynamicSharedMemorySize, and the PPU0010
+  // runtime rejects that exact-cap request.  The Q4 TM256/TN256/WM16/WN128
+  // device witness returned kErrorInternal from that sole initialize path;
+  // its otherwise-isomorphic WM32 control used 172048 B and ran correctly.
+  if (!fits_block_smem(epilogue_smem(c)))
+    return Exclusion::EpilogueSharedStorage;
+
+  // Fold cancels from B bytes.  Metadata uses the format-owned contract:
+  // historical families retain the conservative gs16 scale+zero ladder,
+  // while fixed-gs32 Q8_0 charges its one ScaleOnly fp16 plane.  Applying the
+  // historical two-plane assumption to Q8 would silently delete legal rows.
+  // This is deliberately a broad conservative model: it charges every
+  // format at the minimum runtime group size and can therefore equal the
+  // limit even when the compiled format-owned layout is smaller.  Preserve
+  // equality here and let the exact compiled SharedStorageSize guard make
+  // the strict boundary decision.
+  if (common_per_stage_smem(c, physical_a_rows(c)) * stages >
+      kBlockSmemBytes)
+    return Exclusion::MinimumStageSmem;
   return Exclusion::None;
 }
 
-constexpr Exclusion dense_topology_exclusion(Candidate c, int stages = 2) {
-  return dense_topology_exclusion_with_a_rows(c, stages, c.tm);
-}
-
-// The compact-A reader currently exists in the ordinary, unfolded, one-plane collective. Folded low planes and every
-// two-plane format select different collective types; their type-level witness is zero and their launcher rejects a
-// compact row. Keep that reachability fact next to the footprint equation so the host inventory cannot claim that
-// capacity*TK*2 is available for a collective that still allocates TileM*TK*2.
-constexpr bool common_compact_a_supported(Candidate c) {
-  return c.spec.high_bits == 0 && artifact_low_fold(c) == 1;
-}
-
-constexpr Exclusion common_compact_a_topology_exclusion(Candidate c, int stages, int compact_rows) {
-  if (auto const e = common_non_smem_exclusion(c); e != Exclusion::None) return e;
-  if (!common_compact_a_supported(c)) return Exclusion::CompactAUnavailable;
-  if (!(compact_rows > 0 && compact_rows <= c.tm && c.tm % compact_rows == 0))
-    return Exclusion::CompactARowExtent;
-  return common_topology_exclusion_with_a_rows(c, stages, compact_rows);
-}
-
-constexpr Exclusion dense_compact_a_topology_exclusion(Candidate c, int stages, int compact_rows) {
-  if (auto const e = dense_non_smem_exclusion(c); e != Exclusion::None) return e;
-  if (!common_compact_a_supported(c)) return Exclusion::CompactAUnavailable;
-  if (!(compact_rows > 0 && compact_rows <= c.tm && c.tm % compact_rows == 0))
-    return Exclusion::CompactARowExtent;
-  return dense_topology_exclusion_with_a_rows(c, stages, compact_rows);
-}
-
-constexpr Exclusion common_producer_exclusion(Candidate c) {
-  // Artifact reachability is about the producer's layout, not the tactic that later consumes it. WN=128 remains
-  // outside the producer's validated domain, and Q6/ArtifactTileK=256 is the one known bad inverse map.
-  if (c.wn > 64) return Exclusion::ProducerWarpN;
-  if (c.spec.format == Format::Q6_K && c.artifact_tile_k == 256) return Exclusion::ProducerMap;
-  return Exclusion::None;
-}
-
-// Compile-time controls for the distinction this header owns. A fixed TK64 artifact is legal under larger tactics,
-// including Q3's independent (low,high)=(2,4) folds; a tactic that cannot be partitioned into whole artifact K-blocks
-// is refused before it can instantiate a provider with a partial physical row.
-inline constexpr FormatSpec kArtifactFoldControlI2{Format::I2, "artifact-fold-control-i2", 2, 0};
-inline constexpr FormatSpec kScaleCoverageControlI4{Format::I4, "scale-coverage-control-i4", 4, 0};
-inline constexpr FormatSpec kArtifactFoldControlQ3{Format::Q3_K, "artifact-fold-control-q3", 2, 1};
-inline constexpr Candidate kArtifactFoldControlI2Large{kArtifactFoldControlI2, 64, 64, 256, 32, 32, 64};
-inline constexpr Candidate kArtifactFoldControlQ3Large{kArtifactFoldControlQ3, 64, 128, 256, 32, 32, 64};
-static_assert(artifact_low_fold(kArtifactFoldControlI2Large) == 2);
-static_assert(artifact_low_fold(kArtifactFoldControlQ3Large) == 2 &&
-              artifact_high_fold(kArtifactFoldControlQ3Large) == 4);
-static_assert(common_kernel_exclusion(kArtifactFoldControlI2Large) == Exclusion::None);
-static_assert(common_kernel_exclusion(kArtifactFoldControlQ3Large) == Exclusion::None);
-static_assert(common_kernel_exclusion(
-                  Candidate{kArtifactFoldControlI2, 64, 64, 96, 64, 32, 64}) ==
-              Exclusion::ArtifactTileKDoesNotTileTacticK);
-static_assert(common_kernel_exclusion(
-                  Candidate{kArtifactFoldControlI2, 64, 64, 96, 64, 32, 48}) ==
-              Exclusion::ArtifactLowRun);
-inline constexpr Candidate kScaleCoverageBoundary{
-    kScaleCoverageControlI4, 16, 128, 64, 16, 64, 64};
-inline constexpr Candidate kScaleCoverageOverflow{
-    kScaleCoverageControlI4, 16, 128, 256, 16, 32, 64};
-inline constexpr Candidate kCompactEightControl{
-    kScaleCoverageControlI4, 128, 64, 64, 64, 32, 64};
-static_assert(scale_copy_thread_slots(kScaleCoverageBoundary) == 64 && cta_warps(kScaleCoverageBoundary) == 2);
-static_assert(common_kernel_exclusion(kScaleCoverageBoundary) == Exclusion::None);
-static_assert(scale_copy_thread_slots(kScaleCoverageOverflow) == 256 && cta_warps(kScaleCoverageOverflow) == 4);
-static_assert(scale_copy_thread_slots(kScaleCoverageOverflow, 32) == 128 &&
-              scale_copy_thread_coverage(kScaleCoverageOverflow, 32));
-static_assert(common_kernel_exclusion(kScaleCoverageOverflow) == Exclusion::ScaleCopyCoverage);
-static_assert(common_compact_a_topology_exclusion(kCompactEightControl, 2, 8) == Exclusion::None);
-static_assert(dense_compact_a_topology_exclusion(kCompactEightControl, 2, 8) == Exclusion::None);
-static_assert(common_compact_a_topology_exclusion(kCompactEightControl, 2, 0) ==
-              Exclusion::CompactARowExtent);
-static_assert(common_compact_a_topology_exclusion(kCompactEightControl, 2, 3) ==
-              Exclusion::CompactARowExtent);
-
-// Everything that determines whether some topology for the candidate may be built, except the M- and stage-dependent
-// shared footprint. size_sweep.cpp uses this before asking both the ordinary and compact topology predicates.
-constexpr Exclusion common_static_sweep_exclusion(Candidate c) {
-  if (auto const e = common_non_smem_exclusion(c); e != Exclusion::None) return e;
-  return common_producer_exclusion(c);
-}
-
-constexpr Exclusion dense_static_sweep_exclusion(Candidate c) {
-  if (auto const e = dense_non_smem_exclusion(c); e != Exclusion::None) return e;
-  return common_producer_exclusion(c);
-}
-
-constexpr Exclusion common_sweep_exclusion(Candidate c) {
-  if (auto const e = common_topology_exclusion(c, 2); e != Exclusion::None) return e;
-  return common_producer_exclusion(c);
-}
-
-constexpr Exclusion dense_sweep_exclusion(Candidate c) {
-  if (auto const e = dense_topology_exclusion(c, 2); e != Exclusion::None) return e;
-  return common_producer_exclusion(c);
-}
-
-// Separate wrappers are intentional. The emitter asks each launcher for its own answer and the comparator reports
-// their declared dense-only abort boundary; every other rule remains shared so an additional drift stays visible.
-struct DenseSpace {
-  static constexpr Exclusion kernel_exclusion(Candidate c) { return dense_kernel_exclusion(c); }
-  static constexpr Exclusion topology_exclusion(Candidate c, int stages = 2) {
-    return dense_topology_exclusion(c, stages);
-  }
-  static constexpr bool compact_a_supported(Candidate c) { return common_compact_a_supported(c); }
-  static constexpr Exclusion compact_a_topology_exclusion(Candidate c, int stages, int compact_rows) {
-    return dense_compact_a_topology_exclusion(c, stages, compact_rows);
-  }
-  static constexpr Exclusion static_sweep_exclusion(Candidate c) { return dense_static_sweep_exclusion(c); }
-  static constexpr Exclusion sweep_exclusion(Candidate c) { return dense_sweep_exclusion(c); }
-};
-struct GroupedSpace {
+struct TacticSpace {
   static constexpr Exclusion kernel_exclusion(Candidate c) { return common_kernel_exclusion(c); }
   static constexpr Exclusion topology_exclusion(Candidate c, int stages = 2) {
     return common_topology_exclusion(c, stages);
   }
-  static constexpr bool compact_a_supported(Candidate c) { return common_compact_a_supported(c); }
-  static constexpr Exclusion compact_a_topology_exclusion(Candidate c, int stages, int compact_rows) {
-    return common_compact_a_topology_exclusion(c, stages, compact_rows);
-  }
-  static constexpr Exclusion static_sweep_exclusion(Candidate c) { return common_static_sweep_exclusion(c); }
-  static constexpr Exclusion sweep_exclusion(Candidate c) { return common_sweep_exclusion(c); }
 };
+using DenseSpace = TacticSpace;
+using GroupedSpace = TacticSpace;
+static_assert(std::is_same_v<DenseSpace, GroupedSpace>,
+              "dense and grouped must remain aliases of one tactic-space generator");
 
 }  // namespace ppu_tactics

@@ -50,12 +50,26 @@ constexpr int minimum_delivery_tile_k(Config config) {
   return narrowest_bits > 0 && 256 % narrowest_bits == 0 ? 256 / narrowest_bits : 0;
 }
 
+// Finite offline-producer ABI.  A reader must not accept an arrangement merely because its fold arithmetic is
+// meaningful: Q3/Q5 do not expose the int1 TK32 producer and Q6's TK256 inverse remains incomplete.  Keeping this
+// beside the format registry lets producer, inventory, and launch reject the same descriptor.
+constexpr bool artifact_tile_k_supported(Config config, int artifact_tile_k) {
+  if (config.qtype < 0 || (artifact_tile_k != 32 && artifact_tile_k != 64 &&
+                           artifact_tile_k != 128 && artifact_tile_k != 256))
+    return false;
+  if ((config.qtype == 11 || config.qtype == 13) && artifact_tile_k == 32) return false;
+  if (config.qtype == 14 && artifact_tile_k == 256) return false;
+  return true;
+}
+
 constexpr bool registry_is_valid() {
   for (auto const& config : kConfigs) {
     if (config.qtype < 0 || config.group_size <= 0 || config.low_bits <= 0 ||
         config.scale_first_tile_k != minimum_delivery_tile_k(config) ||
         config.fully_quantized_tile_k < config.scale_first_tile_k ||
-        256 % config.scale_first_tile_k || 256 % config.fully_quantized_tile_k)
+        256 % config.scale_first_tile_k || 256 % config.fully_quantized_tile_k ||
+        !artifact_tile_k_supported(config, config.scale_first_tile_k) ||
+        !artifact_tile_k_supported(config, config.fully_quantized_tile_k))
       return false;
   }
   return true;

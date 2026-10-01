@@ -1,7 +1,7 @@
 #pragma once
 
 #include "cutlass/gemm/dispatch_policy.hpp"
-#include "quactlize_extensions/cutlass/gemm/quactlize_dispatch_policy.hpp"
+#include "actlize_extensions/cutlass/gemm/quactlize_dispatch_policy.hpp"
 
 // One definition of the fine-grained group-size ladder used by dense, grouped and the shipping backend.
 // The schedule tag controls scale-tile reload cadence; ScaleGroups controls how many groups a K tile covers.
@@ -29,11 +29,12 @@ struct Selector<32> {
   using Type = cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32;
 };
 
-// There is no separate Gs16 tag. ScaleTileShape carries the real group count and the validated Gs32 policy
-// supplies the same per-MMA-atom path, as it already did in the grouped launcher.
 template <>
 struct Selector<16> {
-  using Type = cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs32;
+  // The arithmetic path is the same per-MMA-atom path as gs32, but the tag
+  // must still carry the declared group size.  Reusing Gs32 made the runtime
+  // extent and the static schedule look contradictory to admission checks.
+  using Type = cutlass::gemm::KernelAiuMultistageMixedInputFinegrainedGs16;
 };
 
 template <int GroupSize>

@@ -1,52 +1,15 @@
-// Plan #20 phase 2, the DECODE: native GGUF scale bytes -> the (scale, zero) an mma atom needs.
-//
-// NEW FILE. The fp16 scale path is untouched; this is the object a packed-scale collective calls instead of reading a
-// pre-multiplied fp16 plane. Nothing here restates a bit position: the field extraction comes from
-// gguf_scale_layout.hpp's Layouts (gated on real gguf data in fold_derivation/l91: 4096 superblocks x 8 groups, 0 bad)
-// and the code->fp16 conversion comes from the SAME magic-number identity the B converter uses.
-//
-// WHAT THE KERNEL ACTUALLY NEEDS, per (n, group):   scale = d * sc     zero = -dmin * mn
-// with sc/mn the 6-bit codes of the superblock's 12 scale bytes and d/dmin its two fp16 values. Both products are one
-// fp16 multiply and both are EXACT-then-rounded-once, because sc, mn <= 63 need 6 bits and d, dmin are already fp16:
-// the real product has at most 17 significant bits, so fp32 holds it exactly and fp16 rounds it once. Measured over a
-// real tensor's 136192 groups in real_weight/dump_packed_scale.py gate (b): bit-identical to today's host-side form.
-//
-// WHY THE ZERO IS -dmin*mn AND NOT 8*scale - dmin*mn: the stored 4-bit codes already are the unsigned nib, so a
-// converter running with Bias = 0 (plan #20 phase 1 made that immediate a parameter) leaves nib in the mainloop and the
-// zero needs no +8*scale term. Gate (c) of the same file measured both: they agree to 0.0003 of a quantisation step, so
-// the choice is cost -- one product instead of a product plus an fma -- not precision.
-//
-// WHY THIS IS THE SHAPE OF THE WIN. The FINE path reloads the scale (and the zero) once per scale group, i.e. 16 s2r
-// reads per k-tile at gs=32/TileK=256, and the two channels' reads outnumber their writes 9.1:1. One superblock's 12
-// bytes cover EIGHT groups, so one contiguous read plus register decode replaces 8 (x2) strided reads. That is the
-// "16 reloads -> 1" in the plan's re-priced section, and it is why the decode is worth ALU it does not save.
 #pragma once
 
 #include <cstdint>
 #include "cutlass/cutlass.h"
 #include "cutlass/half.h"
 #include "gguf_scale_layout.hpp"
-// THE PACKED-UNIT HELPERS ARE OPTIONAL, and that is what makes this header usable from the portable host side.
-// gguf_packed_scale.h reaches cutlass/half.h, which includes <hggc_fp16.h> from the PPU SDK -- so pulling it in
-// unconditionally means the plain decode cannot be built against stock cutlass, and the torch extension that
-// exposes this to Python could only be built on a machine with the SDK. The PLAIN decode needs none of it:
-// scale_of / min_of / make_group_scale are pure arithmetic over the format's own bytes. Only the re-exports at the
-// bottom of this file need the packed unit, so they follow the same condition.
-//
-// THE PROBE ASKS FOR THE SDK HEADER, NOT FOR OUR OWN. It used to ask for `cutlass/gguf_packed_scale.h`, which
-// worked as a proxy only because that path existed solely inside actlize: finding it meant actlize's cutlass was
-// on the include path, and actlize's cutlass is what needs the SDK. The header moved into quactlize_extensions/
-// on 2026-08-06, where it is ALWAYS findable -- so probing for it answers "yes" on a host build with no SDK,
-// pulls actlize's cutlass in, and the host compile dies on `int4`/`uint4` from <vector_types.h>. Asking for
-// <hggc_fp16.h> states the real condition instead of a proxy that stopped being one.
-//
-// Both directions of getting this wrong are silent-ish and neither is acceptable: probing a path that never
-// exists leaves GGUF_SCALE_HAVE_PACKED undefined and the packed re-exports simply vanish, with nothing failing
-// because every caller is behind the same macro.
+// Packed metadata helpers require the SDK half types. The byte/scale decode
+// remains available when only the host-side CUTLASS types are present.
 #if defined(__has_include)
 #  if __has_include(<hggc_fp16.h>)
 #    define GGUF_SCALE_HAVE_PACKED 1
-#    include "quactlize_extensions/cutlass/gguf_packed_scale.h"
+#    include "actlize_extensions/cutlass/gguf_packed_scale.h"
 #  endif
 #endif
 
@@ -54,15 +17,6 @@ namespace gguf_scale {
 
 using cutlass::half_t;
 
-// ---------------------------------------------------------------------------------------------------------------
-// CODE -> fp16, ONE rule for every format. With v+128 placed in the mantissa of the fp16 pattern 0x6400 (= 1024.0) the
-// value is exactly 1024 + v + 128, so a single subtract of 1152 yields v. This is MixGemmChunkEmit's identity at
-// bpos = 0 -- same mechanism, restated only because a 6-bit code living one-per-byte is not one of that struct's
-// packings (it assumes codes at bpos = i*Bits inside a vreg).
-//
-// The +128 offset is what makes it cover SIGNED codes (Q6_K's int8 scales) with no second path: v in [-128, 895] gives
-// a mantissa field in [0, 1023] and both 1024+v+128 and v are integers below 2048, hence exact in fp16. l93 checks
-// every v in that range against the integer, not against a formula.
 CUTLASS_HOST_DEVICE half_t int_to_half_small(int v) {
   uint16_t const bits = uint16_t(0x6400u | uint32_t((v + 128) & 0x3FF));
   return cutlass::half_t::bitcast(bits) - half_t(1152.f);
@@ -135,11 +89,6 @@ CUTLASS_HOST_DEVICE constexpr float bytes_per_group_per_col_fp16() {
 }
 
 
-// THE PACKED UNIT AND ITS DECODE LIVE IN quactlize_extensions/cutlass/gguf_packed_scale.h, next to the mainloop
-// that needs them. (They were inside the actlize submodule until 2026-08-06, when quactlize's kernels moved out of
-// the fork.) This header re-exports them so existing callers (fold_derivation/l94, the offline harnesses) are
-// unchanged, and so there is exactly ONE definition of the bit map -- copying it here is the failure this work keeps
-// recording. The Q4_K parameters are named where they are used, not baked into the re-export.
 #if defined(GGUF_SCALE_HAVE_PACKED)
 using cutlass::gguf_packed::PackBits;
 using cutlass::gguf_packed::kUnitBytes;

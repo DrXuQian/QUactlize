@@ -1,0 +1,28 @@
+[
+  {
+    "kind": "simt",
+    "config": {"variant": 3, "columns": 4, "warps": 4, "values": 4, "split": 1}
+  },
+  {
+    "kind": "simt",
+    "config": {"variant": 3, "columns": 4, "warps": 4, "values": 4, "split": 2}
+  },
+  {
+    "kind": "tc",
+    "parent": {
+      "symbol": "fqk_tc_q12_l1_a0_tm8_tn64_tk256_wm8_wn16_s2_bc0_ap0_dn64",
+      "qtype": 12, "route": "fq-dense", "tm": 8, "tn": 64, "tk": 256,
+      "wm": 8, "wn": 16, "stages": 2, "ap": 0, "dn": 64, "persistent": -1
+    },
+    "recipe": {"algorithm": 0, "split": 1, "grid": 0}
+  },
+  {
+    "kind": "tc",
+    "parent": {
+      "symbol": "fqk_tc_q12_l1_a0_tm8_tn64_tk256_wm8_wn16_s2_bc0_ap0_dn64",
+      "qtype": 12, "route": "fq-dense", "tm": 8, "tn": 64, "tk": 256,
+      "wm": 8, "wn": 16, "stages": 2, "ap": 0, "dn": 64, "persistent": -1
+    },
+    "recipe": {"algorithm": 0, "split": 2, "grid": 0}
+  }
+]

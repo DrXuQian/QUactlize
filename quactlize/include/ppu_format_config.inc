@@ -12,7 +12,7 @@
 // SCALE_FIRST TileK is the canonical minimum 32-byte run for the narrowest code plane: 256/bits. Two-plane formats
 // use the narrower/high plane. FULLY_QUANTIZED is deliberately distinct: Q2/Q4's packed metadata unit covers a whole
 // 256-code superblock and measured best when one k-tile consumes it; Q3/Q5 already need 256 for their int1 plane;
-// Q6 keeps the independently validated 128-K high-plane map because its 256-K inverse is incomplete.
+// Q6's default fully-quantized tile is 128. Canonical K-pack byte maps remain independent of tactic TileK.
 #define QUACTLIZE_PPU_FORMAT_CONFIGS(X) \
   X(Q2_K, "Q2_K", 10, 2, 0, 16, 128, 256, 2) \
   X(Q3_K, "Q3_K", 11, 2, 1, 16, 256, 256, 3) \

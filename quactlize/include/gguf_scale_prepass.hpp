@@ -41,6 +41,8 @@
 #include "gguf_scale_decode.hpp"
 #include "gguf_packed_unit.hpp"
 
+#include <type_traits>
+
 namespace gguf_scale {
 namespace prepass {
 
@@ -49,10 +51,6 @@ using ::gguf_scale::KType;
 using ::gguf_scale::Traits;
 using ::gguf_scale::GroupScale;
 
-// ONE SUPERBLOCK-COLUMN'S WORTH OF DECODE, and the ONLY place the arithmetic exists. The device kernel below and the
-// host reference both call this, so "the two agree" is not a property that has to be tested -- there is one of them.
-// What DOES have to be tested is that this agrees with the format spec, which is what l101 does, against a literal
-// transcription rather than against this.
 template <KType T, int ZMul>
 CUTLASS_HOST_DEVICE GroupScale
 group_scale_zero(uint8_t const* block, int g, half_t d, half_t dmin) {
@@ -113,6 +111,71 @@ struct UnitPlaneDesc {
   int64_t stride_k;
   int64_t stride_n;
 };
+
+// PPU KERNEL-ARGUMENT ABI CANDIDATE, NOW REFUTED AS THE ROOT CAUSE.
+//
+// The host/device arithmetic above deliberately keeps BlockDesc, PlaneDesc and UnitPlaneDesc as the public layout
+// vocabulary.  They are convenient host-side views.  An earlier PPU closure suspected their kernel signature:
+// both raw and packed-unit prepasses returned rc=0 while leaving every output zero, whereas dequant in the same
+// translation unit was bit exact and both failing symbols were present in the ELF.  The old signatures were
+//
+//     kernel(BlockDesc, PlaneDesc, int, int)
+//     kernel(pointer, UnitPlaneDesc, int, int, int)
+//
+// A one-aggregate candidate preserved every coordinate and passed the CUDA golden, but the fresh PPU binary still
+// produced all-zero raw and packed outputs.  Therefore "two aggregates plus trailing scalars" is conclusively not
+// the root.  These flattened structs remain only to keep the current frozen subject stable while the diagnostic
+// ladder isolates the first failing compiler/device seam; they must not be cited as a fix and can be restored or
+// retained on ordinary API-merit after that closure.
+struct PrepassKernelArgs {
+  uint8_t const* blocks;
+  half_t const* d;
+  half_t const* dmin;
+  half_t* scale;
+  half_t* zero;
+  int64_t block_stride_n;
+  int64_t block_stride_sb;
+  int64_t hdr_stride_n;
+  int64_t hdr_stride_sb;
+  int64_t scale_stride_n;
+  int64_t scale_stride_k;
+  int num_cols;
+  int num_superblocks;
+};
+
+struct UnitPrepassKernelArgs {
+  uint8_t const* units;
+  half_t* scale;
+  half_t* zero;
+  int64_t stride_e;
+  int64_t stride_k;
+  int64_t stride_n;
+  int num_experts;
+  int num_cols;
+  int num_superblocks;
+};
+
+static_assert(std::is_standard_layout<PrepassKernelArgs>::value &&
+              std::is_trivially_copyable<PrepassKernelArgs>::value,
+              "raw prepass kernel arguments must have one stable value ABI");
+static_assert(std::is_standard_layout<UnitPrepassKernelArgs>::value &&
+              std::is_trivially_copyable<UnitPrepassKernelArgs>::value,
+              "packed-unit prepass kernel arguments must have one stable value ABI");
+
+CUTLASS_HOST_DEVICE PrepassKernelArgs
+make_prepass_kernel_args(BlockDesc const& src, PlaneDesc const& dst,
+                         int num_cols, int num_superblocks) {
+  return {src.blocks, src.d, src.dmin, dst.scale, dst.zero,
+          src.block_stride_n, src.block_stride_sb, src.hdr_stride_n, src.hdr_stride_sb,
+          dst.stride_n, dst.stride_k, num_cols, num_superblocks};
+}
+
+CUTLASS_HOST_DEVICE UnitPrepassKernelArgs
+make_unit_prepass_kernel_args(uint8_t const* units, UnitPlaneDesc const& dst,
+                              int num_experts, int num_cols, int num_superblocks) {
+  return {units, dst.scale, dst.zero, dst.stride_e, dst.stride_k, dst.stride_n,
+          num_experts, num_cols, num_superblocks};
+}
 
 template <KType T, int ZMul>
 void prepass_unit_host(uint8_t const* units, UnitPlaneDesc const& dst,
@@ -247,7 +310,7 @@ CUTLASS_HOST_DEVICE constexpr int prepass_grid_size(int num_cols, int num_superb
 }
 
 template <KType T, int ZMul>
-__global__ void prepass_kernel(BlockDesc src, PlaneDesc dst, int num_cols, int num_superblocks) {
+__global__ void prepass_kernel(PrepassKernelArgs args) {
   constexpr int kG = Traits<T>::kGroups;
   static_assert(kG == 8 || kG == 16, "the warp mapping handles two or four four-group tiles");
   using CopyLayout = cute::Layout<cute::Shape<cute::_4, cute::_8>, cute::Stride<cute::_1, cute::_4>>;
@@ -257,9 +320,9 @@ __global__ void prepass_kernel(BlockDesc src, PlaneDesc dst, int num_cols, int n
   int const tid = blockIdx.x * blockDim.x + threadIdx.x;
   int const warp = tid >> 5;
   int const lane = threadIdx.x & 31;
-  int const warp_groups_per_col = (num_superblocks + 7) / 8;
+  int const warp_groups_per_col = (args.num_superblocks + 7) / 8;
   int const n = warp / warp_groups_per_col;
-  if (n >= num_cols) return;
+  if (n >= args.num_cols) return;
 
   // Derive (group-within-pass, superblock-within-warp) from the copy itself. Keeping a second hand-written lane
   // formula beside the TiledCopy would let the arithmetic and the destinations drift independently.
@@ -270,12 +333,12 @@ __global__ void prepass_kernel(BlockDesc src, PlaneDesc dst, int num_cols, int n
   int const g0 = int(cute::get<0>(coord));
   int const sb0 = (warp - n * warp_groups_per_col) * 8;
   int const sb = sb0 + int(cute::get<1>(coord));
-  if (sb >= num_superblocks) return;
+  if (sb >= args.num_superblocks) return;
 
-  uint8_t const* blk = src.blocks + n * src.block_stride_n + sb * src.block_stride_sb;
-  int64_t const hi = n * src.hdr_stride_n + sb * src.hdr_stride_sb;
-  half_t const d = src.d[hi];
-  half_t const dmin = src.dmin ? src.dmin[hi] : half_t(0.f);
+  uint8_t const* blk = args.blocks + n * args.block_stride_n + sb * args.block_stride_sb;
+  int64_t const hi = n * args.hdr_stride_n + sb * args.hdr_stride_sb;
+  half_t const d = args.d[hi];
+  half_t const dmin = args.dmin ? args.dmin[hi] : half_t(0.f);
 
   CUTLASS_PRAGMA_UNROLL
   for (int pass = 0; pass < kG / 4; ++pass) {
@@ -283,16 +346,18 @@ __global__ void prepass_kernel(BlockDesc src, PlaneDesc dst, int num_cols, int n
     GroupScale const sz = group_scale_zero<T, ZMul>(blk, g, d, dmin);
 
     auto tile_layout = cute::make_layout(cute::make_shape(cute::_4{}, cute::_8{}),
-                                         cute::make_stride(dst.stride_k, int64_t(kG) * dst.stride_k));
-    int64_t const tile_offset = n * dst.stride_n + (int64_t(sb0) * kG + pass * 4) * dst.stride_k;
-    auto scale_tile = cute::make_tensor(cute::make_gmem_ptr(dst.scale + tile_offset), tile_layout);
+                                         cute::make_stride(args.scale_stride_k,
+                                                           int64_t(kG) * args.scale_stride_k));
+    int64_t const tile_offset = n * args.scale_stride_n
+                              + (int64_t(sb0) * kG + pass * 4) * args.scale_stride_k;
+    auto scale_tile = cute::make_tensor(cute::make_gmem_ptr(args.scale + tile_offset), tile_layout);
     auto thr_scale = thr_copy.partition_D(scale_tile);
     auto scale_fragment = cute::make_fragment_like(thr_scale);
     scale_fragment(0) = sz.scale;
     cute::copy(tiled_copy, scale_fragment, thr_scale);
 
-    if (dst.zero) {
-      auto zero_tile = cute::make_tensor(cute::make_gmem_ptr(dst.zero + tile_offset), tile_layout);
+    if (args.zero) {
+      auto zero_tile = cute::make_tensor(cute::make_gmem_ptr(args.zero + tile_offset), tile_layout);
       auto thr_zero = thr_copy.partition_D(zero_tile);
       auto zero_fragment = cute::make_fragment_like(thr_zero);
       zero_fragment(0) = sz.zero;
@@ -307,39 +372,40 @@ __global__ void prepass_kernel(BlockDesc src, PlaneDesc dst, int num_cols, int n
 // Q4/Q5 take two passes and Q2/Q3/Q6 four. The source record is selected through (unit,sb_in_unit), so the device path
 // witnesses the same paired-superblock axis as prepass_unit_host rather than relying on an outer caller to offset it.
 template <KType T, int ZMul>
-__global__ void prepass_unit_kernel(uint8_t const* units, UnitPlaneDesc dst,
-                                    int num_experts, int num_cols, int num_superblocks) {
+__global__ void prepass_unit_kernel(UnitPrepassKernelArgs args) {
   using U = packed_unit::Unit<T>;
   static_assert(U::kGroups == 8 || U::kGroups == 16, "packed unit warp mapping expects 8 or 16 groups");
   static_assert(U::kUnitTotal == U::kSbPerUnit * U::kSbBytes,
                 "the kernel must address a complete copyable/paired unit");
   int const warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
   int const lane = threadIdx.x & 31;
-  int const col_tiles = (num_cols + 7) / 8;
-  int const warps_per_expert = num_superblocks * col_tiles;
+  int const col_tiles = (args.num_cols + 7) / 8;
+  int const warps_per_expert = args.num_superblocks * col_tiles;
   int const e = warp / warps_per_expert;
-  if (e >= num_experts) return;
+  if (e >= args.num_experts) return;
   int const in_expert = warp - e * warps_per_expert;
   int const sb = in_expert / col_tiles;
   int const n = (in_expert - sb * col_tiles) * 8 + lane / 4;
-  if (n >= num_cols) return;
+  if (n >= args.num_cols) return;
   int const g0 = lane & 3;
   int const unit = sb / U::kSbPerUnit;
   int const sb_in_unit = sb % U::kSbPerUnit;
-  int const num_units = num_superblocks / U::kSbPerUnit;
-  uint8_t const* src = units + ((int64_t(e) * num_units + unit) * num_cols + n) * U::kUnitTotal;
+  int const num_units = args.num_superblocks / U::kSbPerUnit;
+  uint8_t const* src = args.units
+      + ((int64_t(e) * num_units + unit) * args.num_cols + n) * U::kUnitTotal;
 
   CUTLASS_PRAGMA_UNROLL
   for (int pass = 0; pass < U::kGroups / 4; ++pass) {
     int const g = g0 + 4 * pass;
     GroupScale const sz = packed_unit::unit_group_sb<T, ZMul>(src, sb_in_unit, g);
-    int64_t const o = int64_t(e) * dst.stride_e
-                    + (int64_t(sb) * U::kGroups + g) * dst.stride_k
-                    + int64_t(n) * dst.stride_n;
-    dst.scale[o] = sz.scale;
-    if (dst.zero) dst.zero[o] = sz.zero;
+    int64_t const o = int64_t(e) * args.stride_e
+                    + (int64_t(sb) * U::kGroups + g) * args.stride_k
+                    + int64_t(n) * args.stride_n;
+    args.scale[o] = sz.scale;
+    if (args.zero) args.zero[o] = sz.zero;
   }
 }
+
 
 template <KType T>
 CUTLASS_HOST_DEVICE constexpr int prepass_unit_grid_size(
@@ -348,6 +414,7 @@ CUTLASS_HOST_DEVICE constexpr int prepass_unit_grid_size(
   int64_t const threads = warps * 32;
   return int((threads + threads_per_cta - 1) / threads_per_cta);
 }
+
 #endif
 
 // THE TRAFFIC, as an expression rather than a comment, because the whole case for this path is a byte count and a

@@ -1,7 +1,7 @@
 #pragma once
 // THE PACKED SCALE UNIT, GENERALISED PAST Q4_K. One trait per format; the staging skeleton reads the trait.
 //
-// WHAT WAS HARDCODED. quactlize_extensions/cutlass/gguf_packed_scale.h describes exactly one unit -- 16 bytes,
+// WHAT WAS HARDCODED. actlize_extensions/cutlass/gguf_packed_scale.h describes exactly one unit -- 16 bytes,
 // d and dmin in the first
 // four, eight groups of (6-bit scale, 6-bit min) split into two self-contained halves -- and the collective is built
 // on those numbers: kPackedScaleUnit = 16, one 128-bit cp.async, Scale_TileK == 8, four 32-bit words, 6-bit
@@ -56,13 +56,6 @@ struct Unit {
                 "the reordered unit must not be larger than GGUF's own scale metadata -- an offline reorder is "
                 "permitted, an increase in stored bytes is not");
 
-  // SUPERBLOCKS PER UNIT, which is what makes Q3_K and Q6_K movable at all. ppu.cp.async takes 4, 8 or 16 bytes;
-  // one superblock of Q3_K is 14 and of Q6_K 18, both 2 mod 4, so neither can be bulk-copied. TWO superblocks OF THE
-  // SAME COLUMN are 28 and 36, both divisible by 4, with no padding and no change to which column a thread owns.
-  //
-  // The axis matters and I had it wrong first: pairing along n -- two COLUMNS -- needs the staged tensor recast to
-  // (TN/2, 2*unit) and changes ownership, which is why that attempt was withdrawn. Pairing along k needs neither,
-  // because a thread still owns exactly its own column and simply covers two of its superblocks.
   static constexpr int kSbPerUnit = ((kHeaderBytes + kCodeBits / 8) % 4 == 0) ? 1 : 2;
   static constexpr int kSbBytes   = kHeaderBytes + kCodeBits / 8;      // one superblock's own share
   static constexpr int kUnitTotal = kSbPerUnit * kSbBytes;             // what the copy actually moves
@@ -105,6 +98,26 @@ struct Unit {
     return sb * kSbBytes * 8 + bit_of(g, which);
   }
 };
+
+// Correction owned by the canonical placed-code reader.  It is not a caller
+// option: a wrong value produces finite but numerically wrong weights.  Keep
+// it beside unit_group, the one operation that applies it, so every public
+// prepass and packed consumer can name the same constant.
+template <KType T> struct CanonicalPlacedZMul;
+template <> struct CanonicalPlacedZMul<KType::Q2_K> { static constexpr int value = 0; };
+template <> struct CanonicalPlacedZMul<KType::Q3_K> { static constexpr int value = -4; };
+template <> struct CanonicalPlacedZMul<KType::Q4_K> { static constexpr int value = 8; };
+template <> struct CanonicalPlacedZMul<KType::Q5_K> { static constexpr int value = 8; };
+template <> struct CanonicalPlacedZMul<KType::Q6_K> { static constexpr int value = -24; };
+template <KType T>
+inline constexpr int kCanonicalPlacedZMul = CanonicalPlacedZMul<T>::value;
+
+static_assert(kCanonicalPlacedZMul<KType::Q2_K> == 0 &&
+              kCanonicalPlacedZMul<KType::Q3_K> == -4 &&
+              kCanonicalPlacedZMul<KType::Q4_K> == 8 &&
+              kCanonicalPlacedZMul<KType::Q5_K> == 8 &&
+              kCanonicalPlacedZMul<KType::Q6_K> == -24,
+              "canonical placed-code corrections must remain format exact");
 
 // A field may straddle a byte boundary (6-bit fields always do), so a 16-bit read and one shift. Stated once.
 // THE SECOND BYTE IS READ ONLY WHEN THE FIELD STRADDLES, and that is a bounds requirement rather than an

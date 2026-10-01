@@ -1,0 +1,1009 @@
+{
+  "schema": "quactlize.q8-vector-policy.v1",
+  "rows": [
+    {
+      "key": [
+        8,
+        0,
+        512,
+        2048,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "baseline": [
+        1,
+        4,
+        8,
+        2,
+        1
+      ],
+      "candidate": [
+        5,
+        4,
+        8,
+        4,
+        1
+      ],
+      "old_us": 5.9710294008255005,
+      "new_us": 5.732205860755023,
+      "result_sha256": "b87b4c0b1cb8bd34c2f4b744dace673aee6d597cb8c101febf51f9112b543b57"
+    },
+    {
+      "key": [
+        8,
+        0,
+        512,
+        2048,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "baseline": [
+        1,
+        4,
+        8,
+        2,
+        1
+      ],
+      "candidate": [
+        5,
+        4,
+        8,
+        4,
+        1
+      ],
+      "old_us": 5.738088094136295,
+      "new_us": 5.6727942736709815,
+      "result_sha256": "f66842b3984d25b89e3ef0a1b7b532645e5143ee209a9ae459ca26de99ebb15b"
+    },
+    {
+      "key": [
+        8,
+        0,
+        1024,
+        2048,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "baseline": [
+        1,
+        4,
+        8,
+        2,
+        1
+      ],
+      "candidate": [
+        5,
+        4,
+        8,
+        4,
+        1
+      ],
+      "old_us": 6.591764881330378,
+      "new_us": 6.539117764024173,
+      "result_sha256": "2e1cbdfe45cf75b1a75e85852cb52005be28bec2e908fb9c7e59d092ec070009"
+    },
+    {
+      "key": [
+        8,
+        0,
+        1024,
+        5120,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "baseline": [
+        1,
+        4,
+        8,
+        4,
+        4
+      ],
+      "candidate": [
+        5,
+        8,
+        8,
+        4,
+        8
+      ],
+      "old_us": 10.524285691125053,
+      "new_us": 9.735357016324997,
+      "result_sha256": "ce20e56e09df3234241ba960b242f6ca8d41ac82ad3b23e44321ff523850ec65"
+    },
+    {
+      "key": [
+        8,
+        0,
+        2048,
+        512,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "baseline": [
+        1,
+        4,
+        2,
+        2,
+        1
+      ],
+      "candidate": [
+        5,
+        4,
+        2,
+        4,
+        1
+      ],
+      "old_us": 4.08705893684836,
+      "new_us": 3.7523527794024525,
+      "result_sha256": "b70d8f275cb0c3cd77a3e8ff0f19312e6d16fa230ab8bca9f49ad57d64a40f3b",
+      "archive_sha256": "0362d61e0a9c2e32786298ef59f48e79a0af2d4b84c9a7f542f66444a9ea38f9",
+      "comparison_baseline": [
+        5,
+        8,
+        4,
+        4,
+        1
+      ]
+    },
+    {
+      "key": [
+        8,
+        0,
+        8192,
+        2048,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "baseline": [
+        1,
+        8,
+        8,
+        4,
+        1
+      ],
+      "candidate": [
+        5,
+        4,
+        8,
+        8,
+        1
+      ],
+      "old_us": 16.270555555820465,
+      "new_us": 13.991110854678684,
+      "result_sha256": "03b63c7a0f1e95511bb6bd4c8ef171de36c1c359583276293800f13fa38b22aa"
+    },
+    {
+      "key": [
+        8,
+        0,
+        512,
+        2048,
+        1,
+        1,
+        1,
+        2,
+        0
+      ],
+      "baseline": [
+        1,
+        4,
+        8,
+        2,
+        1
+      ],
+      "candidate": [
+        5,
+        4,
+        8,
+        4,
+        1
+      ],
+      "old_us": 5.985588273581336,
+      "new_us": 5.598823375561658,
+      "result_sha256": "9675fd6e01902d905c2d498c1c2b4b6171ba7c7d5e3b6144388d80cc3938a389"
+    },
+    {
+      "key": [
+        8,
+        0,
+        512,
+        2048,
+        1,
+        1,
+        1,
+        2,
+        1
+      ],
+      "baseline": [
+        1,
+        4,
+        8,
+        2,
+        1
+      ],
+      "candidate": [
+        5,
+        4,
+        8,
+        4,
+        1
+      ],
+      "old_us": 5.66514691009241,
+      "new_us": 5.503382533788681,
+      "result_sha256": "55d18dec4dbff93165b7bfa452b3afc836dea09f98a212a9b9b6bbc97ef77b4a"
+    },
+    {
+      "key": [
+        8,
+        0,
+        512,
+        2048,
+        1,
+        1,
+        1,
+        4,
+        0
+      ],
+      "baseline": [
+        1,
+        4,
+        8,
+        4,
+        1
+      ],
+      "candidate": [
+        5,
+        4,
+        8,
+        4,
+        1
+      ],
+      "old_us": 6.2536765985629135,
+      "new_us": 5.553823621834026,
+      "result_sha256": "e3063c44fd98e0f87031a2978e0107ffbf4aed44331a142c841357811985272a"
+    },
+    {
+      "key": [
+        8,
+        0,
+        512,
+        2048,
+        1,
+        1,
+        1,
+        4,
+        1
+      ],
+      "baseline": [
+        1,
+        4,
+        8,
+        4,
+        1
+      ],
+      "candidate": [
+        5,
+        4,
+        8,
+        4,
+        1
+      ],
+      "old_us": 6.301470539149116,
+      "new_us": 5.657647024182712,
+      "result_sha256": "b4141999b4f1acbffb60b6d008f6353244405f3c745345da15ab2a770385cb8b"
+    },
+    {
+      "key": [
+        8,
+        0,
+        512,
+        2048,
+        1,
+        1,
+        1,
+        8,
+        1
+      ],
+      "baseline": [
+        1,
+        4,
+        8,
+        4,
+        1
+      ],
+      "candidate": [
+        5,
+        4,
+        8,
+        8,
+        1
+      ],
+      "old_us": 8.507941575611339,
+      "new_us": 6.763823549537097,
+      "result_sha256": "3d26d888077088ad31dc03e2a1ecb7fc3e6091323899304f2cc78109cb0122e0"
+    },
+    {
+      "key": [
+        8,
+        0,
+        2048,
+        4096,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "baseline": [
+        1,
+        4,
+        8,
+        4,
+        1
+      ],
+      "candidate": [
+        5,
+        8,
+        4,
+        4,
+        8
+      ],
+      "old_us": 12.375882443259744,
+      "new_us": 9.716470451915965,
+      "result_sha256": "59d140d023f8f6486329a05c2afca54c906dc59907b7129de92d2b436a7d3c7e",
+      "archive_sha256": "828656985400852a3328d11a73ad2b6bf843d28cb14806c22dfe195381e29af6",
+      "reducer": "ORDERED_FLOAT2_ALIGNED_M1"
+    }
+  ],
+  "retained": [
+    {
+      "key": [
+        8,
+        0,
+        1024,
+        2048,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "reason": "READER_REGRESSION"
+    },
+    {
+      "key": [
+        8,
+        0,
+        1024,
+        5120,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "reason": "KEEP_DIFFERENT_SIMT_RECIPE"
+    },
+    {
+      "key": [
+        8,
+        0,
+        2048,
+        512,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "reason": "READER_REGRESSION"
+    },
+    {
+      "key": [
+        8,
+        0,
+        2048,
+        4096,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "reason": "KEEP_DIFFERENT_SIMT_RECIPE"
+    },
+    {
+      "key": [
+        8,
+        0,
+        2048,
+        4096,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "reason": "KEEP_DIFFERENT_SIMT_RECIPE"
+    },
+    {
+      "key": [
+        8,
+        0,
+        4096,
+        2048,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "reason": "KEEP_TC_NO_MATCHED_VECTOR_COMPARISON"
+    },
+    {
+      "key": [
+        8,
+        0,
+        4096,
+        2048,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "reason": "KEEP_DIFFERENT_SIMT_RECIPE"
+    },
+    {
+      "key": [
+        8,
+        0,
+        5120,
+        8192,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "reason": "KEEP_TC_NO_MATCHED_VECTOR_COMPARISON"
+    },
+    {
+      "key": [
+        8,
+        0,
+        5120,
+        8192,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "reason": "KEEP_TC_NO_MATCHED_VECTOR_COMPARISON"
+    },
+    {
+      "key": [
+        8,
+        0,
+        8192,
+        2048,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "reason": "KEEP_TC_NO_MATCHED_VECTOR_COMPARISON"
+    },
+    {
+      "key": [
+        8,
+        0,
+        512,
+        2048,
+        1,
+        1,
+        1,
+        8,
+        0
+      ],
+      "reason": "KEEP_TC_NO_MATCHED_VECTOR_COMPARISON"
+    },
+    {
+      "key": [
+        8,
+        0,
+        2048,
+        512,
+        1,
+        1,
+        1,
+        2,
+        0
+      ],
+      "reason": "KEEP_DIFFERENT_SIMT_RECIPE"
+    },
+    {
+      "key": [
+        8,
+        0,
+        2048,
+        512,
+        1,
+        1,
+        1,
+        2,
+        1
+      ],
+      "reason": "KEEP_DIFFERENT_SIMT_RECIPE"
+    },
+    {
+      "key": [
+        8,
+        0,
+        2048,
+        512,
+        1,
+        1,
+        1,
+        4,
+        0
+      ],
+      "reason": "KEEP_TC_NO_MATCHED_VECTOR_COMPARISON"
+    },
+    {
+      "key": [
+        8,
+        0,
+        2048,
+        512,
+        1,
+        1,
+        1,
+        4,
+        1
+      ],
+      "reason": "KEEP_DIFFERENT_SIMT_RECIPE"
+    },
+    {
+      "key": [
+        8,
+        0,
+        2048,
+        512,
+        1,
+        1,
+        1,
+        8,
+        0
+      ],
+      "reason": "KEEP_TC_NO_MATCHED_VECTOR_COMPARISON"
+    },
+    {
+      "key": [
+        8,
+        0,
+        2048,
+        512,
+        1,
+        1,
+        1,
+        8,
+        1
+      ],
+      "reason": "KEEP_TC_NO_MATCHED_VECTOR_COMPARISON"
+    },
+    {
+      "key": [
+        8,
+        0,
+        2048,
+        4096,
+        1,
+        1,
+        1,
+        2,
+        0
+      ],
+      "reason": "KEEP_TC_NO_MATCHED_VECTOR_COMPARISON"
+    },
+    {
+      "key": [
+        8,
+        0,
+        2048,
+        4096,
+        1,
+        1,
+        1,
+        2,
+        1
+      ],
+      "reason": "KEEP_TC_NO_MATCHED_VECTOR_COMPARISON"
+    },
+    {
+      "key": [
+        8,
+        0,
+        2048,
+        4096,
+        1,
+        1,
+        1,
+        4,
+        0
+      ],
+      "reason": "KEEP_TC_NO_MATCHED_VECTOR_COMPARISON"
+    },
+    {
+      "key": [
+        8,
+        0,
+        2048,
+        4096,
+        1,
+        1,
+        1,
+        4,
+        1
+      ],
+      "reason": "KEEP_TC_NO_MATCHED_VECTOR_COMPARISON"
+    },
+    {
+      "key": [
+        8,
+        0,
+        2048,
+        4096,
+        1,
+        1,
+        1,
+        8,
+        0
+      ],
+      "reason": "KEEP_TC_NO_MATCHED_VECTOR_COMPARISON"
+    },
+    {
+      "key": [
+        8,
+        0,
+        2048,
+        4096,
+        1,
+        1,
+        1,
+        8,
+        1
+      ],
+      "reason": "KEEP_TC_NO_MATCHED_VECTOR_COMPARISON"
+    },
+    {
+      "key": [
+        8,
+        2,
+        1024,
+        2048,
+        256,
+        8,
+        1,
+        1,
+        0
+      ],
+      "reason": "KEEP_INDEXED_E16_NOT_MODEL_E256"
+    },
+    {
+      "key": [
+        8,
+        2,
+        1024,
+        2048,
+        256,
+        8,
+        1,
+        1,
+        1
+      ],
+      "reason": "KEEP_INDEXED_E16_NOT_MODEL_E256"
+    },
+    {
+      "key": [
+        8,
+        2,
+        1024,
+        2048,
+        256,
+        8,
+        1,
+        2,
+        0
+      ],
+      "reason": "KEEP_INDEXED_E16_NOT_MODEL_E256"
+    },
+    {
+      "key": [
+        8,
+        2,
+        1024,
+        2048,
+        256,
+        8,
+        1,
+        2,
+        1
+      ],
+      "reason": "KEEP_INDEXED_E16_NOT_MODEL_E256"
+    },
+    {
+      "key": [
+        8,
+        2,
+        1024,
+        2048,
+        256,
+        8,
+        1,
+        4,
+        0
+      ],
+      "reason": "KEEP_INDEXED_E16_NOT_MODEL_E256"
+    },
+    {
+      "key": [
+        8,
+        2,
+        1024,
+        2048,
+        256,
+        8,
+        1,
+        4,
+        1
+      ],
+      "reason": "KEEP_INDEXED_E16_NOT_MODEL_E256"
+    },
+    {
+      "key": [
+        8,
+        2,
+        1024,
+        2048,
+        256,
+        8,
+        1,
+        8,
+        0
+      ],
+      "reason": "KEEP_INDEXED_E16_NOT_MODEL_E256"
+    },
+    {
+      "key": [
+        8,
+        2,
+        1024,
+        2048,
+        256,
+        8,
+        1,
+        8,
+        1
+      ],
+      "reason": "KEEP_INDEXED_E16_NOT_MODEL_E256"
+    },
+    {
+      "key": [
+        8,
+        2,
+        2048,
+        512,
+        256,
+        8,
+        8,
+        1,
+        0
+      ],
+      "reason": "KEEP_INDEXED_E16_NOT_MODEL_E256"
+    },
+    {
+      "key": [
+        8,
+        2,
+        2048,
+        512,
+        256,
+        8,
+        8,
+        1,
+        1
+      ],
+      "reason": "KEEP_INDEXED_E16_NOT_MODEL_E256"
+    },
+    {
+      "key": [
+        8,
+        2,
+        2048,
+        512,
+        256,
+        8,
+        8,
+        2,
+        0
+      ],
+      "reason": "KEEP_INDEXED_E16_NOT_MODEL_E256"
+    },
+    {
+      "key": [
+        8,
+        2,
+        2048,
+        512,
+        256,
+        8,
+        8,
+        2,
+        1
+      ],
+      "reason": "KEEP_INDEXED_E16_NOT_MODEL_E256"
+    },
+    {
+      "key": [
+        8,
+        2,
+        2048,
+        512,
+        256,
+        8,
+        8,
+        4,
+        0
+      ],
+      "reason": "KEEP_INDEXED_E16_NOT_MODEL_E256"
+    },
+    {
+      "key": [
+        8,
+        2,
+        2048,
+        512,
+        256,
+        8,
+        8,
+        4,
+        1
+      ],
+      "reason": "KEEP_INDEXED_E16_NOT_MODEL_E256"
+    },
+    {
+      "key": [
+        8,
+        2,
+        2048,
+        512,
+        256,
+        8,
+        8,
+        8,
+        0
+      ],
+      "reason": "KEEP_INDEXED_E16_NOT_MODEL_E256"
+    },
+    {
+      "key": [
+        8,
+        2,
+        2048,
+        512,
+        256,
+        8,
+        8,
+        8,
+        1
+      ],
+      "reason": "KEEP_INDEXED_E16_NOT_MODEL_E256"
+    }
+  ],
+  "archive_sha256": "74bfe0d324f550a2d9b7e83a6bc27798fc9f4ece4853a87c4b301c698363f06f",
+  "scope": "EXACT_F32_IO_MEASURED_REPLACEMENT_INCLUDING_TWO_MATCHED_TC_POINTS",
+  "tc_rows": [
+    {
+      "key": [
+        8,
+        0,
+        8192,
+        2048,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "candidate": [
+        5,
+        8,
+        4,
+        4,
+        1
+      ],
+      "old_us": 15.426110890176561,
+      "new_us": 14.59111107720269,
+      "result_sha256": "1fc84f21b7593f4eec5fd107892b5498c90b02f79ddb1247f6b8d39de29af96b",
+      "archive_sha256": "0362d61e0a9c2e32786298ef59f48e79a0af2d4b84c9a7f542f66444a9ea38f9",
+      "baseline": {
+        "symbol": "closure_q8_0_tm8_tn64_tk64_wn16_dn32",
+        "qtype": 8,
+        "route": "sf-dense",
+        "tm": 8,
+        "tn": 64,
+        "tk": 64,
+        "wm": 8,
+        "wn": 16,
+        "stages": 2,
+        "ap": 0,
+        "dn": 32,
+        "persistent": -1,
+        "split": 8
+      }
+    },
+    {
+      "key": [
+        8,
+        0,
+        4096,
+        2048,
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "candidate": [
+        5,
+        4,
+        8,
+        4,
+        1
+      ],
+      "old_us": 10.740000097190633,
+      "new_us": 9.34352944878971,
+      "result_sha256": "da09d38c5457675ba43c805fa82e65804ad8224c3b9152913719a9424ae2cbd1",
+      "archive_sha256": "0362d61e0a9c2e32786298ef59f48e79a0af2d4b84c9a7f542f66444a9ea38f9",
+      "baseline": {
+        "symbol": "closure_q8_0_tm16_tn64_tk64_wn16_dn64",
+        "qtype": 8,
+        "route": "sf-dense",
+        "tm": 16,
+        "tn": 64,
+        "tk": 64,
+        "wm": 16,
+        "wn": 16,
+        "stages": 2,
+        "ap": 0,
+        "dn": 64,
+        "persistent": -1,
+        "split": 8
+      }
+    }
+  ],
+  "reader_evidence_sha256": "004b82519c1d22910246e1be078e4fa7f76c725802801f792662fe2f6c07b090",
+  "model_evidence_sha256": "5ece12e74ce825e92f5840d5b7cf79ec1a59cf90dea63f53790200f4f68e6a41",
+  "evidence_sha256": "29aac2b7af14d42320b93e32bb1322ef8cf83b18de91ceb189cc73e8ae6ca49d",
+  "matched_sha256": "157b3d8d4e74813156bb149824424e76fcee733476ab2a8f977953d84b95889f"
+}
