@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import subprocess
 
-def inspect(text,configs,modes=1):
+def inspect(text,configs,modes=1,pdl=False):
     chunks=re.split(r'Function\s*:',text)[1:]
     if len(chunks)!=configs*2*modes:raise ValueError('actual GGUF device inventory differs')
     result=[]
@@ -18,6 +18,7 @@ def inspect(text,configs,modes=1):
         metadata='fq' if packed and packed[1]=='1' else 'sf'
         bf16='bfloat16' in name
         required=['LDS.128','UTMALDG.','HGMMA.','HMUL2','HADD2']
+        if pdl:required+=['ACQBULK','PREEXIT']
         if bf16:required+=['HMUL2.BF16_V2','HADD2.BF16_V2','.F32.BF16']
         if any(x not in body for x in required):raise ValueError('missing live RS/TMA/typed affine instruction')
         if not re.search(r'HGMMA\.[^\n]+\.F32',body):raise ValueError('FP32 MMA accumulator absent')
@@ -44,17 +45,21 @@ def main():
     sass=subprocess.check_output([str(a.cuobjdump),'--dump-sass',str(lib)],text=True)
     configs=manifest.get('config_count',3)
     modes=manifest.get('metadata_modes',1)
-    bodies=inspect(sass,configs,modes)
+    pdl=manifest.get('pdl_compiled',False)
+    bodies=inspect(sass,configs,modes,pdl)
     negatives=0
-    for instruction in ('LDS.128','UTMALDG.','HGMMA.','HMUL2.BF16_V2','HADD2.BF16_V2'):
-        try:inspect(sass.replace(instruction,'REMOVED'),configs,modes)
+    instructions=['LDS.128','UTMALDG.','HGMMA.','HMUL2.BF16_V2','HADD2.BF16_V2']
+    if pdl:instructions+=['ACQBULK','PREEXIT']
+    for instruction in instructions:
+        try:inspect(sass.replace(instruction,'REMOVED'),configs,modes,pdl)
         except ValueError:negatives+=1
         else:raise ValueError('codegen negative remained green')
     if modes==2:
-        try:inspect(sass.replace('_Lb1EEENS_8epilogue','_Lb0EEENS_8epilogue'),configs,modes)
+        try:inspect(sass.replace('_Lb1EEENS_8epilogue','_Lb0EEENS_8epilogue'),configs,modes,pdl)
         except ValueError:negatives+=1
         else:raise ValueError('missing packed-unit body negative remained green')
     result={'status':'PASS','scope':'CUDA_SM90_NOT_NATIVE_PPU17','library_sha256':row['sha256'],
+            'pdl_compiled':pdl,
             'bodies':bodies,'negatives_rejected':negatives}
     if a.output.exists():raise ValueError('fresh codegen receipt required')
     a.output.write_text(json.dumps(result,indent=2)+'\n')

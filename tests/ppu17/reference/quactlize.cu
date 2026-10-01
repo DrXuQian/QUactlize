@@ -1,6 +1,7 @@
 // Diagnostic prepared-call boundary for the actual PPU1.7 GPTQ scale-only
 // collective. This TU uses only PPU CUTLASS4.3.0, never vLLM's include graph.
 #include "common.cuh"
+#include "quactlize/backends/ppu17/launch.cuh"
 #include "quactlize/backends/ppu17/gptq.cuh"
 
 namespace q17_reference {
@@ -32,7 +33,7 @@ template<int N, int M, int K, class Scheduler = cutlass::gemm::StreamKScheduler,
     Gemm gemm;
     if (gemm.initialize(args,workspace,stream) != cutlass::Status::kSuccess)
       throw std::runtime_error("GPTQ scale-only initialize rejected");
-    if (gemm.run(stream) != cutlass::Status::kSuccess)
+    if (quactlize::ppu17::enqueue_cooperative(gemm, stream) != cutlass::Status::kSuccess)
       throw std::runtime_error("GPTQ scale-only run rejected");
     checked(cudaGetLastError(),"GPTQ full call");
   }

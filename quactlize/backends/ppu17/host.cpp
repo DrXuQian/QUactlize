@@ -31,6 +31,17 @@ bool same_config(q17_config_v1 const &a, q17_config_v1 const &b) {
 
 int error(int code, char const *message) { last_error = message; return code; }
 
+int validate_launch_options(q17_launch_options_v1 const *options, bool compiled) {
+  if (!options) return Q17_SUCCESS;
+  if (options->version != 1 || options->struct_bytes != sizeof(*options) ||
+      options->reserved != 0 || options->programmatic_dependency < 0 ||
+      options->programmatic_dependency > 1)
+    return error(Q17_INVALID, "launch options ABI/value differs");
+  if (options->programmatic_dependency && !compiled)
+    return error(Q17_UNSUPPORTED, "PDL was not compiled; rebuild with --enable-pdl");
+  return Q17_SUCCESS;
+}
+
 int validate_problem(q17_problem_v1 const *p) {
   if (!p || p->version != 1 || p->struct_bytes != sizeof(*p))
     return error(Q17_INVALID, "problem ABI differs");

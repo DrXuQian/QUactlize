@@ -1,6 +1,7 @@
 // PPU CUTLASS4.3 prepared-call boundary. Reuses the upstream reader and
 // optionally our existing Marlin integer decomposition/native SM90 fixup.
 #include "common.cuh"
+#include "quactlize/backends/ppu17/launch.cuh"
 #include "quactlize/backends/ppu17/gptq_prepacked.cuh"
 
 namespace q17_reference {
@@ -40,7 +41,7 @@ template<int N, int M, int ClusterN, class Scheduler, bool PrepareOnce = false, 
     Gemm gemm;
     auto status = PrepareOnce ? gemm.update(args, workspace) : gemm.initialize(args, workspace, stream);
     if (status != cutlass::Status::kSuccess) throw std::runtime_error("prepacked GPTQ initialize/update rejected");
-    if (gemm.run(stream) != cutlass::Status::kSuccess) throw std::runtime_error("prepacked GPTQ launch rejected");
+    if (quactlize::ppu17::enqueue_cooperative(gemm, stream) != cutlass::Status::kSuccess) throw std::runtime_error("prepacked GPTQ launch rejected");
     checked(cudaGetLastError(), "prepacked GPTQ full call");
   }
 };

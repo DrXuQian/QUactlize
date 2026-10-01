@@ -37,6 +37,7 @@ def main():
     p.add_argument("--ppu-cutlass", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--compiler", type=Path, required=True)
+    p.add_argument("--enable-pdl", action="store_true", help="opt in only the Quactlize cooperative provider, not external references or standalone Marlin")
     p.add_argument('--reader', choices=('conventional','prepacked','aligned'), default='conventional',
                    help='aligned retains the prepacked provider and adds the complete Marlin provider')
     args = p.parse_args()
@@ -63,6 +64,7 @@ def main():
                if f.is_file() and f.suffix in (".cu", ".cuh", ".h", ".py")}
     sources['gptq.cuh'] = sha(root/'quactlize/backends/ppu17/gptq.cuh')
     sources['target.cuh'] = sha(root/'quactlize/backends/ppu17/target.cuh')
+    sources['launch.cuh'] = sha(root/'quactlize/backends/ppu17/launch.cuh')
     sources['gptq_prepacked.cuh'] = sha(root/'quactlize/backends/ppu17/gptq_prepacked.cuh')
     sources['gptq_marlin.cuh'] = sha(root/'quactlize/backends/ppu17/gptq_marlin.cuh')
     sources['marlin_format_ppu.hpp'] = sha(root/'quactlize/include/marlin_format_ppu.hpp')
@@ -70,7 +72,7 @@ def main():
     sources['marlin_core'] = sha(root/'third_party/actlize/include/cutlass/gemm/kernel/ppu_tile_scheduler_marlin_core.hpp')
     bound_files = {str(f): sha(f) for f in sorted(HERE.rglob('*'))
                    if f.is_file() and f.suffix in ('.cu', '.cuh', '.h', '.py')}
-    for name in ('gptq.cuh', 'gptq_prepacked.cuh', 'gptq_marlin.cuh', 'target.cuh', 'marlin_scheduler.cuh'):
+    for name in ('gptq.cuh', 'gptq_prepacked.cuh', 'gptq_marlin.cuh', 'target.cuh', 'launch.cuh', 'marlin_scheduler.cuh'):
         path = root/'quactlize/backends/ppu17'/name
         bound_files[str(path)] = sha(path)
     core = root/'third_party/actlize/include/cutlass/gemm/kernel/ppu_tile_scheduler_marlin_core.hpp'
@@ -85,6 +87,7 @@ def main():
                 "dependency_validator_sha256": sha(identity_source),
                 "actlize_integer_core": ACTLIZE,
                 "quactlize_reader": args.reader,
+                "quactlize_cooperative_pdl": args.enable_pdl,
                 "vllm": VLLM, "cutlass": CUTLASS, "sources": sources,
                 "compiler": str(args.compiler), "compiler_sha256": sha(args.compiler),
                 "compiler_version": subprocess.check_output([str(args.compiler), "--version"], text=True),
@@ -101,6 +104,8 @@ def main():
             includes = ['-I'+str(HERE/'shim'), '-I'+str(args.vllm/'csrc'),
                         '-I'+str(args.cutlass/'include')]
         command = common + includes
+        if arm == 'quactlize' and args.enable_pdl:
+            command += ['-DQ17_ENABLE_PDL=1', '-DCUTLASS_ENABLE_GDC_FOR_SM90=1']
         if arm not in ('marlin','quactlize_marlin'):
             command += ["-DCUTLASS_ENABLE_DIRECT_CUDA_DRIVER_CALL=1"]
         source_name = 'quactlize_prepacked' if arm == 'quactlize' and args.reader in ('prepacked','aligned') else arm
@@ -117,6 +122,7 @@ def main():
         reader = ('marlin' if arm in ('marlin','quactlize_marlin') else
                   'prepacked' if arm == 'machete' or args.reader in ('prepacked','aligned') else 'conventional')
         return arm, {"file": library.name, "sha256": sha(library),
+                     "pdl": arm == 'quactlize' and args.enable_pdl,
                      "reader": reader, "seconds": time.monotonic()-began}
     arms = ['marlin','machete','quactlize']
     if args.reader == 'aligned': arms.append('quactlize_marlin')

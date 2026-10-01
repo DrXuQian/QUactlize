@@ -29,6 +29,7 @@ def main():
     p.add_argument('--cutlass',type=Path,required=True)
     p.add_argument('--vllm',type=Path,required=True)
     p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--enable-pdl',action='store_true',help='opt in the existing cooperative GDC protocol')
     a=p.parse_args()
     for key in ('compiler','cutlass','vllm'):
         setattr(a,key,getattr(a,key).resolve(strict=True))
@@ -54,6 +55,7 @@ def main():
     sources=list(HERE.glob('*.cu'))+list(HERE.glob('*.h'))+[Path(__file__)]
     sources+=list((ROOT/'quactlize/backends/ppu17').glob('gguf*.cuh'))
     sources.append(ROOT/'quactlize/backends/ppu17/target.cuh')
+    sources.append(ROOT/'quactlize/backends/ppu17/launch.cuh')
     sources.append(ROOT/'quactlize/backends/ppu17/format.cuh')
     sources.append(ROOT/'quactlize/backends/ppu17/dependency.py')
     sources += [ROOT/'quactlize/include'/name for name in (
@@ -67,7 +69,10 @@ def main():
             '-I'+str(ROOT),'-I'+str(overlay),'-I'+str(a.cutlass/'include'),
             '-I'+str(ROOT/'quactlize/include'),
             '-I'+str(HERE.parent/'reference/shim'),'-I'+str(a.vllm/'csrc')]
+    if a.enable_pdl:
+        common += ['-DQ17_ENABLE_PDL=1','-DCUTLASS_ENABLE_GDC_FOR_SM90=1']
     receipt={'scope':'GGUF_Q4_K_GROUP32_SF_AND_FQ_HOPPER_NOT_NATIVE_PPU17',
+             'pdl_compiled':a.enable_pdl,
              'config_count':6,
              'metadata_modes':2,
              'fq_contract':'GGUF_Q4_K_G32_PACKED_UNITS_PRIVATE_MMA_V1',

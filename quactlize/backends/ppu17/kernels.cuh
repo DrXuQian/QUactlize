@@ -1,16 +1,18 @@
 #pragma once
 
 #include "io.cuh"
+#include "launch.cuh"
 #include "cute/tensor.hpp"
 #include "cute/arch/mma_sm90.hpp"
 #include "cutlass/arch/barrier.h"
 
 namespace quactlize::ppu17 {
 
-template <int Q, class T, bool SF, int LanesN>
+template <int Q, class T, bool SF, int LanesN, bool Pdl = false>
 __global__ void simt(q17_call_v1 c) {
   constexpr int lanes_k = 32 / LanesN, columns = 4 * LanesN;
   int expert = blockIdx.z;
+  wait_for_predecessors<Pdl>();
   auto rows = row_range(c, expert);
   int row = blockIdx.y;
   if (row >= rows.size) return;
@@ -26,6 +28,7 @@ __global__ void simt(q17_call_v1 c) {
   }
   // All lanes participate, including N-tail lanes. Only matching N columns
   // communicate. Accumulation and the warp reduction both remain FP32.
+  release_successors<Pdl>();
   for (int delta = LanesN; delta < 32; delta *= 2)
     sum += __shfl_xor_sync(0xffffffffu, sum, delta);
   if (lane_k == 0 && col < c.problem.n)
@@ -47,11 +50,12 @@ template <class T, int TN, int TK> struct GemmTile {
   };
 };
 
-template <int Q, class T, bool SF, int TN, int TK>
+template <int Q, class T, bool SF, int TN, int TK, bool Pdl = false>
 __global__ __launch_bounds__(128) void wgmma(q17_call_v1 c) {
   using namespace cute;
   using Tile = GemmTile<T, TN, TK>;
   __shared__ typename Tile::Shared shared;
+  wait_for_predecessors<Pdl>();
   auto rows = row_range(c, blockIdx.z);
   int m_base = int(blockIdx.y) * Tile::tm, n_base = int(blockIdx.x) * TN;
   // CTA-uniform early return; no warpgroup is partially active.
@@ -94,6 +98,7 @@ __global__ __launch_bounds__(128) void wgmma(q17_call_v1 c) {
     // warpgroup has finished reading it through the async proxy.
     __syncthreads();
   }
+  release_successors<Pdl>();
   CUTE_UNROLL
   for (int i = 0; i < size(accum); ++i) {
     int mi = m_base + int(get<0>(coords(i))), ni = n_base + int(get<1>(coords(i)));
@@ -103,8 +108,11 @@ __global__ __launch_bounds__(128) void wgmma(q17_call_v1 c) {
   }
 }
 
-template <int Q, class T>
+template <int Q, class T, bool Pdl = false>
 __global__ void expand_scales(q17_call_v1 c) {
+  wait_for_predecessors<Pdl>();
+  // The consumer may initialize, but must wait before reading scale/zero.
+  release_successors<Pdl>();
   using F = Format<Q>;
   size_t per_expert = size_t(c.problem.n) * (c.problem.k / F::group_size);
   size_t total = per_expert * c.problem.experts;

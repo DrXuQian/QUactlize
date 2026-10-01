@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <string>
 #include "quactlize/backends/ppu17/gguf_prepacked.cuh"
+#include "quactlize/backends/ppu17/launch.cuh"
 
 namespace {
 thread_local std::string last_error;
@@ -61,7 +62,7 @@ template<class T, int M, int Stages=4, bool PackedUnits=false> struct TypedPlan 
     Gemm gemm;
     // Include Stream-K lock clearing and all fixup in every measured call.
     if (gemm.initialize(args,workspace,stream)!=cutlass::Status::kSuccess ||
-        gemm.run(stream)!=cutlass::Status::kSuccess)
+        quactlize::ppu17::enqueue_cooperative(gemm,stream)!=cutlass::Status::kSuccess)
       throw std::runtime_error("Q4_K SF initialize/launch rejected");
     check(cudaGetLastError(),"Q4_K SF full call");
   }

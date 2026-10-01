@@ -78,6 +78,12 @@ class CooperativeMarlinScheduler {
   CUTLASS_HOST_DEVICE static constexpr WorkTileInfo next_work(Params const& p, WorkTileInfo const& w) {
     return convert(Core::fetch_next_work(p, w));
   }
+  // CUTLASS GDC releases dependents on each CTA's final work segment, not
+  // on the final reduction peer or the final output tile of the whole grid.
+  // An inactive CTA exits and supplies its implicit launch-completion trigger.
+  CUTLASS_HOST_DEVICE static constexpr bool is_last_tile(WorkTileInfo const& w) {
+    return w.is_valid() && w.linear_next >= w.linear_end;
+  }
   CUTLASS_HOST_DEVICE static constexpr uint64_t lock_index(WorkTileInfo const& w, uint32_t group) {
     return w.output_tile_idx * ConsumerGroups + group;
   }

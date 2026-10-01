@@ -46,12 +46,15 @@ def build(args):
               "-I" + str(shared), "-I" + str(cutlass / "include")]
     if args.target == "native":
         common += ["-DQ17_NATIVE=1", "-DACOMPUTE_VERSION=10700"]
+    if args.enable_pdl:
+        common += ["-DQ17_ENABLE_PDL=1", "-DCUTLASS_ENABLE_GDC_FOR_SM90=1"]
     identity = {"schema": 1, "backend": BACKEND, "target": args.target,
                 "compiler": str(compiler), "compiler_sha256": sha(compiler),
                 "compiler_version": subprocess.check_output([str(compiler), "--version"], text=True),
                 "cutlass_revision": REVISION, "cutlass": dependency, "flags": common[1:],
                 "dependency_validator_sha256": sha(HERE / "dependency.py"),
                 "source_revision": subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip(),
+                "pdl_compiled": args.enable_pdl,
                 "device_admission": "PENDING", "timing_admission": "PENDING"}
     compiler_root = compiler.parent.parent
     identity["toolchain_files"] = {str(p): sha(p) for p in (
@@ -120,6 +123,7 @@ def main():
     p.add_argument("--compiler", required=True)
     p.add_argument("--output", required=True)
     p.add_argument("--target", choices=("cuda-source", "native"), default="cuda-source")
+    p.add_argument("--enable-pdl", action="store_true", help="build opt-in PDL specializations; old entrypoints remain ordinary")
     p.add_argument("--jobs", type=int, default=min(6, os.cpu_count() or 1))
     a = p.parse_args()
     if a.jobs < 1:

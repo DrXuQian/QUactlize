@@ -43,6 +43,11 @@ class Call(Versioned):
     ] + [("a_stride", C.c_int64), ("output_stride", C.c_int64), ("device", C.c_int32), ("reserved", C.c_int32)]
 
 
+class LaunchOptions(Versioned):
+    _fields_ = [("version", C.c_uint32), ("struct_bytes", C.c_uint32),
+                ("programmatic_dependency", C.c_int32), ("reserved", C.c_int32)]
+
+
 class Backend:
     def __init__(self, bundle, *, allow_source_validation=False):
         bundle = Path(bundle).resolve()
@@ -72,6 +77,22 @@ class Backend:
             function = getattr(self.library, "q17_" + name + "_v1")
             function.restype, function.argtypes = result, arguments
             self.functions[name] = function
+        # Old v1 bundles remain usable for ordinary launches. PDL must never
+        # silently fall back when either side of the optional ABI is missing.
+        self.pdl_compiled = False
+        capability = getattr(self.library, "q17_pdl_compiled_v1", None)
+        if capability is not None:
+            capability.argtypes, capability.restype = [], C.c_int
+            self.pdl_compiled = bool(capability())
+            for name, arguments in (
+                ("prepare_with_options", [C.POINTER(Call), C.POINTER(LaunchOptions), C.POINTER(C.c_void_p)]),
+                ("expand_scales_with_options", [C.POINTER(Call), C.POINTER(LaunchOptions)]),
+            ):
+                function = getattr(self.library, "q17_" + name + "_v1")
+                function.argtypes, function.restype = arguments, C.c_int
+                self.functions[name] = function
+        if self.pdl_compiled != self.manifest.get("pdl_compiled", False):
+            raise ValueError("library PDL capability differs from manifest")
         target = self.functions["build_target"]().decode()
         if (target == "ppu17-native") != (self.manifest.get("target") == "native"):
             raise ValueError("library target differs from manifest")
@@ -108,12 +129,25 @@ class Backend:
     def launch(self, call):
         self.checked(self.functions["launch"](C.byref(call)))
 
-    def expand_scales(self, call):
-        self.checked(self.functions["expand_scales"](C.byref(call)))
+    def expand_scales(self, call, *, pdl=False):
+        if pdl:
+            options = self._pdl_options()
+            self.checked(self.functions["expand_scales_with_options"](C.byref(call), C.byref(options)))
+        else:
+            self.checked(self.functions["expand_scales"](C.byref(call)))
 
-    def prepare(self, call):
+    def _pdl_options(self):
+        if not self.pdl_compiled:
+            raise ValueError("PPU1.7: PDL was not compiled; rebuild with --enable-pdl")
+        return LaunchOptions(programmatic_dependency=1)
+
+    def prepare(self, call, *, pdl=False):
         handle = C.c_void_p()
-        self.checked(self.functions["prepare"](C.byref(call), C.byref(handle)))
+        if pdl:
+            options = self._pdl_options()
+            self.checked(self.functions["prepare_with_options"](C.byref(call), C.byref(options), C.byref(handle)))
+        else:
+            self.checked(self.functions["prepare"](C.byref(call), C.byref(handle)))
         return Prepared(self, handle)
 
 

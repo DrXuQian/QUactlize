@@ -181,6 +181,11 @@ Use `--m 1` through `--m 8` for dense decode and `--rows 0,1,1,0` through
 `--rows 0,8,8,0` for grouped decode; `--rows` lists each expert's row count.
 The default `--grouped` fixture uses rows `[0,1,9,65]` to cross tile boundaries.
 
+An opt-in [PDL dependency protocol](../../../docs/ppu17-pdl.md) is available
+with `build.py --enable-pdl`. Existing calls remain ordinary; use the explicit
+prepared-launch options to request PDL. The separate physical-chain gate is
+not a single-launch simulator input, and weight prefetch is not enabled.
+
 This backend returns compact grouped results. MoE routing, gated activations,
 Split-K, persistent grouped scheduling, full-dequant/library alternatives and
 automatic production policy are not silently supplied by the new API. They

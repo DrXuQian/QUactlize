@@ -31,7 +31,7 @@ template <int Q, class T> struct TmaTile {
   static_assert(sizeof(Shared) < 48 * 1024, "static shared memory must fit without a launch-time attribute change");
 };
 
-template <int Q, class T, bool SF, class TmaA, class TmaLow, class TmaHigh>
+template <int Q, class T, bool SF, class TmaA, class TmaLow, class TmaHigh, bool Pdl = false>
 __global__ __launch_bounds__(128) void tma_wgmma(
     q17_call_v1 c, CUTLASS_GRID_CONSTANT TmaA const tma_a,
     CUTLASS_GRID_CONSTANT TmaLow const tma_low, CUTLASS_GRID_CONSTANT TmaHigh const tma_high) {
@@ -40,6 +40,7 @@ __global__ __launch_bounds__(128) void tma_wgmma(
   using F = Format<Q>;
   using Barrier = cutlass::arch::ClusterTransactionBarrier;
   __shared__ typename Tile::Shared shared;
+  wait_for_predecessors<Pdl>();
   auto rows = row_range(c, blockIdx.z);
   int mb = int(blockIdx.y) * 64, nb = int(blockIdx.x) * 64;
   if (mb >= rows.size || nb >= c.problem.n) return;
@@ -122,6 +123,7 @@ __global__ __launch_bounds__(128) void tma_wgmma(
     // after GMMA completion plus CTA convergence, not after B conversion.
     if (iteration + 2 < c.problem.k / 64) issue(iteration + 2, stage);
   }
+  release_successors<Pdl>();
   CUTE_UNROLL
   for (int i = 0; i < size(accum); ++i) {
     int mi = mb + int(get<0>(coords(i))), ni = nb + int(get<1>(coords(i)));
@@ -130,7 +132,7 @@ __global__ __launch_bounds__(128) void tma_wgmma(
   }
 }
 
-template <int Q, class T, bool SF>
+template <int Q, class T, bool SF, bool Pdl = false>
 std::function<int()> prepare_tma(q17_call_v1 const &c) {
   using namespace cute;
   using Tile = TmaTile<Q, T>;
@@ -147,8 +149,8 @@ std::function<int()> prepare_tma(q17_call_v1 const &c) {
   auto th = make_tma_atom(SM90_TMA_LOAD{}, high, typename Tile::HighLayout{}(_, _, 0), make_shape(_64{}, _8{}));
   return [c, ta, tl, th] {
     dim3 grid((c.problem.n + 63) / 64, (c.problem.max_rows + 63) / 64, c.problem.experts);
-    tma_wgmma<Q, T, SF><<<grid, 128, 0, static_cast<cudaStream_t>(c.stream)>>>(c, ta, tl, th);
-    return int(cudaGetLastError());
+    return enqueue_kernel<Pdl>(tma_wgmma<Q, T, SF, decltype(ta), decltype(tl), decltype(th), Pdl>,
+                              grid, 128, 0, static_cast<cudaStream_t>(c.stream), c, ta, tl, th);
   };
 }
 } // namespace quactlize::ppu17

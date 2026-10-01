@@ -2,11 +2,12 @@
 #include "target.cuh"
 #include "host.hpp"
 #include "prepared.hpp"
+#include "launch.cuh"
 #include <memory>
 
 namespace quactlize::ppu17 {
-#define Q17_DECLARE(Q) int launch_q##Q(q17_call_v1 const &, bool); \
-  std::function<int()> prepare_q##Q(q17_call_v1 const &);
+#define Q17_DECLARE(Q) int launch_q##Q(q17_call_v1 const &, bool, bool); \
+  std::function<int()> prepare_q##Q(q17_call_v1 const &, bool);
 Q17_DECLARE(8)
 Q17_DECLARE(10)
 Q17_DECLARE(11)
@@ -30,14 +31,16 @@ int check_device(q17_call_v1 const *c) {
   return Q17_SUCCESS;
 }
 
-int run_expansion(q17_call_v1 const *c) {
-  int status = validate_call(c, true);
+int run_expansion(q17_call_v1 const *c, q17_launch_options_v1 const *options) {
+  int status = validate_launch_options(options, pdl_compiled);
+  if (status) return status;
+  status = validate_call(c, true);
   if (status) return status;
   status = check_device(c);
   if (status) return status;
   int rc;
   switch (c->problem.qtype) {
-#define Q17_CASE(Q) case Q: rc = launch_q##Q(*c, true); break;
+#define Q17_CASE(Q) case Q: rc = launch_q##Q(*c, true, options && options->programmatic_dependency); break;
     Q17_CASE(8) Q17_CASE(10) Q17_CASE(11) Q17_CASE(12) Q17_CASE(13) Q17_CASE(14)
 #undef Q17_CASE
     default: return error(Q17_UNSUPPORTED, "qtype not compiled");
@@ -47,10 +50,16 @@ int run_expansion(q17_call_v1 const *c) {
 } // namespace quactlize::ppu17
 
 extern "C" int q17_prepare_v1(q17_call_v1 const *c, q17_plan_v1 **out) {
+  return q17_prepare_with_options_v1(c, nullptr, out);
+}
+extern "C" int q17_prepare_with_options_v1(q17_call_v1 const *c,
+    q17_launch_options_v1 const *options, q17_plan_v1 **out) {
   using namespace quactlize::ppu17;
   if (!out) return error(Q17_INVALID, "NULL plan output");
   *out = nullptr;
-  int status = validate_call(c, false);
+  int status = validate_launch_options(options, pdl_compiled);
+  if (status) return status;
+  status = validate_call(c, false);
   if (status) return status;
   status = check_device(c);
   if (status) return status;
@@ -58,7 +67,7 @@ extern "C" int q17_prepare_v1(q17_call_v1 const *c, q17_plan_v1 **out) {
     auto plan = std::make_unique<q17_plan_v1>();
     plan->device = c->device;
     switch (c->problem.qtype) {
-#define Q17_CASE(Q) case Q: plan->enqueue = prepare_q##Q(*c); break;
+#define Q17_CASE(Q) case Q: plan->enqueue = prepare_q##Q(*c, options && options->programmatic_dependency); break;
       Q17_CASE(8) Q17_CASE(10) Q17_CASE(11) Q17_CASE(12) Q17_CASE(13) Q17_CASE(14)
 #undef Q17_CASE
       default: return error(Q17_UNSUPPORTED, "qtype not compiled");
@@ -88,7 +97,11 @@ extern "C" int q17_launch_v1(q17_call_v1 const *c) {
   q17_destroy_v1(plan);
   return status;
 }
-extern "C" int q17_expand_scales_v1(q17_call_v1 const *c) { return quactlize::ppu17::run_expansion(c); }
+extern "C" int q17_expand_scales_v1(q17_call_v1 const *c) { return quactlize::ppu17::run_expansion(c, nullptr); }
+extern "C" int q17_expand_scales_with_options_v1(q17_call_v1 const *c, q17_launch_options_v1 const *options) {
+  return quactlize::ppu17::run_expansion(c, options);
+}
+extern "C" int q17_pdl_compiled_v1() { return quactlize::ppu17::pdl_compiled; }
 extern "C" char const *q17_build_target_v1() {
 #ifdef Q17_NATIVE
   return "ppu17-native";

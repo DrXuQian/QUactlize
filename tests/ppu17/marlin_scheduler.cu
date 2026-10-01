@@ -22,8 +22,11 @@ int main() {
     std::vector<std::vector<Scheduler::WorkTileInfo>> peers(size_t(m) * n * l);
     for (unsigned block = 0; block < p.grid_blocks_; ++block) {
       unsigned segments = 0;
+      unsigned releases = 0;
       for (auto w = Scheduler::work_for_block(p, block); w.is_valid(); w = Scheduler::next_work(p, w)) {
         CHECK(++segments <= 2); // grid >= output tiles bounds each stripe to <= one tile length
+        CHECK(Scheduler::is_last_tile(w) == !Scheduler::next_work(p, w).is_valid());
+        releases += Scheduler::is_last_tile(w);
         CHECK(w.K_idx % 2 == 0 && w.k_tile_count % 2 == 0 && w.K_idx + w.k_tile_count <= k);
         CHECK(w.M_idx >= 0 && unsigned(w.M_idx) < m && w.N_idx >= 0 && unsigned(w.N_idx) < n);
         CHECK(w.L_idx >= 0 && unsigned(w.L_idx) < l);
@@ -37,6 +40,7 @@ int main() {
         saw_unequal_tail |= w.linear_end - w.linear_begin < p.iters_per_block_;
       }
       saw_cross_tile |= segments == 2;
+      CHECK(releases == unsigned(segments != 0));
     }
     for (unsigned count : coverage) CHECK(count == 1);
     for (auto& row : peers) {
@@ -65,5 +69,6 @@ int main() {
   CHECK(!Scheduler::make_params(uint64_t(1)<<63,2,2,2,114).valid_);
   auto p = Scheduler::make_params(1,1,1,16,114);
   CHECK(!Scheduler::work_for_block(p, p.grid_blocks_).is_valid());
-  std::printf("SM90_MARLIN_HOST PASS cases=%u coverage=EXACT peers=REVERSE groups=2 alignment=128 negatives=7\n", cases);
+  CHECK(!Scheduler::is_last_tile(Scheduler::work_for_block(p, p.grid_blocks_)));
+  std::printf("SM90_MARLIN_HOST PASS cases=%u coverage=EXACT peers=REVERSE groups=2 alignment=128 pdl_release=LAST_CTA_SEGMENT negatives=8\n", cases);
 }

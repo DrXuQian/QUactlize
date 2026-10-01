@@ -24,6 +24,25 @@ q17_problem_v1 problem(int q) {
 }
 
 void api_contract() {
+  CHECK(validate_launch_options(nullptr, false) == Q17_SUCCESS);
+  q17_launch_options_v1 launch{1, sizeof(q17_launch_options_v1), 0, 0};
+  CHECK(validate_launch_options(&launch, false) == Q17_SUCCESS);
+  launch.programmatic_dependency = 1;
+  CHECK(validate_launch_options(&launch, false) == Q17_UNSUPPORTED);
+  CHECK(validate_launch_options(&launch, true) == Q17_SUCCESS);
+  for (int invalid : {-1, 2}) {
+    launch.programmatic_dependency = invalid;
+    CHECK(validate_launch_options(&launch, true) == Q17_INVALID);
+  }
+  launch.programmatic_dependency = 1;
+  launch.reserved = 1;
+  CHECK(validate_launch_options(&launch, true) == Q17_INVALID);
+  launch.reserved = 0;
+  launch.struct_bytes--;
+  CHECK(validate_launch_options(&launch, true) == Q17_INVALID);
+  launch.struct_bytes = sizeof(launch);
+  launch.version = 2;
+  CHECK(validate_launch_options(&launch, true) == Q17_INVALID);
   for (int q : {8, 10, 11, 12, 13, 14}) {
     auto p = problem(q);
     q17_sizes_v1 sizes;

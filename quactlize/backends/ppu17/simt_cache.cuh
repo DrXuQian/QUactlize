@@ -1,5 +1,6 @@
 #pragma once
 #include "io.cuh"
+#include "launch.cuh"
 
 namespace quactlize::ppu17 {
 
@@ -19,11 +20,12 @@ __device__ __forceinline__ T cached_dequant(int code, Affine<T> const &a) {
 // its four slots. The original canonical word address and arithmetic stay
 // owned by Format<12>. This is a decode-only alternative, never a fallback
 // for unmeasured large M.
-template<class T, bool SF, int LanesN, class Input, int Warps>
+template<class T, bool SF, int LanesN, class Input, int Warps, bool Pdl = false>
 __global__ __launch_bounds__(Warps*32) void q4_simt_cached(q17_call_v1 c) {
   static_assert(LanesN==4 || LanesN==8 || LanesN==16);
   static_assert(Warps==4 || Warps==16);
   constexpr int lanes_k=32/LanesN, warps=Warps;
+  wait_for_predecessors<Pdl>();
   auto rows=row_range(c,blockIdx.z);
   int row=blockIdx.y;
   if (row>=rows.size) return;
@@ -60,6 +62,7 @@ __global__ __launch_bounds__(Warps*32) void q4_simt_cached(q17_call_v1 c) {
       }
     }
   }
+  release_successors<Pdl>();
   #pragma unroll
   for (int delta=LanesN; delta<32; delta*=2)
     sum+=__shfl_xor_sync(0xffffffffu,sum,delta);
@@ -75,13 +78,13 @@ __global__ __launch_bounds__(Warps*32) void q4_simt_cached(q17_call_v1 c) {
   }
 }
 
-template<class T, bool SF, int LanesN, int Warps=4>
-inline void launch_q4_cached(q17_call_v1 const &c,dim3 grid,cudaStream_t stream) {
+template<class T, bool SF, int LanesN, int Warps=4, bool Pdl=false>
+inline int launch_q4_cached(q17_call_v1 const &c,dim3 grid,cudaStream_t stream) {
   if(c.problem.input_type==Q17_F32)
-    q4_simt_cached<T,SF,LanesN,float,Warps><<<grid,Warps*32,0,stream>>>(c);
+    return enqueue_kernel<Pdl>(q4_simt_cached<T,SF,LanesN,float,Warps,Pdl>,grid,Warps*32,0,stream,c);
   else if(c.problem.input_type==Q17_BF16)
-    q4_simt_cached<T,SF,LanesN,cutlass::bfloat16_t,Warps><<<grid,Warps*32,0,stream>>>(c);
+    return enqueue_kernel<Pdl>(q4_simt_cached<T,SF,LanesN,cutlass::bfloat16_t,Warps,Pdl>,grid,Warps*32,0,stream,c);
   else
-    q4_simt_cached<T,SF,LanesN,cutlass::half_t,Warps><<<grid,Warps*32,0,stream>>>(c);
+    return enqueue_kernel<Pdl>(q4_simt_cached<T,SF,LanesN,cutlass::half_t,Warps,Pdl>,grid,Warps*32,0,stream,c);
 }
 } // namespace quactlize::ppu17

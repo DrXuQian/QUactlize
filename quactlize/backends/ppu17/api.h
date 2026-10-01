@@ -58,6 +58,17 @@ typedef struct q17_call_v1 {
   int32_t device, reserved;
 } q17_call_v1;
 
+// Optional prepared-launch policy. The existing call/plan ABI and v1 entry
+// points retain ordinary stream ordering. NULL options also mean ordinary.
+// PDL requires a PDL-enabled build and an SM90-compatible device/runtime.
+// It does not prefetch weights, change arithmetic, or waive storage lifetimes.
+// Calls in a chain must use the same stream (or explicit programmatic graph
+// dependencies). Prepare outside capture; execute remains one kernel.
+typedef struct q17_launch_options_v1 {
+  uint32_t version, struct_bytes;
+  int32_t programmatic_dependency, reserved; // dependency must be 0 or 1
+} q17_launch_options_v1;
+
 // Host-only calls: do not initialize a GPU context. Inventory is structural,
 // not a performance ranking. Callers must explicitly choose a config.
 int q17_canonical_arrangement_v1(int qtype, quactlize_ppu_placed_arrangement_v2 *out);
@@ -74,10 +85,14 @@ int q17_launch_v1(q17_call_v1 const *);
 // when any binding changes. Storage remains the caller's responsibility.
 typedef struct q17_plan_v1 q17_plan_v1;
 int q17_prepare_v1(q17_call_v1 const *, q17_plan_v1 **);
+int q17_prepare_with_options_v1(q17_call_v1 const *, q17_launch_options_v1 const *, q17_plan_v1 **);
 int q17_execute_v1(q17_plan_v1 const *);
 void q17_destroy_v1(q17_plan_v1 *);
 // Writes scale/zero from units. low/high/a/output/offsets are not accessed.
 int q17_expand_scales_v1(q17_call_v1 const *);
+int q17_expand_scales_with_options_v1(q17_call_v1 const *, q17_launch_options_v1 const *);
+// Host-only build capability, not device or performance admission.
+int q17_pdl_compiled_v1(void);
 char const *q17_last_error_v1(void);
 char const *q17_build_target_v1(void);
 

@@ -22,16 +22,29 @@ def entries(ptx):
     return result
 
 
-def inspect(ptx, q):
+def inspect(ptx, q, pdl=False):
     if ".target sm_90a" not in ptx:
         raise ValueError("wrong emitted architecture")
     bodies = entries(ptx)
     families = {"wgmma": 0, "tma_wgmma": 0, "simt": 0, "expand_scales": 0, "q4_simt_cached": 0}
+    dependencies = dict.fromkeys(families, 0)
     for name, body in bodies.items():
         family = next((f for f in ("q4_simt_cached", "tma_wgmma", "wgmma", "simt", "expand_scales") if f in name), None)
         if not family or (family=="q4_simt_cached" and q!=12) or (family!="q4_simt_cached" and f"ILi{q}E" not in name):
             raise ValueError("unexpected kernel entry: " + name)
         families[family] += 1
+        wait = "griddepcontrol.wait" in body
+        release = "griddepcontrol.launch_dependents" in body
+        if wait != release:
+            raise ValueError("incomplete grid dependency protocol in " + name)
+        dependencies[family] += wait
+        if wait:
+            # Conservative stage: no predecessor storage, including grouped
+            # offsets, may be read before the grid wait. TMA descriptor
+            # prefetch is not a tensor-data read.
+            read = re.search(r"\b(?:ld\.global|cp\.async\.bulk\.tensor)", body)
+            if read and read.start() < body.index("griddepcontrol.wait"):
+                raise ValueError("dependent global read precedes wait in " + name)
         if "st.global" not in body:
             raise ValueError("missing live output in " + name)
         if family in ("wgmma", "tma_wgmma"):
@@ -48,9 +61,30 @@ def inspect(ptx, q):
             raise ValueError("legacy PPU assembly leaked into SM90a source target")
     expected = {"wgmma": 12, "tma_wgmma": 4, "simt": 8, "expand_scales": 2,
                 "q4_simt_cached": 60 if q==12 else 0}
+    if dependencies != {f: count if pdl else 0 for f, count in expected.items()}:
+        raise ValueError(f"incomplete PDL specialization coverage: {dependencies}")
+    if pdl:
+        expected = {f: 2 * count for f, count in expected.items()}
     if families != expected:
         raise ValueError(f"incomplete specialization coverage: {families}")
     return families
+
+
+def inspect_dependency_sass(sass, ptx):
+    # CUDA 12.8/SM90a lowers the two PTX operations to ACQBULK and PREEXIT.
+    # Do not search for the PTX spellings in SASS, or accept one good entry
+    # as evidence for every dtype/route specialization in an object.
+    matches = list(re.finditer(r"Function\s*:\s*(\w+)", sass))
+    native = {m.group(1): sass[m.end():matches[i + 1].start() if i + 1 < len(matches) else len(sass)]
+              for i, m in enumerate(matches)}
+    for name, body in entries(ptx).items():
+        if name not in native:
+            raise ValueError("missing assembled entry: " + name)
+        wait = bool(re.search(r"\b(?:ACQBULK|GRIDDEPCONTROL\.WAIT)\b", native[name]))
+        release = bool(re.search(r"\b(?:PREEXIT|GRIDDEPCONTROL\.LAUNCH_DEPENDENTS)\b", native[name]))
+        expected = "griddepcontrol.wait" in body
+        if wait != expected or release != expected:
+            raise ValueError("assembled dependency protocol differs: " + name)
 
 
 def main():
@@ -78,6 +112,7 @@ def main():
     env = {**os.environ, "TMPDIR": str(tmp)}
     compiler = manifest["compiler"]
     flags = manifest["flags"]
+    pdl = manifest.get("pdl_compiled", False)
     command = [compiler, *flags]
 
     def run(cmd, label, success=True):
@@ -99,6 +134,11 @@ def main():
     run(command + [str(ROOT / "tests/ppu17/benchmark.cu"), "-L" + str(bundle),
                    "-lquactlize_ppu17", "-Xlinker=-rpath=" + str(bundle),
                    "-o", str(out / "benchmark")], "benchmark-build")
+    if pdl:
+        run(command + [str(ROOT / "tests/ppu17/pdl_chain.cu"), "-L" + str(bundle),
+                       "-lquactlize_ppu17", "-Xlinker=-rpath=" + str(bundle),
+                       "-o", str(out / "pdl-chain")], "pdl-chain-build")
+        run([str(out / "pdl-chain"), "--cpu-only"], "pdl-chain-host")
     for q in QTYPES:
         for dtype in (0, 1):
             run([str(out / "single-launch"), "--cpu-only", "--qtype", str(q), "--compute", str(dtype),
@@ -116,20 +156,25 @@ def main():
         ptx = out / f"q{q}.ptx"
         run(command + [f"-DQ17_QTYPE={q}", "--ptx", str(HERE / "module.cu"), "-o", str(ptx)], f"ptx-q{q}")
         text = ptx.read_text()
-        families = inspect(text, q)
+        families = inspect(text, q, pdl)
         # Plant one missing body, one empty compute family, one absent output.
-        for tag, changed in (
+        plants = [
             ("missing-entry", text.replace(".entry", ".not_an_entry", 1)),
             ("no-gmma", text.replace("wgmma.mma_async", "missing_gmma")),
             ("no-output", text.replace("st.global", "missing_store")),
-        ):
-            try: inspect(changed, q)
+        ]
+        if pdl:
+            plants += [("no-grid-wait", text.replace("griddepcontrol.wait", "missing_wait")),
+                       ("no-grid-release", text.replace("griddepcontrol.launch_dependents", "missing_release"))]
+        for tag, changed in plants:
+            try: inspect(changed, q, pdl)
             except ValueError: pass
             else: raise ValueError("negative not caught: " + tag)
         inspector = Path(compiler).parent / "cuobjdump"
         sass = run([str(inspector), "--dump-sass", str(bundle / f"q{q}.o")], f"sass-q{q}")
         if "arch = sm_90a" not in sass or "HGMMA" not in sass:
             raise ValueError("no assembled SM90a GMMA")
+        inspect_dependency_sass(sass, text)
         deps = run(command + [f"-DQ17_QTYPE={q}", "-M", str(HERE / "module.cu")], f"includes-q{q}")
         if "/third_party/actlize/" in deps or "/actlize_extensions/" in deps or "/third_party/cutlass/" in deps:
             raise ValueError("mixed legacy/new include graph")
@@ -156,10 +201,16 @@ def main():
               "application_sha256": sha(out / "single-launch"),
               "benchmark_application": str(out / "benchmark"), "benchmark_sha256": sha(out / "benchmark"),
               "test_sources": {str(p.relative_to(ROOT)): sha(p) for p in sorted((ROOT / "tests/ppu17").glob("*.cu*"))},
-              "target_negatives": 2, "codegen_negatives": 18, "exports": names,
+              "target_negatives": 2, "codegen_negatives": 30 if pdl else 18, "exports": names,
+              "pdl_compiled": pdl,
               "device_launches": 0, "native_ppu17": "NOT_RUN", "device_numerics": "NOT_RUN", "performance": "NOT_RUN"}
     (out / "validation.json").write_text(json.dumps(result, indent=2) + "\n")
-    print("PPU17_CHECK PASS specializations=216 host_and_abi=PASS device_admission=PENDING output=" + str(out))
+    if pdl:
+        result.update(pdl_chain_application=str(out / "pdl-chain"),
+                      pdl_chain_sha256=sha(out / "pdl-chain"), pdl_device_admission="NOT_RUN")
+        (out / "validation.json").write_text(json.dumps(result, indent=2) + "\n")
+    total = sum(sum(row["families"].values()) for row in rows)
+    print(f"PPU17_CHECK PASS specializations={total} host_and_abi=PASS device_admission=PENDING output={out}")
 
 
 if __name__ == "__main__":
