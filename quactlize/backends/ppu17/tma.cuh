@@ -71,40 +71,37 @@ __global__ __launch_bounds__(128) void tma_wgmma(
   __syncthreads();
 
   if constexpr (PrefetchB) {
-    // Separate transaction lifetime: ready[0] must never wait for A bytes
-    // on a CTA which later discovers that its expert/tile is empty.
-    __shared__ __align__(16) uint64_t b_ready;
-    if (threadIdx.x == 0) {
-      Barrier::init(&b_ready, 1);
-      cutlass::arch::fence_barrier_init();
-    }
-    __syncthreads();
+    // Keep arrival count one until the dependent row range is known. B may
+    // complete early, but cannot flip stage0's phase before A is accounted.
     if (threadIdx.x == 0) {
       constexpr int bytes = 64 * Tile::low_words * 2
           + (F::high_bits ? 64 * Tile::high_words * 2 : 0);
-      Barrier::arrive_and_expect_tx(&b_ready, bytes);
+      Barrier::expect_transaction(&shared.ready[0], bytes);
       int lg = int(blockIdx.z) * (c.problem.k / F::Low::kPack) + F::Low::physical_kgroup(0);
       auto gl = local_tile(domain_offset(make_coord(nb, lg), m_low),
                            make_shape(_64{}, Int<Tile::low_words>{}), make_coord(0, 0));
       auto [tl_g, tl_s] = tma_partition(tma_low, Int<0>{}, Layout<_1>{},
             group_modes<0, 2>(s_low(_, _, 0)), group_modes<0, 2>(gl));
-      copy(tma_low.with(b_ready), tl_g, tl_s);
+      copy(tma_low.with(shared.ready[0]), tl_g, tl_s);
       if constexpr (F::high_bits) {
         int hg = int(blockIdx.z) * (c.problem.k / (16 / Tile::high_bits)) + F::High::physical_kgroup(0);
         auto gh = local_tile(domain_offset(make_coord(nb, hg), m_high),
                              make_shape(_64{}, _8{}), make_coord(0, 0));
         auto [th_g, th_s] = tma_partition(tma_high, Int<0>{}, Layout<_1>{},
               group_modes<0, 2>(s_high(_, _, 0)), group_modes<0, 2>(gh));
-        copy(tma_high.with(b_ready), th_g, th_s);
+        copy(tma_high.with(shared.ready[0]), th_g, th_s);
       }
     }
     wait_for_predecessors<Pdl>();
-    // Drain speculative B even for empty experts before shared storage can
-    // be retired/reused. No activation transaction has been issued yet.
-    Barrier::wait(&b_ready, 0);
-    __syncthreads();
     rows = row_range(c, blockIdx.z);
-    if (mb >= rows.size || nb >= c.problem.n) return;
+    if (mb >= rows.size || nb >= c.problem.n) {
+      // No A is needed. Complete the sole arrival and drain speculative B
+      // before this CTA's shared storage can be retired/reused.
+      if (threadIdx.x == 0) Barrier::arrive(&shared.ready[0]);
+      Barrier::wait(&shared.ready[0], 0);
+      __syncthreads();
+      return;
+    }
   }
 
   auto issue = [&](int iteration, int stage) {
@@ -119,8 +116,8 @@ __global__ __launch_bounds__(128) void tma_wgmma(
           group_modes<0, 2>(s_a(_, _, stage)), group_modes<0, 2>(ga));
     if constexpr (PrefetchB) {
       if (iteration == 0) {
-        // B0 has its own completed transaction. The ordinary phase0 now
-        // expects only A0; subsequent stage refills keep the original bytes.
+        // Add A0 to the outstanding B0 bytes and complete the sole arrival.
+        // The ordinary stage0 wait covers both; later refills are unchanged.
         Barrier::arrive_and_expect_tx(&shared.ready[stage], 64 * 64 * sizeof(T));
         copy(tma_a.with(shared.ready[stage]), ta_g, ta_s);
         return;
