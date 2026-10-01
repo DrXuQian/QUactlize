@@ -3,6 +3,7 @@
 #include "prepared.hpp"
 #include "cute/atom/copy_traits_sm90_tma.hpp"
 #include "cutlass/device_kernel.h"
+#include <stdexcept>
 
 namespace quactlize::ppu17 {
 
@@ -190,7 +191,7 @@ __global__ __launch_bounds__(128) void tma_wgmma(
 }
 
 template <int Q, class T, bool SF, bool Pdl = false, bool PrefetchB = false>
-std::function<int()> prepare_tma(q17_call_v1 const &c) {
+std::function<int()> prepare_tma(q17_call_v1 const &c, int shared_carveout = -1) {
   using namespace cute;
   using Tile = TmaTile<Q, T>;
   using F = Format<Q>;
@@ -204,6 +205,15 @@ std::function<int()> prepare_tma(q17_call_v1 const &c) {
   auto ta = make_tma_atom(SM90_TMA_LOAD{}, a, typename Tile::ALayout{}(_, _, 0), make_shape(_64{}, _64{}));
   auto tl = make_tma_atom(SM90_TMA_LOAD{}, low, typename Tile::LowLayout{}(_, _, 0), make_shape(_64{}, Int<Tile::low_words>{}));
   auto th = make_tma_atom(SM90_TMA_LOAD{}, high, typename Tile::HighLayout{}(_, _, 0), make_shape(_64{}, _8{}));
+  // Internal experimental caller only. Existing callers leave the driver
+  // policy unchanged. Set before any capture/execution of this specialization.
+  if (shared_carveout < -1 || shared_carveout > 100)
+    throw std::invalid_argument("invalid shared-memory carveout");
+  if (shared_carveout >= 0) {
+    auto rc = cudaFuncSetAttribute(tma_wgmma<Q,T,SF,decltype(ta),decltype(tl),decltype(th),Pdl,PrefetchB>,
+                                  cudaFuncAttributePreferredSharedMemoryCarveout, shared_carveout);
+    if (rc != cudaSuccess) throw std::runtime_error(cudaGetErrorString(rc));
+  }
   return [c, ta, tl, th] {
     dim3 grid((c.problem.n + 63) / 64, (c.problem.max_rows + 63) / 64, c.problem.experts);
     return enqueue_kernel<Pdl>(tma_wgmma<Q, T, SF, decltype(ta), decltype(tl), decltype(th), Pdl, PrefetchB>,

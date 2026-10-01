@@ -71,6 +71,8 @@ def main():
     p.add_argument("--resume-from",type=Path,help="reuse only hash-verified identical successful correctness points")
     p.add_argument("--only",type=int,nargs="+")
     p.add_argument("--reverse",action="store_true")
+    p.add_argument("--carveout",type=int,choices=(-1,25),default=-1,help="bounded internal resource-policy control")
+    p.add_argument("--serial-sf",action="store_true",help="diagnostic: use ordinary launch for the SF helper")
     p.add_argument("--timeout",type=int,default=180)
     args=p.parse_args()
     build,baseline,out=args.build.resolve(),args.baseline.resolve(),args.output.resolve()
@@ -95,6 +97,7 @@ def main():
     receipt=dict(identity=identity,gpu=initial,phase=args.phase,points=points,indices=indices,
                  partial=set(indices)!=set(range(len(points))),status="INCOMPLETE",results=[],
                  scope="PHYSICAL_HOPPER_NOT_NATIVE_PPU17",production_selection="UNCHANGED",runner_sha256=sha(__file__))
+    receipt["controls"]=dict(shared_carveout=args.carveout,serial_sf=args.serial_sf)
     reused={}
     if args.resume_from:
         previous=json.loads(args.resume_from.read_text())
@@ -130,6 +133,8 @@ def main():
         else:
             if point["grouped"]: command.append("--grouped")
             if point["cache"]=="rotating": command.append("--rotating")
+            command += ["--carveout",str(args.carveout)]
+            if args.serial_sf:command.append("--serial-sf")
         result={}
         try:
             if args.phase=="correctness":
@@ -140,6 +145,9 @@ def main():
                 result=run_point(command,env,log,args.device,args.expected_uuid,args.timeout)
                 if result["status"]!="PASS": raise ValueError(result["error"])
                 validate_timing(result["result"][0],point)
+                row=result["result"][0]
+                if row.get("shared_carveout")!=args.carveout or row.get("serial_sf")!=args.serial_sf or not row.get("inline_controls"):
+                    raise ValueError("resource/edge controls differ")
             result["status"]="PASS"
         except Exception as error:
             result.update(status="FAIL",error=str(error))
