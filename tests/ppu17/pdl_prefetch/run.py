@@ -13,6 +13,58 @@ from check_device import sha
 from check_pdl import run_case
 from run_benchmark import require_idle, run_point, snapshot
 
+DEFAULT_CONTROLS = dict(shared_carveout=-1, sf_carveout=-1, sf_trigger="early", serial_sf=False)
+
+
+def parse_carveout(value):
+    choices = {"-1": -1, "default": -1, "25": 25, "-2": -2, "auto": -2}
+    if value not in choices:
+        raise argparse.ArgumentTypeError("carveout must be default, 25 or auto")
+    return choices[value]
+
+
+def controls_from_args(args):
+    if args.serial_sf and args.sf_trigger is not None:
+        raise ValueError("--serial-sf and --sf-trigger are mutually exclusive")
+    trigger = "serial" if args.serial_sf else args.sf_trigger or "early"
+    return dict(shared_carveout=args.carveout, sf_carveout=args.sf_carveout,
+                sf_trigger=trigger, serial_sf=trigger == "serial")
+
+
+def validate_resources(records, point, controls):
+    roles = {("target", arm) for arm in range(3)}
+    if point["route"]: roles |= {("sf", arm) for arm in range(3)}
+    if len(records) != len(roles) or {(r.get("role"), r.get("arm")) for r in records} != roles:
+        raise ValueError("missing/duplicate resource control")
+    for row in records:
+        role = row["role"]
+        request = controls["sf_carveout" if role == "sf" else "shared_carveout"]
+        fields = ("device", "threads", "dynamic_bytes", "static_bytes", "registers", "request",
+                  "selected", "default_blocks", "selected_blocks")
+        if any(type(row.get(k)) is not int for k in fields): raise ValueError("invalid resource counters")
+        if (row["device"] != 0 or row["threads"] != (256 if role == "sf" else 128)
+                or row["dynamic_bytes"] != 0 or row["static_bytes"] < 0 or row["registers"] <= 0
+                or row["request"] != request or min(row["default_blocks"], row["selected_blocks"]) <= 0):
+            raise ValueError("resource launch/query identity differs")
+        if request == -2:
+            if not 0 <= row["selected"] <= 100 or row["selected_blocks"] < row["default_blocks"]:
+                raise ValueError("automatic carveout lost default occupancy")
+        elif row["selected"] != request:
+            raise ValueError("default/fixed resource preference differs")
+
+
+def validate_gate(gate, identity, controls):
+    points = correctness_points()
+    if (gate.get("identity") != identity or gate.get("controls") != controls
+            or gate.get("status") != "PASS" or gate.get("partial") is not False
+            or gate.get("phase") != "correctness" or gate.get("points") != points):
+        raise ValueError("full same-binary/device/policy correctness has not passed")
+    rows = gate.get("results", [])
+    if len(rows) != len(points) or {r.get("index") for r in rows} != set(range(len(points))):
+        raise ValueError("correctness result inventory differs")
+    if any(r.get("status") != "PASS" or r.get("point") != points[r["index"]] for r in rows):
+        raise ValueError("correctness point failed or differs")
+
 
 def correctness_points():
     points=[]
@@ -33,7 +85,8 @@ def timing_points():
             for cache in ("warm","rotating")]
 
 
-def validate_chain(text, point):
+def validate_chain(text, point, controls=None):
+    controls = DEFAULT_CONTROLS if controls is None else controls
     lines=[s for s in text.splitlines() if s.startswith("PPU17_PDL_CHAIN PASS ")]
     if len(lines)!=1: raise ValueError("missing/duplicate correctness receipt")
     fields=dict(item.split("=",1) for item in lines[0].split()[2:])
@@ -41,22 +94,30 @@ def validate_chain(text, point):
               "input":str(point["compute"]),"output":"2","config":"5",
               "grouped":str(int(point["rows"] is not None)),"comparisons":"36","prefetch":"1",
               "raw_equal":"1","cpu_oracle":"PASS","stream":"PASS","graph":"PASS","timing":"NOT_MEASURED"}
+    expected.update({k:str(controls[k]) for k in ("sf_trigger", "shared_carveout", "sf_carveout")})
     if any(fields.get(k)!=v for k,v in expected.items()):
         raise ValueError("correctness receipt differs from requested point")
+    resources = [s.removeprefix("PPU17_PDL_RESOURCES ") for s in text.splitlines() if s.startswith("PPU17_PDL_RESOURCES ")]
+    if len(resources) != 1: raise ValueError("missing/duplicate resource receipt")
+    validate_resources(json.loads(resources[0]), point, controls)
 
 
-def validate_timing(row, point):
+def validate_timing(row, point, controls=None):
+    controls = DEFAULT_CONTROLS if controls is None else controls
     expected={"q":12,"compute":point["compute"],"route":point["route"],
               "m":point["m"]+9 if point["grouped"] else point["m"],
               "n":point["n"],"k":point["k"],"experts":4 if point["grouped"] else 1,
               "cache":point["cache"],"raw_equal":True,"producer_config":2,"consumer_config":5,
               "metric_scope":"GEMM_OPTIONAL_SF_GEMM_CHAIN","warmup_graphs_per_arm":3}
+    expected.update(controls, inline_controls=True)
     if any(row.get(k)!=v for k,v in expected.items()): raise ValueError("timing point/chain scope differs")
     if set(row.get("arms",{}))!={"ordinary","protocol","prefetch"}: raise ValueError("three arms required")
+    validate_resources(row.get("resources", []), point, controls)
     for arm in row["arms"].values():
         samples=arm["samples_us"]
         if len(samples)!=11 or any(not math.isfinite(v) or v<=0 for v in samples): raise ValueError("invalid samples")
-        if abs(sorted(samples)[5]-arm["median_us"])>1.e-6: raise ValueError("median differs")
+        if not math.isfinite(arm["median_us"]) or abs(sorted(samples)[5]-arm["median_us"])>1.e-6:
+            raise ValueError("median differs or is nonfinite")
 
 
 def main():
@@ -71,13 +132,16 @@ def main():
     p.add_argument("--resume-from",type=Path,help="reuse only hash-verified identical successful correctness points")
     p.add_argument("--only",type=int,nargs="+")
     p.add_argument("--reverse",action="store_true")
-    p.add_argument("--carveout",type=int,choices=(-1,25),default=-1,help="bounded internal resource-policy control")
+    p.add_argument("--carveout",type=parse_carveout,default=-1,help="target preference: default, 25 or auto (preserve default occupancy)")
+    p.add_argument("--sf-carveout",type=parse_carveout,default=-1,help="independent SF preference: default, 25 or auto")
+    p.add_argument("--sf-trigger",choices=("early","late","serial"),help="SF release placement; default early remains the counterexample")
     p.add_argument("--serial-sf",action="store_true",help="diagnostic: use ordinary launch for the SF helper")
     p.add_argument("--timeout",type=int,default=180)
     args=p.parse_args()
+    controls=controls_from_args(args)
     build,baseline,out=args.build.resolve(),args.baseline.resolve(),args.output.resolve()
     manifest=json.loads((build/"manifest.json").read_text())
-    if manifest["status"]!="PASS" or sha(baseline/"libquactlize_ppu17.so")!=manifest["library_sha256"]:
+    if manifest["status"]!="PASS" or manifest.get("sf_controls_schema")!=1 or sha(baseline/"libquactlize_ppu17.so")!=manifest["library_sha256"]:
         raise ValueError("experiment build/baseline identity differs")
     for name,digest in manifest["applications"].items():
         if sha(build/name)!=digest: raise ValueError("application differs: "+name)
@@ -86,8 +150,11 @@ def main():
     if args.phase=="timing":
         if not args.correctness: raise ValueError("full correctness receipt required before timing")
         gate=json.loads(args.correctness.read_text())
-        if gate["identity"]!=identity or gate["status"]!="PASS" or len(gate["results"])!=96 or gate["partial"] or gate["points"]!=correctness_points():
-            raise ValueError("full same-binary/device correctness has not passed")
+        validate_gate(gate,identity,controls)
+        for row in gate["results"]:
+            log=Path(row["log"])
+            if not log.is_file() or sha(log)!=row["log_sha256"]:raise ValueError("correctness log identity differs")
+            validate_chain(log.read_text(),row["point"],controls)
     out.mkdir(parents=True,exist_ok=False)
     initial=snapshot(args.device);require_idle(initial,args.expected_uuid)
     points=correctness_points() if args.phase=="correctness" else timing_points()
@@ -97,17 +164,17 @@ def main():
     receipt=dict(identity=identity,gpu=initial,phase=args.phase,points=points,indices=indices,
                  partial=set(indices)!=set(range(len(points))),status="INCOMPLETE",results=[],
                  scope="PHYSICAL_HOPPER_NOT_NATIVE_PPU17",production_selection="UNCHANGED",runner_sha256=sha(__file__))
-    receipt["controls"]=dict(shared_carveout=args.carveout,serial_sf=args.serial_sf)
+    receipt["controls"]=controls
     reused={}
     if args.resume_from:
         previous=json.loads(args.resume_from.read_text())
-        if args.phase!="correctness" or previous["phase"]!="correctness" or previous["identity"]!=identity:
-            raise ValueError("resume is only for same-binary/device correctness")
+        if args.phase!="correctness" or previous["phase"]!="correctness" or previous["identity"]!=identity or previous.get("controls")!=controls:
+            raise ValueError("resume is only for same-binary/device/policy correctness")
         for row in previous["results"]:
             if row["status"]!="PASS":continue
             log=Path(row["log"])
             if not log.is_file() or sha(log)!=row["log_sha256"]:raise ValueError("resume log identity differs")
-            validate_chain(log.read_text(),row["point"])
+            validate_chain(log.read_text(),row["point"],controls)
             key=json.dumps(row["point"],sort_keys=True)
             if key in reused:raise ValueError("duplicate resume point")
             reused[key]=row
@@ -125,6 +192,8 @@ def main():
             print(f"PDL_PREFETCH_PROGRESS phase=correctness completed={len(receipt['results'])}/{len(indices)} status=REUSED_PASS",flush=True)
             continue
         command=[str(build/("chain" if args.phase=="correctness" else "benchmark"))]
+        command += ["--carveout",str(controls["shared_carveout"]),"--sf-carveout",str(controls["sf_carveout"]),
+                    "--sf-trigger",controls["sf_trigger"]]
         for key in ("compute","m","n","k"): command += ["--"+key,str(point[key])]
         if point["route"]: command.append("--sf")
         if args.phase=="correctness":
@@ -133,21 +202,16 @@ def main():
         else:
             if point["grouped"]: command.append("--grouped")
             if point["cache"]=="rotating": command.append("--rotating")
-            command += ["--carveout",str(args.carveout)]
-            if args.serial_sf:command.append("--serial-sf")
         result={}
         try:
             if args.phase=="correctness":
                 result=run_case(command,env,log,args.device,args.expected_uuid,args.timeout)
                 if result["error"] or result["returncode"]: raise ValueError(result["error"] or "child rc="+str(result["returncode"]))
-                validate_chain(log.read_text(),point)
+                validate_chain(log.read_text(),point,controls)
             else:
                 result=run_point(command,env,log,args.device,args.expected_uuid,args.timeout)
                 if result["status"]!="PASS": raise ValueError(result["error"])
-                validate_timing(result["result"][0],point)
-                row=result["result"][0]
-                if row.get("shared_carveout")!=args.carveout or row.get("serial_sf")!=args.serial_sf or not row.get("inline_controls"):
-                    raise ValueError("resource/edge controls differ")
+                validate_timing(result["result"][0],point,controls)
             result["status"]="PASS"
         except Exception as error:
             result.update(status="FAIL",error=str(error))

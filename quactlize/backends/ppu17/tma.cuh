@@ -188,7 +188,8 @@ __global__ __launch_bounds__(128) void tma_wgmma(
 }
 
 template <int Q, class T, bool SF, bool Pdl = false, bool PrefetchB = false>
-std::function<int()> prepare_tma(q17_call_v1 const &c, int shared_carveout = -1) {
+std::function<int()> prepare_tma(q17_call_v1 const &c, int shared_carveout = -1,
+    std::function<void(void const *)> const &configure = {}) {
   using namespace cute;
   using Tile = TmaTile<Q, T>;
   using F = Format<Q>;
@@ -211,6 +212,10 @@ std::function<int()> prepare_tma(q17_call_v1 const &c, int shared_carveout = -1)
                                   cudaFuncAttributePreferredSharedMemoryCarveout, shared_carveout);
     if (rc != cudaSuccess) throw std::runtime_error(cudaGetErrorString(rc));
   }
+  // Optional internal experiment hook, invoked before capture, never at launch.
+  // Public callers retain an empty hook and the original resource policy.
+  if (configure) configure(reinterpret_cast<void const *>(
+      tma_wgmma<Q,T,SF,decltype(ta),decltype(tl),decltype(th),Pdl,PrefetchB>));
   return [c, ta, tl, th] {
     dim3 grid((c.problem.n + 63) / 64, (c.problem.max_rows + 63) / 64, c.problem.experts);
     return enqueue_kernel<Pdl>(tma_wgmma<Q, T, SF, decltype(ta), decltype(tl), decltype(th), Pdl, PrefetchB>,

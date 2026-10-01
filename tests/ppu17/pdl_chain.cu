@@ -4,6 +4,7 @@
 #include <memory>
 #if defined(Q17_TEST_WEIGHT_PREFETCH)
 #include "tma.cuh"
+#include "pdl_prefetch/controls.cuh"
 #endif
 
 namespace {
@@ -11,6 +12,8 @@ struct ChainOptions : Options {
   int replays = 3;
   bool negative = false;
   bool prefetch = false;
+  std::string sf_trigger = "early";
+  int carveout = -1, sf_carveout = -1;
 };
 
 __host__ __device__ float activation_value(int row, int k, int epoch) {
@@ -168,16 +171,26 @@ template <int Q, class T> void test(ChainOptions const &o) {
   q17_launch_options_v1 options{1, sizeof(options), 1, 0};
   std::vector<std::vector<uint8_t>> baseline(2);
   int comparisons = 0;
+#if defined(Q17_TEST_WEIGHT_PREFETCH)
+  std::vector<pdl_experiment::ResourceRecord> resources;
+#endif
   for (bool graph : {false, true}) for (int arm = 0; arm < (o.prefetch ? 3 : 2); ++arm) {
     bool pdl = arm != 0;
     q17_plan_v1 *raw = nullptr;
-    if (arm == 2) {
+    if (o.prefetch) {
 #if defined(Q17_TEST_WEIGHT_PREFETCH)
       if (c.config.engine != Q17_TMA_WGMMA) throw std::runtime_error("prefetch test requires TMA config");
       // Test-only invocation: low/high were fully uploaded before this
       // chain. No production ABI silently adopts the stronger lifetime.
-      raw = new q17_plan_v1{c.device, o.sf ? prepare_tma<Q,T,true,true,true>(c)
-                                         : prepare_tma<Q,T,false,true,true>(c)};
+      auto configure = [&](void const *kernel) {
+        if (!graph) resources.push_back(pdl_experiment::configure_resource(
+            kernel,"target",arm,o.carveout,128,0,c.device));
+      };
+      std::function<int()> execute;
+      if (arm==2) execute=o.sf?prepare_tma<Q,T,true,true,true>(c,-1,configure):prepare_tma<Q,T,false,true,true>(c,-1,configure);
+      else if (arm==1) execute=o.sf?prepare_tma<Q,T,true,true,false>(c,-1,configure):prepare_tma<Q,T,false,true,false>(c,-1,configure);
+      else execute=o.sf?prepare_tma<Q,T,true,false,false>(c,-1,configure):prepare_tma<Q,T,false,false,false>(c,-1,configure);
+      raw = new q17_plan_v1{c.device, std::move(execute)};
 #else
       throw std::runtime_error("prefetch test was not compiled");
 #endif
@@ -185,6 +198,14 @@ template <int Q, class T> void test(ChainOptions const &o) {
       check(pdl ? q17_prepare_with_options_v1(&c, &options, &raw) : q17_prepare_v1(&c, &raw), "prepare chain");
     }
     std::unique_ptr<q17_plan_v1, decltype(&q17_destroy_v1)> plan(raw, q17_destroy_v1);
+#if defined(Q17_TEST_WEIGHT_PREFETCH)
+    std::function<int(q17_call_v1 const &)> expansion;
+    if (o.prefetch && o.sf) {
+      std::vector<pdl_experiment::ResourceRecord> ignored;
+      expansion=pdl_experiment::prepare_expansion<Q,T>(c,arm,
+          pdl_experiment::parse_trigger(o.sf_trigger),o.sf_carveout,graph?ignored:resources);
+    }
+#endif
     auto enqueue = [&](int epoch) {
       auto producer = pdl ? produce_inputs<true> : produce_inputs<false>;
       int rc = pdl ? enqueue_kernel<true>(producer, 7, 128, 0, stream, c,
@@ -194,7 +215,13 @@ template <int Q, class T> void test(ChainOptions const &o) {
                         static_cast<int const *>(d.p), static_cast<uint8_t const *>(u_source.p), units.size(),
                         static_cast<uint8_t *>(out.p), bytes, epoch, 50000ull);
       gpu(cudaError_t(rc), "producer launch");
-      if (o.sf) check(pdl ? q17_expand_scales_with_options_v1(&c, &options) : q17_expand_scales_v1(&c), "expansion");
+      if (o.sf) {
+#if defined(Q17_TEST_WEIGHT_PREFETCH)
+        if (o.prefetch) check(expansion(c), "experimental expansion");
+        else
+#endif
+          check(pdl ? q17_expand_scales_with_options_v1(&c, &options) : q17_expand_scales_v1(&c), "expansion");
+      }
       check(q17_execute_v1(plan.get()), "dependent compute");
       rc = pdl ? enqueue_kernel<true>(consume_output<true>, 3, 128, 0, stream,
                     static_cast<uint8_t const *>(out.p), static_cast<uint8_t *>(snapshot.p), bytes)
@@ -238,8 +265,12 @@ template <int Q, class T> void test(ChainOptions const &o) {
     }
   }
   gpu(cudaStreamDestroy(stream), "stream destroy");
-  std::printf("PPU17_PDL_CHAIN PASS q=%d compute=%d input=%d output=%d config=%d route=%d grouped=%d comparisons=%d raw_equal=1 cpu_oracle=PASS stream=PASS graph=PASS timing=NOT_MEASURED prefetch=%d m=%d n=%d k=%d backend=%s\n",
-      Q, o.compute, o.input, o.output, o.config, p.route, o.grouped, comparisons, o.prefetch, m, o.n, o.k, q17_build_target_v1());
+#if defined(Q17_TEST_WEIGHT_PREFETCH)
+  if (o.prefetch) { std::printf("PPU17_PDL_RESOURCES ");pdl_experiment::print_resources(resources);std::printf("\n"); }
+#endif
+  std::printf("PPU17_PDL_CHAIN PASS q=%d compute=%d input=%d output=%d config=%d route=%d grouped=%d comparisons=%d raw_equal=1 cpu_oracle=PASS stream=PASS graph=PASS timing=NOT_MEASURED prefetch=%d m=%d n=%d k=%d backend=%s sf_trigger=%s shared_carveout=%d sf_carveout=%d\n",
+      Q, o.compute, o.input, o.output, o.config, p.route, o.grouped, comparisons, o.prefetch, m, o.n, o.k, q17_build_target_v1(),
+      o.sf_trigger.c_str(),o.carveout,o.sf_carveout);
 }
 } // namespace
 
@@ -256,6 +287,11 @@ int main(int argc, char **argv) {
       else if (key == "--prefetch") o.prefetch = true;
       else {
         if (++i == argc) throw std::runtime_error("missing value for " + key);
+#if defined(Q17_TEST_WEIGHT_PREFETCH)
+        if (key=="--sf-trigger") {o.sf_trigger=pdl_experiment::name(pdl_experiment::parse_trigger(argv[i]));continue;}
+        if (key=="--carveout") {o.carveout=pdl_experiment::parse_carveout(argv[i]);continue;}
+        if (key=="--sf-carveout") {o.sf_carveout=pdl_experiment::parse_carveout(argv[i]);continue;}
+#endif
         if (key == "--rows") {
           o.grouped = true;
           std::istringstream fields(argv[i]); std::string field;
@@ -277,6 +313,8 @@ int main(int argc, char **argv) {
       }
     }
     if (o.replays < 2 || o.replays > 32) throw std::runtime_error("replays must be in [2,32]");
+    if (!o.prefetch && (o.sf_trigger!="early" || o.carveout!=-1 || o.sf_carveout!=-1))
+      throw std::runtime_error("experimental controls require --prefetch");
     if (o.compute != Q17_F16 && o.compute != Q17_BF16) throw std::runtime_error("invalid compute type");
     if (o.negative) {
       if (o.cpu_only) throw std::runtime_error("negative requires a physical device");

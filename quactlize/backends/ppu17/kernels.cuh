@@ -108,11 +108,10 @@ __global__ __launch_bounds__(128) void wgmma(q17_call_v1 c) {
   }
 }
 
-template <int Q, class T, bool Pdl = false>
-__global__ void expand_scales(q17_call_v1 c) {
-  wait_for_predecessors<Pdl>();
-  // The consumer may initialize, but must wait before reading scale/zero.
-  release_successors<Pdl>();
+// Arithmetic owner shared by the admitted entry and test-only launch policies.
+// The caller owns grid dependency ordering; this body contains no PDL hooks.
+template <int Q, class T>
+__device__ __forceinline__ void expand_scale_values(q17_call_v1 const &c) {
   using F = Format<Q>;
   size_t per_expert = size_t(c.problem.n) * (c.problem.k / F::group_size);
   size_t total = per_expert * c.problem.experts;
@@ -128,5 +127,13 @@ __global__ void expand_scales(q17_call_v1 c) {
     scale[i] = affine.scale;
     zero[i] = affine.zero;
   }
+}
+
+template <int Q, class T, bool Pdl = false>
+__global__ void expand_scales(q17_call_v1 c) {
+  wait_for_predecessors<Pdl>();
+  // The consumer may initialize, but must wait before reading scale/zero.
+  release_successors<Pdl>();
+  expand_scale_values<Q,T>(c);
 }
 } // namespace quactlize::ppu17

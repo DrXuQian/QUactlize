@@ -102,6 +102,96 @@ timings are explanatory only; the table above uses unprofiled event runs.
 Do not blanket-enable PDL on helpers or adopt carveout25 as a production preset.
 Keep SF ordinary unless a matched complete-chain comparison admits otherwise.
 
+## SF release/resource follow-up (local build only)
+
+The follow-up separates two previously coupled variables. It does **not**
+replace the public SF entry, enable PDL by default, or change the existing
+PPU1.0/1.5 path. Device numerics and timing for these new controls are pending.
+
+- `--sf-trigger early`: original wait, trigger, expansion order.
+- `--sf-trigger late`: wait, the same scale/zero expansion body, then trigger.
+  Only release placement changes; launch attributes and dependency waits stay.
+- `--sf-trigger serial` (also `--serial-sf`): ordinary SF launch, retained as
+  the previous diagnostic. This changes both launch and device protocol, so it
+  is not a substitute for the early/late comparison.
+- `--carveout default|25|auto` controls the TMA consumer independently of
+  `--sf-carveout default|25|auto`, which controls SF. `-1` and `-2` are aliases
+  for default and auto. Default does not write a function attribute.
+
+Auto queries default blocks/SM and chooses the first shared-memory preference
+in [0,100] retaining that number. It is configured during preparation, outside
+capture/timing. The bounded harness uses fixed function launch geometry; there
+is no process-global cache and no change to device selection. Failures restore
+the original preference. Receipts include function register/static-shared
+counts, device, threads, dynamic shared bytes, requested/selected preference
+and default/selected blocks/SM for every arm. These are runtime **queries and
+preferences**, not measurements of achieved occupancy or actual L1 capacity.
+
+Motivation: [SGLang's occupancy-preserving L1 helper](https://github.com/sgl-project/sglang/pull/40767)
+documents a possible PDL shared-partition interaction; its PR enables no
+production caller and claims no model speedup. The mechanism remains a
+hypothesis for our H800 SF regression. The late-release control follows the
+ordering used by its per-token quantization kernel, not its FP8 arithmetic.
+
+Run this bounded matrix, each in fresh child processes with its **own** full
+96-point correctness receipt before the 24-point Q4 full-chain timing:
+
+| Control | SF trigger | SF carveout | Consumer carveout |
+|---|---|---|---|
+| Original counterexample | early | default | default |
+| Release placement only | late | default | default |
+| Helper resources only | early | auto | default |
+| Consumer resources only | early | default | auto |
+| Both resource preferences | early | auto | auto |
+| Controlled composition | late | auto | auto |
+| Previous serial-SF control | serial | default | default |
+
+The old fixed25 control remains available. Keep FQ points as controls, even
+though SF trigger/resource settings have no effect on FQ calls. Timing retains
+ordinary/protocol/early-B arms, warm/rotating rings, fixed configs2/5, and the
+independent CPU dot/guard checks. Do not infer the best production config or
+TPOT from this diagnostic.
+
+The builder now assembles all12 late-SF specializations (six formats and two
+compute types), inspects wait/load/store/release order in PTX and SASS, and
+requires exact encoded equality of all72 original inline SF/TMA controls
+against the immutable parent library. Host tests exercise the actual C++
+resource selector with injected queries, including occupancy loss and failure
+restoration. A source-order assertion alone is not the lowering gate.
+
+Correctness receipt identity includes the selected controls. The runner rejects
+old receipts, missing/duplicate/failed cells, mismatched preferences or device,
+and changed correctness logs. It cannot use an early/default PASS to authorize
+late/auto timing. Existing historical receipts/binaries are left untouched.
+
+Local CUDA12.8 SM90a validation: 33 host tests passed; all432 existing backend
+specializations compiled/checked and all216 ordinary encoded bodies matched
+the parent. The experiment compiled12 late-SF bodies and matched72 original
+SF/TMA controls. Nine codegen mutations and five resource-query negatives were
+rejected. Evidence is under
+`/workspace/quactlize-ppu17-pdl-sf-policy-20261001/` (`build-final`,
+`full-validation`, `ordinary-codegen.json`). No GPU test was run for this
+follow-up; neither physical Hopper nor native PPU1.7 performance is admitted.
+
+After rebuilding the experiment with the build command below, a late/default
+example (on an idle physical Hopper, not locally) is:
+
+```bash
+python3 tests/ppu17/pdl_prefetch/run.py \
+  --build "$EXPERIMENT/build" --baseline "$BASELINE" --device 0 \
+  --expected-uuid "$GPU_UUID" --phase correctness --sf-trigger late \
+  --output "$EXPERIMENT/late-default-correctness"
+python3 tests/ppu17/pdl_prefetch/run.py \
+  --build "$EXPERIMENT/build" --baseline "$BASELINE" --device 0 \
+  --expected-uuid "$GPU_UUID" --phase timing --sf-trigger late \
+  --correctness "$EXPERIMENT/late-default-correctness/summary.json" \
+  --output "$EXPERIMENT/late-default-timing"
+```
+
+Set paths and the physical GPU UUID explicitly as in the reproduction section.
+Use identical control flags for both commands; repeat timing with `--reverse`
+and a new output directory. Ordinary-only users need no rebuild or new flags.
+
 ## Reproduction
 
 Use a PDL-enabled baseline built by `quactlize/backends/ppu17/build.py`, the
@@ -121,7 +211,7 @@ python3 tests/ppu17/pdl_prefetch/build.py \
 GPU_UUID=$(nvidia-smi --id=0 --query-gpu=uuid --format=csv,noheader)
 python3 tests/ppu17/pdl_prefetch/run.py \
   --baseline "$BASELINE" --build "$EXPERIMENT/build" \
-  --device 0 --expected-uuid "$GPU_UUID" --phase correctness \
+  --device 0 --expected-uuid "$GPU_UUID" --phase correctness --serial-sf \
   --output "$EXPERIMENT/correctness"
 
 python3 tests/ppu17/pdl_prefetch/run.py \
@@ -131,9 +221,11 @@ python3 tests/ppu17/pdl_prefetch/run.py \
   --serial-sf --output "$EXPERIMENT/timing"
 ```
 
-Repeat timing with `--reverse` and a fresh output. Omit `--serial-sf` to retain
-the default-edge counterexample; use `--only 6 7 --carveout 25` for the bounded
-resource diagnostic. No global environment knob changes shipping routes.
+Repeat timing with `--reverse` and a fresh output. Omit `--serial-sf` from both
+correctness and timing to retain the default-edge counterexample. For the
+bounded resource diagnostic, run full correctness with `--carveout 25` first,
+then time `--only 6 7 --carveout 25` against that receipt. No global environment
+knob changes shipping routes.
 
 Evidence: `/workspace/quactlize-ppu17-pdl-prefetch-20261001/` contains the plan,
 immutable builds P1/C1/P2, ordinary code comparison, full library validation,

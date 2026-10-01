@@ -23,7 +23,7 @@ def inspect_prefetch(text, sass):
     for chunk in re.split(r"(?m)^\s*(?:\.(?:visible|weak)\s+)?\.entry\s+", text)[1:]:
         symbol = chunk.split("(", 1)[0].strip()
         match = re.search(r"tma_wgmmaILi(\d+)E", symbol)
-        if not match:
+        if not match or "Lb1ELb1EEEv" not in symbol:
             continue
         q = int(match[1])
         if chunk.count("griddepcontrol.wait;") != 1:
@@ -60,6 +60,58 @@ def inspect_prefetch(text, sass):
     return results
 
 
+def inspect_sf(text, sass):
+    native = {c.splitlines()[0].strip(): c for c in re.split(r"Function\s*:\s*", sass)[1:]}
+    result = []
+    for chunk in re.split(r"(?m)^\s*(?:\.(?:visible|weak)\s+)?\.entry\s+", text)[1:]:
+        symbol = chunk.split("(", 1)[0].strip()
+        if "expand_scales" not in symbol:
+            continue
+        late = "expand_scales_late" in symbol
+        enabled = late or "Lb1E" in symbol
+        wait, release = "griddepcontrol.wait;", "griddepcontrol.launch_dependents;"
+        if chunk.count(wait) != int(enabled) or chunk.count(release) != int(enabled):
+            raise ValueError("SF dependency count differs")
+        if "ld.global" not in chunk or "st.global" not in chunk:
+            raise ValueError("SF arithmetic/read/store body missing")
+        if enabled and chunk.index(wait) > chunk.index("ld.global"):
+            raise ValueError("SF unit read precedes wait")
+        if late and chunk.index(release) < chunk.rindex("st.global"):
+            raise ValueError("late SF release precedes a metadata store")
+        if enabled and not late and chunk.index(release) > chunk.index("ld.global"):
+            raise ValueError("early SF control changed")
+        body = native.get(symbol, "")
+        if "STG" not in body or ("ACQBULK" in body) != enabled or ("PREEXIT" in body) != enabled:
+            raise ValueError("SF assembled body/protocol differs")
+        if late and body.index("PREEXIT") < body.rindex("STG"):
+            raise ValueError("assembled late SF release precedes metadata store")
+        result.append(dict(symbol=symbol, trigger="late" if late else "early" if enabled else "ordinary"))
+    if len(result) != 36 or any(sum(r["trigger"] == t for r in result) != 12 for t in ("late", "early", "ordinary")):
+        raise ValueError("incomplete SF policy specialization inventory")
+    return result
+
+
+def unchanged_controls(sass, baseline_sass):
+    def entries(source):
+        rows = {}
+        for chunk in re.split(r"Function\s*:\s*", source)[1:]:
+            symbol = chunk.splitlines()[0].strip()
+            if "expand_scales_late" in symbol or "Lb1ELb1EEEv" in symbol:
+                continue
+            if "tma_wgmma" not in symbol and "expand_scales" not in symbol:
+                continue
+            words = re.findall(r"/\* 0x([0-9a-f]{16}) \*/", chunk)
+            if not words or symbol in rows: raise ValueError("missing/duplicate control encoding")
+            rows[symbol] = hashlib.sha256("".join(words).encode()).hexdigest()
+        return rows
+    candidate, parent = entries(sass), entries(baseline_sass)
+    if len(candidate) != 72 or set(candidate) != set(parent):
+        raise ValueError("incomplete same-body SF/TMA controls")
+    changed = [s for s, digest in candidate.items() if parent[s] != digest]
+    if changed: raise ValueError("original SF/TMA control encodings changed: " + str(changed))
+    return dict(bodies=len(candidate), status="PASS", scope="EXACT_ENCODED_ORDINARY_AND_PDL_CONTROLS")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--baseline", type=Path, required=True)
@@ -83,6 +135,9 @@ def main():
                    set((ROOT / "tests/ppu17").glob("*.cuh")) |
                    set(Path(__file__).parent.glob("*.py")) |
                    set(Path(__file__).parent.glob("*.cu")) |
+                   set(Path(__file__).parent.glob("*.cuh")) |
+                   set(Path(__file__).parent.glob("*.hpp")) |
+                   set(Path(__file__).parent.glob("*.cpp")) |
                    {ROOT / "tests/ppu17/pdl_chain.cu"})
     for relative, digest in original["sources"].items():
         if relative.startswith("quactlize/include/"):
@@ -100,6 +155,8 @@ def main():
             subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
         print("PDL_PREFETCH_BUILD PASS " + name, flush=True)
     links = ["-L"+str(baseline), "-lquactlize_ppu17", "-Xlinker=-rpath="+str(baseline)]
+    run("resource-policy-build", ["c++", "-std=c++17", "-O2", str(Path(__file__).parent/"resource_policy_test.cpp"), "-o", str(out/"resource-policy-test")])
+    run("resource-policy-host", [str(out/"resource-policy-test")])
     chain = [str(compiler), *flags, "-DQ17_TEST_WEIGHT_PREFETCH=1", str(ROOT/"tests/ppu17/pdl_chain.cu")]
     jobs = [("chain", [*chain, *links, "-o", str(out/"chain")]),
             ("ptx", [*chain, "--ptx", "-o", str(out/"chain.ptx")]),
@@ -111,6 +168,9 @@ def main():
     (out/"chain.sass").write_text(sass)
     text = (out/"chain.ptx").read_text()
     codegen = inspect_prefetch(text, sass)
+    sf_codegen = inspect_sf(text, sass)
+    baseline_sass = subprocess.check_output([str(inspector), "--dump-sass", str(library)], text=True)
+    controls = unchanged_controls(sass, baseline_sass)
     # Per-body regressions: missing wait/release, wrong (A) descriptor,
     # missing producer drain, missing native launch hint.
     plants = [(text.replace("griddepcontrol.wait;", "absent_wait;"), sass),
@@ -122,6 +182,14 @@ def main():
         try: inspect_prefetch(changed, native)
         except ValueError: pass
         else: raise ValueError("codegen negative was not rejected")
+    sf_plants = [(text.replace("griddepcontrol.wait;", "absent_wait;"), sass),
+                 (text.replace("griddepcontrol.launch_dependents;", "absent_release;"), sass),
+                 (text.replace("st.global", "absent_store"), sass),
+                 (text, sass.replace("PREEXIT", "NOP"))]
+    for changed, native in sf_plants:
+        try: inspect_sf(changed, native)
+        except ValueError: pass
+        else: raise ValueError("SF codegen negative was not rejected")
     run("cpu-fixture", [str(out/"chain"), "--cpu-only", "--prefetch"])
     if any(sha(ROOT/f) != digest for f,digest in sources.items()):
         raise ValueError("sources changed during experiment build")
@@ -129,7 +197,9 @@ def main():
                    parent=original["build_key"], library_sha256=sha(library), dependency=dependency,
                    compiler_sha256=sha(compiler), flags=flags, sources=sources,
                    applications={name:sha(out/name) for name in ("chain","benchmark")},
-                   codegen=codegen, negatives=len(plants), native_ppu17="NOT_RUN")
+                   codegen=codegen, sf_codegen=sf_codegen, unchanged_controls=controls,
+                   negatives=len(plants)+len(sf_plants), native_ppu17="NOT_RUN",
+                   sf_controls_schema=1, device_admission="PENDING")
     (out/"manifest.json").write_text(json.dumps(receipt,indent=2)+"\n")
     print("PDL_PREFETCH_BUILD COMPLETE " + str(out), flush=True)
 

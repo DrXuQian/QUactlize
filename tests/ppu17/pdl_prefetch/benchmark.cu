@@ -2,6 +2,7 @@
 // No synthetic delay, no production policy change, no GPU reference.
 #include "../fixture.cuh"
 #include "tma.cuh"
+#include "controls.cuh"
 #include <array>
 #include <memory>
 
@@ -15,7 +16,8 @@ struct Calls {
 char const *arm_name(int arm) { return arm == 0 ? "ordinary" : arm == 1 ? "protocol" : "prefetch"; }
 q17_launch_options_v1 const pdl_options{1, sizeof(q17_launch_options_v1), 1, 0};
 
-template <class T> void benchmark(Options const &o, bool rotating, int carveout, bool serial_sf) {
+template <class T> void benchmark(Options const &o, bool rotating, int carveout,
+    pdl_experiment::SfTrigger trigger, int sf_carveout) {
   constexpr int Q = 12, producer_k = 256;
   auto counts = o.grouped ? std::vector<int>{0,1,8,o.m} : std::vector<int>{o.m};
   std::vector<int32_t> offsets{0};
@@ -69,6 +71,10 @@ template <class T> void benchmark(Options const &o, bool rotating, int carveout,
   first.a=a.p; first.output=static_cast<T *>(mid.p)+32;
   last.a=first.output; last.output=static_cast<float *>(c.p)+8;
   first.offsets=last.offsets=static_cast<int32_t const *>(directory.p);
+  std::vector<pdl_experiment::ResourceRecord> resources;
+  std::array<std::function<int(q17_call_v1 const &)>,3> expansions;
+  if(o.sf) for(int arm=0;arm<3;++arm)
+    expansions[arm]=pdl_experiment::prepare_expansion<Q,T>(last,arm,trigger,sf_carveout,resources);
   size_t active=std::count_if(counts.begin(),counts.end(),[](int n){return n>0;});
   size_t weights=(before.low.size()+before.units.size()+after.low.size()+after.units.size()+
     (o.sf?(after.scale.size()+after.zero.size())*sizeof(T):0))/experts*active;
@@ -93,10 +99,14 @@ template <class T> void benchmark(Options const &o, bool rotating, int carveout,
       row->first[arm].reset(raw); raw=nullptr;
       // All target arms use the same translation unit and resource policy;
       // ordinary/protocol bodies are checked against the immutable library.
+      auto configure=[&](void const *kernel) {
+        if(i==0) resources.push_back(pdl_experiment::configure_resource(
+            kernel,"target",arm,carveout,128,0,t.device));
+      };
       std::function<int()> execute;
-      if(arm==2) execute=o.sf?prepare_tma<Q,T,true,true,true>(t,carveout):prepare_tma<Q,T,false,true,true>(t,carveout);
-      else if(arm==1) execute=o.sf?prepare_tma<Q,T,true,true,false>(t,carveout):prepare_tma<Q,T,false,true,false>(t,carveout);
-      else execute=o.sf?prepare_tma<Q,T,true,false,false>(t,carveout):prepare_tma<Q,T,false,false,false>(t,carveout);
+      if(arm==2) execute=o.sf?prepare_tma<Q,T,true,true,true>(t,-1,configure):prepare_tma<Q,T,false,true,true>(t,-1,configure);
+      else if(arm==1) execute=o.sf?prepare_tma<Q,T,true,true,false>(t,-1,configure):prepare_tma<Q,T,false,true,false>(t,-1,configure);
+      else execute=o.sf?prepare_tma<Q,T,true,false,false>(t,-1,configure):prepare_tma<Q,T,false,false,false>(t,-1,configure);
       raw=new q17_plan_v1{t.device,std::move(execute)};
       row->last[arm].reset(raw);
     }
@@ -107,7 +117,7 @@ template <class T> void benchmark(Options const &o, bool rotating, int carveout,
   if(std::getchar()!='R') throw std::runtime_error("idle guard did not admit execution");
   auto enqueue=[&](Calls const &row,int arm) {
     check(q17_execute_v1(row.first[arm].get()),"producer");
-    if(o.sf) check(q17_expand_scales_with_options_v1(&row.consumer,arm&&!serial_sf?&pdl_options:nullptr),"SF expansion");
+    if(o.sf) check(expansions[arm](row.consumer),"SF expansion");
     check(q17_execute_v1(row.last[arm].get()),"consumer");
   };
   std::vector<float> raw_baseline;
@@ -153,7 +163,10 @@ template <class T> void benchmark(Options const &o, bool rotating, int carveout,
   auto print_samples=[](std::vector<double> const &v){std::printf("[");for(size_t i=0;i<v.size();++i)std::printf("%s%.9f",i?",":"",v[i]);std::printf("]");};
   std::printf("PPU17_BENCH {\"q\":12,\"compute\":%d,\"route\":%d,\"m\":%d,\"n\":%d,\"k\":%d,\"experts\":%d,\"sm_count\":%d,\"l2_bytes\":%d,\"cache\":\"%s\",\"weight_bytes\":%zu,\"weight_copies\":%d,\"launches_per_graph\":%d,\"chains_per_graph\":%d,\"warmup_graphs_per_arm\":3,\"producer_config\":2,\"consumer_config\":5,\"correctness\":\"CPU_DOT_AND_GUARDS_PASS\",\"raw_equal\":true,\"scope\":\"PHYSICAL_HOPPER_GRAPH_AVERAGE_NOT_PPU17\",\"metric_scope\":\"GEMM_OPTIONAL_SF_GEMM_CHAIN\",\"median_us\":%.9f,\"samples_us\":",
     o.compute,int(o.sf),m,o.n,o.k,experts,prop.multiProcessorCount,prop.l2CacheSize,rotating?"rotating":"warm",weights,copies,chains,chains,median(samples[0]));
-  print_samples(samples[0]); std::printf(",\"shared_carveout\":%d,\"serial_sf\":%s,\"inline_controls\":true,\"arms\":{",carveout,serial_sf?"true":"false");
+  print_samples(samples[0]);
+  std::printf(",\"shared_carveout\":%d,\"sf_carveout\":%d,\"sf_trigger\":\"%s\",\"serial_sf\":%s,\"inline_controls\":true,\"resources\":",
+      carveout,sf_carveout,pdl_experiment::name(trigger),trigger==pdl_experiment::SfTrigger::Serial?"true":"false");
+  pdl_experiment::print_resources(resources);std::printf(",\"arms\":{");
   for(int arm=0;arm<3;++arm) {
     std::printf("%s\"%s\":{\"median_us\":%.9f,\"samples_us\":",arm?",":"",arm_name(arm),median(samples[arm]));
     print_samples(samples[arm]);std::printf("}");
@@ -168,22 +181,33 @@ template <class T> void benchmark(Options const &o, bool rotating, int carveout,
 int main(int argc,char **argv) {
   try {
     if(!std::getenv("Q17_BENCH_GUARDED")) throw std::runtime_error("use the guarded physical-device runner");
-    Options o; o.m=1;o.n=512;o.k=2048;bool rotating=false,serial_sf=false;int carveout=-1;
+    Options o; o.m=1;o.n=512;o.k=2048;bool rotating=false;int carveout=-1,sf_carveout=-1;
+    auto trigger=pdl_experiment::SfTrigger::Early;bool trigger_set=false;
     for(int i=1;i<argc;++i) {
       std::string key=argv[i];
       if(key=="--grouped")o.grouped=true;
       else if(key=="--sf")o.sf=true;
       else if(key=="--rotating")rotating=true;
-      else if(key=="--serial-sf")serial_sf=true;
+      else if(key=="--serial-sf") {
+        if(trigger_set)throw std::runtime_error("duplicate SF trigger selection");
+        trigger=pdl_experiment::SfTrigger::Serial;trigger_set=true;
+      }
+      else if(key=="--sf-trigger"||key=="--carveout"||key=="--sf-carveout") {
+        if(++i==argc)throw std::runtime_error("missing value");
+        if(key=="--sf-trigger") {
+          if(trigger_set)throw std::runtime_error("duplicate SF trigger selection");
+          trigger=pdl_experiment::parse_trigger(argv[i]);trigger_set=true;
+        } else if(key=="--carveout")carveout=pdl_experiment::parse_carveout(argv[i]);
+        else sf_carveout=pdl_experiment::parse_carveout(argv[i]);
+      }
       else {if(++i==argc)throw std::runtime_error("missing value");int v=std::stoi(argv[i]);
         if(key=="--compute")o.compute=v;else if(key=="--m")o.m=v;
         else if(key=="--n")o.n=v;else if(key=="--k")o.k=v;
-        else if(key=="--carveout")carveout=v;
         else throw std::runtime_error("unknown option");}
     }
     if(o.m<1||o.m>128||o.n<16||o.n>4096||o.k<256||o.k>8192||o.k%256||o.n%16)throw std::runtime_error("outside bounded experiment");
-    if(o.compute==Q17_F16)benchmark<cutlass::half_t>(o,rotating,carveout,serial_sf);
-    else if(o.compute==Q17_BF16)benchmark<cutlass::bfloat16_t>(o,rotating,carveout,serial_sf);
+    if(o.compute==Q17_F16)benchmark<cutlass::half_t>(o,rotating,carveout,trigger,sf_carveout);
+    else if(o.compute==Q17_BF16)benchmark<cutlass::bfloat16_t>(o,rotating,carveout,trigger,sf_carveout);
     else throw std::runtime_error("compute must be F16/BF16");
     return 0;
   } catch(std::exception const &e) {std::fprintf(stderr,"PPU17_PREFETCH_BENCH FAIL: %s\n",e.what());return 1;}
