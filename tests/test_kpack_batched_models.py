@@ -225,7 +225,7 @@ def test_final_model_runner_uses_joint_ci_caller_and_pinned_runtime():
     subprocess.run(['bash', '-n', str(ROOT/'tools/run_kpack_q4_model_box.sh')], check=True)
     assert '\n(\n' in text and 'trap finish EXIT' in text
     assert 'lfs pull origin' in text and 'kpack_q4_model_artifact.json' in text
-    assert 'dev/quactlize-v0.3.0' in text and 'cmake --build' not in text
+    assert '[[ "$LLAMA_BRANCH" == quactlize ]]' in text and 'cmake --build' not in text
     assert 'build_kpack_model_ci.py' in text and 'NCP_LIB_DIR:-/sim/eec/shared/junfu.qx/ncp_flash_lib' in text
     assert 'BUILD_DIR="$LLAMA_DIR/build-ci"' in text and 'BUILD_DIR="$BUNDLE/llama"' not in text
     assert 'caller-ci-build.json' in text and 'JOBS=${JOBS:-192}' in text
@@ -246,16 +246,13 @@ def test_final_model_runner_uses_joint_ci_caller_and_pinned_runtime():
     assert '--exclude=\'*.asysrep\'' in text
     assert 'DrXuQian/llama.cpp.git' in text and 'ggml-org/llama.cpp.git' not in text
     receipt = json.loads((ROOT/'tools/kpack_q4_model_artifact.json').read_text())
-    caller_branches = {'artifacts/kpack-model-runtime-v1': 'dev/quactlize-v0.3.0',
-                      'artifacts/kpack-model-paired-n4-v1': 'dev/quactlize-gate-up-v0.3.0',
-                      'artifacts/kpack-model-readers-v1': 'dev/quactlize-gate-up-v0.3.0',
-                      'artifacts/kpack-model-prepare-v1': 'dev/quactlize-tp2-v0.3.0',
-                      'artifacts/kpack-model-tp2-scale-v1': 'dev/quactlize-tp2-v0.3.0',
-                      'artifacts/kpack-model-selected-v1': 'dev/quactlize-selected-decode',
-                      'artifacts/kpack-launch-fix-v1': 'dev/quactlize-selected-decode'}
-    assert receipt['branch'] in caller_branches
+    artifact_branches = {'artifacts/kpack-model-runtime-v1', 'artifacts/kpack-model-paired-n4-v1',
+                         'artifacts/kpack-model-readers-v1', 'artifacts/kpack-model-prepare-v1',
+                         'artifacts/kpack-model-tp2-scale-v1', 'artifacts/kpack-model-selected-v1',
+                         'artifacts/kpack-launch-fix-v1'}
+    assert receipt['branch'] in artifact_branches
     assert receipt['path'] == 'prebuilt/ppu0010/kpack-model-runtime-v1'
-    assert receipt['llama_branch'] == caller_branches[receipt['branch']]
+    assert receipt['llama_branch'] == 'quactlize'
     assert 'llama_commit' not in receipt and 'test ! -e "$BUNDLE/llama"' in text
     assert len(receipt['commit']) == len(receipt['llama_ci_commit']) == 40
     assert len(receipt['manifest_sha256']) == 64

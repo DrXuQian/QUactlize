@@ -5,15 +5,25 @@ PR, a main-branch product release, or a rebase of `feat/kpack-gpu-cache`.
 
 | Branch | Commit | Contents |
 |---|---|---|
-| `dev/v0.3.0` | `e73e2136b` | Official v0.3.0 plus the supplied PPU patch, unchanged |
-| `dev/quactlize-v0.3.0` | `7bddc62e7` | That base plus 40 Quactlize commits and the v0.3.0 compatibility correction |
-| `feat/kpack-gpu-cache` | `b312a0955` | Original published feature history retained; not rebased |
+| `master` | `2092353c8` | Existing fork master; not upgraded to a new upstream release |
+| `dev` | `e73e2136b` | Official v0.3.0 plus the supplied PPU patch, unchanged |
+| `quactlize` | `905dbdd48` | That base plus Quactlize, TP2, selected decode and paired recipes |
+
+These are the three maintained llama.cpp branches as of 2026-10-08. The
+former `dev/quactlize-v0.3.0` tip `4ae897c77` is 20 commits behind `quactlize`
+with no divergence. Advancing it needs no merge commit or rebase. TP2 through
+`1bac078de` is an ancestor of `quactlize`; it is not a separate development line.
+The older `feat/kpack-gpu-cache` history is archived, not replayed over this port.
+Published old branch tips are recoverable under
+`archive/branches-20261008/fork/`; local-only tips remain in local archive tags.
+This branch change does not alter kernel selection, artifact commits or their
+device-admission status. See [branch policy](BRANCHES.md#llamacpp-fork).
 
 Official release commit: `c1d0e7a004015f23bc0233470b747b596f29b264`.
 Supplied input: `/root/ppu_dev-vs-master.diff`, SHA256
 `0ce55e7beb27ebf3f06cacca997daa72da61324ec6751eb311e66b2aa9be8b33`.
 Applying it to an independent index at that release produces tree
-`42d1067362c361226f34c1c3e8384e6393158b0d`, exactly the tree of `dev/v0.3.0`.
+`42d1067362c361226f34c1c3e8384e6393158b0d`, exactly the tree of `dev`.
 The patch's six pre-existing trailing-whitespace warnings were not rewritten.
 
 The Quactlize port includes canonical intake/sidecar caching, selected dense
@@ -32,7 +42,7 @@ full-BF16 provider integration. Tests remain in these development branches.
   `write_inverse`. Quactlize's gather uses compact-row-to-input coordinates,
   so it explicitly requests the forward map with `false`.
 
-## Local validation
+## Initial v0.3.0 port validation (historical)
 
 - Host library/loader/sidecar build succeeds; four CTest entries pass.
 - Native-evidence, numerical-runner and GSM8K-runner unit suites pass:

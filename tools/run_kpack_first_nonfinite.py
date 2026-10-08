@@ -186,7 +186,7 @@ def main():
     source = (llama / 'tools/perplexity/perplexity.cpp').read_text()
     kl_source = source.partition('static void kl_divergence(')[2].partition('\nint llama_perplexity(')[0]
     if 'numerical_check_logits(batch_logits, size_t(n_outputs) * n_vocab);' not in kl_source:
-        raise ValueError('update llama dev/quactlize-v0.3.0: the diagnostic must be inside the KL loop')
+        raise ValueError('update llama quactlize: the diagnostic must be inside the KL loop')
     if args.snapshot_until and 'LLAMA_NUMERICAL_SNAPSHOT_COMPLETE' not in source:
         raise ValueError('update the caller for first-token intermediate snapshots')
     for key in ('-m', '-f', '--kl-divergence-base'):

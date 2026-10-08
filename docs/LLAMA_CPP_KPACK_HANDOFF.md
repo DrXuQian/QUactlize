@@ -4,6 +4,12 @@ Quactlize development now uses `develop`, including the former TP2 and fusion
 branches. Historical artifact pins below are retained as evidence, not as
 fresh-install download instructions; see [branch policy](BRANCHES.md).
 
+The llama.cpp fork separately uses `master`, `dev` and `quactlize`.
+`dev` is the v0.3.0 PPU base; `quactlize` includes TP2 and the later selected
+decode/paired-recipe changes through `905dbdd48`. Fetch `quactlize`, then use
+the handoff's exact caller commit. Branch consolidation does not upgrade a
+pinned runtime or imply a new device/performance validation.
+
 This file is the single integration handoff for consuming Quactlize K-pack
 artifacts from llama.cpp. Update it whenever the sidecar schema, public C ABI,
 binary bundle, or loader contract changes.

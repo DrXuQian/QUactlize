@@ -66,7 +66,7 @@ export QUACTLIZE_KPACK_JIT_CACHE=${fields[5]}
 [[ $PROMPT =~ ^[1-9][0-9]*$ && $GENERATE =~ ^[1-9][0-9]*$ && -s $PPU_SDK/envsetup.sh ]]
 HELP=$("$PYTHON" "$LLAMA_DIR/tests/quactlize_native.py" --help)
 if [[ $HELP != *--proof-arm* || $HELP != *--proof-tokens* ]]; then
-    printf 'Update llama.cpp feat/kpack-gpu-cache: matched reference trace options are required.\n' >&2
+    printf 'Update llama.cpp quactlize: matched reference trace options are required.\n' >&2
     false
 fi
 source "$PPU_SDK/envsetup.sh"

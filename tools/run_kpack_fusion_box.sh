@@ -44,7 +44,7 @@ trap 'printf "FAIL stage=%s line=%s rc=%s\n" "$stage" "$LINENO" "$?" >&2' ERR
 [[ $# == 0 && $JOBS =~ ^[1-9][0-9]*$ && -d $RESULT_ROOT ]]
 [[ -s $BUILD_DIR/CMakeCache.txt && -s $LLAMA_DIR/ggml/src/ggml-cuda/quactlize/kpack_indexed.h ]]
 if [[ ! -s $LLAMA_DIR/tests/test-kpack-model-loader.cpp ]]; then
-    printf 'Update llama.cpp feat/kpack-gpu-cache: paired-weight loader regression is required (bd4e8bf93).\n' >&2
+    printf 'Update llama.cpp quactlize: paired-weight loader regression is required (bd4e8bf93).\n' >&2
     false
 fi
 [[ -s $PPU_SDK/envsetup.sh ]]
@@ -87,7 +87,7 @@ if [[ ${RUN_MODEL_BENCH:-1} == 1 || ${RUN_MODEL_TRACE:-0} == 1 ]]; then
         "$PYTHON" "$LLAMA_DIR/tests/quactlize_native.py" --help > "$RUN/results/model-trace-help.txt"
         if ! grep -q -- '--proof-only' "$RUN/results/model-trace-help.txt" || \
            ! grep -q -- '--tensor-inventory' "$RUN/results/model-trace-help.txt"; then
-            printf 'Update llama.cpp feat/kpack-gpu-cache: the Asys-only runner is required.\n' >&2
+            printf 'Update llama.cpp quactlize: the Asys-only runner is required.\n' >&2
             false
         fi
     fi

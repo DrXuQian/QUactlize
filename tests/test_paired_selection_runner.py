@@ -17,6 +17,17 @@ from tools.paired_decode_selection import EVIDENCE
 CATALOG=json.loads(EVIDENCE.read_text())
 
 
+@pytest.mark.parametrize('name,field,commit',[
+    ('kpack_q4_model_artifact.json','llama_ci_commit','1f7da3bd94b1fc6b9520e156456c89221fddd07f'),
+    ('kpack_paired_selection_artifact.json','llama_commit','905dbdd486325189f88e519470a37bbd8badb685'),
+    ('kpack_prefill_runtime_artifact.json','llama_commit','03142a8b7bdf690ac8c1ecfc51c9b20d4fbafc8e'),
+])
+def test_caller_branch_consolidation_preserves_pinned_builds(name,field,commit):
+    receipt=json.loads((Path(__file__).resolve().parents[1]/'tools'/name).read_text())
+    assert receipt['llama_branch']=='quactlize'
+    assert receipt[field]==commit
+
+
 def test_samples_are_normalized_exactly_once_and_order_alternates():
     seen=[]
     def sample(arm,time):seen.append(arm);return time

@@ -45,3 +45,35 @@ short-K helper additionally requires an already available base bundle.
 Uncommitted work and experimental output files are preserved in their original
 worktrees. Retiring a branch does not discard those files or imply that their
 unreviewed changes were merged.
+
+## llama.cpp fork
+
+As of 2026-10-08, `DrXuQian/llama.cpp` has three maintained branches:
+
+| Branch | Tip at consolidation | Purpose |
+|---|---|---|
+| `master` | `2092353c8` | Preserve the fork's existing master. |
+| `dev` | `e73e2136b` | Official v0.3.0 plus the supplied PPU patch. |
+| `quactlize` | `905dbdd48` | Complete Quactlize development line, including TP2. |
+
+The upstream `ggml-org/llama.cpp` repository is not modified. Old fork heads
+are retained as tags under `archive/branches-20261008/fork/`. Local heads,
+including unpublished experiments, are tagged under
+`archive/branches-20261008/local/` and are not newly published.
+Recover a former fork tip with, for example:
+
+```sh
+git fetch drxuqian refs/tags/archive/branches-20261008/fork/dev/quactlize-tp2-v0.3.0
+git show FETCH_HEAD
+```
+
+The clean local development worktree is `/root/autodl-tmp/llama-v0.3.0`, on
+`quactlize`. The two dirty worktrees, `/root/llama.cpp` and
+`/root/llama-validate`, retain their original commits and edits in detached
+HEAD state. Nothing in those dirty worktrees is discarded or claimed merged.
+The reference/config audit is `/workspace/llama-three-branches-20261008/`.
+
+Caller fetch aliases use `quactlize`; exact caller commit pins remain unchanged.
+Historical binary-delivery scripts remain subject to the source-build
+migration described above. This cleanup does not make retired artifact
+branches available again.
