@@ -19,6 +19,25 @@ from quactlize import pack_gguf
 ROOT = pathlib.Path(__file__).parents[1]
 
 
+@pytest.mark.parametrize("environment, override, expected", [
+    (None, None, "/usr/local/PPU_SDK"),
+    ("", None, "/usr/local/PPU_SDK"),
+    ("/sdk path/ppu", None, "/sdk path/ppu"),
+    ("/sdk/env", "/sdk/explicit", "/sdk/explicit"),
+])
+def test_device_packer_sdk_defaults(monkeypatch, tmp_path, environment, override, expected):
+    from tools import build_kpack_pack
+
+    monkeypatch.delenv("PPU_SDK", raising=False)
+    if environment is not None:
+        monkeypatch.setenv("PPU_SDK", environment)
+    monkeypatch.setattr(build_kpack_pack, "build", lambda sdk, output: (sdk, output))
+    args = ["--output", str(tmp_path / "build")]
+    if override:
+        args += ["--sdk", override]
+    assert build_kpack_pack.main(args) == (pathlib.Path(expected), tmp_path / "build")
+
+
 class _FakeGGUFEndian:
     LITTLE = "little"
     BIG = "big"

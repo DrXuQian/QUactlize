@@ -66,9 +66,14 @@ def build(sdk, output):
     return manifest
 
 
-if __name__ == "__main__":
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sdk", type=Path, required=True)
+    parser.add_argument("--sdk", type=Path, default=Path(os.environ.get("PPU_SDK") or "/usr/local/PPU_SDK"),
+                        help="SDK root (default: PPU_SDK or /usr/local/PPU_SDK)")
     parser.add_argument("--output", type=Path, required=True, help="fresh output directory")
-    args = parser.parse_args()
-    build(args.sdk, args.output)
+    args = parser.parse_args(argv)
+    return build(args.sdk, args.output)
+
+
+if __name__ == "__main__":
+    main()
