@@ -381,3 +381,9 @@ incorrect row is invalid.
 changes are selectively rebuilt on the current `main`; `develop` is not
 merged wholesale. The main branch admits only PPU product code, the canonical
 K-pack descriptors, necessary tests, and concise operator-facing tooling.
+
+## Standalone dense runtime
+
+The packing + complete dense consumer is built as one public
+`libquactlize_ppu.so`, without a downstream selector/wrapper. See
+[the standalone library contract and build instructions](docs/PPU_LIBRARY.md).

@@ -16,6 +16,10 @@
 set -Eeuo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"          # the repository root
+if [ "${1:-}" = "--library" ]; then
+  shift
+  exec python3 "$HERE/tools/build_ppu_library.py" "$@"
+fi
 ACTLIZE="$(cd "$HERE/third_party/actlize" && pwd)"
 # THE SOURCE IS NO LONGER ONE FLAT DIRECTORY. The tree separates kernels, tests and benchmarks, and the overlay
 # FLATTENS all of them into one example directory -- which is only sound because no basename repeats across them

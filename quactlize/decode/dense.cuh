@@ -20,11 +20,12 @@ constexpr uint64_t mapping=QK_QTYPE==8?q8_kpack2::kMappingId:QK_QTYPE==12?
     UINT64_C(0x51344b5034540001):UINT64_C(0x514b504b54000001);
 static_assert(QK_ROUTE==QK_DENSE_FQ || QK_ROUTE==QK_DENSE_SF);
 
-inline int validate(qkd_dense_call_v1 const& d,qk_recipe_v1 const& r) {
+inline int validate(qkd_dense_call_v1 const& d,qk_recipe_v1 const& r,bool general=false) {
   auto const& c=d.call;
   if (d.version!=1 || d.size!=sizeof(d) || c.version!=1 || c.size!=sizeof(c) ||
       d.input_type!=d.output_type || (d.input_type!=QKD_F32 && d.input_type!=QKD_BF16) ||
-      c.m<1 || c.m>8 || c.experts!=1 || c.n<=0 || c.n%256 || c.k<=0 ||
+      c.m<1 || (!general && c.m>8) || c.experts!=1 || c.n<=0 || c.n%256 || c.k<=0 ||
+      int64_t(c.m)*c.n>INT32_MAX || c.m>INT32_MAX-256 ||
       c.k%((QK_QTYPE==11||QK_QTYPE==14)?512:256) || c.mapping_id!=mapping ||
       c.group_size!=F::spec.group_size || c.rows_host || c.rows_device || c.offsets_device ||
       r.version!=1 || r.size!=sizeof(r) || r.algorithm<0 || r.algorithm>1 ||
@@ -153,10 +154,10 @@ extern "C" int quactlize_kpack_decode_dense_device_v1(char* name,int capacity,in
   if (*cu<=0) return QK_RUNTIME_ERROR;
   std::strcpy(name,prop.name);return QK_OK;
 }
-static int qkd_query(qkd_dense_call_v1 const* d,qk_recipe_v1 const* r,qk_resources_v1* out) {
+static int qkd_query(qkd_dense_call_v1 const* d,qk_recipe_v1 const* r,qk_resources_v1* out,bool general=false) {
   using namespace quactlize::decode;
   if(!d||!r||!out)return QK_INVALID;
-  int rc=validate(*d,*r);if(rc)return rc;
+  int rc=validate(*d,*r,general);if(rc)return rc;
   int device=-1;
   if(hggcGetDevice(&device)!=hggcSuccess)return QK_RUNTIME_ERROR;
   if(device!=d->call.device || cutlass::KernelHardwareInfo::query_device_multiprocessor_count(device)!=d->call.compute_units)return QK_INVALID;
@@ -210,8 +211,8 @@ extern "C" int quactlize_kpack_decode_dense_prepare_v2(qkd_dense_call_v2 const* 
 extern "C" int quactlize_kpack_decode_dense_run_v1(void* h,void* stream) {
   return h?static_cast<quactlize::decode::Handle*>(h)->run(static_cast<hggcStream_t>(stream)):QK_INVALID;
 }
-extern "C" int quactlize_kpack_decode_dense_prepare_dynamic_v1(qkd_dense_call_v2 const* d,
-    qk_recipe_v1 const* r,void** out) {
+static int qkd_prepare_dynamic(qkd_dense_call_v2 const* d,
+    qk_recipe_v1 const* r,void** out,bool general) {
   using namespace quactlize::decode;
   if (!out) return QK_INVALID;
   *out=nullptr;
@@ -219,13 +220,22 @@ extern "C" int quactlize_kpack_decode_dense_prepare_dynamic_v1(qkd_dense_call_v2
   hggcStreamCaptureStatus capture;
   if (hggcStreamIsCapturing(static_cast<hggcStream_t>(d->dense.call.stream),&capture)!=hggcSuccess) return QK_RUNTIME_ERROR;
   if (capture!=hggcStreamCaptureStatusNone) return QK_UNSUPPORTED;
-  qk_resources_v1 resources{};int rc=qkd_query(&d->dense,r,&resources);if (rc) return rc;
+  qk_resources_v1 resources{};int rc=qkd_query(&d->dense,r,&resources,general);if (rc) return rc;
   try {
     auto make=[&](auto* h) { h->shape=*d;h->shape.dense.call.stream=nullptr;h->recipe=*r;h->resources=resources;*out=h; };
     if (d->dense.input_type==QKD_F32) make(new DynamicHandle<float>());
     else make(new DynamicHandle<cutlass::bfloat16_t>());
     return QK_OK;
   } catch (...) { return QK_RUNTIME_ERROR; }
+}
+extern "C" int quactlize_kpack_decode_dense_prepare_dynamic_v1(qkd_dense_call_v2 const* d,
+    qk_recipe_v1 const* r,void** out) { return qkd_prepare_dynamic(d,r,out,false); }
+extern "C" int quactlize_kpack_decode_dense_prepare_dynamic_v2(qkd_dense_call_v2 const* d,
+    qk_recipe_v1 const* r,void** out) { return qkd_prepare_dynamic(d,r,out,true); }
+extern "C" int quactlize_kpack_decode_dense_query_dynamic_v2(qkd_dense_call_v2 const* d,
+    qk_recipe_v1 const* r,qk_resources_v1* out) {
+  if (!qkd_compute_matches(d) || !r || !out) return QK_INVALID;
+  return qkd_query(&d->dense,r,out,true);
 }
 extern "C" int quactlize_kpack_decode_dense_run_dynamic_v1(void* h,qkd_dense_call_v2 const* d) {
   return h && d ? static_cast<quactlize::decode::Handle const*>(h)->run_dynamic(*d) : QK_INVALID;

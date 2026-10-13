@@ -18,7 +18,7 @@ enum { QKS_RECENT = 1, QKS_HISTORICAL = 2, QKS_PREDICTED = 3,
        QKS_SMALLM_EXACT = 9, QKS_SMALLM_BUCKET = 10,
        QKS_COMPUTE_INITIAL = 11, QKS_MATCHED_EXACT = 12,
        QKS_MATCHED_BUCKET = 13, QKS_MATCHED_ROUTER = 14,
-       QKS_Q8_VECTOR_MEASURED = 15 };
+       QKS_Q8_VECTOR_MEASURED = 15, QKS_DENSE_FALLBACK = 16, QKS_LEGACY_DENSE = 17 };
 
 // Additive Q8_0/W8A16 intake capability, without a device/context or JIT.
 // Returns 1 for supported weight geometry and SF route (1=dense,3=grouped).
@@ -132,6 +132,22 @@ int quactlize_kpack_dispatch_query_decode_v1(void* runtime, qks_request_v1 const
 // old query/prepare retain FP16 semantics. No tuning or new fallback policy.
 int quactlize_kpack_dispatch_query_dense_io_v1(void* runtime,qks_request_v1 const*,
                                             int32_t endpoint_type,int32_t decode_policy,qks_choice_v1*);
+// General dense F32 endpoints, every representable M (M*N<=INT32_MAX).
+// Used by the complete dense provider AFTER matched/decode policy. Retains
+// the ordinary selected recipe, then the old canonical dense FQ fallback
+// (LEGACY_DENSE). Only an uncovered shape uses an explicit AP0/S1 parent
+// (DENSE_FALLBACK). Neither fallback label claims a measured winner.
+// Query failures for an existing choice never silently select a different
+// kernel. Only prepare_dynamic_v1/run_dynamic_v1 may execute this ticket.
+int quactlize_kpack_dispatch_query_dense_dynamic_v1(void* runtime,qks_request_v1 const*,
+    int32_t compute_type,qks_choice_v1*);
+// Same coverage/recipe policy with the original native FP16 endpoints. The
+// complete provider uses this for PoC-identical prefill (including adapters).
+int quactlize_kpack_dispatch_query_dense_native_v1(void* runtime,qks_request_v1 const*,qks_choice_v1*);
+// Describe the materialized ticket, not a second policy lookup or a parse of
+// its symbol. Dense metadata remains FP16 (including BF16-compute parents).
+int quactlize_kpack_dispatch_dense_contract_v1(void* runtime,qks_choice_v1 const*,
+    qks_request_v1*,int32_t* compute_type,int32_t* metadata_type);
 int quactlize_kpack_dispatch_prepare_dense_io_v1(void* runtime,qks_choice_v1 const*,
                                                qkd_dense_call_v1 const*,void** handle);
 // compute_type is QK_COMPUTE_F16/BF16. endpoint_type is 0 for grouped native

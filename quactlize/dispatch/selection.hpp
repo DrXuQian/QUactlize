@@ -2,12 +2,15 @@
 #include "compute.hpp"
 #include "decode.hpp"
 #include "smallm_matched.hpp"
+#include "../include/ppu_format_config.hpp"
+#include "../include/ppu_kquant_measured_policy.hpp"
+#include "../include/ppu_q4_kpack4_shipping_policy.hpp"
 
 namespace quactlize::dispatch {
 
 // Internal identity, not an ABI enum or a persisted cache key. Channels and
 // selection profile are separate dimensions instead of encoded integers.
-enum class SelectionProfile { General, Decode, LegacySmallM, MatchedSmallM };
+enum class SelectionProfile { General, Decode, LegacySmallM, MatchedSmallM, DenseDynamic, DenseNative };
 struct SelectionContext {
     SelectionProfile profile = SelectionProfile::General;
     int channels = 0;
@@ -40,6 +43,53 @@ inline TcDecision select_tc(qks_request_v1 const& r, bool decode, int compute,
         out.symbol = selected.config->symbol;
         out.policy = selected.policy;
     }
+    return out;
+}
+
+// The old dense device API's canonical K-pack fallback, expressed as a JIT
+// parent rather than loading the six legacy DSOs. Reuse its authoritative
+// policies, including auto delivery (DN0), not a similar-looking new tile.
+inline TcDecision select_legacy_dense(qks_request_v1 const& r) {
+    if (!valid(r) || r.route!=QK_DENSE_FQ || r.qtype==8) return {};
+    TcDecision out;
+    auto& c=out.value;
+    c={"legacy-dense",nullptr,"LEGACY_DENSE",r.qtype,r.route,
+        0,0,0,0,0,0,0,0,-1,1,0,0,0,r.mapping_id};
+    if (r.qtype==12) {
+        ppu_q4_kpack4_shipping::ConfigId id{};
+        if (!ppu_q4_kpack4_shipping::find_config(nullptr,r.m,r.n,r.k,id)) return {};
+        auto const& row=ppu_q4_kpack4_shipping::row(id);
+        c.tm=row.tile_m;c.tn=row.tile_n;c.tk=row.tile_k;
+        c.wm=row.warp_m;c.wn=row.warp_n;c.stages=row.stages;c.split=row.split;
+    } else {
+        ppu_dense_shipping::ConfigId id{};
+        if (!ppu_kquant_measured_policy::find_dense_config(nullptr,r.qtype,r.m,r.n,r.k,id)) return {};
+        auto const& row=ppu_dense_shipping::kConfigs[static_cast<int>(id)];
+        c.tm=row.tile_m;c.tn=row.tile_n;c.tk=ppu_formats::for_qtype(r.qtype).fully_quantized_tile_k;
+        c.wm=row.warp_m;c.wn=row.warp_n;c.stages=row.stages;
+    }
+    if (r.k%(c.tk*c.split) || r.k/(c.tk*c.split)<c.stages-1 || (c.tm==8 && r.m>64)) return {};
+    out.symbol="fqk_tc_q"+std::to_string(r.qtype)+"_l"+(r.qtype==12?"1":"2")+
+        "_a0_tm"+std::to_string(c.tm)+"_tn"+std::to_string(c.tn)+"_tk"+std::to_string(c.tk)+
+        "_wm"+std::to_string(c.wm)+"_wn"+std::to_string(c.wn)+"_s"+std::to_string(c.stages)+"_bc0_ap0_dn0";
+    out.policy=QKS_LEGACY_DENSE;
+    return out;
+}
+
+// Preserve the existing native policy, then the old canonical FQ fallback.
+// Only a shape the old path cannot cover gets the new resource-bounded S1.
+inline TcDecision select_dense_dynamic(qks_request_v1 const& r,int compute) {
+    if (r.route>=2 || !valid(r) || int64_t(r.m)*r.n>INT32_MAX) return {};
+    auto out=select_tc(r,false,compute);
+    if (out) return out;
+    if (!compute_valid(compute)) return {};
+    if (compute==QK_COMPUTE_F16) {
+        out=select_legacy_dense(r);
+        if (out) return out;
+    }
+    out.value=compute_proposal(r,{},out.symbol);
+    if (!out.value.symbol) {out.symbol.clear();return out;}
+    out.policy=QKS_DENSE_FALLBACK;
     return out;
 }
 

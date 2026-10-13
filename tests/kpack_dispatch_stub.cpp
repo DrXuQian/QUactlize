@@ -62,6 +62,15 @@ extern "C" int quactlize_kpack_decode_dense_prepare_dynamic_v1(qkd_dense_call_v2
     if (!rc) static_cast<StubHandle*>(*out)->endpoint=c->dense.input_type;
     return rc;
 }
+#ifdef QK_TEST_GENERAL
+extern "C" int quactlize_kpack_decode_dense_query_dynamic_v2(qkd_dense_call_v2 const* c,qk_recipe_v1 const* r,qk_resources_v1* out) {
+    if (!c || c->version!=2 || c->compute_type!=0 || c->dense.input_type!=QKD_F32) return QK_INVALID;
+    return quactlize_kpack_query_v1(&c->dense.call,r,out);
+}
+extern "C" int quactlize_kpack_decode_dense_prepare_dynamic_v2(qkd_dense_call_v2 const* c,qk_recipe_v1 const* r,void** out) {
+    return quactlize_kpack_decode_dense_prepare_dynamic_v1(c,r,out);
+}
+#endif
 extern "C" int quactlize_kpack_decode_dense_run_dynamic_v1(void* p,qkd_dense_call_v2 const* c) {
     if (!p || !c || c->version!=2 || c->compute_type!=0 ||
         c->dense.input_type!=static_cast<StubHandle*>(p)->endpoint || c->dense.output_type!=c->dense.input_type) return QK_INVALID;

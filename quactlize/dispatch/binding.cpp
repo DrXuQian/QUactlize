@@ -63,6 +63,8 @@ struct Module {
     decltype(&quactlize_kpack_prepare_dynamic_v1) prepare_dynamic=nullptr;
     decltype(&quactlize_kpack_run_dynamic_v1) run_dynamic=nullptr;
     decltype(&quactlize_kpack_decode_dense_prepare_dynamic_v1) prepare_dense_dynamic=nullptr;
+    decltype(&quactlize_kpack_decode_dense_query_dynamic_v2) query_dense_general=nullptr;
+    decltype(&quactlize_kpack_decode_dense_prepare_dynamic_v2) prepare_dense_general=nullptr;
     decltype(&quactlize_kpack_decode_dense_run_dynamic_v1) run_dense_dynamic=nullptr;
     decltype(&quactlize_kpack_destroy_v1) destroy=nullptr;
     decltype(&quactlize_kpack_decode_dense_query_v1) query_dense_io=nullptr;
@@ -85,6 +87,7 @@ struct Plan {
     std::shared_ptr<Module> module;
     int endpoint_type=0;
     int compute_type=QK_COMPUTE_F16;
+    bool dense_general=false;
 };
 struct MoeExecution {
     void* library=nullptr;
@@ -383,6 +386,10 @@ std::shared_ptr<Module> load(Runtime& r,Image const& image,Config const& c,bool 
             " previous_compute_units="+std::to_string(r.cu));
     r.device=device; r.cu=cu;
     if (dense_io) {
+        module->query_dense_general=reinterpret_cast<decltype(module->query_dense_general)>(
+            dlsym(module->library,"quactlize_kpack_decode_dense_query_dynamic_v2"));
+        module->prepare_dense_general=reinterpret_cast<decltype(module->prepare_dense_general)>(
+            dlsym(module->library,"quactlize_kpack_decode_dense_prepare_dynamic_v2"));
         module->prepare_dense_dynamic=reinterpret_cast<decltype(module->prepare_dense_dynamic)>(
             dlsym(module->library,"quactlize_kpack_decode_dense_prepare_dynamic_v1"));
         module->run_dense_dynamic=reinterpret_cast<decltype(module->run_dense_dynamic)>(
@@ -514,9 +521,17 @@ static int materialize(Runtime& r,qks_request_v1 const* req,qks_choice_v1* out,
     auto call=call_for(*req,r);
     auto rec=recipe(config,*req,1);
     qk_resources_v1 resources{};
-    auto query=[&]() {
+    auto query=[&]() -> int {
         if (endpoint_type) {
             qkd_dense_call_v1 typed{1,sizeof(typed),call,endpoint_type,endpoint_type};
+            if (context.profile==SelectionProfile::DenseDynamic) {
+                if (!module->query_dense_general) {
+                    last_error="general dense endpoint absent; rebuild selected parent";
+                    return QK_UNSUPPORTED;
+                }
+                qkd_dense_call_v2 d{2,sizeof(d),typed,compute_type};
+                return module->query_dense_general(&d,&rec,&resources);
+            }
             if (compute_type==QK_COMPUTE_BF16) {
                 qkd_dense_call_v2 d{2,sizeof(d),typed,compute_type};
                 return module->query_dense_compute(&d,&rec,&resources);
@@ -542,7 +557,8 @@ static int materialize(Runtime& r,qks_request_v1 const* req,qks_choice_v1* out,
     choice.device=r.device; choice.compute_units=r.cu;
     if (image->parent.size()>=sizeof(choice.parent)) return QKS_BINDING;
     std::strcpy(choice.parent,image->parent.c_str()); std::strcpy(choice.build_key,image->key.c_str());
-    r.plans.push_back({*req,choice,rec,module,endpoint_type,compute_type});
+    r.plans.push_back({*req,choice,rec,module,endpoint_type,compute_type,
+        context.profile==SelectionProfile::DenseDynamic});
     r.requests.emplace(key(*req,context,endpoint_type,compute_type),choice.ticket);
     *out=choice; return QKS_OK;
 }
@@ -551,14 +567,16 @@ static int query(void* runtime,qks_request_v1 const* req,qks_choice_v1* out,Sele
                  Selected table={},int compute_type=QK_COMPUTE_F16) {
     if (!runtime || !req || !out || !valid(*req) || !compute_valid(compute_type)) return QKS_INVALID;
     *out={};
-    if (endpoint_type && (req->route>=2 || req->experts!=1 || req->m>8)) return QKS_MISS;
+    if (endpoint_type && (req->route>=2 || req->experts!=1 ||
+        (req->m>8 && context.profile!=SelectionProfile::DenseDynamic))) return QKS_MISS;
     if (compute_type==QK_COMPUTE_BF16 && req->route<2 && !endpoint_type) return QKS_MISS;
     try {
         auto& r=*static_cast<Runtime*>(runtime);
         std::lock_guard<std::mutex> lock(r.mutex);
         auto found=r.requests.find(key(*req,context,endpoint_type,compute_type));
         if (found!=r.requests.end()) { *out=r.plans.at(found->second-1).choice; return QKS_OK; }
-        auto selected=select_tc(*req,context.profile!=SelectionProfile::General,compute_type,table);
+        auto selected=(context.profile==SelectionProfile::DenseDynamic || context.profile==SelectionProfile::DenseNative) ? select_dense_dynamic(*req,compute_type) :
+            select_tc(*req,context.profile!=SelectionProfile::General,compute_type,table);
         if (!selected) { last_error="no same-family policy choice"; return QKS_MISS; }
         return materialize(r,req,out,selected,context,endpoint_type,compute_type);
     } catch (std::exception const& e) { last_error=e.what(); return QKS_BINDING; }
@@ -566,6 +584,14 @@ static int query(void* runtime,qks_request_v1 const* req,qks_choice_v1* out,Sele
 
 extern "C" int quactlize_kpack_dispatch_query_v1(void* runtime,qks_request_v1 const* req,qks_choice_v1* out) {
     return query(runtime,req,out,{});
+}
+extern "C" int quactlize_kpack_dispatch_query_dense_dynamic_v1(void* runtime,qks_request_v1 const* req,
+    int32_t compute_type,qks_choice_v1* out) {
+    return query(runtime,req,out,{SelectionProfile::DenseDynamic},QKD_F32,{},compute_type);
+}
+extern "C" int quactlize_kpack_dispatch_query_dense_native_v1(void* runtime,qks_request_v1 const* req,qks_choice_v1* out) {
+    if (!req || req->route>=2) return QKS_INVALID;
+    return query(runtime,req,out,{SelectionProfile::DenseNative});
 }
 extern "C" int quactlize_kpack_dispatch_query_decode_v1(void* runtime,qks_request_v1 const* req,qks_choice_v1* out) {
     return query(runtime,req,out,{SelectionProfile::Decode});
@@ -808,6 +834,17 @@ extern "C" int quactlize_kpack_dispatch_run_v1(void* handle,void* stream) {
     if (h.dynamic) return QKS_INVALID;
     return h.module->run(h.inner,stream)==QK_OK ? QKS_OK : QKS_RUNTIME;
 }
+extern "C" int quactlize_kpack_dispatch_dense_contract_v1(void* runtime,qks_choice_v1 const* choice,
+    qks_request_v1* request,int32_t* compute_type,int32_t* metadata_type) {
+    if (!runtime || !choice || !request || !compute_type || !metadata_type) return QKS_INVALID;
+    auto& r=*static_cast<Runtime*>(runtime);
+    std::lock_guard<std::mutex> lock(r.mutex);
+    if (!choice->ticket || choice->ticket>r.plans.size()) return QKS_INVALID;
+    auto const& p=r.plans[choice->ticket-1];
+    if (!same_choice(*choice,p.choice) || p.request.route>=2) return QKS_INVALID;
+    *request=p.request;*compute_type=p.compute_type;*metadata_type=QK_METADATA_F16;
+    return QKS_OK;
+}
 extern "C" int quactlize_kpack_dispatch_prepare_dynamic_v1(void* runtime,qks_choice_v1 const* choice,void** out) {
     if (!out) return QKS_INVALID;
     *out=nullptr;
@@ -822,7 +859,8 @@ extern "C" int quactlize_kpack_dispatch_prepare_dynamic_v1(void* runtime,qks_cho
             last_error="dynamic dense execution does not accept grouped tickets";return QKS_MISS;
         }
         auto m=plan.module;
-        if (plan.endpoint_type ? !m->prepare_dense_dynamic || !m->run_dense_dynamic :
+        auto prepare_dense=plan.dense_general ? m->prepare_dense_general : m->prepare_dense_dynamic;
+        if (plan.endpoint_type ? !prepare_dense || !m->run_dense_dynamic :
                                  !m->prepare_dynamic || !m->run_dynamic) {
             last_error="selected parent lacks dynamic execution ABI; rebuild that parent and dispatcher";
             return QKS_BINDING;
@@ -830,7 +868,7 @@ extern "C" int quactlize_kpack_dispatch_prepare_dynamic_v1(void* runtime,qks_cho
         auto h=std::make_unique<Handle>();h->module=m;h->dynamic=true;h->endpoint_type=plan.endpoint_type;
         auto call=call_for(plan.request,r);
         qkd_dense_call_v2 typed{2,sizeof(typed),{1,sizeof(qkd_dense_call_v1),call,plan.endpoint_type,plan.endpoint_type},plan.compute_type};
-        int rc=plan.endpoint_type ? m->prepare_dense_dynamic(&typed,&plan.recipe,&h->inner) :
+        int rc=plan.endpoint_type ? prepare_dense(&typed,&plan.recipe,&h->inner) :
                                    m->prepare_dynamic(&call,&plan.recipe,&h->inner);
         if (rc!=QK_OK || !h->inner) {
             last_error="selected dynamic plan preparation failed rc="+std::to_string(rc);

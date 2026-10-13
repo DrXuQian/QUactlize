@@ -84,12 +84,13 @@ def validate_parent(parent):
         or parent["wm"] not in (8, 16, 32, 64, 128)
         or parent["wn"] not in (16, 32, 64, 128)
         or parent["stages"] not in (2, 3, 4, 6, 8, 12)
-        or parent["dn"] not in (16, 32, 64)
+        or parent["dn"] not in (0, 16, 32, 64)
         or parent["ap"] not in (0, 1)
         or parent["persistent"] not in (-1, 0, 1)
         or parent["tm"] % parent["wm"]
         or parent["tn"] % parent["wn"]
-        or parent["tn"] % parent["dn"]
+        or (parent["dn"] and parent["tn"] % parent["dn"])
+        or (parent["dn"] == 0 and (parent["route"] != "fq-dense" or parent["ap"] != 0))
     ):
         raise ValueError("invalid parent geometry")
     if parent["ap"] and (

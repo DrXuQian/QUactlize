@@ -54,6 +54,14 @@ int quactlize_kpack_decode_dense_prepare_v2(qkd_dense_call_v2 const*,qk_recipe_v
 // No allocation/JIT/occupancy query/synchronization in run; use destroy_v1.
 int quactlize_kpack_decode_dense_prepare_dynamic_v1(qkd_dense_call_v2 const*,qk_recipe_v1 const*,void**);
 int quactlize_kpack_decode_dense_run_dynamic_v1(void*,qkd_dense_call_v2 const*);
+// General dense successor. Identical arithmetic, storage and contiguous
+// layout, without the decode-only M<=8 restriction. M*N must fit INT32_MAX
+// (the ordered reducer's index domain). v1/v2 bound query/prepare and the
+// decode-only dynamic preparation above retain their original domain.
+int quactlize_kpack_decode_dense_query_dynamic_v2(qkd_dense_call_v2 const*,qk_recipe_v1 const*,qk_resources_v1*);
+int quactlize_kpack_decode_dense_prepare_dynamic_v2(qkd_dense_call_v2 const*,qk_recipe_v1 const*,void**);
+// General dynamic plans use run_dynamic_v1/destroy_v1. No extra adapter,
+// alternative recipe or precision conversion is introduced by this entry.
 // v2 prepared handles retain the existing run_v1/destroy_v1 lifecycle. A
 // BF16-compute module rejects v1 query/prepare instead of changing v1 math.
 #ifdef __cplusplus
