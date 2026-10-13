@@ -60,6 +60,10 @@ struct Module {
     decltype(&quactlize_kpack_grouped_query_v2) query_device=nullptr;
     decltype(&quactlize_kpack_grouped_prepare_v2) prepare_device=nullptr;
     decltype(&quactlize_kpack_run_v1) run=nullptr;
+    decltype(&quactlize_kpack_prepare_dynamic_v1) prepare_dynamic=nullptr;
+    decltype(&quactlize_kpack_run_dynamic_v1) run_dynamic=nullptr;
+    decltype(&quactlize_kpack_decode_dense_prepare_dynamic_v1) prepare_dense_dynamic=nullptr;
+    decltype(&quactlize_kpack_decode_dense_run_dynamic_v1) run_dense_dynamic=nullptr;
     decltype(&quactlize_kpack_destroy_v1) destroy=nullptr;
     decltype(&quactlize_kpack_decode_dense_query_v1) query_dense_io=nullptr;
     decltype(&quactlize_kpack_decode_dense_prepare_v1) prepare_dense_io=nullptr;
@@ -127,6 +131,8 @@ struct Runtime {
 struct Handle {
     std::shared_ptr<Module> module;
     void* inner=nullptr;
+    bool dynamic=false;
+    int endpoint_type=0;
     ~Handle() { if (inner) module->destroy(inner); }
 };
 struct MoeChain {
@@ -377,6 +383,10 @@ std::shared_ptr<Module> load(Runtime& r,Image const& image,Config const& c,bool 
             " previous_compute_units="+std::to_string(r.cu));
     r.device=device; r.cu=cu;
     if (dense_io) {
+        module->prepare_dense_dynamic=reinterpret_cast<decltype(module->prepare_dense_dynamic)>(
+            dlsym(module->library,"quactlize_kpack_decode_dense_prepare_dynamic_v1"));
+        module->run_dense_dynamic=reinterpret_cast<decltype(module->run_dense_dynamic)>(
+            dlsym(module->library,"quactlize_kpack_decode_dense_run_dynamic_v1"));
         module->query_dense_io=symbol<decltype(module->query_dense_io)>(module->library,"quactlize_kpack_decode_dense_query_v1");
         module->prepare_dense_io=symbol<decltype(module->prepare_dense_io)>(module->library,"quactlize_kpack_decode_dense_prepare_v1");
         module->run=symbol<decltype(module->run)>(module->library,"quactlize_kpack_decode_dense_run_v1");
@@ -386,6 +396,10 @@ std::shared_ptr<Module> load(Runtime& r,Image const& image,Config const& c,bool 
             module->prepare_dense_compute=symbol<decltype(module->prepare_dense_compute)>(module->library,"quactlize_kpack_decode_dense_prepare_v2");
         }
     } else {
+    module->prepare_dynamic=reinterpret_cast<decltype(module->prepare_dynamic)>(
+        dlsym(module->library,"quactlize_kpack_prepare_dynamic_v1"));
+    module->run_dynamic=reinterpret_cast<decltype(module->run_dynamic)>(
+        dlsym(module->library,"quactlize_kpack_run_dynamic_v1"));
     module->query=symbol<decltype(module->query)>(module->library,"quactlize_kpack_query_v1");
     module->prepare=symbol<decltype(module->prepare)>(module->library,"quactlize_kpack_prepare_v1");
     module->query_device=symbol<decltype(module->query_device)>(module->library,"quactlize_kpack_grouped_query_v2");
@@ -791,7 +805,49 @@ extern "C" int quactlize_kpack_dispatch_prepare_compute_v2(void* runtime,qks_cho
 extern "C" int quactlize_kpack_dispatch_run_v1(void* handle,void* stream) {
     if (!handle) return QKS_INVALID;
     auto& h=*static_cast<Handle*>(handle);
+    if (h.dynamic) return QKS_INVALID;
     return h.module->run(h.inner,stream)==QK_OK ? QKS_OK : QKS_RUNTIME;
+}
+extern "C" int quactlize_kpack_dispatch_prepare_dynamic_v1(void* runtime,qks_choice_v1 const* choice,void** out) {
+    if (!out) return QKS_INVALID;
+    *out=nullptr;
+    if (!runtime || !choice) return QKS_INVALID;
+    try {
+        auto& r=*static_cast<Runtime*>(runtime);
+        std::lock_guard<std::mutex> lock(r.mutex);
+        if (!choice->ticket || choice->ticket>r.plans.size()) return QKS_INVALID;
+        auto const& plan=r.plans.at(choice->ticket-1);
+        if (!same_choice(*choice,plan.choice)) return QKS_INVALID;
+        if (plan.request.route>=QK_GROUPED_FQ) {
+            last_error="dynamic dense execution does not accept grouped tickets";return QKS_MISS;
+        }
+        auto m=plan.module;
+        if (plan.endpoint_type ? !m->prepare_dense_dynamic || !m->run_dense_dynamic :
+                                 !m->prepare_dynamic || !m->run_dynamic) {
+            last_error="selected parent lacks dynamic execution ABI; rebuild that parent and dispatcher";
+            return QKS_BINDING;
+        }
+        auto h=std::make_unique<Handle>();h->module=m;h->dynamic=true;h->endpoint_type=plan.endpoint_type;
+        auto call=call_for(plan.request,r);
+        qkd_dense_call_v2 typed{2,sizeof(typed),{1,sizeof(qkd_dense_call_v1),call,plan.endpoint_type,plan.endpoint_type},plan.compute_type};
+        int rc=plan.endpoint_type ? m->prepare_dense_dynamic(&typed,&plan.recipe,&h->inner) :
+                                   m->prepare_dynamic(&call,&plan.recipe,&h->inner);
+        if (rc!=QK_OK || !h->inner) {
+            last_error="selected dynamic plan preparation failed rc="+std::to_string(rc);
+            return rc==QK_INVALID ? QKS_INVALID : QKS_RUNTIME;
+        }
+        *out=h.release();return QKS_OK;
+    } catch (std::exception const& e) {last_error=e.what();return QKS_RUNTIME;}
+}
+extern "C" int quactlize_kpack_dispatch_run_dynamic_v1(void* handle,qk_call_v1 const* call) {
+    if (!handle || !call) return QKS_INVALID;
+    auto const& h=*static_cast<Handle const*>(handle);
+    if (!h.dynamic) return QKS_INVALID;
+    qkd_dense_call_v2 typed{2,sizeof(typed),{1,sizeof(qkd_dense_call_v1),*call,h.endpoint_type,h.endpoint_type},h.module->compute_type};
+    int rc=h.endpoint_type ? h.module->run_dense_dynamic(h.inner,&typed) : h.module->run_dynamic(h.inner,call);
+    if (rc==QK_OK) return QKS_OK;
+    last_error="dynamic selected launch failed rc="+std::to_string(rc);
+    return rc==QK_INVALID ? QKS_INVALID : QKS_RUNTIME;
 }
 extern "C" int quactlize_kpack_dispatch_bind_llama_indexed_v1(void* handle,qk_llama_indexed_v1 const* io) {
     if (!handle || !io) return QKS_INVALID;

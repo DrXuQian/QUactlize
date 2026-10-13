@@ -43,6 +43,8 @@ def build(sdk,output,jobs):
     symbols=subprocess.check_output(['nm','-D','--defined-only',str(lib)],text=True)
     for name in ('query','prepare','run','destroy','error','device_status','provider_image'):
         if f'quactlize_kpack_prefill_{name}_v1' not in symbols:raise ValueError('missing prefill ABI')
+    for name in ('query','prepare','run','device_status'):
+        if f'quactlize_kpack_prefill_{name}_dynamic_v1' not in symbols:raise ValueError('missing dynamic prefill ABI')
     manifest=dict(schema='quactlize.prefill-runtime.v1',library=lib.name,sha256=sha(lib),source_hashes=inputs,
         runtime={f'lib{x}.so':sha(sdk/'lib'/f'lib{x}.so') for x in LIBRARIES},compiler_sha256=sha(sdk/'bin/hgcc'),
         commands=commands,seconds=time.monotonic()-start,device_admission='PENDING_COMPOSED_RUNTIME')

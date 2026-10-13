@@ -46,6 +46,14 @@ void quactlize_kpack_decode_dense_destroy_v1(void*);
 qkd_compute_identity_v2 const* quactlize_kpack_decode_dense_identity_v2(void);
 int quactlize_kpack_decode_dense_query_v2(qkd_dense_call_v2 const*,qk_recipe_v1 const*,qk_resources_v1*);
 int quactlize_kpack_decode_dense_prepare_v2(qkd_dense_call_v2 const*,qk_recipe_v1 const*,void**);
+// Shape-only preparation and per-launch full-call execution. Same M1..8,
+// precision and endpoint contract as v2; no new numerical conversion or
+// clamping. Pointer fields must be NULL at prepare, except the capture-check
+// stream. Run may change every buffer and stream, but not shape/precision.
+// Immutable plans are shareable across streams with disjoint live scratch.
+// No allocation/JIT/occupancy query/synchronization in run; use destroy_v1.
+int quactlize_kpack_decode_dense_prepare_dynamic_v1(qkd_dense_call_v2 const*,qk_recipe_v1 const*,void**);
+int quactlize_kpack_decode_dense_run_dynamic_v1(void*,qkd_dense_call_v2 const*);
 // v2 prepared handles retain the existing run_v1/destroy_v1 lifecycle. A
 // BF16-compute module rejects v1 query/prepare instead of changing v1 math.
 #ifdef __cplusplus

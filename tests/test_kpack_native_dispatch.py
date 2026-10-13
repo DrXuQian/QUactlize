@@ -235,7 +235,7 @@ def build_stub(
     assert parts[0] != "MISS"
     symbol = parts[0]
     q, route, tm, tn, tk, wm, wn, stages, ap, dn = map(int, parts[1:11])
-    mapping = 0x51344B5034540001 if q == 12 else 0x514B504B54000001
+    mapping = 0x51384B5032540001 if q == 8 else 0x51344B5034540001 if q == 12 else 0x514B504B54000001
     key = "a" * 64
     module = tmp / "modules" / key
     module.mkdir(parents=True)

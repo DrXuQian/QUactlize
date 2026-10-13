@@ -101,6 +101,17 @@ int quactlize_kpack_query_v1(qk_call_v1 const*, qk_recipe_v1 const*, qk_resource
 int quactlize_kpack_prepare_v1(qk_call_v1 const*, qk_recipe_v1 const*, void**);
 // Includes the grouped directory build or dense Split-K reducer when needed.
 int quactlize_kpack_run_v1(void*, void* stream);
+// Dense-only additive lifecycle. Prepare stores geometry/recipe, not buffers;
+// all pointer fields in shape must be NULL (stream is used only to check that
+// preparation is outside capture). Run accepts a complete current call, with
+// the SAME geometry/device/layout. FQ, SF and Q8 retain their original FP16
+// storage and arithmetic; SF expansion remains the caller's responsibility.
+// Run builds private launch parameters on the stack: no allocation, JIT,
+// occupancy query, handle mutation or synchronization. Concurrent streams
+// require disjoint output/workspace; retain them through graph/device use.
+// Dynamic handles use destroy_v1; run_v1 rejects them. Grouped is unsupported.
+int quactlize_kpack_prepare_dynamic_v1(qk_call_v1 const* shape, qk_recipe_v1 const*, void**);
+int quactlize_kpack_run_dynamic_v1(void*, qk_call_v1 const*);
 // Caller must complete work using the handle before destroy/reusing workspace.
 void quactlize_kpack_destroy_v1(void*);
 int quactlize_kpack_measure_v1(void*, void* stream, int repeats, double* microseconds);

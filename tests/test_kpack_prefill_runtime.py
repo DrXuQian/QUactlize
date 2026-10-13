@@ -37,14 +37,15 @@ int main() {
 
 def test_full_bf16_provider_keeps_measured_abi_and_no_hot_path_compiler():
     source=(ROOT/'quactlize/prefill/runtime.cpp').read_text()
-    run=source.split('extern "C" int quactlize_kpack_prefill_run_v1(')[1].split('extern "C" void')[0]
+    run=source.split('static int run_prefill(')[1].split('extern "C" int quactlize_kpack_prefill_run_v1')[0]
     for forbidden in ('posix_spawn','hggcMalloc','hggcMemcpy','hggcStreamSynchronize','dlopen','prewarm('):
         assert forbidden not in run
     assert 'quactlize_kpack_dequant_indexed_v1' in run
     assert 'base+h.layout.rows' in run and 'base+h.layout.directory' in run
     assert 'h.gemm(h.blas,1,0,w.n,c.m,w.k' in run
     assert 'base+h.layout.out,14,w.n,68,-1' in run
-    assert 'cublasSetWorkspace' not in source
+    # Only the additive dynamic plan resolves explicit cuBLAS workspace.
+    assert 'if (h.dynamic) h.workspace=' in source
 
 
 def test_prefill_sync_only_updates_documented_public_includes(tmp_path):

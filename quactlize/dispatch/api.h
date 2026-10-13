@@ -151,6 +151,17 @@ int quactlize_kpack_dispatch_prepare_dense_io_v2(void* runtime,qks_choice_v1 con
 int quactlize_kpack_dispatch_prepare_v1(void* runtime, qks_choice_v1 const*,
                                      qk_call_v1 const*, void** handle);
 int quactlize_kpack_dispatch_run_v1(void* handle, void* stream);
+// Additive dense execution of the EXACT query ticket (including matched TC,
+// endpoint precision, algorithm and Split-K). Prepare takes no data pointers.
+// Native queries retain FP16 storage; typed queries retain their declared
+// F32/BF16 endpoints and compute type. SF scale/zero are supplied per call.
+// No shape or precision change, implicit fallback, prepare/JIT/allocation or
+// synchronization in run. Different buffers/streams are accepted; concurrent
+// calls must have disjoint live output/workspace. Grouped tickets decline.
+// Old modules without these exports report QKS_BINDING: rebuild the selected
+// parent, never silently substitute another tactic. Use destroy_v1 to release.
+int quactlize_kpack_dispatch_prepare_dynamic_v1(void* runtime,qks_choice_v1 const*,void**);
+int quactlize_kpack_dispatch_run_dynamic_v1(void* handle,qk_call_v1 const*);
 // Optional, once-per-handle adapter binding, outside capture. A miss leaves
 // the handle unchanged and requires the unfused caller's preparation path.
 int quactlize_kpack_dispatch_bind_llama_indexed_v1(void*,qk_llama_indexed_v1 const*);

@@ -1,4 +1,5 @@
 #include "layout.hpp"
+#include "dynamic.hpp"
 #include "../dequant/indexed.h"
 #include <hggc_runtime.h>
 #include <dlfcn.h>
@@ -115,8 +116,35 @@ struct Handle {
     int(*stream)(void*,void*)=nullptr;
     using Gemm=int(*)(void*,int,int,int,int,int,void const*,void const*,int,int,void const*,int,int,void const*,void*,int,int,int,int);
     Gemm gemm=nullptr;
+    bool dynamic=false;
+    std::mutex blas_mutex;
+    int(*workspace)(void*,void*,size_t)=nullptr;
     ~Handle() {if (blas && destroy) destroy(blas);}
 };
+
+int prepare_provider(Handle& h,qkp_call_v1 const& c,qkp_options_v1 const& o) {
+    hggcStreamCaptureStatus capture;
+    check(hggcStreamIsCapturing(static_cast<hggcStream_t>(c.weight.stream),&capture),"capture query");
+    if (capture!=hggcStreamCaptureStatusNone) return QKG_INVALID;
+    int device=-1;check(hggcGetDevice(&device),"device query");
+    hggcDeviceProp prop{};check(hggcGetDeviceProperties(&prop,device),"device properties");
+    int sms=0;check(hggcDeviceGetAttribute(&sms,hggcDevAttrMultiProcessorCount,device),"SM attribute");
+    if (device!=c.device || sms!=72 || !std::strstr(prop.name,"PPU-ZW810")) return QKG_INVALID;
+    if (c.weight.experts>1) h.dg=deep(c,o,h.layout);
+    else {
+        auto path=std::filesystem::path(o.sdk)/"CUDA_SDK/targets/x86_64-linux/lib/libcublas.so";
+        h.blas_lib=std::make_shared<Library>(path.string());
+        auto create=entry<int(*)(void**)>(h.blas_lib->so,"cublasCreate_v2");
+        h.destroy=entry<decltype(h.destroy)>(h.blas_lib->so,"cublasDestroy_v2");
+        h.stream=entry<decltype(h.stream)>(h.blas_lib->so,"cublasSetStream_v2");
+        h.gemm=entry<Handle::Gemm>(h.blas_lib->so,"cublasGemmEx");
+        if (h.dynamic) h.workspace=entry<decltype(h.workspace)>(h.blas_lib->so,"cublasSetWorkspace_v2");
+        check(create(&h.blas),"cuBLAS create");
+        check(entry<int(*)(void*,int)>(h.blas_lib->so,"cublasSetMathMode")(h.blas,16),"cuBLAS FP32 reduction");
+        check(h.stream(h.blas,c.weight.stream),"cuBLAS stream");
+    }
+    return QKG_OK;
+}
 }
 
 extern "C" int quactlize_kpack_prefill_query_v1(qkp_call_v1 const* c,
@@ -157,35 +185,14 @@ extern "C" int quactlize_kpack_prefill_prepare_v1(qkp_call_v1 const* c,
             for (int j=0;j<i;++j)
                 if (quactlize::execution::overlap(pointers[i],lengths[i],pointers[j],lengths[j])) return QKG_INVALID;
         }
-        hggcStreamCaptureStatus capture;
-        check(hggcStreamIsCapturing(static_cast<hggcStream_t>(c->weight.stream),&capture),"capture query");
-        if (capture!=hggcStreamCaptureStatusNone) return QKG_INVALID;
-        int device=-1;check(hggcGetDevice(&device),"device query");
-        hggcDeviceProp prop{};check(hggcGetDeviceProperties(&prop,device),"device properties");
-        int sms=0;check(hggcDeviceGetAttribute(&sms,hggcDevAttrMultiProcessorCount,device),"SM attribute");
-        if (device!=c->device || sms!=72 || !std::strstr(prop.name,"PPU-ZW810")) return QKG_INVALID;
         h->call=*c;h->arr=*arr;
-        if (c->weight.experts>1) h->dg=deep(*c,*o,h->layout);
-        else {
-            auto path=std::filesystem::path(o->sdk)/"CUDA_SDK/targets/x86_64-linux/lib/libcublas.so";
-            h->blas_lib=std::make_shared<Library>(path.string());
-            auto create=entry<int(*)(void**)>(h->blas_lib->so,"cublasCreate_v2");
-            h->destroy=entry<decltype(h->destroy)>(h->blas_lib->so,"cublasDestroy_v2");
-            h->stream=entry<decltype(h->stream)>(h->blas_lib->so,"cublasSetStream_v2");
-            h->gemm=entry<Handle::Gemm>(h->blas_lib->so,"cublasGemmEx");
-            check(create(&h->blas),"cuBLAS create");
-            check(entry<int(*)(void*,int)>(h->blas_lib->so,"cublasSetMathMode")(h->blas,16),"cuBLAS FP32 reduction");
-            check(h->stream(h->blas,c->weight.stream),"cuBLAS stream");
-        }
+        int rc=prepare_provider(*h,*c,*o);if (rc) return rc;
         *result=h.release();error.clear();return 0;
     } catch (std::exception const& e) {error=e.what();return QKG_RUNTIME;}
 }
-extern "C" int quactlize_kpack_prefill_run_v1(void* handle,void* stream) {
+static int run_prefill(Handle& h,qkp_call_v1 c) {
     try {
-        if (!handle) return QKG_INVALID;
-        auto& h=*static_cast<Handle*>(handle);auto c=h.call;
-        // Stream and scratch are immutable for a prepared cuBLAS handle.
-        if (stream!=c.weight.stream) return QKG_INVALID;
+        auto stream=c.weight.stream;
         auto base=static_cast<uint8_t*>(c.workspace);
         check(qkp_stage_prepare(&c,&h.layout,stream),"prefill input");
         auto w=c.weight;w.output=base+h.layout.weights;w.zero=nullptr;
@@ -200,6 +207,14 @@ extern "C" int quactlize_kpack_prefill_run_v1(void* handle,void* stream) {
         } else {
             check(quactlize_kpack_dequant_v1(&w,&h.arr),"weight expansion");
             float alpha=1,beta=0;
+            std::unique_lock<std::mutex> lock(h.blas_mutex,std::defer_lock);
+            if (h.dynamic) {
+                lock.lock();
+                // Setting the stream resets cuBLAS workspace: set BOTH on
+                // every enqueue. Distinct streams never share device scratch.
+                check(h.stream(h.blas,stream),"cuBLAS dynamic stream");
+                check(h.workspace(h.blas,base+h.layout.bytes,blas_workspace_bytes),"cuBLAS dynamic workspace");
+            }
             // Row-major A[M,K] * B[N,K]^T, BF16 A/B/output, FP32 compute.
             check(h.gemm(h.blas,1,0,w.n,c.m,w.k,&alpha,w.output,14,w.k,
                 base+h.layout.a,14,w.k,&beta,base+h.layout.out,14,w.n,68,-1),"cuBLAS BF16 GEMM");
@@ -207,10 +222,55 @@ extern "C" int quactlize_kpack_prefill_run_v1(void* handle,void* stream) {
         return qkp_stage_finish(&c,&h.layout,stream);
     } catch (std::exception const& e) {error=e.what();return QKG_RUNTIME;}
 }
+extern "C" int quactlize_kpack_prefill_run_v1(void* handle,void* stream) {
+    if (!handle) return QKG_INVALID;
+    auto& h=*static_cast<Handle*>(handle);
+    if (h.dynamic || stream!=h.call.weight.stream) return QKG_INVALID;
+    return run_prefill(h,h.call);
+}
+extern "C" int quactlize_kpack_prefill_query_dynamic_v1(qkp_call_v1 const* c,
+    quactlize_ppu_placed_arrangement_v2 const* arr,uint64_t* bytes) {
+    if (!c || !bytes) return QKG_INVALID;
+    int rc=quactlize_kpack_prefill_query_v1(c,arr,bytes);
+    if (rc==QKG_OK && c->weight.experts==1) *bytes+=blas_workspace_bytes;
+    return rc;
+}
+extern "C" int quactlize_kpack_prefill_prepare_dynamic_v1(qkp_call_v1 const* c,
+    quactlize_ppu_placed_arrangement_v2 const* arr,qkp_options_v1 const* o,void** out) {
+    if (!out) return QKG_INVALID;
+    *out=nullptr;
+    try {
+        if (!c || !o || o->version!=1 || o->size!=sizeof(*o) || !o->sdk ||
+            !std::filesystem::path(o->sdk).is_absolute() || !address_free(*c)) return QKG_INVALID;
+        auto h=std::make_unique<Handle>();
+        int rc=layout(*c,arr,h->layout);if (rc) return rc;
+        h->call=*c;h->call.weight.stream=nullptr;h->arr=*arr;h->dynamic=true;
+        rc=prepare_provider(*h,*c,*o);if (rc) return rc;
+        *out=h.release();error.clear();return QKG_OK;
+    } catch (std::exception const& e) {error=e.what();return QKG_RUNTIME;}
+}
+extern "C" int quactlize_kpack_prefill_run_dynamic_v1(void* handle,qkp_call_v1 const* c) {
+    if (!handle || !c) return QKG_INVALID;
+    auto& h=*static_cast<Handle*>(handle);
+    if (!h.dynamic || !same_shape(*c,h.call)) return QKG_INVALID;
+    int rc=validate_buffers(*c,h.arr,dynamic_bytes(*c,h.layout));
+    return rc ? rc : run_prefill(h,*c);
+}
+extern "C" int quactlize_kpack_prefill_device_status_dynamic_v1(void* handle,qkp_call_v1 const* c,int32_t const** out) {
+    if (!out) return QKG_INVALID;
+    *out=nullptr;
+    if (!handle || !c) return QKG_INVALID;
+    auto const& h=*static_cast<Handle*>(handle);
+    if (!h.dynamic || !same_shape(*c,h.call)) return QKG_INVALID;
+    int rc=validate_buffers(*c,h.arr,dynamic_bytes(*c,h.layout));if (rc) return rc;
+    *out=reinterpret_cast<int32_t const*>(static_cast<uint8_t*>(c->workspace)+h.layout.error);
+    return QKG_OK;
+}
 extern "C" void quactlize_kpack_prefill_destroy_v1(void* p) {delete static_cast<Handle*>(p);}
 extern "C" int quactlize_kpack_prefill_device_status_v1(void* p,int32_t const** status) {
     if (!p || !status) return QKG_INVALID;
     auto& h=*static_cast<Handle*>(p);
+    if (h.dynamic) return QKG_INVALID;
     *status=reinterpret_cast<int32_t const*>(static_cast<uint8_t*>(h.call.workspace)+h.layout.error);
     return 0;
 }

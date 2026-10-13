@@ -5,6 +5,7 @@
 #include "indexed.cuh"
 #include "moe_chain.cuh"
 #include "compute_reducer.cuh"
+#include "dense_dynamic.cuh"
 #include <algorithm>
 #include <limits>
 #include <memory>
@@ -95,6 +96,7 @@ inline int validate(qk_call_v1 const& c, qk_recipe_v1 const& r, int& max_rows, i
 
 struct Handle {
   virtual int run(hggcStream_t) = 0;
+  virtual int run_dynamic(qk_call_v1 const&) const { return QK_UNSUPPORTED; }
   virtual int bind_indexed(qk_llama_indexed_v1 const&) { return QK_UNSUPPORTED; }
   virtual int moe_projection(qk_moe_projection_v1&) { return QK_UNSUPPORTED; }
   virtual int moe_stage(qk_moe_plan_v1 const&,int,hggcStream_t) { return QK_UNSUPPORTED; }
@@ -139,6 +141,17 @@ template<class T> struct DenseHandle final : Handle {
 };
 
 using Dense = DenseTypes<qtype,QK_TM,QK_TN,QK_TK,QK_WM,QK_WN,QK_STAGES,QK_AP,QK_DN>;
+template<class T> struct DynamicDenseHandle final : Handle {
+  qk_call_v1 shape{};
+  qk_recipe_v1 recipe{};
+  qk_resources_v1 resources{};
+  int run(hggcStream_t) override { return QK_INVALID; }
+  int run_dynamic(qk_call_v1 const& c) const override {
+    if (!same_dense_shape(c,shape) ||
+        !dense_buffers(c,resources.workspace_bytes,F::spec.high_bits!=0,needs_zero)) return QK_INVALID;
+    return run_dense_dynamic<T>(c,recipe,resources.occupancy);
+  }
+};
 template<bool P, class O = GroupCompute, bool Compact = false>
 using Group = GroupedTypes<qtype,QK_TM,QK_TN,QK_TK,QK_WM,QK_WN,QK_STAGES,QK_DN,P,O,Compact,GroupCompute,GroupMetadata>;
 
@@ -531,6 +544,29 @@ extern "C" int quactlize_kpack_prepare_v1(qk_call_v1 const* c,qk_recipe_v1 const
 extern "C" int quactlize_kpack_run_v1(void* handle,void* stream) {
   if (!handle) return QK_INVALID;
   return static_cast<quactlize::runtime::Handle*>(handle)->run(static_cast<hggcStream_t>(stream));
+}
+extern "C" int quactlize_kpack_prepare_dynamic_v1(qk_call_v1 const* c,qk_recipe_v1 const* r,void** out) {
+  using namespace quactlize::runtime;
+  if (!out) return QK_INVALID;
+  *out=nullptr;
+  if constexpr (grouped) { return QK_UNSUPPORTED; } else {
+  if (!c || !r || !address_free(*c)) return QK_INVALID;
+  hggcStreamCaptureStatus capture;
+  if (hggcStreamIsCapturing(static_cast<hggcStream_t>(c->stream),&capture)!=hggcSuccess) return QK_RUNTIME_ERROR;
+  if (capture!=hggcStreamCaptureStatusNone) return QK_UNSUPPORTED;
+  qk_resources_v1 resources{};
+  int rc=quactlize_kpack_query_v1(c,r,&resources);
+  if (rc) return rc;
+  try {
+    auto h=std::make_unique<DynamicDenseHandle<Dense>>();
+    h->shape=*c;h->shape.stream=nullptr;h->recipe=*r;h->resources=resources;
+    *out=h.release();return QK_OK;
+  } catch (...) { return QK_RUNTIME_ERROR; }
+  }
+}
+extern "C" int quactlize_kpack_run_dynamic_v1(void* handle,qk_call_v1 const* c) {
+  if (!handle || !c) return QK_INVALID;
+  return static_cast<quactlize::runtime::Handle const*>(handle)->run_dynamic(*c);
 }
 
 extern "C" int quactlize_kpack_bind_llama_indexed_v1(void* handle,qk_llama_indexed_v1 const* io) {

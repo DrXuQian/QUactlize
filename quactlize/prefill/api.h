@@ -45,6 +45,24 @@ int quactlize_kpack_prefill_query_v1(qkp_call_v1 const*,
 int quactlize_kpack_prefill_prepare_v1(qkp_call_v1 const*,
     quactlize_ppu_placed_arrangement_v2 const*, qkp_options_v1 const*, void**);
 int quactlize_kpack_prefill_run_v1(void*, void* stream);
+// Additive address-free plan. query_dynamic includes a private 4 MiB cuBLAS
+// workspace for dense; the legacy query/layout is unchanged. Prepare accepts
+// only geometry/config/strides (all data pointers NULL), resolves the
+// provider outside capture, and retains no caller buffers. Run receives the
+// complete current call, including weight.stream, with unchanged geometry.
+// Different streams need disjoint live workspaces; a host mutex protects the
+// short cuBLAS configuration/enqueue sequence, never waiting for device work.
+// No JIT, allocation or device synchronization by this library in run. The
+// installed provider still requires an eager warmup before capture/timing.
+// Destroy with destroy_v1; legacy run/status reject dynamic plans. Graph
+// replay retains captured addresses, not whatever was passed to a later run.
+int quactlize_kpack_prefill_query_dynamic_v1(qkp_call_v1 const*,
+    quactlize_ppu_placed_arrangement_v2 const*,uint64_t* workspace_bytes);
+int quactlize_kpack_prefill_prepare_dynamic_v1(qkp_call_v1 const*,
+    quactlize_ppu_placed_arrangement_v2 const*,qkp_options_v1 const*,void**);
+int quactlize_kpack_prefill_run_dynamic_v1(void*,qkp_call_v1 const*);
+// Computes the status pointer in THIS call's workspace, without readback.
+int quactlize_kpack_prefill_device_status_dynamic_v1(void*,qkp_call_v1 const*,int32_t const**);
 // Resident status, reset on each run. Reading it on the host is optional and
 // requires caller synchronization; this accessor performs neither operation.
 int quactlize_kpack_prefill_device_status_v1(void*, int32_t const**);

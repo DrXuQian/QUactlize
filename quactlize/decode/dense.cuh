@@ -2,6 +2,7 @@
 #include "api.h"
 #include "types.cuh"
 #include "reducer.cuh"
+#include "../runtime/dynamic.hpp"
 #include <memory>
 #include <cstring>
 
@@ -37,6 +38,7 @@ inline int validate(qkd_dense_call_v1 const& d,qk_recipe_v1 const& r) {
 
 struct Handle {
   virtual int run(hggcStream_t)=0;
+  virtual int run_dynamic(qkd_dense_call_v2 const&) const { return QK_UNSUPPORTED; }
   virtual ~Handle()=default;
 };
 template<class Scalar> struct TypedHandle:Handle {
@@ -67,7 +69,7 @@ template<class Scalar> struct TypedHandle:Handle {
     return QK_OK;
   }
 
-  int prepare(qkd_dense_call_v1 const& d,qk_recipe_v1 const& r,int occupancy) {
+  int prepare(qkd_dense_call_v1 const& d,qk_recipe_v1 const& r,int occupancy,bool initialize=true) {
     auto const& c=d.call;auto stream=static_cast<hggcStream_t>(c.stream);
     typename T::Mainloop::Arguments ml{};
     ml.ptr_A=static_cast<Scalar const*>(c.a);
@@ -85,7 +87,8 @@ template<class Scalar> struct TypedHandle:Handle {
       typename Split::Arguments args{cutlass::gemm::GemmUniversalMode::kGemm,{c.m,c.n,c.k,1},ml,
           {partials,stride,partials,stride},r.split};
       if(Split::can_implement(args)!=cutlass::Status::kSuccess)return QK_UNSUPPORTED;
-      return split.initialize(args,nullptr,stream)==cutlass::Status::kSuccess?QK_OK:QK_INITIALIZE_ERROR;
+      auto status=initialize ? split.initialize(args,nullptr,stream) : split.update(args);
+      return status==cutlass::Status::kSuccess?QK_OK:QK_INITIALIZE_ERROR;
     }
     auto sc=cutlass::make_cute_packed_stride(typename Shipping::GemmKernel::StrideC{},cute::make_shape(c.m,c.n,1));
     auto sd=cutlass::make_cute_packed_stride(typename Shipping::GemmKernel::StrideD{},cute::make_shape(c.m,c.n,1));
@@ -95,12 +98,14 @@ template<class Scalar> struct TypedHandle:Handle {
           cutlass::KernelHardwareInfo{c.device,c.compute_units},{},occupancy,uint32_t(r.grid)};
       if(Persistent::can_implement(args)!=cutlass::Status::kSuccess)return QK_UNSUPPORTED;
       use_persistent=true;
-      return persistent.initialize(args,nullptr,stream)==cutlass::Status::kSuccess?QK_OK:QK_INITIALIZE_ERROR;
+      auto status=initialize ? persistent.initialize(args,nullptr,stream) : persistent.update(args);
+      return status==cutlass::Status::kSuccess?QK_OK:QK_INITIALIZE_ERROR;
     }
     typename Shipping::Arguments args{cutlass::gemm::GemmUniversalMode::kGemm,{c.m,c.n,c.k,1},ml,
         {{1.f,0.f},static_cast<Scalar*>(nullptr),sc,output,sd},1};
     if(Shipping::can_implement(args)!=cutlass::Status::kSuccess)return QK_UNSUPPORTED;
-    return shipping.initialize(args,nullptr,stream)==cutlass::Status::kSuccess?QK_OK:QK_INITIALIZE_ERROR;
+    auto status=initialize ? shipping.initialize(args,nullptr,stream) : shipping.update(args);
+    return status==cutlass::Status::kSuccess?QK_OK:QK_INITIALIZE_ERROR;
   }
 
   int run(hggcStream_t stream) override {
@@ -111,6 +116,24 @@ template<class Scalar> struct TypedHandle:Handle {
     switch(slices) { QKD_REDUCE(2);QKD_REDUCE(4);QKD_REDUCE(8);default:break; }
 #undef QKD_REDUCE
     return hggcGetLastError()==hggcSuccess?QK_OK:QK_RUNTIME_ERROR;
+  }
+};
+template<class Scalar> struct DynamicHandle final:Handle {
+  qkd_dense_call_v2 shape{};
+  qk_recipe_v1 recipe{};
+  qk_resources_v1 resources{};
+  int run(hggcStream_t) override { return QK_INVALID; }
+  int run_dynamic(qkd_dense_call_v2 const& d) const override {
+    auto const& c=d.dense.call;
+    if (d.version!=2 || d.size!=sizeof(d) || d.compute_type!=compute_type ||
+        d.dense.version!=1 || d.dense.size!=sizeof(d.dense) ||
+        d.dense.input_type!=shape.dense.input_type || d.dense.output_type!=shape.dense.output_type ||
+        !runtime::same_dense_shape(c,shape.dense.call) ||
+        !runtime::dense_buffers(c,resources.workspace_bytes,F::spec.high_bits!=0,!packed && QK_QTYPE!=8))
+      return QK_INVALID;
+    TypedHandle<Scalar> launch;
+    int rc=launch.prepare(d.dense,recipe,resources.occupancy,false);
+    return rc ? rc : launch.run(static_cast<hggcStream_t>(c.stream));
   }
 };
 } // namespace quactlize::decode
@@ -186,5 +209,25 @@ extern "C" int quactlize_kpack_decode_dense_prepare_v2(qkd_dense_call_v2 const* 
 }
 extern "C" int quactlize_kpack_decode_dense_run_v1(void* h,void* stream) {
   return h?static_cast<quactlize::decode::Handle*>(h)->run(static_cast<hggcStream_t>(stream)):QK_INVALID;
+}
+extern "C" int quactlize_kpack_decode_dense_prepare_dynamic_v1(qkd_dense_call_v2 const* d,
+    qk_recipe_v1 const* r,void** out) {
+  using namespace quactlize::decode;
+  if (!out) return QK_INVALID;
+  *out=nullptr;
+  if (!qkd_compute_matches(d) || !r || !quactlize::runtime::address_free(d->dense.call)) return QK_INVALID;
+  hggcStreamCaptureStatus capture;
+  if (hggcStreamIsCapturing(static_cast<hggcStream_t>(d->dense.call.stream),&capture)!=hggcSuccess) return QK_RUNTIME_ERROR;
+  if (capture!=hggcStreamCaptureStatusNone) return QK_UNSUPPORTED;
+  qk_resources_v1 resources{};int rc=qkd_query(&d->dense,r,&resources);if (rc) return rc;
+  try {
+    auto make=[&](auto* h) { h->shape=*d;h->shape.dense.call.stream=nullptr;h->recipe=*r;h->resources=resources;*out=h; };
+    if (d->dense.input_type==QKD_F32) make(new DynamicHandle<float>());
+    else make(new DynamicHandle<cutlass::bfloat16_t>());
+    return QK_OK;
+  } catch (...) { return QK_RUNTIME_ERROR; }
+}
+extern "C" int quactlize_kpack_decode_dense_run_dynamic_v1(void* h,qkd_dense_call_v2 const* d) {
+  return h && d ? static_cast<quactlize::decode::Handle const*>(h)->run_dynamic(*d) : QK_INVALID;
 }
 extern "C" void quactlize_kpack_decode_dense_destroy_v1(void* h) {delete static_cast<quactlize::decode::Handle*>(h);}

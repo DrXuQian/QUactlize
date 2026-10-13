@@ -157,6 +157,21 @@ class Dispatch:
             raise ValueError("native query: " + self.fn["error"]().decode())
         return choice
 
+    def prepare_dynamic(self, choice):
+        """Prepare the selected dense ticket without binding caller buffers."""
+        fn = self.lib.quactlize_kpack_dispatch_prepare_dynamic_v1
+        fn.argtypes, fn.restype = [C.c_void_p, C.POINTER(Choice), C.POINTER(C.c_void_p)], C.c_int
+        handle = C.c_void_p()
+        if fn(self.runtime, C.byref(choice), C.byref(handle)):
+            raise ValueError('dynamic prepare: ' + self.fn['error']().decode())
+        self.handles.append(handle)
+        return handle
+
+    def run_dynamic(self, handle, call):
+        fn = self.lib.quactlize_kpack_dispatch_run_dynamic_v1
+        fn.argtypes, fn.restype = [C.c_void_p, C.POINTER(Call)], C.c_int
+        return fn(handle, C.byref(call))
+
     def query_smallm(self, call, arrangement, compute_type=None):
         typed=call if compute_type is None else SimtCallV2(call,compute_type)
         fn=getattr(self.lib,'quactlize_kpack_dispatch_query_smallm_v'+('1' if compute_type is None else '2'))

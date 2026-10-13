@@ -39,6 +39,11 @@ unknown or incompatible descriptor instead of guessing a layout.
 | `third_party/actlize/` | Pinned PPU CUTLASS-3 implementation |
 | `dev/` | Develop-only derivations, negative controls, and experiments |
 
+For embedding a selected kernel without binding activation/output addresses,
+see the additive [dynamic dense execution ABI](docs/KPACK_DYNAMIC_EXECUTION.md).
+It preserves existing selectors and bound-handle APIs; PPU device admission
+is separate from host and compile-only checks.
+
 `dev/` is not product source and is deliberately excluded when product code
 is rebuilt on `main`.
 
