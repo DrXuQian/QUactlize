@@ -21,21 +21,29 @@ stage=precheck
 finish() {
     prefill_rc=$?
     trap - EXIT
+    if [[ -f "$prefill_run/measurement/summary.json" && -f "$prefill_run/measurement/authority.json" ]]; then
+        "$prefill_python" "$prefill_source/tools/pack_kpack_strategy_review.py" "$prefill_run"
+    else
     "$prefill_python" - "$prefill_run" "$prefill_rc" "$stage" <<'PY'
 from pathlib import Path
 import io,json,sys,tarfile,time
 root=Path(sys.argv[1]).resolve(strict=True)
-archive=Path(str(root)+'.'+str(time.time_ns())+'.results.tgz')
+archive=Path(str(root)+'.'+str(time.time_ns())+'.setup-errors.tgz')
 with tarfile.open(archive,'x:gz') as out:
     data=json.dumps(dict(runner_rc=int(sys.argv[2]),stage=sys.argv[3])).encode()
     entry=tarfile.TarInfo('runner-status.json');entry.size=len(data)
     out.addfile(entry,io.BytesIO(data))
-    for path in sorted(root.rglob('*')):
-        if (path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(root) and
-                path.suffix in ('.json','.txt','.log')):
-            out.add(path,arcname=path.relative_to(root),recursive=False)
+    paths=[root/'console.log',root/'measurement/counts.json']
+    paths+=sorted((root/'measurement').glob('*.log'))[-32:]
+    for path in paths:
+        if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(root):continue
+        with path.open('rb') as stream:
+            stream.seek(max(0,path.stat().st_size-65536));data=stream.read(65536)
+        name=str(path.relative_to(root))+('.tail.txt' if path.suffix=='.log' else '')
+        entry=tarfile.TarInfo(name);entry.size=len(data);out.addfile(entry,io.BytesIO(data))
 print('results='+str(archive),flush=True)
 PY
+    fi
     printf 'runner_rc=%s stage=%s\nCurrent Docker shell is preserved.\n' "$prefill_rc" "$stage"
     exit "$prefill_rc"
 }

@@ -49,13 +49,14 @@ def accuracy(data):
                 visit(child)
 
     visit(data.get('numerical', []))
-    out = select(data, 'correctness zero_input pointer_negatives omitted_producer')
+    out = select(data, 'correctness zero_input zero_a pointer_negatives omitted_producer '
+                       'changed_input_and_router mutable_count')
     out['checks'] = len(proofs)
     for field in ('bad', 'nonfinite', 'relative_l1_error'):
         values = [p[field] for p in proofs if field in p]
         if values:
             out[field + '_max'] = max(values)
-    for field in ('cells', 'tolerance'):
+    for field in ('cells', 'bits', 'tolerance', 'active_experts', 'inactive_experts_untouched'):
         out[field] = sorted({p[field] for p in proofs if field in p})
     return out
 
@@ -71,6 +72,7 @@ class Review:
         self.previous_components = set()
         self.previous_points = set()
         self.screens = set()
+        self.points = set()
         self.input_bytes = 0
 
     def emit(self, record_type, **value):
@@ -118,11 +120,27 @@ class Review:
         return value
 
     def proof(self, data):
+        execution = data.get('receipt')
+        if isinstance(execution, dict) and isinstance(execution.get('provider'), dict):
+            execution = dict(execution, provider=self.provider(execution['provider']))
         out = dict(accuracy=accuracy(data),
                    fixture=self.ref('fixture', data.get('fixture')),
-                   execution=self.ref('execution', data.get('receipt')))
-        out.update(select(data, 'components scope cost_scope wall_seconds'))
+                   execution=self.ref('execution', execution))
+        out.update(select(data, 'components scope cost_scope wall_seconds timed_router_sha256 '
+                               'timed_active_experts provider_loaded_images output_cache'))
         return out
+
+    def provider(self, value):
+        compact = {k:v for k,v in value.items() if k!='files'}
+        if 'files' in value:
+            compact.update(source_files_sha256=digest(value['files']), source_files_count=len(value['files']))
+        return self.ref('provider', compact)
+
+    def point(self, value):
+        pid = value.get('id', value.get('point'))
+        if pid not in self.points:
+            self.points.add(pid)
+            self.emit('point', id=pid, **select(value, 'workload status decision previous_screen reason issues'))
 
     def component(self, cid, data, phase, point=None):
         if not re.fullmatch('[0-9a-f]{64}', cid):
@@ -161,11 +179,13 @@ class Review:
         pid = data.get('point', data.get('id'))
         if pid in self.screens:
             return
+        self.point(data)
         self.screens.add(pid)
         row = select(data, 'status selection missing best_sf expansion_configs component_arms finalists '
-                           'measurement_origin previous_root previous_receipt')
+                           'measurement_origin previous_root previous_receipt best_helpers components '
+                           'scope excluded admission')
         self.emit('screen', point=pid, **row)
-        for keys in data.get('component_arms', {}).values():
+        for keys in data.get('component_arms', data.get('components', {})).values():
             self.needed.update(keys)
 
     def arm(self, row):
@@ -214,10 +234,11 @@ class Review:
                   authority_sha256=digest(authority),
                   authority=dict(resource=resource, harness_sha256=authority.get('harness', {}).get('sha256'),
                       **select(authority, 'plan body_source dequant oracle l2 idle protocol scope')),
-                  images={k: authority[k] for k in ('tc', 'vectors') if k in authority})
-        for p in summary.get('points', []):
+                  images={k: authority[k] for k in ('tc', 'vectors') if k in authority},
+                  providers={k:self.provider(v) for k,v in authority.get('providers', {}).items()})
+        for p in summary.get('points', []) + summary.get('blocked', []):
             pid = p.get('id', p.get('point'))
-            self.emit('point', id=pid, **select(p, 'workload status decision previous_screen reason issues'))
+            self.point(p)
             if p.get('previous_screen'):
                 self.previous_points.add(pid)
             if p.get('status') not in ('PASS', 'COMPLETE'):

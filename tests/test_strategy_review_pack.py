@@ -168,15 +168,16 @@ def test_standalone_copy_needs_no_repository_sdk_and_cannot_overwrite(tmp_path):
 
 
 @pytest.mark.parametrize('completed', [True, False])
-def test_campaign_finish_uses_small_review_or_bounded_setup_diagnostics(tmp_path, completed):
+@pytest.mark.parametrize('runner', ['campaign', 'prefill'])
+def test_campaign_finish_uses_small_review_or_bounded_setup_diagnostics(tmp_path, completed, runner):
     root,*_=fixture(tmp_path)
     if not completed:
         (root/'summary.json').rename(root/'missing-summary.json')
     source=Path(__file__).resolve().parents[1]
-    shell=(source/'tools/run_kpack_strategy_campaign_box.sh').read_text()
+    shell=(source/f'tools/run_kpack_strategy_{runner}_box.sh').read_text()
     finish=shell[shell.index('finish() {'):shell.index('trap finish EXIT')]
-    env=dict(os.environ,campaign_python=sys.executable,campaign_source=str(source),
-             campaign_run=str(root.parent),stage='test')
+    env=dict(os.environ,stage='test',**{runner+'_python':sys.executable,
+             runner+'_source':str(source),runner+'_run':str(root.parent)})
     result=subprocess.run(['bash','-c',finish+'\nfinish'],env=env,capture_output=True,text=True)
     assert result.returncode==0,result.stdout+result.stderr
     assert 'runner_rc=0 stage=test' in result.stdout
@@ -189,3 +190,37 @@ def test_campaign_finish_uses_small_review_or_bounded_setup_diagnostics(tmp_path
         with tarfile.open(paths[0]) as archive:
             assert all(m.size<=65536 for m in archive)
             assert not any('families/' in n or 'plan/' in n for n in archive.getnames())
+
+
+def test_large_m_cases_keep_workloads_components_and_active_dequant_proof(tmp_path):
+    root,pid,cid,_,_,arm=fixture(tmp_path)
+    # Prefill has per-case workloads, not a duplicated summary.points array.
+    (root/'screens').rename(root/'cases')
+    case=json.loads((root/'cases'/(pid+'.json')).read_text())
+    case['id']=case.pop('point');case['workload']['m']=128
+    case['components']=case.pop('component_arms')
+    case.update(best_helpers={'sf':5,'full_dequant':4},scope='ISOLATED',excluded=['TOPK'])
+    write(root/'cases'/(pid+'.json'),case)
+    write(root/'summary.json',dict(status='SCREEN_COMPLETE',passed=1,expected=2,
+        blocked=[dict(id='d'*64,reason='CONTROL_UNAVAILABLE')]))
+    provider=dict(provider='DEEPGEMM_INSTALLED',entry='bf16',files={'file':'DEEPGEMM_FULL_FILE_MAP_OMITTED'})
+    write(root/'authority.json',dict(providers={'grouped':provider}))
+    data=dict(correctness='PASS',components=[cid],mutable_count='PASS',
+              numerical=dict(bits=8192,bad=0,active_experts=12,inactive_experts_untouched=True),
+              receipt={'provider':provider},provider_loaded_images={'lib.so':'image-sha'},
+              output_cache='REUSED_OUTPUT_SEPARATE_FROM_ROTATING_BF16_PROVIDER_RING')
+    arm('e'*64,'PASS',['full_dequant'],data)
+    output=tmp_path/'review.xz';main([str(root),'--output',str(output)])
+    raw,records=unpack(output)
+    assert records[-1]['export_status']=='COMPLETE'
+    points={r['id']:r for r in records if r['type']=='point'}
+    assert points[pid]['workload']['m']==128 and points['d'*64]['reason']=='CONTROL_UNAVAILABLE'
+    assert any(r['type']=='failure' and r['point']=='d'*64 for r in records)
+    screen=next(r for r in records if r['type']=='screen')
+    assert screen['components']['original']==[cid] and screen['excluded']==['TOPK']
+    helper=next(r for r in records if r['type']=='arm' and r['id']=='e'*64)
+    assert helper['accuracy']['bits']==[8192] and helper['accuracy']['active_experts']==[12]
+    assert helper['accuracy']['inactive_experts_untouched']==[True]
+    assert helper['provider_loaded_images']=={'lib.so':'image-sha'}
+    assert b'DEEPGEMM_FULL_FILE_MAP_OMITTED' not in raw
+    assert len([r for r in records if r['type']=='definition' and r['table']=='provider'])==1
