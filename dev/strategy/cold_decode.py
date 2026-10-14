@@ -20,10 +20,14 @@ from quactlize.runtime.tuning import digest
 from tools.run_kpack_gemv_gate import Resources
 
 
-def ring_geometry(w, plane_bytes, l2_bytes, has_sf=False, *, metadata_only=False):
+def ring_geometry(w, plane_bytes, l2_bytes, has_sf=False, *, metadata_only=False, minimum_active=None):
     if type(l2_bytes) is not int or l2_bytes<=0:
         raise ValueError('verified positive L2 bytes required')
     active=w.experts if metadata_only else w.topk if w.operation=='indexed' else 1
+    if minimum_active is not None:
+        if metadata_only or type(minimum_active) is not int or not active<=minimum_active<=w.experts:
+            raise ValueError('invalid verified active-expert lower bound')
+        active=minimum_active
     packed=sum(plane_bytes.values())//w.experts*active
     # SF reads ONLY metadata. Size the ring for the SMALLEST actual read set,
     # not total allocated E weights or code planes an SF prepass never reads.
@@ -50,14 +54,14 @@ class Plane:
 
 
 class Ring:
-    def __init__(self,sdk,w,l2_bytes,has_sf=False,*,weights=None,metadata_only=False):
+    def __init__(self,sdk,w,l2_bytes,has_sf=False,*,weights=None,metadata_only=False,minimum_active=None):
         self.r=Resources(sdk);self.buffers=[];self.planes=[];self.objects=[]
         try:
             self.w=weights if weights is not None else Weights(w.qtype,w.n,w.k,w.experts)
             if (self.w.q,self.w.n,self.w.k,self.w.experts)!=(w.qtype,w.n,w.k,w.experts):
                 raise ValueError('shared fixture weight family differs')
             self.receipt=ring_geometry(w,{k:v.nbytes for k,v in self.w.planes.items()},l2_bytes,has_sf,
-                                       metadata_only=metadata_only)
+                                       metadata_only=metadata_only,minimum_active=minimum_active)
             self.copies=self.receipt['copies']
             self.receipt['fixture']=self.w.record
             bases={}

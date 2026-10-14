@@ -100,8 +100,9 @@ def stage_groups(descriptions, copies):
 
 
 class Captured:
-    def __init__(self, rt, calls):
+    def __init__(self, rt, calls, *, owned_graph=None, allocation_owner=None):
         self.rt, self.graph, self.params, self.descriptions = rt, C.c_void_p(), [], []
+        self.allocation_owner = allocation_owner
         signatures = {
             'GraphGetNodes': [C.c_void_p, C.POINTER(C.c_void_p), C.POINTER(C.c_size_t)],
             'GraphGetEdges': [C.c_void_p, C.POINTER(C.c_void_p), C.POINTER(C.c_void_p), C.POINTER(EdgeData), C.POINTER(C.c_size_t)],
@@ -118,17 +119,24 @@ class Captured:
                 raise RuntimeError('SDK lacks isolated-profile graph entry: ' + name) from e
             fn.argtypes, fn.restype = args, C.c_int
             setattr(self, name, fn)
-        rt.sync()
-        checked(rt.StreamBeginCapture(rt.stream, 0), 'untimed capture begin')
-        try:
-            for call in calls:
-                checked(call(), 'untimed production capture')
-        except BaseException:
-            # End invalidated capture to leave the stream releasable.
-            rt.StreamEndCapture(rt.stream, C.byref(self.graph))
-            self.close()
-            raise
-        checked(rt.StreamEndCapture(rt.stream, C.byref(self.graph)), 'untimed capture end')
+        if owned_graph is not None:
+            # Caller transfers a cloned graph and keeps its provider allocator
+            # alive. The clone owns parameters; allocation_owner owns storage.
+            if not owned_graph.value or allocation_owner is None:
+                raise ValueError('external graph needs a live allocation owner')
+            self.graph = owned_graph
+        else:
+            rt.sync()
+            checked(rt.StreamBeginCapture(rt.stream, 0), 'untimed capture begin')
+            try:
+                for call in calls:
+                    checked(call(), 'untimed production capture')
+            except BaseException:
+                # End invalidated capture to leave the stream releasable.
+                rt.StreamEndCapture(rt.stream, C.byref(self.graph))
+                self.close()
+                raise
+            checked(rt.StreamEndCapture(rt.stream, C.byref(self.graph)), 'untimed capture end')
         try:
             count = C.c_size_t()
             checked(self.GraphGetNodes(self.graph, None, C.byref(count)), 'node count')
@@ -175,6 +183,7 @@ class Captured:
         if self.graph.value:
             checked(self.rt.GraphDestroy(self.graph), 'destroy untimed capture')
             self.graph = C.c_void_p()
+        self.allocation_owner = None
 
 
 class Isolated:

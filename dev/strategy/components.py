@@ -33,9 +33,9 @@ def role(name):
         return 'expansion'
     if any(s in n for s in ('convert_rows', 'convert_flat', 'copy_rows', 'gather', 'scatter')):
         return 'adapter'
-    if any(s in n for s in ('metadata', 'moe_directory::build_kernel', 'moe_chain_prepare', 'mm_ids_helper', 'topk_moe', 'indexed_prepare')):
+    if any(s in n for s in ('metadata', 'moe_directory::build_kernel', 'moe_chain_prepare', 'mm_ids_helper', 'topk_moe', 'indexed_prepare', 'active_experts', 'computeblockinfokernel')):
         return 'prepare'
-    if any(s in n for s in ('swiglu', 'weighted_finish', 'indexed_finish')):
+    if any(s in n for s in ('swiglu', 'weighted_finish', 'indexed_finish', 'finish_bf16')):
         return 'postprocess'
     if any(s in n for s in ('gemm', 'gemv', 'register_reuse', 'q4_decode::kernel',
                             'q4_s1::', 'model_gemv::', 'simt::')):
@@ -69,12 +69,17 @@ def component_key(workload, recipe, node, *, authority, source, cache):
                         channels=w['channels'], experts=w['experts'],
                         partial_layout=node.get('partial_layout', 'EXACT_SYMBOL_CONTRACT'))
     elif kind == 'expansion':
-        # Do not remove M/router for active-only expansion. Dense expansion is
-        # weight-only; SF and full outputs have different symbols/precision.
+        # Active-only expansion retains M/router unless the caller binds its
+        # exact resident ID set. Dense and all-expert SF are weight-only.
+        domain = node.get('active_expert_ids')
+        if domain is not None and (not isinstance(domain, list) or not domain or
+                any(type(e) is not int or not 0<=e<w['experts'] for e in domain) or domain!=sorted(set(domain))):
+            raise ValueError('invalid explicit expansion expert domain')
         contract = dict(qtype=w['qtype'], n=w['n'], k=w['k'], experts=w['experts'],
                         compute=w['compute'], mapping=workload.mapping,
                         domain='ALL_DENSE_WEIGHTS' if w['operation'] == 'dense' else
-                               'ALL_EXPERTS' if node.get('expert_domain')=='ALL' else w)
+                               'ALL_EXPERTS' if node.get('expert_domain')=='ALL' else
+                               dict(active_expert_ids=domain) if domain is not None else w)
     elif kind == 'adapter' and w['operation'] == 'dense':
         # Kernel parameter columns/strides are not encoded in the symbol.
         # Conservatively retain both N/K; remove only the producer config.

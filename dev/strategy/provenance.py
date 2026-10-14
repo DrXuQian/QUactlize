@@ -9,7 +9,7 @@ def source_identity(root):
     root = Path(root)
     files = {}
     scopes = {
-        'dev/strategy': {'.py'},
+        'dev/strategy': {'.py', '.cpp', '.cu', '.h', '.hpp', '.cuh'},
         'tools': {'.py', '.sh'},
         'quactlize': {'.py', '.h', '.hpp', '.cuh', '.cpp', '.cu', '.inl', '.inc'},
         'policies': {'.json', '.hpp'},

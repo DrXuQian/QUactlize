@@ -1,5 +1,27 @@
 # PPU failure lessons
 
+Large-M component harness additions (2026-10-14, host validation only): do
+not extend a decode-only indexed binder by removing its M check. Use the
+general typed grouped endpoint with resident GPU offsets, retaining its real
+metadata/directory and reducer kernels. Time caller adapters separately and
+state whether creation of routing maps is outside scope. For indexed full
+dequant, reuse helper timings across M only for the exact same active ID set,
+original E-axis strides, precision, binary/source and cache protocol; SF's
+all-expert metadata expansion is a different domain. A family cold-ring bound
+can use the minimum active set across every declared correctness replay, but
+must assert that bound at runtime, not assume all experts are always active.
+
+Python JIT providers may allocate temporary directory tensors during graph
+capture. Extracting native kernel nodes without retaining the framework graph
+allocator can leave stale device pointers. The large-M harness captures with
+Torch, clones the graph before capture ends through a compiled SDK bridge,
+and retains the original graph/pool owner until extracted graphs are gone.
+CUDA permits operations on an active capture graph except destruction/node
+removal ([runtime contract](https://docs.nvidia.com/cuda/archive/12.4.1/cuda-runtime-api/group__CUDART__STREAM.html));
+this is an API/design basis, NOT proof of PPU runtime support or speed. Local
+ownership/ABI tests and HGCC object compilation do not replace the Box gate.
+Evidence seams: `dev/strategy/prefill_*`, `tests/test_strategy_prefill.py`.
+
 Use the category that matches the observation; these are not reasons to add
 every diagnostic to every kernel.
 
