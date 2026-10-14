@@ -16,7 +16,8 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from quactlize.runtime.compiler import Compiler, FLAGS, LIBRARIES, sha, source_contract
+from quactlize.runtime.compiler import (Compiler, FLAGS, LIBRARIES, HEADER_SUFFIXES,
+                                       sha, source_contract, validate_actlize_headers)
 from tools.build_kpack_pack import build as build_pack
 from tools.build_kpack_execution import build as build_execution
 from tools.build_kpack_prefill_runtime import build as build_prefill
@@ -52,13 +53,37 @@ def stage_jit(compiler, destination):
     files = {ROOT / name for name in JIT_PYTHON}
     for directory in compiler.includes:
         files.update(p for p in directory.rglob('*') if p.is_file() and
-                     p.suffix in ('.h', '.hpp', '.cuh', '.inc', '.inl'))
+                     p.suffix in HEADER_SUFFIXES)
     for directory in (ROOT, ROOT / 'third_party/actlize'):
         files.update(p for p in directory.iterdir() if p.is_file() and
                      p.name.lower().startswith(('license', 'copyright', 'notice')))
     for source in sorted(files):
         copy_relative(source, destination)
     return files
+
+
+def validate_actlize_checkout(root):
+    """No nested fetch: ncp/CI owns the authenticated dependency checkout."""
+    root = Path(root)
+    dependency = root / 'third_party/actlize'
+    if (root / '.git').exists():
+        expected = subprocess.check_output(
+            ['git', '-C', str(root), 'ls-tree', 'HEAD', 'third_party/actlize'], text=True).split()
+        if len(expected) != 4 or expected[:2] != ['160000', 'commit']:
+            raise ValueError('Quactlize HEAD has no third_party/actlize gitlink')
+        actual = subprocess.run(['git', '-C', str(dependency), 'rev-parse', 'HEAD'],
+                                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if actual.returncode or actual.stdout.strip() != expected[2]:
+            raise ValueError('actlize checkout differs from Quactlize gitlink: '
+                f'want={expected[2]} got={actual.stdout.strip() or "MISSING"}; '
+                'checkout the pinned commit with CI SSH credentials before building; '
+                'the library builder does not fetch or modify submodules')
+        dirty = subprocess.run(['git', '-C', str(dependency), 'diff', '--quiet', 'HEAD', '--',
+                                'include', 'tools/util/include', 'examples/common'])
+        if dirty.returncode:
+            raise ValueError('actlize JIT headers differ from its checked-out commit; '
+                             'use a clean pinned checkout, do not package modified vendor headers')
+    validate_actlize_headers(root)
 
 
 def verify(output):
@@ -77,6 +102,9 @@ def verify(output):
 
 
 def build(sdk, output, jobs):
+    # --library bypasses the legacy shell builder, including its gitlink guard.
+    # Fail here before any output directory or expensive device compilation.
+    validate_actlize_checkout(ROOT)
     sdk = sdk.resolve(strict=True)
     output = output.resolve()
     if jobs < 1:

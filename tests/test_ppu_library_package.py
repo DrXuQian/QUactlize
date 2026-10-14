@@ -3,9 +3,10 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import pytest
 
-from quactlize.runtime.compiler import Compiler, LIBRARIES, source_contract
-from tools.build_ppu_library import ROOT, stage_jit
+from quactlize.runtime.compiler import Compiler, LIBRARIES, source_contract, validate_actlize_headers
+from tools.build_ppu_library import ROOT, stage_jit, validate_actlize_checkout
 
 
 def test_jit_snapshot_has_the_same_source_identity_without_checkout(tmp_path):
@@ -28,6 +29,62 @@ def test_jit_snapshot_has_the_same_source_identity_without_checkout(tmp_path):
     subprocess.run([sys.executable, str(snapshot / 'tools/kpack_jit.py'), '--help'],
                    cwd=tmp_path, env=env, check=True, stdout=subprocess.PIPE)
     assert (snapshot / 'third_party/actlize/LICENSE.txt').is_file()
+    # Builder .inl files used to be copied but omitted from the fingerprint.
+    builder = snapshot / 'quactlize/include/actlize_extensions/cutlass/gemm/collective/builders/quactlize_mma_builder.inl'
+    builder.write_text(builder.read_text() + '\n// regression: changed builder\n')
+    changed = subprocess.check_output(command, cwd=snapshot, env=env, text=True).strip()
+    assert changed != actual
+
+
+def test_installed_snapshot_rejects_missing_bf16_atom_before_compiling(tmp_path):
+    import shutil
+    paths = ('cute/arch/mma_ppu0010.hpp', 'cute/atom/mma_traits_ppu0010.hpp',
+             'cutlass/gemm/config/gemm_operands.hpp')
+    for name in paths:
+        dst = tmp_path / 'third_party/actlize/include' / name
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / 'third_party/actlize/include' / name, dst)
+    validate_actlize_headers(tmp_path)
+    for name in paths:
+        dst = tmp_path / 'third_party/actlize/include' / name
+        original = dst.read_text()
+        dst.write_text(original.replace('PPU0010_8x16x16_F32BF16BF16F32_TN', 'OLD_HEADER_NO_BF16_M8'))
+        with pytest.raises(ValueError, match='incompatible actlize headers.*BF16 M8'):
+            validate_actlize_headers(tmp_path)
+        dst.write_text(original)
+
+
+def test_library_build_checks_exact_gitlink_and_dirty_vendor_headers(tmp_path):
+    import shutil
+    root = tmp_path / 'source'
+    vendor = root / 'third_party/actlize'
+    vendor.mkdir(parents=True)
+
+    def git(directory, *args):
+        return subprocess.check_output(['git', '-C', str(directory), '-c', 'user.name=Test',
+            '-c', 'user.email=test@example.invalid', *args], text=True).strip()
+
+    git(root, 'init', '-q')
+    git(vendor, 'init', '-q')
+    for name in ('cute/arch/mma_ppu0010.hpp', 'cute/atom/mma_traits_ppu0010.hpp',
+                 'cutlass/gemm/config/gemm_operands.hpp'):
+        dst = vendor / 'include' / name
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / 'third_party/actlize/include' / name, dst)
+    git(vendor, 'add', 'include')
+    git(vendor, 'commit', '-qm', 'vendor')
+    commit = git(vendor, 'rev-parse', 'HEAD')
+    git(root, 'update-index', '--add', '--cacheinfo', '160000', commit, 'third_party/actlize')
+    git(root, 'commit', '-qm', 'pin')
+    validate_actlize_checkout(root)
+    header = vendor / 'include/cute/arch/mma_ppu0010.hpp'
+    header.write_text(header.read_text() + '\n// dirty vendor\n')
+    with pytest.raises(ValueError, match='headers differ from its checked-out commit'):
+        validate_actlize_checkout(root)
+    git(vendor, 'add', 'include')
+    git(vendor, 'commit', '-qm', 'another vendor commit')
+    with pytest.raises(ValueError, match='checkout differs from Quactlize gitlink'):
+        validate_actlize_checkout(root)
 
 
 def test_exported_headers_need_no_private_source_include(tmp_path):

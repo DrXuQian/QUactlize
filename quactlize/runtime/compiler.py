@@ -46,6 +46,33 @@ FLAGS = [
     "-fPIC",
 ]
 LIBRARIES = ("hggc_wrapper", "hggcrt1", "hggc", "hg_wrapper")
+HEADER_SUFFIXES = frozenset((".h", ".hpp", ".cuh", ".inc", ".inl"))
+
+
+def validate_actlize_headers(root):
+    """Check the installed JIT closure too, where git metadata is absent.
+
+    Packed-A's layout assertions name BF16 M8 even in an FP16 compilation.
+    An old actlize snapshot therefore cannot compile any runtime parent.
+    This is a capability diagnostic, not a replacement for source hashes or
+    the build-time gitlink check, and never patches the dependency in place.
+    """
+    atom = "PPU0010_8x16x16_F32BF16BF16F32_TN"
+    required = {
+        "cute/arch/mma_ppu0010.hpp": rf"struct\s+{atom}\b",
+        "cute/atom/mma_traits_ppu0010.hpp": rf"MMA_Traits\s*<\s*{atom}\s*>",
+        "cutlass/gemm/config/gemm_operands.hpp": rf"\b{atom}\b",
+    }
+    include = Path(root) / "third_party/actlize/include"
+    for name, pattern in required.items():
+        path = include / name
+        if not path.is_file() or not re.search(pattern, path.read_text()):
+            raise ValueError(
+                f"incompatible actlize headers: {path} lacks BF16 M8 support ({atom}); "
+                "checkout the actlize gitlink pinned by Quactlize and rebuild/reinstall "
+                "the complete library plus quactlize-runtime/jit; do not replace only "
+                "an installed header or disable BF16 checks"
+            )
 
 
 def source_contract(identity):
@@ -116,6 +143,7 @@ class Compiler:
         if jobs < 1:
             raise ValueError("jobs must be positive")
         self.jobs = jobs
+        validate_actlize_headers(ROOT)
         sdk_files = [self.sdk / "bin/hgcc", self.sdk / "bin/hgobjdump"] + [
             self.sdk / "lib" / f"lib{name}.so" for name in LIBRARIES
         ]
@@ -136,7 +164,7 @@ class Compiler:
                 p
                 for directory in self.includes
                 for p in directory.rglob("*")
-                if p.is_file() and p.suffix in (".h", ".hpp", ".cuh", ".inc")
+                if p.is_file() and p.suffix in HEADER_SUFFIXES
             }
         )
         self.kernel_identity = digest(

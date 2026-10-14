@@ -35,6 +35,15 @@ and no dependency on the original checkout after installation. Relocate the
 public library and its sibling runtime directory together. The private JIT
 snapshot is required even though it is not part of the public include API.
 
+The library builder checks the actlize checkout against Quactlize's gitlink
+before compiling. CI owns SSH checkout; the builder never fetches or patches
+the dependency. Updating Quactlize without updating that checkout is rejected.
+Both source and installed JIT snapshots must provide the BF16 M8 atom, traits
+and operand selector (also referenced by FP16 packed-A layout assertions).
+Header fingerprints include `.inl` builders. A stale installed snapshot must
+be fixed by rebuilding/reinstalling the complete package, not by editing a
+header in place or weakening the JIT source check.
+
 ```sh
 python3 tools/build_ppu_library.py --verify --output /absolute/package
 ```
