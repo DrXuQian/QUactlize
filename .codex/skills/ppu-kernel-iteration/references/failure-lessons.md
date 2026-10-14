@@ -70,6 +70,21 @@ kernel are still needed before claiming L1 misses or dependency-wait cycles.
 Treat carveout as a controlled diagnostic, not a universal preset. Keep native
 PPU1.7 status separate. Evidence: `docs/ppu17-pdl-prefetch.md` (2026-10-01).
 
+In the ZW810 five-point cold-rule screen (IdVdoJoi, source9edbbf5), execution
+wall was984.89s, with about715s in the small dense Q4 point's110 arms. A cold
+SF prepass reads only64KiB of metadata, requiring2304 copies for2.25*64MiB L2;
+using that ring for every GEMM also multiplied handle/capture preparation.
+Keep an independent metadata-only ring for expansion and an active-packed
+ring for producers. Each still needs its own verified cold-read footprint;
+shrinking the SF ring using total packed bytes would falsely measure hot SF.
+This observation identifies harness work, not a kernel speedup or a measured
+speedup for the revised harness. Do not linearly project984s/406 to all shapes.
+Also distinguish a noisy losing screen arm from an unstable winner: an
+irrelevant slow outlier need not force resweeping every candidate. Retest
+competitive finalists and the actual incumbent in alternating rounds, keeping
+noisy candidates whose best rounds remain competitive. Raw archive SHA256:
+fc836f44dcc15a5603b3455e30bb116b89ee225c0c91c6a62f6256f74c274c20.
+
 ## Bounded fallback-rule audits (2026-10-14, host-only)
 
 When the task asks rules to recover old winners, hide the complete target N/K

@@ -29,7 +29,7 @@ def role(name):
     if any(s in n for s in ('reduction', 'reduce_decode', 'register_reuse_reduce')):
         return 'reducer'
     if any(s in n for s in ('dequant', 'sf_prepare', 'expand_scale', 'expand_metadata',
-                             'prepass_unit_kernel', 'sf_columns', 'sf_unit16')):
+                             'prepass_unit_kernel', 'sf_columns', 'sf_unit16', 'sf_bfloat_units')):
         return 'expansion'
     if any(s in n for s in ('convert_rows', 'convert_flat', 'copy_rows', 'gather', 'scatter')):
         return 'adapter'
@@ -73,7 +73,8 @@ def component_key(workload, recipe, node, *, authority, source, cache):
         # weight-only; SF and full outputs have different symbols/precision.
         contract = dict(qtype=w['qtype'], n=w['n'], k=w['k'], experts=w['experts'],
                         compute=w['compute'], mapping=workload.mapping,
-                        domain='ALL_DENSE_WEIGHTS' if w['operation'] == 'dense' else w)
+                        domain='ALL_DENSE_WEIGHTS' if w['operation'] == 'dense' else
+                               'ALL_EXPERTS' if node.get('expert_domain')=='ALL' else w)
     elif kind == 'adapter' and w['operation'] == 'dense':
         # Kernel parameter columns/strides are not encoded in the symbol.
         # Conservatively retain both N/K; remove only the producer config.

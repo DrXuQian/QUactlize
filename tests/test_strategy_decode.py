@@ -51,6 +51,16 @@ def test_plan_rejects_missing_original_and_unprobed_tc(tmp_path):
     with pytest.raises(ValueError,match='resource cache'):make_decode_plan(probe,original(probe))
 
 
+def test_full_smallm_keeps_unavailable_points_in_requested_denominator(tmp_path):
+    probe=example(tmp_path)
+    for row in probe['receipts'].values():row['status']='UNAVAILABLE'
+    plan=make_decode_plan(probe,original(probe),pilot=False)
+    assert plan['points']==[] and plan['vectors']=={} and plan['tc_modules']==[]
+    assert plan['counts']['requested_points']==plan['counts']['blocked_points']==1
+    assert plan['blocked'][0]['id']==probe['resolved']['points'][0]['id']
+    with pytest.raises(ValueError,match='resource cache'):make_decode_plan(probe,original(probe))
+
+
 def gate_runs(tmp_path):
     probe=example(tmp_path/'probe');plan=smoke_cases(probe)
     plan['plan_sha256']=digest(plan)

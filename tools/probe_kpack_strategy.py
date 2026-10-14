@@ -128,7 +128,8 @@ def main():
         p.error('compile pool exceeds explicit module budget; start a pilot or raise --max-modules after wall-time calibration')
     from quactlize.runtime.native import sdk_identity
     device=device_probe(a.sdk)
-    authority=dict(plan=plan['plan_sha256'],source=before['sha256'],sdk=sdk_identity(a.sdk),device=device)
+    authority=dict(plan=plan['plan_sha256'],source=before['sha256'],sdk=sdk_identity(a.sdk),device=device,
+                   cache=str(a.cache))
     authority_path=a.output/'authority.json'
     if authority_path.exists() and json.loads(authority_path.read_text())!=authority:
         raise ValueError('resource source/plan/SDK/device changed; use a new run directory')

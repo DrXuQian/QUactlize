@@ -17,13 +17,14 @@ def test_sf_ordinary_grid_alias_is_not_persistent():
     assert config(r,w)['algorithm']==0
 
 
-def test_current_v4_prepare_and_ring_binding(monkeypatch):
+@pytest.mark.parametrize('route',['fq','sf'])
+def test_current_v4_prepare_and_ring_binding(monkeypatch,route):
     pytest.importorskip('torch')  # existing independent fixture dependency
     import dev.smallm_closure.bench as fixture
     import tools.run_kpack_gemv_gate as gate
     import dev.strategy.resources as resources
     w=Workload(12,1024,2048,8,'indexed','bf16',experts=256,topk=8)
-    r=Recipe.make('tc','fq',**(dict(tc().parameters)|dict(persistent=0,grid_mode=0,grid_b=0)))
+    r=Recipe.make('tc',route,**(dict(tc().parameters)|dict(persistent=0 if route=='fq' else -1,grid_mode=0,grid_b=0)))
     calls=[];expected=[0x30000,0x40000]
     class Buffer:
         address=0x10000
@@ -52,7 +53,9 @@ def test_current_v4_prepare_and_ring_binding(monkeypatch):
                         out=C.cast(values[2],C.POINTER(Query)).contents
                         out.occupancy=3;out.workspace_bytes=4096;out.shared_bytes=8192
                     else:
-                        assert call.low==expected.pop(0) and call.metadata and not call.zero
+                        pointer=expected.pop(0)
+                        assert call.low==pointer and call.metadata
+                        assert call.zero==(pointer+256 if route=='sf' else None)
                         C.cast(values[2],C.POINTER(C.c_void_p))[0]=C.c_void_p(42)
                 return 0
             return invoke
@@ -60,7 +63,7 @@ def test_current_v4_prepare_and_ring_binding(monkeypatch):
     monkeypatch.setattr(gate,'Resources',Owner)
     monkeypatch.setattr(resources,'NativeProbe',Probe)
     b=SimpleNamespace(sdk=SimpleNamespace(synchronize=lambda stream:None),r=Owner(None),rows=64,
-        ring=SimpleNamespace(planes=[dict(low=p,high=None,units=p+128) for p in expected]),
+        ring=SimpleNamespace(planes=[dict(low=p,high=None,units=p+128,zero=p+256 if route=='sf' else None) for p in expected]),
         a=Buffer(None,4),ids=Buffer(None,4),out=Buffer(None,4))
     record=dict(parent=resources.module_spec(w,r)['parent'],key='HOST_MOCK',sha256='HOST_MOCK')
     kernel=TensorCore(b,record,r,w)

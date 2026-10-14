@@ -113,6 +113,7 @@ class TensorCore:
                 ids=context.ids.ptr,a=context.a.ptr,output=context.out.ptr,row_ids=self.row_ids.ptr)
             for plane in context.ring.planes:
                 call.low,call.high,call.metadata=plane['low'],plane['high'],plane['units']
+                call.zero=plane.get('zero')
                 handle=C.c_void_p()
                 checked(prepare(C.byref(request),C.byref(self.recipe),C.byref(handle)),'TC v4 prepare')
                 self.handles.append(handle)

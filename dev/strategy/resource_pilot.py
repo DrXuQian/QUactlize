@@ -32,7 +32,7 @@ def verified_plan(value):
     return value
 
 
-def load_probe(directory):
+def load_probe(directory, *, pilot=True):
     """Host-only checks. Device/SDK/current compiled-source checks follow.
 
     No requirement that an added Python test driver have the old planner's
@@ -41,7 +41,7 @@ def load_probe(directory):
     """
     root = Path(directory).resolve(strict=True)
     plan = verified_plan(json.loads((root / 'plan/plan.json').read_text()))
-    if plan.get('cohort') != 'pilot' or len(plan['points']) > 6:
+    if pilot and (plan.get('cohort') != 'pilot' or len(plan['points']) > 6):
         raise ValueError('execution smoke accepts only the six-point resource pilot')
     resources = root / 'resources'
     resolved = verified_plan(json.loads((resources / 'resolved-plan.json').read_text()))
@@ -135,7 +135,7 @@ def module_record(probe, case):
         raise ValueError('resource module was not compiled')
     record = row['record']
     path = Path(record['path'])
-    cache = (probe['root'] / 'cache').resolve(strict=True)
+    cache = Path(probe['authority'].get('cache', probe['root'] / 'cache')).resolve(strict=True)
     if (path.is_symlink() or not path.resolve(strict=True).is_relative_to(cache) or
             path.name != 'kernel.so' or path.parent.name != record['key'] or
             record['parent'] != spec['parent'] or sha(path) != record['sha256']):
