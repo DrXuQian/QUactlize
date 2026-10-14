@@ -91,6 +91,7 @@ class DenseCore:
                 scratch = alloc(actual.workspace_bytes)
                 call.workspace, call.workspace_bytes = scratch.ptr, scratch.size
                 call.low, call.high, call.metadata = plane['low'], plane['high'], plane['units']
+                call.zero = plane.get('zero')
                 handle = C.c_void_p()
                 checked(prepare(C.byref(request), C.byref(self.recipe), C.byref(handle)), 'explicit dense prepare')
                 self.handles.append(handle)

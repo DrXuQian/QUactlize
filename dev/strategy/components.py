@@ -28,7 +28,8 @@ def role(name):
         n = kernel_entry(name.split('<', 1)[1].split('>', 1)[0]).lower()
     if any(s in n for s in ('reduction', 'reduce_decode', 'register_reuse_reduce')):
         return 'reducer'
-    if any(s in n for s in ('dequant', 'sf_prepare', 'expand_scale', 'expand_metadata')):
+    if any(s in n for s in ('dequant', 'sf_prepare', 'expand_scale', 'expand_metadata',
+                             'prepass_unit_kernel', 'sf_columns', 'sf_unit16')):
         return 'expansion'
     if any(s in n for s in ('convert_rows', 'convert_flat', 'copy_rows', 'gather', 'scatter')):
         return 'adapter'
@@ -57,11 +58,11 @@ def component_key(workload, recipe, node, *, authority, source, cache):
     part of the semantic key. Different cold/hot protocols never alias.
     """
     w = asdict(workload)
-    kind = role(node['name'])
     p = dict(recipe.parameters) if recipe is not None else {}
     split = p.get('split', node.get('split', 1))
+    kind = stage_role(node['name'], split)
     contract = dict(workload=w, recipe=asdict(recipe) if recipe else 'ORIGINAL', split=split)
-    if kind == 'reducer':
+    if kind in ('reducer', 'reducer_finish'):
         contract = dict(operation=w['operation'], rows=w['m'] * w['topk'], n=w['n'], split=split,
                         compute=w['compute'], storage=w['storage'], fusion=w['fusion'],
                         output_stride=w['output_stride'], router=w['router'],
@@ -77,6 +78,12 @@ def component_key(workload, recipe, node, *, authority, source, cache):
         # Kernel parameter columns/strides are not encoded in the symbol.
         # Conservatively retain both N/K; remove only the producer config.
         contract = w
+    elif kind in ('prepare', 'postprocess'):
+        # Exact entry/type/geometry plus all row/stride/domain fields remain.
+        # A different GEMM tile must not re-time identical indexed helpers.
+        # indexed_prepare has a runtime splits loop when writing pointers;
+        # identical symbol/geometry at different S is NOT identical work.
+        contract = dict(workload=w, split=split) if kind == 'prepare' else w
     # Source identity, not ASLR addresses or unrelated parent module hashes.
     # Split is reducer semantics, not a property of an otherwise identical
     # conversion/expansion kernel. Do not let a producer's S duplicate helpers.

@@ -12,13 +12,30 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from quactlize.runtime.compiler import FLAGS, LIBRARIES, sha
+from quactlize.runtime.compiler import FLAGS, LIBRARIES, HEADER_SUFFIXES, sha
 
 
 def native_bf16_output(ops):
     # HGCC can pair two final FP32->BF16 conversions into one instruction.
     # This is not FP16 arithmetic and must not admit the f16x2 variant.
     return any('bf16.f32' in op or op == 'v.pcnvt.bf16x2' for op in ops)
+
+
+def check_kernel_inventory(symbols):
+    # The typed SF endpoint adds 5 formats x 2 block sizes to the original
+    # 63 entries. Check each family, not just an easily stale total count.
+    expected=dict(prepass_unit_kernel=5,sf_columns=10,sf_unit16=4,sf_bfloat_units=10,
+                  full_direct=5,full_wide=15,full_transpose=10,full_shared=8,full_packed_exchange=6)
+    names=list(symbols)
+    groups={family:[s for s in names if family in s] for family in expected}
+    if (len(set(names))!=len(names) or sum(map(len,groups.values()))!=len(names) or
+            {k:len(v) for k,v in groups.items()}!=expected):
+        raise ValueError('dequant kernel specialization inventory differs: '+repr({k:len(v) for k,v in groups.items()}))
+    for fmt in range(5):
+        for threads in (128,256):
+            if sum(f'FmtE{fmt}E' in s and f'ELi{threads}E' in s for s in groups['sf_bfloat_units'])!=1:
+                raise ValueError('typed SF format/block specialization differs')
+    return expected
 
 
 def resource_usage(text):
@@ -39,13 +56,43 @@ def resource_usage(text):
     return result
 
 
+def inspect_image(sdk, image):
+    """Same native checks on a linked library or a compile-only test object."""
+    isa=subprocess.run([str(sdk/'bin/hgobjdump'),'--dump-isa',str(image)],
+                       check=True,capture_output=True,text=True).stdout
+    resources=resource_usage(subprocess.run([str(sdk/'bin/hgobjdump'),'--dump-resource-usage=all',str(image)],
+                                           check=True,capture_output=True,text=True).stdout)
+    entries=list(re.finditer(r'Disassembly of section \.text\.kernel\.([^\n]+):',isa))
+    inventory=check_kernel_inventory(entry[1] for entry in entries)
+    native={}
+    for i,entry in enumerate(entries):
+        body=isa[entry.end():entries[i+1].start() if i+1<len(entries) else None]
+        ops=Counter(re.findall(r'\t([a-z][\w.]+)\s',body))
+        symbol=entry[1]
+        if any(x in symbol for x in ('full_transpose','sf_columns','full_wide','sf_unit16','full_shared','full_packed_exchange')) and any('f64' in op for op in ops):
+            raise ValueError('coordinate decomposition unexpectedly uses FP64 division lowering')
+        if any(x in symbol for x in ('full_transpose','full_direct','full_wide','full_shared','full_packed_exchange','sf_bfloat_units')) and not native_bf16_output(ops):
+            raise ValueError('native BF16 output conversion missing')
+        if 'sf_unit16' in symbol and (ops['vmem.ld.b32x4']!=1 or any(op.startswith('vmem.ld.b8') for op in ops)):
+            raise ValueError('metadata uint4 load was scalarized')
+        if 'full_wide' in symbol and 'ELb1EE' in symbol and not any(op.startswith('vmem.st.b32x4') for op in ops):
+            raise ValueError('wide BF16 output store was scalarized')
+        if 'full_shared' in symbol or 'full_packed_exchange' in symbol:
+            for kind in ('vmem.ld.b32x4','tsm.ld.b32x4','vmem.st.b32x4'):
+                if not any(op.startswith(kind) for op in ops):raise ValueError('shared-vector path was scalarized: '+kind)
+            if resources[symbol]['stack_bytes']:raise ValueError('new shared reader has a local stack allocation')
+        native[symbol]=dict(operations=dict(sorted(ops.items())),resources=resources[symbol],scope='STATIC_COUNTS_NOT_DYNAMIC_PROFILE')
+    if set(native)!=set(resources):raise ValueError('ISA and resource kernel sets differ')
+    return native,inventory
+
+
 def build(sdk, output):
     sdk, output = sdk.resolve(strict=True), output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     paths = [ROOT/'quactlize/dequant', ROOT/'quactlize/execution',
              ROOT/'quactlize/include', ROOT/'third_party/actlize/include']
     inputs = {str(p.relative_to(ROOT)): sha(p) for d in paths for p in d.rglob('*')
-              if p.is_file() and p.suffix in ('.hpp', '.cuh', '.h', '.cu', '.inc')}
+              if p.is_file() and p.suffix in HEADER_SUFFIXES | {'.cu'}}
     env = dict(os.environ, PATH=str(sdk/'bin')+':'+os.environ.get('PATH',''),
                LD_LIBRARY_PATH=str(sdk/'lib')+':'+os.environ.get('LD_LIBRARY_PATH',''))
     commands = [
@@ -61,31 +108,7 @@ def build(sdk, output):
             subprocess.run(command, check=True, env=env, stdout=log, stderr=subprocess.STDOUT)
     if any(sha(ROOT/p)!=h for p,h in inputs.items()):
         raise ValueError('dequant sources changed during compilation')
-    isa=subprocess.run([str(sdk/'bin/hgobjdump'),'--dump-isa',str(output/'libquactlize_ppu_dequant.so')],
-                       check=True,capture_output=True,text=True).stdout
-    resources=resource_usage(subprocess.run([str(sdk/'bin/hgobjdump'),'--dump-resource-usage=all',str(output/'libquactlize_ppu_dequant.so')],
-                                           check=True,capture_output=True,text=True).stdout)
-    entries=list(re.finditer(r'Disassembly of section \.text\.kernel\.([^\n]+):',isa))
-    if len(entries)!=63:raise ValueError('dequant kernel specialization denominator differs')
-    native={}
-    for i,entry in enumerate(entries):
-        body=isa[entry.end():entries[i+1].start() if i+1<len(entries) else None]
-        ops=Counter(re.findall(r'\t([a-z][\w.]+)\s',body))
-        symbol=entry[1]
-        if any(x in symbol for x in ('full_transpose','sf_columns','full_wide','sf_unit16','full_shared','full_packed_exchange')) and any('f64' in op for op in ops):
-            raise ValueError('coordinate decomposition unexpectedly uses FP64 division lowering')
-        if any(x in symbol for x in ('full_transpose','full_direct','full_wide','full_shared','full_packed_exchange')) and not native_bf16_output(ops):
-            raise ValueError('native BF16 output conversion missing')
-        if 'sf_unit16' in symbol and (ops['vmem.ld.b32x4']!=1 or any(op.startswith('vmem.ld.b8') for op in ops)):
-            raise ValueError('metadata uint4 load was scalarized')
-        if 'full_wide' in symbol and 'ELb1EE' in symbol and not any(op.startswith('vmem.st.b32x4') for op in ops):
-            raise ValueError('wide BF16 output store was scalarized')
-        if 'full_shared' in symbol or 'full_packed_exchange' in symbol:
-            for kind in ('vmem.ld.b32x4','tsm.ld.b32x4','vmem.st.b32x4'):
-                if not any(op.startswith(kind) for op in ops):raise ValueError('shared-vector path was scalarized: '+kind)
-            if resources[symbol]['stack_bytes']:raise ValueError('new shared reader has a local stack allocation')
-        native[symbol]=dict(operations=dict(sorted(ops.items())),resources=resources[symbol],scope='STATIC_COUNTS_NOT_DYNAMIC_PROFILE')
-    if set(native)!=set(resources):raise ValueError('ISA and resource kernel sets differ')
+    native,inventory=inspect_image(sdk,output/'libquactlize_ppu_dequant.so')
     (output/'native.json').write_text(json.dumps(native,indent=2)+'\n')
     manifest = dict(schema='quactlize.dequant-only.v1', source_hashes=inputs,
         library='libquactlize_ppu_dequant.so', sha256=sha(output/'libquactlize_ppu_dequant.so'),
@@ -99,6 +122,7 @@ def build(sdk, output):
         full_output='BF16_E_N_K', full_arithmetic='RAW_GGUF_FP32_MUL_SUB_BF16_RNE',
         sf_output='FP16_E_GROUP_N_TWO_PLANES', timing='NO_GEMM')
     manifest['native_sha256']=sha(output/'native.json')
+    manifest['native_inventory']=inventory
     manifest['inspector_sha256']=sha(sdk/'bin/hgobjdump')
     (output/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     print('KPACK_DEQUANT_BUILD',json.dumps(dict(seconds=manifest['seconds'],library=str(output/manifest['library']))))

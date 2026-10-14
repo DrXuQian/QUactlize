@@ -6,8 +6,16 @@ arguments. The original captured graph owns argument storage until close().
 Unsupported/nonlinear graphs fail closed instead of losing hidden work.
 """
 import ctypes as C
+from functools import lru_cache
 import math
 import subprocess
+
+
+@lru_cache(maxsize=4096)
+def readable_symbol(symbol):
+    # Cold rings can have thousands of copies of the same kernel. Demangling
+    # each node by spawning a process would dominate the experiment wall time.
+    return subprocess.check_output(['c++filt', symbol], text=True).strip()
 
 
 class Dim3(C.Structure):
@@ -62,20 +70,22 @@ def linear_order(nodes, edges):
     if not nodes or len(set(nodes)) != len(nodes):
         raise ValueError('empty/duplicate captured nodes')
     incoming = {n: set() for n in nodes}
+    outgoing = {n: set() for n in nodes}
     for a, b in edges:
         if a not in incoming or b not in incoming or a == b:
             raise ValueError('invalid graph edge')
         incoming[b].add(a)
+        outgoing[a].add(b)
     result = []
-    while incoming:
-        ready = [n for n, deps in incoming.items() if not deps]
+    ready = [n for n, deps in incoming.items() if not deps]
+    while len(result) < len(nodes):
         if len(ready) != 1:
             raise ValueError('nonlinear/cyclic graph cannot be decomposed as a serial cost sum')
-        n = ready[0]
+        n = ready.pop()
         result.append(n)
-        del incoming[n]
-        for deps in incoming.values():
-            deps.discard(n)
+        for other in outgoing[n]:
+            incoming[other].remove(n)
+            if not incoming[other]: ready.append(other)
     return result
 
 
@@ -140,7 +150,7 @@ class Captured:
                 if not name.value:
                     raise ValueError('empty captured kernel symbol')
                 symbol = name.value.decode()
-                readable = subprocess.check_output(['c++filt', symbol], text=True).strip()
+                readable = readable_symbol(symbol)
                 self.params.append(params)
                 self.descriptions.append(dict(name=readable, symbol=symbol,
                     grid=[params.grid.x, params.grid.y, params.grid.z],

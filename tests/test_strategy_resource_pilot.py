@@ -31,8 +31,8 @@ def passed_result(case):
         components=[component])
 
 
-def example(tmp_path):
-    w = Workload(12, 1024, 2048, 1)
+def example(tmp_path, w=None):
+    w = w or Workload(12, 1024, 2048, 1)
     r = tc()
     recipes = [Recipe.make('tc', 'fq', **(dict(r.parameters) | dict(split=s, grid_mode=0, grid_b=0))) for s in (1, 2, 4)]
     point = dict(id=w.key, workload=asdict(w), candidates=[asdict(c) for c in recipes], champion_controls=[])
