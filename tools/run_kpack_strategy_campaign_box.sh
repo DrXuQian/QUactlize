@@ -27,30 +27,30 @@ stage=precheck
 finish() {
     campaign_rc=$?
     trap - EXIT
+    if [[ -f "$campaign_run/measurement/summary.json" && -f "$campaign_run/measurement/authority.json" ]]; then
+        "$campaign_python" "$campaign_source/tools/pack_kpack_strategy_review.py" "$campaign_run"
+    else
     "$campaign_python" - "$campaign_run" "$campaign_rc" "$stage" <<'PY'
 from pathlib import Path
 import io,json,sys,tarfile,time
 root=Path(sys.argv[1]).resolve(strict=True)
-archive=Path(str(root)+'.'+str(time.time_ns())+'.results.tgz')
+archive=Path(str(root)+'.'+str(time.time_ns())+'.setup-errors.tgz')
 with tarfile.open(archive,'x:gz') as out:
     data=json.dumps(dict(runner_rc=int(sys.argv[2]),stage=sys.argv[3])).encode()
     entry=tarfile.TarInfo('runner-status.json');entry.size=len(data);out.addfile(entry,io.BytesIO(data))
-    # Keep all raw evidence on box. The transfer contains summaries, manifests,
-    # components and selected/failed receipts, not tens of thousands of duplicate
-    # successful current/attempt snapshots or device binaries.
-    for path in sorted(root.rglob('*')):
-        if (not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(root) or
-                path.suffix not in ('.json','.log','.txt')):continue
-        relative=path.relative_to(root)
-        if 'arms' in relative.parts:
-            if path.name!='current.json':continue
-            row=json.loads(path.read_text())
-            if row.get('status')=='PASS' and row.get('identity',{}).get('arm',{}).get('roles')!=['confirmation']:
-                continue
-        if path.name.startswith('probe-') and path.stat().st_size==0:continue
-        out.add(path,arcname=relative,recursive=False)
+    # No completed summary yet: bounded setup diagnostics, never a recursive
+    # copy of resource queries, family manifests or compiler cache contents.
+    paths=[root/'console.log',root/'measurement/counts.json']
+    paths+=sorted((root/'measurement').glob('*.log'))[-32:]
+    for path in paths:
+        if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(root):continue
+        with path.open('rb') as stream:
+            stream.seek(max(0,path.stat().st_size-65536));data=stream.read(65536)
+        name=str(path.relative_to(root))+('.tail.txt' if path.suffix=='.log' else '')
+        entry=tarfile.TarInfo(name);entry.size=len(data);out.addfile(entry,io.BytesIO(data))
 print('results='+str(archive),flush=True)
 PY
+    fi
     printf 'runner_rc=%s stage=%s\nCurrent Docker shell is preserved.\n' "$campaign_rc" "$stage"
     exit "$campaign_rc"
 }

@@ -1,5 +1,19 @@
 # PPU failure lessons
 
+Result transfer is not raw-run backup. For large rule campaigns, recursively
+archiving JSON also copies expanded plans, per-family manifests and resource
+queries even when binaries/attempts are excluded. Export all current candidate
+accuracy summaries and costs (including losers/failures), deduplicated config/
+kernel identities, referenced component samples, finalist confirmation and
+bounded failure-log tails. Keep source/SDK/device identity once. Leave raw
+receipts on Box for targeted follow-up; the compact file is not a full
+admission certificate or a resume cache. Do not modify an active source tree
+just to package results: use a standalone stdlib exporter outside that tree.
+The archived five-point ZW810 screen shrank5280850 to168476bytes in the initial
+host check, retaining416currentarm records and454components. This is a measured
+sample reduction, not a promised full-campaign size. Seams:
+`tools/pack_kpack_strategy_review.py`, `tests/test_strategy_review_pack.py`.
+
 Large-M component harness additions (2026-10-14, host validation only): do
 not extend a decode-only indexed binder by removing its M check. Use the
 general typed grouped endpoint with resident GPU offsets, retaining its real
