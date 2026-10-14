@@ -65,6 +65,26 @@ int quactlize_ppu_dense_prepare_v1(void* context,quactlize_ppu_dense_params_v1 c
     void const* low,void const* high,void const* units,void** plan,
     quactlize_ppu_dense_plan_info_v1* info);
 
+// Explicit initialization candidates; default prepare_v1 is unchanged. This
+// is not an instruction to change production routing or a measured-win claim.
+// kind: 0=TC, 1=generic SIMT, 2=existing selected Q4 reader, 3=full BF16.
+// route: 0=FQ, 1=SF, 3=full (same public route values as above).
+// TC fields describe the exact compiled parent and runtime recipe; SIMT uses
+// variant/columns/warps/values/split. Unused fields must be zero, except
+// dequant_config=-1 means the existing default SF prepass. native_f16 retains
+// the original adapters/rounding; it is forbidden for BF16 contexts. Q4 uses
+// its already selected reader (not an unchecked arbitrary specialization).
+typedef struct {
+    uint32_t version,size;
+    int32_t kind,route,native_f16,legacy_adapters,dequant_config;
+    int32_t tm,tn,tk,wm,wn,stages,ap,delivery_n,split,grid_mode,grid_b;
+    int32_t variant,columns,warps,values;
+    char parent[192];
+} quactlize_ppu_dense_candidate_v1;
+int quactlize_ppu_dense_prepare_candidate_v1(void* context,quactlize_ppu_dense_params_v1 const*,
+    void const* low,void const* high,void const* units,quactlize_ppu_dense_candidate_v1 const*,
+    void** plan,quactlize_ppu_dense_plan_info_v1* info);
+
 // Enqueue only. Each invocation accepts new 16-byte-aligned A/C pointers,
 // stream and private 256-byte-aligned workspace. Disjoint output/workspace
 // is required for concurrent streams. Includes per-call SF/full expansion,
@@ -87,4 +107,6 @@ static_assert(offsetof(quactlize_ppu_dense_params_v1,arrangement)==40,"dense ABI
 static_assert(offsetof(quactlize_ppu_dense_params_v1,sizes)==80,"dense ABI drift");
 static_assert(sizeof(quactlize_ppu_dense_plan_info_v1)==224,"dense ABI drift");
 static_assert(offsetof(quactlize_ppu_dense_plan_info_v1,config)==32,"dense ABI drift");
+static_assert(sizeof(quactlize_ppu_dense_candidate_v1)==280,"candidate ABI drift");
+static_assert(offsetof(quactlize_ppu_dense_candidate_v1,parent)==88,"candidate ABI drift");
 #endif

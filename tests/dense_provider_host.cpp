@@ -133,6 +133,72 @@ extern "C" char const* quactlize_kpack_prefill_error_v1() {return "fake provider
 
 #include "dense_poc_selection.hpp"
 
+void explicit_candidates() {
+    using namespace quactlize::dispatch;
+    for (int compute:{0,1}) for (int q:{8,10,11,12,13,14}) for (int m:{1,128}) {
+        kImages.clear();auto owner=test::context(compute);auto& ctx=*owner;
+        auto p=test::params(q,m);auto request=quactlize::dense::request_for(p);
+        auto d=select_dense_dynamic(request,compute);assert(d);
+        bool native=compute==0 && m>8;
+        test::install(ctx,d,!native,compute);auto const& c=d.value;
+        quactlize_ppu_dense_candidate_v1 candidate{1,sizeof(candidate)};
+        candidate.kind=0;candidate.route=request.route;candidate.native_f16=native;
+        candidate.dequant_config=-1;candidate.tm=c.tm;candidate.tn=c.tn;candidate.tk=c.tk;
+        candidate.wm=c.wm;candidate.wn=c.wn;candidate.stages=c.stages;candidate.ap=c.ap;
+        candidate.delivery_n=c.dn;candidate.split=c.split;candidate.grid_mode=c.grid_mode;candidate.grid_b=c.grid_b;
+        std::snprintf(candidate.parent,sizeof(candidate.parent),"%s",d.symbol.c_str());
+        auto low=reinterpret_cast<void const*>(UINT64_C(0x10000000000));
+        auto high=p.sizes.high_bytes?reinterpret_cast<void const*>(UINT64_C(0x20000000000)):nullptr;
+        auto units=reinterpret_cast<void const*>(UINT64_C(0x30000000000));
+        void* out=nullptr;quactlize_ppu_dense_plan_info_v1 info{1,sizeof(info)};
+        auto& runtime=*static_cast<Runtime*>(ctx.dispatcher);
+        size_t before=runtime.requests.size();
+        assert(!quactlize_ppu_dense_prepare_candidate_v1(&ctx,&p,low,high,units,&candidate,&out,&info));
+        assert(out && info.compute_type==compute && info.split==candidate.split);
+        assert(std::string(info.config)==d.symbol && info.policy==QKS_PREDICTED);
+        assert(runtime.requests.size()==before); // cannot poison default selection
+        auto& plan=*static_cast<quactlize::dense::Plan*>(out);
+        assert(plan.native_f16==native && plan.metadata_type==QK_METADATA_F16);
+        candidate.variant=1;
+        assert(quactlize_ppu_dense_prepare_candidate_v1(&ctx,&p,low,high,units,&candidate,&out,&info) && !out);
+        candidate.variant=0;candidate.native_f16=1;
+        if (compute) assert(quactlize_ppu_dense_prepare_candidate_v1(&ctx,&p,low,high,units,&candidate,&out,&info) && !out);
+        candidate.native_f16=native;candidate.split=0;
+        assert(quactlize_ppu_dense_prepare_candidate_v1(&ctx,&p,low,high,units,&candidate,&out,&info) && !out);
+        candidate.split=1;candidate.parent[0]=';';
+        assert(quactlize_ppu_dense_prepare_candidate_v1(&ctx,&p,low,high,units,&candidate,&out,&info) && !out);
+        auto normal=test::plan(ctx,p);
+        // The frozen llama PoC fixture is explicitly F16, not a BF16 oracle.
+        if (!compute) compare_poc(poc_dense(ctx.dispatcher,p),*static_cast<quactlize::dense::Plan*>(normal));
+        else assert(static_cast<quactlize::dense::Plan*>(normal)->compute==compute);
+    }
+    kImages.clear();auto owner=test::context(0);auto& ctx=*owner;
+    auto p=test::params(12,1);
+    auto low=reinterpret_cast<void const*>(UINT64_C(0x10000000000));
+    auto units=reinterpret_cast<void const*>(UINT64_C(0x30000000000));
+    void* out=nullptr;quactlize_ppu_dense_plan_info_v1 info{1,sizeof(info)};
+    quactlize_ppu_dense_candidate_v1 candidate{1,sizeof(candidate)};
+    candidate.kind=1;candidate.dequant_config=-1;candidate.variant=1;candidate.columns=4;
+    candidate.warps=4;candidate.values=4;candidate.split=1;
+    assert(!quactlize_ppu_dense_prepare_candidate_v1(&ctx,&p,low,nullptr,units,&candidate,&out,&info));
+    assert(info.route==QUACTLIZE_DENSE_SIMT && info.policy==QKS_PREDICTED);
+    candidate={1,sizeof(candidate)};candidate.kind=3;candidate.route=QUACTLIZE_DENSE_FULL_BF16;candidate.dequant_config=4;
+    assert(quactlize_ppu_dense_prepare_candidate_v1(&ctx,&p,low,nullptr,units,&candidate,&out,&info) && !out);
+    p.m=128;
+    assert(!quactlize_ppu_dense_prepare_candidate_v1(&ctx,&p,low,nullptr,units,&candidate,&out,&info));
+    assert(info.route==QUACTLIZE_DENSE_FULL_BF16 && info.compute_type==QUACTLIZE_DENSE_BF16);
+    for (int q:{10,11,12,13,14}) for (int config:{0,4,5,6,10,11,12,13}) {
+        p=test::params(q,128);candidate.dequant_config=config;
+        auto high=p.sizes.high_bytes?reinterpret_cast<void const*>(UINT64_C(0x20000000000)):nullptr;
+        int rc=quactlize_ppu_dense_prepare_candidate_v1(&ctx,&p,low,high,units,&candidate,&out,&info);
+        bool supported=config<=12 && (config<=5 || q==12 || q==13);
+        assert((rc==0)==supported);
+        if (supported) assert(static_cast<quactlize::dense::Plan*>(out)->prefill.dequant_config==config);
+        else assert(!out);
+    }
+    std::puts("DENSE_CANDIDATES_HOST PASS precision+default-cache-isolation+admission timing=NOT_MEASURED");
+}
+
 int main() {
     using namespace quactlize::dispatch;
     size_t matched_count=0,cost_count=0;
@@ -234,4 +300,5 @@ int main() {
     assert(quactlize_ppu_dense_prepare_v1(&ctx,&p,plan.low,plan.high,plan.units,&failed,&info)!=0 && !failed);
     test::capture=0;
     std::printf("DENSE_PROVIDER_HOST PASS matched=%zu prefill=%zu all_m=1 metadata=F16 default=POC_F16 timing=NOT_MEASURED\n",matched_count,cost_count);
+    explicit_candidates();
 }

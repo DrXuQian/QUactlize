@@ -5,6 +5,7 @@
 #include "../../policies/kpack_zw810_heuristic_v1.hpp"
 #include <algorithm>
 #include <limits>
+#include <stdexcept>
 
 namespace quactlize::dispatch {
 namespace policy = quactlize_kpack_heuristic_v1;
@@ -148,9 +149,11 @@ inline Selected select(qks_request_v1 const& r) {
     return {base.config,QKS_PREDICTED};
 }
 
-inline qk_recipe_v1 recipe(Config const& c, qks_request_v1 const& r, int occupancy) {
+inline qk_recipe_v1 recipe(Config const& c, qks_request_v1 const& r, int occupancy, int compute_units) {
     qk_recipe_v1 out{1,sizeof(out),c.grid_mode >= 2 ? QK_PERSISTENT : QK_ORDINARY,c.split,0};
     if (out.algorithm == QK_PERSISTENT) {
+        if (compute_units <= 0 || occupancy <= 0)
+            throw std::invalid_argument("persistent grid requires positive device CUs and occupancy");
         int b=std::max(1,std::min(c.grid_b,occupancy));
         int64_t mt=r.route >= 2 ? int64_t(r.experts)*((int64_t(r.max_rows)+c.tm-1)/c.tm) :
             (int64_t(r.m)+c.tm-1)/c.tm;
@@ -162,7 +165,9 @@ inline qk_recipe_v1 recipe(Config const& c, qks_request_v1 const& r, int occupan
             int64_t active=std::min(r.m,r.experts);
             mt=std::min(mt,(int64_t(r.m)+active*(c.tm-1))/c.tm);
         }
-        int64_t tiles=mt*((int64_t(r.n)+c.tn-1)/c.tn)*(r.route>=2 ? c.split : 1), cap=72LL*b;
+        // Scheduling policy comes from the selected config; device capacity
+        // comes from the runtime probe, never from the timing table's board.
+        int64_t tiles=mt*((int64_t(r.n)+c.tn-1)/c.tn)*(r.route>=2 ? c.split : 1), cap=int64_t(compute_units)*b;
         out.grid=int(c.grid_mode == 3 ? (tiles+(tiles+cap-1)/cap-1)/((tiles+cap-1)/cap) :
             std::min(tiles,cap));
     }

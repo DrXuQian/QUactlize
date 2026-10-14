@@ -96,26 +96,28 @@ def recipe_probe(tmp_path_factory):
 
 
 @pytest.mark.parametrize("occupancy", [1, 3, 4, 6, 12])
-def test_sparse_sf_grouped_grid_fits_actual_directory(recipe_probe, occupancy):
+@pytest.mark.parametrize("compute_units", [64, 72, 96])
+def test_sparse_sf_grouped_grid_fits_actual_directory(recipe_probe, occupancy, compute_units):
     # The measured Q4 SF parent requests four CTAs/CU, but eight routed rows
     # occupy only eight TM16 blocks, not one block for each of 256 experts.
-    fields = (3, 8, 512, 256, 1, 16, 16, 1, 2, 4, occupancy)
+    fields = (3, 8, 512, 256, 1, 16, 16, 1, 2, 4, occupancy, compute_units)
     line = subprocess.check_output([str(recipe_probe), *map(str, fields)], text=True)
     result = dict(item.split("=") for item in line.split())
     assert int(result["work"]) == 256
-    assert int(result["grid"]) == min(72 * min(4, occupancy), 256)
+    assert int(result["grid"]) == min(compute_units * min(4, occupancy), 256)
 
 
 @pytest.mark.parametrize("route", [2, 3])
 @pytest.mark.parametrize("mode", [0, 2, 3])
-def test_grouped_recipes_match_shipping_work_bound(recipe_probe, route, mode):
+@pytest.mark.parametrize("compute_units", [64, 72, 96])
+def test_grouped_recipes_match_shipping_work_bound(recipe_probe, route, mode, compute_units):
     for tm in (8, 16, 32, 64, 128, 256):
         for m, experts, maximum in ((1, 256, 1), (9, 256, 9), (528, 256, 129), (1024, 256, 128)):
             for split in (1, 2, 4, 8):
-                fields = (route, m, 512, experts, maximum, tm, 32, split, mode, 9, 6)
+                fields = (route, m, 512, experts, maximum, tm, 32, split, mode, 9, 6, compute_units)
                 line = subprocess.check_output([str(recipe_probe), *map(str, fields)], text=True)
                 result = {k: int(v) for k, v in (item.split("=") for item in line.split())}
-                work, capacity = result["work"], 72 * 6
+                work, capacity = result["work"], compute_units * 6
                 expected = 0 if mode == 0 else min(work, capacity)
                 if mode == 3:
                     waves = (work + capacity - 1) // capacity
@@ -124,16 +126,73 @@ def test_grouped_recipes_match_shipping_work_bound(recipe_probe, route, mode):
                 assert result["split"] == split
 
 
-def test_dense_recipe_does_not_change(recipe_probe):
+@pytest.mark.parametrize("compute_units", [64, 72, 96])
+def test_dense_recipe_uses_actual_device_capacity(recipe_probe, compute_units):
     for mode in (0, 2, 3):
         for m in (1, 128, 4096):
-            fields = (1, m, 1024, 1, m, 16, 32, 1, mode, 4, 6)
+            fields = (1, m, 1024, 1, m, 16, 32, 1, mode, 4, 6, compute_units)
             line = subprocess.check_output([str(recipe_probe), *map(str, fields)], text=True)
             result = {k: int(v) for k, v in (item.split("=") for item in line.split())}
             work = ((m + 15) // 16) * 32
-            waves = (work + 287) // 288
-            expected = 0 if mode == 0 else min(work, 288) if mode == 2 else (work + waves - 1) // waves
+            capacity = compute_units * 4
+            waves = (work + capacity - 1) // capacity
+            expected = 0 if mode == 0 else min(work, capacity) if mode == 2 else (work + waves - 1) // waves
             assert result["grid"] == expected
+
+
+@pytest.mark.parametrize("mode", [2, 3])
+@pytest.mark.parametrize("compute_units,occupancy", [(0, 4), (-1, 4), (64, 0), (72, -1)])
+def test_persistent_recipe_rejects_missing_resources(recipe_probe, mode, compute_units, occupancy):
+    fields = (1, 128, 1024, 1, 128, 16, 32, 1, mode, 4, occupancy, compute_units)
+    result = subprocess.run([str(recipe_probe), *map(str, fields)], text=True, capture_output=True)
+    assert result.returncode == 1
+    assert 'positive device CUs and occupancy' in result.stderr
+
+
+def test_materialization_passes_runtime_cus_to_both_resource_queries(tmp_path):
+    # Cached fake modules bypass real device admission only in this host test.
+    # This checks the materializer's plumbing, not admission of a new GPU.
+    (tmp_path / 'catalog.inc').write_text('static std::vector<Image> kImages; static char kJitSource[]="";\n')
+    source = tmp_path / 'device-grid.cpp'
+    binary = tmp_path / 'device-grid'
+    source.write_text(r'''
+#include "quactlize/dispatch/binding.cpp"
+#include <cassert>
+static int cu, mode, queries;
+static int expected_grid(int blocks) {
+    int tiles=4096, cap=cu*blocks, waves=(tiles+cap-1)/cap;
+    return mode==3 ? (tiles+waves-1)/waves : std::min(tiles,cap);
+}
+static int query_resources(qk_call_v1 const* call, qk_recipe_v1 const* recipe, qk_resources_v1* out) {
+    assert(call->compute_units==cu);
+    assert(recipe->grid==expected_grid(queries==0 ? 1:3));
+    ++queries; *out={}; out->occupancy=3; return QK_OK;
+}
+int main() {
+    using namespace quactlize::dispatch;
+    for (int units:{64,72,96}) for (int grid_mode:{2,3}) {
+        cu=units; mode=grid_mode; queries=0;
+        Runtime runtime; runtime.device=0; runtime.cu=cu;
+        Config c{}; c.symbol="host-resource-grid"; c.qtype=12; c.route=QK_DENSE_SF;
+        c.tm=c.tn=c.wm=c.wn=16; c.tk=64; c.stages=2; c.dn=16;
+        c.parent_persistent=-1; c.split=1; c.grid_mode=mode; c.grid_b=4;
+        c.mapping_id=UINT64_C(0x51344b5034540001);
+        Image image{c.symbol,std::string(64,'a'),std::string(64,'b'),c.qtype,c.route,
+            c.tm,c.tn,c.tk,c.wm,c.wn,c.stages,c.ap,c.dn,{},false,0};
+        auto module=std::make_shared<Module>(); module->query=query_resources;
+        kImages={image}; runtime.modules[image.key]=module;
+        qks_request_v1 request{1,sizeof(request),12,QK_DENSE_SF,256,4096,2048,1,256,c.mapping_id};
+        assert(valid(request));
+        TcDecision selected{c,c.symbol,QKS_PREDICTED}; qks_choice_v1 choice{};
+        assert(materialize(runtime,&request,&choice,selected,{},0,0)==QKS_OK);
+        assert(queries==2 && choice.compute_units==cu && choice.grid==expected_grid(3));
+        assert(choice.algorithm==QK_PERSISTENT && choice.split==1);
+    }
+}
+''')
+    subprocess.run(['g++', '-std=c++17', '-O1', '-pthread', f'-I{ROOT}', f'-I{tmp_path}',
+                    str(source), '-ldl', '-o', str(binary)], check=True)
+    subprocess.run([str(binary)], check=True)
 
 
 def test_all_formats_bounds_and_dense(probe):

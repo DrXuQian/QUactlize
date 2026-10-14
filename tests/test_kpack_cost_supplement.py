@@ -32,6 +32,31 @@ def test_exact_missing_denominator(planned):
     for p in planned['points']:validate_point(p)
 
 
+@pytest.mark.parametrize('compute_units', [64, 72, 96])
+@pytest.mark.parametrize('mode', [0, 2, 3, 'capacity', 'balanced'])
+@pytest.mark.parametrize('grouped', [False, True])
+def test_historical_recipe_uses_probed_device_capacity(compute_units, mode, grouped):
+    from tools.kpack_cost_measurements import recipe
+    c=dict(tm=16,tn=32,split=2 if grouped else 1,grid_mode=mode,grid_b=4)
+    p=dict(rows=[128,0,1,7] if grouped else [128],experts=4 if grouped else 1,tokens=128,n=4096)
+    result=recipe(c,p,3,compute_units)
+    # Match the directory's bounded work, not an experts * max_rows rectangle.
+    total=sum(p['rows'])
+    mt=min(4*8,(total+min(total,4)*15)//16) if grouped else 8
+    work=mt*128*c['split']
+    capacity=compute_units*3
+    waves=(work+capacity-1)//capacity
+    expected=(0 if mode==0 else (work+waves-1)//waves if mode in (3,'balanced') else min(work,capacity))
+    assert result.grid==expected and result.split==c['split']
+
+
+@pytest.mark.parametrize('compute_units,occupancy', [(0,3),(-1,3),(64,0),(72,-1)])
+def test_historical_persistent_recipe_requires_resources(compute_units, occupancy):
+    from tools.kpack_cost_measurements import recipe
+    with pytest.raises(ValueError,match='positive device CUs and occupancy'):
+        recipe(dict(grid_mode=2,split=1),{},occupancy,compute_units)
+
+
 def test_native_selection_closure_and_json_resume(tmp_path):
     p=make_plan(tmp_path)
     assert len(p['parents'])==134

@@ -10,7 +10,7 @@ extern "C" int q4_decode_tc(qks_request_v1 const* r,char* out,int bytes) {
     auto s=quactlize::dispatch::select_decode_tc(*r);
     if(!s.config) return QKS_MISS;
     auto f=s.config;
-    auto recipe=quactlize::dispatch::recipe(*f,*r,12);
+    auto recipe=quactlize::dispatch::recipe(*f,*r,12,72);
     std::snprintf(out,bytes,"tc:%s:s%d:b%d:g%d",f->symbol,recipe.split,f->grid_b,f->grid_mode);
     return s.policy;
 }

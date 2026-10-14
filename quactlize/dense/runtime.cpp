@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <cstdlib>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -207,8 +208,63 @@ void select(Plan& p) {
         p.plane_bytes=uint64_t(p.params.n)*p.params.k/p.params.arrangement.group_size*2;
 }
 
-void prepare(Plan& p) {
-    select(p);auto& info=p.info;info.compute_type=p.compute;
+void select_candidate(Plan& p,quactlize_ppu_dense_candidate_v1 const& c) {
+    require(c.version==1 && c.size==sizeof(c) && c.kind>=0 && c.kind<=3 &&
+        (c.native_f16==0 || c.native_f16==1) && (c.legacy_adapters==0 || c.legacy_adapters==1) &&
+        c.dequant_config>=-1 && c.dequant_config<=12 && std::memchr(c.parent,0,sizeof(c.parent)),
+        "invalid dense candidate ABI");
+    require(!c.native_f16 || p.compute==QK_COMPUTE_F16,"native F16 candidate in BF16 context");
+    require(!c.legacy_adapters || c.native_f16,"legacy adapter requires native F16");
+    bool tile=c.tm || c.tn || c.tk || c.wm || c.wn || c.stages || c.ap || c.delivery_n || c.grid_mode || c.grid_b;
+    bool reader=c.variant || c.columns || c.warps || c.values;
+    p.request=request_for(p.params);p.request.route=c.route;
+    if (c.kind==3) {
+        require(c.route==QUACTLIZE_DENSE_FULL_BF16 && p.params.qtype!=8 && p.params.m>=128 &&
+            !tile && !reader && !c.parent[0] && !c.native_f16 && !c.legacy_adapters && !c.split &&
+            c.dequant_config>=0 && (c.dequant_config<=5 || p.params.qtype==12 || p.params.qtype==13),
+            "invalid full-dequant candidate");
+        p.kind=Kind::Full;p.prefill={1,sizeof(p.prefill),2,c.dequant_config,0,1,0,0};return;
+    }
+    if (c.kind==1 || c.kind==2) {
+        require(c.route==QUACTLIZE_DENSE_FQ_TC && p.params.m<=8 && !tile && !c.parent[0] &&
+            !c.native_f16 && !c.legacy_adapters && c.dequant_config==-1,"invalid SIMT candidate");
+        auto d=simt_call(p);p.small.base.policy=QKS_PREDICTED;
+        if (c.kind==1) {
+            p.kind=Kind::Simt;p.small.base.simt={1,sizeof(p.small.base.simt),c.variant,c.columns,c.warps,c.values,c.split};
+            require(quactlize_kpack_simt_query_v2(&d,&p.small.base.simt,&p.params.arrangement,&p.small.base.sizes)==QKG_OK,
+                "explicit SIMT candidate is not available");
+        } else {
+            require(!reader && !c.split && p.params.qtype==12,"invalid selected Q4 candidate");
+            p.kind=Kind::Q4;
+            require(quactlize_kpack_q4_decode_select_v2(&d,&p.params.arrangement,&p.small.q4,&p.small.base.sizes)==QKG_OK,
+                "selected Q4 reader is not available");
+        }
+        p.kernel_bytes=p.small.base.sizes.workspace_bytes;return;
+    }
+    require((c.route==QK_DENSE_FQ || c.route==QK_DENSE_SF) && !reader &&
+        (c.route==QK_DENSE_SF || c.dequant_config==-1) &&
+        (p.params.qtype!=8 || c.dequant_config==-1),"invalid TC candidate route/metadata");
+    require(c.dequant_config<=3 || ((p.params.qtype==12 || p.params.qtype==13) && c.dequant_config<=5),
+        "invalid dense SF expansion config");
+    p.owner->enable_jit();
+    qks_tc_candidate_v1 tc{1,sizeof(tc),c.tm,c.tn,c.tk,c.wm,c.wn,c.stages,c.ap,c.delivery_n,-1,
+        c.split,c.grid_mode,c.grid_b,{}};
+    std::memcpy(tc.parent,c.parent,sizeof(tc.parent));
+    dispatch_check(quactlize_kpack_dispatch_query_candidate_v1(p.owner->dispatcher,&p.request,&tc,p.compute,c.native_f16,&p.tc));
+    p.kind=Kind::Tc;p.native_f16=c.native_f16;p.legacy_adapters=c.legacy_adapters;
+    int compute=-1;
+    dispatch_check(quactlize_kpack_dispatch_dense_contract_v1(p.owner->dispatcher,&p.tc,&p.request,&compute,&p.metadata_type));
+    require(compute==p.compute,"candidate changed compute precision");
+    p.kernel_bytes=p.tc.workspace_bytes;
+    if (c.route==QK_DENSE_SF && p.params.qtype!=8) {
+        p.plane_bytes=uint64_t(p.params.n)*p.params.k/p.params.arrangement.group_size*2;
+        if (c.dequant_config>=0) p.prefill={1,sizeof(p.prefill),1,c.dequant_config,0,1,0,0};
+    }
+}
+
+void prepare(Plan& p,quactlize_ppu_dense_candidate_v1 const* candidate=nullptr) {
+    if (candidate) select_candidate(p,*candidate);else select(p);
+    auto& info=p.info;info.compute_type=p.compute;
     if (p.kind==Kind::Full) {
         auto shape=full_call(p);
         prefill_check(quactlize_kpack_prefill_query_dynamic_v1(&shape,&p.params.arrangement,&info.workspace_bytes));
@@ -334,8 +390,9 @@ extern "C" int quactlize_ppu_dense_create_v1(int device,void** out) {
     quactlize_ppu_dense_options_v1 options{1,sizeof(options),QUACTLIZE_DENSE_F16,0};
     return quactlize_ppu_dense_create_with_options_v1(device,&options,out);
 }
-extern "C" int quactlize_ppu_dense_prepare_v1(void* context,quactlize_ppu_dense_params_v1 const* params,
-    void const* low,void const* high,void const* units,void** out,quactlize_ppu_dense_plan_info_v1* info) {
+static int prepare_entry(void* context,quactlize_ppu_dense_params_v1 const* params,
+    void const* low,void const* high,void const* units,quactlize_ppu_dense_candidate_v1 const* candidate,
+    void** out,quactlize_ppu_dense_plan_info_v1* info) {
     using namespace quactlize::dense;if (out) *out=nullptr;
     return boundary([&] {
         require(context && out && info && info->version==1 && info->size==sizeof(*info),"invalid dense prepare ABI");
@@ -348,8 +405,18 @@ extern "C" int quactlize_ppu_dense_prepare_v1(void* context,quactlize_ppu_dense_
         std::lock_guard<std::mutex> lock(ctx.mutex);
         auto p=std::make_unique<quactlize::dense::Plan>();p->owner=&ctx;p->params=*params;p->compute=ctx.compute;
         p->low=static_cast<uint8_t const*>(low);p->high=static_cast<uint8_t const*>(high);p->units=static_cast<uint8_t const*>(units);
-        prepare(*p);auto raw=p.get();ctx.plans.push_back(std::move(p));*info=raw->info;*out=raw;
+        prepare(*p,candidate);auto raw=p.get();ctx.plans.push_back(std::move(p));*info=raw->info;*out=raw;
     });
+}
+extern "C" int quactlize_ppu_dense_prepare_v1(void* context,quactlize_ppu_dense_params_v1 const* params,
+    void const* low,void const* high,void const* units,void** out,quactlize_ppu_dense_plan_info_v1* info) {
+    return prepare_entry(context,params,low,high,units,nullptr,out,info);
+}
+extern "C" int quactlize_ppu_dense_prepare_candidate_v1(void* context,quactlize_ppu_dense_params_v1 const* params,
+    void const* low,void const* high,void const* units,quactlize_ppu_dense_candidate_v1 const* candidate,
+    void** out,quactlize_ppu_dense_plan_info_v1* info) {
+    if (!candidate) {if (out) *out=nullptr;quactlize::dense::error="null dense candidate";return 1;}
+    return prepare_entry(context,params,low,high,units,candidate,out,info);
 }
 extern "C" int quactlize_ppu_dense_run_v1(void* plan,float const* input,float* output,void* workspace,uint64_t bytes,void* stream) {
     using namespace quactlize::dense;

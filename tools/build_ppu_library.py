@@ -29,7 +29,7 @@ PUBLIC_EXPORTS = (
     'quactlize_ppu_prepare_fully_quantized_dev_for_arrangement_v2',
     'quactlize_ppu_prepare_gate_up_dev_for_arrangement_v1',
     *('quactlize_ppu_dense_' + suffix for suffix in (
-        'supported_v1', 'create_v1', 'create_with_options_v1', 'prepare_v1',
+        'supported_v1', 'create_v1', 'create_with_options_v1', 'prepare_v1', 'prepare_candidate_v1',
         'run_v1', 'destroy_v1', 'error_v1')),
 )
 JIT_PYTHON = (

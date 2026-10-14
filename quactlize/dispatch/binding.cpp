@@ -509,7 +509,8 @@ extern "C" int quactlize_kpack_dispatch_enable_jit_v1(void* runtime,qks_jit_opti
 // Called with the runtime mutex held, after pure selection. Resource queries
 // may refine grid/workspace, but must not silently choose another kernel.
 static int materialize(Runtime& r,qks_request_v1 const* req,qks_choice_v1* out,
-                       TcDecision const& selected,SelectionContext context,int endpoint_type,int compute_type) {
+                       TcDecision const& selected,SelectionContext context,int endpoint_type,int compute_type,
+                       bool remember_request=true) {
     auto config=selected.config();
     Image const* image=nullptr;
     for (auto const& candidate : kImages)
@@ -519,7 +520,7 @@ static int materialize(Runtime& r,qks_request_v1 const* req,qks_choice_v1* out,
     if (!image) { last_error=std::string("selected parent not packaged: ")+config.symbol; return QKS_MISS; }
     auto module=load(r,*image,config,endpoint_type!=0,compute_type);
     auto call=call_for(*req,r);
-    auto rec=recipe(config,*req,1);
+    auto rec=recipe(config,*req,1,call.compute_units);
     qk_resources_v1 resources{};
     auto query=[&]() -> int {
         if (endpoint_type) {
@@ -548,7 +549,7 @@ static int materialize(Runtime& r,qks_request_v1 const* req,qks_choice_v1* out,
     };
     int rc=query();
     if (rc!=QK_OK) { last_error="selected parent resource query rejected"; return rc==QK_UNSUPPORTED ? QKS_MISS : QKS_RUNTIME; }
-    rec=recipe(config,*req,resources.occupancy);
+    rec=recipe(config,*req,resources.occupancy,call.compute_units);
     if (query()!=QK_OK) { last_error="selected recipe resource query rejected"; return QKS_RUNTIME; }
     qks_choice_v1 choice{};
     choice.version=1; choice.size=sizeof(choice); choice.ticket=r.plans.size()+1;
@@ -559,7 +560,7 @@ static int materialize(Runtime& r,qks_request_v1 const* req,qks_choice_v1* out,
     std::strcpy(choice.parent,image->parent.c_str()); std::strcpy(choice.build_key,image->key.c_str());
     r.plans.push_back({*req,choice,rec,module,endpoint_type,compute_type,
         context.profile==SelectionProfile::DenseDynamic});
-    r.requests.emplace(key(*req,context,endpoint_type,compute_type),choice.ticket);
+    if (remember_request) r.requests.emplace(key(*req,context,endpoint_type,compute_type),choice.ticket);
     *out=choice; return QKS_OK;
 }
 
@@ -592,6 +593,41 @@ extern "C" int quactlize_kpack_dispatch_query_dense_dynamic_v1(void* runtime,qks
 extern "C" int quactlize_kpack_dispatch_query_dense_native_v1(void* runtime,qks_request_v1 const* req,qks_choice_v1* out) {
     if (!req || req->route>=2) return QKS_INVALID;
     return query(runtime,req,out,{SelectionProfile::DenseNative});
+}
+extern "C" int quactlize_kpack_dispatch_query_candidate_v1(void* runtime,qks_request_v1 const* req,
+    qks_tc_candidate_v1 const* c,int32_t compute,int32_t native,qks_choice_v1* out) {
+    if (out) *out={};
+    if (!runtime || !req || !c || !out || c->version!=1 || c->size!=sizeof(*c) ||
+        !valid(*req) || req->route>=2 || !compute_valid(compute) || (native!=0 && native!=1) ||
+        (native && compute!=QK_COMPUTE_F16) || !std::memchr(c->parent,0,sizeof(c->parent))) return QKS_INVALID;
+    auto member=[](int value,std::initializer_list<int> values) {
+        return std::find(values.begin(),values.end(),value)!=values.end();
+    };
+    if (!member(c->tm,{8,16,32,64,128,256}) || !member(c->tn,{16,32,64,128,256}) ||
+        !member(c->tk,{64,128,256}) || !member(c->wm,{8,16,32,64,128}) ||
+        !member(c->wn,{16,32,64,128}) || !member(c->stages,{2,3,4,6,8,12}) ||
+        !member(c->delivery_n,{0,16,32,64}) || !member(c->split,{1,2,4,8}) ||
+        !member(c->ap,{0,1}) || !member(c->grid_mode,{0,1,2,3}) ||
+        c->parent_persistent!=-1 || c->grid_b<0 || c->grid_b>32 ||
+        c->tm%c->wm || c->tn%c->wn || (c->delivery_n && c->tn%c->delivery_n) ||
+        (!c->delivery_n && (req->route!=QK_DENSE_FQ || c->ap)) ||
+        (c->ap && (req->m!=1 || c->tm!=8 || c->wm!=8 || (req->qtype!=10 && req->qtype!=12)))) return QKS_INVALID;
+    if (req->k%(c->tk*c->split) || req->k/(c->tk*c->split)<c->stages-1) return QKS_MISS;
+    std::string name=c->parent;
+    if (name.empty() || !(name[0]=='_' || (name[0]>='A' && name[0]<='Z') || (name[0]>='a' && name[0]<='z')))
+        return QKS_INVALID;
+    for (char ch:name) if (!(ch=='_' || (ch>='A' && ch<='Z') || (ch>='a' && ch<='z') || (ch>='0' && ch<='9')))
+        return QKS_INVALID;
+    try {
+        TcDecision selected;
+        selected.symbol=name;selected.policy=QKS_PREDICTED;
+        selected.value={"initialization-candidate",nullptr,"EXPLICIT_CANDIDATE",req->qtype,req->route,
+            c->tm,c->tn,c->tk,c->wm,c->wn,c->stages,c->ap,c->delivery_n,-1,c->split,c->grid_mode,c->grid_b,0,req->mapping_id};
+        auto& r=*static_cast<Runtime*>(runtime);
+        std::lock_guard<std::mutex> lock(r.mutex);
+        return materialize(r,req,out,selected,{native?SelectionProfile::DenseNative:SelectionProfile::DenseDynamic},
+            native?0:QKD_F32,compute,false);
+    } catch (std::exception const& e) {last_error=e.what();return QKS_BINDING;}
 }
 extern "C" int quactlize_kpack_dispatch_query_decode_v1(void* runtime,qks_request_v1 const* req,qks_choice_v1* out) {
     return query(runtime,req,out,{SelectionProfile::Decode});

@@ -189,13 +189,15 @@ def dequant_measure(a,p,w,operation):
     finally:ctx.close()
 
 
-def recipe(config,p,occupancy):
+def recipe(config,p,occupancy,compute_units):
     mode=config['grid_mode'];persistent=mode in (2,3,'capacity','balanced')
     if not persistent:return Recipe(1,C.sizeof(Recipe),0,config['split'],0)
+    if compute_units<=0 or occupancy<=0:
+        raise ValueError('persistent grid requires positive device CUs and occupancy')
     tm,tn=config['tm'],config['tn'];m=sum(p['rows']);e=p['experts'];bound=p['tokens']
     mt=(m+tm-1)//tm if e==1 else min(e*((bound+tm-1)//tm),(m+min(m,e)*(tm-1))//tm)
     tiles=mt*((p['n']+tn-1)//tn)*(config['split'] if e>1 else 1)
-    cap=72*max(1,min(config['grid_b'],occupancy))
+    cap=compute_units*max(1,min(config['grid_b'],occupancy))
     grid=(tiles+(tiles+cap-1)//cap-1)//((tiles+cap-1)//cap) if mode in (3,'balanced') else min(tiles,cap)
     return Recipe(1,C.sizeof(Recipe),1,config['split'],grid)
 
@@ -234,7 +236,7 @@ def gemm_measure(a,p,w,route,historical=False):
                 c.workspace_bytes=current.workspace_bytes;c.workspace=ctx.r.alloc(max(16,c.workspace_bytes))
                 calls.append(dispatch.prepare(current,c))
             else:
-                rec=recipe(old,p,1);res=Query()
+                rec=recipe(old,p,1,ctx.device['compute_units']);res=Query()
                 if p['experts']>1:
                     query=module.lib.quactlize_kpack_grouped_query_v2;prepare=module.lib.quactlize_kpack_grouped_prepare_v2
                     query.argtypes=[C.POINTER(DeviceCall),C.POINTER(Recipe),C.POINTER(Query)];query.restype=C.c_int
@@ -242,7 +244,7 @@ def gemm_measure(a,p,w,route,historical=False):
                     d=DeviceCall(2,C.sizeof(DeviceCall),c,p['tokens'],0)
                     checked(query(C.byref(d),C.byref(rec),C.byref(res)),'historical grouped query')
                 else:checked(module.query(C.byref(c),C.byref(rec),C.byref(res)),'historical dense query')
-                rec=recipe(old,p,res.occupancy)
+                rec=recipe(old,p,res.occupancy,ctx.device['compute_units'])
                 if p['experts']>1:checked(query(C.byref(d),C.byref(rec),C.byref(res)),'historical grouped recipe')
                 else:checked(module.query(C.byref(c),C.byref(rec),C.byref(res)),'historical dense recipe')
                 c.workspace_bytes=res.workspace_bytes;c.workspace=ctx.r.alloc(max(16,res.workspace_bytes))

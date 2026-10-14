@@ -33,7 +33,7 @@ int main() {
     assert(out.base.tc.policy==out.base.policy && std::string(out.base.tc.parent)==c.symbol);
     assert(out.base.tc.split==c.split && out.base.tc.workspace_bytes==8192 && out.base.tc.shared_bytes==1234);
     auto const& plan=runtime.plans.back();assert(plan.compute_type==compute && plan.choice.ticket==out.base.tc.ticket);
-    auto rec=recipe(c,plan.request,3);
+    auto rec=recipe(c,plan.request,3,runtime.cu);
     assert(rec.algorithm==out.base.tc.algorithm && rec.grid==out.base.tc.grid && rec.split==out.base.tc.split);
     int before=queries;qks_smallm_choice_v2 again{};
     assert(quactlize_kpack_dispatch_query_smallm_v3(&runtime,&typed,&arr,&again)==QKS_OK);

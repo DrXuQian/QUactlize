@@ -60,3 +60,53 @@ interaction, not its hardware mechanism; counters or a phase-instrumented
 kernel are still needed before claiming L1 misses or dependency-wait cycles.
 Treat carveout as a controlled diagnostic, not a universal preset. Keep native
 PPU1.7 status separate. Evidence: `docs/ppu17-pdl-prefetch.md` (2026-10-01).
+
+## Bounded fallback-rule audits (2026-10-14, host-only)
+
+When the task asks rules to recover old winners, hide the complete target N/K
+family before generation, including other M, precision and format rows. Reveal
+historical winners afterwards as separate controls; a control-only win must
+not be reported as rule recall. Exact recipe recall is still not performance
+proof. A new-device holdout and original-wiring A/B remain necessary.
+
+Count compiled parents, runtime recipe arms and independent helper jobs
+separately. An SF parent exposes both ordinary and persistent entries: a
+persistent donor must not hide ordinary Split-K. Conversely, resource probing
+must use the exact ordinary/persistent, split and endpoint/compute entry.
+Deduplicate B/mode aliases using actual algorithm/S/grid and probed CUs, not
+an assumed 72-CU budget. High-coverage one-axis expansion can still be too
+large: the 2026-10-14 host replay expanded 308846 arms for only 93.23% exact
+recall. It was rejected as the default, not called an overnight plan.
+
+Use durable per-arm receipts and fresh processes after failures. Test resume
+with real fault-injected child processes, including tuple/list JSON identity
+roundtrips. Bind imported fixture/oracle sources as well as the top-level
+runner. A declared helper/grid domain is not executed coverage; fail the
+preflight when its driver is incomplete. Evidence and host regression seams:
+`dev/strategy/`, `tests/test_strategy_{space,journal,resources,provenance}.py`.
+
+Follow-up blind replay: remove duplicate seed slots only when their ENTIRE
+generated closures agree (warp-only expansion can collapse donor warps;
+one-axis warp+column expansion cannot). Equal-ranked seeds should not lose
+because of an arbitrary symbol hash. Preserve narrow/wide output tiles for
+decode and narrow/throughput row tiles for prefill. Unrestricted cross-M
+transfer increased work and regressed recall; vacant decode strata can borrow
+legal cross-M geometry without replacing nearby donors. These are development
+rules, not universal hardware performance laws.
+
+Q4 specialized SIMT is not the generic all-format image: N/K and reader
+parameters instantiate a new body. Count these specializations and require
+an explicit carrier; a selected-only public API cannot benchmark arbitrary
+proposals. For the existing Q4 row readers, whole-group K pass counts can
+derive non-power-of-two warp neighbors without embedding a target winner.
+They still require numerical, native-code and PPU performance admission.
+
+After freezing candidates, report same-point historical confirmed-pool regret
+separately from exact-config recall. A missed route champion may be irrelevant
+to the overall winner, while high aggregate recall can hide a large isolated
+regression. Near-tie within 5% is not strict parity; missing measurements are
+not losses. Never feed this post-generation scoreboard into the target pool.
+Keep production unchanged and admit no new-device performance on host tests.
+Seams: `dev/strategy/{prescreen,q4_space,replay}.py` and their tests. Source
+seals must include shell orchestration; resource resume binds host, PCI,
+driver/runtime versions, SDK and exact module/compute/schedule identity.

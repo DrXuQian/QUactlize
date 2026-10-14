@@ -144,6 +144,18 @@ int quactlize_kpack_dispatch_query_dense_dynamic_v1(void* runtime,qks_request_v1
 // Same coverage/recipe policy with the original native FP16 endpoints. The
 // complete provider uses this for PoC-identical prefill (including adapters).
 int quactlize_kpack_dispatch_query_dense_native_v1(void* runtime,qks_request_v1 const*,qks_choice_v1*);
+// Initialization tooling only: materialize an explicit TC recipe instead of
+// invoking a second selector. Its ticket is independent of the default query
+// cache. No timing or policy/cache publication is performed here. The actual
+// module still validates geometry, precision, shared memory and resources.
+typedef struct {
+    uint32_t version,size;
+    int32_t tm,tn,tk,wm,wn,stages,ap,delivery_n,parent_persistent;
+    int32_t split,grid_mode,grid_b;
+    char parent[192];
+} qks_tc_candidate_v1;
+int quactlize_kpack_dispatch_query_candidate_v1(void* runtime,qks_request_v1 const*,
+    qks_tc_candidate_v1 const*,int32_t compute_type,int32_t native_f16,qks_choice_v1*);
 // Describe the materialized ticket, not a second policy lookup or a parse of
 // its symbol. Dense metadata remains FP16 (including BF16-compute parents).
 int quactlize_kpack_dispatch_dense_contract_v1(void* runtime,qks_choice_v1 const*,

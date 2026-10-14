@@ -87,7 +87,7 @@ int main() {
      largest=knot.n; want=c;
    }
    assert(s.config==want);
-   auto recipe_real=recipe(*s.config,r,4);
+   auto recipe_real=recipe(*s.config,r,4,72);
    assert(recipe_real.split==1 && recipe_real.grid>=0);
    // The cost API must not invent measured head or full-dequant timings.
    qks_prefill_choice_v1 cost{};assert(cost::query(r,7,cost)==QKS_MISS);
