@@ -2,28 +2,51 @@
 from dataclasses import asdict
 import json
 import math
+import re
 import statistics
 
 from quactlize.runtime.tuning import digest
 
 
+def kernel_entry(name):
+    """Ignore template arguments and parameter types when naming an entry.
+
+    A GEMM may contain Directory/Metadata/Dequant/SwiGLU types without being
+    one of those standalone helpers. Anonymous namespaces are not arguments.
+    """
+    head = re.split(r'[<(]', name.replace('(anonymous namespace)', '__anonymous'), maxsplit=1)[0].strip()
+    return head.rsplit(None, 1)[-1] if head else ''
+
+
 def role(name):
-    n = name.lower()
+    n = kernel_entry(name).lower()
+    if n in ('cutlass::device_kernel', 'cutlass::kernel'):
+        # CUTLASS's outer callable is generic. Classify its first kernel TYPE,
+        # never the nested scheduler, collective, epilogue or argument types.
+        if '<' not in name:
+            return 'unclassified'
+        n = kernel_entry(name.split('<', 1)[1].split('>', 1)[0]).lower()
     if any(s in n for s in ('reduction', 'reduce_decode', 'register_reuse_reduce')):
         return 'reducer'
     if any(s in n for s in ('dequant', 'sf_prepare', 'expand_scale', 'expand_metadata')):
         return 'expansion'
     if any(s in n for s in ('convert_rows', 'convert_flat', 'copy_rows', 'gather', 'scatter')):
         return 'adapter'
-    if any(s in n for s in ('metadata', 'directory', 'moe_chain_prepare', 'mm_ids_helper', 'topk_moe')):
+    if any(s in n for s in ('metadata', 'moe_directory::build_kernel', 'moe_chain_prepare', 'mm_ids_helper', 'topk_moe', 'indexed_prepare')):
         return 'prepare'
     if any(s in n for s in ('swiglu', 'weighted_finish', 'indexed_finish')):
         return 'postprocess'
-    if any(s in n for s in ('gemm', 'gemv', 'register_reuse<', 'q4_decode::kernel',
+    if any(s in n for s in ('gemm', 'gemv', 'register_reuse', 'q4_decode::kernel',
                             'q4_s1::', 'model_gemv::', 'simt::')):
         return 'producer'
     # Unknown kernels remain visible and timed, never silently omitted.
     return 'unclassified'
+
+
+def stage_role(name, split):
+    if kernel_entry(name).rsplit('::', 1)[-1] == 'indexed_finish':
+        return 'reducer_finish' if split > 1 else 'postprocess'
+    return role(name)
 
 
 def component_key(workload, recipe, node, *, authority, source, cache):

@@ -107,6 +107,41 @@ def test_unknown_kernels_cannot_disappear_from_costs():
     assert role('unrecognized_vendor_kernel')=='unclassified'
 
 
+@pytest.mark.parametrize('kernel', [
+    'GroupDirectoryMixedInputKernel', 'GemmUniversal', 'GemmUniversalMixedInputSplitKParallel',
+    'PersistentMixedInputKernel', 'StreamKMixedInputKernel',
+])
+def test_grouped_tc_is_not_its_directory_or_metadata_template(kernel):
+    name = ('void cutlass::device_kernel<cutlass::gemm::kernel::' + kernel +
+            '<ProblemShape, Metadata, Dequant, MoeBlockDirectoryScheduler, SwiGLU>>(Params)')
+    assert role(name) == 'producer'
+
+
+@pytest.mark.parametrize(('name', 'expected'), [
+    ('void quactlize::runtime::indexed_prepare<8, cutlass::gemm::kernel::GemmUniversal>(Params)', 'prepare'),
+    ('void quactlize::runtime::grouped_device_metadata<cutlass::gemm::Gemm>(Params)', 'prepare'),
+    ('void quactlize::moe_directory::build_kernel<8, 256>(Params)', 'prepare'),
+    ('void cutlass::Kernel<cutlass::gemm::device::splitk_parallel::PpuMixedInputSplitKParallelM1FastReductionKernel<2,4>>(Params)', 'reducer'),
+    ('void quactlize::runtime::indexed_finish<2>(cutlass::gemm::kernel::GemmUniversal::Params)', 'postprocess'),
+    ('void (anonymous namespace)::gather<float>(cutlass::gemm::kernel::GemmUniversal::Params)', 'adapter'),
+    ('void sf_prepare<quactlize::gemm>(Params)', 'expansion'),
+    ('void quactlize::q4_decode::kernel<1, 2>(Metadata)', 'producer'),
+    ('void unknown_kernel(cutlass::gemm::kernel::GemmUniversal::Params)', 'unclassified'),
+    ('void cutlass::device_kernel<UnknownKernel<cutlass::gemm::Gemm>>(Params)', 'unclassified'),
+])
+def test_component_role_uses_callable_not_argument_substrings(name, expected):
+    assert role(name) == expected
+
+
+def test_grouped_captured_inventory_retains_one_producer_and_actual_split_finish():
+    from dev.strategy.components import stage_role
+    names = ['void quactlize::runtime::indexed_prepare<8>(Params)',
+             'void cutlass::device_kernel<cutlass::gemm::kernel::GroupDirectoryMixedInputKernel<Shape, Metadata>>(Params)',
+             'void quactlize::runtime::indexed_finish<2>(Params)']
+    assert [stage_role(n, 1) for n in names] == ['prepare', 'producer', 'postprocess']
+    assert [stage_role(n, 2) for n in names] == ['prepare', 'producer', 'reducer_finish']
+
+
 def test_historical_audit_has_scope_downgrades_not_deletions():
     report=audit()
     assert report['counts']['observations']==7237

@@ -11,6 +11,7 @@ every diagnostic to every kernel.
 | Changing-input replay intermittently wrong | H2D must be ordered on the consumer stream and host memory kept alive | Passing once excludes a race |
 | Error at second M8 tile, N-column stripes | Enumerate actual epilogue ownership; first CTA must not write next tile's row | Rebase the A pointer without evidence |
 | Profiler checker rejects a new implementation | Import saved reports; match exact producer, geometry and required reducer for that call | All symbols observed in a whole request must occur in one M1 profile |
+| A grouped graph has two `prepare` roles and no producer | Classify the callable or CUTLASS's outer kernel type, not words in the full demangled template/argument list | `GroupDirectoryMixedInputKernel` is a directory-builder launch because its name contains `directory` |
 | Query says JIT source differs | Rebuild the small dispatcher against the candidate source and refresh the package | Disable hashes or point an old manifest at a replacement DSO |
 | Benchmark is days rather than hours | Measure wall-time fixture/build/child overhead and prune a declared inventory | Kernel duration times the cell count predicts campaign duration |
 | Port compiles but native instructions balloon | Inspect exact PTX/SDK lowering, operand delivery and resources; see [native lowering](native-lowering.md) | Compiler acceptance means efficient native support, or the hardware lacks the arithmetic capability |
@@ -46,6 +47,14 @@ Use fresh child processes after runtime/launch errors. Keep failed logs and
 mark their timings invalid. Preserve unrelated valid experiments. If the same
 environment failure recurs after targeted checks, report it and continue safe
 host analysis; do not reset devices, kill another workload or rewrite the SDK.
+
+The 2026-10-14 ZW810 resource-reuse pilot reported 8/12 PASS, followed by a
+captured inventory `prepare, prepare, postprocess`. The host classifier matched
+`directory` anywhere before testing `gemm`, misclassifying the grouped producer.
+Callable/outer-type regressions reproduce and correct this parser error; the
+device retry remains necessary for extracted replay and isolated timer gates.
+Retry failed cells in a new source-bound run, leaving old PASS receipts under
+their original authority; do not disable source checks or relabel old timing.
 
 Keep diagnostics small: the exact first bad cell, immediate runtime code,
 source/binary identity, and saved detailed logs are more useful than thousands

@@ -20,7 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from dev.strategy.journal import atomic_json
 from dev.strategy.provenance import harness_identity
-from dev.strategy.resource_pilot import load_probe, smoke_cases, module_record, current_module, sealed, validate_pass, SCOPE
+from dev.strategy.resource_pilot import (load_probe, smoke_cases, module_record, current_module,
+    sealed, validate_pass, retry_failed, validate_retry_authority, SCOPE)
 from dev.strategy.resources import compiler
 from quactlize.runtime.tuning import digest
 from tools.probe_kpack_strategy import device_probe, write
@@ -52,6 +53,8 @@ def main():
     parser.add_argument('--sdk', type=Path, default=Path(os.environ.get('PPU_SDK', '/usr/local/PPU_SDK')))
     parser.add_argument('--plan-only', action='store_true')
     parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--retry-failed-from', type=Path,
+                        help='previous pilot output; preserve its PASS receipts and run only failed/missing cases')
     parser.add_argument('--idle-confirmed', action='store_true')
     parser.add_argument('--case', help=argparse.SUPPRESS)
     parser.add_argument('--receipt', type=Path, help=argparse.SUPPRESS)
@@ -61,6 +64,8 @@ def main():
     plan = smoke_cases(probe)
     plan['resource_plan'] = probe['resolved']['plan_sha256']
     plan['plan_sha256'] = digest(plan)
+    if args.retry_failed_from:
+        plan = retry_failed(plan, args.retry_failed_from)
     if args.case:
         if not args.receipt or args.receipt.resolve().parent != (args.output / 'attempts').resolve():
             parser.error('child receipt must be inside the pilot attempts directory')
@@ -76,6 +81,7 @@ def main():
         else:
             atomic_json(destination, plan)
         print('STRATEGY_EXEC_PLAN ' + json.dumps(dict(cases=len(plan['cases']), omitted=plan['omitted'],
+              previous_passed=len(plan.get('retry', {}).get('previous_passed', [])),
               compile_modules=0, scope=SCOPE, performance_admitted=False)), flush=True)
         if args.plan_only:
             return 0
@@ -93,6 +99,7 @@ def main():
         protocol=dict(rounds=3, samples=3, replays=16, weight_copies=2, cache='WARM_SMOKE'),
         idle='OPERATOR_CONFIRMED_NOT_INDEPENDENTLY_AUDITED', scope=SCOPE)
     authority = json.loads(json.dumps(authority))
+    validate_retry_authority(plan, authority)
     apath = args.output / 'authority.json'
     if apath.exists():
         if json.loads(apath.read_text()) != authority:
@@ -143,6 +150,8 @@ def main():
             command = [sys.executable, '-u', str(Path(__file__).resolve()), '--resource-run', str(probe['root']),
                 '--sdk', str(args.sdk.resolve()), '--output', str(args.output), '--idle-confirmed',
                 '--case', cid, '--receipt', str(attempt)]
+            if args.retry_failed_from:
+                command += ['--retry-failed-from', str(args.retry_failed_from.resolve())]
             with log.open('x') as out:
                 child = subprocess.Popen(command, stdout=out, stderr=subprocess.STDOUT, pass_fds=(held.fileno(),))
                 while True:
@@ -167,6 +176,10 @@ def main():
         cases=outcomes, elapsed_seconds=time.monotonic()-start, new_compiles=0,
         device=physical, scope=SCOPE, performance_admitted=False, production_changed=False,
         full_sweep_started=False, omissions=plan['excluded'])
+    if 'retry' in plan:
+        summary['previous_passed'] = len(plan['retry']['previous_passed'])
+        summary['original_expected'] = plan['retry']['original_expected']
+        summary['retry'] = {k: plan['retry'][k] for k in ('previous_output', 'scope')}
     atomic_json(args.output / 'summary.json', summary)
     print('STRATEGY_EXEC_DONE ' + json.dumps(summary), flush=True)
     return int(summary['status'] != 'PASS')

@@ -11,7 +11,7 @@ import numpy as np
 from dev.bf16_compute.fixture import compare, round_compute
 from dev.smallm_closure.bench import Buffer, Context
 from dev.smallm_closure.fixture import Weights
-from dev.strategy.components import role, statistics_checked
+from dev.strategy.components import stage_role, statistics_checked
 from dev.strategy.indexed import RuntimeView, TensorCore as IndexedCore
 from dev.strategy.isolated import Captured, checked
 from dev.strategy.resources import NativeProbe, request_abi
@@ -124,14 +124,6 @@ class DenseCore:
         self.r.close()
 
 
-def stage_role(name, split):
-    if 'indexed_prepare' in name:
-        return 'prepare'
-    if 'indexed_finish' in name:
-        return 'reducer_finish' if split > 1 else 'postprocess'
-    return role(name)
-
-
 def measure_case(sdk, case, record, query_receipt, *, rounds=3, samples=3, replays=16):
     from quactlize.dispatch.table import Workload, Recipe
     w, recipe = Workload(**case['workload']), Recipe.from_dict(case['recipe'])
@@ -224,7 +216,8 @@ def measure_case(sdk, case, record, query_receipt, *, rounds=3, samples=3, repla
         split = dict(recipe.parameters)['split']
         kinds = [stage_role(node['name'], split) for node in nodes]
         if kinds.count('producer') != 1 or 'unclassified' in kinds:
-            raise ValueError('unexpected captured component inventory: ' + repr(kinds))
+            raise ValueError('unexpected captured component inventory: ' + repr([
+                dict(role=kind, **node) for kind, node in zip(kinds, nodes)]))
         if split > 1 and not any(k in ('reducer', 'reducer_finish') for k in kinds):
             raise ValueError('split call has no captured reducer/finish')
         # Old partials contain A0. Change A/router BEFORE executing extracted

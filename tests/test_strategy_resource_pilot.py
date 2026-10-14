@@ -18,6 +18,19 @@ from tools.probe_kpack_strategy import write
 from test_strategy_prescreen import tc
 
 
+def passed_result(case):
+    from dev.strategy.components import statistics_checked
+    w = Workload(**case['workload'])
+    proof = dict(cells=w.m*w.topk*w.n, bad=0, nonfinite=0, tolerance=.005, relative_l1_error=.0001)
+    component = dict(statistics_checked([[1.]*3 for _ in range(3)]), role='producer',
+                     node=dict(name='void cutlass::device_kernel<cutlass::gemm::kernel::GemmUniversal<Shape>>(Params)'),
+                     timed_kernel_types=1, first_use_excluded=True, cache='WARM_SMOKE_NO_COLD_OR_PERFORMANCE_ADMISSION')
+    return dict(status='PASS', scope='WARM_TC_MECHANISM_GATE_NOT_COLD_SELECTION',
+        production_changed=False, performance_admitted=False, numerical=[proof]*5, extracted=proof,
+        negatives=dict(zero_input='DETECTED', omitted_producer='DETECTED', ring_planes=['low','units']),
+        components=[component])
+
+
 def example(tmp_path):
     w = Workload(12, 1024, 2048, 1)
     r = tc()
@@ -131,24 +144,79 @@ def test_supplemental_warm_timing_cannot_claim_cold_or_pick_winner(tmp_path):
 
 def test_pass_requires_complete_oracles_negatives_and_recomputed_statistics(tmp_path):
     import copy
-    from dev.strategy.components import statistics_checked
     from dev.strategy.resource_pilot import validate_pass
     case = smoke_cases(example(tmp_path))['cases'][0]
-    proof = dict(cells=1024, bad=0, nonfinite=0, tolerance=.005, relative_l1_error=.0001)
-    component = dict(statistics_checked([[1.]*3 for _ in range(3)]), role='producer',
-                     timed_kernel_types=1, first_use_excluded=True, cache='WARM_SMOKE_NO_COLD_OR_PERFORMANCE_ADMISSION')
-    result = dict(status='PASS', scope='WARM_TC_MECHANISM_GATE_NOT_COLD_SELECTION',
-        production_changed=False, performance_admitted=False, numerical=[proof]*5, extracted=proof,
-        negatives=dict(zero_input='DETECTED', omitted_producer='DETECTED', ring_planes=['low','units']),
-        components=[component])
+    result = passed_result(case)
     assert validate_pass(case, result) == result
-    for change in ('numerical', 'negative', 'statistic', 'combined'):
+    for change in ('numerical', 'negative', 'statistic', 'combined', 'wrong_kernel'):
         bad = copy.deepcopy(result)
         if change == 'numerical': bad['numerical'] = []
         if change == 'negative': bad['negatives']['omitted_producer'] = 'NOT_TESTED'
         if change == 'statistic': bad['components'][0]['median_us'] = .01
         if change == 'combined': bad['components'][0]['timed_kernel_types'] = 3
+        if change == 'wrong_kernel': bad['components'][0]['node']['name'] = 'indexed_prepare<8>'
         with pytest.raises(ValueError): validate_pass(case, bad)
+
+
+def previous_pilot(tmp_path):
+    probe = example(tmp_path / 'resource')
+    plan = smoke_cases(probe)
+    plan['resource_plan'] = probe['resolved']['plan_sha256']
+    plan['plan_sha256'] = digest(plan)
+    directory = tmp_path / 'previous'
+    authority = dict(plan=plan['plan_sha256'], harness=dict(sha256='old-harness'),
+                     resource=probe['authority'], oracle='same-oracle', protocol='same-protocol')
+    atomic_json(directory / 'plan.json', plan)
+    atomic_json(directory / 'authority.json', authority)
+    for case in plan['cases']:
+        result = passed_result(case) if case['split_kind'] == 's1' else dict(status='FAIL', error='classification')
+        write(directory / 'cases' / (case['id'] + '.json'), dict(authority=authority, case=case), result)
+    return plan, directory, authority
+
+
+def test_failed_only_retry_preserves_raw_pass_without_relabelling(tmp_path):
+    from dev.strategy.resource_pilot import retry_failed, validate_retry_authority
+    plan, directory, authority = previous_pilot(tmp_path)
+    before = {p: p.read_bytes() for p in directory.rglob('*.json')}
+    retry = retry_failed(plan, directory)
+    assert len(retry['cases']) == 1 and retry['cases'][0]['split_kind'] == 'split'
+    assert retry['retry']['previous_passed'] == [plan['cases'][0]['id']]
+    assert retry['retry']['original_expected'] == 2
+    assert retry['retry']['previous_harness_sha256'] == 'old-harness'
+    assert before == {p: p.read_bytes() for p in directory.rglob('*.json')}
+    current = dict(authority, plan=retry['plan_sha256'], harness=dict(sha256='fixed-harness'))
+    validate_retry_authority(retry, current)
+    with pytest.raises(ValueError, match='authority changed'):
+        validate_retry_authority(retry, dict(current, oracle='different-oracle'))
+
+
+def test_retry_rejects_changed_plan_and_damaged_previous_receipt(tmp_path):
+    from dev.strategy.resource_pilot import retry_failed
+    plan, directory, authority = previous_pilot(tmp_path)
+    with pytest.raises(ValueError, match='identical original'):
+        retry_failed(dict(plan, scope='changed'), directory)
+    path = directory / 'cases' / (plan['cases'][0]['id'] + '.json')
+    damaged = json.loads(path.read_text())
+    damaged['data']['numerical'] = []
+    atomic_json(path, damaged)
+    with pytest.raises(ValueError, match='digest'):
+        retry_failed(plan, directory)
+
+
+def test_box_failed_only_plan_needs_no_device_or_rebuild(tmp_path):
+    import os
+    plan, directory, authority = previous_pilot(tmp_path)
+    # Box convention is run/pilot, while the Python runner accepts pilot.
+    run = tmp_path / 'old-run'
+    run.mkdir()
+    directory.rename(run / 'pilot')
+    env = dict(os.environ, PROBE_RUN=str(tmp_path / 'resource'), RUN_ROOT=str(tmp_path),
+               RETRY_FROM=str(run), PLAN_ONLY='1', PYTHON=sys.executable)
+    result = subprocess.run(['bash', 'tools/run_kpack_strategy_pilot_box.sh'], env=env,
+        capture_output=True, text=True, cwd=Path(__file__).resolve().parents[1])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert '"cases": 1' in result.stdout and '"previous_passed": 1' in result.stdout
+    assert '"compile_modules": 0' in result.stdout
 
 
 def test_box_plan_only_has_no_runtime_dependency_and_preserves_shell(tmp_path):
@@ -166,8 +234,7 @@ def test_box_plan_only_has_no_runtime_dependency_and_preserves_shell(tmp_path):
 
 
 def test_grouped_fused_reducer_finish_has_explicit_timing_scope():
-    pytest.importorskip('torch')
-    from dev.strategy.pilot_native import stage_role
+    from dev.strategy.components import stage_role
     assert stage_role('indexed_prepare<8>', 2) == 'prepare'
     assert stage_role('indexed_finish<2>', 2) == 'reducer_finish'
     assert stage_role('indexed_finish<1>', 1) == 'postprocess'

@@ -156,9 +156,62 @@ def current_module(record, spec, compiler):
     return key
 
 
+def retry_failed(plan, directory):
+    """New attempt for failed cells; old PASS receipts remain old evidence.
+
+    This is deliberately not --resume with its source checks disabled. The
+    new run has its own harness authority and never rewrites/imports a prior
+    PASS as a fresh measurement. Recheck old seals, cases and component roles.
+    """
+    root = Path(directory).resolve(strict=True)
+    previous = verified_plan(json.loads((root / 'plan.json').read_text()))
+    if previous != plan:
+        raise ValueError('retry requires the identical original pilot plan')
+    authority = json.loads((root / 'authority.json').read_text())
+    if authority.get('plan') != previous['plan_sha256']:
+        raise ValueError('retry parent authority differs from its plan')
+    passed, pending, receipts = [], [], {}
+    for case in plan['cases']:
+        path = root / 'cases' / (case['id'] + '.json')
+        if not path.exists():
+            receipts[case['id']] = None
+            pending.append(case)
+            continue
+        result = sealed(path, dict(authority=authority, case=case))
+        receipts[case['id']] = sha(path)
+        if result.get('status') == 'PASS':
+            validate_pass(case, result)
+            passed.append(case['id'])
+        elif result.get('status') == 'FAIL':
+            pending.append(case)
+        else:
+            raise ValueError('retry parent has an invalid case status')
+    if not pending:
+        raise ValueError('previous pilot has no failed or missing cases to retry')
+    result = {k: v for k, v in plan.items() if k != 'plan_sha256'}
+    result.update(cases=pending, retry=dict(previous_output=str(root),
+        previous_plan_sha256=previous['plan_sha256'], previous_authority_sha256=digest(authority),
+        previous_harness_sha256=authority['harness']['sha256'],
+        previous_passed=passed, original_expected=len(plan['cases']), receipts=receipts,
+        scope='FAILED_CASES_ONLY_PREVIOUS_PASS_NOT_REMEASURED_OR_RELABELLED'))
+    result['plan_sha256'] = digest(result)
+    return result
+
+
+def validate_retry_authority(plan, authority):
+    retry = plan.get('retry')
+    if not retry:
+        return
+    previous = json.loads((Path(retry['previous_output']) / 'authority.json').read_text())
+    comparable = lambda value: {k: v for k, v in value.items() if k not in ('plan', 'harness')}
+    if (digest(previous) != retry['previous_authority_sha256'] or
+            comparable(previous) != comparable(authority)):
+        raise ValueError('retry device/SDK/oracle/protocol/resource authority changed')
+
+
 def validate_pass(case, result):
     """A PASS label alone cannot make a partially measured arm resumable."""
-    from dev.strategy.components import statistics_checked
+    from dev.strategy.components import stage_role, statistics_checked
     if (result.get('status') != 'PASS' or result.get('production_changed') is not False or
             result.get('performance_admitted') is not False or
             result.get('scope') != 'WARM_TC_MECHANISM_GATE_NOT_COLD_SELECTION'):
@@ -189,6 +242,8 @@ def validate_pass(case, result):
             split > 1 and not any(k in ('reducer', 'reducer_finish') for k in kinds)):
         raise ValueError('pilot component inventory incomplete')
     for stage in stages:
+        if stage.get('role') != stage_role(stage.get('node', {}).get('name', ''), split):
+            raise ValueError('pilot component role differs from captured kernel entry')
         statistics = statistics_checked(stage['samples_us'])
         if (any(stage.get(k) != v for k, v in statistics.items()) or
                 stage.get('timed_kernel_types') != 1 or stage.get('first_use_excluded') is not True or

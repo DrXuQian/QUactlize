@@ -11,6 +11,12 @@ pilot_python=$(command -v "${PYTHON:-python3}")
 : "${PROBE_RUN:?Set PROBE_RUN to the completed kpack-rule-probe directory}"
 pilot_probe=$(realpath -e -- "$PROBE_RUN")
 test -f "$pilot_probe/resources/summary.json"
+pilot_retry=()
+if [[ -n "${RETRY_FROM:-}" ]]; then
+    pilot_previous=$(realpath -e -- "$RETRY_FROM")
+    test -f "$pilot_previous/pilot/plan.json"
+    pilot_retry=(--retry-failed-from "$pilot_previous/pilot")
+fi
 pilot_root=$(realpath -e -- "${RUN_ROOT:-/workspace}")
 test -d "${pilot_root:?}"
 if [[ -n "${RESUME_DIR:-}" ]]; then
@@ -48,7 +54,7 @@ cd -- "${pilot_source:?}"
 if [[ "${PLAN_ONLY:-0}" == 1 ]]; then
     stage=plan-only
     "$pilot_python" -u tools/run_kpack_strategy_pilot.py --resource-run "$pilot_probe" \
-        --output "$pilot_run/pilot" --plan-only
+        --output "$pilot_run/pilot" --plan-only "${pilot_retry[@]}" "${pilot_resume[@]}"
 else
     : "${CUDA_VISIBLE_DEVICES:?Select the same single card as the resource probe}"
     if [[ "${IDLE_CONFIRMED:-0}" != 1 ]]; then
@@ -60,7 +66,7 @@ else
     stage=execution-and-isolated-timer
     "$pilot_python" -u tools/run_kpack_strategy_pilot.py --resource-run "$pilot_probe" \
         --sdk "$pilot_sdk" --output "$pilot_run/pilot" --idle-confirmed \
-        "${pilot_resume[@]}" 2>&1 | tee -a "$pilot_run/console.log"
+        "${pilot_resume[@]}" "${pilot_retry[@]}" 2>&1 | tee -a "$pilot_run/console.log"
 fi
 stage=complete
 if [[ "${PLAN_ONLY:-0}" == 1 ]]; then
