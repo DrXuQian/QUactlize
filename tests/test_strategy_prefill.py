@@ -107,6 +107,22 @@ def test_failed_child_log_tail_is_bounded_and_decodes_invalid_bytes(tmp_path, ca
     assert log.stat().st_size > 20000
 
 
+def test_helper_compile_failure_prints_real_log_tail_and_keeps_artifact(tmp_path, monkeypatch, capsys):
+    import dev.strategy.prefill_build as mod
+    monkeypatch.setattr(mod, 'identity', lambda sdk: dict(test='HOST_ONLY_FAILURE_INJECTION'))
+    code = 'import sys; sys.stdout.buffer.write(b"OMITTED_PREFIX"+b"x"*20000+b"\\xffHGCC_FAILURE_TAIL"); sys.exit(5)'
+    monkeypatch.setattr(mod, 'commands', lambda sdk, output: [[sys.executable, '-c', code]])
+    output = tmp_path/'attempt'
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        mod.build(tmp_path, output)
+    assert error.value.returncode == 5
+    console = capsys.readouterr().out
+    assert 'STRATEGY_PREFILL_BUILD_FAILURE unit=prefill_helpers rc=5' in console
+    assert 'HGCC_FAILURE_TAIL' in console and 'OMITTED_PREFIX' not in console and len(console) < 14000
+    assert (output/'prefill_helpers.log').stat().st_size > 20000
+    assert not (output/'manifest.json').exists()
+
+
 def test_live_original_is_revealed_after_blind_generation_not_injected(tmp_path):
     points = [point(), point(Workload(12, 1024, 2048, 128, 'indexed', 'bf16', experts=256, topk=8)),
               point(Workload(8, 2048, 4096, 128))]

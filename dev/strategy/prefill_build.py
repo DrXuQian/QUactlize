@@ -47,8 +47,15 @@ def build(sdk, output):
     start = time.monotonic()
     def run(item):
         name, command = item
-        with (output/(name+'.log')).open('x') as log:
-            subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
+        path = output/(name+'.log')
+        with path.open('x') as log:
+            result = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT)
+        if result.returncode:
+            print(f'STRATEGY_PREFILL_BUILD_FAILURE unit={name} rc={result.returncode} log={path}', flush=True)
+            with path.open('rb') as log:
+                log.seek(max(0, path.stat().st_size-12288))
+                print(log.read().decode('utf-8', errors='replace'), flush=True)
+            raise subprocess.CalledProcessError(result.returncode, command)
     jobs = commands(sdk, output)
     with ThreadPoolExecutor(max_workers=2) as pool:
         list(pool.map(run, [(Path(p).stem, c) for p, c in zip(SOURCES, jobs)]))

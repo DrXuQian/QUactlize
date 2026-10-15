@@ -35,6 +35,7 @@ with tarfile.open(archive,'x:gz') as out:
     out.addfile(entry,io.BytesIO(data))
     paths=[root/'console.log',root/'measurement/counts.json']
     paths+=sorted((root/'measurement').glob('*.log'))[-32:]
+    paths+=sorted((root/'measurement/build-attempts').glob('*/*.log'))[-32:]
     for path in paths:
         if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(root):continue
         with path.open('rb') as stream:
