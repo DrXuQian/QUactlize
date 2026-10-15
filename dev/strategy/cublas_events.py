@@ -2,6 +2,7 @@
 import json
 import math
 from pathlib import Path
+import statistics
 
 from dev.strategy.components import statistics_checked
 from quactlize.runtime.compiler import sha
@@ -44,6 +45,14 @@ def summarize(data, *, provider_only=False):
     expected = [(r, s, p, (r*count+s) % copies) for r in range(3) for s in range(count) for p in PHASES]
     if [(r.get('round'), r.get('sample'), r.get('phase'), r.get('copy')) for r in measured] != expected:
         raise ValueError('event sample inventory is incomplete, duplicate or reordered')
+    frontend = data.get('submission_frontend', 'PYTHON_PER_CALL_SYNC')
+    if frontend not in ('PYTHON_PER_CALL_SYNC', 'CPP_PREBOUND_CONTINUOUS'):
+        raise ValueError('unknown event submission frontend')
+    if frontend == 'CPP_PREBOUND_CONTINUOUS':
+        if (data.get('per_sample_synchronizations') != 0 or data.get('inter_round_checks') != 0 or
+                any(type(r.get('host_submit_us')) not in (int, float) or
+                    not math.isfinite(r['host_submit_us']) or r['host_submit_us'] < 0 for r in measured)):
+            raise ValueError('native continuous submission evidence incomplete')
     timers, missing = {}, []
     for phase in PHASES:
         samples = [r for r in measured if r['phase'] == phase]
@@ -57,11 +66,16 @@ def summarize(data, *, provider_only=False):
                      timing_method='CUDA_EVENTS_ORDINARY_CALL', first_use_excluded=True,
                      internal_reduction_included=phase == 'provider',
                      kernel_count='OPAQUE_PROVIDER' if phase == 'provider' else 1,
-                     host_launch_cost_added=False)
+                     host_launch_cost_added=False, submission_frontend=frontend)
+        if frontend == 'CPP_PREBOUND_CONTINUOUS':
+            host = [[r['host_submit_us'] for r in samples if r['round'] == i] for i in range(3)]
+            medians = [statistics.median(r) for r in host]
+            timer['host_submission'] = dict(samples_us=host, round_medians_us=medians,
+                median_us=statistics.median(medians), scope='CPU_SUBMISSION_DIAGNOSTIC_NOT_SUBTRACTED')
         timers[phase] = timer
     return dict(status='PASS', timers=timers, missing_adapter_timers=missing,
         scope='CUBLAS_PROVIDER_ONLY' if missing else 'SEPARATE_PROVIDER_AND_ADAPTER_API_EVENTS',
-        original_event_scope=data.get('event_scope'), cuda_graph=False, profiler=False,
+        original_event_scope=data.get('event_scope'), submission_frontend=frontend, cuda_graph=False, profiler=False,
         dequant_timed=False, production_changed=False, performance_admitted=False)
 
 

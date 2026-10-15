@@ -109,6 +109,11 @@ def run(args):
         data = run_events(args.sdk, args.output, authority, held, args.timeout_seconds)
         print('STRATEGY_CUBLAS_DONE '+json.dumps(dict(status=data['status'],
             provider_us=data['timers']['provider']['median_us'], seconds=time.monotonic()-start,
+            round_medians_us=data['timers']['provider']['round_medians_us'],
+            spread_pct=data['timers']['provider']['spread_pct'],
+            submission_frontend=data['submission_frontend'],
+            host_submission_us=data['timers']['provider'].get('host_submission', {}).get('median_us'),
+            adapter_us={p: data['timers'][p]['median_us'] for p in ('input', 'output')},
             cuda_graph=False, profiler=False, performance_admitted=False, full_campaign=False)), flush=True)
         return 0
 

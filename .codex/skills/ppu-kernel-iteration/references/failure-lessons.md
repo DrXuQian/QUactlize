@@ -82,6 +82,22 @@ exit, authority, numerical controls and complete sample inventory validate.
 Do not turn a failed profiler receipt green or invent unmeasured adapter times.
 Existing TC/dequant/grouped timers remain unchanged; host tests are not PPU proof.
 
+Saved ordinary-call events from rtPK66KP (Q3 M128/N1024/K5120, ZW810/72,
+SDK2.1.1) had provider round medians59.32/65.76/59.68us and first-sample
+spikes183.64/147.08/118.12us. The source placed Python/Torch stream/view/
+pointer work AFTER the start event, synchronized each phase, and performed
+D2H/CPU oracle work between rounds. Those are confirmed harness seams, not
+proof that cuBLAS changes algorithms or clocks. Use prebound native ordinary
+submissions with separate event pairs, one final completion sync, and oracle
+work outside the whole timed sequence. Retain all samples and CPU submission
+diagnostics without subtracting them. No Graph or profiler is required.
+Native continuous-submission stability still needs its PPU comparison; don't
+retroactively relabel59.68us as pure GEMM or claim an unmeasured speedup.
+Keep CUDA compatibility cuBLAS headers in a separate HOST translation unit
+from native HGGCRT/device headers; combining their include roots caused
+type/math declaration conflicts on this SDK. Bind the actual SDK ABI and
+pass the already-loaded cuBLAS function/handle, not a second provider DSO.
+
 Two equal captured launch inventories do not prove tuning completion or
 optimality. Use ordinary untimed warmup, synchronization, and event timing;
 for this experiment retain the requested separate kernel-stage timers.

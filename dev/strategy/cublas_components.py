@@ -74,6 +74,7 @@ def event_components(data, workload, authority, source):
         kind, name = names[phase]
         identity = dict(schema='quactlize.provider-event-component.v1', authority=authority,
             implementation=source, cuda_graph=False, profiler=False, contract=asdict(workload),
+            submission_frontend=timer['submission_frontend'],
             phase=phase, kind=kind, node=dict(name=name, entry_type='PROVIDER_API' if phase=='provider' else 'KERNEL'),
             cache='ROTATING_BF16_WEIGHTS_2P25_L2_RESIDENT_SCRATCH_ORDINARY_CALL')
         cid = digest(identity)

@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import time
 
 from dev.strategy.journal import atomic_json
@@ -11,13 +12,17 @@ from quactlize.runtime.compiler import Compiler, FLAGS, LIBRARIES, sha
 from quactlize.runtime.tuning import digest
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCES = ('dev/strategy/prefill_helpers.cu', 'quactlize/dequant/indexed.cu')
-HEADERS = ('dev/strategy/prefill_capture.hpp',)
+SOURCES = ('dev/strategy/prefill_helpers.cu', 'quactlize/dequant/indexed.cu',
+           'dev/strategy/prefill_cublas.cpp', 'dev/strategy/prefill_blas.cpp')
+HEADERS = ('dev/strategy/prefill_capture.hpp', 'dev/strategy/prefill_events.hpp')
 
 
 def identity(sdk):
     compiler = Compiler(sdk, Path(sdk)/'unused-strategy-identity')
-    return dict(compiler=compiler.identity, sources={p: sha(ROOT/p) for p in (*SOURCES, *HEADERS)},
+    return dict(compiler=compiler.identity, host_compiler=sha(Path(shutil.which('g++')).resolve(strict=True)),
+                blas_headers={name: sha(Path(sdk)/'CUDA_SDK/include'/name)
+                for name in ('cublas_v2.h', 'cublas_api.h')},
+                sources={p: sha(ROOT/p) for p in (*SOURCES, *HEADERS)},
                 adapters={str(p.relative_to(ROOT)): sha(p)
                     for folder in ('quactlize/dense', 'quactlize/prefill', 'quactlize/dequant')
                     for p in (ROOT/folder).rglob('*') if p.is_file() and p.suffix in ('.h', '.hpp', '.cuh', '.cu')})
@@ -25,8 +30,17 @@ def identity(sdk):
 
 def commands(sdk, output):
     includes = [ROOT, ROOT/'quactlize/include', ROOT/'third_party/actlize/include']
-    return [[str(sdk/'bin/hgcc'), *FLAGS, *['-I'+str(p) for p in includes],
-             '-c', str(ROOT/source), '-o', str(output/(Path(source).stem+'.o'))] for source in SOURCES]
+    result = []
+    for source in SOURCES:
+        if source.endswith('.cpp'):
+            # Native host timing only. Do not mix CUDA compatibility headers
+            # into HGCC's device compilation or alter production kernel flags.
+            sdk_include = sdk/('CUDA_SDK/include' if source.endswith('prefill_blas.cpp') else 'include')
+            prefix = ['g++', '-std=c++17', '-O3', '-fPIC', '-I'+str(ROOT), '-I'+str(sdk_include)]
+        else:
+            prefix = [str(sdk/'bin/hgcc'), *FLAGS, *['-I'+str(p) for p in includes]]
+        result.append([*prefix, '-c', str(ROOT/source), '-o', str(output/(Path(source).stem+'.o'))])
+    return result
 
 
 def verify(sdk, output):

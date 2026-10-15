@@ -52,6 +52,36 @@ def test_provider_is_a_black_box_call_not_a_single_kernel():
     assert data['performance_admitted'] is False
 
 
+def native_proof():
+    data=proof()
+    data.update(submission_frontend='CPP_PREBOUND_CONTINUOUS',
+                per_sample_synchronizations=0,inter_round_checks=0)
+    for row in data['measured']: row['host_submit_us']=17.
+    return data
+
+
+def test_native_host_diagnostic_is_not_subtracted_from_gpu_events():
+    data=summarize(native_proof())
+    timer=data['timers']['provider']
+    assert timer['median_us']==40. and timer['host_submission']['median_us']==17.
+    assert timer['submission_frontend']=='CPP_PREBOUND_CONTINUOUS'
+    rows=event_components(data,Workload(11,1024,5120,128),'authority','body')
+    assert all(r['identity']['submission_frontend']=='CPP_PREBOUND_CONTINUOUS' for r in rows)
+
+
+@pytest.mark.parametrize('edit', [
+    lambda d:d.update(submission_frontend='UNKNOWN'),
+    lambda d:d.update(per_sample_synchronizations=1),
+    lambda d:d.update(inter_round_checks=1),
+    lambda d:d['measured'][0].pop('host_submit_us'),
+    lambda d:d['measured'][0].update(host_submit_us=float('nan')),
+    lambda d:d['measured'][0].update(host_submit_us=-1.),
+])
+def test_native_submission_cannot_silently_change_its_protocol(edit):
+    data=native_proof(); edit(data)
+    with pytest.raises(ValueError): summarize(data)
+
+
 @pytest.mark.parametrize('edit', [
     lambda d:d.update(profiler=True), lambda d:d.update(cuda_graph=True),
     lambda d:d.update(annotations={'profiler':'yes'}), lambda d:d.update(correctness='PENDING'),

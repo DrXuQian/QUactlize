@@ -139,11 +139,14 @@ def test_ordinary_worker_never_uses_capture_and_retains_numeric_negatives(monkey
     def fill(ptr, *_):
         if ptr == 42: phase['bad_weight'] = True
         else: phase['poison'] = True
-    def sampled(fn, count):
-        assert count==1
-        controls.append(len(events)); fn(); return [20.]
+    def sampled(warmups):
+        assert warmups == 12
+        controls.append(len(events))
+        launch(2)
+        return [dict(round=r,sample=s,copy=s,phase=p,event_span_us=20.,host_submit_us=1.)
+                for r in range(3) for s in range(3) for p in ('input','provider','output')]
     b = SimpleNamespace(w=SimpleNamespace(operation='dense', experts=1), update=update, check=check,
-        rt=SimpleNamespace(sync=lambda: None), r=SimpleNamespace(fill=fill, samples=sampled),
+        rt=SimpleNamespace(sync=lambda: None), r=SimpleNamespace(fill=fill),
         ring=SimpleNamespace(buffers=[], receipt={'unchanged': True}),
         input=lambda *args: 0, finish=lambda *args: 0)
     tensor = lambda ptr: SimpleNamespace(data_ptr=lambda: ptr, numel=lambda: 16)
@@ -151,14 +154,16 @@ def test_ordinary_worker_never_uses_capture_and_retains_numeric_negatives(monkey
         setup=setup, launch=launch, matmul=launch, update=lambda: None, guards=lambda: None,
         check_weights=lambda i: {'bad':0}, receipt={'provider':'cuBLAS'})
     monkeypatch.setattr(m, 'loaded_images', lambda: {'blas.so':'sha'})
+    monkeypatch.setattr(m, 'NativeCalls', lambda *_: SimpleNamespace(matmul=launch,measure=sampled))
     r = m.measure(b, core)
     assert r['correctness']=='PASS' and not r['cuda_graph'] and r['warmup_calls']==12
     assert r['omitted_producer']=='DETECTED' and r['pointer_negatives']==['BF16_LAST_COPY_ZERO']
-    assert len(r['measured'])==27 and len(controls)==28  # one untimed event warmup
+    assert len(r['measured'])==27 and len(controls)==1
     assert all(item['event_span_us']==20. for item in r['measured'])
     assert r['profiler'] is False and r['annotations'] is None
     # No fixture/expansion/warmup work after the first measured range.
-    assert all(e=='gemm' for e in events[controls[1]:])
+    assert all(e=='gemm' for e in events[controls[0]:])
+    assert r['submission_frontend']=='CPP_PREBOUND_CONTINUOUS' and r['inter_round_checks']==0
     assert any(e[0]=='update' and e[2].get('amplitude')==2**20 for e in events if isinstance(e,tuple))
 
 
