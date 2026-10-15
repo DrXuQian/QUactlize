@@ -174,6 +174,17 @@ def child(args):
                                 authority['body_source'], args.output, separate_expansion=True)
                         data = sf_results[c]
                     elif role in ('full_dequant', 'bf16'):
+                        if role == 'bf16' and w.operation == 'dense':
+                            from dev.strategy.cublas_components import measure_cublas
+                            # Free this provider's expanded ring before its
+                            # fresh profiled worker allocates the same fixture.
+                            if full: full.close(); full = None
+                            with os.fdopen(os.dup(args.lock_fd), 'a') as held:
+                                data = measure_cublas(args, w, authority, held)
+                            journal.finish(point, job, 'PASS', data=data)
+                            print(f'STRATEGY_PREFILL_JOB point={point["id"][:12]} job={job["id"][:12]} '
+                                  'status=PASS method=ASYS_NO_GRAPH', flush=True)
+                            continue
                         domain_key = (tuple(map(int, routing(w, 0)['active'])), job['config'])
                         if role == 'full_dequant' and domain_key in full_results:
                             journal.finish(point, job, 'PASS', data=full_results[domain_key])
@@ -281,7 +292,9 @@ def main():
     parser.add_argument('--previous-output', type=Path,
                         help='stopped prefill run; retry failed/pending jobs without remeasuring its PASS jobs')
     parser.add_argument('--idle-confirmed', action='store_true')
+    parser.add_argument('--asys', type=Path, help='dense cuBLAS individual-kernel profiler (no CUDA Graph)')
     parser.add_argument('--family', help=argparse.SUPPRESS)
+    parser.add_argument('--lock-fd', type=int, help=argparse.SUPPRESS)
     parser.add_argument('--deadline', type=float, default=0., help=argparse.SUPPRESS)
     parser.add_argument('--invocation', default=uuid.uuid4().hex, help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -317,6 +330,11 @@ def main():
           production_changed=False, scope='LARGE_M_COMPONENT_SCREEN')), flush=True)
     if args.plan_only: return 0
     if not args.idle_confirmed: parser.error('--idle-confirmed required')
+    asys_identity = None
+    if any(p['workload']['operation'] == 'dense' for p in frozen['points']):
+        from quactlize.runtime.compiler import sha
+        asys = (args.asys or args.sdk/'asight/bin/asys').resolve(strict=True)
+        asys_identity = dict(path=str(asys), sha256=sha(asys))
     if counts['modules'] > args.max_modules: raise ValueError('module bound exceeded before compilation')
     import torch
     if not torch.cuda.is_available() or torch.cuda.device_count() != 1:
@@ -373,9 +391,9 @@ def main():
         authority = dict(plan=plan['plan_sha256'], resource=probe['authority'], harness=harness_identity(ROOT),
             oracle=oracle_identity(), graph_abi=check_sdk_graph_abi(args.sdk), l2=l2,
             tc={k: v['sha256'] for k, v in records.items()}, dequant=dq['sha256'], helpers=hp['sha256'],
-            providers=providers,
+            providers=providers, asys=asys_identity,
             body_source=digest([dq['source_hashes'], hp['identity']]),
-            idle='OPERATOR_CONFIRMED', protocol='3x3_ONE_KERNEL_PER_TIMER_NO_LAUNCH_PENALTY',
+            idle='OPERATOR_CONFIRMED', protocol='SEPARATE_KERNELS_CUBLAS_ASYS_ORDINARY_OTHERS_ISOLATED_EVENTS',
             scope=plan['scope'], production_changed=False)
         path = args.output/'authority.json'
         if path.exists() and json.loads(path.read_text()) != authority: raise ValueError('resume authority changed')
@@ -401,6 +419,7 @@ def main():
                 log = args.output/(f'family-{key}-{time.time_ns()}.log')
                 cmd = [sys.executable, '-u', str(Path(__file__).resolve()), '--output', str(args.output),
                     '--sdk', str(args.sdk), '--cache', str(args.cache), '--family', key,
+                    '--lock-fd', str(held.fileno()),
                     '--invocation', args.invocation, '--deadline', str(started+args.hours*3600)]
                 rc = wait(cmd, log, held=held, phase=f'family-{number+1}/{len(families)}')
                 for p in points:

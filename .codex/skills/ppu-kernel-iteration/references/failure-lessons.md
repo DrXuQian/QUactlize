@@ -63,8 +63,18 @@ the workspace through graph replay and handle destruction, with redzones.
 Do not remove allocation/free or other non-kernel nodes to make extraction
 pass. The one-point default/resident probe uses separate processes and the
 same physical-device lock as the campaign; active sources/results stay fixed.
-Native helper object compilation and101 host tests passed, device proof is
-pending. Seam: `tools/probe_kpack_prefill_capture.py`.
+Follow-up evidence fromqiUnYdHg: resident workspace yielded60kernel nodes,
+zero non-kernel nodes and successful clone, but runtimeGetKernelNodeParams
+failed500 (named symbol not found). Do not mistake successful clone for
+usable extracted kernels, or blame numerical correctness from this failure.
+The user requested NO CUDA Graph for cuBLAS. That capture probe is retired.
+Use ordinary warmed calls and synchronizedHGTX ranges with Asys GPU activity
+timestamps (`probe_kpack_cublas_ordinary.py`). Preserve every internal kernel,
+its geometry and sample; keep provider event spans auxiliary, not a producer
+timer. Mark profiler samples separately from isolated graph-event records.
+Empty/calibration-broken device activity is a failure, never host-time
+fallback. Existing TC/dequant/grouped timers are unchanged. A single-point
+gate is required before restarting a campaign; host tests are not PPU proof.
 
 Two equal captured launch inventories do not prove tuning completion or
 optimality. Use ordinary untimed warmup, synchronization, and event timing;

@@ -157,15 +157,22 @@ class Review:
                         spread_pct=100*(max(medians)/min(medians)-1))
         if any(data.get(k) != v for k, v in expected.items()):
             raise ValueError('component statistics differ from samples')
-        if (data.get('status') != 'PASS' or data.get('scope') != 'ISOLATED_SINGLE_KERNEL' or
+        if (data.get('status') != 'PASS' or data.get('scope') not in ('ISOLATED_SINGLE_KERNEL', 'PROFILED_SINGLE_KERNEL') or
                 data.get('timed_kernel_types') != 1 or not data.get('first_use_excluded') or
                 data.get('host_launch_cost_added') is not False):
             raise ValueError('component timing scope differs')
+        if data['scope'] == 'PROFILED_SINGLE_KERNEL' and (
+                data.get('timing_method') != 'ASYS_GPU_ACTIVITY' or
+                identity.get('schema') != 'quactlize.profiled-component.v1' or
+                identity.get('cuda_graph') is not False or not identity.get('trace_sha256')):
+            raise ValueError('profiled component trace identity missing')
         node = dict(identity['node'])
         for field in ('name', 'symbol'):
             if field in node:
                 node[field] = self.ref('symbol', node[field])
-        row = select(data, 'kind median_us spread_pct samples_us calls_per_graph status scope record_sha256')
+        row = select(data, 'kind median_us spread_pct samples_us calls_per_graph status scope record_sha256 timing_method')
+        if data['scope'] == 'PROFILED_SINGLE_KERNEL':
+            row.update(trace_sha256=identity['trace_sha256'], cuda_graph=False)
         row.update(id=cid, phase=phase, point=point, cache=identity.get('cache'),
                    node=self.ref('kernel', node),
                    contract=self.ref('component_contract', identity.get('contract')),

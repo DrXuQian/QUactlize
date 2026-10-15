@@ -144,12 +144,20 @@ class Full:
         b = self.b
         if b.w.operation == 'indexed': checked(self.active(), 'provider active selection')
         checked(b.input(self.a.data_ptr(), True), 'provider BF16 input')
+        self.matmul(copy)
+        return b.finish(self.out.data_ptr(), True)
+
+    def matmul(self, copy=0):
+        """Ordinary provider call, with adapters and expansion outside it."""
+        b = self.b
         with self.torch.cuda.stream(self.stream):
             self.provider(self.a, self.weights[copy][0] if b.w.experts == 1 else self.weights[copy],
                           self.out, self.indices, self.rows)
-        return b.finish(self.out.data_ptr(), True)
+        return 0
 
     def capture(self):
+        if self.b.w.experts == 1:
+            raise ValueError('cuBLAS must use ordinary calls and Asys kernel activities, not CUDA Graph')
         # Python JIT/provider allocations belong to the Torch graph pool.
         # Cloning without retaining that pool would leave dangling pointers.
         owner = self.torch.cuda.CUDAGraph()

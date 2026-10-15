@@ -177,6 +177,12 @@ def run(args):
 
 
 def main():
+    # Retain old result readers for historical receipts, not another cuBLAS
+    # graph experiment. The replacement runs ordinary warmed provider calls.
+    raise SystemExit('cuBLAS capture probe retired; use tools/probe_kpack_cublas_ordinary.py (no CUDA Graph)')
+
+
+def historical_main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--sdk', type=Path, default=Path(os.environ.get('PPU_SDK', '/usr/local/PPU_SDK')))
     parser.add_argument('--output', type=Path, required=True)

@@ -49,6 +49,8 @@ def test_resource_child_can_lock_device_and_exposes_its_failure(tmp_path, monkey
     import tools.run_kpack_strategy_prefill as mod
     import tools.kpack_bf16_providers as providers
     out = tmp_path/'run'
+    (tmp_path/'asight/bin').mkdir(parents=True)
+    (tmp_path/'asight/bin/asys').write_text('host-only-profiler-identity')
     lock = tmp_path/('quactlize-components-'+digest('host-only-pci')[:24]+'.lock')
     monkeypatch.setattr(mod, 'Path', lambda value: tmp_path if str(value) == '/tmp' else Path(value))
     monkeypatch.setattr(mod, 'freeze', lambda args: dict(points=[point()], total_points=1, total_families=1))
@@ -435,7 +437,8 @@ def test_full_capture_clones_inside_torch_capture_and_retains_owner(monkeypatch)
     full = f.Full.__new__(f.Full)
     full.torch = SimpleNamespace(cuda=SimpleNamespace(CUDAGraph=lambda: owner, graph=graph))
     full.stream = 'stream'; full.copies = 2
-    full.b = SimpleNamespace(rt=SimpleNamespace(sync=lambda: None), r=SimpleNamespace(stream=1),
+    full.b = SimpleNamespace(w=SimpleNamespace(experts=256),
+                             rt=SimpleNamespace(sync=lambda: None), r=SimpleNamespace(stream=1),
                              helpers=SimpleNamespace(clone=clone))
     full.launch = lambda copy: events.append('call'+str(copy)) or 0
     monkeypatch.setattr(f, 'Captured', captured)

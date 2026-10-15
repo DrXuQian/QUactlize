@@ -112,6 +112,19 @@ def statistics_checked(rounds):
                 samples_us=rounds, status='PASS', scope='ISOLATED_SINGLE_KERNEL')
 
 
+def component_statistics(row):
+    """Keep profiler device activity distinct from isolated graph events."""
+    result = statistics_checked(row['samples_us'])
+    if row.get('scope') == 'PROFILED_SINGLE_KERNEL':
+        identity = row.get('identity', {})
+        if (row.get('timing_method') != 'ASYS_GPU_ACTIVITY' or
+                identity.get('schema') != 'quactlize.profiled-component.v1' or
+                identity.get('cuda_graph') is not False or not identity.get('trace_sha256')):
+            raise ValueError('profiled component lacks its no-Graph trace identity')
+        result['scope'] = 'PROFILED_SINGLE_KERNEL'
+    return result
+
+
 def recommendation(arms, records, baseline='original', *, roles=None):
     """No theoretical launch penalty and no double charging of reductions.
 
@@ -126,7 +139,7 @@ def recommendation(arms, records, baseline='original', *, roles=None):
             missing[arm] = ['EMPTY_CALL']
             continue
         bad = [k for k in keys if k not in records or records[k].get('status') != 'PASS' or
-               records[k].get('scope') != 'ISOLATED_SINGLE_KERNEL']
+               records[k].get('scope') not in ('ISOLATED_SINGLE_KERNEL', 'PROFILED_SINGLE_KERNEL')]
         if bad:
             missing[arm] = bad
             continue
@@ -152,10 +165,12 @@ def recommendation(arms, records, baseline='original', *, roles=None):
     control_only_wins=(best_control is not None and winner in costs and costs[best_control]<costs[winner])
     if missing or noisy or control_only_wins:
         winner = baseline
+    profiled = any(r.get('scope') == 'PROFILED_SINGLE_KERNEL' for r in records.values())
     return dict(recommended=winner, baseline=baseline, costs_us=costs, missing=missing, noisy=noisy,
                 best_rule=best_rule,best_control=best_control,rule_regret_pct=regret,
                 control_only_wins=control_only_wins,roles=roles,
-                scope='SUM_OF_ISOLATED_KERNELS_NOT_MEASURED_E2E',
+                scope=('SUM_OF_COMPONENT_GPU_TIMES_MIXED_METHODS_NOT_MEASURED_E2E' if profiled else
+                       'SUM_OF_ISOLATED_KERNELS_NOT_MEASURED_E2E'),
                 host_launch_cost_added=False, production_changed=False,
                 admission='ORIGINAL_WIRING_MODEL_AB_REQUIRED',
                 regression_action='RETAIN_ORIGINAL')

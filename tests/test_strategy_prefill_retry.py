@@ -153,9 +153,14 @@ def closure(files):
     return dict(files=files, sha256=digest(files))
 
 
-def test_only_exact_classifier_repair_and_orchestration_changes_are_allowed():
-    source = (ROOT/'dev/strategy/components.py').read_bytes()
-    old = closure({'dev/strategy/components.py':CLASSIFIER_BEFORE, 'timer.py':'same'})
+def test_only_exact_classifier_repair_and_orchestration_changes_are_allowed(monkeypatch):
+    # Exercise the historical byte-exact exception with a tiny pinned source.
+    # Today's profiler support changes measurement semantics and must NOT be
+    # smuggled through that old parser-only exception.
+    source = b"if name in ('reduction', 'reduce_bf16_grouped', 'foo'): return 'reducer'\n"
+    before = hashlib.sha256(source.replace(b"'reduce_bf16_grouped', ", b'', 1)).hexdigest()
+    monkeypatch.setattr('dev.strategy.prefill_retry.CLASSIFIER_BEFORE', before)
+    old = closure({'dev/strategy/components.py':before, 'timer.py':'same'})
     current = closure(dict(old['files'], **{'dev/strategy/components.py':hashlib.sha256(source).hexdigest(),
         'dev/strategy/prefill_retry.py':'new-orchestration'}))
     same_inputs(old, current, classifier_source=source)
@@ -172,7 +177,7 @@ def test_only_exact_classifier_repair_and_orchestration_changes_are_allowed():
 def test_previous_probe_compares_plans_and_transitive_harness(tmp_path, monkeypatch):
     old, _, _, authority, _ = fixture(tmp_path)
     source = (ROOT/'dev/strategy/components.py').read_bytes()
-    inputs = closure({'dev/strategy/components.py':CLASSIFIER_BEFORE})
+    inputs = closure({'dev/strategy/components.py':hashlib.sha256(source).hexdigest()})
     new_inputs = closure({'dev/strategy/components.py':hashlib.sha256(source).hexdigest()})
     authority['harness'] = inputs
     atomic_json(old/'authority.json', authority)
@@ -185,6 +190,14 @@ def test_previous_probe_compares_plans_and_transitive_harness(tmp_path, monkeypa
         previous_probe(old, dict(frozen, points=['different']), new_inputs, ROOT)
     with pytest.raises(ValueError, match='measurement inputs changed'):
         previous_probe(old, frozen, closure(dict(new_inputs['files'], **{'oracle.py':'different'})), ROOT)
+
+
+def test_ordinary_provider_method_cannot_relabel_historical_graph_results():
+    source = (ROOT/'dev/strategy/components.py').read_bytes()
+    old = closure({'dev/strategy/components.py':CLASSIFIER_BEFORE})
+    current = closure({'dev/strategy/components.py':hashlib.sha256(source).hexdigest()})
+    with pytest.raises(ValueError, match='reviewed BF16 reducer'):
+        same_inputs(old, current, classifier_source=source)
 
 
 def test_fresh_full_prefill_plan_matches_its_json_for_retry(tmp_path, monkeypatch):

@@ -26,7 +26,7 @@ from quactlize.runtime.compiler import sha
 from quactlize.runtime.tuning import digest
 from dev.strategy.plan import make_plan
 from dev.strategy.coverage import execution_gaps, require_executable
-from dev.strategy.components import component_key, role, recommendation, statistics_checked
+from dev.strategy.components import component_key, role, recommendation, statistics_checked, component_statistics
 from dev.strategy.isolated import Captured, checked,check_sdk_graph_abi
 from dev.strategy.journal import ArmJournal, planned_arms, execute_point, atomic_json
 from dev.strategy.provenance import harness_identity
@@ -42,7 +42,7 @@ def record_load(path, identity):
     if (row.get('identity')!=identity or row.get('record_sha256') != digest(
             {k:v for k,v in row.items() if k!='record_sha256'})):
         raise ValueError('component evidence identity/digest differs: '+str(path))
-    stats=statistics_checked(row['samples_us'])
+    stats=component_statistics(row)
     if any(row.get(k)!=v for k,v in stats.items()):
         raise ValueError('component statistic or scope differs: '+str(path))
     return row
