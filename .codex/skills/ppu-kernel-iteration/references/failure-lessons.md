@@ -1,5 +1,20 @@
 # PPU failure lessons
 
+Resource and timing drivers must not independently acquire the same device
+`flock` while one waits for the other. Passing the parent's locked fd to a
+child does not authorize the child's second `open()` to acquire that lock.
+The large-M wrapper did exactly this; a host-only real-subprocess regression
+reproduces `BlockingIOError: [Errno 11]` before the resource probe can work.
+Run the probe under its own lock first, then acquire the measurement lock;
+retain the inherited fd only for measurement children that do not reopen it.
+Keep failures' bounded log tails visible in the parent instead of reporting
+only "resource phase incomplete". This fixes orchestration, not numerical or
+performance admission. Reuse compiled module caches in a new source-bound
+run; never delete lock files, disable exclusion, or bypass old source seals.
+Seams: `tools/run_kpack_strategy_prefill.py`, `tests/test_strategy_prefill.py`
+(2026-10-15; pre-fix regression RED, post-fix host suite 63 PASS; real PPU
+resource/timing retry remains required).
+
 Result transfer is not raw-run backup. For large rule campaigns, recursively
 archiving JSON also copies expanded plans, per-family manifests and resource
 queries even when binaries/attempts are excluded. Export all current candidate

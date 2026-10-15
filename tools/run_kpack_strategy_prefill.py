@@ -81,7 +81,14 @@ def wait(command, log, *, held=None, phase='setup'):
             pass_fds=(held.fileno(),) if held else ())
         start = time.monotonic()
         while True:
-            try: return p.wait(timeout=30)
+            try:
+                rc = p.wait(timeout=30)
+                if rc:
+                    print(f'STRATEGY_PREFILL_CHILD_FAILURE phase={phase} rc={rc} log={log}', flush=True)
+                    with log.open('rb') as failure:
+                        failure.seek(max(0, log.stat().st_size-12288))
+                        print(failure.read().decode('utf-8', errors='replace'), flush=True)
+                return rc
             except subprocess.TimeoutExpired:
                 print(f'STRATEGY_PREFILL_WAIT phase={phase} minutes={(time.monotonic()-start)/60:.1f} log={log}', flush=True)
 
@@ -303,19 +310,26 @@ def main():
     dev = device_probe(args.sdk)
     lock = Path('/tmp')/('quactlize-components-'+digest(dev['pci'])[:24]+'.lock')
     budget = False
+    # The resource probe owns this same device lock. Inheriting an already
+    # locked fd does not let it flock a second open of that file. Complete
+    # the independently locked probe before locking our measurement phase.
+    cmd = [sys.executable, '-u', str(ROOT/'tools/probe_kpack_strategy.py'), '--plan', str(args.output/'plan/plan.json'),
+        '--output', str(args.output/'resources'), '--sdk', str(args.sdk), '--cache', str(args.cache),
+        '--jobs', str(args.jobs), '--max-modules', str(args.max_modules)]
+    if (args.output/'resources').exists(): cmd.append('--resume')
+    resource_log = args.output/('resources-'+str(time.time_ns())+'.log')
+    resource_rc = wait(cmd, resource_log, phase='compile-resources')
+    if resource_rc:
+        raise ValueError(f'resource phase incomplete rc={resource_rc}; see {resource_log}; completed modules are resumable')
     with lock.open('a') as held:
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if any(p['workload']['operation'] == 'dense' for p in frozen['points']):
             from tools.kpack_bf16_providers import Cublas
+            print('STRATEGY_PREFILL_PROVIDER phase=cublas-identity status=START', flush=True)
             blas = Cublas(args.sdk, None)
             providers['dense'] = blas.identity
             blas.close()
-        cmd = [sys.executable, '-u', str(ROOT/'tools/probe_kpack_strategy.py'), '--plan', str(args.output/'plan/plan.json'),
-            '--output', str(args.output/'resources'), '--sdk', str(args.sdk), '--cache', str(args.cache),
-            '--jobs', str(args.jobs), '--max-modules', str(args.max_modules)]
-        if (args.output/'resources').exists(): cmd.append('--resume')
-        if wait(cmd, args.output/('resources-'+str(time.time_ns())+'.log'), held=held, phase='compile-resources'):
-            raise ValueError('resource phase incomplete; completed modules are resumable')
+            print('STRATEGY_PREFILL_PROVIDER phase=cublas-identity status=PASS', flush=True)
         probe = load_probe(args.output, pilot=False); plan = execution_plan(probe)
         if plan['counts']['arms'] > args.max_arms: raise ValueError('expanded arm limit exceeded')
         atomic_json(args.output/'execution-plan.json', plan)

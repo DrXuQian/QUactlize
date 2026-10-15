@@ -42,6 +42,71 @@ def test_sharding_owns_complete_weight_families_and_no_candidate_cross_card():
         with pytest.raises(ValueError): partition(points, *args)
 
 
+@pytest.mark.parametrize('probe_rc', [0, 7])
+def test_resource_child_can_lock_device_and_exposes_its_failure(tmp_path, monkeypatch, capsys, probe_rc):
+    """Real subprocess/flock regression, not a mocked successful lock."""
+    torch = pytest.importorskip('torch')
+    import tools.run_kpack_strategy_prefill as mod
+    import tools.kpack_bf16_providers as providers
+    out = tmp_path/'run'
+    lock = tmp_path/('quactlize-components-'+digest('host-only-pci')[:24]+'.lock')
+    monkeypatch.setattr(mod, 'Path', lambda value: tmp_path if str(value) == '/tmp' else Path(value))
+    monkeypatch.setattr(mod, 'freeze', lambda args: dict(points=[point()], total_points=1, total_families=1))
+    monkeypatch.setattr(mod, 'inventory', lambda plan: dict(counts=dict(modules=1, queries=1)))
+    monkeypatch.setattr(mod, 'device_probe', lambda sdk: dict(pci='host-only-pci'))
+    monkeypatch.setattr(torch.cuda, 'is_available', lambda: True)
+    monkeypatch.setattr(torch.cuda, 'device_count', lambda: 1)
+    monkeypatch.setattr(sys, 'argv', ['run', '--output', str(out), '--sdk', str(tmp_path), '--idle-confirmed'])
+    original_wait = mod.wait
+    probe_status = []
+
+    class ProbeReached(Exception):
+        pass
+
+    def check_measurement_lock(*args):
+        assert probe_status == [0]
+        code = 'import fcntl,sys; f=open(sys.argv[1],"a"); fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)'
+        other = subprocess.run([sys.executable, '-c', code, str(lock)], capture_output=True, text=True)
+        assert other.returncode != 0 and 'BlockingIOError' in other.stderr
+        raise ProbeReached
+
+    monkeypatch.setattr(providers, 'Cublas', check_measurement_lock)
+
+    def run_probe(command, log, *, held=None, phase='setup'):
+        assert 'probe_kpack_strategy.py' in command[2]
+        code = ('import fcntl,sys; f=open(sys.argv[1],"a"); '
+                'fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB); '
+                'print("RESOURCE_CHILD_LOCK_OK",flush=True); '
+                'print("TEST_RESOURCE_FAILURE",flush=True) if int(sys.argv[2]) else None; '
+                'sys.exit(int(sys.argv[2]))')
+        rc = original_wait([sys.executable, '-u', '-c', code, str(lock), str(probe_rc)], log,
+                           held=held, phase=phase)
+        assert 'RESOURCE_CHILD_LOCK_OK' in log.read_text(), log.read_text()
+        assert rc == probe_rc
+        probe_status.append(rc)
+        return rc
+
+    monkeypatch.setattr(mod, 'wait', run_probe)
+    if probe_rc:
+        with pytest.raises(ValueError, match='resource phase incomplete.*rc=7.*resources-'):
+            mod.main()
+        console = capsys.readouterr().out
+        assert 'STRATEGY_PREFILL_CHILD_FAILURE' in console and 'TEST_RESOURCE_FAILURE' in console
+    else:
+        with pytest.raises(ProbeReached):
+            mod.main()
+
+
+def test_failed_child_log_tail_is_bounded_and_decodes_invalid_bytes(tmp_path, capsys):
+    from tools.run_kpack_strategy_prefill import wait
+    log = tmp_path/'child.log'
+    code = 'import sys; sys.stdout.buffer.write(b"OMITTED_PREFIX"+b"x"*20000+b"\\xffFAIL_TAIL"); sys.exit(9)'
+    assert wait([sys.executable, '-c', code], log, phase='test') == 9
+    console = capsys.readouterr().out
+    assert 'FAIL_TAIL' in console and 'OMITTED_PREFIX' not in console and len(console) < 14000
+    assert log.stat().st_size > 20000
+
+
 def test_live_original_is_revealed_after_blind_generation_not_injected(tmp_path):
     points = [point(), point(Workload(12, 1024, 2048, 128, 'indexed', 'bf16', experts=256, topk=8)),
               point(Workload(8, 2048, 4096, 128))]
