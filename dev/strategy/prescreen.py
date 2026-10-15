@@ -116,6 +116,13 @@ def proposal_family(w, cross_format=False):
     return (dtype, w.operation, w.fusion, w.input_stride == w.k, w.output_stride == w.n)
 
 
+def portable_sf_family(w):
+    # SF tile geometry is shared by dense and indexed builders. Only its
+    # template may cross this boundary: endpoint, metadata precision, launch
+    # resources, routing helpers and timings must be resolved on the target.
+    return (w.qtype, w.fusion, w.input_stride == w.k, w.output_stride == w.n)
+
+
 def seed_identity(w, recipe, stencil):
     """Do not spend multiple seed slots on an axis already expanded later.
 
@@ -138,10 +145,15 @@ class Prescreen:
         self.rows = defaultdict(list)
         self.proposals = defaultdict(list)
         self.templates = defaultdict(list)
+        self.portable_sf = defaultdict(list)
         for row in table.observations:
             self.rows[semantic_family(row.workload)].append(row)
             self.proposals[proposal_family(row.workload)].append(row)
             self.templates[proposal_family(row.workload,True)].append(row)
+            if (row.recipe.kind == 'tc' and row.recipe.route == 'sf' and
+                    row.workload.operation in ('dense', 'indexed') and row.workload.m <= 8 and
+                    not dict(row.recipe.parameters).get('ap')):
+                self.portable_sf[portable_sf_family(row.workload)].append(row)
 
     def select(self, w, *, mandatory=(), limit=8, optional=1, max_threads=1024, blind=False,
                per_stratum=1, factorized=True, k_weight=1.0, cross_format=False,
@@ -257,6 +269,31 @@ class Prescreen:
             if tag(r) not in near_tags and (r.kind,r.route) in near_routes:
                 ranked.setdefault(key,(rank,r,'VACANT_STRATUM_CROSS_M:'+source))
 
+        # A leave-NK-out catalog can contain zero local TC donors (Q8 indexed
+        # was one such case). Absence of observations is not evidence that
+        # SIMT wins. Borrow SF templates only when the entire TC family is
+        # absent, not to fill every tile stratum in an already covered family.
+        # Never displace local seeds, borrow the withheld N/K, or use its old
+        # latency/winner to rank proposals. FQ/AP/grouped-only recipes are not
+        # portable through this rule. The normal resource and numeric gates
+        # still apply after instantiating the target typed endpoint.
+        if (blind and factorized and w.m <= 8 and w.operation in ('dense', 'indexed') and
+                not any(r.kind == 'tc' for _,r,_ in ranked.values())):
+            for row in self.portable_sf.get(portable_sf_family(w), ()):
+                ow = row.workload
+                if ow.operation == w.operation or (ow.n, ow.k) == (w.n, w.k):
+                    continue
+                r = prototype(row.recipe)
+                if rejection(r, w, max_threads):
+                    continue
+                distance = (abs(math.log2(ow.n / w.n)) + k_weight * abs(math.log2(ow.k / w.k)) +
+                            2 * abs(math.log2(ow.m / w.m)))
+                rank = (ow.compute != w.compute, ow.storage != w.storage, distance,
+                        ow.channels != w.channels, -row.priority, r.key)
+                key = producer_key(r)
+                if key not in ranked or rank < ranked[key][0]:
+                    ranked[key] = (rank, r, 'MISSING_TC_FAMILY_CROSS_OPERATION:' + row.source)
+
         covered = {tag(r) for r in protected.values()}
         strata=defaultdict(int)
         for r in protected.values():strata[tag(r)]+=1
@@ -326,7 +363,7 @@ class Prescreen:
         expanded = 1 + len(protected) + len(coverage) > limit
         report = dict(stage='PRE_JIT_PER_SHAPE', original_mandatory=True,
             rule_generation='LEAVE_NK_FAMILY_OUT' if blind else 'REFERENCE_CONTROL_INVENTORY',
-            rule_revision=24 if blind and factorized else 2 if blind else None,per_stratum=per_stratum,
+            rule_revision=25 if blind and factorized else 2 if blind else None,per_stratum=per_stratum,
             cross_format_templates=bool(blind and factorized and cross_format),
             reader_strata=reader_strata,
             neighbor_stencil=stencil,seed_prototype_count=seed_count,

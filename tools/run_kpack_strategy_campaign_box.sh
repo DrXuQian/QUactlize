@@ -59,6 +59,12 @@ cd -- "${campaign_source:?}"
 campaign_args=(--output "$campaign_run/measurement" --previous-screen "$campaign_screen"
     --resource-cache "$campaign_cache" --jobs "${JOBS:-192}" --hours "${HOURS:-10}"
     "${campaign_resume[@]}")
+if [[ -n "${POINT_FILTER:-}" ]]; then
+    campaign_args+=(--point-filter "$POINT_FILTER")
+fi
+if [[ -n "${MAX_FINALISTS:-}" ]]; then
+    campaign_args+=(--max-finalists "$MAX_FINALISTS")
+fi
 if [[ "${PLAN_ONLY:-0}" == 1 ]]; then
     stage=plan-only
     "$campaign_python" -u tools/run_kpack_strategy_campaign.py "${campaign_args[@]}" --plan-only

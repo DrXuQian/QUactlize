@@ -23,6 +23,7 @@ sys.path.insert(0,str(ROOT))
 from dev.strategy.journal import ArmJournal,atomic_json
 from dev.strategy.followup import jobs,families,load_screen,reusable,read_point,finalists,validate_confirmation
 from dev.strategy.plan import make_plan
+from dev.strategy.subset import point_filter,filtered_plan,completion_status
 from dev.strategy.provenance import source_identity,verify_unchanged,harness_identity
 from dev.strategy.resource_pilot import load_probe
 from dev.strategy.resources import inventory,compiler as tc_compiler
@@ -99,11 +100,13 @@ def freeze_plan(args):
     path=args.output/'plan/plan.json'
     if path.exists():
         plan=json.loads(path.read_text())
+        if plan.get('point_filter',{}) != args.point_filter:
+            raise ValueError('campaign point filter changed; use a new output directory')
         verify_unchanged(plan['source_identity'],ROOT)
         if plan['plan_sha256']!=digest({k:v for k,v in plan.items() if k!='plan_sha256'}):
             raise ValueError('campaign frozen plan seal differs')
         return plan
-    before=source_identity(ROOT);plan=make_plan('decode')
+    before=source_identity(ROOT);plan=filtered_plan(make_plan('decode'),args.point_filter)
     # Query the real selector AFTER blind rule generation. Original and
     # historical controls are separate pools in the resource inventory too.
     requests=original_requests(dict(resolved=plan))
@@ -255,6 +258,8 @@ def main():
     p.add_argument('--hours',type=float,default=10.,help='stop BETWEEN arms/families at budget; retain receipts for resume')
     p.add_argument('--plan-only',action='store_true');p.add_argument('--resume',action='store_true')
     p.add_argument('--idle-confirmed',action='store_true')
+    p.add_argument('--point-filter',type=point_filter,default={},
+                   help='JSON qtype/operation/n/k filter; a fresh subset run never relabels prior results')
     p.add_argument('--family',help=argparse.SUPPRESS);p.add_argument('--invocation',default=uuid.uuid4().hex,help=argparse.SUPPRESS)
     p.add_argument('--deadline',type=float,default=0.,help=argparse.SUPPRESS)
     args=p.parse_args()
@@ -279,7 +284,9 @@ def main():
                     tc_modules=inv['counts']['modules'],queries=inv['counts']['queries'],
                     vector_modules=len(vector_ids),unexpanded_arms=sum(1+len(x['candidates'])+len(x['champion_controls']) for x in plan['points']))
         atomic_json(args.output/'counts.json',counts)
-        print('STRATEGY_CAMPAIGN_PLAN '+json.dumps(counts|dict(hours=args.hours,scope='ALL_KNOWN_SMALLM_NOT_LARGE_M',
+        print('STRATEGY_CAMPAIGN_PLAN '+json.dumps(counts|dict(hours=args.hours,
+              scope='FILTERED_SMALLM_NOT_FULL_COHORT' if args.point_filter else 'ALL_KNOWN_SMALLM_NOT_LARGE_M',
+              point_filter=args.point_filter,
               duration_guaranteed=False,production_changed=False)),flush=True)
         if args.plan_only:return 0
         if not args.idle_confirmed:p.error('--idle-confirmed required; no timed job may share this card')
@@ -317,7 +324,8 @@ def main():
         dequant=dm['sha256'],body_source=digest([vc.identity,dm['source_hashes']]),idle='OPERATOR_CONFIRMED',
         protocol=dict(rounds=3,samples=3,replays_min=16,screen_order='HASH_SEEDED_NOT_FINALIST_CONFIRMATION',
                       rings='SEPARATE_ALL_METADATA_AND_ACTIVE_PRODUCER',confirmation='6x5_ALTERNATING'),
-        scope='ALL_KNOWN_SMALLM_COMPONENTS_NOT_LARGE_M_OR_MODEL_AB')
+        scope='FILTERED_SMALLM_COMPONENTS_NOT_FULL_COHORT_OR_MODEL_AB' if args.point_filter else
+              'ALL_KNOWN_SMALLM_COMPONENTS_NOT_LARGE_M_OR_MODEL_AB')
     path=args.output/'authority.json'
     if path.exists() and json.loads(path.read_text())!=authority:raise ValueError('campaign authority changed')
     atomic_json(path,authority)
@@ -374,14 +382,15 @@ def main():
                            result=str(journal.location(point,confirmation_job(point))/'current.json')))
     points.extend(dict(p,status='BLOCKED_RESOURCE',decision=None,previous_screen=False) for p in plan['blocked'])
     passed=sum(p['status']=='PASS' for p in points);unresolved=sum(p['decision'] in ('RULE_MISS','UNSTABLE_RETAIN_ORIGINAL') for p in points)
-    summary=dict(status='COMPLETE_SMALLM' if passed==len(points) and not unresolved else 'INCOMPLETE',
+    summary=dict(status=completion_status(passed,len(points),unresolved,args.point_filter),
         points=points,passed=passed,expected=len(points),unresolved_selection=unresolved,
+        point_filter=args.point_filter,full_smallm_cohort=not bool(args.point_filter),
         prior_screen_reused=len(imported),budget_reached=budget,elapsed_seconds=time.monotonic()-started,
         production_changed=False,performance_admitted=False,full_campaign=False,
         remaining=['LARGE_M_FULL_DEQUANT_PROVIDER','ORIGINAL_WIRING_MODEL_AB'])
     atomic_json(args.output/'summary.json',summary)
     print('STRATEGY_CAMPAIGN_DONE '+json.dumps({k:v for k,v in summary.items() if k!='points'}),flush=True)
-    return int(summary['status']!='COMPLETE_SMALLM')
+    return int(summary['status']=='INCOMPLETE')
 
 
 if __name__=='__main__':raise SystemExit(main())

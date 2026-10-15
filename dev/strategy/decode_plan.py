@@ -92,7 +92,9 @@ def make_decode_plan(probe, originals, *, pilot=True):
             vector_modules=len(vectors),reused_tc_modules=len(modules),
             expansion_jobs=sum(len(p['sf_configs']) for p in points)),
         precision='DENSE_F32_STORAGE_F16_COMPUTE_INDEXED_F32_STORAGE_BF16_COMPUTE',
-        production_changed=False,full_campaign=False,full_smallm_cohort=not pilot,
+        production_changed=False,full_campaign=False,
+        full_smallm_cohort=not pilot and not bool(probe['resolved'].get('point_filter')),
+        point_filter=probe['resolved'].get('point_filter',{}),
         comparison='CURRENT_SELECTED_BODY_VS_BLIND_RULES_VS_SEPARATE_CHAMPION_CONTROLS',
         cost_scope='SUM_OF_ISOLATED_KERNELS_NOT_MODEL_OR_MEASURED_E2E',
         final_admission='ORIGINAL_WIRING_MODEL_AB_STILL_REQUIRED')
