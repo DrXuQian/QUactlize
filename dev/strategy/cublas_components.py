@@ -44,18 +44,23 @@ def components(trace, workload, authority, source):
 
 def measure_cublas(args, w, authority, held):
     from tools.probe_kpack_cublas_ordinary import run_events
+    from dev.strategy.prefill_build import verify
+    helpers = args.output/('cublas-helpers' if authority.get('cublas_helpers') else 'helpers')
+    if verify(args.sdk, helpers)['sha256'] != authority.get('cublas_helpers', authority['helpers']):
+        raise ValueError('ordinary provider helper differs from campaign preflight')
     path = args.output/'cublas-events'/(w.key+'-'+str(time.time_ns()))
     path.mkdir(parents=True, exist_ok=False)
     probe = dict(harness=authority['harness'], sdk=authority['resource']['sdk'],
         device=authority['resource']['device'], workload=asdict(w), l2=authority['l2'],
-        helpers_path=str(args.output/'helpers'), dequant_path=str(args.output/'dequant'),
+        helpers_path=str(helpers), dequant_path=str(args.output/'dequant'),
         cuda_graph=False, profiler=False, production_changed=False)
     data = run_events(args.sdk, path, probe, held)
     proof = data['worker']['data']
     if proof['receipt']['provider'] != authority['providers']['dense']:
         raise ValueError('ordinary provider differs from campaign preflight')
     rows = event_components(data, w, dict(sha256=digest(authority)),
-                            digest([authority['body_source'], proof['provider_loaded_images']]))
+                            digest([authority['body_source'], authority.get('cublas_helpers', authority['helpers']),
+                                    proof['provider_loaded_images']]))
     for row in rows: atomic_json(args.output/'components'/(row['component_id']+'.json'), row)
     return dict(correctness='PASS', components=[r['component_id'] for r in rows],
         stages=[dict(id=r['component_id'], role=r['kind'], median_us=r['median_us'], spread_pct=r['spread_pct'])

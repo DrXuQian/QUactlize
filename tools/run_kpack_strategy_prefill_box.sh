@@ -56,6 +56,9 @@ if [[ -n "${PREVIOUS_RUN:-}" ]]; then
     prefill_previous=$(realpath -e -- "$PREVIOUS_RUN")
     prefill_args+=(--previous-output "$prefill_previous")
 fi
+if [[ "${CUBLAS_EVENT_UPGRADE:-0}" == 1 ]]; then
+    prefill_args+=(--upgrade-cublas-events)
+fi
 if [[ -n "${RESOURCE_CACHE:-}" ]]; then
     prefill_cache=$(realpath -e -- "$RESOURCE_CACHE")
     test -d "$prefill_cache"

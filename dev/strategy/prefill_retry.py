@@ -70,19 +70,27 @@ def same_inputs(previous, current, *, classifier_source):
         raise ValueError('retry measurement inputs changed: '+', '.join(sorted(changed-ORCHESTRATION)))
 
 
-def previous_probe(root, frozen, current_harness, source_root):
+def previous_probe(root, frozen, current_harness, source_root, *, provider_upgrade=False):
     probe = load_probe(root, pilot=False)
     old = probe['plan']
     omit = {'plan_sha256', 'source_identity'}
+    # The catalog seal also covers small-M policy, but the actual prefill
+    # points/configs/incumbents below must still compare byte-for-byte.
+    if provider_upgrade: omit.add('catalog')
     if {k:v for k,v in old.items() if k not in omit} != {
             k:v for k,v in frozen.items() if k not in omit}:
         raise ValueError('retry frozen workload/config inventory changed')
     authority, _ = read(root, 'authority.json')
     if authority['resource'] != probe['authority']:
         raise ValueError('retry resource authority differs')
-    classifier = (source_root/'dev/strategy/components.py').read_bytes()
-    same_inputs(old['source_identity'], frozen['source_identity'], classifier_source=classifier)
-    same_inputs(authority['harness'], current_harness, classifier_source=classifier)
+    if provider_upgrade:
+        from dev.strategy.prefill_upgrade import source_delta
+        source_delta(old['source_identity'], frozen['source_identity'], 'source')
+        source_delta(authority['harness'], current_harness, 'harness')
+    else:
+        classifier = (source_root/'dev/strategy/components.py').read_bytes()
+        same_inputs(old['source_identity'], frozen['source_identity'], classifier_source=classifier)
+        same_inputs(authority['harness'], current_harness, classifier_source=classifier)
     return probe
 
 
@@ -128,14 +136,18 @@ def checked_component(root, cid, authority):
     return value, raw
 
 
-def import_passes(root, output, plan, authority, jobs):
+def import_passes(root, output, plan, authority, jobs, *, provider_upgrade=False):
     """Called by the parent while it owns the original physical-device lock."""
     old_plan, _ = read(root, 'execution-plan.json')
     verified_plan(old_plan)
     old, old_raw = read(root, 'authority.json')
     if old_plan != plan or old['plan'] != plan['plan_sha256']:
         raise ValueError('retry resolved execution plan changed')
-    if {k:v for k,v in old.items() if k != 'harness'} != {
+    upgrade = None
+    if provider_upgrade:
+        from dev.strategy.prefill_upgrade import authority_check, replaces
+        upgrade = authority_check(old, authority)
+    elif {k:v for k,v in old.items() if k != 'harness'} != {
             k:v for k,v in authority.items() if k != 'harness'}:
         raise ValueError('retry SDK/device/binary/oracle/protocol authority changed')
     index_path = output/'prior/index.json'
@@ -143,15 +155,20 @@ def import_passes(root, output, plan, authority, jobs):
         index, _ = read(output, 'prior/index.json')
         if index['previous_output'] != str(root) or index['authority_sha256'] != digest(old):
             raise ValueError('retry parent changed')
+        if index.get('provider_upgrade') != upgrade:
+            raise ValueError('retry provider migration changed')
         for cid, expected in index['components'].items():
             value, _ = checked_component(output, cid, dict(sha256=digest(old)))
             if value['record_sha256'] != expected:
                 raise ValueError('imported component changed on resume')
         return index
     previous = ArmJournal(root/'arms', dict(sha256=digest(old)), '0'*32)
-    receipts, components = {}, {}
+    receipts, components, replaced = {}, {}, []
     for point in plan['points']:
         for job in jobs(point):
+            if provider_upgrade and replaces(point, job):
+                replaced.append(point['id']+'/'+job['id'])
+                continue
             row = previous.read(point, job)
             if not row or row['status'] != 'PASS': continue
             relative = Path('arms')/point['id']/job['id']/'current.json'
@@ -170,6 +187,9 @@ def import_passes(root, output, plan, authority, jobs):
     index = dict(schema='quactlize.prefill-parser-retry.v1', previous_output=str(root),
         authority_sha256=digest(old), receipts=receipts, components=components,
         passed_jobs=len(receipts), scope='PRIOR_PASS_UNCHANGED_NEW_FAILED_OR_PENDING_ATTEMPTS_ONLY')
+    if upgrade:
+        index.update(schema='quactlize.prefill-provider-retry.v1', provider_upgrade=upgrade,
+                     replaced_jobs=replaced)
     index['record_sha256'] = digest(index)
     atomic_json(index_path, index)
     return index

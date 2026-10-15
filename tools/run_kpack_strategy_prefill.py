@@ -131,8 +131,14 @@ def child(args):
         spec = manifest['specs'][mid]; key = (spec['endpoint'], spec['compute'])
         if key not in cs: cs[key] = compiler(spec, args.sdk, args.cache)
         current_module(record, spec, cs[key])
-    dequant_checked(args.output/'dequant', args.sdk)
-    verify_helpers(args.sdk, args.output/'helpers')
+    dq = dequant_checked(args.output/'dequant', args.sdk)
+    if authority.get('cublas_helpers'):
+        from dev.strategy.prefill_upgrade import verify_helpers as verify_isolated_helpers
+        hp = verify_isolated_helpers(args.sdk, args.output/'helpers')
+    else:
+        hp = verify_helpers(args.sdk, args.output/'helpers')
+    if dq['sha256'] != authority['dequant'] or hp['sha256'] != authority['helpers']:
+        raise ValueError('prefill helper images changed after preflight')
     journal = PrefillJournal(args.output/'arms', dict(sha256=digest(authority)), args.invocation)
     sdk = SDK(args.sdk); helpers = Helpers(args.output/'helpers/libstrategy_prefill.so')
     ring = metadata_ring = b = mb = sf = msf = full = None
@@ -292,6 +298,8 @@ def main():
     parser.add_argument('--plan-only', action='store_true'); parser.add_argument('--resume', action='store_true')
     parser.add_argument('--previous-output', type=Path,
                         help='stopped prefill run; retry failed/pending jobs without remeasuring its PASS jobs')
+    parser.add_argument('--upgrade-cublas-events', action='store_true',
+                        help='reviewed 4ad5bb8 migration: retain isolated PASS, replace all dense cuBLAS timers')
     parser.add_argument('--idle-confirmed', action='store_true')
     parser.add_argument('--family', help=argparse.SUPPRESS)
     parser.add_argument('--lock-fd', type=int, help=argparse.SUPPRESS)
@@ -305,11 +313,17 @@ def main():
     args.output.mkdir(parents=True, exist_ok=args.resume or bool(args.family))
     request = args.output/'retry-request.json'
     if request.exists():
-        original = Path(json.loads(request.read_text())['previous_output'])
+        requested = json.loads(request.read_text())
+        original = Path(requested['previous_output'])
         if args.previous_output and prior_root(args.previous_output) != original:
             raise ValueError('retry parent changed')
         args.previous_output = original
+        if args.upgrade_cublas_events and not requested.get('upgrade_cublas_events', False):
+            raise ValueError('cannot change an existing retry measurement protocol')
+        args.upgrade_cublas_events = requested.get('upgrade_cublas_events', False)
     previous = prior_root(args.previous_output) if args.previous_output else None
+    if args.upgrade_cublas_events and not previous:
+        parser.error('--upgrade-cublas-events requires --previous-output')
     if previous:
         if args.output == previous or args.output.is_relative_to(previous):
             raise ValueError('retry needs a separate output; do not modify the original run')
@@ -318,7 +332,7 @@ def main():
         # Reuse the old verified value if the SDK's L2 attribute is zero;
         # l2_authority still queries the device and rejects any disagreement.
         args.l2_bytes = args.l2_bytes or old['l2']['bytes']
-        atomic_json(request, dict(previous_output=str(previous)))
+        atomic_json(request, dict(previous_output=str(previous), upgrade_cublas_events=args.upgrade_cublas_events))
     args.cache = (args.cache or args.output/'tc-cache').resolve()
     if args.family: return child(args)
     started = time.monotonic(); frozen = freeze(args); inv = inventory(frozen)
@@ -350,10 +364,11 @@ def main():
     probe = None
     if previous:
         from quactlize.runtime.native import sdk_identity
-        probe = previous_probe(previous, frozen, harness_identity(ROOT), ROOT)
+        probe = previous_probe(previous, frozen, harness_identity(ROOT), ROOT,
+                               provider_upgrade=args.upgrade_cublas_events)
         if (probe['authority']['device'] != dev or probe['authority']['sdk'] != sdk_identity(args.sdk) or
                 probe['authority']['cache'] != str(args.cache)):
-            raise ValueError('parser-only retry requires the same device/SDK/cache')
+            raise ValueError('prefill retry requires the same physical device/SDK/cache')
         print('STRATEGY_PREFILL_RETRY resource=VERIFIED_PRIOR_PROBE new_resource_queries=0', flush=True)
     else:
         cmd = [sys.executable, '-u', str(ROOT/'tools/probe_kpack_strategy.py'), '--plan', str(args.output/'plan/plan.json'),
@@ -377,11 +392,16 @@ def main():
         if plan['counts']['arms'] > args.max_arms: raise ValueError('expanded arm limit exceeded')
         atomic_json(args.output/'execution-plan.json', plan)
         records = records_for(probe, plan, args.sdk)
+        isolated_verify = verify_helpers
+        if args.upgrade_cublas_events:
+            from dev.strategy.prefill_upgrade import verify_helpers as isolated_verify
         if previous:
             reuse_build(previous, args.output, 'dequant', args.sdk, dequant_checked)
-            reuse_build(previous, args.output, 'helpers', args.sdk, lambda path, sdk: verify_helpers(sdk, path))
+            reuse_build(previous, args.output, 'helpers', args.sdk, lambda path, sdk: isolated_verify(sdk, path))
         dq = stable_build(args, 'dequant', build_dequant, dequant_checked)
-        hp = stable_build(args, 'helpers', build_helpers, lambda path, sdk: verify_helpers(sdk, path))
+        hp = stable_build(args, 'helpers', build_helpers, lambda path, sdk: isolated_verify(sdk, path))
+        event_helper = (stable_build(args, 'cublas-helpers', build_helpers,
+                        lambda path, sdk: verify_helpers(sdk, path)) if args.upgrade_cublas_events else None)
         l2 = l2_authority(args)
         authority = dict(plan=plan['plan_sha256'], resource=probe['authority'], harness=harness_identity(ROOT),
             oracle=oracle_identity(), graph_abi=check_sdk_graph_abi(args.sdk), l2=l2,
@@ -390,15 +410,22 @@ def main():
             body_source=digest([dq['source_hashes'], hp['identity']]),
             idle='OPERATOR_CONFIRMED', protocol='CUBLAS_PROVIDER_EVENTS_OTHERS_SEPARATE_KERNEL_EVENTS',
             scope=plan['scope'], production_changed=False)
+        if event_helper: authority['cublas_helpers'] = event_helper['sha256']
         path = args.output/'authority.json'
         if path.exists() and json.loads(path.read_text()) != authority: raise ValueError('resume authority changed')
         atomic_json(path, authority)
-        imported = import_passes(previous, args.output, plan, authority, jobs) if previous else None
+        imported = import_passes(previous, args.output, plan, authority, jobs,
+                                 provider_upgrade=args.upgrade_cublas_events) if previous else None
         if imported:
             print(f'STRATEGY_PREFILL_RETRY preserved_pass_jobs={imported["passed_jobs"]} '
-                  'scope=FAILED_OR_PENDING_ONLY original_receipts=UNCHANGED', flush=True)
+                  f'replaced_cublas_jobs={len(imported.get("replaced_jobs", []))} '
+                  'original_receipts=UNCHANGED', flush=True)
         journal = PrefillJournal(args.output/'arms', dict(sha256=digest(authority)), args.invocation)
         families = groups(plan['points'])
+        total_jobs = sum(len(jobs(p)) for p in plan['points'])
+        pending_jobs = sum(journal.due(p, j) for p in plan['points'] for j in jobs(p))
+        print(f'STRATEGY_PREFILL_WORK total_jobs={total_jobs} pending_jobs={pending_jobs} '
+              f'preserved_jobs={total_jobs-pending_jobs} prior_resource_reuse={int(previous is not None)}', flush=True)
         for key, points in families.items():
             arms = [a for p in points for a in p['arms'] if a['recipe']['kind'] == 'tc']
             manifest = dict(points=points, authority_sha256=digest(authority),

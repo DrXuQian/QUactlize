@@ -91,12 +91,31 @@ proof that cuBLAS changes algorithms or clocks. Use prebound native ordinary
 submissions with separate event pairs, one final completion sync, and oracle
 work outside the whole timed sequence. Retain all samples and CPU submission
 diagnostics without subtracting them. No Graph or profiler is required.
-Native continuous-submission stability still needs its PPU comparison; don't
-retroactively relabel59.68us as pure GEMM or claim an unmeasured speedup.
+The uT4gbzkq follow-up on the SAME physical card/SDK/workload passed nine
+numerical checks and135phase event samples: provider26.24us, round medians
+26.40/26.24/26.24us (spread0.61%). Input12.80us and output4.28us were separate.
+This resolves that single-point harness gate, not every large-M shape. Native
+CPU submission24.656us is a diagnostic, NOT subtractable from26.24us. Do not
+call59.68->26.24us a GPU-kernel optimization or retroactively change old scopes.
+ArchiveSHA256:983e5184fc25208303b83e57e99b49e1ad09082ee97fc2a53247bace13480d8f.
 Keep CUDA compatibility cuBLAS headers in a separate HOST translation unit
 from native HGGCRT/device headers; combining their include roots caused
 type/math declaration conflicts on this SDK. Bind the actual SDK ABI and
 pass the already-loaded cuBLAS function/handle, not a second provider DSO.
+
+Changing one provider's timing protocol need not invalidate unrelated PASS
+components. The reviewed4ad5bb8->4e46a0f migration retains byte-identical TC,
+dequant and isolated-adapter DSOs and old receipts under their OLD authority;
+only the ordinary-cuBLAS helper is new. Re-run EVERY dense provider job, even
+if its old graph attempt passed. Require identical workloads/incumbents/rules,
+SDK, physical PCI/host, resources and non-provider timer/oracle sources. A
+small-M policy/catalog hash changed while all430large-M points stayed equal;
+do not disable whole-source validation to accommodate it. Bind an explicit,
+reviewed changed-file/hash transition and retain negative tests for altered
+fixtures/timers/images/devices. Match multi-GPU continuation by physical card,
+not ordinal. Export old/new authority and method separately. Scope: component
+screen only; no model admission. Seams: `dev/strategy/prefill_upgrade.py`,
+`tests/test_strategy_prefill_retry.py`, `tests/test_strategy_prefill_multigpu.py`.
 
 Two equal captured launch inventories do not prove tuning completion or
 optimality. Use ordinary untimed warmup, synchronization, and event timing;

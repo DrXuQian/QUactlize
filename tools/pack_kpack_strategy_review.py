@@ -251,7 +251,7 @@ class Review:
         self.emit('run', root=str(self.root), summary={k:v for k,v in summary.items() if k!='points'},
                   authority_sha256=digest(authority),
                   authority=dict(resource=resource, harness_sha256=authority.get('harness', {}).get('sha256'),
-                      **select(authority, 'plan body_source dequant oracle l2 idle protocol scope')),
+                      **select(authority, 'plan body_source dequant helpers cublas_helpers oracle l2 idle protocol scope')),
                   images={k: authority[k] for k in ('tc', 'vectors') if k in authority},
                   providers={k:self.provider(v) for k,v in authority.get('providers', {}).items()})
         prior_index = None
@@ -262,9 +262,11 @@ class Review:
                 raise ValueError('imported prefill authority differs')
             self.emit('prior_run', root=prior_index['previous_output'],
                 authority_sha256=digest(old), passed_jobs=prior_index['passed_jobs'],
+                provider_upgrade=prior_index.get('provider_upgrade'),
+                replaced_jobs=len(prior_index.get('replaced_jobs', [])),
                 authority=dict(resource=old.get('resource', {}),
                     harness_sha256=old.get('harness', {}).get('sha256'),
-                    **select(old, 'plan body_source dequant oracle l2 idle protocol scope')),
+                    **select(old, 'plan body_source dequant helpers oracle l2 idle protocol scope')),
                 images={k:old[k] for k in ('tc', 'vectors') if k in old},
                 providers={k:self.provider(v) for k,v in old.get('providers', {}).items()},
                 scope='PRIOR_PASS_RECEIPTS_AND_SAMPLES_UNCHANGED_NOT_NEW_MEASUREMENTS')

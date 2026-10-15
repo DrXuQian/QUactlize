@@ -253,6 +253,92 @@ def test_helpers_are_verified_and_copied_not_recompiled(tmp_path):
     assert snapshot(old) == snapshot(new)
 
 
+def test_cublas_upgrade_preserves_isolated_pass_but_replaces_even_passed_blas(tmp_path, monkeypatch):
+    from dev.strategy.prefill_upgrade import NEW_PROTOCOL, OLD_PROTOCOL
+    old, new, plan, before, _ = fixture(tmp_path)
+    p = plan['points'][0]
+    p['full_configs'] = [4]
+    plan['plan_sha256'] = digest({k:v for k,v in plan.items() if k!='plan_sha256'})
+    before.update(plan=plan['plan_sha256'], protocol=OLD_PROTOCOL)
+    atomic_json(old/'authority.json', before); atomic_json(old/'execution-plan.json', plan)
+    # Replace synthetic test receipts with the new synthetic authority.
+    journal = ArmJournal(old/'arms', dict(sha256=digest(before)), 'a'*32)
+    data = component(old, Workload(**p['workload']), Recipe.from_dict(p['arms'][0]['recipe']), before)
+    for job in jobs(p):
+        row = dict(schema='quactlize.component-arm.v1', identity=journal.identity(p, job), invocation='a'*32,
+                   attempt='b'*32, status='PASS' if job['roles'] in (['bf16'], ['full_dequant'], ['original'])
+                   else 'FAIL', data=data)
+        journal.publish(p, job, row)
+    current = dict(before, harness={'sha256':'different'}, protocol=NEW_PROTOCOL, cublas_helpers='new-native-helper')
+    monkeypatch.setattr('dev.strategy.prefill_upgrade.source_delta', lambda *a: {'sha256':'host-test'})
+    untouched = snapshot(old)
+    imported = import_passes(old, new, plan, current, jobs, provider_upgrade=True)
+    assert imported['passed_jobs'] == 2 and len(imported['replaced_jobs']) == 1
+    assert snapshot(old) == untouched
+    after = PrefillJournal(new/'arms', {'sha256':digest(current)}, 'c'*32)
+    assert after.due(p, next(j for j in jobs(p) if j['roles']==['bf16']))
+    assert not after.due(p, next(j for j in jobs(p) if j['roles']==['full_dequant']))
+    assert not after.due(p, p['arms'][0])
+    assert import_passes(old, new, plan, current, jobs, provider_upgrade=True) == imported
+    with pytest.raises(ValueError, match='authority changed'):
+        import_passes(old, new, plan, current, jobs)
+    for key in ('tc', 'helpers', 'dequant', 'body_source', 'resource', 'providers', 'oracle', 'l2'):
+        with pytest.raises(ValueError, match='isolated binary/device/oracle'):
+            import_passes(old, new, plan, dict(current, **{key:'changed'}), jobs, provider_upgrade=True)
+
+
+def test_cublas_upgrade_never_imports_indexed_provider_as_dense():
+    from dev.strategy.prefill_upgrade import replaces
+    for operation in ('dense', 'indexed'):
+        for role in ('bf16', 'sf', 'full_dequant', 'rule'):
+            assert replaces({'workload':{'operation':operation}}, {'roles':[role]}) == (
+                operation == 'dense' and role == 'bf16')
+
+
+def test_upgrade_helper_requires_identical_old_image_compiler_adapters(tmp_path, monkeypatch):
+    from dev.strategy.prefill_upgrade import OLD_HELPER_SOURCE, verify_helpers
+    current = dict(compiler={'sdk':'SDK'}, adapters={'stages.cu':'same'},
+                   sources={'quactlize/dequant/indexed.cu':'indexed'})
+    monkeypatch.setattr('dev.strategy.prefill_build.identity', lambda sdk: current)
+    library = tmp_path/'libstrategy_prefill.so'; library.write_bytes(b'HOST_TEST_IMAGE')
+    ident = dict(compiler=current['compiler'], adapters=current['adapters'], sources={
+        'dev/strategy/prefill_helpers.cu':OLD_HELPER_SOURCE,
+        'quactlize/dequant/indexed.cu':'indexed'})
+    value = dict(identity=ident, sha256=hashlib.sha256(library.read_bytes()).hexdigest())
+    sealed(tmp_path/'manifest.json', value)
+    assert verify_helpers(tmp_path, tmp_path)['identity'] == ident
+    for key in ('compiler', 'adapters', 'sources'):
+        bad = deepcopy(value); bad['identity'][key] = {'changed':True}
+        sealed(tmp_path/'manifest.json', bad)
+        with pytest.raises(ValueError, match='helper source/SDK/image'):
+            verify_helpers(tmp_path, tmp_path)
+    sealed(tmp_path/'manifest.json', value); library.write_bytes(b'REPLACED_IMAGE')
+    with pytest.raises(ValueError, match='helper source/SDK/image'):
+        verify_helpers(tmp_path, tmp_path)
+
+
+def test_reviewed_upgrade_delta_binds_real_history_and_rejects_timer_or_oracle_changes():
+    """Git blobs are only used by this host test, never by the Box importer."""
+    import subprocess
+    from dev.strategy.prefill_upgrade import source_delta
+    from dev.strategy.provenance import harness_identity, source_identity
+    before_ref = '4ad5bb8d53bd776585a64813d9afb9950bcd3e0c'
+    files = subprocess.check_output(['git', 'diff', '--name-only', before_ref, '4e46a0f'], cwd=ROOT, text=True).splitlines()
+    for kind, current in [('source', source_identity(ROOT)), ('harness', harness_identity(ROOT))]:
+        old = deepcopy(current)
+        for name in files:
+            if name not in old['files']: continue
+            blob = subprocess.run(['git','show',before_ref+':'+name], cwd=ROOT, capture_output=True)
+            if blob.returncode: del old['files'][name]
+            else: old['files'][name] = hashlib.sha256(blob.stdout).hexdigest()
+        old['sha256'] = digest(old['files'])
+        assert source_delta(old, current, kind)['sha256']
+        for name in ('dev/strategy/isolated.py', 'dev/strategy/prefill_measure.py', 'reference/gguf_kpack.py'):
+            bad = deepcopy(current); bad['files'][name] = 'changed'; bad['sha256'] = digest(bad['files'])
+            with pytest.raises(ValueError, match='only approved'):
+                source_delta(old, bad, kind)
+
+
 def test_retry_review_exports_old_and_new_authorities_without_relabelling(tmp_path):
     from tools.pack_kpack_strategy_review import main
     old, new, plan, before, current = fixture(tmp_path)
