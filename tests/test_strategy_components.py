@@ -122,6 +122,7 @@ def test_grouped_tc_is_not_its_directory_or_metadata_template(kernel):
     ('void quactlize::runtime::grouped_device_metadata<cutlass::gemm::Gemm>(Params)', 'prepare'),
     ('void quactlize::moe_directory::build_kernel<8, 256>(Params)', 'prepare'),
     ('void cutlass::Kernel<cutlass::gemm::device::splitk_parallel::PpuMixedInputSplitKParallelM1FastReductionKernel<2,4>>(Params)', 'reducer'),
+    ('void quactlize::runtime::reduce_bf16_grouped<2>(float const*, cutlass::bfloat16_t*, long)', 'reducer'),
     ('void quactlize::runtime::indexed_finish<2>(cutlass::gemm::kernel::GemmUniversal::Params)', 'postprocess'),
     ('void (anonymous namespace)::gather<float>(cutlass::gemm::kernel::GemmUniversal::Params)', 'adapter'),
     ('void sf_prepare<quactlize::gemm>(Params)', 'expansion'),

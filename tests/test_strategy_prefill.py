@@ -196,6 +196,33 @@ def test_prefill_roles_include_provider_directory_and_no_nested_misclassificatio
     assert [stage_role(n, 1) for n in names] == ['prepare', 'adapter', 'prepare', 'producer', 'postprocess']
 
 
+def test_grouped_bf16_splitk_inventory_has_its_real_reducer(tmp_path, monkeypatch):
+    from dev.strategy.prefill_measure import stages
+    from types import SimpleNamespace
+    names = [
+        'quactlize::prefill::gather_bf16(float const*, __ppu_bfloat16*, int const*, int, long, int, int*)',
+        'void quactlize::runtime::grouped_splitk_device_metadata<Shape, Stride>(Params)',
+        'void quactlize::moe_directory::build_kernel<16, 256>(Params)',
+        'void cutlass::device_kernel<cutlass::gemm::kernel::GroupDirectoryMixedInputKernel<Shape, Metadata>>(Params)',
+        'void quactlize::runtime::reduce_bf16_grouped<2>(float const*, cutlass::bfloat16_t*, long)',
+        'quactlize::prefill::finish_bf16(__ppu_bfloat16 const*, float*, int const*, int, int)',
+    ]
+    assert [stage_role(n, 2) for n in names] == ['adapter', 'prepare', 'prepare', 'producer', 'reducer', 'postprocess']
+    class InventoryPassed(Exception):
+        pass
+    def replay(*_):
+        raise InventoryPassed
+    monkeypatch.setattr('dev.strategy.prefill_measure.replay_extracted', replay)
+    w = Workload(12, 256, 512, 128, 'indexed', 'bf16', experts=256, topk=8)
+    recipe = Recipe.make('tc', 'fq', split=2)
+    capture = SimpleNamespace(descriptions=[dict(name=n) for n in names], groups=list(range(len(names))))
+    with pytest.raises(InventoryPassed):
+        stages(capture, SimpleNamespace(w=w), recipe, 'host-test', 'host-test', tmp_path, None)
+    capture.descriptions[4] = dict(name='unknown_kernel(reduce_bf16_grouped)')
+    with pytest.raises(ValueError, match='inventory differs'):
+        stages(capture, SimpleNamespace(w=w), recipe, 'host-test', 'host-test', tmp_path, None)
+
+
 def test_router_resident_maps_have_exact_semantics_and_real_default():
     pytest.importorskip('torch')
     from dev.strategy.prefill_fixture import routing

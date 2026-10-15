@@ -20,9 +20,10 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from dev.strategy.journal import ArmJournal, atomic_json
+from dev.strategy.journal import atomic_json
 from dev.strategy.plan import make_plan
 from dev.strategy.prefill_plan import family, partition, bind_original, execution_plan
+from dev.strategy.prefill_retry import PrefillJournal, prior_root, previous_probe, reuse_build, import_passes
 from dev.strategy.provenance import source_identity, verify_unchanged, harness_identity
 from dev.strategy.resource_pilot import load_probe, verified_plan, current_module
 from dev.strategy.resources import inventory, compiler
@@ -129,7 +130,7 @@ def child(args):
         current_module(record, spec, cs[key])
     dequant_checked(args.output/'dequant', args.sdk)
     verify_helpers(args.sdk, args.output/'helpers')
-    journal = ArmJournal(args.output/'arms', dict(sha256=digest(authority)), args.invocation)
+    journal = PrefillJournal(args.output/'arms', dict(sha256=digest(authority)), args.invocation)
     sdk = SDK(args.sdk); helpers = Helpers(args.output/'helpers/libstrategy_prefill.so')
     ring = metadata_ring = b = mb = sf = msf = full = None
     sf_results, full_results = {}, {}
@@ -237,7 +238,7 @@ def summarize(output, plan, journal):
             value = row['data']; data[job['id']] = value['components']
             for cid in value['components']:
                 path = output/'components'/(cid+'.json'); raw = json.loads(path.read_text())
-                if digest(raw['identity']) != cid or raw['identity']['authority'] != journal.authority:
+                if digest(raw['identity']) != cid or raw['identity']['authority'] != row['identity']['authority']:
                     raise ValueError('prefill component identity differs')
                 records[cid] = load_component(path, raw['identity'])
             role = job['roles'][0]
@@ -275,6 +276,8 @@ def main():
     parser.add_argument('--max-modules', type=int, default=256)
     parser.add_argument('--max-arms', type=int, default=160000)
     parser.add_argument('--plan-only', action='store_true'); parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--previous-output', type=Path,
+                        help='stopped prefill run; retry failed/pending jobs without remeasuring its PASS jobs')
     parser.add_argument('--idle-confirmed', action='store_true')
     parser.add_argument('--family', help=argparse.SUPPRESS)
     parser.add_argument('--deadline', type=float, default=0., help=argparse.SUPPRESS)
@@ -284,8 +287,24 @@ def main():
         parser.error('finite positive limits required')
     if args.family and not re.fullmatch('[0-9a-f]{64}', args.family): parser.error('invalid family ID')
     args.output = args.output.resolve(); args.sdk = args.sdk.resolve()
-    args.cache = (args.cache or args.output/'tc-cache').resolve()
     args.output.mkdir(parents=True, exist_ok=args.resume or bool(args.family))
+    request = args.output/'retry-request.json'
+    if request.exists():
+        original = Path(json.loads(request.read_text())['previous_output'])
+        if args.previous_output and prior_root(args.previous_output) != original:
+            raise ValueError('retry parent changed')
+        args.previous_output = original
+    previous = prior_root(args.previous_output) if args.previous_output else None
+    if previous:
+        if args.output == previous or args.output.is_relative_to(previous):
+            raise ValueError('retry needs a separate output; do not modify the original run')
+        old = json.loads((previous/'authority.json').read_text())
+        args.cache = args.cache or Path(old['resource']['cache'])
+        # Reuse the old verified value if the SDK's L2 attribute is zero;
+        # l2_authority still queries the device and rejects any disagreement.
+        args.l2_bytes = args.l2_bytes or old['l2']['bytes']
+        atomic_json(request, dict(previous_output=str(previous)))
+    args.cache = (args.cache or args.output/'tc-cache').resolve()
     if args.family: return child(args)
     started = time.monotonic(); frozen = freeze(args); inv = inventory(frozen)
     counts = dict(points=len(frozen['points']), families=len(groups(frozen['points'])),
@@ -313,14 +332,23 @@ def main():
     # The resource probe owns this same device lock. Inheriting an already
     # locked fd does not let it flock a second open of that file. Complete
     # the independently locked probe before locking our measurement phase.
-    cmd = [sys.executable, '-u', str(ROOT/'tools/probe_kpack_strategy.py'), '--plan', str(args.output/'plan/plan.json'),
-        '--output', str(args.output/'resources'), '--sdk', str(args.sdk), '--cache', str(args.cache),
-        '--jobs', str(args.jobs), '--max-modules', str(args.max_modules)]
-    if (args.output/'resources').exists(): cmd.append('--resume')
-    resource_log = args.output/('resources-'+str(time.time_ns())+'.log')
-    resource_rc = wait(cmd, resource_log, phase='compile-resources')
-    if resource_rc:
-        raise ValueError(f'resource phase incomplete rc={resource_rc}; see {resource_log}; completed modules are resumable')
+    probe = None
+    if previous:
+        from quactlize.runtime.native import sdk_identity
+        probe = previous_probe(previous, frozen, harness_identity(ROOT), ROOT)
+        if (probe['authority']['device'] != dev or probe['authority']['sdk'] != sdk_identity(args.sdk) or
+                probe['authority']['cache'] != str(args.cache)):
+            raise ValueError('parser-only retry requires the same device/SDK/cache')
+        print('STRATEGY_PREFILL_RETRY resource=VERIFIED_PRIOR_PROBE new_resource_queries=0', flush=True)
+    else:
+        cmd = [sys.executable, '-u', str(ROOT/'tools/probe_kpack_strategy.py'), '--plan', str(args.output/'plan/plan.json'),
+            '--output', str(args.output/'resources'), '--sdk', str(args.sdk), '--cache', str(args.cache),
+            '--jobs', str(args.jobs), '--max-modules', str(args.max_modules)]
+        if (args.output/'resources').exists(): cmd.append('--resume')
+        resource_log = args.output/('resources-'+str(time.time_ns())+'.log')
+        resource_rc = wait(cmd, resource_log, phase='compile-resources')
+        if resource_rc:
+            raise ValueError(f'resource phase incomplete rc={resource_rc}; see {resource_log}; completed modules are resumable')
     with lock.open('a') as held:
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if any(p['workload']['operation'] == 'dense' for p in frozen['points']):
@@ -330,10 +358,13 @@ def main():
             providers['dense'] = blas.identity
             blas.close()
             print('STRATEGY_PREFILL_PROVIDER phase=cublas-identity status=PASS', flush=True)
-        probe = load_probe(args.output, pilot=False); plan = execution_plan(probe)
+        probe = probe or load_probe(args.output, pilot=False); plan = execution_plan(probe)
         if plan['counts']['arms'] > args.max_arms: raise ValueError('expanded arm limit exceeded')
         atomic_json(args.output/'execution-plan.json', plan)
         records = records_for(probe, plan, args.sdk)
+        if previous:
+            reuse_build(previous, args.output, 'dequant', args.sdk, dequant_checked)
+            reuse_build(previous, args.output, 'helpers', args.sdk, lambda path, sdk: verify_helpers(sdk, path))
         dq = stable_build(args, 'dequant', build_dequant, dequant_checked)
         hp = stable_build(args, 'helpers', build_helpers, lambda path, sdk: verify_helpers(sdk, path))
         l2 = l2_authority(args)
@@ -347,7 +378,11 @@ def main():
         path = args.output/'authority.json'
         if path.exists() and json.loads(path.read_text()) != authority: raise ValueError('resume authority changed')
         atomic_json(path, authority)
-        journal = ArmJournal(args.output/'arms', dict(sha256=digest(authority)), args.invocation)
+        imported = import_passes(previous, args.output, plan, authority, jobs) if previous else None
+        if imported:
+            print(f'STRATEGY_PREFILL_RETRY preserved_pass_jobs={imported["passed_jobs"]} '
+                  'scope=FAILED_OR_PENDING_ONLY original_receipts=UNCHANGED', flush=True)
+        journal = PrefillJournal(args.output/'arms', dict(sha256=digest(authority)), args.invocation)
         families = groups(plan['points'])
         for key, points in families.items():
             arms = [a for p in points for a in p['arms'] if a['recipe']['kind'] == 'tc']
@@ -386,6 +421,7 @@ def main():
     summary = dict(status='SCREEN_COMPLETE' if passed == plan['counts']['requested_points'] else 'INCOMPLETE',
         passed=passed, expected=plan['counts']['requested_points'], blocked=plan['blocked'],
         counts=counts, elapsed_seconds=time.monotonic()-started, budget_reached=budget,
+        prior_pass_jobs=imported['passed_jobs'] if imported else 0,
         production_changed=False, performance_admitted=False, full_campaign=False,
         remaining=['ALTERNATING_LARGE_M_FINALISTS', 'ORIGINAL_WIRING_MODEL_AB'],
         scope=plan['scope'], excluded=plan['excluded'])

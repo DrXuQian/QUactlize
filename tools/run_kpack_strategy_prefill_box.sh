@@ -52,6 +52,10 @@ trap finish EXIT
 cd -- "${prefill_source:?}"
 prefill_args=(--output "$prefill_run/measurement" --jobs "${JOBS:-192}" --hours "${HOURS:-10}"
     --shard "${SHARD:-0}" --shards "${SHARDS:-1}" --l2-bytes "${L2_BYTES:-0}" "${prefill_resume[@]}")
+if [[ -n "${PREVIOUS_RUN:-}" ]]; then
+    prefill_previous=$(realpath -e -- "$PREVIOUS_RUN")
+    prefill_args+=(--previous-output "$prefill_previous")
+fi
 if [[ -n "${RESOURCE_CACHE:-}" ]]; then
     prefill_cache=$(realpath -e -- "$RESOURCE_CACHE")
     test -d "$prefill_cache"

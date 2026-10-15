@@ -188,12 +188,14 @@ class Review:
         for keys in data.get('component_arms', data.get('components', {})).values():
             self.needed.update(keys)
 
-    def arm(self, row):
+    def arm(self, row, *, origin=None):
         identity = row['identity']
         pid, arm = identity['point'], identity['arm']
         out = dict(point=pid, id=arm['id'], status=row['status'], roles=arm['roles'],
                    recipe=self.ref('config', arm.get('recipe')),
                    authority=identity.get('authority'), record_sha256=row['record_sha256'])
+        if origin:
+            out['measurement_origin'] = origin
         if 'config' in arm:
             out['expansion_config'] = arm['config']
         data = row.get('data', {})
@@ -236,6 +238,20 @@ class Review:
                       **select(authority, 'plan body_source dequant oracle l2 idle protocol scope')),
                   images={k: authority[k] for k in ('tc', 'vectors') if k in authority},
                   providers={k:self.provider(v) for k,v in authority.get('providers', {}).items()})
+        prior_index = None
+        if (self.root/'prior/index.json').is_file():
+            prior_index = self.read(self.root/'prior/index.json')
+            old = self.read(self.root/'prior/authority.json')
+            if digest(old) != prior_index['authority_sha256']:
+                raise ValueError('imported prefill authority differs')
+            self.emit('prior_run', root=prior_index['previous_output'],
+                authority_sha256=digest(old), passed_jobs=prior_index['passed_jobs'],
+                authority=dict(resource=old.get('resource', {}),
+                    harness_sha256=old.get('harness', {}).get('sha256'),
+                    **select(old, 'plan body_source dequant oracle l2 idle protocol scope')),
+                images={k:old[k] for k in ('tc', 'vectors') if k in old},
+                providers={k:self.provider(v) for k,v in old.get('providers', {}).items()},
+                scope='PRIOR_PASS_RECEIPTS_AND_SAMPLES_UNCHANGED_NOT_NEW_MEASUREMENTS')
         for p in summary.get('points', []) + summary.get('blocked', []):
             pid = p.get('id', p.get('point'))
             self.point(p)
@@ -270,6 +286,21 @@ class Review:
                 self.issue(path.relative_to(self.root), exc)
             if index % 1000 == 0:
                 print(f'STRATEGY_REVIEW_PROGRESS current_receipts={index} input_MiB={self.input_bytes/2**20:.1f}', flush=True)
+        if prior_index:
+            for key, expected in sorted(prior_index['receipts'].items()):
+                if not re.fullmatch('[0-9a-f]{64}/(?:original|[0-9a-f]{64})', key):
+                    self.issue('prior/index.json', 'invalid prior point/arm'); continue
+                path = self.root/'prior/arms'/key/'current.json'
+                try:
+                    row = self.read(path)
+                    if (row['record_sha256'] != expected or row['status'] != 'PASS' or
+                            row['identity']['authority'] != {'sha256':prior_index['authority_sha256']} or
+                            row['identity']['point']+'/'+row['identity']['arm']['id'] != key or
+                            (self.root/'arms'/key/'current.json').exists()):
+                        raise ValueError('prior PASS receipt identity/uniqueness differs')
+                    self.arm(row, origin='PRIOR_PASS_UNCHANGED')
+                except (ValueError, OSError, KeyError, TypeError) as exc:
+                    self.issue(path.relative_to(self.root), exc)
         for cid in sorted(self.needed - self.previous_components):
             if not isinstance(cid, str) or not re.fullmatch('[0-9a-f]{64}', cid):
                 self.issue('components', 'invalid referenced component ID: '+repr(cid))

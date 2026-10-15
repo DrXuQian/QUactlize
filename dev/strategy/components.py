@@ -26,7 +26,7 @@ def role(name):
         if '<' not in name:
             return 'unclassified'
         n = kernel_entry(name.split('<', 1)[1].split('>', 1)[0]).lower()
-    if any(s in n for s in ('reduction', 'reduce_decode', 'register_reuse_reduce')):
+    if any(s in n for s in ('reduction', 'reduce_decode', 'reduce_bf16_grouped', 'register_reuse_reduce')):
         return 'reducer'
     if any(s in n for s in ('dequant', 'sf_prepare', 'expand_scale', 'expand_metadata',
                              'prepass_unit_kernel', 'sf_columns', 'sf_unit16', 'sf_bfloat_units')):
