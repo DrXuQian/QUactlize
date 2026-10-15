@@ -12,11 +12,12 @@ from quactlize.runtime.tuning import digest
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCES = ('dev/strategy/prefill_helpers.cu', 'quactlize/dequant/indexed.cu')
+HEADERS = ('dev/strategy/prefill_capture.hpp',)
 
 
 def identity(sdk):
     compiler = Compiler(sdk, Path(sdk)/'unused-strategy-identity')
-    return dict(compiler=compiler.identity, sources={p: sha(ROOT/p) for p in SOURCES},
+    return dict(compiler=compiler.identity, sources={p: sha(ROOT/p) for p in (*SOURCES, *HEADERS)},
                 adapters={str(p.relative_to(ROOT)): sha(p)
                     for folder in ('quactlize/dense', 'quactlize/prefill', 'quactlize/dequant')
                     for p in (ROOT/folder).rglob('*') if p.is_file() and p.suffix in ('.h', '.hpp', '.cuh', '.cu')})

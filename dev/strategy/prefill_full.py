@@ -14,11 +14,16 @@ from tools.run_kpack_gemv_gate import Resources
 
 
 class Full:
-    def __init__(self, b, bundle, l2_bytes, sdk_path):
+    def __init__(self, b, bundle, l2_bytes, sdk_path, *, workspace_bytes=0):
+        # Explicit opt-in until the bounded Box capture gate admits it. Do not
+        # change an active campaign's provider selection/workspace implicitly.
+        if type(workspace_bytes) is not int or workspace_bytes < 0:
+            raise ValueError('workspace bytes must be a nonnegative integer')
         import torch
         self.torch, self.b = torch, b
         self.r = Resources(b.sdk)
         self.provider = None
+        self.workspace = None
         self.tensors, self.backs, self.calls = [], [], []
         self.weights = []
         try:
@@ -54,6 +59,11 @@ class Full:
                 self.weights.append(tensor((w.experts, w.n, w.k)))
             self.provider = Cublas(sdk_path, b.r.stream) if w.experts == 1 else DeepGemm()
             self.receipt['provider'] = self.provider.identity
+            self.receipt['workspace'] = dict(mode='PROVIDER_DEFAULT')
+            if w.experts == 1 and workspace_bytes:
+                self.workspace = ResidentWorkspace(self.r, workspace_bytes)
+                self.receipt['workspace'] = self.provider.set_workspace(
+                    self.workspace.ptr, self.workspace.size)
         except BaseException:
             self.close(); raise
 
@@ -162,6 +172,7 @@ class Full:
                     self.b.sdk.download(back.data_ptr()+size-128, 128) != b'\xa5'*128):
                 raise ValueError('full provider tensor guard changed')
         self.ids.guard(); self.count.guard()
+        if self.workspace: self.workspace.guard()
 
     def close(self):
         self.b.rt.sync()
@@ -170,3 +181,20 @@ class Full:
         self.a = self.out = self.rows = self.indices = None
         self.r.close()
         self.torch.cuda.empty_cache()  # This child only, outside capture/timing.
+
+
+class ResidentWorkspace:
+    """Guarded 256-byte-aligned allocation, owned by the provider Resources."""
+    def __init__(self, resources, size):
+        if type(size) is not int or size <= 0:
+            raise ValueError('positive resident workspace bytes required')
+        self.r, self.size = resources, size
+        base = resources.alloc(size+768)
+        self.ptr = (base+511) & ~255
+        resources.fill(self.ptr-256, 0xa5, size+512)
+        resources.sdk.synchronize(resources.stream)
+
+    def guard(self):
+        for ptr in (self.ptr-256, self.ptr+self.size):
+            if self.r.sdk.download(ptr, 256) != b'\xa5'*256:
+                raise ValueError('cuBLAS resident workspace redzone differs')

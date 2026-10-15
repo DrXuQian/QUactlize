@@ -46,6 +46,26 @@ class Cublas:
             b.data_ptr(), 14, k, a.data_ptr(), 14, k, C.byref(self.beta), out.data_ptr(), 14, n, 68, -1),
             'cuBLAS BF16 GEMM')
 
+    def set_workspace(self, pointer, size):
+        """Bind caller-owned storage AFTER SetStream, before warmup/capture.
+
+        Stream-ordered internal allocations are not cloneable graph nodes.
+        The caller must retain this buffer through all extracted graph use and
+        handle destruction. This is not an algorithm override or a tuner.
+        """
+        if type(pointer) is not int or pointer <= 0 or pointer % 256:
+            raise ValueError('cuBLAS workspace requires a positive 256-byte-aligned pointer')
+        if type(size) is not int or size <= 0:
+            raise ValueError('cuBLAS workspace requires positive bytes')
+        for name in ('cublasSetWorkspace_v2', 'cublasSetWorkspace'):
+            fn = getattr(self.lib, name, None)
+            if fn is not None:
+                fn.argtypes, fn.restype = [C.c_void_p, C.c_void_p, C.c_size_t], C.c_int
+                checked(fn(self.handle, pointer, size), name+' resident capture workspace')
+                return dict(mode='CALLER_OWNED', bytes=size, alignment=256, entry=name,
+                            algorithm='CUBLAS_GEMM_DEFAULT', allocation_timed=False)
+        raise ValueError('installed cuBLAS lacks cublasSetWorkspace; no workspace fallback')
+
     def close(self):
         if self.handle:
             checked(self.lib.cublasDestroy_v2(self.handle), 'cuBLAS destroy')

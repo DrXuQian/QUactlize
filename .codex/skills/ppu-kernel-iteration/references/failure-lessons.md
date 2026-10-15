@@ -51,6 +51,30 @@ this is an API/design basis, NOT proof of PPU runtime support or speed. Local
 ownership/ABI tests and HGCC object compilation do not replace the Box gate.
 Evidence seams: `dev/strategy/prefill_*`, `tests/test_strategy_prefill.py`.
 
+Follow-up ZW810/SDK2.1.1 observation (2026-10-15): the dense BF16 cuBLAS
+provider failed the combined capture-info/clone bridge with801 for Q3
+M128/N1024/K5120; the preceding full-dequant jobs passed. That message alone
+does NOT distinguish GetCaptureInfo failure from GraphClone failure. Log
+each API and graph node type before blaming the provider or changing kernels.
+cuBLAS can capture allocation/free nodes, which CUDA GraphClone disallows;
+an explicit256-byte-aligned persistent workspace, bound AFTER SetStream,
+is a candidate mitigation, not yet proven for this PPU implementation. Keep
+the workspace through graph replay and handle destruction, with redzones.
+Do not remove allocation/free or other non-kernel nodes to make extraction
+pass. The one-point default/resident probe uses separate processes and the
+same physical-device lock as the campaign; active sources/results stay fixed.
+Native helper object compilation and101 host tests passed, device proof is
+pending. Seam: `tools/probe_kpack_prefill_capture.py`.
+
+Two equal captured launch inventories do not prove tuning completion or
+optimality. Use ordinary untimed warmup, synchronization, and event timing;
+for this experiment retain the requested separate kernel-stage timers.
+The provider default is not an external algo search. Explicit workspace size
+belongs in the measurement identity because it can affect provider selection.
+See [cuBLAS workspace/graphs](https://docs.nvidia.com/cuda/cublas/index.html),
+[CUDA graph restrictions](https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__GRAPH.html),
+and [NVIDIA explicit cuBLASLt tuning sample](https://github.com/NVIDIA/CUDALibrarySamples/tree/master/cuBLASLt/LtSgemmSimpleAutoTuning).
+
 Use the category that matches the observation; these are not reasons to add
 every diagnostic to every kernel.
 

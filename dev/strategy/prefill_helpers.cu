@@ -1,6 +1,7 @@
 // Experiment-only launch wrappers around unchanged production adapters.
 #include "quactlize/dense/copy.cu"
 #include "quactlize/prefill/stages.cu"
+#include "dev/strategy/prefill_capture.hpp"
 
 extern "C" int strategy_prefill_io(int bf16, int input, void const* src, void* dst,
         int rows, int width, int64_t stride, int const* map, int source_rows,
@@ -33,13 +34,5 @@ extern "C" int strategy_prefill_active(int const* offsets, int* rows, int* ids,
 // during capture; PPU runtime support still requires the device execution gate.
 // https://docs.nvidia.com/cuda/archive/12.4.1/cuda-runtime-api/group__CUDART__STREAM.html
 extern "C" int strategy_prefill_clone_capture(void* stream, void** result) {
-    hggcStreamCaptureStatus status;
-    hggcGraph_t graph = nullptr, clone = nullptr;
-    auto rc = hggcStreamGetCaptureInfo(static_cast<hggcStream_t>(stream), &status,
-                                     nullptr, &graph, nullptr, nullptr, nullptr);
-    if (rc != hggcSuccess) return int(rc);
-    if (status != hggcStreamCaptureStatusActive || !graph || !result) return 1;
-    rc = hggcGraphClone(&clone, graph);
-    if (rc == hggcSuccess) *result = clone;
-    return int(rc);
+    return strategy_prefill::clone_capture(stream, result);
 }
