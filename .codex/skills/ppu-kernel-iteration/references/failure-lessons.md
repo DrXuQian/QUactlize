@@ -68,13 +68,19 @@ zero non-kernel nodes and successful clone, but runtimeGetKernelNodeParams
 failed500 (named symbol not found). Do not mistake successful clone for
 usable extracted kernels, or blame numerical correctness from this failure.
 The user requested NO CUDA Graph for cuBLAS. That capture probe is retired.
-Use ordinary warmed calls and synchronizedHGTX ranges with Asys GPU activity
-timestamps (`probe_kpack_cublas_ordinary.py`). Preserve every internal kernel,
-its geometry and sample; keep provider event spans auxiliary, not a producer
-timer. Mark profiler samples separately from isolated graph-event records.
-Empty/calibration-broken device activity is a failure, never host-time
-fallback. Existing TC/dequant/grouped timers are unchanged. A single-point
-gate is required before restarting a campaign; host tests are not PPU proof.
+The replacement Asys/HGTX path then reported0/135 measured ranges; that alone
+does not prove missing GPU activity, and its range failure root is unverified.
+The user explicitly chose direct CUDA events, without Asys. Current
+`probe_kpack_cublas_ordinary.py` warms ordinary calls then times only the
+provider API; input/output conversions and expansion remain separate. A
+provider span includes any internal reducer AND host-submission/device gaps;
+do not relabel it a single GPU kernel, subtract guessed launch latency or add
+the internal reducer twice. Keep this method distinct from isolated graph
+kernel costs; mixed-method sums are screening estimates, not model E2E.
+Offline review may reuse the previous UNPROFILED events worker only after its
+exit, authority, numerical controls and complete sample inventory validate.
+Do not turn a failed profiler receipt green or invent unmeasured adapter times.
+Existing TC/dequant/grouped timers remain unchanged; host tests are not PPU proof.
 
 Two equal captured launch inventories do not prove tuning completion or
 optimality. Use ordinary untimed warmup, synchronization, and event timing;

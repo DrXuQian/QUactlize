@@ -1,4 +1,4 @@
-"""No-Graph cuBLAS measurement: synchronized HGTX ranges, GPU activity times.
+"""Historical trace helpers; the current cuBLAS benchmark uses CUDA events.
 
 Events around the provider are an auxiliary API-span check, never a GEMM or
 reducer timer. Every GPU kernel is retained, including unclassified entries.
@@ -6,16 +6,13 @@ reducer timer. Every GPU kernel is retained, including unclassified entries.
 from contextlib import contextmanager
 import ctypes as C
 import json
-import os
 from pathlib import Path
-import signal
 import sqlite3
 import statistics
-import subprocess
-import time
 import uuid
 
 from dev.strategy.components import stage_role
+from dev.strategy.process import wait_process
 from quactlize.runtime.compiler import sha
 
 PREFIX = 'STRATEGY_CUBLAS/'
@@ -57,34 +54,6 @@ def profile_command(asys, report, application):
             '--kill', 'sigterm', '--show-output', 'true', '--force-overwrite', 'false',
             '--session-new', 'quactlize-cublas-'+uuid.uuid4().hex,
             '--output', str(report), *application]
-
-
-def wait_process(command, log, held, timeout):
-    """Timeout only this fresh process group, including its profiler worker."""
-    with Path(log).open('x') as out:
-        p = subprocess.Popen(command, stdout=out, stderr=subprocess.STDOUT,
-            pass_fds=(held.fileno(),), start_new_session=True)
-        start = time.monotonic()
-        try:
-            while True:
-                remaining = timeout-(time.monotonic()-start)
-                if remaining <= 0:
-                    # start_new_session makes this PID the owned process-group
-                    # leader. No pkill/device reset/shared profiler shutdown.
-                    if p.poll() is None:
-                        if os.getpgid(p.pid) != p.pid: raise RuntimeError('owned process group changed')
-                        os.killpg(p.pid, signal.SIGKILL)
-                    p.wait()
-                    return dict(rc=p.returncode, timeout=True, seconds=time.monotonic()-start)
-                try:
-                    return dict(rc=p.wait(timeout=min(30, remaining)), timeout=False,
-                                seconds=time.monotonic()-start)
-                except subprocess.TimeoutExpired:
-                    print(f'STRATEGY_CUBLAS_WAIT log={log} seconds={time.monotonic()-start:.1f}', flush=True)
-        finally:
-            if p.poll() is None:
-                if os.getpgid(p.pid) != p.pid: raise RuntimeError('owned process group changed')
-                os.killpg(p.pid, signal.SIGKILL); p.wait()
 
 
 def parse_trace(path, expected):

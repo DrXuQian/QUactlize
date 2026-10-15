@@ -157,7 +157,7 @@ class Full:
 
     def capture(self):
         if self.b.w.experts == 1:
-            raise ValueError('cuBLAS must use ordinary calls and Asys kernel activities, not CUDA Graph')
+            raise ValueError('cuBLAS must use ordinary calls and CUDA events, not CUDA Graph')
         # Python JIT/provider allocations belong to the Torch graph pool.
         # Cloning without retaining that pool would leave dangling pointers.
         owner = self.torch.cuda.CUDAGraph()

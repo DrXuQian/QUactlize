@@ -8,7 +8,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from dev.strategy.components import stage_role, statistics_checked
+from dev.strategy.components import stage_role, component_statistics
 from dev.strategy.journal import ArmJournal, atomic_json
 from dev.strategy.resource_pilot import load_probe, verified_plan
 from quactlize.runtime.tuning import digest
@@ -115,13 +115,15 @@ def reuse_build(root, output, name, sdk, verify):
 def checked_component(root, cid, authority):
     value, raw = read(root, Path('components')/(cid+'.json'))
     identity = value['identity']
+    provider_event = value.get('scope') == 'PROVIDER_CALL_EVENTS'
+    kind = 'provider' if provider_event else stage_role(identity['node']['name'], identity['contract'].get('split', 1))
     if (digest(identity) != cid or identity['authority'] != authority or
             value.get('kind') != identity['kind'] or
-            identity['kind'] != stage_role(identity['node']['name'], identity['contract'].get('split', 1)) or
-            value.get('timed_kernel_types') != 1 or value.get('first_use_excluded') is not True or
+            identity['kind'] != kind or
+            value.get('timed_kernel_types') != (None if provider_event else 1) or value.get('first_use_excluded') is not True or
             value.get('host_launch_cost_added') is not False):
         raise ValueError('retry component identity/timing scope changed')
-    if any(value.get(k) != v for k,v in statistics_checked(value['samples_us']).items()):
+    if any(value.get(k) != v for k,v in component_statistics(value).items()):
         raise ValueError('retry component samples/statistics differ')
     return value, raw
 

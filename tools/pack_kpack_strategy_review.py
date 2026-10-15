@@ -157,8 +157,10 @@ class Review:
                         spread_pct=100*(max(medians)/min(medians)-1))
         if any(data.get(k) != v for k, v in expected.items()):
             raise ValueError('component statistics differ from samples')
-        if (data.get('status') != 'PASS' or data.get('scope') not in ('ISOLATED_SINGLE_KERNEL', 'PROFILED_SINGLE_KERNEL') or
-                data.get('timed_kernel_types') != 1 or not data.get('first_use_excluded') or
+        provider_event = data.get('scope') == 'PROVIDER_CALL_EVENTS'
+        if (data.get('status') != 'PASS' or data.get('scope') not in ('ISOLATED_SINGLE_KERNEL', 'PROFILED_SINGLE_KERNEL',
+                'PROVIDER_CALL_EVENTS', 'SINGLE_KERNEL_CALL_EVENTS') or
+                data.get('timed_kernel_types') != (None if provider_event else 1) or not data.get('first_use_excluded') or
                 data.get('host_launch_cost_added') is not False):
             raise ValueError('component timing scope differs')
         if data['scope'] == 'PROFILED_SINGLE_KERNEL' and (
@@ -166,18 +168,25 @@ class Review:
                 identity.get('schema') != 'quactlize.profiled-component.v1' or
                 identity.get('cuda_graph') is not False or not identity.get('trace_sha256')):
             raise ValueError('profiled component trace identity missing')
+        if data['scope'] in ('PROVIDER_CALL_EVENTS', 'SINGLE_KERNEL_CALL_EVENTS') and (
+                data.get('timing_method') != 'CUDA_EVENTS_ORDINARY_CALL' or
+                identity.get('schema') != 'quactlize.provider-event-component.v1' or
+                identity.get('cuda_graph') is not False or identity.get('profiler') is not False or
+                (identity.get('phase') == 'provider') != provider_event or
+                data.get('internal_reduction_included') is not provider_event):
+            raise ValueError('provider/API event component scope differs')
         node = dict(identity['node'])
         for field in ('name', 'symbol'):
             if field in node:
                 node[field] = self.ref('symbol', node[field])
-        row = select(data, 'kind median_us spread_pct samples_us calls_per_graph status scope record_sha256 timing_method')
+        row = select(data, 'kind median_us spread_pct samples_us calls_per_graph status scope record_sha256 timing_method internal_reduction_included')
         if data['scope'] == 'PROFILED_SINGLE_KERNEL':
             row.update(trace_sha256=identity['trace_sha256'], cuda_graph=False)
         row.update(id=cid, phase=phase, point=point, cache=identity.get('cache'),
                    node=self.ref('kernel', node),
                    contract=self.ref('component_contract', identity.get('contract')),
                    authority=identity.get('authority'), implementation=identity.get('implementation'),
-                   first_use_excluded=True, timed_kernel_types=1, host_launch_cost_added=False)
+                   first_use_excluded=True, timed_kernel_types=data['timed_kernel_types'], host_launch_cost_added=False)
         self.emit('component', **row)
         if phase == 'screen':
             self.written_components.add(cid)

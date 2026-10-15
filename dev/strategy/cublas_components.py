@@ -1,7 +1,5 @@
-"""Import ordinary-call *individual GPU activities*, not event/API spans."""
+"""cuBLAS provider event components; historical trace import remains explicit."""
 from dataclasses import asdict
-import json
-from pathlib import Path
 import time
 
 from dev.strategy.components import statistics_checked
@@ -45,24 +43,41 @@ def components(trace, workload, authority, source):
 
 
 def measure_cublas(args, w, authority, held):
-    from tools.probe_kpack_cublas_ordinary import run_profile
-    path = args.output/'cublas-traces'/(w.key+'-'+str(time.time_ns()))
+    from tools.probe_kpack_cublas_ordinary import run_events
+    path = args.output/'cublas-events'/(w.key+'-'+str(time.time_ns()))
     path.mkdir(parents=True, exist_ok=False)
     probe = dict(harness=authority['harness'], sdk=authority['resource']['sdk'],
         device=authority['resource']['device'], workload=asdict(w), l2=authority['l2'],
         helpers_path=str(args.output/'helpers'), dequant_path=str(args.output/'dequant'),
-        asys=authority['asys'], cuda_graph=False, production_changed=False)
-    data = run_profile(args.sdk, path, probe, held)
-    trace = json.loads((path/'kernel-activities.json').read_text())
-    proof = data['arms']['asys']['result']['data']
+        cuda_graph=False, profiler=False, production_changed=False)
+    data = run_events(args.sdk, path, probe, held)
+    proof = data['worker']['data']
     if proof['receipt']['provider'] != authority['providers']['dense']:
         raise ValueError('ordinary provider differs from campaign preflight')
-    rows = components(trace, w, dict(sha256=digest(authority)),
-                      digest([authority['body_source'], proof['provider_loaded_images']]))
+    rows = event_components(data, w, dict(sha256=digest(authority)),
+                            digest([authority['body_source'], proof['provider_loaded_images']]))
     for row in rows: atomic_json(args.output/'components'/(row['component_id']+'.json'), row)
     return dict(correctness='PASS', components=[r['component_id'] for r in rows],
         stages=[dict(id=r['component_id'], role=r['kind'], median_us=r['median_us'], spread_pct=r['spread_pct'])
                 for r in rows], numerical=proof['numerical'], receipt=proof['receipt'],
-        profiler_report=data['report'], trace=str(path/'kernel-activities.json'), cuda_graph=False,
-        timing='INDIVIDUAL_ASYS_KERNEL_ACTIVITIES_NOT_CALL_EVENTS',
+        events=str(path/'events/result.json'), cuda_graph=False, profiler=False,
+        timing='PROVIDER_AND_ADAPTER_API_EVENTS_INTERNAL_REDUCTION_ALREADY_INCLUDED',
         production_changed=False, performance_admitted=False)
+
+
+def event_components(data, workload, authority, source):
+    if data['missing_adapter_timers']: raise ValueError('full composition needs measured adapter timers')
+    names = dict(input=('adapter', 'quactlize::prefill::gather_bf16'),
+                 provider=('provider', 'cublasGemmEx'), output=('postprocess', 'quactlize::prefill::finish_bf16'))
+    rows = []
+    for phase, timer in data['timers'].items():
+        kind, name = names[phase]
+        identity = dict(schema='quactlize.provider-event-component.v1', authority=authority,
+            implementation=source, cuda_graph=False, profiler=False, contract=asdict(workload),
+            phase=phase, kind=kind, node=dict(name=name, entry_type='PROVIDER_API' if phase=='provider' else 'KERNEL'),
+            cache='ROTATING_BF16_WEIGHTS_2P25_L2_RESIDENT_SCRATCH_ORDINARY_CALL')
+        cid = digest(identity)
+        row = dict(timer, identity=identity, component_id=cid, kind=kind,
+                   timed_kernel_types=None if phase=='provider' else 1)
+        row['record_sha256'] = digest(row); rows.append(row)
+    return rows

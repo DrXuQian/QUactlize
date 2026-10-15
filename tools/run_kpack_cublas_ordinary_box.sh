@@ -12,7 +12,7 @@ cublas_sdk=$(realpath -e -- "${PPU_SDK:-/usr/local/PPU_SDK}")
 test -d "$cublas_root"
 : "${CUDA_VISIBLE_DEVICES:?Choose exactly one idle physical device}"
 [[ "${IDLE_CONFIRMED:-0}" == 1 ]] || { printf '%s\n' 'Set IDLE_CONFIRMED=1 on an idle card.' >&2; exit 2; }
-for path in bin/hgcc asight/bin/asys asight/lib/libhgToolsExt.so lib/libhggc_wrapper.so; do
+for path in bin/hgcc lib/libhggc_wrapper.so; do
     [[ -f "$cublas_sdk/$path" ]] || { printf 'MISSING %s\n' "$cublas_sdk/$path" >&2; exit 1; }
 done
 cublas_run=$(mktemp -d "${cublas_root:?}/kpack-cublas-ordinary.XXXXXXXX")

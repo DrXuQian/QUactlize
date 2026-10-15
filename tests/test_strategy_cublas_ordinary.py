@@ -139,7 +139,9 @@ def test_ordinary_worker_never_uses_capture_and_retains_numeric_negatives(monkey
     def fill(ptr, *_):
         if ptr == 42: phase['bad_weight'] = True
         else: phase['poison'] = True
-    def sampled(fn, count): assert count==1; fn(); return [20.]
+    def sampled(fn, count):
+        assert count==1
+        controls.append(len(events)); fn(); return [20.]
     b = SimpleNamespace(w=SimpleNamespace(operation='dense', experts=1), update=update, check=check,
         rt=SimpleNamespace(sync=lambda: None), r=SimpleNamespace(fill=fill, samples=sampled),
         ring=SimpleNamespace(buffers=[], receipt={'unchanged': True}),
@@ -149,18 +151,14 @@ def test_ordinary_worker_never_uses_capture_and_retains_numeric_negatives(monkey
         setup=setup, launch=launch, matmul=launch, update=lambda: None, guards=lambda: None,
         check_weights=lambda i: {'bad':0}, receipt={'provider':'cuBLAS'})
     monkeypatch.setattr(m, 'loaded_images', lambda: {'blas.so':'sha'})
-    class FakeRanges:
-        identity = {'test':True}
-        def __init__(self, _): pass
-        @contextmanager
-        def range(self, name, sync): controls.append((name, len(events))); yield
-    monkeypatch.setattr(m, 'Ranges', FakeRanges)
-    r = m.measure(b, core, '/sdk', trace=True)
+    r = m.measure(b, core)
     assert r['correctness']=='PASS' and not r['cuda_graph'] and r['warmup_calls']==12
     assert r['omitted_producer']=='DETECTED' and r['pointer_negatives']==['BF16_LAST_COPY_ZERO']
-    assert len(r['measured'])==27 and len(controls)==27
+    assert len(r['measured'])==27 and len(controls)==28  # one untimed event warmup
+    assert all(item['event_span_us']==20. for item in r['measured'])
+    assert r['profiler'] is False and r['annotations'] is None
     # No fixture/expansion/warmup work after the first measured range.
-    assert all(e=='gemm' for e in events[controls[0][1]:])
+    assert all(e=='gemm' for e in events[controls[1]:])
     assert any(e[0]=='update' and e[2].get('amplitude')==2**20 for e in events if isinstance(e,tuple))
 
 
@@ -226,27 +224,24 @@ def test_owned_process_timeout_does_not_leak_its_child(tmp_path):
     assert not marker.exists()
 
 
-def test_profile_failure_cannot_publish_success_or_export(tmp_path, monkeypatch):
+def test_event_worker_failure_cannot_publish_success(tmp_path, monkeypatch):
     import tools.probe_kpack_cublas_ordinary as probe
     from dev.strategy.journal import atomic_json
-    from quactlize.runtime.compiler import sha
     from quactlize.runtime.tuning import digest
-    asys = tmp_path/'asys'; asys.write_text('fake profiler')
     output = tmp_path/'output'; output.mkdir()
-    authority = dict(asys=dict(path=str(asys),sha256=sha(asys)))
+    authority = dict(profiler=False)
     calls = []
     def wait(cmd, log, held, timeout):
         calls.append(cmd); Path(log).write_text('mock child\n')
         arm = cmd[cmd.index('--worker')+1]
         atomic_json(output/arm/'result.json', dict(status='PASS', authority_sha256=digest(authority),
             data=dict(correctness='PASS')))
-        return dict(rc=0 if arm=='events' else 23, timeout=False, seconds=1.)
+        return dict(rc=23, timeout=False, seconds=1.)
     monkeypatch.setattr(probe,'wait_process',wait)
-    monkeypatch.setattr(probe.subprocess,'run',lambda *a,**k: SimpleNamespace(returncode=0))
     with (tmp_path/'lock').open('a') as held:
-        with pytest.raises(ValueError,match='asys failed'):
-            probe.run_profile('/sdk',output,authority,held)
-    assert len(calls)==2 and not (output/'summary.json').exists()
+        with pytest.raises(ValueError,match='events failed'):
+            probe.run_events('/sdk',output,authority,held)
+    assert len(calls)==1 and not (output/'summary.json').exists()
 
 
 def test_reuse_builds_queries_l2_from_actual_reused_directory(monkeypatch, tmp_path):
@@ -255,36 +250,26 @@ def test_reuse_builds_queries_l2_from_actual_reused_directory(monkeypatch, tmp_p
     assert 'l2_authority(SimpleNamespace(output=builds, l2_bytes=args.l2_bytes))' in inspect.getsource(probe.run)
 
 
-def test_complete_profile_handoff_uses_gpu_times_and_keeps_event_spans_auxiliary(tmp_path, monkeypatch):
+def test_complete_event_handoff_has_no_profiler_process(tmp_path, monkeypatch):
     import tools.probe_kpack_cublas_ordinary as probe
     from dev.strategy.journal import atomic_json
-    from quactlize.runtime.compiler import sha
     from quactlize.runtime.tuning import digest
-    asys = tmp_path/'asys'; asys.write_text('fake profiler')
     output = tmp_path/'output'; output.mkdir()
-    authority = dict(asys=dict(path=str(asys),sha256=sha(asys)))
-    expected = fixture(output/'ordinary.sqlite')
+    authority = dict(profiler=False)
+    calls=[]
     def wait(cmd, log, held, timeout):
+        calls.append(cmd)
         Path(log).write_text('mock only\n')
-        if cmd[1]=='export': return dict(rc=0, timeout=False, seconds=1.)
         arm=cmd[cmd.index('--worker')+1]
-        measured = [dict(r, **({'event_span_us':40. if arm=='events' else 48.}
-                              if r['phase']=='provider' else {})) for r in expected]
-        data = dict(correctness='PASS', measured=measured, receipt={'same':'provider'},
-                    provider_loaded_images={'same':'hash'}, fixture={'same':'bytes'},
-                    warmup_calls=12, samples_per_round=3)
-        atomic_json(output/arm/'result.json', dict(status='PASS', authority_sha256=digest(authority),data=data))
+        atomic_json(output/arm/'result.json', dict(status='PASS', authority_sha256=digest(authority),data={'test':True}))
         return dict(rc=0, timeout=False, seconds=1.)
     monkeypatch.setattr(probe,'wait_process',wait)
-    monkeypatch.setattr(probe.subprocess,'run',lambda *a,**k: SimpleNamespace(returncode=0))
+    monkeypatch.setattr(probe,'summarize',lambda data: dict(status='PASS', received=data))
     with (tmp_path/'lock').open('a') as held:
-        result=probe.run_profile('/sdk',output,authority,held)
-    assert result['status']=='PASS'
-    assert result['phase_kernel_sum_median_us']['provider']==7.
-    assert result['auxiliary_event_median_us']==dict(events=40., asys=48.)
-    assert result['profiled_vs_unprofiled_event_pct']==pytest.approx(20.)
-    assert result['performance_admitted'] is False
-    assert (output/'summary.json').is_file() and (output/'kernel-activities.json').is_file()
+        result=probe.run_events('/sdk',output,authority,held)
+    assert result['status']=='PASS' and result['received']=={'test':True}
+    assert len(calls)==1 and calls[0][-2:]==['--worker','events']
+    assert (output/'summary.json').is_file() and not (output/'ordinary.sqlite').exists()
 
 
 def test_box_wrapper_is_non_destructive_and_requires_idle_device():

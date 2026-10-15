@@ -113,7 +113,7 @@ def statistics_checked(rounds):
 
 
 def component_statistics(row):
-    """Keep profiler device activity distinct from isolated graph events."""
+    """Do not relabel provider/API event spans as isolated GPU kernels."""
     result = statistics_checked(row['samples_us'])
     if row.get('scope') == 'PROFILED_SINGLE_KERNEL':
         identity = row.get('identity', {})
@@ -122,6 +122,17 @@ def component_statistics(row):
                 identity.get('cuda_graph') is not False or not identity.get('trace_sha256')):
             raise ValueError('profiled component lacks its no-Graph trace identity')
         result['scope'] = 'PROFILED_SINGLE_KERNEL'
+    elif row.get('scope') in ('PROVIDER_CALL_EVENTS', 'SINGLE_KERNEL_CALL_EVENTS'):
+        identity = row.get('identity', {})
+        provider = row['scope'] == 'PROVIDER_CALL_EVENTS'
+        if (identity.get('schema') != 'quactlize.provider-event-component.v1' or
+                identity.get('cuda_graph') is not False or identity.get('profiler') is not False or
+                row.get('timing_method') != 'CUDA_EVENTS_ORDINARY_CALL' or
+                (identity.get('phase') == 'provider') != provider or
+                row.get('internal_reduction_included') is not provider or
+                row.get('timed_kernel_types') != (None if provider else 1)):
+            raise ValueError('provider/API event component scope differs')
+        result['scope'] = row['scope']
     return result
 
 
@@ -139,7 +150,8 @@ def recommendation(arms, records, baseline='original', *, roles=None):
             missing[arm] = ['EMPTY_CALL']
             continue
         bad = [k for k in keys if k not in records or records[k].get('status') != 'PASS' or
-               records[k].get('scope') not in ('ISOLATED_SINGLE_KERNEL', 'PROFILED_SINGLE_KERNEL')]
+               records[k].get('scope') not in ('ISOLATED_SINGLE_KERNEL', 'PROFILED_SINGLE_KERNEL',
+                                               'PROVIDER_CALL_EVENTS', 'SINGLE_KERNEL_CALL_EVENTS')]
         if bad:
             missing[arm] = bad
             continue
@@ -165,11 +177,11 @@ def recommendation(arms, records, baseline='original', *, roles=None):
     control_only_wins=(best_control is not None and winner in costs and costs[best_control]<costs[winner])
     if missing or noisy or control_only_wins:
         winner = baseline
-    profiled = any(r.get('scope') == 'PROFILED_SINGLE_KERNEL' for r in records.values())
+    mixed = any(r.get('scope') != 'ISOLATED_SINGLE_KERNEL' for r in records.values())
     return dict(recommended=winner, baseline=baseline, costs_us=costs, missing=missing, noisy=noisy,
                 best_rule=best_rule,best_control=best_control,rule_regret_pct=regret,
                 control_only_wins=control_only_wins,roles=roles,
-                scope=('SUM_OF_COMPONENT_GPU_TIMES_MIXED_METHODS_NOT_MEASURED_E2E' if profiled else
+                scope=('SUM_OF_COMPONENT_COSTS_MIXED_METHODS_NOT_MEASURED_E2E' if mixed else
                        'SUM_OF_ISOLATED_KERNELS_NOT_MEASURED_E2E'),
                 host_launch_cost_added=False, production_changed=False,
                 admission='ORIGINAL_WIRING_MODEL_AB_REQUIRED',

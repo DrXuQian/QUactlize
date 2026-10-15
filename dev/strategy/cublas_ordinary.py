@@ -1,13 +1,15 @@
 """Independent correctness and rotating-weight ordinary cuBLAS calls."""
 import time
 
-from dev.strategy.cublas_trace import PHASES, Ranges, label
 from dev.strategy.prefill_measure import expect_oracle_failure
 from quactlize.runtime.native import checked
 from tools.kpack_bf16_providers import loaded_images
 
 
-def measure(b, core, sdk_path, *, trace=False, config=4):
+PHASES = ('input', 'provider', 'output')
+
+
+def measure(b, core, *, config=4):
     if b.w.operation != 'dense' or b.w.experts != 1:
         raise ValueError('ordinary cuBLAS worker requires a dense workload')
     start = time.monotonic()
@@ -46,7 +48,7 @@ def measure(b, core, sdk_path, *, trace=False, config=4):
     b.update(0); core.update()
     # Standard untimed warmup, not a claim that identical dispatches prove
     # optimality. Every rotating weight address is visited twice, at least11
-    # complete calls; synchronize before any measured HGTX range/event.
+    # complete calls; synchronize before any measured event.
     warmups = max(2, (11+core.copies-1)//core.copies)*core.copies
     for i in range(warmups): checked(core.launch(i % core.copies), 'ordinary warmup')
     # Warm the event API too. End at the last address so sample0 does not
@@ -55,29 +57,25 @@ def measure(b, core, sdk_path, *, trace=False, config=4):
     numerical.append(b.check()); b.rt.sync()
     images = loaded_images()
     if not images: raise ValueError('installed cuBLAS images missing after warmup')
-    ranges = Ranges(sdk_path) if trace else None
     measured = []
     count = max(3, core.copies)
     for round_ in range(3):
         for sample in range(count):
             copy = (round_*count+sample) % core.copies
             for phase in PHASES:
-                row = dict(label=label(round_, sample, phase), round=round_, sample=sample,
+                row = dict(round=round_, sample=sample,
                            copy=copy, phase=phase)
                 def launch():
                     if phase == 'input': return b.input(core.a.data_ptr(), True)
                     if phase == 'output': return b.finish(core.out.data_ptr(), True)
                     return core.matmul(copy)
-                if trace:
-                    with ranges.range(row['label'], b.rt.sync):
-                        if phase == 'provider': row['event_span_us'] = b.r.samples(launch, 1)[0]
-                        else: checked(launch(), 'ordinary '+phase)
-                else:
-                    if phase == 'provider': row['event_span_us'] = b.r.samples(launch, 1)[0]
-                    else: checked(launch(), 'ordinary '+phase)
+                # Each interval contains exactly one API call. In the provider
+                # phase that call may launch GEMM plus an internal reducer.
+                # Neither dequant nor caller input/output adapters enter it.
+                row['event_span_us'] = b.r.samples(launch, 1)[0]
                 measured.append(row)
         numerical.append(b.check())
-        print(f'STRATEGY_CUBLAS_PROGRESS mode={"asys" if trace else "events"} '
+        print('STRATEGY_CUBLAS_PROGRESS mode=events '
               f'round={round_+1}/3 ring={core.copies} cuda_graph=0', flush=True)
     checked(core.launch(), 'ordinary final oracle'); numerical.append(b.check())
     core.guards()
@@ -87,7 +85,7 @@ def measure(b, core, sdk_path, *, trace=False, config=4):
         pointer_negatives=['BF16_LAST_COPY_ZERO'], zero_a='PASS', omitted_producer='DETECTED',
         changed_input='PASS', receipt=core.receipt, fixture=b.ring.receipt, measured=measured,
         warmup_calls=warmups, event_warmup_calls=1, rounds=3, samples_per_round=count, cuda_graph=False,
-        provider_loaded_images=images, annotations=ranges.identity if ranges else None,
-        event_scope='AUXILIARY_PROVIDER_API_SPAN_INCLUDING_GAPS_NOT_SINGLE_KERNEL',
-        profiler=trace, wall_seconds=time.monotonic()-start,
+        provider_loaded_images=images, annotations=None,
+        event_scope='SEPARATE_API_EVENTS_PROVIDER_INCLUDES_INTERNAL_REDUCTION_AND_LAUNCH_GAPS',
+        profiler=False, wall_seconds=time.monotonic()-start,
         production_changed=False, performance_admitted=False)
