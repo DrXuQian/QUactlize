@@ -73,7 +73,9 @@ def freeze(args):
     p['source_identity'] = verify_unchanged(before, ROOT)
     p['plan_sha256'] = digest({k: v for k, v in p.items() if k != 'plan_sha256'})
     atomic_json(path, p)
-    return p
+    # bind_original adds dataclass tuples after make_plan's JSON normalization.
+    # Fresh and resumed callers must see exactly the same sealed representation.
+    return json.loads(json.dumps(p, allow_nan=False))
 
 
 def wait(command, log, *, held=None, phase='setup'):

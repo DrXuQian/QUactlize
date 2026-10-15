@@ -5,6 +5,7 @@ import hashlib
 import json
 import lzma
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -184,6 +185,44 @@ def test_previous_probe_compares_plans_and_transitive_harness(tmp_path, monkeypa
         previous_probe(old, dict(frozen, points=['different']), new_inputs, ROOT)
     with pytest.raises(ValueError, match='measurement inputs changed'):
         previous_probe(old, frozen, closure(dict(new_inputs['files'], **{'oracle.py':'different'})), ROOT)
+
+
+def test_fresh_full_prefill_plan_matches_its_json_for_retry(tmp_path, monkeypatch):
+    """Real 430-point planner + compiled original selector, not a JSON fixture.
+
+    bind_original() adds dataclass tuples AFTER make_plan() normalizes JSON.
+    The very first retry invocation compares this fresh in-memory plan with
+    the previous run's deserialized plan. A second --resume alone misses it.
+    """
+    from dev.strategy.provenance import harness_identity
+    from dev.strategy.resources import inventory
+    from tools.run_kpack_strategy_prefill import freeze
+    args = SimpleNamespace(output=tmp_path, shard=0, shards=1)
+    fresh = freeze(args)
+    saved = json.loads((tmp_path/'plan/plan.json').read_text())
+    assert fresh == saved
+    assert len(fresh['points']) == 430
+    assert inventory(fresh) == inventory(saved)
+    assert freeze(args) == fresh
+    current_harness = harness_identity(ROOT)
+    resource = dict(plan=saved['plan_sha256'], source=saved['source_identity']['sha256'])
+    atomic_json(tmp_path/'authority.json', dict(resource=resource, harness=current_harness))
+    probe = dict(plan=saved, authority=resource)
+    monkeypatch.setattr('dev.strategy.prefill_retry.load_probe', lambda *a, **k: probe)
+    assert previous_probe(tmp_path, fresh, current_harness, ROOT) == probe
+    # Real semantic changes must still reject; normalization is not a bypass.
+    for field in ('workload', 'original_recipe', 'candidates', 'partition'):
+        altered = deepcopy(fresh)
+        if field == 'partition':
+            altered['partition']['shard'] = 1
+        elif field == 'workload':
+            altered['points'][0]['workload']['n'] += 256
+        elif field == 'original_recipe':
+            altered['points'][0]['original_recipe']['parameters'][0][1] = 'changed'
+        else:
+            altered['points'][0]['candidates'][0]['parameters'][0][1] = 'changed'
+        with pytest.raises(ValueError, match='inventory changed'):
+            previous_probe(tmp_path, altered, current_harness, ROOT)
 
 
 def test_helpers_are_verified_and_copied_not_recompiled(tmp_path):

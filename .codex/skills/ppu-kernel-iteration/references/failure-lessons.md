@@ -155,7 +155,14 @@ recall. It was rejected as the default, not called an overnight plan.
 
 Use durable per-arm receipts and fresh processes after failures. Test resume
 with real fault-injected child processes, including tuple/list JSON identity
-roundtrips. Bind imported fixture/oracle sources as well as the top-level
+roundtrips. Exercise the freshly generated plan after its LAST binder, not
+only fixtures already decoded from JSON. In the 2026-10-15 prefill retry,
+`bind_original()` reintroduced tuple recipe parameters after `make_plan()`
+normalized them; direct comparison with saved lists rejected an unchanged
+430-point inventory before GPU work. Normalize at the freeze return boundary,
+and retain negative tests for actual workload/config/shard changes. Reproducer:
+`tests/test_strategy_prefill_retry.py::test_fresh_full_prefill_plan_matches_its_json_for_retry`.
+Bind imported fixture/oracle sources as well as the top-level
 runner. A declared helper/grid domain is not executed coverage; fail the
 preflight when its driver is incomplete. Evidence and host regression seams:
 `dev/strategy/`, `tests/test_strategy_{space,journal,resources,provenance}.py`.
