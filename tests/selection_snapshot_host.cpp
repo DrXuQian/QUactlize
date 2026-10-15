@@ -4,6 +4,10 @@
 #include <iostream>
 
 static quactlize::dispatch::matched::data::Choice const* current = nullptr;
+template<class Selection> auto chosen(Selection const& s,int)->decltype(s.choice) {return s.choice;}
+template<class Selection> auto chosen(Selection const& s,long) {
+    return s.row?&quactlize::dispatch::matched::data::kChoices[s.row->choice]:nullptr;
+}
 static int resources(qk_resources_v1* out) {
     *out={};out->occupancy=3;out->workspace_bytes=8192;out->shared_bytes=1234;
     return QK_OK;
@@ -30,7 +34,7 @@ int main() {
         if(mutation==4)d.compute_type=99;
         if(mutation==5)d.call.a=reinterpret_cast<void*>(4);
         auto selected=matched::select(d);
-        current=selected.row?&matched::data::kChoices[selected.row->choice]:nullptr;
+        current=chosen(selected,0);
         Runtime runtime;runtime.device=0;runtime.cu=72;kImages.clear();
         if(current && current->kind==QKS_SMALLM_TC) {
             auto const& f=current->tc;bool dense=mode==QKG_DENSE;

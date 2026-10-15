@@ -15,6 +15,11 @@ def recipes():
     for r in policy["ranges"]:
         if r["role"] == "auto" and r["recipe"].startswith("simt:"):
             groups[r["n"], r["k"]].add(tuple(int(x[1:]) for x in r["recipe"][5:].split("-")))
+    from tools.generate_decode_selection import EVIDENCE, effective
+    for r in effective(json.loads(EVIDENCE.read_text()))['exact']:
+        if r['config']['kind'] == 'q4':
+            groups[r['key'][2], r['key'][3]].add(tuple(r['config'][f]
+                for f in ('reader', 'variant', 'warps', 'values', 'columns')))
     return {shape: sorted(values) for shape, values in sorted(groups.items())}
 
 

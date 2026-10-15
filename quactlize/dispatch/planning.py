@@ -59,6 +59,15 @@ def validate_inventory(plan, execution, modules=(), *, jit=False):
             raise ValueError(f'final selector requires unavailable BF16 execution: q={q}')
     if required['q4'] and not execution.get('q4_decode_policy_sha256'):
         raise ValueError('final selector requires the compiled Q4 decode policy')
+    for row in plan['requests']:
+        if row['status'] != 0 or row['kind'] != 2:
+            continue
+        q, _, n, k, _, _, _, _, compute = row['request']
+        config = [row['config'][f] for f in ('reader', 'variant', 'warps', 'values', 'columns')]
+        if q != 12 or config not in [list(c) for c in execution.get('q4_decode_configs', {}).get(f'{n}x{k}', [])]:
+            raise ValueError(f'final selector Q4 specialization absent from execution: {n}x{k} config={config}')
+        if compute and 'bf16' not in execution.get('q4_decode_compute_v2', {}).get('compute', []):
+            raise ValueError('final selector requires unavailable BF16 Q4 execution')
     compiled = {(m['parent']['symbol'], int(m['identity'].get('compute_type', 'f16') == 'bf16'),
                  m['identity'].get('endpoints') == 'decode-m1-8-f32-bf16-v1') for m in modules}
     missing = [r for r in required['tc'] if tuple(r) not in compiled]

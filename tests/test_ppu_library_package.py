@@ -1,5 +1,7 @@
 """Relocatable header/JIT payload tests; fake SDK bytes are host-only."""
 import os
+import copy
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -100,3 +102,31 @@ def test_exported_headers_need_no_private_source_include(tmp_path):
         subprocess.run([compiler, '-x', language, '-fsyntax-only', '-I' + str(tmp_path / 'include'), '-'],
             cwd=tmp_path, input='#include "quactlize/dense/api.h"\n#include "quactlize/packing/api.h"\n',
             text=True, check=True)
+
+
+@pytest.mark.parametrize('fault', [None, 'missing-q4', 'stale-execution', 'missing-seal', 'capabilities'])
+def test_public_library_binds_actual_selected_execution(tmp_path, fault):
+    from tools.build_ppu_library import PUBLIC_EXPORTS, verify
+    from quactlize.dispatch.planning import validate_inventory
+    from quactlize.runtime.compiler import sha
+    source=tmp_path/'stub.c';library=tmp_path/'libquactlize_ppu.so'
+    source.write_text('\n'.join('int '+name+'(void) {return 0;}' for name in PUBLIC_EXPORTS))
+    subprocess.run(['cc','-shared','-fPIC',source,'-o',library],check=True)
+    path=tmp_path/'quactlize-runtime/final-selection.json';path.parent.mkdir()
+    config=dict(reader=2,variant=7,warps=8,values=4,columns=4)
+    plan=dict(schema='quactlize.final-selection.v1',requests=[dict(status=0,kind=2,
+        request=[12,2,1024,2048,256,8,1,1,1],config=config)])
+    path.write_text(json.dumps(plan))
+    execution=dict(q4_decode_policy_sha256='host-test',smallm_effective_sha256='a'*64,
+        q4_decode_configs={'1024x2048':[[2,7,8,4,4]]},q4_decode_compute_v2=dict(compute=['f16','bf16']))
+    m=dict(schema='quactlize.ppu-library.v1',payloads={str(p.relative_to(tmp_path)):sha(p) for p in (path,library)},
+        execution_receipt=copy.deepcopy(execution),source_hashes={'policies/kpack_smallm_effective_v1.hpp':'a'*64},
+        final_selection=dict(path=str(path.relative_to(tmp_path)),capabilities=validate_inventory(plan,execution,jit=True)))
+    if fault=='missing-q4':m['execution_receipt']['q4_decode_configs']={}
+    elif fault=='stale-execution':m['execution_receipt']['smallm_effective_sha256']='b'*64
+    elif fault=='missing-seal':m['payloads'].pop(str(path.relative_to(tmp_path)))
+    elif fault=='capabilities':m['final_selection']['capabilities']['required']['q4']=[]
+    (tmp_path/'manifest.json').write_text(json.dumps(m))
+    if fault:
+        with pytest.raises(ValueError):verify(tmp_path)
+    else:assert verify(tmp_path)['schema']==m['schema']

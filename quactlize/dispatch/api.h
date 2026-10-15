@@ -18,7 +18,8 @@ enum { QKS_RECENT = 1, QKS_HISTORICAL = 2, QKS_PREDICTED = 3,
        QKS_SMALLM_EXACT = 9, QKS_SMALLM_BUCKET = 10,
        QKS_COMPUTE_INITIAL = 11, QKS_MATCHED_EXACT = 12,
        QKS_MATCHED_BUCKET = 13, QKS_MATCHED_ROUTER = 14,
-       QKS_Q8_VECTOR_MEASURED = 15, QKS_DENSE_FALLBACK = 16, QKS_LEGACY_DENSE = 17 };
+       QKS_Q8_VECTOR_MEASURED = 15, QKS_DENSE_FALLBACK = 16, QKS_LEGACY_DENSE = 17,
+       QKS_DECODE_COMPONENT_MEASURED = 18 };
 
 // Additive Q8_0/W8A16 intake capability, without a device/context or JIT.
 // Returns 1 for supported weight geometry and SF route (1=dense,3=grouped).

@@ -26,7 +26,7 @@ def check_choice(choice, point):
 def select_choice(dispatch, point, arr):
     """Use the caller's selector, not the older decode-only TC policy."""
     p=point
-    if p['policy'] in (12,13,14):
+    if p['policy'] in (12,13,14,18):
         call=SimtCall(version=1,size=C.sizeof(SimtCall),qtype=p['q'],n=p['n'],k=p['k'],
             experts=1,rows=1,mode=0,input_type=1,channels=1,topk=1,
             a_row_stride=p['k'],a_token_stride=0,ids_stride=0,out_row_stride=p['n'])

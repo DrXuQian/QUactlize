@@ -262,6 +262,14 @@ def verify(root, *, sdk=None):
         if (receipt.get('path')!=path.name or path.is_symlink() or sha(path)!=receipt['sha256'] or
                 m['policy_hashes'].get('policies/kpack_smallm_effective_v1.hpp')!=receipt['effective_header_sha256']):
             raise ValueError('decode winner catalog differs')
+    if 'component_decode' in m:
+        receipt=m['component_decode'];path=root/'component-decode.json'
+        header=receipt.get('effective_header_sha256')
+        if (receipt.get('path')!=path.name or path.is_symlink() or sha(path)!=receipt.get('sha256') or
+                m['policy_hashes'].get('policies/kpack_component_decode_v1.json')!=receipt.get('sha256') or
+                m['policy_hashes'].get('policies/kpack_smallm_effective_v1.hpp')!=header or
+                m['execution_receipt'].get('smallm_effective_sha256')!=header):
+            raise ValueError('component decode selector/execution identity differs')
     if 'compute_contract' in m:
         c=m['compute_contract']
         execution=m['execution_receipt'].get('simt_compute_v2',{})

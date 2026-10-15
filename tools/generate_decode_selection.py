@@ -21,6 +21,7 @@ from tools.fit_smallm_closure import header as matched_header
 
 FIELDS = ('variant', 'columns', 'warps', 'values', 'split')
 EVIDENCE = ROOT/'policies/kpack_decode_winners_v1.json'
+COMPONENTS = ROOT/'policies/kpack_component_decode_v1.json'
 OUTPUT = ROOT/'policies/kpack_smallm_effective_v1.hpp'
 IMPLEMENTATIONS = ROOT/'quactlize/execution/measured_decode.inc'
 ARCHIVES = {
@@ -145,7 +146,7 @@ def capture(tp2, fallback):
     return result | dict(evidence_sha256=digest(json.dumps(result,sort_keys=True).encode()))
 
 
-def effective(evidence):
+def effective(evidence, *, include_components=True):
     if evidence['schema']!='quactlize.decode-winners.v1' or evidence['archives']!=ARCHIVES:
         raise ValueError('winner evidence authority differs')
     if evidence.get('evidence_sha256')!=digest(json.dumps(
@@ -195,14 +196,16 @@ def effective(evidence):
     # identical semantic key; all other explicit exclusions remain fail-closed.
     promoted={tuple(w['key']) for w in evidence['rows'] if w['automatic'] and not w['point']['paired']}
     result['excluded']=[r for r in base['excluded'] if tuple(r['key'][:-1]+[int(r['key'][-1]=='bf16')]) not in promoted]
+    if include_components:
+        from dev.strategy.production import apply
+        result = apply(json.loads(COMPONENTS.read_text()), result)
     return result
 
 
 def header(policy):
     text=matched_header(policy).replace('tools/fit_smallm_closure.py','tools/generate_decode_selection.py')
     text=text.replace('smallm_matched_data','smallm_effective_data')
-    # Guard choices preserve old donor admission unless a new measured winner
-    # has explicitly replaced it. They never select a second kernel.
+    # Generic donor choices preserve coverage where an exact Q4 body bakes N/K.
     guards=matched_header(dict(exact=[dict(r,config=r['guard']) for r in policy['exact']],buckets=[],excluded=[]))
     guard_choices=guards.split('inline constexpr Choice kChoices[]={\n',1)[1].split('\n};',1)[0]
     guard_rows=guards.split('inline constexpr Row kExact[]={\n',1)[1].split('\n};',1)[0]
@@ -210,6 +213,7 @@ def header(policy):
     extra='inline constexpr Choice kGuards[]={\n'+guard_choices+'\n};\n'
     extra+='inline constexpr int kGuardIndex[]={'+','.join(map(str,indices))+'};\n'
     extra+='inline constexpr int kPolicy[]={'+','.join(str(r['policy']) for r in policy['exact'])+'};\n'
+    extra+='inline constexpr int kDequant[]={'+','.join(str(r.get('dequant_config',-1)) for r in policy['exact'])+'};\n'
     return text.replace('} // namespace quactlize::smallm_effective_data',extra+'} // namespace quactlize::smallm_effective_data')
 
 

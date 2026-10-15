@@ -20,6 +20,7 @@ static void emit(int q,int mode,int n,int k,int experts,int topk,int channels,in
         <<"],\"status\":"<<d.status;
     if(d.status==QKS_OK) {
         std::cout<<",\"kind\":"<<b.kind<<",\"policy\":"<<b.policy
+            <<",\"dequant_config\":"<<d.dequant_config
             <<",\"donor\":["<<b.source_n<<','<<b.source_k<<','<<b.source_tokens<<']'
             <<",\"workspace_bytes\":"<<b.sizes.workspace_bytes;
         if(b.kind==QKS_SMALLM_TC) {

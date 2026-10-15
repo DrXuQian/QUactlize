@@ -189,7 +189,11 @@ def fit(e):
     buckets = []
     for key, indices in sorted(groups.items()):
         def score(i):
-            return sum(sum(abs(math.log2(exact[i]['key'][a]/exact[j]['key'][a])) for a in (2,3,7)) for j in indices)
+            # Keep the stored donors reproducible across Python 3.10/3.12.
+            # Ordinary float sum changed in 3.12; tiny roundoff in tied
+            # distances must not defeat the existing regret/index tie-break.
+            return math.fsum(math.fsum(abs(math.log2(exact[i]['key'][a]/exact[j]['key'][a]))
+                                      for a in (2,3,7)) for j in indices)
         donor = min(indices, key=lambda i: (score(i), exact[i]['worst_regret_pct'], i))
         buckets.append(dict(key=list(key), row=donor))
     return dict(schema=SCHEMA, exact=exact, buckets=buckets, excluded=excluded, missing=e['missing'],

@@ -58,22 +58,32 @@ def test_public_final_decisions_equal_frozen_baseline(snapshots):
     keys=case_keys();text=''.join(' '.join(map(str,k))+'\n' for k in keys)
     results=[subprocess.check_output([str(p)],input=text,text=True).splitlines() for p in snapshots]
     assert len(results[0])==len(results[1])==len(keys)
-    from tools.generate_decode_selection import EVIDENCE,effective
+    from tools.generate_decode_selection import EVIDENCE,COMPONENTS,effective
     e=json.loads(EVIDENCE.read_text());p=effective(e)
     promoted={tuple(w['key']) for w in e['rows'] if w['automatic'] and not w['point']['paired']}
+    promoted|={tuple(w['key']) for w in json.loads(COMPONENTS.read_text())['rows'] if w['changed']}
     exact={tuple(r['key']) for r in p['exact']}
     changed=[]
     for k,a,b in zip(keys,*results):
         if a==b:continue
         # Old exact winners and rejection behavior cannot be weakened by a
-        # bucket update. Only declared M1 evidence and its predicted neighbors
+        # bucket update. Only declared measured evidence and its predicted neighbors
         # may differ; test_decode_selection checks their recipes independently.
         request=k[:9]
         if request in exact:
             assert request in promoted,(k,a,b)
         else:
-            assert k[7]==1 and k[8]==0 and k[1]==0 and k[0]==8,(k,a,b)
-        assert k[9]==0,(k,a,b)
+            # A bucket may change only through a declared updated donor,
+            # including when that donor becomes ineligible at this new K.
+            def donor(line):
+                v=line.split()
+                if v[0]!='0' or v[7]!='13':return None
+                return (*k[:2],int(v[8]),int(v[9]),*k[4:7],int(v[10]),k[8])
+            assert donor(a) in promoted or donor(b) in promoted,(k,a,b)
+        # mutation 5 is an aligned F32 pointer (4-byte, not Q4's 16-byte
+        # alignment). SIMT may legally accept it; only ABI/layout/stride/
+        # precision mutations must stay rejected independently of promotion.
+        assert k[9] in (0,5),(k,a,b)
         changed.append(k)
     assert changed
     print(f'SELECTION_SHADOW PASS requests={len(keys)} declared_promotions_and_neighbors={len(changed)}')
@@ -89,14 +99,16 @@ def execution_for(plan):
     fields=('variant','columns','warps','values','split')
     for q,compute,*config in need['simt']:
         configs.setdefault(str(q),[]).append(dict(zip(fields,config)))
+    from quactlize.execution.q4_decode_codegen import recipes
     return dict(simt_configs=configs,simt_compute_v2=dict(compute=['f16','bf16'],formats=[8,10,11,12,13,14]),
-                q4_decode_policy_sha256='host-fixture')
+                q4_decode_policy_sha256='host-fixture',q4_decode_compute_v2=dict(compute=['f16','bf16']),
+                q4_decode_configs={f'{n}x{k}':rs for (n,k),rs in recipes().items()})
 
 
 def test_final_catalog_is_exact_and_checks_full_tuple(final_plan):
     assert len(final_plan['requests'])==1852
     assert all(r['status']==0 for r in final_plan['requests'])
-    assert len(requirements(final_plan)['simt'])==189
+    assert len(requirements(final_plan)['simt'])==183
     execution=execution_for(final_plan)
     validate_inventory(final_plan,execution,jit=True)
     for mutate in ('config','compute','q4'):
@@ -112,7 +124,7 @@ def test_final_catalog_is_exact_and_checks_full_tuple(final_plan):
 def test_prewarm_keeps_compute_and_endpoint_identity(final_plan):
     groups=prewarm_groups(final_plan)
     assert {(c,d) for c,d,_ in groups}=={('f16',False),('f16',True),('bf16',False),('bf16',True)}
-    assert sum(len(p) for _,_,p in groups)==len(requirements(final_plan)['tc'])==62
+    assert sum(len(p) for _,_,p in groups)==len(requirements(final_plan)['tc'])==68
     assert all(p['route'].endswith('dense')==dense for _,dense,parents in groups for p in parents)
 
 
@@ -151,7 +163,8 @@ def test_implementation_identity_follows_actual_shape(tmp_path):
                               ((2048,4096),(8192,2048),(4096,2048),(768,2048))])
     rows={tuple(r['request'][2:4]):r for r in plan['requests']}
     assert rows[2048,4096]['implementation']['producer']=='q8-vector-fixed'
-    assert rows[8192,2048]['implementation']['producer']=='q8-vector-fixed-hoisted'
+    assert rows[8192,2048]['policy']==18
+    assert rows[8192,2048]['implementation']['producer']=='q8-vector'
     assert rows[4096,2048]['implementation']['producer']=='q8-vector-s1-narrow'
     assert rows[768,2048]['implementation']['hoist']
     assert not rows[768,2048]['implementation']['fixed']

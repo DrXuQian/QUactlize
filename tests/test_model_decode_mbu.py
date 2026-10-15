@@ -60,8 +60,9 @@ def test_tc_profile_uses_exact_asys_module_and_no_fixed_top_three():
         with pytest.raises(ValueError):profile_plan(s,k,log,helpers,m)
 
 
-def test_tc_matched_policy_must_use_same_entry_as_caller():
-    point=dict(q=8,n=8192,k=2048,compute=0,endpoint=1,policy=12,parent='observed',build='f'*64,
+@pytest.mark.parametrize('policy', (12,13,14,18))
+def test_tc_matched_policy_must_use_same_entry_as_caller(policy):
+    point=dict(q=8,n=8192,k=2048,compute=0,endpoint=1,policy=policy,parent='observed',build='f'*64,
                split=8,algorithm=0,grid=0,route=1)
     choice=SimpleNamespace(**{k:v for k,v in point.items() if k not in ('parent','build')},
                            parent=b'observed',build_key=b'f'*64)

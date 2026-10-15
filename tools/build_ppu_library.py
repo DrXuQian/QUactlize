@@ -22,6 +22,7 @@ from tools.build_kpack_pack import build as build_pack
 from tools.build_kpack_execution import build as build_execution
 from tools.build_kpack_prefill_runtime import build as build_prefill
 from tools.build_kpack_dispatch import catalog
+from quactlize.dispatch.planning import plan_smallm, validate_inventory
 
 PUBLIC_EXPORTS = (
     'quactlize_ppu_kpack_canonical_arrangement_v1',
@@ -98,6 +99,17 @@ def verify(output):
         ['nm', '-D', '--defined-only', str(output / 'libquactlize_ppu.so')], text=True).splitlines() if line.split()}
     if set(PUBLIC_EXPORTS) - exports:
         raise ValueError('public exports missing: ' + repr(sorted(set(PUBLIC_EXPORTS) - exports)))
+    if 'final_selection' in manifest:
+        receipt = manifest['final_selection']
+        if receipt['path'] != 'quactlize-runtime/final-selection.json' or receipt['path'] not in manifest['payloads']:
+            raise ValueError('invalid library selection receipt path')
+        actual = validate_inventory(json.loads((output/receipt['path']).read_text()),
+                                    manifest['execution_receipt'], jit=True)
+        if json.loads(json.dumps(actual)) != receipt['capabilities']:
+            raise ValueError('public library selection capability closure differs')
+        header = manifest['source_hashes'].get('policies/kpack_smallm_effective_v1.hpp')
+        if not header or manifest['execution_receipt'].get('smallm_effective_sha256') != header:
+            raise ValueError('public provider and Q4 execution selectors differ')
     return manifest
 
 
@@ -122,10 +134,17 @@ def build(sdk, output, jobs):
     start = time.monotonic()
     public_sources = {p: sha(p) for directory in ('quactlize/dense', 'quactlize/dispatch')
                       for p in (ROOT / directory).iterdir() if p.is_file()}
+    public_sources.update({p: sha(p) for p in (ROOT/'policies').iterdir() if p.suffix in ('.hpp', '.json')})
+    from tools.generate_decode_selection import EVIDENCE, OUTPUT, effective, header
+    if header(effective(json.loads(EVIDENCE.read_text()))) != OUTPUT.read_text():
+        raise ValueError('stale effective decode catalog; regenerate before building')
+    final_selection = plan_smallm(work)
+    (runtime/'final-selection.json').write_text(json.dumps(final_selection, indent=2)+'\n')
     # The existing device builders retain the exact production flags and
     # SIMT recipe inventory. No sweep, regenerated heuristic or fake backend.
     build_pack(sdk, work / 'packing')
-    build_execution(sdk, work / 'execution', jobs)
+    execution = build_execution(sdk, work / 'execution', jobs)
+    capabilities = validate_inventory(final_selection, execution, jit=True)
     build_prefill(sdk, work / 'prefill', jobs)
     for component, name in (('execution', 'libquactlize_ppu_execution.so'),
                             ('prefill', 'libquactlize_ppu_prefill.so')):
@@ -193,6 +212,8 @@ def build(sdk, output, jobs):
         payloads=payloads, commands=commands, jit_source_contract=contract,
         sdk=compiler.sdk_identity, formats=[8, 10, 11, 12, 13, 14],
         source_hashes={str(p.relative_to(ROOT)): digest for p, digest in public_sources.items()},
+        execution_receipt=execution,
+        final_selection=dict(path='quactlize-runtime/final-selection.json', capabilities=capabilities),
         default_dense_compute='F16_POC', device_admission='PENDING',
         performance_admission='NOT_MEASURED', seconds=time.monotonic() - start)
     (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')

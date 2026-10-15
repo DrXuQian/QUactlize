@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import traceback
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -18,8 +19,17 @@ from quactlize.runtime.compiler import sha
 
 def gate_rows():
     evidence = json.loads(EVIDENCE.read_text())
-    effective(evidence)  # Sealed authority, not an editable list of recipes.
-    return [w for w in evidence['rows'] if w['automatic'] and w['config']['kind'] == 'simt']
+    catalog={tuple(r['key']):r for r in effective(evidence)['exact']}
+    rows=[]
+    for w in evidence['rows']:
+        if not w['automatic'] or w['config']['kind']!='simt':continue
+        if not w['point']['paired']:
+            c=catalog[tuple(w['key'])]['config']
+            if c['kind'] not in ('simt','q4'):
+                raise ValueError('selected numerical gate needs a TC provider for '+w['point']['name'])
+            w=dict(w,config=c)
+        rows.append(w)
+    return rows
 
 
 class SelectedProvider:
@@ -31,6 +41,7 @@ class SelectedProvider:
         from quactlize.fusion.native import Library as FusionLibrary, integration_entries, Config
         self.b, self.arm = bench, 'selected'
         self.config = Candidate(**winner['body'])
+        self.q4 = winner['config']['kind']=='q4'
         p = bench.point
         self.fusion = None
         if p.paired:
@@ -44,12 +55,21 @@ class SelectedProvider:
             d = Dispatch(bundle)
             try:
                 choice = d.query_smallm_matched(bench.call(), arrangement(p.q), p.compute)
-                if (choice is None or choice.base.kind != 1 or
-                        {f: getattr(choice.base.simt, f) for f in FIELDS} != {f: winner['config'][f] for f in FIELDS}):
+                fields=('reader','variant','warps','values','columns') if self.q4 else FIELDS
+                selected=choice.q4 if choice and self.q4 else choice.base.simt if choice else None
+                if (choice is None or choice.base.kind != (2 if self.q4 else 1) or
+                        {f: getattr(selected, f) for f in fields} != {f: winner['config'][f] for f in fields}):
                     raise ValueError('published ordinary selection differs')
             finally:
                 d.close()
-            self.shipping = Library(bundle/'libquactlize_ppu_execution.so', p.compute, entry=entry)
+            self.config=SimpleNamespace(**{k:v for k,v in winner['config'].items() if k!='kind'},
+                vector_reduce=not self.q4 and winner['config']['split']>1)
+            if self.q4:
+                from dev.gemv_simt.production import Q4Library
+                if entry!='v2':raise ValueError('selected Q4 numerical gate uses its typed entry')
+                self.shipping=Q4Library(bundle/'libquactlize_ppu_execution.so',p.compute)
+            else:
+                self.shipping = Library(bundle/'libquactlize_ppu_execution.so', p.compute, entry=entry)
 
     def prepare(self, copy=0):
         from quactlize.fusion.native import MappedCall, FusionCall
@@ -61,6 +81,8 @@ class SelectedProvider:
                                 b.mapping.ptr if b.mapping and b.mapped_call else None,
                                 b.status.ptr if b.status else None)
             return lambda: self.entries['run'](C.byref(mapped), C.byref(self.paired_config), C.byref(self.layout))
+        if self.q4:
+            return self.shipping.prepare(call,self.config)
         return self.shipping.prepare(call, Config(**{f: getattr(self.config, f) for f in FIELDS}))
 
     def close(self):
@@ -81,9 +103,12 @@ def run_point(args, winner):
         point = Point(**winner['point'])
         bench = Bench(rt, point, 0, profile=True)
         provider = SelectedProvider(bench, args.bundle, winner, args.entry)
-        proof, snapshots = correctness(provider, token_controls=range(1, 9))
+        # Q4's public entry validates the exact per-M selection. Do not force
+        # its M1 winner into M2..8, which may legitimately select another body.
+        proof, snapshots = correctness(provider, token_controls=(1,) if provider.q4 else range(1, 9))
         result.update(status='PASS', controls=proof,m1_sha256=hashlib.sha256(snapshots['m1'].tobytes()).hexdigest(),
-                      scope='M1_SELECTED_RECIPE_NUMERICS_T1_TO_8_NOT_M2_TO_8_RANKING')
+                      scope='M1_Q4_SELECTED_NUMERICS_ONLY' if provider.q4 else
+                            'M1_SELECTED_RECIPE_NUMERICS_T1_TO_8_NOT_M2_TO_8_RANKING')
         return 0
     except Exception as exc:
         result['error'] = str(exc)
@@ -98,7 +123,8 @@ def run_point(args, winner):
 
 def entry_checks(rows):
     return [(w, entry) for w in rows for entry in
-            (('v1','v2') if not w['point']['paired'] and not w['point']['compute'] else ('v2',))]
+            (('v1','v2') if not w['point']['paired'] and not w['point']['compute'] and
+             w['config']['kind']=='simt' else ('v2',))]
 
 
 def main():
@@ -129,7 +155,7 @@ def main():
             failures.append(name)
         print(f'SELECTED_DECODE_NUMERICS point={name} rc={rc} completed={i+1}/{len(checks)} remaining_continue=1', flush=True)
     for w in rows:
-        if w['point']['paired'] or w['point']['compute']:continue
+        if w['point']['paired'] or w['point']['compute'] or w['config']['kind']=='q4':continue
         name=w['point']['name']
         if any(name+'.'+entry in failures for entry in ('v1','v2')):continue
         records=[json.loads((args.output/(name+'.'+entry+'.json')).read_text()) for entry in ('v1','v2')]

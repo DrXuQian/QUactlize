@@ -8,7 +8,7 @@ int main() {
     c.experts=e;c.topk=top;c.channels=ch;c.rows=mode==2?m*top:m;c.input_type=QKG_F32;
     qkg_simt_call_v2 d{2,sizeof(d),c,compute};auto s=matched::select(d);
     if(!s.row) {std::cout<<"MISS\n";continue;}
-    auto r=*s.row;auto f=matched::data::kChoices[r.choice];
+    auto r=*s.row;auto f=*s.choice;
     std::cout<<s.policy<<" "<<r.n<<" "<<r.k<<" "<<r.tokens<<" "<<f.kind;
     if(f.kind==0) std::cout<<" "<<f.tc.symbol<<" "<<f.tc.split;
     else std::cout<<" "<<f.reader.reader<<" "<<f.reader.variant<<" "<<f.reader.columns<<" "<<f.reader.warps<<" "<<f.reader.values<<" "<<f.reader.split;

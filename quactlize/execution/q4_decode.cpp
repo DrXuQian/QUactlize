@@ -1,11 +1,12 @@
 #include "q4_decode.h"
 #include "q4_s1_validation.hpp"
 #include "../../policies/kpack_q4_decode_v1.hpp"
+#include "../dispatch/smallm_matched.hpp"
 
 extern "C" int qkg_q4_decode_launch(qkg_call_v1 const&, qkg_q4_decode_config_v1 const&);
 extern "C" int qkg_q4_decode_launch_bf16(qkg_call_v1 const&, qkg_q4_decode_config_v1 const&);
 
-extern "C" int quactlize_kpack_q4_decode_select_v1(qkg_call_v1 const* call,
+static int select(qkg_call_v1 const* call, int compute,
     quactlize_ppu_placed_arrangement_v2 const* arrangement,
     qkg_q4_decode_config_v1* out, qkg_sizes_v1* sizes) {
     if (!call || !out || !sizes) return QKG_INVALID;
@@ -24,12 +25,25 @@ extern "C" int quactlize_kpack_q4_decode_select_v1(qkg_call_v1 const* call,
     else if (c.mode==QKG_INDEXED && c.experts==256 && c.topk==8 && c.rows<=64 &&
              (c.channels==1 || c.channels==8)) tokens=c.rows/8;
     if (!tokens) return QKG_SHAPE;
+    auto matched=quactlize::dispatch::matched::select({2,sizeof(qkg_simt_call_v2),c,compute});
+    if (matched.choice && matched.choice->kind==QKS_SMALLM_Q4) {
+        auto f=matched.choice->reader;
+        *out={1,sizeof(*out),f.reader,f.variant,f.warps,f.values,f.columns};
+        *sizes=s;
+        return QKG_OK;
+    }
     auto choice=quactlize::decode_policy::select(c.mode,c.n,c.k,tokens);
     if (!choice || !choice->simt) return QKG_SHAPE;
     auto f=choice->config;
     *out={1,sizeof(*out),f.reader,f.variant,f.warps,f.values,f.columns};
     *sizes=s;
     return QKG_OK;
+}
+
+extern "C" int quactlize_kpack_q4_decode_select_v1(qkg_call_v1 const* call,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement,
+    qkg_q4_decode_config_v1* out, qkg_sizes_v1* sizes) {
+    return select(call,QKG_COMPUTE_F16,arrangement,out,sizes);
 }
 
 extern "C" int quactlize_kpack_q4_decode_run_v1(qkg_call_v1 const* call,
@@ -61,9 +75,9 @@ extern "C" int quactlize_kpack_q4_decode_select_v2(qkg_simt_call_v2 const* d,
     if (storage.a_row_stride%alignment ||
         (storage.mode==QKG_INDEXED && storage.a_token_stride%alignment)) return QKG_SHAPE;
     // The policy key contains geometry, not storage width. Validate the real
-    // storage above, then use the unchanged selector without reading A.
+    // storage above, then use the compute-specific selector without reading A.
     auto proposal=d->call;proposal.input_type=QKG_F32;
-    return quactlize_kpack_q4_decode_select_v1(&proposal,arrangement,out,sizes);
+    return select(&proposal,d->compute_type,arrangement,out,sizes);
 }
 
 extern "C" int quactlize_kpack_q4_decode_run_v2(qkg_simt_call_v2 const* d,

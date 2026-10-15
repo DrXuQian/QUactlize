@@ -300,6 +300,8 @@ def main():
         if sha(args.sdk / "lib" / name) != value:
             raise ValueError(f"execution SDK runtime differs: {name}")
     capabilities=validate_inventory(final_selection,receipt,records,jit=True)
+    if receipt.get('smallm_effective_sha256')!=sha(ROOT/'policies/kpack_smallm_effective_v1.hpp'):
+        raise ValueError('execution Q4 selector differs from the effective catalog; rebuild execution')
     shutil.copy2(execution, output / execution.name)
     source_paths = [
         *sorted((ROOT / "quactlize/dispatch").glob("*")),
@@ -321,6 +323,7 @@ def main():
         ROOT / "policies/kpack_smallm_matched_v1.hpp",
         ROOT / "policies/kpack_smallm_effective_v1.hpp",
         ROOT / "policies/kpack_decode_winners_v1.json",
+        ROOT / "policies/kpack_component_decode_v1.json",
         ROOT / "policies/kpack_q8_vector_v1.hpp",
     ]
     manifest = dict(
@@ -371,6 +374,11 @@ def main():
     manifest['decode_winners']=dict(path='decode-winners.json',sha256=sha(winners),
         effective_header_sha256=sha(ROOT/'policies/kpack_smallm_effective_v1.hpp'),
         admission='COMPONENT_CONFIRMED_PRODUCTION_INTEGRATION_PENDING')
+    components=ROOT/'policies/kpack_component_decode_v1.json'
+    shutil.copy2(components,output/'component-decode.json')
+    manifest['component_decode']=dict(path='component-decode.json',sha256=sha(components),
+        effective_header_sha256=sha(ROOT/'policies/kpack_smallm_effective_v1.hpp'),
+        admission='ISOLATED_COMPONENT_SUM_MODEL_AB_PENDING')
     if receipt.get('simt_compute_v2'):
         manifest['compute_contract']=dict(schema='quactlize.explicit-compute.v1',
             formats=[8,10,11,12,13,14],grouped='ALL_LEGAL_M',dense='DECODE_M1_8',

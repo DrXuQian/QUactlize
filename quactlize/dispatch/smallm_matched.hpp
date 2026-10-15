@@ -4,7 +4,12 @@
 
 namespace quactlize::dispatch::matched {
 namespace data=quactlize::smallm_effective_data;
-struct Selection { data::Row const* row=nullptr; int policy=0; };
+struct Selection {
+    data::Row const* row=nullptr;
+    int policy=0;
+    data::Choice const* choice=nullptr;
+    int dequant_config=-1;
+};
 
 inline bool domain(qkg_simt_call_v2 const& d) {
     auto const& c=d.call;
@@ -35,7 +40,7 @@ inline Selection select(qkg_simt_call_v2 const& d) {
     };
     for(auto const& r:data::kExact) if(family(r) && r.n==c.n && r.k==c.k && r.tokens==m &&
         eligible(data::kGuards[data::kGuardIndex[&r-data::kExact]],c))
-        return {&r,data::kPolicy[&r-data::kExact]};
+        return {&r,data::kPolicy[&r-data::kExact],&data::kChoices[r.choice],data::kDequant[&r-data::kExact]};
     for(auto const& r:data::kOpen) if(family(r) && r.n==c.n && r.k==c.k && r.tokens==m) return {};
     data::Row const* donor=nullptr;int distance=INT32_MAX;
     for(auto const& b:data::kBuckets) {
@@ -47,6 +52,13 @@ inline Selection select(qkg_simt_call_v2 const& d) {
         int delta=std::abs(smallm::log2(c.n)-b.n)+std::abs(smallm::log2(c.k)-b.k);
         if(delta<distance) {distance=delta;donor=&r;}
     }
-    return {donor,donor?QKS_MATCHED_BUCKET:0};
+    if(!donor) return {};
+    auto index=donor-data::kExact;
+    auto const& exact=data::kChoices[donor->choice];
+    // Q4 S1 is shape-specialized. Its previous generic donor remains available
+    // outside the exact key; generic measured improvements update buckets too.
+    auto const& generic=exact.kind==QKS_SMALLM_Q4 ? data::kGuards[data::kGuardIndex[index]] : exact;
+    if(generic.kind==QKS_SMALLM_Q4) return {};
+    return {donor,QKS_MATCHED_BUCKET,&generic,exact.kind==QKS_SMALLM_Q4 ? -1 : data::kDequant[index]};
 }
 } // namespace quactlize::dispatch::matched

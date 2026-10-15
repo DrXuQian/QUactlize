@@ -29,7 +29,7 @@ int main() {
     qkg_simt_call_v2 typed{2,sizeof(typed),call,compute};qks_smallm_choice_v2 out{};
     int rc=quactlize_kpack_dispatch_query_smallm_v3(&runtime,&typed,&arr,&out);
     assert(rc==QKS_OK && out.base.kind==QKS_SMALLM_TC && out.compute_type==compute);
-    assert(out.base.policy==(row.router_sensitive?QKS_MATCHED_ROUTER:QKS_MATCHED_EXACT));
+    assert(out.base.policy==matched::data::kPolicy[&row-matched::data::kExact]);
     assert(out.base.tc.policy==out.base.policy && std::string(out.base.tc.parent)==c.symbol);
     assert(out.base.tc.split==c.split && out.base.tc.workspace_bytes==8192 && out.base.tc.shared_bytes==1234);
     auto const& plan=runtime.plans.back();assert(plan.compute_type==compute && plan.choice.ticket==out.base.tc.ticket);

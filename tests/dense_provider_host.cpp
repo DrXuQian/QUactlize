@@ -201,7 +201,7 @@ void explicit_candidates() {
 
 int main() {
     using namespace quactlize::dispatch;
-    size_t matched_count=0,cost_count=0;
+    size_t matched_count=0,cost_count=0,component_sf_count=0;
     // Each context has a separate device module cache. The test catalog is
     // reset between contexts; no untracked modules can satisfy a selection.
     for (int compute:{0,1}) {
@@ -216,6 +216,19 @@ int main() {
                 assert(std::string(plan.tc.parent)==d.tc->symbol && plan.tc.split==d.tc->split);
                 assert(plan.request.route==d.tc->route && plan.compute==compute);
                 assert(plan.metadata_type==QK_METADATA_F16);
+                if(d.dequant_config>=0) {
+                    assert(plan.prefill.version && plan.prefill.route==1);
+                    assert(plan.prefill.dequant_config==d.dequant_config);
+                    assert(d.choice.base.policy==QKS_DECODE_COMPONENT_MEASURED);
+                    // Actual provider helper dispatch (device stub): a table
+                    // change without changing the launched expansion is wrong.
+                    void const *metadata=nullptr,*zero=nullptr;
+                    std::vector<uint8_t> scratch(plan.info.workspace_bytes);
+                    test::launches.clear();
+                    quactlize::dense::expand_sf(plan,scratch.data(),nullptr,metadata,zero);
+                    assert((test::launches==std::vector<std::string>{"sf-"+std::to_string(d.dequant_config)}));
+                    ++component_sf_count;
+                }
             } else {
                 assert(plan.info.route==QUACTLIZE_DENSE_SIMT);
                 assert(plan.kind==(d.choice.base.kind==QKS_SMALLM_Q4?quactlize::dense::Kind::Q4:quactlize::dense::Kind::Simt));
@@ -244,6 +257,7 @@ int main() {
             p=test::params(q,m);p.sizes.units_bytes++;assert(quactlize_ppu_dense_supported_v1(&p)==0);
         }
     }
+    assert(component_sf_count==41);
     kImages.clear();auto owner=test::context(0);auto& ctx=*owner;
     // Replay all measured dense weight families over boundary M, not only
     // exact table keys. This exercises both exact and bucket/fallback order.

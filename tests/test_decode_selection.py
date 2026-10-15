@@ -42,16 +42,28 @@ def test_edited_winner_is_rejected(evidence,field):
 
 @pytest.fixture(scope='module')
 def selected(tmp_path_factory,evidence):
-    rows=[w for w in evidence['rows'] if not w['point']['paired'] and w['automatic']]
+    catalog={tuple(r['key']):r for r in generate.effective(evidence)['exact']}
+    rows=[copy.deepcopy(w) for w in evidence['rows'] if not w['point']['paired'] and w['automatic']]
+    for w in rows:
+        current=catalog[tuple(w['key'])]
+        # Only later confirmed component evidence may supersede an old winner.
+        if current['policy']==18:
+            w.update(config=current['config'],implementation='existing')
+        else:
+            assert w['config']==current['config']
+        w['policy']=current['policy']
     plan=plan_smallm(tmp_path_factory.mktemp('winner-query'),[r['key'] for r in rows])
     return rows,plan
 
 
 def assert_winner(row,w):
-    assert row['status']==0 and row['policy']==12 and row['donor']==w['key'][2:4]+[1]
+    assert row['status']==0 and row['policy']==w['policy'] and row['donor']==w['key'][2:4]+[1]
     if w['config']['kind']=='tc':
         assert row['kind']==0 and row['parent']['symbol']==w['config']['symbol']
         assert row['split']==w['config']['split']
+    elif w['config']['kind']=='q4':
+        assert row['kind']==2
+        assert row['config']=={k:v for k,v in w['config'].items() if k!='kind'}
     else:
         assert row['kind']==1
         assert row['config']=={k:w['config'][k] for k in generate.FIELDS}
@@ -82,7 +94,7 @@ def test_actual_c_abi_matches_the_selected_simt_winners(tmp_path,selected):
                 channels=ch,rows=m*top if mode else m,input_type=1,a_row_stride=k,
                 a_token_stride=k*ch,ids_stride=top,out_row_stride=n)
             got=d.query_smallm_matched(c,arrangement(q),compute)
-            assert got and got.base.kind==1 and got.base.policy==12
+            assert got and got.base.kind==1 and got.base.policy==w['policy']
             assert {f:getattr(got.base.simt,f) for f in generate.FIELDS}=={
                 f:w['config'][f] for f in generate.FIELDS}
     finally:d.close()
@@ -123,11 +135,18 @@ def test_fallback_uses_updated_donor_but_not_its_fixed_dimensions(tmp_path):
 def test_device_handoff_is_numerical_only_and_keeps_tc_winners():
     from tools.run_selected_decode_numerics import gate_rows
     rows=gate_rows()
-    assert len(rows)==17 and all(r['config']['kind']=='simt' for r in rows)
+    assert len(rows)==17 and sum(r['config']['kind']=='simt' for r in rows)==16
+    assert sum(r['config']['kind']=='q4' for r in rows)==1
     assert sum(r['point']['paired'] for r in rows)==3
     assert not any(r['point']['name']=='tp2-q4-paired-routed' for r in rows)
+    from tools.run_selected_decode_numerics import entry_checks
+    catalog={tuple(r['key']):r for r in generate.effective(json.loads(generate.EVIDENCE.read_text()))['exact']}
+    for row in rows:
+        if not row['point']['paired']:
+            assert row['config']==catalog[tuple(row['key'])]['config']
+    assert all(entry=='v2' for row,entry in entry_checks(rows) if row['config']['kind']=='q4')
     text=(ROOT/'tools/run_selected_decode_numerics.py').read_text()
-    assert 'timing_graph' not in text and 'token_controls=range(1, 9)' in text
+    assert 'timing_graph' not in text and 'token_controls=(1,) if provider.q4 else range(1, 9)' in text
     box=(ROOT/'tools/run_kpack_tp2_box.sh').read_text()
     assert box.index('stage=selected-entry-numerics')<box.index('stage=model-perf')
 

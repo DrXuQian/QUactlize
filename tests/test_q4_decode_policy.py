@@ -89,10 +89,17 @@ def select(lib,c,arr=None):
 
 
 def test_all_372_actual_c_choices(library,policy,evidence):
+    from tools.generate_decode_selection import EVIDENCE,effective
+    current={tuple(r['key']):r for r in effective(json.loads(EVIDENCE.read_text()))['exact']}
     replay={r['case']:r for r in policy['replay']}
     for c in evidence['cases']:
         w=c['workload'];call=make_call(w);rc,f,s=select(library,call)
         wanted=replay[w['id']]['recipe']
+        key=(12,call.mode,call.n,call.k,call.experts,call.topk,call.channels,w['tokens'],0)
+        row=current.get(key)
+        if row and row['config']['kind']=='q4':
+            c=row['config']
+            wanted=f"simt:r{c['reader']}-v{c['variant']}-w{c['warps']}-p{c['values']}-c{c['columns']}"
         if wanted.startswith('simt:'):
             assert rc==0
             assert f'simt:r{f.reader}-v{f.variant}-w{f.warps}-p{f.values}-c{f.columns}'==wanted
@@ -153,6 +160,10 @@ def test_compile_only_selected_closure(policy):
     shapes=codegen.recipes();sources=codegen.sources()
     expected={(r['n'],r['k'],tuple(int(x[1:]) for x in r['recipe'][5:].split('-')))
         for r in policy['ranges'] if r['role']=='auto' and r['recipe'].startswith('simt:')}
+    from tools.generate_decode_selection import EVIDENCE,effective
+    expected|={(r['key'][2],r['key'][3],tuple(r['config'][f] for f in
+        ('reader','variant','warps','values','columns')))
+        for r in effective(json.loads(EVIDENCE.read_text()))['exact'] if r['config']['kind']=='q4'}
     assert {(n,k,tuple(c)) for (n,k),rs in shapes.items() for c in rs}==expected
     assert len(sources)==len(shapes)+1
     assert all('dev/' not in s and 'cuda' not in s for s in sources.values())

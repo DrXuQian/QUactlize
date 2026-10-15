@@ -63,13 +63,16 @@ def build(sdk, output, jobs, variant="production"):
         }
     )
     hashes = {str(p.relative_to(ROOT)): sha(p) for p in inputs}
-    for folder in (ROOT/'quactlize/runtime',ROOT/'quactlize/integrations/llama'):
+    for folder in (ROOT/'quactlize/runtime',ROOT/'quactlize/integrations/llama',ROOT/'quactlize/dispatch'):
         for p in sorted(folder.rglob('*')):
             if p.is_file() and p.suffix in ('.h','.hpp','.cuh'):
                 hashes[str(p.relative_to(ROOT))]=sha(p)
     for p in (q4_decode_codegen.POLICY, q4_decode_codegen.POLICY.with_suffix('.hpp'),
               ROOT/'quactlize/execution/q4_decode_codegen.py',
               ROOT/'quactlize/execution/simt_codegen.py',
+              ROOT/'policies/kpack_smallm_effective_v1.hpp',
+              ROOT/'policies/kpack_smallm_v1.hpp',
+              ROOT/'policies/kpack_component_decode_v1.json',
               ROOT/'policies/kpack_zw810_heuristic_v1.hpp',
               ROOT/'policies/kpack_zw810_runtime_v1.hpp',
               ROOT/'policies/kpack_zw810_v1.hpp'):
@@ -178,11 +181,12 @@ def build(sdk, output, jobs, variant="production"):
         generated_source_sha256=sha(gemv_source),
         comparison_adapters=bool(extra_sources),
         q4_decode_policy_sha256=sha(q4_decode_codegen.POLICY),
+        smallm_effective_sha256=sha(ROOT/'policies/kpack_smallm_effective_v1.hpp'),
         q4_decode_configs={f'{n}x{k}':v for (n,k),v in q4_decode_codegen.recipes().items()},
         q4_decode_compute_v2={
             "compute": ["f16", "bf16"], "bf16_storage": ["f32", "bf16"],
             "bf16_arithmetic": "BF16_A_FP32_AFFINE_ACCUMULATOR_OUTPUT",
-            "bf16_selection": "FP16_GEOMETRY_INITIAL_NOT_MEASURED",
+            "bf16_selection": "EXPLICIT_COMPUTE_MATCHED_CATALOG_ELSE_F16_GEOMETRY_PROPOSAL",
             "device_validated": False,
         },
         simt_configs={str(q): [c.record() for c in simt_codegen.runtime_inventory(q)]

@@ -169,8 +169,13 @@ void select(Plan& p) {
             }
         }
         if (rc==QKS_OK) {
-            if (p.small.base.kind==QKS_SMALLM_TC) p.tc=p.small.base.tc;
-            else {
+            if (p.small.base.kind==QKS_SMALLM_TC) {
+                p.tc=p.small.base.tc;
+                // The SF expansion was timed independently, but is part of
+                // this selected call. Preserve its winning implementation too.
+                if (decision.status==QKS_OK && decision.dequant_config>=0)
+                    p.prefill={1,sizeof(p.prefill),1,decision.dequant_config,0,1,0,0};
+            } else {
                 p.kind=p.small.base.kind==QKS_SMALLM_Q4?Kind::Q4:Kind::Simt;
                 p.kernel_bytes=p.small.base.sizes.workspace_bytes;return;
             }

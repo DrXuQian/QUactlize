@@ -32,7 +32,8 @@ inline TcDecision select_tc(qks_request_v1 const& r, bool decode, int compute,
     if (!valid(r) || !compute_valid(compute)) return out;
     auto selected = preferred.config ? preferred : decode ? select_decode_tc(r) : select(r);
     bool matched = preferred.config && (preferred.policy == QKS_MATCHED_EXACT ||
-        preferred.policy == QKS_MATCHED_BUCKET || preferred.policy == QKS_MATCHED_ROUTER);
+        preferred.policy == QKS_MATCHED_BUCKET || preferred.policy == QKS_MATCHED_ROUTER ||
+        preferred.policy == QKS_DECODE_COMPONENT_MEASURED);
     if (compute == QK_COMPUTE_BF16 && !matched) {
         if (!selected.config) selected = select(r);
         out.value = compute_proposal(r, selected, out.symbol);
@@ -97,6 +98,7 @@ struct SmallMDecision {
     int status = QKS_MISS;
     qks_smallm_choice_v2 choice{2, sizeof(qks_smallm_choice_v2)};
     Config const* tc = nullptr;
+    int dequant_config = -1;
 };
 
 // The complete v3 host decision. Module materialization is a separate step;
@@ -107,7 +109,8 @@ inline SmallMDecision select_smallm(qkg_simt_call_v2 const& typed,
     auto selected = matched::select(typed);
     if (!selected.row) return out;
     auto const& row = *selected.row;
-    auto const& original = matched::data::kChoices[row.choice];
+    auto const& original = *selected.choice;
+    out.dequant_config = selected.dequant_config;
     auto& result = out.choice;
     auto& base = result.base;
     result.compute_type = typed.compute_type;

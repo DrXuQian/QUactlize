@@ -112,6 +112,12 @@ inline void compare_poc(PocDense const& old,quactlize::dense::Plan const& now) {
         assert(now.tc.algorithm==old.tc.algorithm && now.tc.split==old.tc.split && now.tc.grid==old.tc.grid);
         assert(now.tc.policy==old.tc.policy && now.tc.workspace_bytes==old.tc.workspace_bytes);
         assert(now.native_f16==old.native_f16 && now.metadata_type==QK_METADATA_F16);
-        assert((now.prefill.version && now.prefill.route==1 ? now.prefill.dequant_config : -1)==old.sf_config);
+        auto selected=quactlize::dispatch::select_smallm(quactlize::dense::simt_call(now),now.params.arrangement);
+        if(selected.dequant_config>=0) {
+            // New independently confirmed SF helper, not a change to the
+            // frozen PoC's default prepass. Every other contract stays equal.
+            assert(old.sf_config==-1 && now.prefill.version && now.prefill.route==1);
+            assert(now.prefill.dequant_config==selected.dequant_config);
+        } else assert((now.prefill.version && now.prefill.route==1 ? now.prefill.dequant_config : -1)==old.sf_config);
     }
 }

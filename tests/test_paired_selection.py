@@ -71,7 +71,16 @@ def test_generated_catalog_and_ordinary_decisions_are_frozen():
     assert generate.header(CATALOG) == generate.OUTPUT.read_text()
     for path in ('policies/kpack_smallm_effective_v1.hpp', 'quactlize/execution/measured_decode.inc'):
         before = subprocess.check_output(['git', 'show', generate.BASE_SOURCE+':'+path], cwd=ROOT)
-        assert before == (ROOT/path).read_bytes()
+        if path.endswith('.hpp'):
+            from tools.generate_decode_selection import EVIDENCE, effective, header
+            # Paired work did not alter ordinary selection. Later component
+            # promotions have their own replay; recover the frozen base here.
+            original = header(effective(json.loads(EVIDENCE.read_text()), include_components=False))
+            original = ''.join(line for line in original.splitlines(keepends=True)
+                               if not line.startswith('inline constexpr int kDequant[]='))
+            assert before == original.encode()
+        else:
+            assert before == (ROOT/path).read_bytes()
     assert len(CATALOG['rows']) == 26 and len(CATALOG['legacy']) == 17
 
 
