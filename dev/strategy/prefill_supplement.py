@@ -20,7 +20,8 @@ from quactlize.runtime.tuning import digest
 
 BASE_HARNESS = 'a315ce458e00a8e25ed489f917163139061dbf78fd24f97a3c82a4385b173fbd'
 BASE_RUNNER = 'b108f8a6c871711b4493ff9062e8530a5ab0495add898fe689b30a87ed379a20'
-MEASUREMENT_AST = '2759405ab64764f092d65677b3a99fc53d8038e6caa947cf36f70ab3e8f3b663'
+# Exact child/jobs source from BASE_RUNNER, not a version-dependent ast.dump.
+MEASUREMENT_SOURCE = 'b8a70944ead8a134bd60718e17968ba58c52c1a61322b5fb460905afe9bf15ae'
 RUNNER = 'tools/run_kpack_strategy_prefill.py'
 HOST_ONLY = {
     'dev/strategy/prescreen.py', 'dev/strategy/prefill_candidates.py',
@@ -40,6 +41,27 @@ def previous_root(path):
     return root
 
 
+def measurement_signature(source):
+    """Seal reviewed function text, including decorators, across Python versions.
+
+    ast.dump adds type_params in Python3.12 even for unchanged functions. Use
+    the parser only to locate source spans; do not normalize executable text.
+    """
+    names = {'child', 'jobs'}
+    lines = source.splitlines(keepends=True)
+    functions = {}
+    for node in ast.parse(source).body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name not in names:
+            continue
+        if node.name in functions:
+            raise ValueError('duplicate measured function: '+node.name)
+        start = min([node.lineno]+[d.lineno for d in node.decorator_list])-1
+        functions[node.name] = ''.join(lines[start:node.end_lineno])
+    if functions.keys() != names:
+        raise ValueError('missing measured functions: '+', '.join(sorted(names-functions.keys())))
+    return digest(functions)
+
+
 def check_harness(old, current, root):
     for value in (old, current):
         if value.get('sha256') != digest(value['files']):
@@ -50,11 +72,10 @@ def check_harness(old, current, root):
                if old['files'].get(p) != current['files'].get(p)}
     if changed - HOST_ONLY - {RUNNER}:
         raise ValueError('supplement changed measurement inputs: '+', '.join(sorted(changed-HOST_ONLY-{RUNNER})))
-    nodes = ast.parse((Path(root)/RUNNER).read_text()).body
-    signature = digest({n.name: ast.dump(n, include_attributes=False) for n in nodes
-                        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in ('child', 'jobs')})
-    if signature != MEASUREMENT_AST:
-        raise ValueError('supplement changed the measured child or job semantics')
+    signature = measurement_signature((Path(root)/RUNNER).read_text(encoding='utf-8'))
+    if signature != MEASUREMENT_SOURCE:
+        raise ValueError('supplement changed the measured child or job source: '
+                         f'got={signature} expected={MEASUREMENT_SOURCE}')
 
 
 def geometry(spec):

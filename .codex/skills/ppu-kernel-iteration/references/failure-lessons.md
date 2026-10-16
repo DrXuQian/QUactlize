@@ -1,5 +1,15 @@
 # PPU failure lessons
 
+Do not use ast.dump as a cross-Python-version measurement compatibility seal.
+Python3.12 adds FunctionDef.type_params=[] to the dump of unmodified Python3.10
+functions. The R26 prefill supplement rejected its unchanged child/jobs before
+device probing for exactly this reason (reproduced on both interpreters).
+Seal the reviewed function source spans, including decorators, instead; reject
+missing/duplicate functions and retain all helper, image, launch, SDK and
+physical-device checks. Test the real entry boundary on both interpreters,
+including changed-body negatives. Never bypass the check or relabel prior
+timings. Seams: prefill_supplement.py, test_strategy_prefill_supplement.py.
+
 Resource and timing drivers must not independently acquire the same device
 `flock` while one waits for the other. Passing the parent's locked fd to a
 child does not authorize the child's second `open()` to acquire that lock.

@@ -3,13 +3,17 @@ from copy import deepcopy
 from dataclasses import asdict
 import json
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 
 import pytest
 
 from dev.strategy.components import component_key, statistics_checked
 from dev.strategy.journal import ArmJournal, atomic_json
 from dev.strategy.prefill_supplement import (
-    SupplementJournal, canonicalize, check_harness, compatible, import_passes, job_key,
+    MEASUREMENT_SOURCE, SupplementJournal, canonicalize, check_harness, compatible,
+    import_passes, job_key, measurement_signature,
 )
 from dev.strategy.resources import module_spec
 from quactlize.dispatch.table import Recipe, Workload
@@ -118,13 +122,58 @@ def test_symbol_reuse_never_adds_an_unproposed_geometry(tmp_path,monkeypatch):
     with pytest.raises(ValueError,match='every point'): canonicalize([],old)
 
 
-def test_current_measured_frontend_still_has_reviewed_ast():
-    from dev.strategy.prefill_supplement import MEASUREMENT_AST
-    import ast
+def test_current_measured_frontend_still_has_reviewed_source():
     path=Path(__file__).resolve().parents[1]/'tools/run_kpack_strategy_prefill.py'
-    nodes=ast.parse(path.read_text()).body
-    assert digest({n.name:ast.dump(n,include_attributes=False) for n in nodes
-                   if isinstance(n,ast.FunctionDef) and n.name in ('child','jobs')})==MEASUREMENT_AST
+    assert measurement_signature(path.read_text())==MEASUREMENT_SOURCE
+
+
+@pytest.mark.parametrize('interpreter', sorted({sys.executable} | {
+    path for name in ('python3.10', 'python3.11', 'python3.12', 'python3.13')
+    if (path := shutil.which(name))
+}))
+def test_reviewed_boundary_across_available_python_versions(interpreter):
+    root=Path(__file__).resolve().parents[1]
+    script='''
+from pathlib import Path
+from dev.strategy.prefill_supplement import (
+    BASE_RUNNER, RUNNER, MEASUREMENT_SOURCE, check_harness, measurement_signature,
+)
+from quactlize.runtime.tuning import digest
+import dev.strategy.prefill_supplement as mod
+
+files={RUNNER:BASE_RUNNER, 'unchanged-timer.py':'same'}
+old=dict(files=files, sha256=digest(files))
+mod.BASE_HARNESS=old['sha256']
+check_harness(old, old, Path('.'))
+source=Path(RUNNER).read_text(encoding='utf-8')
+assert measurement_signature(source)==MEASUREMENT_SOURCE
+for original,changed in [('def child(args):','def child(args):\\n    return 0'),
+                         ('def jobs(point):','def jobs(point):\\n    return []'),
+                         ('def child(args):','@changed_semantics\\ndef child(args):')]:
+    assert original in source
+    assert measurement_signature(source.replace(original,changed,1))!=MEASUREMENT_SOURCE
+print(MEASUREMENT_SOURCE)
+'''
+    result=subprocess.run([interpreter,'-c',script],cwd=root,text=True,capture_output=True,check=True)
+    assert result.stdout.strip()==MEASUREMENT_SOURCE
+
+
+@pytest.mark.parametrize('source, message', [
+    ('def jobs(p): return []\n', 'missing measured functions'),
+    ('def child(a): return 0\ndef jobs(p): return []\ndef child(a): return 1\n',
+     'duplicate measured function'),
+])
+def test_missing_or_shadowed_measured_function_rejected(source,message):
+    with pytest.raises(ValueError,match=message): measurement_signature(source)
+
+
+def test_decorators_and_body_edits_are_not_ignored():
+    source='def child(a): return 0\ndef jobs(p): return []\n'
+    before=measurement_signature(source)
+    assert measurement_signature('@decorator\n'+source)!=before
+    assert measurement_signature(source.replace('return 0','return 1'))!=before
+    assert measurement_signature(source.replace('return []','return [p]'))!=before
+    assert measurement_signature(source.replace('def child','async def child'))!=before
 
 
 def test_source_boundary_rejects_timer_or_child_changes(tmp_path,monkeypatch):
