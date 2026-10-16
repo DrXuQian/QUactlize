@@ -24,16 +24,23 @@ sys.path.insert(0, str(ROOT))
 from dev.strategy.journal import atomic_json
 from dev.strategy.plan import make_plan
 from dev.strategy.prefill_plan import family, partition, bind_original, execution_plan
-from dev.strategy.prefill_retry import PrefillJournal, prior_root, previous_probe, reuse_build, import_passes
+from dev.strategy.prefill_retry import PrefillJournal as RetryJournal, prior_root, previous_probe, reuse_build, import_passes
 from dev.strategy.provenance import source_identity, verify_unchanged, harness_identity
 from dev.strategy.resource_pilot import load_probe, verified_plan, current_module
 from dev.strategy.resources import inventory, compiler
-from dev.strategy.components import recommendation
+from dev.strategy.prefill_selection import compose
 from quactlize.dispatch.table import Workload, Recipe
 from quactlize.runtime.tuning import digest
 from tools.probe_kpack_strategy import device_probe
 from tools.run_kpack_strategy_decode import records_for, dequant_checked, l2_authority
 from tools.run_kpack_strategy_pilot import oracle_identity
+
+
+def PrefillJournal(directory, authority, invocation):
+    if (Path(directory).parent/'supplement/index.json').exists():
+        from dev.strategy.prefill_supplement import SupplementJournal
+        return SupplementJournal(directory, authority, invocation)
+    return RetryJournal(directory, authority, invocation)
 
 
 def jobs(point):
@@ -71,6 +78,10 @@ def freeze(args):
     p['points'] = partition(all_points, args.shard, args.shards)
     if not p['points']: raise ValueError('empty family partition; decrease shard count')
     bind_original(p['points'], args.output)
+    if getattr(args, 'supplement_from', None):
+        from dev.strategy.prefill_supplement import canonicalize
+        old = json.loads((args.supplement_from/'execution-plan.json').read_text())
+        p['compiled_symbol_aliases'] = canonicalize(p['points'], old)
     p['source_identity'] = verify_unchanged(before, ROOT)
     p['plan_sha256'] = digest({k: v for k, v in p.items() if k != 'plan_sha256'})
     atomic_json(path, p)
@@ -264,23 +275,8 @@ def summarize(output, plan, journal):
             role = job['roles'][0]
             if role in helper: helper[role][job['config']] = value['components']
             if role == 'bf16': provider = value['components']
-        best = {role: min(pool, key=lambda c: sum(records[k]['median_us'] for k in pool[c]), default=None)
-                for role, pool in helper.items()}
-        arms, roles = {}, {}
-        for arm in p['arms']:
-            r = Recipe.from_dict(arm['recipe']); aid = arm['id']; roles[aid] = arm['roles']
-            components = list(provider if r.kind == 'full' else data.get(aid, []))
-            role = 'full_dequant' if r.kind == 'full' else 'sf' if r.route == 'sf' and p['sf_configs'] else None
-            if role:
-                c = best[role] if 'rule' in roles[aid] else max(0, dict(r.parameters).get('dequant_config', -1))
-                components = components+helper[role][c] if components and c in helper[role] else []
-            arms[aid] = components
-        selection = recommendation(arms, records, roles=roles)
-        if missing: selection['recommended'] = 'original'
-        result = dict(id=p['id'], workload=p['workload'], status='PASS' if not missing else 'INCOMPLETE',
-            missing=missing, selection=selection, best_helpers=best, components=arms,
-            scope=plan['scope'], excluded=plan['excluded'],
-            admission='SCREEN_ONLY_ALTERNATING_FINALISTS_AND_ORIGINAL_MODEL_AB_REQUIRED')
+        result = compose(p, data, helper, provider, records, missing)
+        result.update(scope=plan['scope'], excluded=plan['excluded'])
         atomic_json(output/'cases'/(p['id']+'.json'), result); results.append(result)
     return results
 
@@ -298,6 +294,8 @@ def main():
     parser.add_argument('--plan-only', action='store_true'); parser.add_argument('--resume', action='store_true')
     parser.add_argument('--previous-output', type=Path,
                         help='stopped prefill run; retry failed/pending jobs without remeasuring its PASS jobs')
+    parser.add_argument('--supplement-from', type=Path,
+                        help='reviewed completed screen; reuse identical PASS calls and measure new rule candidates')
     parser.add_argument('--upgrade-cublas-events', action='store_true',
                         help='reviewed 4ad5bb8 migration: retain isolated PASS, replace all dense cuBLAS timers')
     parser.add_argument('--idle-confirmed', action='store_true')
@@ -312,16 +310,29 @@ def main():
     args.output = args.output.resolve(); args.sdk = args.sdk.resolve()
     args.output.mkdir(parents=True, exist_ok=args.resume or bool(args.family))
     request = args.output/'retry-request.json'
+    if args.supplement_from and (args.previous_output or args.upgrade_cublas_events):
+        parser.error('--supplement-from cannot be combined with a parser/provider migration')
     if request.exists():
         requested = json.loads(request.read_text())
         original = Path(requested['previous_output'])
-        if args.previous_output and prior_root(args.previous_output) != original:
+        supplied = args.supplement_from or args.previous_output
+        if supplied and supplied.resolve() != original:
             raise ValueError('retry parent changed')
-        args.previous_output = original
+        if requested.get('rules_supplement'):
+            args.supplement_from = original
+        else:
+            args.previous_output = original
         if args.upgrade_cublas_events and not requested.get('upgrade_cublas_events', False):
             raise ValueError('cannot change an existing retry measurement protocol')
         args.upgrade_cublas_events = requested.get('upgrade_cublas_events', False)
-    previous = prior_root(args.previous_output) if args.previous_output else None
+    if args.supplement_from:
+        from dev.strategy.prefill_supplement import previous_root, check_harness
+        previous = previous_root(args.supplement_from)
+        args.supplement_from = previous
+        prior_authority = json.loads((previous/'authority.json').read_text())
+        check_harness(prior_authority['harness'], harness_identity(ROOT), ROOT)
+    else:
+        previous = prior_root(args.previous_output) if args.previous_output else None
     if args.upgrade_cublas_events and not previous:
         parser.error('--upgrade-cublas-events requires --previous-output')
     if previous:
@@ -332,7 +343,8 @@ def main():
         # Reuse the old verified value if the SDK's L2 attribute is zero;
         # l2_authority still queries the device and rejects any disagreement.
         args.l2_bytes = args.l2_bytes or old['l2']['bytes']
-        atomic_json(request, dict(previous_output=str(previous), upgrade_cublas_events=args.upgrade_cublas_events))
+        atomic_json(request, dict(previous_output=str(previous), upgrade_cublas_events=args.upgrade_cublas_events,
+                                 rules_supplement=bool(args.supplement_from)))
     args.cache = (args.cache or args.output/'tc-cache').resolve()
     if args.family: return child(args)
     started = time.monotonic(); frozen = freeze(args); inv = inventory(frozen)
@@ -364,11 +376,13 @@ def main():
     probe = None
     if previous:
         from quactlize.runtime.native import sdk_identity
+        old_resource = json.loads((previous/'authority.json').read_text())['resource']
+        if (old_resource['device'] != dev or old_resource['sdk'] != sdk_identity(args.sdk) or
+                old_resource['cache'] != str(args.cache)):
+            raise ValueError('prefill retry requires the same physical device/SDK/cache')
+    if previous and not args.supplement_from:
         probe = previous_probe(previous, frozen, harness_identity(ROOT), ROOT,
                                provider_upgrade=args.upgrade_cublas_events)
-        if (probe['authority']['device'] != dev or probe['authority']['sdk'] != sdk_identity(args.sdk) or
-                probe['authority']['cache'] != str(args.cache)):
-            raise ValueError('prefill retry requires the same physical device/SDK/cache')
         print('STRATEGY_PREFILL_RETRY resource=VERIFIED_PRIOR_PROBE new_resource_queries=0', flush=True)
     else:
         cmd = [sys.executable, '-u', str(ROOT/'tools/probe_kpack_strategy.py'), '--plan', str(args.output/'plan/plan.json'),
@@ -393,15 +407,21 @@ def main():
         atomic_json(args.output/'execution-plan.json', plan)
         records = records_for(probe, plan, args.sdk)
         isolated_verify = verify_helpers
-        if args.upgrade_cublas_events:
+        old_event_helper = bool(previous and json.loads((previous/'authority.json').read_text()).get('cublas_helpers'))
+        if args.upgrade_cublas_events or args.supplement_from and old_event_helper:
             from dev.strategy.prefill_upgrade import verify_helpers as isolated_verify
         if previous:
             reuse_build(previous, args.output, 'dequant', args.sdk, dequant_checked)
             reuse_build(previous, args.output, 'helpers', args.sdk, lambda path, sdk: isolated_verify(sdk, path))
         dq = stable_build(args, 'dequant', build_dequant, dequant_checked)
         hp = stable_build(args, 'helpers', build_helpers, lambda path, sdk: isolated_verify(sdk, path))
+        if args.supplement_from and old_event_helper:
+            from dev.strategy.prefill_supplement import reuse_event_helper
+            reuse_event_helper(previous, args.output, args.sdk)
         event_helper = (stable_build(args, 'cublas-helpers', build_helpers,
                         lambda path, sdk: verify_helpers(sdk, path)) if args.upgrade_cublas_events else None)
+        if args.supplement_from and old_event_helper:
+            event_helper = verify_helpers(args.sdk, args.output/'cublas-helpers')
         l2 = l2_authority(args)
         authority = dict(plan=plan['plan_sha256'], resource=probe['authority'], harness=harness_identity(ROOT),
             oracle=oracle_identity(), graph_abi=check_sdk_graph_abi(args.sdk), l2=l2,
@@ -414,8 +434,12 @@ def main():
         path = args.output/'authority.json'
         if path.exists() and json.loads(path.read_text()) != authority: raise ValueError('resume authority changed')
         atomic_json(path, authority)
-        imported = import_passes(previous, args.output, plan, authority, jobs,
-                                 provider_upgrade=args.upgrade_cublas_events) if previous else None
+        if args.supplement_from:
+            from dev.strategy.prefill_supplement import import_passes as import_supplement
+            imported = import_supplement(previous, args.output, plan, authority, jobs, ROOT)
+        else:
+            imported = import_passes(previous, args.output, plan, authority, jobs,
+                                     provider_upgrade=args.upgrade_cublas_events) if previous else None
         if imported:
             print(f'STRATEGY_PREFILL_RETRY preserved_pass_jobs={imported["passed_jobs"]} '
                   f'replaced_cublas_jobs={len(imported.get("replaced_jobs", []))} '
@@ -426,6 +450,11 @@ def main():
         pending_jobs = sum(journal.due(p, j) for p in plan['points'] for j in jobs(p))
         print(f'STRATEGY_PREFILL_WORK total_jobs={total_jobs} pending_jobs={pending_jobs} '
               f'preserved_jobs={total_jobs-pending_jobs} prior_resource_reuse={int(previous is not None)}', flush=True)
+        if args.supplement_from:
+            from dev.strategy.prefill_supplement import estimate
+            eta = estimate(previous, plan, journal, jobs)
+            atomic_json(args.output/'supplement/work-estimate.json', eta)
+            print('STRATEGY_PREFILL_SUPPLEMENT_ETA '+json.dumps(eta), flush=True)
         for key, points in families.items():
             arms = [a for p in points for a in p['arms'] if a['recipe']['kind'] == 'tc']
             manifest = dict(points=points, authority_sha256=digest(authority),
@@ -465,6 +494,9 @@ def main():
         passed=passed, expected=plan['counts']['requested_points'], blocked=plan['blocked'],
         counts=counts, elapsed_seconds=time.monotonic()-started, budget_reached=budget,
         prior_pass_jobs=imported['passed_jobs'] if imported else 0,
+        selection_gaps=sum(r['selection']['decision']=='RULE_GAP' for r in rows),
+        unstable_comparisons=sum(r['selection']['decision']=='UNSTABLE_COMPARISON' for r in rows),
+        legacy_fallback=False,
         production_changed=False, performance_admitted=False, full_campaign=False,
         remaining=['ALTERNATING_LARGE_M_FINALISTS', 'ORIGINAL_WIRING_MODEL_AB'],
         scope=plan['scope'], excluded=plan['excluded'])

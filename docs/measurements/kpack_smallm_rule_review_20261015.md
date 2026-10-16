@@ -52,3 +52,21 @@ resource/vector caches, preserve all old timing receipts, and confirm on the
 same idle physical card. `COMPLETE_SMALLM_SUBSET` is deliberately distinct from
 full-cohort completion. Do not resume the source-sealed R24 campaign using R25.
 Production tables and original-wiring model A/B remain separate work.
+
+## 2026-10-16: measurement completion is not current rule closure
+
+After the component choices were integrated, a host-only replay used the
+current catalog, leave-NK-out generation, two prototypes per stratum and the
+warp stencil. It regenerated 877 of the 930 chosen runtime-key recipes, but
+not 53 (22 TC, 11 generic SIMT, 20 specialized Q4). Of those 53, 23 retained
+the old choice and 30 were changed table entries. The selected recipes already
+have measurement evidence and remain available through the exact table.
+Do not call these 53 missing GPU measurements or infer a runtime regression.
+
+Example: Q4 indexed BF16 M5/N512/K2048/ch1 selected reader2/variant6/P8/C4/W4;
+the regenerated pool contains W2/W8 but not W4 for that reader tuple. Q5 dense
+M2/N8192/K5120 selected SF TM16/TN64/TK256/stages3/DN64/S2; this exact producer
+is also absent. A frozen campaign's completeness cannot certify a changed
+donor catalog. Reconcile rule/catalog recall across all keys, then reuse
+existing evidence and benchmark genuinely new proposals. Production routing
+and the raw old verdicts are unchanged by this audit; no new timing admitted.

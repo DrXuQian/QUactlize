@@ -199,7 +199,7 @@ class Review:
         self.screens.add(pid)
         row = select(data, 'status selection missing best_sf expansion_configs component_arms finalists '
                            'measurement_origin previous_root previous_receipt best_helpers components '
-                           'scope excluded admission')
+                           'scope excluded admission control_helper_bindings')
         self.emit('screen', point=pid, **row)
         for keys in data.get('component_arms', data.get('components', {})).values():
             self.needed.update(keys)
@@ -319,6 +319,32 @@ class Review:
                     self.arm(row, origin='PRIOR_PASS_UNCHANGED')
                 except (ValueError, OSError, KeyError, TypeError) as exc:
                     self.issue(path.relative_to(self.root), exc)
+        if (self.root/'supplement/index.json').is_file():
+            supplement = self.read(self.root/'supplement/index.json')
+            self.emit('supplement_run', previous_output=supplement['previous_output'],
+                      passed_jobs=supplement['passed_jobs'], scope=supplement['scope'])
+            for key, value in supplement['source_authorities'].items():
+                if digest(value) != key: raise ValueError('supplement source authority differs')
+                self.emit('supplement_authority', authority_sha256=key,
+                          authority=dict(resource=value.get('resource', {}),
+                              harness_sha256=value.get('harness', {}).get('sha256'),
+                              **select(value, 'plan body_source dequant helpers oracle l2 idle protocol scope')),
+                          images={k:value[k] for k in ('tc', 'vectors') if k in value})
+            seen = set()
+            for key, binding in sorted(supplement['receipts'].items()):
+                if not re.fullmatch('[0-9a-f]{64}/(?:original|[0-9a-f]{64})', key):
+                    raise ValueError('invalid supplement target')
+                row = self.read(self.root/binding['path'])
+                if row['record_sha256'] != binding['seal'] or row['status'] != 'PASS':
+                    raise ValueError('supplement PASS differs')
+                pid, aid = key.split('/')
+                self.emit('reuse_binding', point=pid, id=aid, roles=binding['expected']['roles'],
+                          recipe=self.ref('config', binding['expected'].get('recipe')),
+                          source_job=binding['source_job'], source_authority=binding['source_authority'],
+                          source_record_sha256=binding['seal'])
+                source = (pid, binding['source_job'], binding['seal'])
+                if source not in seen:
+                    self.arm(row, origin='SUPPLEMENT_PASS_UNCHANGED'); seen.add(source)
         for cid in sorted(self.needed - self.previous_components):
             if not isinstance(cid, str) or not re.fullmatch('[0-9a-f]{64}', cid):
                 self.issue('components', 'invalid referenced component ID: '+repr(cid))

@@ -267,3 +267,17 @@ Keep production unchanged and admit no new-device performance on host tests.
 Seams: `dev/strategy/{prescreen,q4_space,replay}.py` and their tests. Source
 seals must include shell orchestration; resource resume binds host, PCI,
 driver/runtime versions, SDK and exact module/compute/schedule identity.
+
+Updating the production table can change the donor catalog even when the
+proposal code is unchanged. On 2026-10-16, leave-NK-out replay of the updated
+small-M catalog recalled 877/930 selected host-key recipes and missed 53
+(22 TC, 11 generic SIMT, 20 Q4). These configurations already had measurements;
+this was a rule-regeneration gap, NOT 53 missing tests or a measured runtime
+regression. Q4 indexed M5/N512/K2048 W4 was confirmed in the frozen campaign
+but absent from the regenerated pool. Treat proposal catalog + rule revision
+as one versioned input. Audit after table promotions, keep measured evidence
+immutable, and distinguish exact-table availability, blind generation recall,
+competitive-pool regret and model A/B. Repair generic coverage before claiming
+the legacy selector is unnecessary; never silently inject the target champion.
+Evidence: `policies/kpack_component_decode_v1.json`, `dev/strategy/{prescreen,
+neighbors,q4_space}.py`, and the task's `decode-rule-recall-20261016.json`.

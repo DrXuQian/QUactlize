@@ -42,6 +42,15 @@ def test_commands_always_reuse_original_shards_and_cache(tmp_path):
     assert '--resume' in command(row, tmp_path, Path('/sdk'), 27, 24)
 
 
+def test_rule_supplement_never_replaces_successful_cublas_or_reshards(tmp_path):
+    row = dict(runs()[1], rules_supplement=True)
+    cmd = command(row, tmp_path, Path('/sdk'), 27, 24)
+    assert '--supplement-from' in cmd and '--upgrade-cublas-events' not in cmd
+    assert '--previous-output' not in cmd
+    assert cmd[cmd.index('--supplement-from')+1] == row['previous']
+    assert cmd[cmd.index('--shard')+1] == '1'
+
+
 def test_setup_failures_package_logs_not_binary_or_weight_cache(tmp_path):
     atomic_json(tmp_path/'request.json', {'test':'host-only'})
     atomic_json(tmp_path/'summary.json', {'status':'INCOMPLETE'})

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resume the stopped seven-card prefill screen with ordinary cuBLAS events.
+"""Resume provider measurements or supplement the reviewed prefill rules.
 
 Match cards by physical identity, not visible ordinal. Keep every family on
 its original card; do not move old timings to another card. Each worker owns
@@ -27,19 +27,25 @@ from dev.strategy.prefill_upgrade import source_delta
 from quactlize.runtime.tuning import digest
 
 
-def discover(previous):
-    paths = sorted(Path(previous).glob('gpu-*/kpack-rule-prefill.*/measurement/authority.json'))
+def discover(previous, supplement=False):
+    paths = sorted(Path(previous).glob('shard-*/measurement/authority.json' if supplement else
+                                      'gpu-*/kpack-rule-prefill.*/measurement/authority.json'))
     runs = []
     harness = harness_identity(ROOT)
     for path in paths:
-        root = prior_root(path.parent)
+        if supplement:
+            from dev.strategy.prefill_supplement import previous_root, check_harness
+            root = previous_root(path.parent)
+        else:
+            root = prior_root(path.parent)
         authority, _ = read(root, 'authority.json')
         plan, _ = read(root, 'plan/plan.json')
         runs.append(dict(previous=str(root), device=authority['resource']['device'],
                          partition=plan['partition'], cache=authority['resource']['cache'],
-                         authority_sha256=digest(authority)))
-        source_delta(authority['harness'], harness, 'harness')
-    if not runs: raise ValueError('no stopped gpu-*/kpack-rule-prefill.*/measurement runs found')
+                         authority_sha256=digest(authority), rules_supplement=supplement))
+        if supplement: check_harness(authority['harness'], harness, ROOT)
+        else: source_delta(authority['harness'], harness, 'harness')
+    if not runs: raise ValueError('no matching per-shard prefill measurement runs found')
     shards = {r['partition']['shards'] for r in runs}
     if shards != {len(runs)} or {r['partition']['shard'] for r in runs} != set(range(len(runs))):
         raise ValueError('previous run has missing/duplicate shards; do not silently reshard it')
@@ -63,9 +69,11 @@ def bind_devices(runs, visible):
 
 
 def command(row, output, sdk, jobs, hours):
+    parent = (['--supplement-from', row['previous'], '--max-modules', '384'] if row.get('rules_supplement') else
+              ['--previous-output', row['previous'], '--upgrade-cublas-events'])
     cmd = [sys.executable, '-u', str(ROOT/'tools/run_kpack_strategy_prefill.py'),
            '--output', str(output/'measurement'), '--sdk', str(sdk), '--cache', row['cache'],
-           '--previous-output', row['previous'], '--upgrade-cublas-events', '--idle-confirmed',
+           *parent, '--idle-confirmed',
            '--shard', str(row['partition']['shard']), '--shards', str(row['partition']['shards']),
            '--jobs', str(jobs), '--hours', str(hours)]
     if (output/'measurement').exists(): cmd.append('--resume')
@@ -108,6 +116,8 @@ def package(output, rows):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--previous', type=Path, required=True)
+    parser.add_argument('--supplement-rules', action='store_true',
+                        help='append new blind-rule configurations to the reviewed ordinary-event screen')
     parser.add_argument('--sdk', type=Path, default=Path('/usr/local/PPU_SDK'))
     parser.add_argument('--devices', default='1,2,3,4,5,6,7')
     parser.add_argument('--run-root', type=Path, default=Path('/workspace'))
@@ -124,7 +134,7 @@ def main():
     if any(not s.isdigit() for s in selectors) or len(selectors) != len(set(selectors)):
         parser.error('--devices must be distinct nonnegative ordinals')
     previous, sdk = args.previous.resolve(strict=True), args.sdk.resolve(strict=True)
-    runs = discover(previous)
+    runs = discover(previous, args.supplement_rules)
     code = ('import json,sys; from pathlib import Path; from tools.probe_kpack_strategy import device_probe; '
             'print(json.dumps(device_probe(Path(sys.argv[1]))))')
     visible = []
@@ -140,14 +150,16 @@ def main():
         if output == previous or output.is_relative_to(previous): parser.error('output must not modify the old run')
         output.mkdir(parents=True, exist_ok=args.resume)
     else:
-        output = Path(tempfile.mkdtemp(prefix='kpack-prefill-events-', dir=args.run_root.resolve(strict=True)))
+        output = Path(tempfile.mkdtemp(prefix='kpack-prefill-supplement-' if args.supplement_rules else
+                                      'kpack-prefill-events-', dir=args.run_root.resolve(strict=True)))
     request = dict(previous=str(previous), sdk=str(sdk), rows=rows, harness=harness_identity(ROOT),
-                   scope='RETAIN_ISOLATED_PASS_REPLACE_CUBLAS_COMPLETE_PENDING_NOT_MODEL_AB')
+                   scope=('ALL_POINTS_NEW_RULE_CONFIGS_REUSE_IDENTICAL_PASS_NOT_MODEL_AB' if args.supplement_rules else
+                          'RETAIN_ISOLATED_PASS_REPLACE_CUBLAS_COMPLETE_PENDING_NOT_MODEL_AB'))
     if (output/'request.json').exists() and json.loads((output/'request.json').read_text()) != request:
         raise ValueError('resume device/source/parent changed')
     atomic_json(output/'request.json', request)
     print(f'STRATEGY_PREFILL_MULTI_START run={output} workers={len(rows)} hours_limit={args.hours} '
-          'duration_guaranteed=0 new_tc_compiles=0', flush=True)
+          f'duration_guaranteed=0 new_tc_compiles={"RESOURCE_PLAN_PENDING" if args.supplement_rules else "0"}', flush=True)
     active, statuses = {}, {}
     start = time.monotonic()
     try:

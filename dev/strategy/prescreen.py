@@ -14,6 +14,7 @@ from quactlize.runtime.tuning import digest
 from quactlize.dispatch.table import Recipe
 from dev.strategy.space import prototype, split_variants, factor_candidates, rebind_template, producer_key, grid_search
 from dev.strategy.neighbors import MODES, one_axis
+from dev.strategy.prefill_candidates import template_family as prefill_template_family
 
 
 def parent(recipe, workload):
@@ -146,10 +147,14 @@ class Prescreen:
         self.proposals = defaultdict(list)
         self.templates = defaultdict(list)
         self.portable_sf = defaultdict(list)
+        self.prefill_sf = defaultdict(list)
         for row in table.observations:
             self.rows[semantic_family(row.workload)].append(row)
             self.proposals[proposal_family(row.workload)].append(row)
             self.templates[proposal_family(row.workload,True)].append(row)
+            if (row.recipe.kind == 'tc' and row.recipe.route == 'sf' and
+                    row.workload.m > 8 and not dict(row.recipe.parameters).get('ap')):
+                self.prefill_sf[prefill_template_family(row.workload)].append(row)
             if (row.recipe.kind == 'tc' and row.recipe.route == 'sf' and
                     row.workload.operation in ('dense', 'indexed') and row.workload.m <= 8 and
                     not dict(row.recipe.parameters).get('ap')):
@@ -157,7 +162,7 @@ class Prescreen:
 
     def select(self, w, *, mandatory=(), limit=8, optional=1, max_threads=1024, blind=False,
                per_stratum=1, factorized=True, k_weight=1.0, cross_format=False,
-               reader_strata=False, stencil='none'):
+               reader_strata=False, stencil='none', prefill_breadth=True):
         if not 2 <= limit <= 32 or not 0 <= optional <= 8 or not 0 < max_threads <= 1024:
             raise ValueError('invalid pre-JIT candidate limits')
         if not 1 <= per_stratum <= 16:
@@ -322,6 +327,15 @@ class Prescreen:
         for _, r, source in pool[:room]:
             reasons[r.key].add('BOUNDED_NEIGHBOR_PROPOSAL:' + source)
         selected = sorted(protected.values(), key=lambda r: r.key) + list(coverage.values()) + picked
+        prefill_added = 0
+        if blind and factorized and prefill_breadth and w.m > 8:
+            from dev.strategy.prefill_candidates import supplement
+            additions, why = supplement(w, selected,
+                [*rows, *self.prefill_sf.get(prefill_template_family(w), ())],
+                max_threads=max_threads, k_weight=k_weight)
+            selected += additions
+            prefill_added = len(additions)
+            for key, values in why.items(): reasons[key].update(values)
         if blind and factorized:
             from dev.strategy.q4_space import proposals as q4_proposals
             known = {producer_key(r) for r in selected}
@@ -363,7 +377,8 @@ class Prescreen:
         expanded = 1 + len(protected) + len(coverage) > limit
         report = dict(stage='PRE_JIT_PER_SHAPE', original_mandatory=True,
             rule_generation='LEAVE_NK_FAMILY_OUT' if blind else 'REFERENCE_CONTROL_INVENTORY',
-            rule_revision=25 if blind and factorized else 2 if blind else None,per_stratum=per_stratum,
+            rule_revision=(26 if prefill_breadth and w.m>8 else 25) if blind and factorized else 2 if blind else None,per_stratum=per_stratum,
+            prefill_geometry_supplement=prefill_added,
             cross_format_templates=bool(blind and factorized and cross_format),
             reader_strata=reader_strata,
             neighbor_stencil=stencil,seed_prototype_count=seed_count,

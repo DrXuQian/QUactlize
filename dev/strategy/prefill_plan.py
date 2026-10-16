@@ -11,6 +11,7 @@ import subprocess
 from dev.strategy.journal import planned_arms
 from dev.strategy.resources import module_spec, probe_spec
 from dev.strategy.space import expansion_configs, resolved_grid
+from dev.strategy.prefill_selection import control_helper_config
 from quactlize.dispatch.table import Workload, Recipe
 from quactlize.runtime.tuning import digest
 from tools.export_kpack_strategy import recipe as normalize
@@ -109,6 +110,10 @@ def execution_plan(probe):
             c = dict(r.parameters).get('dequant_config', -1)
             if r.kind == 'full' and ('original' in a['roles'] or 'control' in a['roles']) and c not in full:
                 issues.append(dict(arm=a['id'], reason='CONTROL_ACTIVE_DEQUANT_CONFIG_UNAVAILABLE', config=c))
+            if (r.route == 'sf' and w.qtype != 8 and 'rule' not in a['roles'] and
+                    control_helper_config(w, r) not in sf):
+                issues.append(dict(arm=a['id'], reason='CONTROL_TYPED_SF_CONFIG_UNAVAILABLE',
+                                   config=control_helper_config(w, r)))
         if issues:
             blocked.append(dict(id=p['id'], reason='CONTROL_HELPER_UNAVAILABLE', issues=issues))
             continue
