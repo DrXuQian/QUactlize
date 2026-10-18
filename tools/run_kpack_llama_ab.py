@@ -5,6 +5,8 @@ Uses an existing .aoneci/scripts/build.sh build. Builds only a host-side test
 carrier against that exact source/build; never edits or builds llama itself.
 All-format dense + indexed coverage requires the full PoC caller, not the
 dense-only MR. Unsupported operations fail, they are not skipped as passes.
+Default: all 1544 frozen workloads, one production-selected recipe per point.
+The optional 32-point pilot is a diagnostic, not full regression admission.
 """
 import argparse
 from collections import defaultdict
@@ -28,7 +30,8 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from dev.llama_ab.contract import SCOPE, coverage, family, inventory, judge, pilot, route_proof
+from dev.llama_ab.contract import (MEASURED_STATUSES, SCOPE, coverage, coverage_breakdown,
+                                   family, inventory, judge, phase_points, pilot, route_proof)
 from dev.strategy.journal import atomic_json
 from dev.strategy.provenance import harness_identity
 from quactlize.runtime.compiler import sha
@@ -213,7 +216,7 @@ def record_load(path, authority):
         raise ValueError('result authority/digest differs: '+str(path))
     if 'id' in row and row['id']!=path.stem:
         raise ValueError('result stored under another point key')
-    if row.get('data') and row.get('status') in ('PASS','REGRESSION','INCONCLUSIVE'):
+    if row.get('data') and row.get('status') in MEASURED_STATUSES:
         if judge(row['data'])['status']!=row['status']:
             raise ValueError('saved verdict disagrees with raw samples')
     return row
@@ -222,6 +225,21 @@ def record_load(path, authority):
 def save_record(path, record):
     record['sha256'] = digest(record)
     atomic_json(path, record)
+
+
+def pending_groups(request, shard_index, phase, records):
+    """Full mode has no pilot barrier; resume retries only failures/missing points."""
+    shard = request['shards'][shard_index]
+    authority = dict(request=digest(request), hardware=shard['hardware'], shard=shard_index)
+    groups = defaultdict(list)
+    for row in phase_points(request['points'], phase):
+        if family(row) not in shard['families']:
+            continue
+        path = records/(row['id']+'.json')
+        if path.exists() and record_load(path, authority)['status'] in MEASURED_STATUSES:
+            continue
+        groups[family(row)].append(row)
+    return groups
 
 
 def worker(args):
@@ -239,104 +257,83 @@ def worker(args):
     authority = dict(request=digest(request), hardware=current, shard=args.worker)
     lock = Path('/tmp')/('quactlize-components-'+digest(current['device']['pci'])[:24]+'.lock')
     records = args.output/'records'; records.mkdir(exist_ok=True)
-    rows = [r for r in request['points'] if family(r) in shard['families']]
     executable = args.output/'llama-ab-carrier'
     env = environment(args)
     start = time.monotonic()
     with lock.open('a') as held:
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        # The pilot is mandatory for a new build. Performance regressions do
-        # not stop coverage; unsupported/numeric/route failures do stop it.
-        own_pilot = {r['id'] for r in pilot(request['points'])} & {r['id'] for r in rows}
-        for phase in ('pilot', 'full'):
-            groups = defaultdict(list)
-            for row in rows:
-                if (row['id'] in own_pilot) != (phase == 'pilot'):
-                    continue
-                path = records/(row['id']+'.json')
-                if path.exists():
-                    old = record_load(path, authority)
-                    if old['status'] in ('PASS','REGRESSION','INCONCLUSIVE'):
-                        continue
-                groups[family(row)].append(row)
-            if phase == 'full':
-                failed = [k for k in own_pilot if not (records/(k+'.json')).exists() or
-                    record_load(records/(k+'.json'), authority)['status'] not in ('PASS','REGRESSION','INCONCLUSIVE')]
-                if failed:
-                    print('LLAMA_AB_PILOT_BLOCKED '+json.dumps(dict(shard=args.worker, failed=failed)), flush=True)
+        # Keep each family in one process where possible: do not repeat its
+        # weights/JIT setup for a separate pilot before running the full set.
+        for fid, todo in sorted(pending_groups(request, args.worker, args.phase, records).items()):
+            # An abort must not poison later cases. Completed points stay
+            # valid; each failed point is attempted once per invocation.
+            while todo:
+                unchanged()
+                if args.hours and time.monotonic()-start >= args.hours*3600:
+                    print('LLAMA_AB_BUDGET_EXHAUSTED remaining='+str(len(todo)), flush=True)
                     return 1
-                if args.phase == 'pilot':
-                    break
-            for fid, todo in sorted(groups.items()):
-                # An abort must not poison later cases. Completed points stay
-                # valid; each failed point is attempted once per invocation.
-                while todo:
-                    unchanged()
-                    if args.hours and time.monotonic()-start >= args.hours*3600:
-                        print('LLAMA_AB_BUDGET_EXHAUSTED remaining='+str(len(todo)), flush=True)
-                        return 1
-                    attempt = args.output/f'shard-{args.worker}'/uuid.uuid4().hex
-                    attempt.mkdir(parents=True)
-                    points = [point_request(r, current['l2']['bytes']) for r in todo]
-                    config = dict(points=points, rounds=args.rounds, samples=args.samples, authority=authority,
-                                  runtime_library=str(args.sdk/'lib/libhggc_wrapper.so'))
-                    atomic_json(attempt/'request.json', config)
-                    command = [str(executable), str(attempt/'request.json'), str(attempt/'raw')]
-                    print(f'LLAMA_AB_FAMILY phase={phase} family={fid} points={len(todo)} log={attempt}/run.log', flush=True)
-                    with (attempt/'run.log').open('x') as log:
-                        p = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT)
-                        try:
-                            while p.poll() is None:
-                                try: p.wait(timeout=30)
-                                except subprocess.TimeoutExpired:
-                                    print(f'LLAMA_AB_WAIT family={fid} elapsed_minutes={(time.monotonic()-start)/60:.1f} log={attempt}/run.log', flush=True)
-                                    if args.hours and time.monotonic()-start >= args.hours*3600:
-                                        p.terminate(); p.wait(timeout=30)
-                        finally:
-                            if p.poll() is None:
-                                p.kill(); p.wait()
-                    log_text = (attempt/'run.log').read_text(errors='replace')
-                    unchanged()
-                    completed = set()
-                    for row in todo:
-                        raw = attempt/'raw'/(row['id']+'.json')
-                        if not raw.exists():
-                            continue
-                        try:
-                            data = json.loads(raw.read_text())
-                            if data['id']!=row['id'] or data['workload']!=row['workload'] or data['authority']!=authority:
-                                raise ValueError('carrier result identity differs')
-                            routes = route_proof(log_text, row)
-                            named={re.search(r'tensor=([^\s]+)',line)[1] for line in routes}
-                            if len(named)!=data['ring']['copies']:
-                                raise ValueError('selected plan proof does not cover all cold weight copies')
-                            loaded=validate_loaded(data,request)
-                            result = judge(data)
-                            record = dict(result, id=row['id'], authority=authority, data=data, routes=routes,
-                                          loaded_images=loaded,raw_sha256=sha(raw), log=str(attempt/'run.log'))
-                        except Exception as exc:
-                            record = dict(id=row['id'], authority=authority, status='FAIL', error=repr(exc),
-                                          raw_sha256=sha(raw), log=str(attempt/'run.log'))
-                        save_record(records/(row['id']+'.json'), record)
-                        completed.add(row['id'])
-                        print('LLAMA_AB_POINT '+json.dumps({k:record[k] for k in ('id','status','ratio') if k in record}), flush=True)
-                    pending = [r for r in todo if r['id'] not in completed]
-                    if pending:
-                        started = re.findall(r'^LLAMA_AB_START id=([0-9a-f]{64})$', log_text, re.M)
-                        # A setup failure applies to this entire family, not
-                        # to an arbitrary final point from another process.
-                        failed = {started[-1]} if started and started[-1] not in completed else {r['id'] for r in pending}
-                        for row in pending:
-                            if row['id'] in failed:
-                                save_record(records/(row['id']+'.json'), dict(id=row['id'],authority=authority,
-                                    status='FAIL',process_rc=p.returncode,error='carrier failed; inspect log',log=str(attempt/'run.log')))
-                        todo = [r for r in pending if r['id'] not in failed]
-                    else:
-                        todo = []
+                attempt = args.output/f'shard-{args.worker}'/uuid.uuid4().hex
+                attempt.mkdir(parents=True)
+                points = [point_request(r, current['l2']['bytes']) for r in todo]
+                config = dict(points=points, rounds=args.rounds, samples=args.samples, authority=authority,
+                              runtime_library=str(args.sdk/'lib/libhggc_wrapper.so'))
+                atomic_json(attempt/'request.json', config)
+                command = [str(executable), str(attempt/'request.json'), str(attempt/'raw')]
+                print(f'LLAMA_AB_FAMILY phase={args.phase} family={fid} points={len(todo)} log={attempt}/run.log', flush=True)
+                with (attempt/'run.log').open('x') as log:
+                    p = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT)
+                    try:
+                        while p.poll() is None:
+                            try: p.wait(timeout=30)
+                            except subprocess.TimeoutExpired:
+                                print(f'LLAMA_AB_WAIT family={fid} elapsed_minutes={(time.monotonic()-start)/60:.1f} log={attempt}/run.log', flush=True)
+                                if args.hours and time.monotonic()-start >= args.hours*3600:
+                                    p.terminate(); p.wait(timeout=30)
+                    finally:
+                        if p.poll() is None:
+                            p.kill(); p.wait()
+                log_text = (attempt/'run.log').read_text(errors='replace')
+                unchanged()
+                completed = set()
+                for row in todo:
+                    raw = attempt/'raw'/(row['id']+'.json')
+                    if not raw.exists():
+                        continue
+                    try:
+                        data = json.loads(raw.read_text())
+                        if data['id']!=row['id'] or data['workload']!=row['workload'] or data['authority']!=authority:
+                            raise ValueError('carrier result identity differs')
+                        routes = route_proof(log_text, row)
+                        named={re.search(r'tensor=([^\s]+)',line)[1] for line in routes}
+                        if len(named)!=data['ring']['copies']:
+                            raise ValueError('selected plan proof does not cover all cold weight copies')
+                        loaded=validate_loaded(data,request)
+                        result = judge(data)
+                        record = dict(result, id=row['id'], authority=authority, data=data, routes=routes,
+                                      loaded_images=loaded,raw_sha256=sha(raw), log=str(attempt/'run.log'))
+                    except Exception as exc:
+                        record = dict(id=row['id'], authority=authority, status='FAIL', error=repr(exc),
+                                      raw_sha256=sha(raw), log=str(attempt/'run.log'))
+                    save_record(records/(row['id']+'.json'), record)
+                    completed.add(row['id'])
+                    print('LLAMA_AB_POINT '+json.dumps({k:record[k] for k in ('id','status','ratio') if k in record}), flush=True)
+                pending = [r for r in todo if r['id'] not in completed]
+                if pending:
+                    started = re.findall(r'^LLAMA_AB_START id=([0-9a-f]{64})$', log_text, re.M)
+                    # A setup failure applies to this entire family, not
+                    # to an arbitrary final point from another process.
+                    failed = {started[-1]} if started and started[-1] not in completed else {r['id'] for r in pending}
+                    for row in pending:
+                        if row['id'] in failed:
+                            save_record(records/(row['id']+'.json'), dict(id=row['id'],authority=authority,
+                                status='FAIL',process_rc=p.returncode,error='carrier failed; inspect log',log=str(attempt/'run.log')))
+                    todo = [r for r in pending if r['id'] not in failed]
+                else:
+                    todo = []
     return 0
 
 
-def summarize(output, request):
+def summarize(output, request, worker_exit_codes=None):
     rows = {}
     for path in sorted((output/'records').glob('*.json')):
         raw = json.loads(path.read_text())
@@ -344,7 +341,11 @@ def summarize(output, request):
                          shard=raw['authority']['shard'])
         rows[path.stem] = record_load(path, authority)
     result = coverage(request['points'], rows)
-    result['full_registry_coverage']=len(request['points'])==1544
+    result['full_registry_requested']={r['id'] for r in request['points']}=={r['id'] for r in inventory()}
+    result['full_registry_coverage']=result['full_registry_requested'] and result['measured']==result['expected']
+    result['breakdown']=coverage_breakdown(request['points'], rows)
+    result['worker_exit_codes']=worker_exit_codes or {}
+    if any(result['worker_exit_codes'].values()):result['status']='NOT_ADMITTED'
     atomic_json(output/'summary.json', result)
     table=output/('comparison-'+str(time.time_ns())+'.csv')
     with table.open('x',newline='') as f:
@@ -369,7 +370,7 @@ def summarize(output, request):
                 data=f.read()
             info=tarfile.TarInfo(str(path.relative_to(output)));info.size=len(data)
             out.addfile(info,io.BytesIO(data))
-    print('LLAMA_AB_DONE '+json.dumps({k:v for k,v in result.items() if k!='missing'}),flush=True)
+    print('LLAMA_AB_DONE '+json.dumps({k:v for k,v in result.items() if k not in ('missing','breakdown')}),flush=True)
     print('results='+str(archive),flush=True)
     return result
 
@@ -413,7 +414,8 @@ def main():
     p.add_argument('--l2-bytes',type=int,default=int(os.environ.get('L2_BYTES','0')))
     p.add_argument('--output',type=Path)
     p.add_argument('--resume',action='store_true')
-    p.add_argument('--phase',choices=('pilot','all'),default='pilot')
+    p.add_argument('--phase',choices=('pilot','all'),default='all',
+                   help='all (default): every frozen workload; pilot: optional interface diagnostic only')
     p.add_argument('--cohort',choices=('all','decode','prefill'),default='all')
     p.add_argument('--operation',choices=('all','dense','indexed'),default='all')
     p.add_argument('--rounds',type=int,default=6)
@@ -434,8 +436,12 @@ def main():
     rows=inventory()
     rows=[r for r in rows if (args.cohort=='all' or r['cohort']==args.cohort) and
           (args.operation=='all' or r['workload']['operation']==args.operation)]
-    print('LLAMA_AB_PLAN '+json.dumps(dict(points=len(rows),families=len({family(r) for r in rows}),
-        pilot_points=len(pilot(rows)),configs_per_shape='PRODUCTION_SELECTOR_ONLY',scope=SCOPE)),flush=True)
+    selected=phase_points(rows,args.phase)
+    print('LLAMA_AB_PLAN '+json.dumps(dict(points=len(rows),scheduled_points=len(selected),phase=args.phase,
+        families=len({family(r) for r in selected}),pilot_points=len(pilot(rows)),
+        breakdown=[{k:r[k] for k in ('cohort','operation','qtype','expected')}
+                   for r in coverage_breakdown(selected,{})],
+        configs_per_shape='PRODUCTION_SELECTOR_ONLY',scope=SCOPE)),flush=True)
     if args.plan_only:return 0
     if not args.idle_confirmed:p.error('--idle-confirmed is required; graphs do not isolate other GPU work')
     if args.resume and not args.output:p.error('--resume requires --output')
@@ -476,44 +482,41 @@ def main():
     if target.exists() and json.loads(target.read_text())!=request:
         raise ValueError('resume request/source/runtime/device changed')
     atomic_json(target,request)
-    active={};start=time.monotonic()
+    active={};exit_codes={};start=time.monotonic();phase=args.phase
     try:
-        for phase in ('pilot','all') if args.phase=='all' else ('pilot',):
-            exit_codes={}
-            for i,selector in enumerate(selectors):
-                folder=args.output/f'shard-{i}';folder.mkdir(exist_ok=True)
-                command=[sys.executable,'-u',str(Path(__file__).resolve()),'--worker',str(i),'--output',str(args.output),
-                    '--llama-source',str(args.llama_source),'--llama-build',str(args.llama_build),
-                    '--sdk',str(args.sdk),'--l2-bytes',str(args.l2_bytes),'--phase',phase,
-                    '--jit-cache',str(args.jit_cache),
-                    '--rounds',str(args.rounds),'--samples',str(args.samples),'--hours',str(args.hours)]
-                for key in ('bundle','legacy_bundle','pack_library','jit_helper'):
-                    if getattr(args,key):command += ['--'+key.replace('_','-'),str(getattr(args,key))]
-                with (folder/'console.log').open('ab') as log:
-                    active[i]=subprocess.Popen(command,cwd=ROOT,env=dict(environment(args),CUDA_VISIBLE_DEVICES=selector),
-                                               stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
-            while active:
-                for i,proc in list(active.items()):
-                    if proc.poll() is not None:
-                        exit_codes[i]=proc.returncode
-                        print(f'LLAMA_AB_WORKER_DONE phase={phase} shard={i} rc={proc.returncode}',flush=True);del active[i]
-                completed=len(list((args.output/'records').glob('*.json')))
-                print(f'LLAMA_AB_PROGRESS phase={phase} alive={len(active)}/{len(selectors)} completed={completed}/{len(rows)} '
-                      f'elapsed_minutes={(time.monotonic()-start)/60:.1f} '
-                      f'logs={args.output}/shard-*/console.log',flush=True)
-                if phase=='all':print('LLAMA_AB_ETA '+json.dumps(eta(args.output,request)),flush=True)
-                if active:time.sleep(30)
-            if phase=='pilot':
-                missing=[]
-                for r in pilot(rows):
-                    path=args.output/'records'/(r['id']+'.json')
-                    if not path.is_file() or json.loads(path.read_text())['status'] not in ('PASS','REGRESSION','INCONCLUSIVE'):
-                        missing.append(r['id'])
-                blocked=bool(missing) or any(exit_codes.values())
-                print('LLAMA_AB_PILOT '+json.dumps(dict(status='FAIL' if blocked else 'MEASURED',missing=missing,
-                    worker_exit_codes=exit_codes,
-                    wall_seconds=time.monotonic()-start,duration_guaranteed=False)),flush=True)
-                if blocked:break
+        for i,selector in enumerate(selectors):
+            folder=args.output/f'shard-{i}';folder.mkdir(exist_ok=True)
+            command=[sys.executable,'-u',str(Path(__file__).resolve()),'--worker',str(i),'--output',str(args.output),
+                '--llama-source',str(args.llama_source),'--llama-build',str(args.llama_build),
+                '--sdk',str(args.sdk),'--l2-bytes',str(args.l2_bytes),'--phase',phase,
+                '--jit-cache',str(args.jit_cache),
+                '--rounds',str(args.rounds),'--samples',str(args.samples),'--hours',str(args.hours)]
+            for key in ('bundle','legacy_bundle','pack_library','jit_helper'):
+                if getattr(args,key):command += ['--'+key.replace('_','-'),str(getattr(args,key))]
+            with (folder/'console.log').open('ab') as log:
+                active[i]=subprocess.Popen(command,cwd=ROOT,env=dict(environment(args),CUDA_VISIBLE_DEVICES=selector),
+                                           stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
+        while active:
+            for i,proc in list(active.items()):
+                if proc.poll() is not None:
+                    exit_codes[i]=proc.returncode
+                    print(f'LLAMA_AB_WORKER_DONE phase={phase} shard={i} rc={proc.returncode}',flush=True);del active[i]
+            completed=len(list((args.output/'records').glob('*.json')))
+            print(f'LLAMA_AB_PROGRESS phase={phase} alive={len(active)}/{len(selectors)} completed={completed}/{len(rows)} '
+                  f'elapsed_minutes={(time.monotonic()-start)/60:.1f} '
+                  f'logs={args.output}/shard-*/console.log',flush=True)
+            if phase=='all':print('LLAMA_AB_ETA '+json.dumps(eta(args.output,request)),flush=True)
+            if active:time.sleep(30)
+        if phase=='pilot':
+            missing=[]
+            for r in pilot(rows):
+                path=args.output/'records'/(r['id']+'.json')
+                if not path.is_file() or json.loads(path.read_text())['status'] not in MEASURED_STATUSES:
+                    missing.append(r['id'])
+            blocked=bool(missing) or any(exit_codes.values())
+            print('LLAMA_AB_PILOT '+json.dumps(dict(status='FAIL' if blocked else 'MEASURED',missing=missing,
+                worker_exit_codes=exit_codes,
+                wall_seconds=time.monotonic()-start,duration_guaranteed=False)),flush=True)
     finally:
         for proc in active.values():
             if proc.poll() is None:
@@ -525,13 +528,14 @@ def main():
                 try:os.killpg(proc.pid,signal.SIGKILL)
                 except ProcessLookupError:pass
                 proc.wait()
-        result=summarize(args.output,request)
+        result=summarize(args.output,request,exit_codes)
     if args.phase=='pilot':
         records=[args.output/'records'/(r['id']+'.json') for r in pilot(rows)]
         passed=sum(p.is_file() and json.loads(p.read_text())['status']=='PASS' for p in records)
+        admitted=passed==len(records) and not any(exit_codes.values())
         print('LLAMA_AB_PILOT_VERDICT '+json.dumps(dict(passed=passed,expected=len(records),
-            status='PASS' if passed==len(records) else 'NOT_ADMITTED',full_campaign=False)),flush=True)
-        return int(passed!=len(records))
+            status='PASS' if admitted else 'NOT_ADMITTED',full_campaign=False)),flush=True)
+        return int(not admitted)
     return 0 if result['status']=='PASS' else 1
 
 

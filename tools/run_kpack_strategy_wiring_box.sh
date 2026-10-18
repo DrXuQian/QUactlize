@@ -29,6 +29,8 @@
     RESULT_ROOT=$(realpath -e -- "${RESULT_ROOT:-/workspace}")
     JOBS=${JOBS:-192}
     DEVICES=${DEVICES:-1,2,3,4,5,6,7}
+    AB_PHASE=${AB_PHASE:-all}
+    [[ $AB_PHASE == all || $AB_PHASE == pilot ]] || { echo 'AB_PHASE must be all or pilot.' >&2; exit 2; }
     # This handoff is explicitly for the uploaded ZW810/64 MiB cohort. The
     # SDK can return zero for L2; preserve the independently verified value.
     L2_BYTES=${L2_BYTES:-67108864}
@@ -129,13 +131,13 @@ PY
             --jobs "$JOBS" "${reuse[@]}" 2>&1 | tee "$RUN/results/caller-build.log"
     fi
     CALLER_BUILD=$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["build"])' "$RUN/results/caller-build.json")
-    stage=native-ab-pilot
+    stage=native-ab-$AB_PHASE
     resume=()
     if [[ -f $RUN/ab/request.json ]]; then resume+=(--resume); fi
     "$PYTHON" -u tools/run_kpack_llama_ab.py --llama-source "$RUN/ci/llama" --llama-build "$CALLER_BUILD" \
         --sdk "$SDK" --bundle "$RUN/bundle" --pack-library "$RUN/public/libquactlize_ppu.so" \
         --legacy-bundle "$LEGACY" --jit-cache "$JIT_CACHE" --jit-helper "$ROOT/tools/kpack_jit.py" \
-        --devices "$DEVICES" --l2-bytes "$L2_BYTES" --phase "${AB_PHASE:-pilot}" --hours 0 --idle-confirmed --output "$RUN/ab" \
+        --devices "$DEVICES" --l2-bytes "$L2_BYTES" --phase "$AB_PHASE" --hours 0 --idle-confirmed --output "$RUN/ab" \
         "${resume[@]}" 2>&1 | tee "$RUN/results/native-ab.log"
     stage=complete
     printf 'STRATEGY_WIRING_DONE run=%s scope=SELECTED_TICKETS_AND_NATIVE_OPERATOR_AB_NOT_MODEL_TPOT\n' "$RUN"

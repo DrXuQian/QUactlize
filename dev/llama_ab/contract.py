@@ -12,6 +12,7 @@ from quactlize.runtime.tuning import digest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCOPE = 'LLAMA_EAGER_COMPLETE_OPERATOR_EVENTS_NOT_KERNEL_ONLY_OR_MODEL_TPOT'
+MEASURED_STATUSES = frozenset(('PASS', 'REGRESSION', 'INCONCLUSIVE'))
 
 
 @lru_cache(maxsize=1)
@@ -61,6 +62,25 @@ def pilot(rows):
     return sorted(selected.values(), key=lambda r:r['id'])
 
 
+def phase_points(rows, phase):
+    if phase == 'all':
+        return list(rows)
+    if phase == 'pilot':
+        return pilot(rows)
+    raise ValueError('unknown A/B phase: ' + phase)
+
+
+def coverage_breakdown(rows, records):
+    """Expose missing/failed/slow points in each format/operator cohort."""
+    groups = {}
+    for row in rows:
+        w = row['workload']
+        groups.setdefault((row['cohort'], w['operation'], w['qtype']), []).append(row)
+    return [dict(cohort=key[0], operation=key[1], qtype=key[2],
+                 **coverage(points, {r['id']: records[r['id']] for r in points if r['id'] in records}))
+            for key, points in sorted(groups.items())]
+
+
 def judge(raw):
     if raw.get('correctness') != 'PASS' or raw.get('scope') != SCOPE:
         raise ValueError('timing lacks numerical proof or full-call scope')
@@ -102,6 +122,7 @@ def coverage(rows, records):
     missing = sorted(expected - set(records))
     return dict(status='PASS' if counts.get('PASS') == len(expected) else 'NOT_ADMITTED',
                 expected=len(expected), completed=len(expected)-len(missing),
+                measured=sum(counts.get(s, 0) for s in MEASURED_STATUSES),
                 counts=dict(counts), missing=missing, scope=SCOPE,
                 model_tpot_admitted=False, production_changed=False)
 

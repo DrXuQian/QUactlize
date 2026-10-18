@@ -50,7 +50,7 @@ Next Box command (the existing intake bundle location must still be valid):
   cd /sim/eec/shared/junfu.qx/quactlize
   git pull --ff-only origin develop
   git -C /sim/eec/shared/junfu.qx/llama.cpp fetch git@github.com:DrXuQian/llama.cpp.git quactlize
-  PPU_SDK=/usr/local/PPU_SDK JOBS=192 DEVICES=1,2,3,4,5,6,7 IDLE_CONFIRMED=1 \
+  PPU_SDK=/usr/local/PPU_SDK JOBS=192 DEVICES=1,2,3,4,5,6,7 IDLE_CONFIRMED=1 AB_PHASE=all \
     LLAMA_CI_DIR=/sim/eec/shared/junfu.qx/llama.cpp \
     NCP_LIB_DIR=/sim/eec/shared/junfu.qx/ncp_flash_lib \
     QUACTLIZE_PPU_BUNDLE=/actual/existing/six-library/bundle \
@@ -58,9 +58,33 @@ Next Box command (the existing intake bundle location must still be valid):
 
 This builds the small runtime/selector and pinned caller via the existing
 .aoneci/scripts/build.sh; prewarms only selected TC parents, reusing compatible
-cache entries; verifies all 430 actual tickets/resources; then runs 32 native
-llama operator ABBA pilot points (all format/operator/cohort interfaces and
-every selected prefill route). The former 22-point pilot omitted FULL.
+cache entries; verifies all 430 actual tickets/resources; then runs the complete
+frozen 1544-point native llama operator ABBA comparison by DEFAULT:
+
+                  dense       indexed/MoE       total
+  small M           530               584        1114
+  large M           280               150         430
+  total             810               734        1544
+
+Every measured workload in the current small-M and prefill inventories is
+included, preserving format, M/N/K, experts, top-k, channels and router profile.
+Small M includes Q8_0 and Q2_K..Q6_K; large M includes the measured Q2_K..Q6_K
+domain above. The request records every point, not just 108 weight families.
+One production-selected recipe runs against the actual llama native dispatcher
+at each point. Both arms use the same GGUF fixture and physical device. Three
+untimed warmup passes and JIT/setup are excluded; six ABBA rounds measure the
+complete operator, including adapters/reduction, not isolated GEMM time.
+These are synthetic GGUF fixtures with real caller execution, not full models.
+
+Full mode does not run a separate pilot barrier or repeat family setup for it.
+A point failure is retained and the other points continue in fresh processes;
+a family setup failure marks that family failed and does not stop other families.
+Missing, failed, unstable and slower points stay visible in summary.json and
+comparison-*.csv, including per-format/operator/cohort coverage. Every point
+must pass the numerical/route checks and strict paired no-slowdown gate before
+the full native A/B is admitted. A good mean cannot hide a slower point.
+The 32-point pilot is now only an explicit AB_PHASE=pilot interface diagnostic,
+never sufficient evidence for full coverage or native performance admission.
 No config sweep, forced deadline, automatic model run, or compiler output upload.
 The default TC cache is /workspace/kpack-prefill-7gpu.js14yGTG/tc-cache; override
 JIT_CACHE if moved. NCP_CI_DIR may reuse a matching pinned NCP build.
@@ -72,10 +96,16 @@ fallback, and changed library bytes still fail validation.
 
 Upload the printed kpack-strategy-wiring.*.results.tgz. It includes the compact
 native A/B package, not GPU libraries or weights. WIRING_RUN may resume completed
-stages with the same source/SDK/caller/devices. AB_PHASE=all expands from the
-pilot to the frozen 1544 operators, still one production recipe per point;
-it is not run implicitly. A failed partial compiler stage stays on disk for
-diagnosis. Reuse of failed/incomplete compiler outputs is not asserted safe.
+stages with the same source/SDK/caller/devices. Repeat the command above with
+WIRING_RUN=/the/printed/kpack-strategy-wiring.XXXXXXXX to retry failed/missing
+points only. Valid PASS/REGRESSION/INCONCLUSIVE samples are not overwritten or
+repeated until they pass; regressions remain a separate optimization task.
+An explicit pilot can later expand to all in the same run without remeasuring
+its valid points. A failed partial compiler stage stays on disk for diagnosis.
+Reuse of failed/incomplete compiler outputs is not asserted safe.
+The runner reports remaining-time estimates from observed per-point and family
+wall time, including setup. There is no honest complete-run ETA before these
+actual caller measurements; component kernel microseconds cannot predict it.
 
 Remaining device admission: actual selected-call numerical/route validation,
 native llama A/B, warmed model A/B (first use/JIT excluded). Component evidence

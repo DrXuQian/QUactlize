@@ -3,7 +3,10 @@
   "llama_branch": "quactlize",
   "llama_repository": "DrXuQian/llama.cpp",
   "scope": "CONFIRMED_COMPONENT_SELECTION_REQUIRES_ACTUAL_CALLER_AB",
-  "default_phase": "pilot",
+  "default_phase": "all",
   "expected_prefill_keys": 430,
+  "expected_native_points": 1544,
+  "expected_native_decode": 1114,
+  "expected_native_prefill": 430,
   "expected_native_pilot": 32
 }
