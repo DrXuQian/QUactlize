@@ -50,6 +50,27 @@ static void emit(int q,int mode,int n,int k,int experts,int topk,int channels,in
 }
 
 int main(int argc,char** argv) {
+    if(argc==2 && std::string(argv[1])=="--prefill-inventory") {
+        for(auto const& k:prefill::data::kKnots) {
+            qks_request_v1 r{1,sizeof(r),k.q,k.experts==1?0:2,k.tokens*(k.experts==1?1:8),k.n,k.k,k.experts,k.tokens,
+                k.q==12?UINT64_C(0x51344b5034540001):UINT64_C(0x514b504b54000001)};
+            qks_prefill_choice_v2 out{};
+            int rc=prefill::query(r,7,k.compute,k.channels,out);
+            std::cout<<"{\"request\":["<<k.q<<','<<(k.experts==1?0:2)<<','<<k.n<<','<<k.k<<','<<k.experts<<','
+                <<(k.experts==1?1:8)<<','<<k.channels<<','<<k.tokens<<','<<k.compute<<"],\"status\":"<<rc
+                <<",\"route\":"<<k.route<<",\"policy\":"<<out.policy<<",\"dequant_config\":"<<k.dequant;
+            if(k.config>=0) {
+                auto const& c=prefill::data::kConfigs[k.config];
+                std::cout<<",\"kind\":0,\"parent\":{\"symbol\":"<<std::quoted(c.symbol)
+                    <<",\"qtype\":"<<c.qtype<<",\"route\":"<<c.route<<",\"tm\":"<<c.tm<<",\"tn\":"<<c.tn
+                    <<",\"tk\":"<<c.tk<<",\"wm\":"<<c.wm<<",\"wn\":"<<c.wn<<",\"stages\":"<<c.stages
+                    <<",\"ap\":"<<c.ap<<",\"dn\":"<<c.dn<<",\"persistent\":"<<c.parent_persistent
+                    <<"},\"split\":"<<c.split<<",\"grid_mode\":"<<c.grid_mode<<",\"grid_b\":"<<c.grid_b;
+            } else std::cout<<",\"kind\":3";
+            std::cout<<"}\n";
+        }
+        return 0;
+    }
     if(argc==2 && std::string(argv[1])=="--inventory") {
         for(auto const& r:matched::data::kExact)
             emit(r.q,r.mode,r.n,r.k,r.experts,r.topk,r.channels,r.tokens,r.compute);

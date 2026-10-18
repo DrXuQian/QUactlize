@@ -110,6 +110,13 @@ def verify(output):
         header = manifest['source_hashes'].get('policies/kpack_smallm_effective_v1.hpp')
         if not header or manifest['execution_receipt'].get('smallm_effective_sha256') != header:
             raise ValueError('public provider and Q4 execution selectors differ')
+    if 'prefill_confirmed' in manifest:
+        receipt=manifest['prefill_confirmed']
+        if (receipt.get('path')!='quactlize-runtime/prefill-confirmed.json' or
+                receipt['path'] not in manifest['payloads'] or
+                manifest['source_hashes'].get('policies/kpack_prefill_confirmation_v1.json')!=manifest['payloads'][receipt['path']] or
+                manifest['source_hashes'].get('policies/kpack_prefill_confirmation_v1.hpp')!=receipt.get('header_sha256')):
+            raise ValueError('public provider confirmed prefill receipt differs')
     return manifest
 
 
@@ -138,6 +145,11 @@ def build(sdk, output, jobs):
     from tools.generate_decode_selection import EVIDENCE, OUTPUT, effective, header
     if header(effective(json.loads(EVIDENCE.read_text()))) != OUTPUT.read_text():
         raise ValueError('stale effective decode catalog; regenerate before building')
+    from tools.fit_prefill_confirmation import EVIDENCE as PREFILL_EVIDENCE, HEADER as PREFILL_HEADER, header as prefill_header
+    confirmed=json.loads(PREFILL_EVIDENCE.read_text())
+    if prefill_header(confirmed)!=PREFILL_HEADER.read_text():
+        raise ValueError('stale confirmed prefill catalog; regenerate before building')
+    shutil.copy2(PREFILL_EVIDENCE,runtime/'prefill-confirmed.json')
     final_selection = plan_smallm(work)
     (runtime/'final-selection.json').write_text(json.dumps(final_selection, indent=2)+'\n')
     # The existing device builders retain the exact production flags and
@@ -214,6 +226,8 @@ def build(sdk, output, jobs):
         source_hashes={str(p.relative_to(ROOT)): digest for p, digest in public_sources.items()},
         execution_receipt=execution,
         final_selection=dict(path='quactlize-runtime/final-selection.json', capabilities=capabilities),
+        prefill_confirmed=dict(path='quactlize-runtime/prefill-confirmed.json',
+            header_sha256=sha(PREFILL_HEADER), admission='CONFIRMED_COMPONENT_SELECTION_NOT_MODEL_AB'),
         default_dense_compute='F16_POC', device_admission='PENDING',
         performance_admission='NOT_MEASURED', seconds=time.monotonic() - start)
     (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')

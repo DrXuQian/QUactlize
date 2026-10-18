@@ -74,6 +74,7 @@ struct Plan {
     qks_choice_v1 tc{};
     qks_request_v1 request{};
     qks_prefill_choice_v1 prefill{};
+    bool confirmed_prefill=false;
     int compute=QK_COMPUTE_F16,metadata_type=QK_METADATA_F16;
     void* handle=nullptr;
     uint64_t input_offset=0,output_offset=0,kernel_offset=0,scale_offset=0,zero_offset=0;
@@ -182,7 +183,14 @@ void select(Plan& p) {
         }
     }
     if (!p.tc.ticket) {
-        int rc=quactlize_kpack_dispatch_prefill_v1(&p.request,7,&p.prefill);
+        qks_prefill_choice_v2 confirmed{};
+        int rc=p.params.input_stride==p.params.k && p.params.output_stride==p.params.n ?
+            quactlize_kpack_dispatch_prefill_v2(&p.request,7,p.compute,1,&confirmed) : QKS_MISS;
+        if (rc==QKS_OK) {
+            p.prefill=confirmed.base;p.confirmed_prefill=true;
+        } else if (rc==QKS_MISS) {
+            rc=quactlize_kpack_dispatch_prefill_v1(&p.request,7,&p.prefill);
+        }
         if (rc!=QKS_OK && rc!=QKS_MISS) dispatch_check(rc);
         if (rc==QKS_OK) {
             // Existing isolated F16 component ranking is a route proposal
@@ -192,6 +200,10 @@ void select(Plan& p) {
             p.request.route=p.prefill.route;
         }
         ctx.enable_jit();
+        if (p.confirmed_prefill) {
+            p.native_f16=true;
+            dispatch_check(quactlize_kpack_dispatch_query_prefill_v1(ctx.dispatcher,&p.request,p.compute,1,&p.tc));
+        }
         if (p.params.m<=8 && p.params.qtype==12) {
             rc=quactlize_kpack_dispatch_query_compute_v1(ctx.dispatcher,&p.request,p.compute,QKD_F32,1,&p.tc);
             if (rc!=QKS_OK && rc!=QKS_MISS) dispatch_check(rc);
@@ -276,7 +288,8 @@ void prepare(Plan& p,quactlize_ppu_dense_candidate_v1 const* candidate=nullptr) 
         qkp_options_v1 options{1,sizeof(options),p.owner->sdk.c_str(),nullptr,nullptr};
         prefill_check(quactlize_kpack_prefill_prepare_dynamic_v1(&shape,&p.params.arrangement,&options,&p.handle));
         info.route=QUACTLIZE_DENSE_FULL_BF16;info.compute_type=QUACTLIZE_DENSE_BF16;
-        info.policy=p.prefill.predicted?QKS_PREDICTED:QKS_COMPONENT_MEASURED;info.split=1;
+        info.policy=p.confirmed_prefill?QKS_PREFILL_COMPONENT_MEASURED:
+            p.prefill.predicted?QKS_PREDICTED:QKS_COMPONENT_MEASURED;info.split=1;
         std::snprintf(info.config,sizeof(info.config),"full-bf16:cublas:dq%d",p.prefill.dequant_config);
         return;
     }

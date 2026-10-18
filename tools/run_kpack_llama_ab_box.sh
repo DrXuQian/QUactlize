@@ -15,7 +15,7 @@ for path in "$LLAMA_CI_DIR/ggml/include/ggml.h" "$LLAMA_BUILD_DIR/CMakeCache.txt
 done
 args=(--llama-source "$LLAMA_CI_DIR" --llama-build "$LLAMA_BUILD_DIR" --sdk "$PPU_SDK"
       --devices "${DEVICES:-1,2,3,4,5,6,7}" --l2-bytes "${L2_BYTES:-0}"
-      --phase "${PHASE:-all}" --hours "${HOURS:-24}" --idle-confirmed)
+      --phase "${PHASE:-all}" --hours "${HOURS:-0}" --idle-confirmed)
 if [ -n "${QUACTLIZE_KPACK_EXECUTION:-}" ]; then args+=(--bundle "$QUACTLIZE_KPACK_EXECUTION"); fi
 if [ -n "${QUACTLIZE_PPU_BUNDLE:-}" ]; then args+=(--legacy-bundle "$QUACTLIZE_PPU_BUNDLE"); fi
 if [ -n "${QUACTLIZE_PPU_PACK_LIBRARY:-}" ]; then args+=(--pack-library "$QUACTLIZE_PPU_PACK_LIBRARY"); fi

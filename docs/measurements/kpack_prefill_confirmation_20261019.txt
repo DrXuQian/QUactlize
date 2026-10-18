@@ -1,0 +1,82 @@
+Prefill confirmation and caller handoff, 2026-10-19
+
+Input: confirmation-1792328080064058562.tgz
+SHA256: b43e1d28bada3d28d15aed2ebd5e92d693c63cb4429924e24ab79fbf5d5ce8fb
+Frozen shortlist: 7cdf365ac87435117fb6d10bfbc19eaa3cea5d6ab13d3b7fabdfa56bb7d1a103
+Box wall time: 9453.05 seconds. Seven ZW810 devices, 72 CUs, 64 MiB L2.
+
+All 430 points completed six alternating rounds. No correctness or execution
+failure. The original result remains 412 PASS, 16 RULE_REGRESSION, 2 UNSTABLE.
+It has NOT been rewritten or relabelled as a green experiment.
+
+Independent host review:
+- Audit compact footer hashes, raw samples, component identity, six fresh
+  round authorities, alternating order, numerical evidence and compositions.
+- Replay R27 blind rules with the complete target N/K family excluded.
+  1133/1138 measured finalists are generated, including control-labelled
+  helper variants. Target champions are never inserted into that generator.
+- Choose the fastest feasible, actually measured whole composition. Do not
+  freeze the screen's helper winner after new confirmation evidence arrives.
+- Keep zero median regression, at least 4/6 paired wins and <=5% candidate
+  spread. Two unstable controls are usable only because every observed
+  candidate round is faster than every observed control round. Overlapping
+  noisy ranges and noisy candidates still fail. This is NOT a confidence bound.
+
+Result: 430/430 have an eligible generated candidate; 18 reviewed decisions
+differ from the original verdict. Maximum relative L1 error: 0.00412545925.
+Dense: 280 points (178 full, 100 SF, 2 FQ); 127 faster, 153 identical to the
+original measured composition. Indexed: 150 (8 full, 137 SF, 5 FQ); 136 faster,
+14 identical; median component-cost change -12.5844%. No model TPOT claim.
+
+The generated table is policies/kpack_prefill_confirmation_v1.{json,hpp}.
+Reproduce the complete audit with:
+  python3 tools/fit_prefill_confirmation.py --archive /path/to/confirmation-1792328080064058562.tgz --check
+
+Production interfaces:
+- prefill_v2 selects route + helper from this table, policy 19.
+- query_prefill_v1 materializes that same TC recipe, preserving BF16 and the
+  actual resource-derived persistent grid. It does not invoke a second chooser.
+- Dense public provider and full llama PoC both consume this interface.
+- Known winner but missing provider/helper is an explicit failure, not old
+  wiring fallback. Out-of-domain requests keep their prior labelled proposal.
+- Exact domain: Q2_K..Q6_K; M=128,512,1024,2048,4096; listed N/K; dense F32
+  storage/F16 TC, or indexed E256/top8/channels1 F32 storage/BF16 TC. FULL uses
+  BF16 A/B/C with FP32 accumulation. This is not evidence for large-M Q8,
+  channels8, other routers/devices/SDKs, or unseen/interior M.
+- Metadata/reducers/adapters/provider costs are isolated, not a new synthetic
+  whole-call measurement. cuBLAS uses ordinary events, never graph extraction.
+
+Next Box command (the existing intake bundle location must still be valid):
+  cd /sim/eec/shared/junfu.qx/quactlize
+  git pull --ff-only origin develop
+  git -C /sim/eec/shared/junfu.qx/llama.cpp fetch git@github.com:DrXuQian/llama.cpp.git quactlize
+  PPU_SDK=/usr/local/PPU_SDK JOBS=192 DEVICES=1,2,3,4,5,6,7 IDLE_CONFIRMED=1 \
+    LLAMA_CI_DIR=/sim/eec/shared/junfu.qx/llama.cpp \
+    NCP_LIB_DIR=/sim/eec/shared/junfu.qx/ncp_flash_lib \
+    QUACTLIZE_PPU_BUNDLE=/actual/existing/six-library/bundle \
+    bash tools/run_kpack_strategy_wiring_box.sh
+
+This builds the small runtime/selector and pinned caller via the existing
+.aoneci/scripts/build.sh; prewarms only selected TC parents, reusing compatible
+cache entries; verifies all 430 actual tickets/resources; then runs 32 native
+llama operator ABBA pilot points (all format/operator/cohort interfaces and
+every selected prefill route). The former 22-point pilot omitted FULL.
+No config sweep, forced deadline, automatic model run, or compiler output upload.
+The default TC cache is /workspace/kpack-prefill-7gpu.js14yGTG/tc-cache; override
+JIT_CACHE if moved. NCP_CI_DIR may reuse a matching pinned NCP build.
+All selected devices are probed before building, including physical PCI
+identity, 72 CUs and the independently verified 64 MiB L2 capacity. This is
+not a ZW610 test. The merged public library's private dependencies are also
+included in the A/B runtime identity; loading them is not an unknown-library
+fallback, and changed library bytes still fail validation.
+
+Upload the printed kpack-strategy-wiring.*.results.tgz. It includes the compact
+native A/B package, not GPU libraries or weights. WIRING_RUN may resume completed
+stages with the same source/SDK/caller/devices. AB_PHASE=all expands from the
+pilot to the frozen 1544 operators, still one production recipe per point;
+it is not run implicitly. A failed partial compiler stage stays on disk for
+diagnosis. Reuse of failed/incomplete compiler outputs is not asserted safe.
+
+Remaining device admission: actual selected-call numerical/route validation,
+native llama A/B, warmed model A/B (first use/JIT excluded). Component evidence
+does not by itself prove no regression against native llama or whole-model TPOT.

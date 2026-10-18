@@ -32,6 +32,12 @@ extern "C" int quactlize_kpack_dispatch_prefill_compute_v1(qks_request_v1 const*
     if (rc==QKS_OK && compute_type==QK_COMPUTE_BF16) out->predicted=1;
     return rc;
 }
+extern "C" int quactlize_kpack_dispatch_prefill_v2(qks_request_v1 const* r,uint32_t mask,
+        int32_t compute,int32_t channels,qks_prefill_choice_v2* out) {
+    if (!r || !out || !quactlize::dispatch::valid(*r) ||
+        !quactlize::dispatch::compute_valid(compute) || channels<=0) return QKS_INVALID;
+    return quactlize::dispatch::prefill::query(*r,mask,compute,channels,*out);
+}
 
 namespace {
 using namespace quactlize::dispatch;
@@ -585,6 +591,17 @@ static int query(void* runtime,qks_request_v1 const* req,qks_choice_v1* out,Sele
 
 extern "C" int quactlize_kpack_dispatch_query_v1(void* runtime,qks_request_v1 const* req,qks_choice_v1* out) {
     return query(runtime,req,out,{});
+}
+extern "C" int quactlize_kpack_dispatch_query_prefill_v1(void* runtime,qks_request_v1 const* req,
+        int32_t compute,int32_t channels,qks_choice_v1* out) {
+    if (!req || !out || !valid(*req) || !compute_valid(compute) || channels<=0) return QKS_INVALID;
+    *out={};
+    auto k=prefill::knot(*req,compute,channels);
+    if (!k || k->config<0) return QKS_MISS;
+    if (req->route%2!=k->route) return QKS_INVALID;
+    auto const& c=prefill::data::kConfigs[k->config];
+    return query(runtime,req,out,{SelectionProfile::ConfirmedPrefill,channels},0,
+                 {&c,QKS_PREFILL_COMPONENT_MEASURED},compute);
 }
 extern "C" int quactlize_kpack_dispatch_query_dense_dynamic_v1(void* runtime,qks_request_v1 const* req,
     int32_t compute_type,qks_choice_v1* out) {

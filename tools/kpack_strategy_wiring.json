@@ -1,0 +1,9 @@
+{
+  "llama_commit": "2161f43e37bea9b46407dcc78576fec96f967129",
+  "llama_branch": "quactlize",
+  "llama_repository": "DrXuQian/llama.cpp",
+  "scope": "CONFIRMED_COMPONENT_SELECTION_REQUIRES_ACTUAL_CALLER_AB",
+  "default_phase": "pilot",
+  "expected_prefill_keys": 430,
+  "expected_native_pilot": 32
+}

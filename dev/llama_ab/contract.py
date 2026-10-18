@@ -1,6 +1,7 @@
 """Frozen workload denominator and strict, paired native regression verdicts."""
 from collections import Counter
 from dataclasses import asdict, replace
+from functools import lru_cache
 import json
 import math
 from pathlib import Path
@@ -11,6 +12,12 @@ from quactlize.runtime.tuning import digest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCOPE = 'LLAMA_EAGER_COMPLETE_OPERATOR_EVENTS_NOT_KERNEL_ONLY_OR_MODEL_TPOT'
+
+
+@lru_cache(maxsize=1)
+def confirmed_prefill():
+    evidence=json.loads((ROOT/'policies/kpack_prefill_confirmation_v1.json').read_text())
+    return {p['point']:p for p in evidence['points']}
 
 
 def inventory():
@@ -42,12 +49,15 @@ def family(row):
 
 
 def pilot(rows):
-    # All format/operator/cohort interfaces, not just the easiest Q4 M=1 cell.
+    # Format/operator/cohort plus every selected prefill route. The old
+    # smallest-shape-only pilot never exercised FULL, even when it won most
+    # dense points. No new config or workload is introduced here.
     selected = {}
     for row in sorted(rows, key=lambda r:(r['workload']['n'] * r['workload']['k'],
                                          r['workload']['m'], r['id'])):
         w = row['workload']
-        selected.setdefault((row['cohort'], w['operation'], w['qtype']), row)
+        route=confirmed_prefill()[row['id']]['recipe']['route'] if row['cohort']=='prefill' else ''
+        selected.setdefault((row['cohort'], w['operation'], w['qtype'],route), row)
     return sorted(selected.values(), key=lambda r:r['id'])
 
 
@@ -120,4 +130,14 @@ def route_proof(text, row):
             raise ValueError('indexed selected plan is not BF16 grouped compute')
         if w['operation']=='dense' and fields.get('activation') not in (None,'FP16','BF16'):
             raise ValueError('unexpected dense arithmetic')
+        if row.get('cohort')=='prefill':
+            expected=confirmed_prefill().get(row['id'])
+            if expected is None:raise ValueError('prefill AB point lacks confirmed selector evidence')
+            recipe=expected['recipe'];p=dict(recipe['parameters'])
+            route='full-bf16' if recipe['kind']=='full' else recipe['route']
+            if (fields.get('policy')!='19' or fields.get('route')!=route or fields.get('channels')!='1' or
+                    fields.get('dequant')!=str(p['dequant_config'])):
+                raise ValueError('actual prefill route/helper differs from confirmed composition')
+            if recipe['kind']=='tc' and (fields.get('parent')!=p['symbol'] or fields.get('split')!=str(p['split'])):
+                raise ValueError('actual prefill TC recipe differs from confirmed selection')
     return sorted(set(lines))

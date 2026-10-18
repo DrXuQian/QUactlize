@@ -202,8 +202,8 @@ def main():
         print("QK_JIT_V1", record["key"], digest(record["identity"]), contract)
     else:
         plan_record=json.loads(args.plan.read_text())
-        from quactlize.dispatch.planning import SCHEMA,prewarm_groups
-        if plan_record.get('schema')==SCHEMA:
+        from quactlize.dispatch.planning import SCHEMA,PREFILL_SCHEMA,prewarm_groups
+        if plan_record.get('schema') in (SCHEMA,PREFILL_SCHEMA):
             if args.compute_type!='f16' or args.dense_io:
                 raise ValueError('typed final plan owns per-request compute/endpoints; do not override them')
             groups=prewarm_groups(plan_record)
@@ -217,7 +217,7 @@ def main():
                     f'KPACK_SELECTION_PREWARM compute={compute} dense_io={int(dense)} completed={n}/{total}',flush=True)))
             if args.receipt:
                 args.receipt.write_text(json.dumps(dict(modules=records,seconds=time.monotonic()-start,
-                    selection_schema=SCHEMA,device_validated=False),indent=2)+'\n')
+                    selection_schema=plan_record['schema'],device_validated=False),indent=2)+'\n')
             print(f'KPACK_SELECTION_PREWARM PASS parents={len(records)} simt_jit=0 device_validation=PENDING')
             return
         parents = plan_record["parents"]

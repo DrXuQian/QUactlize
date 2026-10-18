@@ -31,6 +31,8 @@ void install(quactlize::dense::Context& ctx,quactlize::dispatch::TcDecision cons
     Image image{c.symbol,os.str(),std::string(64,'a'),c.qtype,c.route,c.tm,c.tn,c.tk,c.wm,c.wn,c.stages,c.ap,c.dn,{},typed,compute};
     auto mod=std::make_shared<Module>();mod->qtype=c.qtype;mod->compute_type=compute;
     mod->query=resource;
+    mod->query_device=[](auto d,auto r,auto out){return resource(&d->call,r,out);};
+    mod->query_compute=[](auto d,auto r,auto out){return resource(&d->device_call.call,r,out);};
     mod->query_dense_io=[](auto d,auto r,auto out){return resource(&d->call,r,out);};
     mod->query_dense_compute=[](auto d,auto r,auto out){return resource(&d->dense.call,r,out);};
     mod->query_dense_general=mod->query_dense_compute;
@@ -66,6 +68,11 @@ void install_for(quactlize::dense::Context& ctx,quactlize_ppu_dense_params_v1 co
     auto typed=quactlize::dense::simt_call(plan);
     auto matched=select_smallm(typed,p.arrangement);
     auto r=quactlize::dense::request_for(p);
+    auto confirmed=prefill::knot(r,ctx.compute,1);
+    if(confirmed && confirmed->config>=0) {
+        auto const& c=prefill::data::kConfigs[confirmed->config];r.route=c.route;
+        install(ctx,select_tc(r,false,ctx.compute,{&c,QKS_PREFILL_COMPONENT_MEASURED}),false,ctx.compute);
+    }
     if (matched.status==0 && matched.tc) {
         r.route=matched.tc->route;
         install(ctx,select_tc(r,true,ctx.compute,{matched.tc,matched.choice.base.policy}),true,ctx.compute);
@@ -169,7 +176,9 @@ void explicit_candidates() {
         assert(quactlize_ppu_dense_prepare_candidate_v1(&ctx,&p,low,high,units,&candidate,&out,&info) && !out);
         auto normal=test::plan(ctx,p);
         // The frozen llama PoC fixture is explicitly F16, not a BF16 oracle.
-        if (!compute) compare_poc(poc_dense(ctx.dispatcher,p),*static_cast<quactlize::dense::Plan*>(normal));
+        auto& automatic=*static_cast<quactlize::dense::Plan*>(normal);
+        if(automatic.confirmed_prefill) assert(automatic.info.policy==19);
+        else if (!compute) compare_poc(poc_dense(ctx.dispatcher,p),automatic);
         else assert(static_cast<quactlize::dense::Plan*>(normal)->compute==compute);
     }
     kImages.clear();auto owner=test::context(0);auto& ctx=*owner;
@@ -238,12 +247,19 @@ int main() {
         for (auto const& knot:cost::data::kKnots) if (knot.experts==1) {
             auto p=test::params(knot.q,knot.tokens,knot.n,knot.k);
             auto raw=test::plan(ctx,p);auto& plan=*static_cast<quactlize::dense::Plan*>(raw);
-            qks_prefill_choice_v1 expected{};assert(cost::query(quactlize::dense::request_for(p),7,expected)==0);
+            qks_prefill_choice_v1 expected{};
+            auto req=quactlize::dense::request_for(p);
+            qks_prefill_choice_v2 confirmed{};
+            bool fresh=quactlize_kpack_dispatch_prefill_v2(&req,7,compute,1,&confirmed)==0;
+            if(fresh) expected=confirmed.base;else assert(cost::query(req,7,expected)==0);
             assert(plan.prefill.route==expected.route && plan.prefill.dequant_config==expected.dequant_config);
             assert(plan.info.route==(expected.route==2?QUACTLIZE_DENSE_FULL_BF16:expected.route));
             if (expected.route!=2) {
                 auto r=quactlize::dense::request_for(p);r.route=expected.route;
-                auto old=select_tc(r,false,compute);assert(old);
+                auto row=prefill::knot(r,compute,1);
+                Selected preferred{};
+                if(row) preferred={&prefill::data::kConfigs[row->config],QKS_PREFILL_COMPONENT_MEASURED};
+                auto old=select_tc(r,false,compute,preferred);assert(old);
                 assert(std::string(plan.tc.parent)==old.symbol && plan.tc.split==old.value.split);
                 assert(plan.native_f16==(compute==0));
             }
@@ -266,14 +282,43 @@ int main() {
     for (auto const& r:smallm::data::kExact) if (r.mode==QKG_DENSE) weights.emplace(r.q,r.n,r.k);
     for (auto const& r:cost::data::kKnots) if (r.experts==1) weights.emplace(r.q,r.n,r.k);
     for (auto const& r:quactlize::decode_policy::kRanges) if (r.mode==QKG_DENSE) weights.emplace(12,r.n,r.k);
-    size_t equivalent=0,legacy=0;
+    size_t equivalent=0,legacy=0,replaced=0;
     for (auto [q,n,k]:weights) for (int m:{1,2,3,4,5,6,7,8,9,16,32,64,127,128,256,512,1024,2048,4096}) {
         auto p=test::params(q,m,n,k);auto raw=test::plan(ctx,p);
         auto old=poc_dense(ctx.dispatcher,p);
-        compare_poc(old,*static_cast<quactlize::dense::Plan*>(raw));++equivalent;
+        auto& now=*static_cast<quactlize::dense::Plan*>(raw);
+        if(now.confirmed_prefill) {
+            auto row=prefill::knot(quactlize::dense::request_for(p),0,1);assert(row);
+            assert(now.prefill.route==row->route && now.prefill.dequant_config==row->dequant && now.info.policy==19);
+            ++replaced;
+        } else {compare_poc(old,now);++equivalent;}
         if (old.legacy) ++legacy;
     }
-    std::printf("DENSE_POC_SELECTION PASS equivalent=%zu old_legacy=%zu weights=%zu fields=route+parent+recipe+precision+prepass+endpoints timing=NOT_MEASURED\n",equivalent,legacy,weights.size());
+    assert(replaced==280);
+    std::printf("DENSE_POC_SELECTION PASS equivalent=%zu confirmed_replacements=%zu old_legacy=%zu weights=%zu fields=route+parent+recipe+precision+prepass+endpoints timing=NOT_MEASURED\n",equivalent,replaced,legacy,weights.size());
+    // Exercise the REAL exported query + materializer for every confirmed TC
+    // key, including BF16 indexed. Device resources are explicitly fake here.
+    size_t confirmed_count=0;
+    for(auto const& row:prefill::data::kKnots) if(row.config>=0) {
+        auto const& c=prefill::data::kConfigs[row.config];
+        qks_request_v1 request{1,sizeof(request),row.q,c.route,row.tokens*(row.experts==1?1:8),
+            row.n,row.k,row.experts,row.tokens,c.mapping_id};
+        test::install(ctx,select_tc(request,false,row.compute,{&c,QKS_PREFILL_COMPONENT_MEASURED}),false,row.compute);
+        qks_choice_v1 choice{};
+        assert(!quactlize_kpack_dispatch_query_prefill_v1(ctx.dispatcher,&request,row.compute,1,&choice));
+        assert(choice.policy==19 && std::string(choice.parent)==c.symbol && choice.split==c.split);
+        auto& runtime=*static_cast<Runtime*>(ctx.dispatcher);
+        assert(runtime.plans.at(choice.ticket-1).compute_type==row.compute);
+        auto wanted=recipe(c,request,6,72);
+        assert(choice.algorithm==wanted.algorithm && choice.grid==wanted.grid);
+        auto ticket=choice.ticket;
+        assert(!quactlize_kpack_dispatch_query_prefill_v1(ctx.dispatcher,&request,row.compute,1,&choice) && choice.ticket==ticket);
+        assert(quactlize_kpack_dispatch_query_prefill_v1(ctx.dispatcher,&request,row.compute,8,&choice)==QKS_MISS && !choice.ticket);
+        request.route^=1;
+        assert(quactlize_kpack_dispatch_query_prefill_v1(ctx.dispatcher,&request,row.compute,1,&choice)==QKS_INVALID);
+        ++confirmed_count;
+    }
+    assert(confirmed_count==244);
     // Run order and pointer/stream mutation. All
     // actual arithmetic is deliberately excluded from this host test.
     auto p=test::params(12,512);

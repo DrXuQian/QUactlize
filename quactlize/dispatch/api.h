@@ -19,7 +19,7 @@ enum { QKS_RECENT = 1, QKS_HISTORICAL = 2, QKS_PREDICTED = 3,
        QKS_COMPUTE_INITIAL = 11, QKS_MATCHED_EXACT = 12,
        QKS_MATCHED_BUCKET = 13, QKS_MATCHED_ROUTER = 14,
        QKS_Q8_VECTOR_MEASURED = 15, QKS_DENSE_FALLBACK = 16, QKS_LEGACY_DENSE = 17,
-       QKS_DECODE_COMPONENT_MEASURED = 18 };
+       QKS_DECODE_COMPONENT_MEASURED = 18, QKS_PREFILL_COMPONENT_MEASURED = 19 };
 
 // Additive Q8_0/W8A16 intake capability, without a device/context or JIT.
 // Returns 1 for supported weight geometry and SF route (1=dense,3=grouped).
@@ -105,6 +105,26 @@ int quactlize_kpack_dispatch_prefill_v1(qks_request_v1 const*, uint32_t mask,
 // donor costs, not relabeled BF16 measurements. No small-M full expansion.
 int quactlize_kpack_dispatch_prefill_compute_v1(qks_request_v1 const*, uint32_t mask,
     int32_t compute_type, qks_prefill_choice_v1*);
+
+// Confirmed ZW810 component selection, including separately measured adapters,
+// metadata, producer/provider and reducer. Dense F32 storage/F16 TC or indexed
+// F32 storage/BF16 TC, E256/top8/channels1, exact measured M/N/K only. FULL uses
+// BF16 weights/activations and FP32 accumulation. These sums are not model TPOT.
+// MISS: out of domain. BINDING: known winner's helper/provider is unavailable;
+// never silently replace a covered winner with the previous selector.
+typedef struct {
+    uint32_t version,size;
+    qks_prefill_choice_v1 base;
+    int32_t policy,compute_type,channels;
+} qks_prefill_choice_v2;
+int quactlize_kpack_dispatch_prefill_v2(qks_request_v1 const*,uint32_t mask,
+    int32_t compute_type,int32_t channels,qks_prefill_choice_v2*);
+// Materialize the SAME exact TC winner, not a second fixed-route lookup.
+// req.route must equal the route returned above (plus 2 for grouped). Native
+// F16 dense endpoints retain the measured adapters; grouped endpoints retain
+// BF16 metadata and compute. FULL is prepared by the prefill runtime instead.
+int quactlize_kpack_dispatch_query_prefill_v1(void* runtime,qks_request_v1 const*,
+    int32_t compute_type,int32_t channels,qks_choice_v1*);
 
 // One runtime per device/context. root contains the exact modules packaged
 // with this host library. open/query/prepare belong outside graph capture.

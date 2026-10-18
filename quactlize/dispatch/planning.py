@@ -6,6 +6,18 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[2]
 FIELDS = ('variant', 'columns', 'warps', 'values', 'split')
 SCHEMA = 'quactlize.final-selection.v1'
+PREFILL_SCHEMA = 'quactlize.prefill-final-selection.v1'
+
+
+def plan_prefill(output):
+    executable=Path(output)/'prefill-selection-query'
+    subprocess.run(['g++','-std=c++17','-O2','-I'+str(ROOT),
+                    str(ROOT/'tools/kpack_selection.cpp'),'-o',str(executable)],check=True)
+    text=subprocess.check_output([str(executable),'--prefill-inventory'],text=True)
+    rows=[json.loads(line) for line in text.splitlines()]
+    if len(rows)!=430 or any(r['status']!=0 or r['policy']!=19 for r in rows):
+        raise ValueError('confirmed prefill selector denominator differs')
+    return dict(schema=PREFILL_SCHEMA,scope='TYPED_PREFILL_COMPONENT_SELECTION_NOT_MODEL_ADMISSION',requests=rows)
 
 
 def plan_smallm(output, requests=None):
@@ -80,14 +92,15 @@ def prewarm_groups(plan):
     """Only selected TC parents need JIT; compute and endpoints are identity."""
     from quactlize.runtime.tuning import ROUTES
     from quactlize.runtime.compiler import validate_parent
-    requirements(plan)
+    prefill=plan.get('schema')==PREFILL_SCHEMA
+    if not prefill: requirements(plan)
     if any(row['status'] != 0 for row in plan['requests']):
         raise ValueError('final-selection plan has policy misses; no complete prewarm is possible')
     groups = {}
     for row in plan['requests']:
         if row['status'] != 0 or row['kind'] != 0:
             continue
-        key = ('bf16' if row['request'][-1] else 'f16', row['request'][1] == 0)
+        key = ('bf16' if row['request'][-1] else 'f16', row['request'][1] == 0 and not prefill)
         parent = dict(row['parent'])
         parent['route'] = ROUTES[parent['route']]
         validate_parent(parent)

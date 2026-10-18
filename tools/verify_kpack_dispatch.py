@@ -270,6 +270,14 @@ def verify(root, *, sdk=None):
                 m['policy_hashes'].get('policies/kpack_smallm_effective_v1.hpp')!=header or
                 m['execution_receipt'].get('smallm_effective_sha256')!=header):
             raise ValueError('component decode selector/execution identity differs')
+    if 'prefill_confirmed' in m:
+        receipt=m['prefill_confirmed'];path=root/'prefill-confirmed.json'
+        if (receipt.get('path')!=path.name or path.is_symlink() or sha(path)!=receipt.get('sha256') or
+                m['policy_hashes'].get('policies/kpack_prefill_confirmation_v1.json')!=receipt.get('sha256') or
+                m['policy_hashes'].get('policies/kpack_prefill_confirmation_v1.hpp')!=receipt.get('header_sha256')):
+            raise ValueError('confirmed prefill selector identity differs')
+        require_exports(root/'libquactlize_kpack_dispatch.so',{
+            'quactlize_kpack_dispatch_prefill_v2','quactlize_kpack_dispatch_query_prefill_v1'})
     if 'compute_contract' in m:
         c=m['compute_contract']
         execution=m['execution_receipt'].get('simt_compute_v2',{})

@@ -2,6 +2,7 @@ import ctypes as C
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import pytest
 from quactlize.dispatch.native import Request, Choice
@@ -23,21 +24,51 @@ def test_missing_package_does_not_pass(tmp_path):
         verify(tmp_path)
 
 
-def test_llama_headers_are_exact_copies():
-    from tools.sync_kpack_llama_headers import INCLUDES
+def test_explicit_llama_caller_abi_matches_library(tmp_path):
+    # A caller may omit newer, unused additive functions and format its own
+    # declarations. Compare compiler-checked ABI, not an arbitrary stale
+    # checkout at a hardcoded /root path or byte-identical header comments.
+    if not os.environ.get('LLAMA_SOURCE'):
+        pytest.skip('set LLAMA_SOURCE to the full caller being admitted')
+    from quactlize.dispatch.native import (PrefillChoice, ConfirmedPrefill, SmallmChoice,
+        MatchedSmallmChoice, DeviceCall, GroupedCompute, GroupedMetadata)
+    from quactlize.runtime.native import Call
     root = Path(__file__).resolve().parents[1]
-    llama = Path(os.environ.get('LLAMA_SOURCE', '/root/autodl-tmp/llama-v0.3.0')) / 'ggml/src/ggml-cuda/quactlize'
-    if not llama.exists():
-        pytest.skip("external llama checkout not available")
-    for source, target in (
-        (root / "quactlize/runtime/abi.h", "kpack_module.h"),
-        (root / "quactlize/execution/api.h", "kpack_execution.h"),
-        (root / "quactlize/dispatch/api.h", "kpack_dispatch.h"),
-    ):
-        text = source.read_text()
-        for before, after in INCLUDES.items():
-            text = text.replace('"'+before+'"', '"'+after+'"')
-        assert text == (llama / target).read_text()
+    llama = Path(os.environ['LLAMA_SOURCE']) / 'ggml/src/ggml-cuda/quactlize'
+    types={'qks_request_v1':Request,'qks_choice_v1':Choice,'qk_call_v1':Call,
+        'qks_prefill_choice_v1':PrefillChoice,'qks_prefill_choice_v2':ConfirmedPrefill,
+        'qks_smallm_choice_v1':SmallmChoice,'qks_smallm_choice_v2':MatchedSmallmChoice,
+        'qk_device_call_v2':DeviceCall,'qk_compute_device_call_v3':GroupedCompute,
+        'qk_compute_device_call_v4':GroupedMetadata}
+    body=['#include <cstddef>', '#include <cstdio>', '#include <type_traits>',
+        'static_assert(std::is_same_v<decltype(&quactlize_kpack_dispatch_prefill_v2),'
+        'int(*)(qks_request_v1 const*,uint32_t,int32_t,int32_t,qks_prefill_choice_v2*)>);',
+        'static_assert(std::is_same_v<decltype(&quactlize_kpack_dispatch_query_prefill_v1),'
+        'int(*)(void*,qks_request_v1 const*,int32_t,int32_t,qks_choice_v1*)>);',
+        'static_assert(QKS_DECODE_COMPONENT_MEASURED==18 && QKS_PREFILL_COMPONENT_MEASURED==19);',
+        'int main() {']
+    expected=[]
+    for name,cls in types.items():
+        body.append(f'printf("%zu %zu ",sizeof({name}),alignof({name}));')
+        expected.extend([C.sizeof(cls),C.alignment(cls)])
+        for field,_ in cls._fields_:
+            body.append(f'printf("%zu ",offsetof({name},{field}));')
+            expected.append(getattr(cls,field).offset)
+    body.append('}')
+    def layout(name,header):
+        source=tmp_path/(name+'.cpp');binary=tmp_path/name
+        source.write_text('#include "'+str(header)+'"\n'+'\n'.join(body))
+        subprocess.run(['g++','-std=c++17','-I'+str(llama),str(source),'-o',str(binary)],check=True)
+        return list(map(int,subprocess.check_output([str(binary)],text=True).split()))
+    assert layout('provider',root/'quactlize/dispatch/api.h')==expected
+    header=llama/'kpack_dispatch.h'
+    assert layout('caller',header)==expected
+    # Same-sized int fields exchanged is ABI drift despite unchanged sizeof.
+    changed,count=re.subn(r'policy,\s*compute_type,\s*channels',
+                         'channels, compute_type, policy',header.read_text())
+    assert count==1
+    bad=tmp_path/'bad-header.h';bad.write_text(changed)
+    assert layout('bad-caller',bad)!=expected
 
 
 @pytest.mark.parametrize('fault', [None, 'image', 'receipt', 'helper', 'sdk', 'symlink'])

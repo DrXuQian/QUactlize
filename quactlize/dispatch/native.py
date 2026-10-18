@@ -30,6 +30,17 @@ class Choice(C.Structure):
     )
 
 
+class PrefillChoice(C.Structure):
+    _fields_ = [("version", C.c_uint32), ("size", C.c_uint32)] + [
+        (name, C.c_int32) for name in ("route", "dequant_config", "measured_tokens", "predicted")] + [
+        ("gemm_us", C.c_double), ("dequant_us", C.c_double)]
+
+
+class ConfirmedPrefill(C.Structure):
+    _fields_ = [("version", C.c_uint32), ("size", C.c_uint32), ("base", PrefillChoice)] + [
+        (name, C.c_int32) for name in ("policy", "compute_type", "channels")]
+
+
 class DenseIO(C.Structure):
     _fields_ = [("version",C.c_uint32),("size",C.c_uint32),("call",Call),
                 ("input_type",C.c_int32),("output_type",C.c_int32)]
@@ -166,6 +177,28 @@ class Dispatch:
             raise ValueError('dynamic prepare: ' + self.fn['error']().decode())
         self.handles.append(handle)
         return handle
+
+    def prefill(self, request, compute, channels=1, mask=7):
+        fn = self.lib.quactlize_kpack_dispatch_prefill_v2
+        fn.argtypes, fn.restype = [C.POINTER(Request), C.c_uint32, C.c_int32, C.c_int32,
+                                  C.POINTER(ConfirmedPrefill)], C.c_int
+        choice = ConfirmedPrefill()
+        rc = fn(C.byref(request), mask, compute, channels, C.byref(choice))
+        if rc == 1:
+            return None
+        if rc:
+            raise ValueError(f'confirmed prefill query: status={rc}; no fallback admitted')
+        return choice
+
+    def query_prefill(self, request, compute, channels=1):
+        fn = self.lib.quactlize_kpack_dispatch_query_prefill_v1
+        fn.argtypes, fn.restype = [C.c_void_p, C.POINTER(Request), C.c_int32, C.c_int32,
+                                  C.POINTER(Choice)], C.c_int
+        choice = Choice()
+        rc = fn(self.runtime, C.byref(request), compute, channels, C.byref(choice))
+        if rc:
+            raise ValueError('confirmed prefill materialization: ' + self.fn['error']().decode())
+        return choice
 
     def run_dynamic(self, handle, call):
         fn = self.lib.quactlize_kpack_dispatch_run_dynamic_v1

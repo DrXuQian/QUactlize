@@ -2,6 +2,7 @@
 #include "compute.hpp"
 #include "decode.hpp"
 #include "smallm_matched.hpp"
+#include "prefill.hpp"
 #include "../include/ppu_format_config.hpp"
 #include "../include/ppu_kquant_measured_policy.hpp"
 #include "../include/ppu_q4_kpack4_shipping_policy.hpp"
@@ -10,7 +11,7 @@ namespace quactlize::dispatch {
 
 // Internal identity, not an ABI enum or a persisted cache key. Channels and
 // selection profile are separate dimensions instead of encoded integers.
-enum class SelectionProfile { General, Decode, LegacySmallM, MatchedSmallM, DenseDynamic, DenseNative };
+enum class SelectionProfile { General, Decode, LegacySmallM, MatchedSmallM, DenseDynamic, DenseNative, ConfirmedPrefill };
 struct SelectionContext {
     SelectionProfile profile = SelectionProfile::General;
     int channels = 0;
@@ -33,7 +34,7 @@ inline TcDecision select_tc(qks_request_v1 const& r, bool decode, int compute,
     auto selected = preferred.config ? preferred : decode ? select_decode_tc(r) : select(r);
     bool matched = preferred.config && (preferred.policy == QKS_MATCHED_EXACT ||
         preferred.policy == QKS_MATCHED_BUCKET || preferred.policy == QKS_MATCHED_ROUTER ||
-        preferred.policy == QKS_DECODE_COMPONENT_MEASURED);
+        preferred.policy == QKS_DECODE_COMPONENT_MEASURED || preferred.policy == QKS_PREFILL_COMPONENT_MEASURED);
     if (compute == QK_COMPUTE_BF16 && !matched) {
         if (!selected.config) selected = select(r);
         out.value = compute_proposal(r, selected, out.symbol);

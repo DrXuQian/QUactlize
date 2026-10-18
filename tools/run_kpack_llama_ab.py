@@ -49,6 +49,25 @@ def identities(paths):
     return result
 
 
+def runtime_payloads(args):
+    roots=[args.bundle,args.legacy_bundle,args.llama_build/'bin/quactlize-runtime']
+    paths=[]
+    if args.pack_library:
+        paths.append(args.pack_library)
+        if args.pack_library.name=='libquactlize_ppu.so':
+            # The merged producer also loads its private dispatch/execution
+            # dependencies. Seal them even when the PoC uses a separate host
+            # dispatcher, rather than rejecting their legitimate dlopen paths.
+            from tools.build_ppu_library import verify
+            verify(args.pack_library.parent)
+            roots.append(args.pack_library.parent/'quactlize-runtime')
+            paths.append(args.pack_library.parent/'manifest.json')
+    for root in roots:
+        if root:paths.extend(p for p in root.rglob('*') if p.is_file() and ('.so' in p.name or p.suffix=='.json'))
+    if args.jit_helper:paths.append(args.jit_helper)
+    return paths
+
+
 def validate_loaded(data, request):
     paths=[Path(s) for s in data['loaded_images']]
     if any(not path.is_file() for path in paths):
@@ -177,6 +196,8 @@ def environment(args):
                    QUACTLIZE_KPACK_JIT_HELPER=str(helper),
                    QUACTLIZE_KPACK_JIT_PYTHON=sys.executable,
                    QUACTLIZE_KPACK_JIT_CACHE=str(args.jit_cache))
+        deepgemm=args.bundle/'kpack_deepgemm_prewarm.py'
+        if deepgemm.is_file():env['QUACTLIZE_KPACK_DEEPGEMM_HELPER']=str(deepgemm)
     if args.pack_library:
         env['QUACTLIZE_PPU_PACK_LIBRARY'] = str(args.pack_library)
     if args.legacy_bundle:
@@ -251,7 +272,7 @@ def worker(args):
                 # valid; each failed point is attempted once per invocation.
                 while todo:
                     unchanged()
-                    if time.monotonic()-start >= args.hours*3600:
+                    if args.hours and time.monotonic()-start >= args.hours*3600:
                         print('LLAMA_AB_BUDGET_EXHAUSTED remaining='+str(len(todo)), flush=True)
                         return 1
                     attempt = args.output/f'shard-{args.worker}'/uuid.uuid4().hex
@@ -269,7 +290,7 @@ def worker(args):
                                 try: p.wait(timeout=30)
                                 except subprocess.TimeoutExpired:
                                     print(f'LLAMA_AB_WAIT family={fid} elapsed_minutes={(time.monotonic()-start)/60:.1f} log={attempt}/run.log', flush=True)
-                                    if time.monotonic()-start >= args.hours*3600:
+                                    if args.hours and time.monotonic()-start >= args.hours*3600:
                                         p.terminate(); p.wait(timeout=30)
                         finally:
                             if p.poll() is None:
@@ -397,14 +418,14 @@ def main():
     p.add_argument('--operation',choices=('all','dense','indexed'),default='all')
     p.add_argument('--rounds',type=int,default=6)
     p.add_argument('--samples',type=int,default=3)
-    p.add_argument('--hours',type=float,default=24)
+    p.add_argument('--hours',type=float,default=0,help='explicit budget, 0 means no forced deadline')
     p.add_argument('--idle-confirmed',action='store_true')
     p.add_argument('--plan-only',action='store_true')
     p.add_argument('--worker',type=int,help=argparse.SUPPRESS)
     p.add_argument('--probe-device',action='store_true',help=argparse.SUPPRESS)
     args=p.parse_args()
-    if args.rounds<6 or args.samples<3 or not math.isfinite(args.hours) or args.hours<=0:
-        p.error('require rounds>=6, samples>=3 and positive finite hours')
+    if args.rounds<6 or args.samples<3 or not math.isfinite(args.hours) or args.hours<0:
+        p.error('require rounds>=6, samples>=3 and nonnegative finite hours')
     args.sdk=args.sdk.resolve()
     if args.probe_device:
         print(json.dumps(device(args)));return 0
@@ -445,12 +466,8 @@ def main():
         raise ValueError('selectors refer to the same physical GPU')
     families=sorted({family(r) for r in rows})
     sources=identities([ROOT/'dev/llama_ab/carrier.cpp',ROOT/'dev/llama_ab/contract.py',Path(__file__),
-                       ROOT/'policies/kpack_component_decode_v1.json'])
-    runtime=[]
-    for root in (args.bundle,args.legacy_bundle,args.llama_build/'bin/quactlize-runtime'):
-        if root:runtime.extend(p for p in root.rglob('*') if p.is_file() and ('.so' in p.name or p.name.endswith('.json')))
-    if args.pack_library:runtime.append(args.pack_library)
-    if args.jit_helper:runtime.append(args.jit_helper)
+                       ROOT/'policies/kpack_component_decode_v1.json',ROOT/'policies/kpack_prefill_confirmation_v1.json'])
+    runtime=runtime_payloads(args)
     request=dict(points=rows,carrier=carrier,sources=sources,harness=harness_identity(ROOT),candidate_runtime=identities(runtime),
         rounds=args.rounds,samples=args.samples,mode='EAGER_COLD_COMPLETE_OPERATOR',
         shards=[dict(selector=s,hardware=h,families=families[i::len(selectors)]) for i,(s,h) in enumerate(zip(selectors,hardware))],
@@ -509,6 +526,12 @@ def main():
                 except ProcessLookupError:pass
                 proc.wait()
         result=summarize(args.output,request)
+    if args.phase=='pilot':
+        records=[args.output/'records'/(r['id']+'.json') for r in pilot(rows)]
+        passed=sum(p.is_file() and json.loads(p.read_text())['status']=='PASS' for p in records)
+        print('LLAMA_AB_PILOT_VERDICT '+json.dumps(dict(passed=passed,expected=len(records),
+            status='PASS' if passed==len(records) else 'NOT_ADMITTED',full_campaign=False)),flush=True)
+        return int(passed!=len(records))
     return 0 if result['status']=='PASS' else 1
 
 

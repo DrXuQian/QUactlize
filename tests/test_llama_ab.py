@@ -2,10 +2,12 @@ from collections import Counter
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from dev.llama_ab.contract import SCOPE, coverage, family, inventory, judge, pilot, route_proof
-from tools.run_kpack_llama_ab import point_request, record_load, save_record
+from tools.run_kpack_llama_ab import point_request, record_load, save_record, runtime_payloads, identities, validate_loaded
 
 
 def measured(ratio=.8):
@@ -77,9 +79,14 @@ class InventoryTest(unittest.TestCase):
 
     def test_pilot_covers_all_interfaces(self):
         rows=pilot(self.rows)
-        self.assertEqual(len(rows),22)
+        self.assertEqual(len(rows),32)
         self.assertEqual({(r['cohort'],r['workload']['operation'],r['workload']['qtype']) for r in rows},
                          {(r['cohort'],r['workload']['operation'],r['workload']['qtype']) for r in self.rows})
+        from dev.llama_ab.contract import confirmed_prefill
+        def routes(items):
+            return {(r['workload']['operation'],r['workload']['qtype'],confirmed_prefill()[r['id']]['recipe']['route'])
+                    for r in items if r['cohort']=='prefill'}
+        self.assertEqual(routes(rows),routes(self.rows))
 
     def test_active_cold_read_set(self):
         row=next(r for r in self.rows if r['workload']['operation']=='indexed' and
@@ -93,7 +100,7 @@ class InventoryTest(unittest.TestCase):
         self.assertEqual(len(point['owners']),active)
 
     def test_route_requires_compute_not_placement(self):
-        row=next(r for r in self.rows if r['workload']['operation']=='indexed')
+        row=next(r for r in self.rows if r['workload']['operation']=='indexed' and r['cohort']=='decode')
         w=row['workload'];name='ab_'+row['id'][:20]+'_0'
         text=f'[quactlize-plan] tensor={name} op=grouped route=gemv q={w["qtype"]} n={w["n"]} k={w["k"]} activation=BF16'
         self.assertTrue(route_proof(text,row))
@@ -108,8 +115,43 @@ class InventoryTest(unittest.TestCase):
             self.assertNotIn('recipe',row)
             self.assertNotIn('candidates',row)
 
+    def test_prefill_trace_cannot_use_old_route_or_helper(self):
+        from dev.llama_ab.contract import confirmed_prefill
+        for row in (r for r in self.rows if r['cohort']=='prefill'):
+            w=row['workload'];r=confirmed_prefill()[row['id']]['recipe'];p=dict(r['parameters'])
+            route='full-bf16' if r['kind']=='full' else r['route']
+            text=(f'[quactlize-plan] tensor=ab_{row["id"][:20]}_0 op={"dense" if w["operation"]=="dense" else "grouped"} '
+                  f'route={route} q={w["qtype"]} n={w["n"]} k={w["k"]} policy=19 channels=1 dequant={p["dequant_config"]} '
+                  f'activation={"FP16" if w["compute"]=="f16" else "BF16"}')
+            if r['kind']=='tc':text+=f' parent={p["symbol"]} split={p["split"]}'
+            self.assertTrue(route_proof(text,row))
+            for before,after in [('policy=19','policy=8'),('channels=1','channels=8'),
+                                 (f'dequant={p["dequant_config"]}','dequant=99')]:
+                with self.assertRaises(ValueError):route_proof(text.replace(before,after),row)
+
 
 class SourceContractTest(unittest.TestCase):
+    def test_merged_producer_private_dependencies_are_sealed(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);build=root/'llama'
+            libraries=[root/'public/libquactlize_ppu.so',
+                root/'public/quactlize-runtime/libquactlize_kpack_dispatch.so',
+                root/'bundle/libquactlize_kpack_dispatch.so',
+                build/'bin/libggml-base.so',build/'bin/libggml-cuda.so']
+            for p in libraries:p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'HOST IDENTITY FIXTURE')
+            manifest=root/'public/manifest.json';manifest.write_text('{}')
+            args=SimpleNamespace(bundle=root/'bundle',legacy_bundle=None,llama_build=build,
+                                 pack_library=libraries[0],jit_helper=None)
+            # Actual public manifest/ELF verification has separate host tests.
+            with patch('tools.build_ppu_library.verify') as check:
+                paths=runtime_payloads(args);check.assert_called_once_with(root/'public')
+            self.assertIn(libraries[1],paths)
+            request=dict(candidate_runtime=identities(paths),carrier={'identity':{'libraries':identities(libraries[3:])}})
+            data={'loaded_images':list(map(str,libraries))}
+            self.assertTrue(validate_loaded(data,request))
+            libraries[1].write_bytes(b'CHANGED DISPATCHER')
+            with self.assertRaises(ValueError):validate_loaded(data,request)
+
     def test_native_dispatcher_and_eager_events(self):
         source=Path('dev/llama_ab/carrier.cpp').read_text()
         self.assertIn('ggml_backend_graph_compute_async',source)
