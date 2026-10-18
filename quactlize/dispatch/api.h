@@ -80,6 +80,11 @@ typedef struct {
 } qks_smallm_choice_v2;
 int quactlize_kpack_dispatch_query_smallm_v3(void* runtime,qkg_simt_call_v2 const*,
     quactlize_ppu_placed_arrangement_v2 const*,qks_smallm_choice_v2*);
+// Pure companion query for the same matched decision. -1 means use the
+// endpoint's standard metadata path; >=0 is the measured per-call SF helper.
+// No device access/JIT. Kept additive so v3's layout and old callers stay valid.
+int quactlize_kpack_dispatch_smallm_dequant_v1(qkg_simt_call_v2 const*,
+    quactlize_ppu_placed_arrangement_v2 const*,int32_t* config);
 
 typedef struct {
     uint32_t version, size;

@@ -752,6 +752,17 @@ extern "C" int quactlize_kpack_dispatch_query_smallm_v3(void* runtime,qkg_simt_c
     *out=result;return QKS_OK;
 }
 
+extern "C" int quactlize_kpack_dispatch_smallm_dequant_v1(qkg_simt_call_v2 const* typed,
+    quactlize_ppu_placed_arrangement_v2 const* arrangement,int32_t* config) {
+    if (!config) return QKS_INVALID;
+    *config=-1;
+    if (!typed || !arrangement) return QKS_INVALID;
+    auto selected=select_smallm(*typed,*arrangement);
+    if (selected.status!=QKS_OK) return selected.status;
+    *config=selected.dequant_config;
+    return QKS_OK;
+}
+
 extern "C" int quactlize_kpack_dispatch_query_dense_io_v1(void* runtime,qks_request_v1 const* req,
     int32_t endpoint_type,int32_t decode_policy,qks_choice_v1* out) {
     if ((endpoint_type!=QKD_F32 && endpoint_type!=QKD_BF16) || (decode_policy!=0 && decode_policy!=1))

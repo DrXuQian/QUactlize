@@ -1,9 +1,9 @@
 """Candidate coverage tests, not performance admission or fabricated timings."""
 from dataclasses import replace
 
-from dev.strategy.prefill_candidates import regime, supplement
+from dev.strategy.prefill_candidates import delivery_peers, regime, supplement
 from dev.strategy.prescreen import Prescreen
-from dev.strategy.space import scheduled_key
+from dev.strategy.space import prototype, scheduled_key
 from quactlize.dispatch.table import Observation, Recipe, StrategyTable, Workload
 
 
@@ -83,7 +83,7 @@ def test_breadth_is_additive_and_does_not_change_decode():
         if m <= 8:
             assert after == before and report['rule_revision'] == 25
         else:
-            assert report['rule_revision'] == 26
+            assert report['rule_revision'] == 27
 
 
 def test_supplement_only_uses_prefill_and_preserves_target_legality():
@@ -92,3 +92,31 @@ def test_supplement_only_uses_prefill_and_preserves_target_legality():
     rows = [observation(replace(donor, m=1), tc(tn=128)),
             observation(donor, tc(tk=256, stages=12))]
     assert supplement(w, [], rows) == ([], {})
+
+
+def test_delivery_peers_preserve_exact_geometry_not_just_coarse_regime():
+    w = target(); donor = replace(w, n=2048, output_stride=0)
+    seed, peer = tc(dn=16), tc(dn=32)
+    coarse_alias = Recipe.make('tc', 'sf', **(dict(peer.parameters) | {'wm':8}))
+    assert regime(coarse_alias) == regime(peer)
+    rows = [observation(donor, peer), observation(donor, tc(stages=3, dn=64))]
+    out, why = delivery_peers(w, [seed, coarse_alias], rows)
+    peer = prototype(peer)
+    assert out == [peer] and why[peer.key] == ['PREFILL_OBSERVED_DELIVERY_PEER_LEAVE_NK_OUT']
+    assert delivery_peers(w, [coarse_alias], rows) == ([], {})
+
+
+def test_delivery_peers_do_not_leak_target_or_copy_other_format_or_decode():
+    w = target(); donor = replace(w, n=2048, output_stride=0)
+    rows = [observation(replace(w, m=256), tc(dn=32)),
+            observation(replace(donor, m=1), tc(dn=32)),
+            observation(replace(donor, qtype=13), tc(13, dn=32)),
+            observation(replace(donor, operation='indexed', experts=256, topk=8), tc(dn=32))]
+    assert delivery_peers(w, [tc(dn=16)], rows) == ([], {})
+
+
+def test_delivery_peers_are_timing_blind_and_order_independent():
+    w = target(); donor = replace(w, n=2048, output_stride=0)
+    rows = [observation(donor, tc(dn=32), 100), observation(donor, tc(dn=64), 1)]
+    out = delivery_peers(w, [tc(dn=16)], rows)
+    assert delivery_peers(w, [tc(dn=16)], [replace(r, us=1000-r.us) for r in reversed(rows)]) == out

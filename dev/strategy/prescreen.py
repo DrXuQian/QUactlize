@@ -328,6 +328,7 @@ class Prescreen:
             reasons[r.key].add('BOUNDED_NEIGHBOR_PROPOSAL:' + source)
         selected = sorted(protected.values(), key=lambda r: r.key) + list(coverage.values()) + picked
         prefill_added = 0
+        delivery_added = 0
         if blind and factorized and prefill_breadth and w.m > 8:
             from dev.strategy.prefill_candidates import supplement
             additions, why = supplement(w, selected,
@@ -335,6 +336,11 @@ class Prescreen:
                 max_threads=max_threads, k_weight=k_weight)
             selected += additions
             prefill_added = len(additions)
+            for key, values in why.items(): reasons[key].update(values)
+            from dev.strategy.prefill_candidates import delivery_peers
+            additions, why = delivery_peers(w, selected, rows, max_threads=max_threads)
+            selected += additions
+            delivery_added = len(additions)
             for key, values in why.items(): reasons[key].update(values)
         if blind and factorized:
             from dev.strategy.q4_space import proposals as q4_proposals
@@ -377,8 +383,9 @@ class Prescreen:
         expanded = 1 + len(protected) + len(coverage) > limit
         report = dict(stage='PRE_JIT_PER_SHAPE', original_mandatory=True,
             rule_generation='LEAVE_NK_FAMILY_OUT' if blind else 'REFERENCE_CONTROL_INVENTORY',
-            rule_revision=(26 if prefill_breadth and w.m>8 else 25) if blind and factorized else 2 if blind else None,per_stratum=per_stratum,
+            rule_revision=(27 if prefill_breadth and w.m>8 else 25) if blind and factorized else 2 if blind else None,per_stratum=per_stratum,
             prefill_geometry_supplement=prefill_added,
+            prefill_delivery_peers=delivery_added,
             cross_format_templates=bool(blind and factorized and cross_format),
             reader_strata=reader_strata,
             neighbor_stencil=stencil,seed_prototype_count=seed_count,

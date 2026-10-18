@@ -24,6 +24,53 @@ def regime(recipe):
             p.get('persistent', -1) if recipe.route == 'fq' else -1)
 
 
+def delivery_family(recipe):
+    """Exact compiled geometry except DN, not a coarse tile-size band."""
+    p = dict(recipe.parameters)
+    return (recipe.route, *(p[k] for k in ('tm', 'tn', 'tk', 'wm', 'wn', 'stages', 'ap')),
+            p.get('persistent', -1))
+
+
+def delivery_peers(w, seeds, rows, *, max_threads=1024):
+    """Retain observed DN variants of a selected parent, without cross products.
+
+    The entire target N/K family is withheld. Only same-format/operation
+    prefill observations supply variants; no timing or champion label is used.
+    A different warp geometry with the same regime is not a delivery peer.
+    """
+    from dev.strategy.prescreen import rejection, proposal_family
+    if w.m <= 8:
+        return [], {}
+    families = {delivery_family(r) for r in seeds if r.kind == 'tc'}
+    known = {producer_key(r) for r in seeds}
+    selected, reasons = {}, {}
+    for row in rows:
+        ow, r = row.workload, row.recipe
+        if (r.kind != 'tc' or ow.m <= 8 or (ow.n, ow.k) == (w.n, w.k) or
+                proposal_family(ow) != proposal_family(w) or delivery_family(r) not in families):
+            continue
+        r = prototype(r)
+        if producer_key(r) in known or rejection(r, w, max_threads):
+            continue
+        # Scheduling is expanded after resource query. Preserve the seed's
+        # scheduling strata rather than importing an unrelated donor grid.
+        for seed in seeds:
+            if seed.kind != 'tc' or delivery_family(seed) != delivery_family(r):
+                continue
+            p, sp = dict(r.parameters), dict(seed.parameters)
+            p.update(grid_mode=sp['grid_mode'], grid_b=sp['grid_b'])
+            peer = type(r).make(r.kind, r.route, **p)
+            key = producer_key(peer)
+            if key in known:
+                continue
+            if key not in selected or peer.key < selected[key].key:
+                selected[key] = peer
+    out = sorted(selected.values(), key=lambda r: r.key)
+    for r in out:
+        reasons[r.key] = ['PREFILL_OBSERVED_DELIVERY_PEER_LEAVE_NK_OUT']
+    return out, reasons
+
+
 def supplement(w, seeds, rows, *, max_threads=1024, k_weight=1.0):
     from dev.strategy.prescreen import rejection, proposal_family
     if w.m <= 8:

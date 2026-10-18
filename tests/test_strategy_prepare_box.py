@@ -19,7 +19,10 @@ def test_invalid_task_does_not_start_a_campaign(tmp_path):
 
 
 @pytest.mark.parametrize('task,cohort,max_modules',[
-    ('prefill-resources','prefill',160),('device-pilot','pilot',64)])
+    # R26 broadened prefill geometry and current decode reader coverage. R27
+    # adds two observed delivery parents (264/74 current modules). These are
+    # host proposal bounds, NOT the closure runner's zero-recompile inventory.
+    ('prefill-resources','prefill',280),('device-pilot','pilot',80)])
 def test_plan_only_and_resume_have_no_sdk_device_or_claimed_timings(tmp_path,task,cohort,max_modules):
     # Actual host rule generation and resource inventory, not a fake GPU.
     env=dict(os.environ,PYTHON=sys.executable,RUN_ROOT=str(tmp_path),PLAN_ONLY='1',

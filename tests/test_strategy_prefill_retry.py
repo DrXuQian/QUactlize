@@ -323,15 +323,20 @@ def test_reviewed_upgrade_delta_binds_real_history_and_rejects_timer_or_oracle_c
     from dev.strategy.prefill_upgrade import source_delta
     from dev.strategy.provenance import harness_identity, source_identity
     before_ref = '4ad5bb8d53bd776585a64813d9afb9950bcd3e0c'
-    files = subprocess.check_output(['git', 'diff', '--name-only', before_ref, '4e46a0f'], cwd=ROOT, text=True).splitlines()
+    after_ref = '4e46a0f'
+    files = subprocess.check_output(['git', 'diff', '--name-only', before_ref, after_ref], cwd=ROOT, text=True).splitlines()
     for kind, current in [('source', source_identity(ROOT)), ('harness', harness_identity(ROOT))]:
         old = deepcopy(current)
         for name in files:
             if name not in old['files']: continue
-            blob = subprocess.run(['git','show',before_ref+':'+name], cwd=ROOT, capture_output=True)
-            if blob.returncode: del old['files'][name]
-            else: old['files'][name] = hashlib.sha256(blob.stdout).hexdigest()
+            # This is an exact historical migration, not permission to reuse
+            # measurements after subsequent edits to either endpoint.
+            for ref, value in ((before_ref, old), (after_ref, current)):
+                blob = subprocess.run(['git','show',ref+':'+name], cwd=ROOT, capture_output=True)
+                if blob.returncode: value['files'].pop(name, None)
+                else: value['files'][name] = hashlib.sha256(blob.stdout).hexdigest()
         old['sha256'] = digest(old['files'])
+        current['sha256'] = digest(current['files'])
         assert source_delta(old, current, kind)['sha256']
         for name in ('dev/strategy/isolated.py', 'dev/strategy/prefill_measure.py', 'reference/gguf_kpack.py'):
             bad = deepcopy(current); bad['files'][name] = 'changed'; bad['sha256'] = digest(bad['files'])

@@ -123,6 +123,29 @@ def test_typed_c_abi_can_pick_measured_simt_without_gpu_or_jit(host_dispatch,pol
     assert len(picks)==2
 
 
+def test_companion_query_exports_all_component_helpers_without_jit(host_dispatch):
+    from quactlize.execution.native import SimtCallV2
+    rows = json.loads((ROOT/'policies/kpack_component_decode_v1.json').read_text())['rows']
+    fn = host_dispatch.lib.quactlize_kpack_dispatch_smallm_dequant_v1
+    fn.argtypes = [C.POINTER(SimtCallV2), C.POINTER(type(arrangement(12))), C.POINTER(C.c_int32)]
+    fn.restype = C.c_int
+    checked = 0
+    for row in rows:
+        if not row['changed']:
+            continue
+        q, mode, n, k, e, top, ch, m, compute = row['key']
+        c = Call(version=1, size=C.sizeof(Call), qtype=q, mode=mode, n=n, k=k,
+                 experts=e, topk=top, channels=ch, rows=m*top, input_type=1,
+                 a_row_stride=k, a_token_stride=k*ch, ids_stride=top, out_row_stride=n)
+        typed, a, config = SimtCallV2(c, compute), arrangement(q), C.c_int32(-999)
+        assert fn(C.byref(typed), C.byref(a), C.byref(config)) == 0
+        assert config.value == row['dequant_config']
+        checked += config.value >= 0
+    assert checked == 41
+    config = C.c_int32(99)
+    assert fn(None, None, C.byref(config)) == 2 and config.value == -1
+
+
 def test_matched_tc_keeps_compute_recipe_and_ticket(tmp_path):
     (tmp_path/'catalog.inc').write_text('static std::vector<Image> kImages; static char kJitSource[]="";\n')
     binary=tmp_path/'tc'
