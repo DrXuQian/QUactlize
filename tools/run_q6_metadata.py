@@ -66,7 +66,7 @@ def raw_equal(first, second):
         raise ValueError(f'candidate differs from same-order baseline: bad={len(bad)} first={int(bad[0])}')
 
 
-def measure(a, w, record):
+def measure(a, w, record, pattern_model=None):
     import numpy as np
     from contextlib import ExitStack
     from dev.gemv_simt.q6_metadata_fixture import Weights
@@ -124,15 +124,15 @@ def measure(a, w, record):
         patterns = []
         bases = {name: int(ptr)%128 for name, ptr in ring.planes[0].items()}
         bases['A'] = b.a.ptr%128
-        for warp in (0, 7):
-            patterns.append(pattern(14, Config(3,4,8,8,1), w.n, w.k, bases=bases, warp=warp))
+        for warp in (range(8) if pattern_model else (0, 7)):
+            patterns.append((pattern_model or pattern)(14, Config(3,4,8,8,1), w.n, w.k, bases=bases, warp=warp))
         captures, graphs, nodes = [], [], []
         for arm in range(2):
             for copy in range(ring.copies): checked(core.launch(arm, copy), 'excluded ring warmup')
             b.check()
             capture = Captured(rt, [lambda i=i,arm=arm:core.launch(arm,i) for i in range(ring.copies)])
             cleanup.callback(capture.close);captures.append(capture)
-            expected = '::register_reuse<' if arm==0 else '::q6_register_fields('
+            expected = record.get('kernel_names', ['::register_reuse<','::q6_register_fields('])[arm]
             if len(capture.groups)!=1 or expected not in capture.descriptions[0]['name']:
                 raise ValueError('unexpected Q6 kernel inventory')
             nodes.append(capture.descriptions[0])
@@ -174,18 +174,18 @@ def measure(a, w, record):
     return result
 
 
-def child(a):
+def child(a, source_inputs=inputs, pattern_model=None):
     from tools.run_kpack_llama_ab import device
     from quactlize.runtime.native import sdk_identity
     authority = json.loads((a.output/'authority.json').read_text())
     manifest = json.loads((a.output/'build/manifest.json').read_text())
     if (device(a)!=authority['device'] or harness_identity(ROOT)!=authority['harness'] or
-            inputs()!=manifest['sources'] or manifest.get('sdk')!=sdk_identity(a.sdk)):
+            source_inputs()!=manifest['sources'] or manifest.get('sdk')!=sdk_identity(a.sdk)):
         raise ValueError('source, SDK or physical device changed')
     w = workloads()[a.child]
     record = next(r for r in manifest['records'] if r['compute']==w.compute)
     if sha(a.output/'build'/record['image'])!=record['sha256']: raise ValueError('binary changed')
-    result = measure(a,w,record)
+    result = measure(a,w,record,pattern_model=pattern_model)
     result.update(authority_sha256=digest(authority), library_sha256=record['sha256'])
     atomic_json(a.result, result)
     print('Q6_METADATA_POINT '+json.dumps(dict(point=a.child,status='PASS',delta_pct=result.get('delta_pct'))),flush=True)
@@ -211,11 +211,16 @@ def execute(command, log):
     return child.returncode
 
 
-def collect(a):
+def collect(a, *, builder=build, arms=ARMS, driver=None, point_indices=None, profile_arms=(0,1)):
     from tools.run_kpack_llama_ab import device
     from dev.native_components.profile import acu_command,check_report
     a.output.mkdir(parents=True,exist_ok=False)
-    plan = dict(points=[asdict(w) for w in workloads()],arms=ARMS,rounds=6,samples=5,
+    indices=list(range(len(workloads()))) if point_indices is None else list(point_indices)
+    if not indices or len(set(indices))!=len(indices) or any(i not in range(len(workloads())) for i in indices):
+        raise ValueError('invalid or duplicate point inventory')
+    if a.acu and indices[0]!=0: raise ValueError('profile requires point0 first')
+    driver=Path(__file__).resolve() if driver is None else Path(driver).resolve()
+    plan = dict(points=[asdict(workloads()[i]) for i in indices],point_indices=indices,arms=arms,rounds=6,samples=5,
                 native=False,production_changed=False,configs=1)
     atomic_json(a.output/'plan.json',plan)
     if a.plan_only:
@@ -227,18 +232,18 @@ def collect(a):
     lock = (Path('/tmp')/('quactlize-components-'+digest(actual['device']['pci'])[:24]+'.lock')).open('a')
     with lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        build(a.sdk,a.output/'build')
+        builder(a.sdk,a.output/'build')
         rows=[];reports=[]
-        for i in range(len(workloads())):
+        for done,i in enumerate(indices,1):
             destination=a.output/f'point-{i}.json'
-            command=[sys.executable,str(Path(__file__).resolve()),'--sdk',str(a.sdk),
+            command=[sys.executable,'-u',str(driver),'--sdk',str(a.sdk),
                      '--output',str(a.output),'--l2-bytes',str(a.l2_bytes),'--child',str(i),'--result',str(destination)]
             rc=execute(command,a.output/f'point-{i}.log')
             row=json.loads(destination.read_text()) if rc==0 and destination.is_file() else dict(status='FAIL',rc=rc)
             rows.append(row)
-            print(f'Q6_METADATA_PROGRESS completed={i+1}/{len(workloads())} status={row["status"]} remaining_continue=1',flush=True)
+            print(f'Q6_METADATA_PROGRESS completed={done}/{len(indices)} point={i} status={row["status"]} remaining_continue=1',flush=True)
         if a.acu and rows[0]['status']=='PASS':
-            for arm in range(2):
+            for arm in profile_arms:
                 target=a.output/f'profile-{arm}'
                 command=[sys.executable,'-u',str(ROOT/'tools/profile_q6_metadata.py'),
                          '--source',str(ROOT),'--results',str(a.output),'--sdk',str(a.sdk),

@@ -26,21 +26,22 @@ def inputs():
     return {str(p.relative_to(ROOT)): sha(p) for p in sorted(paths)}
 
 
-def build(sdk, output, object_only=False):
+def build(sdk, output, object_only=False, *, generator=source, source_inputs=inputs,
+          schema='q6-metadata-v1', kernel_names=None):
     sdk = sdk.resolve(strict=True)
     output.mkdir(parents=True, exist_ok=False)
     includes = [ROOT, ROOT/'quactlize/execution', ROOT/'quactlize/include',
                 ROOT/'third_party/actlize/include', ROOT/'third_party/actlize/tools/util/include']
     if not (includes[-2]/'cute/tensor.hpp').is_file():
         raise ValueError('missing pinned actlize headers; initialize the local gitlink first')
-    frozen = inputs()
+    frozen = source_inputs()
     env = dict(os.environ, PATH=str(sdk/'bin')+':'+os.environ.get('PATH', ''),
                LD_LIBRARY_PATH=str(sdk/'lib')+':'+os.environ.get('LD_LIBRARY_PATH', ''))
     started = time.monotonic()
 
     def one(compute):
         src, obj, lib = (output/(compute+ext) for ext in ('.cu', '.o', '.so'))
-        src.write_text(source(compute))
+        src.write_text(generator(compute))
         commands = [[str(sdk/'bin/hgcc'), *FLAGS, *[f'-I{p}' for p in includes],
                      '-c', str(src), '-o', str(obj)]]
         if not object_only:
@@ -59,13 +60,15 @@ def build(sdk, output, object_only=False):
             with (output/(compute+ext)).open('x') as log:
                 subprocess.run([sdk/'bin/hgobjdump', option, target], env=env,
                                stdout=log, stderr=subprocess.STDOUT, check=True)
-        return dict(compute=compute, image=target.name, sha256=sha(target), source_sha256=sha(src))
+        row=dict(compute=compute, image=target.name, sha256=sha(target), source_sha256=sha(src))
+        if kernel_names is not None: row['kernel_names']=list(kernel_names)
+        return row
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         records = list(pool.map(one, ('f16', 'bf16')))
-    if inputs() != frozen:
+    if source_inputs() != frozen:
         raise ValueError('source changed during compilation')
-    receipt = dict(schema='q6-metadata-v1', object_only=object_only, records=records,
+    receipt = dict(schema=schema, object_only=object_only, records=records,
                    compiler_sha256=sha(sdk/'bin/hgcc'), flags=FLAGS, sources=frozen,
                    seconds=time.monotonic()-started, device_admission='NOT_RUN',
                    production_changed=False)

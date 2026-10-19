@@ -123,8 +123,13 @@ def main():
     with phase('source-and-device-verification'):
         authority = json.loads((a.results/'authority.json').read_text())
         manifest = json.loads((a.results/'build/manifest.json').read_text())
+        source_inputs=experiment.inputs
+        if manifest.get('schema')=='q6-sparse-v1':
+            source_inputs=importlib.import_module('dev.gemv_simt.build_q6_sparse').inputs
+        elif manifest.get('schema')!='q6-metadata-v1':
+            raise ValueError('unsupported Q6 experiment schema')
         if (harness_identity(a.source) != authority['harness'] or
-                experiment.inputs() != manifest['sources'] or manifest.get('object_only') or
+                source_inputs() != manifest['sources'] or manifest.get('object_only') or
                 manifest.get('sdk') != sdk_identity(a.sdk) or device(a) != authority['device']):
             raise ValueError('frozen source, SDK or physical device differs from the original run')
         workloads = experiment.workloads()

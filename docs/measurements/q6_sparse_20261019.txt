@@ -1,0 +1,94 @@
+Q6 sparse metadata A2: bounded experiment, not production promotion
+================================================================
+
+Parent develop: 78309d7f906c870d8670b3f3f564a9edf32445cc.
+Control A1 is the previous fixed-register decoder, NOT the original
+TSM-heavy register_reuse kernel. Canonical K-pack, BF16/F16 activation
+rounding, F32 storage, F32 group-affine dot/reduction order, V3/C4/W8/P8/S1
+and launch geometry are unchanged. No caller, runtime selector or public
+ABI is edited. ACU uses a single ordinary launch, no timing ring or graphs.
+
+Evidence prompting this experiment
+---------------------------------
+Uploaded arm1.acurep SHA256:
+7a67a6c13edbda8b74d199fa7e34adbecf633eab17746e6c41269bfb3ae8cb75.
+Kernel q6_register_fields, M8/N512/K2048/E256/topk8/channels8/cluster,
+1024 blocks x256 threads. It reports1024B shared,108 vector registers,
+TSM transactions32768 and zero bank conflicts, but1310720 indexed
+shuffle executions and roughly112.8MB L1/L2 traffic versus7.43MB DRAM.
+Its112.833us ACU duration is NOT a fresh paired event comparison with the
+historical118.451us report. The original timing/JSON receipts were not
+uploaded with arm1.acurep, so complete cohort admission remains pending.
+
+Of4677632 executed v.shrl instructions,2228224 have variable shift operands,
+1179648 use16-bit shifts, and1245184 use26..31-bit shifts. Native surrounding
+instructions associate many of the latter with signed index division or
+modulo corrections. Not every shift is intrinsic to K-pack. Code unpack
+already uses lop3/half2 construction; FP32 dot accumulation is unchanged.
+Unsigned coordinate arithmetic is a SEPARATE next hypothesis, not this A2.
+
+Read/ownership contract
+-----------------------
+For C4, g=warp*8+lane/4+iteration*64. Each active warp owns8 consecutive
+groups within one32-group/36-byte unit. Owner column lane=(lane%4)*8+p;
+its group may differ from the receiving lane, so extract fields using the
+RECEIVER'S group after exchange, not the source lane's group.
+Required uint32 words by phase (g>>3)&3:
+  0:0,1,2; 1:0,2,3,4; 2:4,5,6; 3:4,7,8.
+A2 loads3/4 words instead of9. It always shuffles four named registers,
+zero-filling an unused fourth field, to avoid masked-shuffle reconvergence.
+Both code planes and A retain identical addresses. Metadata lane stride is
+36 bytes; source32/64/128-byte footprints are recorded for every warp and
+actual plane-base alignment. These are request models, not DRAM counters.
+
+Local proofs and native lowering
+--------------------------------
+50 targeted host tests passed. The actual C++ helper is exercised over
+2064384 finite-header/signed-scale cases and10240 tagged cross-lane
+exchanges. Wrong owner, receiving group, phase and signedness are detected.
+Every load is checked against the exact3/4-word mask inside the36-byte unit.
+K256/512/2048/5120 active/inactive warp patterns are checked separately.
+
+SDK2.1.1 compiler SHA256:
+fa62c590c67411c23fa4028f15fa562b39ce0cf830830d038a1ec04c59d8c76e.
+Both F16 and BF16 local PPU objects compiled in14.45s total. No PPU execution
+is available locally. Per-function native A1 instruction bytes are identical
+to the previous local A1 build; control BF16 code hash:
+0dc1973df4a972a9e22da839a028372a6e305e86e9e545853540a18ee373b6a2.
+
+                    A1       A2
+BF16 instruction sites2290     2130
+F16 instruction sites2297      2136
+indexed shuffle sites80         40
+BF16 v.shrl sites    289       289
+BF16 f32 FMA sites   136       136
+TSM ld/st sites      8/1       8/1
+vregs/sregs          108/104   108/104
+shared bytes/stack   1024/0    1024/0
+
+A2 metadata lowering uses a b32x2 load plus a b32 load in phases0/2/3,
+and b32x2 plus two b32 loads in phase1, rather than two b32x4 plus b32.
+There are four phase paths, so summing STATIC global-load sites over all
+paths would overcount per-warp execution. Numerical equivalence does not
+prove performance. Register-limited occupancy does not improve here.
+
+Rejected local draft: conditionally exchanging the fourth register added
+masked-shuffle control flow; static BF16 sites remained2290. The fixed-four
+variant plus straight-line field selection reduced sites to2130. This is
+a code-generation decision, NOT a measured speedup or GPU correctness pass.
+
+Box contract
+------------
+tools/run_q6_sparse_box.sh defaults to one focus point0, one configuration,
+two arms, six alternating timing rounds x five samples. It rebuilds only
+the narrow F16/BF16 experimental modules, not llama or the production .so.
+Existing independent GGUF dot, RAW equality, changed inputs, BF16 large-range
+inputs, zero-A, plane/copy negative controls and guards remain mandatory.
+Ordinary event timing uses the existing>=2.25L2 active-weight ring. Separate
+ACU profiles only A2 with one weight copy and graph-profiling=none; it never
+runs the cold timing loop under ACU. Warmup and first use remain excluded.
+POINTS=all enables the original eight controls after the focus experiment.
+PROFILE_ACU=0 runs numerical and paired timing only.
+Upload the printed results/review.tgz (JSON/logs/native text/ACU only).
+Device correctness, performance improvement and production admission remain
+NOT_RUN until the new paired Box results are reviewed.
