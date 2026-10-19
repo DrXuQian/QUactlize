@@ -1,0 +1,49 @@
+Q6 register-field experiment, not a production promotion
+=======================================================
+
+Parent: 8c6d249bd97a5ac1bdd69bb094459085024ba151.
+Evidence reviewed: review.tgz SHA256
+638480df9e966051174fed8e5d399ea201dde6fec971afa4d47b94ba669dcea2.
+Point: Q6_K indexed M8/N512/K2048/E256/topk8/channels8/cluster,
+F32 storage, BF16 activation, FP32 group-affine arithmetic and output.
+Incumbent V3/C4/W8/P8/S1 events116.83818us; ACU118.451us.
+The native A8 comparison is explicitly deferred by the user.
+
+Mechanism: share_meta exchanges nine words for each output column, then
+meta_bits dynamically indexes Meta<9>. Captured PPU instructions store all
+36 bytes in per-thread TSM and read the selected fields back. This is not
+the final1KiB reduction array or a global-memory stack spill. Baseline has
+37888B static shared and108vector registers. Many sampled memory waits
+are on these TSM reads. Stall samples do not quantify saved wall time.
+
+A1 only replaces the metadata seam in a bounded generated body. Named
+register selection preserves signed int8 scales, both18B superblocks, the
+FP16 superscale conversion and FP32 multiply. Offline bytes, ABI, global
+load topology, activation rounding, dot/reduction order and launch geometry
+are unchanged. Production sources and selectors are untouched.
+
+Local SDK2.1.1 hgcc SHA256
+fa62c590c67411c23fa4028f15fa562b39ce0cf830830d038a1ec04c59d8c76e.
+Both F16/BF16 objects compile. Resource shared units296->8 (128B units,
+37888->1024B); vector registers108->108; stack0->0.
+BF16 static instruction sites2308->2290; TSM stores25->1, reads40->8;
+remaining TSM accesses belong to final reduction. Global load, shuffle,
+FP32 FMA and code-conversion counts are unchanged. No indirect register read.
+The baseline native code hash matches the prior local baseline:
+76f826cd7be92c800c9184d2e8ec3a3ec415ab40444396c2d4705faacce7fd0c.
+Candidate native code hash:
+0dc1973df4a972a9e22da839a028372a6e305e86e9e545853540a18ee373b6a2.
+These are local compile facts, not Box binary identity or a speedup.
+
+Host: actual helper checks2064384 field cases, all finite superscales and
+signed scale bytes; wrong-superblock/group/signedness negatives detected.
+32 targeted host tests pass. The device fixture varies signed group scales
+and superscale signs instead of reusing the common fixture's all-one scales.
+
+Box entry: tools/run_q6_metadata_box.sh. Eight bounded points atM1/2/8,
+dense/indexed, F16/BF16, one config; six alternating rounds of five samples.
+Raw equality old/new plus independent GGUF dot, changed inputs, large BF16
+values, zero input, plane/copy negatives and guards precede timing. Active
+weight ring>=2.25verifiedL2. Two optional forced-cold ACU captures on point0.
+No llama dependency, old-results dependency, native reference or full sweep.
+Device correctness, resource counters and performance remain NOT_RUN.
