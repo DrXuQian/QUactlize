@@ -16,6 +16,20 @@ from dev.strategy.journal import atomic_json
 from quactlize.runtime.tuning import digest
 
 
+def worker_failure(output, returncode):
+    log=output/'console.log'
+    lines=[]
+    if log.is_file():
+        with log.open('rb')as stream:
+            stream.seek(max(0,log.stat().st_size-8192))
+            lines=stream.read().decode(errors='replace').splitlines()
+    markers=('fatal error:', 'command fatal', 'error:', 'undefined reference', 'GGML_ASSERT',
+             'RuntimeError:', 'ValueError:', 'FileNotFoundError:', 'NATIVE_COMPONENT_FAIL:')
+    relevant=[line.strip()for line in lines if any(marker in line for marker in markers)]
+    return dict(worker=output.name,returncode=returncode,log=str(log),
+                diagnostic='\n'.join(line[:400]for line in (relevant or lines)[-6:]))
+
+
 def pack(root, destinations):
     target=root/('review-'+str(time.time_ns())+'.tgz')
     with tarfile.open(target,'w:gz')as archive:
@@ -105,10 +119,13 @@ def main():
     finally:
         for _,log in children:log.close()
     rc=[child.returncode for child,_ in children]
+    failures=[worker_failure(output,code)for output,code in zip(outputs,rc)if code]
+    for failure in failures:
+        print('NATIVE_COMPONENT_WORKER_FAIL '+json.dumps(failure),flush=True)
     summaries=[json.loads((output/'summary.json').read_text())if (output/'summary.json').is_file()else
                dict(status='INCOMPLETE',expected=None,measured=0)for output in outputs]
     result=dict(status='COMPLETE'if not any(rc)and all(s['status']=='COMPLETE'for s in summaries)else'INCOMPLETE',
-                returncodes=rc,measured=sum(s['measured']for s in summaries),
+                returncodes=rc,failures=failures,measured=sum(s['measured']for s in summaries),
                 scope='NATIVE_AND_SUPPLEMENT_COMPONENTS_HISTORICAL_COMPARISON_NOT_MODEL_TPOT',
                 no_regression_admitted=False,production_changed=False)
     atomic_json(a.output/'summary.json',result)

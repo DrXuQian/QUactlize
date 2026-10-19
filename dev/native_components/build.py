@@ -19,6 +19,58 @@ ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 
 
+def response_files(flags, workdir):
+    """Seal nvcc options files without rewriting native compiler arguments.
+
+    CMake emits these paths relative to the target binary directory, NOT
+    the top-level build or the directory containing flags.make. Nested
+    options files use the same compiler cwd. Missing/cyclic files fail before
+    compilation, rather than silently dropping the target's include paths.
+    """
+    result={}
+
+    def visit(arguments, active):
+        i=0
+        while i<len(arguments):
+            argument=arguments[i];value=None
+            if argument in ('--options-file','-optf'):
+                i+=1
+                if i==len(arguments):raise ValueError('native options-file argument is missing')
+                value=arguments[i]
+            elif argument.startswith(('--options-file=','-optf=')):
+                value=argument.split('=',1)[1]
+            if value is not None:
+                for name in value.split(','):
+                    if not name:raise ValueError('empty native options-file path')
+                    path=(workdir/name).resolve()
+                    if path in active:raise ValueError('cyclic native options file: '+str(path))
+                    if not path.is_file():
+                        raise ValueError(f'missing native options file: {path} (compiler cwd={workdir})')
+                    if str(path)not in result:
+                        result[str(path)]=sha(path)
+                        visit(shlex.split(path.read_text()),active|{path})
+            i+=1
+
+    visit(flags,set())
+    return result
+
+
+def run_commands(commands, workdir, log_path):
+    """Keep the full log and expose the compiler's own diagnostic on failure."""
+    with log_path.open('x')as log:
+        log.write(json.dumps(dict(cwd=str(workdir)))+'\n')
+        for index,command in enumerate(commands):
+            log.write(json.dumps(command)+'\n');log.flush()
+            result=subprocess.run(command,cwd=workdir,stdout=log,stderr=subprocess.STDOUT)
+            if result.returncode:
+                log.flush()
+                with log_path.open('rb')as reader:
+                    reader.seek(max(0,log_path.stat().st_size-8192))
+                    tail='\n'.join(reader.read().decode(errors='replace').splitlines()[-24:])
+                raise RuntimeError(f'native adapter {"compile"if index==0 else"link"} failed '
+                                   f'rc={result.returncode}; cwd={workdir}; log={log_path}\n{tail}')
+
+
 def between(text, start, end):
     if text.count(start) != 1 or text.count(end) != 1:
         raise ValueError('native source seam changed: '+start)
@@ -97,6 +149,10 @@ def build_adapter(llama, build, sdk, output):
     output.mkdir(parents=True, exist_ok=True)
     source, binding = adapter_source(llama)
     compiler, flags, flag_file = native_flags(llama, build)
+    # Make's CUDA compile rule runs "cd <target binary dir> && nvcc ...".
+    # Keep that cwd for relative -I paths and --options-file arguments alike.
+    workdir=flag_file.parents[2]
+    responses=response_files(flags,workdir)
     compiler_path=Path(compiler).resolve(strict=True)
     if not compiler_path.is_relative_to(sdk):
         raise ValueError('native compiler is outside the requested PPU SDK; use its matching SDK')
@@ -114,6 +170,7 @@ def build_adapter(llama, build, sdk, output):
             p=directory/name
             if p.is_file():images.add(p.resolve())
     identity = dict(binding=binding, flags_sha256=sha(flag_file), flags=flags,
+        compiler_workdir=str(workdir),response_files=responses,
         cmake_sha256=sha(build/'CMakeCache.txt'),
         llama_head=subprocess.check_output(['git','-C',str(llama),'rev-parse','HEAD'],text=True).strip(),
         headers={str(p.relative_to(llama)):sha(p) for base in ('ggml/include','ggml/src/ggml-cuda')
@@ -140,10 +197,9 @@ def build_adapter(llama, build, sdk, output):
          '-L'+str(sdk/'lib'),'-L'+str(sdk/'targets/x86_64-linux/lib'),
          '-Wl,-rpath-link,'+str(sdk/'CUDA_SDK/targets/x86_64-linux/lib'),
          '-Wl,-rpath-link,'+str(sdk/'targets/x86_64-linux/lib'),'-lhggc_wrapper','-pthread','-ldl']]
-    with (output/'adapter-build.log').open('x') as log:
-        for command in commands:
-            log.write(json.dumps(command)+'\n'); log.flush()
-            subprocess.run(command, cwd=build, stdout=log, stderr=subprocess.STDOUT, check=True)
+    run_commands(commands,workdir,output/'adapter-build.log')
+    if response_files(flags,workdir)!=responses:
+        raise ValueError('native response files changed during adapter build')
     receipt = dict(identity=identity, binary_sha256=sha(binary), commands=commands,
                    scope='TEST_ONLY_EXACT_NATIVE_HOST_DISPATCH_NOT_DEVICE_ADMISSION')
     atomic_json(manifest, receipt)

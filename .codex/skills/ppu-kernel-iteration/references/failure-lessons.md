@@ -315,3 +315,14 @@ contained no FULL path despite that path winning 186 prefill points. None of
 these component results establishes native llama parity or model TPOT.
 Evidence and limits: `docs/measurements/kpack_prefill_confirmation_20261019.txt`,
 `dev/strategy/prefill_review.py`, `tests/test_strategy_prefill_review.py`.
+
+When reusing a CMake target's flags for a narrow test adapter, preserve its
+compile working directory as well as argv. The native comparison runner
+copied `--options-file CMakeFiles/ggml-cuda.dir/includes_CUDA.rsp` but launched
+from the top-level build; the file belongs under `build/ggml/src/ggml-cuda`.
+Local SDK2.1.1 compilation reproduces "Could not open options file" at the
+wrong cwd and succeeds at the target cwd. Keep the native response file and
+flags intact, seal its contents in the receipt, and expose compiler stderr
+in worker/coordinator errors. Object compilation is not full linking or GPU
+execution. Seams: `dev/native_components/build.py`,
+`tests/test_native_components_build.py` (2026-10-19).
