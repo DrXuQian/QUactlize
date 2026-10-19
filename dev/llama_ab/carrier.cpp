@@ -92,22 +92,24 @@ struct Backend {
 };
 
 struct Weights {
-    int q, n, k, experts, copies;
+    int q, n, k, experts, copies, arms;
     size_t bytes, row_bytes;
     uint64_t raw_fingerprint = UINT64_C(14695981039346656037);
     Context contexts[2];
     Buffer buffers[2];
     std::vector<ggml_tensor *> tensors[2];
     std::vector<uint8_t> raw;
-    Weights(const json & w, int count, Runtime & rt) :
+    Weights(const json & w, int count, Runtime & rt, int arm_count = 2, const std::string & raw_path = "") :
         q(w["qtype"]), n(w["n"]), k(w["k"]), experts(w["experts"]), copies(count),
+        arms(arm_count),
         contexts{Context((count+8)*ggml_tensor_overhead()), Context((count+8)*ggml_tensor_overhead())} {
+        require(arms == 1 || arms == 2, "invalid arm count");
         Backend probe;
         auto dev = ggml_backend_get_device(probe.p);
         auto reg = ggml_backend_dev_backend_reg(dev);
         auto native = ggml_backend_cuda_buffer_type(0);
         ggml_backend_buffer_type_t packed = nullptr;
-        for (auto name : {"ggml_backend_dev_get_override_bufts", "ggml_backend_dev_get_extra_bufts"}) {
+        if (arms == 2) for (auto name : {"ggml_backend_dev_get_override_bufts", "ggml_backend_dev_get_extra_bufts"}) {
             auto get = reinterpret_cast<ggml_backend_dev_get_extra_bufts_t>(ggml_backend_reg_get_proc_address(reg, name));
             if (get) for (auto types = get(dev); types && *types; ++types) {
                 if (strstr(ggml_backend_buft_name(*types), "KPACK")) {
@@ -115,28 +117,38 @@ struct Weights {
                 }
             }
         }
-        require(packed && packed != native, "K-pack buffer is unavailable in this llama build");
+        require(arms == 1 || (packed && packed != native), "K-pack buffer is unavailable in this llama build");
         row_bytes = ggml_row_size(ggml_type(q), k);
         bytes = row_bytes * size_t(n) * experts;
         raw.resize(bytes);
-        std::vector<float> values(size_t(k)*32), importance(k, 1.f);
-        for (int e = 0; e < experts; ++e) for (int first = 0; first < n; first += 32) {
-            int rows = std::min(32, n-first);
-            for (size_t i = 0; i < size_t(rows)*k; ++i)
-                values[i] = value((uint64_t(e)*n+first)*k+i, 710+q*1009);
-            auto size = ggml_quantize_chunk(ggml_type(q), values.data(),
-                raw.data()+(size_t(e)*n+first)*row_bytes, 0, rows, k, importance.data());
-            require(size == size_t(rows)*row_bytes, "quantizer byte count differs");
+        if (!raw_path.empty()) {
+            const size_t expert_bytes=row_bytes*size_t(n),patterns=std::min(experts,17);
+            require(fs::file_size(raw_path)==patterns*expert_bytes,"historical GGUF fixture extent differs");
+            std::ifstream file(raw_path,std::ios::binary);
+            file.read(reinterpret_cast<char *>(raw.data()),patterns*expert_bytes);
+            require(bool(file),"historical GGUF fixture read failed");
+            for(int e=int(patterns);e<experts;++e)
+                std::memcpy(raw.data()+e*expert_bytes,raw.data()+(e%patterns)*expert_bytes,expert_bytes);
+        } else {
+            std::vector<float> values(size_t(k)*32), importance(k, 1.f);
+            for (int e = 0; e < experts; ++e) for (int first = 0; first < n; first += 32) {
+                int rows = std::min(32, n-first);
+                for (size_t i = 0; i < size_t(rows)*k; ++i)
+                    values[i] = value((uint64_t(e)*n+first)*k+i, 710+q*1009);
+                auto size = ggml_quantize_chunk(ggml_type(q), values.data(),
+                    raw.data()+(size_t(e)*n+first)*row_bytes, 0, rows, k, importance.data());
+                require(size == size_t(rows)*row_bytes, "quantizer byte count differs");
+            }
         }
         for (uint8_t v : raw) { raw_fingerprint ^= v; raw_fingerprint *= UINT64_C(1099511628211); }
         size_t free_bytes=0, total=0;
         checked(rt.memory(&free_bytes, &total), "memory query");
         std::printf("LLAMA_AB_MEMORY %s\n", json({{"free_bytes",free_bytes},{"total_bytes",total},
-                    {"weight_pair_bytes",uint64_t(bytes)*copies*2},{"copies",copies}}).dump().c_str());
+                    {"weight_pair_bytes",uint64_t(bytes)*copies*arms},{"copies",copies}}).dump().c_str());
         std::fflush(stdout);
-        require(double(bytes)*copies*2 < free_bytes*.78,
+        require(double(bytes)*copies*arms < free_bytes*.78,
             "cold pair exceeds free VRAM budget; do not shrink the cold ring or omit experts");
-        for (int arm=0; arm<2; ++arm) {
+        for (int arm=0; arm<arms; ++arm) {
             auto type = arm ? packed : native;
             for (int i=0; i<copies; ++i)
                 tensors[arm].push_back(ggml_new_tensor_3d(contexts[arm].p, ggml_type(q), k, n, experts));
@@ -168,17 +180,19 @@ struct Point {
     Backend backends[2];
     std::vector<float> input;
     std::vector<int32_t> owners;
+    json input_fixture;
     Point(Weights & weights, const json & row) : weight(weights) {
         const auto & w = row["workload"];
         m=w["m"]; topk=w["topk"]; channels=w["channels"]; copies=row["copies"];
         indexed=w["operation"]=="indexed"; id=row["id"];
+        input_fixture=row.value("input_fixture",json());
         require(copies>=2 && copies<=weight.copies, "invalid ring count");
         owners=row["owners"].get<std::vector<int32_t>>();
         require(owners.size()==size_t(m)*topk, "routing extent differs");
         for (auto e : owners) require(e>=0 && e<weight.experts, "expert out of bounds");
         input.resize(size_t(m)*channels*weight.k);
         const size_t ctx_bytes=(copies*8+32)*ggml_tensor_overhead()+copies*ggml_graph_overhead_custom(8, false);
-        for (int arm=0; arm<2; ++arm) {
+        for (int arm=0; arm<weight.arms; ++arm) {
             ctx[arm]=std::make_unique<Context>(ctx_bytes);
             auto c=ctx[arm]->p;
             inputs[arm]=ggml_new_tensor_3d(c, GGML_TYPE_F32, weight.k, indexed?channels:m, indexed?m:1);
@@ -204,13 +218,23 @@ struct Point {
                 "backend graph execution failed");
     }
     void set_input(int repeat) {
-        for (size_t i=0;i<input.size();++i) input[i]=value(i,931+repeat*541);
-        for (int arm=0;arm<2;++arm) ggml_backend_tensor_set(inputs[arm],input.data(),0,input.size()*4);
+        if(input_fixture.is_null()) {
+            for (size_t i=0;i<input.size();++i) input[i]=value(i,931+repeat*541);
+        } else {
+            auto categories=input_fixture["categories"].get<std::vector<int>>();
+            auto coeff=input_fixture["coefficients"].at(repeat).get<std::vector<float>>();
+            require(categories.size()==size_t(weight.k) && coeff.size()==size_t(m)*channels*4,"historical A fixture extent differs");
+            for(size_t i=0;i<input.size();++i) {
+                int group=categories[i%weight.k];require(group>=0 && group<4,"invalid historical K category");
+                input[i]=coeff[i/weight.k*4+group];
+            }
+        }
+        for (int arm=0;arm<weight.arms;++arm) ggml_backend_tensor_set(inputs[arm],input.data(),0,input.size()*4);
     }
     json check(int index) {
         std::vector<float> got[2];
         const size_t count=size_t(m)*topk*weight.n;
-        for (int arm=0;arm<2;++arm) {
+        for (int arm=0;arm<weight.arms;++arm) {
             got[arm].resize(count);
             ggml_backend_synchronize(backends[arm].p);
             ggml_backend_tensor_get(outputs[arm][index],got[arm].data(),0,count*4);
@@ -220,7 +244,7 @@ struct Point {
             }
         }
         double diff=0,norm=0;
-        for (size_t i=0;i<count;++i) { diff+=std::pow(double(got[0][i])-got[1][i],2); norm+=double(got[0][i])*got[0][i]; }
+        if (weight.arms == 2) for (size_t i=0;i<count;++i) { diff+=std::pow(double(got[0][i])-got[1][i],2); norm+=double(got[0][i])*got[0][i]; }
         double relative=std::sqrt(diff/std::max(norm,1e-30));
         if (!(relative<.02)) throw std::runtime_error("candidate/native relative L2 error="+
             std::to_string(relative)+" exceeds .02, copy="+std::to_string(index));
@@ -236,7 +260,7 @@ struct Point {
             decode(weight.raw.data()+(size_t(expert)*weight.n+col)*weight.row_bytes,b.data(),weight.k);
             double dot=0,denom=0;
             for (int k=0;k<weight.k;++k) { double x=double(input[ar*weight.k+k])*b[k];dot+=x;denom+=std::abs(x); }
-            for (int arm=0;arm<2;++arm) maximum[arm]=std::max(maximum[arm],std::abs(got[arm][pos]-dot)/std::max(denom,1e-30));
+            for (int arm=0;arm<weight.arms;++arm) maximum[arm]=std::max(maximum[arm],std::abs(got[arm][pos]-dot)/std::max(denom,1e-30));
         }
         if (!(maximum[0]<.005 && maximum[1]<.005)) throw std::runtime_error(
             "independent GGUF spot dot error native="+std::to_string(maximum[0])+
