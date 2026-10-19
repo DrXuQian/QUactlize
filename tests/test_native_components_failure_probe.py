@@ -9,6 +9,7 @@ import tempfile
 import unittest
 
 from tools.probe_native_component_failures import check_binding,select,pack
+from dev.native_components.build import between
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -47,6 +48,63 @@ class FailureProbeTest(unittest.TestCase):
         script=(ROOT/'tools/probe_native_component_failures.py').read_text()
         self.assertNotIn("atomic_json(a.previous",script)
         self.assertIn("if mode!='native':child_env['GGML_CUDA_CUBLAS_COMPUTE_TYPE']=mode",script)
+
+    def test_changed_input_snapshot_waits_for_producer_not_only_copy_stream(self):
+        compiler=shutil.which('g++')
+        if not compiler:self.skipTest('C++ compiler unavailable')
+        # Compile the actual download helper with two independent fake streams.
+        # Waiting for tensor_get's copy alone must leave compute pending. The
+        # legacy helper then deterministically reads input0 after launching input1.
+        helper=between((ROOT/'dev/native_components/carrier.cpp').read_text(),
+                       'static std::vector<float> download(', 'static void compare_native(')
+        prefix=r'''
+#include <vector>
+#include <cstddef>
+#include <cassert>
+#include <cstring>
+struct Tensor {std::vector<float> data;};
+struct Stream {Tensor * output;std::vector<float> pending;bool waiting=false;int waits=0;};
+struct Backend {Stream * p;};
+struct Point {Backend backends[1];std::vector<Tensor *> outputs[1];};
+static size_t ggml_nelements(Tensor * t) {return t->data.size();}
+static void ggml_backend_synchronize(Stream * s) {
+    ++s->waits;
+    if(s->waiting) {s->output->data=s->pending;s->waiting=false;}
+}
+static void ggml_backend_tensor_get(Tensor * t,void * out,size_t off,size_t bytes) {
+    std::memcpy(out,reinterpret_cast<char *>(t->data.data())+off,bytes);
+}
+'''
+        suffix=r'''
+int main() {
+    Tensor first{{1,2}},second{{3,4}};Stream producer{&first,{11,12},true};
+    Point p{{{&producer}},{{&first,&second}}};
+    if(download(p,0)!=std::vector<float>({11,12}) || producer.waiting || producer.waits!=1)return 1;
+    producer={&second,{21,22},true};
+    if(download(p,1)!=std::vector<float>({21,22}) || producer.waiting || producer.waits!=1)return 2;
+    if(first.data!=std::vector<float>({11,12}))return 3;
+}
+'''
+        with tempfile.TemporaryDirectory()as td:
+            path=Path(td)
+            for name,body,want in (('fixed',helper,0),('missing-producer-wait',
+                    helper.replace('ggml_backend_synchronize(point.backends[0].p);',''),1)):
+                src=path/(name+'.cpp');src.write_text(prefix+body+suffix)
+                subprocess.run([compiler,'-std=c++17',str(src),'-o',str(path/name)],check=True,capture_output=True)
+                self.assertEqual(subprocess.run([str(path/name)]).returncode,want)
+
+    def test_diagnostic_keeps_failed_phase_and_metrics_without_relaxing_gate(self):
+        text=(ROOT/'dev/native_components/carrier.cpp').read_text()
+        comparison=between(text,'static void compare_native(','static int helpers(')
+        self.assertIn('require(relative<1e-5,',comparison)
+        self.assertLess(comparison.index('if(evidence)*evidence=detail;'),comparison.index('require(relative<1e-5,'))
+        diagnostic=between(text,'if(request.value("diagnostic",false)) {','            proofs.push_back(proof(0));')
+        self.assertIn('"input0-replay"',diagnostic)
+        self.assertIn('"input1-replay"',diagnostic)
+        self.assertIn('detail["status"]="INFRASTRUCTURE_FAIL";detail["error"]=e.what();save();throw;',diagnostic)
+        # publish() refuses overwrite: write one final success OR one failure,
+        # not several updates to the same immutable result path.
+        self.assertEqual(diagnostic.count('save();'),2)
 
     def test_native_q8_host_arithmetic(self):
         compiler=shutil.which('g++')

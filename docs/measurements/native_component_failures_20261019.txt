@@ -60,3 +60,54 @@ failed-only reuse binding; never disable the old identity checks.
 
 API contract reference (node owns kernelParams/extra; retain its lifetime):
 https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__GRAPH.html
+
+Follow-up diagnostic pdvGnj2J, review.tgz
+SHA256: 48b155bd13093521d3c93385624f5efb93a0edaab8ccf533f9c74194455a07fd
+17 jobs, 99.150 seconds including the narrow build. No timing samples.
+The uploaded caller HEAD is again 908c347a, identical to bR8xRPDM. All
+previously sealed production sources/headers/flags/compiler/libraries are
+unchanged; only the test adapter changed and libcuda was added to the seal.
+The earlier llama_head rejection is not present in this uploaded run. Keep
+that identity check: there is no reason to relax it for this evidence.
+
+All three JIT representatives now extract the actual Driver CUfunction and
+launch metadata (batched_gemvt_kernel, computeBlockInfoKernel and
+bf16_grouped_deep_gemm_NoPad). Parameter API failure 500 is gone. Full replay
+admission is NOT proved: 11/17 jobs fail the linked-backend comparison, without
+the old script recording which input comparison failed or its residual.
+
+Six completed jobs are Q4/Q5 dense N5120 K25600 M2048 with native/BF16/F32
+controls. For original inputs, independent raw-GGUF dot errors normalized by
+sum(abs(A*B)) are:
+                  native F16     BF16 control    F32 control
+Q4                .091582305     .000209448      .000238292
+Q5                .092176880     .000262119      .000292015
+The changed input also reproduces the large F16 error (.087653/.091337).
+Linked and extracted full outputs agree for both inputs in all six jobs.
+This locates those two raw-oracle failures in the original precision/provider
+path, not Quactlize, but does not separate dequant/accumulation/output rounding:
+the controls change multiple precision boundaries. They are not replacement
+performance baselines. Dense .005 admission remains unchanged.
+
+Host source audit finds a definite diagnostic readback race: after
+set_input(1), graph_compute_async submits to a nonblocking backend stream;
+download called tensor_get without synchronizing that producer. The caller's
+tensor_get copies on cudaStreamPerThread and waits only for that copy stream.
+The following point.check synchronizes too late to repair the already-saved
+reference snapshot. Fix download to synchronize the actual producer first.
+A deterministic two-stream host mock compiled from that helper fails with
+the legacy missing wait and passes with the fix, for both output allocations.
+This identifies a harness defect, not proof that it explains all 11 failures.
+Normal campaign snapshots already followed point.check (which synchronizes),
+so do not invalidate or remeasure the 1178 successful historical rows.
+
+Retain diagnostic comparison phase, relative L2, worst difference and prefix
+oracle evidence even on failure. Keep the strict 1e-5 replay gate. All new
+synchronization/readback is outside timing; cuBLAS remains ordinary, not
+captured. Repeat only the bounded 17-job diagnostic on one idle card, using
+the same Box command and unchanged caller/build/SDK. No full sweep yet.
+
+Local checks: 106 host tests PASS in69.29seconds, including a compiled
+missing-producer-wait negative. Full carrier C++17 syntax check against the
+existing dense caller headers passes; bash syntax, Python AST and git whitespace
+checks pass. Device retry of this synchronization fix is still pending.

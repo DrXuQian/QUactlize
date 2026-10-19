@@ -145,6 +145,7 @@ every diagnostic to every kernel.
 | Immediate status200 / InvalidKernelImage, including marker | Inspect SDK/compiler/runtime identity and native image admission; compare known runnable carrier | Header-defined kernel, aggregate ABI or CuTe must be broken |
 | Failure appears after adding F32 endpoints | Inspect first nonfinite tensor and exact activation/dequant precision boundaries | F32-to-F16 cannot overflow, or clipping is harmless |
 | Changing-input replay intermittently wrong | H2D must be ordered on the consumer stream and host memory kept alive | Passing once excludes a race |
+| Extracted replay differs after an asynchronous linked-backend launch | Wait for the producer stream BEFORE saving the reference output; tensor_get may wait only for its own copy stream | A later synchronized oracle repairs an already-stale host snapshot |
 | Error at second M8 tile, N-column stripes | Enumerate actual epilogue ownership; first CTA must not write next tile's row | Rebase the A pointer without evidence |
 | Profiler checker rejects a new implementation | Import saved reports; match exact producer, geometry and required reducer for that call | All symbols observed in a whole request must occur in one M1 profile |
 | A grouped graph has two `prepare` roles and no producer | Classify the callable or CUTLASS's outer kernel type, not words in the full demangled template/argument list | `GroupDirectoryMixedInputKernel` is a directory-builder launch because its name contains `directory` |
@@ -195,6 +196,18 @@ their original authority; do not disable source checks or relabel old timing.
 Keep diagnostics small: the exact first bad cell, immediate runtime code,
 source/binary identity, and saved detailed logs are more useful than thousands
 of repeated warnings. A CPU/profiler receipt is not device admission.
+
+Native-component diagnostic pdvGnj2J (ZW810, 2026-10-19) exposed a missing
+producer wait in its changed-input reference download. llama graph compute
+uses a nonblocking stream; tensor_get used cudaStreamPerThread and waited
+only for the D2H copy. A host two-stream negative reproduces this race, but
+device closure of the eleven mismatches still needs the fixed diagnostic.
+Keep comparison phase/residual and partial independent proofs on failure.
+Separate this from the six completed Q4/Q5 dense precision controls: the
+original F16 path has about9% abs-dot-normalized error even when extraction
+matches; BF16/F32 controls are below.031%. Do not relax the gate, blame
+Quactlize, or substitute a faster/different native arithmetic baseline.
+Evidence: docs/measurements/native_component_failures_20261019.txt.
 
 On physical H800 / CUDA12.8 SM90a / driver595.71.05, a fixed Q4
 GEMM -> SF -> TMA GEMM graph regressed even without early weight loads.

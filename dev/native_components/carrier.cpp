@@ -73,17 +73,28 @@ static void poison(Point & point, int copy) {
     ggml_backend_tensor_set(point.outputs[0][copy],values.data(),0,values.size()*4);
 }
 static std::vector<float> download(Point & point, int copy) {
+    // graph_compute_async uses the backend's nonblocking compute stream.
+    // tensor_get waits only for its own copy stream, not that producer.
+    // This is an untimed correctness snapshot, never part of nc.measure.
+    ggml_backend_synchronize(point.backends[0].p);
     std::vector<float> result(ggml_nelements(point.outputs[0][copy]));
     ggml_backend_tensor_get(point.outputs[0][copy],result.data(),0,result.size()*4);return result;
 }
-static void compare_native(const std::vector<float> & a, const std::vector<float> & b) {
-    double diff=0,norm=0;
+static void compare_native(const std::vector<float> & a, const std::vector<float> & b, json * evidence=nullptr) {
+    double diff=0,norm=0,maximum=0;size_t worst=0;
     require(a.size()==b.size(),"native output extent differs");
     for(size_t i=0;i<a.size();++i) {
         require(std::isfinite(a[i])&&std::isfinite(b[i]),"native adapter produced nonfinite output");
-        diff+=std::pow(double(a[i])-b[i],2);norm+=double(a[i])*a[i];
+        const double delta=double(a[i])-b[i];diff+=delta*delta;norm+=double(a[i])*a[i];
+        if(std::abs(delta)>maximum) {maximum=std::abs(delta);worst=i;}
     }
-    require(std::sqrt(diff/std::max(norm,1e-30))<1e-5,"extracted native call differs from linked backend");
+    const double relative=std::sqrt(diff/std::max(norm,1e-30));
+    json detail={{"relative_l2",relative},{"limit",1e-5},{"elements",a.size()},
+        {"max_abs_difference",maximum},{"worst_position",worst},
+        {"linked_value",a.empty()?json(nullptr):json(a[worst])},
+        {"extracted_value",b.empty()?json(nullptr):json(b[worst])}};
+    if(evidence)*evidence=detail;
+    require(relative<1e-5,("extracted native call differs from linked backend: "+detail.dump()).c_str());
 }
 static int helpers(const json & request,const fs::path & output) {
     Backend backend; // initialize the native device/launch policy once
@@ -162,21 +173,38 @@ int main(int argc,char ** argv) {
             if(request.value("diagnostic",false)) {
                 // No timers and no campaign result: an accuracy failure is
                 // evidence to inspect, never a permission to time wrong output.
-                proofs.push_back(proof(0,false));
-                poison(point,0);nc.check(nc.replay(nc.session,0,-1));
-                compare_native(original,download(point,0));
-                proofs.push_back(proof(0,false));
-                point.set_input(1);point.launch(0,0);auto changed=download(point,0);
-                proofs.push_back(proof(0,false));
-                poison(point,0);nc.check(nc.replay(nc.session,0,-1));
-                compare_native(changed,download(point,0));proofs.push_back(proof(0,false));
-                publish(fs::path(argv[2])/(point.id+".diagnostic.json"),json{
+                json detail={
                     {"id",point.id},{"workload",row["workload"]},{"inventory",inventory},
                     {"original_raw",original_raw},{"proof",proofs},
-                    {"linked_backend_comparison","PASS_TWO_INPUTS"},{"status","DIAGNOSTIC_COMPLETE"},
+                    {"linked_backend_comparison","NOT_COMPLETE"},{"status","IN_PROGRESS"},
+                    {"comparisons",json::object()},{"phase","captured"},
                     {"authority",request["authority"]},{"compute_override",request.value("compute_override","native")},
                     {"scope","NUMERIC_AND_EXTRACTION_DIAGNOSTIC_NO_TIMING"},
-                    {"performance_admitted",false},{"production_changed",false}});
+                    {"performance_admitted",false},{"production_changed",false}};
+                auto save=[&] {
+                    detail["proof"]=proofs;
+                    publish(fs::path(argv[2])/(point.id+".diagnostic.json"),detail);
+                };
+                try {
+                    proofs.push_back(proof(0,false));
+                    detail["phase"]="input0-replay";
+                    poison(point,0);nc.check(nc.replay(nc.session,0,-1));
+                    auto got=download(point,0);
+                    compare_native(original,got,&detail["comparisons"]["input0"]);
+                    proofs.push_back(proof(0,false));
+                    detail["phase"]="input1-linked-snapshot";
+                    point.set_input(1);point.launch(0,0);auto changed=download(point,0);
+                    proofs.push_back(proof(0,false));
+                    detail["phase"]="input1-replay";
+                    poison(point,0);nc.check(nc.replay(nc.session,0,-1));
+                    got=download(point,0);
+                    compare_native(changed,got,&detail["comparisons"]["input1"]);
+                    proofs.push_back(proof(0,false));
+                    detail["linked_backend_comparison"]="PASS_TWO_INPUTS";
+                    detail["status"]="DIAGNOSTIC_COMPLETE";detail["phase"]="complete";save();
+                } catch(const std::exception & e) {
+                    detail["status"]="INFRASTRUCTURE_FAIL";detail["error"]=e.what();save();throw;
+                }
                 std::printf("NATIVE_DIAGNOSTIC_DONE point=%s\n",point.id.c_str());std::fflush(stdout);
                 continue;
             }

@@ -165,7 +165,9 @@ def main():
                         raw_f32_status=[v['raw_f32_status']for v in data['proof']],
                         arithmetic_status=[v['status']for v in data['proof']],
                         raw_errors=[v['raw_spot_normalized_error']for v in data['proof']],
-                        replay=data['linked_backend_comparison'])
+                        replay=data['linked_backend_comparison'],
+                        phase=data.get('phase'),comparisons=data.get('comparisons',{}))
+                    if 'error'in data:result['error']=data['error']
                 else:result['status']='INFRASTRUCTURE_FAIL'
                 results.append(result);print('NATIVE_DIAGNOSTIC_RESULT '+json.dumps(result),flush=True)
     finally:
