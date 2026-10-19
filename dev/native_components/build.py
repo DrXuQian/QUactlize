@@ -171,7 +171,7 @@ def build_adapter(llama, build, sdk, output):
         raise ValueError('llama sources are newer than libggml-cuda; rebuild before this comparison')
     images=set(p.resolve()for p in (build/'bin').glob('*.so*')if p.is_file())
     for directory in (sdk/'lib',sdk/'targets/x86_64-linux/lib',sdk/'CUDA_SDK/targets/x86_64-linux/lib'):
-        for name in ('libcublas.so','libcudart.so','libhggc_wrapper.so','libhggc.so','libhggcrt1.so'):
+        for name in ('libcublas.so','libcudart.so','libcuda.so','libhggc_wrapper.so','libhggc.so','libhggcrt1.so'):
             p=directory/name
             if p.is_file():images.add(p.resolve())
     identity = dict(binding=binding, flags_sha256=sha(flag_file), flags=flags,
@@ -198,7 +198,7 @@ def build_adapter(llama, build, sdk, output):
                  '-I'+str(llama/'ggml/src'), '-c', str(generated), '-o', str(obj)],
         ['g++','-shared','-Wl,--no-undefined',str(obj),'-o',str(binary),'-L'+str(build/'bin'),
          '-Wl,-rpath,'+str(build/'bin'),'-lggml-cuda','-lggml-base',
-         '-L'+str(sdk/'CUDA_SDK/targets/x86_64-linux/lib'),'-lcublas','-lcudart',
+         '-L'+str(sdk/'CUDA_SDK/targets/x86_64-linux/lib'),'-lcublas','-lcudart','-lcuda',
          '-L'+str(sdk/'lib'),'-L'+str(sdk/'targets/x86_64-linux/lib'),
          '-Wl,-rpath-link,'+str(sdk/'CUDA_SDK/targets/x86_64-linux/lib'),
          '-Wl,-rpath-link,'+str(sdk/'targets/x86_64-linux/lib'),'-lhggc_wrapper','-pthread','-ldl']]

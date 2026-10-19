@@ -52,8 +52,7 @@ struct KernelGraph {
             for (auto stage:stages) {
                 if (stage->provider) throw std::runtime_error("provider in graph forbidden");
                 cudaGraphNode_t node=nullptr;
-                check(cudaGraphAddKernelNode(&node,graph,previous?&previous:nullptr,previous?1:0,
-                    &stage->params),"single-stage graph add"); previous=node;
+                stage->kernel.add(&node,graph,previous); previous=node;
             }
             check(cudaGraphInstantiateWithFlags(&instance,graph,0),"single-stage instantiate");
         } catch (...) { if (graph) cudaGraphDestroy(graph); throw; }

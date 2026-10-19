@@ -4,6 +4,7 @@
 #include "../llama_ab/carrier.cpp"
 #undef main
 #include <cxxabi.h>
+#include "oracle.hpp"
 
 struct NativeComponents {
     const char * (*error)();
@@ -57,6 +58,15 @@ static std::string native_role(const json & stage) {
        head.find("computeBlockInfo")!=std::string::npos || head.find("k_compute_batched_ptrs")!=std::string::npos)
         return "prepare";
     return "unclassified";
+}
+static bool native_q8_1_contract(const json & inventory, int qtype) {
+    // These K-quant MMVQ bodies use FP32 scale arithmetic and consume the
+    // rounded Q8_1 scale/codes. MMQ's sum metadata and other qtypes need their
+    // own reference; never infer this contract merely from quantized weights.
+    if(qtype<10 || qtype>14 || inventory.size()!=2) return false;
+    return inventory[0]["entry"]=="KERNEL" && inventory[1]["entry"]=="KERNEL" &&
+        inventory[0]["name"].get<std::string>().find("quantize_q8_1(")==0 &&
+        inventory[1]["name"].get<std::string>().find("void mul_mat_vec_q")==0;
 }
 static void poison(Point & point, int copy) {
     std::vector<float> values(ggml_nelements(point.outputs[0][copy]),NAN);
@@ -126,10 +136,11 @@ int main(int argc,char ** argv) {
             std::printf("NATIVE_COMPONENT_START point=%s\n",row["id"].get<std::string>().c_str());std::fflush(stdout);
             Point point(weights,row);
             json proofs=json::array();
-            point.set_input(0);point.launch(0,0);proofs.push_back(point.check(0));
+            point.set_input(0);point.launch(0,0);
+            const auto original_raw=point.check(0,nullptr,false);
             auto original=download(point,0);
             NativeComponents nc(request["adapter_library"]);
-            for(int copy=0;copy<point.copies;++copy) nc.check(nc.record(nc.session,point.outputs[0][copy]));
+            nc.check(nc.record(nc.session,point.outputs[0][0]));
             json inventory=json::parse(nc.inventory(nc.session));
             int first_main=-1;
             for(size_t i=0;i<inventory.size();++i) {
@@ -140,34 +151,65 @@ int main(int argc,char ** argv) {
                 if(stage["role"]=="producer"||stage["role"]=="provider") if(first_main<0) first_main=int(i);
             }
             publish(fs::path(argv[2])/(point.id+".inventory.json"),inventory);
+            const bool q8_1=native_q8_1_contract(inventory,weights.q);
+            auto proof=[&](int copy,bool enforce=true) {
+                if(!q8_1) return point.check(copy,nullptr,enforce);
+                const auto input=native_q8_1_input(point.input,[](float v) {
+                    return ggml_fp16_to_fp32(ggml_fp32_to_fp16(v));
+                });
+                return point.check(copy,&input,enforce);
+            };
+            if(request.value("diagnostic",false)) {
+                // No timers and no campaign result: an accuracy failure is
+                // evidence to inspect, never a permission to time wrong output.
+                proofs.push_back(proof(0,false));
+                poison(point,0);nc.check(nc.replay(nc.session,0,-1));
+                compare_native(original,download(point,0));
+                proofs.push_back(proof(0,false));
+                point.set_input(1);point.launch(0,0);auto changed=download(point,0);
+                proofs.push_back(proof(0,false));
+                poison(point,0);nc.check(nc.replay(nc.session,0,-1));
+                compare_native(changed,download(point,0));proofs.push_back(proof(0,false));
+                publish(fs::path(argv[2])/(point.id+".diagnostic.json"),json{
+                    {"id",point.id},{"workload",row["workload"]},{"inventory",inventory},
+                    {"original_raw",original_raw},{"proof",proofs},
+                    {"linked_backend_comparison","PASS_TWO_INPUTS"},{"status","DIAGNOSTIC_COMPLETE"},
+                    {"authority",request["authority"]},{"compute_override",request.value("compute_override","native")},
+                    {"scope","NUMERIC_AND_EXTRACTION_DIAGNOSTIC_NO_TIMING"},
+                    {"performance_admitted",false},{"production_changed",false}});
+                std::printf("NATIVE_DIAGNOSTIC_DONE point=%s\n",point.id.c_str());std::fflush(stdout);
+                continue;
+            }
+            proofs.push_back(proof(0));
             require(first_main>=0,"native producer not identified; inventory retained");
             for(auto & stage:inventory) require(stage["role"]!="unclassified","unclassified native component; no timing admitted");
+            for(int copy=1;copy<point.copies;++copy) nc.check(nc.record(nc.session,point.outputs[0][copy]));
             for(int copy=0;copy<point.copies;++copy) {
                 poison(point,copy);nc.check(nc.replay(nc.session,copy,-1));
-                compare_native(original,download(point,copy));proofs.push_back(point.check(copy));
+                compare_native(original,download(point,copy));proofs.push_back(proof(copy));
             }
             const int last=point.copies-1;
             nc.check(nc.zero_weight(nc.session,weights.tensors[0][last]->data,weights.bytes));
             nc.check(nc.replay(nc.session,last,-1));
             bool weight_failed=false;
-            try {point.check(last);compare_native(original,download(point,last));}
+            try {proof(last);compare_native(original,download(point,last));}
             catch(const std::exception &) {weight_failed=true;}
             require(weight_failed,"last weight copy was not consumed");
-            nc.check(nc.replay(nc.session,0,-1));proofs.push_back(point.check(0));
+            nc.check(nc.replay(nc.session,0,-1));proofs.push_back(proof(0));
             ggml_backend_tensor_set(weights.tensors[0][last],weights.raw.data(),0,weights.bytes);
-            nc.check(nc.replay(nc.session,last,-1));proofs.push_back(point.check(last));
-            point.set_input(1);point.launch(0,0);proofs.push_back(point.check(0));
+            nc.check(nc.replay(nc.session,last,-1));proofs.push_back(proof(last));
+            point.set_input(1);point.launch(0,0);proofs.push_back(proof(0));
             auto expected_changed=download(point,0);poison(point,0);
             nc.check(nc.replay(nc.session,0,first_main));
             bool failed=false;
-            try { point.check(0);compare_native(expected_changed,download(point,0)); }
+            try { proof(0);compare_native(expected_changed,download(point,0)); }
             catch(const std::exception &) {failed=true;}
             require(failed,"omitting the main stage was not detected");
             for(int copy=0;copy<point.copies;++copy) {
-                poison(point,copy);nc.check(nc.replay(nc.session,copy,-1));proofs.push_back(point.check(copy));
+                poison(point,copy);nc.check(nc.replay(nc.session,copy,-1));proofs.push_back(proof(copy));
             }
             // Original library vs extracted call with changed activation as well.
-            auto changed=download(point,0);point.launch(0,0);point.check(0);
+            auto changed=download(point,0);point.launch(0,0);proof(0);
             compare_native(changed,download(point,0));
             point.set_input(0);
             const int rounds=request.value("rounds",3),samples=request.value("samples",3);
@@ -192,7 +234,7 @@ int main(int argc,char ** argv) {
                 components.push_back(stage);
             }
             for(int copy=0;copy<point.copies;++copy) {
-                poison(point,copy);nc.check(nc.replay(nc.session,copy,-1));proofs.push_back(point.check(copy));
+                poison(point,copy);nc.check(nc.replay(nc.session,copy,-1));proofs.push_back(proof(copy));
             }
             json result={{"id",point.id},{"workload",row["workload"]},{"components",components},
                 {"correctness","PASS"},{"proof",proofs},{"linked_backend_comparison","PASS_TWO_INPUTS"},

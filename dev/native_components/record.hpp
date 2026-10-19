@@ -11,6 +11,7 @@
 #include <type_traits>
 #include "nlohmann/json.hpp"
 #include "ggml-cuda/mmid.cuh"
+#include "kernel_node.hpp"
 
 namespace nc {
 using Json = nlohmann::ordered_json;
@@ -18,7 +19,7 @@ inline void check(cudaError_t rc, const char * step) {
     if (rc != cudaSuccess) throw std::runtime_error(std::string(step)+": "+cudaGetErrorString(rc));
 }
 struct Stage {
-    cudaKernelNodeParams params{};
+    KernelNode kernel;
     std::function<cublasStatus_t()> provider;
     Json description;
 };
@@ -66,14 +67,15 @@ struct Recorder {
             if (kind!=cudaGraphNodeTypeKernel)
                 throw std::runtime_error("native non-kernel work requires an explicit timer, type="+std::to_string(kind));
             Stage stage;
-            check(cudaGraphKernelNodeGetParams(node, &stage.params), "native kernel params");
-            const char * name=nullptr;
-            check(cudaFuncGetName(&name, stage.params.func), "native kernel name");
-            if (!name || !*name) throw std::runtime_error("missing native kernel name");
-            const auto & p=stage.params;
+            stage.kernel.capture(node);
+            const char * name=stage.kernel.name();
+            const auto & p=stage.kernel.runtime;
+            const auto & d=stage.kernel.driver;
             stage.description={{"entry","KERNEL"},{"symbol",name},
-                {"grid",{p.gridDim.x,p.gridDim.y,p.gridDim.z}},
-                {"block",{p.blockDim.x,p.blockDim.y,p.blockDim.z}},{"shared_bytes",p.sharedMemBytes}};
+                {"grid",stage.kernel.driver_entry ? Json{d.gridDimX,d.gridDimY,d.gridDimZ} : Json{p.gridDim.x,p.gridDim.y,p.gridDim.z}},
+                {"block",stage.kernel.driver_entry ? Json{d.blockDimX,d.blockDimY,d.blockDimZ} : Json{p.blockDim.x,p.blockDim.y,p.blockDim.z}},
+                {"shared_bytes",stage.kernel.driver_entry ? d.sharedMemBytes : p.sharedMemBytes}};
+            if(stage.kernel.driver_entry) stage.description["parameter_api"]="DRIVER_CUFUNCTION";
             stages.push_back(std::move(stage));
         }
     }

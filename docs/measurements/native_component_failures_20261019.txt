@@ -1,0 +1,62 @@
+Native component failure review, 2026-10-19
+
+Input: review-1792379097100259860.tgz
+SHA256: 0299d29cfdc699115668a831481faabb32a6d20a722cbeee414aad2eeaa38409
+Box run: /workspace/kpack-native-components.bR8xRPDM
+Caller: 908c347a66619c162b7b4cd41a7efb111af7cded
+Previous harness: 1b9fad691a87c2c87bd6255bcdd14287da14322f
+ZW810, 72 CUs, 64 MiB L2, SDK identity d22a00a15fb7f378b7fd81d2ebee94275d2a686db6dc284f1fbdefef6f459772.
+Cards 1,2,3,4,5,7. No GPU6. 1544 expected, 1178 measured, 366 failed.
+All 36 helper jobs passed. Do not overwrite or rerun the 1178 completed rows.
+
+250 failures: runtime graph kernel parameter query returns symbol-not-found.
+All 250 logs selected external so-deepgemm-nopad, including small-M Q2/Q3
+paths beyond the native MMVQ batch cutoff and 150 indexed prefill points.
+The recording harness expected a runtime-registered function for every node.
+Add a bounded Driver API path on cudaErrorSymbolNotFound only, retain the
+CUfunction/launch parameters in that API, and keep the source graph alive.
+Unrelated errors still fail. Ordinary cuBLAS is STILL outside capture.
+Real SDK compilation and host API mocks are not device execution proof.
+
+18 failures: Q4/Q5 indexed MMVQ using native Q8_1 activation quantization.
+Independent CPU replay of original GGUF bytes, original activation bytes and
+both input seeds reproduces ALL 18 printed maximum errors to <4.81e-7 absolute
+(logs print six decimals). Values include .00503632 and .00629476.
+The old checker compared this path to an unquantized F32 dot. Fix the oracle,
+not the GPU input or native algorithm: F32 amax/127, round-away codes, F16
+stored d, FP32 accumulation against independently decoded GGUF weights.
+Restrict the alternate oracle to the captured quantize_q8_1 + K-quant MMVQ
+pair; other routes keep the .005 original-F32 check. Retain the original raw
+error/status and check the Q8_1 arithmetic residual at .00005. Full-output
+linked-backend comparison, changed-input replay and negative controls remain.
+The misleading candidate=0 in native-only errors is now NOT_MEASURED.
+CPU agreement with printed maxima is not a fresh full-output device gate.
+
+98 failures: dense original-F32 oracle. Inventories present for 20 of these
+show dequant-F16 -> A convert-F16 -> cublasGemmEx(COMPUTE_16F=64, C=F16) ->
+C convert-F32. The others fail before recording in the old harness; do not
+claim their exact provider inventory without rerunning that diagnostic.
+14 errors exceed .02; maximum .092177, at N5120 K25600. This is not merely
+the .005 threshold boundary. Preserve the failure; do NOT relax the dense
+gate or replace the native performance baseline with a forced provider.
+Diagnostic-only native/BF16/F32 controls distinguish this precision path
+from fixture/adapter errors. A different compute mode is never timing evidence
+for the original dispatcher.
+
+Box handoff: tools/probe_native_component_failures_box.sh
+PREVIOUS_RUN is the full run above, NOT its compact tgz. One idle GPU.
+Select nine representative failed points: three JIT routes, two MMVQ
+formats, four dense formats. Dense adds BF16/F32 controls in fresh processes:
+17 diagnostic jobs total. Two copies, two activation inputs, no timers,
+no resweep, no caller/production edits, no old-result writes. Reuse existing
+raw fixtures read-only after SHA validation. Build only the test adapter/carrier.
+Every failed child preserves its log and other jobs continue. Result is
+<new-run>/review.tgz; DIAGNOSTIC_COMPLETE means evidence collected, NOT all
+precision arms passed and NOT performance admission. Read the per-arm statuses.
+
+Do not resume the old campaign with the changed harness identity. This command
+is a separate diagnosis. After device closure, use an explicit reviewed
+failed-only reuse binding; never disable the old identity checks.
+
+API contract reference (node owns kernelParams/extra; retain its lifetime):
+https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__GRAPH.html

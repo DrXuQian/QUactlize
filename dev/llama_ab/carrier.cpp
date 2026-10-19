@@ -231,7 +231,9 @@ struct Point {
         }
         for (int arm=0;arm<weight.arms;++arm) ggml_backend_tensor_set(inputs[arm],input.data(),0,input.size()*4);
     }
-    json check(int index) {
+    json check(int index, const std::vector<float> * arithmetic_input = nullptr, bool enforce = true) {
+        require(!arithmetic_input || (weight.arms==1 && arithmetic_input->size()==input.size()),
+                "alternate arithmetic oracle is native-only and must keep the input extent");
         std::vector<float> got[2];
         const size_t count=size_t(m)*topk*weight.n;
         for (int arm=0;arm<weight.arms;++arm) {
@@ -251,7 +253,9 @@ struct Point {
         const auto decode=ggml_get_type_traits(ggml_type(weight.q))->to_float;
         require(decode,"raw GGUF independent decoder unavailable");
         std::vector<float> b(weight.k);
-        double maximum[2]{};
+        double maximum[2]{}, arithmetic_maximum=0;
+        json worst=json::array(), arithmetic_worst;
+        for(int arm=0;arm<weight.arms;++arm) worst.push_back(nullptr);
         for (int s=0;s<64;++s) {
             size_t pos=(uint64_t(mix(s+471))*count)>>32;
             size_t row=pos/weight.n, col=pos%weight.n;
@@ -260,12 +264,42 @@ struct Point {
             decode(weight.raw.data()+(size_t(expert)*weight.n+col)*weight.row_bytes,b.data(),weight.k);
             double dot=0,denom=0;
             for (int k=0;k<weight.k;++k) { double x=double(input[ar*weight.k+k])*b[k];dot+=x;denom+=std::abs(x); }
-            for (int arm=0;arm<weight.arms;++arm) maximum[arm]=std::max(maximum[arm],std::abs(got[arm][pos]-dot)/std::max(denom,1e-30));
+            for (int arm=0;arm<weight.arms;++arm) {
+                double error=std::abs(got[arm][pos]-dot)/std::max(denom,1e-30);
+                if(error>=maximum[arm]) {
+                    maximum[arm]=error;
+                    worst[arm]={{"position",pos},{"row",row},{"column",col},{"expert",expert},
+                        {"activation_row",ar},{"got",got[arm][pos]},{"dot",dot},{"abs_dot",denom}};
+                }
+            }
+            if(arithmetic_input) {
+                double want=0;
+                for(int k=0;k<weight.k;++k) want+=double((*arithmetic_input)[ar*weight.k+k])*b[k];
+                double error=std::abs(got[0][pos]-want)/std::max(denom,1e-30);
+                if(error>=arithmetic_maximum) {
+                    arithmetic_maximum=error;
+                    arithmetic_worst={{"position",pos},{"got",got[0][pos]},
+                        {"dot",want},{"raw_dot",dot},{"abs_dot",denom}};
+                }
+            }
         }
-        if (!(maximum[0]<.005 && maximum[1]<.005)) throw std::runtime_error(
+        const bool raw_pass=maximum[0]<.005 && maximum[1]<.005;
+        // The native Q8_1 path quantizes A. Check its own FP32 accumulation much
+        // more tightly, while retaining (not relabelling) the original F32 error.
+        const bool accepted=arithmetic_input ? arithmetic_maximum<.00005 : raw_pass;
+        if (enforce && !accepted) throw std::runtime_error(
             "independent GGUF spot dot error native="+std::to_string(maximum[0])+
-            " candidate="+std::to_string(maximum[1])+" exceeds .005 abs-dot normalization");
-        return {{"pair_relative_l2",relative},{"raw_spot_normalized_error",{maximum[0],maximum[1]}},
+            (weight.arms==2 ? " candidate="+std::to_string(maximum[1]) : " candidate=NOT_MEASURED")+
+            " raw_limit=.005 arithmetic="+(arithmetic_input ? "Q8_1" : "ORIGINAL_F32")+
+            " arithmetic_error="+std::to_string(arithmetic_input ? arithmetic_maximum : maximum[0])+
+            " worst="+worst.dump());
+        json errors=json::array();for(int arm=0;arm<weight.arms;++arm) errors.push_back(maximum[arm]);
+        return {{"pair_relative_l2",weight.arms==2 ? json(relative) : json(nullptr)},
+                {"raw_spot_normalized_error",errors},{"raw_f32_status",raw_pass ? "PASS" : "FAIL"},
+                {"oracle_activation",arithmetic_input ? "NATIVE_Q8_1" : "ORIGINAL_F32"},
+                {"arithmetic_spot_normalized_error",arithmetic_input ? json(arithmetic_maximum) : json(nullptr)},
+                {"arithmetic_worst",arithmetic_worst},{"worst",worst},
+                {"status",accepted ? "PASS" : "FAIL"},
                 {"spot_cells",64},{"finite_cells_per_arm",count},{"copy",index}};
     }
     json sample(int arm, Runtime & rt, int traversals) {

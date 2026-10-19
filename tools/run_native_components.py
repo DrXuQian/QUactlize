@@ -140,7 +140,8 @@ def carrier(args, output):
         '-Wl,-rpath-link,'+str(args.sdk/'targets/x86_64-linux/lib'),
         '-Wl,-rpath-link,'+str(args.sdk/'CUDA_SDK/targets/x86_64-linux/lib'),
         '-lggml-cuda','-lggml-base','-ldl','-pthread','-o',str(binary)]
-    identity=dict(command=command,source=sha(source),fixture=sha(ROOT/'dev/llama_ab/carrier.cpp'))
+    identity=dict(command=command,source=sha(source),fixture=sha(ROOT/'dev/llama_ab/carrier.cpp'),
+                  headers={p.name:sha(p)for p in sorted(source.parent.glob('*.hpp'))})
     receipt=output/'carrier.json'
     if receipt.exists():
         old=json.loads(receipt.read_text())
