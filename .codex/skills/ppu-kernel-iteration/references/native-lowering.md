@@ -55,6 +55,32 @@ clock conditions and report raw elapsed cycles, not instruction totals, when
 the task uses a cycle score. Record disagreements rather than replacing that
 score with event time. Evidence/scope: `docs/measurements/q6_index_20261019.txt`.
 
+The A3 device follow-up (b0b450f, Q6 indexed M8/N512/K2048/E256/topk8,
+F32 storage/BF16 activation, V3/C4/W8/P8/S1, ZW810/1.7GHz) passes50 numerical
+checks and RAW equality. Three alternating same-clock CE pairs reduce cycles
+107742->87023,107806->88029,107968->88529 (median -18.345%). Actual dynamic
+SHR4.678M->3.490M, SHRA1.638M->0 and MADL2.491M->0.098M support the address-
+arithmetic mechanism, not attribution to SHR alone. FMA/conversions/global
+loads,7.42MB DRAM and113MB L1/L2 traffic remain essentially fixed. Actual
+registers124->104 still allow only4CTA/CU, so this is not doubled occupancy.
+Remaining memory-dependency ratios rise despite faster execution; do not
+interpret them as saved/cancelled wall time. Preserve remaining field-extract
+shifts unless another measured change helps. Focus evidence is not permission
+to promote all M/qtypes/shapes. Archive SHA256:
+`a9ee9d00e411db0a7b7ab9773344b9e7f6474f4b49b3eb1d17f265dc089ec0ea`.
+
+When testing fewer warps after the unsigned-coordinate improvement, keep the
+A3 control binary body unchanged. Warp count changes FP32 reduction association;
+use the independent oracle across warps, and RAW equality only between matched-
+warp scheduling variants. A depth2 residue-load experiment preserves every
+word and arithmetic operation while interleaving loads with FMAs: local codegen
+keeps the load/FMA/conversion counts and registers fixed, but starts FMA after5
+rather than9 vector128 load sites. This is native scheduling evidence, NOT
+measured latency overlap. Do not use fewer SHRL sites or the earlier static FMA
+position to predict a speedup. Next discriminating test: alternating same-clock
+CE cycles plus actual waits/traffic under direct one-kernel cold ACU replay.
+Scope/status: `docs/measurements/q6_schedule_20261019.txt`, DEVICE_NOT_RUN.
+
 ## Keep AIU SWZL and matrix-load layout contracts paired
 
 For matrix tiles written by **AIU.swzl, use the matching ld.swzl consumer**.

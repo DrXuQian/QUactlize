@@ -31,8 +31,17 @@ def phase(name):
 
 
 def validate_prior(prior, authority, record, workload, digest):
+    if 'configs' in record:
+        from dev.gemv_simt.q6_schedule import validate_record, EQUAL_GROUPS, CONFIGS
+        validate_record(record)
+        equality = (prior.get('raw_equal') is False and prior.get('raw_equal_groups') == EQUAL_GROUPS and
+                    prior.get('configs') == CONFIGS and
+                    prior.get('raw_equal_scope') == 'MATCHED_WARP_PAIRS_ONLY_CROSS_WARP_INDEPENDENT_ORACLE')
+        count = len(CONFIGS)
+    else:
+        equality, count = prior.get('raw_equal') is True, 2
     if (prior.get('status') != 'PASS' or prior.get('profiled') is not False or
-            prior.get('raw_equal') is not True or len(prior.get('timings', [])) != 2 or
+            not equality or len(prior.get('timings', [])) != count or
             prior.get('authority_sha256') != digest(authority) or
             prior.get('library_sha256') != record['sha256'] or
             prior.get('workload') != asdict(workload)):
@@ -96,7 +105,7 @@ def main():
     for name in ('source', 'results', 'sdk', 'result'):
         parser.add_argument('--'+name, type=Path, required=True)
     parser.add_argument('--point', type=int, default=0)
-    parser.add_argument('--arm', type=int, choices=(0, 1), required=True)
+    parser.add_argument('--arm', type=int, choices=range(6), required=True)
     parser.add_argument('--l2-bytes', type=int, default=67108864)
     a = parser.parse_args()
     a.source = a.source.resolve(strict=True)
@@ -128,6 +137,8 @@ def main():
             source_inputs=importlib.import_module('dev.gemv_simt.build_q6_sparse').inputs
         elif manifest.get('schema')=='q6-index-v1':
             source_inputs=importlib.import_module('dev.gemv_simt.build_q6_index').inputs
+        elif manifest.get('schema')=='q6-schedule-v1':
+            source_inputs=importlib.import_module('dev.gemv_simt.build_q6_schedule').inputs
         elif manifest.get('schema')!='q6-metadata-v1':
             raise ValueError('unsupported Q6 experiment schema')
         if (harness_identity(a.source) != authority['harness'] or
@@ -139,6 +150,8 @@ def main():
             raise ValueError('point outside the original workload inventory')
         workload = workloads[a.point]
         record, = [r for r in manifest['records'] if r['compute'] == workload.compute]
+        if a.arm >= len(record.get('kernel_names', (0,1))):
+            raise ValueError('arm outside the compiled experiment inventory')
         library = a.results/'build'/record['image']
         if sha(library) != record['sha256']:
             raise ValueError('previous compiled image changed')

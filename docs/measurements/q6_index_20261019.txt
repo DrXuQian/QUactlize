@@ -99,5 +99,29 @@ repeatably without numeric regression, reject/revise A3 despite fewer shifts.
 POINTS=all adds the original seven numerical/event controls; it does not turn
 one-point profiling into multi-shape cycle admission. No broad sweep needed.
 Upload the printed results/review.tgz, including all six .acurep files.
-Current status: DEVICE_CORRECTNESS_NOT_RUN, CYCLE_GAIN_NOT_RUN,
+Status at initial publication: DEVICE_CORRECTNESS_NOT_RUN, CYCLE_GAIN_NOT_RUN,
 PRODUCTION_UNCHANGED. Do not use this record as a shipping selector result.
+
+Returned A3 focus evidence (2026-10-19)
+--------------------------------------
+Source b0b450fc11114c6a418196a489fe312492667c82; archive SHA256
+a9ee9d00e411db0a7b7ab9773344b9e7f6474f4b49b3eb1d17f265dc089ec0ea.
+Box run /workspace/kpack-q6-index.BbOaHV1m/results, ZW810/72 CUs,
+aiswu52.eng.t-head.cn, PCI 0000:7E:00.0, 64MiB reported L2.
+Compiler SHA256
+0ecb9407820ccb7852bb0b2fdce6f50f22a189eb2f38e64e92d4cfd5423b2983.
+All six actual ACU reports were reimported; source/harness/report hashes checked.
+50 numerical checks PASS, RAW equality, BF16 range, guards, zero-A and
+plane/omitted-producer negatives PASS. Maximum independent error 2.75214e-8.
+
+Three CE cycle pairs A2 -> A3:
+107742 -> 87023; 107806 -> 88029; 107968 -> 88529.
+Median 107806 -> 88029 cycles (-18.345%); CE/CU/PU rate 1.7GHz throughout.
+DRAM median 7424000 -> 7420288 bytes, L1/L2 113343360 -> 113343744 bytes.
+PU instructions 29114368 -> 22552576; dynamic SHRL 4677632 -> 3489792,
+SHRA 1638400 -> 0, MADL 2491392 -> 98304. FMA/conversions/loads unchanged.
+Registers 124 -> 104, resident CTA/CU bound 4 -> 4; occupancy 44.77 -> 46.62%.
+Remaining vector-memory dependency ratios rose despite lower latency: they
+are per-issue ratios, not a decomposition of wall time.
+Keep A3 as the next experimental control for this focus; no all-shape or
+production admission. Next bounded axes: W2/W4/W8 and shallow load/FMA overlap.

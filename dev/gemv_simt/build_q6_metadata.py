@@ -27,7 +27,7 @@ def inputs():
 
 
 def build(sdk, output, object_only=False, *, generator=source, source_inputs=inputs,
-          schema='q6-metadata-v1', kernel_names=None):
+          schema='q6-metadata-v1', kernel_names=None, record_contract=None):
     sdk = sdk.resolve(strict=True)
     output.mkdir(parents=True, exist_ok=False)
     includes = [ROOT, ROOT/'quactlize/execution', ROOT/'quactlize/include',
@@ -62,6 +62,9 @@ def build(sdk, output, object_only=False, *, generator=source, source_inputs=inp
                                stdout=log, stderr=subprocess.STDOUT, check=True)
         row=dict(compute=compute, image=target.name, sha256=sha(target), source_sha256=sha(src))
         if kernel_names is not None: row['kernel_names']=list(kernel_names)
+        if record_contract is not None:
+            if set(row) & set(record_contract): raise ValueError('record contract overwrites image identity')
+            row.update(record_contract)
         return row
 
     with ThreadPoolExecutor(max_workers=2) as pool:

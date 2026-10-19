@@ -35,13 +35,17 @@ def metrics(text):
     return result
 
 
-def compare(reports,rounds=3):
+def compare(reports,rounds=3,*,expected_geometries=None):
     expected={(r,a) for r in range(rounds) for a in (0,1)}
     if (len(reports)!=len(expected) or {(r.get('round'),r.get('arm')) for r in reports}!=expected or
             any(r.get('status')!='PASS' for r in reports)):
         raise ValueError('incomplete/duplicate paired cycle inventory')
-    if len({(tuple(r['grid']),tuple(r['block'])) for r in reports})!=1:
-        raise ValueError('cycle cohort launch geometry differs')
+    if expected_geometries is None:
+        if len({(tuple(r['grid']),tuple(r['block'])) for r in reports})!=1:
+            raise ValueError('cycle cohort launch geometry differs')
+    elif (set(expected_geometries)!={0,1} or any(
+            (tuple(r['grid']),tuple(r['block'])) != expected_geometries[r['arm']] for r in reports)):
+        raise ValueError('cycle cohort differs from declared warp experiment geometry')
     if any(len({r['symbol'] for r in reports if r['arm']==a})!=1 for a in (0,1)):
         raise ValueError('cycle cohort kernel identity changed')
     data={(r['round'],r['arm']):metrics(Path(r['raw_csv']).read_text(errors='replace')) for r in reports}

@@ -1,0 +1,85 @@
+Q6 A3 warp count and shallow load/FMA scheduling
+==============================================
+
+Base b0b450fc11114c6a418196a489fe312492667c82; pinned actlize
+021c69300864e03926108867d318572871a44d35. This is an isolated experiment,
+not a shipping library/selector/caller change. Format, ABI and precision stay
+fixed. Only the user's requested two axes are implemented.
+
+Six arms (all V3/C4/P8/S1, TileN32):
+0 A3 W8 control; 1 W4; 2 W2; 3 W8 pipeline; 4 W4 pipeline; 5 W2 pipeline.
+Default point: Q6 indexed tokens8/N512/K2048/E256/topk8/channels8/cluster,
+F32 storage, BF16-rounded A, ordered F32 group-affine dot, F32 output.
+Grid1024 stays fixed; blocks256/128/64 threads. Changing warps divides each
+CTA's K-group workers from64 to32/16, increasing iterations2 -> 4/8 here.
+Fewer threads reduce intra-CTA reduction work, but can reduce useful memory
+parallelism. No claim of faster execution from occupancy alone.
+
+The pipeline loads residues0,1 then issues2,3 ahead of ordered residue math
+during slot0. Both low4 and high2 plane words survive into slot1; no reread,
+next-group prefetch, extra barriers or shared staging. Each lane still reads
+16-byte vectors; C4 covers32 N columns (64 bytes per plane/group request).
+The source footprint model records actual modulo128 plane/A/metadata bases,
+lane ownership and32/64/128-byte footprints. Duplicate source reads do not
+equal DRAM traffic; eight tokens in the focus reuse the same expert weights.
+
+Raw equality is required ONLY for pairs0/3,1/4,2/5. Warp changes alter FP32
+partial reduction association, so all six arms independently pass the same
+unchanged GGUF oracle. All changed-input, large-BF16, zero-A, poisoned output,
+low/high/metadata negative, copy isolation and guard checks remain enabled.
+
+Local codegen, not device evidence
+---------------------------------
+49 focused host tests pass, including original Q6 regressions, all-word
+lifetimes with missing/early-use negatives, exact K-group coverage for all
+warps, sparse-packet phase/footprint proofs, six-arm numerical contracts,
+18-report alternating orchestration and wrong-clock/geometry rejection.
+F16/BF16 object build passed (first compile16.03sec), SDK2.1.1 compilerSHA
+fa62c590c67411c23fa4028f15fa562b39ce0cf830830d038a1ec04c59d8c76e.
+A3 W8 native instruction bytes match the earlier A3 build exactly for BOTH
+precisions. All six recipes:96 vector /80 scalar registers, stack0.
+Source shared bytes W8/W4/W2:1024/512/256. The hgobjdump shared_memory_size
+raw fields are8/4/2; do not mislabel those raw fields as bytes.
+
+BF16 non-NOP native sites ordinary/pipeline:
+W8 1630/1629; W4 1610/1609; W2 1604/1603.
+F16:1637/1638,1617/1618,1611/1612.
+Matched-warp pairs have identical global-load widths/counts, FMA/conversion,
+shuffle and TSM instruction counts. Pipeline changes instruction placement:
+first BF16 FMA index608 -> 545 forW8 (indices include NOPs), with5 instead
+of9 vector128 load sites before it. Subsequent loads interleave with FMAs.
+These are STATIC order facts, not proof of latency hiding or a predicted gain.
+Every Box build writes build/native-audit.json and full native ISA/resources
+because its compiler differs from this local compiler.
+Final verification build16.47sec, generated-source SHA256:
+F16 192357b19b4823e01c51d6538da156e2f0ffe5ce306e9b2448ee8aa9ef7e03a5
+BF16 824bbaf1d0aa9584c26445ca62f25d9e9ca0b318e894e8819ce33ddb08eed39b
+Final experiment object SHA256 (local, not a distributable PPU runtime):
+F16 5d4758d844e44a5037650d43feb8db1e9fa869bbd9e5ba9bafa83201dd52f752
+BF16 21787baf90935cf8a46fb7dd149c5de97dacc91f1b80974d34fb2878124bd622
+
+How to test
+-----------
+Use tools/run_q6_schedule_box.sh on one otherwise idle PPU. It archives the
+local pinned git objects, never fetches nested HTTPS submodules, and compiles
+only the bounded experiment (both activation precisions). POINTS=0 is the
+default; POINTS=all adds the seven existing numerical/event controls. It does
+not expand the profiled focus or claim multi-shape cycle admission.
+
+One independent numerical/cold-ring timing phase, then18 ACU captures:
+0,1,2,3,4,5 / 5,4,3,2,1,0 / 0,1,2,3,4,5.
+Each capture has one weight copy, one direct selected kernel, no graphs and
+no cold-ring loops; cache-control=all. Cold event timings are separate and
+secondary. First-use graph upload/JIT/fixture creation are excluded.
+
+Output comparisons:0/1 and0/2 (warps),0/3,1/4,2/5 (pipeline).
+Rank by median CE elapsed cycles, never frequency-derived microseconds or
+opcode counts. Require matching CE/CU/PU/memory clocks and consistent pair
+direction; differing clocks, mixed pairs, missing/duplicate reports or wrong
+geometry cannot certify a win. fastest_measured_arm is just a ranked result,
+not a promotion; performance_admitted=false and production_changed=false.
+All logs and actual reports go into the printed results/review.tgz, excluding
+the generated object/DSO payloads. Valid independent results survive failures.
+
+Scope at handoff: host tests and local codegen verified; device precision,
+CE cycle gain and model TPOT are NOT_RUN. Do not replace production routing.

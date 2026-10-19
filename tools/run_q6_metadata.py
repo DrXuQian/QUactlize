@@ -66,6 +66,19 @@ def raw_equal(first, second):
         raise ValueError(f'candidate differs from same-order baseline: bad={len(bad)} first={int(bad[0])}')
 
 
+def experiment_contract(record):
+    if 'configs' in record:
+        from dev.gemv_simt.q6_schedule import validate_record
+        validate_record(record)
+        return record['configs'], record['equal_groups']
+    return [dict(variant=3,columns=4,warps=8,values=8,split=1)]*2, [[0,1]]
+
+
+def check_equal_groups(outputs, groups):
+    for first, second in groups:
+        raw_equal(outputs[first], outputs[second])
+
+
 def measure(a, w, record, pattern_model=None):
     import numpy as np
     from contextlib import ExitStack
@@ -79,6 +92,8 @@ def measure(a, w, record, pattern_model=None):
     from dev.strategy.components import statistics_checked
     from dev.strategy.pilot_native import scale_activation_data
     from quactlize.runtime.native import SDK, checked
+    configs, equal_groups = experiment_contract(record)
+    arm_count = len(configs)
     sdk = SDK(a.sdk)
     with ExitStack() as cleanup:
         weights = Weights(w.n, w.k, w.experts)
@@ -95,16 +110,16 @@ def measure(a, w, record, pattern_model=None):
                 if np.max(np.abs(b.data['a'])) <= 65504: raise ValueError('missing BF16 range test')
             for copy in (0, ring.copies-1):
                 outputs = []
-                for arm in range(2):
+                for arm in range(arm_count):
                     b.out.poison();checked(core.launch(arm, copy), 'Q6 numerical')
                     proofs.append(b.check());outputs.append(b.out.read((b.rows, w.n)).copy())
-                raw_equal(*outputs)
+                check_equal_groups(outputs, equal_groups)
         b.update(0);b.out.poison()
         try: b.check()
         except ValueError as exc:
             if not str(exc).startswith('typed oracle mismatch:'): raise
         else: raise ValueError('omitted producer passed')
-        for arm in range(2):
+        for arm in range(arm_count):
             b.a.upload(np.zeros_like(b.data['a']));b.out.poison()
             checked(core.launch(arm), 'zero A');rt.sync()
             if np.any(b.out.read((b.rows, w.n))): raise ValueError('zero A failed')
@@ -112,7 +127,7 @@ def measure(a, w, record, pattern_model=None):
         for name, buf in ring.objects[-1].items():
             try:
                 ring.r.fill(buf.ptr, 0, buf.size);sdk.synchronize(ring.r.stream)
-                for arm in range(2):
+                for arm in range(arm_count):
                     checked(core.launch(arm, ring.copies-1), 'plane negative')
                     try: b.check()
                     except ValueError as exc:
@@ -124,10 +139,19 @@ def measure(a, w, record, pattern_model=None):
         patterns = []
         bases = {name: int(ptr)%128 for name, ptr in ring.planes[0].items()}
         bases['A'] = b.a.ptr%128
-        for warp in (range(8) if pattern_model else (0, 7)):
-            patterns.append((pattern_model or pattern)(14, Config(3,4,8,8,1), w.n, w.k, bases=bases, warp=warp))
+        if 'configs' in record:
+            for cfg in configs[:3]:
+                config = Config(**cfg)
+                for warp in range(config.warps):
+                    last = max(0, (w.k//16-1-warp*8)//(config.warps*8))
+                    for iteration in sorted({0,1,last}):
+                        patterns.append(pattern_model(14, config, w.n, w.k, bases=bases,
+                                                      warp=warp, iteration=iteration))
+        else:
+            for warp in (range(8) if pattern_model else (0, 7)):
+                patterns.append((pattern_model or pattern)(14, Config(3,4,8,8,1), w.n, w.k, bases=bases, warp=warp))
         captures, graphs, nodes = [], [], []
-        for arm in range(2):
+        for arm in range(arm_count):
             for copy in range(ring.copies): checked(core.launch(arm, copy), 'excluded ring warmup')
             b.check()
             capture = Captured(rt, [lambda i=i,arm=arm:core.launch(arm,i) for i in range(ring.copies)])
@@ -135,6 +159,9 @@ def measure(a, w, record, pattern_model=None):
             expected = record.get('kernel_names', ['::register_reuse<','::q6_register_fields('])[arm]
             if len(capture.groups)!=1 or expected not in capture.descriptions[0]['name']:
                 raise ValueError('unexpected Q6 kernel inventory')
+            if 'configs' in record and (capture.descriptions[0]['grid'] != [b.rows*(w.n//32),1,1] or
+                    capture.descriptions[0]['block'] != [configs[arm]['warps']*32,1,1]):
+                raise ValueError('Q6 schedule launch geometry differs from declared recipe')
             nodes.append(capture.descriptions[0])
             graph = capture.isolate(0, weight_ring=True, repeats=16)
             cleanup.callback(graph.close);graphs.append(graph)
@@ -144,9 +171,9 @@ def measure(a, w, record, pattern_model=None):
         for graph in graphs:
             b.out.poison();graph.run();rt.sync();proofs.append(b.check())
             outputs.append(b.out.read((b.rows,w.n)).copy())
-        raw_equal(*outputs)
+        check_equal_groups(outputs, equal_groups)
         b.update(0)
-        samples = [[], []]
+        samples = [[] for _ in range(arm_count)]
         if a.profile_arm is not None:
             from tools.profile_kpack_gpu_compact import AcuRange
             rt.sync()
@@ -156,19 +183,24 @@ def measure(a, w, record, pattern_model=None):
             timing = []
         else:
             for rnd in range(6):
-                for arm in ((0,1) if rnd%2==0 else (1,0)):
+                for arm in (range(arm_count) if rnd%2==0 else reversed(range(arm_count))):
                     samples[arm].append([graphs[arm].sample() for _ in range(5)])
                     proofs.append(b.check())
                 print(f'Q6_METADATA_ROUND point={a.child} round={rnd+1}/6', flush=True)
             timing = [statistics_checked(v) for v in samples]
         for buffer in ring.buffers: buffer.guard()
-        result = dict(status='PASS', workload=asdict(w), numerical=proofs, raw_equal=True,
+        result = dict(status='PASS', workload=asdict(w), numerical=proofs, raw_equal=arm_count==2,
                       zero_input='PASS', omitted_producer='DETECTED', plane_negatives=list(ring.objects[-1]),
                       fixture=ring.receipt, patterns=patterns, nodes=nodes, timings=timing,
                       calls_per_graph=[g.count for g in graphs], profiled=a.profile_arm is not None,
                       production_changed=False, scope='Q6_S1_SINGLE_KERNEL_OLD_NEW_NOT_MODEL_OR_NATIVE')
+        if 'configs' in record:
+            result.update(configs=configs, raw_equal_groups=equal_groups,
+                          raw_equal_scope='MATCHED_WARP_PAIRS_ONLY_CROSS_WARP_INDEPENDENT_ORACLE',
+                          scope='Q6_WARP_AND_PIPELINE_S1_NOT_MODEL_OR_PRODUCTION')
         if timing:
-            result['delta_pct'] = 100*(timing[1]['median_us']/timing[0]['median_us']-1)
+            if arm_count == 2:
+                result['delta_pct'] = 100*(timing[1]['median_us']/timing[0]['median_us']-1)
             result['modeled_weight_mbu_pct'] = [ring.receipt['minimum_read_bytes']/t['median_us']/27000 for t in timing]
             result['mbu_peak_gbps_assumption'] = 2700
     return result
@@ -222,11 +254,11 @@ def collect(a, *, builder=build, arms=ARMS, driver=None, point_indices=None,
     if a.acu and indices[0]!=0: raise ValueError('profile requires point0 first')
     if not isinstance(profile_rounds,int) or not 1<=profile_rounds<=3:
         raise ValueError('profile rounds must be 1..3')
-    if len(set(profile_arms))!=len(profile_arms) or any(i not in (0,1) for i in profile_arms):
+    if len(set(profile_arms))!=len(profile_arms) or any(i not in range(len(arms)) for i in profile_arms):
         raise ValueError('invalid profile arm inventory')
     driver=Path(__file__).resolve() if driver is None else Path(driver).resolve()
     plan = dict(points=[asdict(workloads()[i]) for i in indices],point_indices=indices,arms=arms,rounds=6,samples=5,
-                native=False,production_changed=False,configs=1,profile_rounds=profile_rounds,
+                native=False,production_changed=False,configs=3 if len(arms)==6 else 1,profile_rounds=profile_rounds,
                 profile_arms=list(profile_arms))
     atomic_json(a.output/'plan.json',plan)
     if a.plan_only:
