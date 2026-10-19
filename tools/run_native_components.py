@@ -184,7 +184,12 @@ def validated(path, authority):
 def run_family(args,binary,request,rows,authority):
     from dev.native_components.fixture import weights,activation
     try:
-        raw,receipt=weights(rows[0]['workload'],args.output/'fixtures'/family(rows[0]))
+        folder=args.output/'fixtures'/family(rows[0])
+        reuse=getattr(args,'reuse_fixtures',None)
+        if reuse is not None:
+            prior=reuse/family(rows[0])
+            if (prior/'weights.raw').is_file() and (prior/'weights.json').is_file():folder=prior
+        raw,receipt=weights(rows[0]['workload'],folder)
         request=dict(request,raw_fixture=str(raw),raw_fixture_receipt=receipt)
         rows=[dict(r,input_fixture=activation(r))for r in rows]
     except Exception as exc:

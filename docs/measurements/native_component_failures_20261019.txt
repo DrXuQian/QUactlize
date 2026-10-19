@@ -111,3 +111,60 @@ Local checks: 106 host tests PASS in69.29seconds, including a compiled
 missing-producer-wait negative. Full carrier C++17 syntax check against the
 existing dense caller headers passes; bash syntax, Python AST and git whitespace
 checks pass. Device retry of this synchronization fix is still pending.
+
+Device closure: sHDpIkfa, review_new.tgz
+SHA256: 5aced49add8d19d3a60692c23a8fd0856fe1da5895cd1a1275d0ef05b3a90c9f
+17/17 diagnostic jobs completed in95.3315seconds. All34 complete-output
+comparisons (two distinct inputs per job) have relativeL2=0 and max_abs_diff=0.
+All three JIT representatives now extract and replay successfully. Native
+Q4/Q5 MMVQ arithmetic residuals against the independent Q8_1 reference are
+at most8.621e-8; the original unquantized-input errors remain visible. This
+closes the sampled extraction/readback/reference gates, not all268 missing
+measurements or model performance. The source/body hashes match efa97ce.
+
+The user explicitly deferred the original cuBLAS F16 accuracy issue to the
+operator-library owner. Do not debug it further, change native precision,
+relax Quactlize checks, or turn those failures into passes. Quarantine the98
+original dense failures as DEFERRED_NATIVE_FP16_ACCURACY. The8 BF16/F32 control
+jobs already present in the diagnostic are not substituted performance arms.
+
+Failed-only handoff: tools/retry_native_components_box.sh
+PREVIOUS_RUN=/workspace/kpack-native-components.bR8xRPDM (full raw directory)
+DIAGNOSTIC_REVIEW=/workspace/kpack-native-diagnostic.sHDpIkfa/review.tgz
+GPUS=1,2,3,4,5,7 (original physical devices; NOT GPU6)
+
+Old1178successful records retain their old authority/samples;36helpers are
+reused. Retry only250JIT +18Q8_1-reference failures, in a NEW output directory.
+The original run's summary/authority/build/helper/failure-log set is sealed
+by aggregate digest0b03f09f4fb00bc8c43073d91f50ab48fe1585daae10230be98aff68dc750c8a.
+Old successful raw records, full-output controls, image hashes and sums are
+revalidated on Box. Current production source/build/compiler/SDK must match;
+current extraction/oracle/timer source bodies must match the reviewed device
+diagnostic. Each worker uses its original physical card. No blanket bypass
+of source checks, no recompilation of llama, no production routing changes.
+
+Per-worker new points: gpu1=25,gpu2=48,gpu3=87,gpu4=35,gpu5=36,gpu7=37.
+Existing complete raw fixtures are read-only; missing fixtures are created
+only in the new run. Interrupted retries preserve old successes and restart
+only missing/failed points on reusing the NEW retry RUN. No24-hour deadline.
+All components still timed separately; cuBLAS remains ordinary events.
+
+Expected successful status: COMPLETE_EXCEPT_DEFERRED_NATIVE_FP16,
+measured1446/1544, retried_measured268/268, deferred98. This is not full
+coverage, no-regression admission or model TPOT. Any unresolved retried point
+keeps statusINCOMPLETE. Return the final compact review-*.tgz; no weights,
+objects, DSOs or successful-request dumps are needed. This268point timing
+pass is larger than the95second17job diagnostic; do not reuse that duration
+as its ETA. Progress shows completed new points and elapsed time.
+
+Exact historical sweep coverage audit: all268retry pointIDs and evidence-record
+hashes match the sealed historical component baseline. All are indexed/MoE:
+118smallM (116confirmed,2unchanged-arm screens) and150prefill (six-round
+confirmation). The two screen points are Q5 N3072 K512 E256 topk8, M1/channels1
+and M3/channels8; their original3x3samples, accuracy and exactSIMTconfig are
+present in the recovered audit. No extrapolated/newshape is introduced.
+This asserts coverage of selected measured configurations, not exhaustive
+Cartesian configuration coverage or model-level no-regression.
+
+Local final validation:116hosttestsPASS in81.70seconds; shellsyntax and
+gitdiffwhitespace checksPASS. No new GPU execution on the local host.

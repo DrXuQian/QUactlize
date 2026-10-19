@@ -201,13 +201,21 @@ Native-component diagnostic pdvGnj2J (ZW810, 2026-10-19) exposed a missing
 producer wait in its changed-input reference download. llama graph compute
 uses a nonblocking stream; tensor_get used cudaStreamPerThread and waited
 only for the D2H copy. A host two-stream negative reproduces this race, but
-device closure of the eleven mismatches still needs the fixed diagnostic.
+device closure at that point still required the fixed diagnostic.
 Keep comparison phase/residual and partial independent proofs on failure.
 Separate this from the six completed Q4/Q5 dense precision controls: the
 original F16 path has about9% abs-dot-normalized error even when extraction
 matches; BF16/F32 controls are below.031%. Do not relax the gate, blame
 Quactlize, or substitute a faster/different native arithmetic baseline.
 Evidence: docs/measurements/native_component_failures_20261019.txt.
+
+Follow-up sHDpIkfa (95.33seconds):17/17diagnostic jobs completed; all34
+linked/extracted full-output comparisons across two inputs have zero residual.
+Q4/Q5 native Q8_1 residuals are below8.621e-8. Preserve the separate statuses:
+this admits the sampled harness seam, not every historical failed point or
+new performance. Retry only the reviewed failures in a new run with explicit
+old/new authority. User-deferred native-provider numerical failures must stay
+marked deferred, not become successful rows or forced-precision baselines.
 
 On physical H800 / CUDA12.8 SM90a / driver595.71.05, a fixed Q4
 GEMM -> SF -> TMA GEMM graph regressed even without early weight loads.

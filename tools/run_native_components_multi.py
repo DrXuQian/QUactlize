@@ -35,7 +35,7 @@ def pack(root, destinations):
     with tarfile.open(target,'w:gz')as archive:
         paths=[root/'summary.json',root/'run.json']
         for output in destinations:
-            paths += [output/n for n in ('authority.json','summary.json','comparison.json','comparison.csv')]
+            paths += [output/n for n in ('authority.json','summary.json','comparison.json','comparison.csv','retry.json')]
             paths += list((output/'results').glob('*.json'))+list((output/'helpers').glob('*.json'))
             paths += [output/'build/adapter.json',output/'build/carrier.json',output/'console.log']
             if not (output/'summary.json').is_file():
