@@ -1,0 +1,104 @@
+SIMT reader generalization -- experiment, production unchanged
+============================================================
+Parent: 94469272ff80245c946d766b8b8dc934609af65f
+Canonical bytes: Q2_K/Q3_K/Q4_K/Q5_K/Q6_K/Q8_0 unchanged.
+Storage: F32 input/output; activation rounding: F16 or BF16; F32 ordered dots.
+S1 only. No inter-CTA reducer omitted or estimated. No A-to-Q8 quantization.
+
+Implementation
+--------------
+End-to-end unsigned nonnegative K/N coordinates and 64-bit address products.
+Q5 high-plane N/K-bit interchange is retained (not a generic 1-bit map).
+2D grid[N tile,row], with compile-time dense/grouped/indexed addressing;
+N/K/top-k/channels remain runtime dimensions, not one-model constants.
+
+Q2: header + current eight-group scale/min words (3 instead of5 words).
+Q3: header + required current six-bit fields (2/3 instead of7 unique words),
+    including paired14-byte records and cross-word fields.
+Q6: reuse the measured sparse packet, now valid for C4/C8; signed scales.
+Q4/Q5: retain existing vector128 header load and fixed-register extraction.
+Q8: retain vectorized scale/code reader and hoisted/narrow mathematical order;
+    no Q6 packet or extra metadata staging is introduced.
+
+No production file is modified. Generated candidates transform guarded source
+seams rather than maintaining a new copy of the dot/reduction. Every launch
+still calls existing shape/arrangement/buffer validators. The next admission
+must move winning structural capabilities into the shared reader used by
+fallbacks; exact-shape table promotion alone is not the desired endpoint.
+
+Controls and boundary
+---------------------
+Matched geometries use the current register-reuse arithmetic body. Q5 BF16
+C4/W2/P8 retains Changes=3. Q4 also includes C4/W4/P4. Q8 includes its vector
+hoisted controls, not the original scalarized generic8-bit reader.
+Q6 C4/W8/P8 retains A3; C4/W2/P8 retains the latest pipeline control. Local
+F16 andBF16 native instruction bytes for BOTH Q6 controls are exactly equal
+to the prior build-final bodies, despite the wrapper names being different.
+Q6 C8 is a new-geometry generic control, not previously admitted champion.
+
+This compares a bounded pool of S1 bodies, NOT every selected q4-specialized
+kernel/TC/Split-K winner from the historical full campaign. It cannot claim
+global optimality, model TPOT or universal no-regression. A losing candidate
+stays a losing experiment; it never replaces a selected production kernel.
+
+Box inventory
+-------------
+84 independent fixture families.36 basic format/compute/mode controls cover
+M1..8 numerically, with cold timing at M1/M8. Other points cover five existing
+large dense N/K geometries, larger MoE, spread routing, and short-K/channels1
+(including M3 correctness). Three configs per K-quant, four for Q4, two forQ8.
+1134 same-config numerical pairs,468 cold timing pairs (two arms each).
+No full Cartesian config sweep or model load/rebuild.
+
+Grouped mode consumes already grouped A and GPU offsets. CPU fixture sorting
+is untimed and not claimed free at model level. Indexed mode separately
+consumes actual GPU IDs and reads the appropriate A row inside the kernel.
+Ragged/empty experts, changed IDs/A, invalid indexed IDs, omitted producer,
+every weight plane, guards, graph replay and BF16-range inputs are gated.
+Independent official GGUF decoder uses random metadata, not all-one scales.
+Matched pair outputs must additionally be RAW-equal; tolerance is unchanged.
+
+Cold ring >=2.25x verified L2 using the minimum actually active expert set,
+not all allocated E. Six alternating rounds, five samples. Numerical M2..7
+coverage is NOT represented as performance measurements at those M values.
+ACU: six M8 indexed/BF16 focus points, fastest screened candidate config vs
+its same-config control; three alternating pairs each (36 reports total).
+One copy, one direct kernel, no graphs/rings under ACU. Same-clock CE cycles
+are the primary focus score; cold-ring events are secondary screening.
+
+Local evidence (PPU SDK2.1.1, no local PPU)
+-----------------------------------------
+All12 qtype/compute objects compile; all144 native wrapper bodies inspected,
+zero candidate stack. F16/BF16 compute remains separately instantiated.
+58 host tests PASS, including actual C++ field/map/row helpers, official GGUF
+fixture dots, failure preservation, receipt corruption and plan-only entry.
+Representative BF16/indexed config0 baseline -> candidate non-NOP static sites
+(W8 for K-quants, W4 forQ8):
+Q8 1038->907; Q2 2213->1161; Q3 2183->1447; Q4 2468->1845;
+Q5 3019->2304; Q6 A3 1630->1463. These are NOT dynamic counts or speedups.
+CompilerSHA fa62c590c67411c23fa4028f15fa562b39ce0cf830830d038a1ec04c59d8c76e.
+Native generated instruction bytes/resources are captured in each build's
+native-audit.json. New Box compiler output is authoritative on that machine.
+
+Run / resume
+------------
+IDLE_CONFIRMED=1 CUDA_VISIBLE_DEVICES=1 PPU_SDK=/usr/local/PPU_SDK \
+  L2_BYTES=67108864 bash tools/run_simt_general_box.sh
+
+Use an otherwise idle GPU. The shell wrapper freezes HEAD plus the local
+pinned actlize git object; it performs no HTTPS submodule clone. Nothing is
+overwritten/installed in production. One failed family leaves prior cells
+valid and later families continue in fresh processes. Retry only uncompleted
+cells using the SAME frozen source/device/SDK:
+
+RESUME_RUN=/workspace/kpack-simt-general.XXXXXXXX IDLE_CONFIRMED=1 \
+  CUDA_VISIBLE_DEVICES=1 PPU_SDK=/usr/local/PPU_SDK \
+  bash tools/run_simt_general_box.sh
+
+The output prints review-*.tgz. Only receipts/logs/reports are transferred,
+not DSO/object files. Completed ACU reports are hash checked and reused.
+POINTS=controls is an optional36-family subset, NOT all84; resume must keep
+the same POINTS selection. No forced timeout. ETA is observed wall-time only.
+
+Still pending: actual Box numerics/cycles, subsequent two-row B reuse,
+Split-K coverage and measured admission into generic production fallback.

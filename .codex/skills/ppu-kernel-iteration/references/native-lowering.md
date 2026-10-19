@@ -79,7 +79,20 @@ rather than9 vector128 load sites. This is native scheduling evidence, NOT
 measured latency overlap. Do not use fewer SHRL sites or the earlier static FMA
 position to predict a speedup. Next discriminating test: alternating same-clock
 CE cycles plus actual waits/traffic under direct one-kernel cold ACU replay.
-Scope/status: `docs/measurements/q6_schedule_20261019.txt`, DEVICE_NOT_RUN.
+The follow-up (9446927, sameQ6/M8/N512/K2048/ZW810/BF16/1.7GHz) passes150
+numeric checks and18 reimported ACU reports. W8/W4/W2 ordinary median cycles
+87775/84389/78938: fewer warps save10.068% atW2, while achieved occupancy falls
+46.56->40.48%. PU instructions22.553M->20.319M and TSM ld/st1/4 support less
+per-warp setup/reduction work, not higher occupancy or fewer useful FMAs.
+DRAM stays7.42MB; L1/L2 bytes rise4.72%. Warp-op SHRL drops only12288: do not
+reuse the earlier address-signedness explanation for this different gain.
+Pipeline W8/W4 has mixed signs; W2 adds only.945% (all3 pairs lower but small).
+Actual Box emits the first FMA after8 rather than9 vector128 loads, NOT the
+local5vs9. Compiler-specific schedule evidence matters. Memory-dependency
+ratios rise while compute-dependency falls; this is not an exact wall-time
+decomposition. Keep W2/pipeline as scoped experimental candidates, not global
+policies; next test other existing workload controls before more pipelining.
+Evidence: `docs/measurements/q6_schedule_20261019.txt`; production unchanged.
 
 ## Keep AIU SWZL and matrix-load layout contracts paired
 

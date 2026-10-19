@@ -83,3 +83,47 @@ the generated object/DSO payloads. Valid independent results survive failures.
 
 Scope at handoff: host tests and local codegen verified; device precision,
 CE cycle gain and model TPOT are NOT_RUN. Do not replace production routing.
+
+Returned focus results (2026-10-19; supersedes pending device status above)
+------------------------------------------------------------------------
+Source9446927, archiveSHA
+9137ca894b8aa39828d101aca6ec6ef8d89dc49bec591c4909f8d5a56ed0a01d.
+All694source/559harness hashes match.150 numerical checks PASS, max independent
+error2.7521372717020376e-8; same-warp RAW equality, guards and negatives PASS.
+18 actual ACU reports hash-checked and locally reimported; all comparison
+medians recomputed identically. SameZW810/72CUs/PCI0000:7E:00.0, CE/CU/PU1.7GHz
+and identical raw memoryclock1800000. Both F16/BF16 A3control native bodies
+byte-identical to previous Box build. This point executes BF16; the F16 body
+identity is not a claim that the optional F16 workload controls were executed.
+
+Warp count       ordinary CE cycles      pipeline CE cycles
+8                87775                   87679
+4                84389                   84553
+2                78938                   78192
+
+W4/W2 vsW8 improve3.858%/10.068%, all three paired cycles lower. Pipeline W8
+andW4 have mixed signs and no stable cycle improvement. Pipeline W2 improves
+.945% median (paired -1.811%,-.945%,-.286%); small effect, not a universal rule.
+Combined best W2-pipeline vsA3W8:10.918% fewer CE cycles,1.12256x. Secondary
+rotating-event50.26545->45.38818us (-9.703%) agrees directionally; not the
+primary score or a component to subtract from forced-cold ACU timing.
+
+W8->W2 PU instructions22.553M->20.319M (-9.90%), TSM ld/st8192->2048each;
+DRAMread remains7.42MB, L1/L2 transactionbytes113.382->118.737MB (+4.72%).
+Useful FMA/code-conversion/indexed-shuffle counts unchanged. SHRL falls only
+12288 executions: most removed work is per-warp setup/address/control and
+finish/reduction, not dequant. Register104/thread fixed, CTA/CUcapacity4->16
+but theoretical warp occupancy remains50%; achieved occupancy46.56->40.48%
+and eligible warps2.495->2.231 actually fall. No higher-occupancy explanation.
+TSM is a small time share; do not credit the complete10.1% to TSM alone.
+
+Actual Box pipeline scheduling is weaker than local: FMA after8 rather than9
+vector128 loadsites (local5vs9). W2 pipeline adds24576 dynamic warp-op counts,
+compute-dependency ratio falls.296823->.199022 while vmem-load dependency rises
+.206037->.345327. Samples/ratios are not wall-time shares. This supports only
+a small scheduling tradeoff; it does not prove a large hidden-load benefit.
+
+Decision: keep W2 as new focus control and W2-pipeline as best measured focus
+candidate. Production remains unchanged; no all-shape/qtype/M1 or model-TPOT
+admission. Next test existing optional seven controls before generalization,
+then profile any intended new promotion shape. Do not blindly deepen pipeline.
