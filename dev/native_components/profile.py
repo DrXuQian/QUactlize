@@ -38,12 +38,14 @@ def check_native(nodes):
     return actual
 
 
-def acu_command(acu, report, child, *, symbol=None):
+def acu_command(acu, report, child, *, symbol=None, graph_profiling='node'):
     # SDK 2.1.1: launch-skip counts MATCHING kernels, not all launches.
     # Native: first linked call + three adapter warmups; collect warmup #3.
     # Candidate: only one ordinary call inside its explicit profiler range.
+    if graph_profiling not in ('none', 'node', 'graph'):
+        raise ValueError('unsupported graph profiling mode')
     result = [str(acu), '--set', 'full', '--profile-from-start', 'yes' if symbol else 'no',
-              '--graph-profiling', 'node', '--replay-mode', 'kernel', '--cache-control', 'all',
+              '--graph-profiling', graph_profiling, '--replay-mode', 'kernel', '--cache-control', 'all',
               '--kill', 'no', '--check-exit-code', 'yes', '--launch-count', '1',
               '--export', str(report)]
     if symbol:

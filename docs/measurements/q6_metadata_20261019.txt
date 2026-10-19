@@ -47,3 +47,25 @@ values, zero input, plane/copy negatives and guards precede timing. Active
 weight ring>=2.25verifiedL2. Two optional forced-cold ACU captures on point0.
 No llama dependency, old-results dependency, native reference or full sweep.
 Device correctness, resource counters and performance remain NOT_RUN.
+
+2026-10-19 profiler-only correction
+----------------------------------
+User observed roughly one hour before the old ACU report completed; the next
+arm also appeared stuck after target PID. The old carrier reused the entire
+22-copy cold ring (4,844,421,120 weight bytes), negative controls, and timing
+graphs before ProfilerStart. Its BEGIN marker was after ProfilerStart, so the
+log did not distinguish preparation from a blocking profiler-start call.
+Those overheads are unnecessary for a single forced-cold ACU launch. The
+hour-long stall's exact cause is NOT established by this source inspection.
+
+tools/profile_q6_metadata.py now imports the original immutable snapshot,
+checks source/SDK/device/image identities and the completed point receipt,
+then uses one weight copy (220,200,960 bytes for point0). It launches only the
+chosen arm, verifies changed-input warmups and the profiled result, and calls
+no graph API. ACU uses graph-profiling=none and cache-control=all. Every phase
+prints BEGIN/END, including before ProfilerStart. Results go to a new path.
+Eight-point rotating event timing and all numerical gates are unchanged.
+The old frozen source, compiled images and existing results stay untouched.
+Standalone command takes --source OLD_RUN/source --results OLD_RUN/results,
+--sdk SDK --arm 1 --result NEW_FILE, under ACU --profile-from-start no.
+This is a profiling-harness correction, not a kernel change or speedup claim.

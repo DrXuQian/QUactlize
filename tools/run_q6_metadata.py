@@ -240,10 +240,11 @@ def collect(a):
         if a.acu and rows[0]['status']=='PASS':
             for arm in range(2):
                 target=a.output/f'profile-{arm}'
-                command=[sys.executable,str(Path(__file__).resolve()),'--sdk',str(a.sdk),
-                         '--output',str(a.output),'--l2-bytes',str(a.l2_bytes),'--child','0',
-                         '--result',str(a.output/f'profile-{arm}.json'),'--profile-arm',str(arm)]
-                rc=execute(acu_command(a.acu,target,command),a.output/f'acu-{arm}.log')
+                command=[sys.executable,'-u',str(ROOT/'tools/profile_q6_metadata.py'),
+                         '--source',str(ROOT),'--results',str(a.output),'--sdk',str(a.sdk),
+                         '--l2-bytes',str(a.l2_bytes),'--point','0',
+                         '--result',str(a.output/f'profile-{arm}.json'),'--arm',str(arm)]
+                rc=execute(acu_command(a.acu,target,command,graph_profiling='none'),a.output/f'acu-{arm}.log')
                 try:
                     if rc: raise ValueError(f'ACU child rc={rc}')
                     paths=[p for p in (target,target.with_suffix('.acurep')) if p.is_file()]
