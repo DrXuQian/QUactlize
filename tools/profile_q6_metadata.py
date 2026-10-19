@@ -126,6 +126,8 @@ def main():
         source_inputs=experiment.inputs
         if manifest.get('schema')=='q6-sparse-v1':
             source_inputs=importlib.import_module('dev.gemv_simt.build_q6_sparse').inputs
+        elif manifest.get('schema')=='q6-index-v1':
+            source_inputs=importlib.import_module('dev.gemv_simt.build_q6_index').inputs
         elif manifest.get('schema')!='q6-metadata-v1':
             raise ValueError('unsupported Q6 experiment schema')
         if (harness_identity(a.source) != authority['harness'] or

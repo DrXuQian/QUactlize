@@ -211,7 +211,8 @@ def execute(command, log):
     return child.returncode
 
 
-def collect(a, *, builder=build, arms=ARMS, driver=None, point_indices=None, profile_arms=(0,1)):
+def collect(a, *, builder=build, arms=ARMS, driver=None, point_indices=None,
+            profile_arms=(0,1), profile_rounds=1):
     from tools.run_kpack_llama_ab import device
     from dev.native_components.profile import acu_command,check_report
     a.output.mkdir(parents=True,exist_ok=False)
@@ -219,9 +220,14 @@ def collect(a, *, builder=build, arms=ARMS, driver=None, point_indices=None, pro
     if not indices or len(set(indices))!=len(indices) or any(i not in range(len(workloads())) for i in indices):
         raise ValueError('invalid or duplicate point inventory')
     if a.acu and indices[0]!=0: raise ValueError('profile requires point0 first')
+    if not isinstance(profile_rounds,int) or not 1<=profile_rounds<=3:
+        raise ValueError('profile rounds must be 1..3')
+    if len(set(profile_arms))!=len(profile_arms) or any(i not in (0,1) for i in profile_arms):
+        raise ValueError('invalid profile arm inventory')
     driver=Path(__file__).resolve() if driver is None else Path(driver).resolve()
     plan = dict(points=[asdict(workloads()[i]) for i in indices],point_indices=indices,arms=arms,rounds=6,samples=5,
-                native=False,production_changed=False,configs=1)
+                native=False,production_changed=False,configs=1,profile_rounds=profile_rounds,
+                profile_arms=list(profile_arms))
     atomic_json(a.output/'plan.json',plan)
     if a.plan_only:
         print('Q6_METADATA_PLAN '+json.dumps(plan));return 0
@@ -243,24 +249,29 @@ def collect(a, *, builder=build, arms=ARMS, driver=None, point_indices=None, pro
             rows.append(row)
             print(f'Q6_METADATA_PROGRESS completed={done}/{len(indices)} point={i} status={row["status"]} remaining_continue=1',flush=True)
         if a.acu and rows[0]['status']=='PASS':
-            for arm in profile_arms:
-                target=a.output/f'profile-{arm}'
-                command=[sys.executable,'-u',str(ROOT/'tools/profile_q6_metadata.py'),
-                         '--source',str(ROOT),'--results',str(a.output),'--sdk',str(a.sdk),
-                         '--l2-bytes',str(a.l2_bytes),'--point','0',
-                         '--result',str(a.output/f'profile-{arm}.json'),'--arm',str(arm)]
-                rc=execute(acu_command(a.acu,target,command,graph_profiling='none'),a.output/f'acu-{arm}.log')
-                try:
-                    if rc: raise ValueError(f'ACU child rc={rc}')
-                    paths=[p for p in (target,target.with_suffix('.acurep')) if p.is_file()]
-                    if len(paths)!=1: raise ValueError('missing or ambiguous ACU report')
-                    raw=a.output/f'profile-{arm}.raw.csv'
-                    if execute([str(a.acu),'--import',str(paths[0]),'--page','raw','--csv'],raw):
-                        raise ValueError('ACU import failed')
-                    reports.append(dict(status='PASS',report=str(paths[0]),report_sha256=sha(paths[0]),
-                                        **check_report(raw.read_text(errors='replace'),rows[0]['nodes'][arm])))
-                except Exception as exc:
-                    reports.append(dict(status='FAIL',error=str(exc)))
+            for rnd in range(profile_rounds):
+                order=profile_arms if rnd%2==0 else tuple(reversed(profile_arms))
+                for arm in order:
+                    suffix=str(arm) if profile_rounds==1 else f'r{rnd}-a{arm}'
+                    target=a.output/f'profile-{suffix}'
+                    command=[sys.executable,'-u',str(ROOT/'tools/profile_q6_metadata.py'),
+                             '--source',str(ROOT),'--results',str(a.output),'--sdk',str(a.sdk),
+                             '--l2-bytes',str(a.l2_bytes),'--point','0',
+                             '--result',str(a.output/f'profile-{suffix}.json'),'--arm',str(arm)]
+                    print(f'Q6_PROFILE_PROGRESS round={rnd+1}/{profile_rounds} arm={arm}',flush=True)
+                    rc=execute(acu_command(a.acu,target,command,graph_profiling='none'),a.output/f'acu-{suffix}.log')
+                    try:
+                        if rc: raise ValueError(f'ACU child rc={rc}')
+                        paths=[p for p in (target,target.with_suffix('.acurep')) if p.is_file()]
+                        if len(paths)!=1: raise ValueError('missing or ambiguous ACU report')
+                        raw=a.output/f'profile-{suffix}.raw.csv'
+                        if execute([str(a.acu),'--import',str(paths[0]),'--page','raw','--csv'],raw):
+                            raise ValueError('ACU import failed')
+                        reports.append(dict(status='PASS',round=rnd,arm=arm,raw_csv=str(raw),
+                                            report=str(paths[0]),report_sha256=sha(paths[0]),
+                                            **check_report(raw.read_text(errors='replace'),rows[0]['nodes'][arm])))
+                    except Exception as exc:
+                        reports.append(dict(status='FAIL',round=rnd,arm=arm,error=str(exc)))
         status='PASS' if all(r['status']=='PASS' for r in rows+reports) else 'INCOMPLETE'
         summary=dict(status=status,points=rows,profiles=reports,production_changed=False,
                      performance_admitted=False,scope='EXPERIMENT_NOT_SELECTOR_PROMOTION')

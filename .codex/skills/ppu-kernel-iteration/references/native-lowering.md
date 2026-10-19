@@ -34,6 +34,27 @@ Generic signed layout arithmetic, scalar publication, repeated conversions
 and a poor register layout also expand code. Attribute the extra sequence to
 the actual source/IR/native lowering before naming its cause.
 
+### Nonnegative coordinates must remain unsigned through reader helpers
+
+Q6 PPU0010 follow-up: an unsigned outer index still incurred sign correction
+after conversion to local `int k` or signed `word_index`/`word_slot` parameters.
+Keeping validated nonnegative coordinates unsigned end to end removed native
+shift/add/multiply corrections without changing canonical bytes or dequant
+math. Preserve 64-bit address products, signed scales and invalid expert IDs.
+Prove actual helper addresses at slot/group boundaries and maximum ABI sizes.
+Local non-NOP BF16 sites fell 2107->1630 and vregs 108->96; global load widths,
+FMA and code-conversion counts did not change. This is compile evidence only.
+The Box compiler can allocate differently; fewer instructions or registers
+are not themselves a speed verdict. Inspect control flow when static stores
+increase: separate error/normal exits can still execute just one store.
+
+If ACU reports show different CE frequencies, never attribute the converted
+microsecond ratio entirely to source changes. Cycles are also affected by
+core/memory clock ratios: collect repeated alternating pairs under matching
+clock conditions and report raw elapsed cycles, not instruction totals, when
+the task uses a cycle score. Record disagreements rather than replacing that
+score with event time. Evidence/scope: `docs/measurements/q6_index_20261019.txt`.
+
 ## Keep AIU SWZL and matrix-load layout contracts paired
 
 For matrix tiles written by **AIU.swzl, use the matching ld.swzl consumer**.
