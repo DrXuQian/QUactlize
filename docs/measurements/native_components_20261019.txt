@@ -142,3 +142,14 @@ precision and timing are unchanged.
 For THIS zero-measurement failed attempt, pull the fix and use a fresh RUN
 (unset RUN before the normal command). Preserve the old directory and logs.
 No llama rebuild, Quactlize runtime rebuild or config sweep is requested.
+
+Carrier diagnostic follow-up (2026-10-19)
+---------------------------------------
+The next posted exception reaches the host carrier g++ compile/link, but its
+argv is truncated and contains no compiler diagnostic. The carrier now uses
+the same bounded stderr reporting as the adapter, preserving its environment
+and full log. 98 host tests pass; carrier C++ syntax passes against the local
+dense-MR headers. This is a diagnostic fix, not a proven Box linker fix.
+Read RUN/gpu-1/build/carrier-build.log from the existing failed run before
+rerunning seven workers or changing any native link flags. No full PPU link,
+GPU execution, new timing or production change is claimed.

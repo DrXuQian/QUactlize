@@ -4,12 +4,14 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from dev.native_components.build import build_adapter, native_flags, response_files, run_commands
 from quactlize.runtime.compiler import sha
 from tools.run_native_components_multi import worker_failure
+from tools.run_native_components import carrier, environment
 
 
 class NativeBuildTest(unittest.TestCase):
@@ -123,6 +125,55 @@ class NativeBuildTest(unittest.TestCase):
             self.assertEqual(result['returncode'],1)
             missing=worker_failure(root/'absent',1)
             self.assertEqual(missing['diagnostic'],'')
+
+    def test_carrier_compile_and_link_errors_reach_worker_summary(self):
+        for message in ('fatal error: ggml.h: No such file or directory',
+                        "undefined reference to `native_test_symbol'"):
+            with self.subTest(message=message),tempfile.TemporaryDirectory()as td:
+                root=Path(td);source,build,sdk,_,_=self.fixture(root)
+                output=root/'output';output.mkdir()
+                args=SimpleNamespace(llama_source=source,llama_build=build,sdk=sdk)
+
+                def compiler(command,*,cwd,env,stdout,stderr):
+                    self.assertEqual(command[0],'g++')
+                    self.assertEqual(cwd,build)
+                    self.assertEqual(env,environment(args))
+                    stdout.write(message+'\n')
+                    return subprocess.CompletedProcess(command,1)
+
+                with patch('dev.native_components.build.subprocess.run',side_effect=compiler):
+                    with self.assertRaisesRegex(RuntimeError,'native carrier compile/link failed rc=1')as caught:
+                        carrier(args,output)
+                self.assertIn(message,str(caught.exception))
+                self.assertIn(message,(output/'carrier-build.log').read_text())
+                self.assertFalse((output/'carrier.json').exists())
+                (root/'console.log').write_text(str(caught.exception))
+                self.assertIn(message,worker_failure(root,1)['diagnostic'])
+
+    def test_carrier_success_receipt_reused_and_binary_change_rejected(self):
+        with tempfile.TemporaryDirectory()as td:
+            root=Path(td);source,build,sdk,_,_=self.fixture(root)
+            output=root/'output';output.mkdir()
+            args=SimpleNamespace(llama_source=source,llama_build=build,sdk=sdk)
+
+            def compiler(command,**kwargs):
+                Path(command[command.index('-o')+1]).write_text('HOST TEST ONLY')
+                return subprocess.CompletedProcess(command,0)
+
+            with patch('dev.native_components.build.subprocess.run',side_effect=compiler)as compile_call:
+                binary=carrier(args,output)
+                self.assertEqual(carrier(args,output),binary)
+                compile_call.assert_called_once()
+                binary.write_text('CHANGED')
+                with self.assertRaisesRegex(ValueError,'native fixture changed'):
+                    carrier(args,output)
+
+    def test_command_runner_passes_explicit_environment(self):
+        with tempfile.TemporaryDirectory()as td:
+            root=Path(td)
+            command=[sys.executable,'-c','import os; assert os.environ["NATIVE_BUILD_TEST"] == "carrier"']
+            run_commands([command],root,root/'environment.log',
+                         env={'NATIVE_BUILD_TEST':'carrier'},stages=['native carrier compile/link'])
 
 
 if __name__=='__main__':unittest.main()

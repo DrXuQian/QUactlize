@@ -55,19 +55,24 @@ def response_files(flags, workdir):
     return result
 
 
-def run_commands(commands, workdir, log_path):
+def run_commands(commands, workdir, log_path, *, env=None, stages=None):
     """Keep the full log and expose the compiler's own diagnostic on failure."""
+    if stages is None:
+        stages=['native adapter '+('compile'if i==0 else'link')for i in range(len(commands))]
+    if len(stages)!=len(commands):
+        raise ValueError('build commands and diagnostic stages differ')
     with log_path.open('x')as log:
         log.write(json.dumps(dict(cwd=str(workdir)))+'\n')
         for index,command in enumerate(commands):
             log.write(json.dumps(command)+'\n');log.flush()
-            result=subprocess.run(command,cwd=workdir,stdout=log,stderr=subprocess.STDOUT)
+            options={}if env is None else dict(env=env)
+            result=subprocess.run(command,cwd=workdir,stdout=log,stderr=subprocess.STDOUT,**options)
             if result.returncode:
                 log.flush()
                 with log_path.open('rb')as reader:
                     reader.seek(max(0,log_path.stat().st_size-8192))
                     tail='\n'.join(reader.read().decode(errors='replace').splitlines()[-24:])
-                raise RuntimeError(f'native adapter {"compile"if index==0 else"link"} failed '
+                raise RuntimeError(f'{stages[index]} failed '
                                    f'rc={result.returncode}; cwd={workdir}; log={log_path}\n{tail}')
 
 

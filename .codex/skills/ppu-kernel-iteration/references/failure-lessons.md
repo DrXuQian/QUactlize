@@ -326,3 +326,9 @@ flags intact, seal its contents in the receipt, and expose compiler stderr
 in worker/coordinator errors. Object compilation is not full linking or GPU
 execution. Seams: `dev/native_components/build.py`,
 `tests/test_native_components_build.py` (2026-10-19).
+
+Apply that diagnostic path to host carriers as well as device adapters. A
+truncated g++ argv/CalledProcessError does not distinguish a source error,
+missing dependency or unresolved symbol. Preserve and inspect the existing
+carrier-build.log before another GPU campaign; host syntax success is not
+proof of linking against the Box backend and its transitive dependencies.

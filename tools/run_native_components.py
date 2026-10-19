@@ -20,7 +20,7 @@ import uuid
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from dev.native_components.plan import plan
-from dev.native_components.build import build_adapter
+from dev.native_components.build import build_adapter, run_commands
 from dev.native_components.accounting import checked_component
 from dev.native_components.history import check_cohort
 from dev.llama_ab.contract import family, pilot
@@ -148,8 +148,8 @@ def carrier(args, output):
             raise ValueError('native fixture changed; use a new output')
         return binary
     if binary.exists():raise ValueError('unreceipted native carrier')
-    with (output/'carrier-build.log').open('x') as log:
-        subprocess.run(command,env=environment(args),stdout=log,stderr=subprocess.STDOUT,check=True)
+    run_commands([command],args.llama_build,output/'carrier-build.log',
+                 env=environment(args),stages=['native carrier compile/link'])
     atomic_json(receipt,dict(identity=identity,binary_sha256=sha(binary)))
     return binary
 
