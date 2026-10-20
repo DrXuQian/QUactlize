@@ -69,6 +69,16 @@ def assert_winner(row,w):
         assert row['config']=={k:w['config'][k] for k in generate.FIELDS}
         if w['implementation']=='constant-split':
             impl=row['implementation']
+            if impl['producer']=='common-packet-3d':
+                # The admitted common reader superseded non-fixed historical
+                # bodies, without changing this measured geometry/selection.
+                q, mode, n, k, e, top, ch, m, compute = w['key']
+                f = w['config']
+                assert 10 <= q <= 14 and compute in (0, 1) and f['variant'] == 3
+                assert (f['columns'], f['warps'], f['values']) in ((4, 2, 8), (4, 8, 8), (8, 4, 4)) or (
+                    q == 12 and (f['columns'], f['warps'], f['values']) == (4, 4, 4))
+                assert not w['body']['fixed'] and impl['measured'] == 'none'
+                return
             assert impl['measured']==w['point']['name'].replace('-','_')
             for field in ('hoist','fixed','changes'):assert impl[field]==w['body'][field]
 
@@ -191,6 +201,15 @@ template<int Q,int V,int C,int W,int P> int launch(qkg_call_v1 const& c,int s) {
 namespace q8_vector { using simt::launch;using simt::launch_v2; }
 }
 ''')
+    (tmp_path/'simt_common.cuh').write_text(r'''#pragma once
+#include "measured_decode.cuh"
+#include "quactlize/execution/simt_common_scope.hpp"
+namespace quactlize::execution::simt {
+template<int Q,int C,int W,int P> int common_reader_launch(qkg_simt_call_v2 const& d,int) {
+    observed=d;implementation=-2;++launches;return QKG_OK;
+}
+}
+''')
     generated=[]
     for q in simt_codegen.QTYPES:
         path=tmp_path/f'launch{q}.cpp'
@@ -199,6 +218,7 @@ namespace q8_vector { using simt::launch;using simt::launch_v2; }
     main=tmp_path/'entry.cpp'
     main.write_text(r'''#include "measured_decode.cuh"
 #include "quactlize/execution/simt_validation.hpp"
+#include "quactlize/execution/simt_common_scope.hpp"
 #include <cassert>
 using namespace quactlize::execution;
 static void check(qkg_call_v1 c,qkg_simt_config_v1 f,int compute,bool measured) {
@@ -215,6 +235,8 @@ static void check(qkg_call_v1 c,qkg_simt_config_v1 f,int compute,bool measured) 
     launches=0;
     assert(quactlize_kpack_simt_run_v2(&d,&f,&a)==QKG_OK && launches==1);
     assert((implementation!=0)==measured);
+    if (simt::common_reader_scope(d,f)) assert(implementation==-2);
+    else if (measured) assert(implementation==int(simt::measured_decode(d,f)));
     assert(observed.compute_type==compute && !memcmp(&observed.call,&c,sizeof(c)));
     int expected=implementation;
     if(compute==QKG_COMPUTE_F16) {
