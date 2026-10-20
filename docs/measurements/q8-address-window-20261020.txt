@@ -1,0 +1,94 @@
+Q8 address/window review and bounded cycle supplement, 2026-10-20
+
+Evidence
+  review-lite-1792466826984023439.tar.xz
+  SHA256 b1e4b03fd7ff66779c4852787aabdbd30f9a6c8415927db9f8d7ff63899d4c01
+  Source 4bda7f6ee35b8e349af75fa80832da1c809fa81d.
+  Box /workspace/kpack-q8-dense.sAlv8KU5/results.
+  ZW810/72 CUs, PCI 0000:7E:00.0, SDK attribute L2=67108864.
+  Verified 608 transfer hashes, 744 compile inputs, 583 Python harness inputs,
+  280 numerical pairs/3360 independent checks, 160 rotating timing pairs,
+  36 original raw ACU CSVs and linked receipts. No numerical failures.
+  Maximum relative L1 error 1.9250276131233765e-8; all paired raw bits equal.
+  Runtime libraries and full acurep intentionally remain on Box; neither
+  was rehashed/reimported locally from this lightweight upload.
+  All captured CE/CU/PU clocks 1.7GHz, memory raw clock 1800000.
+  Event-phase clock lock was not independently sampled.
+  Measured wall time 317.72s, excluding preceding compilation and packaging.
+
+  Both Box arms use compiler SHA256
+  0ecb9407820ccb7852bb0b2fdce6f50f22a189eb2f38e64e92d4cfd5423b2983,
+  NOT the local compiler fa62c590... . Do not substitute local native lowering
+  for Box performance evidence. 16/24 native audit entries match the local
+  receipts; the eight address-induction/combined bodies differ. All 12 old
+  control entries are unchanged against the same-Box compiler reference;
+  all 24 entries have zero stack in the Box build audit.
+
+Same-config cycle focus results (original vs candidate)
+  F16 M1 N1024 K5120, C4W8P4:
+    original 17474 cycles
+    signed-grid 17711 (+1.36%, mixed pair signs)
+    previous unsigned 19093 (+9.27%, all three slower)
+    address induction 17938 (+2.66%, mixed pair signs)
+    half-window 20079 (+14.91%, all three slower)
+    induction+half 19885 (+13.80%, all three slower)
+  No new small-focus winner is admitted.
+
+  F16 M8 N5120 K8192, C8W4P4:
+    original 238127 cycles
+    signed-grid 237168 (-0.40%, mixed pair signs)
+    previous unsigned 273662 (+14.92%, all three slower)
+    address induction 230596 (-3.16%, all three lower:
+      -3.16%, -1.98%, -4.06%)
+    half-window 262323 (+10.16%, all three slower)
+    induction+half 257543 (+8.15%, all three slower)
+  Retain address induction as a finalist for this scope; no global Q8 switch.
+
+Rotating event screen: four other M8 opportunities
+  These numbers are within the TWO retained configurations, not a full sweep.
+  Original is the best-config median across contemporary paired controls.
+  All selected half-window gains below have six lower paired round medians.
+  Shape N,K         original us   candidate us  decrease    candidate/config
+   512,2048            7.4406         6.5201       12.37%    combined/C4W8P4
+  4096,2048           32.7541        25.3088       22.73%    half/C8W4P4
+  4096,4096           59.3056        46.2233       22.06%    half/C8W4P4
+  8192,5120          140.2275       121.0900       13.65%    combined/C8W4P4
+  The original winner for the first row is C8W4P4; the matched C4 control is
+  slower, so the same-config decrease there is about16.5%, not12.37%.
+  These four points had no ACU capture in the first run. Do not equate their
+  event gains with a same-clock cycle admission or reject them globally using
+  the two different focus shapes.
+
+Counter interpretation / transferable lesson
+  At the losing large focus, half-window drops registers78->62 and increases
+  active occupancy59.91->83.09%, but cycles increase10.16%. DRAM is essentially
+  fixed (44.83584->44.83456 MB), L1/L2 bytes742.94->741.72 MB, VMEM load count
+  unchanged. Load-dependency per-issue ratio0.0616->0.3174 and IALU-busy
+  ratio0.3826->0.6113 increase. This supports a delivery/scheduling tradeoff,
+  not a weight-volume reduction and not exact stall-to-latency accounting.
+  Small-focus occupancy stays about11% despite fewer registers; its fixed
+  64-CTA grid is still underfilled. Half-window reduces load lookahead as well
+  as register lifetime, so lower register count is not a universal win.
+  Conversely, the event gains above prevent a blanket "always hoist all B"
+  conclusion. Keep window/config/shape as measured axes in the shortlist.
+  The address-only focus improvement has fixed registers/loads and virtually
+  fixed traffic/instruction counts; exact native dependency attribution is
+  still open without the full candidate report/native per-PC evidence.
+
+Next and command
+  Profile ONLY the four M8 screen-winner points above, same frozen
+  source/DSOs/device. Reuse the prior numerical and timing cells; no compile,
+  no ring timing rerun, no changed original plan/authority/summary.
+  Five geometries: additionally keep the original C8W4P4 best for N512/K2048,
+  not only its slower matched C4 control. All six arms and three alternating
+  rounds: 90 single-launch ACU reports. These are four points, not five.
+  Same command resumes missing profiles; successful raw evidence is retained.
+
+  CUDA_VISIBLE_DEVICES=1 python3 tools/confirm_q8_dense.py \
+    --run /workspace/kpack-q8-dense.sAlv8KU5 \
+    --sdk /usr/local/PPU_SDK --expected-ce-ghz 1.7 --confirm-idle
+
+  Operator must confirm that the SAME physical card is idle. Device/SDK/
+  source mismatch is a rejection, not a reason to rewrite receipts.
+  Upload the final review-lite-*.tar.xz; full acurep stays on Box.
+  No production Q8, global selector or model TPOT change is claimed.
