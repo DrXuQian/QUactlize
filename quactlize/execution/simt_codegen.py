@@ -50,9 +50,20 @@ def source(q, profile="full"):
     conditions = [f"f->variant=={c.variant} && f->columns=={c.columns} && "
                   f"f->warps=={c.warps} && f->values=={c.values}" for c in candidates]
     body = '#include "measured_decode.cuh"\n'
+    if q != 8:
+        body += '#include "simt_common.cuh"\n'
     body += f'extern "C" bool qkg_simt_supported_{q}(qkg_simt_config_v1 const* f) {{\n'
     body += "    return " + " ||\n        ".join(f"({s})" for s in conditions) + ";\n}\n"
     body += f'extern "C" int qkg_simt_launch_v2_{q}(qkg_simt_call_v2 const* c,qkg_simt_config_v1 const* f) {{\n'
+    if q != 8:
+        body += '    if (quactlize::execution::simt::common_reader_scope(*c,*f)) {\n'
+        for c, condition in zip(candidates, conditions):
+            common = c.variant == 3 and ((c.columns == 4 and c.values == 8 and c.warps in (2, 8)) or
+                (c.columns == 8 and c.warps == 4 and c.values == 4) or
+                (q == 12 and c.columns == 4 and c.warps == 4 and c.values == 4))
+            if common:
+                body += f'        if ({condition}) return quactlize::execution::simt::common_reader_launch<{q},{c.columns},{c.warps},{c.values}>(*c,f->split);\n'
+        body += '    }\n'
     body += f'    if (quactlize::execution::simt::measured_decode(*c,*f)!=quactlize::execution::simt::MeasuredDecode::None) return quactlize::execution::simt::measured_decode_launch<{q}>(*c,*f);\n'
     for c, condition in zip(candidates, conditions):
         reader = "simt::q8_vector" if c.variant >= 4 else "simt"

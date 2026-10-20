@@ -30,7 +30,13 @@ def test_codegen_query_and_launch_have_same_inventory():
             source = spec.source(q,profile)
             for c in spec.inventory(q,profile):
                 condition = f'f->variant=={c.variant} && f->columns=={c.columns} && f->warps=={c.warps} && f->values=={c.values}'
-                assert source.count(condition)==2
+                common = q != 8 and c.variant == 3 and (
+                    (c.columns == 4 and c.values == 8 and c.warps in (2, 8)) or
+                    (c.columns == 8 and c.warps == 4 and c.values == 4) or
+                    (q == 12 and c.columns == 4 and c.warps == 4 and c.values == 4))
+                # Query and generic launch retain the same inventory. The
+                # measured common body adds a guarded implementation, no recipe.
+                assert source.count(condition)==2+int(common)
                 reader='simt::q8_vector' if c.variant>=4 else 'simt'
                 assert f'{reader}::launch<' not in source
                 assert source.count(f'{reader}::launch_v2<{q},{c.variant},{c.columns},{c.warps},{c.values}>')==1

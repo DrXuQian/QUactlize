@@ -1,0 +1,65 @@
+Common K-quant SIMT reader: returned Split-K admission and production port
+
+Authority
+  review-lite-1792464616100465032.tar.xz
+  SHA256 6461d52b2d2a32d74e9467f6889c4901e54bfc25d6ef1441198fdf9044380416
+  Box /workspace/kpack-simt-split.QX0ZCJ7N/results, ZW810, 72 CUs.
+  Seven distinct physical devices; each whole family and A/B pair stays on
+  one card. Verified 3410 exported files and 738 compile-input hashes.
+  Complete original records and raw CSVs were reviewed; omitted ACU reports
+  and source access details remain on Box, not newly reimported here.
+
+Results
+  74 families, 2224/2224 numerical pairs, 1776/1776 timed pairs.
+  All raw-equal gates pass; maximum independent relative L1 error 1.779e-7.
+  F32 endpoints, F16/BF16 activation computation, ordered FP32 accumulation.
+  S1/S2/S4/S8, dense/grouped/indexed. M1/M8 timings; intermediate-M gates
+  are numerical evidence, not a claim of measured speed for every M.
+  Producer/reducer measured separately; identical reducer charged once in
+  both sums. All 1774 winning producers win in all six alternating rounds.
+  No producer exceeds 5% round spread; 425 common-reducer measurements do.
+  Do not present component sums as measured model E2E/TPOT.
+
+  Format    matched-config component-cost median decrease
+  Q2_K      32.37%
+  Q3_K      34.07%
+  Q4_K      22.77%
+  Q5_K      21.98%
+  Q6_K      32.53%
+
+  Twenty ACU cohorts, three pairs each: all lower CE cycles at matching
+  1.7GHz core and memory raw clock1800000. Per-format cycle reductions:
+  Q2 32.33..33.35%, Q3 33.46..51.18%, Q4 17.48..42.02%,
+  Q5 17.51..35.82%, Q6 47.22..54.63%.
+  This matches clocks for those profiles; event-phase clock lock was not
+  independently verified. No comparison with historical1.0GHz latencies.
+
+Exceptions and promotion
+  Every one of the1664 non-fixed-control paired cells improves.
+  Q5 indexed/BF16 M1 N2048 K512 C4W2P8/S1:
+  old fixed9.33852us, generic candidate9.66667us (+3.51%, all six slower).
+  Q4 indexed/BF16 M1 N1024 K3072 C4W4P4/S1:
+  old17.51000us, candidate17.51091us (mixed pairs; tie, not a gain).
+  Keep existing fixed S1 dispatches; do not add a measured losing override.
+  All S2/S4/S8 paired candidates improve. Upgrade the common implementation
+  for the admitted three geometries (plus Q4 C4W4P4), all four splits.
+
+Production boundary
+  simt_common.cuh carries the same tested metadata/address/body.
+  simt_common_scope.hpp shares eligibility with codegen and explain.
+  No shape-to-config selection, public ABI, canonical format, rounding,
+  reducer, caller or Q8 production change. Unmeasured geometries/storage
+  keep their old implementation. The F32 endpoints retain both compute types.
+  New shapes within these generic geometry contracts use the common body;
+  no measured speed claim is made for an unseen shape.
+  Existing fused gate-up bodies are unchanged, not covered by this promotion.
+  Public launch code routes eligible calls to common before the old fallback.
+  Native-port gate compares actual production kernels with the measured
+  producer (both precisions, every admitted geometry/mode), requiring byte
+  equality and zero stack. Local compiler gate is not fresh device evidence.
+
+Next selection work
+  Resume the requested bounded SIMT/TC shortlist at the CURRENT clock using
+  this common implementation. Historical1.0GHz results supply configurations,
+  not comparable times. Q8 address/window candidates remain experimental;
+  do not publish a new global selector or promise model TPOT from this gate.

@@ -2,6 +2,7 @@
 #include "simt.h"
 #include "model_gemv_scope.hpp"
 #include "measured_decode.hpp"
+#include "simt_common_scope.hpp"
 
 namespace quactlize::execution::simt {
 // Host launcher strategy, shared with planning/explain. These are not new
@@ -44,6 +45,10 @@ struct Implementation {
 inline Implementation implementation(qkg_simt_call_v2 const& d,qkg_simt_config_v1 const& f) {
     auto const& c=d.call;
     Implementation out{"register-reuse",f.split==1?"none":"ordered-row-float2-or-scalar"};
+    if(common_reader_scope(d,f)) {
+        out.producer="common-packet-3d";
+        return out;
+    }
     auto id=measured_decode(d,f);
     if(id!=MeasuredDecode::None) {
         out.producer="measured-constant-split";out.measured=measured_decode_name(id);
