@@ -1,0 +1,94 @@
+Large-M finalist retiming at requested 1700 MHz
+=============================================
+
+This is an experiment, not a production policy change. All 430 existing
+large-M points (dense and indexed MoE, Q2_K..Q6_K, M=128/512/1024/2048/4096)
+are covered. It is NOT a new Cartesian sweep, Q8 large-M coverage, native
+llama A/B, or a model TPOT measurement.
+
+The frozen shortlist contains all 1138 candidates from the prior completed
+screen/confirmation: 2..4 per point, 301 distinct full recipes, 115 compiled
+TC modules, 782 resource queries, 86 weight families. The current production
+C++ prefill selector is queried on the host; every one of its 430 selected
+recipes must be present and match geometry, precision, schedule and dequant.
+Those current selections are primary controls. The old pre-confirmation
+baseline remains an additional control, not a substitute for today's code.
+
+Historical input: confirmation-1792328080064058562.tgz, SHA256
+b43e1d28bada3d28d15aed2ebd5e92d693c63cb4429924e24ab79fbf5d5ce8fb.
+The generator tools/export_prefill_refresh.py reproduces the checked-in
+recipe shortlist from this archive and policies/kpack_prefill_confirmation_v1.json.
+No original archive, old run directory, or old absolute latency is required
+on Box. Historical family process duration is used ONLY for seven-card
+load balancing, never in a fresh performance verdict. Current source and
+SDK compile identities are verified; completed valid modules may be reused.
+
+Protocol
+--------
+- Build all required TC modules and the two small helper libraries once.
+- Check actual physical cards, SDK, installed BF16 providers, independent
+  GGUF oracle and graph ABI. Refuse missing providers or unavailable finalists.
+- Keep a weight family and all its candidates on one card. Request CU clocks
+  at 1700 MHz using ppu-smi; never set memory clocks/power limits or reset GPUs.
+  Lower actual clocks are diagnostic only, not FAIL/retry/normalization.
+- Six alternating confirmation rounds. Preserve independent numerical checks,
+  changed inputs/router profiles, negative controls and guard checks.
+- Cold producer, SF/full expansion, metadata, adapters, reducer and finish are
+  timed separately by the existing component harness. Share an identical
+  component only within one round. Do not time three kernels then count them
+  individually. Sum component medians; do not label that sum model E2E.
+- Dense cuBLAS uses prewarmed, ordinary event timing, NOT CUDA Graph or Asys.
+  Grouped FULL uses the installed DeepGEMM Python JIT BF16 entry; warmup/JIT
+  are excluded. MoE full dequant expands only GPU-selected active experts.
+- An incomplete point is retried only on an explicit resume. No retry-until-win
+  for noise/regression and no 24-hour timeout. Failed peers continue in a fresh
+  process. Validate saved partial rounds before skipping them.
+- COMPLETE means all 430 points have measured numerical/component receipts.
+  PASS/UNSTABLE/RULE_REGRESSION remain separate selection statuses. It does
+  not admit a production change, new-clock optimum, or no-regression model.
+
+Run on otherwise idle ZW810 cards (same SDK/device cohort)
+-------------------------------------------------------
+(
+    set -e
+    cd /sim/eec/shared/junfu.qx/quactlize
+    git pull --ff-only origin develop
+    unset RUN RESUME_RUN
+    GPUS=1,2,3,4,5,6,7 \
+    PPU_SDK=/usr/local/PPU_SDK \
+    L2_BYTES=67108864 EXPECTED_CE_GHZ=1.7 \
+    IDLE_CONFIRMED=1 JOBS=192 \
+    bash tools/run_prefill_refresh_box.sh
+)
+
+No llama checkout/build or old result path is needed. The wrapper exports
+committed Quactlize plus the locally available pinned actlize commit; it
+does not attempt an HTTPS nested submodule fetch. PPU_SMI can override the
+ppu-smi executable. PLAN_ONLY=1 exercises the host planner without a PPU.
+BUILD_ONLY=1 builds/probes but does not start measurements.
+
+Resume using the RUN printed by the first command:
+RESUME_RUN=/workspace/kpack-prefill-refresh.XXXXXXXX \
+PPU_SDK=/usr/local/PPU_SDK IDLE_CONFIRMED=1 JOBS=192 \
+bash tools/run_prefill_refresh_box.sh
+
+The original frozen source and card assignment are retained on resume.
+Use a new run after changing source, SDK, cards or candidates. The controller
+prints progress and an observed slowest-worker ETA; it has no duration
+guarantee. The previous confirmation took 9453 seconds (~2.6 hours) on
+seven cards, not including this new-source compile. Historical rebalancing
+suggests ~124 minutes of worker work, but that is not a new measured ETA.
+
+Upload only results/confirmation-*.tgz printed at completion. It contains
+raw samples, numerical summaries, current controls, resource/image/source
+receipts, actual-clock diagnostics and bounded error logs, not libraries,
+weights or ACU reports. Full raw rounds and compiled cache stay on Box.
+
+Local validation
+----------------
+Host tests cover actual C++ control coverage, every finalist's resource
+binding, whole-family ownership, missing/changed control rejection,
+partial-round receipt validation, throttling diagnostics and small packaging.
+No device or performance result is claimed before the returned Box receipts.
+The ppu-kernel-iteration workflow keeps old evidence immutable and limits
+this run to historical finalists; production and small-M routing are untouched.

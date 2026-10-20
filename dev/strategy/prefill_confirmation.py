@@ -50,6 +50,43 @@ def ordered_jobs(point, round_index):
     return [point['jobs'][k] for k in (keys if round_index % 2 == 0 else reversed(keys))]
 
 
+def validate_round(point, row, index):
+    """Also validate completed partial rounds before a resumed child skips them."""
+    require(row['point'] == point['id'] and row['round'] == index and row['status'] == 'PASS',
+            'missing/failed confirmation round')
+    require(set(row['jobs']) == set(point['jobs']), 'confirmation job denominator differs')
+    require(row['order'] == [j['id'] for j in ordered_jobs(point, index)],
+            'finalists were not measured in alternating order')
+    for job in row['jobs'].values():
+        require(job['correctness'] == 'PASS' and job['components'], 'confirmation correctness missing')
+        from tools.pack_kpack_strategy_review import accuracy
+        proof = accuracy(job)
+        require(proof['checks'] > 0 and proof.get('bad_max', 0) == 0 and
+                proof.get('nonfinite_max', 0) == 0 and
+                math.isfinite(proof.get('relative_l1_error_max', 0)) and
+                0 <= proof.get('relative_l1_error_max', 0) < .005,
+                'independent numerical proof failed')
+    for cid, component in row['components'].items():
+        require(component['status'] == 'PASS', 'component measurement failed')
+        require(cid == digest(component['identity']), 'component identity changed')
+        require(component['record_sha256'] == digest({k:v for k,v in component.items()
+                if k != 'record_sha256'}), 'component receipt changed')
+        stats = statistics_checked(component['samples_us'])
+        require(all(component[k] == v for k,v in stats.items() if k in
+                    ('median_us', 'round_medians_us', 'spread_pct')),
+                'component samples differ from statistics')
+        require(component['first_use_excluded'] and component['host_launch_cost_added'] is False,
+                'warmup/launch timing contract differs')
+        require(component['identity']['authority'] == row['authority'] and
+                row['authority']['round'] == index and row['authority']['point'] == point['id'],
+                'old round timing cannot be reused')
+    for arm in point['arms'].values():
+        ids = [c for j in arm['jobs'] for c in row['jobs'][j]['components']]
+        require(ids and len(ids) == len(set(ids)), 'component double counted or missing')
+        require(all(c in row['components'] and math.isfinite(row['components'][c]['median_us']) and
+                    row['components'][c]['median_us'] > 0 for c in ids), 'invalid component cost')
+
+
 def verdict(point, rounds):
     """Six alternating rounds, separately measured stages, no old timings.
 
@@ -60,34 +97,7 @@ def verdict(point, rounds):
     costs = {a:[] for a in point['arms']}
     components = {}
     for index, row in enumerate(rounds):
-        require(row['point'] == point['id'] and row['round'] == index and row['status'] == 'PASS',
-                'missing/failed confirmation round')
-        require(set(row['jobs']) == set(point['jobs']), 'confirmation job denominator differs')
-        require(row['order'] == [j['id'] for j in ordered_jobs(point, index)],
-                'finalists were not measured in alternating order')
-        for job in row['jobs'].values():
-            require(job['correctness'] == 'PASS' and job['components'], 'confirmation correctness missing')
-            from tools.pack_kpack_strategy_review import accuracy
-            proof = accuracy(job)
-            require(proof['checks'] > 0 and proof.get('bad_max', 0) == 0 and
-                    proof.get('nonfinite_max', 0) == 0 and
-                    math.isfinite(proof.get('relative_l1_error_max', 0)) and
-                    0 <= proof.get('relative_l1_error_max', 0) < .005,
-                    'independent numerical proof failed')
-        for cid, component in row['components'].items():
-            require(component['status'] == 'PASS', 'component measurement failed')
-            require(cid == digest(component['identity']), 'component identity changed')
-            require(component['record_sha256'] == digest({k:v for k,v in component.items()
-                    if k != 'record_sha256'}), 'component receipt changed')
-            stats = statistics_checked(component['samples_us'])
-            require(all(component[k] == v for k,v in stats.items() if k in
-                        ('median_us', 'round_medians_us', 'spread_pct')),
-                    'component samples differ from statistics')
-            require(component['first_use_excluded'] and component['host_launch_cost_added'] is False,
-                    'warmup/launch timing contract differs')
-            require(component['identity']['authority'] == row['authority'] and
-                    row['authority']['round'] == index and row['authority']['point'] == point['id'],
-                    'old round timing cannot be reused')
+        validate_round(point, row, index)
         for aid, arm in point['arms'].items():
             ids = [c for j in arm['jobs'] for c in row['jobs'][j]['components']]
             require(len(ids) == len(set(ids)), 'component double counted')

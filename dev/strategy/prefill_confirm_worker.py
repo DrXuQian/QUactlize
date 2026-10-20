@@ -36,6 +36,13 @@ def child(args):
             authority['device'] == device_probe(args.sdk) and authority['sdk'] == sdk_identity(args.sdk) and
             authority['oracle'] == oracle_identity(),
             'confirmation source/SDK/device changed')
+    clock = authority.get('clock')
+    if clock:
+        from dev.strategy.refresh_clock import ADVISORY, observe
+        require(clock['policy'] == ADVISORY and sha(Path(clock['smi'])) == clock['smi_sha256'],
+                'clock policy/tool changed')
+        def clock_sample():
+            return observe(clock['smi'], authority['device']['pci'], clock['requested_mhz'], advisory=True)
     manifest = json.loads((args.output/'families'/(args.family+'.json')).read_text())
     require(manifest['sha256'] == digest({k:v for k,v in manifest.items() if k != 'sha256'}) and
             manifest['authority'] == digest(authority), 'confirmation manifest changed')
@@ -71,6 +78,9 @@ def child(args):
             point_id = point['id']
             point_root = args.output/'points'/point['id']
             paths = [point_root/f'round-{i}.json' for i in range(ROUNDS)]
+            if clock:
+                from dev.strategy.prefill_refresh import collect
+                collect(point, args.output, authority)  # Check partial receipts before skipping.
             if all(path.is_file() for path in paths):
                 continue
             b = Context(sdk, ring, Workload(**point['workload']), helpers)
@@ -83,6 +93,7 @@ def child(args):
                 output = point_root/f'measure-{index}-{uuid.uuid4().hex}'
                 output.mkdir(parents=True, exist_ok=False)
                 records, data = {}, {}
+                before = clock_sample() if clock else None
                 for job in ordered_jobs(point, index):
                     core = None
                     try:
@@ -128,6 +139,8 @@ def child(args):
                 row = dict(status='PASS', point=point['id'], round=index, authority=epoch,
                     jobs=data, components=records, wall_seconds=time.monotonic()-started,
                     order=[j['id'] for j in ordered_jobs(point, index)])
+                if clock:
+                    row['clock_observations'] = dict(before=before, after=clock_sample())
                 row['record_sha256'] = digest(row); atomic_json(path, row)
             if full: full.close(); full = None
             if sf: sf.close(); sf = None

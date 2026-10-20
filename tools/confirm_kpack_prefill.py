@@ -156,9 +156,16 @@ def setup_worker(args):
 def package(output):
     """Small review only: selected results, receipts and bounded failure logs."""
     archive = output/('confirmation-'+str(time.time_ns())+'.tgz')
-    selected = [output/'request.json', output/'summary.json', output/'finalists.json']
+    selected = [output/'request.json', output/'summary.json', output/'finalists.json',
+                output/'devices.json', output/'images.json', output/'source.json']
+    selected += sorted(output.glob('clock-lock-*.json'))
+    selected += sorted(output.glob('setup-error-*.json'))
+    selected += sorted((output/'build-attempts').glob('*/*.log'))
+    selected += sorted((output/'cache/tc').glob('*/build.log'))
+    selected += sorted(output.glob('*.log'))
     for shard in sorted(output.glob('shard-*')):
-        selected += [shard/'authority.json',shard/'summary.json',shard/'console.log']
+        selected += [shard/'authority.json',shard/'summary.json',shard/'console.log',
+                     shard/'resources.json',shard/'command.json']
         selected += sorted((shard/'results').glob('*.json'))
         selected += sorted((shard/'failures').glob('*.json'))
         selected += sorted(shard.glob('family-*.log'))
@@ -171,9 +178,10 @@ def package(output):
                 review.emit('confirmation_authority',value=read(shard/'authority.json'))
                 for path in sorted((shard/'points').glob('*/round-*.json')):
                     row=review.read(path)
+                    extra = {k: row[k] for k in ('clock_observations', 'wall_seconds') if k in row}
                     review.emit('prefill_confirmation_round',point=row['point'],round=row['round'],
                         authority=row['authority'],record_sha256=row['record_sha256'],
-                        order=row['order'],jobs={k:review.proof(v) for k,v in row['jobs'].items()})
+                        order=row['order'],jobs={k:review.proof(v) for k,v in row['jobs'].items()}, **extra)
                     for cid,c in row['components'].items():
                         review.component(cid,c,'confirmation',row['point'])
                 review.emit('end',counts=dict(review.counts),prior_lines_sha256=review.content.hexdigest(),
