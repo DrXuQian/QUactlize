@@ -18,7 +18,7 @@ class Kernel(GeneralKernel):
         return super().launch(config,0 if arm==0 else self.candidate,copy)
 
 
-def timing(core,config,recipe):
+def timing(core,config,recipe,*,geometry_fn=geometry,symbol_fn=symbol_name):
     b=core.b;rt=RuntimeView(b);nodes=[];graphs=[]
     with ExitStack() as cleanup:
         for arm in (0,1):
@@ -27,8 +27,8 @@ def timing(core,config,recipe):
             b.check()
             cap=Captured(rt,[lambda i=i,a=arm:core.launch(config,a,i) for i in range(b.ring.copies)])
             cleanup.callback(cap.close)
-            grid,block=geometry(b.w,recipe,actual)
-            if (len(cap.groups)!=1 or symbol_name(config,actual)+'(' not in cap.descriptions[0]['name'] or
+            grid,block=geometry_fn(b.w,recipe,actual)
+            if (len(cap.groups)!=1 or symbol_fn(config,actual)+'(' not in cap.descriptions[0]['name'] or
                     cap.descriptions[0]['grid']!=grid or cap.descriptions[0]['block']!=block):
                 raise ValueError('Q8 ablation captured inventory differs')
             nodes.append(cap.descriptions[0])

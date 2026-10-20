@@ -9,6 +9,11 @@ export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-1}
 test -x "${PPU_SDK}/bin/hgcc"
 "${PYTHON:-python3}" -c 'import numpy; from gguf.quants import dequantize'
 args=()
+case ${Q8_EXPERIMENT:-ablation} in
+    ablation) ;;
+    address) args+=(--experiment address) ;;
+    *) echo 'ERROR: Q8_EXPERIMENT must be ablation or address.' >&2; exit 1 ;;
+esac
 if [[ -n ${RESUME_RUN:-} ]]; then
     RUN=$(realpath -e -- "${RESUME_RUN}")
     [[ -d ${RUN}/source && -f ${RUN}/results/plan.json && ! -L ${RUN} ]] || exit 1
@@ -37,13 +42,13 @@ if [[ ${PROFILE_ACU:-1} == 1 ]]; then
     test -x "${ACU:-${PPU_SDK}/asight/bin/acu}"
     args+=(--acu "${ACU:-${PPU_SDK}/asight/bin/acu}")
 fi
-echo "Q8_DENSE_BOX run=${RUN} gpu=${CUDA_VISIBLE_DEVICES} expected_ce_ghz=${EXPECTED_CE_GHZ:-1.7} production_changed=0"
+echo "Q8_DENSE_BOX experiment=${Q8_EXPERIMENT:-ablation} run=${RUN} gpu=${CUDA_VISIBLE_DEVICES} expected_ce_ghz=${EXPECTED_CE_GHZ:-1.7} production_changed=0"
 set +e
 "${PYTHON:-python3}" -u "${SOURCE}/tools/run_q8_dense.py" \
     --sdk "${PPU_SDK}" --output "${RUN}/results" --l2-bytes "${L2_BYTES:-67108864}" \
     --expected-ce-ghz "${EXPECTED_CE_GHZ:-1.7}" --confirm-idle "${args[@]}" 2>&1 | tee "${RUN}/console-$(date +%s%N).log"
 rc=${PIPESTATUS[0]}
 set -e
-echo "Q8_DENSE_RESUME RESUME_RUN=${RUN} IDLE_CONFIRMED=1 EXPECTED_CE_GHZ=${EXPECTED_CE_GHZ:-1.7} bash tools/run_q8_dense_box.sh"
+echo "Q8_DENSE_RESUME RESUME_RUN=${RUN} Q8_EXPERIMENT=${Q8_EXPERIMENT:-ablation} IDLE_CONFIRMED=1 EXPECTED_CE_GHZ=${EXPECTED_CE_GHZ:-1.7} bash tools/run_q8_dense_box.sh"
 echo "runner_rc=${rc}"
 exit "${rc}"

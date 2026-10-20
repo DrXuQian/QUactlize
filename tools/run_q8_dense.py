@@ -7,7 +7,6 @@ import fcntl
 import json
 from pathlib import Path
 import sys
-import tarfile
 import time
 import traceback
 
@@ -24,6 +23,24 @@ from quactlize.runtime.compiler import sha
 from quactlize.runtime.tuning import digest
 from tools.run_q6_metadata import execute
 from tools.run_simt_general import sealed,read_cell
+from dev.gemv_simt.q8_dense_bench import Kernel,timing
+
+
+def configure(experiment):
+    global build,plan,inventory,ARMS,timing
+    if experiment=='ablation':return
+    if experiment!='address':raise ValueError('unknown Q8 experiment')
+    from functools import partial
+    from dev.gemv_simt.build_q8_address import build as selected_build
+    from dev.gemv_simt.q8_address_plan import plan as selected_plan,inventory as selected_inventory
+    from dev.gemv_simt.q8_address_source import ARMS as selected_arms,geometry,symbol_name
+    from dev.gemv_simt.q8_dense_bench import timing as original_timing
+    build,plan,inventory,ARMS=selected_build,selected_plan,selected_inventory,selected_arms
+    timing=partial(original_timing,geometry_fn=geometry,symbol_fn=symbol_name)
+
+
+def experiment_args(a):
+    return ['--experiment','address'] if getattr(a,'experiment','ablation')=='address' else []
 
 
 def identity(output,point,authority):
@@ -76,7 +93,6 @@ def binding(a):
 
 def child(a):
     from dev.gemv_simt.general_bench import Context,Weights,numerical,profile,single_copy
-    from dev.gemv_simt.q8_dense_bench import Kernel,timing
     from dev.gemv_simt.general_access import pattern
     from dev.strategy.cold_decode import Ring
     from quactlize.execution.simt_codegen import Config
@@ -146,7 +162,7 @@ def profile_focus(a,focus,attempt,authority):
             target=folder/stem
             command=[sys.executable,'-u',str(Path(__file__).resolve()),'--sdk',str(a.sdk),'--output',str(a.output),
                      '--l2-bytes',str(a.l2_bytes),'--child',str(p),'--m',str(m),'--config',str(c),
-                     '--profile-arm',str(arm),'--result',str(folder/(stem+'.json'))]
+                     '--profile-arm',str(arm),'--result',str(folder/(stem+'.json')),*experiment_args(a)]
             print(f'Q8_DENSE_ACU focus={name} round={rnd+1}/3 arm={arm} direct_calls=1',flush=True)
             try:
                 rc=execute(acu_command(a.acu,target,command,graph_profiling='none'),folder/(stem+'.log'))
@@ -215,7 +231,7 @@ def collect(a):
         for spec in frozen['points']:
             point=spec['point']
             rc=execute([sys.executable,'-u',str(Path(__file__).resolve()),'--sdk',str(a.sdk),'--output',str(a.output),
-                        '--l2-bytes',str(a.l2_bytes),'--child',str(point)],attempt/f'point-{point}.log')
+                        '--l2-bytes',str(a.l2_bytes),'--child',str(point),*experiment_args(a)],attempt/f'point-{point}.log')
             if not rc:
                 try:complete_point(a.output,point,authority)
                 except Exception as e:rc=1;print(f'Q8_DENSE_INCOMPLETE point={point} error={e}',flush=True)
@@ -244,9 +260,11 @@ def main():
     p.add_argument('--l2-bytes',type=int,default=67108864);p.add_argument('--expected-ce-ghz',type=float,default=1.7)
     p.add_argument('--confirm-idle',action='store_true');p.add_argument('--plan-only',action='store_true')
     p.add_argument('--resume',action='store_true');p.add_argument('--acu',type=Path)
+    p.add_argument('--experiment',choices=('ablation','address'),default='ablation')
     p.add_argument('--child',type=int);p.add_argument('--profile-arm',type=int);p.add_argument('--config',type=int)
     p.add_argument('--m',type=int);p.add_argument('--result',type=Path)
     a=p.parse_args();a.sdk=a.sdk.resolve();a.output=a.output.resolve()
+    configure(a.experiment)
     if not 0<a.expected_ce_ghz<10:p.error('expected CE GHz must be finite positive')
     if a.child is not None:
         if a.child not in range(len(inventory())):p.error('invalid point')
@@ -256,13 +274,8 @@ def main():
     try:return collect(a)
     finally:
         if a.output.is_dir():
-            archive=a.output/f'review-{time.time_ns()}.tgz'
-            with tarfile.open(archive,'w:gz') as tar:
-                for path in sorted(a.output.rglob('*')):
-                    bare=path.name in {f'r{r}-a{i}' for r in range(3) for i in range(len(ARMS))}
-                    if path.is_file() and not path.is_symlink() and (path.suffix in ('.json','.log','.csv','.txt','.acurep') or bare):
-                        tar.add(path,arcname=str(path.relative_to(a.output)),recursive=False)
-            print('results='+str(archive),flush=True)
+            from tools.pack_simt_split_review import package
+            package(a.output)
 
 
 if __name__=='__main__':

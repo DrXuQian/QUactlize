@@ -60,6 +60,23 @@ def test_run_results_or_archive_locator(tmp_path):
     assert result_root(root) == root
 
 
+@pytest.mark.parametrize('schema', ['q8-dense-ablation-v1', 'q8-address-window-v1'])
+def test_q8_evidence_without_full_reports(tmp_path, schema):
+    root = tmp_path / 'results'
+    root.mkdir()
+    (root / 'plan.json').write_text(json.dumps({'schema': schema}))
+    for arm in range(6):
+        (root / f'r0-a{arm}').write_bytes(b'dummy-large-report')
+        (root / f'r0-a{arm}.acurep').write_bytes(b'dummy-large-report')
+        (root / f'r0-a{arm}.raw.csv').write_bytes(b'kernel,cycles\ncontrol,100\n')
+    assert result_root(tmp_path) == root
+    archive = package(root)
+    with tarfile.open(archive) as reader:
+        assert set(reader.getnames()) == {
+            'plan.json', 'transfer-manifest.json',
+            *(f'r0-a{arm}.raw.csv' for arm in range(6))}
+
+
 def test_no_link_traversal_or_overwrite(tmp_path):
     root = tmp_path / 'results'
     fixture(root)
