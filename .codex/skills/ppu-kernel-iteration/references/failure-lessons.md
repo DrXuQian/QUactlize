@@ -365,3 +365,15 @@ alone does not prove a TDP or temperature cause. Keep unscaled event times and
 numerical/launch/identity checks. Preserve strict-policy raw receipts; retry
 only incomplete points under a separately sealed advisory policy. This is
 user-authorized cohort policy, not a universal exemption from clock controls.
+
+An experiment can preserve the production geometry yet execute the wrong
+implementation. The 2026-10-20 MoE M8 gap audit found the explicit SIMT carrier
+calling measured_decode/generic launch_v2 but missing the newer common-reader
+dispatch above them. Raw captured register_reuse symbols proved the mismatch;
+an "implementation=shipping" label did not. Mirror dispatch ordering and
+guards, compare native bodies, and assert the captured producer entry. When
+this changes a comparison's control body, remeasure every required router
+profile for that key; do not merge the old control's absolute times or call
+them measurements of the new body. Keep unrelated archived verdicts intact.
+See docs/measurements/decode_profile_gap_handoff_20261020.txt. This corrects
+the experiment, not a production selector or a model-performance claim.

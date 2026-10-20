@@ -103,7 +103,7 @@ def test_resource_rejection_is_visible_not_missing_incumbent_or_measured_loser(p
     assert not result['arms'] and not bindings
     assert list(result['resource_unavailable']) == [arms[0]['id']]
     arms[0]['required'] = True
-    with pytest.raises(ValueError, match='required incumbent'):
+    with pytest.raises(ValueError, match='required or failed TC'):
         bind_point(item, records)
 
 

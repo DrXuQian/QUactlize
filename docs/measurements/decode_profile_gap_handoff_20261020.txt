@@ -1,0 +1,83 @@
+MoE M8 profile-gap supplement (not a new full sweep)
+
+Use PHASE=profile-gaps with tools/run_decode_refresh_box.sh.
+Frozen input: kpack_decode_refresh_v1.json, evidence seal
+67fe29755f8ecc07b30374f4f76c1609f9ea9fccf52753c29063dc6f00997841.
+
+The reviewed table leaves 57 candidate/router-profile pairings missing over
+14 runtime keys and 43 points. Only alternatives eligible on every already
+measured profile are considered. Known losing/noisy alternatives do not
+cause another search. No new geometry, tile, split, format or M is added.
+
+Carrier correction
+------------------
+The old experiment's generic SIMT carrier calls measured_decode/launch_v2,
+but omitted the common-reader branch of the production simt_codegen launcher.
+Raw receipts confirm register_reuse<14,1,3,4,8,8,1,0> for the affected
+original controls. Do not describe those measurements as common_reader.
+
+Fix the experiment dispatch ordering to common -> fixed measured -> generic,
+using the same production geometry predicate and unchanged kernel headers.
+Two of these 14 keys are affected: Q6 indexed BF16, F32 endpoints, E256,
+top8, channels8, M8, N512/K2048 and N512/K3072. Recheck all five router
+profiles for their two shortlisted candidates. This adds 12 previously
+measured pairs and six points. New totals:
+
+  14 keys, 49 points, 69 candidate/profile pairs, 49 paired controls,
+  118 arms, 10 weight families, 7 TC modules and 6 SIMT modules.
+
+All arms are FQ; no scale expansion or full dequantization is needed.
+Actual C++ host queries bind all incumbents; capture inventory must show
+common_reader for the affected controls. A missing required arm, incorrect
+producer, numerical failure or incomplete component inventory is a failure,
+never a partial successful comparison.
+
+Timing / execution
+------------------
+Six forward/reverse alternating rounds, five samples each. Isolated kernel
+timers; producer/reducer/helpers remain separate, then measured costs are
+summed. Active-weight rotation >=2.25 verified L2, existing independent GGUF
+and BF16 precision checks, changed input, plane/producer negative controls,
+guards and graph replay retained. Compile and first-use warmup excluded.
+No synthetic launch cost, no ACU, no model TPOT claim.
+
+Shared compilation finishes before any timing. Whole weight families go to
+disjoint physical GPUs; never split a candidate/control pair across cards.
+Default cards 1..7, request min=max1700MHz first. Recorded actual frequency
+deviations are advisory, not failures or timing normalization. No 24h kill.
+
+Box:
+  PHASE=profile-gaps GPUS=1,2,3,4,5,6,7 \
+  PPU_SDK=/usr/local/PPU_SDK L2_BYTES=67108864 \
+  EXPECTED_CE_GHZ=1.7 IDLE_CONFIRMED=1 JOBS=192 \
+  bash tools/run_decode_refresh_box.sh
+
+For CPU-only preview add PLAN_ONLY=1 (does not require SDK/GPU).
+The wrapper archives the committed source and the locally available pinned
+actlize, with no nested network fetch. Run after git pull; uncommitted edits
+are deliberately not copied. It prints a RESUME_RUN command and a compact
+results/review-lite-*.tar.xz. Upload that archive, not the complete run.
+Same-run resume preserves successful receipts; do not use CLOCK_RETRY_RUN.
+
+Evidence interpretation
+-----------------------
+Replace all old profile comparisons of the two corrected-body keys with
+fresh evidence. For the other 12 keys, fill only the original missing pairs;
+never compare absolute times across different source/clock cohorts. Choose
+one common recipe per runtime key only after all tested profiles admit it.
+Measurement completeness does not itself certify a faster common winner.
+
+No production routes change here. Q8's previously admitted 27 exact keys
+remain active, the other 160 candidate proposals remain inactive. Those
+other proposals need a carrier/body-identity audit before future activation;
+this supplement is not a blanket admission of the old scan. No large-M,
+llama.cpp, packaging ABI or caller changes.
+
+Local preflight
+---------------
+13/13 planned module objects compiled with the local SDK2.1.1 (77.46s).
+The six common-reader specializations (three modes x F16/BF16 compute)
+match the previously admitted production native instruction bytes and have
+zero stack. 84 host tests pass; 12 separate opt-in checks skipped.
+The local compiler differs from Box; no runtime linking or PPU execution
+is claimed. Box rebuilds and validates its own source-bound libraries.

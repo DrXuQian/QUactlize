@@ -19,6 +19,8 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from dev.strategy.refresh import make_plan, request, family, assign
+from dev.strategy.refresh_gaps import (PHASE as GAP_PHASE, make_plan as make_gap_plan,
+                                       query_points as gap_queries, validate_producers)
 from dev.strategy.refresh_clock import ADVISORY, observe, parse as parse_clock, request_lock
 from dev.strategy.refresh_retry import make_retry, previous_run, cache_root
 from dev.strategy.journal import atomic_json
@@ -60,6 +62,7 @@ def saved(path, authority, point):
         raise ValueError('point receipt identity/hash changed: '+str(path))
     if r['status'] == 'PASS':
         validate_confirmation(r['data'])
+        validate_producers(point, r['data'])
         expected = {a['id'] for a in point['arms']}
         unavailable = r['data'].get('resource_unavailable', {})
         if (set(r['data']['arms']) & set(unavailable) or
@@ -271,7 +274,7 @@ def bind_point(point, records):
             query = probe.query(probe_spec(w, r, int(dict(r.parameters).get('grid_mode', 0) >= 2)))
             if query['status'] != 'READY':
                 if arm['required'] or query.get('runtime_status') != 0:
-                    raise ValueError('required incumbent TC recipe unavailable: '+arm['id'])
+                    raise ValueError('required or failed TC resource query: '+arm['id']+' '+json.dumps(query))
                 result['resource_unavailable'][arm['id']] = query
                 continue
             arm['binding'] = dict(launch=resolved_grid(w, r, probe.device['compute_units'], query['occupancy']))
@@ -358,6 +361,7 @@ def family_child(a):
                     data['resource_unavailable'] = bound['resource_unavailable']
                     data['sf_helper_selection'] = screen
                 validate_confirmation(data)
+                validate_producers(p, data)
                 for buf in ring.buffers:
                     buf.guard()
                 row = dict(status='PASS', point=p['id'], authority=auth, data=data,
@@ -399,7 +403,7 @@ def aggregate(plan, run, output):
                 for side in ('before', 'after'))
         results.append(result)
     counts = Counter(p['status'] for p in results)
-    return dict(status='COMPLETE' if counts['PASS'] == len(results) else 'INCOMPLETE',
+    result = dict(status='COMPLETE' if counts['PASS'] == len(results) else 'INCOMPLETE',
                 expected=len(results), completed=counts['PASS'], counts=dict(counts), points=results,
                 decisions=dict(Counter(p['decision'] for p in results if p['status'] == 'PASS')),
                 clock_policy=run.get('clock_policy', 'LEGACY_STRICT'),
@@ -407,6 +411,15 @@ def aggregate(plan, run, output):
                 clock_retry=plan.get('clock_retry'),
                 scope=plan['scope'], historical_times_reused=False, production_changed=False,
                 no_regression_admitted=False, model_tpot_admitted=False)
+    if plan.get('phase') == GAP_PHASE:
+        passed = {p['id'] for p in results if p['status'] == 'PASS'}
+        cells = plan['profile_gaps']['cells']
+        result['profile_gap_coverage'] = dict(
+            expected=len(cells), completed=sum(c['point'] in passed for c in cells),
+            missing_pairs=sum(c['previous_status'] == 'NOT_MEASURED' for c in cells),
+            body_rechecks=sum(c['previous_status'] == 'ELIGIBLE' for c in cells),
+            production_admission='PENDING_REVIEW')
+    return result
 
 
 def worker(a):
@@ -501,15 +514,18 @@ def run(a):
             if sha(ROOT/name) != value:
                 raise ValueError('plan source changed')
     else:
-        points = [p for p in inventory() if p['cohort'] == 'decode']
+        points = gap_queries() if a.phase == GAP_PHASE else [
+            p for p in inventory() if p['cohort'] == 'decode']
         originals = plan_smallm(a.output, [request(Workload(**p['workload'])) for p in points])
         atomic_json(a.output/'cpp-originals.json', originals)
-        plan = make_plan(originals['requests'], a.phase)
+        plan = (make_gap_plan(originals['requests']) if a.phase == GAP_PHASE else
+                make_plan(originals['requests'], a.phase))
         if a.clock_retry_from:
             plan = make_retry(a.clock_retry_from, plan, harness_identity(ROOT), saved, authority_for)
         atomic_json(pp, plan)
     print('DECODE_REFRESH_PLAN '+json.dumps(dict(plan['counts'], phase=a.phase,
-        scope=plan['scope'], q8_new_bodies='DENSE_S1', acu=False, historical_times_reused=False,
+        scope=plan['scope'], q8_new_bodies='NONE' if a.phase == GAP_PHASE else 'DENSE_S1',
+        acu=False, historical_times_reused=False,
         hard_timeout=False)), flush=True)
     if a.plan_only:
         return 0
@@ -609,7 +625,7 @@ def main():
     p.add_argument('--expected-ce-ghz', type=float, default=1.7)
     p.add_argument('--l2-bytes', type=int, default=67108864)
     p.add_argument('--jobs', type=int, default=192)
-    p.add_argument('--phase', choices=('all', 'pilot'), default='all')
+    p.add_argument('--phase', choices=('all', 'pilot', GAP_PHASE), default='all')
     p.add_argument('--resume', action='store_true')
     p.add_argument('--clock-retry-from', type=Path,
                    help='reviewed strict-clock results; retry only incomplete points in a new run')
@@ -625,7 +641,7 @@ def main():
     if (not cards or len(set(cards)) != len(cards) or any(not c.isdecimal() or str(int(c)) != c for c in cards) or
             a.jobs < 1 or a.l2_bytes <= 0 or not 0 < a.expected_ce_ghz < 10 or
             a.expected_ce_ghz*1000 != int(a.expected_ce_ghz*1000) or
-            a.resume and a.clock_retry_from):
+            a.resume and a.clock_retry_from or a.phase == GAP_PHASE and a.clock_retry_from):
         p.error('invalid worker/jobs/L2/clock parameters')
     a.output = a.output.resolve()
     a.sdk = a.sdk.resolve()

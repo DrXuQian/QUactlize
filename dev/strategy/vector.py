@@ -80,6 +80,8 @@ def source(item):
         launch = 'quactlize::execution::q4_decode::launch<' + ','.join(map(str, arguments)) + '>(d->call)'
     else:
         header = '#include "measured_decode.cuh"\n#include "simt_validation.hpp"\n'
+        if item['q'] != 8:
+            header += '#include "simt_common.cuh"\n'
         config = 'qkg_simt_config_v1 f{1,sizeof(f),' + ','.join(str(p[f]) for f in (
             'variant', 'columns', 'warps', 'values')) + ',split};\n'
         query = common + config + 'return quactlize::execution::simt::query_v2(*d,f,a,*out);\n'
@@ -89,7 +91,17 @@ def source(item):
         launch = f'quactlize::execution::{reader}::launch_v2<' + ','.join(map(str, arguments)) + '>(*d,split)'
         # This branch is part of the shipping implementation, not a new
         # selector. Omitting it would benchmark a slower generic lookalike.
-        launch = config + f'''if (quactlize::execution::simt::measured_decode(*d,f)!=
+        prefix = ''
+        if item['q'] != 8:
+            # Same ordering and compile-time geometry guard as simt_codegen:
+            # common -> fixed measured -> generic. Old frozen experiments
+            # remain old evidence; the changed source creates new module keys.
+            prefix = f'''if constexpr (quactlize::execution::simt::kCommonReader<{','.join(map(str, arguments))}>) {{
+        if (quactlize::execution::simt::common_reader_scope(*d,f))
+            return quactlize::execution::simt::common_reader_launch<{item['q']},{p['columns']},{p['warps']},{p['values']}>(*d,split);
+    }}
+    '''
+        launch = config + prefix + f'''if (quactlize::execution::simt::measured_decode(*d,f)!=
         quactlize::execution::simt::MeasuredDecode::None)
         return quactlize::execution::simt::measured_decode_launch<{item['q']}>(*d,f);
     return {launch};'''
