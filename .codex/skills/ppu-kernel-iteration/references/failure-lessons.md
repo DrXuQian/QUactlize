@@ -377,3 +377,14 @@ profile for that key; do not merge the old control's absolute times or call
 them measurements of the new body. Keep unrelated archived verdicts intact.
 See docs/measurements/decode_profile_gap_handoff_20261020.txt. This corrects
 the experiment, not a production selector or a model-performance claim.
+
+Test symbol guards with raw captured names, not only hand-written readable
+names. GNU c++filt can return a valid deeply nested CuTe symbol unchanged at
+its recursion limit; seven such TC symbols caused all49 profile-gap points
+to fail a post-timing exact-name guard. --no-recurse-limit reproduces their
+actual device_kernel identity on the host. For outer-entry classification,
+recognize only the exact mangled namespace/name/template boundary instead
+of recursively expanding types or substring matching nested helpers. Keep
+unknown/mismatching entries rejected. Save raw measurements as UNADMITTED
+when postchecks fail, separately from PASS receipts; otherwise a host-only
+validator bug discards the samples and requires another GPU run.

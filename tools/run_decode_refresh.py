@@ -53,6 +53,17 @@ def sealed(path, data):
     atomic_json(path, value)
 
 
+def save_rejected_measurement(output, point, authority, data, invocation, error):
+    """Preserve completed raw samples when a later host admission check fails."""
+    if not point.get('profile_gap') or data is None:
+        return None
+    path = output/'rejected'/point['id']/(uuid.uuid4().hex+'.json')
+    sealed(path, dict(status='UNADMITTED', point=point['id'], authority=authority,
+        data=data, invocation=invocation, error=str(error), performance_admitted=False,
+        scope='POSTCHECK_REJECTED_MEASUREMENT_NOT_A_PASS_RECEIPT'))
+    return str(path.relative_to(output))
+
+
 def saved(path, authority, point):
     if not path.exists():
         return None
@@ -340,6 +351,7 @@ def family_child(a):
                 sf_costs[cfg] = sum(s['median_us'] for s in measured['stages'])
         for p in pending:
             start = time.monotonic()
+            data = None
             print('DECODE_REFRESH_POINT_START point='+p['id']+' arms='+str(len(p['arms'])), flush=True)
             try:
                 w = Workload(**p['workload'])
@@ -374,9 +386,11 @@ def family_child(a):
                     selected_us=data['decision']['statistics'][data['decision']['winner']]['median_us'])), flush=True)
             except Exception as error:
                 traceback.print_exc()
+                diagnostic = save_rejected_measurement(out, p, auth, data, a.invocation, error)
                 sealed(out/'points'/(p['id']+'.json'), dict(
                     status='FAIL', point=p['id'], authority=auth, invocation=a.invocation,
-                    error=str(error), elapsed_seconds=time.monotonic()-start))
+                    error=str(error), elapsed_seconds=time.monotonic()-start,
+                    rejected_measurement=diagnostic))
                 return 1  # Fresh process for other points after a runtime failure.
     return 0
 

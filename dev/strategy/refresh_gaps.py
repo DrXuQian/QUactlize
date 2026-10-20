@@ -157,6 +157,32 @@ def make_plan(originals):
     return json.loads(json.dumps(result))
 
 
+def producer_entry(node):
+    """Recognize only known outer callees if c++filt hits its recursion limit.
+
+    Deep CuTe types can remain mangled; do not recursively parse their template
+    arguments or use a substring search (a helper may name a GEMM internally).
+    Exact namespace/source-name lengths plus the template boundary identify
+    the same outer functions accepted in the readable-name path.
+    """
+    display = kernel_entry(node['name'])
+    symbol = node.get('symbol', node['name'])
+    if not symbol.startswith('_Z'):
+        return display
+    for name in ('cutlass::device_kernel', 'cutlass::Kernel',
+                 'quactlize::execution::simt::common_reader',
+                 'quactlize::execution::simt::register_reuse'):
+        *namespace, function = name.split('::')
+        outer = '_ZN' + ''.join(str(len(p))+p for p in namespace)
+        for internal in ('', 'L'):
+            prefix = outer + internal + str(len(function)) + function + 'I'
+            if symbol.startswith(prefix) and len(symbol) > len(prefix):
+                if display not in (symbol, name):
+                    raise ValueError('producer symbol/display name disagree')
+                return name
+    return symbol  # Unknown outer function: retain fail-closed validation.
+
+
 def validate_producers(point, data):
     """Do not accept the old generic lookalike as a current production control."""
     if not point.get('profile_gap'):
@@ -169,7 +195,7 @@ def validate_producers(point, data):
                  if data['component_records'][cid]['kind'] == 'producer']
         if len(nodes) != 1:
             raise ValueError('profile supplement lacks one producer per arm')
-        entry = kernel_entry(nodes[0]['name'])
+        entry = producer_entry(nodes[0])
         expected = arm['expected_producer']
         if ((expected == 'common-packet-3d' and entry != 'quactlize::execution::simt::common_reader') or
                 (expected == 'register-reuse' and entry != 'quactlize::execution::simt::register_reuse') or

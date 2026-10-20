@@ -81,3 +81,31 @@ match the previously admitted production native instruction bytes and have
 zero stack. 84 host tests pass; 12 separate opt-in checks skipped.
 The local compiler differs from Box; no runtime linking or PPU execution
 is claimed. Box rebuilds and validates its own source-bound libraries.
+
+Returned run / host validation correction
+----------------------------------------
+review-lite-1792502728639765842.tar.xz (SHA256
+1cc1ee9f7d15723a8f2a502d583b6679e8b88a9f8716d50873a97a07972552e8)
+contains 203 verified files from /workspace/kpack-decode-refresh.nkGMiNuK.
+All 49 points stopped at the post-confirmation producer-name guard, not a
+reported numerical error. Ordinary c++filt left seven deeply nested TC
+symbols unchanged at its recursion limit; with --no-recurse-limit, all
+seven resolve to cutlass::device_kernel. The guard incorrectly required
+the readable spelling. This is a harness bug.
+
+Recognize the exact outer Itanium namespace/name/template prefix as well
+as the readable name. Do not match a substring inside template arguments
+or accept a generic SIMT body where common_reader is required. Raw symbol,
+module hashes, numerical checks, timers and candidate inventory stay intact.
+Postcheck failures now keep a separate UNADMITTED raw measurement for later
+diagnosis; it is not a passing receipt and is not counted as valid timing.
+
+The failed run had already discarded its measurements when saving the
+error-only receipts, so no source-only repair can recover those samples.
+Keep it immutable and start a new profile-gaps run with the command above.
+Do not use RESUME_RUN with the old frozen validator. This repeats only the
+same 49 points / 118 arms, not the full 1114-point refresh. The failed
+worker stage took 101.08s; compilation/setup is additional.
+Local regression: all seven actual symbols are recognized, the 49-point
+plan reproduces unchanged, and 93 host tests pass (12 opt-in checks skipped).
+This verifies the host fix, not new PPU execution or recovered timing data.

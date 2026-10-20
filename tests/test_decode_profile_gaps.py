@@ -11,7 +11,7 @@ import tarfile
 import pytest
 
 from dev.strategy.refresh import assign, family, request
-from dev.strategy.refresh_gaps import PHASE, make_plan, query_points, validate_producers
+from dev.strategy.refresh_gaps import PHASE, make_plan, query_points, validate_producers, producer_entry
 from dev.strategy.vector import source
 from quactlize.dispatch.planning import plan_smallm
 from quactlize.dispatch.table import Workload
@@ -118,6 +118,75 @@ def test_captured_inventory_rejects_historical_lookalike_or_missing_arm(evidence
     d['resource_unavailable'] = {'candidate': dict(status='UNAVAILABLE')}
     with pytest.raises(ValueError, match='every required pairing'):
         validate_producers(p, d)
+
+
+def test_real_tc_symbol_survives_demangler_recursion_limit(evidence):
+    # Exact symbol from review-lite-1792502728639765842.tar.xz. Ordinary
+    # c++filt on Box left all seven long TC entries mangled, failing 49 points.
+    raw = (ROOT/'tests/fixtures/profile_gap_tc_symbol.txt').read_text().strip()
+    readable = subprocess.check_output(
+        ['c++filt', '--no-recurse-limit', raw], text=True, timeout=5).strip()
+    assert readable.startswith('void cutlass::device_kernel<')
+    for name in (raw, readable):
+        assert producer_entry(dict(name=name, symbol=raw)) == 'cutlass::device_kernel'
+    p = next(p for p in evidence[0]['points'] if p['workload']['qtype'] == 10)
+    d = captured(p)
+    for arm in p['arms']:
+        if arm['expected_producer'] == 'tc':
+            d['component_records'][arm['id']]['identity']['node'] = dict(name=raw, symbol=raw)
+    validate_producers(p, d)
+
+
+@pytest.mark.parametrize('raw', [
+    '_ZN7cutlass13device_kernelIiiEEvT_',
+    '_ZN7cutlassL13device_kernelIiiEEvT_',
+    '_ZN7cutlass6KernelIiiEEvT_',
+    '_ZN7cutlassL6KernelIiiEEvT_',
+    '_ZN9quactlize9execution4simt13common_readerILi2ELi14ELi4ELi8ELi8ELi1EEEv11qkg_call_v1i',
+    '_ZN9quactlize9execution4simt14register_reuseILi14ELi1ELi3ELi4ELi8ELi8ELi1ELi0EEEv11qkg_call_v1i',
+])
+def test_known_mangled_outer_names_are_not_substring_matches(raw):
+    entry = producer_entry(dict(name=raw, symbol=raw))
+    assert not entry.startswith('_Z')
+    with pytest.raises(ValueError, match='symbol/display'):
+        producer_entry(dict(name='void wrong::kernel<int>()', symbol=raw))
+    # A helper mentioning the producer inside template arguments is not it.
+    nested = '_ZN7cutlass6helperI' + raw + 'EEvv'
+    assert producer_entry(dict(name=nested, symbol=nested)) == nested
+    # Preserve the namespace/identifier length and terminal template boundary.
+    for bad in (raw.replace('_ZN7cutlass', '_ZN8cutlass', 1),
+                raw.replace('13common_readerI', '13common_readerX', 1),
+                raw.replace('14register_reuseI', '14register_reuseX', 1),
+                raw.replace('13device_kernelI', '13device_kernelX', 1)):
+        if bad != raw:
+            assert producer_entry(dict(name=bad, symbol=bad)) == bad
+
+
+def test_mangled_generic_still_cannot_pass_as_common_reader(evidence):
+    p = next(p for p in evidence[0]['points'] if p['arms'][0]['expected_producer'] == 'common-packet-3d')
+    d = captured(p)
+    raw = '_ZN9quactlize9execution4simt14register_reuseILi14ELi1ELi3ELi4ELi8ELi8ELi1ELi0EEEv11qkg_call_v1i'
+    d['component_records']['original']['identity']['node'] = dict(name=raw, symbol=raw)
+    with pytest.raises(ValueError, match='current production'):
+        validate_producers(p, d)
+
+
+def test_postcheck_failure_keeps_raw_measurements_unadmitted(evidence, tmp_path):
+    from tools.run_decode_refresh import save_rejected_measurement
+    p = evidence[0]['points'][0]
+    data = captured(p)
+    original = deepcopy(data)
+    paths = [save_rejected_measurement(tmp_path, p, {'run': 'host-only'}, data, 'invocation',
+                                      ValueError('injected postcheck failure')) for _ in range(2)]
+    assert len(set(paths)) == 2  # Failure retries cannot overwrite prior raw data.
+    for path in paths:
+        r = json.loads((tmp_path/path).read_bytes())
+        assert r['status'] == 'UNADMITTED' and not r['performance_admitted']
+        assert r['data'] == original and r['point'] == p['id']
+        assert r['sha256'] == digest({k: v for k, v in r.items() if k != 'sha256'})
+    assert data == original and not (tmp_path/'points').exists()
+    assert save_rejected_measurement(tmp_path, p, {}, None, 'invocation', '') is None
+    assert save_rejected_measurement(tmp_path, {'id': 'other'}, {}, data, 'invocation', '') is None
 
 
 def test_missing_candidate_is_not_optional_resource_success(evidence, monkeypatch):
