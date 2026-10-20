@@ -4,16 +4,21 @@ set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 [[ ${IDLE_CONFIRMED:-0} == 1 ]] || { echo 'ERROR: confirm an otherwise idle GPU.' >&2; exit 1; }
 PPU_SDK=${PPU_SDK:-/usr/local/PPU_SDK}
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-1}
-[[ ${CUDA_VISIBLE_DEVICES} =~ ^[0-9]+$ ]] || { echo 'ERROR: choose exactly one GPU.' >&2; exit 1; }
 test -x "${PPU_SDK}/bin/hgcc"
 "${PYTHON:-python3}" -c 'import numpy; from gguf.quants import dequantize'
 args=()
+runner=run_simt_split.py
 if [[ -n ${RESUME_RUN:-} ]]; then
     RUN=$(realpath -e -- "${RESUME_RUN}")
-    [[ -d ${RUN}/source && -f ${RUN}/results/plan.json && ! -L ${RUN} ]] || exit 1
+    [[ -d ${RUN}/source && ! -L ${RUN} ]] || exit 1
     SOURCE=${RUN}/source
-    test -f "${SOURCE}/tools/run_simt_split.py"
+    if [[ -f ${RUN}/results/multi.json ]]; then
+        runner=run_simt_split_multi.py
+        GPUS=${GPUS:-$("${PYTHON:-python3}" -c 'import json,sys; print(",".join(json.load(open(sys.argv[1]))["cards"]))' "${RUN}/results/multi.json")}
+    else
+        test -f "${RUN}/results/plan.json"
+        [[ -z ${GPUS:-} ]] || { echo 'ERROR: do not reshard a completed/active single-GPU run; use a new RUN for multi-GPU.' >&2; exit 1; }
+    fi
     args+=(--resume)
 else
     [[ -z ${RUN:-} ]] || { echo 'ERROR: unset RUN or use RESUME_RUN.' >&2; exit 1; }
@@ -32,6 +37,14 @@ else
     git -C "${ROOT}" archive "${REV}" | tar -x -C "${SOURCE}"
     mkdir -p "${SOURCE}/third_party/actlize"
     git -C "${ROOT}/third_party/actlize" archive "${ACTLIZE_REV}" | tar -x -C "${SOURCE}/third_party/actlize"
+    if [[ -n ${GPUS:-} ]]; then runner=run_simt_split_multi.py; fi
+fi
+test -f "${SOURCE}/tools/${runner}"
+if [[ ${runner} == run_simt_split_multi.py ]]; then
+    args+=(--devices "${GPUS}")
+else
+    export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-1}
+    [[ ${CUDA_VISIBLE_DEVICES} =~ ^[0-9]+$ ]] || { echo 'ERROR: use GPUS=1,2,... for multiple devices.' >&2; exit 1; }
 fi
 if [[ ${PROFILE_ACU:-1} == 1 ]]; then
     test -x "${ACU:-${PPU_SDK}/asight/bin/acu}"
@@ -39,9 +52,9 @@ if [[ ${PROFILE_ACU:-1} == 1 ]]; then
 fi
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}
 export OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-1}
-echo "SPLIT_BOX run=${RUN} gpu=${CUDA_VISIBLE_DEVICES} splits=1,2,4,8 production_changed=0"
+echo "SPLIT_BOX run=${RUN} devices=${GPUS:-${CUDA_VISIBLE_DEVICES}} splits=1,2,4,8 production_changed=0"
 set +e
-"${PYTHON:-python3}" -u "${SOURCE}/tools/run_simt_split.py" \
+"${PYTHON:-python3}" -u "${SOURCE}/tools/${runner}" \
     --sdk "${PPU_SDK}" --output "${RUN}/results" --l2-bytes "${L2_BYTES:-67108864}" \
     --confirm-idle "${args[@]}" 2>&1 | tee "${RUN}/console-$(date +%s%N).log"
 rc=${PIPESTATUS[0]}

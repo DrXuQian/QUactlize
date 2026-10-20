@@ -34,15 +34,23 @@ def cell_path(output,index,m,config,split):
     return output/'points'/str(index)/f'm{m}-c{config}-s{split}.json'
 
 
+def build_root(a):
+    return a.build_root if getattr(a,'build_root',None) is not None else a.output/'build'
+
+
+def build_args(a):
+    return ['--build-root',str(a.build_root)] if getattr(a,'build_root',None) is not None else []
+
+
 def binding(a,spec,authority):
     w=Workload(**spec['workload'])
-    manifest=json.loads((a.output/'build'/str(w.qtype)/'manifest.json').read_text())
+    manifest=json.loads((build_root(a)/str(w.qtype)/'manifest.json').read_text())
     from quactlize.runtime.native import sdk_identity
     if (manifest['sources']!=inputs() or manifest.get('sdk')!=sdk_identity(a.sdk) or
             manifest['object_only'] or authority['harness']!=harness_identity(ROOT)):
         raise ValueError('source/SDK changed; completed cells cannot be mixed')
     record,=[r for r in manifest['records'] if r['compute']==w.compute]
-    library=a.output/'build'/str(w.qtype)/record['image']
+    library=build_root(a)/str(w.qtype)/record['image']
     if record['configs']!=configs(w.qtype) or sha(library)!=record['sha256']:
         raise ValueError('compiled recipe/image changed')
     return library,dict(authority_sha256=digest(authority),library_sha256=record['sha256'],
@@ -108,6 +116,8 @@ def child(a):
     from quactlize.runtime.native import SDK
     from tools.run_kpack_llama_ab import device
     spec=inventory()[a.child];w=Workload(**spec['workload'])
+    declared=json.loads((a.output/'plan.json').read_text())
+    if a.child not in {p['point'] for p in declared['points']}:raise ValueError('point belongs to another worker')
     authority=json.loads((a.output/'authority.json').read_text())
     if device(a)!=authority['device']:raise ValueError('physical device changed')
     library,identity=binding(a,spec,authority)
@@ -194,7 +204,7 @@ def profile_pair(a,spec,split,attempt,authority):
             stem=f'r{rnd}-a{arm}';target=home/stem
             command=[sys.executable,'-u',str(Path(__file__).resolve()),'--sdk',str(a.sdk),'--output',str(a.output),
                      '--l2-bytes',str(a.l2_bytes),'--child',str(index),'--config',str(c),'--split',str(split),
-                     '--profile-arm',str(arm),'--result',str(home/(stem+'.json'))]
+                     '--profile-arm',str(arm),'--result',str(home/(stem+'.json')),*build_args(a)]
             print(f'SPLIT_ACU point={index} split={split} config={c} round={rnd+1}/3 arm={arm} graphs=0',flush=True)
             try:
                 if execute(acu_command(a.acu,target,command,graph_profiling='none'),home/(stem+'.log')):
@@ -219,7 +229,8 @@ def profile_pair(a,spec,split,attempt,authority):
 
 
 def collect(a):
-    frozen=plan()
+    selected=None if a.points=='all' else [int(i) for i in a.points.split(',')]
+    frozen=plan(selected)
     if not a.resume:a.output.mkdir(parents=True,exist_ok=False)
     elif not a.output.is_dir():raise ValueError('resume directory missing')
     pp=a.output/'plan.json'
@@ -241,14 +252,15 @@ def collect(a):
     lock=(Path('/tmp')/('quactlize-components-'+digest(actual['device']['pci'])[:24]+'.lock')).open('a')
     with lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        if not (a.output/'build').exists():build(a.sdk,a.output/'build')
-        if not (a.output/'build/manifest.json').is_file():raise ValueError('incomplete build; inspect compiler logs')
+        compiled=build_root(a)
+        if not compiled.exists() and a.build_root is None:build(a.sdk,compiled)
+        if not (compiled/'manifest.json').is_file():raise ValueError('incomplete build; shared builds must be prepared by the coordinator')
         attempt=a.output/'attempts'/str(time.time_ns());attempt.mkdir(parents=True)
         points=[];completed=0;timings=[];started=time.monotonic()
         for done,spec in enumerate(frozen['points'],1):
             index=spec['point']
             rc=execute([sys.executable,'-u',str(Path(__file__).resolve()),'--sdk',str(a.sdk),
-                        '--output',str(a.output),'--l2-bytes',str(a.l2_bytes),'--child',str(index)],attempt/f'point-{index}.log')
+                        '--output',str(a.output),'--l2-bytes',str(a.l2_bytes),'--child',str(index),*build_args(a)],attempt/f'point-{index}.log')
             _,identity=binding(a,spec,authority);count=0
             for m,c,s in cells(spec):
                 row=read_cell(cell_path(a.output,index,m,c,s),identity|dict(m=m,config=c,split=s))
@@ -277,10 +289,12 @@ def collect(a):
                         try:profiles.append(profile_pair(a,spec,split,attempt,authority))
                         except Exception as e:
                             profiles.append(dict(status='FAIL',point=spec['point'],split=split,error=str(e)))
+        expected_profiles=(sum(p['kind']=='all-format-control' and p['workload']['compute']=='bf16' and
+                               p['workload']['operation']=='indexed' for p in frozen['points'])*len(SPLITS)) if a.acu else 0
         status='PASS' if (completed==frozen['numeric_pairs'] and not any(p['rc'] for p in points) and
-                          (not a.acu or len(profiles)==20) and all(p['status']=='PASS' for p in profiles)) else 'INCOMPLETE'
+                          len(profiles)==expected_profiles and all(p['status']=='PASS' for p in profiles)) else 'INCOMPLETE'
         summary=dict(status=status,completed=completed,expected=frozen['numeric_pairs'],points=points,timings=timings,
-                     profiles=profiles,profile_cohorts_expected=20 if a.acu else 0,
+                     profiles=profiles,profile_cohorts_expected=expected_profiles,
                      regressions_over_5pct=sum(t['delta_pct']>5 for t in timings),noisy_pairs=sum(t['noisy'] for t in timings),
                      elapsed_seconds=time.monotonic()-started,production_changed=False,performance_admitted=False,
                      verdict='REVIEW_REQUIRED_NOT_AUTOMATIC_PROMOTION',scope=frozen['scope'])
@@ -295,16 +309,22 @@ def main():
     p.add_argument('--l2-bytes',type=int,default=67108864);p.add_argument('--confirm-idle',action='store_true')
     p.add_argument('--plan-only',action='store_true');p.add_argument('--resume',action='store_true')
     p.add_argument('--child',type=int)
+    p.add_argument('--points',default='all');p.add_argument('--build-root',type=Path)
+    p.add_argument('--probe-only',action='store_true');p.add_argument('--no-pack',action='store_true')
     p.add_argument('--acu',type=Path);p.add_argument('--profile-arm',type=int,choices=(0,1))
     p.add_argument('--config',type=int);p.add_argument('--split',type=int,choices=SPLITS);p.add_argument('--result',type=Path)
     a=p.parse_args();a.sdk=a.sdk.resolve();a.output=a.output.resolve()
+    if a.build_root is not None:a.build_root=a.build_root.resolve()
+    if a.probe_only:
+        from tools.run_kpack_llama_ab import device
+        atomic_json(a.output/'device.json',device(a));return 0
     if a.child is not None:
         if a.child not in range(len(inventory())):p.error('invalid child point')
         if a.profile_arm is not None and (a.config is None or a.split is None or a.result is None):p.error('profile requires config/split/result')
         return child(a)
     try:return collect(a)
     finally:
-        if a.output.is_dir():
+        if a.output.is_dir() and not a.no_pack:
             archive=a.output/f'review-{time.time_ns()}.tgz'
             with tarfile.open(archive,'w:gz') as tar:
                 for path in sorted(a.output.rglob('*')):

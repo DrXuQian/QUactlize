@@ -23,8 +23,12 @@ def inventory():
     return result
 
 
-def plan():
-    points=inventory()
+def plan(indices=None):
+    all_points=inventory()
+    selected=list(range(len(all_points))) if indices is None else list(indices)
+    if not selected or len(selected)!=len(set(selected)) or any(type(i) is not int or not 0<=i<len(all_points) for i in selected):
+        raise ValueError('invalid/duplicate point selection')
+    points=[all_points[i] for i in selected]
     return dict(schema='simt-common-split-v1',points=points,splits=list(SPLITS),
         configs={str(q):configs(q) for q in QTYPES},
         numeric_pairs=sum(len(p['numeric_m'])*len(configs(p['workload']['qtype']))*len(SPLITS) for p in points),

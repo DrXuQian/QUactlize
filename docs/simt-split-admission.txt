@@ -46,6 +46,23 @@ Run on one otherwise idle GPU (requires local pinned actlize git objects)
   PPU_SDK=/usr/local/PPU_SDK CUDA_VISIBLE_DEVICES=1 L2_BYTES=67108864 \
   IDLE_CONFIRMED=1 bash tools/run_simt_split_box.sh
 
+Run the SAME inventory on seven otherwise idle GPUs
+  PPU_SDK=/usr/local/PPU_SDK GPUS=1,2,3,4,5,6,7 L2_BYTES=67108864 \
+  IDLE_CONFIRMED=1 PROFILE_ACU=1 bash tools/run_simt_split_box.sh
+
+  One shared build is completed before starting GPU workers. Whole families
+  are greedily balanced by an explicit work estimate (not a timing promise).
+  Each family retains all M/config/S/arms on the same physical card. Check
+  distinct host+PCI identities and matching SDK/CU/warp/L2 before any timing.
+  The total inventory is unchanged, not seven repetitions of the full sweep.
+  Workers take per-device locks, keep successes and continue other cards on
+  failure; review packaging happens once at the coordinator. The per-worker
+  ACU denominator is derived from its own assigned points, totaling20.
+  RESUME_RUN reuses the frozen source, original point ownership and cards.
+  Do not reshard an old single-card run or start another benchmark on a card
+  still occupied by that run. To switch from single-card to seven cards,
+  first stop the old run and use a new run directory (unset RUN RESUME_RUN).
+
   PROFILE_ACU=0 skips counters explicitly; it is not cycle-based admission.
   Do not set RUN. OUTPUT_ROOT defaults to /workspace. The runner freezes the
   checkout using local git archives; it does not fetch nested submodules.
