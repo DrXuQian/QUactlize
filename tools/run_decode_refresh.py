@@ -19,7 +19,8 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from dev.strategy.refresh import make_plan, request, family, assign
-from dev.strategy.refresh_clock import observe, parse as parse_clock
+from dev.strategy.refresh_clock import ADVISORY, observe, parse as parse_clock, request_lock
+from dev.strategy.refresh_retry import make_retry, previous_run, cache_root
 from dev.strategy.journal import atomic_json
 from dev.strategy.provenance import harness_identity
 from dev.strategy.vector import Compiler as VectorCompiler
@@ -84,7 +85,8 @@ def saved(path, authority, point):
             for side in ('before', 'after'):
                 v = c[side]
                 checked = parse_clock(v['stdout'], authority['pci'], authority['cu_mhz'],
-                                      authority['memory_mhz'])
+                                      authority['memory_mhz'],
+                                      advisory=authority.get('clock_policy') == ADVISORY)
                 if any(v.get(k) != value for k, value in checked.items()):
                     raise ValueError('recorded clock interpretation changed')
     return r
@@ -114,24 +116,39 @@ def compile_all(a, plan):
     """Single shared build; no timed GPU jobs until all compilers have exited."""
     from tools.build_kpack_dequant import build as build_dequant
     from tools.run_kpack_strategy_decode import dequant_checked
-    vc = VectorCompiler(a.sdk, a.output/'cache/vectors')
+    cache = cache_root(a.output, plan)
+    vc = VectorCompiler(a.sdk, cache/'cache/vectors')
     compilers = {}
     for item in plan['tc'].values():
         k = (item['endpoint'], item['compute'])
         if k not in compilers:
-            compilers[k] = tc_compiler(item, a.sdk, a.output/'cache/tc')
+            compilers[k] = tc_compiler(item, a.sdk, cache/'cache/tc')
     tasks = [('tc', k, v) for k, v in plan['tc'].items()]
     tasks += [('vector', k, v) for k, v in plan['vectors'].items()]
     records = {'tc': {}, 'vectors': {}}
+    prior_records = read(cache/'images.json') if cache != a.output else None
     available = next(int(l.split()[1])*1024 for l in Path('/proc/meminfo').read_text().splitlines()
                      if l.startswith('MemAvailable:'))
     slots = min(a.jobs, len(tasks), max(1, (available-4*2**30)//(2*2**30)))
     def build(task):
         kind, key, item = task
         if kind == 'tc':
-            record = compilers[item['endpoint'], item['compute']].build(item['parent'])
+            compiler = compilers[item['endpoint'], item['compute']]
+            if prior_records is not None:
+                old = prior_records['tc'][key]
+                expected = digest(dict(identity=compiler.identity, parent=item['parent'],
+                                       source=compiler.source(item['parent'], '')))
+                if (old['key'] != expected or
+                        not (cache/'cache/tc'/expected/'manifest.json').is_file()):
+                    raise ValueError('clock retry TC cache/source missing or changed; no rebuild attempted')
+            record = compiler.build(item['parent'])
         else:
-            record = vc.build(item)
+            if prior_records is not None:
+                record = prior_records['vectors'][key]
+                vc.verify(item, record)
+                record = record | dict(cache_hit=True)
+            else:
+                record = vc.build(item)
         return kind, key, record
     start = time.monotonic()
     with ThreadPoolExecutor(max_workers=slots) as pool:
@@ -147,11 +164,15 @@ def compile_all(a, plan):
                 elapsed_minutes=(time.monotonic()-start)/60)), flush=True)
     dequant = None
     if any(p['sf_configs'] for p in plan['points']):
-        pointer = a.output/'dequant.json'
+        pointer = cache/'dequant.json'
         if pointer.exists():
             dequant = Path(read(pointer)['directory'])
             dequant_checked(dequant, a.sdk)
+            if cache != a.output:
+                freeze(a.output/'dequant.json', read(pointer))
         else:
+            if cache != a.output:
+                raise ValueError('clock retry expansion cache missing; no rebuild attempted')
             dequant = a.output/'build-attempts'/('dequant-'+uuid.uuid4().hex)
             build_dequant(a.sdk, dequant)
             dequant_checked(dequant, a.sdk)
@@ -167,7 +188,7 @@ def image_identity(records, dequant):
 
 
 def verify_images(a, plan, records, dequant, points=None):
-    vc = VectorCompiler(a.sdk, a.output/'cache/vectors')
+    vc = VectorCompiler(a.sdk, cache_root(a.output, plan)/'cache/vectors')
     selected = points or plan['points']
     modules = {arm['module']: arm for p in selected for arm in p['arms']}
     for mid, arm in modules.items():
@@ -186,9 +207,51 @@ def verify_images(a, plan, records, dequant, points=None):
 
 def authority_for(run, shard):
     hardware = run['devices'][shard]
-    return dict(run=run['sha256'], shard=shard, pci=hardware['device']['pci'],
+    result = dict(run=run['sha256'], shard=shard, pci=hardware['device']['pci'],
                 hardware=hardware, cu_mhz=run['cu_mhz'],
                 memory_mhz=run['memory_mhz'])
+    if 'clock_policy' in run:
+        result['clock_policy'] = run['clock_policy']
+    return result
+
+
+def lock_clocks(a, devices):
+    """Request once before timing, with all participating device locks held.
+
+    No default restoration: leave the requested CU limit in place and report
+    that fact. Never reset another workload's device or change memory/power.
+    """
+    path = a.output/('clock-lock-'+str(time.time_ns())+'.json')
+    receipt = dict(clock_policy=ADVISORY, requested_mhz=a.expected_ce_ghz*1000,
+                   status='STARTED', requests=[], observations=[],
+                   settings_after_run='REQUEST_LEFT_IN_PLACE',
+                   memory_and_power_settings_changed=False)
+    atomic_json(path, receipt)
+    try:
+        with ExitStack() as stack:
+            for dev in devices:
+                pci = dev['device']['pci']
+                held = stack.enter_context((Path('/tmp')/(
+                    'quactlize-components-'+digest(pci)[:24]+'.lock')).open('a'))
+                fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            for dev in devices:
+                pci = dev['device']['pci']
+                result = request_lock(a.smi, pci, a.expected_ce_ghz*1000)
+                receipt['requests'].append(result)
+                atomic_json(path, receipt)
+                if result['returncode']:
+                    raise ValueError('PPU clock lock request failed: '+result['stdout']+result['stderr'])
+                actual = observe(a.smi, pci, a.expected_ce_ghz*1000, advisory=True)
+                receipt['observations'].append(actual)
+                print('DECODE_REFRESH_CLOCK '+json.dumps(dict(
+                    pci=pci, requested_mhz=a.expected_ce_ghz*1000,
+                    actual_mhz=actual['cu_mhz'], affects_verdict=False)), flush=True)
+        receipt['status'] = 'REQUESTS_ACCEPTED'
+    except BaseException as exc:
+        receipt.update(status='FAIL', error=str(exc))
+        raise
+    finally:
+        atomic_json(path, receipt)
 
 
 def bind_point(point, records):
@@ -288,7 +351,8 @@ def family_child(a):
                         local.callback(sf.close)
                     screen = dict(best_sf=min(sf_costs, key=sf_costs.get) if sf_costs else None)
                     shortlist = dict(status='READY', arms=[a['id'] for a in bound['arms']], aliases={})
-                    clock = lambda: observe(a.smi, auth['pci'], auth['cu_mhz'], auth['memory_mhz'])
+                    clock = lambda: observe(a.smi, auth['pci'], auth['cu_mhz'], auth['memory_mhz'],
+                                            advisory=auth.get('clock_policy') == ADVISORY)
                     data = confirm_point(b, metadata_b, sf, metadata_sf, bound, screen, shortlist,
                         lambda arm: bindings[arm['id']], auth, run['body_source'], round_observer=clock)
                     data['resource_unavailable'] = bound['resource_unavailable']
@@ -329,11 +393,18 @@ def aggregate(plan, run, output):
                           unavailable_recipes=len(row['data'].get('resource_unavailable', {})))
         elif row:
             result['error'] = row['error']
+        if row and row['status'] == 'PASS':
+            result['clock_deviations'] = sum(
+                bool(c[side].get('target_differs')) for c in row['data']['clock_observations']
+                for side in ('before', 'after'))
         results.append(result)
     counts = Counter(p['status'] for p in results)
     return dict(status='COMPLETE' if counts['PASS'] == len(results) else 'INCOMPLETE',
                 expected=len(results), completed=counts['PASS'], counts=dict(counts), points=results,
                 decisions=dict(Counter(p['decision'] for p in results if p['status'] == 'PASS')),
+                clock_policy=run.get('clock_policy', 'LEGACY_STRICT'),
+                clock_deviations=sum(p.get('clock_deviations', 0) for p in results),
+                clock_retry=plan.get('clock_retry'),
                 scope=plan['scope'], historical_times_reused=False, production_changed=False,
                 no_regression_admitted=False, model_tpot_admitted=False)
 
@@ -408,7 +479,8 @@ def progress(plan, run, output, started):
         done = [read(output/('gpu-'+card)/'points'/(p['id']+'.json')) for p in points
                 if (output/('gpu-'+card)/'points'/(p['id']+'.json')).exists()]
         fresh = [r['elapsed_seconds'] for r in done if r['status'] == 'PASS' and 'elapsed_seconds' in r]
-        remaining.append(sum(fresh[-16:])/len(fresh[-16:])*(len(points)-len(done))/60 if fresh else None)
+        remaining.append(0 if len(points) == len(done) else
+                         sum(fresh[-16:])/len(fresh[-16:])*(len(points)-len(done))/60 if fresh else None)
     return dict(completed=completed, expected=total, elapsed_minutes=round(elapsed/60, 1),
                 remaining_minutes=round(max(remaining), 1) if all(v is not None for v in remaining) else None,
                 eta='RECENT_POINT_WALL_SLOWEST_WORKER_EXCLUDES_UNSEEN_FIXTURE_COST_NOT_GUARANTEE')
@@ -433,6 +505,8 @@ def run(a):
         originals = plan_smallm(a.output, [request(Workload(**p['workload'])) for p in points])
         atomic_json(a.output/'cpp-originals.json', originals)
         plan = make_plan(originals['requests'], a.phase)
+        if a.clock_retry_from:
+            plan = make_retry(a.clock_retry_from, plan, harness_identity(ROOT), saved, authority_for)
         atomic_json(pp, plan)
     print('DECODE_REFRESH_PLAN '+json.dumps(dict(plan['counts'], phase=a.phase,
         scope=plan['scope'], q8_new_bodies='DENSE_S1', acu=False, historical_times_reused=False,
@@ -451,17 +525,34 @@ def run(a):
         subprocess.run(cmd, env=dict(os.environ, CUDA_VISIBLE_DEVICES=card), check=True)
         dev = read(path)
         devices.append(dev)
-        clocks.append(observe(a.smi, dev['device']['pci'], a.expected_ce_ghz*1000))
+        clocks.append(observe(a.smi, dev['device']['pci'], a.expected_ce_ghz*1000, advisory=True))
     check_devices(devices)
-    if len({p['memory_mhz'] for p in clocks}) != 1:
-        raise ValueError('different memory-clock cohort across requested cards')
+    previous = previous_run(plan)
+    if previous:
+        for key, value in dict(cards=cards, devices=devices, sdk=sdk_identity(a.sdk),
+                               cu_mhz=a.expected_ce_ghz*1000, smi_sha256=sha(a.smi)).items():
+            if previous[key] != value:
+                raise ValueError('clock retry parent binding changed: '+key)
+    # This baseline is diagnostic metadata, not a live-frequency resume gate.
+    old_inputs = read(a.output/'inputs.json') if (a.output/'inputs.json').exists() else None
+    memory_baseline = (old_inputs or previous or clocks[0])['memory_mhz']
     inputs = dict(plan=plan['sha256'], cards=cards, devices=devices, harness=harness_identity(ROOT),
-                  sdk=sdk_identity(a.sdk), cu_mhz=a.expected_ce_ghz*1000, memory_mhz=clocks[0]['memory_mhz'],
-                  smi_sha256=sha(a.smi), assignments=assign(plan, len(cards)))
+                  sdk=sdk_identity(a.sdk), cu_mhz=a.expected_ce_ghz*1000,
+                  memory_mhz=memory_baseline,
+                  smi_sha256=sha(a.smi),
+                  assignments=previous['assignments'] if previous else assign(plan, len(cards)),
+                  clock_policy=ADVISORY)
     freeze(a.output/'inputs.json', inputs)
     # Snapshot-only clock observations are kept outside immutable input identity.
     atomic_json(a.output/('preflight-clocks-'+str(time.time_ns())+'.json'), clocks)
     records, dequant = compile_all(a, plan)
+    if previous:
+        images = image_identity(records, dequant)
+        for kind in ('tc', 'vectors'):
+            if any(previous['images'][kind].get(k) != v for k, v in images[kind].items()):
+                raise ValueError('clock retry compiled image changed: '+kind)
+        if dequant and images['dequant'] != previous['images']['dequant']:
+            raise ValueError('clock retry dequant image changed')
     run_data = inputs | dict(images=image_identity(records, dequant),
                              body_source=digest(inputs['harness']))
     run_data['sha256'] = digest(run_data)
@@ -469,6 +560,7 @@ def run(a):
     if a.build_only:
         print('DECODE_REFRESH_BUILD_ONLY device_timing=NOT_RUN', flush=True)
         return 0
+    lock_clocks(a, devices)
     start, children = time.monotonic(), []
     attempt = a.output/'attempts'/str(time.time_ns())
     attempt.mkdir(parents=True)
@@ -519,6 +611,8 @@ def main():
     p.add_argument('--jobs', type=int, default=192)
     p.add_argument('--phase', choices=('all', 'pilot'), default='all')
     p.add_argument('--resume', action='store_true')
+    p.add_argument('--clock-retry-from', type=Path,
+                   help='reviewed strict-clock results; retry only incomplete points in a new run')
     p.add_argument('--confirm-idle', action='store_true')
     p.add_argument('--plan-only', action='store_true')
     p.add_argument('--build-only', action='store_true')
@@ -529,7 +623,9 @@ def main():
     a = p.parse_args()
     cards = a.devices.split(',')
     if (not cards or len(set(cards)) != len(cards) or any(not c.isdecimal() or str(int(c)) != c for c in cards) or
-            a.jobs < 1 or a.l2_bytes <= 0 or not 0 < a.expected_ce_ghz < 10):
+            a.jobs < 1 or a.l2_bytes <= 0 or not 0 < a.expected_ce_ghz < 10 or
+            a.expected_ce_ghz*1000 != int(a.expected_ce_ghz*1000) or
+            a.resume and a.clock_retry_from):
         p.error('invalid worker/jobs/L2/clock parameters')
     a.output = a.output.resolve()
     a.sdk = a.sdk.resolve()

@@ -353,3 +353,15 @@ truncated g++ argv/CalledProcessError does not distinguish a source error,
 missing dependency or unresolved symbol. Preserve and inspect the existing
 carrier-build.log before another GPU campaign; host syntax success is not
 proof of linking against the Box backend and its transitive dependencies.
+
+The 2026-10-20 new-clock small-M refresh completed1098/1114points; all16
+incomplete points stopped at a strict1700MHz check with1537..1687MHz actual
+CU clocks. The user changed this experiment's contract: request1700MHz, then
+treat actual frequency as diagnostic, not an automatic failure/retry gate.
+SDK2.1.1 ppu-smi v1.28 uses --lock-ppu-clocks=1700,1700, not --lock-gpu-clocks.
+Target only the resolved assigned PCI devices; preserve power/memory settings.
+A successful request does not rule out hardware throttling, and frequency
+alone does not prove a TDP or temperature cause. Keep unscaled event times and
+numerical/launch/identity checks. Preserve strict-policy raw receipts; retry
+only incomplete points under a separately sealed advisory policy. This is
+user-authorized cohort policy, not a universal exemption from clock controls.

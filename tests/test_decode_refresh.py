@@ -9,7 +9,7 @@ import subprocess
 import pytest
 
 from dev.strategy.refresh import make_plan, request, family, assign, Q8_BODIES
-from dev.strategy.refresh_clock import parse, observe
+from dev.strategy.refresh_clock import ADVISORY, parse, observe, request_lock
 from dev.strategy.vector import spec, source
 from dev.llama_ab.contract import inventory
 from quactlize.dispatch.planning import plan_smallm
@@ -161,6 +161,126 @@ def test_clock_observation_is_read_only_and_outside_gpu_timing(monkeypatch):
     assert result['scope'].endswith('NOT_CONTINUOUS_CLOCK_LOCK_PROOF')
     assert '--id=0000:08:00.0' in commands[0]
     assert not any(x.startswith(('--lock', '--reset', '--applications', '--set')) for x in commands[0])
+
+
+def test_requested_clock_does_not_turn_actual_throttling_into_failure():
+    for actual in (1000, 1537, 1687, 1700, 1712):
+        value = parse(f'0000:08:00.0, {actual}, 1750', '0000:08:00.0', 1700, 1800,
+                      advisory=True)
+        assert value['cu_mhz'] == actual and value['memory_mhz'] == 1750
+        assert value['clock_policy'] == ADVISORY
+        assert value['affects_verdict'] is False
+        assert value['frequency_normalization'] is False
+    # Prior strict receipts keep their old interpretation, not a retroactive PASS.
+    with pytest.raises(ValueError, match='current clocks differ'):
+        parse('0000:08:00.0, 1537, 1800', '0000:08:00.0', 1700, 1800)
+    for text in ('0000:09:00.0, 1700, 1800', '0000:08:00.0, nan, 1800'):
+        with pytest.raises(ValueError):
+            parse(text, '0000:08:00.0', 1700, advisory=True)
+
+
+def test_lock_request_uses_verified_ppu_option_and_only_physical_target(monkeypatch):
+    from types import SimpleNamespace
+    calls = []
+    def execute(command, **kwargs):
+        calls.append(command)
+        assert kwargs['timeout'] == 20
+        return SimpleNamespace(returncode=0, stdout='accepted', stderr='')
+    monkeypatch.setattr(subprocess, 'run', execute)
+    result = request_lock('/sdk/ppu-smi', '0001:CE:00.0', 1700)
+    assert calls == [['/sdk/ppu-smi', '--id=0001:CE:00.0',
+                      '--lock-ppu-clocks=1700,1700', '--error-on-warning']]
+    assert result['returncode'] == 0 and result['command'] == calls[0]
+    for mhz in (float('nan'), float('inf'), 0, -1, 1700.5):
+        with pytest.raises(ValueError):
+            request_lock('/sdk/ppu-smi', '0001:CE:00.0', mhz)
+    assert len(calls) == 1
+    with pytest.raises(ValueError):
+        request_lock('/sdk/ppu-smi', '', 1700)
+
+
+@pytest.mark.parametrize('refused', [False, True])
+def test_preflight_records_accepted_or_failed_requests_without_reset(tmp_path, monkeypatch, refused):
+    from types import SimpleNamespace
+    import tools.run_decode_refresh as runner
+    calls, requests = [], []
+    def lock(fd, flags):
+        calls.append(flags)
+    def request(binary, pci, mhz):
+        assert len(calls) == 2  # All assigned devices acquired before ANY mutation.
+        requests.append(pci)
+        return dict(returncode=int(refused), stdout='lock test', stderr='', pci=pci)
+    monkeypatch.setattr(runner.fcntl, 'flock', lock)
+    monkeypatch.setattr(runner, 'request_lock', request)
+    monkeypatch.setattr(runner, 'observe', lambda binary, pci, mhz, **kw:
+                        parse(f'{pci}, 1537, 1800', pci, mhz, **kw))
+    a = SimpleNamespace(output=tmp_path, smi=Path('/unused'), expected_ce_ghz=1.7)
+    devices = [dict(device=dict(pci=p)) for p in ('0000:08:00.0', '0001:CE:00.0')]
+    if refused:
+        with pytest.raises(ValueError, match='lock request failed'):
+            runner.lock_clocks(a, devices)
+        assert requests == ['0000:08:00.0']
+    else:
+        runner.lock_clocks(a, devices)
+        assert requests == ['0000:08:00.0', '0001:CE:00.0']
+    receipt = json.loads(next(tmp_path.glob('clock-lock-*.json')).read_bytes())
+    assert receipt['status'] == ('FAIL' if refused else 'REQUESTS_ACCEPTED')
+    assert receipt['settings_after_run'] == 'REQUEST_LEFT_IN_PLACE'
+    assert receipt['memory_and_power_settings_changed'] is False
+
+
+def test_clock_retry_reuses_passes_only_without_modifying_originals(plan, tmp_path):
+    from dev.strategy.refresh_retry import make_retry, OLD_FILES, NEW_FILES, check_transition
+    from tools.run_decode_refresh import authority_for, sealed, saved
+    old_harness = dict(files=OLD_FILES | {'dev/strategy/confirm.py': 'unchanged-timer'})
+    old_harness['sha256'] = digest(old_harness['files'])
+    new_harness = dict(files={k: 'reviewed-clock-edit' for k in OLD_FILES} |
+                      {k: 'new-file' for k in NEW_FILES} |
+                      {'dev/strategy/confirm.py': 'unchanged-timer'})
+    new_harness['sha256'] = digest(new_harness['files'])
+    check_transition(old_harness, new_harness)
+    for changed in ('dev/strategy/confirm.py', 'tools/run_decode_refresh.py'):
+        bad = deepcopy(old_harness if changed.endswith('run_decode_refresh.py') else new_harness)
+        bad['files'][changed] = 'unreviewed-change'
+        bad['sha256'] = digest(bad['files'])
+        with pytest.raises(ValueError):
+            check_transition(bad, new_harness) if changed.endswith('run_decode_refresh.py') else \
+                check_transition(old_harness, bad)
+    assignments = assign(plan, 7)
+    run = dict(plan=plan['sha256'], harness=old_harness, assignments=assignments,
+               cards=list(map(str, range(1, 8))), cu_mhz=1700, memory_mhz=1800,
+               devices=[dict(device=dict(pci=f'0000:0{i}:00.0')) for i in range(7)])
+    sealed(tmp_path/'plan.json', plan)
+    sealed(tmp_path/'run.json', run)
+    run = json.loads((tmp_path/'run.json').read_bytes())
+    # Host stand-in tests only orchestration, not numerical/timing admission.
+    called = []
+    def completed(path, authority, point):
+        called.append(point['id'])
+        if point == plan['points'][0]:
+            return dict(status='FAIL', sha256='old-failure')
+        return dict(status='PASS', sha256='old-passing-proof')
+    before = {p: p.read_bytes() for p in tmp_path.iterdir()}
+    retry = make_retry(tmp_path, plan, new_harness, completed, authority_for)
+    assert len(called) == 1114
+    assert retry['points'] == plan['points'][:1]
+    assert retry['counts']['points'] == 1
+    assert retry['clock_retry']['previous_passed'] == 1113
+    assert retry['clock_retry']['raw_results_modified'] is False
+    assert retry['clock_retry']['previous_points'][0]['status'] == 'FAIL'
+    assert all(p.read_bytes() == data for p, data in before.items())
+    assert authority_for(run, 0).get('clock_policy') is None
+    assert authority_for(run | dict(clock_policy=ADVISORY), 0)['clock_policy'] == ADVISORY
+    # A corrupt old receipt must still fail through the real reader.
+    point = plan['points'][0]
+    shard = next(i for i, keys in enumerate(assignments) if family(Workload(**point['workload'])) in keys)
+    path = tmp_path/('gpu-'+run['cards'][shard])/'points'/(point['id']+'.json')
+    sealed(path, dict(status='FAIL', point=point['id'], authority=authority_for(run, shard)))
+    data = json.loads(path.read_bytes())
+    data['status'] = 'PASS'
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match='hash'):
+        make_retry(tmp_path, plan, new_harness, saved, authority_for)
 
 
 def test_aggregate_keeps_missing_and_failures_in_denominator(plan, tmp_path):

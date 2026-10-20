@@ -31,9 +31,20 @@ One shared compilation stage precedes all timing. Compiler concurrency is
 bounded by available memory and JOBS;192 requested jobs is not192 busy cores.
 Whole families stay on one physical card, with no cross-card A/B pair.
 Source, SDK, actual device, module images, plan and shard ownership are sealed.
-PPU-SMI read-only current CU/memory-clock checks run before/after each timing
-round. This observes1.7GHz boundaries, not a continuous clock-lock guarantee.
-No device settings are modified. Cards must otherwise be idle.
+Before timing the runner requests min=max1700MHz on each assigned physical
+PCI device with PPU-SMI --lock-ppu-clocks=1700,1700 --error-on-warning.
+Only CU clock settings change; no memory-clock, power-limit or device reset.
+The requested setting is left in place after the run (not automatically reset).
+Cards must otherwise be idle. PLAN_ONLY/BUILD_ONLY do not set clocks.
+
+User-directed update2026-10-20: after a successful lock request, actual
+CU/memory frequencies are diagnostic ONLY. Lower clocks do not fail a point,
+reject its timing or trigger a retry. Hardware power/thermal limiting may
+still occur; the observation alone does not establish the cause. Keep raw
+event times without frequency normalization, and all numerical/execution/
+identity checks. A refused lock request remains a setup failure.
+Read-only current-clock observations run outside each timing round; they
+are snapshots, not continuous clock-lock/throttle-cause evidence.
 
 Every arm passes independent GGUF full-output oracle, changed input, plane
 pointer negatives, zero/omitted-producer checks, guard regions and extracted
@@ -54,7 +65,17 @@ from microsecond kernel costs. Successful per-point receipts survive resume.
 Each failed child exits; another process continues unrelated points. A new
 invocation retries failed/missing points, never relabels them successful.
 
-Resume with the printed RESUME_RUN command; preserve its source/results/cache.
+Resume a new advisory-clock run with the printed RESUME_RUN command.
+The original50c168d strict-clock experiment remains immutable. Its first
+uploaded run had1098PASS and16clockFAIL. Set:
+  CLOCK_RETRY_RUN=/workspace/kpack-decode-refresh.mJIUUzD1
+to create a new source-bound retry of ONLY incomplete points.
+It preserves original per-card ownership,
+requires identical workloads/recipes/images/SDK, and reuses the old compiled
+cache. The new summary is a retry denominator, NOT another full1114-point run.
+Previous PASS receipts keep their old authority/policy; do not relabel them.
+Review the retry archive together with the previously uploaded full archive.
+Preserve both runs' source/results/cache.
 Transfer only results/review-lite-*.tar.xz printed at completion. Original
 JSON/accuracy/raw samples/diagnostics remain; binaries/codegen/ACU stay on Box.
 No nested HTTPS/SSH submodule download: archive the local pinned actlize commit.
@@ -72,3 +93,11 @@ Local verification (compile/host only, not PPU admission):
   Final targeted host suite:99 PASS;9 native compile-only tests were separately
   run successfully (including4 new Q8 adapters). Full1114-point plan creation
   and plan-only resume pass without a GPU; shell syntax/diff checks pass.
+
+Advisory-clock update verification (host only):
+  87 tests PASS,4 opt-in native compilation tests skipped; device sources
+  unchanged. Parsed SDK2.1.1 ppu-smi v1.28 help to verify the lock option.
+  Replayed the actual uploaded1114-point archive under Python3.12:1098PASS
+  validated unchanged,16incomplete points/308arms/6families selected for retry.
+  The real plan-only CLI selects those16points with10TC/10vector cached modules.
+  No GPU was available locally; physical lock and timing happen only on Box.

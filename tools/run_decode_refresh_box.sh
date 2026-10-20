@@ -4,6 +4,16 @@ set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 PYTHON=${PYTHON:-python3}
 args=()
+if [[ -n ${CLOCK_RETRY_RUN:-} ]]; then
+    [[ -z ${RESUME_RUN:-} && -z ${RUN:-} ]] || {
+        echo 'ERROR: CLOCK_RETRY_RUN creates a new run; unset RUN and RESUME_RUN.' >&2
+        exit 1
+    }
+    PREVIOUS=$(realpath -e -- "${CLOCK_RETRY_RUN}/results")
+    test -f "${PREVIOUS}/run.json"
+    GPUS=${GPUS:-$("${PYTHON}" -c 'import json,sys; print(",".join(json.load(open(sys.argv[1]))["cards"]))' "${PREVIOUS}/run.json")}
+    args+=(--clock-retry-from "${PREVIOUS}")
+fi
 if [[ -n ${RESUME_RUN:-} ]]; then
     RUN=$(realpath -e -- "${RESUME_RUN}")
     [[ -n ${RUN} && -d ${RUN}/source && -f ${RUN}/results/plan.json ]] || {
@@ -12,6 +22,10 @@ if [[ -n ${RESUME_RUN:-} ]]; then
     }
     SOURCE=${RUN}/source
     if [[ -f ${RUN}/results/inputs.json ]]; then
+        "${PYTHON}" -c 'import json,sys
+if json.load(open(sys.argv[1])).get("clock_policy") != "LOCK_REQUESTED_ACTUAL_CLOCKS_ADVISORY":
+    sys.exit("ERROR: this frozen run uses the old strict clock gate; use CLOCK_RETRY_RUN instead of RESUME_RUN.")' \
+            "${RUN}/results/inputs.json"
         GPUS=${GPUS:-$("${PYTHON}" -c 'import json,sys; print(",".join(json.load(open(sys.argv[1]))["cards"]))' "${RUN}/results/inputs.json")}
     fi
     PHASE=${PHASE:-$("${PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1]))["phase"])' "${RUN}/results/plan.json")}
@@ -54,7 +68,7 @@ fi
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 GPUS=${GPUS:-1,2,3,4,5,6,7}
 PHASE=${PHASE:-all}
-echo "DECODE_REFRESH_BOX run=${RUN} devices=${GPUS} phase=${PHASE} clock_GHz=${EXPECTED_CE_GHZ:-1.7} acu=0"
+echo "DECODE_REFRESH_BOX run=${RUN} devices=${GPUS} phase=${PHASE} requested_clock_GHz=${EXPECTED_CE_GHZ:-1.7} actual_clock=ADVISORY acu=0"
 set +e
 "${PYTHON}" -u "${SOURCE}/tools/run_decode_refresh.py" \
     --output "${RUN}/results" --devices "${GPUS}" --phase "${PHASE}" \
