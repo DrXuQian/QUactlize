@@ -94,6 +94,28 @@ decomposition. Keep W2/pipeline as scoped experimental candidates, not global
 policies; next test other existing workload controls before more pipelining.
 Evidence: `docs/measurements/q6_schedule_20261019.txt`; production unchanged.
 
+Generalizing this path (eff5d4c, ZW810/1.7GHz, returned20261020) reduced
+Q2/Q3/Q4/Q5 indexed M8 focus cycles33.09/33.41/18.19/17.00%, with unchanged
+useful FMAs. Q3 shared29696->1024B, TSM ld/st401408->8192 each and near-fixed
+DRAM show removable on-chip metadata delivery, not lower HBM weight bytes.
+Q8 focus improved15.90%, but12 event points regressed>1%, including dense
+M8/N5120/K8192 +14.68%; Q6 versus the already-optimized W2-pipeline was
++0.62%/mixed. Retain old controls; don't generalize a mode's win globally or
+count old Q6 gains again. Current experiment separates mode specialization,
+2D geometry and index signedness, preserving the full dot/dequant body.
+An unsigned K-loop changes native load forms; that compile observation alone
+does not explain dense regressions. Native/codegen control bytes must remain
+identical when constructing ablations. Evidence:
+`docs/measurements/q8_dense_ablation_20261020.txt`.
+
+If production clock changes (user's historical1.0GHz sweep vs current1.7GHz
+ACU), do not rescale old times or assume the recipe ranking survives.
+Reconfirm old champions/close runners-up/new candidates and distinct compute
+routes as a bounded shortlist at the target core/memory clock regime. Preserve
+old numeric evidence separately; cycles also depend on core/memory balance.
+A matched1.7GHz old/new reader improvement remains valid for that experiment,
+but does not establish parity with every historical full-sweep winner.
+
 ## Keep AIU SWZL and matrix-load layout contracts paired
 
 For matrix tiles written by **AIU.swzl, use the matching ld.swzl consumer**.

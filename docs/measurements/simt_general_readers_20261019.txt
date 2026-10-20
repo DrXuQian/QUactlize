@@ -100,5 +100,8 @@ not DSO/object files. Completed ACU reports are hash checked and reused.
 POINTS=controls is an optional36-family subset, NOT all84; resume must keep
 the same POINTS selection. No forced timeout. ETA is observed wall-time only.
 
-Still pending: actual Box numerics/cycles, subsequent two-row B reuse,
-Split-K coverage and measured admission into generic production fallback.
+Returned Box review: all84 families/1134 numeric pairs passed;36 ACU reports
+reimported. Q2-Q5 gain in dense and MoE; Q8 has dense regressions, Q6 focus is
+unchanged versus its prior optimized control. See q8_dense_ablation_20261020.txt
+for scope/numbers and the next bounded experiment. Two-row B reuse, Split-K
+coverage and measured admission into generic production fallback remain pending.

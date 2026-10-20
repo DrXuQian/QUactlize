@@ -1,0 +1,101 @@
+Q8 dense controlled follow-up, 2026-10-20
+=======================================
+Parent eff5d4c681d7edd41118704f0d7cac85f5be322a, experimental code only.
+Canonical Q8 K-pack2, F32 input/output, F16/BF16 activation rounding and
+ordered F32 group-affine dot/reduction unchanged. No production/caller edits.
+
+Why this follow-up
+------------------
+Parent Box review-1792417875056787783.tgz, SHA256
+0d3c55ea4e95519f8ddc03e4a4ef50f3285b6f3c5c6d0e776ec7d9b2485136e9:
+84/84 families,1134 matched numeric pairs/13608 checks,468 cold timing pairs,
+36 actual ACU reports reimported. Maximum normalized GGUF error1.62122134e-7.
+All matching outputs RAW-equal. All ACU CE/CU/PU clocks1.7GHz and raw memory
+clock1800000 matched. Local review is in
+/root/autodl-tmp/quactlize-simt-general.mwPbTlQI/review.0WT0sGGO/analysis.json.
+
+Q2-Q5 MoE is included, not just dense. Indexed M8/N512/K2048/E256/topk8/ch8,
+BF16 activation, same-config forced-cold CE medians, three alternating pairs:
+Q2 88108->58956 (-33.09%); Q3 115470->76897 (-33.41%);
+Q4 64933->53121 (-18.19%); Q5 81586->67720 (-17.00%).
+Every pair is lower. Already-grouped cold-event median deltas across four
+declared points performat are -32.50/-31.43/-19.14/-17.53%, respectively;
+they are not separate cycle confirmation or whole-chain/model measurements.
+Q3 shared29696->1024B and TSM ld/st each401408->8192 show on-chip metadata
+delivery savings, not a reduction in compulsory HBM weight bytes.
+
+Q8 focus indexed cycles improved15.90%, but12 dense/indexed/grouped points
+had >1% event regression even against the fastest new config in the pool.
+Dense F16 M1/N1024/K5120 regressed12.49%; M8/N5120/K8192 regressed14.68%.
+Do not promote the combined body globally. Q6 latest W2-pipeline is already
+the control; its +0.62% mixed cycle result gives no new speed admission.
+
+Experiment
+----------
+Keep BOTH previous C8/W4/P4 and C4/W8/P4 vector-hoisted S1 controls.
+Seven bodies:0 unchanged control;1 dense-locate-only;2 2D-grid-only;
+3 unsigned-coordinate-only;4 dense+2D with signed coordinates;
+5 previous combined body;6 combined body with signed K-group loop.
+Runtime N/K/M remain dynamic; no model-shape hardcoding in candidate kernels.
+This is a causal reader experiment, not the full TC/SIMT/SplitK selector sweep.
+
+Six existing dense N/K geometries, F16 at M1/M8; M1..8 numerics for the two
+small geometries. Additional BF16 controls at N1024/K5120,N5120/K8192,M1/M8.
+Eight families,336 matching numeric pairs,192 timing pairs. Frozen plan prints
+those denominators; no silent Cartesian expansion or timeout.
+Independent GGUF oracle, RAW equality, changed inputs, large BF16 values,
+per-plane and omitted-producer negatives, guards and graph replay are retained.
+Source request footprints retain B/A/metadata widths and 32/64/128B accounting;
+geometry/signedness changes do not change the requested byte addresses.
+Rotating weight rings >=2.25*verified L2,6 alternating rounds x5 samples.
+
+Only two cycle-focus cells:
+M1/N1024/K5120/C4W8P4 and M8/N5120/K8192/C8W4P4, F16.
+All seven bodies x3 interleaved rounds =42 actual ACU reports, one direct
+kernel/copy each, no graph or ring under profiler. Each report is bound to
+the exact passed numerical/timing cell. Successful cells/reports are sealed
+and reused on resume; failed attempts remain readable but are not admitted.
+
+Local validation
+----------------
+34 host tests pass, including the real plan-only entry, changed-plan rejection,
+variant binding, exact output/reduction source spans, work ownership,
+mocked complete profile/resume, corrupted reports and 1.0-vs1.7GHz rejection.
+Four PPU object builds (candidate+reference, F16+BF16),28 candidate/control
+native wrappers audited, all zero stack. Eight old/previous-combined control
+bodies match prior-source native instruction bytes exactly under this compiler.
+Signed-loop arm6 restores old load opcode forms; this is codegen evidence,
+NOT proof it repairs performance. The actual Box compiler/profile decides.
+SDK2.1.1 compiler SHA256
+fa62c590c67411c23fa4028f15fa562b39ce0cf830830d038a1ec04c59d8c76e.
+Local SDK lacks runtime link libraries, so no locally linked/device-tested
+DSO is claimed. The existing Box builder links against its actual SDK.
+
+Clock regime
+------------
+User reports older sweep1.0GHz; current actual ACU is1.7GHz. Do not scale
+old microseconds or merge them with current results. Compute/memory balance
+and therefore TC/SIMT/warps/SplitK rankings can change. Same-core-clock alone
+is insufficient: compare core AND memory clocks within each cycle cohort.
+EXPECTED_CE_GHZ is a validation expectation, NOT a command that changes clocks.
+Event-screen clock was not independently sampled; primary score is the matched
+clock actual ACU cycles. A historical numeric proof is not new clock admission.
+The later production shortlist must include old champions, close contenders
+and distinct route representatives, then remeasure under the production clock.
+This command diagnoses Q8; it does not complete that full selection update.
+
+Run / resume
+------------
+IDLE_CONFIRMED=1 CUDA_VISIBLE_DEVICES=1 EXPECTED_CE_GHZ=1.7 \
+PPU_SDK=/usr/local/PPU_SDK L2_BYTES=67108864 bash tools/run_q8_dense_box.sh
+
+The wrapper freezes Git HEAD and the local pinned actlize object; no nested
+HTTPS fetch, large bundle or llama rebuild. It never installs an experiment
+DSO in production. Upload its final review-*.tgz, not the full build directory.
+Keep the same physical device/SDK/source/clock expectation for resume:
+RESUME_RUN=/workspace/kpack-q8-dense.XXXXXXXX IDLE_CONFIRMED=1 \
+CUDA_VISIBLE_DEVICES=1 EXPECTED_CE_GHZ=1.7 PPU_SDK=/usr/local/PPU_SDK \
+bash tools/run_q8_dense_box.sh
+
+PPU runtime correctness and performance are pending. Two-row B reuse and
+production promotion are separate future steps, not part of this handoff.
