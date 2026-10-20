@@ -111,6 +111,8 @@ def host_dispatch(tmp_path_factory):
 
 
 def test_typed_c_abi_can_pick_measured_simt_without_gpu_or_jit(host_dispatch,policy):
+    from tools.generate_decode_selection import EVIDENCE, effective
+    current = {tuple(r['key']): r for r in effective(json.loads(EVIDENCE.read_text()))['exact']}
     picks=[]
     for compute in (0,1):
         r=next(r for r in policy['exact'] if r['key'][0]==8 and r['key'][1]==0 and r['key'][7:]==[1,compute] and r['config']['kind']=='simt')
@@ -118,7 +120,10 @@ def test_typed_c_abi_can_pick_measured_simt_without_gpu_or_jit(host_dispatch,pol
         c=Call(version=1,size=C.sizeof(Call),qtype=q,mode=mode,n=n,k=k,experts=e,topk=top,
             channels=ch,rows=m,input_type=1,a_row_stride=k,a_token_stride=k,ids_stride=top,out_row_stride=n)
         got=host_dispatch.query_smallm_matched(c,arrangement(q),compute)
-        assert got and got.compute_type==compute and got.base.policy in (12,15) and got.base.kind==1
+        selected = current[tuple(r['key'])]
+        assert got and got.compute_type==compute and got.base.policy==selected['policy'] and got.base.kind==1
+        assert {f:getattr(got.base.simt,f) for f in ('variant','columns','warps','values','split')} == {
+            k:v for k,v in selected['config'].items() if k!='kind'}
         picks.append(got.base.simt.split)
     assert len(picks)==2
 

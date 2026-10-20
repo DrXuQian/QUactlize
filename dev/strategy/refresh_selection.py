@@ -425,16 +425,18 @@ def verify(table):
             'summary or pending scope differs')
 
 
-def readiness(table, current):
+def readiness(table, current, *, q8_bindings=()):
     """Structural capability audit, not an execution or new-device admission."""
     verify(table)
     require(table['baseline_sha256'] == digest(current), 'current runtime catalog differs from measured incumbent')
     from quactlize.execution.q4_decode_codegen import recipes
     q4 = recipes()
+    q8 = {(tuple(r['key']), r['body'], tuple(r['config'][f] for f in FIELDS)) for r in q8_bindings}
     pending, requirements = [], defaultdict(set)
     for row in table['rows']:
         k, c = row['key'], row['config']
-        if row['implementation']['kind'] == 'q8-address':
+        if row['implementation']['kind'] == 'q8-address' and (
+                tuple(k), row['implementation']['body'], tuple(c[f] for f in FIELDS)) not in q8:
             pending.append(dict(key=k, reason='Q8_BODY_REQUIRES_EXPLICIT_LAUNCHER_BINDING',
                                 implementation=row['implementation'], config=c))
         if c['kind'] == 'simt':

@@ -24,7 +24,10 @@ def original_recipe(row):
     if row['kind']==0:
         return normalize(dict(row['parent'],kind='tc',split=row['split'],grid_mode=row['grid_mode'],grid_b=row['grid_b']))
     if row['kind'] not in (1,2): raise ValueError('unknown original selector implementation')
-    return normalize(dict(row['config'],kind='simt' if row['kind']==1 else 'q4'))
+    config = dict(row['config'],kind='simt' if row['kind']==1 else 'q4')
+    if row.get('implementation', {}).get('q8_body'):
+        config['q8_body'] = row['implementation']['q8_body']
+    return normalize(config)
 
 
 def make_decode_plan(probe, originals, *, pilot=True):

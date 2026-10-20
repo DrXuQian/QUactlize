@@ -1,11 +1,15 @@
 New-clock small-M selection table, 2026-10-20
 
-State
+Initial state at b3ad001
   CANDIDATE TABLE ONLY. Production selector, generated runtime catalog,
   kernels, public ABI, caller and fallback are unchanged.
   policies/kpack_decode_refresh_v1.json is deliberately not imported by
   generate_decode_selection.py. A geometry-only activation would discard
   the new Q8 implementation identity.
+  Follow-up: the27 Q8 exact body bindings are now implemented and selected;
+  see q8_refresh_binding_20261020.txt. The other160 proposed replacements,
+  router supplement and all fallback recipes remain unchanged. The sealed
+  candidate table itself is retained as immutable evidence, not rewritten.
 
 Evidence
   Original archive SHA256:
@@ -97,9 +101,10 @@ Reproduce (CPU only; paths are user supplied)
 
  The output includes selection.json, readiness.json, pending.json and
  supplement-plan.json. It compiles the existing host C++ selection query
- and compares all1114current choices with the original recorded choices.
+ and compares all1114current choices with the original recorded choices,
+ allowing only the27 explicit Q8 bindings described in the follow-up.
  No SDK, GPU, online tuning, kernel compilation or clock changes are needed.
- Source updates which alter the incumbent correctly invalidate this check.
+ Any other source update which alters these choices invalidates this check.
 
  Tests also exercise Python3.10/3.12 sum roundoff without changing recorded
  sums, numerical tolerances, winners or admission thresholds. Two historical

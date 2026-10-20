@@ -52,9 +52,13 @@ def source(q, profile="full"):
     body = '#include "measured_decode.cuh"\n'
     if q != 8:
         body += '#include "simt_common.cuh"\n'
+    else:
+        body += '#include "simt_q8_refresh.cuh"\n'
     body += f'extern "C" bool qkg_simt_supported_{q}(qkg_simt_config_v1 const* f) {{\n'
     body += "    return " + " ||\n        ".join(f"({s})" for s in conditions) + ";\n}\n"
     body += f'extern "C" int qkg_simt_launch_v2_{q}(qkg_simt_call_v2 const* c,qkg_simt_config_v1 const* f) {{\n'
+    if q == 8:
+        body += '    if (quactlize::execution::simt::q8_refresh_body(*c,*f)) return quactlize::execution::simt::q8_refresh::launch(*c,*f);\n'
     if q != 8:
         body += '    if (quactlize::execution::simt::common_reader_scope(*c,*f)) {\n'
         for c, condition in zip(candidates, conditions):

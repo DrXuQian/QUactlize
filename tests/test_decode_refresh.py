@@ -61,7 +61,11 @@ def test_q8_address_variants_present_for_every_dense_point_not_blanket_promotion
             assert len(q8) == 2 * len(Q8_BODIES)
             assert {a['spec']['q8_body'] for a in q8} == set(Q8_BODIES)
             assert {a['spec']['config']['columns'] for a in q8} == {4, 8}
-            assert all(a['id'] != 'original' for a in q8)
+            # An admitted Q8 body is now the real original, not a geometry-only
+            # proxy. The shortlist deduplicates that arm without dropping it.
+            original = next(a for a in p['arms'] if a['id'] == 'original')
+            assert ('q8_body' in original['spec']) == (
+                'q8_body' in dict(Recipe.from_dict(p['original_recipe']).parameters))
             assert all(dict(Recipe.from_dict(a['recipe']).parameters)['split'] == 1 for a in q8)
         else:
             assert not q8

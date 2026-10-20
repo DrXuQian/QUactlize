@@ -1,0 +1,70 @@
+Q8 exact-body production binding, 2026-10-20
+
+Scope
+  Close the first pending item from decode_refresh_selection_20261020.txt:
+ 27 reviewed Q8 dense keys, F32 input/output, F16 activation compute, S1.
+ Body1 signed2D:10keys; body3 signed pointer induction:8; body4 half-window:7;
+ body5 induction+half-window:2. Seven body/geometry instantiations.
+ This is source-level exact selection admission, not a new sweep or model
+ TPOT result. The other160 proposed replacements and14MoE profile gaps are
+ outside this change. Large-M, BF16, indexed/grouped and fallback recipes
+ are unchanged; S2/S4/S8 implementations are untouched. Within the27 keys,
+ 24 were previously SIMT/S1,2 SIMT/S8 and1 TC/S8; all now use the measured
+ SIMT/S1 winner, including its zero-workspace/no-reducer complete-call cost.
+
+Routing and ABI
+  Existing v1/v2 SIMT calls retain their ABI, dynamic pointers, strides and
+ stream. No new public API or online tuning. The offline generator imports
+ only these27 keys into the single effective catalog. A compact internal
+ body lookup checks the exact key plus selected geometry. Body identity
+ appears in host explain/planning and is preserved in future sweep controls.
+ No Q8 body ID is discarded into the old geometry-only recipe.
+ Exact choices and bucket donors are generated separately; every old donor
+ is retained. A new measured exact key cannot silently promote its geometry
+ to an unmeasured neighboring shape.
+ Execution manifests bind the body source, catalog and all27 key/config/body
+ tuples. Packaging rejects an old DSO receipt even if its SIMT geometry set
+ contains all selected tuples. Existing library builders use this check.
+
+Evidence and local validation
+  Source baseline: b3ad001. Candidate-table seal remains
+ 67fe29755f8ecc07b30374f4f76c1609f9ea9fccf52753c29063dc6f00997841.
+ The original1114 raw PASS points reconstruct the same table. The actual
+ host C++ selector agrees with all original requests except the27 explicitly
+ admitted bindings, which match both measured geometry and body.
+ Against a pre-edit executable,12294 exact/neighbor/out-of-domain requests:
+ 27 intended changes,12267 byte-for-byte identical JSON decisions.
+ Targeted host regressions:106PASS,4opt-in GPU/compiler tests skipped.
+ They include actual generated v1/v2 dispatch with rebound pointers/stream,
+ all27 scopes, invalid inputs, package mismatch and new-sweep recipe identity.
+ The generated bodies have the same dequant, signed coordinates and FP32
+ accumulation/reduction order as their measured experiment. Original Q8
+ kernel, activation and format header hashes match the uploaded module
+ receipts. No FP16 clipping or INT8 activation was introduced.
+ The four measured source-body texts are pinned by SHA256:
+ 00d1eba87baa5e086dcc0a217583f3246ba73611a4c76048a74e4e7b5bcc138b.
+ Regenerating a changed body under these old timings is an error.
+
+  Compile-only SDK2.1.1 compiler SHA256:
+ fa62c590c67411c23fa4028f15fa562b39ce0cf830830830d038a1ec04c59d8c76e.
+ Compile the complete production Q8 translation unit and the measured
+ experiment. All7 new native instruction-byte streams match; all have
+ FP32 FMA and zero reported stack. This is a same-local-compiler identity
+ check, NOT a claim that its binaries equal the Box's different compiler.
+ No new PPU launches, linked replacement library publication, ACU captures
+ or model benchmarks were performed. Existing measured per-key gains do
+ not establish model TPOT. Final deployment/model A/B remains separate.
+
+Reproduce
+  python3 tools/generate_q8_refresh.py --check
+  python3 tools/generate_decode_selection.py --check
+  python3 -m pytest -q tests/test_q8_refresh_binding.py \
+    tests/test_decode_selection.py tests/test_smallm_matched.py
+  python3 dev/gemv_simt/build_q8_refresh.py \
+    --sdk /path/to/PPU_SDK --output /path/to/new-q8-native-audit
+
+  The last command only compiles/inspects native code; it does not use a GPU,
+ run timings or rebuild TC modules. Use a new output directory. Normal
+ build_kpack_execution/build_ppu_library builds include the new bodies.
+ Rebuild the execution library and dispatcher together before use; do not
+ overwrite only one old bundle payload or edit its manifest by hand.

@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from quactlize.runtime.compiler import FLAGS, LIBRARIES, sha
 from quactlize.execution import q4_decode_codegen, simt_codegen
+from quactlize.execution.q8_refresh import capability as q8_capability
 
 
 def build(sdk, output, jobs, variant="production"):
@@ -22,6 +23,10 @@ def build(sdk, output, jobs, variant="production"):
     sdk, output = sdk.resolve(), output.resolve()
     if jobs < 1:
         raise ValueError("jobs must be positive")
+    from tools.generate_q8_refresh import catalog as q8_catalog, header as q8_header
+    for name, text in [('q8_refresh.inc', q8_catalog()), ('simt_q8_refresh.cuh', q8_header())]:
+        if (ROOT/'quactlize/execution'/name).read_text() != text:
+            raise ValueError('stale Q8 binding; run tools/generate_q8_refresh.py')
     for path in [sdk / "bin/hgcc", *[sdk / "lib" / f"lib{x}.so" for x in LIBRARIES]]:
         if not path.is_file():
             raise ValueError(f"missing SDK input: {path}")
@@ -70,6 +75,8 @@ def build(sdk, output, jobs, variant="production"):
     for p in (q4_decode_codegen.POLICY, q4_decode_codegen.POLICY.with_suffix('.hpp'),
               ROOT/'quactlize/execution/q4_decode_codegen.py',
               ROOT/'quactlize/execution/simt_codegen.py',
+              ROOT/'quactlize/execution/q8_refresh.py',
+              ROOT/'policies/kpack_decode_refresh_v1.json',
               ROOT/'policies/kpack_smallm_effective_v1.hpp',
               ROOT/'policies/kpack_smallm_v1.hpp',
               ROOT/'policies/kpack_component_decode_v1.json',
@@ -199,7 +206,8 @@ def build(sdk, output, jobs, variant="production"):
             "moe_projection_boundary": "EXPLICIT_COMPUTE_TYPE_NO_CLIP",
             "device_validated": False,
         },
-        simt_selection="EXPLICIT_CALLER_CONFIG_NO_POLICY_CHANGE",
+        simt_selection="EXPLICIT_CALLER_CONFIG_WITH_REVIEWED_EXACT_Q8_BODY_BINDINGS",
+        q8_refresh=q8_capability(),
     )
     if variant == "fp32-affine":
         manifest["gemv_pair_affine"] = "FP32_GROUP_AFFINE_NO_INTERMEDIATE_FP16_ROUNDING"

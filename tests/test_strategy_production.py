@@ -38,13 +38,15 @@ def test_every_reviewed_point_and_unaffected_key(evidence, baseline, plan):
     assert evidence['summary'] == dict(points=1114, host_keys=930, changed=448, retained=482)
     assert sum(len(r['profiles']) for r in evidence['rows']) == 1114
     effective = fit.apply(evidence, baseline)
-    expected = {tuple(r['key']): r for r in effective['exact']}
     declared = {tuple(r['key']): r for r in evidence['rows'] if r['changed']}
     for before, after in zip(baseline['exact'], effective['exact']):
         if tuple(before['key']) not in declared:
             assert before == after
     assert effective['buckets'] == baseline['buckets']
     assert effective['excluded'] == baseline['excluded']
+    from quactlize.execution.q8_refresh import apply
+    effective = apply(effective)
+    expected = {tuple(r['key']): r for r in effective['exact']}
     for actual in plan['requests']:
         row = expected[tuple(actual['request'])]; c = row['config']
         assert actual['status'] == 0 and actual['policy'] == row['policy']
@@ -59,7 +61,8 @@ def test_every_reviewed_point_and_unaffected_key(evidence, baseline, plan):
         else:
             assert actual['kind'] == (1 if c['kind'] == 'simt' else 2)
             assert actual['config'] == {k: v for k, v in c.items() if k != 'kind'}
-    assert sum(r['policy'] == 18 for r in plan['requests']) == 448
+    assert sum(r['policy'] == 18 for r in plan['requests']) == sum(
+        r['policy'] == 18 for r in effective['exact'])
 
 
 @pytest.mark.parametrize('fault', ['config', 'samples', 'scope', 'incumbent'])
@@ -121,10 +124,12 @@ def test_router_profiles_need_a_common_no_regression_choice():
 
 def test_new_q4_specializations_and_compute_are_compiled(plan):
     from quactlize.execution import q4_decode_codegen, simt_codegen
+    from quactlize.execution.q8_refresh import capability
     execution = dict(simt_configs={str(q): [c.record() for c in simt_codegen.runtime_inventory(q)]
         for q in simt_codegen.QTYPES}, simt_compute_v2=dict(compute=['f16', 'bf16'], formats=list(simt_codegen.QTYPES)),
         q4_decode_policy_sha256='fixture', q4_decode_compute_v2=dict(compute=['f16', 'bf16']),
-        q4_decode_configs={f'{n}x{k}': rs for (n, k), rs in q4_decode_codegen.recipes().items()})
+        q4_decode_configs={f'{n}x{k}': rs for (n, k), rs in q4_decode_codegen.recipes().items()},
+        q8_refresh=capability())
     validate_inventory(plan, execution, jit=True)
     for fault in ('missing-tuple', 'bf16'):
         bad = copy.deepcopy(execution)

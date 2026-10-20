@@ -51,3 +51,16 @@ already-complete ACU captures solely to search for a preferred result.
 The admission boundary is the measured shape/precision/M/configuration.
 This case does not establish performance for MoE, other Split-K factors,
 all M2..7, a global selector, or model TPOT.
+
+Implementation-binding follow-up: the later full small-M refresh admitted
+27 exact dense/F32/F16/S1 keys, using four different bodies across seven
+body/geometry instantiations. See `docs/measurements/q8_refresh_binding_20261020.txt`.
+Geometry alone is not the identity of these winners. Keep the body in host
+explain, package capability checks and the next sweep's incumbent recipe;
+otherwise a matching tile can silently run or benchmark the old body.
+These27 exact updates also exposed shared bucket donors: preserve the
+previous donor explicitly when the new body has only exact-shape evidence.
+The pre/post host selector audit checked12,294requests and changed only27.
+All seven new production native bodies matched the corresponding measured
+source under the same local compiler, with zero reported stack. This proves
+the local port, not binary equality to another SDK or model-level speedup.

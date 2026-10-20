@@ -54,11 +54,10 @@ inline Selection select(qkg_simt_call_v2 const& d) {
     }
     if(!donor) return {};
     auto index=donor-data::kExact;
-    auto const& exact=data::kChoices[donor->choice];
-    // Q4 S1 is shape-specialized. Its previous generic donor remains available
-    // outside the exact key; generic measured improvements update buckets too.
-    auto const& generic=exact.kind==QKS_SMALLM_Q4 ? data::kGuards[data::kGuardIndex[index]] : exact;
+    // Donors are generated separately: exact-only evidence cannot silently
+    // change bucket behavior. This also keeps Q4's shape-specialized body out.
+    auto const& generic=data::kBucketChoices[data::kBucketIndex[index]];
     if(generic.kind==QKS_SMALLM_Q4) return {};
-    return {donor,QKS_MATCHED_BUCKET,&generic,exact.kind==QKS_SMALLM_Q4 ? -1 : data::kDequant[index]};
+    return {donor,QKS_MATCHED_BUCKET,&generic,data::kBucketDequant[index]};
 }
 } // namespace quactlize::dispatch::matched

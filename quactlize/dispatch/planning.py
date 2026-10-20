@@ -80,12 +80,30 @@ def validate_inventory(plan, execution, modules=(), *, jit=False):
             raise ValueError(f'final selector Q4 specialization absent from execution: {n}x{k} config={config}')
         if compute and 'bf16' not in execution.get('q4_decode_compute_v2', {}).get('compute', []):
             raise ValueError('final selector requires unavailable BF16 Q4 execution')
+    # The old SIMT ABI contains geometry, not body identity. A matching tuple
+    # alone must not make an old execution library look ready for the refresh.
+    q8 = [r for r in plan['requests'] if r['status'] == 0 and
+          r.get('implementation', {}).get('q8_body')]
+    if q8:
+        from quactlize.execution.q8_refresh import capability
+        expected = capability()
+        if execution.get('q8_refresh') != expected:
+            raise ValueError('final selector Q8 body capability differs; rebuild execution')
+        supported = {(tuple(r['key']), r['body'], tuple(r['config'][f] for f in FIELDS))
+                     for r in expected['keys']}
+        for r in q8:
+            if (tuple(r['request']), r['implementation']['q8_body'],
+                    tuple(r['config'][f] for f in FIELDS)) not in supported:
+                raise ValueError('final selector Q8 body/config is outside the measured scope')
     compiled = {(m['parent']['symbol'], int(m['identity'].get('compute_type', 'f16') == 'bf16'),
                  m['identity'].get('endpoints') == 'decode-m1-8-f32-bf16-v1') for m in modules}
     missing = [r for r in required['tc'] if tuple(r) not in compiled]
     if missing and not jit:
         raise ValueError(f'final selector needs {len(missing)} unpackaged typed TC parents; enable JIT or prewarm the typed plan')
-    return dict(required=required, jit_required=missing)
+    result = dict(required=required, jit_required=missing)
+    if q8:
+        result['q8_refresh'] = expected
+    return result
 
 
 def prewarm_groups(plan):

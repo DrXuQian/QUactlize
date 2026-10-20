@@ -146,7 +146,7 @@ def capture(tp2, fallback):
     return result | dict(evidence_sha256=digest(json.dumps(result,sort_keys=True).encode()))
 
 
-def effective(evidence, *, include_components=True):
+def effective(evidence, *, include_components=True, include_refresh=True):
     if evidence['schema']!='quactlize.decode-winners.v1' or evidence['archives']!=ARCHIVES:
         raise ValueError('winner evidence authority differs')
     if evidence.get('evidence_sha256')!=digest(json.dumps(
@@ -199,6 +199,9 @@ def effective(evidence, *, include_components=True):
     if include_components:
         from dev.strategy.production import apply
         result = apply(json.loads(COMPONENTS.read_text()), result)
+        if include_refresh:
+            from quactlize.execution.q8_refresh import apply as bind_q8
+            result = bind_q8(result)
     return result
 
 
@@ -214,6 +217,18 @@ def header(policy):
     extra+='inline constexpr int kGuardIndex[]={'+','.join(map(str,indices))+'};\n'
     extra+='inline constexpr int kPolicy[]={'+','.join(str(r['policy']) for r in policy['exact'])+'};\n'
     extra+='inline constexpr int kDequant[]={'+','.join(str(r.get('dequant_config',-1)) for r in policy['exact'])+'};\n'
+    # Exact-only Q8 admission must not change an unseen shape's old donor.
+    donors = [dict(r, config=r.get('bucket_config', r['guard'] if r['config']['kind']=='q4' else r['config']))
+              for r in policy['exact']]
+    buckets = matched_header(dict(exact=donors, buckets=[], excluded=[]))
+    choices = buckets.split('inline constexpr Choice kChoices[]={\n',1)[1].split('\n};',1)[0]
+    rows = buckets.split('inline constexpr Row kExact[]={\n',1)[1].split('\n};',1)[0]
+    indices = [int(line.strip().strip('{},').split(',')[-2]) for line in rows.splitlines()]
+    extra += 'inline constexpr Choice kBucketChoices[]={\n'+choices+'\n};\n'
+    extra += 'inline constexpr int kBucketIndex[]={'+','.join(map(str,indices))+'};\n'
+    extra += 'inline constexpr int kBucketDequant[]={'+','.join(str(r.get(
+        'bucket_dequant_config', -1 if r['config']['kind']=='q4' else r.get('dequant_config',-1)))
+        for r in policy['exact'])+'};\n'
     return text.replace('} // namespace quactlize::smallm_effective_data',extra+'} // namespace quactlize::smallm_effective_data')
 
 

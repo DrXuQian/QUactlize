@@ -210,6 +210,15 @@ template<int Q,int C,int W,int P> int common_reader_launch(qkg_simt_call_v2 cons
 }
 }
 ''')
+    (tmp_path/'simt_q8_refresh.cuh').write_text(r'''#pragma once
+#include "measured_decode.cuh"
+#include "quactlize/execution/simt_q8_refresh.hpp"
+namespace quactlize::execution::simt::q8_refresh {
+inline int launch(qkg_simt_call_v2 const& d,qkg_simt_config_v1 const& f) {
+    observed=d;implementation=-100-q8_refresh_body(d,f);++launches;return QKG_OK;
+}
+}
+''')
     generated=[]
     for q in simt_codegen.QTYPES:
         path=tmp_path/f'launch{q}.cpp'
@@ -219,6 +228,7 @@ template<int Q,int C,int W,int P> int common_reader_launch(qkg_simt_call_v2 cons
     main.write_text(r'''#include "measured_decode.cuh"
 #include "quactlize/execution/simt_validation.hpp"
 #include "quactlize/execution/simt_common_scope.hpp"
+#include "quactlize/execution/simt_q8_refresh.hpp"
 #include <cassert>
 using namespace quactlize::execution;
 static void check(qkg_call_v1 c,qkg_simt_config_v1 f,int compute,bool measured) {
@@ -235,10 +245,17 @@ static void check(qkg_call_v1 c,qkg_simt_config_v1 f,int compute,bool measured) 
     launches=0;
     assert(quactlize_kpack_simt_run_v2(&d,&f,&a)==QKG_OK && launches==1);
     assert((implementation!=0)==measured);
-    if (simt::common_reader_scope(d,f)) assert(implementation==-2);
+    if (simt::q8_refresh_body(d,f)) assert(implementation==-100-simt::q8_refresh_body(d,f));
+    else if (simt::common_reader_scope(d,f)) assert(implementation==-2);
     else if (measured) assert(implementation==int(simt::measured_decode(d,f)));
     assert(observed.compute_type==compute && !memcmp(&observed.call,&c,sizeof(c)));
     int expected=implementation;
+    auto rebound=d;
+    rebound.call.a=(void*)((uintptr_t)c.a+4096);
+    rebound.call.output=(float*)((uintptr_t)c.output+4096);
+    rebound.call.stream=(void*)1234;
+    assert(quactlize_kpack_simt_run_v2(&rebound,&f,&a)==QKG_OK);
+    assert(implementation==expected && !memcmp(&observed.call,&rebound.call,sizeof(c)));
     if(compute==QKG_COMPUTE_F16) {
         launches=0;implementation=-1;
         assert(quactlize_kpack_simt_run_v1(&c,&f,&a)==QKG_OK && launches==1);
@@ -262,6 +279,12 @@ c.channels=Ch;c.rows=Top;c.input_type=QKG_F32; \
 check(c,{1,sizeof(qkg_simt_config_v1),V,C,W,P,S},Compute,true);}
 #include "quactlize/execution/measured_decode.inc"
 #undef QDM
+#define Q8R(N,K,M,C,W,Body) \
+{qkg_call_v1 c{};c.qtype=8;c.mode=QKG_DENSE;c.n=N;c.k=K;c.experts=1;c.topk=1; \
+c.channels=1;c.rows=M;c.input_type=QKG_F32; \
+check(c,{1,sizeof(qkg_simt_config_v1),5,C,W,4,1},0,true);}
+#include "quactlize/execution/q8_refresh.inc"
+#undef Q8R
 for(int q:{8,10,11,12,13,14}) for(int tokens=1;tokens<=8;++tokens) for(int mode:{0,2})
 for(int compute:{0,1}) for(int split:{1,2,4,8}) {
     qkg_call_v1 c{};c.qtype=q;c.mode=mode;c.n=256;c.k=512;c.experts=mode?256:1;

@@ -39,7 +39,9 @@ static void emit(int q,int mode,int n,int k,int experts,int topk,int channels,in
             std::cout<<",\"implementation\":{\"producer\":"<<std::quoted(impl.producer)
                 <<",\"measured\":"<<std::quoted(impl.measured)
                 <<",\"reduction\":"<<std::quoted(impl.reduction)<<",\"changes\":"<<impl.changes
-                <<",\"hoist\":"<<(impl.hoist?"true":"false")<<",\"fixed\":"<<(impl.fixed?"true":"false")<<'}';
+                <<",\"hoist\":"<<(impl.hoist?"true":"false")<<",\"fixed\":"<<(impl.fixed?"true":"false");
+            if(impl.q8_body)std::cout<<",\"q8_body\":"<<impl.q8_body;
+            std::cout<<'}';
         } else {
             auto f=d.choice.q4;
             std::cout<<",\"config\":{\"reader\":"<<f.reader<<",\"variant\":"<<f.variant

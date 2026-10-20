@@ -144,10 +144,10 @@ def test_checked_in_table_is_inactive_complete_and_unscaled():
             selection.verify(edited)
 
 
-def test_table_and_new_q8_bodies_are_not_silently_activated():
+def test_original_full_table_remains_inactive_and_audits_old_binding_gap():
     from tools.generate_decode_selection import EVIDENCE, effective
     table = json.loads(TABLE.read_text())
-    current = effective(json.loads(EVIDENCE.read_text()))
+    current = effective(json.loads(EVIDENCE.read_text()), include_refresh=False)
     assert digest(current) == table['baseline_sha256']
     report = selection.readiness(table, current)
     assert report['kernel_launches'] == 0 and report['production_changed'] is False
