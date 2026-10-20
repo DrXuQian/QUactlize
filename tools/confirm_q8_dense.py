@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Profile four screened Q8 winners using an unchanged, completed Box run."""
+"""Confirm M1 first, then M8 Q8 finalists using an unchanged completed Box run."""
 import argparse
 import fcntl
 import hashlib
@@ -10,16 +10,42 @@ import sys
 import time
 from types import SimpleNamespace
 
-# Fixed before this confirmation, selected from the completed cold screen.
+# Six F16 M1 shapes plus two BF16 controls. For each point keep the incumbent
+# best and the union of each arm's best screened config. Only points2/3 need
+# both configs. No shape is excluded because its proposed speedup is small.
+M1_FOCUSES = (
+    dict(point=0, m=1, config=1),
+    dict(point=1, m=1, config=1),  # Already captured; validate and reuse.
+    dict(point=2, m=1, config=0),
+    dict(point=2, m=1, config=1),
+    dict(point=3, m=1, config=1),
+    dict(point=3, m=1, config=0),
+    dict(point=4, m=1, config=1),
+    dict(point=5, m=1, config=0),
+    dict(point=6, m=1, config=1),
+    dict(point=7, m=1, config=1),
+)
+# Previous supplement stays available independently and is reused when done.
 # Keep all six controls/candidates, not only the nominal event winner.
-FOCUSES = (
+M8_FOCUSES = (
     dict(point=0, m=8, config=1),
     dict(point=0, m=8, config=0),  # Original best recipe differs at this shape.
     dict(point=2, m=8, config=0),
     dict(point=3, m=8, config=0),
     dict(point=5, m=8, config=0),
 )
-SHAPES = {0: (512, 2048), 2: (4096, 2048), 3: (4096, 4096), 5: (8192, 5120)}
+SHAPES = {0: (512, 2048), 1: (1024, 5120), 2: (4096, 2048), 3: (4096, 4096),
+          4: (5120, 8192), 5: (8192, 5120), 6: (1024, 5120), 7: (5120, 8192)}
+
+
+def selected_focuses(cohort):
+    if cohort == 'm1':
+        return M1_FOCUSES
+    if cohort == 'm8':
+        return M8_FOCUSES
+    if cohort == 'all':
+        return M1_FOCUSES + M8_FOCUSES
+    raise ValueError('unknown confirmation cohort')
 
 
 def sha(path):
@@ -45,7 +71,7 @@ def contained(root, name):
     return path
 
 
-def parent(run):
+def parent(run, cohort='all'):
     source = (run / 'source').resolve(strict=True)
     output = (run / 'results').resolve(strict=True)
     frozen = read(output / 'plan.json')
@@ -58,10 +84,11 @@ def parent(run):
             summary.get('production_changed') or build.get('object_only')):
         raise ValueError('requires the completed Q8 address-window parent, not an ablation/rebuild')
     specs = {p['point']: p for p in frozen['points']}
-    for f in FOCUSES:
+    for f in selected_focuses(cohort):
         p = specs[f['point']]
         w = p['workload']
-        if (w['qtype'] != 8 or w['compute'] != 'f16' or w['operation'] != 'dense' or
+        compute = 'bf16' if f['point'] in (6, 7) else 'f16'
+        if (w['qtype'] != 8 or w['compute'] != compute or w['operation'] != 'dense' or
                 (w['n'], w['k']) != SHAPES[f['point']] or f['m'] not in p['timing_m']):
             raise ValueError('frozen finalist workload differs')
     harness = authority['harness']
@@ -82,6 +109,7 @@ def parent(run):
 
 
 def execute(a, source, output, frozen, authority):
+    focuses = selected_focuses(a.cohort)
     # Import the immutable parent's implementation, not the updated checkout's
     # harness. Child commands inside profile_focus also use this frozen path.
     sys.path.insert(0, str(source))
@@ -103,28 +131,29 @@ def execute(a, source, output, frozen, authority):
     lock_name = 'quactlize-components-' + digest(authority['device']['device']['pci'])[:24] + '.lock'
     with (Path('/tmp') / lock_name).open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        for point in sorted({f['point'] for f in FOCUSES}):
+        for point in sorted({f['point'] for f in focuses}):
             runner.complete_point(output, point, authority)
         attempt = output / 'attempts' / ('finalists-' + str(time.time_ns()))
         attempt.mkdir(parents=True, exist_ok=False)
         started = time.monotonic()
         profiles = []
         try:
-            for f in FOCUSES:
+            for f in focuses:
                 print('Q8_CONFIRM_FOCUS ' + json.dumps(f), flush=True)
                 try:
                     profiles.append(runner.profile_focus(args, f, attempt, authority))
                 except Exception as exc:
                     profiles.append(dict(focus=f, status='FAIL', error=str(exc)))
             result = dict(
-                schema='q8-address-cycle-confirm-v1',
+                schema='q8-address-cycle-confirm-v2', cohort=a.cohort,
                 status='PASS' if all(p['status'] == 'PASS' for p in profiles) else 'INCOMPLETE',
-                profiles=profiles, original_evidence_sha256=original,
+                profiles=profiles, focuses=focuses, requested_acu_reports=len(focuses)*18,
+                original_evidence_sha256=original,
                 authority_sha256=digest(authority), coordinator_sha256=sha(Path(__file__).resolve()),
                 elapsed_seconds=time.monotonic() - started, new_compiles=0,
                 cold_timing_rerun=False, original_summary_modified=False,
                 production_changed=False, performance_admitted=False,
-                scope='FOUR_SCREEN_WINNER_ACU_CONFIRMATION_NOT_GLOBAL_SELECTOR_OR_MODEL_TPOT')
+                scope='M1_M8_SEPARATE_ACU_CONFIRMATION_NOT_GLOBAL_SELECTOR_OR_MODEL_TPOT')
             if any(sha(output / p) != value for p, value in original.items()):
                 raise ValueError('original summary/plan/authority changed during confirmation')
             runner.sealed(attempt / 'confirmation.json', result)
@@ -141,12 +170,16 @@ def main():
     p.add_argument('--sdk', type=Path, default=Path('/usr/local/PPU_SDK'))
     p.add_argument('--acu', type=Path)
     p.add_argument('--expected-ce-ghz', type=float, default=1.7)
+    p.add_argument('--cohort', choices=('m1', 'm8', 'all'), default='all',
+                   help='all runs M1 first; validated existing profiles are reused')
     p.add_argument('--confirm-idle', action='store_true')
     p.add_argument('--plan-only', action='store_true')
     a = p.parse_args()
     try:
-        source, output, frozen, authority = parent(a.run.resolve(strict=True))
-        print('Q8_CONFIRM_PLAN ' + json.dumps(dict(focuses=FOCUSES, acu_reports=90,
+        source, output, frozen, authority = parent(a.run.resolve(strict=True), a.cohort)
+        focuses = selected_focuses(a.cohort)
+        print('Q8_CONFIRM_PLAN ' + json.dumps(dict(cohort=a.cohort, focuses=focuses,
+            acu_reports=len(focuses)*18,
             new_compiles=0, cold_timing_rerun=False, production_changed=False)), flush=True)
         if a.plan_only:
             return 0

@@ -39,14 +39,17 @@ def fixture(run):
     return source, output
 
 
-def test_plan_only_is_read_only_and_needs_no_gpu(tmp_path):
+@pytest.mark.parametrize('cohort,reports,geometries,points', [
+    ('m1', 180, 10, 8), ('m8', 90, 5, 4), ('all', 270, 15, 8)])
+def test_plan_only_is_read_only_and_needs_no_gpu(tmp_path, cohort, reports, geometries, points):
     fixture(tmp_path)
     before = {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
     result = subprocess.run([sys.executable, str(ROOT / 'tools/confirm_q8_dense.py'),
-        '--run', str(tmp_path), '--plan-only'], check=True, capture_output=True, text=True)
+        '--run', str(tmp_path), '--cohort', cohort, '--plan-only'], check=True, capture_output=True, text=True)
     row = json.loads(result.stdout.split('Q8_CONFIRM_PLAN ', 1)[1])
-    assert row['acu_reports'] == 90 and row['new_compiles'] == 0 and not row['cold_timing_rerun']
-    assert len(row['focuses']) == 5 and len({f['point'] for f in row['focuses']}) == 4
+    assert row['acu_reports'] == reports and row['new_compiles'] == 0 and not row['cold_timing_rerun']
+    assert len(row['focuses']) == geometries and len({f['point'] for f in row['focuses']}) == points
+    assert row['cohort'] == cohort
     assert before == {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
 
 
@@ -83,7 +86,8 @@ def test_no_escape_or_linked_image(tmp_path):
         confirm.parent(tmp_path)
 
 
-def test_supplement_only_calls_frozen_profiler_and_preserves_parent(tmp_path, monkeypatch):
+@pytest.mark.parametrize('cohort', ['m1', 'm8', 'all'])
+def test_supplement_only_calls_frozen_profiler_and_preserves_parent(tmp_path, monkeypatch, cohort):
     source, output = fixture(tmp_path)
     frozen = json.loads((output / 'plan.json').read_bytes())
     authority = dict(expected_ce_hz=1.7e9,
@@ -110,13 +114,35 @@ def test_supplement_only_calls_frozen_profiler_and_preserves_parent(tmp_path, mo
     from tools import pack_simt_split_review
     monkeypatch.setattr(pack_simt_split_review, 'package', lambda out: calls.append(('pack', out)))
     monkeypatch.setattr(sys, 'path', list(sys.path))
-    a = SimpleNamespace(sdk=sdk, acu=acu, expected_ce_ghz=1.7)
+    a = SimpleNamespace(sdk=sdk, acu=acu, expected_ce_ghz=1.7, cohort=cohort)
     assert confirm.execute(a, source, output, frozen, authority) == 0
-    assert [value for kind, value in calls if kind == 'profile'] == list(confirm.FOCUSES)
-    assert [value for kind, value in calls if kind == 'numeric-reuse'] == [0, 2, 3, 5]
+    focuses = confirm.selected_focuses(cohort)
+    assert [value for kind, value in calls if kind == 'profile'] == list(focuses)
+    assert [value for kind, value in calls if kind == 'numeric-reuse'] == sorted({f['point'] for f in focuses})
     assert calls[-1] == ('pack', output)
     assert all((output / name).read_bytes() == content for name, content in before.items())
     saved, = output.glob('attempts/finalists-*/confirmation.json')
     result = json.loads(saved.read_bytes())
     assert result['status'] == 'PASS' and result['new_compiles'] == 0
+    assert result['cohort'] == cohort and result['requested_acu_reports'] == len(focuses)*18
     assert not result['cold_timing_rerun'] and not result['production_changed']
+
+
+def test_m1_covers_every_shape_and_both_precision_controls_first():
+    assert {f['point'] for f in confirm.M1_FOCUSES} == set(range(8))
+    assert all(f['m'] == 1 for f in confirm.M1_FOCUSES)
+    assert confirm.selected_focuses('all')[:10] == confirm.M1_FOCUSES
+    assert len({(f['point'], f['m'], f['config']) for f in confirm.selected_focuses('all')}) == 15
+    expected = {0: {1}, 1: {1}, 2: {0, 1}, 3: {0, 1}, 4: {1}, 5: {0}, 6: {1}, 7: {1}}
+    assert {p: {f['config'] for f in confirm.M1_FOCUSES if f['point'] == p} for p in range(8)} == expected
+    with pytest.raises(ValueError, match='cohort'):
+        confirm.selected_focuses('unknown')
+
+
+def test_bf16_control_is_not_substituted_with_f16(tmp_path):
+    _, output = fixture(tmp_path)
+    frozen = json.loads((output/'plan.json').read_bytes())
+    frozen['points'][6]['workload']['compute'] = 'f16'
+    (output/'plan.json').write_text(json.dumps(frozen))
+    with pytest.raises(ValueError, match='workload differs'):
+        confirm.parent(tmp_path, 'm1')

@@ -86,9 +86,50 @@ Next and command
 
   CUDA_VISIBLE_DEVICES=1 python3 tools/confirm_q8_dense.py \
     --run /workspace/kpack-q8-dense.sAlv8KU5 \
-    --sdk /usr/local/PPU_SDK --expected-ce-ghz 1.7 --confirm-idle
+    --sdk /usr/local/PPU_SDK --cohort m8 --expected-ce-ghz 1.7 --confirm-idle
 
   Operator must confirm that the SAME physical card is idle. Device/SDK/
   source mismatch is a rejection, not a reason to rewrite receipts.
   Upload the final review-lite-*.tar.xz; full acurep stays on Box.
   No production Q8, global selector or model TPOT change is claimed.
+
+M1 coverage correction
+  The initial follow-up above under-covered the primary decoding cohort.
+  One M1 focus without a stable winner is NOT evidence that all M1 shapes
+  are exhausted. M1 remains a separate priority, not inferred from M8 gains.
+  Existing M1 cold screen, best among the two retained recipes:
+  Compute N,K        original us   best candidate us   decrease
+  F16       512,2048      4.5718       4.5146              1.25%
+  F16      1024,5120      9.4454       9.3125              1.41%
+  F16      4096,2048      9.6882       9.2518              4.51%
+  F16      4096,4096     16.5067      15.3711              6.88%
+  F16      5120,8192     35.9225      34.8050              3.11%
+  F16      8192,5120     29.3912      28.7113              2.31%
+  BF16     1024,5120      9.4107       9.2271              1.95%
+  BF16     5120,8192     35.7662      34.6650              3.08%
+  These are event medians, not cycle-confirmed gains. The original F16
+  N1024/K5120 ACU comparison has mixed signs despite its nominal event gain.
+
+  New default is --cohort all: M1 first, then the prior M8 points. Explicit
+  --cohort m1 or --cohort m8 selects only that cohort without altering the
+  parent experiment or invalidating reusable profile receipts.
+  M1 includes all eight workload/precision points and keeps the incumbent
+  best recipe plus each arm's best screened recipe. Only N4096/K2048 and
+  N4096/K4096 need both configurations; the other six points need one.
+  No point is pruned merely because the predicted improvement is small.
+
+  Ten M1 geometries x six arms x three rounds =180 requested reports, of
+  which18 are already available in the original run and hash-checked/reused.
+  Combined M1+M8 requests270 profiles, not a new full sweep. Successful M8
+  supplement captures are also reused. F32 endpoints and the two distinct
+  F16/BF16 activation-compute contracts remain unchanged.
+  No new compiler, JIT, numerical sweep or cold event screen is invoked.
+
+  Original observed per-report wall time was5s capture +1s raw export.
+  Projection: M1-only162 new reports ~16.2min; combined252 new reports ~25.2min
+  if M8 was not captured yet. Add overhead/variation; these are estimates,
+  not timing guarantees. Do not run both cohorts concurrently on one card.
+
+  CUDA_VISIBLE_DEVICES=1 python3 tools/confirm_q8_dense.py \
+    --run /workspace/kpack-q8-dense.sAlv8KU5 --sdk /usr/local/PPU_SDK \
+    --cohort all --expected-ce-ghz 1.7 --confirm-idle
