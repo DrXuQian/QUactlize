@@ -1,0 +1,68 @@
+Large-M reviewed-cohort reconfirmation (not a new sweep)
+======================================================
+
+Reviewed confirmation-1792526517275128933.tgz, SHA256
+2d8dfa8970a7bbb28afdb58d30404712fc81684a5836ce9d6a3d5419e4ac17c5,
+from /workspace/kpack-prefill-refresh.NoEQNIli/results, source4bbee40.
+All430points/1138arms/2580rounds completed, with51972numerical checks and
+maximum relative error.004125459245414886<.005. Raw343PASS/82UNSTABLE/
+5RULE_REGRESSION; unchanged reviewed eligibility gives351eligible/79pending.
+76of79pending were on cards6/7. Possible other workloads are NOT a proven
+cause. A locked1700MHz request does not establish an otherwise idle GPU.
+
+Retest ALL120points originally on cards6/7, including their passing points,
+plus3unresolved dense points from cards2/3. Preserve the other307points under
+their old authority. Do not rename their old measurements as this run's data.
+The checked-in scope receipt binds the exact original plan and hardware/
+SDK/providers/oracle cohort. Recreating that original plan checks all430
+current C++ controls. Select123points/316arms/71TCmodules/229resource queries;
+keep every candidate and control, unchanged precision/config/helper recipe.
+All indexed families stay complete so their active-expert cold rings remain
+identical. Only3denseE1 families have a partial M domain; their ring is M-free.
+
+Assign whole families by prior ROUND WALL time across idle cards1..5, not by
+kernel microseconds. Those totals balance to44.6..46.1minutes, EXCLUDING
+fixture/startup overhead and without guaranteeing new runtime. Budget roughly
+60..90minutes. No24hour kill, no retry-until-win. Unstable/regressing outcomes
+remain visible even when measurement coverage is COMPLETE.
+
+Command (after verifying all assigned cards are otherwise idle):
+(
+    set -e
+    cd /sim/eec/shared/junfu.qx/quactlize
+    git pull --ff-only origin develop
+    unset RUN RESUME_RUN PLAN_ONLY BUILD_ONLY PPU_SMI
+    PREFILL_REFRESH_SCOPE=reconfirm \
+    REUSE_BUILD=/workspace/kpack-prefill-refresh.NoEQNIli/results \
+    GPUS=1,2,3,4,5 PPU_SDK=/usr/local/PPU_SDK \
+    L2_BYTES=67108864 EXPECTED_CE_GHZ=1.7 IDLE_CONFIRMED=1 JOBS=192 \
+    bash tools/run_prefill_refresh_box.sh
+)
+
+REUSE_BUILD is optional. It reads only validated compiled TC/helper/dequant
+images from that exact prior run, never timings or resource queries. It checks
+current compiled-source/SDK/host identities, cache manifests and image hashes.
+Mismatch fails before timing; it does not silently substitute a new image.
+If the old directory was removed, unset REUSE_BUILD: the bounded71modules
+are rebuilt once. New-device resource queries always run on the assigned
+physical cards. Changing cards requires a fresh run, not RESUME of the old
+completed430-point run. No old results/cache files are modified.
+
+Each new point gets6fresh alternating rounds on ONEcard; candidates and the
+current control are never compared using old absolute times from other cards.
+Producer/reducer/helpers are separate, unchanged timers. Dense cuBLAS uses
+ordinary prewarmed events, no cuBLAS Graph, Asys or ACU. Clock request1700MHz;
+actual frequency remains advisory. No numerical thresholds are relaxed.
+
+Resume only this NEWrun with the printed RESUME_RUN and IDLE_CONFIRMED=1;
+the wrapper recovers scope, build reuse path and card assignments. Changing
+any saved source/config/card/build identity rejects the resume. Complete
+rounds are validated and left unchanged, even if their selection was noisy.
+Upload only the NEW results/confirmation-*.tgz printed on exit. It carries
+old-scope provenance, current controls, new timings/numerics/clock records
+and image reuse receipts, not shared objects, weights or profiler reports.
+
+No production policy, kernel, ABI or llama caller is changed. This is a
+component revalidation, not proof of model TPOT or native llama parity.
+The ppu-kernel-iteration skill limits the experiment to the reviewed cohort
+and keeps the old raw verdicts separate from fresh evidence.

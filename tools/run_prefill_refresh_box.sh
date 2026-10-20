@@ -14,6 +14,12 @@ if [[ -n ${RESUME_RUN:-} ]]; then
     SOURCE=${RUN}/source
     GPUS=${GPUS:-$("${PYTHON}" -c 'import json,sys;print(",".join(json.load(open(sys.argv[1]))["cards"]))' \
         "${RUN}/results/finalists.json")}
+    if [[ -f ${RUN}/results/run-options.json ]]; then
+        PREFILL_REFRESH_SCOPE=${PREFILL_REFRESH_SCOPE:-$("${PYTHON}" -c \
+            'import json,sys;print(json.load(open(sys.argv[1]))["scope"])' "${RUN}/results/run-options.json")}
+        REUSE_BUILD=${REUSE_BUILD:-$("${PYTHON}" -c \
+            'import json,sys;print(json.load(open(sys.argv[1]))["reuse_build"] or "")' "${RUN}/results/run-options.json")}
+    fi
     args+=(--resume)
 else
     [[ -z ${RUN:-} ]] || { echo 'ERROR: unset RUN or use RESUME_RUN.' >&2; exit 1; }
@@ -34,6 +40,20 @@ else
     git -C "${ROOT}/third_party/actlize" archive "${ACTLIZE_REV}" | tar -x -C "${SOURCE}/third_party/actlize"
 fi
 test -f "${SOURCE}/tools/run_prefill_refresh.py"
+PREFILL_REFRESH_SCOPE=${PREFILL_REFRESH_SCOPE:-full}
+[[ ${PREFILL_REFRESH_SCOPE} == full || ${PREFILL_REFRESH_SCOPE} == reconfirm ]] || {
+    echo 'ERROR: PREFILL_REFRESH_SCOPE must be full or reconfirm.' >&2; exit 1;
+}
+# Old frozen runs have no --scope option. Their original full resume remains
+# valid; switching a completed full run into a retest requires a NEW run.
+if [[ -z ${RESUME_RUN:-} || -f ${RUN}/results/run-options.json ]]; then
+    args+=(--scope "${PREFILL_REFRESH_SCOPE}")
+else
+    [[ ${PREFILL_REFRESH_SCOPE} == full && -z ${REUSE_BUILD:-} ]] || {
+        echo 'ERROR: create a fresh reconfirm run; do not change an old frozen run.' >&2; exit 1;
+    }
+fi
+[[ -z ${REUSE_BUILD:-} ]] || args+=(--reuse-build "${REUSE_BUILD}")
 if [[ ${PLAN_ONLY:-0} == 1 ]]; then
     args+=(--plan-only)
 else
@@ -51,8 +71,12 @@ else
     "${PYTHON}" -c 'import numpy,torch;from gguf.quants import dequantize'
 fi
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
-GPUS=${GPUS:-1,2,3,4,5,6,7}
-echo "PREFILL_REFRESH_BOX run=${RUN} devices=${GPUS} clock_MHz=1700 actual_clock=ADVISORY cuBLAS_graph=0 asys=0 acu=0"
+if [[ ${PREFILL_REFRESH_SCOPE} == reconfirm ]]; then
+    GPUS=${GPUS:-1,2,3,4,5}
+else
+    GPUS=${GPUS:-1,2,3,4,5,6,7}
+fi
+echo "PREFILL_REFRESH_BOX run=${RUN} scope=${PREFILL_REFRESH_SCOPE} devices=${GPUS} clock_MHz=1700 actual_clock=ADVISORY cuBLAS_graph=0 asys=0 acu=0"
 set +e
 "${PYTHON}" -u "${SOURCE}/tools/run_prefill_refresh.py" \
     --output "${RUN}/results" --devices "${GPUS}" \

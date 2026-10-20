@@ -19,6 +19,7 @@ from dev.strategy.prefill_closure import require
 from dev.strategy.prefill_confirmation import ROUNDS
 from dev.strategy.prefill_plan import family
 from dev.strategy.prefill_refresh import make_plan, bind, collect
+from dev.strategy.prefill_reconfirm import make_reconfirm_plan, check_cohort, build_paths, reuse_images
 from dev.strategy.provenance import harness_identity, source_identity, verify_unchanged
 from dev.strategy.refresh_clock import ADVISORY
 from dev.strategy.resource_pilot import current_module, verified_plan
@@ -167,8 +168,7 @@ def prepare_worker(args, plan, request, device_receipt, images):
     authority = dict(plan=plan['plan_sha256'], device=hardware['device'], sdk=hardware['sdk'],
         l2=hardware['l2'], providers=providers, oracle=device_receipt['oracle'],
         graph_abi=device_receipt['graph_abi'], harness=request['harness'], source=request['source'],
-        cache=str(args.output/'cache/tc'), helpers_path=str(args.output/'helpers'),
-        dequant_path=str(args.output/'dequant'), helpers=images['helpers']['sha256'],
+        **build_paths(args.output, request.get('reuse_build')), helpers=images['helpers']['sha256'],
         dequant=images['dequant']['sha256'],
         body_source=digest([images['dequant']['source_hashes'], images['helpers']['identity']]),
         idle='OPERATOR_CONFIRMED', clock=request['clock'], protocol=plan['protocol'],
@@ -195,7 +195,7 @@ def prepare_worker(args, plan, request, device_receipt, images):
             module = spec['module']
             key = module['endpoint'], module['compute']
             if key not in compilers:
-                compilers[key] = compiler(module, args.sdk, args.output/'cache/tc')
+                compilers[key] = compiler(module, args.sdk, Path(authority['cache']))
             current_module(record, module, compilers[key])
             probes[mid] = NativeProbe(module, record)
             require(all(probes[mid].device[k] == hardware['device'][k] for k in ('ordinal', 'compute_units')),
@@ -343,6 +343,9 @@ def main():
     p.add_argument('--resume', action='store_true')
     p.add_argument('--plan-only', action='store_true')
     p.add_argument('--build-only', action='store_true')
+    p.add_argument('--scope', choices=('full', 'reconfirm'), default='full')
+    p.add_argument('--reuse-build', type=Path,
+                   help='Read-only results directory from the reviewed full run (reconfirm only)')
     p.add_argument('--probe', action='store_true', help=argparse.SUPPRESS)
     p.add_argument('--shard', type=int, help=argparse.SUPPRESS)
     p.add_argument('--child', action='store_true', help=argparse.SUPPRESS)
@@ -365,6 +368,12 @@ def main():
     signal.signal(signal.SIGTERM, interrupted)
     require(args.jobs > 0 and args.l2_bytes > 0 and args.expected_ce_ghz == 1.7,
             'positive jobs/L2 and the requested 1700 MHz cohort required')
+    require(not args.reuse_build or args.scope == 'reconfirm', 'build reuse is only for the reviewed reconfirmation')
+    if args.reuse_build:
+        args.reuse_build = args.reuse_build.resolve(strict=True)
+        require((args.reuse_build/'images.json').is_file(), '--reuse-build needs the old results/images.json')
+        require(not args.output.is_relative_to(args.reuse_build) and
+                not args.reuse_build.is_relative_to(args.output), 'new output must not overlap the old build/run')
     cards = args.devices.split(',')
     if args.output.exists():
         require(args.resume, 'output exists; use --resume for this frozen run')
@@ -378,11 +387,14 @@ def main():
     from quactlize.dispatch.planning import plan_prefill
     source = source_identity(ROOT)
     save_once(args.output/'source.json', source)
-    plan = make_plan(plan_prefill(args.output), cards)
+    planner = make_reconfirm_plan if args.scope == 'reconfirm' else make_plan
+    plan = planner(plan_prefill(args.output), cards)
     save_once(args.output/'finalists.json', plan)
+    save_once(args.output/'run-options.json', dict(scope=args.scope,
+        reuse_build=str(args.reuse_build) if args.reuse_build else None))
     print('PREFILL_REFRESH_PLAN '+json.dumps(plan['counts'] | dict(
         cards=cards, rounds=ROUNDS, duration_guaranteed=False, production_changed=False,
-        historical_balanced_minutes=max(plan['historical_shard_seconds'])/60)), flush=True)
+        scope=args.scope, historical_balanced_minutes=max(plan['historical_shard_seconds'])/60)), flush=True)
     if args.plan_only:
         return 0
     require(args.confirm_idle, 'confirm every assigned GPU is otherwise idle')
@@ -392,6 +404,8 @@ def main():
     request = dict(plan=plan['plan_sha256'], sdk=str(args.sdk), cards=cards, source=source['sha256'],
         harness=harness_identity(ROOT), clock=dict(policy=ADVISORY, smi=str(args.smi),
         smi_sha256=sha(args.smi), requested_mhz=1700), idle='OPERATOR_CONFIRMED')
+    if args.reuse_build:
+        request['reuse_build'] = str(args.reuse_build)
     save_once(args.output/'request.json', request)
     try:
         devices = []
@@ -404,8 +418,15 @@ def main():
             require(rc == 0, 'device/provider preflight failed; no timing started')
             devices.append(read(out/'probe.json'))
         check_devices([d['hardware'] for d in devices])
+        if args.scope == 'reconfirm':
+            check_cohort(plan, devices)
         save_once(args.output/'devices.json', devices)
-        build_all(args, plan)
+        if args.reuse_build:
+            images = reuse_images(args.sdk, args.reuse_build, plan)
+            save_once(args.output/'images.json', images)
+            print('PREFILL_REFRESH_REUSE '+json.dumps(images['reuse']), flush=True)
+        else:
+            build_all(args, plan)
         verify_unchanged(source, ROOT)
         if args.build_only:
             print('PREFILL_REFRESH_BUILD_ONLY performance_admitted=0 timed_samples=0', flush=True)

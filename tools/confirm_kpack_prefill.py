@@ -157,7 +157,7 @@ def package(output):
     """Small review only: selected results, receipts and bounded failure logs."""
     archive = output/('confirmation-'+str(time.time_ns())+'.tgz')
     selected = [output/'request.json', output/'summary.json', output/'finalists.json',
-                output/'devices.json', output/'images.json', output/'source.json']
+                output/'devices.json', output/'images.json', output/'source.json', output/'run-options.json']
     selected += sorted(output.glob('clock-lock-*.json'))
     selected += sorted(output.glob('setup-error-*.json'))
     selected += sorted((output/'build-attempts').glob('*/*.log'))
