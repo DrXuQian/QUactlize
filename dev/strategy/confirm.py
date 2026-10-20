@@ -11,13 +11,14 @@ from quactlize.dispatch.table import Recipe,Workload
 
 
 def confirm_point(b,metadata_b,sf,metadata_sf,point,screen,shortlist,record_for,authority,source,
-                  *,rounds=6,samples=5):
+                  *,rounds=6,samples=5,round_observer=None):
     if shortlist['status']!='READY' or rounds<6 or rounds%2 or samples<3:
         raise ValueError('confirmation requires a ready shortlist and >=6 even rounds x >=3 samples')
     started=time.monotonic();w=Workload(**point['workload'])
     selected={a['id']:a for a in point['arms'] if a['id'] in shortlist['arms']}
     if set(selected)!=set(shortlist['arms']):raise ValueError('finalist is not a declared screen arm')
     timers={};values={};nodes={};arm_keys={};sessions={};roles={};sf_keys={};sf_proofs={}
+    observations=[]
     with ExitStack() as stack:
         def timer(capture,index,recipe,*,expansion=False):
             split=dict(recipe.parameters).get('split',1) if recipe else 1
@@ -68,6 +69,7 @@ def confirm_point(b,metadata_b,sf,metadata_sf,point,screen,shortlist,record_for,
                 else:keys.append(timer(session.capture,i,r))
             arm_keys[aid]=keys
         for round_no in range(rounds):
+            before=round_observer() if round_observer else None
             order=list(shortlist['arms'])
             if round_no%2:order.reverse()
             sampled=set()
@@ -77,6 +79,8 @@ def confirm_point(b,metadata_b,sf,metadata_sf,point,screen,shortlist,record_for,
                     values[cid].append([timers[cid].sample() for _ in range(samples)])
                     sampled.add(cid)
             if sampled!=set(timers):raise ValueError('unmeasured finalist component')
+            if round_observer:
+                observations.append(dict(round=round_no,before=before,after=round_observer()))
         for buffer in [*(sf.buffers if sf else []),*(metadata_sf.buffers if metadata_sf else [])]:buffer.guard()
         if metadata_b:
             for buffer in metadata_b.ring.buffers:buffer.guard()
@@ -86,7 +90,7 @@ def confirm_point(b,metadata_b,sf,metadata_sf,point,screen,shortlist,record_for,
     costs={aid:[[sum(values[k][rnd][i] for k in keys) for i in range(samples)]
                 for rnd in range(rounds)] for aid,keys in arm_keys.items()}
     decision=paired_verdict(costs,roles)
-    return dict(status='PASS',correctness='PASS',components=list(timers),point=point['id'],
+    result=dict(status='PASS',correctness='PASS',components=list(timers),point=point['id'],
                 workload=point['workload'],
                 decision=decision,arms={a:s.data for a,s in sessions.items()},roles=roles,
                 arm_components=arm_keys,component_records={k:dict(nodes[k],**statistics_checked(v)) for k,v in values.items()},
@@ -94,3 +98,6 @@ def confirm_point(b,metadata_b,sf,metadata_sf,point,screen,shortlist,record_for,
                 cache='SEPARATE_METADATA_AND_PRODUCER_RINGS_AT_LEAST_2P25_L2'),
                 expansion_fixture=metadata_b.ring.receipt if required_sf else None,
                 wall_seconds=time.monotonic()-started,production_changed=False,performance_admitted=False)
+    if round_observer:
+        result['clock_observations']=observations
+    return result

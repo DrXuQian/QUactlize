@@ -22,7 +22,8 @@ def result_root(source):
         for name, schema in (('multi.json', 'simt-split-multigpu-v1'),
                              ('plan.json', 'simt-common-split-v1'),
                              ('plan.json', 'q8-dense-ablation-v1'),
-                             ('plan.json', 'q8-address-window-v1')):
+                             ('plan.json', 'q8-address-window-v1'),
+                             ('plan.json', 'quactlize.decode-clock-refresh.v1')):
             marker = root / name
             if marker.is_file() and json.loads(marker.read_bytes()).get('schema') == schema:
                 return root

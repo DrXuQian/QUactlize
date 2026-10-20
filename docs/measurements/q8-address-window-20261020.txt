@@ -133,3 +133,39 @@ M1 coverage correction
   CUDA_VISIBLE_DEVICES=1 python3 tools/confirm_q8_dense.py \
     --run /workspace/kpack-q8-dense.sAlv8KU5 --sdk /usr/local/PPU_SDK \
     --cohort all --expected-ce-ghz 1.7 --confirm-idle
+
+Completed M1/M8 supplements: stop repeating the confirmation command
+  Latest archive review-lite-1792469872546474625.tar.xz, SHA256
+  a008a15b4850e8e94d15fed7bd9af78d7cb4f76ee9172dabd24a888ef0c74d93.
+  All2641 transferred files verified; all1334 prior upload files unchanged.
+  M1 coordinator41fa412:10/10geometries,180reports including18oldreused,
+  elapsed956.57s. M8 coordinator3af335f:5/5geometries,90reports,538.21s.
+  Combined288canonical rawACU captures include the original two focuses.
+  AllcapturedCE/CU/PU1.7GHz,memory1800000. Original280numeric/160event
+  pairs unchanged. Fullacurep/DSOs still remain onBox.
+
+  M1 representative half-window/C4W8P4 candidates, versus best ORIGINAL
+  profiled/event configurations respectively (not always the same config):
+  Compute N,K        cycles old -> new       cold event us old -> new
+  F16  4096,2048     18677 ->15908 (-14.83%)    9.68823 ->9.31588 (-3.84%)
+  F16  4096,4096     29447 ->25970 (-11.81%)   16.50667 ->15.37111 (-6.88%)
+  F16  5120,8192     61067 ->59316 ( -2.87%)   35.92250 ->34.80500 (-3.11%)
+  BF16 5120,8192     61756 ->59339 ( -3.91%)   35.76625 ->34.66500 (-3.08%)
+  These have three lower matched cycle pairs and six lower event rounds.
+  Induction/C8 has slightlybettercold9.25176us atN4096K2048M1.
+  Combined/C4 atN5120K8192M1 has slightlybettercycles59005F16/58833BF16,
+  but half/C4 slightlybettercold. Keepbothclosealternatives forselection.
+
+  M1N512K2048signed2D/C4:cycles-3.38%,coldonly-0.33%(~0.015us);
+  do not present it as material latencygain.
+  M1N1024K5120F16/BF16 andN8192K5120F16: no stable newcyclewinner.
+  Half-windowM1N512K2048cycles-4.07% BUT cold+12.40%: notadmitted.
+  Half-windowM1C8N4096K2048cycles+13.95%, M8sameconfig-25.64%.
+  No globalhalf-windowreplacement is supported.
+
+  PriorM8half-windowcycles atN512K2048/C4,N4096K2048/C8,
+  N4096K4096/C8,N8192K5120/C8: -13.23%,-25.64%,-24.72%,-16.94%.
+  N5120K8192M8/C8 stillfavorsinduction(-3.16%); half-windowloses10.16%.
+  This completes the DECLARED supplement, not allQ8shapes or MoE/Split-K.
+  ProductionQ8,configtables,caller,formatandABI unchanged.
+  Next:retainoriginalandscopedfinalists in1.7GHzselectionrefresh.

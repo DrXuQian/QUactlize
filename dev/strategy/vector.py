@@ -31,12 +31,23 @@ def spec(w, recipe):
     p = dict(recipe.parameters)
     # Generic SIMT retains runtime N/K, including all admitted measured-body
     # dispatches. Q4 bakes N/K into its existing reader specialization.
-    return dict(kind=recipe.kind, q=w.qtype, compute=w.compute,
+    result = dict(kind=recipe.kind, q=w.qtype, compute=w.compute,
                 n=w.n if recipe.kind == 'q4' else 0, k=w.k if recipe.kind == 'q4' else 0,
                 config={f: p[f] for f in fields})
+    if 'q8_body' in p:
+        if (w.qtype != 8 or w.operation != 'dense' or recipe.kind != 'simt' or
+                p.get('split') != 1 or type(p['q8_body']) is not int or p['q8_body'] not in (0, 1, 3, 4, 5) or
+                (p['variant'], p['columns'], p['warps'], p['values']) not in
+                ((5, 4, 8, 4), (5, 8, 4, 4))):
+            raise ValueError('Q8 address/window candidate is dense S1 with a declared geometry only')
+        result['q8_body'] = p['q8_body']
+    return result
 
 
 def source(item):
+    if 'q8_body' in item:
+        from dev.strategy.refresh_vector import source as q8_source
+        return q8_source(item)
     w = Workload(item['q'], item['n'] or 1024, item['k'] or 8192, 1, compute=item['compute'])
     config = item['config'] | (dict(split=1) if item['kind']=='simt' else {})
     if spec(w, Recipe.make(item['kind'], 'fq', **config)) != item:
@@ -102,6 +113,11 @@ class Compiler:
         self.paths = sorted({p for folder in [*self.includes, ROOT/'quactlize/runtime', ROOT/'quactlize/integrations',
                                             ROOT/'quactlize/decode']
                              for p in folder.rglob('*') if p.is_file() and p.suffix in HEADER_SUFFIXES})
+        # Extra source is experiment-only; seal all generators consumed by it.
+        self.includes.append(ROOT)
+        self.paths += [ROOT/p for p in ('dev/strategy/refresh_vector.py',
+            'dev/gemv_simt/q8_address_source.py', 'dev/gemv_simt/q8_dense_source.py',
+            'dev/gemv_simt/general_locate.hpp', 'dev/gemv_simt/model_followup.py')]
         self.identity = dict(sdk=sdk_identity(self.sdk), flags=FLAGS,
             generator=sha(__file__), headers={str(p.relative_to(ROOT)):sha(p) for p in self.paths},
             host=subprocess.check_output(['g++', '--version'], text=True))
@@ -187,7 +203,8 @@ class Vector:
                 self.calls.append(c)
             self.receipt = dict(kind=item['kind'],spec=item,split=split,
                 build_key=record['key'],module_sha256=record['sha256'],workspace_bytes=sizes.workspace_bytes,
-                scope='EXPLICIT_SHIPPING_BODY_F32_ENDPOINTS_REAL_REDUCER')
+                scope=('EXPLICIT_MEASURED_Q8_CANDIDATE_F32_ENDPOINTS_DENSE_S1'
+                       if 'q8_body' in item else 'EXPLICIT_SHIPPING_BODY_F32_ENDPOINTS_REAL_REDUCER'))
         except BaseException:
             self.close();raise
 

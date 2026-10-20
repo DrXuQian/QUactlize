@@ -130,7 +130,12 @@ def test_confirmation_alternates_single_components_and_checks_late_guards(monkey
         d['correctness']='PASS';events.append('verified-'+arm['id'])
     monkeypatch.setattr(c,'prepared_arm',prepared)
     short=dict(status='READY',arms=['original','fast'],aliases={})
-    run=lambda:c.confirm_point(None,None,None,None,p,{},short,lambda a:(None,None),{},'source')
+    clock_calls=[]
+    def observe_clock():
+        clock_calls.append(len(calls))
+        return dict(cu_mhz=1700, call_position=len(calls))
+    run=lambda:c.confirm_point(None,None,None,None,p,{},short,lambda a:(None,None),{},'source',
+                              round_observer=observe_clock)
     if late_failure:
         with pytest.raises(ValueError,match='late guard'):run()
     else:
@@ -138,6 +143,8 @@ def test_confirmation_alternates_single_components_and_checks_late_guards(monkey
         assert result['decision']['winner']=='fast'
         assert result['decision']['statistics']['original']['median_us']==11.
         assert result['decision']['statistics']['fast']['median_us']==9.
+        assert len(result['clock_observations'])==6
+        assert clock_calls==[v for r in range(6) for v in (r*15,(r+1)*15)]
         assert all(v['timed_kernel_types']==1 for v in result['component_records'].values())
         from dev.strategy.followup import validate_confirmation
         validate_confirmation(result)

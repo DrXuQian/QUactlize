@@ -12,6 +12,9 @@ comparison and from production admission.
 Read [the C4/C8 case](references/q4-c4-c8-20260912.md) when diagnosing a
 K-pack/Xplane gap, vector-memory pressure, or transferring the Q4 C8 result.
 It contains evidence, not a universal C8 policy.
+Read [the Q8 load-window case](references/q8-load-window-20261020.md) when
+transferring register-liveness changes across M/configs or when profiler
+cycles and rotating-event rankings disagree.
 
 ## Scope and comparison contract
 
