@@ -27,7 +27,7 @@ def raw_weight(q,n,k,seed):
 
 
 class Weights(BaseWeights):
-    def __init__(self,q,n,k,experts):
+    def __init__(self,q,n,k,experts,*,observe=None):
         self.q,self.n,self.k,self.experts=q,n,k,experts
         self.categories=np.random.default_rng(81811+k).integers(0,4,k)
         self.planes={};count=min(experts,17)
@@ -38,6 +38,7 @@ class Weights(BaseWeights):
             for first in range(0,n,256):
                 size=min(256,n-first)
                 raw,gold=raw_weight(q,size,k,710+expert*31+q*1009+first)
+                if observe is not None:observe(expert,first,gold,self.categories)
                 hasher.update(raw.tobytes());packed=planes(raw,q)
                 for name in ('low','high','units'):
                     arr=packed[name]

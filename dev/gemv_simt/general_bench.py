@@ -60,9 +60,9 @@ class Context:
 
 
 class Kernel:
-    def __init__(self,b,library):
+    def __init__(self,b,library,*,entry='general_reader_run'):
         self.b=b;self.lib=C.CDLL(str(library),mode=C.RTLD_LOCAL)
-        self.fn=self.lib.general_reader_run
+        self.fn=getattr(self.lib,entry)
         self.fn.argtypes=[C.POINTER(SimtCallV2),C.POINTER(Arrangement),C.c_int,C.c_int];self.fn.restype=C.c_int
         w=b.w
         call=Call(version=1,size=C.sizeof(Call),qtype=w.qtype,n=w.n,k=w.k,experts=w.experts,
