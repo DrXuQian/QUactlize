@@ -142,7 +142,7 @@ def test_one_archive_excludes_libraries_objects_and_nested_archives(tmp_path):
     (tmp_path/'sample.acurep').write_bytes(b'test-counter-data')
     archive=multi.package(tmp_path)
     with tarfile.open(archive) as reader:
-        assert set(reader.getnames())=={'summary.json','gpu-1/points/0/m1-c0-s2.json','sample.acurep'}
+        assert set(reader.getnames())=={'summary.json','gpu-1/points/0/m1-c0-s2.json','transfer-manifest.json'}
 
 
 def test_shell_multidevice_dispatch_and_safe_resume():

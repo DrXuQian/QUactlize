@@ -77,9 +77,23 @@ Retry failed/missing cells, preserving completed paired evidence
 
   Resume requires identical frozen source, device, SDK, recipe and image.
   A failing family exits its GPU process; independent families continue.
-  Upload the final results=.../review-*.tgz (JSON, logs, resource/ISA text and
-  ACU reports, no objects/libraries/weight dumps). Leave the original run for
-  retries. Do not delete existing successful evidence or retag it as current.
+  Upload the final results=.../review-lite-*.tar.xz. It retains original JSON
+  (all numerical checks, timing samples, losers and failures), raw ACU CSV,
+  logs and source/device/image identities, without recomputing any verdict.
+  Full ACU reports, access footprints, codegen text and binaries stay on Box.
+  The transfer manifest records included file hashes and omitted categories;
+  original JSON references to omitted reports/footprints remain unchanged.
+  Leave the original run for retries or targeted report requests. Do not
+  delete existing successful evidence or retag it as current.
+
+Repack an existing run without SDK, GPU work, rebuild or rerunning tests
+  python3 tools/pack_simt_split_review.py /workspace/kpack-simt-split.<actual>
+
+  A results directory or old review archive path also works, provided the
+  original results directory still exists. The archive is never extracted.
+  The new archive is exclusively created; old archives are not overwritten.
+  Packaging can preserve an incomplete run, but does not claim completeness.
+  Finish/stop workers first if a consistent completed-run snapshot is needed.
 
 Local checks before handoff
   Ten PPU object compilations; 96 candidate native entries, FP32 FMA present,

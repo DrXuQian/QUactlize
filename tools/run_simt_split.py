@@ -7,7 +7,6 @@ import fcntl
 import json
 from pathlib import Path
 import sys
-import tarfile
 import time
 import traceback
 
@@ -325,13 +324,8 @@ def main():
     try:return collect(a)
     finally:
         if a.output.is_dir() and not a.no_pack:
-            archive=a.output/f'review-{time.time_ns()}.tgz'
-            with tarfile.open(archive,'w:gz') as tar:
-                for path in sorted(a.output.rglob('*')):
-                    report_without_extension=path.name in {f'r{r}-a{x}' for r in range(3) for x in (0,1)}
-                    if path.is_file() and not path.is_symlink() and (path.suffix in ('.json','.log','.csv','.txt','.acurep') or report_without_extension):
-                        tar.add(path,arcname=str(path.relative_to(a.output)),recursive=False)
-            print('results='+str(archive),flush=True)
+            from tools.pack_simt_split_review import package
+            package(a.output)
 
 
 if __name__=='__main__':

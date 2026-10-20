@@ -8,7 +8,6 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
-import tarfile
 import time
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -20,6 +19,7 @@ from dev.strategy.journal import atomic_json
 from dev.strategy.provenance import harness_identity
 from quactlize.runtime.compiler import sha
 from tools.run_simt_split import cells
+from tools.pack_simt_split_review import package
 
 
 def family_work(spec):
@@ -117,18 +117,6 @@ def aggregate(assignments,summaries,returncodes,profile):
                 returncodes=returncodes,timings=timings,profiles=profiles,
                 production_changed=False,performance_admitted=False,
                 scope='DISJOINT_FAMILIES_SAME_PHYSICAL_DEVICE_WITHIN_EVERY_AB_PAIR')
-
-
-def package(output):
-    target=output/f'review-{time.time_ns()}.tgz'
-    with tarfile.open(target,'w:gz') as archive:
-        for path in sorted(output.rglob('*')):
-            direct_report=path.name in {f'r{r}-a{a}' for r in range(3) for a in (0,1)}
-            if (path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(output) and
-                    (path.suffix in ('.json','.log','.csv','.txt','.acurep') or direct_report)):
-                archive.add(path,arcname=str(path.relative_to(output)),recursive=False)
-    print('results='+str(target),flush=True)
-    return target
 
 
 def run(a,cards):
