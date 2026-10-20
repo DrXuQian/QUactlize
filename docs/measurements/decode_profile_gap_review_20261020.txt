@@ -1,0 +1,79 @@
+MoE M8 profile-gap closure, 2026-10-20
+
+Result
+  49/49 points PASS, all118 arms and69 candidate/profile comparisons present.
+  57 missing pairings are filled and12 old-body comparisons are rechecked.
+  The20 shortlisted alternatives each lose on at least one fresh paired
+  router profile. All14 runtime keys retain their incumbent. This is a
+  measured tradeoff, not a missing-test fallback or a blanket SIMT preference.
+  No further Box run is needed to close this particular supplement.
+
+Evidence
+  review-lite-1792504115317102403.tar.xz SHA256:
+    951a6dae38e735e55d9b0d7717a5dc447f2b2e53685cab54ef984f62c1baa451
+  Box: /workspace/kpack-decode-refresh.Q1EmhdJY/results
+  Source:24844b3b3697bb55bd388a6e8bbbec2fc1433794
+  Verified125 transferred files, plan/run/receipt seals, module bindings,
+  executed producer entries, physical devices, clocks, independent numerical
+  checks and negative controls. DSOs were not transferred; no local DSO
+  byte check or new device execution is claimed.
+  708 numerical proofs; maximum abs-dot-normalized error0.0038842549
+  (<0.005).260 isolated components,7800 raw event samples. Six alternating
+  rounds x five samples; producer active-weight ring >=2.25*verified64MiB L2.
+  The measured call includes its separately measured helpers/reducer.
+  Requested1700MHz; no recorded clock deviations in this run. No scaling
+  or frequency-derived admission rule is applied. Idle availability was
+  declared by the caller, not independently proven by these event samples.
+  Workers finished in28.098s; build/fixture setup is not part of that figure.
+
+Interpretation
+  Each comparison uses its same-run, same-card incumbent. Old absolute times
+  are never the control for a new measurement. The two Q6 common-reader keys
+  use fresh evidence for all five profiles, replacing the superseded generic
+  carrier comparisons rather than relabelling them.
+  Other historical positive profiles remain historical. A fresh measured
+  loss alone suffices to reject a universal replacement, so no cross-cohort
+  averaging is needed. Router-specific winners are not discarded as invalid,
+  but cannot become one unconditional host-key choice.
+
+  Examples (candidate full component sum versus contemporary incumbent):
+    Q2,N512,K2048,channels1: real+33.62%,spread+35.56%.
+      The shortlisted TC/S4 had won on clustered/repeated expert patterns.
+    Q5,N1024,K2048,channels1: real-3.39%,repeat2-7.55%,repeat4+12.50%.
+    Q6,N1024,K2048,channels1: TC/TK256/S1 wins some patterns,
+      but repeat2+2.56% versus current TC/TK128/S1.
+  Therefore "choose TC everywhere" and "choose SIMT everywhere" both discard
+  useful shape/profile information. A future GPU-side distribution-aware
+  decision would be new scheduling work with its own overhead and admission;
+  this review does not introduce CPU router readback or a new runtime tuner.
+
+State after review
+  policies/kpack_decode_refresh_v1.json remains byte-identical to the original
+  1114-point/930-key evidence table. The separate completion receipt records
+  fresh versus historical profile results. fit_decode_refresh.py no longer
+  lists these completed57 pairings as pending GPU work.
+  Existing27 Q8 exact body bindings are unchanged. Other160 candidate
+  proposals still need implementation-identity/admission auditing;22 noisy
+  points remain separate. No large-M, fallback, llama.cpp, public ABI or
+  production kernel/configuration changes are made by this closure.
+  Component sums are not native llama parity or measured model TPOT.
+
+Reproduce (host only)
+  python3 tools/review_decode_profile_gaps.py \
+    /path/to/review-lite-1792504115317102403.tar.xz \
+    --check policies/kpack_decode_profile_gaps_v1.json
+
+  The CLI rechecks raw components, numerics and all69 pairings. Its compact
+  completion receipt is an audit index, not a replacement for raw Box data.
+  Keep the previous failed archive immutable; none of its49 failures is
+  relabelled PASS. The new independent run closes the old host-parser failure.
+
+Host verification
+  92 tests PASS,7 opt-in checks skipped. Raw review and the full1114-point
+  table replay agree on Python3.10 and3.12. The original table seal remains
+  67fe29755f8ecc07b30374f4f76c1609f9ea9fccf52753c29063dc6f00997841.
+  All595 recorded harness files match the frozen source commit;70 current
+  C++ profile queries exactly match the supplement's controls. The full fit
+  checks all1114 selector requests and retains the27 earlier Q8 bindings.
+  Runtime catalog generation --check passes. No source/ABI/caller change
+  or new local GPU execution is hidden in this host-only closure.

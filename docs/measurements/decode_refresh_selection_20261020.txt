@@ -7,9 +7,10 @@ Initial state at b3ad001
   generate_decode_selection.py. A geometry-only activation would discard
   the new Q8 implementation identity.
   Follow-up: the27 Q8 exact body bindings are now implemented and selected;
-  see q8_refresh_binding_20261020.txt. The other160 proposed replacements,
-  router supplement and all fallback recipes remain unchanged. The sealed
-  candidate table itself is retained as immutable evidence, not rewritten.
+  see q8_refresh_binding_20261020.txt. The14-key router supplement is now
+  closed with zero replacements (decode_profile_gap_review_20261020.txt).
+  The other160 proposed replacements and all fallback recipes remain
+  unchanged. The sealed candidate table is immutable historical evidence.
 
 Evidence
   Original archive SHA256:
@@ -66,7 +67,7 @@ Selection
   Some common-safe selections have large regret versus a router-specific
   winner (maximum71.8453% in this cohort); they are not global optima.
 
-Bounded remaining evidence
+Original bounded gap plan (now completed; retained for provenance)
  26keys have at least one missing candidate/profile pairing; many alternatives
  already fail elsewhere and cannot justify further measurement.
  Restricting to existing winners that are eligible everywhere they WERE
@@ -100,7 +101,13 @@ Reproduce (CPU only; paths are user supplied)
     --output /path/to/a-new-review-directory
 
  The output includes selection.json, readiness.json, pending.json and
- supplement-plan.json. It compiles the existing host C++ selection query
+ supplement-plan.json. The selection remains byte-identical historical
+ evidence; the supplement now references kpack_decode_profile_gaps_v1.json
+ and reports zero pending pairs. It does not change the160 other inactive
+ proposals or the22 retained noisy points. To reproduce the new review:
+   python3 tools/review_decode_profile_gaps.py /path/to/review-lite-1792504115317102403.tar.xz \
+     --check policies/kpack_decode_profile_gaps_v1.json
+ The original fit command compiles the existing host C++ selection query
  and compares all1114current choices with the original recorded choices,
  allowing only the27 explicit Q8 bindings described in the follow-up.
  No SDK, GPU, online tuning, kernel compilation or clock changes are needed.

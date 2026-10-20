@@ -1,5 +1,12 @@
 MoE M8 profile-gap supplement (not a new full sweep)
 
+COMPLETED: the corrected 49-point run has been reviewed. No further GPU
+work is needed for these 57 missing pairings. All 20 shortlisted alternatives
+have a fresh measured regression on at least one router profile; retain all
+14 incumbents. See decode_profile_gap_review_20261020.txt and the machine-
+readable completion receipt. The command below remains a reproduction tool,
+not a request to rerun an already closed supplement.
+
 Use PHASE=profile-gaps with tools/run_decode_refresh_box.sh.
 Frozen input: kpack_decode_refresh_v1.json, evidence seal
 67fe29755f8ecc07b30374f4f76c1609f9ea9fccf52753c29063dc6f00997841.

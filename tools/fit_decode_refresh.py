@@ -8,7 +8,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from dev.strategy.production import serialize
-from dev.strategy.refresh_selection import fit, load, readiness, require, supplement_plan, verify
+from dev.strategy.refresh_gap_review import RECEIPT, close_supplement
+from dev.strategy.refresh_selection import fit, load, readiness, require, verify
 from quactlize.dispatch.planning import plan_smallm
 from quactlize.execution.q8_refresh import capability, check_cpp_transition
 from tools.generate_decode_selection import EVIDENCE, effective
@@ -45,7 +46,9 @@ def main():
     current = plan_smallm(a.output, [r['request'] for r in originals])
     bound = check_cpp_transition(originals, current['requests'])
     capabilities = readiness(table, baseline, q8_bindings=capability()['keys'])
-    supplement = supplement_plan(table)
+    # Preserve the historical table verbatim; completed measured losses are
+    # no longer pending GPU work. This receipt does not activate any recipe.
+    supplement = close_supplement(table, json.loads(RECEIPT.read_bytes()))
     (a.output/'selection.json').write_text(serialize(table))
     (a.output/'readiness.json').write_text(json.dumps(capabilities, indent=2, sort_keys=True)+'\n')
     (a.output/'pending.json').write_text(json.dumps(table['pending'], indent=2, sort_keys=True)+'\n')
