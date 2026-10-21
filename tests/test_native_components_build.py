@@ -1,5 +1,6 @@
 """CMake cwd/options-file regression tests; no synthetic GPU admission."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -84,6 +85,58 @@ class NativeBuildTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'native adapter identity changed'):
                     build_adapter(source,build,sdk,output)
                 self.assertEqual(len(invocations),2)
+
+    def test_newer_source_mtime_does_not_require_backend_rebuild(self):
+        with tempfile.TemporaryDirectory()as td:
+            root=Path(td);source,build,sdk,_,rsp=self.fixture(root);output=root/'output'
+            header=source/'ggml/src/ggml-cuda/common.cuh'
+            stamp=(build/'bin/libggml-cuda.so').stat().st_mtime_ns+10_000_000_000
+            os.utime(header,ns=(stamp,stamp))
+            self.assertGreater(header.stat().st_mtime_ns,(build/'bin/libggml-cuda.so').stat().st_mtime_ns)
+
+            def compiler(command,**kwargs):
+                Path(command[command.index('-o')+1]).write_text('HOST TEST ONLY')
+                return subprocess.CompletedProcess(command,0)
+
+            with patch('dev.native_components.build.adapter_source',return_value=('// test source',{})),\
+                 patch('dev.native_components.build.subprocess.check_output',return_value='a'*40+'\n'),\
+                 patch('dev.native_components.build.subprocess.run',side_effect=compiler)as compile_call:
+                result=build_adapter(source,build,sdk,output)
+                for path in (header,rsp,build/'bin/libggml-cuda.so',sdk/'bin/nvcc'):
+                    os.utime(path,ns=(stamp+1,stamp+1))
+                self.assertEqual(build_adapter(source,build,sdk,output),result)
+                self.assertEqual(compile_call.call_count,2)
+
+    def test_content_changes_still_reject_receipt_with_older_timestamps(self):
+        with tempfile.TemporaryDirectory()as td:
+            root=Path(td);source,build,sdk,target,rsp=self.fixture(root);output=root/'output'
+            dispatch=source/'ggml/src/ggml-cuda/ggml-cuda.cu';dispatch.write_text('// native source')
+
+            def compiler(command,**kwargs):
+                Path(command[command.index('-o')+1]).write_text('HOST TEST ONLY')
+                return subprocess.CompletedProcess(command,0)
+
+            def binding(_):
+                return dispatch.read_text(),{'source_sha256':sha(dispatch)}
+
+            with patch('dev.native_components.build.adapter_source',side_effect=binding),\
+                 patch('dev.native_components.build.subprocess.check_output',return_value='a'*40+'\n'),\
+                 patch('dev.native_components.build.subprocess.run',side_effect=compiler)as compile_call:
+                binary,receipt=build_adapter(source,build,sdk,output)
+                for path in (dispatch,source/'ggml/src/ggml-cuda/common.cuh',
+                             build/'bin/libggml-cuda.so',build/'bin/libggml-base.so',sdk/'bin/nvcc',
+                             build/'CMakeCache.txt',target/'CMakeFiles/ggml-cuda.dir/flags.make',rsp,binary):
+                    with self.subTest(path=path):
+                        original=path.read_bytes()
+                        try:
+                            path.write_bytes(original+b'\n# changed content\n')
+                            os.utime(path,ns=(1,1))
+                            with self.assertRaisesRegex(ValueError,'native adapter identity changed'):
+                                build_adapter(source,build,sdk,output)
+                        finally:
+                            path.write_bytes(original)
+                self.assertEqual(build_adapter(source,build,sdk,output)[1],receipt)
+                self.assertEqual(compile_call.call_count,2)
 
     def test_response_forms_nested_and_content_hash(self):
         with tempfile.TemporaryDirectory()as td:

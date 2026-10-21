@@ -40,17 +40,16 @@ def carrier_source():
 
 
 def build_native(args, target, env):
-    reuse = getattr(args, 'reuse_build', None)
-    base_dir = reuse/'native' if reuse else target
-    if reuse and not (base_dir/'adapter.json').is_file():
-        raise ValueError('previous native adapter receipt missing; no implicit rebuild')
-    # With an existing manifest build_adapter only validates the exact
-    # source/flags/headers/libraries/compiler; it never rebuilds a mismatch.
+    # --reuse-build applies to device payloads, not the small host adapter.
+    # A new run builds against the supplied caller/flags and records fresh
+    # hashes. Never mutate/relabel an old adapter receipt when this harness
+    # changes; completed runs still validate their own receipts on resume.
+    base_dir = target
     _, base = build_adapter(args.llama_source, args.llama_build, args.sdk, base_dir)
     target.mkdir(parents=True, exist_ok=True)
     original = (base_dir/'native-dispatch.cu').read_text()
     if original != adapter_source(args.llama_source)[0]:
-        raise ValueError('previous generated native dispatcher differs')
+        raise ValueError('generated native dispatcher differs')
     # Keep the admitted adapter unchanged. Recompile only its tiny host
     # dispatcher with the diagnostic timer appended, using the SAME flags.
     source = target/'point-dispatch.cu'

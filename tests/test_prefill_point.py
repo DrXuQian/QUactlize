@@ -5,9 +5,11 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from dev.prefill_point.bench import Call, SF, WORKLOAD, call, summarize
-from dev.prefill_point.build import carrier_source, once
+from dev.prefill_point.build import build_native, carrier_source, once
 from tools.run_prefill_point import ARMS, native_stage_names, plan
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,6 +50,22 @@ class PrefillPointTests(unittest.TestCase):
         self.assertNotIn('nc.measure(nc.session,int(i),rotate', text)
         self.assertEqual(text.count('NC_BIND(point_samples)'), 1)
         with self.assertRaises(ValueError): once('two two', 'two', 'one')
+
+    def test_payload_reuse_builds_native_adapter_in_new_run(self):
+        with tempfile.TemporaryDirectory()as td:
+            root=Path(td);previous=root/'previous';previous.mkdir()
+            old=previous/'native';old.mkdir()
+            receipt=old/'adapter.json';receipt.write_text('old receipt remains immutable')
+            args=SimpleNamespace(reuse_build=previous,llama_source=root/'llama',
+                                 llama_build=root/'build',sdk=root/'sdk')
+            target=root/'new'/'native'
+            # Stop at the real build seam: never validate or rewrite the old
+            # control-script identity merely to reuse unchanged GPU payloads.
+            with patch('dev.prefill_point.build.build_adapter',side_effect=RuntimeError('test build seam'))as build:
+                with self.assertRaisesRegex(RuntimeError,'test build seam'):
+                    build_native(args,target,{})
+                build.assert_called_once_with(args.llama_source,args.llama_build,args.sdk,target)
+            self.assertEqual(receipt.read_text(),'old receipt remains immutable')
 
     def test_summary_requires_complete_three_round_inventory(self):
         rows = self.rows()

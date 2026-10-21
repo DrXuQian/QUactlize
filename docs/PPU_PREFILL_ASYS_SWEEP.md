@@ -31,9 +31,11 @@ LLAMA_CI_BUILD_DIR=/sim/eec/shared/junfu.qx/llama.cpp.ncp/build-ci-32F-cublas \
 bash tools/run_prefill_model_asys_box.sh
 ```
 
-`PREVIOUS_RUN` reuses the successful point's unchanged native base adapter,
-helper and dequant libraries after source/SDK/image checks. New tiny host
-profiling wrappers and missing TC templates are built once. If that run no
+`PREVIOUS_RUN` reuses the successful point's unchanged helper and dequant
+libraries after source/SDK/image checks. The small native adapter and
+profiling wrappers are built in the new run using the supplied caller's
+flags; the previous native adapter and receipt are never changed. Missing
+TC templates are built once. If that run no
 longer exists, omit the variable; the diagnostic builds its own dependencies,
 never llama.cpp. `MODEL` can override the default Qwen3-32B GGUF path, but the
 header must still match this exact reviewed cohort. `TC_CACHE` optionally
@@ -47,6 +49,12 @@ extracted sequence to the linked backend and verifies the actual GemmEx call
 uses F16 A/B/C with `CUBLAS_COMPUTE_32F` (68). The build directory name alone
 is not precision evidence. Full-BF16 has different rounding and provider
 settings; those differences remain explicit in its receipt.
+
+There is no source-versus-library timestamp check. Checkout/copy times are
+not evidence of a stale backend. Source, header, compiler, flags, response
+files and library contents remain hashed; actual native execution is checked
+against the linked backend before timing. A build/header/content change on
+resume still fails the receipt check.
 
 Asys uses profiler-API capture ranges, merging a small batch of configs into
 one report. CPU fixture construction, correctness, compilation and warmup are
@@ -81,6 +89,12 @@ The original frozen source and payload/cache paths are reused. Valid completed
 batches are verified and skipped; an interrupted batch is retried into a new
 attempt, preserving its old evidence. No 24-hour timeout or automatic process
 kill is installed. Do not change `CONFIGS_PER_BATCH` (default16) when resuming.
+
+If an old frozen run stopped at the removed timestamp check, start a new run
+after pulling the fix: `unset RUN RESUME_RUN`. Do not resume its frozen source
+or change file timestamps. `PREVIOUS_RUN` can still point to the successful
+single-point run to reuse its device payloads; no llama.cpp rebuild is needed
+solely because of this precheck error.
 
 Upload only the printed `results/review-*.tgz`. It contains correctness,
 per-kernel samples/configs and bounded error logs, not weights, binaries or
