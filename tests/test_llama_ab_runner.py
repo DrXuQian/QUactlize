@@ -43,14 +43,14 @@ class FullCoverageTest(unittest.TestCase):
 
     def test_inventory_matches_both_complete_evidence_sets(self):
         small = json.loads(Path('policies/kpack_component_decode_v1.json').read_text())
-        prefill = json.loads(Path('policies/kpack_prefill_confirmation_v1.json').read_text())
+        prefill = json.loads(Path('policies/kpack_prefill_refresh_v1.json').read_text())
         expected = {p['point'] for r in small['rows'] for p in r['profiles']}
         expected.update(p['point'] for p in prefill['points'])
         actual = phase_points(self.rows, 'all')
         self.assertEqual({r['id'] for r in actual}, expected)
         self.assertEqual(Counter(r['cohort'] for r in actual), dict(decode=1114, prefill=430))
         self.assertEqual(len(actual), len(expected))
-        self.assertEqual(len(phase_points(self.rows, 'pilot')), 32)
+        self.assertEqual(len(phase_points(self.rows, 'pilot')), 34)
         with self.assertRaises(ValueError):phase_points(self.rows, 'unknown')
 
     def test_failure_does_not_disappear_in_cohort_breakdown(self):

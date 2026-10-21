@@ -23,6 +23,7 @@ from tools.build_kpack_execution import build as build_execution
 from tools.build_kpack_prefill_runtime import build as build_prefill
 from tools.build_kpack_dispatch import catalog
 from quactlize.dispatch.planning import plan_smallm, validate_inventory
+from quactlize.dispatch.prefill_policy import check_receipt, receipt_fields
 
 PUBLIC_EXPORTS = (
     'quactlize_ppu_kpack_canonical_arrangement_v1',
@@ -113,10 +114,9 @@ def verify(output):
     if 'prefill_confirmed' in manifest:
         receipt=manifest['prefill_confirmed']
         if (receipt.get('path')!='quactlize-runtime/prefill-confirmed.json' or
-                receipt['path'] not in manifest['payloads'] or
-                manifest['source_hashes'].get('policies/kpack_prefill_confirmation_v1.json')!=manifest['payloads'][receipt['path']] or
-                manifest['source_hashes'].get('policies/kpack_prefill_confirmation_v1.hpp')!=receipt.get('header_sha256')):
+                receipt['path'] not in manifest['payloads']):
             raise ValueError('public provider confirmed prefill receipt differs')
+        check_receipt(receipt,manifest['source_hashes'],manifest['payloads'][receipt['path']])
     return manifest
 
 
@@ -145,7 +145,7 @@ def build(sdk, output, jobs):
     from tools.generate_decode_selection import EVIDENCE, OUTPUT, effective, header
     if header(effective(json.loads(EVIDENCE.read_text()))) != OUTPUT.read_text():
         raise ValueError('stale effective decode catalog; regenerate before building')
-    from tools.fit_prefill_confirmation import EVIDENCE as PREFILL_EVIDENCE, HEADER as PREFILL_HEADER, header as prefill_header
+    from tools.fit_prefill_refresh import EVIDENCE as PREFILL_EVIDENCE, HEADER as PREFILL_HEADER, header as prefill_header
     confirmed=json.loads(PREFILL_EVIDENCE.read_text())
     if prefill_header(confirmed)!=PREFILL_HEADER.read_text():
         raise ValueError('stale confirmed prefill catalog; regenerate before building')
@@ -227,7 +227,7 @@ def build(sdk, output, jobs):
         execution_receipt=execution,
         final_selection=dict(path='quactlize-runtime/final-selection.json', capabilities=capabilities),
         prefill_confirmed=dict(path='quactlize-runtime/prefill-confirmed.json',
-            header_sha256=sha(PREFILL_HEADER), admission='CONFIRMED_COMPONENT_SELECTION_NOT_MODEL_AB'),
+            header_sha256=sha(PREFILL_HEADER), **receipt_fields()),
         default_dense_compute='F16_POC', device_admission='PENDING',
         performance_admission='NOT_MEASURED', seconds=time.monotonic() - start)
     (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')

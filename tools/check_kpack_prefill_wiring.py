@@ -16,7 +16,7 @@ from dev.strategy.journal import atomic_json
 from quactlize.dispatch.native import Dispatch,Request
 from quactlize.runtime.native import SDK
 from quactlize.runtime.compiler import sha
-from tools.fit_prefill_confirmation import EVIDENCE
+from quactlize.dispatch.prefill_policy import EVIDENCE
 from tools.verify_kpack_dispatch import verify
 
 
@@ -32,7 +32,9 @@ def check(dispatch,row):
             selected.base.predicted or selected.base.route!=expected or
             selected.base.dequant_config!=p['dequant_config'] or selected.base.measured_tokens!=w['m']):
         raise ValueError('pure query differs from confirmed composition')
-    result=dict(point=row['point'],status='PASS',route=recipe['route'],dequant=p['dequant_config'],policy=19)
+    result=dict(point=row['point'],status='PASS',route=recipe['route'],dequant=p['dequant_config'],policy=19,
+                timing_confirmed=row['timing_confirmed'],cost_basis=row['cost_basis'],
+                refresh_status=row['refresh_status'])
     if recipe['kind']=='tc':
         request.route=(2 if grouped else 0)+expected
         ticket=dispatch.query_prefill(request,compute,w['channels'])
@@ -71,6 +73,8 @@ def main():
     failed=sum(r['status']!='PASS' for r in results)
     summary=dict(status='FAIL' if failed else 'PASS',points=len(results),failed=failed,
                  scope='ACTUAL_SELECTED_TICKETS_RESOURCE_ONLY',kernel_launches=0,
+                 refresh_timing_confirmed=sum(r.get('timing_confirmed',False) for r in results),
+                 refresh_timing_pending=sum(r.get('timing_confirmed') is False for r in results),
                  performance_admitted=False,device_arithmetic_admitted=False)
     atomic_json(a.output/'summary.json',summary)
     print('PREFILL_WIRING_DONE '+json.dumps(summary),flush=True)

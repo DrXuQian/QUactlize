@@ -472,7 +472,7 @@ def main():
         raise ValueError('selectors refer to the same physical GPU')
     families=sorted({family(r) for r in rows})
     sources=identities([ROOT/'dev/llama_ab/carrier.cpp',ROOT/'dev/llama_ab/contract.py',Path(__file__),
-                       ROOT/'policies/kpack_component_decode_v1.json',ROOT/'policies/kpack_prefill_confirmation_v1.json'])
+                       ROOT/'policies/kpack_component_decode_v1.json',ROOT/'policies/kpack_prefill_refresh_v1.json'])
     runtime=runtime_payloads(args)
     request=dict(points=rows,carrier=carrier,sources=sources,harness=harness_identity(ROOT),candidate_runtime=identities(runtime),
         rounds=args.rounds,samples=args.samples,mode='EAGER_COLD_COMPLETE_OPERATOR',

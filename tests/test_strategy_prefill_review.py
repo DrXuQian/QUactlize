@@ -131,7 +131,7 @@ int main() {
    } else { assert(k.route==2);full++; }
    count++;
  }
- assert(count==430 && tc==244 && full==186);
+ assert(count==430 && tc==257 && full==173);
 }
 ''')
     subprocess.run(['g++','-std=c++17','-O2','-Wall','-Wextra','-I'+str(ROOT),str(source),'-o',str(exe)],check=True)

@@ -54,7 +54,7 @@
         exit 2
     fi
     cd "$ROOT"
-    "$PYTHON" tools/fit_prefill_confirmation.py --check
+    "$PYTHON" tools/fit_prefill_refresh.py --check
     if [[ -n ${WIRING_RUN:-} ]]; then
         RUN=$(realpath -e -- "$WIRING_RUN")
         test -s "$RUN/results/inputs.json"
@@ -68,7 +68,7 @@ import json,os,sys,subprocess
 from pathlib import Path
 from dev.strategy.journal import atomic_json
 from quactlize.runtime.compiler import Compiler
-from tools.fit_prefill_confirmation import EVIDENCE
+from quactlize.dispatch.prefill_policy import EVIDENCE
 run,root,sdk=map(Path,sys.argv[1:4])
 if subprocess.check_output(['git','diff','--name-only','HEAD'],text=True).strip():
     raise ValueError('use a clean committed Quactlize tree for a resumable wiring run')

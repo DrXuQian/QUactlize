@@ -1,6 +1,7 @@
 // Host-only final selection used by package planning and offline explain.
 #include "quactlize/dispatch/selection.hpp"
 #include "quactlize/execution/simt_strategy.hpp"
+#include "policies/kpack_prefill_confirmation_v1.hpp"
 #include <iomanip>
 #include <iostream>
 
@@ -51,18 +52,20 @@ static void emit(int q,int mode,int n,int k,int experts,int topk,int channels,in
     std::cout<<"}\n";
 }
 
-int main(int argc,char** argv) {
-    if(argc==2 && std::string(argv[1])=="--prefill-inventory") {
-        for(auto const& k:prefill::data::kKnots) {
+// Historical inventory is an explicit offline replay fixture, never a runtime
+// policy switch. Live callers and package planning always use the active table.
+template<class Knot,size_t NK,class Config,size_t NC>
+static void emit_prefill(Knot const (&knots)[NK],Config const (&configs)[NC]) {
+        for(auto const& k:knots) {
             qks_request_v1 r{1,sizeof(r),k.q,k.experts==1?0:2,k.tokens*(k.experts==1?1:8),k.n,k.k,k.experts,k.tokens,
                 k.q==12?UINT64_C(0x51344b5034540001):UINT64_C(0x514b504b54000001)};
             qks_prefill_choice_v2 out{};
-            int rc=prefill::query(r,7,k.compute,k.channels,out);
+            int rc=prefill::query_in(r,7,k.compute,k.channels,out,knots);
             std::cout<<"{\"request\":["<<k.q<<','<<(k.experts==1?0:2)<<','<<k.n<<','<<k.k<<','<<k.experts<<','
                 <<(k.experts==1?1:8)<<','<<k.channels<<','<<k.tokens<<','<<k.compute<<"],\"status\":"<<rc
                 <<",\"route\":"<<k.route<<",\"policy\":"<<out.policy<<",\"dequant_config\":"<<k.dequant;
             if(k.config>=0) {
-                auto const& c=prefill::data::kConfigs[k.config];
+                auto const& c=configs[k.config];
                 std::cout<<",\"kind\":0,\"parent\":{\"symbol\":"<<std::quoted(c.symbol)
                     <<",\"qtype\":"<<c.qtype<<",\"route\":"<<c.route<<",\"tm\":"<<c.tm<<",\"tn\":"<<c.tn
                     <<",\"tk\":"<<c.tk<<",\"wm\":"<<c.wm<<",\"wn\":"<<c.wn<<",\"stages\":"<<c.stages
@@ -71,6 +74,15 @@ int main(int argc,char** argv) {
             } else std::cout<<",\"kind\":3";
             std::cout<<"}\n";
         }
+}
+
+int main(int argc,char** argv) {
+    if(argc==2 && std::string(argv[1])=="--prefill-inventory") {
+        emit_prefill(prefill::data::kKnots,prefill::data::kConfigs);
+        return 0;
+    }
+    if(argc==2 && std::string(argv[1])=="--historical-prefill-inventory") {
+        emit_prefill(quactlize_prefill_confirmation_v1::kKnots,quactlize_prefill_confirmation_v1::kConfigs);
         return 0;
     }
     if(argc==2 && std::string(argv[1])=="--inventory") {

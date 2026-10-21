@@ -13,6 +13,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def plan():
     small = json.loads((ROOT/'policies/kpack_component_decode_v1.json').read_text())
+    # Frozen historical component comparison, NOT the active production table.
+    # Its native measurements bind these original recipes and must not be
+    # silently relabelled as measurements of the refreshed selector.
     prefill = json.loads((ROOT/'policies/kpack_prefill_confirmation_v1.json').read_text())
     by_small = {p['point']:(r,p) for r in small['rows'] for p in r['profiles']}
     by_large = {p['point']:p for p in prefill['points']}

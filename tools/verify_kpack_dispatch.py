@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT))
 from quactlize.runtime.compiler import Compiler, sha, source_contract
 from quactlize.runtime.tuning import digest
 from tools.kpack_jit import module_source
+from quactlize.dispatch.prefill_policy import check_receipt
 
 
 PREFILL_MODEL_EXPORTS = frozenset({'quactlize_kpack_dequant_v1'} | {
@@ -272,10 +273,9 @@ def verify(root, *, sdk=None):
             raise ValueError('component decode selector/execution identity differs')
     if 'prefill_confirmed' in m:
         receipt=m['prefill_confirmed'];path=root/'prefill-confirmed.json'
-        if (receipt.get('path')!=path.name or path.is_symlink() or sha(path)!=receipt.get('sha256') or
-                m['policy_hashes'].get('policies/kpack_prefill_confirmation_v1.json')!=receipt.get('sha256') or
-                m['policy_hashes'].get('policies/kpack_prefill_confirmation_v1.hpp')!=receipt.get('header_sha256')):
+        if (receipt.get('path')!=path.name or path.is_symlink() or sha(path)!=receipt.get('sha256')):
             raise ValueError('confirmed prefill selector identity differs')
+        check_receipt(receipt,m['policy_hashes'],receipt['sha256'])
         require_exports(root/'libquactlize_kpack_dispatch.so',{
             'quactlize_kpack_dispatch_prefill_v2','quactlize_kpack_dispatch_query_prefill_v1'})
     if 'compute_contract' in m:

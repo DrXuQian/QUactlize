@@ -21,7 +21,7 @@ class Reconfirm(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory(prefix='prefill-reconfirm-test-')
-        cls.selector = plan_prefill(Path(cls.tmp.name))
+        cls.selector = plan_prefill(Path(cls.tmp.name), historical=True)
         cls.scope = load_scope()
         cls.old = make_plan(cls.selector, cls.scope['prior_cards'])
         cls.plan = make_reconfirm_plan(cls.selector, list('12345'))

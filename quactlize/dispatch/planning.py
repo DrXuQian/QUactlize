@@ -9,11 +9,14 @@ SCHEMA = 'quactlize.final-selection.v1'
 PREFILL_SCHEMA = 'quactlize.prefill-final-selection.v1'
 
 
-def plan_prefill(output):
+def plan_prefill(output, *, historical=False):
     executable=Path(output)/'prefill-selection-query'
     subprocess.run(['g++','-std=c++17','-O2','-I'+str(ROOT),
                     str(ROOT/'tools/kpack_selection.cpp'),'-o',str(executable)],check=True)
-    text=subprocess.check_output([str(executable),'--prefill-inventory'],text=True)
+    # Only frozen-experiment replay tests request the old table. Not exposed by
+    # the JIT/package CLI; a fresh production plan cannot accidentally use it.
+    option='--historical-prefill-inventory' if historical else '--prefill-inventory'
+    text=subprocess.check_output([str(executable),option],text=True)
     rows=[json.loads(line) for line in text.splitlines()]
     if len(rows)!=430 or any(r['status']!=0 or r['policy']!=19 for r in rows):
         raise ValueError('confirmed prefill selector denominator differs')

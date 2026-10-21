@@ -47,7 +47,7 @@ class PrefillRefresh(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory(prefix='prefill-refresh-test-')
-        cls.selector = plan_prefill(Path(cls.tmp.name))
+        cls.selector = plan_prefill(Path(cls.tmp.name), historical=True)
         cls.seed = load_seed()
         cls.plan = make_plan(cls.selector, list('1234567'), cls.seed)
 

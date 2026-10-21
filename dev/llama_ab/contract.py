@@ -9,6 +9,7 @@ import statistics
 import re
 
 from quactlize.runtime.tuning import digest
+from quactlize.dispatch.prefill_policy import EVIDENCE as PREFILL_EVIDENCE
 
 ROOT = Path(__file__).resolve().parents[2]
 SCOPE = 'LLAMA_EAGER_COMPLETE_OPERATOR_EVENTS_NOT_KERNEL_ONLY_OR_MODEL_TPOT'
@@ -17,7 +18,7 @@ MEASURED_STATUSES = frozenset(('PASS', 'REGRESSION', 'INCONCLUSIVE'))
 
 @lru_cache(maxsize=1)
 def confirmed_prefill():
-    evidence=json.loads((ROOT/'policies/kpack_prefill_confirmation_v1.json').read_text())
+    evidence=json.loads(PREFILL_EVIDENCE.read_text())
     return {p['point']:p for p in evidence['points']}
 
 

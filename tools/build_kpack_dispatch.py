@@ -18,6 +18,7 @@ from tools.verify_kpack_dispatch import verify as verify_native
 from tools.verify_kpack_dispatch import require_exports, PREFILL_MODEL_EXPORTS
 from quactlize.execution.q4_decode_codegen import POLICY as DECODE_POLICY
 from quactlize.dispatch.planning import plan_smallm, plan_prefill, validate_inventory
+from quactlize.dispatch.prefill_policy import EVIDENCE as PREFILL_EVIDENCE, HEADER as PREFILL_HEADER, receipt_fields
 
 
 def attach_prefill(output, build, sdk):
@@ -229,6 +230,9 @@ def main():
         p.error("--jit-only and --reuse-bundle are mutually exclusive")
     if args.jobs < 1:
         p.error('--jobs must be positive')
+    from tools.fit_prefill_refresh import header as prefill_header
+    if prefill_header(json.loads(PREFILL_EVIDENCE.read_text()))!=PREFILL_HEADER.read_text():
+        raise ValueError('stale refresh prefill catalog; regenerate before building')
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     parents, selected = plan(output)
@@ -327,6 +331,8 @@ def main():
         ROOT / "policies/kpack_zw810_cost_v1.hpp",
         ROOT / "policies/kpack_prefill_confirmation_v1.hpp",
         ROOT / "policies/kpack_prefill_confirmation_v1.json",
+        PREFILL_HEADER,
+        PREFILL_EVIDENCE,
         ROOT / "policies/kpack_smallm_v1.hpp",
         ROOT / "policies/kpack_smallm_matched_v1.hpp",
         ROOT / "policies/kpack_smallm_effective_v1.hpp",
@@ -387,11 +393,11 @@ def main():
     manifest['component_decode']=dict(path='component-decode.json',sha256=sha(components),
         effective_header_sha256=sha(ROOT/'policies/kpack_smallm_effective_v1.hpp'),
         admission='ISOLATED_COMPONENT_SUM_MODEL_AB_PENDING')
-    confirmed=ROOT/'policies/kpack_prefill_confirmation_v1.json'
+    confirmed=PREFILL_EVIDENCE
     shutil.copy2(confirmed,output/'prefill-confirmed.json')
     manifest['prefill_confirmed']=dict(path='prefill-confirmed.json',sha256=sha(confirmed),
         header_sha256=sha(confirmed.with_suffix('.hpp')),
-        admission='CONFIRMED_COMPONENT_SELECTION_NOT_MODEL_AB')
+        **receipt_fields())
     if receipt.get('simt_compute_v2'):
         manifest['compute_contract']=dict(schema='quactlize.explicit-compute.v1',
             formats=[8,10,11,12,13,14],grouped='ALL_LEGAL_M',dense='DECODE_M1_8',

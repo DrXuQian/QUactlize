@@ -6,6 +6,7 @@
 #include "quactlize/runtime/dynamic.hpp"
 #include <cassert>
 #include <iomanip>
+#include <iostream>
 #include <sstream>
 #include <set>
 
@@ -32,7 +33,10 @@ void install(quactlize::dense::Context& ctx,quactlize::dispatch::TcDecision cons
     auto mod=std::make_shared<Module>();mod->qtype=c.qtype;mod->compute_type=compute;
     mod->query=resource;
     mod->query_device=[](auto d,auto r,auto out){return resource(&d->call,r,out);};
-    mod->query_compute=[](auto d,auto r,auto out){return resource(&d->device_call.call,r,out);};
+    mod->query_compute=[](auto d,auto r,auto out){
+        assert(d->compute_type==QK_COMPUTE_BF16 && d->metadata_type==QK_METADATA_BF16);
+        return resource(&d->device_call.call,r,out);
+    };
     mod->query_dense_io=[](auto d,auto r,auto out){return resource(&d->call,r,out);};
     mod->query_dense_compute=[](auto d,auto r,auto out){return resource(&d->dense.call,r,out);};
     mod->query_dense_general=mod->query_dense_compute;
@@ -290,6 +294,11 @@ int main() {
         if(now.confirmed_prefill) {
             auto row=prefill::knot(quactlize::dense::request_for(p),0,1);assert(row);
             assert(now.prefill.route==row->route && now.prefill.dequant_config==row->dequant && now.info.policy==19);
+            std::cout<<"REFRESH_DENSE {\"request\":["<<q<<",0,"<<n<<','<<k<<",1,1,1,"<<m
+                <<",0],\"route\":"<<now.prefill.route<<",\"dequant\":"<<now.prefill.dequant_config
+                <<",\"compute\":"<<now.info.compute_type<<",\"parent\":"<<std::quoted(now.tc.parent)
+                <<",\"split\":"<<now.tc.split<<",\"grid\":"<<now.tc.grid
+                <<",\"native_f16\":"<<(now.native_f16?"true":"false")<<"}\n";
             ++replaced;
         } else {compare_poc(old,now);++equivalent;}
         if (old.legacy) ++legacy;
@@ -311,6 +320,12 @@ int main() {
         assert(runtime.plans.at(choice.ticket-1).compute_type==row.compute);
         auto wanted=recipe(c,request,6,72);
         assert(choice.algorithm==wanted.algorithm && choice.grid==wanted.grid);
+        auto const& materialized=runtime.plans.at(choice.ticket-1);
+        std::cout<<"REFRESH_TICKET {\"request\":["<<row.q<<','<<(row.experts==1?0:2)<<','<<row.n<<','<<row.k
+            <<','<<row.experts<<','<<(row.experts==1?1:8)<<",1,"<<row.tokens<<','<<row.compute
+            <<"],\"parent\":"<<std::quoted(choice.parent)<<",\"compute\":"<<materialized.compute_type
+            <<",\"split\":"<<materialized.recipe.split<<",\"grid\":"<<materialized.recipe.grid
+            <<",\"algorithm\":"<<materialized.recipe.algorithm<<",\"endpoint\":"<<materialized.endpoint_type<<"}\n";
         auto ticket=choice.ticket;
         assert(!quactlize_kpack_dispatch_query_prefill_v1(ctx.dispatcher,&request,row.compute,1,&choice) && choice.ticket==ticket);
         assert(quactlize_kpack_dispatch_query_prefill_v1(ctx.dispatcher,&request,row.compute,8,&choice)==QKS_MISS && !choice.ticket);
@@ -318,7 +333,7 @@ int main() {
         assert(quactlize_kpack_dispatch_query_prefill_v1(ctx.dispatcher,&request,row.compute,1,&choice)==QKS_INVALID);
         ++confirmed_count;
     }
-    assert(confirmed_count==244);
+    assert(confirmed_count==257);
     // Run order and pointer/stream mutation. All
     // actual arithmetic is deliberately excluded from this host test.
     auto p=test::params(12,512);

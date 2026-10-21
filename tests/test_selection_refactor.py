@@ -62,6 +62,8 @@ def test_public_final_decisions_equal_frozen_baseline(snapshots):
     e=json.loads(EVIDENCE.read_text());p=effective(e)
     promoted={tuple(w['key']) for w in e['rows'] if w['automatic'] and not w['point']['paired']}
     promoted|={tuple(w['key']) for w in json.loads(COMPONENTS.read_text())['rows'] if w['changed']}
+    from quactlize.execution.q8_refresh import rows as q8_rows
+    promoted|={tuple(w['key']) for w in q8_rows()}
     exact={tuple(r['key']) for r in p['exact']}
     changed=[]
     for k,a,b in zip(keys,*results):
@@ -100,9 +102,10 @@ def execution_for(plan):
     for q,compute,*config in need['simt']:
         configs.setdefault(str(q),[]).append(dict(zip(fields,config)))
     from quactlize.execution.q4_decode_codegen import recipes
+    from quactlize.execution.q8_refresh import capability
     return dict(simt_configs=configs,simt_compute_v2=dict(compute=['f16','bf16'],formats=[8,10,11,12,13,14]),
                 q4_decode_policy_sha256='host-fixture',q4_decode_compute_v2=dict(compute=['f16','bf16']),
-                q4_decode_configs={f'{n}x{k}':rs for (n,k),rs in recipes().items()})
+                q4_decode_configs={f'{n}x{k}':rs for (n,k),rs in recipes().items()},q8_refresh=capability())
 
 
 def test_final_catalog_is_exact_and_checks_full_tuple(final_plan):
@@ -111,11 +114,12 @@ def test_final_catalog_is_exact_and_checks_full_tuple(final_plan):
     assert len(requirements(final_plan)['simt'])==183
     execution=execution_for(final_plan)
     validate_inventory(final_plan,execution,jit=True)
-    for mutate in ('config','compute','q4'):
+    for mutate in ('config','compute','q4','q8'):
         bad=copy.deepcopy(execution)
         if mutate=='config':bad['simt_configs']['8']=[]
         elif mutate=='compute':bad['simt_compute_v2']['compute']=['f16']
-        else:bad.pop('q4_decode_policy_sha256')
+        elif mutate=='q4':bad.pop('q4_decode_policy_sha256')
+        else:bad.pop('q8_refresh')
         with pytest.raises(ValueError):validate_inventory(final_plan,bad,jit=True)
     with pytest.raises(ValueError,match='unpackaged typed TC'):
         validate_inventory(final_plan,execution,jit=False)
@@ -162,10 +166,10 @@ def test_implementation_identity_follows_actual_shape(tmp_path):
     plan=plan_smallm(tmp_path,[[8,0,n,k,1,1,1,1,0] for n,k in
                               ((2048,4096),(8192,2048),(4096,2048),(768,2048))])
     rows={tuple(r['request'][2:4]):r for r in plan['requests']}
-    assert rows[2048,4096]['implementation']['producer']=='q8-vector-fixed'
-    assert rows[8192,2048]['policy']==18
-    assert rows[8192,2048]['implementation']['producer']=='q8-vector'
-    assert rows[4096,2048]['implementation']['producer']=='q8-vector-s1-narrow'
+    for shape,body in (((2048,4096),3),((8192,2048),1),((4096,2048),3)):
+        assert rows[shape]['policy']==18
+        assert rows[shape]['implementation']['producer']=='q8-address'
+        assert rows[shape]['implementation']['q8_body']==body
     assert rows[768,2048]['implementation']['hoist']
     assert not rows[768,2048]['implementation']['fixed']
 

@@ -54,7 +54,10 @@ def test_public_provider_orchestration_and_poc_selection(tmp_path):
         str(ROOT / 'tests/dense_provider_host.cpp'), str(ROOT / 'quactlize/packing/sizes.cpp'),
         str(ROOT / 'quactlize/execution/simt.cpp'), str(ROOT / 'quactlize/execution/q4_decode.cpp'),
         '-ldl', '-o', str(exe)], check=True)
-    subprocess.run([str(exe)], check=True)
+    result=subprocess.run([str(exe)], check=True, text=True, stdout=subprocess.PIPE)
+    from test_prefill_refresh_policy import check_materialized
+    check_materialized(result.stdout)
+    print(result.stdout)
 
 
 def test_public_header_is_c_and_cpp_compatible(tmp_path):
