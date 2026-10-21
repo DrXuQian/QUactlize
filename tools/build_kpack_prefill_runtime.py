@@ -22,7 +22,9 @@ def build(sdk,output,jobs):
     include=[ROOT/'quactlize/include',ROOT/'third_party/actlize/include',ROOT/'quactlize/execution',ROOT/'quactlize/dequant']
     dirs=include+[ROOT/'quactlize/prefill']
     inputs={str(p.relative_to(ROOT)):sha(p) for d in dirs for p in d.rglob('*') if p.is_file() and p.suffix in ('.h','.hpp','.cuh','.cu','.cpp','.inc')}
-    sources=['quactlize/dequant/kernels.cu','quactlize/dequant/indexed.cu','quactlize/prefill/stages.cu','quactlize/prefill/runtime.cpp']
+    sources=['quactlize/dequant/kernels.cu','quactlize/dequant/indexed.cu','quactlize/prefill/stages.cu',
+             'quactlize/prefill/runtime.cpp','quactlize/dequant/dense.cu',
+             'quactlize/prefill/dense_io.cu','quactlize/prefill/dense_runtime.cpp']
     env=dict(os.environ,PATH=str(sdk/'bin')+':'+os.environ.get('PATH',''),LD_LIBRARY_PATH=str(sdk/'lib')+':'+os.environ.get('LD_LIBRARY_PATH',''))
     commands=[];start=time.monotonic()
     def compile(source):
@@ -45,6 +47,8 @@ def build(sdk,output,jobs):
         if f'quactlize_kpack_prefill_{name}_v1' not in symbols:raise ValueError('missing prefill ABI')
     for name in ('query','prepare','run','device_status'):
         if f'quactlize_kpack_prefill_{name}_dynamic_v1' not in symbols:raise ValueError('missing dynamic prefill ABI')
+    for name in ('prepare','run','destroy','error'):
+        if f'quactlize_kpack_dense_full_{name}_v1' not in symbols:raise ValueError('missing dense full ABI')
     manifest=dict(schema='quactlize.prefill-runtime.v1',library=lib.name,sha256=sha(lib),source_hashes=inputs,
         runtime={f'lib{x}.so':sha(sdk/'lib'/f'lib{x}.so') for x in LIBRARIES},compiler_sha256=sha(sdk/'bin/hgcc'),
         commands=commands,seconds=time.monotonic()-start,device_admission='PENDING_COMPOSED_RUNTIME')

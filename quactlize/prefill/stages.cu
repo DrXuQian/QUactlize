@@ -50,6 +50,13 @@ __global__ void active_experts(int const* offsets,int* rows,int* ids,int* count,
 }
 }
 
+extern "C" int qkp_stage_input(qkp_call_v1 const* c,quactlize::prefill::Layout const* l,void* stream) {
+    auto base=static_cast<uint8_t*>(c->workspace);
+    quactlize::prefill::gather_bf16<<<c->m,256,0,static_cast<hggcStream_t>(stream)>>>(
+        c->a,reinterpret_cast<__ppu_bfloat16*>(base+l->a),c->src_rows,c->weight.k,c->a_stride,
+        c->a_rows,reinterpret_cast<int*>(base+l->error));
+    return hggcGetLastError()==hggcSuccess ? 0 : QKG_RUNTIME;
+}
 extern "C" int qkp_stage_prepare(qkp_call_v1 const* c,quactlize::prefill::Layout const* l,void* stream) {
     using namespace quactlize::prefill;
     auto base=static_cast<uint8_t*>(c->workspace);auto s=static_cast<hggcStream_t>(stream);
@@ -60,9 +67,7 @@ extern "C" int qkp_stage_prepare(qkp_call_v1 const* c,quactlize::prefill::Layout
             reinterpret_cast<int*>(base+l->error),c->m);
         if (hggcGetLastError()!=hggcSuccess) return QKG_RUNTIME;
     }
-    gather_bf16<<<c->m,256,0,s>>>(c->a,reinterpret_cast<__ppu_bfloat16*>(base+l->a),c->src_rows,
-        c->weight.k,c->a_stride,c->a_rows,reinterpret_cast<int*>(base+l->error));
-    return hggcGetLastError()==hggcSuccess ? 0 : QKG_RUNTIME;
+    return qkp_stage_input(c,l,stream);
 }
 extern "C" int qkp_stage_finish(qkp_call_v1 const* c,quactlize::prefill::Layout const* l,void* stream) {
     auto base=static_cast<uint8_t*>(c->workspace);
