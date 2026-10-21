@@ -1,7 +1,7 @@
 """Build diagnostic copies without changing historical carriers or their hashes."""
 from pathlib import Path
 
-from dev.native_components.build import build_adapter, run_commands
+from dev.native_components.build import adapter_source, build_adapter, run_commands
 from dev.strategy.journal import atomic_json
 from quactlize.runtime.compiler import sha
 
@@ -19,9 +19,10 @@ def once(source, old, new):
 def carrier_source():
     source = (NATIVE/'carrier.cpp').read_text()
     source = once(source, '    void * session = nullptr;',
-        '    int (*point_samples)(void *,int,int,int,int,double *);\n    void * session = nullptr;')
+        '    int (*point_samples)(void *,int,int,int,int,double *);\n'
+        '    int (*point_profile)(void *);\n    void * session = nullptr;')
     source = once(source, '        NC_BIND(zero_weight);',
-        '        NC_BIND(zero_weight);\n        NC_BIND(point_samples);')
+        '        NC_BIND(zero_weight);\n        NC_BIND(point_samples);\n        NC_BIND(point_profile);')
     begin = '            for(size_t i=0;i<inventory.size();++i) {\n                auto stage=inventory[i];'
     end = '            for(int copy=0;copy<point.copies;++copy) {\n                poison(point,copy);nc.check(nc.replay'
     if source.count(begin) != 1:
@@ -39,14 +40,27 @@ def carrier_source():
 
 
 def build_native(args, target, env):
-    _, base = build_adapter(args.llama_source, args.llama_build, args.sdk, target)
+    reuse = getattr(args, 'reuse_build', None)
+    base_dir = reuse/'native' if reuse else target
+    if reuse and not (base_dir/'adapter.json').is_file():
+        raise ValueError('previous native adapter receipt missing; no implicit rebuild')
+    # With an existing manifest build_adapter only validates the exact
+    # source/flags/headers/libraries/compiler; it never rebuilds a mismatch.
+    _, base = build_adapter(args.llama_source, args.llama_build, args.sdk, base_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    original = (base_dir/'native-dispatch.cu').read_text()
+    if original != adapter_source(args.llama_source)[0]:
+        raise ValueError('previous generated native dispatcher differs')
     # Keep the admitted adapter unchanged. Recompile only its tiny host
     # dispatcher with the diagnostic timer appended, using the SAME flags.
     source = target/'point-dispatch.cu'
-    source.write_text((target/'native-dispatch.cu').read_text()+'\n#include "'+str(HERE/'native.cuh')+'"\n')
+    source.write_text(original+'\n#include "'+str(HERE/'native.cuh')+'"\n')
     adapter, obj = target/'libpoint-native.so', target/'point-dispatch.o'
-    rename = {str(target/'native-dispatch.cu'):str(source), str(target/'native-dispatch.o'):str(obj),
-              str(target/'libnative-components.so'):str(adapter)}
+    rename = {str(base_dir/'native-dispatch.cu'):str(source), str(base_dir/'native-dispatch.o'):str(obj),
+              str(base_dir/'libnative-components.so'):str(adapter)}
+    for word in base['commands'][0]:
+        if word.startswith('-I') and word.endswith('/dev/native_components'):
+            rename[word] = '-I'+str(NATIVE)
     commands = [[rename.get(word, word) for word in row] for row in base['commands']]
     run_commands(commands, Path(base['identity']['compiler_workdir']), target/'point-adapter.log', env=env)
     src, binary = target/'point-carrier.cpp', target/'point-carrier'

@@ -1,0 +1,387 @@
+{
+  "scope": "CONFIG_CONTROLS_ONLY_NO_IMPORTED_TIMINGS",
+  "source": "dense-model-ab.q36zvilm.review.tgz/build-quactlize/prefill-confirmed.json",
+  "source_sha256": "2f3a0ea41c040c94378af30bf700ba0540381a0877c7aa16fcd21e86c62fd42d",
+  "points": [
+    {
+      "workload": {
+        "channels": 1,
+        "compute": "f16",
+        "experts": 1,
+        "fusion": "none",
+        "input_stride": 5120,
+        "k": 5120,
+        "m": 2048,
+        "n": 25600,
+        "operation": "dense",
+        "output_stride": 25600,
+        "qtype": 12,
+        "router": "",
+        "storage": "f32",
+        "topk": 1
+      },
+      "recipe": {
+        "kind": "full",
+        "parameters": [
+          [
+            "dequant_config",
+            11
+          ],
+          [
+            "provider",
+            "bf16-default"
+          ]
+        ],
+        "route": "full"
+      }
+    },
+    {
+      "workload": {
+        "channels": 1,
+        "compute": "f16",
+        "experts": 1,
+        "fusion": "none",
+        "input_stride": 8192,
+        "k": 8192,
+        "m": 2048,
+        "n": 5120,
+        "operation": "dense",
+        "output_stride": 5120,
+        "qtype": 12,
+        "router": "",
+        "storage": "f32",
+        "topk": 1
+      },
+      "recipe": {
+        "kind": "tc",
+        "parameters": [
+          [
+            "ap",
+            0
+          ],
+          [
+            "dequant_config",
+            4
+          ],
+          [
+            "dn",
+            64
+          ],
+          [
+            "grid_b",
+            8
+          ],
+          [
+            "grid_mode",
+            2
+          ],
+          [
+            "persistent",
+            -1
+          ],
+          [
+            "qtype",
+            12
+          ],
+          [
+            "split",
+            1
+          ],
+          [
+            "stages",
+            3
+          ],
+          [
+            "symbol",
+            "sf_q12_a0_tm64_tn64_tk64_wm64_wn32_s3_bc0_ap0_dn64"
+          ],
+          [
+            "tk",
+            64
+          ],
+          [
+            "tm",
+            64
+          ],
+          [
+            "tn",
+            64
+          ],
+          [
+            "wm",
+            64
+          ],
+          [
+            "wn",
+            32
+          ]
+        ],
+        "route": "sf"
+      }
+    },
+    {
+      "workload": {
+        "channels": 1,
+        "compute": "f16",
+        "experts": 1,
+        "fusion": "none",
+        "input_stride": 5120,
+        "k": 5120,
+        "m": 2048,
+        "n": 1024,
+        "operation": "dense",
+        "output_stride": 1024,
+        "qtype": 14,
+        "router": "",
+        "storage": "f32",
+        "topk": 1
+      },
+      "recipe": {
+        "kind": "full",
+        "parameters": [
+          [
+            "dequant_config",
+            2
+          ],
+          [
+            "provider",
+            "bf16-default"
+          ]
+        ],
+        "route": "full"
+      }
+    },
+    {
+      "workload": {
+        "channels": 1,
+        "compute": "f16",
+        "experts": 1,
+        "fusion": "none",
+        "input_stride": 5120,
+        "k": 5120,
+        "m": 2048,
+        "n": 8192,
+        "operation": "dense",
+        "output_stride": 8192,
+        "qtype": 12,
+        "router": "",
+        "storage": "f32",
+        "topk": 1
+      },
+      "recipe": {
+        "kind": "full",
+        "parameters": [
+          [
+            "dequant_config",
+            11
+          ],
+          [
+            "provider",
+            "bf16-default"
+          ]
+        ],
+        "route": "full"
+      }
+    },
+    {
+      "workload": {
+        "channels": 1,
+        "compute": "f16",
+        "experts": 1,
+        "fusion": "none",
+        "input_stride": 25600,
+        "k": 25600,
+        "m": 2048,
+        "n": 5120,
+        "operation": "dense",
+        "output_stride": 5120,
+        "qtype": 12,
+        "router": "",
+        "storage": "f32",
+        "topk": 1
+      },
+      "recipe": {
+        "kind": "tc",
+        "parameters": [
+          [
+            "ap",
+            0
+          ],
+          [
+            "dequant_config",
+            4
+          ],
+          [
+            "dn",
+            64
+          ],
+          [
+            "grid_b",
+            8
+          ],
+          [
+            "grid_mode",
+            2
+          ],
+          [
+            "persistent",
+            -1
+          ],
+          [
+            "qtype",
+            12
+          ],
+          [
+            "split",
+            1
+          ],
+          [
+            "stages",
+            3
+          ],
+          [
+            "symbol",
+            "sf_q12_a0_tm64_tn64_tk64_wm64_wn32_s3_bc0_ap0_dn64"
+          ],
+          [
+            "tk",
+            64
+          ],
+          [
+            "tm",
+            64
+          ],
+          [
+            "tn",
+            64
+          ],
+          [
+            "wm",
+            64
+          ],
+          [
+            "wn",
+            32
+          ]
+        ],
+        "route": "sf"
+      }
+    },
+    {
+      "workload": {
+        "channels": 1,
+        "compute": "f16",
+        "experts": 1,
+        "fusion": "none",
+        "input_stride": 5120,
+        "k": 5120,
+        "m": 2048,
+        "n": 1024,
+        "operation": "dense",
+        "output_stride": 1024,
+        "qtype": 12,
+        "router": "",
+        "storage": "f32",
+        "topk": 1
+      },
+      "recipe": {
+        "kind": "tc",
+        "parameters": [
+          [
+            "ap",
+            0
+          ],
+          [
+            "dequant_config",
+            4
+          ],
+          [
+            "dn",
+            64
+          ],
+          [
+            "grid_b",
+            8
+          ],
+          [
+            "grid_mode",
+            2
+          ],
+          [
+            "persistent",
+            -1
+          ],
+          [
+            "qtype",
+            12
+          ],
+          [
+            "split",
+            1
+          ],
+          [
+            "stages",
+            3
+          ],
+          [
+            "symbol",
+            "sf_q12_a0_tm64_tn64_tk64_wm64_wn32_s3_bc0_ap0_dn64"
+          ],
+          [
+            "tk",
+            64
+          ],
+          [
+            "tm",
+            64
+          ],
+          [
+            "tn",
+            64
+          ],
+          [
+            "wm",
+            64
+          ],
+          [
+            "wn",
+            32
+          ]
+        ],
+        "route": "sf"
+      }
+    },
+    {
+      "workload": {
+        "channels": 1,
+        "compute": "f16",
+        "experts": 1,
+        "fusion": "none",
+        "input_stride": 25600,
+        "k": 25600,
+        "m": 2048,
+        "n": 5120,
+        "operation": "dense",
+        "output_stride": 5120,
+        "qtype": 14,
+        "router": "",
+        "storage": "f32",
+        "topk": 1
+      },
+      "recipe": {
+        "kind": "full",
+        "parameters": [
+          [
+            "dequant_config",
+            5
+          ],
+          [
+            "provider",
+            "bf16-default"
+          ]
+        ],
+        "route": "full"
+      }
+    }
+  ]
+}

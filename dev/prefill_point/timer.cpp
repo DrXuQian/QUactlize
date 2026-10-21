@@ -1,4 +1,5 @@
 #include <hggc_runtime_api.h>
+#include <hggc_profiler_api.h>
 #include <cstdint>
 #define POINT_RT(name) hggc##name
 #include "events.hpp"
@@ -41,4 +42,13 @@ extern "C" int point_samples(const PointCall * calls,int stages,int copies,void 
             [&](int j,int i){return invoke(calls[i*stages+j]);},values);
         error.clear();return 0;
     } catch (const std::exception & e) {error=e.what();return 1;}
+}
+
+extern "C" int point_profile(const PointCall * calls,int stages,int copies,void * stream) {
+    try {
+        prefill_point::trace(static_cast<hggcStream_t>(stream),stages,copies,
+            [&](int j,int i){return invoke(calls[i*stages+j]);},
+            [](bool start){return int(start?hggcProfilerStart():hggcProfilerStop());});
+        error.clear();return 0;
+    } catch(const std::exception & e) {error=e.what();return 1;}
 }

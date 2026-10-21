@@ -16,7 +16,7 @@ import traceback
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from dev.prefill_point.bench import WORKLOAD, SF, qz, summarize
+from dev.prefill_point.bench import WORKLOAD, SF, qz, summarize, trace_contract
 from dev.strategy.journal import atomic_json
 from quactlize.runtime.compiler import sha
 from quactlize.runtime.tuning import digest
@@ -68,10 +68,13 @@ def build(args):
     from tools.build_kpack_dequant import build as dequant
     target = args.output/'build'
     target.mkdir()
-    print('PREFILL_POINT_BUILD native adapter + one SF parent + dequant/helpers; llama_rebuild=0', flush=True)
+    reuse = getattr(args, 'reuse_build', None)
+    print('PREFILL_POINT_BUILD '+('profile host wrappers only; device_payload=REUSED' if reuse else
+          'native adapter + one SF parent + dequant/helpers')+'; llama_rebuild=0', flush=True)
     adapter, binary, receipt = build_native(args, target/'native', environment(args))
-    helpers(args.sdk, target/'helpers')
-    dequant(args.sdk, target/'dequant')
+    if not reuse:
+        helpers(args.sdk, target/'helpers')
+        dequant(args.sdk, target/'dequant')
     include = args.sdk/'include'
     if not (include/'hggc_runtime_api.h').is_file():
         include = args.sdk/'targets/x86_64-linux/include'
@@ -92,7 +95,8 @@ def native(args, receipt):
     from dev.native_components.fixture import weights, activation
     from tools.run_kpack_llama_ab import point_request
     from tools.run_native_components import environment
-    row = dict(id=WORKLOAD.key, workload=asdict(WORKLOAD), cohort='prefill')
+    w = getattr(args, 'workload', WORKLOAD)
+    row = dict(id=w.key, workload=asdict(w), cohort='prefill')
     row = point_request(row, args.l2_bytes)
     row['input_fixture'] = activation(row)
     raw, fixture = weights(row['workload'], args.output/'fixture')
@@ -104,7 +108,8 @@ def native(args, receipt):
     request = dict(runtime_library=str(runtime), adapter_library=receipt['adapter'],
         authority=json.loads((args.output/'authority.json').read_text()), points=[row],
         raw_fixture=str(raw), raw_fixture_receipt=fixture, rounds=args.rounds,
-        samples=args.samples, point_probe=True)
+        samples=args.samples, point_probe=True, trace_only=getattr(args, 'trace_only', False),
+        model_prefill_probe=getattr(args, 'model_prefill_probe', False))
     atomic_json(out/'request.json', request)
     command = [receipt['carrier'], str(out/'request.json'), str(out)]
     atomic_json(out/'command.json', command)
@@ -113,12 +118,16 @@ def native(args, receipt):
     with (out/'run.log').open('x') as log:
         proc = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, env=environment(args))
         wait(proc, 'native-fp16', out/'run.log')
-    data = json.loads((out/(WORKLOAD.key+'.json')).read_text())
+    data = json.loads((out/(w.key+'.json')).read_text())
     if data['correctness'] != 'PASS': raise ValueError('native correctness failed')
     names = native_stage_names(data['inventory'])
+    trace_only = getattr(args, 'trace_only', False)
     data.update(status='PASS', arm='native-fp16', stages=names,
                 allocation='PER_WEIGHT_COPY_NATIVE_POOL_AND_OUTPUT; ISOLATED_CASTS_USE_COPY0',
-                summary=summarize(data['point_timings'], names))
+                summary=None if trace_only else summarize(data['point_timings'], names))
+    if trace_only:
+        data['trace'] = trace_contract(row['copies'])
+        data['scope'] = 'ASYS_KERNEL_DURATIONS_NOT_EVENT_TIMER'
     atomic_json(args.output/'results/native-fp16.json', data)
     return data
 
@@ -170,10 +179,14 @@ def main():
     p.add_argument('--confirm-idle', action='store_true')
     p.add_argument('--plan-only', action='store_true')
     p.add_argument('--worker', choices=ARMS, help=argparse.SUPPRESS)
+    p.add_argument('--trace-only', action='store_true', help=argparse.SUPPRESS)
+    p.add_argument('--reuse-build', type=Path, help=argparse.SUPPRESS)
     a = p.parse_args()
     if not a.device.isdigit() or a.rounds < 3 or a.samples < 3 or a.l2_bytes <= 0:
         p.error('one device, positive verified L2, at least three rounds/samples required')
     a.output = a.output.resolve()
+    if (a.trace_only or a.reuse_build) and not a.worker:
+        p.error('trace/reuse options belong to tools/profile_prefill_point.py')
     if a.worker:
         if a.worker == 'native-fp16':
             native(a, json.loads((a.output/'build/receipt.json').read_text()))

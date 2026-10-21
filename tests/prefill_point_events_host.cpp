@@ -47,4 +47,20 @@ int main() {
     try { prefill_point::sample(nullptr,1,0,0,0,3,[](int,int){return 0;},result); }
     catch (const std::runtime_error &) { failed=true; }
     assert(failed);
+    // Profile warmup and three measured rings use no inner events. A whole
+    // first captured ring is deliberately discarded by the Asys reader.
+    creates=destroys=records=syncs=0;calls.clear();
+    std::vector<std::pair<bool,int>> control;
+    prefill_point::trace(nullptr,4,5,[&](int stage,int copy) {
+        calls.emplace_back(stage,copy);return 0;
+    },[&](bool start){control.emplace_back(start,int(calls.size()));return 0;});
+    assert(creates==0 && destroys==0 && records==0 && syncs==2);
+    assert((control==std::vector<std::pair<bool,int>>{{true,80},{false,240}}));
+    for(size_t i=0;i<calls.size();++i) assert((calls[i]==std::make_pair(int(i%4),int(i/4%5))));
+    calls.clear();control.clear();syncs=0;failed=false;
+    try { prefill_point::trace(nullptr,1,2,[&](int,int) {
+        calls.emplace_back(0,0);return calls.size()==18?9:0;
+    },[&](bool start){control.emplace_back(start,int(calls.size()));return 0;}); }
+    catch(const std::runtime_error &) {failed=true;}
+    assert(failed && syncs==2 && control.size()==2 && !control.back().first);
 }

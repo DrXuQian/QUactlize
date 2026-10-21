@@ -14,6 +14,28 @@ inline void check(int rc, const char * what) {
     if (rc) throw std::runtime_error(std::string(what) + " rc=" + std::to_string(rc));
 }
 
+// No per-stage events or synchronizations. One complete rotating sequence is
+// captured; the first captured ring is a primer, excluded by the trace reader.
+template<class Invoke, class Control>
+void trace(Stream stream, int stages, int copies, Invoke invoke, Control control) {
+    if(stages<1 || copies<1) throw std::runtime_error("bad point trace contract");
+    auto calls=[&](int count) {
+        for(int i=0;i<count;++i) for(int j=0;j<stages;++j)
+            check(invoke(j,i%copies),"point trace stage");
+    };
+    const int ring=copies*((8+copies-1)/copies);
+    calls(2*ring);
+    check(POINT_RT(StreamSynchronize)(stream),"trace warmup completion");
+    check(control(true),"trace start");
+    try {
+        calls(4*ring);
+        check(POINT_RT(StreamSynchronize)(stream),"trace completion");
+    } catch(...) {
+        POINT_RT(StreamSynchronize)(stream);control(false);throw;
+    }
+    check(control(false),"trace stop");
+}
+
 // mode0: isolated stage, mode1: per-stage intervals inside the sequence,
 // mode2: one interval around the complete sequence (no inner events).
 // No event allocation, Python, readback or synchronization between samples.
