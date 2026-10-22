@@ -141,6 +141,7 @@ def io_gate(sdk,sdk_path,library,*,vectors=(0,1)):
     try:
         shapes=[(3,2048,0,0),(3,1031,0,0),(3,1024,4,0),(3,1027,5,0),(2,1024,0,4)]
         if 2 in vectors:shapes.extend([(3,1028,4,0),(1,3,0,0),(1,2049,0,0)])
+        if 3 in vectors:shapes.extend([(4,1024,0,0),(2,4096,0,0),(1,4095,0,0),(1,4097,0,0)])
         for rows,width,pad,offset in shapes:
             stride=width+pad;values=np.random.default_rng(width).uniform(-3,3,(rows,stride)).astype('f4')
             edge=np.array([0.,-0.,65504.,65520.,1e-8,-1e-8,243383.484,-243383.484],dtype='f4')
@@ -218,7 +219,7 @@ def dequant_gate(sdk,library,*,variants=(0,1,2,3)):
     return dict(status='PASS',cases=rows,oracle='INDEPENDENT_GGUF_NON_DYADIC_RAW_BITS')
 
 
-def dynamic_gate(sdk,sdk_path,library,timer,l2,*,round_two=False,variants=None):
+def dynamic_gate(sdk,sdk_path,library,timer,l2,*,round_two=False,variants=None,vector_io=None):
     from quactlize.dispatch.table import Workload
     results=[]
     for q in range(10,15):
@@ -230,7 +231,7 @@ def dynamic_gate(sdk,sdk_path,library,timer,l2,*,round_two=False,variants=None):
             alternate.workspace=ws.ptr;alternate.output=out.ptr;alternate.weight.stream=other.stream.value
             for storage in (0,1):
                 for variant in ([0]if q<12 else variants if variants is not None else [4,5,6,7]if round_two else[1]):
-                    arm=dict(name='contract',storage=storage,vector_io=2 if round_two else 1,
+                    arm=dict(name='contract',storage=storage,vector_io=vector_io if vector_io is not None else 2 if round_two else 1,
                              dequant_variant=variant,math_mode=16,algorithm=-1)
                     h=b.handle(arm)
                     for repeat in (0,1):

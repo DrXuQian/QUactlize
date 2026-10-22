@@ -19,7 +19,9 @@ typedef struct {
     // 8/9: paired N32/K128, 10/11: paired N32/K256, 12/13: paired N16/K256.
     // Even paired variants use scalar code conversion; odd use exact FP32
     // mantissa construction. All retain FP32 multiply/subtract rounding.
-    // 1..13 support Q4/Q5/Q6; 0 Q2..Q6. Existing selectors are unchanged.
+    // 14/15/16: paired bank layout N32/K128, N32/K256, N16/K256.
+    // 17/18/19: same with cooperative unit metadata; 20/21: N64/K128/K256.
+    // 1..21 support Q4/Q5/Q6; 0 Q2..Q6. Existing selectors are unchanged.
     int32_t dequant_variant;
     int32_t math_mode, algorithm; // explicit cuBLAS controls; compute is always 32F
 } qkp_dense_options_v1;
@@ -38,6 +40,7 @@ char const* quactlize_kpack_dense_full_error_v1(void);
 // Dense contiguous/strided cast. No row-map semantics. vector_io=0 retains
 // row-CTA scalar control; =1 enables aligned 8-element chunks and safe tails;
 // =2 uses two warp-contiguous vec4 chunks, same eight elements/thread.
+// =3 uses four such chunks for aligned contiguous whole CTAs, otherwise =2.
 // error is optional; output propagates nonzero status as NaNs, input ignores it.
 int quactlize_dense_io_v1(int storage,int input,int vector_io,void const* src,void* dst,
     int rows,int width,int64_t stride,int const* error,void* stream);

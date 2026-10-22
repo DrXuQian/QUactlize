@@ -716,3 +716,30 @@ are not fixed by shared reuse. `tests/test_prefill_dense_r3.py` preserves
 32/64/128B footprint and duplicate-read checks instead of assuming a
 uint4 load guarantees full sectors. Implementation/experiment:
 `quactlize/dequant/dense_pair.hpp`, `dev/prefill_dense/round3.py`.
+
+R3 device follow-up (`dc18965`, review-1792640379512214929.tgz,
+SHA256 22fc34cb4ab784e597bf3d4ec8b94797e054cacd6f4cde542d3329614398f18e,
+ZW81072CU/1.700GHz/SDK2.1.1) passes all42 arms and24 ACU captures.
+Paired reuse wins small Q4/Q6 event medians by11%/6--7%, but large shapes
+only0.2--1.7%. Exact FP32 bit construction does not win. Q4 large shared
+read transactions fall40% while shared-write conflicts triple; Q6 large
+reads fall20% while conflicts rise67%. These are overlapping effects,
+not proof of speed proportional to static instructions or TSM bytes.
+
+Q6 N5120K25600 paired BF16 profile10 reports968.75MiB LSU global-read
+transaction bytes,393.617MiB L2 reads,102.561MiB HBM reads versus102.539MiB
+packed weights; output is250MiB. The9.45x amplification is on-chip request
+traffic, NOT9x compulsory HBM. Canonical36B metadata units still use byte
+loads and repeat the header per group. A uint4 code load does not solve
+metadata coalescing. R2 IO similarly halved expanded-side KVD transactions
+without materially reducing large-shape latency; low eligible warps persist.
+
+The bounded R4 hypothesis separates low32/high16 shared maps and producer
+ordering, cooperative16B unit staging, wider N, and full-flat four-load IO.
+Q6 unit staging copies the unused paired-superblock half and adds one CTA
+barrier: both costs must remain in the component time. Host bank models
+at16/32 lanes are not actual ACU bank-conflict admission. Local native code
+removes cooperative metadata global byte loads, keeps zero stack, and
+preserves108 old device bodies; this is compile evidence, not a speedup.
+Use `round4.py` matched bank-only/metadata pairs and separate full-call
+confirmation; no production route changes until device regression checks.

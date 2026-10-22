@@ -39,8 +39,8 @@ extern "C" int quactlize_kpack_dense_full_prepare_v1(qkp_call_v1 const* c,
     try {
         if(!c || !arr || !o || o->version!=1 || o->size!=sizeof(*o) || !o->sdk ||
             !std::filesystem::path(o->sdk).is_absolute() || c->weight.experts!=1 || !address_free(*c) ||
-            (o->storage!=0 && o->storage!=1) || o->vector_io<0 || o->vector_io>2 ||
-            o->dequant_variant < -1 || o->dequant_variant>13 ||
+            (o->storage!=0 && o->storage!=1) || o->vector_io<0 || o->vector_io>3 ||
+            o->dequant_variant < -1 || o->dequant_variant>21 ||
             (o->dequant_variant==-1 && o->storage!=1) ||
             (o->dequant_variant>0 && c->weight.qtype<12) ||
             (o->math_mode!=0 && o->math_mode!=1 && o->math_mode!=3 &&

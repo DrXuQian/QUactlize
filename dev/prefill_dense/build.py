@@ -25,14 +25,17 @@ def inspect(sdk,image):
         if ('dense_convert_vec8' in e[1]or'dense_dequant_'in e[1]and'direct'not in e[1])and not any(
                 op.startswith('vmem.st.b32x4')for op in ops):
             raise ValueError('candidate vector output store missing: '+e[1])
-        if 'dense_convert_stripe4' in e[1]:
-            input_=re.search(r'stripe4ILb[01]ELb([01])',e[1])[1]=='1'
+        if 'dense_convert_stripe4' in e[1]or'dense_convert_full4'in e[1]:
+            input_=re.search(r'(?:stripe4|full4)ILb[01]ELb([01])',e[1])[1]=='1'
             vectors=('vmem.ld.b32x4','vmem.st.b32x2')if input_ else('vmem.ld.b32x2','vmem.st.b32x4')
             if not all(any(op.startswith(prefix)for op in ops)for prefix in vectors):
                 raise ValueError('striped vector transfer missing: '+e[1])
             if resources[e[1]]['shared_allocation_field']:raise ValueError('striped IO unexpectedly stages through shared memory')
         rows.append(dict(symbol=e[1],ops=dict(ops),resources=resources[e[1]]))
-    if len(rows)!=108:raise ValueError('typed candidate inventory differs: '+str(len(rows)))
+        if 'dense_dequant_cooperative'in e[1]and'ELb1EEEvPKtS5_PKhPtii'in e[1]:
+            if any(op.startswith('vmem.ld.b8')for op in ops):raise ValueError('cooperative metadata regressed to global byte loads: '+e[1])
+            if not any(op.startswith('vmem.ld.b32x4')for op in ops):raise ValueError('cooperative vector loads missing: '+e[1])
+    if len(rows)!=160:raise ValueError('typed candidate inventory differs: '+str(len(rows)))
     pairs={r['symbol']:r for r in rows if 'dense_dequant_pair' in r['symbol']}
     fast=[]
     for symbol,row in pairs.items():

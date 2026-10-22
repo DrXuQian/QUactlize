@@ -25,6 +25,10 @@ from quactlize.runtime.tuning import digest
 
 def read(p):return json.loads(p.read_text())
 
+def protocol_for(a):
+    from dev.prefill_dense import round2,round3,round4
+    return round4 if a.round_four else round3 if a.round_three else round2 if a.round_two else None
+
 def harness():
     from dev.strategy.provenance import harness_identity
     local={str(p.relative_to(ROOT)):sha(p)for p in (ROOT/'dev/prefill_dense').rglob('*')
@@ -55,10 +59,10 @@ def child(a):
         raise ValueError('cuBLAS provider binary changed')
     m=check_build(a);sdk=SDK(a.sdk);w=workloads()[a.point]
     lib=a.output/'build'/m['library'];timer=a.output/'build/libdense-opt-timer.so'
-    if a.round_two or a.round_three:
+    protocol=protocol_for(a)
+    if protocol:
         from dev.prefill_dense.round2 import measure
-        from dev.prefill_dense import round2,round3
-        return measure(a,sdk,w,lib,timer,m,authority,protocol=round3 if a.round_three else round2)
+        return measure(a,sdk,w,lib,timer,m,authority,protocol=protocol)
     profile=a.arm is not None
     if not profile and a.point==0:
         atomic_json(a.output/'io-gate.json',io_gate(sdk,a.sdk,lib))
@@ -156,19 +160,20 @@ def main():
     p.add_argument('--arm');p.add_argument('--stage',type=int,choices=range(4))
     rounds=p.add_mutually_exclusive_group()
     rounds.add_argument('--round-two',action='store_true');rounds.add_argument('--round-three',action='store_true')
+    rounds.add_argument('--round-four',action='store_true')
     p.add_argument('--resume',action='store_true')
     p.add_argument('--no-acu',action='store_true');a=p.parse_args()
     a.sdk=a.sdk.resolve(strict=True);a.output=a.output.resolve();os.environ['CUDA_VISIBLE_DEVICES']=a.device
+    protocol=protocol_for(a)
     if a.point is not None:
         if a.result is None or (a.arm is not None and a.stage is None):p.error('child result/profile stage missing')
-        from dev.prefill_dense import round2,round3
-        candidates=round3.pool(a.point)if a.round_three else round2.pool(a.point)if a.round_two else arms()
+        candidates=protocol.pool(a.point)if protocol else arms()
         if a.arm is not None and a.arm not in {r['name']for r in candidates}:
             p.error('unknown arm for this point/round')
         return child(a)
     if not a.confirm_idle:p.error('confirm assigned GPU idle')
     if a.resume:
-        if not (a.round_two or a.round_three):p.error('resume is only supported for rounds two and three')
+        if not protocol:p.error('resume is only supported for rounds two, three and four')
         if not (a.output/'authority.json').is_file():p.error('resume requires an existing frozen output')
     else:a.output.mkdir(parents=True,exist_ok=False)
     from tools.run_kpack_llama_ab import device
@@ -179,10 +184,9 @@ def main():
     authority=dict(device=d,harness=harness(),workloads=[asdict(w)for w in workloads()],arms=arms(),
         provider=dict(path=str(provider),sha256=sha(provider),compute='CUBLAS_COMPUTE_32F',
             math_mode=16,workspace_bytes=4<<20,algorithm_controls=[-1,99],no_graph=True))
-    if a.round_two or a.round_three:
-        from dev.prefill_dense import round2,round3
-        protocol=round3 if a.round_three else round2
+    if protocol:
         authority.update(round_two=a.round_two,round_three=a.round_three,arms={str(i):protocol.pool(i)for i in range(7)})
+        if a.round_four:authority['round_four']=True
         authority['provider']['algorithm_controls']=[-1]
     if a.resume:
         if read(a.output/'authority.json')!=authority:raise ValueError('resume device/source/provider contract changed')
@@ -200,6 +204,7 @@ def main():
                   '--device',a.device,'--l2-bytes',str(a.l2_bytes)]
             if a.round_two:base+=['--round-two']
             if a.round_three:base+=['--round-three']
+            if a.round_four:base+=['--round-four']
             def admitted(path):
                 if not path.is_file():return False
                 row=read(path)
@@ -216,8 +221,8 @@ def main():
                 atomic_json(a.output/f'clock-{point}.json',observe(smi,pci,1700,advisory=True))
                 print('DENSE_OPT_POINT '+json.dumps(dict(point=point,status=row['status'])),flush=True)
             if not a.no_acu and all(r['status']=='PASS'for r in rows):
-                jobs=protocol.profile_jobs(rows)if a.round_two or a.round_three else profile_jobs(rows)
-                checker=protocol.check_profile if a.round_two or a.round_three else check_profile
+                jobs=protocol.profile_jobs(rows)if protocol else profile_jobs(rows)
+                checker=protocol.check_profile if protocol else check_profile
                 for i,job in enumerate(jobs):
                     saved=a.output/f'acu-{i}.receipt.json'
                     if a.resume and saved.is_file():
@@ -249,11 +254,11 @@ def main():
                     print('DENSE_OPT_ACU '+json.dumps(job|dict(status=reports[-1]['status'],rc=rc,
                         cycles=evidence.get('cycles'),report=str(report))),flush=True)
             status='PASS'if all(r['status']=='PASS'for r in rows+reports)else'INCOMPLETE'
-            if a.round_two or a.round_three:
+            if protocol:
                 pairs=protocol.cycle_pairs(reports);atomic_json(a.output/'cycle-pairs.json',pairs)
                 for pair in pairs:print(f'DENSE_R{protocol.ROUND}_CYCLES '+json.dumps(pair),flush=True)
             atomic_json(a.output/'summary.json',dict(status=status,points=rows,acu=reports,production_changed=False,
-                performance_admitted=False,round_two=a.round_two,round_three=a.round_three,acu_skipped=a.no_acu,
+                performance_admitted=False,round_two=a.round_two,round_three=a.round_three,round_four=a.round_four,acu_skipped=a.no_acu,
                 scope='DENSE_PREFILL_CANDIDATES_NOT_MODEL_E2E'))
             print('DENSE_OPT_DONE '+status,flush=True);return int(status!='PASS')
     finally:package(a.output)

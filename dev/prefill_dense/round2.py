@@ -109,7 +109,7 @@ def check_profile(path,job,*,expected_kernel=None,geometry=None):
 
 def cycle_pairs(reports):
     result=[]
-    for pair in range(6):
+    for pair in sorted({r['pair']for r in reports}):
         rows=[r for r in reports if r['pair']==pair and r['status']=='PASS']
         sides={side:[r['evidence']['cycles']for r in rows if r['role']==side]for side in ('control','candidate')}
         if any(len(v)!=2 for v in sides.values()):continue
@@ -128,10 +128,10 @@ def measure(a,sdk,w,lib,timer,manifest,authority,*,protocol=None):
     tag=f'DENSE_R{protocol.ROUND}'
     profile=a.arm is not None
     if not profile and a.point==0:
-        atomic_json(a.output/'io-gate.json',io_gate(sdk,a.sdk,lib,vectors=(0,1,2)))
+        atomic_json(a.output/'io-gate.json',io_gate(sdk,a.sdk,lib,vectors=getattr(protocol,'IO_VARIANTS',(0,1,2))))
         atomic_json(a.output/'dequant-gate.json',dequant_gate(sdk,lib,variants=protocol.DEQUANT_VARIANTS))
         atomic_json(a.output/'dynamic-gate.json',dynamic_gate(sdk,a.sdk,lib,timer,a.l2_bytes,
-            round_two=True,variants=protocol.DYNAMIC_VARIANTS))
+            round_two=True,variants=protocol.DYNAMIC_VARIANTS,vector_io=getattr(protocol,'DYNAMIC_IO',None)))
     candidates=protocol.pool(a.point)
     if profile:
         prior=json.loads((a.output/f'point-{a.point}.json').read_text())
@@ -192,7 +192,7 @@ def measure(a,sdk,w,lib,timer,manifest,authority,*,protocol=None):
                 selection_scope='LOCAL_COMPONENT_SCREEN_NOT_PRODUCTION_ADMISSION')
         result.update(library_sha256=manifest['sha256'],authority=digest(authority),numerical=proofs,
                       production_changed=False,performance_admitted=False,round_two=protocol.ROUND==2,
-                      round_three=protocol.ROUND==3)
+                      round_three=protocol.ROUND==3,round_four=protocol.ROUND==4)
         atomic_json(a.result,result);return 0
     finally:
         if b:b.close()

@@ -106,8 +106,44 @@ __global__ void dense_convert_stripe4(void const* src,void* dst,int width,int64_
     }
 }
 template<bool BF16,bool Input>
+__global__ void dense_convert_full4(void const* src,void* dst,int const* error) {
+    using D=DenseConvert<BF16>;
+    bool const bad=!Input && error && *error;
+    float4 floats[4];uint2 packed[4];
+    // No per-strip row/tail checks. Expose four independent global loads
+    // before converting/storing; all four instructions are warp-contiguous.
+    #pragma unroll
+    for(unsigned part=0;part<4;++part) {
+        uint64_t i=DenseFull4<256>::element(blockIdx.x,threadIdx.x,part);
+        if constexpr(Input) floats[part]=*reinterpret_cast<float4 const*>(static_cast<float const*>(src)+i);
+        else packed[part]=*reinterpret_cast<uint2 const*>(static_cast<typename D::Scalar const*>(src)+i);
+    }
+    #pragma unroll
+    for(unsigned part=0;part<4;++part) {
+        uint64_t i=DenseFull4<256>::element(blockIdx.x,threadIdx.x,part);
+        union Bits {uint2 bits;typename D::Pair pairs[2];} v;
+        if constexpr(Input) {
+            auto a=floats[part];v.pairs[0]=D::pack2(make_float2(a.x,a.y));
+            v.pairs[1]=D::pack2(make_float2(a.z,a.w));
+            *reinterpret_cast<uint2*>(static_cast<typename D::Scalar*>(dst)+i)=v.bits;
+        } else {
+            v.bits=packed[part];auto a=D::unpack2(v.pairs[0]),b=D::unpack2(v.pairs[1]);
+            if(bad)a=b=make_float2(__int_as_float(0x7fc00000),__int_as_float(0x7fc00000));
+            *reinterpret_cast<float4*>(static_cast<float*>(dst)+i)=make_float4(a.x,a.y,b.x,b.y);
+        }
+    }
+}
+template<bool BF16,bool Input>
 void dense_convert(int vector,void const* src,void* dst,int rows,int width,int64_t stride,int const* error,hggcStream_t stream) {
     bool aligned=!(uintptr_t(src)%16 || uintptr_t(dst)%16);
+    if(vector==3) {
+        int64_t count=int64_t(rows)*width;
+        if(aligned && stride==width && count%4096==0) {
+            dense_convert_full4<BF16,Input><<<count/4096,256,0,stream>>>(src,dst,error);
+            return;
+        }
+        vector=2; // Existing safe stripe/scalar paths own tails and strides.
+    }
     if (vector==2 && aligned && stride==width) {
         int64_t count=int64_t(rows)*width;
         dense_convert_stripe4<BF16,Input,true><<<(count+2047)/2048,256,0,stream>>>(src,dst,width,stride,count,error);
@@ -123,7 +159,7 @@ void dense_convert(int vector,void const* src,void* dst,int rows,int width,int64
 }
 extern "C" int quactlize_dense_io_v1(int storage,int input,int vector,void const* src,void* dst,
         int rows,int width,int64_t stride,int const* error,void* stream) {
-    if ((storage!=0 && storage!=1) || (input!=0 && input!=1) || vector<0 || vector>2 ||
+    if ((storage!=0 && storage!=1) || (input!=0 && input!=1) || vector<0 || vector>3 ||
         !src || !dst || rows<=0 || rows>65535 || width<=0 || stride<width ||
         uint64_t(stride)>uint64_t(INT64_MAX)/4/rows ||
         (uint64_t(rows)*width+2047)/2048>INT_MAX ||
