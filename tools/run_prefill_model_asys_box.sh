@@ -1,14 +1,23 @@
 #!/usr/bin/env bash
-# Qwen3-32B PP2048 only. Source/actlize frozen locally; no checkout/fetch on Box.
+# Dense prefill; legacy Qwen3-32B PP2048 or a reviewed model cohort.
+# Source/actlize frozen locally; no checkout/fetch on Box.
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 PYTHON=${PYTHON:-python3}
 GPU=${GPU:-1}
 [[ ${GPU} =~ ^[0-9]+$ ]] || { echo 'ERROR: one GPU ordinal required.' >&2; exit 1; }
 [[ -z ${RUN:-} ]] || { echo 'ERROR: unset RUN; use RESUME_RUN for an existing frozen sweep.' >&2; exit 1; }
-MODEL=${MODEL:-/sim/eec/shared/AI_workspace/llm-models/bench_model_zoo/Qwen3-32B-Q4_K_M-GGUF/Qwen3-32B-Q4_K_M.gguf}
-test -f "${MODEL}"
 args=()
+if [[ -n ${COHORT:-} ]]; then
+    COHORT=$(realpath -e -- "${COHORT}")
+    args+=(--cohort "${COHORT}" --shard "${SHARD:-0}" --shards "${SHARDS:-1}"
+           --max-cases "${MAX_CASES:-96}" --max-modules "${MAX_MODULES:-256}")
+    [[ -z ${POINT_ID:-} ]] || args+=(--point "${POINT_ID}")
+else
+    MODEL=${MODEL:-/sim/eec/shared/AI_workspace/llm-models/bench_model_zoo/Qwen3-32B-Q4_K_M-GGUF/Qwen3-32B-Q4_K_M.gguf}
+    test -f "${MODEL}"
+    args+=(--model "${MODEL}")
+fi
 if [[ ${PLAN_ONLY:-0} == 1 ]]; then
     args+=(--plan-only)
 else
@@ -35,7 +44,7 @@ if [[ -n ${RESUME_RUN:-} ]]; then
     args+=(--resume)
 else
     test -d "${OUTPUT_ROOT:-/workspace}"
-    REV=$(git -C "${ROOT}" rev-parse --verify HEAD)
+    REV=$(git -C "${ROOT}" rev-parse --verify "${SOURCE_REV:-HEAD}^{commit}")
     ACTLIZE_REV=$(git -C "${ROOT}" rev-parse "${REV}:third_party/actlize")
     [[ ${REV} =~ ^[0-9a-f]{40}$ && ${ACTLIZE_REV} =~ ^[0-9a-f]{40}$ ]] || exit 1
     if ! git -C "${ROOT}/third_party/actlize" cat-file -e "${ACTLIZE_REV}^{commit}"; then
@@ -59,15 +68,15 @@ if [[ -n ${PREVIOUS_RUN:-} ]]; then
     fi
 fi
 [[ -z ${TC_CACHE:-} ]] || args+=(--cache "${TC_CACHE}")
-echo "PREFILL_ASYS_BOX run=${RUN} gpu=${GPU} M=2048 shape_scope=QWEN3_32B_QUANTIZED_DENSE clock_MHz=1700 actual_clock=ADVISORY helpers=PRODUCTION_R4 native_accumulator=FP32"
+echo "PREFILL_ASYS_BOX run=${RUN} gpu=${GPU} cohort=${COHORT:-QWEN3_32B_PP2048} shard=${SHARD:-0}/${SHARDS:-1} clock_MHz=1700 actual_clock=ADVISORY native_accumulator=FP32"
 set +e
 "${PYTHON}" -u "${RUN}/source/tools/run_prefill_model_asys.py" \
-    --output "${RUN}/results" --model "${MODEL}" --device "${GPU}" \
+    --output "${RUN}/results" --device "${GPU}" \
     --l2-bytes "${L2_BYTES:-67108864}" --jobs "${JOBS:-8}" \
     --configs-per-batch "${CONFIGS_PER_BATCH:-16}" "${args[@]}" 2>&1 | tee "${RUN}/console-$(date +%s).log"
 rc=${PIPESTATUS[0]}
 set -e
-echo "runner_rc=${rc} review=${RUN}/results/review-*.tgz"
+echo "runner_rc=${rc} review=${RUN}/results/review-*"
 echo "Asys=${RUN}/results/batches/*/attempt-*/trace.asysrep"
 echo "Resume with RESUME_RUN=${RUN} and the same GPU/environment. Do not delete its source/cache/results."
 exit "${rc}"

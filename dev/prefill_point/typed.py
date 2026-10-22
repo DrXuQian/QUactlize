@@ -39,7 +39,7 @@ class DenseLibrary:
             [C.POINTER(Call),C.c_int,C.POINTER(C.c_int),C.POINTER(C.c_int)])
         self.io=bind(self.lib,'quactlize_dense_io_v1',
             [C.c_int]*3+[C.c_void_p]*2+[C.c_int]*2+[C.c_int64,C.c_void_p,C.c_void_p])
-        self.query=bind(self.lib,'quactlize_kpack_prefill_query_dynamic_v1',
+        self.query=bind(self.lib,'quactlize_kpack_dense_full_workspace_v1',
             [C.POINTER(Call),C.POINTER(Arrangement),C.POINTER(C.c_uint64)])
         self.prepare=bind(self.lib,'quactlize_kpack_dense_full_prepare_v1',
             [C.POINTER(Call),C.POINTER(Arrangement),C.POINTER(Options),C.POINTER(C.c_void_p)])
@@ -54,9 +54,11 @@ class DenseLibrary:
         c.weight=Weight(1,C.sizeof(Weight),w.qtype,w.n,w.k,1,1,5)
         return c
 
-    def choice(self,w,storage):
+    def choice(self,w,storage,allow_miss=False):
         c=self.shape(w);dq,io=C.c_int(-1),C.c_int(-1)
-        checked(self.policy(C.byref(c),storage,C.byref(dq),C.byref(io)),
+        rc=self.policy(C.byref(c),storage,C.byref(dq),C.byref(io))
+        if allow_miss and rc==24: return None  # QKG_SHAPE only; runtime errors still fail.
+        checked(rc,
                 'production dense helper policy (requires measured ZW810 shape)')
         return dict(dequant_variant=dq.value,vector_io=io.value,storage=storage)
 
@@ -67,11 +69,12 @@ class DenseLibrary:
 
 
 class TypedFull:
-    def __init__(self,b,library,sdk_path,storage):
+    def __init__(self,b,library,sdk_path,storage,options=None):
         self.b,self.library,self.storage=b,library,storage;self.handle=C.c_void_p()
         self.workspaces=[];w=b.w;self.shape=library.shape(w)
+        choice=library.choice(w,storage) if options is None else dict(options,storage=storage)
         self.options=Options(1,C.sizeof(Options),str(sdk_path).encode(),
-                            **library.choice(w,storage),math_mode=16,algorithm=-1)
+                            **choice,math_mode=16,algorithm=-1)
         size=C.c_uint64()
         checked(library.query(C.byref(self.shape),C.byref(b.arr),C.byref(size)),'typed full workspace')
         rc=library.prepare(C.byref(self.shape),C.byref(b.arr),C.byref(self.options),C.byref(self.handle))
@@ -88,7 +91,7 @@ class TypedFull:
                 c.weight.stream=b.r.stream.value
         except BaseException:
             self.close();raise
-        self.receipt=dict(kind='typed-full',helper_policy=library.choice(w,storage),
+        self.receipt=dict(kind='typed-full',helper_policy=choice,
             arithmetic=dict(a='BF16' if storage else 'F16',b='BF16' if storage else 'F16',
                             c='BF16' if storage else 'F16',accumulator='FP32'),
             compute_type=68,math_mode=16,algorithm=-1,workspace_bytes=size.value,
@@ -125,7 +128,7 @@ def measure_full(args,b,timer,arm,recipe,library):
     from tools.kpack_bf16_providers import loaded_images
     storage=int(arm=='full-bf16-typed');core=None
     try:
-        core=TypedFull(b,library,args.sdk,storage)
+        core=TypedFull(b,library,args.sdk,storage,getattr(args,'helper_options',None))
         calls=(Descriptor*(5*b.ring.copies))(*core.descriptors())
         names=['error_reset','input','expansion','main','output'];proof=[];bits=[]
         for repeat in (0,1):
@@ -151,7 +154,8 @@ def measure_full(args,b,timer,arm,recipe,library):
         proof.append(b.check())
         for buf in b.ring.buffers+b.buffers:buf.guard()
         value=dict(status='PASS',arm=arm,workload=asdict(b.w),recipe=asdict(recipe),correctness=proof,
-            helper_mode='production',helper_policy=core.receipt['helper_policy'],
+            helper_mode='experimental' if getattr(args,'helper_options',None) is not None else 'production',
+            helper_policy=core.receipt['helper_policy'],
             weight_bits=bits,omitted_producer='DETECTED',zero_a='PASS',receipt=core.receipt,
             fixture=b.ring.receipt,stages=names,point_timings=rows,loaded_images=loaded_images(),
             trace=trace_contract(b.ring.copies),summary=None if args.trace_only else summarize(rows,names),

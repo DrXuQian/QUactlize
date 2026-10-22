@@ -50,7 +50,7 @@ def helper_role(row, arm):
     if arm != 'native-fp16':
         typed=re.search(r'dense_convert_(?:vec8|stripe4|full4|scalar)<(?:true|false),(true|false)(?:,|>)',n)
         if typed:return 'input' if typed[1]=='true' else 'output'
-        if re.search(r'dense_dequant_(?:direct|packed|unsigned|pair|cooperative)<',n):return 'expansion'
+        if re.search(r'dense_dequant_(?:direct|packed|unsigned|pair|cooperative|q8)<',n):return 'expansion'
     if arm == 'native-fp16':
         if 'dequantize_block_' in n: return 'expansion'
         if ('convert_cont_ppu_kernel<float,__half>' in n or
@@ -82,6 +82,7 @@ def one_call(rows, arm, stages, split):
         name=row['name'].replace(' ','')
         cast=re.search(r'dense_convert_(?:vec8|stripe4|full4|scalar)<(true|false),',name)
         dq=re.search(r'dense_dequant_(?:direct|packed|unsigned|pair|cooperative)<[^,]+,(true|false)',name)
+        if dq is None: dq=re.search(r'dense_dequant_q8<(true|false)>',name)
         for match in (cast,dq):
             if match and (match[1]=='true') != (arm in ('full-bf16','full-bf16-typed')):
                 raise ValueError('typed helper precision differs from arm: '+row['name'])

@@ -38,6 +38,10 @@ def test_c_api_choice_is_single_source_not_python_table():
     library.policy=lambda *a:1
     import pytest
     with pytest.raises(RuntimeError):library.choice(WORKLOAD,0)
+    library.policy=lambda *a:24
+    assert library.choice(WORKLOAD,0,allow_miss=True) is None
+    library.policy=lambda *a:41
+    with pytest.raises(RuntimeError):library.choice(WORKLOAD,0,allow_miss=True)
     fake=SimpleNamespace(w=WORKLOAD,r=SimpleNamespace(stream=C.c_void_p(4)))
     library.io=C.CFUNCTYPE(C.c_int)(lambda:0)
     d=library.io_call(fake,1,2,input=True,storage=0,vector=2)
@@ -77,6 +81,20 @@ def test_new_gpu_inventory_and_precision_guard():
         assert out['gpu_sum_us']==5
         if arm=='full-fp16':
             changed[1]['name']='dense_convert_stripe4<true, true, true>(...)'
+            with pytest.raises(ValueError,match='precision'):parse_rows(changed,[c])
+
+
+def test_q8_dequant_inventory_and_precision_guard():
+    import pytest
+    rows,case=PrefillAsysTests().rows('full-bf16')
+    for bf in ('false','true'):
+        changed=copy.deepcopy(rows);c=dict(case,arm='full-fp16')
+        for r in changed:
+            if 'gather_bf16' in r['name']:r['name']='dense_convert_scalar<false, true>(...)'
+            elif 'finish_bf16' in r['name']:r['name']='dense_convert_scalar<false, false>(...)'
+            elif 'full_packed_exchange' in r['name']:r['name']=f'dense_dequant_q8<{bf}>(...)'
+        if bf=='false':assert parse_rows(changed,[c])[0]['phases_us']['expansion']==1
+        else:
             with pytest.raises(ValueError,match='precision'):parse_rows(changed,[c])
 
 

@@ -102,7 +102,8 @@ def runnable(point):
             raise ValueError('required launch unavailable: '+r.key)
         launch = resolved_grid(w, r, receipt['device']['compute_units'], receipt['occupancy'])
         key = digest([spec, launch, p.get('dequant_config', -1)])
-        row = pool.setdefault(key, dict(id=key, arm=r.route, recipe=asdict(r),helper_mode='production',
+        row = pool.setdefault(key, dict(id=key, arm=r.route, recipe=asdict(r),
+            helper_mode='cohort-current' if point.get('cohort_explicit_helpers') else 'production',
             module=digest(spec), launch=launch, roles=[]))
         if role not in row['roles']: row['roles'].append(role)
     # Only the model/current config gets an old-helper twin. The TC search
@@ -123,6 +124,15 @@ def runnable(point):
                 legacy_role='legacy-'+role
                 if legacy_role not in row['roles']: row['roles'].append(legacy_role)
         pool[row['id']] = row
+    if point.get('cohort_explicit_helpers'):
+        for options in point['helper_candidates']:
+            r = Recipe.make('full', 'full', provider='typed-fp16', **options)
+            pool[r.key] = dict(id=r.key, arm='full-fp16', recipe=asdict(r),
+                helper_mode='experimental', helper_options=options,
+                roles=['typed-full', 'same-dtype-native', 'UNADMITTED_HELPER_COMBINATION'])
+        if len(pool)+1 > point['max_cases']:
+            raise ValueError('resolved config pool exceeds declared per-shape budget')
+        return sorted(pool.values(), key=lambda r:digest([point['id'],r['id']]))
     for storage,arm in ((0,'full-fp16'),(1,'full-bf16-typed')):
         # Query the SAME compiled helper policy as the production facade on
         # device; do not copy its table or stale timings into this Python plan.

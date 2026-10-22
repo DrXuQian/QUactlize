@@ -47,7 +47,7 @@ def build(sdk,output,jobs,*,line_info=False):
         if f'quactlize_kpack_prefill_{name}_v1' not in symbols:raise ValueError('missing prefill ABI')
     for name in ('query','prepare','run','device_status'):
         if f'quactlize_kpack_prefill_{name}_dynamic_v1' not in symbols:raise ValueError('missing dynamic prefill ABI')
-    for name in ('prepare','run','destroy','error'):
+    for name in ('prepare','run','destroy','error','workspace'):
         if f'quactlize_kpack_dense_full_{name}_v1' not in symbols:raise ValueError('missing dense full ABI')
     if 'quactlize_kpack_dense_helper_policy_v1' not in symbols:raise ValueError('missing dense helper policy')
     manifest=dict(schema='quactlize.prefill-runtime.v1',library=lib.name,sha256=sha(lib),source_hashes=inputs,

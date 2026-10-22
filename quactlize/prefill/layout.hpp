@@ -11,13 +11,14 @@ inline uint64_t reserve(uint64_t& cursor,uint64_t bytes) {
     if (bytes>uint64_t(INT64_MAX)-255-cursor) throw std::overflow_error("prefill workspace overflow");
     auto offset=cursor;cursor+=(bytes+255)&~uint64_t(255);return offset;
 }
-inline int layout(qkp_call_v1 const& c,quactlize_ppu_placed_arrangement_v2 const* arr,Layout& l) {
+inline int layout(qkp_call_v1 const& c,quactlize_ppu_placed_arrangement_v2 const* arr,Layout& l,
+                  bool typed_dense_q8=false) {
     auto w=c.weight;
     qkg_sizes_v1 s{};
     int rc=execution::sizes(w.qtype,w.n,w.k,w.experts,arr,s);
     if (rc) return rc;
     if (c.version!=1 || c.size!=sizeof(c) || w.version!=1 || w.size!=sizeof(w) ||
-        w.qtype==8 || w.operation!=1 || w.zero || c.device<0 ||
+        (w.qtype==8 && !(typed_dense_q8 && w.experts==1)) || w.operation!=1 || w.zero || c.device<0 ||
         c.a_stride<w.k || c.output_stride<w.n || w.n>INT32_MAX-256 ||
         w.k>INT32_MAX-256 || c.m>32768 || c.a_rows<=0 ||
         (w.experts==1 ? c.m<128 || c.m>4096 || c.a_rows!=c.m || c.src_rows || c.dst_rows || c.offsets :

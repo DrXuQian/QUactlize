@@ -28,7 +28,7 @@ typedef struct {
     char const* sdk;
     int32_t storage, vector_io;
     // -1: existing full BF16 dequant (call.weight.config).
-    // Otherwise use the stable helper IDs above: direct Q2..Q6; pair and
+    // Otherwise use the stable helper IDs above: direct Q2..Q6 and Q8_0; pair and
     // cooperative Q4/Q5/Q6. This is not the weight.config namespace.
     int32_t dequant_variant;
     int32_t math_mode, algorithm; // explicit cuBLAS controls; compute is always 32F
@@ -39,6 +39,10 @@ typedef struct {
 // Does not select a GEMM, change precision, compile or launch any work.
 int quactlize_kpack_dense_helper_policy_v1(qkp_call_v1 const*, int storage,
     int* dequant_variant, int* vector_io);
+
+// Typed dense workspace query; Q8_0 does not enable the legacy BF16 provider.
+int quactlize_kpack_dense_full_workspace_v1(qkp_call_v1 const*,
+    quactlize_ppu_placed_arrangement_v2 const*, uint64_t* bytes);
 
 // Same workspace/layout contract as query_dynamic_v1 (including private
 // cuBLAS workspace). Prepare is address-free and must occur outside capture.

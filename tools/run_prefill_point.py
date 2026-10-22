@@ -109,6 +109,7 @@ def native(args, receipt):
         authority=json.loads((args.output/'authority.json').read_text()), points=[row],
         raw_fixture=str(raw), raw_fixture_receipt=fixture, rounds=args.rounds,
         samples=args.samples, point_probe=True, trace_only=getattr(args, 'trace_only', False),
+        cohort_prefill_probe=getattr(args, 'cohort_prefill_probe', False),
         model_prefill_probe=getattr(args, 'model_prefill_probe', False))
     atomic_json(out/'request.json', request)
     command = [receipt['carrier'], str(out/'request.json'), str(out)]

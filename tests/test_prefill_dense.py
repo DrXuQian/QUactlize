@@ -21,6 +21,7 @@ class DenseHelperHost(unittest.TestCase):
         cls.lib.dense_full4.argtypes=[C.c_uint64,C.c_uint,C.c_uint];cls.lib.dense_full4.restype=C.c_uint64
         cls.lib.dense_pair_host.argtypes=[C.c_int]*3+[C.c_void_p]*4+[C.c_int]*3
         cls.lib.dense_direct_host.argtypes=[C.c_int]*2+[C.c_void_p]*4+[C.c_int]*2
+        cls.lib.dense_q8_host.argtypes=[C.c_int]+[C.c_void_p]*3+[C.c_uint]*2+[C.c_int]
         cls.lib.dense_stripe4.argtypes=[C.c_uint64,C.c_uint,C.c_uint];cls.lib.dense_stripe4.restype=C.c_uint64
         cls.lib.dense_unsigned_index.argtypes=[C.c_uint]*4;cls.lib.dense_unsigned_index.restype=C.c_uint64
     @classmethod
@@ -61,6 +62,38 @@ class DenseHelperHost(unittest.TestCase):
                     args=(q,bf,*[packed[x].ctypes.data if packed[x].size else None for x in ('low','high','units')],out.ctypes.data,n,k)
                     self.assertEqual(self.lib.dense_direct_host(*args),0)
                     self.assertFalse(np.any((out!=want)&(((out|want)&0x7fff)!=0)))
+
+    def test_q8_full_tile_matches_independent_gguf(self):
+        import numpy as np
+        from gguf import GGMLQuantizationType
+        from gguf.quants import dequantize
+        from dev.bf16_compute.fixture import planes, bf16_bits
+        for n,k in ((256,256),(256,512),(512,1024)):
+            rng=np.random.default_rng(n+k)
+            raw=rng.integers(0,256,(n,k//32,34),dtype='u1')
+            scale=rng.uniform(-.09,.09,(n,k//32)).astype('<f2')
+            scale.view('<u2').flat[:8]=[0,0x8000,1,0x8001,0x3555,0xb555,0x0400,0x8400]
+            raw[:,:,:2]=scale.view('u1').reshape(n,k//32,2)
+            raw.reshape(-1,34)[:8,2:]=np.arange(256,dtype='u1').reshape(8,32)
+            packed=planes(raw,8)
+            gold=dequantize(raw.reshape(-1),GGMLQuantizationType.Q8_0).reshape(n,k)
+            for bf in (0,1):
+                want=bf16_bits(gold) if bf else gold.astype('<f2').view('<u2')
+                for fault in (0,1):
+                    out=np.full_like(want,0x7fff)
+                    rc=self.lib.dense_q8_host(bf,packed['low'].ctypes.data,packed['units'].ctypes.data,
+                                             out.ctypes.data,n,k,fault)
+                    self.assertEqual(rc,0)
+                    differs=np.any((out!=want)&(((out|want)&0x7fff)!=0))
+                    self.assertEqual(bool(differs),bool(fault))
+
+    def test_q8_coalesced_vector_loads_and_stores(self):
+        for base in range(0,128,32):
+            loads=[((t//8)*512+(t%8)*8)*2 for t in range(base,base+32)]
+            stores=[((t//4)*1024+(t%4)*8)*2 for t in range(base,base+32)]
+            for addresses in (loads,stores):
+                self.assertTrue(all(a%16==0 for a in addresses))
+                self.assertEqual(len({(a+b)//32 for a in addresses for b in range(16)}),16)
 
     def test_pair_geometry_independent_gguf_bits_and_faults(self):
         import numpy as np

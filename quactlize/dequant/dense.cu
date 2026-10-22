@@ -1,11 +1,42 @@
 #include <hggc_runtime.h>
 #include "../prefill/dense_api.h"
 #include "dense_reader.hpp"
+#include "dense_q8.hpp"
 #include "dense_cooperative.hpp"
 #include "packed_exchange.hpp"
 #include "../execution/validation.hpp"
 
 namespace quactlize::dequant {
+// One read per packed word; shared exchange preserves contiguous K8 stores.
+template<bool BF16>
+__global__ __launch_bounds__(128) void dense_dequant_q8(
+        uint16_t const* low, uint16_t const* units, uint16_t* output, int n, int k) {
+    using L = DenseQ8;
+    __shared__ uint32_t tile[L::Words];
+    __shared__ uint16_t scales[L::N];
+    unsigned tid = threadIdx.x, n0 = blockIdx.x * L::N, k0 = blockIdx.y * L::K;
+    unsigned row = tid / 8, col = tid % 8 * 8;
+    auto source = low + uint64_t(k0 / 2 + row) * unsigned(n) + n0 + col;
+    uint4 v = *reinterpret_cast<uint4 const*>(source);
+    unsigned at = L::shared(row, col);
+    tile[at] = v.x; tile[at + 1] = v.y; tile[at + 2] = v.z; tile[at + 3] = v.w;
+    if (tid < L::N) scales[tid] = units[uint64_t(k0 / 32) * unsigned(n) + n0 + tid];
+    __syncthreads();
+    #pragma unroll
+    for (unsigned part = 0; part < 2; ++part) {
+        unsigned column = tid / 4 + part * 32, kk = tid % 4 * 8;
+        uint32_t out[4];
+        #pragma unroll
+        for (unsigned p = 0; p < 4; ++p) {
+            auto a = tile[L::shared(L::packed_row(kk + 2*p), column)];
+            auto b = tile[L::shared(L::packed_row(kk + 2*p + 1), column)];
+            out[p] = uint32_t(L::weight<BF16>(L::code(a, column, kk), scales[column])) |
+                     (uint32_t(L::weight<BF16>(L::code(b, column, kk), scales[column])) << 16);
+        }
+        auto dst = output + uint64_t(n0 + column) * unsigned(k) + k0 + kk;
+        *reinterpret_cast<uint4*>(dst) = {out[0], out[1], out[2], out[3]};
+    }
+}
 template<KType T,bool BF16>
 __global__ void dense_dequant_direct(uint16_t const* low,uint16_t const* high,uint8_t const* units,
                                       uint16_t* output,int n,int k) {
@@ -187,15 +218,25 @@ extern "C" int quactlize_kpack_dequant_dense_v1(qzd_call_v1 const* c,
     if (!c || c->version!=1 || c->size!=sizeof(*c) || c->operation!=1 || c->experts!=1 ||
         c->zero || (storage!=0 && storage!=1) || !qkp_dense_dequant_variant_valid(variant)) return QKG_INVALID;
     qkg_sizes_v1 s{};int rc=sizes(c->qtype,c->n,c->k,c->experts,arr,s);if(rc)return rc;
-    if (c->qtype<10 || c->qtype>14 || (variant && c->qtype<12)) return QKG_FORMAT;
+    if ((c->qtype!=8 && (c->qtype<10 || c->qtype>14)) || (variant && c->qtype<12)) return QKG_FORMAT;
     if (c->k/128>65535 || c->n/32>65535 || (int64_t(c->n)*c->k+255)/256>INT32_MAX) return QKG_SHAPE;
     uint64_t bytes=uint64_t(c->n)*c->k*2;
     if (c->low_bytes<s.low_bytes || c->high_bytes<s.high_bytes || c->unit_bytes<s.units_bytes || c->output_bytes<bytes) return QKG_CAPACITY;
     uintptr_t p[]={uintptr_t(c->low),uintptr_t(c->high),uintptr_t(c->units),uintptr_t(c->output)};
     uint64_t len[]={s.low_bytes,s.high_bytes,s.units_bytes,bytes};
+    if (c->qtype==8 && c->high) return QKG_INVALID;
     for (int i=0;i<4;++i) if (len[i]) {
         if (!p[i] || p[i]%16 || !span(p[i],len[i])) return QKG_INVALID;
         for (int j=0;j<i;++j) if(overlap(p[i],len[i],p[j],len[j])) return QKG_INVALID;
+    }
+    if (c->qtype==8) {
+        if (c->k/32>65535) return QKG_SHAPE;
+        auto stream=static_cast<hggcStream_t>(c->stream);
+        auto low=static_cast<uint16_t const*>(c->low), units=static_cast<uint16_t const*>(c->units);
+        auto output=static_cast<uint16_t*>(c->output);
+        if (storage) dense_dequant_q8<true><<<dim3(c->n/64,c->k/32),128,0,stream>>>(low,units,output,c->n,c->k);
+        else dense_dequant_q8<false><<<dim3(c->n/64,c->k/32),128,0,stream>>>(low,units,output,c->n,c->k);
+        return hggcGetLastError()==hggcSuccess?QKG_OK:QKG_RUNTIME;
     }
     switch(c->qtype) {
         case 10:return dense_type<KType::Q2_K>(*c,storage,variant);

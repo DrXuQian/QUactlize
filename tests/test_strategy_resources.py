@@ -81,6 +81,17 @@ def test_control_is_not_expanded_or_promoted_to_rule():
     assert len(result['champion_controls'])==1
 
 
+def test_bounded_cohort_keeps_proposed_schedules_without_cartesian_expansion():
+    w,r,p=fixture();p['fixed_schedules']=True
+    data=inventory(dict(points=[p]))
+    assert data['counts']==dict(modules=1,queries=1)
+    row=receipt(w,r,0,3)
+    resolved=resolve_point(p,{digest(row['request']):row})
+    assert resolved['resource_resolution']['status']=='COMPLETE'
+    assert [Recipe.from_dict(v) for v in resolved['candidates']]==[r]
+    assert resolved['resource_resolution']['bindings'][r.key]['launch']==resolved_grid(w,r,64,3)
+
+
 @pytest.mark.parametrize('q,compute,metadata',[(12,'bf16',1),(8,'bf16',0),(14,'f16',0)])
 def test_grouped_request_is_full_v4_abi_without_data_pointers(q,compute,metadata):
     from quactlize.decode.native_compute import GroupedMetadataCall

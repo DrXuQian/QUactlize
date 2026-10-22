@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qwen3-32B PP2048 config sweep, ordinary calls + Asys GPU activity durations.
+"""Dense model/cohort config sweep, ordinary calls + Asys GPU activity durations.
 
 Production helpers integrated; this runner does not alter route selectors.
 No CUDA Graph, per-stage events or HGTX
@@ -88,6 +88,7 @@ def worker(a):
     root = a.output
     w = Workload(**job['workload'])
     a.workload, a.trace_only, a.model_prefill_probe = w, True, True
+    a.cohort_prefill_probe = 'cohort_sha256' in read(a.output/'plan.json')
     a.rounds, a.samples = 3, 17
     a.output = a.batch.parent
     (a.output/'results').mkdir()
@@ -107,6 +108,7 @@ def worker(a):
         for case in job['cases']:
             a.recipe, a.case_id = Recipe.from_dict(case['recipe']),case['id']
             a.helper_mode = case['helper_mode']
+            a.helper_options = case.get('helper_options')
             a.module_record = None
             if case.get('module'):
                 spec = module_spec(w,a.recipe)
@@ -204,10 +206,12 @@ def summarize(points, measurements):
         winner = min(eligible,key=lambda r:r['gpu_sum_us']) if eligible else None
         controls = [found[k] for k,c in pool.items() if 'model-config' in c['roles'] and k in found]
         same_dtype = [r for r in eligible if pool[r['case_id']].get('arm') in ('sf','fq','full-fp16')
-                      and pool[r['case_id']].get('helper_mode')=='production']
+                      and pool[r['case_id']].get('helper_mode') in ('production','cohort-current','experimental')]
         f16 = min(same_dtype,key=lambda r:r['gpu_sum_us']) if same_dtype else None
         legacy = [found[k] for k,c in pool.items() if 'legacy-model-config' in c['roles'] and k in found]
-        result.append(dict(id=point['id'],workload=point['workload'],pp_calls=len(point['tensors']),
+        result.append(dict(id=point['id'],workload=point['workload'],
+            pp_calls=point.get('call_count',len(point['tensors'])),
+            bucket=point.get('bucket'),consumers=point.get('consumers'),
             status='SCREEN_COMPLETE' if complete else 'INCOMPLETE',measured=len(found),expected=len(pool)+1,
             native_us=native_row['gpu_sum_us'] if native_row else None,
             native_phases=native_row['phases_us'] if native_row else None,
@@ -217,6 +221,7 @@ def summarize(points, measurements):
             best_recipe=pool[winner['case_id']]['recipe'] if winner else None,
             same_dtype_best_us=f16['gpu_sum_us'] if f16 else None,
             same_dtype_best_id=f16['case_id'] if f16 else None,
+            same_dtype_best_roles=pool[f16['case_id']]['roles'] if f16 else [],
             same_dtype_phases=f16['phases_us'] if f16 else None,
             same_dtype_delta_pct=100*(f16['gpu_sum_us']/native_row['gpu_sum_us']-1) if f16 and native_row else None,
             legacy_model_config_us=[r['gpu_sum_us'] for r in legacy],
@@ -257,6 +262,12 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--model',type=Path)
+    p.add_argument('--cohort',type=Path,help='validated plan_prefill_model_cohort.py inventory, instead of --model')
+    p.add_argument('--max-cases',type=int,default=96,help='cohort per-shape budget; never silently truncates controls')
+    p.add_argument('--max-modules',type=int,default=256)
+    p.add_argument('--shard',type=int,default=0)
+    p.add_argument('--shards',type=int,default=1)
+    p.add_argument('--point',action='append',help='cohort point ID; new run for a single-point optimization')
     p.add_argument('--sdk',type=Path,default=Path('/usr/local/PPU_SDK'))
     p.add_argument('--llama-source',type=Path,default=Path('/sim/eec/shared/junfu.qx/llama.cpp.ncp'))
     p.add_argument('--llama-build',type=Path)
@@ -274,6 +285,8 @@ def main():
     p.add_argument('--worker',action='store_true',help=argparse.SUPPRESS)
     p.add_argument('--batch',type=Path,help=argparse.SUPPRESS)
     a=p.parse_args()
+    if not 0<=a.shard<a.shards or a.shards>64 or a.max_cases<1 or a.max_modules<1:
+        p.error('invalid shard or candidate/module budget')
     if not a.device.isdigit() or not 1 <= a.configs_per_batch <= 32 or not 1<=a.jobs<=64:
         p.error('one GPU; 1..32 configs/batch; 1..64 compile jobs')
     a.output=a.output.resolve()
@@ -288,12 +301,18 @@ def main():
     if a.reuse_build: a.reuse_build=a.reuse_build.resolve(strict=True)
     if a.worker: return worker(a)
     a.output.mkdir(parents=True,exist_ok=a.resume)
-    if not a.model: p.error('--model is required')
+    if bool(a.model)==bool(a.cohort): p.error('supply exactly one of --model or --cohort')
     from tools.gguf_internal_shape_inventory import read_gguf_header
     from dev.strategy.provenance import source_identity
-    a.model=a.model.resolve(strict=True)
-    with a.model.open('rb') as stream: header=read_gguf_header(stream,str(a.model))
-    identity=dict(path=str(a.model),bytes=a.model.stat().st_size,header=header)
+    if a.cohort:
+        from dev.prefill_asys.cohort import validate, freeze as freeze_cohort
+        cohort=validate(read(a.cohort))
+        identity=dict(cohort_sha256=cohort['sha256'],shard=a.shard,shards=a.shards,max_cases=a.max_cases,
+                      points=sorted(a.point or []))
+    else:
+        a.model=a.model.resolve(strict=True)
+        with a.model.open('rb') as stream: header=read_gguf_header(stream,str(a.model))
+        identity=dict(path=str(a.model),bytes=a.model.stat().st_size,header=header)
     plan_path=a.output/'plan.json'
     if plan_path.exists():
         plan=read(plan_path)
@@ -302,7 +321,24 @@ def main():
         if plan['plan_sha256']!=digest({k:v for k,v in plan.items() if k!='plan_sha256'}):
             raise ValueError('plan digest differs')
     else:
-        plan=freeze(header,a.output)
+        if a.cohort:
+            if a.point:
+                known={v['id'] for v in cohort['points']}
+                if len(set(a.point))!=len(a.point) or not set(a.point)<=known:
+                    raise ValueError('unknown/duplicate requested point ID')
+                cohort=dict(cohort,points=[v for v in cohort['points'] if v['id'] in a.point])
+                cohort['sha256']=digest({k:v for k,v in cohort.items() if k!='sha256'})
+            plan=freeze_cohort(cohort,a.output,a.max_cases)
+            # Family ownership is stable. Every config/control for a shape
+            # runs on the same physical GPU; no cross-device fastest sample.
+            from dev.prefill_asys.cohort import partition
+            plan['all_counts']=dict(plan['counts'])
+            plan['points']=partition(plan['points'],a.shard,a.shards)
+            from dev.strategy.resources import inventory
+            plan['counts']=dict(points=len(plan['points']),**inventory(plan)['counts'])
+            if not plan['points']: raise ValueError('empty shard; reduce shard count')
+        else:
+            plan=freeze(header,a.output)
         plan.update(model_identity=identity,harness=source_seal(),source_identity=source_identity(ROOT))
         plan['plan_sha256']=digest({k:v for k,v in plan.items() if k!='plan_sha256'})
         atomic_json(plan_path,plan)
@@ -339,7 +375,7 @@ def main():
         if clock['returncode']: raise ValueError('1700MHz lock request failed')
         cmd=[sys.executable,'-u',str(ROOT/'tools/probe_kpack_strategy.py'),'--plan',str(plan_path),
             '--output',str(a.output/'probe'),'--sdk',str(a.sdk),'--cache',str(a.cache),
-            '--jobs',str(a.jobs),'--max-modules','96']
+            '--jobs',str(a.jobs),'--max-modules',str(a.max_modules if a.cohort else 96)]
         if (a.output/'probe').exists(): cmd.append('--resume')
         execute(cmd,a.output/('resources-'+str(time.time_ns())+'.log'),env)
         resource=read(a.output/'probe/summary.json')
@@ -363,15 +399,23 @@ def main():
                 # A TC + full-provider pair checks different capture ranges,
                 # adapters and allocation teardown before the larger batches.
                 cs=point['cases']
-                smoke=[next(c for c in cs if c['arm']=='sf' and c['helper_mode']=='production'),
-                       next(c for c in cs if c['arm']=='full-fp16'),
-                       next(c for c in cs if c['arm']=='full-bf16-typed')]
-                jobs.append(smoke)
+                smoke=[next((c for c in cs if c['arm']==arm and c['helper_mode']!='legacy'),None)
+                       for arm in ('sf','full-fp16','full-bf16-typed')]
+                smoke=[c for c in smoke if c]
+                if smoke: jobs.append(smoke)
                 rest=[c for c in cs if c['id'] not in {s['id'] for s in smoke}]
                 jobs += [rest[i:i+a.configs_per_batch] for i in range(0,len(rest),a.configs_per_batch)]
                 for cases in jobs:
                     before=observe(a.smi,pci,1700,advisory=True)
-                    measured=profile_batch(a,point,cases,authority,env)
+                    try:
+                        measured=profile_batch(a,point,cases,authority,env)
+                    except Exception as exc:
+                        if not a.cohort: raise
+                        atomic_json(a.output/('failed-'+point['id']+'-'+cases[0]['id']+'.json'),
+                            dict(point=point['id'],cases=[c['id'] for c in cases],error=repr(exc)))
+                        print('PREFILL_ASYS_BATCH_FAIL '+json.dumps(dict(point=point['id'],
+                            cases=[c['id'] for c in cases],error=str(exc)[-4000:],remaining_continue=1)),flush=True)
+                        measured=[]
                     for r in measured: measurements[point['id']][r['case_id']]=r
                     done+=len(cases)
                     after=observe(a.smi,pci,1700,advisory=True)
@@ -386,7 +430,16 @@ def main():
     except BaseException as e:
         atomic_json(a.output/('error-'+str(time.time_ns())+'.json'),dict(error=repr(e),traceback=traceback.format_exc()))
         raise
-    finally:package(a.output)
+    finally:
+        if a.cohort and (a.output/'execution-plan.json').exists():
+            review=a.output/('review-'+str(time.time_ns())+'.json.xz')
+            exported=subprocess.run([sys.executable,str(ROOT/'tools/review_prefill_cohort.py'),
+                '--run',str(a.output),'--output',str(review)])
+            if exported.returncode not in (0,1) or not review.is_file():
+                print('PREFILL_REVIEW_FAIL raw_results_retained=1; packaging diagnostic receipts',flush=True)
+                package(a.output)
+            else:print('results='+str(review),flush=True)
+        else:package(a.output)
 
 
 if __name__=='__main__':raise SystemExit(main())

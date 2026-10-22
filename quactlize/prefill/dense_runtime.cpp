@@ -34,6 +34,15 @@ struct DensePlan {
     ~DensePlan() {if(blas && destroy)destroy(blas);if(library)dlclose(library);}
 };
 }
+extern "C" int quactlize_kpack_dense_full_workspace_v1(qkp_call_v1 const* c,
+        quactlize_ppu_placed_arrangement_v2 const* arr, uint64_t* bytes) {
+    if (bytes) *bytes=0;
+    if (!c || !arr || !bytes || c->weight.experts!=1 || !address_free(*c)) return QKG_INVALID;
+    try {
+        Layout l{};int rc=layout(*c,arr,l,true);if(rc)return rc;
+        *bytes=dynamic_bytes(*c,l);return QKG_OK;
+    } catch (std::exception const& e) {dense_error=e.what();return QKG_OVERFLOW;}
+}
 extern "C" int quactlize_kpack_dense_helper_policy_v1(qkp_call_v1 const* c, int storage,
         int* dequant_variant, int* vector_io) {
     if (dequant_variant) *dequant_variant=-1;
@@ -60,12 +69,13 @@ extern "C" int quactlize_kpack_dense_full_prepare_v1(qkp_call_v1 const* c,
             (o->storage!=0 && o->storage!=1) || o->vector_io<0 || o->vector_io>3 ||
             (o->dequant_variant!=-1 && !qkp_dense_dequant_variant_valid(o->dequant_variant)) ||
             (o->dequant_variant==-1 && o->storage!=1) ||
+            (c->weight.qtype==8 && o->dequant_variant!=0) ||
             (o->dequant_variant>0 && c->weight.qtype<12) ||
             (o->math_mode!=0 && o->math_mode!=1 && o->math_mode!=3 &&
              o->math_mode!=16 && o->math_mode!=17 && o->math_mode!=19) ||
             (o->algorithm!=-1 && o->algorithm!=99))return QKG_INVALID;
         auto h=std::make_unique<DensePlan>();
-        int rc=layout(*c,arr,h->layout);if(rc)return rc;
+        int rc=layout(*c,arr,h->layout,true);if(rc)return rc;
         int device=-1;check(hggcGetDevice(&device),"device");if(device!=c->device)return QKG_INVALID;
         hggcStreamCaptureStatus capture;
         check(hggcStreamIsCapturing(static_cast<hggcStream_t>(c->weight.stream),&capture),"capture");

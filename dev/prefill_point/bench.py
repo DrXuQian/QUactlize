@@ -127,7 +127,8 @@ def qz(args, arm):
     keep = []
     try:
         w = getattr(args, 'workload', WORKLOAD)
-        promoted = getattr(args, 'helper_mode', 'legacy') == 'production'
+        helper_mode = getattr(args, 'helper_mode', 'legacy')
+        promoted = helper_mode in ('production','cohort-current')
         typed = arm in ('full-fp16', 'full-bf16-typed')
         tc = arm != 'full-bf16'
         recipe = getattr(args, 'recipe', SF if tc else
@@ -171,7 +172,7 @@ def qz(args, arm):
             a, out = core.a.data_ptr(), core.out.data_ptr()
             names = ['error_reset', 'input', 'expansion', 'main', 'output']
         seq = []
-        helper_choice = dense.choice(w,0) if promoted and tc else None
+        helper_choice = dense.choice(w,0,allow_miss=helper_mode=='cohort-current') if promoted and tc else None
         for i in range(copies):
             if not tc: seq.append(call(None, 3, [b.error.ptr, b.r.stream]))
             if sf_first:
@@ -232,7 +233,7 @@ def qz(args, arm):
             for buffer in core.buffers+(expansion.buffers if expansion else []): buffer.guard()
         else: core.guards()
         value = dict(status='PASS', arm=arm, workload=asdict(w), correctness=proof,
-            helper_policy=helper_choice,helper_mode='production' if promoted else 'legacy',
+            helper_policy=helper_choice,helper_mode=helper_mode,
             omitted_producer='DETECTED', zero_a='PASS', receipt=core.receipt,
             fixture=ring.receipt, stages=names, point_timings=rows,
             timing=('ASYS_GPU_ACTIVITIES_COMPLETE_CALLS_NO_INNER_EVENTS' if trace_only else

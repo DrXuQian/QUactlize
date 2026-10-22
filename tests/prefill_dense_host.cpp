@@ -2,11 +2,43 @@
 // against independent raw GGUF dequantization; fault arms must fail.
 #include <hggc_runtime.h>
 #include "quactlize/dequant/dense_reader.hpp"
+#include "quactlize/dequant/dense_q8.hpp"
 #include "quactlize/dequant/dense_cooperative.hpp"
 #include "quactlize/dequant/packed_exchange.hpp"
 #include "quactlize/prefill/dense_io_layout.hpp"
 #include <cstring>
 #include <vector>
+
+extern "C" int dense_q8_host(int bf,uint16_t const* low,uint16_t const* units,
+                            uint16_t* output,unsigned n,unsigned k,int fault) {
+    using L=quactlize::dequant::DenseQ8;
+    uint32_t tile[L::Words];
+    unsigned writes[L::Words];
+    for(unsigned n0=0;n0<n;n0+=64)for(unsigned k0=0;k0<k;k0+=32) {
+        std::fill(writes,writes+L::Words,0);
+        for(unsigned tid=0;tid<128;++tid) {
+            unsigned row=tid/8,col=tid%8*8,at=L::shared(row,col);
+            uint64_t src=uint64_t(k0/2+row)*n+n0+col;
+            if(src%8)return 1;
+            for(unsigned p=0;p<4;++p) {
+                if(++writes[at+p]!=1)return 2;
+                tile[at+p]=uint32_t(low[src+2*p])|(uint32_t(low[src+2*p+1])<<16);
+            }
+        }
+        for(unsigned tid=0;tid<128;++tid)for(unsigned part=0;part<2;++part) {
+            unsigned col=tid/4+part*32,kk=tid%4*8;
+            if((uint64_t(n0+col)*k+k0+kk)%8)return 3;
+            uint16_t d=units[uint64_t(k0/32)*n+n0+col];
+            for(unsigned v=0;v<8;++v) {
+                unsigned at=L::shared(L::packed_row(kk+v),col);
+                if(writes[at]!=1)return 4;
+                int code=L::code(tile[at],col,kk^(fault?8:0));
+                output[uint64_t(n0+col)*k+k0+kk+v]=bf?L::weight<true>(code,d):L::weight<false>(code,d);
+            }
+        }
+    }
+    return 0;
+}
 
 namespace pair_oracle {
 template<gguf_scale::KType T,bool BF16,unsigned TN,unsigned TK,bool Fast>

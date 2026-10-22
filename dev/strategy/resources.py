@@ -46,7 +46,7 @@ def inventory(plan):
                 if r.kind!='tc':continue
                 spec=module_spec(w,r);mid=digest(spec)
                 modules[mid]=spec
-                domain=grid_search(w,r) if role=='rule' else None
+                domain=grid_search(w,r) if role=='rule' and not point.get('fixed_schedules') else None
                 modes=domain['modes'] if domain else [dict(r.parameters).get('grid_mode',0)]
                 for algorithm in sorted({int(mode>=2) for mode in modes}):
                     request=probe_spec(w,r,algorithm);qid=digest(request)
@@ -161,7 +161,7 @@ def resolve_point(point, receipts):
         for value in point.get(field,[]):
             r=Recipe.from_dict(value)
             if r.kind!='tc':output[r.key]=value;continue
-            domain=grid_search(w,r) if role=='rule' else None
+            domain=grid_search(w,r) if role=='rule' and not point.get('fixed_schedules') else None
             modes=domain['modes'] if domain else [dict(r.parameters).get('grid_mode',0)]
             for algorithm in sorted({int(mode>=2) for mode in modes}):
                 spec=probe_spec(w,r,algorithm);key=digest(spec);row=receipts.get(key)

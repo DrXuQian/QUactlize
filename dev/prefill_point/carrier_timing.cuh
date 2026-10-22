@@ -1,7 +1,10 @@
 // Included inside a GENERATED copy of the original carrier's main. Existing
 // fixture/oracle/negative controls stay identical; only its timers are replaced.
 require(request.value("point_probe",false),"not a point probe");
-if(request.value("model_prefill_probe",false)) {
+if(request.value("cohort_prefill_probe",false)) {
+    require((weights.q==8 || (weights.q>=10 && weights.q<=14)) && point.m>=128 && point.m<=4096,
+            "cohort prefill diagnostic requires Q2..Q6/Q8 M128..4096");
+} else if(request.value("model_prefill_probe",false)) {
     require((weights.q==12 || weights.q==14) && point.m==2048,
             "model prefill diagnostic requires Q4/Q6 M2048");
 } else {
