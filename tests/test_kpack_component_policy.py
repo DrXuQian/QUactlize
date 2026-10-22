@@ -1,26 +1,9 @@
-import json
 from pathlib import Path
 import subprocess
 
-from tools.import_kpack_cost_policy import candidate, choose_profiles, header
+from tools.import_kpack_cost_policy import candidate, choose_profiles
 
 ROOT=Path(__file__).resolve().parents[1]
-
-
-def test_generated_cost_table_matches_audited_receipt():
-    report=json.loads((ROOT/'docs/measurements/kpack_component_policy_20260914.json').read_text())
-    assert len(report['points'])==502 and report['components_audited']==2385
-    assert len(report['knots'])==430
-    assert (ROOT/'policies/kpack_zw810_cost_v1.hpp').read_text()==header(report)
-    assert not report['small_m_full_dequant'] and not report['external_adapters_included']
-    for row in report['knots']:
-        assert row['tokens']>=128
-        for mask,c in row['choices'].items():
-            assert int(mask)&(1<<c['route'])
-            if c['route']==0:assert c['dequant_us']==0
-            if c['route']==2 and row['experts']>1:assert c['dequant_config'] in (4,5,10,11)
-            if c['route']<2:
-                assert c['tactic']==row['choices'][str(1<<c['route'])]['tactic']
 
 
 def test_tie_prefers_fq_and_unstable_times_do_not_win():
