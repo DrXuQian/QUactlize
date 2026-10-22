@@ -48,7 +48,6 @@ def pytest_runtest_setup(item):
         f"  fp16 in a different order, so the numbers disagree for a reason that is not a defect in either.\n"
         f"  Run them with the device disabled:\n"
         f"      QUACTLIZE_PPU_LIB=/nonexistent python -m pytest -m cpu_reference tests/\n"
-        f"  benchmarks/run_batch.sh's pytest step already runs them as a separate pass.\n"
         f"  QUACTLIZE_PPU_LIB currently = {os.environ.get('QUACTLIZE_PPU_LIB', '<unset>')}")
 
 
@@ -61,8 +60,8 @@ def pytest_runtest_setup(item):
 # five real defects and are about code nobody was running.
 #
 # The guard already existed in tests/test_layouts.py, but only for tests taking its Q fixture, so it surfaced as
-# one ERROR among many AFTER everything else had already been measured. run_batch's pytest step rebuilds
-# automatically now, and that only helps whoever remembers to use run_batch.
+# one ERROR among many AFTER everything else had already been measured. Legacy extension users must
+# rebuild with setup.py before testing; public-package CI is independent of that extension.
 #
 # So it is a SESSION-LEVEL refusal: nothing runs, and the first thing on screen is the command to fix it.
 #
@@ -89,6 +88,5 @@ def pytest_sessionstart(session):
         "about code nobody is running.\n"
         f"  newer than {so[0].name}: {', '.join(newer[:6])}{' ...' if len(newer) > 6 else ''}\n"
         "  fix:  python3 setup.py build_ext --inplace\n"
-        "  or:   ./benchmarks/run_batch.sh pytest   (rebuilds by itself, and splits the cpu_reference pass)\n"
         "  This has produced two full runs of plausible-looking garbage already -- 'worst nan' on all five "
         "formats and a planted fault going uncaught, both from a .so predating the commit under test.")

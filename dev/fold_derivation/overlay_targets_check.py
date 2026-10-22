@@ -42,8 +42,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.environ.get("QUACTLIZE_ROOT") or os.path.abspath(os.path.join(HERE, "..", ".."))
 
-# Targets other things break without. run_batch.sh builds exactly these: seven splitk variants, four q4k gates, two
-# verifier builds. do_check needs the latter two; do_perf needs splitk. Each is asserted to have been CREATED, not
+# Required legacy build targets. Each is asserted to have been CREATED, not
 # merely parsed -- the previous check consulted this list only while iterating registrations its regex happened to
 # match, so a registration that failed to parse took its requirement with it and the summary still printed "3
 # required target(s) present", a constant rather than a measurement.
@@ -197,7 +196,7 @@ def main():
         missing_req = [t for t in REQUIRED if t not in created]
         if missing_req:
             print(f"  [FAIL] overlay_targets: cmake configured, but did NOT create {', '.join(missing_req)}")
-            print("           benchmarks/run_batch.sh builds these; without them the gates cannot run.")
+            print("           Explicit legacy TARGET builds require these registrations.")
             for l in skipped[:6]:
                 print(f"           {l.strip()}")
             return 1

@@ -134,8 +134,8 @@ TARGET="${TARGET:-test_lowbit_dense_bench}"
 # their device payloads into one x86-64 executable stretches the final host ELF past the signed 32-bit relocations
 # used by crtbeginS.o and the host stubs.  The failure otherwise arrives only after every expensive device TU has
 # compiled.  Refuse the one combination we have measured to fail before even asking for the SDK; narrower, explicit
-# format subsets remain available for focused experiments and benchmarks/sweep_all_formats.sh is the full-coverage
-# path (five complete search spaces, five link units, one appended result stream).
+# format subsets remain available for explicit legacy-target builds. Current product sweeps use the
+# run_kpack_strategy_* runners rather than the retired all-format benchmark wrapper.
 #
 # Empty MOE_FORMATS means all five in CMake.  Also catch the explicit full set in any order.  Unknown names and
 # duplicates remain CMake's validation job: they already fail at configure time rather than after compilation.
@@ -160,8 +160,8 @@ if [ "$TARGET" = "test_lowbit_moe_bench" ] && [ "${MOE_ALLOW_ALL_FORMAT_MONOLITH
   fi
   if [ "$_moe_all_selected" -eq 1 ]; then
     echo "[build.sh] refusing the known-oversize five-format MoE link before hgcc starts." >&2
-    echo "           Run: bash benchmarks/sweep_all_formats.sh" >&2
-    echo "           That builds q3/q5/q6/i2/i4 separately and appends every result; coverage is unchanged." >&2
+    echo "           Select one legacy format with MOE_FORMATS=q3|q5|q6|i2|i4 and use a separate build directory." >&2
+    echo "           For current product sweeps, see README.md." >&2
     echo "           MOE_ALLOW_ALL_FORMAT_MONOLITH=1 is only for linker-layout diagnosis on the box." >&2
     exit 2
   fi

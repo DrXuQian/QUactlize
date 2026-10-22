@@ -1,6 +1,10 @@
-# Decode GEMV support and measurement
+# Historical decode GEMV measurement (2026-08-03)
 
-Current result: all five GGUF k-quants are independently validated through four production CUDA-core launches:
+This records the legacy routes and RTX 5090 results, not current PPU performance.
+The retired measurement runner is recoverable at commit `138ad8b`; current
+public-package correctness uses `run_tests.sh --suite test --package PATH`.
+
+At that revision, all five GGUF k-quants were independently validated through four CUDA-core launches:
 `FULLY_QUANTIZED` dense/MoE and `SCALE_FIRST` dense/MoE. The MoE launches use grid.z experts and gathered ragged
 rows; the scale-first launches consume a resident `(low, high, scale, zero)` artifact.
 
@@ -9,7 +13,7 @@ The gate is `test_device_decode_routes_match_official_oracle_and_reject_planted_
 `[2,0,3,1]`). Each launch must first make the official `gguf` oracle reject a launch-specific planted fault. The
 20 positive comparisons then require conditioned error below `2^-11`; observed errors are `4.64e-5..1.21e-4`.
 
-## Reproduce the measurement
+## Historical reproduction (checkout the archived revision)
 
 ```bash
 python benchmarks/decode_routes_bench.py --reps 9 --experts 8

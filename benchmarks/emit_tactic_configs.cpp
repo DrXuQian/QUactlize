@@ -72,8 +72,8 @@ bool g_prune = false;
 // blocks/CU and blocks/CU is not what binds at M=1: D6's grid is 512 CTAs against the 792 slots capacity 0 already
 // provides. Freed slots with no CTAs to put in them buy nothing.
 //
-// OFF BY DEFAULT AND IT MUST STAY OFF UNTIL THE SWEEP ANSWERS IT. benchmarks/sweep_real_shapes.py covers m=1 and
-// m=4 across every row; that run is what says whether a TileM > 16 row ever wins at small M. Pruning first would
+// OFF BY DEFAULT AND IT MUST STAY OFF UNTIL THE SWEEP ANSWERS IT. Cover m=1 and
+// m=4 across every row to establish whether a TileM > 16 row ever wins at small M. Pruning first would
 // destroy the evidence that would justify pruning. The dropped count is printed, because a sweep that silently
 // covers less is the failure this repository keeps paying for.
 int g_m_max = 0;

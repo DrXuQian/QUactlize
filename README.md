@@ -82,3 +82,22 @@ routes. Retired dense IDs are rejected, never renumbered or silently aliased.
 Production helper selection, arithmetic and configuration tables are unchanged.
 Use the current model-specific Asys sweep for new comparisons, not a retired
 round's command.
+
+The old `benchmarks/` batch/format/shape wrappers and completed 5090 experiments
+are retired (recoverable at `138ad8b`). Their dedicated checks and log parser
+are retired with them; product tests and recorded measurement evidence remain.
+The four remaining Python scripts have live consumers: `analyse.py` for
+selection analysis, `fixtures.py` / `workloads.py` for shared shape definitions,
+and `sweep_gemv_perf.py` for the legacy GEMV sweep entry. CMake benchmark targets,
+their generated configuration inputs and the Q4 comparison fixture headers
+remain because builds, oracles or current PPU comparisons still use them.
+
+Current performance entrypoints are separate from CI:
+
+- `tools/run_kpack_strategy_campaign_box.sh`: small-M selection campaign.
+- `tools/run_kpack_strategy_prefill_box.sh`: prefill component campaign.
+- `tools/run_prefill_model_asys_box.sh`: model-shape prefill Asys sweep.
+- `tools/run_native_components_box.sh`: isolated native/candidate comparison.
+
+Use their declared device, SDK, input and measurement requirements; these are
+not substitutes for `run_tests.sh` and do not run during product CI.

@@ -68,7 +68,7 @@ function(quactlize_ppu_executable NAME)
   # ABSOLUTE PATHS ARE GENERATED SOURCES AND MUST NOT BE PREFIXED. _SK_SRCS, _GEMV_UNIT_SRCS and _MOE_UNIT_SRCS all
   # expand to "${CMAKE_CURRENT_BINARY_DIR}/<dir>/<unit>.cu", written by file(WRITE) earlier in this file. Prefixing
   # one with CMAKE_CURRENT_SOURCE_DIR produced "<overlay>//abs/path", which never exists -- so the first version of
-  # this guard SKIPPED test_moe_splitk_bench, a target run_batch.sh cannot do without, and the unconditional
+  # this guard SKIPPED the required test_moe_splitk_bench target, and the unconditional
   # target_compile_options() below then failed with "not built by this project". The guard written to prevent a
   # configure failure caused one. IS_ABSOLUTE is the discriminator: every overlaid source is relative, every
   # generated one is absolute.

@@ -1581,13 +1581,6 @@ def lint_dense_splitk_multiformat_types():
         "[l199] PASS:")
 
 
-def lint_streamk_tail_plan():
-    """INBOX 122's scan must include attributed zero, medium, and extreme last waves."""
-    return _run_ci_script(
-        "check_streamk_tail_plan.py",
-        "Stream-K scan shapes derive from runtime workers and print Q/W/tail per row")
-
-
 def lint_streamk_tail_oracle():
     """The committed dense domain must admit an exact, nonempty DP-major tail partition.
 
@@ -1714,21 +1707,7 @@ def lint_format_loader():
     rc, log, dt = run(["bash", str(script)], cwd=str(ROOT))
     lines = [line.strip() for line in log.splitlines() if line.strip()]
     verdict = lines[-1] if lines else "l140 produced no output"
-    if rc != 0:
-        return "FAIL", verdict, dt
-    # l140 proves loader semantics, but the actual device recipe once supplied only the generic base path.  That
-    # made load_format(fmt) splice a nonexistent `_fmtN.so` even though the just-built library was valid.  Bind the
-    # integration line and its independent qtype mapping here so this exact failure cannot recur outside the oracle.
-    batch = (ROOT / "benchmarks" / "run_batch.sh").read_text()
-    required = (
-        '12) _packed_fmt=0', '13) _packed_fmt=1', '10) _packed_fmt=2',
-        '11) _packed_fmt=3', '14) _packed_fmt=4',
-        '"QUACTLIZE_PPU_LIB_FMT${_packed_fmt}=$_fmtso"',
-    )
-    missing = [needle for needle in required if needle not in batch]
-    if missing:
-        return "FAIL", f"run_batch format-loader binding missing {missing}", dt
-    return "PASS", verdict + "; run_batch FMT binding=PASS", dt
+    return ("PASS" if rc == 0 else "FAIL"), verdict, dt
 
 
 def lint_q36_zero_redundancy():
@@ -1891,19 +1870,6 @@ def lint_gemv_lop3_codegen():
     rc, log, dt = run([sys.executable, str(script)], cwd=str(ROOT))
     lines = [line.strip() for line in log.splitlines() if line.strip()]
     verdict = lines[-1] if lines else "l145 produced no output"
-    if rc == 3:
-        return "SKIP", verdict, dt
-    return ("PASS" if rc == 0 else "FAIL"), verdict, dt
-
-
-def lint_q4k_pdf_ab_contract():
-    """The reconstructed PDF comparison must preserve source, packer and raw-timing boundaries."""
-    script = ROOT / "ci" / "check_q4k_pdf_ab_contract.py"
-    if not script.is_file():
-        return "FAIL", f"missing {script.name}", 0.0
-    rc, log, dt = run([sys.executable, str(script)], cwd=str(ROOT))
-    lines = [line.strip() for line in log.splitlines() if line.strip()]
-    verdict = lines[-1] if lines else "Q4_K PDF A/B contract produced no output"
     if rc == 3:
         return "SKIP", verdict, dt
     return ("PASS" if rc == 0 else "FAIL"), verdict, dt
@@ -2631,7 +2597,6 @@ def main():
                 ("lint", "fixed Split-K W4 selector and exported C ABI fail closed", lint_dense_splitk_shipping_selector),
                 ("lint", "fixed Split-K one-plane shipping formats retain exact types", lint_dense_splitk_oneplane_formats),
                 ("lint", "fixed Split-K multiformat metadata ABIs retain exact types", lint_dense_splitk_multiformat_types),
-                ("lint", "Stream-K tail scan covers attributed zero, medium, and extreme waves", lint_streamk_tail_plan),
                 ("lint", "dense Stream-K tail partitions exhaust the committed BPC domain", lint_streamk_tail_oracle),
                 ("lint", "dense Marlin keeps K-fast stripes, reverse q locks, and the scheduler-owned grid", lint_dense_marlin_contract),
                 ("lint", "dense Marlin exhausts the declared deployment domain without sampling", lint_dense_marlin_exhaustive),
@@ -2657,7 +2622,6 @@ def main():
                 ("lint", "box identity is measured atomically and never guessed", lint_box_identity_probe),
                 ("lint", "L143 WK1 admission is executable committed evidence with planted reds", lint_l143_wk4_committed_evidence),
                 ("lint", "GEMV production converter reports normalized sm_120 extraction codegen", lint_gemv_lop3_codegen),
-                ("lint", "Q4_K PDF reconstruction preserves pack, topology and raw-event evidence", lint_q4k_pdf_ab_contract),
                 ("lint", "grouped Stream-K preserves q locks, worker/K decomposition, and timing", lint_grouped_streamk_contract),
                 ("lint", "l122_streamk_fixup_cohort contract pins the exact 64/128-thread CTA cohort", lint_streamk_fixup_cohort),
                 ("lint", "l124 predicates every shipped FP32 accumulator residue and preserves S1-4", lint_fp32_residue_fixup),

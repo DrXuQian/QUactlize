@@ -105,7 +105,7 @@ def ppu_backend_cuda(tmp_path_factory):
     Two tests errored for a build that should never have been attempted there. Taking the provided library is both
     the correct behaviour and strictly less work.
 
-    The check is is_file() rather than "is the variable set", because run_batch's CPU-reference pass deliberately
+    The check is is_file() rather than "is the variable set", because the CPU-reference pass deliberately
     sets QUACTLIZE_PPU_LIB to a nonexistent path -- that must still fall through to the stand-in, or the pass would
     lose its device tests entirely for a reason unrelated to what it is testing.
     """
@@ -1176,7 +1176,7 @@ def test_q4_kpack4_production_routes_share_one_artifact(ppu_backend_dense):
 # THE DEVICE LIBRARY IS BUILT PER FORMAT, and that is deliberate: a PPU_PACKED_FORMAT=2 binary intentionally
 # cannot run the Q4 packed launch (codex, 070). So "which formats can this run" is a property of the LIBRARY, not
 # of the test file, and a test that parametrised over every implemented format would report a build's scope as a
-# set of failures. run_batch builds once per format and sets QUACTLIZE_PACKED_FORMAT to match; the default is
+# set of failures. Set QUACTLIZE_PACKED_FORMAT to the format of the legacy library under test; the default is
 # Q4_K's ggml type, which is what a library built with no PPU_PACKED_FORMAT contains.
 def _packed_format_under_test() -> int:
     return int(os.environ.get("QUACTLIZE_PACKED_FORMAT", "12"))
@@ -1186,7 +1186,7 @@ def _require_packed_format(qtype: int, name: str):
     want = _packed_format_under_test()
     if qtype != want:
         pytest.skip(f"this library is built for packed format {want}, not {name} ({qtype}). A format-specific "
-                    f"binary cannot run another format's packed launch -- run_batch builds one per format. "
+                    f"binary cannot run another format's packed launch. "
                     f"Set QUACTLIZE_PACKED_FORMAT={qtype} against a matching build to run this case.")
 
 
@@ -1228,9 +1228,8 @@ def test_fully_quantized_dense_matches_dequant_first_and_rejects_fault(name, gt,
     # presence is the real question, and "built and wrong" then stays a failure rather than becoming a skip.
     if not (routes.has_op("gguf_prepare_fully_quantized_dense") and
             routes.has_op("gguf_dense_fully_quantized_for_arrangement")):
-        pytest.skip("the packed-dense ops are not in this build yet (INBOX 012). When they land, run_batch's "
-                    "required-not-to-skip list must be updated in the same change, or a skip on a device box "
-                    "reads as a pass.")
+        pytest.skip("the required packed-dense ops are absent from this legacy build; "
+                    "this skip is not device correctness evidence")
     _require_packed_format(qtype, name)
     prepare, launch = routes.prepare_fully_quantized_dense, routes.matmul_fully_quantized_dense
 

@@ -58,7 +58,7 @@ def test_bench_floor_header_links_from_two_translation_units(tmp_path):
     (tmp_path / "main.cu").write_text(MAIN)
 
     objs = []
-    # INCLUDE ORDER IS LOAD-BEARING and is written down in benchmarks/gemv_bench.py: third_party/cutlass is
+    # INCLUDE ORDER IS LOAD-BEARING: third_party/cutlass is
     # NVIDIA's and is what a local nvcc resolves `cutlass/...` against; third_party/actlize is the PPU fork and
     # supplies only what NVIDIA's does not have. Putting actlize first drags in the PPU SDK's vendor headers and
     # the build dies on hggc_runtime.h -- which reads exactly like "not portable" and is not.

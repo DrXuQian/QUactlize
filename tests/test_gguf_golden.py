@@ -920,8 +920,8 @@ def test_device_vecdot_agrees_with_its_own_cpu_reference_arm():
     torch = pytest.importorskip("torch")
     backend = quactlize.gguf_backend()
     if backend.startswith("cpu"):
-        pytest.skip(f"no device arm to compare against (backend is {backend}); run_batch.sh's pytest step "
-                    f"requires this test to RUN on a device box, so a skip there is a failure")
+        pytest.skip(f"no legacy device arm to compare against (backend is {backend}); "
+                    "run against the matching legacy device library, not the public-package CI suite")
 
     worst = {}
     for name, qtype, hdr, _sc, _cd, qmax in FORMATS:
