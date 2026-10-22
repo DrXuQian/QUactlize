@@ -7,6 +7,11 @@
 #include <thread>
 
 extern "C" hggcError_t hggcGetDevice(int* p){*p=0;return hggcSuccess;}
+static const char* test_name="PPU-ZW810";
+static int test_cu=72;
+extern "C" hggcError_t hggcGetDeviceProperties(hggcDeviceProp* p,int){
+    *p={};std::strcpy(p->name,test_name);p->multiProcessorCount=test_cu;return hggcSuccess;
+}
 extern "C" hggcError_t hggcStreamIsCapturing(hggcStream_t,hggcStreamCaptureStatus* p){*p=hggcStreamCaptureStatusNone;return hggcSuccess;}
 extern "C" hggcError_t hggcMemsetAsync(void* p,int value,size_t bytes,hggcStream_t){std::memset(p,value,bytes);return hggcSuccess;}
 extern "C" int quactlize_dense_io_v1(int storage,int input,int,void const* src,void* dst,int,int,int64_t,int const*,void*) {
@@ -59,4 +64,21 @@ int main(int argc,char** argv){
     assert(quactlize_kpack_dense_full_prepare_v1(&shape,&arr,&invalid,&h) && !h);
     for(auto& c:calls){std::free(const_cast<float*>(c.a));std::free(c.output);std::free(c.workspace);
         std::free(const_cast<void*>(c.weight.low));std::free(const_cast<void*>(c.weight.units));}
+    // Real runtime lookup, device guard and full table. No GPU timing claim.
+    int cases[][6]={{12,25600,5120,21,3,3},{12,8192,5120,21,3,3},
+        {12,5120,8192,20,1,1},{12,5120,25600,8,1,1},{12,1024,5120,20,2,2},
+        {14,5120,25600,21,1,2},{14,1024,5120,20,2,2}};
+    shape.m=shape.a_rows=2048;
+    for(auto const& row:cases)for(int storage:{0,1}){
+        shape.weight.qtype=row[0];shape.weight.n=shape.output_stride=row[1];shape.weight.k=shape.a_stride=row[2];
+        int dq=-1,io=-1;assert(!quactlize_kpack_dense_helper_policy_v1(&shape,storage,&dq,&io));
+        assert(dq==row[3] && io==row[4+storage]);
+        auto miss=[&]{dq=io=99;assert(quactlize_kpack_dense_helper_policy_v1(&shape,storage,&dq,&io)==QKG_SHAPE);assert(dq==-1 && io==-1);};
+        shape.m=shape.a_rows=1024;miss();shape.m=shape.a_rows=2048;
+        shape.a_stride++;miss();shape.a_stride--;
+        shape.output_stride++;miss();shape.output_stride--;
+        shape.weight.experts=256;miss();shape.weight.experts=1;
+        test_name="PPU-ZW610";test_cu=64;miss();test_name="PPU-ZW810";test_cu=72;
+        test_cu=71;miss();test_cu=72;
+    }
 }

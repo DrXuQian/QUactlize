@@ -5,8 +5,8 @@
 extern "C" {
 #endif
 
-// Additive dense-only candidates. No existing BF16/MoE entry or selector is
-// changed. Storage 0=FP16, 1=BF16. FP32 external endpoints and accumulation.
+// Dense-only helpers. Existing BF16/MoE entries are unchanged.
+// Storage 0=FP16, 1=BF16. FP32 external endpoints and accumulation.
 // F16 conversion has IEEE RNE overflow, never clipping or BF16 intermediates.
 typedef struct {
     uint32_t version, size;
@@ -21,10 +21,16 @@ typedef struct {
     // mantissa construction. All retain FP32 multiply/subtract rounding.
     // 14/15/16: paired bank layout N32/K128, N32/K256, N16/K256.
     // 17/18/19: same with cooperative unit metadata; 20/21: N64/K128/K256.
-    // 1..21 support Q4/Q5/Q6; 0 Q2..Q6. Existing selectors are unchanged.
+    // 1..21 support Q4/Q5/Q6; 0 Q2..Q6. Not the legacy weight.config namespace.
     int32_t dequant_variant;
     int32_t math_mode, algorithm; // explicit cuBLAS controls; compute is always 32F
 } qkp_dense_options_v1;
+
+// Host-only helper lookup for the measured device/shape/dtype. Returns
+// QKG_SHAPE on a miss with both outputs -1; caller retains its old helpers.
+// Does not select a GEMM, change precision, compile or launch any work.
+int quactlize_kpack_dense_helper_policy_v1(qkp_call_v1 const*, int storage,
+    int* dequant_variant, int* vector_io);
 
 // Same workspace/layout contract as query_dynamic_v1 (including private
 // cuBLAS workspace). Prepare is address-free and must occur outside capture.

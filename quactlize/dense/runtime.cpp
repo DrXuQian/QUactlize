@@ -4,6 +4,7 @@
 #include "../dispatch/selection.hpp"
 #include "../dispatch/smallm.hpp"
 #include "../prefill/api.h"
+#include "../prefill/dense_api.h"
 #include "../execution/simt_validation.hpp"
 #include <hggc_runtime_api.h>
 #include <dlfcn.h>
@@ -28,6 +29,7 @@ void require(bool condition,char const* message) {
 }
 void dispatch_check(int rc) { require(rc==QKS_OK,quactlize_kpack_dispatch_error_v1()); }
 void prefill_check(int rc) { require(rc==QKG_OK,quactlize_kpack_prefill_error_v1()); }
+void dense_full_check(int rc) { require(rc==QKG_OK,quactlize_kpack_dense_full_error_v1()); }
 void device_check(int expected) {
     int current=-1;
     require(hggcGetDevice(&current)==hggcSuccess && current==expected,"dense context/current device mismatch");
@@ -82,9 +84,14 @@ struct Plan {
     bool copy_input=false,copy_output=false;
     bool native_f16=false;
     bool legacy_adapters=false;
+    int helper_io=-1,helper_dequant=-1;
+    bool typed_full=false;
     ~Plan() {
         if (kind==Kind::Tc && handle) quactlize_kpack_dispatch_destroy_v1(handle);
-        if (kind==Kind::Full && handle) quactlize_kpack_prefill_destroy_v1(handle);
+        if (kind==Kind::Full && handle) {
+            if (typed_full) quactlize_kpack_dense_full_destroy_v1(handle);
+            else quactlize_kpack_prefill_destroy_v1(handle);
+        }
     }
 };
 struct Context {
@@ -282,15 +289,30 @@ void select_candidate(Plan& p,quactlize_ppu_dense_candidate_v1 const& c) {
 void prepare(Plan& p,quactlize_ppu_dense_candidate_v1 const* candidate=nullptr) {
     if (candidate) select_candidate(p,*candidate);else select(p);
     auto& info=p.info;info.compute_type=p.compute;
+    if (p.kind==Kind::Full || (p.kind==Kind::Tc && p.native_f16 && p.compute==QK_COMPUTE_F16)) {
+        auto shape=full_call(p);
+        // Full's admitted route is BF16 even in the default F16 context.
+        // Helper promotion must not silently change that arithmetic contract.
+        int storage=p.kind==Kind::Full ? 1 : 0;
+        int rc=quactlize_kpack_dense_helper_policy_v1(&shape,storage,&p.helper_dequant,&p.helper_io);
+        require(rc==QKG_OK || rc==QKG_SHAPE,"dense helper policy query failed");
+    }
     if (p.kind==Kind::Full) {
         auto shape=full_call(p);
         prefill_check(quactlize_kpack_prefill_query_dynamic_v1(&shape,&p.params.arrangement,&info.workspace_bytes));
-        qkp_options_v1 options{1,sizeof(options),p.owner->sdk.c_str(),nullptr,nullptr};
-        prefill_check(quactlize_kpack_prefill_prepare_dynamic_v1(&shape,&p.params.arrangement,&options,&p.handle));
+        p.typed_full=p.helper_dequant>=0;
+        if (p.typed_full) {
+            qkp_dense_options_v1 options{1,sizeof(options),p.owner->sdk.c_str(),1,p.helper_io,p.helper_dequant,16,-1};
+            dense_full_check(quactlize_kpack_dense_full_prepare_v1(&shape,&p.params.arrangement,&options,&p.handle));
+        } else {
+            qkp_options_v1 options{1,sizeof(options),p.owner->sdk.c_str(),nullptr,nullptr};
+            prefill_check(quactlize_kpack_prefill_prepare_dynamic_v1(&shape,&p.params.arrangement,&options,&p.handle));
+        }
         info.route=QUACTLIZE_DENSE_FULL_BF16;info.compute_type=QUACTLIZE_DENSE_BF16;
         info.policy=p.confirmed_prefill?QKS_PREFILL_COMPONENT_MEASURED:
             p.prefill.predicted?QKS_PREDICTED:QKS_COMPONENT_MEASURED;info.split=1;
-        std::snprintf(info.config,sizeof(info.config),"full-bf16:cublas:dq%d",p.prefill.dequant_config);
+        if (p.typed_full) std::snprintf(info.config,sizeof(info.config),"full-bf16:cublas:typed-dq%d:io%d",p.helper_dequant,p.helper_io);
+        else std::snprintf(info.config,sizeof(info.config),"full-bf16:cublas:dq%d",p.prefill.dequant_config);
         return;
     }
     uint64_t cursor=0;
@@ -335,6 +357,17 @@ void expand_sf(Plan const& p,uint8_t* base,void* stream,void const*& metadata,vo
     require(rc==QKG_OK,"dense SF expansion failed");metadata=scales;zero=zeros;
 }
 
+void copy_endpoint(Plan const& p,bool input,void const* src,void* dst,void* stream) {
+    int width=input?p.params.k:p.params.n;
+    int64_t stride=input?p.params.input_stride:p.params.output_stride;
+    int rc;
+    if (!p.native_f16) rc=quactlize_dense_copy_f32(static_cast<float const*>(src),static_cast<float*>(dst),
+        p.params.m,width,input?stride:width,input?width:stride,stream);
+    else if (p.helper_io>=0) rc=quactlize_dense_io_v1(0,input,p.helper_io,src,dst,p.params.m,width,stride,nullptr,stream);
+    else rc=quactlize_dense_convert_f16(input,src,dst,p.params.m,width,stride,p.legacy_adapters,stream);
+    require(!rc,input?"dense input copy failed":"dense output copy failed");
+}
+
 void run(Plan const& p,float const* a,float* output,void* workspace,uint64_t bytes,void* stream) {
     device_check(p.owner->device);
     require(buffers(p.params,p.low,p.high,p.units,a,output,workspace,bytes,p.info.workspace_bytes),
@@ -344,7 +377,9 @@ void run(Plan const& p,float const* a,float* output,void* workspace,uint64_t byt
         c.weight.low_bytes=p.params.sizes.low_bytes;c.weight.high_bytes=p.params.sizes.high_bytes;
         c.weight.unit_bytes=p.params.sizes.units_bytes;c.weight.stream=stream;
         c.a=a;c.output=output;c.workspace=workspace;c.workspace_bytes=bytes;
-        prefill_check(quactlize_kpack_prefill_run_dynamic_v1(p.handle,&c));return;
+        if (p.typed_full) dense_full_check(quactlize_kpack_dense_full_run_v1(p.handle,&c,-1));
+        else prefill_check(quactlize_kpack_prefill_run_dynamic_v1(p.handle,&c));
+        return;
     }
     auto base=static_cast<uint8_t*>(workspace);
     void const *metadata=nullptr,*zero=nullptr;
@@ -354,8 +389,7 @@ void run(Plan const& p,float const* a,float* output,void* workspace,uint64_t byt
     float const* input=a;float* result=output;
     if (p.copy_input) {
         auto dst=reinterpret_cast<float*>(base+p.input_offset);
-        require(!(p.native_f16 ? quactlize_dense_convert_f16(1,a,dst,p.params.m,p.params.k,p.params.input_stride,p.legacy_adapters,stream) :
-            quactlize_dense_copy_f32(a,dst,p.params.m,p.params.k,p.params.input_stride,p.params.k,stream)),"dense input copy failed");
+        copy_endpoint(p,true,a,dst,stream);
         input=dst;
     }
     if (p.copy_output) result=reinterpret_cast<float*>(base+p.output_offset);
@@ -373,8 +407,7 @@ void run(Plan const& p,float const* a,float* output,void* workspace,uint64_t byt
         c.output=result;c.workspace=scratch;c.workspace_bytes=p.kernel_bytes;c.stream=stream;
         dispatch_check(quactlize_kpack_dispatch_run_dynamic_v1(p.handle,&c));
     }
-    if (p.copy_output) require(!(p.native_f16 ? quactlize_dense_convert_f16(0,result,output,p.params.m,p.params.n,p.params.output_stride,p.legacy_adapters,stream) :
-        quactlize_dense_copy_f32(result,output,p.params.m,p.params.n,p.params.n,p.params.output_stride,stream)),"dense output copy failed");
+    if (p.copy_output) copy_endpoint(p,false,result,output,stream);
 }
 
 template<class F> int boundary(F fn) {

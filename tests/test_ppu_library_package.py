@@ -104,6 +104,31 @@ def test_exported_headers_need_no_private_source_include(tmp_path):
             text=True, check=True)
 
 
+@pytest.mark.parametrize('fault',[None,'policy','private-policy','image'])
+def test_public_dense_helper_receipt_binds_policy_and_private_runtime(tmp_path,fault):
+    from tools.build_ppu_library import PUBLIC_EXPORTS,verify
+    from quactlize.runtime.compiler import sha
+    source=tmp_path/'host.c';library=tmp_path/'libquactlize_ppu.so'
+    source.write_text('\n'.join('int '+name+'(void){return 0;}' for name in PUBLIC_EXPORTS))
+    subprocess.run(['cc','-shared','-fPIC',source,'-o',library],check=True)
+    runtime=tmp_path/'quactlize-runtime';runtime.mkdir()
+    image=runtime/'libquactlize_ppu_prefill.so';image.write_bytes(b'HOST RECEIPT TEST ONLY')
+    header='quactlize/prefill/dense_helpers.hpp'
+    receipt=runtime/'prefill-runtime.json'
+    data=dict(source_hashes={header:'a'*64},sha256=sha(image))
+    if fault=='private-policy':data['source_hashes'][header]='b'*64
+    if fault=='image':data['sha256']='b'*64
+    receipt.write_text(json.dumps(data))
+    m=dict(schema='quactlize.ppu-library.v1',source_hashes={header:'a'*64},
+        payloads={str(p.relative_to(tmp_path)):sha(p) for p in (library,image,receipt)},
+        dense_helpers=dict(policy_sha256='b'*64 if fault=='policy' else 'a'*64,
+                           runtime_receipt='quactlize-runtime/prefill-runtime.json'))
+    (tmp_path/'manifest.json').write_text(json.dumps(m))
+    if fault:
+        with pytest.raises(ValueError):verify(tmp_path)
+    else:assert verify(tmp_path)['dense_helpers']==m['dense_helpers']
+
+
 @pytest.mark.parametrize('fault', [None, 'missing-q4', 'stale-execution', 'missing-seal', 'capabilities'])
 def test_public_library_binds_actual_selected_execution(tmp_path, fault):
     from tools.build_ppu_library import PUBLIC_EXPORTS, verify

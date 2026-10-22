@@ -22,6 +22,10 @@ static int invoke(const PointCall & c) {
         case 2: return reinterpret_cast<int(*)(void*,void*,const void*,const void*,void*,int,int,int)>(
             c.function)(c.p[0],c.p[1],c.p[2],c.p[3],c.p[4],c.v[0],c.v[1],c.v[2]);
         case 3: return int(hggcMemsetAsync(c.p[0],0,4,static_cast<hggcStream_t>(c.p[1])));
+        case 4: return reinterpret_cast<int(*)(void*,void*,int)>(c.function)(c.p[0],c.p[1],c.v[0]);
+        case 5: return reinterpret_cast<int(*)(int,int,int,const void*,void*,int,int,int64_t,const int*,void*)>(
+            c.function)(c.v[0],c.v[1],c.v[2],c.p[0],c.p[1],c.v[3],c.v[4],c.stride,
+                        static_cast<const int*>(c.p[2]),c.p[3]);
         default: return 1;
     }
 }

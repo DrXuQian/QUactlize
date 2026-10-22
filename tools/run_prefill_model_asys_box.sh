@@ -59,7 +59,7 @@ if [[ -n ${PREVIOUS_RUN:-} ]]; then
     fi
 fi
 [[ -z ${TC_CACHE:-} ]] || args+=(--cache "${TC_CACHE}")
-echo "PREFILL_ASYS_BOX run=${RUN} gpu=${GPU} M=2048 shape_scope=QWEN3_32B_QUANTIZED_DENSE clock_MHz=1700 actual_clock=ADVISORY kernel_changes=0"
+echo "PREFILL_ASYS_BOX run=${RUN} gpu=${GPU} M=2048 shape_scope=QWEN3_32B_QUANTIZED_DENSE clock_MHz=1700 actual_clock=ADVISORY helpers=PRODUCTION_R4 native_accumulator=FP32"
 set +e
 "${PYTHON}" -u "${RUN}/source/tools/run_prefill_model_asys.py" \
     --output "${RUN}/results" --model "${MODEL}" --device "${GPU}" \

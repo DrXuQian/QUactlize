@@ -47,13 +47,17 @@ def activities(path):
 def helper_role(row, arm):
     if row['kind'] == 'memset': return None
     n = row['name'].replace(' ', '')
+    if arm != 'native-fp16':
+        typed=re.search(r'dense_convert_(?:vec8|stripe4|full4|scalar)<(?:true|false),(true|false)(?:,|>)',n)
+        if typed:return 'input' if typed[1]=='true' else 'output'
+        if re.search(r'dense_dequant_(?:direct|packed|unsigned|pair|cooperative)<',n):return 'expansion'
     if arm == 'native-fp16':
         if 'dequantize_block_' in n: return 'expansion'
         if ('convert_cont_ppu_kernel<float,__half>' in n or
                 'fp32_to_fp16' in n or 'convert_f32_to_f16' in n): return 'input'
         if ('convert_cont_ppu_kernel<__half,float>' in n or
                 'fp16_to_fp32' in n or 'convert_f16_to_f32' in n): return 'output'
-    elif arm == 'full-bf16':
+    elif arm in ('full-bf16','full-fp16','full-bf16-typed'):
         if '::gather_bf16(' in n: return 'input'
         if '::finish_bf16(' in n: return 'output'
         if re.search(r'\bfull_(direct|wide|transpose|shared|packed_exchange)<',n): return 'expansion'
@@ -74,11 +78,18 @@ def one_call(rows, arm, stages, split):
     expected = [s for s in stages if s not in ('main','error_reset')]
     if [r for _,r in helpers] != expected or helpers[-1][0] != len(rows)-1:
         raise ValueError('GPU call helper inventory/order differs: '+repr(helpers))
+    for row in rows:
+        name=row['name'].replace(' ','')
+        cast=re.search(r'dense_convert_(?:vec8|stripe4|full4|scalar)<(true|false),',name)
+        dq=re.search(r'dense_dequant_(?:direct|packed|unsigned|pair|cooperative)<[^,]+,(true|false)',name)
+        for match in (cast,dq):
+            if match and (match[1]=='true') != (arm in ('full-bf16','full-bf16-typed')):
+                raise ValueError('typed helper precision differs from arm: '+row['name'])
     first_main = helpers[-2][0]+1
     last_main = helpers[-1][0]
     if last_main <= first_main: raise ValueError('missing GPU main kernel')
     phases = {i:role for i,role in helpers}
-    if arm == 'full-bf16':
+    if arm in ('full-bf16','full-fp16','full-bf16-typed'):
         if helpers[0][0] != 1 or not (rows[0]['kind'] == 'memset' and
                 rows[0]['bytes'] == 4 and rows[0]['value'] == 0):
             raise ValueError('full BF16 reset activity missing or differs')
@@ -134,6 +145,8 @@ def parse_rows(rows, cases):
             kernels.append(dict(signature(node),phase=node['phase'],samples_us=samples,
                                 median_us=statistics.median(samples)))
         row = dict(case_id=case['case_id'],arm=arm,status='PASS',calls=len(kept),
+            helper_policy=case.get('helper_policy'),helper_mode=case.get('helper_mode'),
+            arithmetic=case.get('receipt',{}).get('arithmetic'),
             kernel_inventory=kernels,samples=kept,
             phases_us={p:statistics.median(r['phases_us'][p] for r in kept) for p in phases},
             **{key:statistics.median(r[key] for r in kept)

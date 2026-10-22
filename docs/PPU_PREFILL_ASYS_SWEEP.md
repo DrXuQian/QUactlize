@@ -1,7 +1,8 @@
 # Qwen3-32B PP2048 config screen
 
-`tools/run_prefill_model_asys_box.sh` changes no kernel, selector, or llama
-source/binary. It reads the real GGUF header and covers the seven quantized
+`tools/run_prefill_model_asys_box.sh` measures the integrated production
+helpers without changing route tables or the supplied llama source/binary.
+It reads the real GGUF header and covers the seven quantized
 dense weight families observed at M2048 (445 calls per prefill). Token lookup,
 the output head, and last-layer FFN M1 operations are explicitly excluded.
 
@@ -11,7 +12,10 @@ are 54 unique TC compile templates and 752 resource queries before actual
 Split-K/grid deduplication. This is not the Cartesian product of every legal
 tile/warp/pipeline. It does not promise the global optimum or model admission.
 Both FQ and SF remain measurable candidates, not mandatory fallbacks. Full
-BF16 dequant plus cuBLAS is also measured with the legal expansion configs.
+BF16 dequant plus cuBLAS is also measured with the legacy expansion configs.
+New Full-F16 and Full-BF16 arms query the same compiled helper policy as the
+production facade. Only old model/current TC configs get old-helper twins;
+the entire TC search is not doubled. See `PPU_PREFILL_DENSE_PRODUCTION.md`.
 SF metadata expansion stays at its model-control config (or Q4=4/Q6=0), so
 this is a GEMM-config screen, not a Cartesian helper-times-producer search.
 
@@ -23,7 +27,6 @@ clocks are recorded but throttling does not fail the run or rescale results.
 ```bash
 cd /sim/eec/shared/junfu.qx/quactlize
 git pull --ff-only origin develop
-PREVIOUS_RUN=/workspace/kpack-prefill-point.T71HvBXC \
 GPU=1 IDLE_CONFIRMED=1 JOBS=8 \
 PPU_SDK=/usr/local/PPU_SDK \
 LLAMA_CI_DIR=/sim/eec/shared/junfu.qx/llama.cpp.ncp \
@@ -31,7 +34,9 @@ LLAMA_CI_BUILD_DIR=/sim/eec/shared/junfu.qx/llama.cpp.ncp/build-ci-32F-cublas \
 bash tools/run_prefill_model_asys_box.sh
 ```
 
-`PREVIOUS_RUN` reuses the successful point's unchanged helper and dequant
+Start a fresh run after this integration (`unset RUN RESUME_RUN PREVIOUS_RUN`).
+The new dense helper runtime is built on Box. No llama rebuild is needed
+for this component sweep. `PREVIOUS_RUN` optionally reuses unchanged legacy helper and dequant
 libraries after source/SDK/image checks. The small native adapter and
 profiling wrappers are built in the new run using the supplied caller's
 flags; the previous native adapter and receipt are never changed. Missing
@@ -60,8 +65,8 @@ Asys uses profiler-API capture ranges, merging a small batch of configs into
 one report. CPU fixture construction, correctness, compilation and warmup are
 outside each range. Ordinary C++ calls rotate weights; no Python between
 stages, CUDA Graph, or per-stage events. The first captured ring is discarded;
-three further rings are retained. Startup validates native and a two-config
-SF/Full capture before continuing a family's larger batches.
+three further rings are retained. Startup validates native and a three-config
+SF/Full-F16/Full-BF16 capture before continuing a family's larger batches.
 
 The parser reads GPU kernel/memset activity `end-start`, retains all provider
 subkernels, and reports input, expansion, main, reducer, output and reset
@@ -70,8 +75,9 @@ gaps. Unknown provider subkernels are retained, never dropped. Missing calls,
 unexpected activity, changed post-warmup launch inventory, or numeric failure
 stops admission. There is no fallback to CPU/API/event times.
 
-Native rotating calls own per-weight-copy scratch; Quactlize reuses converted
-A/C. This is declared, not claimed to reproduce all model cache residency.
+Native and typed Full rotating calls own per-weight-copy scratch; TC and
+legacy Full reuse converted A/C. This is declared, not claimed to reproduce
+all model cache residency.
 The minimum GPU-sum config is a **screen winner**, not a production update:
 paired finalist confirmation and model trace comparison follow separately.
 

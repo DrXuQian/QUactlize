@@ -67,7 +67,8 @@ def freeze(header, output):
     result = dict(schema='quactlize.model-prefill-asys.v1', model='Qwen3-32B-Q4_K_M', m=2048,
         points=points, omitted=omitted, model_control_sha256=sha(CONTROLS),
         measurement='ASYS_GPU_ACTIVITIES_INSIDE_COMPLETE_ROTATING_CALLS',
-        arithmetic='EXTERNAL_F32; NATIVE_AND_TC_F16; FULL_BF16; ALL_ACCUMULATORS_F32',
+        arithmetic='EXTERNAL_F32; NATIVE_AND_TC_F16; SEPARATE_FULL_F16_AND_BF16; ALL_ACCUMULATORS_F32',
+        helper_policy='PRODUCTION_ZW810_PP2048_R4; RETAIN_LEGACY_CONTROLS',
         sf_expansion='FIXED_MODEL_CONTROL_OR_Q4_CONFIG4_Q6_CONFIG0; NOT_A_HELPER_CONFIG_SWEEP',
         candidates='ALL_LEGAL_RULE_AND_CONTROL_RECIPES; DISTINCT_RESOURCE_RESOLVED_GRIDS',
         scope='SEVEN_QUANTIZED_DENSE_FAMILIES_NOT_ALL_LEGAL_CARTESIAN_CONFIGS_NOT_MODEL_E2E',
@@ -101,18 +102,35 @@ def runnable(point):
             raise ValueError('required launch unavailable: '+r.key)
         launch = resolved_grid(w, r, receipt['device']['compute_units'], receipt['occupancy'])
         key = digest([spec, launch, p.get('dequant_config', -1)])
-        row = pool.setdefault(key, dict(id=key, arm=r.route, recipe=asdict(r),
+        row = pool.setdefault(key, dict(id=key, arm=r.route, recipe=asdict(r),helper_mode='production',
             module=digest(spec), launch=launch, roles=[]))
         if role not in row['roles']: row['roles'].append(role)
+    # Only the model/current config gets an old-helper twin. The TC search
+    # is not doubled, nor does the new route replace its control's evidence.
+    for row in list(pool.values()):
+        controls=[r for r in row['roles'] if r in ('model-config','source-current')]
+        if controls:
+            key=digest([row['id'],'legacy-helpers'])
+            pool[key]=dict(row,id=key,helper_mode='legacy',roles=['legacy-'+r for r in controls])
     # Full-dequant+cuBLAS is part of the search, not a separately omitted
     # fallback. Direct BF16 expansion, no F16->BF16 relabelling.
     for c in point['full_configs']:
         r = Recipe.make('full','full',dequant_config=c,provider='bf16-default')
-        row = dict(id=r.key, arm='full-bf16', recipe=asdict(r), roles=['full'])
+        row = dict(id=r.key, arm='full-bf16', recipe=asdict(r),helper_mode='legacy',roles=['legacy-full'])
         for role, value in values:
             other = Recipe.from_dict(value)
             if other.kind == 'full' and dict(other.parameters).get('dequant_config') == c:
-                if role not in row['roles']: row['roles'].append(role)
+                legacy_role='legacy-'+role
+                if legacy_role not in row['roles']: row['roles'].append(legacy_role)
         pool[row['id']] = row
+    for storage,arm in ((0,'full-fp16'),(1,'full-bf16-typed')):
+        # Query the SAME compiled helper policy as the production facade on
+        # device; do not copy its table or stale timings into this Python plan.
+        r=Recipe.make('full','full',provider='typed-fp16' if not storage else 'typed-bf16',
+                      helper_policy='production-r4')
+        roles=['typed-full','same-dtype-native' if not storage else 'bf16-alternative']
+        if storage:
+            roles += sorted({role for role,value in values if Recipe.from_dict(value).kind=='full'})
+        pool[r.key]=dict(id=r.key,arm=arm,recipe=asdict(r),helper_mode='production',roles=roles)
     # Config order is deterministic and independent of historical times.
     return sorted(pool.values(), key=lambda r:digest([point['id'],r['id']]))

@@ -86,3 +86,15 @@ Use `--recheck-existing` for a host-only review of saved ACU reports.
 
 Component gates, kernel full-call performance, whole-model numerics and warmed
 TPOT are four different deliverables. Passing one must not relabel the others.
+
+## Helper promotion must reach the actual provider
+
+The PP2048 R4 follow-up found that additive `dense_full_*` helpers were measured
+but the public facade still used old `prefill_*` calls and row casts. Integrate
+only the admitted device/shape/type scope, and have the sweep query the same
+compiled helper policy. Bind both policy and private DSO in the package receipt.
+Keep original GEMM recipes and arithmetic unchanged until the new full-call
+comparison is admitted. For dense, report Full-F16 and Full-BF16 separately;
+FP32 accumulation alone does not make their operands/rounding equivalent.
+Verify SF/input enqueue order against production, not an old diagnostic's
+order. See `docs/PPU_PREFILL_DENSE_PRODUCTION.md` and the model Asys screen.

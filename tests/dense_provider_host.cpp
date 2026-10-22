@@ -3,6 +3,7 @@
 #include "quactlize/dispatch/binding.cpp"
 #include "quactlize/dense/runtime.cpp"
 #include "quactlize/prefill/dynamic.hpp"
+#include "quactlize/prefill/dense_helpers.hpp"
 #include "quactlize/runtime/dynamic.hpp"
 #include <cassert>
 #include <iomanip>
@@ -13,6 +14,7 @@
 namespace test {
 std::vector<std::string> launches;
 int device=0,capture=0;
+bool helper_device=true;
 struct Handle {qk_call_v1 shape;bool typed;};
 int resource(qk_call_v1 const* c,qk_recipe_v1 const* r,qk_resources_v1* out) {
     *out={1,sizeof(*out),r->split>1 ? uint64_t(c->m)*c->n*r->split*4 : 0,4096,6,0,0};return 0;
@@ -113,6 +115,26 @@ extern "C" int quactlize_dense_copy_f32(float const*,float*,int,int,int64_t,int6
 extern "C" int quactlize_dense_convert_f16(int input,void const*,void*,int,int,int64_t,int linear,void*) {
     test::launches.push_back(linear?(input?"legacy-in":"legacy-out"):(input?"f16-in":"f16-out"));return 0;
 }
+extern "C" int quactlize_kpack_dense_helper_policy_v1(qkp_call_v1 const* c,int storage,int* dq,int* io) {
+    *dq=*io=-1;
+    if(!test::helper_device || c->a_stride!=c->weight.k || c->output_stride!=c->weight.n)return QKG_SHAPE;
+    auto choice=quactlize::prefill::dense_helpers(c->weight.qtype,c->m,c->weight.n,c->weight.k,storage);
+    *dq=choice.dequant;*io=choice.io;return *dq<0?QKG_SHAPE:QKG_OK;
+}
+extern "C" int quactlize_dense_io_v1(int storage,int input,int vector,void const*,void*,int,int,int64_t,int const*,void*) {
+    assert(!storage);test::launches.push_back(std::string(input?"vector-in-":"vector-out-")+std::to_string(vector));return 0;
+}
+extern "C" int quactlize_kpack_dense_full_prepare_v1(qkp_call_v1 const* c,quactlize_ppu_placed_arrangement_v2 const*,qkp_dense_options_v1 const* o,void** out) {
+    assert(quactlize::prefill::address_free(*c) && o->storage==1 && o->math_mode==16 && o->algorithm==-1);
+    auto choice=quactlize::prefill::dense_helpers(c->weight.qtype,c->m,c->weight.n,c->weight.k,1);
+    assert(o->vector_io==choice.io && o->dequant_variant==choice.dequant);
+    *out=new qkp_call_v1(*c);return 0;
+}
+extern "C" int quactlize_kpack_dense_full_run_v1(void* h,qkp_call_v1 const* c,int stage) {
+    assert(stage==-1 && quactlize::prefill::same_shape(*static_cast<qkp_call_v1*>(h),*c));test::launches.push_back("full-typed-bf16");return 0;
+}
+extern "C" void quactlize_kpack_dense_full_destroy_v1(void* h){delete static_cast<qkp_call_v1*>(h);}
+extern "C" char const* quactlize_kpack_dense_full_error_v1(){return "fake typed provider";}
 extern "C" int qkg_q4_decode_launch(qkg_call_v1 const&,qkg_q4_decode_config_v1 const&) {test::launches.push_back("q4");return 0;}
 extern "C" int qkg_q4_decode_launch_bf16(qkg_call_v1 const&,qkg_q4_decode_config_v1 const&) {test::launches.push_back("q4-bf16");return 0;}
 #define QSTUB(Q) \
@@ -143,6 +165,41 @@ extern "C" void quactlize_kpack_prefill_destroy_v1(void* h) {delete static_cast<
 extern "C" char const* quactlize_kpack_prefill_error_v1() {return "fake provider";}
 
 #include "dense_poc_selection.hpp"
+
+void promoted_helpers() {
+    for(int compute:{0,1})for(bool target:{false,true}) {
+        kImages.clear();auto ctx=test::context(compute);test::helper_device=target;
+        auto p=test::params(12,2048);void* raw=nullptr;
+        quactlize_ppu_dense_plan_info_v1 info{1,sizeof(info)};
+        quactlize_ppu_dense_candidate_v1 candidate{1,sizeof(candidate)};
+        candidate.kind=3;candidate.route=QUACTLIZE_DENSE_FULL_BF16;candidate.dequant_config=12;
+        assert(!quactlize_ppu_dense_prepare_candidate_v1(ctx.get(),&p,
+            reinterpret_cast<void*>(UINT64_C(0x10000000000)),nullptr,reinterpret_cast<void*>(UINT64_C(0x30000000000)),
+            &candidate,&raw,&info));
+        auto& plan=*static_cast<quactlize::dense::Plan*>(raw);
+        assert(plan.typed_full==target && info.compute_type==QUACTLIZE_DENSE_BF16);
+        assert(plan.helper_io==(target?2:-1) && plan.helper_dequant==(target?20:-1));
+        for(uintptr_t replay:{1,2}) {
+            test::launches.clear();
+            assert(!quactlize_ppu_dense_run_v1(raw,reinterpret_cast<float*>(UINT64_C(0x40000000000)+replay*256),
+                reinterpret_cast<float*>(UINT64_C(0x50000000000)+replay*256),
+                reinterpret_cast<void*>(UINT64_C(0x60000000000)+replay*256),info.workspace_bytes,reinterpret_cast<void*>(replay)));
+            assert((test::launches==std::vector<std::string>{target?"full-typed-bf16":"full"}));
+        }
+    }
+    for(bool target:{false,true}) {
+        kImages.clear();test::helper_device=target;auto ctx=test::context(0);auto p=test::params(12,2048);
+        auto raw=test::plan(*ctx,p);auto& plan=*static_cast<quactlize::dense::Plan*>(raw);
+        assert(plan.kind==quactlize::dense::Kind::Tc && plan.native_f16);
+        assert(plan.helper_io==(target?2:-1));test::launches.clear();
+        assert(!quactlize_ppu_dense_run_v1(raw,reinterpret_cast<float*>(UINT64_C(0x40000000000)),
+            reinterpret_cast<float*>(UINT64_C(0x50000000000)),reinterpret_cast<void*>(UINT64_C(0x60000000000)),
+            plan.info.workspace_bytes,nullptr));
+        assert(test::launches[test::launches.size()-3]==(target?"vector-in-2":"f16-in"));
+        assert(test::launches.back()==(target?"vector-out-2":"f16-out"));
+    }
+    test::helper_device=true;
+}
 
 void explicit_candidates() {
     using namespace quactlize::dispatch;
@@ -375,4 +432,5 @@ int main() {
     test::capture=0;
     std::printf("DENSE_PROVIDER_HOST PASS matched=%zu prefill=%zu all_m=1 metadata=F16 default=POC_F16 timing=NOT_MEASURED\n",matched_count,cost_count);
     explicit_candidates();
+    promoted_helpers();
 }

@@ -117,6 +117,16 @@ def verify(output):
                 receipt['path'] not in manifest['payloads']):
             raise ValueError('public provider confirmed prefill receipt differs')
         check_receipt(receipt,manifest['source_hashes'],manifest['payloads'][receipt['path']])
+    if 'dense_helpers' in manifest:
+        helper=manifest['dense_helpers']
+        path=helper['runtime_receipt']
+        if (path!='quactlize-runtime/prefill-runtime.json' or path not in manifest['payloads'] or
+                helper['policy_sha256']!=manifest['source_hashes'].get('quactlize/prefill/dense_helpers.hpp')):
+            raise ValueError('public provider helper policy binding differs')
+        runtime=json.loads((output/path).read_text())
+        if (runtime['source_hashes'].get('quactlize/prefill/dense_helpers.hpp')!=helper['policy_sha256'] or
+                runtime['sha256']!=manifest['payloads'].get('quactlize-runtime/libquactlize_ppu_prefill.so')):
+            raise ValueError('public provider and dense helper runtime differ')
     return manifest
 
 
@@ -142,6 +152,8 @@ def build(sdk, output, jobs):
     public_sources = {p: sha(p) for directory in ('quactlize/dense', 'quactlize/dispatch')
                       for p in (ROOT / directory).iterdir() if p.is_file()}
     public_sources.update({p: sha(p) for p in (ROOT/'policies').iterdir() if p.suffix in ('.hpp', '.json')})
+    helper_policy=ROOT/'quactlize/prefill/dense_helpers.hpp'
+    public_sources[helper_policy]=sha(helper_policy)
     from tools.generate_decode_selection import EVIDENCE, OUTPUT, effective, header
     if header(effective(json.loads(EVIDENCE.read_text()))) != OUTPUT.read_text():
         raise ValueError('stale effective decode catalog; regenerate before building')
@@ -161,6 +173,7 @@ def build(sdk, output, jobs):
     for component, name in (('execution', 'libquactlize_ppu_execution.so'),
                             ('prefill', 'libquactlize_ppu_prefill.so')):
         shutil.copy2(work / component / name, runtime / name)
+    shutil.copy2(work/'prefill/manifest.json',runtime/'prefill-runtime.json')
     compiler = Compiler(sdk, work / 'modules', jobs)
     contract = source_contract(compiler.identity)
     (work / 'catalog.inc').write_text(catalog([], contract))
@@ -229,6 +242,8 @@ def build(sdk, output, jobs):
         prefill_confirmed=dict(path='quactlize-runtime/prefill-confirmed.json',
             header_sha256=sha(PREFILL_HEADER), **receipt_fields()),
         default_dense_compute='F16_POC', device_admission='PENDING',
+        dense_helpers=dict(policy_sha256=sha(helper_policy),runtime_receipt='quactlize-runtime/prefill-runtime.json',
+                           scope='ZW810_DENSE_M2048_SEVEN_NK_FAMILIES; NO_GEMM_ROUTE_OR_DTYPE_CHANGE'),
         performance_admission='NOT_MEASURED', seconds=time.monotonic() - start)
     (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     verify(output)

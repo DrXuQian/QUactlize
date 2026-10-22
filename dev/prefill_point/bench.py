@@ -127,14 +127,23 @@ def qz(args, arm):
     keep = []
     try:
         w = getattr(args, 'workload', WORKLOAD)
+        promoted = getattr(args, 'helper_mode', 'legacy') == 'production'
+        typed = arm in ('full-fp16', 'full-bf16-typed')
         tc = arm != 'full-bf16'
         recipe = getattr(args, 'recipe', SF if tc else
                          Recipe.make('full', 'full', dequant_config=12, provider='bf16-default'))
         need_sf = tc and recipe.route == 'sf' and w.qtype != 8
+        sf_first = need_sf and (promoted or getattr(args,'model_prefill_probe',False))
         dequant_config = dict(recipe.parameters).get('dequant_config', 4 if tc else 12)
         if dequant_config < 0: dequant_config = 4 if w.qtype == 12 else 0
         ring = getattr(args, 'shared_ring', None) or Ring(sdk, w, args.l2_bytes)
         b = Context(sdk, ring, w, Helpers(payload/'helpers/libstrategy_prefill.so'))
+        dense = None
+        if promoted or typed:
+            from .typed import DenseLibrary, measure_full
+            dense = DenseLibrary(args.dense_library)
+        if typed:
+            return measure_full(args,b,timer,arm,recipe,dense)
         copies = ring.copies
         if tc:
             spec = module_spec(w, recipe)
@@ -155,18 +164,23 @@ def qz(args, arm):
             if expansion:
                 for c in expansion.calls: c.config = dequant_config
             names = ['input']+(['expansion'] if need_sf else [])+['main', 'output']
+            if sf_first: names = ['expansion','input','main','output']
         else:
             core = Full(b, payload/'dequant', args.l2_bytes, args.sdk, workspace_bytes=4 << 20)
             submit = NativeCalls(b, core)
             a, out = core.a.data_ptr(), core.out.data_ptr()
             names = ['error_reset', 'input', 'expansion', 'main', 'output']
         seq = []
+        helper_choice = dense.choice(w,0) if promoted and tc else None
         for i in range(copies):
             if not tc: seq.append(call(None, 3, [b.error.ptr, b.r.stream]))
-            seq.append(call(b.helpers.io, 1, [b.a.ptr, a, None, b.error.ptr, b.r.stream],
+            if sf_first:
+                seq.append(call(expansion.fn, pointers=[ptr(C.byref(expansion.calls[i])), ptr(C.byref(b.arr))]))
+            seq.append(dense.io_call(b,b.a.ptr,a,input=True,storage=0,vector=helper_choice['vector_io']) if helper_choice else
+                call(b.helpers.io, 1, [b.a.ptr, a, None, b.error.ptr, b.r.stream],
                             [int(not tc), 1, w.m, w.k, w.m], w.k))
             if tc:
-                if expansion:
+                if expansion and not sf_first:
                     seq.append(call(expansion.fn, pointers=[ptr(C.byref(expansion.calls[i])), ptr(C.byref(b.arr))]))
                 seq.append(call(core.run_fn, pointers=[core.handles[i], b.r.stream]))
             else:
@@ -180,7 +194,8 @@ def qz(args, arm):
                 seq.append(call(core.dequant, pointers=[ptr(C.byref(dq)), ptr(C.byref(b.arr))]))
                 seq.append(call(submit.run, 2, [submit.entry, core.provider.handle, a, target, out],
                                 [w.m, w.n, w.k]))
-            seq.append(call(b.helpers.io, 1, [out, b.out.ptr, None, b.error.ptr, b.r.stream],
+            seq.append(dense.io_call(b,out,b.out.ptr,input=False,storage=0,vector=helper_choice['vector_io']) if helper_choice else
+                call(b.helpers.io, 1, [out, b.out.ptr, None, b.error.ptr, b.r.stream],
                             [int(not tc), 0, w.m, w.n, w.m], w.n))
         calls = (Call*len(seq))(*seq)
         proof = []
@@ -217,12 +232,14 @@ def qz(args, arm):
             for buffer in core.buffers+(expansion.buffers if expansion else []): buffer.guard()
         else: core.guards()
         value = dict(status='PASS', arm=arm, workload=asdict(w), correctness=proof,
+            helper_policy=helper_choice,helper_mode='production' if promoted else 'legacy',
             omitted_producer='DETECTED', zero_a='PASS', receipt=core.receipt,
             fixture=ring.receipt, stages=names, point_timings=rows,
             timing=('ASYS_GPU_ACTIVITIES_COMPLETE_CALLS_NO_INNER_EVENTS' if trace_only else
                     'CPP_ORDINARY_EVENTS_NO_GRAPH_NO_ASYS_NO_PYTHON_BETWEEN_EVENTS'),
             cache_note='ROTATING_QUANTIZED_WEIGHTS_RESIDENT_F32_A; SF_METADATA_NOT_SEPARATELY_COLD',
-            sequence='EXPANSION_ON_EVERY_CALL_NOT_REUSED_ACROSS_CALLS',
+            sequence=('SF_INPUT_MAIN_OUTPUT_EVERY_CALL' if sf_first else
+                      'EXPANSION_ON_EVERY_CALL_NOT_REUSED_ACROSS_CALLS'),
             provider_workspace_bytes=0 if tc else 4 << 20,
             allocation='SHARED_CONVERTED_A_AND_C; EXPANDED_B_RING_AT_LEAST_2P25_L2_FOR_FULL',
             loaded_images=loaded_images(), summary=None if trace_only else summarize(rows, names),

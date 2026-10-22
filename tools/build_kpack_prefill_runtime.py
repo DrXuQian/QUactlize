@@ -49,11 +49,27 @@ def build(sdk,output,jobs):
         if f'quactlize_kpack_prefill_{name}_dynamic_v1' not in symbols:raise ValueError('missing dynamic prefill ABI')
     for name in ('prepare','run','destroy','error'):
         if f'quactlize_kpack_dense_full_{name}_v1' not in symbols:raise ValueError('missing dense full ABI')
+    if 'quactlize_kpack_dense_helper_policy_v1' not in symbols:raise ValueError('missing dense helper policy')
     manifest=dict(schema='quactlize.prefill-runtime.v1',library=lib.name,sha256=sha(lib),source_hashes=inputs,
         runtime={f'lib{x}.so':sha(sdk/'lib'/f'lib{x}.so') for x in LIBRARIES},compiler_sha256=sha(sdk/'bin/hgcc'),
         commands=commands,seconds=time.monotonic()-start,device_admission='PENDING_COMPOSED_RUNTIME')
     (output/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     print('KPACK_PREFILL_BUILD COMPLETE '+str(lib),flush=True)
+
+
+def verify(sdk,output):
+    """Bind an existing payload to the exact sources/SDK, not its filename."""
+    manifest=json.loads((output/'manifest.json').read_text())
+    if manifest['schema']!='quactlize.prefill-runtime.v1' or sha(output/manifest['library'])!=manifest['sha256']:
+        raise ValueError('prefill runtime identity differs')
+    if sha(sdk/'bin/hgcc')!=manifest['compiler_sha256']:raise ValueError('prefill compiler differs')
+    for name,want in manifest['source_hashes'].items():
+        if sha(ROOT/name)!=want:raise ValueError('prefill source differs: '+name)
+    if 'quactlize/prefill/dense_helpers.hpp' not in manifest['source_hashes']:
+        raise ValueError('prefill runtime predates production helper policy')
+    for name,want in manifest['runtime'].items():
+        if sha(sdk/'lib'/name)!=want:raise ValueError('prefill SDK runtime differs: '+name)
+    return manifest
 
 
 if __name__=='__main__':

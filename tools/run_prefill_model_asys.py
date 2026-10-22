@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Qwen3-32B PP2048 config sweep, ordinary calls + Asys GPU activity durations.
 
-No kernel/selector/caller edits. No CUDA Graph, per-stage events or HGTX
+Production helpers integrated; this runner does not alter route selectors.
+No CUDA Graph, per-stage events or HGTX
 range inference. Fixed-size config batches share one cold-weight fixture;
 profiler API capture ranges merge into a report, with first-ring exclusion.
 """
@@ -51,7 +52,9 @@ def validate_payload(a):
     hp, dq = verify(a.sdk,payload/'helpers'), dequant_verify(payload/'dequant',a.sdk)
     for name,value in dq['source_hashes'].items():
         if sha(ROOT/name) != value: raise ValueError('dequant source changed: '+name)
-    return dict(path=str(payload),helpers=hp['sha256'],dequant=dq['sha256'])
+    from tools.build_kpack_prefill_runtime import verify as verify_dense
+    dense=verify_dense(a.sdk,a.output/'build/dense')
+    return dict(path=str(payload),helpers=hp['sha256'],dequant=dq['sha256'],dense=dense['sha256'])
 
 
 def validate_native(receipt, a):
@@ -97,11 +100,13 @@ def worker(a):
         return 0
     a.timer_library = root/'build/libpoint-timer.so'
     a.device_payload = Path(authority['payload']['path'])
+    a.dense_library = root/'build/dense/libquactlize_ppu_prefill.so'
     a.shared_ring = Ring(SDK(a.sdk),w,a.l2_bytes)
     values = []; modules = read(root/'modules.json'); compilers = {}
     try:
         for case in job['cases']:
             a.recipe, a.case_id = Recipe.from_dict(case['recipe']),case['id']
+            a.helper_mode = case['helper_mode']
             a.module_record = None
             if case.get('module'):
                 spec = module_spec(w,a.recipe)
@@ -198,6 +203,10 @@ def summarize(points, measurements):
         complete = set(found) == set(pool) | {'native-fp16'}
         winner = min(eligible,key=lambda r:r['gpu_sum_us']) if eligible else None
         controls = [found[k] for k,c in pool.items() if 'model-config' in c['roles'] and k in found]
+        same_dtype = [r for r in eligible if pool[r['case_id']].get('arm') in ('sf','fq','full-fp16')
+                      and pool[r['case_id']].get('helper_mode')=='production']
+        f16 = min(same_dtype,key=lambda r:r['gpu_sum_us']) if same_dtype else None
+        legacy = [found[k] for k,c in pool.items() if 'legacy-model-config' in c['roles'] and k in found]
         result.append(dict(id=point['id'],workload=point['workload'],pp_calls=len(point['tensors']),
             status='SCREEN_COMPLETE' if complete else 'INCOMPLETE',measured=len(found),expected=len(pool)+1,
             native_us=native_row['gpu_sum_us'] if native_row else None,
@@ -206,6 +215,11 @@ def summarize(points, measurements):
             best_id=winner['case_id'] if winner else None,
             best_phases=winner['phases_us'] if winner else None,
             best_recipe=pool[winner['case_id']]['recipe'] if winner else None,
+            same_dtype_best_us=f16['gpu_sum_us'] if f16 else None,
+            same_dtype_best_id=f16['case_id'] if f16 else None,
+            same_dtype_phases=f16['phases_us'] if f16 else None,
+            same_dtype_delta_pct=100*(f16['gpu_sum_us']/native_row['gpu_sum_us']-1) if f16 and native_row else None,
+            legacy_model_config_us=[r['gpu_sum_us'] for r in legacy],
             model_config_us=[r['gpu_sum_us'] for r in controls],
             model_config_phases=[r['phases_us'] for r in controls],
             delta_pct=100*(winner['gpu_sum_us']/native_row['gpu_sum_us']-1) if winner and native_row else None))
@@ -213,7 +227,7 @@ def summarize(points, measurements):
         points=result,production_changed=False,performance_admitted=False,no_regression_admitted=False,
         timing='ASYS_GPU_ACTIVITY_SUM',warmup_excluded=True,
         scope='FIXED_MODEL_M_CONFIG_SCREEN; PAIRED_FINALISTS_AND_MODEL_REPLAY_REQUIRED',
-        caveat='Native F16 and Full BF16 have different rounding/provider settings; no dtype relabelling')
+        caveat='Use same_dtype fields for native F16/FP32 comparison; Full BF16 is separately labelled')
 
 
 def package(output):
@@ -225,6 +239,7 @@ def package(output):
     paths += list((output/'batches').rglob('profile.log'))+list((output/'batches').rglob('export.log'))
     paths += list((output/'batches').rglob('request.json'))+list((output/'batches').rglob('*.process.json'))
     paths += list((output/'build').rglob('*.log'))+list((output/'build').glob('receipt.json'))
+    paths += list((output/'build/dense').glob('manifest.json'))
     paths += list((output/'probe').glob('probe-*.log'))+list((output/'probe').glob('summary.json'))
     paths += [f for f in (output/'probe/modules').glob('*.json') if read(f)['data']['status']!='PASS']
     with tarfile.open(archive,'x:gz') as tar:
@@ -309,6 +324,9 @@ def main():
         if old and (old['device']!=d or old['harness']!=source_seal() or old['plan']!=plan['plan_sha256']):
             raise ValueError('resume source/device/SDK differs')
         receipt=read(a.output/'build/receipt.json') if (a.output/'build/receipt.json').exists() else build(a)
+        from tools.build_kpack_prefill_runtime import build as build_dense
+        if not (a.output/'build/dense/manifest.json').exists():
+            build_dense(a.sdk,a.output/'build/dense',a.jobs)
         for key,path in [('carrier_sha256',Path(receipt['carrier'])),('timer_sha256',a.output/'build/libpoint-timer.so')]:
             if sha(path)!=receipt[key]:raise ValueError('diagnostic executable changed')
         validate_native(receipt,a)
@@ -345,7 +363,9 @@ def main():
                 # A TC + full-provider pair checks different capture ranges,
                 # adapters and allocation teardown before the larger batches.
                 cs=point['cases']
-                smoke=[next(c for c in cs if c['arm']=='sf'),next(c for c in cs if c['arm']=='full-bf16')]
+                smoke=[next(c for c in cs if c['arm']=='sf' and c['helper_mode']=='production'),
+                       next(c for c in cs if c['arm']=='full-fp16'),
+                       next(c for c in cs if c['arm']=='full-bf16-typed')]
                 jobs.append(smoke)
                 rest=[c for c in cs if c['id'] not in {s['id'] for s in smoke}]
                 jobs += [rest[i:i+a.configs_per_batch] for i in range(0,len(rest),a.configs_per_batch)]
