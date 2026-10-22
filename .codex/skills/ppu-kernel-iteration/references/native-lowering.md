@@ -682,3 +682,37 @@ same-tile pairs despite10% lower resident bytes. Next distinguish repeated
 traffic, field/header conversion and register pressure with bounded ablations;
 measure SF expansion separately before end-to-end selection. This is CUDA
 Hopper evidence, not a universal native PPU1.7 performance claim.
+
+## Dense full-dequant: packed reuse and exact FP32 conversion
+
+PPU0010/SDK2.1.1 helper R3 keeps each canonical32-bit low word's two N
+columns together in shared memory. One consumer owns2N x8K and issues
+two independently coalesced16B output stores. Q5/Q6 retain a compact16-bit
+high sideband. Compared with R2 byte-expanded exchange, logical code
+shared reads fall4->2B/weight for Q4 and4->3 for Q5/Q6; affine math is
+unchanged. Do not confuse this with reduced compulsory HBM bytes.
+
+For raw codes<=63, bitcast(0x4b000000|raw)-(8388608+bias) produces the
+exact FP32 integer, including Q6 bias32. Keep multiply and minimum
+subtraction separately rounded; folding the bias into a scaled constant
+is a different arithmetic contract. This is not a cast through FP16.
+Native N32K128 int->F32 sites fall34->2, but OR/subtract work increases;
+retain ordinary conversion as an independent control. Fewer converts
+alone do not prove lower cycles. Final output already uses packed F16/BF16
+conversions, so scalar-looking source casts are not evidence of scalar ISA.
+
+Local codegen: Q4 N32K128 F16 static instructions532->394 for reuse,
+428 with fast FP32; Q6 N16K256 BF16717->575/576. Zero stack, all52 old
+dequant instruction bodies unchanged.108 host raw-GGUF cells, all integer
+codes, producer/consumer coverage and planted mapping faults passed. These
+are compile/host proofs, NOT GPU correctness or speed admission. R3 Box
+uses matched R2 controls, isolated event timing and single-helper ACU ABBA
+cycles; full calls are confirmed separately, including reset and IO.
+
+Audit global footprint per instruction: N32 low loads span64B per K
+residue, N16 spans32B, not128B. Q5 high words also repeat across N-bit3
+and K32; Q6 high repeats across K32 halves. Those existing limitations
+are not fixed by shared reuse. `tests/test_prefill_dense_r3.py` preserves
+32/64/128B footprint and duplicate-read checks instead of assuming a
+uint4 load guarantees full sectors. Implementation/experiment:
+`quactlize/dequant/dense_pair.hpp`, `dev/prefill_dense/round3.py`.

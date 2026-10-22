@@ -200,12 +200,16 @@ def dequant_gate(sdk,library,*,variants=(0,1,2,3)):
             for storage in (0,1):
                 want=bf16_bits(gold)if storage else gold.astype('<f2').view('<u2')
                 for variant in ([0]if q<12 else variants):
+                    # A missing writer must not inherit the preceding arm's
+                    # correct result and pass this independent raw-bit gate.
+                    out.upload(np.full((n,k),0x7fff,dtype='<u2'))
                     checked(fn(C.byref(call),C.byref(arr),storage,variant),'non-dyadic typed expansion')
                     sdk.synchronize(r.stream)
                     got=np.frombuffer(sdk.download(out.ptr,out.size),dtype='u2').reshape(n,k)
                     if np.any((got!=want)&(((got|want)&0x7fff)!=0)):raise ValueError(f'dequant random bits differ q={q} storage={storage} variant={variant}')
                     rows.append(dict(q=q,storage=storage,variant=variant,bits=got.size,bad=0))
                 if storage:
+                    out.upload(np.full((n,k),0x7fff,dtype='<u2'))
                     checked(old(C.byref(call),C.byref(arr)),'legacy expansion control');sdk.synchronize(r.stream)
                     got=np.frombuffer(sdk.download(out.ptr,out.size),dtype='u2').reshape(n,k)
                     if np.any((got!=want)&(((got|want)&0x7fff)!=0)):raise ValueError('legacy expansion bits differ')
@@ -214,7 +218,7 @@ def dequant_gate(sdk,library,*,variants=(0,1,2,3)):
     return dict(status='PASS',cases=rows,oracle='INDEPENDENT_GGUF_NON_DYADIC_RAW_BITS')
 
 
-def dynamic_gate(sdk,sdk_path,library,timer,l2,*,round_two=False):
+def dynamic_gate(sdk,sdk_path,library,timer,l2,*,round_two=False,variants=None):
     from quactlize.dispatch.table import Workload
     results=[]
     for q in range(10,15):
@@ -225,7 +229,7 @@ def dynamic_gate(sdk,sdk_path,library,timer,l2,*,round_two=False):
             ws=b.alloc(alternate.workspace_bytes);out=b.alloc(128*256*4)
             alternate.workspace=ws.ptr;alternate.output=out.ptr;alternate.weight.stream=other.stream.value
             for storage in (0,1):
-                for variant in ([0]if q<12 else [4,5,6,7]if round_two else[1]):
+                for variant in ([0]if q<12 else variants if variants is not None else [4,5,6,7]if round_two else[1]):
                     arm=dict(name='contract',storage=storage,vector_io=2 if round_two else 1,
                              dequant_variant=variant,math_mode=16,algorithm=-1)
                     h=b.handle(arm)

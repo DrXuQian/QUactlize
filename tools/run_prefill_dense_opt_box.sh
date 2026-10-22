@@ -5,7 +5,7 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 PYTHON=${PYTHON:-python3}
 GPU=${GPU:-1}
 DENSE_ROUND=${DENSE_ROUND:-1}
-[[ ${DENSE_ROUND} == 1 || ${DENSE_ROUND} == 2 ]] || { echo 'ERROR: DENSE_ROUND must be 1 or 2.' >&2; exit 1; }
+[[ ${DENSE_ROUND} == 1 || ${DENSE_ROUND} == 2 || ${DENSE_ROUND} == 3 ]] || { echo 'ERROR: DENSE_ROUND must be 1, 2, or 3.' >&2; exit 1; }
 [[ ${GPU} =~ ^[0-9]+$ && ${IDLE_CONFIRMED:-0} == 1 ]] || {
     echo 'ERROR: choose one idle GPU and set IDLE_CONFIRMED=1.' >&2; exit 1;
 }
@@ -30,6 +30,7 @@ export LD_LIBRARY_PATH="${PPU_SDK}/lib:${PPU_SDK}/targets/x86_64-linux/lib:${PPU
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 extra=();arms=11
 if [[ ${DENSE_ROUND} == 2 ]]; then extra+=(--round-two);arms=14;fi
+if [[ ${DENSE_ROUND} == 3 ]]; then extra+=(--round-three);arms=6;fi
 echo "DENSE_OPT_BOX run=${RUN} gpu=${GPU} round=${DENSE_ROUND} shapes=7 arms=${arms} clock=1700 actual_clock=ADVISORY production_changed=0"
 set +e
 "${PYTHON}" -u "${RUN}/source/tools/run_prefill_dense_opt.py" --sdk "${PPU_SDK}" \

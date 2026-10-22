@@ -16,7 +16,10 @@ typedef struct {
     // 0: direct typed reference, 1/2: packed exchange K128/K256,
     // 3: K256 with K-fast CTA order. 4/5: unsigned K128/K256 N32/T128;
     // 6: unsigned K256 N16/T128; 7: unsigned K256 N32/T256.
-    // 1..7 support Q4/Q5/Q6; 0 Q2..Q6. Existing selectors are unchanged.
+    // 8/9: paired N32/K128, 10/11: paired N32/K256, 12/13: paired N16/K256.
+    // Even paired variants use scalar code conversion; odd use exact FP32
+    // mantissa construction. All retain FP32 multiply/subtract rounding.
+    // 1..13 support Q4/Q5/Q6; 0 Q2..Q6. Existing selectors are unchanged.
     int32_t dequant_variant;
     int32_t math_mode, algorithm; // explicit cuBLAS controls; compute is always 32F
 } qkp_dense_options_v1;

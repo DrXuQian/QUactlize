@@ -32,8 +32,19 @@ def inspect(sdk,image):
                 raise ValueError('striped vector transfer missing: '+e[1])
             if resources[e[1]]['shared_allocation_field']:raise ValueError('striped IO unexpectedly stages through shared memory')
         rows.append(dict(symbol=e[1],ops=dict(ops),resources=resources[e[1]]))
-    if len(rows)!=72:raise ValueError('typed candidate inventory differs: '+str(len(rows)))
-    return dict(scope='STATIC_CODEGEN_NOT_SPEEDUP',kernels=rows)
+    if len(rows)!=108:raise ValueError('typed candidate inventory differs: '+str(len(rows)))
+    pairs={r['symbol']:r for r in rows if 'dense_dequant_pair' in r['symbol']}
+    fast=[]
+    for symbol,row in pairs.items():
+        # Final template argument is the conversion mode. The rest of the
+        # specialization, including output precision and geometry, is equal.
+        if not symbol.endswith('ELb1EEEvPKtS5_PKhPtii'):continue
+        control=pairs[symbol.replace('ELb1EEEvPKtS5_PKhPtii','ELb0EEEvPKtS5_PKhPtii')]
+        count=lambda r:sum(v for op,v in r['ops'].items()if op.startswith('v.cnvt.f32.i32'))
+        if count(row)>=count(control):raise ValueError('direct FP32 code conversion did not lower: '+symbol)
+        fast.append(dict(symbol=symbol,control=control['symbol'],int_to_fp32=[count(control),count(row)]))
+    if len(fast)!=18:raise ValueError('paired FP32 lowering inventory differs')
+    return dict(scope='STATIC_CODEGEN_NOT_SPEEDUP',kernels=rows,fast_fp32_pairs=fast)
 
 def build(sdk,output,jobs):
     runtime_build(sdk,output,jobs)

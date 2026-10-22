@@ -7,10 +7,14 @@ import ctypes as C
 import json
 import math
 import statistics
+import sys
 from .spec import STAGES,workloads
 from dev.strategy.journal import atomic_json
 from quactlize.runtime.tuning import digest
 
+ROUND=2
+DEQUANT_VARIANTS=range(8)
+DYNAMIC_VARIANTS=(4,5,6,7)
 
 def baseline_variant(point,storage):
     # Prior component screen, not an assertion of a confirmed global winner.
@@ -68,15 +72,16 @@ def profile_jobs(results):
     return jobs
 
 
-def check_profile(path,job):
+def check_profile(path,job,*,expected_kernel=None,geometry=None):
     import csv,io
     from quactlize.runtime.compiler import sha
     text=path.read_text(errors='replace');start=text.find('"ID"')
     if start<0:raise ValueError('ACU export has no kernel table')
     rows=[r for r in csv.DictReader(io.StringIO(text[start:]))if r.get('Kernel Name')]
     launches=sorted({(r['ID'],r['Kernel Name'])for r in rows})
-    if len(launches)!=1:raise ValueError('round2 must capture exactly one component kernel')
-    if job['stage']==1:
+    if len(launches)!=1:raise ValueError('must capture exactly one component kernel')
+    if expected_kernel is not None:expected=expected_kernel
+    elif job['stage']==1:
         expected='dense_dequant_unsigned'if int(job['arm'][-1])>=4 else'dense_dequant_packed'
     else:expected='dense_convert_stripe4'if job['arm'].endswith('io2')else'dense_convert_vec8'
     if expected not in launches[0][1]:raise ValueError('ACU component differs from selected candidate')
@@ -86,7 +91,8 @@ def check_profile(path,job):
         if not math.isfinite(x):raise ValueError('nonfinite ACU counter: '+key)
         return x
     w=workloads()[job['point']]
-    if job['stage']==1:
+    if geometry is not None:grid,block=geometry
+    elif job['stage']==1:
         variant=int(job['arm'][-1]);tn=16 if variant==6 else 32;tk=128 if variant in (1,4)else 256
         grid=[w.n//tn,w.k//tk,1];block=256 if variant==7 else 128
     else:grid=[(w.m*(w.k if job['stage']==0 else w.n)+2047)//2048,1,1];block=256
@@ -115,25 +121,28 @@ def cycle_pairs(reports):
     return result
 
 
-def measure(a,sdk,w,lib,timer,manifest,authority):
+def measure(a,sdk,w,lib,timer,manifest,authority,*,protocol=None):
     from .bench import Bench,io_gate,dequant_gate,dynamic_gate
     from quactlize.runtime.native import checked
+    protocol=protocol or sys.modules[__name__]
+    tag=f'DENSE_R{protocol.ROUND}'
     profile=a.arm is not None
     if not profile and a.point==0:
         atomic_json(a.output/'io-gate.json',io_gate(sdk,a.sdk,lib,vectors=(0,1,2)))
-        atomic_json(a.output/'dequant-gate.json',dequant_gate(sdk,lib,variants=range(8)))
-        atomic_json(a.output/'dynamic-gate.json',dynamic_gate(sdk,a.sdk,lib,timer,a.l2_bytes,round_two=True))
-    candidates=pool(a.point)
+        atomic_json(a.output/'dequant-gate.json',dequant_gate(sdk,lib,variants=protocol.DEQUANT_VARIANTS))
+        atomic_json(a.output/'dynamic-gate.json',dynamic_gate(sdk,a.sdk,lib,timer,a.l2_bytes,
+            round_two=True,variants=protocol.DYNAMIC_VARIANTS))
+    candidates=protocol.pool(a.point)
     if profile:
         prior=json.loads((a.output/f'point-{a.point}.json').read_text())
         if prior['status']!='PASS'or prior['library_sha256']!=manifest['sha256']or prior['authority']!=digest(authority):
-            raise ValueError('round2 prior numerical/timing admission missing')
+            raise ValueError('prior numerical/timing admission missing')
         if a.arm not in {r['arm']['name']for r in prior['arms']}:raise ValueError('profile arm not admitted')
         candidates=[arm for arm in candidates if arm['name']==a.arm]
     b=None
     try:
         b=Bench(sdk,a.sdk,lib,timer,w,a.l2_bytes,profile=profile)
-        print(f'DENSE_R2_FIXTURE point={a.point} copies={b.copies} profile={int(profile)}',flush=True)
+        print(f'{tag}_FIXTURE point={a.point} copies={b.copies} profile={int(profile)}',flush=True)
         handles={arm['name']:b.handle(arm)for arm in candidates};proofs={}
         def check(arm,h):
             proof=[]
@@ -143,7 +152,7 @@ def measure(a,sdk,w,lib,timer,manifest,authority):
             bits=b.check_weights(arm['storage'],b.copies-1)
             b.update(0,zero=True);b.launch(h);b.check(zero=True)
             b.update(0);b.launch(h);proof.append(b.check())
-            print(f'DENSE_R2_NUMERIC point={a.point} arm={arm["name"]} status=PASS',flush=True)
+            print(f'{tag}_NUMERIC point={a.point} arm={arm["name"]} status=PASS',flush=True)
             return dict(dot=proof,weights=bits)
         for arm in candidates:proofs[arm['name']]=check(arm,handles[arm['name']])
         if profile:
@@ -152,25 +161,25 @@ def measure(a,sdk,w,lib,timer,manifest,authority):
             sdk.synchronize(b.r.stream)
             start,stop=sdk.lib.hggcProfilerStart,sdk.lib.hggcProfilerStop
             for fn in (start,stop):fn.argtypes=[];fn.restype=C.c_int
-            print(f'DENSE_R2_ACU_BEGIN point={a.point} arm={a.arm} stage={a.stage} calls=1 cold_ring=0',flush=True)
+            print(f'{tag}_ACU_BEGIN point={a.point} arm={a.arm} stage={a.stage} calls=1 cold_ring=0',flush=True)
             checked(start(),'profiler start')
             try:b.launch(h,stage=a.stage);sdk.synchronize(b.r.stream)
             finally:checked(stop(),'profiler stop')
             b.launch(h);b.check()
             result=dict(status='PASS',point=a.point,arm=a.arm,stage=a.stage,calls=1,cold_ring=False,profiled=True)
         else:
-            timings={arm['name']:{s:[]for s in stages(a.point,arm)}for arm in candidates};rounds=[]
+            timings={arm['name']:{s:[]for s in protocol.stages(a.point,arm)}for arm in candidates};rounds=[]
             inverse={name:stage for stage,name in STAGES.items()}
             for rnd in range(4):
                 order=candidates if rnd%2==0 else list(reversed(candidates))
                 for arm in order:
-                    samples={s:b.samples(handles[arm['name']],inverse[s])for s in stages(a.point,arm)}
+                    samples={s:b.samples(handles[arm['name']],inverse[s])for s in protocol.stages(a.point,arm)}
                     for s,values in samples.items():timings[arm['name']][s]+=values
                     rounds.append(dict(round=rnd,arm=arm['name'],samples_us=samples))
-                    print(f'DENSE_R2_PROGRESS point={a.point} round={rnd+1}/4 arm={arm["name"]}',flush=True)
+                    print(f'{tag}_PROGRESS point={a.point} round={rnd+1}/4 arm={arm["name"]}',flush=True)
             rows=[dict(arm=arm,proof=proofs[arm['name']],samples_us=timings[arm['name']],
                        median_us={s:statistics.median(v)for s,v in timings[arm['name']].items()})for arm in candidates]
-            complete=[];selected=composed(a.point,rows)
+            complete=[];selected=protocol.composed(a.point,rows)
             for arm in selected:
                 h=b.handle(arm);handles[arm['name']]=h;proofs[arm['name']]=check(arm,h)
             for rnd in range(4):
@@ -182,7 +191,8 @@ def measure(a,sdk,w,lib,timer,manifest,authority):
                 timing='ORDINARY_EVENT_COMPONENT_INTERVALS_NOT_ACU_CYCLES',
                 selection_scope='LOCAL_COMPONENT_SCREEN_NOT_PRODUCTION_ADMISSION')
         result.update(library_sha256=manifest['sha256'],authority=digest(authority),numerical=proofs,
-                      production_changed=False,performance_admitted=False,round_two=True)
+                      production_changed=False,performance_admitted=False,round_two=protocol.ROUND==2,
+                      round_three=protocol.ROUND==3)
         atomic_json(a.result,result);return 0
     finally:
         if b:b.close()
