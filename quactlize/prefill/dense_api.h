@@ -5,6 +5,21 @@
 extern "C" {
 #endif
 
+// Stable helper IDs. Retired experiment IDs are deliberately not renumbered
+// or silently mapped onto another implementation.
+enum {
+    QKP_DENSE_DEQUANT_DIRECT = 0,
+    QKP_DENSE_DEQUANT_PAIR = 8,
+    QKP_DENSE_DEQUANT_COOPERATIVE_K128 = 20,
+    QKP_DENSE_DEQUANT_COOPERATIVE_K256 = 21,
+};
+
+static inline int qkp_dense_dequant_variant_valid(int variant) {
+    return variant == QKP_DENSE_DEQUANT_DIRECT || variant == QKP_DENSE_DEQUANT_PAIR ||
+           variant == QKP_DENSE_DEQUANT_COOPERATIVE_K128 ||
+           variant == QKP_DENSE_DEQUANT_COOPERATIVE_K256;
+}
+
 // Dense-only helpers. Existing BF16/MoE entries are unchanged.
 // Storage 0=FP16, 1=BF16. FP32 external endpoints and accumulation.
 // F16 conversion has IEEE RNE overflow, never clipping or BF16 intermediates.
@@ -12,18 +27,9 @@ typedef struct {
     uint32_t version, size;
     char const* sdk;
     int32_t storage, vector_io;
-    // -1: existing full BF16 dequant (call.weight.config). Otherwise:
-    // 0: direct typed reference, 1/2: packed exchange K128/K256,
-    // 3: K256 with K-fast CTA order. 4/5: unsigned K128/K256 N32/T128;
-    // 6: unsigned K256 N16/T128; 7: unsigned K256 N32/T256.
-    // 8/9: paired N32/K128, 10/11: paired N32/K256, 12/13: paired N16/K256.
-    // Even paired variants use scalar code conversion; odd use exact FP32
-    // mantissa construction. All retain FP32 multiply/subtract rounding.
-    // 14/15/16: paired bank layout N32/K128, N32/K256, N16/K256.
-    // 17/18/19: same with cooperative unit metadata; 20/21: N64/K128/K256.
-    // 1..21 support Q4/Q5/Q6; 0 Q2..Q6. Not the legacy weight.config namespace.
-    // 22/23: experimental Q5/Q6 N64 K128/K256, unique physical high loads.
-    // Metadata, consumer, output store and rounding match 20/21 respectively.
+    // -1: existing full BF16 dequant (call.weight.config).
+    // Otherwise use the stable helper IDs above: direct Q2..Q6; pair and
+    // cooperative Q4/Q5/Q6. This is not the weight.config namespace.
     int32_t dequant_variant;
     int32_t math_mode, algorithm; // explicit cuBLAS controls; compute is always 32F
 } qkp_dense_options_v1;
@@ -53,7 +59,7 @@ char const* quactlize_kpack_dense_full_error_v1(void);
 int quactlize_dense_io_v1(int storage,int input,int vector_io,void const* src,void* dst,
     int rows,int width,int64_t stride,int const* error,void* stream);
 
-// Independent full dequant candidate. qzd_call_v1.operation must be 1;
+// Dense full-dequant helpers. qzd_call_v1.operation must be 1;
 // config is not reinterpreted: variant has its own explicit namespace above.
 int quactlize_kpack_dequant_dense_v1(qzd_call_v1 const*,
     quactlize_ppu_placed_arrangement_v2 const*,int storage,int variant);

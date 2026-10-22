@@ -58,10 +58,9 @@ extern "C" int quactlize_kpack_dense_full_prepare_v1(qkp_call_v1 const* c,
         if(!c || !arr || !o || o->version!=1 || o->size!=sizeof(*o) || !o->sdk ||
             !std::filesystem::path(o->sdk).is_absolute() || c->weight.experts!=1 || !address_free(*c) ||
             (o->storage!=0 && o->storage!=1) || o->vector_io<0 || o->vector_io>3 ||
-            o->dequant_variant < -1 || o->dequant_variant>23 ||
+            (o->dequant_variant!=-1 && !qkp_dense_dequant_variant_valid(o->dequant_variant)) ||
             (o->dequant_variant==-1 && o->storage!=1) ||
             (o->dequant_variant>0 && c->weight.qtype<12) ||
-            (o->dequant_variant>=22 && c->weight.qtype<13) ||
             (o->math_mode!=0 && o->math_mode!=1 && o->math_mode!=3 &&
              o->math_mode!=16 && o->math_mode!=17 && o->math_mode!=19) ||
             (o->algorithm!=-1 && o->algorithm!=99))return QKG_INVALID;

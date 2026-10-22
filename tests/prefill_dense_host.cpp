@@ -1,55 +1,241 @@
+// Host execution of production address/metadata readers. Python compares
+// against independent raw GGUF dequantization; fault arms must fail.
 #include <hggc_runtime.h>
 #include "quactlize/dequant/dense_reader.hpp"
+#include "quactlize/dequant/dense_cooperative.hpp"
 #include "quactlize/dequant/packed_exchange.hpp"
+#include "quactlize/prefill/dense_io_layout.hpp"
+#include <cstring>
 #include <vector>
 
-template<gguf_scale::KType T,bool BF16,int TileK>
-int decode(uint16_t const* low,uint16_t const* high,uint8_t const* units,uint16_t* output,int n,int k,int fault) {
-    using namespace quactlize::dequant;using R=DenseReader<T,BF16>;using L=PackedExchangeLayout<TileK>;
-    constexpr int G=TileK/R::group;
-    using A=DenseAffineLayout<G>;
-    std::vector<uint32_t> tile(L::kCells);std::vector<typename R::Affine> aff(32*G);
-    std::vector<int> owned(L::kCells);
-    for(int n0=0;n0<n;n0+=32)for(int k0=0;k0<k;k0+=TileK) {
-        std::fill(owned.begin(),owned.end(),0);
-        for(int i=0;i<32*G;++i)aff[A::offset(i%32,i/32)]=R::affine(units,n0+i%32,k0/R::group+i/32,n);
-        for(int tid=0;tid<128;++tid)for(int part=0;part<TileK/128;++part) {
-            int lane=tid%32,warp=tid/32,c0=(lane%4)*8,r=lane/4,kb=k0+part*128+warp*32;
-            auto li=R::LowMap::word_index(n0+c0,kb+r,n);
-            if((li*2)%16)return 1;
-            int64_t hi=0;
-            if constexpr(R::hi_bits){hi=R::HighMap::word_index(n0+c0,kb+r,n);if((hi*2)%16)return 2;}
-            for(int v=0;v<8;++v) {
-                uint16_t h=R::hi_bits?high[hi+v]:0;
-                int idx=L::offset(c0+v,(part*4+warp)*8+r);
-                if(++owned[idx]!=1)return 3;
-                tile[idx]=DenseCodes<T>::combine(low[li+v],h,n0+c0+v,kb+r);
+namespace pair_oracle {
+template<gguf_scale::KType T,bool BF16,unsigned TN,unsigned TK,bool Fast>
+int decode(uint16_t const* low,uint16_t const* high,uint8_t const* units,uint16_t* output,
+           unsigned n,unsigned k,int fault) {
+    using namespace quactlize::dequant;
+    using R=DensePairReader<T,BF16,Fast>;using Codes=DensePairCodes<T>;using L=PackedExchangeLayout<TK>;
+    constexpr unsigned G=TK/R::group,V=TN/8;using A=DenseAffineLayout<G>;
+    std::vector<uint32_t> tile(TN/2*L::kWords);
+    std::vector<uint16_t> upper(tile.size());std::vector<typename R::Affine> affine(TN*G);
+    std::vector<unsigned> writes(tile.size()),metadata(affine.size()),reads(TN*TK);
+    for(unsigned n0=0;n0<n;n0+=TN)for(unsigned k0=0;k0<k;k0+=TK) {
+        std::fill(writes.begin(),writes.end(),0);std::fill(metadata.begin(),metadata.end(),0);
+        std::fill(reads.begin(),reads.end(),0);
+        for(unsigned tid=0;tid<128;++tid) {
+            for(unsigned i=tid;i<TN*G;i+=128) {
+                unsigned col=i%TN,g=i/TN,index=A::offset(col,g);
+                if(index>=metadata.size() || ++metadata[index]!=1)return 1;
+                affine[index]=R::affine(units,n0+col,k0/R::group+g,n);
+            }
+            for(unsigned i=tid;i<(TK/32)*8*V;i+=128) {
+                if(fault==2 && i==0)continue;
+                unsigned c0=(i%V)*8,r=(i/V)%8,g=i/(V*8),kb=k0+g*32;
+                auto li=R::LowMap::word_index(n0+c0,kb+r,n);
+                if(li%8)return 2;
+                uint64_t hi=0;
+                if constexpr(R::hi_bits) {hi=R::HighMap::word_index(n0+c0,kb+r,n);if(hi%8)return 3;}
+                for(unsigned p=0;p<4;++p) {
+                    unsigned at=L::offset(c0/2+p,g*8+r);
+                    if(at>=writes.size() || ++writes[at]!=1)return 4;
+                    tile[at]=uint32_t(low[li+2*p])|(uint32_t(low[li+2*p+1])<<16);
+                    if constexpr(R::hi_bits) {
+                        uint32_t h=uint32_t(high[hi+2*p])|(uint32_t(high[hi+2*p+1])<<16);
+                        upper[at]=Codes::high(h,n0+c0+2*p,kb);
+                    }
+                }
             }
         }
-        for(int x:owned)if(x!=1)return 4;
-        for(int i=0;i<32*TileK/8;++i) {
-            int row=i/(TileK/8),kk=(i%(TileK/8))*8,g=kk/32,s=(kk/8)%4;
-            auto a=aff[A::offset(row,kk/R::group)];
-            if(fault)s^=1;
-            for(int half=0;half<2;++half) {
-                int offset=L::offset(row,g*8+half*4);if(offset%4)return 5;
-                for(int v=0;v<4;++v)output[int64_t(n0+row)*k+k0+kk+half*4+v]=
-                    R::weight(DenseCodes<T>::code(tile[offset+v],s),a);
+        for(unsigned x:writes)if(x!=1)return 5;
+        for(unsigned x:metadata)if(x!=1)return 6;
+        for(unsigned tid=0;tid<128;++tid)for(unsigned i=tid;i<TN/2*(TK/8);i+=128) {
+            unsigned pair=i/(TK/8),kk=(i%(TK/8))*8,g=kk/32,slot=(kk/8)%4;
+            if(fault==1)slot^=1;
+            for(unsigned part=0;part<2;++part) {
+                unsigned offset=L::offset(pair,g*8+part*4);
+                if(offset%4 || offset+4>tile.size())return 7;
+                for(unsigned v=0;v<4;++v) {
+                    unsigned raw=Codes::codes(tile[offset+v],upper[offset+v],slot);
+                    for(unsigned side=0;side<2;++side) {
+                        unsigned row=2*pair+side,index=row*TK+kk+part*4+v;
+                        if(++reads[index]!=1)return 8;
+                        if((uint64_t(n0+row)*k+k0+kk)%8)return 9;
+                        auto f=affine[A::offset(row,kk/R::group)];
+                        unsigned code=(raw>>(16*(side^(fault==3))))&0xffffu;
+                        output[uint64_t(n0+row)*k+k0+kk+part*4+v]=R::weight(code,f);
+                    }
+                }
             }
         }
+        for(unsigned x:reads)if(x!=1)return 10;
     }
     return 0;
 }
-template<gguf_scale::KType T> int typed(int bf,int tk,uint16_t const* l,uint16_t const* h,
-    uint8_t const* u,uint16_t* o,int n,int k,int fault) {
-    if(bf)return tk==128?decode<T,true,128>(l,h,u,o,n,k,fault):decode<T,true,256>(l,h,u,o,n,k,fault);
-    return tk==128?decode<T,false,128>(l,h,u,o,n,k,fault):decode<T,false,256>(l,h,u,o,n,k,fault);
+template<gguf_scale::KType T,bool B> int geometry(int variant,uint16_t const* l,uint16_t const* h,
+        uint8_t const* u,uint16_t* out,int n,int k,int fault) {
+    switch(variant) {
+        case 8:return decode<T,B,32,128,false>(l,h,u,out,n,k,fault);
+        default:return 99;
+    }
 }
-extern "C" int dense_host(int q,int bf,int tk,uint16_t const* l,uint16_t const* h,uint8_t const* u,
-    uint16_t* o,int n,int k,int fault) {
+template<gguf_scale::KType T> int typed(int bf,int variant,uint16_t const* l,uint16_t const* h,
+        uint8_t const* u,uint16_t* out,int n,int k,int fault) {
+    return bf?geometry<T,true>(variant,l,h,u,out,n,k,fault):geometry<T,false>(variant,l,h,u,out,n,k,fault);
+}
+extern "C" int dense_pair_host(int q,int bf,int variant,uint16_t const* l,uint16_t const* h,uint8_t const* u,
+        uint16_t* out,int n,int k,int fault) {
     using gguf_scale::KType;
-    if(q==12)return typed<KType::Q4_K>(bf,tk,l,h,u,o,n,k,fault);
-    if(q==13)return typed<KType::Q5_K>(bf,tk,l,h,u,o,n,k,fault);
-    if(q==14)return typed<KType::Q6_K>(bf,tk,l,h,u,o,n,k,fault);
-    return 1;
+    if(q==12)return typed<KType::Q4_K>(bf,variant,l,h,u,out,n,k,fault);
+    if(q==13)return typed<KType::Q5_K>(bf,variant,l,h,u,out,n,k,fault);
+    if(q==14)return typed<KType::Q6_K>(bf,variant,l,h,u,out,n,k,fault);
+    return 99;
+}
+
+} // namespace pair_oracle
+
+namespace cooperative_oracle {
+template<gguf_scale::KType T,bool B,unsigned TN,unsigned TK,bool Metadata>
+int decode(uint16_t const* low,uint16_t const* high,uint8_t const* units,uint16_t* output,
+           unsigned n,unsigned k,int fault) {
+    using namespace quactlize::dequant;
+    using R=DensePairReader<T,B,false>;using C=DensePairCodes<T>;using U=typename R::U;
+    using L=DenseCooperativeLayout<TN,TK>;constexpr unsigned G=TK/R::group,MW=TN*U::kUnitTotal/4;
+    using A=DenseCooperativeAffine<G>;
+    std::vector<uint32_t> tile(L::Cells),raw(MW);std::vector<uint16_t> upper(L::Cells);
+    std::vector<typename R::Affine> affine(TN*G);
+    std::vector<unsigned> wl(L::Cells),wh(L::Cells),wm(MW),wa(TN*G),wo(TN*TK);
+    for(unsigned n0=0;n0<n;n0+=TN)for(unsigned k0=0;k0<k;k0+=TK) {
+        for(auto* v:{&wl,&wh,&wm,&wa,&wo})std::fill(v->begin(),v->end(),0);
+        if constexpr(Metadata) {
+            uint64_t start=(uint64_t(k0/(256*U::kSbPerUnit))*n+n0)*U::kUnitTotal;
+            if(start%16 || start+MW*4>uint64_t(n)*k/256*U::kSbBytes)return 1;
+            for(unsigned tid=0;tid<128;++tid)for(unsigned i=tid;i<MW/4;i+=128) {
+                if(fault==4 && i==MW/4-1)continue;
+                std::memcpy(raw.data()+i*4,units+start+i*16,16);
+                for(unsigned v=0;v<4;++v)if(++wm[i*4+v]!=1)return 2;
+            }
+            for(unsigned x:wm)if(x!=1)return 3;
+        }
+        for(unsigned tid=0;tid<128;++tid)for(unsigned i=tid;i<(TK/32)*8*L::V;i+=(fault==2?256:128)) {
+            auto lp=L::producer(i,false),hp=L::producer(i,true);
+            auto li=R::LowMap::word_index(n0+lp.col,k0+lp.group*32+lp.residue,n);
+            if(li%8 || li+8>uint64_t(n)*k/4)return 4;
+            uint64_t hi=0;
+            if constexpr(R::hi_bits) {
+                hi=R::HighMap::word_index(n0+hp.col,k0+hp.group*32+hp.residue,n);
+                if(hi%8 || hi+8>uint64_t(n)*k*R::hi_bits/16)return 5;
+            }
+            for(unsigned p=0;p<4;++p) {
+                unsigned lo=L::low(lp.col/2+p,lp.group*8+lp.residue);
+                if(lo>=wl.size() || ++wl[lo]!=1)return 6;
+                tile[lo]=uint32_t(low[li+2*p])|(uint32_t(low[li+2*p+1])<<16);
+                if constexpr(R::hi_bits) {
+                    unsigned at=L::high(hp.col/2+p,hp.group*8+hp.residue);
+                    if(at>=wh.size() || ++wh[at]!=1)return 7;
+                    uint32_t h=uint32_t(high[hi+2*p])|(uint32_t(high[hi+2*p+1])<<16);
+                    upper[at]=C::high(h,n0+hp.col+2*p,k0+hp.group*32);
+                }
+            }
+        }
+        for(unsigned x:wl)if(x!=1)return 8;
+        if constexpr(R::hi_bits)for(unsigned x:wh)if(x!=1)return 9;
+        for(unsigned col=0;col<TN;++col) {
+            auto values=DenseRegisterAffine<T,TK>::load(raw.data()+col*(U::kUnitTotal/4),k0^(fault==5?128:0));
+            for(unsigned g=0;g<G;++g) {
+                unsigned at=A::offset(col,g);
+                if(at>=wa.size() || ++wa[at]!=1)return 10;
+                if constexpr(Metadata)affine[at]=values.group(g);
+                else affine[at]=R::affine(units,n0+col,k0/R::group+g,n);
+            }
+        }
+        for(unsigned x:wa)if(x!=1)return 11;
+        for(unsigned tid=0;tid<128;++tid)for(unsigned i=tid;i<TN/2*(TK/8);i+=128) {
+            unsigned pair=i/(TK/8),kk=(i%(TK/8))*8,g=kk/32,slot=(kk/8)%4;
+            if(fault==1)slot^=1;
+            for(unsigned part=0;part<2;++part) {
+                unsigned lo=L::low(pair,g*8+part*4),hi=L::high(pair,g*8+part*4);
+                if(lo%4 || hi%4 || lo+4>tile.size() || hi+4>upper.size())return 12;
+                for(unsigned v=0;v<4;++v) {
+                    if(L::low(pair,g*8+part*4+v)!=lo+v || L::high(pair,g*8+part*4+v)!=hi+v)return 13;
+                    uint32_t codes=C::codes(tile[lo+v],upper[hi+v],slot);
+                    for(unsigned side=0;side<2;++side) {
+                        unsigned row=2*pair+side,at=row*TK+kk+part*4+v;
+                        if(++wo[at]!=1)return 14;
+                        output[uint64_t(n0+row)*k+k0+kk+part*4+v]=R::weight((codes>>(side*16))&0xffffu,affine[A::offset(row,kk/R::group)]);
+                    }
+                }
+            }
+        }
+        for(unsigned x:wo)if(x!=1)return 15;
+    }
+    return 0;
+}
+template<gguf_scale::KType T,bool B> int geometry(int v,uint16_t const* l,uint16_t const* h,uint8_t const* u,uint16_t* o,int n,int k,int f) {
+    switch(v) {
+        case 20:return decode<T,B,64,128,true>(l,h,u,o,n,k,f);
+        case 21:return decode<T,B,64,256,true>(l,h,u,o,n,k,f);
+        default:return 99;
+    }
+}
+template<gguf_scale::KType T> int typed(int b,int v,uint16_t const* l,uint16_t const* h,uint8_t const* u,uint16_t* o,int n,int k,int f) {
+    return b?geometry<T,true>(v,l,h,u,o,n,k,f):geometry<T,false>(v,l,h,u,o,n,k,f);
+}
+extern "C" int dense_cooperative_host(int q,int b,int v,uint16_t const* l,uint16_t const* h,uint8_t const* u,uint16_t* o,int n,int k,int f) {
+    using gguf_scale::KType;
+    if(q==12)return typed<KType::Q4_K>(b,v,l,h,u,o,n,k,f);
+    if(q==13)return typed<KType::Q5_K>(b,v,l,h,u,o,n,k,f);
+    if(q==14)return typed<KType::Q6_K>(b,v,l,h,u,o,n,k,f);
+    return 99;
+}
+template<unsigned N,unsigned K> unsigned layout(unsigned plane,unsigned a,unsigned b) {
+    using L=quactlize::dequant::DenseCooperativeLayout<N,K>;
+    if(plane==0)return L::low(a,b);
+    if(plane==1)return L::high(a,b);
+    auto p=L::producer(a,b);return p.col|(p.residue<<8)|(p.group<<16);
+}
+extern "C" unsigned dense_cooperative_layout(unsigned n,unsigned k,unsigned plane,unsigned a,unsigned b) {
+    if(n==16)return k==128?layout<16,128>(plane,a,b):layout<16,256>(plane,a,b);
+    if(n==32)return k==128?layout<32,128>(plane,a,b):layout<32,256>(plane,a,b);
+    return k==128?layout<64,128>(plane,a,b):layout<64,256>(plane,a,b);
+}
+extern "C" uint64_t dense_full4(uint64_t block,unsigned thread,unsigned part) {
+    return quactlize::prefill::DenseFull4<256>::element(block,thread,part);
+}
+
+} // namespace cooperative_oracle
+
+extern "C" uint64_t dense_stripe4(uint64_t block,unsigned thread,unsigned part){
+    return quactlize::prefill::DenseStripe4<256>::element(block,thread,part);
+}
+extern "C" uint64_t dense_unsigned_index(unsigned bits,unsigned n,unsigned k,unsigned extent){
+    using namespace quactlize::dequant;
+    if(bits==4)return DenseUnsignedPlane<4>::word_index(n,k,extent);
+    if(bits==2)return DenseUnsignedPlane<2>::word_index(n,k,extent);
+    return DenseUnsignedQ5High::word_index(n,k,extent);
+}
+
+
+template<gguf_scale::KType T,bool B>
+void direct(uint16_t const* low,uint16_t const* high,uint8_t const* units,uint16_t* out,int n,int k) {
+    using R=quactlize::dequant::DenseReader<T,B>;
+    for(int col=0;col<n;++col)for(int kk=0;kk<k;++kk) {
+        int raw=R::code(low,high,col,kk,n)+(R::lo_bits==4?8:0);
+        out[uint64_t(col)*k+kk]=R::weight(raw,R::affine(units,col,kk/R::group,n));
+    }
+}
+template<gguf_scale::KType T>
+void direct_typed(int bf,uint16_t const* l,uint16_t const* h,uint8_t const* u,uint16_t* out,int n,int k) {
+    if(bf)direct<T,true>(l,h,u,out,n,k);else direct<T,false>(l,h,u,out,n,k);
+}
+extern "C" int dense_direct_host(int q,int bf,uint16_t const* l,uint16_t const* h,
+                                 uint8_t const* u,uint16_t* out,int n,int k) {
+    using gguf_scale::KType;
+    switch(q) {
+        case 10:direct_typed<KType::Q2_K>(bf,l,h,u,out,n,k);break;
+        case 11:direct_typed<KType::Q3_K>(bf,l,h,u,out,n,k);break;
+        case 12:direct_typed<KType::Q4_K>(bf,l,h,u,out,n,k);break;
+        case 13:direct_typed<KType::Q5_K>(bf,l,h,u,out,n,k);break;
+        case 14:direct_typed<KType::Q6_K>(bf,l,h,u,out,n,k);break;
+        default:return 99;
+    }
+    return 0;
 }

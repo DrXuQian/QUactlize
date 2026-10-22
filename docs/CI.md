@@ -80,7 +80,10 @@ must not be relabelled as device evidence. Historical Box runners remain
 available for those experiments. The `separate` section in `--list` records
 legacy Torch/six-library, private llama and PPU1.7 tests and their requirements.
 `ci/local_gates.py` is retained and labelled a legacy development runner.
-The unused `ci/codex_liveness.py` agent process monitor was removed, not tests.
+The completed dense-helper experiment runners have been retired. Their
+production numerical, layout, negative and dynamic-call checks are consolidated
+in `tests/test_prefill_dense.py`; no product correctness gate is replaced by
+a recorded experiment PASS.
 
 ## CI artifacts and verdict
 

@@ -76,6 +76,18 @@ Investigate initialization/MOV provenance before removing it; do not disable
 the compiler's `ppu-fix-uninit` correctness workaround to improve a count.
 Confirm raw bits, occupancy and same-frequency cycles before promotion.
 
-The next isolated high-plane producer experiment is documented in
-[PPU_PREFILL_HIGH_UNIQUE.md](PPU_PREFILL_HIGH_UNIQUE.md). DQ22/23 are explicit
-diagnostic candidates, not production selections.
+## Retired experiments
+
+The high-plane unique-read R5 candidate was not admitted: paired cycle medians
+changed by -1.21%, +0.08%, -0.67%, +6.16% for Q6 large/small and Q5 large/small.
+Two samples per arm do not establish the small improvements; Q5 small regressed.
+The R1–R5 runners and unselected typed helper bodies have been removed from
+develop. Source and historical commands remain at commit
+`8a004d42a91a23664e69762509d34c3b76bbf8e8`; do not run them against a new library.
+
+Only typed dequant IDs 0/8/20/21 remain: direct, pair N32/K128 and cooperative
+N64/K128,K256. Their IDs, descriptor ABI and the selection table above are
+unchanged. IO0..3 and the separate general SF/full-dequant config namespace
+are retained. All removed typed IDs fail validation rather than falling back.
+Independent GGUF, ownership/tail and changed-address/stream tests now live
+together in `tests/test_prefill_dense.py`.

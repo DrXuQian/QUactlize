@@ -18,7 +18,8 @@ extern "C" int quactlize_dense_io_v1(int storage,int input,int,void const* src,v
     *static_cast<float*>(dst)=*static_cast<float const*>(src)+(input?100*storage:0);return 0;
 }
 extern "C" int quactlize_kpack_dequant_dense_v1(qzd_call_v1 const* c,quactlize_ppu_placed_arrangement_v2 const*,int storage,int variant){
-    assert(variant>=0 && variant<=21);*static_cast<float*>(c->output)=*static_cast<float const*>(c->low)+100*storage;return 0;
+    assert(variant==0 || variant==8 || variant==20 || variant==21);
+    *static_cast<float*>(c->output)=*static_cast<float const*>(c->low)+100*storage;return 0;
 }
 extern "C" int quactlize_kpack_dequant_v1(qzd_call_v1 const* c,quactlize_ppu_placed_arrangement_v2 const* a){return quactlize_kpack_dequant_dense_v1(c,a,1,0);}
 extern "C" int qkp_stage_input(qkp_call_v1 const* c,quactlize::prefill::Layout const* l,void*){
@@ -41,10 +42,12 @@ int main(int argc,char** argv){
         c.weight.stream=reinterpret_cast<void*>(uintptr_t(i+1));
         const_cast<float*>(c.a)[0]=i+2;static_cast<float*>(const_cast<void*>(c.weight.low))[0]=i+5;
     }
-    for(int type:{0,1})for(int vector:{0,1,2,3})for(int variant:{-1,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21})for(int algorithm:{-1,99}){
+    for(int type:{0,1})for(int vector:{0,1,2,3})for(int variant=-2;variant<=24;++variant)for(int algorithm:{-1,99}){
+        bool typed=variant==0 || variant==8 || variant==20 || variant==21;
+        assert(bool(qkp_dense_dequant_variant_valid(variant))==typed);
         qkp_dense_options_v1 o{1,sizeof(o),argv[1],type,vector,variant,16,algorithm};void* h=nullptr;
         int rc=quactlize_kpack_dense_full_prepare_v1(&shape,&arr,&o,&h);
-        if(type==0 && variant==-1){assert(rc && !h);continue;}
+        if((variant==-1 && type==0) || (variant!=-1 && !typed)){assert(rc && !h);continue;}
         assert(!rc && h);
         auto run=[&](int i){for(int r=0;r<8;++r){
             auto& c=calls[i];const_cast<float*>(c.a)[0]=i+2+r;

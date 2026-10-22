@@ -1,5 +1,5 @@
 #pragma once
-#include "dense_pair.hpp"
+#include "dense_reader.hpp"
 
 namespace quactlize::dequant {
 

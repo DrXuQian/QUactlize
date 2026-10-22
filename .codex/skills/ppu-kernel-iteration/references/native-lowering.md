@@ -712,10 +712,12 @@ cycles; full calls are confirmed separately, including reset and IO.
 Audit global footprint per instruction: N32 low loads span64B per K
 residue, N16 spans32B, not128B. Q5 high words also repeat across N-bit3
 and K32; Q6 high repeats across K32 halves. Those existing limitations
-are not fixed by shared reuse. `tests/test_prefill_dense_r3.py` preserves
+are not fixed by shared reuse. `tests/test_prefill_dense.py` preserves
 32/64/128B footprint and duplicate-read checks instead of assuming a
-uint4 load guarantees full sectors. Implementation/experiment:
-`quactlize/dequant/dense_pair.hpp`, `dev/prefill_dense/round3.py`.
+uint4 load guarantees full sectors. Current readers are consolidated in
+`quactlize/dequant/dense_reader.hpp`. The unselected candidates and R1–R5
+runners were retired; historical experiments remain at commit
+`8a004d42a91a23664e69762509d34c3b76bbf8e8`, not in the installed runtime.
 
 R3 device follow-up (`dc18965`, review-1792640379512214929.tgz,
 SHA256 22fc34cb4ab784e597bf3d4ec8b94797e054cacd6f4cde542d3329614398f18e,

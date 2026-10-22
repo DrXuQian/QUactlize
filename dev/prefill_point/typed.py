@@ -5,13 +5,31 @@ from dataclasses import asdict
 import numpy as np
 
 from dev.bf16_compute.fixture import raw_weight, bf16_bits
-from dev.prefill_dense.bench import Options, Guard, bind
 from dev.prefill_point.bench import call, ptr, trace_contract
 from dev.strategy.journal import atomic_json
 from quactlize.dequant.native import Call as Weight
 from quactlize.execution.native import Arrangement
 from quactlize.prefill.native import Call
 from quactlize.runtime.native import checked
+
+
+class Options(C.Structure):
+    _fields_=[('version',C.c_uint32),('size',C.c_uint32),('sdk',C.c_char_p)]+[
+        (x,C.c_int32)for x in ('storage','vector_io','dequant_variant','math_mode','algorithm')]
+
+
+def bind(lib,name,args,restype=C.c_int):
+    fn=getattr(lib,name);fn.argtypes=args;fn.restype=restype;return fn
+
+
+class Guard:
+    def __init__(self,r,size):
+        self.r,self.size=r,int(size);self.base=r.alloc(self.size+512);self.ptr=self.base+256
+        if self.ptr%256:raise ValueError('workspace alignment differs')
+        r.fill(self.base,0xa5,self.size+512);r.sdk.synchronize(r.stream)
+    def guard(self):
+        for ptr in (self.base,self.ptr+self.size):
+            if self.r.sdk.download(ptr,256)!=b'\xa5'*256:raise ValueError('redzone overwritten')
 
 
 class DenseLibrary:

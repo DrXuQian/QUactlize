@@ -1,11 +1,13 @@
 # Branch and build policy
 
-As of 2026-09-29, the maintained branches are:
+Current integration and default working branch: **develop**.
+
+The maintained branches are:
 
 | Branch | Purpose |
 |---|---|
 | `main` | Product source; this consolidation does not change its contents. |
-| `develop` | Integrated development source, including TP2 and PPU1.7. |
+| `develop` | Default integration/build/test source, including TP2 and PPU1.7. |
 
 `develop` includes the local and published develop histories, the TP2 chain
 through `a8f396a`, the isolated PPU1.7 CUTLASS 4.3 integration at `5991449`,
