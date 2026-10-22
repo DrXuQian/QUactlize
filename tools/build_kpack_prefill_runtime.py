@@ -14,7 +14,7 @@ sys.path.insert(0,str(ROOT))
 from quactlize.runtime.compiler import FLAGS,LIBRARIES,sha
 
 
-def build(sdk,output,jobs):
+def build(sdk,output,jobs,*,line_info=False):
     if jobs<1:raise ValueError('jobs must be positive')
     for name in ('bin/hgcc', *[f'lib/lib{x}.so' for x in LIBRARIES]):
         if not (sdk/name).is_file():raise ValueError('missing SDK input: '+name)
@@ -29,7 +29,7 @@ def build(sdk,output,jobs):
     commands=[];start=time.monotonic()
     def compile(source):
         obj=output/(Path(source).stem+'.o')
-        command=([str(sdk/'bin/hgcc'),*FLAGS] if source.endswith('.cu') else
+        command=([str(sdk/'bin/hgcc'),*FLAGS,*(['-lineinfo']if line_info else [])] if source.endswith('.cu') else
                  ['g++','-std=c++17','-O2','-fPIC','-pthread',f'-I{sdk}/include'])
         command += [*[f'-I{p}' for p in include],'-c',str(ROOT/source),'-o',str(obj)]
         commands.append(command)

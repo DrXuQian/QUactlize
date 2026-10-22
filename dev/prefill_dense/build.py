@@ -35,7 +35,7 @@ def inspect(sdk,image):
         if 'dense_dequant_cooperative'in e[1]and'ELb1EEEvPKtS5_PKhPtii'in e[1]:
             if any(op.startswith('vmem.ld.b8')for op in ops):raise ValueError('cooperative metadata regressed to global byte loads: '+e[1])
             if not any(op.startswith('vmem.ld.b32x4')for op in ops):raise ValueError('cooperative vector loads missing: '+e[1])
-    if len(rows)!=160:raise ValueError('typed candidate inventory differs: '+str(len(rows)))
+    if len(rows)!=168:raise ValueError('typed candidate inventory differs: '+str(len(rows)))
     pairs={r['symbol']:r for r in rows if 'dense_dequant_pair' in r['symbol']}
     fast=[]
     for symbol,row in pairs.items():
@@ -49,8 +49,8 @@ def inspect(sdk,image):
     if len(fast)!=18:raise ValueError('paired FP32 lowering inventory differs')
     return dict(scope='STATIC_CODEGEN_NOT_SPEEDUP',kernels=rows,fast_fp32_pairs=fast)
 
-def build(sdk,output,jobs):
-    runtime_build(sdk,output,jobs)
+def build(sdk,output,jobs,*,line_info=False):
+    runtime_build(sdk,output,jobs,line_info=line_info)
     env=dict(os.environ,PATH=str(sdk/'bin')+':'+os.environ.get('PATH',''))
     cmd=['g++','-std=c++17','-O3','-shared','-fPIC','-Wl,-z,defs',
         '-I'+str(ROOT),'-I'+str(sdk/'include'),str(ROOT/'dev/prefill_dense/timer.cpp'),
@@ -58,5 +58,10 @@ def build(sdk,output,jobs):
         '-lhggc_wrapper','-lhggcrt1','-lhggc','-o',str(output/'libdense-opt-timer.so')]
     run_commands([cmd],ROOT,output/'timer-build.log',env=env,stages=['component timer'])
     native=inspect(sdk,output/'libquactlize_ppu_prefill.so');atomic_json(output/'native.json',native)
+    if line_info:
+        from .high_audit import shared_sites
+        isa=subprocess.check_output([str(sdk/'bin/hgobjdump'),'--dump-isa','--line-numbers',
+                                     str(output/'libquactlize_ppu_prefill.so')],text=True)
+        atomic_json(output/'high-shared-sites.json',shared_sites(isa))
     atomic_json(output/'timer.json',dict(command=cmd,source=sha(ROOT/'dev/prefill_dense/timer.cpp'),
         sha256=sha(output/'libdense-opt-timer.so')))

@@ -22,6 +22,8 @@ typedef struct {
     // 14/15/16: paired bank layout N32/K128, N32/K256, N16/K256.
     // 17/18/19: same with cooperative unit metadata; 20/21: N64/K128/K256.
     // 1..21 support Q4/Q5/Q6; 0 Q2..Q6. Not the legacy weight.config namespace.
+    // 22/23: experimental Q5/Q6 N64 K128/K256, unique physical high loads.
+    // Metadata, consumer, output store and rounding match 20/21 respectively.
     int32_t dequant_variant;
     int32_t math_mode, algorithm; // explicit cuBLAS controls; compute is always 32F
 } qkp_dense_options_v1;

@@ -175,7 +175,7 @@ def io_gate(sdk,sdk_path,library,*,vectors=(0,1)):
     return dict(status='PASS',cases=cases,fp16_overflow='IEEE_INF_NOT_CLIPPED',bf16_large_finite='PRESERVED')
 
 
-def dequant_gate(sdk,library,*,variants=(0,1,2,3)):
+def dequant_gate(sdk,library,*,variants=(0,1,2,3),formats=range(10,15)):
     from reference import gguf_kpack as ref
     from tools.kpack_warmup_fixture import prepare_expert
     from gguf import GGMLQuantizationType
@@ -185,7 +185,7 @@ def dequant_gate(sdk,library,*,variants=(0,1,2,3)):
     old=bind(lib,'quactlize_kpack_dequant_v1',[C.POINTER(Weight),C.POINTER(Arrangement)])
     r=Resources(sdk);rows=[]
     try:
-        for q in range(10,15):
+        for q in formats:
             n,k=256,1024;s=ref.SPECS[q];rng=np.random.default_rng(4721+q)
             raw=rng.integers(0,256,(n*k//256,s.raw_bytes),dtype='u1')
             for offset in (s.d_offset,s.dmin_offset):
@@ -219,10 +219,10 @@ def dequant_gate(sdk,library,*,variants=(0,1,2,3)):
     return dict(status='PASS',cases=rows,oracle='INDEPENDENT_GGUF_NON_DYADIC_RAW_BITS')
 
 
-def dynamic_gate(sdk,sdk_path,library,timer,l2,*,round_two=False,variants=None,vector_io=None):
+def dynamic_gate(sdk,sdk_path,library,timer,l2,*,round_two=False,variants=None,vector_io=None,formats=range(10,15)):
     from quactlize.dispatch.table import Workload
     results=[]
-    for q in range(10,15):
+    for q in formats:
         b=None;other=None
         try:
             b=Bench(sdk,sdk_path,library,timer,Workload(q,256,512,128,storage='f32',compute='f16'),l2,profile=True)

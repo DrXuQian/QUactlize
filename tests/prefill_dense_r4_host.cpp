@@ -1,9 +1,11 @@
 #include <hggc_runtime.h>
 #include "quactlize/dequant/dense_cooperative.hpp"
+#include "quactlize/dequant/dense_high_unique.hpp"
 #include "quactlize/prefill/dense_io_layout.hpp"
+#include <set>
 #include <vector>
 
-template<gguf_scale::KType T,bool B,unsigned TN,unsigned TK,bool Metadata>
+template<gguf_scale::KType T,bool B,unsigned TN,unsigned TK,bool Metadata,bool UniqueHigh=false>
 int decode(uint16_t const* low,uint16_t const* high,uint8_t const* units,uint16_t* output,
            unsigned n,unsigned k,int fault) {
     using namespace quactlize::dequant;
@@ -30,7 +32,7 @@ int decode(uint16_t const* low,uint16_t const* high,uint8_t const* units,uint16_
             auto li=R::LowMap::word_index(n0+lp.col,k0+lp.group*32+lp.residue,n);
             if(li%8 || li+8>uint64_t(n)*k/4)return 4;
             uint64_t hi=0;
-            if constexpr(R::hi_bits) {
+            if constexpr(R::hi_bits && !UniqueHigh) {
                 hi=R::HighMap::word_index(n0+hp.col,k0+hp.group*32+hp.residue,n);
                 if(hi%8 || hi+8>uint64_t(n)*k*R::hi_bits/16)return 5;
             }
@@ -38,13 +40,33 @@ int decode(uint16_t const* low,uint16_t const* high,uint8_t const* units,uint16_
                 unsigned lo=L::low(lp.col/2+p,lp.group*8+lp.residue);
                 if(lo>=wl.size() || ++wl[lo]!=1)return 6;
                 tile[lo]=uint32_t(low[li+2*p])|(uint32_t(low[li+2*p+1])<<16);
-                if constexpr(R::hi_bits) {
+                if constexpr(R::hi_bits && !UniqueHigh) {
                     unsigned at=L::high(hp.col/2+p,hp.group*8+hp.residue);
                     if(at>=wh.size() || ++wh[at]!=1)return 7;
                     uint32_t h=uint32_t(high[hi+2*p])|(uint32_t(high[hi+2*p+1])<<16);
                     upper[at]=C::high(h,n0+hp.col+2*p,k0+hp.group*32);
                 }
             }
+        }
+        if constexpr(UniqueHigh) {
+            using H=DenseUniqueHigh<T,TK>;
+            std::set<uint64_t> reads;
+            for(unsigned tid=0;tid<128;++tid)for(unsigned i=tid;i<H::Loads;i+=128) {
+                if(fault==6 && i==H::Loads-1)continue;
+                auto owner=H::owner(i);
+                auto at=R::HighMap::word_index(n0+owner.col,k0+owner.group64*64+owner.residue,n);
+                if(at%8 || at+8>uint64_t(n)*k*R::hi_bits/16 || !reads.insert(at).second)return 16;
+                for(unsigned fan=0;fan<H::Fans;++fan) {
+                    auto dst=H::target(owner,fan);
+                    for(unsigned p=0;p<4;++p) {
+                        unsigned index=L::high(dst.col/2+p,dst.group32*8+owner.residue);
+                        if(index>=wh.size() || ++wh[index]!=1)return 17;
+                        uint32_t h=uint32_t(high[at+2*p])|(uint32_t(high[at+2*p+1])<<16);
+                        upper[index]=C::high(h,n0+dst.col+2*p,k0+(dst.group32^(fault==3?1:0))*32);
+                    }
+                }
+            }
+            if(reads.size()!=H::Loads)return 18;
         }
         for(unsigned x:wl)if(x!=1)return 8;
         if constexpr(R::hi_bits)for(unsigned x:wh)if(x!=1)return 9;
@@ -80,6 +102,10 @@ int decode(uint16_t const* low,uint16_t const* high,uint8_t const* units,uint16_
     return 0;
 }
 template<gguf_scale::KType T,bool B> int geometry(int v,uint16_t const* l,uint16_t const* h,uint8_t const* u,uint16_t* o,int n,int k,int f) {
+    if constexpr(T==gguf_scale::KType::Q5_K || T==gguf_scale::KType::Q6_K) {
+        if(v==22)return decode<T,B,64,128,true,true>(l,h,u,o,n,k,f);
+        if(v==23)return decode<T,B,64,256,true,true>(l,h,u,o,n,k,f);
+    }
     switch(v) {
         case 14:return decode<T,B,32,128,false>(l,h,u,o,n,k,f);
         case 15:return decode<T,B,32,256,false>(l,h,u,o,n,k,f);
@@ -115,4 +141,14 @@ extern "C" unsigned dense_r4_layout(unsigned n,unsigned k,unsigned plane,unsigne
 }
 extern "C" uint64_t dense_full4(uint64_t block,unsigned thread,unsigned part) {
     return quactlize::prefill::DenseFull4<256>::element(block,thread,part);
+}
+template<gguf_scale::KType T,unsigned K> unsigned high_unique(unsigned i,unsigned fan) {
+    using H=quactlize::dequant::DenseUniqueHigh<T,K>;
+    auto p=H::owner(i);auto dst=H::target(p,fan);
+    return dst.col|(p.residue<<8)|(dst.group32<<16);
+}
+extern "C" unsigned dense_r5_high(unsigned q,unsigned k,unsigned i,unsigned fan) {
+    using gguf_scale::KType;
+    if(q==13)return k==128?high_unique<KType::Q5_K,128>(i,fan):high_unique<KType::Q5_K,256>(i,fan);
+    return k==128?high_unique<KType::Q6_K,128>(i,fan):high_unique<KType::Q6_K,256>(i,fan);
 }

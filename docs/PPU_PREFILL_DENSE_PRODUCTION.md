@@ -75,3 +75,7 @@ separate low/high bank layouts, canonical bytes and exact affine rounding.
 Investigate initialization/MOV provenance before removing it; do not disable
 the compiler's `ppu-fix-uninit` correctness workaround to improve a count.
 Confirm raw bits, occupancy and same-frequency cycles before promotion.
+
+The next isolated high-plane producer experiment is documented in
+[PPU_PREFILL_HIGH_UNIQUE.md](PPU_PREFILL_HIGH_UNIQUE.md). DQ22/23 are explicit
+diagnostic candidates, not production selections.
