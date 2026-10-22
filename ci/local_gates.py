@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Legacy/development probes, NOT the product CI entry or a release gate.
 
-Use `bash run_tests.sh --suite all` for the installed public package. This
+Use `bash run_tests.sh --suite test --package PATH` for the installed public package. This
 runner is retained for historical layout/overlay/experiment reproduction;
 its optional skips and legacy Torch tests are not product admissions.
 

@@ -74,12 +74,109 @@ def test_missing_dependencies_and_existing_output_are_not_success(tmp_path, monk
     assert json.loads((out / "summary.json").read_text()) == data
 
 
-def test_shell_entry_works_outside_checkout_and_lists_without_dependencies(tmp_path):
+@pytest.mark.parametrize("suite,phases", [
+    ("host", ["host"]),
+    ("test", ["host", "accuracy"]),
+    ("build", ["build"]),
+    ("accuracy", ["accuracy"]),
+    ("all", ["host", "build", "accuracy"]),
+    ("tooling", ["tooling"]),
+])
+def test_shell_entry_works_outside_checkout_and_lists_without_dependencies(tmp_path, suite, phases):
     env = dict(os.environ, PYTHON=sys.executable, PPU_SDK=str(tmp_path / "missing"))
-    r = subprocess.run(["bash", str(run.ROOT / "run_tests.sh"), "--list", "--suite", "all"],
+    r = subprocess.run(["bash", str(run.ROOT / "run_tests.sh"), "--list", "--suite", suite],
                        env=env, cwd=tmp_path, text=True, capture_output=True, timeout=30)
     assert r.returncode == 0, r.stderr
-    assert json.loads(r.stdout)["phases"] == ["host", "build", "accuracy"]
+    assert json.loads(r.stdout)["phases"] == phases
+
+
+@pytest.mark.parametrize("suite", ["test", "accuracy"])
+def test_test_only_requires_explicit_package_before_creating_output(tmp_path, capsys, suite):
+    out = tmp_path / "result"
+    with pytest.raises(SystemExit) as exc:
+        run.main(["--suite", suite, "--output", str(out)])
+    assert exc.value.code == 2
+    assert "requires --package" in capsys.readouterr().err
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("failed_phase", [None, "host", "accuracy"])
+def test_existing_package_checks_both_suites_without_rebuilding(tmp_path, monkeypatch, failed_phase):
+    package = tmp_path / "installed package"
+    package.mkdir()
+    manifest = package / "manifest.json"
+    manifest.write_bytes(b"host runner fixture, not an admitted device package\n")
+    original = manifest.read_bytes()
+    checks, calls = [], []
+
+    def preflight(phase, sdk, path):
+        checks.append(phase)
+        assert path == package
+
+    def command(argv, log, env, timeout):
+        phase = env["QUACTLIZE_CI_SUITE"]
+        calls.append(phase)
+        assert phase in ("host", "accuracy")
+        assert argv[:3] == [sys.executable, "-m", "pytest"]
+        assert env["QUACTLIZE_CI_PACKAGE"] == str(package)
+        assert env["PYTHON"] == env["QUACTLIZE_PPU_PYTHON"] == sys.executable
+        assert env["CUDA_VISIBLE_DEVICES"] == "3"
+        selected = [p for p in argv if p.endswith(".py")]
+        assert selected == [str(run.ROOT / "tests" / p) for p in inventory()[phase]]
+        xml = next(Path(x.split("=", 1)[1]) for x in argv if x.startswith("--junitxml="))
+        # Even exit 0 cannot admit a skipped test in the combined test-only suite.
+        body = "<skipped/>" if phase == failed_phase else ""
+        xml.write_text(f"<testsuite><testcase>{body}</testcase></testsuite>")
+        return 0
+
+    monkeypatch.setattr(run, "preflight", preflight)
+    monkeypatch.setattr(run, "run_command", command)
+    monkeypatch.setenv("PYTHON", "/wrong/interpreter")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3")
+    out = tmp_path / "result"
+    assert run.main(["--suite", "test", "--package", str(package), "--output", str(out)]) == int(
+        failed_phase is not None)
+    assert checks == calls == (["host"] if failed_phase == "host" else ["host", "accuracy"])
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["suite"] == "test"
+    assert summary["status"] == ("PASS" if failed_phase is None else "FAIL")
+    assert [row["phase"] for row in summary["phases"]] == calls
+    assert manifest.read_bytes() == original
+    assert sorted(package.iterdir()) == [manifest]
+    assert not (out / "package").exists() and not (out / "build.command.json").exists()
+
+
+def test_build_entry_honors_python_arguments_and_exit_code(tmp_path):
+    # Intercept only the interpreter: no compiler, SDK, output package or device.
+    interpreter = tmp_path / "python stub"
+    interpreter.write_text(f"#!{sys.executable}\nimport json, sys\n"
+                           "print(json.dumps(sys.argv[1:]))\nraise SystemExit(17)\n")
+    interpreter.chmod(0o755)
+    destination = tmp_path / "new package"
+    args = ["--output", str(destination), "--jobs", "3"]
+    result = subprocess.run(["bash", str(run.ROOT / "build.sh"), "--library", *args],
+        cwd=tmp_path, env=dict(os.environ, PYTHON=str(interpreter)),
+        text=True, capture_output=True, timeout=30)
+    assert result.returncode == 17, result.stderr
+    assert json.loads(result.stdout) == [str(run.ROOT / "tools/build_ppu_library.py"), *args]
+    assert not destination.exists()
+
+
+def test_build_suite_uses_public_entry_and_same_python(tmp_path, monkeypatch):
+    monkeypatch.setattr(run, "preflight", lambda *args: None)
+    calls = []
+    def command(argv, log, env, timeout):
+        calls.append(argv)
+        assert argv[:3] == ["bash", str(run.ROOT / "build.sh"), "--library"]
+        assert env["PYTHON"] == sys.executable
+        assert env["QUACTLIZE_CI_SUITE"] == "build"
+        return 7
+    monkeypatch.setattr(run, "run_command", command)
+    monkeypatch.setenv("PYTHON", "/wrong/interpreter")
+    out = tmp_path / "result"
+    assert run.main(["--suite", "build", "--output", str(out)]) == 1
+    assert len(calls) == 1
+    assert run.pytest_counts(out / "build.xml")["failures"] == 1
 
 
 def test_command_nonzero_and_timeout_are_retained(tmp_path):

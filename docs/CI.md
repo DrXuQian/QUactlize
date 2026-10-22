@@ -1,8 +1,14 @@
 # Quactlize CI / manual tests
 
-Integration entry: **`bash run_tests.sh`**, from any working directory.
-Build entry remains **`bash build.sh --library`**. Nothing clones dependencies,
-downloads models, launches a sweep or updates a selection table.
+CI has two shell entrypoints, usable from any working directory:
+
+- **`bash build.sh --library`** builds the public package; no device tests.
+- **`bash run_tests.sh --suite test --package PATH`** runs host contracts and
+  PPU accuracy against that package; it never rebuilds the package.
+
+Nothing clones dependencies, downloads models, launches a sweep or updates a
+selection table. Host harnesses still compile small test binaries, and device
+tests may JIT selected kernels; test-only does not mean compilation-free.
 
 ## Requirements
 
@@ -16,32 +22,44 @@ downloads models, launches a sweep or updates a selection table.
 - Accuracy requires one visible PPU (`CUDA_VISIBLE_DEVICES=0`). This is not
   performance admission; no idle/clock requirement or profiler is imposed.
 
-`PYTHON=/path/to/python` selects the interpreter. `--jobs` defaults to 4.
+`PYTHON=/path/to/python` selects the interpreter for both entrypoints.
+`--jobs` defaults to 4 for builds.
 `--timeout` is seconds per phase (default 7200, including cold JIT).
 
 ## Commands
 
 ```bash
-# Inventory only; includes separately retained historical tests.
-bash run_tests.sh --suite all --list
+# Build job: PPU compiler/runtime libraries needed, no GPU needed.
+PPU_SDK=/usr/local/PPU_SDK bash build.sh --library \
+  --output /workspace/quactlize-package-RUN_ID --jobs 8
 
-# No GPU; SDK headers and pinned actlize are required.
-PPU_SDK=/usr/local/PPU_SDK bash run_tests.sh --suite host
-
-# Complete product CI: host -> build -> accuracy.
+# Test job: consumes the build job's complete package; does not rebuild it.
 CUDA_VISIBLE_DEVICES=0 PPU_SDK=/usr/local/PPU_SDK \
-  bash run_tests.sh --suite all --jobs 8 --output /workspace/quactlize-ci-RUN_ID
-
-# Separate build and device jobs, also usable from ncp_flash_lib CI.
-bash run_tests.sh --suite build --package /workspace/quactlize-package-RUN_ID \
-  --output /workspace/quactlize-build-tests-RUN_ID --jobs 8
-CUDA_VISIBLE_DEVICES=0 bash run_tests.sh --suite accuracy \
+  bash run_tests.sh --suite test \
   --package /workspace/quactlize-package-RUN_ID \
-  --output /workspace/quactlize-device-tests-RUN_ID
+  --output /workspace/quactlize-tests-RUN_ID
 ```
 
-Output/build paths must be new. Without `--output`, a unique temporary
-directory is printed. Existing results and packages are never overwritten.
+The build job publishes the whole package; the test job also checks out the
+same Quactlize commit and pinned actlize and uses the same SDK. Results belong
+in a separate directory. No llama checkout is required.
+
+For local diagnosis or an existing combined CI job:
+
+```bash
+bash run_tests.sh --suite test --list  # inventory only, no dependencies needed
+bash run_tests.sh --suite host        # no GPU; SDK headers + pinned actlize
+CUDA_VISIBLE_DEVICES=0 bash run_tests.sh --suite accuracy --package /workspace/quactlize-package-RUN_ID
+CUDA_VISIBLE_DEVICES=0 bash run_tests.sh --suite all --jobs 8 --output /workspace/quactlize-ci-RUN_ID
+```
+
+`test` and `accuracy` require an explicit `--package`; missing or invalid
+packages fail rather than triggering a build or searching for old libraries.
+`all` retains host -> build -> accuracy for compatibility; it is **not**
+test-only. Omitting `--suite` retains the host-only default.
+
+Output/build paths must be new. Without test `--output`, a unique temporary
+results directory is printed. Existing results and packages are never overwritten.
 Pass the **whole** exported package to accuracy: `manifest.json`, `include/`,
 `libquactlize_ppu.so`, `quactlize-runtime/` including JIT headers. Payload and
 SDK identities are checked before loading. No llama checkout is required.
@@ -53,6 +71,7 @@ SDK identities are checked before loading. No llama checkout is required.
 | Suite | Scope |
 |---|---|
 | `host` | Real host ABI/oracles, packing, selectors, dynamic binding, BF16 arithmetic, JIT/cache/package contracts, helpers and runner negatives. Device calls are explicit doubles. |
+| `test` | Host + accuracy against an existing package, fail fast. CI test job; no package build. |
 | `build` | Existing build.sh, complete public library and receipt/export verification. |
 | `accuracy` | Real GPU tests under `tests/ppu/`, sharing one buffer/ABI/oracle helper. |
 | `all` | All three product suites, fail fast. Not every historical experiment. |

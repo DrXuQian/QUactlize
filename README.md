@@ -19,13 +19,14 @@ git submodule update --init third_party/actlize
 PPU_SDK=/usr/local/PPU_SDK bash build.sh --library \
   --output /workspace/quactlize-package-RUN_ID --jobs 8
 
-# Inventory / host-only checks.
-bash run_tests.sh --suite all --list
-PPU_SDK=/usr/local/PPU_SDK bash run_tests.sh --suite host
-
-# Real PPU numerical tests against the complete built package.
+# CI test job: host contracts + real PPU numerical tests; no package rebuild.
 CUDA_VISIBLE_DEVICES=0 PPU_SDK=/usr/local/PPU_SDK \
-  bash run_tests.sh --suite accuracy --package /workspace/quactlize-package-RUN_ID
+  bash run_tests.sh --suite test --package /workspace/quactlize-package-RUN_ID \
+  --output /workspace/quactlize-tests-RUN_ID
+
+# Inventory / host-only checks.
+bash run_tests.sh --suite test --list
+PPU_SDK=/usr/local/PPU_SDK bash run_tests.sh --suite host
 ```
 
 The package contains `libquactlize_ppu.so`, exported `include/`, a private
@@ -34,7 +35,8 @@ Install the whole package, not just the public .so. ncp_flash_lib builds and
 installs it; selection, packing and execution remain in Quactlize.
 
 See [CI.md](docs/CI.md) for dependencies, host/build/accuracy coverage, logs and
-JUnit. `--suite all` runs the three product suites. Tooling, historical Torch
+JUnit. `--suite test` only tests; the compatible `--suite all` also builds.
+Both scripts honor `PYTHON=/path/to/python`. Tooling, historical Torch
 tests, TP/model benchmarks and PPU1.7 tests have separate prerequisites and are
 not implied by product CI passing.
 

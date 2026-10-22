@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Unified product CI: host contracts, public-package build, device accuracy.
+"""Product CI: --suite test checks an existing package (host + PPU accuracy).
 
+Build packages with build.sh --library. --suite all retains host/build/accuracy.
 No downloads, submodule updates, sweeps, model runs, or performance claims.
 """
 import argparse
@@ -19,6 +20,15 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from ci.suites import inventory
+
+SUITE_PHASES = {
+    "host": ("host",),
+    "test": ("host", "accuracy"),
+    "build": ("build",),
+    "accuracy": ("accuracy",),
+    "all": ("host", "build", "accuracy"),
+    "tooling": ("tooling",),
+}
 
 
 def write_json(path, value):
@@ -76,14 +86,15 @@ def preflight(phase, sdk, package):
         if not (ROOT / "third_party/actlize/include/cutlass/cutlass.h").is_file():
             missing.append("pinned third_party/actlize checkout; CI must checkout it using its own credentials")
     if phase == "accuracy" and not (package / "manifest.json").is_file():
-        missing.append(f"built public package: {package}/manifest.json (run --suite build first)")
+        missing.append(f"built public package: {package}/manifest.json (run build.sh --library first)")
     if missing:
         raise ValueError("missing prerequisites: " + "; ".join(missing))
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--suite", choices=("host", "build", "accuracy", "all", "tooling"), default="host")
+    parser.add_argument("--suite", choices=tuple(SUITE_PHASES), default="host",
+                        help="test: host + accuracy, no package rebuild; all: also build; default: host")
     parser.add_argument("--sdk", type=Path, default=Path(os.environ.get("PPU_SDK") or "/usr/local/PPU_SDK"))
     parser.add_argument("--package", type=Path, help="fresh build destination or installed accuracy-test package")
     parser.add_argument("--output", type=Path, help="new directory for logs, JUnit and summary; default mkdtemp")
@@ -96,13 +107,13 @@ def main(argv=None):
     if sys.version_info < (3, 10):
         parser.error("product CI requires Python >= 3.10")
     catalog = inventory()
-    phases = ["host", "build", "accuracy"] if args.suite == "all" else [args.suite]
+    phases = SUITE_PHASES[args.suite]
     if args.list:
         print(json.dumps(dict(phases=phases, inventory=catalog,
             all_scope="PRODUCT_HOST_BUILD_ACCURACY; excludes tooling and separate experiments"), indent=2))
         return 0
-    if args.suite == "accuracy" and args.package is None:
-        parser.error("--suite accuracy requires --package; no implicit search for an old library")
+    if args.suite in ("test", "accuracy") and args.package is None:
+        parser.error(f"--suite {args.suite} requires --package; no implicit search for an old library")
     if args.output is None:
         args.output = Path(tempfile.mkdtemp(prefix="quactlize-ci-"))
     else:
@@ -113,8 +124,7 @@ def main(argv=None):
             parser.error(f"--output must be new: {args.output}")
     package = args.package.absolute() if args.package else args.output / "package"
     sdk = args.sdk.resolve()
-    env = dict(os.environ, PPU_SDK=str(sdk), QUACTLIZE_CI_PACKAGE=str(package),
-               QUACTLIZE_CI_SUITE=args.suite,
+    env = dict(os.environ, PPU_SDK=str(sdk), QUACTLIZE_CI_PACKAGE=str(package), PYTHON=sys.executable,
                QUACTLIZE_PPU_PYTHON=sys.executable, PYTHONUNBUFFERED="1",
                PYTHONPATH=str(ROOT) + os.pathsep + os.environ.get("PYTHONPATH", ""))
     # CPU golden generation must not initialise Torch's GPU backend. Prevent
@@ -154,7 +164,7 @@ def main(argv=None):
                            *[str(ROOT / "tests" / name) for name in catalog[phase]]]
             row["command"] = command
             write_json(args.output / f"{phase}.command.json", command)
-            row["returncode"] = run_command(command, log, env, args.timeout)
+            row["returncode"] = run_command(command, log, dict(env, QUACTLIZE_CI_SUITE=phase), args.timeout)
             if xml.is_file():
                 row["counts"] = pytest_counts(xml)
             if row["returncode"] != 0:

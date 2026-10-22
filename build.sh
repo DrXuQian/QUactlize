@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build the actlize (PPU cutlass3) W4A16 gs=128 comparison bench.
+# Public package: bash build.sh --library --output <new-directory> [--jobs N].
+# Legacy actlize (PPU cutlass3) comparison targets remain below.
 #
 # WHY THIS IS NOT IN THE MARLIN Makefile. actlize does not build with the bare `nvcc` (no -arch) that the
 # marlin kernels use. Its toolchain is the PPU SDK: hgcc as the device compiler (-arch=ppu_10), g++ as host,
@@ -18,7 +19,7 @@ set -Eeuo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"          # the repository root
 if [ "${1:-}" = "--library" ]; then
   shift
-  exec python3 "$HERE/tools/build_ppu_library.py" "$@"
+  exec "${PYTHON:-python3}" "$HERE/tools/build_ppu_library.py" "$@"
 fi
 ACTLIZE="$(cd "$HERE/third_party/actlize" && pwd)"
 # THE SOURCE IS NO LONGER ONE FLAT DIRECTORY. The tree separates kernels, tests and benchmarks, and the overlay
