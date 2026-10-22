@@ -14,7 +14,9 @@ typedef struct {
     int32_t storage, vector_io;
     // -1: existing full BF16 dequant (call.weight.config). Otherwise:
     // 0: direct typed reference, 1/2: packed exchange K128/K256,
-    // 3: K256 with K-fast CTA order. 1..3 support Q4/Q5/Q6; 0 Q2..Q6.
+    // 3: K256 with K-fast CTA order. 4/5: unsigned K128/K256 N32/T128;
+    // 6: unsigned K256 N16/T128; 7: unsigned K256 N32/T256.
+    // 1..7 support Q4/Q5/Q6; 0 Q2..Q6. Existing selectors are unchanged.
     int32_t dequant_variant;
     int32_t math_mode, algorithm; // explicit cuBLAS controls; compute is always 32F
 } qkp_dense_options_v1;
@@ -31,7 +33,8 @@ void quactlize_kpack_dense_full_destroy_v1(void*);
 char const* quactlize_kpack_dense_full_error_v1(void);
 
 // Dense contiguous/strided cast. No row-map semantics. vector_io=0 retains
-// row-CTA scalar control; =1 enables aligned 8-element chunks and safe tails.
+// row-CTA scalar control; =1 enables aligned 8-element chunks and safe tails;
+// =2 uses two warp-contiguous vec4 chunks, same eight elements/thread.
 // error is optional; output propagates nonzero status as NaNs, input ignores it.
 int quactlize_dense_io_v1(int storage,int input,int vector_io,void const* src,void* dst,
     int rows,int width,int64_t stride,int const* error,void* stream);

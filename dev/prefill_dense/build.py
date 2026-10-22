@@ -22,11 +22,17 @@ def inspect(sdk,image):
         body=isa[e.end():entries[i+1].start()if i+1<len(entries)else None]
         ops=Counter(re.findall(r'\t([a-z][\w.]+)\s',body))
         if resources[e[1]]['stack_bytes']:raise ValueError('candidate has local stack: '+e[1])
-        if ('dense_convert_vec8' in e[1]or'dense_dequant_packed'in e[1])and not any(
+        if ('dense_convert_vec8' in e[1]or'dense_dequant_'in e[1]and'direct'not in e[1])and not any(
                 op.startswith('vmem.st.b32x4')for op in ops):
             raise ValueError('candidate vector output store missing: '+e[1])
+        if 'dense_convert_stripe4' in e[1]:
+            input_=re.search(r'stripe4ILb[01]ELb([01])',e[1])[1]=='1'
+            vectors=('vmem.ld.b32x4','vmem.st.b32x2')if input_ else('vmem.ld.b32x2','vmem.st.b32x4')
+            if not all(any(op.startswith(prefix)for op in ops)for prefix in vectors):
+                raise ValueError('striped vector transfer missing: '+e[1])
+            if resources[e[1]]['shared_allocation_field']:raise ValueError('striped IO unexpectedly stages through shared memory')
         rows.append(dict(symbol=e[1],ops=dict(ops),resources=resources[e[1]]))
-    if len(rows)!=40:raise ValueError('typed candidate inventory differs: '+str(len(rows)))
+    if len(rows)!=72:raise ValueError('typed candidate inventory differs: '+str(len(rows)))
     return dict(scope='STATIC_CODEGEN_NOT_SPEEDUP',kernels=rows)
 
 def build(sdk,output,jobs):

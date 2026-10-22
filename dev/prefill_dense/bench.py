@@ -133,15 +133,18 @@ class Bench:
         self.r.close()
 
 
-def io_gate(sdk,sdk_path,library):
+def io_gate(sdk,sdk_path,library,*,vectors=(0,1)):
     """RNE bits, tails, misalignment, row strides, output status and guards."""
     lib=C.CDLL(str(library));fn=bind(lib,'quactlize_dense_io_v1',
         [C.c_int]*3+[C.c_void_p]*2+[C.c_int]*2+[C.c_int64,C.c_void_p,C.c_void_p])
     owner=Resources(sdk);cases=[]
     try:
-        for rows,width,pad,offset in [(3,2048,0,0),(3,1031,0,0),(3,1024,4,0),(3,1027,5,0),(2,1024,0,4)]:
+        shapes=[(3,2048,0,0),(3,1031,0,0),(3,1024,4,0),(3,1027,5,0),(2,1024,0,4)]
+        if 2 in vectors:shapes.extend([(3,1028,4,0),(1,3,0,0),(1,2049,0,0)])
+        for rows,width,pad,offset in shapes:
             stride=width+pad;values=np.random.default_rng(width).uniform(-3,3,(rows,stride)).astype('f4')
-            values.flat[:8]=[0.,-0.,65504.,65520.,1e-8,-1e-8,243383.484,-243383.484]
+            edge=np.array([0.,-0.,65504.,65520.,1e-8,-1e-8,243383.484,-243383.484],dtype='f4')
+            values.flat[:min(8,values.size)]=edge[:min(8,values.size)]
             raw=Guard(owner,values.nbytes+offset);src=raw.ptr+offset
             checked(sdk.lib.hggcMemcpy(src,values.ctypes.data,values.nbytes,1),'io fixture');sdk.synchronize(None)
             for storage in (0,1):
@@ -149,7 +152,7 @@ def io_gate(sdk,sdk_path,library):
                 error.upload(np.zeros(1,dtype='i4'))
                 with np.errstate(over='ignore'):
                     want=bf16_bits(values[:,:width])if storage else values[:,:width].astype('<f2').view('<u2')
-                for vec in (0,1):
+                for vec in vectors:
                     checked(fn(storage,1,vec,src,low.ptr+offset,rows,width,stride,error.ptr,owner.stream),'input conversion')
                     sdk.synchronize(owner.stream)
                     got=np.frombuffer(sdk.download(low.ptr+offset,rows*width*2),dtype='u2').reshape(rows,width)
@@ -163,7 +166,7 @@ def io_gate(sdk,sdk_path,library):
                     for b in (raw,low,dst,error):b.guard()
                     cases.append(dict(rows=rows,width=width,pad=pad,offset=offset,storage=storage,vector_io=vec,status='PASS'))
                 error.upload(np.ones(1,dtype='i4'))
-                checked(fn(storage,0,1,low.ptr+offset,dst.ptr+offset,rows,width,stride,error.ptr,owner.stream),'status finish')
+                checked(fn(storage,0,max(vectors),low.ptr+offset,dst.ptr+offset,rows,width,stride,error.ptr,owner.stream),'status finish')
                 sdk.synchronize(owner.stream)
                 out=np.frombuffer(sdk.download(dst.ptr+offset,values.nbytes),dtype='f4').reshape(rows,stride)
                 if not np.isnan(out[:,:width]).all():raise ValueError('nonzero device status not propagated')
@@ -171,7 +174,7 @@ def io_gate(sdk,sdk_path,library):
     return dict(status='PASS',cases=cases,fp16_overflow='IEEE_INF_NOT_CLIPPED',bf16_large_finite='PRESERVED')
 
 
-def dequant_gate(sdk,library):
+def dequant_gate(sdk,library,*,variants=(0,1,2,3)):
     from reference import gguf_kpack as ref
     from tools.kpack_warmup_fixture import prepare_expert
     from gguf import GGMLQuantizationType
@@ -196,7 +199,7 @@ def dequant_gate(sdk,library):
                 *[p[x].nbytes for x in ('low','high','units')],out.ptr,None,out.size,r.stream.value)
             for storage in (0,1):
                 want=bf16_bits(gold)if storage else gold.astype('<f2').view('<u2')
-                for variant in ([0]if q<12 else [0,1,2,3]):
+                for variant in ([0]if q<12 else variants):
                     checked(fn(C.byref(call),C.byref(arr),storage,variant),'non-dyadic typed expansion')
                     sdk.synchronize(r.stream)
                     got=np.frombuffer(sdk.download(out.ptr,out.size),dtype='u2').reshape(n,k)
@@ -211,7 +214,7 @@ def dequant_gate(sdk,library):
     return dict(status='PASS',cases=rows,oracle='INDEPENDENT_GGUF_NON_DYADIC_RAW_BITS')
 
 
-def dynamic_gate(sdk,sdk_path,library,timer,l2):
+def dynamic_gate(sdk,sdk_path,library,timer,l2,*,round_two=False):
     from quactlize.dispatch.table import Workload
     results=[]
     for q in range(10,15):
@@ -222,16 +225,17 @@ def dynamic_gate(sdk,sdk_path,library,timer,l2):
             ws=b.alloc(alternate.workspace_bytes);out=b.alloc(128*256*4)
             alternate.workspace=ws.ptr;alternate.output=out.ptr;alternate.weight.stream=other.stream.value
             for storage in (0,1):
-                arm=dict(name='contract',storage=storage,vector_io=1,
-                         dequant_variant=0 if q<12 else 1,math_mode=16,algorithm=-1)
-                h=b.handle(arm)
-                for repeat in (0,1):
-                    b.update(repeat);b.launch(h)
-                    checked(b.run(h,C.byref(alternate),-1),'second live stream/dynamic addresses')
-                    sdk.synchronize(other.stream);proof=b.check()
-                    if sdk.download(out.ptr,out.size)!=sdk.download(b.out.ptr,b.out.size):
-                        raise ValueError('disjoint-workspace concurrent output differs')
-                    results.append(dict(q=q,storage=storage,repeat=repeat,status='PASS',proof=proof))
+                for variant in ([0]if q<12 else [4,5,6,7]if round_two else[1]):
+                    arm=dict(name='contract',storage=storage,vector_io=2 if round_two else 1,
+                             dequant_variant=variant,math_mode=16,algorithm=-1)
+                    h=b.handle(arm)
+                    for repeat in (0,1):
+                        b.update(repeat);b.launch(h)
+                        checked(b.run(h,C.byref(alternate),-1),'second live stream/dynamic addresses')
+                        sdk.synchronize(other.stream);proof=b.check()
+                        if sdk.download(out.ptr,out.size)!=sdk.download(b.out.ptr,b.out.size):
+                            raise ValueError('disjoint-workspace concurrent output differs')
+                        results.append(dict(q=q,storage=storage,variant=variant,repeat=repeat,status='PASS',proof=proof))
         finally:
             if other:other.close()
             if b:b.close()

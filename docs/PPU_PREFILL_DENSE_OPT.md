@@ -85,3 +85,76 @@ Upload only `results/review-*.tgz` (JSON, bounded logs, raw counter CSV).
 Reports remain at `results/profile-*.acurep`; compiled libraries/weights and
 reports are excluded from the compact archive. No performance/production
 admission is asserted until returned target-device evidence is reviewed.
+
+## Round 2: address chain, per-instruction coalescing, CTA geometry
+
+Round1 returned `review-1792630720834391642.tgz` (SHA256
+`958025e30093278cb01bbd5c34ad72390938550bdf9059b2c73c7773cd042594`).
+This round retains its exact old kernels; it does not promote its screen
+minima to production. No llama rebuild or GEMM config sweep is required.
+
+- IO option2 uses two independent vec4 chunks/thread. At one FP32 vector
+  instruction, old vec8 lanes request `[32*lane,32*lane+16)`: 512 useful
+  bytes touch 16 64B sectors. New lanes request `[16*lane,16*lane+16)`:
+  512 useful bytes touch8 sectors. Both halves remain explicit independent
+  loads; the 16-bit side uses contiguous8B/lane vectors. No shared staging.
+  L2 merging made the old combined footprint look coalesced; inspect LSU
+  transactions as well as L2/DRAM, not only combined bytes. Safe scalar tails,
+  misalignment/stride fallback and IEEE RNE conversion are preserved.
+- Dequant options4/5 keep N32/T128/K128 or K256 but use unsigned validated
+  coordinates, slot arithmetic and64-bit plane/metadata products. Q6 scale
+  values remain signed; affine math and final F16/BF16 rounding are unchanged.
+  Canonical Q5 high-plane N/K permutation is retained.
+- Options6/7 independently try N16/T128/K256 and N32/T256/K256. For the small
+  Q6 N1024 K5120 point, the old640 CTAs x128 threads cannot fill the theoretical
+  72x16 CTA slots. N16 gives1280x128; T256 gives640x256. Neither is declared
+  faster merely because it exposes more warps. K128 remains a control.
+
+Local evidence: real PPU compile produces72 instances, all zero stack.
+188 related host tests pass (numeric/layout, dynamic ABI, timers and harness).
+The old40 instances have byte-identical encoded instructions. Q6 K128 static
+`v.shra.i32` goes27→2; `v.shrl.b32`148→90, same38 vector registers. These are
+static codegen counts, not dynamic instruction counts or target speedups.
+Independent non-dyadic GGUF tests cover Q4/Q5/Q6 xF16/BF16 xall four new
+geometries; wrong-slot and wrong-thread-stride mutations are detected.
+Tests also prove lane ownership, tails, vector alignment and64-bit addressing.
+Target GPU numerics/performance still require the command below.
+
+```bash
+cd /sim/eec/shared/junfu.qx/quactlize
+git pull --ff-only origin develop
+unset RUN
+DENSE_ROUND=2 GPU=2 IDLE_CONFIRMED=1 PPU_SDK=/usr/local/PPU_SDK JOBS=4 \
+  bash tools/run_prefill_dense_opt_box.sh
+```
+
+Seven PP2048 families,14 arms/point, four alternating-order component rounds.
+Only dequant and IO are screened; the two dtype-specific combinations then
+get separately measured complete calls against their controls (four rounds).
+All provider warmups precede ordinary event timing. The same algorithm-1,
+FP32 accumulator and4MiB explicit provider workspace remain fixed. The sum
+of isolated components is NOT labelled measured full-call latency.
+
+Then24 ACU captures: six component pairs in AB/BA order. Each capture is
+one kernel/one weight copy, with no cold-ring or timed loop in the profiler
+range. Pairs cover BF16 input/output, Q4 expansion, Q6 expansion in both
+dtypes, and the small-Q6 geometry control. Every other case still has
+numerical and event-timing coverage. `cycle-pairs.json` reports CE cycles
+and the actual frequency separately; a higher frequency is not a cycle gain.
+The requested1700MHz clock is not a guarantee against TDP throttling.
+There is no production update or model-E2E/no-regression admission.
+
+Upload the printed `results/review-*.tgz` only; raw counters are included.
+The24 `.acurep` files and binaries stay on Box. For a stopped measurement,
+reuse the frozen source/output (not a newer checkout), same device and SDK:
+
+```bash
+python3 /workspace/prefill-dense-r2.<RUN>/source/tools/run_prefill_dense_opt.py \
+  --sdk /usr/local/PPU_SDK --output /workspace/prefill-dense-r2.<RUN>/results \
+  --device 2 --l2-bytes 67108864 --confirm-idle --round-two --resume
+```
+
+Resume verifies source, provider, SDK, device and compiled binary hashes.
+Completed points/profiles are reused unchanged; failed/interrupted work gets
+new attempt logs. A partial build is not reused. Use the same SDK environment
+as the initial wrapper. No raw evidence is silently re-labelled or deleted.

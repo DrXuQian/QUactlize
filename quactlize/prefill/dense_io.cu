@@ -1,4 +1,5 @@
 #include "dense_api.h"
+#include "dense_io_layout.hpp"
 #include <hggc_runtime.h>
 #include <hggc_fp16.h>
 #include <hggc_bf16.h>
@@ -64,20 +65,65 @@ __global__ void dense_convert_scalar(void const* src,void* dst,int width,int64_t
         else static_cast<float*>(dst)[row*stride+col]=error && *error ? __int_as_float(0x7fc00000):D::unpack(static_cast<typename D::Scalar const*>(src)[row*width+col]);
     }
 }
+template<bool BF16,bool Input,bool Flat>
+__global__ void dense_convert_stripe4(void const* src,void* dst,int width,int64_t stride,
+                                    int64_t count,int const* error) {
+    using D=DenseConvert<BF16>;
+    uint64_t const end=Flat ? uint64_t(count):uint64_t(width);
+    uint64_t const row=Flat ? 0:blockIdx.y;
+    bool const bad=!Input && error && *error;
+    // Load the two independent chunks before conversion/publication. No
+    // shared staging or cross-lane shuffle. Tails never vector-read OOB.
+    float4 floats[2];uint2 packed[2];
+    #pragma unroll
+    for(unsigned part=0;part<2;++part) {
+        uint64_t i=DenseStripe4<256>::element(blockIdx.x,threadIdx.x,part);
+        if(i+4<=end) {
+            if constexpr(Input) floats[part]=*reinterpret_cast<float4 const*>(
+                static_cast<float const*>(src)+row*stride+i);
+            else packed[part]=*reinterpret_cast<uint2 const*>(
+                static_cast<typename D::Scalar const*>(src)+row*width+i);
+        }
+    }
+    #pragma unroll
+    for(unsigned part=0;part<2;++part) {
+        uint64_t i=DenseStripe4<256>::element(blockIdx.x,threadIdx.x,part);
+        if(i+4<=end) {
+            union Bits {uint2 bits;typename D::Pair pairs[2];} v;
+            if constexpr(Input) {
+                auto a=floats[part];v.pairs[0]=D::pack2(make_float2(a.x,a.y));
+                v.pairs[1]=D::pack2(make_float2(a.z,a.w));
+                *reinterpret_cast<uint2*>(static_cast<typename D::Scalar*>(dst)+row*width+i)=v.bits;
+            } else {
+                v.bits=packed[part];auto a=D::unpack2(v.pairs[0]),b=D::unpack2(v.pairs[1]);
+                if(bad)a=b=make_float2(__int_as_float(0x7fc00000),__int_as_float(0x7fc00000));
+                *reinterpret_cast<float4*>(static_cast<float*>(dst)+row*stride+i)=make_float4(a.x,a.y,b.x,b.y);
+            }
+        } else for(unsigned j=0;j<4 && i+j<end;++j) {
+            if constexpr(Input) static_cast<typename D::Scalar*>(dst)[row*width+i+j]=D::pack(static_cast<float const*>(src)[row*stride+i+j]);
+            else static_cast<float*>(dst)[row*stride+i+j]=bad?__int_as_float(0x7fc00000):D::unpack(static_cast<typename D::Scalar const*>(src)[row*width+i+j]);
+        }
+    }
+}
 template<bool BF16,bool Input>
 void dense_convert(int vector,void const* src,void* dst,int rows,int width,int64_t stride,int const* error,hggcStream_t stream) {
     bool aligned=!(uintptr_t(src)%16 || uintptr_t(dst)%16);
-    if (vector && aligned && stride==width) {
+    if (vector==2 && aligned && stride==width) {
+        int64_t count=int64_t(rows)*width;
+        dense_convert_stripe4<BF16,Input,true><<<(count+2047)/2048,256,0,stream>>>(src,dst,width,stride,count,error);
+    } else if(vector==2 && aligned && width%4==0 && stride%4==0) {
+        dense_convert_stripe4<BF16,Input,false><<<dim3((width+2047)/2048,rows),256,0,stream>>>(src,dst,width,stride,0,error);
+    } else if (vector==1 && aligned && stride==width) {
         int64_t count=int64_t(rows)*width;
         dense_convert_vec8<BF16,Input,true><<<(count+2047)/2048,256,0,stream>>>(src,dst,width,stride,count,error);
-    } else if (vector && aligned && width%8==0 && stride%4==0) {
+    } else if (vector==1 && aligned && width%8==0 && stride%4==0) {
         dense_convert_vec8<BF16,Input,false><<<dim3((width+2047)/2048,rows),256,0,stream>>>(src,dst,width,stride,0,error);
     } else dense_convert_scalar<BF16,Input><<<rows,256,0,stream>>>(src,dst,width,stride,error);
 }
 }
 extern "C" int quactlize_dense_io_v1(int storage,int input,int vector,void const* src,void* dst,
         int rows,int width,int64_t stride,int const* error,void* stream) {
-    if ((storage!=0 && storage!=1) || (input!=0 && input!=1) || (vector!=0 && vector!=1) ||
+    if ((storage!=0 && storage!=1) || (input!=0 && input!=1) || vector<0 || vector>2 ||
         !src || !dst || rows<=0 || rows>65535 || width<=0 || stride<width ||
         uint64_t(stride)>uint64_t(INT64_MAX)/4/rows ||
         (uint64_t(rows)*width+2047)/2048>INT_MAX ||
