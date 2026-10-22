@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compact component evidence, exact screening table and empirical bucket proposals.
+"""Compact component evidence and per-shape screening rankings.
 
 Merges complete measured points, never substituted component estimates. The
 output is development data, not an installed production selector.
@@ -32,25 +32,29 @@ def eligible(row):
             and row.get('helper_mode') in ('production','cohort-current','experimental'))
 
 
-def tables(points):
+def tables(points, *, include_buckets=False):
+    # The experiment can exercise bucket proposals explicitly, but exports do
+    # not derive rules before the user reviews the raw per-shape measurements.
     exact, groups, bounds = {}, defaultdict(list), {}
     for key, point in points.items():
         w = Workload(**point['workload'])
-        bid = digest(bucket(w)); bounds[bid] = bucket(w)
+        if include_buckets:
+            bid = digest(bucket(w)); bounds[bid] = bucket(w)
         valid = [r for r in point['measurements'] if eligible(r)]
         native = next((r for r in point['measurements'] if r['arm']=='native-fp16'), None)
         if not valid or not native or native['status']!='PASS':
-            exact[key] = dict(status='REMEASURE_REQUIRED', bucket=bucket(w))
-            groups[bid].append((key, {}))
+            exact[key] = dict(status='REMEASURE_REQUIRED')
+            if include_buckets:groups[bid].append((key, {}))
             continue
         winner = min(valid, key=lambda r:r['gpu_sum_us'])
         exact[key] = dict(status='SCREEN_WINNER_NOT_ADMITTED', candidate=winner['candidate'],
             us=winner['gpu_sum_us'], native_us=native['gpu_sum_us'],
             delta_pct=100*(winner['gpu_sum_us']/native['gpu_sum_us']-1),
-            authority=point['authority'], components=winner['components'], bucket=bucket(w))
+            authority=point['authority'], components=winner['components'])
         # Ratios within each measured point, not absolute microseconds across
         # shapes. A bucket recipe must have been measured at EVERY member.
-        groups[bid].append((key, {r['candidate']:r['gpu_sum_us']/winner['gpu_sum_us'] for r in valid}))
+        if include_buckets:
+            groups[bid].append((key, {r['candidate']:r['gpu_sum_us']/winner['gpu_sum_us'] for r in valid}))
     buckets = {}
     for key, members in groups.items():
         common = set.intersection(*(set(r) for _,r in members))
@@ -211,6 +215,7 @@ def main():
         coverage.setdefault(point['point_id'],dict(point,measurements=[]))
     result['exact'],result['buckets']=tables(coverage)
     result.update(production_changed=False,performance_admitted=False,incomplete=incomplete,
+        bucket_status='PENDING_USER_FEEDBACK',
         scope='COMPLETE_ASYS_SCREEN_POINTS_AND_COMPONENTS_NOT_PRODUCTION_TABLE_OR_MODEL_TPOT')
     result['pending_points']=sorted({p['point_id'] for p in result['partial_points'].values()}-set(result['points']))
     result['review_sha256']=digest({k:v for k,v in result.items() if k!='review_sha256'})

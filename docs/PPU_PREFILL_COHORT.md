@@ -1,5 +1,12 @@
 # Dense prefill model cohorts
 
+Bucket construction is on hold pending user feedback. The inventory and review
+export raw per-shape evidence and rankings only; `buckets` stays empty with
+`bucket_status=PENDING_USER_FEEDBACK`. No production selection table changes.
+DeepSeek TP4 is reserved for later validation, not bucket training. Its local
+dimensions can be derived from the pinned llama TP code and GGUF metadata;
+the source-derived inventory path is still being prepared.
+
 The Qwen3-32B PP2048 screen reproduced the old-helper whole-model Asys subtotal
 within -0.41% (457.337 versus 459.225 ms for 445 calls). The native subtotal
 differed by -2.19%; the small Q4 KV control differed by -10.61%. This supports
@@ -80,7 +87,7 @@ captured ring, and records every helper, producer and reducer in Asys. No cuBLAS
 CUDA Graph, CPU-timing substitution or frequency-normalized latency is used.
 1700 MHz is requested; actual throttling remains diagnostic, not automatic FAIL.
 
-## Incremental component review and tables
+## Incremental component review and per-shape rankings
 
 ```bash
 python3 tools/review_prefill_cohort.py --run /workspace/qwen32-prefill-asys.RUN \
@@ -91,7 +98,7 @@ Repeat `--run` to merge disjoint shards. Upload this compact review; `.asysrep`,
 SQLite, weights, binaries and compiler caches stay on Box. The review retains
 source/SDK/device/binary authority, numerical evidence, all candidate recipes,
 per-kernel signatures/geometry/raw samples and complete-call sums. Medians and
-component sums are checked when exporting. `exact`, `buckets`, `components` and
+component sums are checked when exporting. `exact`, `components` and
 `candidates` are separate sections in the same checksum-protected file. The
 component registry carries input/dequant/main/reducer/output roles; no upload
 of weights or compiler intermediates is needed. The previous seven-shape,
@@ -112,11 +119,8 @@ stale points remain visible in coverage and cannot silently shrink a bucket's
 validation set. Source/SDK/device changes stay attached to their measurements;
 an SDK or hardware domain change requires a separate table.
 
-Exact tables select by complete GPU-call cost at equal precision. Buckets are
-classified before timing by format, precision, M/N/K bands and aspect. A bucket
-proposal must have measurements on every member, and minimizes worst relative
-regret to each member's exact winner. No common candidate yields an unresolved
-bucket, not a guessed FQ fallback. Buckets are explicitly in-sample proposals;
-held-out shapes, alternating finalist confirmation and model replay remain
-required before production policy admission. TP/model consumers are retained
-alongside deduplicated local workloads; no collective cost is inferred.
+Per-shape rankings use complete GPU-call cost at equal precision. The internal
+bucket experiment remains testable but is not invoked by the inventory, sweep
+or export commands. Bucket rules and their validation will be decided after
+the user reviews the measurements. TP/model consumers remain attached to
+deduplicated local workloads; no collective cost is inferred.

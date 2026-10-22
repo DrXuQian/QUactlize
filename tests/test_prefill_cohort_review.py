@@ -26,7 +26,7 @@ class ReviewTests(unittest.TestCase):
 
     def test_bucket_uses_relative_regret_not_absolute_latency(self):
         points=dict([self.point(5120,dict(a=10,b=11)),self.point(6144,dict(a=120,b=100))])
-        exact,buckets=tables(points)
+        exact,buckets=tables(points,include_buckets=True)
         self.assertEqual({r['candidate'] for r in exact.values()},{'a','b'})
         self.assertEqual(len(buckets),1)
         b=next(iter(buckets.values()))
@@ -36,7 +36,7 @@ class ReviewTests(unittest.TestCase):
 
     def test_missing_bucket_measurement_is_not_estimated(self):
         points=dict([self.point(5120,dict(a=10)),self.point(6144,dict(b=100))])
-        _,b=tables(points)
+        _,b=tables(points,include_buckets=True)
         self.assertEqual(next(iter(b.values()))['status'],'NO_COMMON_MEASURED_CONFIG')
 
     def test_stale_component_never_relabels_an_old_full_call(self):
@@ -50,9 +50,16 @@ class ReviewTests(unittest.TestCase):
     def test_unresolved_member_does_not_silently_shrink_bucket(self):
         one=self.point(5120,dict(a=10));two=self.point(6144,dict(a=11))
         two[1]['measurements']=[]
-        exact,buckets=tables(dict([one,two]))
+        exact,buckets=tables(dict([one,two]),include_buckets=True)
         self.assertEqual(exact[two[0]]['status'],'REMEASURE_REQUIRED')
         self.assertEqual(next(iter(buckets.values()))['status'],'NO_COMMON_MEASURED_CONFIG')
+
+    def test_default_only_reports_each_shape_without_bucket_rules(self):
+        points=dict([self.point(5120,dict(a=10)),self.point(6144,dict(a=11))])
+        exact,buckets=tables(points)
+        self.assertEqual(set(exact),set(points))
+        self.assertEqual(buckets,{})
+        self.assertTrue(all('bucket' not in row for row in exact.values()))
 
 
 class IngestTests(unittest.TestCase):
@@ -166,6 +173,8 @@ class IngestTests(unittest.TestCase):
         script=ROOT/'tools/review_prefill_cohort.py'
         subprocess.run([sys.executable,str(script),'--run',str(root),'--output',str(first)],check=True,capture_output=True)
         with lzma.open(first,'rt') as stream:one=json.load(stream)
+        self.assertEqual(one['buckets'],{})
+        self.assertEqual(one['bucket_status'],'PENDING_USER_FEEDBACK')
         component=one['points'][key]['measurements'][1]['components'][1]
         subprocess.run([sys.executable,str(script),'--previous',str(first),'--invalidate-component',component,
                         '--output',str(second)],check=True,capture_output=True)

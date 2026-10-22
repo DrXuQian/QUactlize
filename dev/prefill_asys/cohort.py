@@ -136,7 +136,7 @@ def collect(models, ms, *, loader=headers):
                                              reason='NATIVE_ONLY_KPACK_SHAPE_CONTRACT: '+str(exc)))
                         continue
                     point = groups.setdefault(w.key, dict(id=w.key, workload=asdict(w),
-                        bucket=bucket(w), consumers=[], tensors=[], call_count=None))
+                        consumers=[], tensors=[], call_count=None))
                     consumer = dict(ref, rank=rank, partition=axis)
                     if consumer not in point['consumers']:
                         point['consumers'].append(consumer)
@@ -146,6 +146,7 @@ def collect(models, ms, *, loader=headers):
         status='READY' if groups and not blocked else 'INCOMPLETE',
         scope='DENSE_LAYER_MATRIX_MICROBENCH_NOT_MODEL_CALL_COUNTS_OR_TP_COLLECTIVES',
         precision='F32_STORAGE_F16_OPERANDS_FP32_ACCUMULATION',
+        bucket_status='PENDING_USER_FEEDBACK',
         tp_scope='OBSERVED_LOCAL_DENSE_EXTENTS; NOT_TP_CORRECTNESS_OR_ALLREDUCE_TIMING',
         production_changed=False, performance_admitted=False)
     result['sha256'] = digest(result)

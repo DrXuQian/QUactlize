@@ -28,6 +28,8 @@ class CohortTests(unittest.TestCase):
         self.assertTrue(any(v['reason']=='MOE_SEPARATE_COHORT' for v in doc['excluded']))
         self.assertTrue(any(v['reason'].startswith('NATIVE_ONLY') for v in doc['excluded']))
         self.assertTrue(all(v['call_count'] is None for v in doc['points']))
+        self.assertTrue(all('bucket' not in v for v in doc['points']))
+        self.assertEqual(doc['bucket_status'],'PENDING_USER_FEEDBACK')
         bad=copy.deepcopy(doc);bad['points'][0]['workload']['n']+=256
         with self.assertRaisesRegex(ValueError,'digest'):validate(bad)
 
