@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import subprocess
 import sys
 import types
@@ -96,7 +97,7 @@ int main() {
 
 @pytest.mark.parametrize('grouped', [False, True])
 def test_actual_native_provider_composition_with_cpu_abi_stubs(tmp_path, grouped):
-    sdk=Path('/root/ppu-sdk/2.1.1')
+    sdk=Path(os.environ.get('PPU_SDK', '/usr/local/PPU_SDK'))
     provider=tmp_path/'CUDA_SDK/targets/x86_64-linux/lib'
     provider.mkdir(parents=True)
     stub=tmp_path/'blas.cpp'

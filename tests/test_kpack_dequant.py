@@ -1,5 +1,6 @@
 import ctypes as C
 import json
+import os
 from pathlib import Path
 import subprocess
 
@@ -10,12 +11,12 @@ from quactlize.dequant.native import Call, traffic
 from tools import kpack_dequant_fixture as fixture
 
 ROOT=Path(__file__).resolve().parents[1]
-SDK=Path('/root/ppu-sdk/2.1.1')
+SDK=Path(os.environ.get('PPU_SDK', '/usr/local/PPU_SDK'))
 
 
 @pytest.fixture(scope='module')
 def host(tmp_path_factory):
-    if not (SDK/'bin/hgcc').is_file():pytest.skip('PPU SDK host compiler required')
+    if not (SDK/'include/hggc_runtime.h').is_file():pytest.skip('PPU SDK headers required (PPU_SDK); no device compiler needed')
     out=tmp_path_factory.mktemp('dequant-host')/'host.so'
     command=['g++','-std=c++17','-O2','-shared','-fPIC',
         '-ffp-contract=off',f'-I{ROOT}',f'-I{ROOT}/quactlize/include',

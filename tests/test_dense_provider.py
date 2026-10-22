@@ -46,7 +46,7 @@ def test_general_dynamic_does_not_expand_legacy_decode_domain(tmp_path, probe, q
 
 
 def test_public_provider_orchestration_and_poc_selection(tmp_path):
-    sdk = Path(os.environ.get('PPU_SDK', '/root/ppu-sdk/2.1.1'))
+    sdk = Path(os.environ.get('PPU_SDK', '/usr/local/PPU_SDK'))
     exe = tmp_path / 'provider'
     (tmp_path / 'catalog.inc').write_text('static std::vector<Image> kImages{};\nstatic char const kJitSource[]="";\n')
     subprocess.run(['g++', '-std=c++17', '-O1', '-pthread', '-rdynamic', f'-I{ROOT}', f'-I{tmp_path}',

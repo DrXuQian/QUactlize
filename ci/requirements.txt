@@ -1,0 +1,5 @@
+# Torch must be supplied by the image (CPU Torch for host, compatible PPU
+# Torch on Box). Do not let pip replace a vendor Torch with a CUDA wheel.
+pytest>=7,<9
+numpy>=1.23,<3
+gguf

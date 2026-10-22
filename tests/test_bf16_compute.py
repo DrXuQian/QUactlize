@@ -8,7 +8,7 @@ ROOT=Path(__file__).resolve().parents[1]
 
 
 def test_real_host_compute_contract(tmp_path):
-    sdk=Path(os.environ.get("PPU_SDK","/root/ppu-sdk/2.1.1"))
+    sdk=Path(os.environ.get("PPU_SDK","/usr/local/PPU_SDK"))
     exe=tmp_path/"bf16-compute"
     result=subprocess.run(["g++","-O2","-std=c++17",f"-I{ROOT}",
         f"-I{ROOT}/quactlize/include",f"-I{ROOT}/third_party/actlize/include",
@@ -118,7 +118,7 @@ int main() {
   assert(std::isinf(moe_projection_value<Half>(projection,0,0)));
 }
 ''')
-    sdk=Path(os.environ.get("PPU_SDK","/root/ppu-sdk/2.1.1"))
+    sdk=Path(os.environ.get("PPU_SDK","/usr/local/PPU_SDK"))
     exe=tmp_path/"moe-range"
     result=subprocess.run(["g++","-O2","-std=c++17",f"-I{ROOT}",f"-I{ROOT}/third_party/actlize/include",
         f"-I{sdk}/include",f"-I{sdk}/targets/x86_64-linux/include",str(source),"-o",str(exe)],

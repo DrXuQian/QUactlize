@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture(scope="module")
 def host(tmp_path_factory):
-    sdk = Path(os.environ.get("PPU_SDK", "/root/ppu-sdk/2.1.1"))
+    sdk = Path(os.environ.get("PPU_SDK", "/usr/local/PPU_SDK"))
     target = tmp_path_factory.mktemp("execution-host") / "host.so"
     result = subprocess.run(
         [

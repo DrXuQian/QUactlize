@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def library(tmp_path_factory):
     compiler = shutil.which("g++")
     assert compiler, "g++ is required for the host ownership proof"
-    sdk = Path(os.environ.get("PPU_SDK", "/root/ppu-sdk/2.1.1"))
+    sdk = Path(os.environ.get("PPU_SDK", "/usr/local/PPU_SDK"))
     if not (sdk / "include/hggc_runtime.h").is_file():
         pytest.skip("PPU SDK headers are required; no PPU device is needed")
     output = tmp_path_factory.mktemp("kpack-word-proof") / "host.so"

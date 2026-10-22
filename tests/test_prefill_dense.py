@@ -7,8 +7,6 @@ import unittest
 
 ROOT=Path(__file__).resolve().parents[1]
 SDK=Path(os.environ.get('PPU_SDK','/usr/local/PPU_SDK'))
-if 'PPU_SDK' not in os.environ and not SDK.exists():
-    SDK=Path('/root/ppu-sdk/2.1.1')
 
 class DenseHostTest(unittest.TestCase):
     def test_actual_runtime_dtype_and_dynamic_addresses_two_streams(self):

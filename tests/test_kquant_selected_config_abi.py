@@ -152,7 +152,14 @@ def test_current_runtime_bundle_contract_requires_selected_config_exports():
     assert ppu_bundle.REQUIRED_EXPORTS == (
         ppu_bundle.LEGACY_REQUIRED_EXPORTS |
         ppu_bundle.SELECTED_CONFIG_REQUIRED_EXPORTS |
-        ppu_bundle.ANY_M_REQUIRED_EXPORTS)
+        ppu_bundle.ANY_M_REQUIRED_EXPORTS |
+        ppu_bundle.SCALEFIRST_PREPASS_REQUIRED_EXPORTS)
+    assert ppu_bundle.SCALEFIRST_PREPASS_REQUIRED_EXPORTS == {
+        "quactlize_ppu_kquant_scalefirst_metadata_plane_bytes_for_arrangement_v2",
+        "quactlize_ppu_kquant_scalefirst_prepass_dev_for_arrangement_v2",
+        "quactlize_ppu_q4_kpack4_scalefirst_metadata_plane_bytes_for_arrangement_v2",
+        "quactlize_ppu_q4_kpack4_scalefirst_prepass_dev_for_arrangement_v2",
+    }
     assert ppu_bundle.SELECTED_CONFIG_REQUIRED_EXPORTS == {
         "quactlize_ppu_dense_fully_quantized_selected_config_for_arrangement_v2",
         "quactlize_ppu_grouped_fully_quantized_selected_config_for_arrangement_v2",

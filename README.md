@@ -3,6 +3,11 @@
 Low-bit weight-only GEMM kernels for the T-Head ZW810 PPU, implemented with
 CuTe and the PPU CUTLASS-3 fork in `third_party/actlize`.
 
+CI and manual testing use **`bash run_tests.sh`**. See [CI integration](docs/CI.md)
+for host/build/device suites, requirements, coverage and JUnit artifacts.
+`bash run_tests.sh --suite all --list` lists the product suites and separately
+retained development/legacy tests without building or launching anything.
+
 The maintained branches are `main` (product) and `develop` (integration).
 TP2 and the isolated PPU1.7 CUTLASS 4.3 backend are integrated on `develop`;
 PPU1.0/1.5 continue to use actlize. See [branch and build policy](docs/BRANCHES.md)

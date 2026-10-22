@@ -184,7 +184,8 @@ def automatic_smallm(dispatch, call, arrangement, compute):
 def chain_case(args,sdk,lib,merged,tokens,router_enabled,down_q=13):
     e,n,k,topk=256,512,2048,8;m=tokens*topk
     compute=int(getattr(args,'compute','fp16')=='bf16')
-    jit=dict(python=sys.executable,helper=ROOT/'tools/kpack_jit.py',sdk=args.sdk,cache=args.jit_cache) if args.jit_cache else None
+    jit=dict(python=sys.executable,helper=getattr(args,'jit_helper',ROOT/'tools/kpack_jit.py'),
+             sdk=args.sdk,cache=args.jit_cache) if args.jit_cache else None
     r=Resources(sdk);d=Dispatch(args.bundle,jit=jit)
     graph,instance=C.c_void_p(),C.c_void_p()
     try:

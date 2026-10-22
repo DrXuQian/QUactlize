@@ -100,7 +100,7 @@ def test_grouped_is_not_advertised_as_dense_dynamic(tmp_path, probe):
 
 
 def test_actual_prefill_dynamic_composition_and_stream_isolation(tmp_path):
-    sdk = Path(os.environ.get('PPU_SDK', '/root/ppu-sdk/2.1.1'))
+    sdk = Path(os.environ.get('PPU_SDK', '/usr/local/PPU_SDK'))
     provider = tmp_path / 'CUDA_SDK/targets/x86_64-linux/lib'
     provider.mkdir(parents=True)
     subprocess.run(['g++', '-std=c++17', '-shared', '-fPIC',

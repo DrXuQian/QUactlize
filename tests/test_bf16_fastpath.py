@@ -6,7 +6,7 @@ ROOT=Path(__file__).resolve().parents[1]
 
 
 def test_actual_packed_writer_and_typed_s1_query(tmp_path):
-    sdk=Path(os.environ.get('PPU_SDK','/root/ppu-sdk/2.1.1'))
+    sdk=Path(os.environ.get('PPU_SDK','/usr/local/PPU_SDK'))
     executable=tmp_path/'fastpath'
     result=subprocess.run(['g++','-O2','-std=c++17',f'-I{ROOT}',
         f'-I{ROOT}/quactlize/include',f'-I{ROOT}/third_party/actlize/include',

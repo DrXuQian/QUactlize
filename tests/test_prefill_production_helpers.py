@@ -21,7 +21,7 @@ ROOT=Path(__file__).resolve().parents[1]
 
 
 def test_runtime_descriptors(tmp_path):
-    sdk=Path(os.environ.get('PPU_SDK','/root/ppu-sdk/2.1.1'))
+    sdk=Path(os.environ.get('PPU_SDK','/usr/local/PPU_SDK'))
     exe=tmp_path/'descriptor'
     subprocess.run(['g++','-std=c++17','-O2','-ffunction-sections','-fdata-sections',
         '-Wl,--gc-sections','-I'+str(sdk/'include'),str(ROOT/'tests/prefill_point_descriptor_host.cpp'),'-o',str(exe)],check=True)

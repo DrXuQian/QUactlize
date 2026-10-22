@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 ROOT=Path(__file__).resolve().parents[1]
-SDK=Path(os.environ.get('PPU_SDK','/root/ppu-sdk/2.1.1'))
+SDK=Path(os.environ.get('PPU_SDK','/usr/local/PPU_SDK'))
 
 class RoundThreeHost(unittest.TestCase):
     @classmethod

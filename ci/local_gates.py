@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""THE TIER THAT NEEDS NO DEVICE. Runs every check that can falsify something without a PPU, and reports one table.
+"""Legacy/development probes, NOT the product CI entry or a release gate.
+
+Use `bash run_tests.sh --suite all` for the installed public package. This
+runner is retained for historical layout/overlay/experiment reproduction;
+its optional skips and legacy Torch tests are not product admissions.
 
 Why this exists and why it is separate from the device tier: nearly every wrong result this project produced was
 wrong in a way a local check could have caught -- a layout claimed rather than printed, a hypothesis never fed back
@@ -22,7 +26,7 @@ Three kinds of check:
   pytest   the torch-op tests, if the extension is built and torch is importable. Skipped, not failed, otherwise --
            this tier must stay runnable on a machine with neither.
 
-  ./ci/local_gates.py            run everything
+  ./ci/local_gates.py            run historical probes (not all product tests)
   ./ci/local_gates.py --list     show what would run
   ./ci/local_gates.py -k q4k     run only matching names
 """

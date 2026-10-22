@@ -71,6 +71,10 @@ def pytest_runtest_setup(item):
 # case this refuses.
 def pytest_sessionstart(session):
     import pathlib as _pl
+    # Public-library suites do not load the legacy Torch extension. Direct
+    # legacy pytest invocations retain the existing stale-build guard.
+    if os.environ.get("QUACTLIZE_CI_SUITE") in ("host", "accuracy", "all"):
+        return
     root = _pl.Path(__file__).resolve().parent.parent
     so = sorted((root / "quactlize").glob("_C*.so"))
     if not so:

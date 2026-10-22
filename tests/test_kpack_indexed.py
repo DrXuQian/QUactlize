@@ -1,4 +1,5 @@
 import ctypes as C
+import os
 from pathlib import Path
 import subprocess
 
@@ -11,10 +12,11 @@ ROOT=Path(__file__).resolve().parents[1]
 
 @pytest.fixture(scope="module")
 def library(tmp_path_factory):
+    sdk = Path(os.environ.get('PPU_SDK', '/usr/local/PPU_SDK'))
     output=tmp_path_factory.mktemp("indexed")/"host.so"
     build=subprocess.run(["g++","-std=c++17","-O2","-shared","-fPIC",f"-I{ROOT}",
-        f"-I{ROOT/'third_party/actlize/include'}","-I/root/ppu-sdk/2.1.1/include",
-        "-I/root/ppu-sdk/2.1.1/targets/x86_64-linux/include",
+        f"-I{ROOT/'third_party/actlize/include'}", f"-I{sdk}/include",
+        f"-I{sdk}/targets/x86_64-linux/include",
         "-DCUTLASS_USE_PACKED_TUPLE=1","-DCUTE_USE_PACKED_TUPLE=1",
         str(ROOT/"tests/kpack_indexed_host.cpp"),"-o",str(output)],text=True,capture_output=True)
     assert build.returncode==0,build.stdout+build.stderr
