@@ -54,6 +54,7 @@ def test_full_plan_preserves_storage_and_never_imports_tc():
     families=cohort()['families'];data=measurements(families)
     p=full_plan(families,data,lambda *args:None,'bound-authority')
     assert len(p['points'])==175 and not p['pending']
+    assert json.loads(json.dumps(p))==p  # Exact worker resume comparison.
     assert validate_full_plan(p) is p
     for point in p['points']:
         assert point['confirmation_captures']==2

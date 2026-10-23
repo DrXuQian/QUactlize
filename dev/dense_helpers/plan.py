@@ -115,7 +115,10 @@ def full_plan(families,measurements,policy,authority):
         scope='HELPER_FULL_CALL_CONFIRMATION_NOT_GEMM_ROUTE_SEARCH',
         counts=dict(points=len(points),full_arms=sum(len(p['cases']) for p in points),tc_modules=0))
     plan['sha256']=digest(plan)
-    return plan
+    # Recipe.parameters is a tuple in memory but a list in a saved JSON plan.
+    # Keep creation and resume in the same wire representation; do not relax
+    # source/device/config checks or rewrite previously measured receipts.
+    return json.loads(json.dumps(plan))
 
 
 def validate_full_plan(value):
