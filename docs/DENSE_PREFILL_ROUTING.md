@@ -88,6 +88,8 @@ coverage. Those exclusions remain in the inventory, not counted as passes.
 The runner first loads each model with native llama, equal tensor splits,
 Quactlize disabled and `GGML_META_DEBUG=1`. One PP64/TG1 benchmark row (plus
 the binary's own initial warmup) records the actual per-rank partition.
+No `--no-warmup` option is required or passed: some batched-bench builds do
+not expose it, and this inventory pass is never a performance measurement.
 Replicated weights, N/K cuts and repeated head
 segments are validated against all GGUF shard headers. Missing ranks or a
 debug record describing only a prefix of a segmented axis stop planning.

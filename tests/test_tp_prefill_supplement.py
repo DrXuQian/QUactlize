@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,7 +17,7 @@ from dev.strategy.resources import inventory, resolve_point
 from quactlize.dispatch.dense_prefill import EVIDENCE
 from quactlize.dispatch.table import Workload
 from quactlize.runtime.tuning import digest
-from tools.run_tp_prefill_supplement import probe_command, model_path
+from tools.run_tp_prefill_supplement import probe, probe_command, model_path
 from dev.prefill_point.bench import tc_helper_choice
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -140,10 +141,49 @@ def test_probe_and_path_resolution_are_explicit(tmp_path):
     assert model_path(tmp_path,'model','first.gguf',None)==path
     cmd=probe_command(Path('/build/bin/llama-batched-bench'),path,4)
     assert cmd[cmd.index('-sm')+1]=='tensor' and cmd[cmd.index('-ts')+1]=='1,1,1,1'
-    assert cmd[cmd.index('--verbosity')+1]=='5' and '--no-warmup' in cmd
+    assert cmd[cmd.index('--verbosity')+1]=='5' and '--no-warmup' not in cmd
     other=tmp_path/'model';other.mkdir();(other/'first.gguf').write_bytes(b'other')
     with pytest.raises(ValueError,match='expected one'):model_path(tmp_path,'model','first.gguf',None)
     assert model_path(tmp_path,'model','first.gguf',path)==path
+
+
+@pytest.mark.parametrize('warmup_flag', ['', '--no-warmup'])
+def test_probe_accepts_tp_binary_without_a_warmup_switch(tmp_path,monkeypatch,warmup_flag):
+    build=tmp_path/'build'
+    (build/'bin').mkdir(parents=True)
+    binary=build/'bin/llama-batched-bench';binary.write_bytes(b'host-only test binary identity')
+    args=SimpleNamespace(llama_build=build,sdk=tmp_path/'sdk')
+    help_text='--split-mode --tensor-split --verbosity '+warmup_flag
+    def help_call(command,**kwargs):
+        assert command==[str(binary),'--help']
+        return subprocess.CompletedProcess(command,0,stdout=help_text,stderr='')
+    monkeypatch.setattr('tools.run_tp_prefill_supplement.subprocess.run',help_call)
+    calls=[]
+    monkeypatch.setattr('tools.run_dense_model_ab.execute',lambda *args:calls.append(args))
+    out=tmp_path/'probe';model=tmp_path/'model.gguf'
+    result=probe(args,model,'qwen35-122b-tp2',2,out,['1','3','5','7'])
+    assert result==out/'run.log' and len(calls)==1
+    command,env,directory,label=calls[0]
+    assert '--no-warmup' not in command and command[command.index('-ts')+1]=='1,1'
+    assert env['CUDA_VISIBLE_DEVICES']=='1,3'
+    assert env['GGML_QUACTLIZE_DENSE']=='0' and env['GGML_META_DEBUG']=='1'
+    receipt=json.loads((out/'identity.json').read_text())
+    assert receipt['warmup']=='NATIVE_DEFAULT_NOT_TIMED'
+    assert receipt['scope']=='NATIVE_PLACEMENT_INVENTORY_NOT_PERFORMANCE'
+
+
+@pytest.mark.parametrize('missing', ['--split-mode','--tensor-split','--verbosity'])
+def test_probe_still_requires_actual_inventory_options(tmp_path,monkeypatch,missing):
+    build=tmp_path/'build';(build/'bin').mkdir(parents=True)
+    (build/'bin/llama-batched-bench').write_bytes(b'host-only identity')
+    help_text=' '.join(f for f in ('--split-mode','--tensor-split','--verbosity','--no-warmup') if f!=missing)
+    monkeypatch.setattr('tools.run_tp_prefill_supplement.subprocess.run',
+        lambda command,**_:subprocess.CompletedProcess(command,0,stdout='',stderr=help_text))
+    def unexpected(*_):raise AssertionError('invalid binary must not start a model run')
+    monkeypatch.setattr('tools.run_dense_model_ab.execute',unexpected)
+    with pytest.raises(ValueError,match='required TP inventory option '+missing):
+        probe(SimpleNamespace(llama_build=build,sdk=tmp_path/'sdk'),tmp_path/'model',
+              'tp',2,tmp_path/'probe',['1','2'])
 
 
 def test_fixed_tc_io_does_not_consult_the_old_helper_lookup():

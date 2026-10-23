@@ -50,12 +50,13 @@ def model_path(root, directory, filename, override):
 
 
 def probe_command(binary, model, world):
-    # One small native pass only. TP placement is observed, never obtained by
-    # dividing all N/K. Dense Quactlize/JIT stays off during this inventory.
+    # One small native benchmark row, with the binary's default warmup.
+    # --no-warmup is not exposed by every batched-bench build, and inventory
+    # duration is never admitted as performance. TP extents are observed.
     return [str(binary), '-m', str(model), '-npp', '64', '-ntg', '1', '-npl', '1',
             '-b', '64', '-ub', '64', '-c', '128', '-ngl', 'all', '-sm', 'tensor',
             '-ts', ','.join(['1']*world), '-fa', '1', '--fit', 'off', '--mmap',
-            '--no-warmup', '--output-format', 'jsonl', '--log-colors', 'off', '--verbosity', '5']
+            '--output-format', 'jsonl', '--log-colors', 'off', '--verbosity', '5']
 
 
 def probe(a, model, name, world, directory, gpus):
@@ -67,12 +68,12 @@ def probe(a, model, name, world, directory, gpus):
     directory.mkdir()
     help_result = subprocess.run([str(binary), '--help'], env=env, capture_output=True, text=True,
                                  errors='replace', timeout=30, check=True)
-    for flag in ('--split-mode', '--tensor-split', '--no-warmup', '--verbosity'):
+    for flag in ('--split-mode', '--tensor-split', '--verbosity'):
         if flag not in help_result.stdout+help_result.stderr:
-            raise ValueError(f'{binary} lacks {flag}; use a TP-capable llama build')
+            raise ValueError(f'{binary} lacks required TP inventory option {flag}; inspect this binary\'s --help')
     atomic_json(directory/'identity.json', dict(binary=str(binary), sha256=sha(binary),
         model=str(model), world=world, devices=gpus[:world], GGML_META_DEBUG=1,
-        scope='NATIVE_PLACEMENT_INVENTORY_NOT_PERFORMANCE'))
+        warmup='NATIVE_DEFAULT_NOT_TIMED', scope='NATIVE_PLACEMENT_INVENTORY_NOT_PERFORMANCE'))
     execute(probe_command(binary, model, world), env, directory, name+'-tp-inventory')
     return directory/'run.log'
 
