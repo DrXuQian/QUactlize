@@ -16,14 +16,16 @@ __global__ __launch_bounds__(128) void dense_dequant_plane_pair(
         uint8_t const* __restrict__ units,uint16_t* __restrict__ output,int n,int k) {
     using L=DensePlanePair<Q,TileK>;using Lo=typename L::Low;using Hi=typename L::High;
     using A=typename L::Affine;
-    constexpr unsigned MetaWords=Q==11?64*28/4:1;
+    constexpr unsigned UnitBytes=Q==11?28:20, UnitK=Q==11?512:256;
+    constexpr unsigned MetaWords=Q==8?1:64*UnitBytes/4;
     __shared__ __align__(16) uint32_t tile[Lo::Cells];
     __shared__ __align__(16) uint32_t upper[Q==11?Hi::Cells:1];
     __shared__ __align__(16) uint32_t metadata[MetaWords];
     __shared__ float scale[64*L::Groups];
+    __shared__ float minimum[Q==10?64*L::Groups:1];
     unsigned tid=threadIdx.x,n0=blockIdx.x*64,k0=blockIdx.y*TileK,extent=unsigned(n);
-    if constexpr(Q==11) {
-        auto src=units+(uint64_t(k0/512)*extent+n0)*28;
+    if constexpr(Q!=8) {
+        auto src=units+(uint64_t(k0/UnitK)*extent+n0)*UnitBytes;
         #pragma unroll
         for(unsigned i=tid;i<MetaWords/4;i+=128)
             reinterpret_cast<uint4*>(metadata)[i]=reinterpret_cast<uint4 const*>(src)[i];
@@ -52,11 +54,15 @@ __global__ __launch_bounds__(128) void dense_dequant_plane_pair(
         }
     }
     __syncthreads();
-    if constexpr(Q==11) {
+    if constexpr(Q!=8) {
         if(tid<64) {
-            auto values=DenseRegisterAffine<KType::Q3_K,TileK>::load(metadata+tid*7,k0);
+            auto values=DenseRegisterAffine<Q==10?KType::Q2_K:KType::Q3_K,TileK>::load(metadata+tid*(UnitBytes/4),k0);
             #pragma unroll
-            for(unsigned g=0;g<L::Groups;++g)scale[A::offset(tid,g)]=values.group(g).scale;
+            for(unsigned g=0;g<L::Groups;++g) {
+                auto affine=values.group(g);
+                scale[A::offset(tid,g)]=affine.scale;
+                if constexpr(Q==10)minimum[A::offset(tid,g)]=affine.minimum;
+            }
         }
         __syncthreads();
     }
@@ -73,14 +79,19 @@ __global__ __launch_bounds__(128) void dense_dequant_plane_pair(
         uint32_t words[8]={a.x,a.y,a.z,a.w,b.x,b.y,b.z,b.w};
         uint32_t highs[8]={ha.x,ha.y,ha.z,ha.w,hb.x,hb.y,hb.z,hb.w};
         float s0=scale[A::offset(2*pair,kk/L::Group)],s1=scale[A::offset(2*pair+1,kk/L::Group)];
+        float z0=0.f,z1=0.f;
+        if constexpr(Q==10) {
+            z0=minimum[A::offset(2*pair,kk/L::Group)];
+            z1=minimum[A::offset(2*pair+1,kk/L::Group)];
+        }
         uint32_t out0[4],out1[4];
         #pragma unroll
         for(unsigned p=0;p<4;++p) {
             uint32_t x=L::codes(words[2*p],highs[2*p],kk),y=L::codes(words[2*p+1],highs[2*p+1],kk);
-            out0[p]=uint32_t(L::template weight<BF16>(x&0xffffu,s0))|
-                (uint32_t(L::template weight<BF16>(y&0xffffu,s0))<<16);
-            out1[p]=uint32_t(L::template weight<BF16>(x>>16,s1))|
-                (uint32_t(L::template weight<BF16>(y>>16,s1))<<16);
+            out0[p]=uint32_t(L::template weight<BF16>(x&0xffffu,s0,z0))|
+                (uint32_t(L::template weight<BF16>(y&0xffffu,s0,z0))<<16);
+            out1[p]=uint32_t(L::template weight<BF16>(x>>16,s1,z1))|
+                (uint32_t(L::template weight<BF16>(y>>16,s1,z1))<<16);
         }
         auto dst=output+uint64_t(n0+2*pair)*unsigned(k)+k0+kk;
         *reinterpret_cast<uint4*>(dst)={out0[0],out0[1],out0[2],out0[3]};
@@ -321,6 +332,9 @@ extern "C" int quactlize_kpack_dequant_dense_v1(qzd_call_v1 const* c,
         if(c->qtype==8) {
             if(storage)dense_plane_pair_launch<8,true>(*c,variant);
             else dense_plane_pair_launch<8,false>(*c,variant);
+        } else if(c->qtype==10) {
+            if(storage)dense_plane_pair_launch<10,true>(*c,variant);
+            else dense_plane_pair_launch<10,false>(*c,variant);
         } else {
             if(storage)dense_plane_pair_launch<11,true>(*c,variant);
             else dense_plane_pair_launch<11,false>(*c,variant);

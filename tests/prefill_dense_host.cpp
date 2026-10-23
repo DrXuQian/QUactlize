@@ -33,23 +33,26 @@ template<int Q,bool BF16,unsigned TK>
 int decode(uint16_t const* low,uint16_t const* high,uint8_t const* units,uint16_t* output,unsigned n,unsigned k,int fault) {
     using namespace quactlize::dequant;
     using L=DensePlanePair<Q,TK>;using Lo=typename L::Low;using Hi=typename L::High;using A=typename L::Affine;
-    std::vector<uint32_t> tile(Lo::Cells),upper(Hi::Cells),metadata(64*7);
-    std::vector<float> scale(64*L::Groups);
+    constexpr unsigned UnitBytes=Q==11?28:20, UnitK=Q==11?512:256;
+    std::vector<uint32_t> tile(Lo::Cells),upper(Hi::Cells),metadata(64*UnitBytes/4);
+    std::vector<float> scale(64*L::Groups),minimum(64*L::Groups);
     std::vector<unsigned> wa(scale.size()),wo(64*TK);
     for(unsigned n0=0;n0<n;n0+=64)for(unsigned k0=0;k0<k;k0+=TK) {
         if(stage<Q==8?8:2,TK>(low,tile,n,k,n0,k0,fault))return 4;
         if constexpr(Q==11)if(stage<1,TK>(high,upper,n,k,n0,k0,fault==5?2:0))return 5;
         std::fill(wa.begin(),wa.end(),0);std::fill(wo.begin(),wo.end(),0);
-        if constexpr(Q==11) {
-            uint64_t start=(uint64_t(k0/512)*n+n0)*28;
-            if(start%16 || start+metadata.size()*4>uint64_t(n)*k/256*14)return 6;
+        if constexpr(Q!=8) {
+            uint64_t start=(uint64_t(k0/UnitK)*n+n0)*UnitBytes;
+            if(start%16 || start+metadata.size()*4>uint64_t(n)*k/UnitK*UnitBytes)return 6;
             std::memcpy(metadata.data(),units+start,metadata.size()*4);
             for(unsigned col=0;col<64;++col) {
-                auto values=DenseRegisterAffine<gguf_scale::KType::Q3_K,TK>::load(metadata.data()+col*7,k0^(fault==4?256:0));
+                auto values=DenseRegisterAffine<Q==10?gguf_scale::KType::Q2_K:gguf_scale::KType::Q3_K,TK>::load(
+                    metadata.data()+col*(UnitBytes/4),k0^(fault==4?(Q==11?256:128):0));
                 for(unsigned g=0;g<L::Groups;++g) {
                     unsigned at=A::offset(col,g);
                     if(at>=wa.size() || ++wa[at]!=1)return 7;
                     scale[at]=values.group(g).scale;
+                    if constexpr(Q==10)minimum[at]=values.group(g).minimum;
                 }
             }
         } else {
@@ -76,7 +79,7 @@ int decode(uint16_t const* low,uint16_t const* high,uint8_t const* units,uint16_
                     auto destination=uint64_t(n0+row)*k+k0+kk+v;
                     if(v==0 && destination%8)return 12;
                     output[destination]=L::template weight<BF16>((raw>>(16*(side^(fault==3))))&0xffffu,
-                        scale[A::offset(row,kk/L::Group)]);
+                        scale[A::offset(row,kk/L::Group)],minimum[A::offset(row,kk/L::Group)]);
                 }
             }
         }
@@ -94,6 +97,7 @@ template<int Q> int typed(int b,int v,uint16_t const* l,uint16_t const* h,uint8_
 }
 extern "C" int dense_plane_pair_host(int q,int b,int v,uint16_t const* l,uint16_t const* h,uint8_t const* u,uint16_t* o,unsigned n,unsigned k,int f) {
     if(q==8)return typed<8>(b,v,l,h,u,o,n,k,f);
+    if(q==10)return typed<10>(b,v,l,h,u,o,n,k,f);
     if(q==11)return typed<11>(b,v,l,h,u,o,n,k,f);
     return 99;
 }

@@ -30,7 +30,7 @@ extern "C" int qkp_stage_finish(qkp_call_v1 const* c,quactlize::prefill::Layout 
 }
 int main(int argc,char** argv){
     assert(argc==2);using namespace quactlize::prefill;
-    for(int q:{12,8,11}) {
+    for(int q:{8,10,11,12,13,14}) {
     qkp_call_v1 shape{};shape.version=1;shape.size=sizeof(shape);shape.m=shape.a_rows=128;
     shape.a_stride=512;shape.output_stride=256;shape.weight={1,sizeof(qzd_call_v1),q,256,512,1,1,5};
     auto arr=q==8?q8_kpack2::arrangement():q==12?ppu_arrangements::q4_kpack4_transpose_v1():
@@ -56,7 +56,7 @@ int main(int argc,char** argv){
         assert(bool(qkp_dense_dequant_variant_valid(variant))==typed);
         qkp_dense_options_v1 o{1,sizeof(o),argv[1],type,vector,variant,16,algorithm};void* h=nullptr;
         int rc=quactlize_kpack_dense_full_prepare_v1(&shape,&arr,&o,&h);
-        bool supported=variant==0 || (q==8 || q==11?(variant==22 || variant==23):(variant==8 || variant==20 || variant==21));
+        bool supported=variant==0 || (q==8 || q==10 || q==11?(variant==22 || variant==23):(variant==8 || variant==20 || variant==21));
         if((variant==-1 && (q==8 || type==0)) || (variant!=-1 && !supported)){assert(rc && !h);continue;}
         assert(!rc && h);
         auto run=[&](int i){for(int r=0;r<8;++r){

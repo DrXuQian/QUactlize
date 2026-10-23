@@ -96,20 +96,23 @@ class DenseHelperHost(unittest.TestCase):
                 self.assertTrue(all(a%16==0 for a in addresses))
                 self.assertEqual(len({(a+b)//32 for a in addresses for b in range(16)}),16)
 
-    def test_q3_q8_plane_pair_oracle_and_faults(self):
+    def test_q2_q3_q8_plane_pair_oracle_and_faults(self):
         import numpy as np
         from gguf import GGMLQuantizationType
         from gguf.quants import dequantize
         from reference import gguf_kpack as ref
         from tools.kpack_warmup_fixture import prepare_expert
         from dev.bf16_compute.fixture import planes, bf16_bits
-        for q in (8,11):
+        for q in (8,10,11):
             for n,k in ((256,512),(768,1024),(256,1536)):
                 rng=np.random.default_rng(q+n+k)
                 raw=rng.integers(0,256,(n*k//(32 if q==8 else 256),34 if q==8 else ref.SPECS[q].raw_bytes),dtype='u1')
                 offset=0 if q==8 else ref.SPECS[q].d_offset
                 raw[:,offset:offset+2]=rng.uniform(-.009,.009,len(raw)).astype('<f2').view('u1').reshape(-1,2)
                 raw[:10,offset:offset+2]=np.array([0,0x8000,1,0x8001,0x3555,0xb555,0x0400,0x8400,0x7bff,0xfbff],dtype='<u2').view('u1').reshape(-1,2)
+                if q==10:
+                    off=ref.SPECS[q].dmin_offset
+                    raw[:,off:off+2]=rng.uniform(-.009,.009,len(raw)).astype('<f2').view('u1').reshape(-1,2)
                 if q==8:raw[:8,2:]=np.arange(256,dtype='u1').reshape(8,32)
                 packed=planes(raw.reshape(n,k//32,34),8)if q==8 else prepare_expert(raw,q,n,k)
                 gold=dequantize(raw.reshape(-1),GGMLQuantizationType(q)).reshape(n,k)
@@ -128,7 +131,7 @@ class DenseHelperHost(unittest.TestCase):
                             # control/candidate must still match every raw bit.
                             self.assertFalse(np.any((out!=want)&(((out|want)&0x7fff)!=0)))
                             np.testing.assert_array_equal(out,control)
-                            for fault in (1,3,*((4,)if q==11 else())):
+                            for fault in (1,3,*((4,)if q==11 or q==10 and variant==22 else())):
                                 self.assertEqual(self.lib.dense_plane_pair_host(*args,fault),0)
                                 self.assertTrue(np.any(out!=control))
                             self.assertNotEqual(self.lib.dense_plane_pair_host(*args,2),0)
@@ -137,14 +140,15 @@ class DenseHelperHost(unittest.TestCase):
     def test_box_runner_fixture_is_accepted_by_actual_readers(self):
         import numpy as np
         from tools.run_dense_dequant import fixture
-        for q in (8,11):
+        for q in (8,10,11,12,13,14):
             packed,golden,receipt=fixture(q,256,512)
             self.assertEqual(set(receipt['planes']),{'low','high','units'})
             ptrs=[packed[x].ctypes.data if packed[x].size else None for x in ('low','high','units')]
             for bf,want in enumerate(golden):
-                for v in (22,23):
+                for v in ((22,23) if q in (8,10,11) else (8,20,21)):
                     out=np.full_like(want,0x7fff)
-                    self.assertEqual(self.lib.dense_plane_pair_host(q,bf,v,*ptrs,out.ctypes.data,256,512,0),0)
+                    fn=self.lib.dense_plane_pair_host if q in (8,10,11) else self.lib.dense_pair_host if v==8 else self.lib.dense_cooperative_host
+                    self.assertEqual(fn(q,bf,v,*ptrs,out.ctypes.data,256,512,0),0)
                     self.assertFalse(np.any((out!=want)&(((out|want)&0x7fff)!=0)))
 
     def test_plane_pair_physical_words_and_sector_footprints(self):

@@ -70,9 +70,9 @@ def inspect(sdk, image, output):
         result[match[1]] = dict(resources=resources[match[1]], operations=dict(ops),
                                 static_instructions=sum(ops.values()))
     candidates = [s for s in result if 'dense_dequant_plane_pair' in s]
-    if len(candidates) != 8 or set(result) != set(resources):
+    if len(candidates) != 12 or set(result) != set(resources):
         raise ValueError('native specialization inventory differs')
-    for q in (8, 11):
+    for q in (8, 10, 11):
         for bf in (0, 1):
             for tk in (128, 256):
                 if sum(f'ILi{q}ELb{bf}ELj{tk}E' in s for s in candidates) != 1:
@@ -80,16 +80,20 @@ def inspect(sdk, image, output):
     atomic_json(output/'native.json', dict(scope='STATIC_NOT_DYNAMIC_COUNTS', kernels=result))
 
 
-def build(a):
+def build(a, extra_sources=()):
     output = a.output/'build'
     output.mkdir()
     sources = {str(p.relative_to(ROOT)): sha(p) for directory in
                ('quactlize/dequant', 'quactlize/prefill', 'quactlize/execution',
                 'quactlize/include', 'third_party/actlize/include')
                for p in (ROOT/directory).rglob('*') if p.is_file() and
-               (p.suffix in HEADER_SUFFIXES or p.name == 'dense.cu')}
+               (p.suffix in HEADER_SUFFIXES or p.name == 'dense.cu' or str(p.relative_to(ROOT)) in extra_sources)}
     sources.update({str(p.relative_to(ROOT)): sha(p) for directory in ('quactlize', 'dev', 'tools', 'reference')
                     for p in (ROOT/directory).rglob('*.py') if p.is_file()})
+    for relative in extra_sources:
+        path = (ROOT/relative).resolve(strict=True)
+        path.relative_to(ROOT)
+        sources[relative] = sha(path)
     obj = output/'dense.o'
     command = [str(a.sdk/'bin/hgcc'), *FLAGS, '-lineinfo',
                '-I'+str(ROOT/'quactlize/include'), '-I'+str(ROOT/'third_party/actlize/include'),
@@ -103,9 +107,22 @@ def build(a):
     with (output/'compile.log').open('x') as log:
         subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
     inspect(a.sdk, obj, output)
+    objects = [obj]
+    for relative in extra_sources:
+        source = ROOT/relative
+        if relative not in sources: raise ValueError('unsealed probe source: '+relative)
+        extra = output/(source.stem+'.o')
+        command = ([str(a.sdk/'bin/hgcc'), *FLAGS] if source.suffix == '.cu' else
+                   ['g++','-std=c++17','-O2','-fPIC'])
+        command += ['-I'+str(ROOT), '-I'+str(ROOT/'quactlize/include'),
+                    '-I'+str(ROOT/'third_party/actlize/include'), '-I'+str(a.sdk/'include'),
+                    '-I'+str(a.sdk/'targets/x86_64-linux/include'), '-c', str(source), '-o', str(extra)]
+        with (output/(source.stem+'.log')).open('x') as log:
+            subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
+        objects.append(extra); receipt['commands'].append(command)
     if not a.compile_only:
         library = output/'libquactlize_dense_dequant_probe.so'
-        command = ['g++', '-shared', '-Wl,-Bsymbolic', str(obj), '-L'+str(a.sdk/'lib'),
+        command = ['g++', '-shared', '-Wl,-Bsymbolic', *map(str,objects), '-L'+str(a.sdk/'lib'),
                    *['-l'+name for name in LIBRARIES], '-o', str(library)]
         with (output/'link.log').open('x') as log:
             subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
@@ -168,6 +185,10 @@ def fixture(q, n, k):
     scales = rng.uniform(-.009, .009, (n, k//block)).astype('<f2')
     scales.view('<u2').flat[:8] = [0, 0x8000, 1, 0x8001, 0x3555, 0xb555, 0x400, 0x8400]
     raw[..., offset:offset+2] = scales.view('u1').reshape(n, k//block, 2)
+    if q != 8 and SPECS[q].has_min:
+        offset = SPECS[q].dmin_offset
+        minima = rng.uniform(-.009, .009, (n, k//block)).astype('<f2')
+        raw[..., offset:offset+2] = minima.view('u1').reshape(n, k//block, 2)
     packed = {name: value for name, value in planes(raw, q).items() if name in ('low', 'high', 'units')}
     gold = dequantize(raw.reshape(-1), GGMLQuantizationType(q)).reshape(n, k)
     if not np.isfinite(gold).all() or not np.any(gold):
@@ -179,13 +200,13 @@ def fixture(q, n, k):
 
 
 class Bench:
-    def __init__(self, a):
+    def __init__(self, a, *, shape=None):
         from quactlize.runtime.native import SDK, checked
         from quactlize.dequant.native import Call
         from quactlize.execution.native import Arrangement, arrangement
         from tools.run_kpack_gemv_gate import Resources
         from tools.run_kpack_grouped_device_gate import graph_bind
-        self.q, self.n, self.k = POINTS[a.child]
+        self.q, self.n, self.k = shape if shape is not None else POINTS[a.child]
         receipt = json.loads((a.output/'build/receipt.json').read_text())
         if sha(receipt['library']) != receipt['library_sha256'] or sha(__file__) != receipt['runner_sha256']:
             raise ValueError('probe binary/runner changed')
@@ -258,11 +279,11 @@ class Bench:
             signed_zero_differences=int(np.count_nonzero(got != want)),
             output_sha256=hashlib.sha256(memoryview(got)).hexdigest(), control_raw_bits_equal=control is not None)
 
-    def negative(self):
+    def negative(self, variant=22):
         import numpy as np
         from quactlize.runtime.native import checked
         self.r.fill(self.buffers['low'], 0, self.planes['low'].nbytes)
-        checked(self.launch(22), 'blank low-plane negative')
+        checked(self.launch(variant), 'blank low-plane negative')
         bad = int(np.count_nonzero(self.read() != self.gold[0]))
         if bad < self.n*self.k//100:
             raise ValueError('blank low plane escaped oracle')
@@ -271,21 +292,22 @@ class Bench:
         self.sdk.synchronize(None)
         return bad
 
-    def graph(self, variant):
+    def graph(self, variant, storage=0):
         from tools.run_kpack_grouped_decode_probe import Replay
         from quactlize.runtime.native import checked
-        if variant not in self.graphs:
+        key = (variant, storage)
+        if key not in self.graphs:
             index = 0
             def launch():
                 nonlocal index
-                result = self.launch(variant, index=index % self.copies)
+                result = self.launch(variant, storage, index=index % self.copies)
                 index += 1
                 return result
-            self.graphs[variant] = Replay(self.sdk, self.r.stream, launch, self.replays)
+            self.graphs[key] = Replay(self.sdk, self.r.stream, launch, self.replays)
             for _ in range(2):
-                checked(self.graphs[variant](), 'excluded graph warmup')
+                checked(self.graphs[key](), 'excluded graph warmup')
             self.sdk.synchronize(self.r.stream)
-        return self.graphs[variant]
+        return self.graphs[key]
 
     def close(self):
         self.sdk.synchronize(self.r.stream)

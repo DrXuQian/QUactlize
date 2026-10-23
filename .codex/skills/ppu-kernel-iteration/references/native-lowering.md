@@ -745,3 +745,16 @@ removes cooperative metadata global byte loads, keeps zero stack, and
 preserves108 old device bodies; this is compile evidence, not a speedup.
 Use `round4.py` matched bank-only/metadata pairs and separate full-call
 confirmation; no production route changes until device regression checks.
+
+Q3/Q8 paired-plane follow-up (953c9ca, ZW810/72CU/1.7GHz, returned
+review-1792722733794805356.tgz) passed48 F16/BF16 raw-bit cells. F16-only
+rotating component medians improved Q3 by85.0--85.9%, Q8 by25.2--39.2%.
+Q3 N17408K5120 KVD/LSU read transactions7.13GB->52.9MB and dynamic
+instructions-91.9%, with nearly unchanged compulsory DRAM reads, identify
+repeated metadata/delivery work rather than a7x HBM-volume reduction.
+Q8 N8192K2048 instructions-33.6%, KVD store bytes64->32MiB and lower cycles
+support more efficient store servicing; useful output bytes stay32MiB.
+K128 wins Q8; Q3 K128/K256 differences are within round variation. Retain
+both until full-call confirmation; BF16 performance was NOT measured in
+that return. ACU forced-cold single launches and rotating event medians
+remain separate protocols. This is not model/native-parity admission.

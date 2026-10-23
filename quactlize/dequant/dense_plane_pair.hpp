@@ -28,7 +28,7 @@ template<unsigned Bits, unsigned TileK> struct DensePlanePairLayout {
 };
 
 template<int Q, unsigned TileK> struct DensePlanePair {
-    static_assert(Q == 8 || Q == 11);
+    static_assert(Q == 8 || Q == 10 || Q == 11);
     static constexpr unsigned N = 64, K = TileK, Group = Q == 8 ? 32 : 16;
     static constexpr unsigned Groups = K / Group;
     using Low = DensePlanePairLayout<Q == 8 ? 8 : 2, K>;
@@ -39,14 +39,14 @@ template<int Q, unsigned TileK> struct DensePlanePair {
         if constexpr(Q == 11) value |= High::codes(high, k) << 2;
         return value;
     }
-    template<bool BF16> CUTLASS_HOST_DEVICE static uint16_t weight(unsigned raw, float scale) {
-        constexpr int bias = Q == 8 ? 128 : 4;
+    template<bool BF16> CUTLASS_HOST_DEVICE static uint16_t weight(unsigned raw, float scale, float minimum=0.f) {
+        constexpr int bias = Q == 8 ? 128 : Q == 11 ? 4 : 0;
 #if defined(__CUDA_ARCH__) || defined(__HGGC_ARCH__)
         float value = __fmul_rn(float(int(raw) - bias), scale);
-        if constexpr(Q == 11) value = __fsub_rn(value, 0.f);
+        if constexpr(Q != 8) value = __fsub_rn(value, minimum);
 #else
         volatile float product = float(int(raw) - bias) * scale;
-        float value = Q == 11 ? product - 0.f : product;
+        float value = Q != 8 ? product - minimum : product;
 #endif
         if constexpr(BF16) return cutlass::bfloat16_t(value).raw();
         else return cutlass::half_t(value).raw();

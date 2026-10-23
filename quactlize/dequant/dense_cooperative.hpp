@@ -43,13 +43,20 @@ template<unsigned Groups> struct DenseCooperativeAffine {
 // Byte selection is fixed-register arithmetic, not a dynamically indexed
 // private byte array. Header F16->F32 conversion occurs once per column.
 template<KType T,unsigned TileK> struct DenseRegisterAffine {
-    static_assert(T==KType::Q3_K || T==KType::Q4_K || T==KType::Q5_K || T==KType::Q6_K);
+    static_assert(T==KType::Q2_K || T==KType::Q3_K || T==KType::Q4_K || T==KType::Q5_K || T==KType::Q6_K);
     using R=DenseUnsignedReader<T,false>;
     float d,dm;
     uint32_t x,y,z,w;
     CUTLASS_HOST_DEVICE static DenseRegisterAffine load(uint32_t const* p,unsigned k0) {
         DenseRegisterAffine r{};
-        if constexpr(T==KType::Q3_K) {
+        if constexpr(T==KType::Q2_K) {
+            // One 20-byte unit: d/dmin, eight scales, eight minima,
+            // then the second eight-group run. No paired-superblock padding.
+            r.d=float(cutlass::half_t::bitcast(uint16_t(p[0])));
+            r.dm=float(cutlass::half_t::bitcast(uint16_t(p[0]>>16)));
+            r.x=p[1];r.y=p[2];r.z=p[3];r.w=p[4];
+            if constexpr(TileK==128)if(k0&128u){r.x=r.z;r.y=r.w;}
+        } else if constexpr(T==KType::Q3_K) {
             // Two 14-byte superblocks in a 28-byte unit. The odd header
             // starts in the upper halfword; do not round its stride to 16.
             unsigned sb=(k0>>8)&1u;
@@ -76,7 +83,11 @@ template<KType T,unsigned TileK> struct DenseRegisterAffine {
         return r;
     }
     CUTLASS_HOST_DEVICE typename R::Affine group(unsigned g) const {
-        if constexpr(T==KType::Q3_K) {
+        if constexpr(T==KType::Q2_K) {
+            unsigned scale=((g<8?x:z)>>(4*(g&7)))&15u;
+            unsigned minimum=((g<8?y:w)>>(4*(g&7)))&15u;
+            return {d*float(scale),dm*float(minimum)};
+        } else if constexpr(T==KType::Q3_K) {
             uint32_t code=g<4?x:g<8?y:g<12?z:w;
             int scale=int((code>>(6*(g&3)))&63u)-32;
             return {d*float(scale),0.f};

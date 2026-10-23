@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import statistics
 import subprocess
 import sys
 import tarfile
@@ -40,6 +41,7 @@ def source_seal():
         for p in (ROOT/folder).rglob('*') if p.is_file() and p.suffix in ('.py','.json','.cpp','.cu','.cuh','.hpp')}
     files['tools/run_prefill_point.py'] = sha(ROOT/'tools/run_prefill_point.py')
     files['tools/run_prefill_model_asys.py'] = sha(__file__)
+    files['dev/dense_helpers/plan.py'] = sha(ROOT/'dev/dense_helpers/plan.py')
     files['transitive_python_harness'] = harness_identity(ROOT)['sha256']
     files['dev/llama_ab/carrier.cpp'] = sha(ROOT/'dev/llama_ab/carrier.cpp')
     return digest(files)
@@ -88,7 +90,7 @@ def worker(a):
     root = a.output
     w = Workload(**job['workload'])
     a.workload, a.trace_only, a.model_prefill_probe = w, True, True
-    a.cohort_prefill_probe = 'cohort_sha256' in read(a.output/'plan.json')
+    a.cohort_prefill_probe = any(k in read(a.output/'plan.json') for k in ('cohort_sha256','helper_plan_sha256'))
     a.rounds, a.samples = 3, 17
     a.output = a.batch.parent
     (a.output/'results').mkdir()
@@ -148,10 +150,10 @@ def execute(command,log,env):
             atomic_json(log.with_suffix('.process.json'),state)
 
 
-def profile_batch(a, point, cases, authority, env):
+def profile_batch(a, point, cases, authority, env, confirmation=0):
     # Completed attempts are immutable. Resume verifies both the numerical
     # receipt and the exact raw SQLite used by the parser, not a bare PASS.
-    key = digest([point['id'],cases])
+    key = digest([point['id'],cases]+([confirmation] if confirmation else []))
     base = a.output/'batches'/key
     base.mkdir(parents=True,exist_ok=True)
     for path in base.glob('attempt-*/profile.process.json'):
@@ -163,6 +165,7 @@ def profile_batch(a, point, cases, authority, env):
             if str(path.parent).encode() in proc.read_bytes():
                 raise ValueError('previous profiler still running; do not overlap: '+str(previous['pid']))
     seal = dict(authority=digest(authority),workload=point['workload'],cases=cases)
+    if confirmation: seal['confirmation']=confirmation
     existing = base/'pass.json'
     if existing.exists():
         old = read(existing)
@@ -195,6 +198,17 @@ def profile_batch(a, point, cases, authority, env):
     return data['cases']
 
 
+def confirmed_capture(previous, current):
+    def sample(row):
+        return dict(gpu_sum_us=row['gpu_sum_us'],phases_us=row['phases_us'])
+    history=list(previous.get('confirmation_samples',[sample(previous)])) if previous else []
+    history.append(sample(current))
+    result=dict(current,confirmation_samples=history)
+    result['gpu_sum_us']=statistics.median(r['gpu_sum_us'] for r in history)
+    result['phases_us']={k:statistics.median(r['phases_us'][k] for r in history) for k in current['phases_us']}
+    return result
+
+
 def summarize(points, measurements):
     result = []
     for point in points:
@@ -203,6 +217,8 @@ def summarize(points, measurements):
         eligible = [r for key,r in found.items() if key != 'native-fp16']
         pool = {c['id']:c for c in point['cases']}
         complete = set(found) == set(pool) | {'native-fp16'}
+        if point.get('confirmation_captures'):
+            complete &= all(len(r.get('confirmation_samples',[]))==point['confirmation_captures'] for r in found.values())
         winner = min(eligible,key=lambda r:r['gpu_sum_us']) if eligible else None
         controls = [found[k] for k,c in pool.items() if 'model-config' in c['roles'] and k in found]
         same_dtype = [r for r in eligible if pool[r['case_id']].get('arm') in ('sf','fq','full-fp16')
@@ -235,6 +251,36 @@ def summarize(points, measurements):
         caveat='Use same_dtype fields for native F16/FP32 comparison; Full BF16 is separately labelled')
 
 
+def helper_review(points,measurements):
+    """Data for exact-table review; never turns BF16/native mismatch into parity."""
+    rows=[]
+    for p in points:
+        found=measurements.get(p['id'],{})
+        native=found.get('native-fp16')
+        for arm in ('full-fp16','full-bf16-typed'):
+            planned=[c for c in p['cases'] if c['arm']==arm]
+            actual=[(c,found[c['id']]) for c in planned if c['id'] in found]
+            complete=bool(planned) and len(actual)==len(planned) and all(
+                len(r.get('confirmation_samples',[]))==2 for _,r in actual)
+            winner=min(actual,key=lambda pair:pair[1]['gpu_sum_us'],default=None)
+            controls=[(c,r) for c,r in actual if any('control' in role for role in c['roles'])]
+            best_control=min(controls,key=lambda pair:pair[1]['gpu_sum_us'],default=None)
+            typed_workload=dict(p['workload'],compute='bf16' if arm=='full-bf16-typed' else 'f16')
+            record=dict(point=p['id'],selection_key=Workload(**typed_workload).key,workload=typed_workload,
+                arm=arm,status='COMPLETE' if complete else 'INCOMPLETE',
+                selected=None,production_changed=False)
+            if winner:
+                c,r=winner;record.update(selected=c['helper_options'],median_us=r['gpu_sum_us'],
+                    phases_us=r['phases_us'],confirmation_samples=r['confirmation_samples'],roles=c['roles'])
+                if best_control:
+                    old=best_control[1]['gpu_sum_us'];record.update(best_control_us=old,delta_pct=100*(r['gpu_sum_us']/old-1))
+                if arm=='full-fp16' and native and len(native.get('confirmation_samples',[]))==2:
+                    record.update(native_us=native['gpu_sum_us'],native_delta_pct=100*(r['gpu_sum_us']/native['gpu_sum_us']-1))
+            rows.append(record)
+    return dict(rows=rows,production_changed=False,performance_admitted=False,
+                scope='EXACT_HELPER_PROPOSALS_ONLY; EXISTING_TC_ROUTES_NOT_REPLACED')
+
+
 def package(output):
     # GUI reports/SQLite remain on Box. Upload only enough to recompute the
     # tables, inspect kernel geometry/samples, numerics and failures.
@@ -263,6 +309,7 @@ def main():
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--model',type=Path)
     p.add_argument('--cohort',type=Path,help='validated plan_prefill_model_cohort.py inventory, instead of --model')
+    p.add_argument('--helper-plan',type=Path,help='factorized helper finalists; no TC config/resource sweep')
     p.add_argument('--max-cases',type=int,default=96,help='cohort per-shape budget; never silently truncates controls')
     p.add_argument('--max-modules',type=int,default=256)
     p.add_argument('--shard',type=int,default=0)
@@ -301,10 +348,16 @@ def main():
     if a.reuse_build: a.reuse_build=a.reuse_build.resolve(strict=True)
     if a.worker: return worker(a)
     a.output.mkdir(parents=True,exist_ok=a.resume)
-    if bool(a.model)==bool(a.cohort): p.error('supply exactly one of --model or --cohort')
+    if sum(bool(v) for v in (a.model,a.cohort,a.helper_plan))!=1:
+        p.error('supply exactly one of --model, --cohort or --helper-plan')
     from tools.gguf_internal_shape_inventory import read_gguf_header
     from dev.strategy.provenance import source_identity
-    if a.cohort:
+    if a.helper_plan:
+        from dev.dense_helpers.plan import validate_full_plan
+        helper=validate_full_plan(read(a.helper_plan))
+        if not helper['points']: raise ValueError('no ready helper finalist points')
+        identity=dict(helper_plan_sha256=helper['sha256'])
+    elif a.cohort:
         from dev.prefill_asys.cohort import validate, freeze as freeze_cohort
         cohort=validate(read(a.cohort))
         identity=dict(cohort_sha256=cohort['sha256'],shard=a.shard,shards=a.shards,max_cases=a.max_cases,
@@ -321,7 +374,9 @@ def main():
         if plan['plan_sha256']!=digest({k:v for k,v in plan.items() if k!='plan_sha256'}):
             raise ValueError('plan digest differs')
     else:
-        if a.cohort:
+        if a.helper_plan:
+            plan=dict(helper,helper_plan_sha256=helper['sha256'])
+        elif a.cohort:
             if a.point:
                 known={v['id'] for v in cohort['points']}
                 if len(set(a.point))!=len(a.point) or not set(a.point)<=known:
@@ -359,9 +414,18 @@ def main():
         old=read(a.output/'authority.json') if (a.output/'authority.json').exists() else None
         if old and (old['device']!=d or old['harness']!=source_seal() or old['plan']!=plan['plan_sha256']):
             raise ValueError('resume source/device/SDK differs')
+        if a.helper_plan and (a.output/'build').exists() and not (a.output/'build/receipt.json').exists():
+            # Retain a failed setup attempt; no measurement can precede this receipt.
+            failed=a.output/'build'
+            if failed.is_symlink() or not failed.is_dir():raise ValueError('unexpected helper build path')
+            failed.rename(a.output/('build-failed-'+str(time.time_ns())))
         receipt=read(a.output/'build/receipt.json') if (a.output/'build/receipt.json').exists() else build(a)
         from tools.build_kpack_prefill_runtime import build as build_dense
         if not (a.output/'build/dense/manifest.json').exists():
+            if a.helper_plan and (a.output/'build/dense').exists():
+                failed=a.output/'build/dense'
+                if failed.is_symlink() or not failed.is_dir():raise ValueError('unexpected dense build path')
+                failed.rename(a.output/'build'/('dense-failed-'+str(time.time_ns())))
             build_dense(a.sdk,a.output/'build/dense',a.jobs)
         for key,path in [('carrier_sha256',Path(receipt['carrier'])),('timer_sha256',a.output/'build/libpoint-timer.so')]:
             if sha(path)!=receipt[key]:raise ValueError('diagnostic executable changed')
@@ -373,21 +437,24 @@ def main():
         if not old:atomic_json(a.output/'authority.json',authority)
         clock=request_lock(a.smi,pci,1700);atomic_json(a.output/('clock-lock-'+str(time.time_ns())+'.json'),clock)
         if clock['returncode']: raise ValueError('1700MHz lock request failed')
-        cmd=[sys.executable,'-u',str(ROOT/'tools/probe_kpack_strategy.py'),'--plan',str(plan_path),
-            '--output',str(a.output/'probe'),'--sdk',str(a.sdk),'--cache',str(a.cache),
-            '--jobs',str(a.jobs),'--max-modules',str(a.max_modules if a.cohort else 96)]
-        if (a.output/'probe').exists(): cmd.append('--resume')
-        execute(cmd,a.output/('resources-'+str(time.time_ns())+'.log'),env)
-        resource=read(a.output/'probe/summary.json')
-        if resource['status']!='COMPLETE': raise ValueError('resources incomplete; resume will reuse finished modules')
-        points=read(a.output/'probe/resolved-plan.json')['points']
-        queries={f.stem:read(f)['data'] for f in (a.output/'probe/queries').glob('*.json')}
-        modules={f.stem:read(f)['data']['record'] for f in (a.output/'probe/modules').glob('*.json') if read(f)['data']['status']=='PASS'}
+        if a.helper_plan:
+            points=plan['points'];modules={}
+        else:
+            cmd=[sys.executable,'-u',str(ROOT/'tools/probe_kpack_strategy.py'),'--plan',str(plan_path),
+                '--output',str(a.output/'probe'),'--sdk',str(a.sdk),'--cache',str(a.cache),
+                '--jobs',str(a.jobs),'--max-modules',str(a.max_modules if a.cohort else 96)]
+            if (a.output/'probe').exists(): cmd.append('--resume')
+            execute(cmd,a.output/('resources-'+str(time.time_ns())+'.log'),env)
+            resource=read(a.output/'probe/summary.json')
+            if resource['status']!='COMPLETE': raise ValueError('resources incomplete; resume will reuse finished modules')
+            points=read(a.output/'probe/resolved-plan.json')['points']
+            queries={f.stem:read(f)['data'] for f in (a.output/'probe/queries').glob('*.json')}
+            modules={f.stem:read(f)['data']['record'] for f in (a.output/'probe/modules').glob('*.json') if read(f)['data']['status']=='PASS'}
+            for point in points:
+                point['queries']=queries;point['cases']=runnable(point);point.pop('queries')
         atomic_json(a.output/'modules.json',modules)
-        for point in points:
-            point['queries']=queries;point['cases']=runnable(point);point.pop('queries')
         atomic_json(a.output/'execution-plan.json',dict(points=points,authority=digest(authority)))
-        total=sum(len(p['cases'])+1 for p in points)
+        total=sum((len(p['cases'])+1)*p.get('confirmation_captures',1) for p in points)
         print(f'PREFILL_ASYS_READY shapes={len(points)} configs={total} kernel_changes=0 production_changed=0',flush=True)
         lock_path=Path('/tmp')/('quactlize-components-'+digest(pci)[:24]+'.lock')
         with lock_path.open('a') as held:
@@ -405,22 +472,32 @@ def main():
                 if smoke: jobs.append(smoke)
                 rest=[c for c in cs if c['id'] not in {s['id'] for s in smoke}]
                 jobs += [rest[i:i+a.configs_per_batch] for i in range(0,len(rest),a.configs_per_batch)]
-                for cases in jobs:
+                jobs=[(cases,0) for cases in jobs]
+                if a.helper_plan:
+                    # Native, forward helper pool, reverse helper pool, native.
+                    # First complete rings are excluded inside each capture.
+                    native_case=[dict(id='native-fp16',arm='native-fp16')]
+                    jobs=[(native_case,0),(cs,0),(list(reversed(cs)),1),(native_case,1)]
+                for cases,confirmation in jobs:
                     before=observe(a.smi,pci,1700,advisory=True)
                     try:
-                        measured=profile_batch(a,point,cases,authority,env)
+                        measured=profile_batch(a,point,cases,authority,env,confirmation)
                     except Exception as exc:
-                        if not a.cohort: raise
+                        if not (a.cohort or a.helper_plan): raise
                         atomic_json(a.output/('failed-'+point['id']+'-'+cases[0]['id']+'.json'),
                             dict(point=point['id'],cases=[c['id'] for c in cases],error=repr(exc)))
                         print('PREFILL_ASYS_BATCH_FAIL '+json.dumps(dict(point=point['id'],
                             cases=[c['id'] for c in cases],error=str(exc)[-4000:],remaining_continue=1)),flush=True)
                         measured=[]
-                    for r in measured: measurements[point['id']][r['case_id']]=r
+                    for r in measured:
+                        previous=measurements[point['id']].get(r['case_id'])
+                        measurements[point['id']][r['case_id']]=confirmed_capture(previous,r) if a.helper_plan else r
                     done+=len(cases)
                     after=observe(a.smi,pci,1700,advisory=True)
                     atomic_json(a.output/('clock-'+point['id']+'-'+cases[0]['id']+'.json'),dict(before=before,after=after))
                     status=summarize(points,measurements);atomic_json(a.output/'summary.json',status)
+                    if a.helper_plan:
+                        atomic_json(a.output/'helper-proposals.json',helper_review(points,measurements))
                     print('PREFILL_ASYS_PROGRESS '+json.dumps(dict(completed=done,total=total,
                         elapsed_minutes=(time.monotonic()-started)/60,shape=point['workload'],
                         remaining_minutes=(time.monotonic()-started)/done*(total-done)/60,

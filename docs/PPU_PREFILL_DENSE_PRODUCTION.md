@@ -85,9 +85,48 @@ The R1–R5 runners and unselected typed helper bodies have been removed from
 develop. Source and historical commands remain at commit
 `8a004d42a91a23664e69762509d34c3b76bbf8e8`; do not run them against a new library.
 
-Only typed dequant IDs 0/8/20/21 remain: direct, pair N32/K128 and cooperative
+The retained production helpers are typed IDs 0/8/20/21: direct, pair N32/K128 and cooperative
 N64/K128,K256. Their IDs, descriptor ABI and the selection table above are
 unchanged. IO0..3 and the separate general SF/full-dequant config namespace
 are retained. All removed typed IDs fail validation rather than falling back.
 Independent GGUF, ownership/tail and changed-address/stream tests now live
 together in `tests/test_prefill_dense.py`.
+
+## One-command remaining-helper closeout
+
+`tools/run_dense_helpers_box.sh` covers the 33 returned model families at
+M128/256/512/1024/2048, plus two labelled Q2 format-extension families. These
+are not inferred DeepSeek TP4 shards. The inventory and prior Full-F16 helper
+recipes (not historical times) live in `dev/dense_helpers/cohort.json`.
+
+Explicit candidates22/23 now cover Q2/Q3/Q8 paired-plane N64 K128/K256.
+Q4/Q5/Q6 retain0/8/20/21, including each old full-call winner. Both F16 and
+BF16 are checked/timed independently. Q2 preserves its d/dmin and16 groups;
+Q3 retains its odd14-byte-superblock header; no artifact or rounding changes.
+
+The runner builds one small component probe, partitions whole families onto
+the requested GPUs, and measures each dequant N/K/storage once per card and
+each IO M/width/direction/storage once per card. Single-kernel rotating graphs
+are allowed here, never around cuBLAS. Each scalar/direct baseline remains.
+Two combinations shortlisted from isolated components proceed automatically
+to complete ordinary calls under Asys, along with prior and production-helper
+controls and native F16/FP32. Forward and reverse pools plus bracketing native
+captures expose order drift. First complete warmup/primer rings are excluded.
+No fresh TC sweep; no automatic production selector, dtype or bucket changes.
+
+```bash
+PPU_SDK=/usr/local/PPU_SDK \
+LLAMA_CI_DIR=/sim/eec/shared/junfu.qx/llama.cpp.ncp \
+LLAMA_CI_BUILD_DIR=/sim/eec/shared/junfu.qx/llama.cpp.ncp/build-ci-32F-cublas \
+GPUS=1,2,3,4,5,6,7 L2_BYTES=67108864 IDLE_CONFIRMED=1 \
+bash tools/run_dense_helpers_box.sh
+```
+
+Use only available idle GPUs. A resume supplies `RESUME_RUN` printed by the
+command and the same GPU list/SDK/caller build. Successful component cells
+and successful Asys batches are verified and reused. A bad component blocks
+only its card's finalist stage; other cards continue, all errors stay visible.
+The top-level `review-*.tgz` contains numeric proofs, stage/sample times,
+source/device receipts and short error logs. Weights, DSOs, SQLite and GUI
+reports stay on Box. The tables distinguish isolated sums from full-call
+Asys timings; neither is a whole-model TPOT result.
