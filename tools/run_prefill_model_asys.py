@@ -90,7 +90,8 @@ def worker(a):
     root = a.output
     w = Workload(**job['workload'])
     a.workload, a.trace_only, a.model_prefill_probe = w, True, True
-    a.cohort_prefill_probe = any(k in read(a.output/'plan.json') for k in ('cohort_sha256','helper_plan_sha256'))
+    a.cohort_prefill_probe = any(k in read(a.output/'plan.json') for k in
+                               ('cohort_sha256','helper_plan_sha256','finalist_plan_sha256'))
     a.rounds, a.samples = 3, 17
     a.output = a.batch.parent
     (a.output/'results').mkdir()
@@ -204,6 +205,13 @@ def confirmed_capture(previous, current):
     history=list(previous.get('confirmation_samples',[sample(previous)])) if previous else []
     history.append(sample(current))
     result=dict(current,confirmation_samples=history)
+    if previous:
+        def signatures(row):
+            return [{k:v for k,v in node.items() if k not in ('samples_us','median_us')}
+                    for node in row.get('kernel_inventory',[])]
+        if (previous.get('confirmation_issue') or signatures(previous)!=signatures(current)
+                or previous.get('arithmetic')!=current.get('arithmetic')):
+            result['confirmation_issue']='KERNEL_OR_ARITHMETIC_DRIFT'
     result['gpu_sum_us']=statistics.median(r['gpu_sum_us'] for r in history)
     result['phases_us']={k:statistics.median(r['phases_us'][k] for r in history) for k in current['phases_us']}
     return result
@@ -218,7 +226,8 @@ def summarize(points, measurements):
         pool = {c['id']:c for c in point['cases']}
         complete = set(found) == set(pool) | {'native-fp16'}
         if point.get('confirmation_captures'):
-            complete &= all(len(r.get('confirmation_samples',[]))==point['confirmation_captures'] for r in found.values())
+            complete &= all(len(r.get('confirmation_samples',[]))==point['confirmation_captures']
+                            and not r.get('confirmation_issue') for r in found.values())
         winner = min(eligible,key=lambda r:r['gpu_sum_us']) if eligible else None
         controls = [found[k] for k,c in pool.items() if 'model-config' in c['roles'] and k in found]
         same_dtype = [r for r in eligible if pool[r['case_id']].get('arm') in ('sf','fq','full-fp16')
@@ -310,6 +319,7 @@ def main():
     p.add_argument('--model',type=Path)
     p.add_argument('--cohort',type=Path,help='validated plan_prefill_model_cohort.py inventory, instead of --model')
     p.add_argument('--helper-plan',type=Path,help='factorized helper finalists; no TC config/resource sweep')
+    p.add_argument('--finalist-plan',type=Path,help='frozen affected/noisy route finalists; fixed TC schedules')
     p.add_argument('--max-cases',type=int,default=96,help='cohort per-shape budget; never silently truncates controls')
     p.add_argument('--max-modules',type=int,default=256)
     p.add_argument('--shard',type=int,default=0)
@@ -348,11 +358,19 @@ def main():
     if a.reuse_build: a.reuse_build=a.reuse_build.resolve(strict=True)
     if a.worker: return worker(a)
     a.output.mkdir(parents=True,exist_ok=a.resume)
-    if sum(bool(v) for v in (a.model,a.cohort,a.helper_plan))!=1:
-        p.error('supply exactly one of --model, --cohort or --helper-plan')
+    if sum(bool(v) for v in (a.model,a.cohort,a.helper_plan,a.finalist_plan))!=1:
+        p.error('supply exactly one of --model, --cohort, --helper-plan or --finalist-plan')
+    paired = bool(a.helper_plan or a.finalist_plan)
     from tools.gguf_internal_shape_inventory import read_gguf_header
     from dev.strategy.provenance import source_identity
-    if a.helper_plan:
+    if a.finalist_plan:
+        from dev.prefill_asys.finalists import load as validate_finalists
+        finalists=validate_finalists(read(a.finalist_plan))
+        if finalists['inputs']['helper_policy_sha256']!=digest(read(ROOT/'policies/dense_full_helpers_20261023.json')):
+            raise ValueError('finalist current-helper policy changed; regenerate the plan')
+        identity=dict(finalist_plan_sha256=finalists['sha256'],shard=a.shard,shards=a.shards,
+                      points=sorted(a.point or []))
+    elif a.helper_plan:
         from dev.dense_helpers.plan import validate_full_plan
         helper=validate_full_plan(read(a.helper_plan))
         if not helper['points']: raise ValueError('no ready helper finalist points')
@@ -374,7 +392,18 @@ def main():
         if plan['plan_sha256']!=digest({k:v for k,v in plan.items() if k!='plan_sha256'}):
             raise ValueError('plan digest differs')
     else:
-        if a.helper_plan:
+        if a.finalist_plan:
+            from dev.prefill_asys.finalists import partition as finalist_partition, counts as finalist_counts
+            plan=dict(finalists,finalist_plan_sha256=finalists['sha256'])
+            if a.point:
+                known={v['id'] for v in plan['points']}
+                if len(set(a.point))!=len(a.point) or not set(a.point)<=known:
+                    raise ValueError('unknown/duplicate requested finalist point ID')
+                plan['points']=[v for v in plan['points'] if v['id'] in a.point]
+            plan['all_counts']=dict(plan['counts'])
+            plan['points']=finalist_partition(plan['points'],a.shard,a.shards)
+            plan['counts']=finalist_counts(plan['points'])
+        elif a.helper_plan:
             plan=dict(helper,helper_plan_sha256=helper['sha256'])
         elif a.cohort:
             if a.point:
@@ -414,7 +443,7 @@ def main():
         old=read(a.output/'authority.json') if (a.output/'authority.json').exists() else None
         if old and (old['device']!=d or old['harness']!=source_seal() or old['plan']!=plan['plan_sha256']):
             raise ValueError('resume source/device/SDK differs')
-        if a.helper_plan and (a.output/'build').exists() and not (a.output/'build/receipt.json').exists():
+        if paired and (a.output/'build').exists() and not (a.output/'build/receipt.json').exists():
             # Retain a failed setup attempt; no measurement can precede this receipt.
             failed=a.output/'build'
             if failed.is_symlink() or not failed.is_dir():raise ValueError('unexpected helper build path')
@@ -422,7 +451,7 @@ def main():
         receipt=read(a.output/'build/receipt.json') if (a.output/'build/receipt.json').exists() else build(a)
         from tools.build_kpack_prefill_runtime import build as build_dense
         if not (a.output/'build/dense/manifest.json').exists():
-            if a.helper_plan and (a.output/'build/dense').exists():
+            if paired and (a.output/'build/dense').exists():
                 failed=a.output/'build/dense'
                 if failed.is_symlink() or not failed.is_dir():raise ValueError('unexpected dense build path')
                 failed.rename(a.output/'build'/('dense-failed-'+str(time.time_ns())))
@@ -442,7 +471,7 @@ def main():
         else:
             cmd=[sys.executable,'-u',str(ROOT/'tools/probe_kpack_strategy.py'),'--plan',str(plan_path),
                 '--output',str(a.output/'probe'),'--sdk',str(a.sdk),'--cache',str(a.cache),
-                '--jobs',str(a.jobs),'--max-modules',str(a.max_modules if a.cohort else 96)]
+                '--jobs',str(a.jobs),'--max-modules',str(a.max_modules if a.cohort or a.finalist_plan else 96)]
             if (a.output/'probe').exists(): cmd.append('--resume')
             execute(cmd,a.output/('resources-'+str(time.time_ns())+'.log'),env)
             resource=read(a.output/'probe/summary.json')
@@ -451,7 +480,11 @@ def main():
             queries={f.stem:read(f)['data'] for f in (a.output/'probe/queries').glob('*.json')}
             modules={f.stem:read(f)['data']['record'] for f in (a.output/'probe/modules').glob('*.json') if read(f)['data']['status']=='PASS'}
             for point in points:
-                point['queries']=queries;point['cases']=runnable(point);point.pop('queries')
+                if a.finalist_plan:
+                    from dev.prefill_asys.finalists import bind_cases
+                    point['cases']=bind_cases(point,queries)
+                else:
+                    point['queries']=queries;point['cases']=runnable(point);point.pop('queries')
         atomic_json(a.output/'modules.json',modules)
         atomic_json(a.output/'execution-plan.json',dict(points=points,authority=digest(authority)))
         total=sum((len(p['cases'])+1)*p.get('confirmation_captures',1) for p in points)
@@ -473,7 +506,7 @@ def main():
                 rest=[c for c in cs if c['id'] not in {s['id'] for s in smoke}]
                 jobs += [rest[i:i+a.configs_per_batch] for i in range(0,len(rest),a.configs_per_batch)]
                 jobs=[(cases,0) for cases in jobs]
-                if a.helper_plan:
+                if paired:
                     # Native, forward helper pool, reverse helper pool, native.
                     # First complete rings are excluded inside each capture.
                     native_case=[dict(id='native-fp16',arm='native-fp16')]
@@ -483,7 +516,7 @@ def main():
                     try:
                         measured=profile_batch(a,point,cases,authority,env,confirmation)
                     except Exception as exc:
-                        if not (a.cohort or a.helper_plan): raise
+                        if not (a.cohort or paired): raise
                         atomic_json(a.output/('failed-'+point['id']+'-'+cases[0]['id']+'.json'),
                             dict(point=point['id'],cases=[c['id'] for c in cases],error=repr(exc)))
                         print('PREFILL_ASYS_BATCH_FAIL '+json.dumps(dict(point=point['id'],
@@ -491,7 +524,7 @@ def main():
                         measured=[]
                     for r in measured:
                         previous=measurements[point['id']].get(r['case_id'])
-                        measurements[point['id']][r['case_id']]=confirmed_capture(previous,r) if a.helper_plan else r
+                        measurements[point['id']][r['case_id']]=confirmed_capture(previous,r) if paired else r
                     done+=len(cases)
                     after=observe(a.smi,pci,1700,advisory=True)
                     atomic_json(a.output/('clock-'+point['id']+'-'+cases[0]['id']+'.json'),dict(before=before,after=after))
@@ -508,7 +541,7 @@ def main():
         atomic_json(a.output/('error-'+str(time.time_ns())+'.json'),dict(error=repr(e),traceback=traceback.format_exc()))
         raise
     finally:
-        if a.cohort and (a.output/'execution-plan.json').exists():
+        if (a.cohort or a.finalist_plan) and (a.output/'execution-plan.json').exists():
             review=a.output/('review-'+str(time.time_ns())+'.json.xz')
             exported=subprocess.run([sys.executable,str(ROOT/'tools/review_prefill_cohort.py'),
                 '--run',str(a.output),'--output',str(review)])

@@ -116,6 +116,65 @@ class IngestTests(unittest.TestCase):
         self.assertEqual([value['components'][c]['phase'] for c in row['components']],['input','main','output'])
         self.assertEqual(row['numerical'][0]['relative_l1_error'],.001)
 
+    def paired(self, *, drift=False):
+        root,key,path=self.fixture()
+        plan=json.loads((root/'execution-plan.json').read_text())
+        plan['points'][0]['confirmation_captures']=2
+        (root/'execution-plan.json').write_text(json.dumps(plan))
+        data=json.loads(path.read_text());data['seal']['confirmation']=1
+        for row in data['parsed']['cases']:
+            row['gpu_sum_us']*=2
+            row['measured_rounds_us']=[v*2 for v in row['measured_rounds_us']]
+            row['phases_us']={k:v*2 for k,v in row['phases_us'].items()}
+            for sample in row['samples']:sample['gpu_sum_us']*=2
+            for kernel in row['kernel_inventory']:
+                kernel['median_us']*=2;kernel['samples_us']=[v*2 for v in kernel['samples_us']]
+            if drift:row['kernel_inventory'][0]['block']=[256,1,1]
+        second=root/'batches/reverse/pass.json';second.parent.mkdir()
+        data['record_sha256']=digest({k:v for k,v in data.items() if k!='record_sha256'})
+        second.write_text(json.dumps(data))
+        return root,key,path,second
+
+    def test_paired_confirmation_keeps_both_captures_not_fastest(self):
+        root,key,_,_=self.paired()
+        result=ingest(root)
+        self.assertFalse(result['incomplete'])
+        for row in result['points'][key]['measurements']:
+            self.assertEqual(row['gpu_sum_us'],18)
+            self.assertEqual(row['complete_samples_us'],[12]*3+[24]*3)
+            self.assertEqual(row['component_samples_us'][0],[1]*3+[2]*3)
+            self.assertEqual([r['confirmation'] for r in row['confirmation_captures']],[0,1])
+            self.assertNotIn('raw_receipt',row)
+            self.assertTrue(all(r['raw_receipt_sha256'] for r in row['confirmation_captures']))
+
+    def test_missing_direction_and_launch_drift_cannot_be_complete(self):
+        root,key,_,second=self.paired()
+        second.unlink()
+        value=ingest(root)
+        self.assertEqual(value['incomplete'],[key])
+        partial=next(iter(value['partial_points'].values()))
+        self.assertEqual(partial['unconfirmed'],['config','native-fp16'])
+        self.assertTrue(all(r['status']=='MISSING_CONFIRMATION' for r in partial['measurements']))
+
+    def test_two_captures_with_different_kernel_launches_remain_partial(self):
+        root,key,_,_=self.paired(drift=True)
+        value=ingest(root)
+        self.assertEqual(value['incomplete'],[key])
+        rows=next(iter(value['partial_points'].values()))['measurements']
+        self.assertTrue(all(r['status']=='CONFIRMATION_KERNEL_OR_ARITHMETIC_DRIFT' for r in rows))
+
+    def test_duplicate_capture_index_is_not_another_confirmation(self):
+        root,_,_,second=self.paired()
+        self.rewrite(second,lambda d:d['seal'].update(confirmation=0))
+        with self.assertRaisesRegex(ValueError,'duplicate point/config'):ingest(root)
+
+    def test_ordinary_plan_cannot_admit_a_second_capture(self):
+        root,_,_,_=self.paired()
+        plan=json.loads((root/'execution-plan.json').read_text())
+        plan['points'][0].pop('confirmation_captures')
+        (root/'execution-plan.json').write_text(json.dumps(plan))
+        with self.assertRaisesRegex(ValueError,'confirmation capture'):ingest(root)
+
     def test_uploaded_batch_proof_is_relocated_without_changing_its_hash(self):
         root,key,path=self.fixture()
         attempt=path.parent/'attempt-123';attempt.mkdir()

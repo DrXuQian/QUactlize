@@ -154,6 +154,17 @@ class PrefillAsysTests(unittest.TestCase):
             for row in rows:row['name']=row['name'].replace('vec8<false','vec8<true')
             with self.assertRaisesRegex(ValueError,'F16-only'):parse_rows(rows,[case])
 
+    def test_paired_signed_fast_flags_are_not_output_dtypes(self):
+        for flag in ('true','false','1','0'):
+            rows,case=self.rows('full-fp16')
+            for row in rows:
+                if 'dense_dequant_cooperative' in row['name']:
+                    row['name']=f'void quactlize::dequant::dense_dequant_q8_paired<{flag},128>(...)'
+            self.assertEqual(parse_rows(rows,[case])[0]['phases_us']['expansion'],1)
+            case['arm']='full-bf16'
+            for row in rows:row['name']=row['name'].replace('vec8<false','vec8<true')
+            with self.assertRaisesRegex(ValueError,'F16-only'):parse_rows(rows,[case])
+
     def test_split_reducer_counted_once(self):
         rows,c=self.rows(split=2);v=parse_rows(rows,[c])[0]
         self.assertEqual(v['phases_us']['reducer'],1)

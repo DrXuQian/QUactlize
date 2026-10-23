@@ -88,7 +88,7 @@ def helper_role(row, arm):
     if arm != 'native-fp16':
         typed=re.search(r'dense_convert_(?:vec8|stripe4|full4|scalar)<(?:true|false),(true|false)(?:,|>)',n)
         if typed:return 'input' if typed[1]=='true' else 'output'
-        if re.search(r'dense_dequant_(?:direct|packed|unsigned|pair|cooperative|q8|q8_exchange|q8_tuned|q8_half2|plane_pair)<',n):return 'expansion'
+        if re.search(r'dense_dequant_(?:direct|packed|unsigned|pair|cooperative|q8|q8_exchange|q8_tuned|q8_half2|q8_paired|plane_pair)<',n):return 'expansion'
     if arm == 'native-fp16':
         if 'dequantize_block_' in n: return 'expansion'
         if ('convert_cont_ppu_kernel<float,__half>' in n or
@@ -122,8 +122,8 @@ def one_call(rows, arm, stages, split, *, primer_without_reset=False):
         cast=re.search(r'dense_convert_(?:vec8|stripe4|full4|scalar)<(true|false),',name)
         dq=re.search(r'dense_dequant_(?:direct|packed|unsigned|pair|cooperative|plane_pair)<[^,]+,(true|false)',name)
         if dq is None: dq=re.search(r'dense_dequant_q8(?:_exchange|_tuned)?<(true|false)(?:,|>)',name)
-        if 'dense_dequant_q8_half2<' in name and arm!='full-fp16':
-            raise ValueError('half2 dequant is F16-only: '+row['name'])
+        if re.search(r'dense_dequant_q8_(half2|paired)<',name) and arm!='full-fp16':
+            raise ValueError('half2/paired dequant is F16-only: '+row['name'])
         for match in (cast,dq):
             if match and (match[1]=='true') != (arm in ('full-bf16','full-bf16-typed')):
                 raise ValueError('typed helper precision differs from arm: '+row['name'])

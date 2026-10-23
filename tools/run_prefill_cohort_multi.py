@@ -25,10 +25,12 @@ def gpu_ordinals(value):
     return gpus
 
 
-def worker_environment(output,gpu,index,count,revision):
-    env=dict(os.environ,COHORT=str(output/'cohort.json'),GPU=gpu,SHARD=str(index),SHARDS=str(count),
+def worker_environment(output,gpu,index,count,revision,*,finalists=False):
+    env=dict(os.environ,GPU=gpu,SHARD=str(index),SHARDS=str(count),
         OUTPUT_ROOT=str(output/('gpu-'+gpu)),TC_CACHE=str(output/'tc-cache'),SOURCE_REV=revision,IDLE_CONFIRMED='1')
-    for key in ('RUN','RESUME_RUN','POINT_ID','PREVIOUS_RUN','PLAN_ONLY'):env.pop(key,None)
+    for key in ('RUN','RESUME_RUN','POINT_ID','PREVIOUS_RUN','PLAN_ONLY','COHORT','FINALIST_PLAN','MODEL'):
+        env.pop(key,None)
+    env['FINALIST_PLAN' if finalists else 'COHORT']=str(output/'cohort.json')
     return env
 
 
@@ -36,7 +38,9 @@ def main():
     def terminate(*_): raise KeyboardInterrupt
     signal.signal(signal.SIGTERM,terminate)
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--cohort',type=Path,required=True)
+    plans=p.add_mutually_exclusive_group(required=True)
+    plans.add_argument('--cohort',type=Path)
+    plans.add_argument('--finalist-plan',type=Path)
     p.add_argument('--gpus',default='1,2,3,4,5,6,7')
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--confirm-idle',action='store_true')
@@ -45,7 +49,11 @@ def main():
     try:gpus=gpu_ordinals(a.gpus)
     except ValueError as e:p.error(str(e))
     if not a.confirm_idle:p.error('--confirm-idle required')
-    cohort=validate(json.loads(a.cohort.read_text()))
+    if a.finalist_plan:
+        from dev.prefill_asys.finalists import load as validate_finalists, partition
+        cohort=validate_finalists(json.loads(a.finalist_plan.read_text()))
+        partition(cohort['points'],0,len(gpus))  # Reject excess GPUs before starting workers.
+    else:cohort=validate(json.loads(a.cohort.read_text()))
     a.output=a.output.resolve();a.output.mkdir(parents=True,exist_ok=a.resume)
     held=(a.output/'.coordinator.lock').open('a')
     try:fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -64,7 +72,7 @@ def main():
     try:
         for index,gpu in enumerate(gpus):
             directory=a.output/('gpu-'+gpu);directory.mkdir(exist_ok=a.resume)
-            env=worker_environment(a.output,gpu,index,len(gpus),rev)
+            env=worker_environment(a.output,gpu,index,len(gpus),rev,finalists=bool(a.finalist_plan))
             if a.resume:
                 runs=[r for r in directory.glob('qwen32-prefill-asys.*') if r.is_dir()]
                 if len(runs)!=1:raise ValueError('resume needs exactly one retained run in '+str(directory))

@@ -127,6 +127,35 @@ def batch_measurements(data, proof, workload, path):
     return found,definitions,candidates
 
 
+def confirmations(rows, expected):
+    """Equal-weight capture medians; never pick the fastest direction.
+
+Keep every raw capture and component sample. Only explicitly paired plans
+may contribute twice; accidental duplicate PASS receipts still fail.
+"""
+    if expected==1: return rows[0]
+    ordered=[dict(row,confirmation=index) for index,row in sorted(rows.items())]
+    result=dict(ordered[-1],confirmation_captures=ordered)
+    if len(ordered)!=expected:
+        result['status']='MISSING_CONFIRMATION'
+        return result
+    if (len({r['candidate'] for r in ordered})!=1 or
+            any(r['components']!=ordered[0]['components'] or r['arithmetic']!=ordered[0]['arithmetic']
+                for r in ordered[1:])):
+        result['status']='CONFIRMATION_KERNEL_OR_ARITHMETIC_DRIFT'
+        return result
+    result['gpu_sum_us']=statistics.median(r['gpu_sum_us'] for r in ordered)
+    result['phases_us']={k:statistics.median(r['phases_us'][k] for r in ordered) for k in ordered[0]['phases_us']}
+    result['rounds_us']=[v for r in ordered for v in r['rounds_us']]
+    result['complete_samples_us']=[v for r in ordered for v in r['complete_samples_us']]
+    result['component_samples_us']=[[v for r in ordered for v in r['component_samples_us'][i]]
+                                    for i in range(len(ordered[0]['components']))]
+    for key in ('raw_receipt','raw_receipt_sha256','asysrep','sqlite','confirmation'):
+        result.pop(key,None)  # Each is retained separately in confirmation_captures.
+    result['aggregation']='MEDIAN_OF_TWO_CAPTURE_MEDIANS_NOT_FASTEST_CAPTURE'
+    return result
+
+
 def ingest(root):
     root = Path(root).resolve(strict=True)
     if (root/'results/authority.json').is_file(): root = root/'results'
@@ -157,16 +186,26 @@ def ingest(root):
         if len(recipes)!=len(data['seal']['cases']) or any(expected.get(k)!=v for k,v in recipes.items()):
             raise ValueError('measured recipe differs from execution plan')
         rows,defs,configs=batch_measurements(data,proof,specs[w.key]['workload'],path)
-        if found[w.key].keys() & rows.keys():raise ValueError('duplicate point/config evidence')
-        found[w.key].update(rows);definitions.update(defs);candidates.update(configs)
+        count=specs[w.key].get('confirmation_captures',1)
+        index=data['seal'].get('confirmation',0)
+        if type(count) is not int or count not in (1,2) or type(index) is not int or not 0<=index<count:
+            raise ValueError('undeclared/invalid confirmation capture')
+        for key,row in rows.items():
+            captures=found[w.key].setdefault(key,{})
+            if index in captures:raise ValueError('duplicate point/config evidence')
+            captures[index]=row
+        definitions.update(defs);candidates.update(configs)
     points, incomplete, partial = {}, [], {}
     for key, spec in specs.items():
+        combined={cid:confirmations(rows,spec.get('confirmation_captures',1)) for cid,rows in found[key].items()}
         point = dict(workload=spec['workload'], consumers=spec.get('consumers',spec.get('tensors')),
-                     authority=aid, measurements=list(found[key].values()))
-        if set(found[key]) != {c['id'] for c in spec['cases']} | {'native-fp16'}:
+                     authority=aid, measurements=list(combined.values()))
+        missing=sorted(({c['id'] for c in spec['cases']} | {'native-fp16'})-set(combined))
+        unconfirmed=sorted(cid for cid,row in combined.items() if row['status']!='PASS')
+        if missing or unconfirmed:
             incomplete.append(key)
             partial[digest([aid,key])] = dict(point, point_id=key,
-                missing=sorted(({c['id'] for c in spec['cases']} | {'native-fp16'})-set(found[key])))
+                missing=missing,unconfirmed=unconfirmed)
             continue
         points[key] = point
     diagnostics = [dict(path=str(p),data=read(p)) for pattern in ('failed-*.json','error-*.json')

@@ -8,7 +8,13 @@ GPU=${GPU:-1}
 [[ ${GPU} =~ ^[0-9]+$ ]] || { echo 'ERROR: one GPU ordinal required.' >&2; exit 1; }
 [[ -z ${RUN:-} ]] || { echo 'ERROR: unset RUN; use RESUME_RUN for an existing frozen sweep.' >&2; exit 1; }
 args=()
-if [[ -n ${COHORT:-} ]]; then
+if [[ -n ${FINALIST_PLAN:-} ]]; then
+    [[ -z ${COHORT:-} && -z ${MODEL:-} ]] || { echo 'ERROR: FINALIST_PLAN cannot mix with COHORT/MODEL.' >&2; exit 1; }
+    FINALIST_PLAN=$(realpath -e -- "${FINALIST_PLAN}")
+    args+=(--finalist-plan "${FINALIST_PLAN}" --shard "${SHARD:-0}" --shards "${SHARDS:-1}"
+           --max-modules "${MAX_MODULES:-96}")
+    [[ -z ${POINT_ID:-} ]] || args+=(--point "${POINT_ID}")
+elif [[ -n ${COHORT:-} ]]; then
     COHORT=$(realpath -e -- "${COHORT}")
     args+=(--cohort "${COHORT}" --shard "${SHARD:-0}" --shards "${SHARDS:-1}"
            --max-cases "${MAX_CASES:-96}" --max-modules "${MAX_MODULES:-256}")
@@ -68,7 +74,7 @@ if [[ -n ${PREVIOUS_RUN:-} ]]; then
     fi
 fi
 [[ -z ${TC_CACHE:-} ]] || args+=(--cache "${TC_CACHE}")
-echo "PREFILL_ASYS_BOX run=${RUN} gpu=${GPU} cohort=${COHORT:-QWEN3_32B_PP2048} shard=${SHARD:-0}/${SHARDS:-1} clock_MHz=1700 actual_clock=ADVISORY native_accumulator=FP32"
+echo "PREFILL_ASYS_BOX run=${RUN} gpu=${GPU} cohort=${FINALIST_PLAN:-${COHORT:-QWEN3_32B_PP2048}} shard=${SHARD:-0}/${SHARDS:-1} clock_MHz=1700 actual_clock=ADVISORY native_accumulator=FP32"
 set +e
 "${PYTHON}" -u "${RUN}/source/tools/run_prefill_model_asys.py" \
     --output "${RUN}/results" --device "${GPU}" \
