@@ -104,6 +104,33 @@ def test_exported_headers_need_no_private_source_include(tmp_path):
             text=True, check=True)
 
 
+@pytest.mark.parametrize('fault',[None,'header','payload','table'])
+def test_dense_prefill_receipt_binds_generated_runtime_selection(tmp_path,fault):
+    from tools.build_ppu_library import PUBLIC_EXPORTS,verify
+    from quactlize.dispatch.dense_prefill import EVIDENCE,HEADER
+    from quactlize.runtime.compiler import sha
+    source=tmp_path/'stub.c';library=tmp_path/'libquactlize_ppu.so'
+    source.write_text('\n'.join('int '+name+'(void){return 0;}' for name in PUBLIC_EXPORTS))
+    subprocess.run(['cc','-shared','-fPIC',source,'-o',library],check=True)
+    path=tmp_path/'quactlize-runtime/dense-prefill.json';path.parent.mkdir()
+    path.write_bytes(EVIDENCE.read_bytes())
+    if fault=='table':
+        data=json.loads(path.read_text());data['points'][0]['us']*=2
+        path.write_text(json.dumps(data))
+    m=dict(schema='quactlize.ppu-library.v1',
+        payloads={str(p.relative_to(tmp_path)):sha(p) for p in (library,path)},
+        source_hashes={'policies/dense_prefill_v1.json':sha(path),
+                      'quactlize/dispatch/dense_prefill.inc':sha(HEADER)},
+        dense_prefill=dict(path=str(path.relative_to(tmp_path)),header_sha256=sha(HEADER)))
+    if fault=='header':m['dense_prefill']['header_sha256']='b'*64
+    if fault=='payload':m['source_hashes']['policies/dense_prefill_v1.json']='b'*64
+    (tmp_path/'manifest.json').write_text(json.dumps(m))
+    if fault:
+        with pytest.raises(ValueError):verify(tmp_path)
+    else:
+        assert verify(tmp_path)['dense_prefill']==m['dense_prefill']
+
+
 @pytest.mark.parametrize('fault',[None,'policy','private-policy','image','full-table','private-full-table','full-evidence'])
 def test_public_dense_helper_receipt_binds_policy_and_private_runtime(tmp_path,fault):
     from tools.build_ppu_library import PUBLIC_EXPORTS,verify

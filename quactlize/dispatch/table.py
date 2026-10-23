@@ -107,6 +107,8 @@ class Recipe:
         """Cheap proposal pruning. The real backend MUST also validate resources."""
         p = dict(self.parameters)
         if self.kind == 'full':
+            if p.get('provider') == 'typed-fp16':
+                return w.m >= 128 and w.operation == 'dense' and w.compute == 'f16'
             return w.m >= 128 and w.qtype != 8
         if self.kind in ('simt', 'q4'):
             return w.m <= 8 and w.operation != 'grouped' and (self.kind != 'q4' or w.qtype == 12)

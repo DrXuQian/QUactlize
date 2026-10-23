@@ -1,5 +1,9 @@
 # Measured dense prefill helpers
 
+The later [whole-call dense routing integration](DENSE_PREFILL_ROUTING.md)
+selects F16 routes and their measured helpers together. The helper-only
+results below remain historical evidence, not the current route selector.
+
 This is a helper integration, not a new GEMM route table or a model-level
 performance admission. `quactlize/dense/runtime.cpp` calls the same compiled
 policy and typed runtime used by the diagnostic. Public caller ABI, offline

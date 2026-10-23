@@ -333,6 +333,7 @@ def main():
         ROOT / "policies/kpack_prefill_confirmation_v1.json",
         PREFILL_HEADER,
         PREFILL_EVIDENCE,
+        ROOT / 'policies/dense_prefill_v1.json',
         ROOT / "policies/kpack_smallm_v1.hpp",
         ROOT / "policies/kpack_smallm_matched_v1.hpp",
         ROOT / "policies/kpack_smallm_effective_v1.hpp",

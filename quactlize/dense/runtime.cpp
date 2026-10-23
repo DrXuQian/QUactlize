@@ -77,6 +77,7 @@ struct Plan {
     qks_request_v1 request{};
     qks_prefill_choice_v1 prefill{};
     bool confirmed_prefill=false;
+    dispatch::dense_prefill::Decision dense_prefill{};
     int compute=QK_COMPUTE_F16,metadata_type=QK_METADATA_F16;
     void* handle=nullptr;
     uint64_t input_offset=0,output_offset=0,kernel_offset=0,scale_offset=0,zero_offset=0;
@@ -86,6 +87,7 @@ struct Plan {
     bool legacy_adapters=false;
     int helper_io=-1,helper_dequant=-1;
     bool typed_full=false;
+    int full_storage=1; // legacy Full-BF16; measured dense policy explicitly uses F16
     ~Plan() {
         if (kind==Kind::Tc && handle) quactlize_kpack_dispatch_destroy_v1(handle);
         if (kind==Kind::Full && handle) {
@@ -100,11 +102,20 @@ struct Context {
     fs::path root;
     void* dispatcher=nullptr;
     bool jit=false;
+    int dense_device=-1;
     std::mutex mutex;
     std::vector<std::unique_ptr<Plan>> plans;
     ~Context() {
         plans.clear();
         if (dispatcher) quactlize_kpack_dispatch_close_v1(dispatcher);
+    }
+    bool dense_policy_device() {
+        if(dense_device<0) {
+            hggcDeviceProp prop{};
+            require(hggcGetDeviceProperties(&prop,device)==hggcSuccess,"dense device properties unavailable");
+            dense_device=!std::strcmp(prop.name,"PPU-ZW810") && prop.multiProcessorCount==72 && prop.warpSize==32;
+        }
+        return dense_device==1;
     }
     // JIT configuration is only needed for TC. Context construction and a
     // pure SIMT plan need neither Python nor a writable compilation cache.
@@ -190,37 +201,53 @@ void select(Plan& p) {
         }
     }
     if (!p.tc.ticket) {
-        qks_prefill_choice_v2 confirmed{};
-        int rc=p.params.input_stride==p.params.k && p.params.output_stride==p.params.n ?
-            quactlize_kpack_dispatch_prefill_v2(&p.request,7,p.compute,1,&confirmed) : QKS_MISS;
-        if (rc==QKS_OK) {
-            p.prefill=confirmed.base;p.confirmed_prefill=true;
-        } else if (rc==QKS_MISS) {
-            rc=quactlize_kpack_dispatch_prefill_v1(&p.request,7,&p.prefill);
-        }
-        if (rc!=QKS_OK && rc!=QKS_MISS) dispatch_check(rc);
-        if (rc==QKS_OK) {
-            // Existing isolated F16 component ranking is a route proposal
-            // for BF16, not relabeled measured BF16 latency.
-            if (p.compute==QK_COMPUTE_BF16) p.prefill.predicted=1;
-            if (p.prefill.route==2) {p.kind=Kind::Full;return;}
-            p.request.route=p.prefill.route;
-        }
-        ctx.enable_jit();
-        if (p.confirmed_prefill) {
-            p.native_f16=true;
-            dispatch_check(quactlize_kpack_dispatch_query_prefill_v1(ctx.dispatcher,&p.request,p.compute,1,&p.tc));
-        }
-        if (p.params.m<=8 && p.params.qtype==12) {
-            rc=quactlize_kpack_dispatch_query_compute_v1(ctx.dispatcher,&p.request,p.compute,QKD_F32,1,&p.tc);
+        // The complete GPU-call winner is authoritative, including its exact
+        // adapters/precision. An older helper/TC-only table cannot overwrite it.
+        auto candidate=dispatch::dense_prefill::select(p.request,p.compute);
+        if(candidate && p.params.input_stride==p.params.k && p.params.output_stride==p.params.n &&
+            ctx.dense_policy_device()) p.dense_prefill=candidate;
+        if(p.dense_prefill) {
+            auto const& c=*p.dense_prefill.choice;
+            p.helper_io=c.io;p.helper_dequant=c.dequant;
+            p.prefill={1,sizeof(p.prefill),c.route,c.route==2?5:c.dequant,p.params.m,
+                p.dense_prefill.policy==QKS_DENSE_PREFILL_BUCKET,0,0};
+            if(c.route==2) {p.kind=Kind::Full;p.full_storage=0;return;}
+            p.request.route=c.route;p.native_f16=true;
+            ctx.enable_jit();
+            dispatch_check(quactlize_kpack_dispatch_query_dense_prefill_v1(ctx.dispatcher,&p.request,&p.tc));
+        } else {
+            qks_prefill_choice_v2 confirmed{};
+            int rc=p.params.input_stride==p.params.k && p.params.output_stride==p.params.n ?
+                quactlize_kpack_dispatch_prefill_v2(&p.request,7,p.compute,1,&confirmed) : QKS_MISS;
+            if (rc==QKS_OK) {
+                p.prefill=confirmed.base;p.confirmed_prefill=true;
+            } else if (rc==QKS_MISS) {
+                rc=quactlize_kpack_dispatch_prefill_v1(&p.request,7,&p.prefill);
+            }
             if (rc!=QKS_OK && rc!=QKS_MISS) dispatch_check(rc);
-        }
-        if (!p.tc.ticket) {
-            auto candidate=dispatch::select_dense_dynamic(p.request,p.compute);
-            p.legacy_adapters=candidate.policy==QKS_LEGACY_DENSE;
-            p.native_f16=p.compute==QK_COMPUTE_F16 && (p.params.m>8 || p.legacy_adapters);
-            dispatch_check(p.native_f16 ? quactlize_kpack_dispatch_query_dense_native_v1(ctx.dispatcher,&p.request,&p.tc) :
-                quactlize_kpack_dispatch_query_dense_dynamic_v1(ctx.dispatcher,&p.request,p.compute,&p.tc));
+            if (rc==QKS_OK) {
+                // Existing isolated F16 component ranking is a route proposal
+                // for BF16, not relabeled measured BF16 latency.
+                if (p.compute==QK_COMPUTE_BF16) p.prefill.predicted=1;
+                if (p.prefill.route==2) {p.kind=Kind::Full;return;}
+                p.request.route=p.prefill.route;
+            }
+            ctx.enable_jit();
+            if (p.confirmed_prefill) {
+                p.native_f16=true;
+                dispatch_check(quactlize_kpack_dispatch_query_prefill_v1(ctx.dispatcher,&p.request,p.compute,1,&p.tc));
+            }
+            if (p.params.m<=8 && p.params.qtype==12) {
+                rc=quactlize_kpack_dispatch_query_compute_v1(ctx.dispatcher,&p.request,p.compute,QKD_F32,1,&p.tc);
+                if (rc!=QKS_OK && rc!=QKS_MISS) dispatch_check(rc);
+            }
+            if (!p.tc.ticket) {
+                auto candidate=dispatch::select_dense_dynamic(p.request,p.compute);
+                p.legacy_adapters=candidate.policy==QKS_LEGACY_DENSE;
+                p.native_f16=p.compute==QK_COMPUTE_F16 && (p.params.m>8 || p.legacy_adapters);
+                dispatch_check(p.native_f16 ? quactlize_kpack_dispatch_query_dense_native_v1(ctx.dispatcher,&p.request,&p.tc) :
+                    quactlize_kpack_dispatch_query_dense_dynamic_v1(ctx.dispatcher,&p.request,p.compute,&p.tc));
+            }
         }
     }
     p.kind=Kind::Tc;
@@ -289,7 +316,7 @@ void select_candidate(Plan& p,quactlize_ppu_dense_candidate_v1 const& c) {
 void prepare(Plan& p,quactlize_ppu_dense_candidate_v1 const* candidate=nullptr) {
     if (candidate) select_candidate(p,*candidate);else select(p);
     auto& info=p.info;info.compute_type=p.compute;
-    if (p.kind==Kind::Full || (p.kind==Kind::Tc && p.native_f16 && p.compute==QK_COMPUTE_F16)) {
+    if (!p.dense_prefill && (p.kind==Kind::Full || (p.kind==Kind::Tc && p.native_f16 && p.compute==QK_COMPUTE_F16))) {
         auto shape=full_call(p);
         // Full's admitted route is BF16 even in the default F16 context.
         // Helper promotion must not silently change that arithmetic contract.
@@ -301,19 +328,20 @@ void prepare(Plan& p,quactlize_ppu_dense_candidate_v1 const* candidate=nullptr) 
     }
     if (p.kind==Kind::Full) {
         auto shape=full_call(p);
-        prefill_check(quactlize_kpack_prefill_query_dynamic_v1(&shape,&p.params.arrangement,&info.workspace_bytes));
         p.typed_full=p.helper_dequant>=0;
         if (p.typed_full) {
-            qkp_dense_options_v1 options{1,sizeof(options),p.owner->sdk.c_str(),1,p.helper_io,p.helper_dequant,16,-1};
+            dense_full_check(quactlize_kpack_dense_full_workspace_v1(&shape,&p.params.arrangement,&info.workspace_bytes));
+            qkp_dense_options_v1 options{1,sizeof(options),p.owner->sdk.c_str(),p.full_storage,p.helper_io,p.helper_dequant,16,-1};
             dense_full_check(quactlize_kpack_dense_full_prepare_v1(&shape,&p.params.arrangement,&options,&p.handle));
         } else {
+            prefill_check(quactlize_kpack_prefill_query_dynamic_v1(&shape,&p.params.arrangement,&info.workspace_bytes));
             qkp_options_v1 options{1,sizeof(options),p.owner->sdk.c_str(),nullptr,nullptr};
             prefill_check(quactlize_kpack_prefill_prepare_dynamic_v1(&shape,&p.params.arrangement,&options,&p.handle));
         }
-        info.route=QUACTLIZE_DENSE_FULL_BF16;info.compute_type=QUACTLIZE_DENSE_BF16;
-        info.policy=p.confirmed_prefill?QKS_PREFILL_COMPONENT_MEASURED:
+        info.route=QUACTLIZE_DENSE_FULL;info.compute_type=p.full_storage;
+        info.policy=p.dense_prefill?p.dense_prefill.policy:p.confirmed_prefill?QKS_PREFILL_COMPONENT_MEASURED:
             p.prefill.predicted?QKS_PREDICTED:QKS_COMPONENT_MEASURED;info.split=1;
-        if (p.typed_full) std::snprintf(info.config,sizeof(info.config),"full-bf16:cublas:typed-dq%d:io%d",p.helper_dequant,p.helper_io);
+        if (p.typed_full) std::snprintf(info.config,sizeof(info.config),"full-%s:cublas:typed-dq%d:io%d",p.full_storage?"bf16":"f16",p.helper_dequant,p.helper_io);
         else std::snprintf(info.config,sizeof(info.config),"full-bf16:cublas:dq%d",p.prefill.dequant_config);
         return;
     }
@@ -328,7 +356,8 @@ void prepare(Plan& p,quactlize_ppu_dense_candidate_v1 const* candidate=nullptr) 
         dispatch_check(quactlize_kpack_dispatch_prepare_dynamic_v1(p.owner->dispatcher,&p.tc,&p.handle));
         info.route=p.request.route==QK_DENSE_FQ?QUACTLIZE_DENSE_FQ_TC:QUACTLIZE_DENSE_SF_TC;
         info.policy=p.tc.policy;info.split=p.tc.split;
-        std::snprintf(info.config,sizeof(info.config),"%s",p.tc.parent);
+        if(p.dense_prefill) std::snprintf(info.config,sizeof(info.config),"%s:dq%d:io%d",p.tc.parent,p.prefill.dequant_config,p.helper_io);
+        else std::snprintf(info.config,sizeof(info.config),"%s",p.tc.parent);
     } else {
         info.route=QUACTLIZE_DENSE_SIMT;info.policy=p.small.base.policy;
         if (p.kind==Kind::Simt) {

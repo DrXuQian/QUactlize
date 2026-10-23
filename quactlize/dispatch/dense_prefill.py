@@ -1,0 +1,289 @@
+"""Compile reviewed whole-call dense measurements into exact rows and bounded buckets.
+
+This is an offline exporter, not a runtime tuner. A newer COMPLETE point
+replaces its predecessor atomically; old and new component costs are never
+spliced. Buckets minimize normalized regret, not microseconds across shapes.
+"""
+from collections import Counter, defaultdict
+import json
+import lzma
+import math
+from pathlib import Path
+import statistics
+
+from quactlize.dispatch.table import Workload
+from quactlize.runtime.tuning import digest
+
+ROOT = Path(__file__).resolve().parents[2]
+EVIDENCE = ROOT / 'policies/dense_prefill_v1.json'
+HEADER = ROOT / 'quactlize/dispatch/dense_prefill.inc'
+SCHEMA = 'quactlize.dense-prefill-policy.v1'
+REGRET_LIMIT = .05  # in-sample fitting bound, NOT a new-shape/native guarantee
+
+
+def require(ok, message):
+    if not ok:
+        raise ValueError(message)
+
+
+def band(x):
+    return x.bit_length()-1
+
+
+def bucket_key(shape):
+    q, m, n, k = shape
+    # N and K are not interchangeable: scale expansion and weight delivery
+    # differ even for equal N*K. Keep both balanced orientations separate.
+    return q, band(m), band(n), band(k), (1 if n >= 2*k else 2 if k >= 2*n else 0 if n >= k else 3)
+
+
+def choose(costs):
+    return min(costs, key=lambda c: (costs[c], c))
+
+
+def execution(candidate, row, definitions):
+    """Freeze adapters too: cohort-current is not a stable execution identity."""
+    recipe = candidate['recipe']
+    p = dict(recipe['parameters'])
+    if recipe['kind'] == 'full':
+        require(candidate['arm'] == 'full-fp16' and p['provider'] == 'typed-fp16', 'not Full-F16')
+        require(candidate['helper_options'] == dict(dequant_variant=p['dequant_variant'], vector_io=p['vector_io']),
+                'full helper identity differs')
+        return dict(route=2, io=p['vector_io'], dequant=p['dequant_variant'], tc=None)
+    names = [definitions[c]['name'] for c in row['components'] if definitions[c]['phase'] in ('input', 'output')]
+    require(len(names) == 2, 'TC adapter coverage differs')
+    kinds = {'::convert_rows<': -1, '::dense_convert_vec8<false,': 1,
+             '::dense_convert_stripe4<false,': 2, '::dense_convert_full4<false,': 3}
+    ios = [next((io for name, io in kinds.items() if name in n), None) for n in names]
+    require(ios[0] is not None and ios[0] == ios[1], 'unrecognized/mixed TC adapters')
+    require(recipe['kind'] == 'tc' and recipe['route'] in ('fq', 'sf'), 'unsupported recipe')
+    dq = p.pop('dequant_config')
+    return dict(route=int(recipe['route'] == 'sf'), io=ios[0], dequant=dq, tc=p)
+
+
+def audit_row(row, review, point):
+    require(row['status'] == 'PASS', 'failed row')
+    cid = row['candidate']
+    require(cid == digest(review['candidates'][cid]), 'candidate seal differs')
+    captures = row.get('confirmation_captures') or [row]
+    if len(captures) == 2:
+        require([c['confirmation'] for c in captures] == [0, 1] and
+                row['aggregation'] == 'MEDIAN_OF_TWO_CAPTURE_MEDIANS_NOT_FASTEST_CAPTURE', 'confirmation differs')
+        require(abs(statistics.median(c['gpu_sum_us'] for c in captures)-row['gpu_sum_us']) < 1e-6,
+                'confirmation median differs')
+    for cap in captures:
+        require(cap['status'] == 'PASS' and cap['candidate'] == cid and cap['components'] == row['components'],
+                'capture identity differs')
+        samples = cap['complete_samples_us']
+        require(len(samples) >= 3 and all(math.isfinite(t) and t > 0 for t in samples), 'invalid samples')
+        require(abs(statistics.median(samples)-cap['gpu_sum_us']) < 1e-6, 'sample median differs')
+        times = cap['component_samples_us']
+        require(len(times) == len(cap['components']) and all(len(t) == len(samples) for t in times),
+                'component coverage differs')
+        for key, ts in zip(cap['components'], times):
+            definition = review['components'][key]
+            require(digest(definition) == key and definition['workload'] == point['workload'] and
+                    definition['authority'] == point['authority'], 'component binding differs')
+            require(all(math.isfinite(t) and t > 0 for t in ts), 'invalid component samples')
+        require(all(abs(total-sum(t[i] for t in times)) < 1e-6 for i, total in enumerate(samples)),
+                'whole-call sum differs')
+        if row['arm'] == 'native-fp16':
+            require(cap['numerical'] == 'PASS', 'native correctness failed')
+        else:
+            require(cap['numerical'] and all(c['nonfinite'] == 0 and 0 <= c['relative_l1_error'] < .005
+                                          for c in cap['numerical']), 'numerical gate failed')
+            require(all(c['bad'] == 0 for c in cap.get('weight_bits') or []), 'weight bits differ')
+        if row['arm'] == 'full-fp16':
+            require(cap['arithmetic'] == dict(a='F16', b='F16', c='F16', accumulator='FP32'), 'full arithmetic differs')
+
+
+def fit(points):
+    """Log bins, subdivided only where a common recipe exceeds 5% regret.
+
+    Subdivision uses the largest normalized N/K gap, not a model/tensor name.
+    Single-member leaves are explicitly predictions, never holdout evidence.
+    All leaves stay inside one octave in M/N/K; no remote nearest-neighbor.
+    """
+    groups = defaultdict(list)
+    for p in points:
+        groups[bucket_key(p['shape'])].append(p)
+    leaves = []
+
+    def visit(key, members, bounds):
+        costs = [dict(p['costs']) for p in members]
+        common = set.intersection(*(set(c) for c in costs))
+        normalized = [{k: v/min(c.values()) for k, v in c.items()} for c in costs]
+        best = min(common, key=lambda c: (max(r[c] for r in normalized),
+                   statistics.mean(r[c] for r in normalized), c)) if common else None
+        regret = max(r[best] for r in normalized)-1 if best else math.inf
+        if best is not None and regret <= REGRET_LIMIT:
+            leaves.append(dict(key=list(key), bounds=bounds, recipe=best,
+                members=[p['key'] for p in members], worst_regret_pct=100*regret,
+                predicted=True, holdout_validated=False))
+            return
+        # Different N/K in a coarse bin require a finer rule, not a slower
+        # shared FQ fallback. Distinct exact rows always terminate this split.
+        gaps = []
+        for dim in (2, 3):
+            values = sorted({p['shape'][dim] for p in members})
+            gaps += [(math.log2(b/a), dim, (a+b)//2) for a, b in zip(values, values[1:])]
+        require(gaps, 'cannot subdivide incompatible observations at one shape')
+        _, dim, cut = max(gaps)
+        axis = dim-2
+        for lower in (True, False):
+            subset = [p for p in members if (p['shape'][dim] <= cut) == lower]
+            limits = [list(b) for b in bounds]
+            limits[axis][1 if lower else 0] = cut if lower else cut+1
+            visit(key, subset, limits)
+
+    for key, members in sorted(groups.items()):
+        visit(key, sorted(members, key=lambda p:p['shape']),
+              [[1 << key[2], (1 << (key[2]+1))-1], [1 << key[3], (1 << (key[3]+1))-1]])
+    return leaves
+
+
+def import_reviews(paths):
+    from tools.review_prefill_cohort import eligible, domain
+    points, recipes, sources, authorities = {}, {}, [], {}
+    timing_domain = None
+    for path in paths:
+        path = Path(path)
+        raw = path.read_bytes()
+        review = json.loads(lzma.decompress(raw) if path.suffix == '.xz' else raw)
+        require(review['review_sha256'] == digest({k:v for k,v in review.items() if k != 'review_sha256'}),
+                'review seal differs')
+        require(not review['incomplete'] and not review['pending_points'] and not review['partial_points'],
+                'review incomplete: do not promote partial points')
+        for aid, a in review['authorities'].items():
+            require(aid == digest(a), 'authority seal differs')
+            d = domain(a)
+            if timing_domain is None:
+                timing_domain = d
+            require(d == timing_domain, 'cannot merge different timing domains')
+            authorities[aid] = dict(domain=d, receipt_sha256=aid)
+        sources.append(review['review_sha256'])
+        for key, point in sorted(review['points'].items()):
+            w = Workload(**point['workload'])
+            require(key == w.key and w.operation == 'dense' and w.compute == 'f16' and w.storage == 'f32' and
+                    w.experts == w.channels == w.topk == 1 and w.fusion == 'none' and not w.router and
+                    w.input_stride == w.k and w.output_stride == w.n and 128 <= w.m <= 2048,
+                    'outside reviewed dense prefill domain')
+            costs, observations = {}, {}
+            native = None
+            for row in point['measurements']:
+                if not eligible(row) and row['arm'] != 'native-fp16':
+                    continue
+                audit_row(row, review, point)
+                if row['arm'] == 'native-fp16':
+                    require(native is None, 'duplicate native row')
+                    native = row['gpu_sum_us']
+                    continue
+                recipe = execution(review['candidates'][row['candidate']], row, review['components'])
+                rid = digest(recipe)
+                recipes[rid] = recipe
+                # Two identities can have identical execution (e.g. a legacy
+                # alias). Do not cherry-pick the faster duplicate observation.
+                require(rid not in costs, 'duplicate complete execution identity')
+                costs[rid] = row['gpu_sum_us']
+                observations[rid] = dict(candidate=row['candidate'], receipt_sha256=digest(row),
+                    captures=len(row.get('confirmation_captures') or [row]), components=row['components'])
+            require(costs and native, 'missing native or candidates')
+            winner = choose(costs)
+            points[key] = dict(key=key, shape=[w.qtype, w.m, w.n, w.k], winner=winner,
+                costs=sorted(costs.items()), us=costs[winner], native_us=native,
+                authority=point['authority'], evidence_sha256=digest(point), winner_evidence=observations[winner])
+    result = dict(schema=SCHEMA, reviews=sources, domain=timing_domain, authorities=authorities,
+        recipes={k:recipes[k] for k in sorted({r for p in points.values() for r,_ in p['costs']})},
+        points=sorted(points.values(), key=lambda p:p['shape']),
+        criterion='MINIMUM_COMPLETE_GPU_CALL; NO_CROSS_POINT_ABSOLUTE_TIME_COMPARISON',
+        arithmetic=dict(input='F32', output='F32', compute='F16', accumulator='FP32'),
+        bucket_scope='BOUNDED_PREDICTION; IN_SAMPLE_REGRET_NOT_HOLDOUT_OR_NATIVE_GUARANTEE',
+        model_performance_admitted=False)
+    result['buckets'] = fit(result['points'])
+    result['sha256'] = digest(result)
+    validate(result)
+    return result
+
+
+def validate(data):
+    require(data['schema'] == SCHEMA and data['sha256'] == digest({k:v for k,v in data.items() if k != 'sha256'}),
+            'dense prefill catalog seal differs')
+    require(data['arithmetic'] == dict(input='F32', output='F32', compute='F16', accumulator='FP32') and
+            not data['model_performance_admitted'], 'arithmetic/admission changed')
+    seen = set()
+    for key, recipe in data['recipes'].items():
+        require(digest(recipe) == key, 'execution identity differs')
+    for p in data['points']:
+        q,m,n,k = p['shape']
+        require(p['key'] == Workload(qtype=q,m=m,n=n,k=k,operation='dense',compute='f16',storage='f32').key and
+                p['key'] not in seen, 'point identity differs')
+        seen.add(p['key'])
+        require(p['authority'] in data['authorities'], 'missing authority')
+        costs = dict(p['costs'])
+        require(len(costs) == len(p['costs']) and all(r in data['recipes'] and math.isfinite(t) and t > 0
+                                                   for r,t in costs.items()), 'invalid costs')
+        require(choose(costs) == p['winner'] and costs[p['winner']] == p['us'], 'not measured minimum')
+    require(fit(data['points']) == data['buckets'], 'bucket fitting differs')
+
+
+def render(data):
+    validate(data)
+    used = sorted({p['winner'] for p in data['points']} | {b['recipe'] for b in data['buckets']})
+    index = {k:i for i,k in enumerate(used)}
+    out = ['// Generated by tools/fit_dense_prefill.py; do not edit.',
+           '// Whole GPU call, F16 operands / FP32 accumulation; not model TPOT.',
+           f'inline constexpr char kCatalogSha[] = "{data["sha256"]}";',
+           'inline constexpr Choice kChoices[] = {']
+    for key in used:
+        r = data['recipes'][key]
+        tc = '{}'
+        if r['tc']:
+            p = r['tc']; q = p['qtype']
+            mapping = '0x51384b5032540001' if q == 8 else '0x51344b5034540001' if q == 12 else '0x514b504b54000001'
+            nums = [q,r['route'],*[p[n] for n in ('tm','tn','tk','wm','wn','stages','ap','dn','persistent','split','grid_mode','grid_b')],0]
+            tc = '{"dense-prefill","'+p['symbol']+'","WHOLE_CALL",'+','.join(map(str,nums))+f',UINT64_C({mapping})'+'}'
+        out.append(f'    {{{r["route"]},{r["io"]},{r["dequant"]},{tc}}}, // {key}')
+    out += ['};', 'inline constexpr Exact kExact[] = {']
+    for p in data['points']:
+        out.append('    {'+','.join(map(str, p['shape']+[index[p['winner']]]))+'},')
+    out += ['};', 'inline constexpr Bucket kBuckets[] = {']
+    for b in data['buckets']:
+        nums = [*b['key'],*b['bounds'][0],*b['bounds'][1],index[b['recipe']]]
+        out.append('    {'+','.join(map(str,nums))+'},')
+    out += ['};', '']
+    return '\n'.join(out)
+
+
+def summary(data):
+    return dict(exact=len(data['points']), buckets=len(data['buckets']),
+        routes=dict(Counter(data['recipes'][p['winner']]['route'] for p in data['points'])),
+        worst_bucket_training_regret_pct=max(b['worst_regret_pct'] for b in data['buckets']),
+        slower_than_native=sum(p['us'] > p['native_us'] for p in data['points']),
+        model_performance_admitted=False)
+
+
+def audit_buckets(data):
+    """Leave one entire N/K family out, across all M; do not invent missing times."""
+    families = sorted({(p['shape'][0],*p['shape'][2:]) for p in data['points']})
+    counts, rows = Counter(), []
+    for family in families:
+        held = [p for p in data['points'] if (p['shape'][0],*p['shape'][2:]) == family]
+        buckets = fit([p for p in data['points'] if p not in held])
+        for p in held:
+            q,m,n,k = p['shape']
+            matches = [b for b in buckets if list(bucket_key(p['shape'])) == b['key'] and
+                       b['bounds'][0][0] <= n <= b['bounds'][0][1] and b['bounds'][1][0] <= k <= b['bounds'][1][1]]
+            require(len(matches) <= 1, 'overlapping bucket predictions')
+            if not matches:
+                counts['uncovered'] += 1
+                continue
+            rid = matches[0]['recipe']; costs = dict(p['costs'])
+            if rid not in costs:
+                counts['candidate_not_measured_on_held_family'] += 1
+                continue
+            regret = 100*(costs[rid]/p['us']-1)
+            rows.append(dict(shape=p['shape'], recipe=rid, regret_pct=regret))
+            counts['comparable'] += 1
+    return dict(scope='LEAVE_ONE_NK_FAMILY_OUT; NOT_NEW_MODEL_HOLDOUT', counts=dict(counts),
+                worst_regret_pct=max((r['regret_pct'] for r in rows), default=None),
+                over_5pct=[r for r in rows if r['regret_pct'] > 5], new_model_validated=False)

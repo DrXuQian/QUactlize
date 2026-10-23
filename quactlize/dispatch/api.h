@@ -19,7 +19,8 @@ enum { QKS_RECENT = 1, QKS_HISTORICAL = 2, QKS_PREDICTED = 3,
        QKS_COMPUTE_INITIAL = 11, QKS_MATCHED_EXACT = 12,
        QKS_MATCHED_BUCKET = 13, QKS_MATCHED_ROUTER = 14,
        QKS_Q8_VECTOR_MEASURED = 15, QKS_DENSE_FALLBACK = 16, QKS_LEGACY_DENSE = 17,
-       QKS_DECODE_COMPONENT_MEASURED = 18, QKS_PREFILL_COMPONENT_MEASURED = 19 };
+       QKS_DECODE_COMPONENT_MEASURED = 18, QKS_PREFILL_COMPONENT_MEASURED = 19,
+       QKS_DENSE_PREFILL_EXACT = 20, QKS_DENSE_PREFILL_BUCKET = 21 };
 
 // Additive Q8_0/W8A16 intake capability, without a device/context or JIT.
 // Returns 1 for supported weight geometry and SF route (1=dense,3=grouped).
@@ -170,6 +171,11 @@ int quactlize_kpack_dispatch_query_dense_dynamic_v1(void* runtime,qks_request_v1
 // Same coverage/recipe policy with the original native FP16 endpoints. The
 // complete provider uses this for PoC-identical prefill (including adapters).
 int quactlize_kpack_dispatch_query_dense_native_v1(void* runtime,qks_request_v1 const*,qks_choice_v1*);
+
+// TC portion of the whole-call F16 dense policy. Complete dense provider owns
+// precision/device/stride admission and the selected helpers. Does not tune;
+// buckets are predictions, exact rows minimize measured complete GPU activity.
+int quactlize_kpack_dispatch_query_dense_prefill_v1(void* runtime,qks_request_v1 const*,qks_choice_v1*);
 // Initialization tooling only: materialize an explicit TC recipe instead of
 // invoking a second selector. Its ticket is independent of the default query
 // cache. No timing or policy/cache publication is performed here. The actual

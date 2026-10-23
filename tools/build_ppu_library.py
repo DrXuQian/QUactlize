@@ -24,6 +24,7 @@ from tools.build_kpack_prefill_runtime import build as build_prefill
 from tools.build_kpack_dispatch import catalog
 from quactlize.dispatch.planning import plan_smallm, validate_inventory
 from quactlize.dispatch.prefill_policy import check_receipt, receipt_fields
+from quactlize.dispatch.dense_prefill import EVIDENCE as DENSE_PREFILL_EVIDENCE, HEADER as DENSE_PREFILL_HEADER, render as dense_prefill_header
 
 PUBLIC_EXPORTS = (
     'quactlize_ppu_kpack_canonical_arrangement_v1',
@@ -133,6 +134,16 @@ def verify(output):
                     helper['full_table_sha256']!=runtime['source_hashes'].get(table) or
                     helper['full_evidence_sha256']!=manifest['source_hashes'].get('policies/dense_full_helpers_20261023.json')):
                 raise ValueError('full-only helper table/runtime evidence differs')
+    if 'dense_prefill' in manifest:
+        receipt=manifest['dense_prefill'];path=receipt.get('path')
+        if (path!='quactlize-runtime/dense-prefill.json' or path not in manifest['payloads'] or
+                manifest['payloads'][path]!=manifest['source_hashes'].get('policies/dense_prefill_v1.json') or
+                receipt['header_sha256']!=manifest['source_hashes'].get('quactlize/dispatch/dense_prefill.inc')):
+            raise ValueError('dense prefill whole-call policy binding differs')
+        data=json.loads((output/path).read_text())
+        import hashlib
+        if hashlib.sha256(dense_prefill_header(data).encode()).hexdigest()!=receipt['header_sha256']:
+            raise ValueError('dense prefill catalog/generated selector differs')
     return manifest
 
 
@@ -172,6 +183,10 @@ def build(sdk, output, jobs):
     if prefill_header(confirmed)!=PREFILL_HEADER.read_text():
         raise ValueError('stale confirmed prefill catalog; regenerate before building')
     shutil.copy2(PREFILL_EVIDENCE,runtime/'prefill-confirmed.json')
+    dense_policy=json.loads(DENSE_PREFILL_EVIDENCE.read_text())
+    if dense_prefill_header(dense_policy)!=DENSE_PREFILL_HEADER.read_text():
+        raise ValueError('stale whole-call dense prefill selector; regenerate before building')
+    shutil.copy2(DENSE_PREFILL_EVIDENCE,runtime/'dense-prefill.json')
     final_selection = plan_smallm(work)
     (runtime/'final-selection.json').write_text(json.dumps(final_selection, indent=2)+'\n')
     # The existing device builders retain the exact production flags and
@@ -251,6 +266,8 @@ def build(sdk, output, jobs):
         final_selection=dict(path='quactlize-runtime/final-selection.json', capabilities=capabilities),
         prefill_confirmed=dict(path='quactlize-runtime/prefill-confirmed.json',
             header_sha256=sha(PREFILL_HEADER), **receipt_fields()),
+        dense_prefill=dict(path='quactlize-runtime/dense-prefill.json',header_sha256=sha(DENSE_PREFILL_HEADER),
+            scope='ZW810_DENSE_F16_COMPLETE_GPU_CALL; EXACT_THEN_PREDICTED_BUCKET; MODEL_AB_PENDING'),
         default_dense_compute='F16_POC', device_admission='PENDING',
         dense_helpers=dict(policy_sha256=sha(helper_policy),runtime_receipt='quactlize-runtime/prefill-runtime.json',
                            full_table_sha256=sha(FULL_HELPERS_HEADER),full_evidence_sha256=sha(FULL_HELPERS),

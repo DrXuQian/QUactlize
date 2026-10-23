@@ -59,9 +59,12 @@ quactlize_ppu_dense_params_v1 params(int q,int m,int n=1024,int k=5120) {
 }
 // Preparing a host-only test runtime bypasses filesystem JIT and installs
 // resource fakes for the actual selected parent, not a different tactic.
-std::unique_ptr<quactlize::dense::Context> context(int compute) {
+std::unique_ptr<quactlize::dense::Context> context(int compute,bool reviewed=false) {
     auto owner=std::make_unique<quactlize::dense::Context>();auto& ctx=*owner;
     ctx.device=0;ctx.compute=compute;ctx.jit=true;
+    // Frozen PoC comparisons exclude the new whole-call policy; the separate
+    // reviewed_prefill() suite exercises EVERY new row through the public ABI.
+    ctx.dense_device=reviewed?1:0;
     auto r=new Runtime;r->device=0;r->cu=72;ctx.dispatcher=r;
     r->moe=std::make_shared<MoeExecution>();r->moe->select=&quactlize_kpack_q4_decode_select_v1;
     r->moe->select_compute=&quactlize_kpack_q4_decode_select_v2;
@@ -74,6 +77,11 @@ void install_for(quactlize::dense::Context& ctx,quactlize_ppu_dense_params_v1 co
     auto typed=quactlize::dense::simt_call(plan);
     auto matched=select_smallm(typed,p.arrangement);
     auto r=quactlize::dense::request_for(p);
+    auto measured=dense_prefill::select(r,ctx.compute);
+    if(ctx.dense_device==1 && measured && measured.choice->route!=2) {
+        auto const& c=measured.choice->tc;r.route=c.route;
+        install(ctx,select_tc(r,false,ctx.compute,{&c,measured.policy}),false,ctx.compute);
+    }
     auto confirmed=prefill::knot(r,ctx.compute,1);
     if(confirmed && confirmed->config>=0) {
         auto const& c=prefill::data::kConfigs[confirmed->config];r.route=c.route;
@@ -108,6 +116,10 @@ void* plan(quactlize::dense::Context& ctx,quactlize_ppu_dense_params_v1 const& p
 }
 
 extern "C" hggcError_t hggcGetDevice(int* out) {*out=test::device;return hggcSuccess;}
+extern "C" hggcError_t hggcGetDeviceProperties(hggcDeviceProp* out,int) {
+    *out={};std::strcpy(out->name,test::helper_device?"PPU-ZW810":"PPU-ZW610");
+    out->multiProcessorCount=test::helper_device?72:64;out->warpSize=32;return hggcSuccess;
+}
 extern "C" hggcError_t hggcStreamIsCapturing(hggcStream_t,hggcStreamCaptureStatus* out) {
     *out=test::capture?hggcStreamCaptureStatusActive:hggcStreamCaptureStatusNone;return hggcSuccess;
 }
@@ -130,16 +142,29 @@ extern "C" int quactlize_kpack_dense_full_helper_policy_v1(qkp_call_v1 const* c,
 extern "C" int quactlize_dense_io_v1(int storage,int input,int vector,void const*,void*,int,int,int64_t,int const*,void*) {
     assert(!storage);test::launches.push_back(std::string(input?"vector-in-":"vector-out-")+std::to_string(vector));return 0;
 }
+struct TypedFull {qkp_call_v1 shape;int storage;};
+extern "C" int quactlize_kpack_dense_full_workspace_v1(qkp_call_v1 const* c,quactlize_ppu_placed_arrangement_v2 const* a,uint64_t* out) {
+    quactlize::prefill::Layout l;int rc=quactlize::prefill::layout(*c,a,l,true);
+    *out=quactlize::prefill::dynamic_bytes(*c,l);return rc;
+}
 extern "C" int quactlize_kpack_dense_full_prepare_v1(qkp_call_v1 const* c,quactlize_ppu_placed_arrangement_v2 const*,qkp_dense_options_v1 const* o,void** out) {
-    assert(quactlize::prefill::address_free(*c) && o->storage==1 && o->math_mode==16 && o->algorithm==-1);
-    auto choice=quactlize::prefill::dense_full_helpers(c->weight.qtype,c->m,c->weight.n,c->weight.k,1);
-    assert(o->vector_io==choice.io && o->dequant_variant==choice.dequant);
-    *out=new qkp_call_v1(*c);return 0;
+    assert(quactlize::prefill::address_free(*c) && o->math_mode==16 && o->algorithm==-1);
+    if(o->storage==1) {
+        auto choice=quactlize::prefill::dense_full_helpers(c->weight.qtype,c->m,c->weight.n,c->weight.k,1);
+        assert(o->vector_io==choice.io && o->dequant_variant==choice.dequant);
+    } else {
+        auto p=test::params(c->weight.qtype,c->m,c->weight.n,c->weight.k);
+        auto d=quactlize::dispatch::dense_prefill::select(quactlize::dense::request_for(p),0);
+        assert(d && d.choice->route==2 && o->vector_io==d.choice->io && o->dequant_variant==d.choice->dequant);
+    }
+    *out=new TypedFull{*c,o->storage};return 0;
 }
 extern "C" int quactlize_kpack_dense_full_run_v1(void* h,qkp_call_v1 const* c,int stage) {
-    assert(stage==-1 && quactlize::prefill::same_shape(*static_cast<qkp_call_v1*>(h),*c));test::launches.push_back("full-typed-bf16");return 0;
+    auto& p=*static_cast<TypedFull*>(h);
+    assert(stage==-1 && quactlize::prefill::same_shape(p.shape,*c));
+    test::launches.push_back(p.storage?"full-typed-bf16":"full-typed-f16");return 0;
 }
-extern "C" void quactlize_kpack_dense_full_destroy_v1(void* h){delete static_cast<qkp_call_v1*>(h);}
+extern "C" void quactlize_kpack_dense_full_destroy_v1(void* h){delete static_cast<TypedFull*>(h);}
 extern "C" char const* quactlize_kpack_dense_full_error_v1(){return "fake typed provider";}
 extern "C" int qkg_q4_decode_launch(qkg_call_v1 const&,qkg_q4_decode_config_v1 const&) {test::launches.push_back("q4");return 0;}
 extern "C" int qkg_q4_decode_launch_bf16(qkg_call_v1 const&,qkg_q4_decode_config_v1 const&) {test::launches.push_back("q4-bf16");return 0;}
@@ -276,7 +301,73 @@ void explicit_candidates() {
     std::puts("DENSE_CANDIDATES_HOST PASS precision+default-cache-isolation+admission timing=NOT_MEASURED");
 }
 
+void reviewed_prefill() {
+    namespace data=quactlize::dispatch::dense_prefill;
+    int exact=0,buckets=0;
+    auto check=[&](quactlize_ppu_dense_params_v1 const& p,int policy) {
+        kImages.clear();auto ctx=test::context(0,true);
+        auto d=data::select(quactlize::dense::request_for(p),0);
+        assert(d && d.policy==policy);
+        auto raw=test::plan(*ctx,p);auto& plan=*static_cast<quactlize::dense::Plan*>(raw);
+        auto const& c=*d.choice;
+        assert(plan.info.policy==policy && plan.info.compute_type==0);
+        assert(plan.helper_io==c.io && plan.helper_dequant==c.dequant);
+        if(c.route==2) {
+            assert(plan.kind==quactlize::dense::Kind::Full && plan.full_storage==0 && plan.typed_full);
+            assert(!ctx->dispatcher || static_cast<Runtime*>(ctx->dispatcher)->plans.empty());
+            assert(std::string(plan.info.config).find("full-f16:")==0);
+        } else {
+            assert(plan.native_f16 && plan.request.route==c.route && plan.tc.policy==policy);
+            assert(std::string(plan.tc.parent)==c.tc.symbol && plan.tc.split==c.tc.split);
+            assert(plan.tc.grid==quactlize::dispatch::recipe(c.tc,plan.request,6,72).grid);
+        }
+        for(uintptr_t replay:{1,2}) {
+            test::launches.clear();
+            assert(!quactlize_ppu_dense_run_v1(raw,reinterpret_cast<float*>(UINT64_C(0x40000000000)+replay*256),
+                reinterpret_cast<float*>(UINT64_C(0x50000000000)+replay*256),
+                reinterpret_cast<void*>(UINT64_C(0x60000000000)+replay*256),plan.info.workspace_bytes,
+                reinterpret_cast<void*>(replay)));
+            std::vector<std::string> expected;
+            if(c.route==2) expected={"full-typed-f16"};
+            else {
+                if(c.route==1 && p.qtype!=8) expected.push_back("sf-"+std::to_string(c.dequant));
+                expected.push_back(c.io<0?"f16-in":"vector-in-"+std::to_string(c.io));
+                expected.push_back("tc");
+                expected.push_back(c.io<0?"f16-out":"vector-out-"+std::to_string(c.io));
+            }
+            assert(test::launches==expected);
+        }
+    };
+    for(auto const& row:data::kExact) {
+        auto p=test::params(row.q,row.m,row.n,row.k);
+        check(p,QKS_DENSE_PREFILL_EXACT);++exact;
+        // Same shape, different storage stride or explicit BF16 must not be
+        // relabelled as the F16 contiguous measured contract.
+        for(int mode:{0,1,2}) {
+            kImages.clear();auto ctx=test::context(mode==0?1:0,true);auto other=p;
+            if(mode==1) other.input_stride+=8;
+            if(mode==2) other.output_stride+=8;
+            auto raw=test::plan(*ctx,other);
+            assert(!static_cast<quactlize::dense::Plan*>(raw)->dense_prefill);
+        }
+        // An interior M exercises the prediction without shadowing the exact
+        // row. M>2048 remains outside this campaign's domain.
+        if(row.m<2048) {
+            auto neighbor=p;++neighbor.m;
+            if(data::select(quactlize::dense::request_for(neighbor),0)) {
+                check(neighbor,QKS_DENSE_PREFILL_BUCKET);++buckets;
+            }
+        }
+    }
+    test::helper_device=false;
+    auto ctx=test::context(0,true);ctx->dense_device=-1;
+    assert(!ctx->dense_policy_device());test::helper_device=true;
+    ctx->dense_device=-1;assert(ctx->dense_policy_device());
+    std::cout<<"DENSE_PREFILL_HOST exact="<<exact<<" bucket_replays="<<buckets<<" gpu_execution=0\n";
+}
+
 int main() {
+    reviewed_prefill();
     using namespace quactlize::dispatch;
     size_t matched_count=0,cost_count=0,component_sf_count=0;
     // Each context has a separate device module cache. The test catalog is

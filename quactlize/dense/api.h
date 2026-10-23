@@ -19,7 +19,8 @@ typedef struct {
 } quactlize_ppu_dense_params_v1;
 
 enum { QUACTLIZE_DENSE_FQ_TC=0, QUACTLIZE_DENSE_SF_TC=1,
-       QUACTLIZE_DENSE_SIMT=2, QUACTLIZE_DENSE_FULL_BF16=3 };
+       QUACTLIZE_DENSE_SIMT=2, QUACTLIZE_DENSE_FULL=3,
+       QUACTLIZE_DENSE_FULL_BF16=QUACTLIZE_DENSE_FULL }; // legacy name/ABI value
 enum { QUACTLIZE_DENSE_F16=0, QUACTLIZE_DENSE_BF16=1 };
 typedef struct {
     uint32_t version, size;
@@ -33,8 +34,9 @@ typedef struct {
 // compute boundary must be representable. BF16 avoids the FP16 range limit;
 // it is NOT numerically identical or automatically as fast as F16. F32 input
 // and output storage and FP32 accumulation are used by both. No int8
-// activation quantization and no clipping. Full-dequant uses BF16 in either
-// mode, as in the measured PoC cost table; plan_info reports actual compute.
+// activation quantization and no clipping. Reviewed F16 dense prefill uses
+// Full-F16 when selected; older/out-of-scope Full routes retain BF16. Route 3
+// denotes the Full provider; plan_info.compute_type reports actual precision.
 typedef struct {
     uint32_t version, size;
     int32_t compute_type, reserved;

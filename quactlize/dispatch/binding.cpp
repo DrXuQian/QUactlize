@@ -611,6 +611,15 @@ extern "C" int quactlize_kpack_dispatch_query_dense_native_v1(void* runtime,qks_
     if (!req || req->route>=2) return QKS_INVALID;
     return query(runtime,req,out,{SelectionProfile::DenseNative});
 }
+extern "C" int quactlize_kpack_dispatch_query_dense_prefill_v1(void* runtime,qks_request_v1 const* req,qks_choice_v1* out) {
+    if(out) *out={};
+    if(!runtime || !req || !out || !valid(*req)) return QKS_INVALID;
+    auto selected=dense_prefill::select(*req,QK_COMPUTE_F16);
+    if(!selected || selected.choice->route==2) return QKS_MISS;
+    if(req->route!=selected.choice->route) return QKS_INVALID;
+    return query(runtime,req,out,{SelectionProfile::DensePrefill},0,
+                 {&selected.choice->tc,selected.policy},QK_COMPUTE_F16);
+}
 extern "C" int quactlize_kpack_dispatch_query_candidate_v1(void* runtime,qks_request_v1 const* req,
     qks_tc_candidate_v1 const* c,int32_t compute,int32_t native,qks_choice_v1* out) {
     if (out) *out={};

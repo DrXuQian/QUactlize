@@ -3,6 +3,7 @@
 #include "decode.hpp"
 #include "smallm_matched.hpp"
 #include "prefill.hpp"
+#include "dense_prefill.hpp"
 #include "../include/ppu_format_config.hpp"
 #include "../include/ppu_kquant_measured_policy.hpp"
 #include "../include/ppu_q4_kpack4_shipping_policy.hpp"
@@ -11,7 +12,7 @@ namespace quactlize::dispatch {
 
 // Internal identity, not an ABI enum or a persisted cache key. Channels and
 // selection profile are separate dimensions instead of encoded integers.
-enum class SelectionProfile { General, Decode, LegacySmallM, MatchedSmallM, DenseDynamic, DenseNative, ConfirmedPrefill };
+enum class SelectionProfile { General, Decode, LegacySmallM, MatchedSmallM, DenseDynamic, DenseNative, ConfirmedPrefill, DensePrefill };
 struct SelectionContext {
     SelectionProfile profile = SelectionProfile::General;
     int channels = 0;
