@@ -127,6 +127,12 @@ def verify(output):
         if (runtime['source_hashes'].get('quactlize/prefill/dense_helpers.hpp')!=helper['policy_sha256'] or
                 runtime['sha256']!=manifest['payloads'].get('quactlize-runtime/libquactlize_ppu_prefill.so')):
             raise ValueError('public provider and dense helper runtime differ')
+        if 'full_table_sha256' in helper:
+            table='quactlize/prefill/dense_full_helpers.inc'
+            if (helper['full_table_sha256']!=manifest['source_hashes'].get(table) or
+                    helper['full_table_sha256']!=runtime['source_hashes'].get(table) or
+                    helper['full_evidence_sha256']!=manifest['source_hashes'].get('policies/dense_full_helpers_20261023.json')):
+                raise ValueError('full-only helper table/runtime evidence differs')
     return manifest
 
 
@@ -154,6 +160,10 @@ def build(sdk, output, jobs):
     public_sources.update({p: sha(p) for p in (ROOT/'policies').iterdir() if p.suffix in ('.hpp', '.json')})
     helper_policy=ROOT/'quactlize/prefill/dense_helpers.hpp'
     public_sources[helper_policy]=sha(helper_policy)
+    from tools.generate_dense_full_helpers import EVIDENCE as FULL_HELPERS, HEADER as FULL_HELPERS_HEADER, render as full_helpers_header
+    if full_helpers_header(json.loads(FULL_HELPERS.read_text()))!=FULL_HELPERS_HEADER.read_text():
+        raise ValueError('stale full-only helper table; regenerate before building')
+    public_sources[FULL_HELPERS_HEADER]=sha(FULL_HELPERS_HEADER)
     from tools.generate_decode_selection import EVIDENCE, OUTPUT, effective, header
     if header(effective(json.loads(EVIDENCE.read_text()))) != OUTPUT.read_text():
         raise ValueError('stale effective decode catalog; regenerate before building')
@@ -243,7 +253,8 @@ def build(sdk, output, jobs):
             header_sha256=sha(PREFILL_HEADER), **receipt_fields()),
         default_dense_compute='F16_POC', device_admission='PENDING',
         dense_helpers=dict(policy_sha256=sha(helper_policy),runtime_receipt='quactlize-runtime/prefill-runtime.json',
-                           scope='ZW810_DENSE_M2048_SEVEN_NK_FAMILIES; NO_GEMM_ROUTE_OR_DTYPE_CHANGE'),
+                           full_table_sha256=sha(FULL_HELPERS_HEADER),full_evidence_sha256=sha(FULL_HELPERS),
+                           scope='ZW810_FULL_350_TYPED_POINTS; TC_SF_UNCHANGED; NO_GEMM_ROUTE_OR_DTYPE_CHANGE'),
         performance_admission='NOT_MEASURED', seconds=time.monotonic() - start)
     (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     verify(output)

@@ -25,4 +25,19 @@ inline DenseHelpers dense_helpers(int q, int m, int n, int k, int storage) {
     }
     return {};
 }
+
+// Complete Full-call confirmations include both adapters and expansion.
+// Keep this separate from the old TC/SF policy: those adapter combinations
+// were NOT measured by this campaign. No interpolation or dtype substitution.
+#include "dense_full_helpers.inc"
+inline DenseHelpers dense_full_helpers(int q, int m, int n, int k, int storage) {
+    if (storage != 0 && storage != 1) return {};
+    for (unsigned i = 0; i < sizeof(dense_full_m) / sizeof(*dense_full_m); ++i) {
+        if (m != dense_full_m[i]) continue;
+        for (auto const& family : dense_full_families)
+            if (q == family.q && n == family.n && k == family.k) return family.choices[storage][i];
+        break;
+    }
+    return {};
+}
 } // namespace quactlize::prefill

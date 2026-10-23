@@ -90,14 +90,15 @@ def report_name(choice):
 
 
 class AcuRange:
-    def __init__(self, sdk):
+    def __init__(self, sdk, *, description="warmed_graph_calls=1"):
+        self.description = description
         self.start, self.stop = sdk.lib.hggcProfilerStart, sdk.lib.hggcProfilerStop
         for fn in (self.start, self.stop):
             fn.argtypes, fn.restype = [], C.c_int
 
     def __enter__(self):
         checked(self.start(), "ACU profiler start")
-        print("GPU_COMPACT_ACU_RANGE begin warmed_graph_calls=1", flush=True)
+        print("GPU_COMPACT_ACU_RANGE begin " + self.description, flush=True)
         return self
 
     def __exit__(self, exc_type, exc, tb):

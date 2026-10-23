@@ -7,6 +7,7 @@ GPU=${GPU:-${CUDA_VISIBLE_DEVICES:-1}}
 [[ ${GPU} =~ ^[0-9]+$ ]] || { echo 'ERROR: choose exactly one GPU ordinal.' >&2; exit 1; }
 [[ ${IDLE_CONFIRMED:-0} == 1 ]] || { echo 'ERROR: check the assigned GPU is idle, then set IDLE_CONFIRMED=1.' >&2; exit 1; }
 [[ ${PROFILE_ACU:-0} =~ ^[01]$ ]] || { echo 'ERROR: PROFILE_ACU must be 0 or 1.' >&2; exit 1; }
+[[ ${Q8_EXCHANGE:-0} =~ ^[01]$ ]] || { echo 'ERROR: Q8_EXCHANGE must be 0 or 1.' >&2; exit 1; }
 [[ -z ${RUN:-} ]] || { echo 'ERROR: unset RUN; use RESUME_RUN to retry a retained run.' >&2; exit 1; }
 PPU_SDK=$(realpath -e -- "${PPU_SDK:-/usr/local/PPU_SDK}")
 test -x "${PPU_SDK}/bin/hgcc"
@@ -16,6 +17,8 @@ export LD_LIBRARY_PATH="${PPU_SDK}/lib:${PPU_SDK}/targets/x86_64-linux/lib:${PPU
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 "${PYTHON}" -c 'import numpy,torch;from gguf.quants import dequantize'
 args=(--confirm-idle --sdk "${PPU_SDK}" --l2-bytes "${L2_BYTES:-67108864}")
+if [[ ${Q8_EXCHANGE:-0} == 1 ]]; then args+=(--q8-exchange); fi
+[[ -z ${POINTS:-} ]] || args+=(--points "${POINTS}")
 if [[ -n ${RESUME_RUN:-} ]]; then
     RUN=$(realpath -e -- "${RESUME_RUN}")
     test -f "${RUN}/source/tools/run_dense_dequant.py"
@@ -40,15 +43,16 @@ else
 fi
 if [[ ${PROFILE_ACU:-0} == 1 ]]; then
     test -x "${ACU:-${PPU_SDK}/asight/bin/acu}"
-    args+=(--acu "${ACU:-${PPU_SDK}/asight/bin/acu}" --profile-points "${PROFILE_POINTS:-0,1,5,6}")
+    args+=(--acu "${ACU:-${PPU_SDK}/asight/bin/acu}")
+    [[ -z ${PROFILE_POINTS:-} ]] || args+=(--profile-points "${PROFILE_POINTS}")
 fi
 [[ -z ${PPU_SMI:-} ]] || args+=(--smi "${PPU_SMI}")
-echo "DENSE_DEQUANT_BOX run=${RUN} gpu=${GPU} points=8 variants=3 gemm_calls=0 production_changed=0"
+echo "DENSE_DEQUANT_BOX run=${RUN} gpu=${GPU} q8_exchange=${Q8_EXCHANGE:-0} gemm_calls=0 kernel_default_changed=0"
 set +e
 "${PYTHON}" -u "${RUN}/source/tools/run_dense_dequant.py" --output "${RUN}/results" \
     "${args[@]}" 2>&1 | tee "${RUN}/console-$(date +%s%N).log"
 rc=${PIPESTATUS[0]}
 set -e
 echo "runner_rc=${rc} run=${RUN}"
-echo "DENSE_DEQUANT_RESUME RESUME_RUN=${RUN} GPU=${GPU} IDLE_CONFIRMED=1 bash tools/run_dense_dequant_box.sh"
+echo "DENSE_DEQUANT_RESUME RESUME_RUN=${RUN} GPU=${GPU} Q8_EXCHANGE=${Q8_EXCHANGE:-0} PROFILE_ACU=${PROFILE_ACU:-0} IDLE_CONFIRMED=1 bash tools/run_dense_dequant_box.sh"
 exit "${rc}"

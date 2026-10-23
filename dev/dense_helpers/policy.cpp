@@ -10,6 +10,6 @@ extern "C" int dense_helper_device_name(char* name,int capacity) {
     std::memcpy(name,prop.name,256);name[255]=0;return 0;
 }
 extern "C" void dense_helper_control(int q,int m,int n,int k,int storage,int* dq,int* io) {
-    auto c=quactlize::prefill::dense_helpers(q,m,n,k,storage);
+    auto c=quactlize::prefill::dense_full_helpers(q,m,n,k,storage);
     *dq=c.dequant;*io=c.io;
 }

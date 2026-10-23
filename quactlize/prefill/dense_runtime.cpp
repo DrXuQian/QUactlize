@@ -43,8 +43,8 @@ extern "C" int quactlize_kpack_dense_full_workspace_v1(qkp_call_v1 const* c,
         *bytes=dynamic_bytes(*c,l);return QKG_OK;
     } catch (std::exception const& e) {dense_error=e.what();return QKG_OVERFLOW;}
 }
-extern "C" int quactlize_kpack_dense_helper_policy_v1(qkp_call_v1 const* c, int storage,
-        int* dequant_variant, int* vector_io) {
+static int dense_helper_policy(qkp_call_v1 const* c, int storage,
+        int* dequant_variant, int* vector_io, bool full) {
     if (dequant_variant) *dequant_variant=-1;
     if (vector_io) *vector_io=-1;
     if (!c || !dequant_variant || !vector_io || c->version!=1 || c->size!=sizeof(*c) ||
@@ -52,12 +52,21 @@ extern "C" int quactlize_kpack_dense_helper_policy_v1(qkp_call_v1 const* c, int 
         (storage!=0 && storage!=1)) return QKG_INVALID;
     if (c->weight.experts!=1 || c->a_rows!=c->m || c->a_stride!=c->weight.k ||
         c->output_stride!=c->weight.n || c->src_rows || c->dst_rows || c->offsets) return QKG_SHAPE;
-    auto choice=quactlize::prefill::dense_helpers(c->weight.qtype,c->m,c->weight.n,c->weight.k,storage);
+    auto lookup=full?quactlize::prefill::dense_full_helpers:quactlize::prefill::dense_helpers;
+    auto choice=lookup(c->weight.qtype,c->m,c->weight.n,c->weight.k,storage);
     if (choice.dequant<0) return QKG_SHAPE;
     hggcDeviceProp prop{};
     if (hggcGetDeviceProperties(&prop,c->device)!=hggcSuccess) return QKG_RUNTIME;
     if (std::strcmp(prop.name,"PPU-ZW810") || prop.multiProcessorCount!=72) return QKG_SHAPE;
     *dequant_variant=choice.dequant;*vector_io=choice.io;return QKG_OK;
+}
+extern "C" int quactlize_kpack_dense_helper_policy_v1(qkp_call_v1 const* c, int storage,
+        int* dequant_variant, int* vector_io) {
+    return dense_helper_policy(c,storage,dequant_variant,vector_io,false);
+}
+extern "C" int quactlize_kpack_dense_full_helper_policy_v1(qkp_call_v1 const* c, int storage,
+        int* dequant_variant, int* vector_io) {
+    return dense_helper_policy(c,storage,dequant_variant,vector_io,true);
 }
 extern "C" int quactlize_kpack_dense_full_prepare_v1(qkp_call_v1 const* c,
         quactlize_ppu_placed_arrangement_v2 const* arr,qkp_dense_options_v1 const* o,void** result) {

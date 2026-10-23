@@ -12,9 +12,12 @@ enum {
     QKP_DENSE_DEQUANT_PAIR = 8,
     QKP_DENSE_DEQUANT_COOPERATIVE_K128 = 20,
     QKP_DENSE_DEQUANT_COOPERATIVE_K256 = 21,
-    // Explicit Q2_K/Q3_K/Q8_0 candidates; production helper policy is unchanged.
+    // N64 paired-word Q2_K/Q3_K/Q8_0 helpers.
     QKP_DENSE_DEQUANT_PLANE_PAIR_K128 = 22,
     QKP_DENSE_DEQUANT_PLANE_PAIR_K256 = 23,
+    // Explicit Q8 shared-load exchange experiment; never selected by policy.
+    QKP_DENSE_DEQUANT_Q8_EXCHANGE_K128 = 24,
+    QKP_DENSE_DEQUANT_Q8_EXCHANGE_K256 = 25,
 };
 
 static inline int qkp_dense_dequant_variant_valid(int variant) {
@@ -22,11 +25,15 @@ static inline int qkp_dense_dequant_variant_valid(int variant) {
            variant == QKP_DENSE_DEQUANT_COOPERATIVE_K128 ||
            variant == QKP_DENSE_DEQUANT_COOPERATIVE_K256 ||
            variant == QKP_DENSE_DEQUANT_PLANE_PAIR_K128 ||
-           variant == QKP_DENSE_DEQUANT_PLANE_PAIR_K256;
+           variant == QKP_DENSE_DEQUANT_PLANE_PAIR_K256 ||
+           variant == QKP_DENSE_DEQUANT_Q8_EXCHANGE_K128 ||
+           variant == QKP_DENSE_DEQUANT_Q8_EXCHANGE_K256;
 }
 
 static inline int qkp_dense_dequant_variant_supports(int qtype, int variant) {
     if (!qkp_dense_dequant_variant_valid(variant)) return 0;
+    if (variant == QKP_DENSE_DEQUANT_Q8_EXCHANGE_K128 || variant == QKP_DENSE_DEQUANT_Q8_EXCHANGE_K256)
+        return qtype == 8;
     if (variant == QKP_DENSE_DEQUANT_DIRECT) return qtype == 8 || (qtype >= 10 && qtype <= 14);
     if (variant == QKP_DENSE_DEQUANT_PLANE_PAIR_K128 || variant == QKP_DENSE_DEQUANT_PLANE_PAIR_K256)
         return qtype == 8 || qtype == 10 || qtype == 11;
@@ -51,6 +58,10 @@ typedef struct {
 // QKG_SHAPE on a miss with both outputs -1; caller retains its old helpers.
 // Does not select a GEMM, change precision, compile or launch any work.
 int quactlize_kpack_dense_helper_policy_v1(qkp_call_v1 const*, int storage,
+    int* dequant_variant, int* vector_io);
+// Separately measured Full-provider helpers. The old query above retains
+// its TC/SF adapter semantics; a full-only measurement cannot change them.
+int quactlize_kpack_dense_full_helper_policy_v1(qkp_call_v1 const*, int storage,
     int* dequant_variant, int* vector_io);
 
 // Typed dense workspace query; Q8_0 does not enable the legacy BF16 provider.

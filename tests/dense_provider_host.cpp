@@ -121,12 +121,18 @@ extern "C" int quactlize_kpack_dense_helper_policy_v1(qkp_call_v1 const* c,int s
     auto choice=quactlize::prefill::dense_helpers(c->weight.qtype,c->m,c->weight.n,c->weight.k,storage);
     *dq=choice.dequant;*io=choice.io;return *dq<0?QKG_SHAPE:QKG_OK;
 }
+extern "C" int quactlize_kpack_dense_full_helper_policy_v1(qkp_call_v1 const* c,int storage,int* dq,int* io) {
+    *dq=*io=-1;
+    if(!test::helper_device || c->a_stride!=c->weight.k || c->output_stride!=c->weight.n)return QKG_SHAPE;
+    auto choice=quactlize::prefill::dense_full_helpers(c->weight.qtype,c->m,c->weight.n,c->weight.k,storage);
+    *dq=choice.dequant;*io=choice.io;return *dq<0?QKG_SHAPE:QKG_OK;
+}
 extern "C" int quactlize_dense_io_v1(int storage,int input,int vector,void const*,void*,int,int,int64_t,int const*,void*) {
     assert(!storage);test::launches.push_back(std::string(input?"vector-in-":"vector-out-")+std::to_string(vector));return 0;
 }
 extern "C" int quactlize_kpack_dense_full_prepare_v1(qkp_call_v1 const* c,quactlize_ppu_placed_arrangement_v2 const*,qkp_dense_options_v1 const* o,void** out) {
     assert(quactlize::prefill::address_free(*c) && o->storage==1 && o->math_mode==16 && o->algorithm==-1);
-    auto choice=quactlize::prefill::dense_helpers(c->weight.qtype,c->m,c->weight.n,c->weight.k,1);
+    auto choice=quactlize::prefill::dense_full_helpers(c->weight.qtype,c->m,c->weight.n,c->weight.k,1);
     assert(o->vector_io==choice.io && o->dequant_variant==choice.dequant);
     *out=new qkp_call_v1(*c);return 0;
 }
@@ -178,7 +184,8 @@ void promoted_helpers() {
             &candidate,&raw,&info));
         auto& plan=*static_cast<quactlize::dense::Plan*>(raw);
         assert(plan.typed_full==target && info.compute_type==QUACTLIZE_DENSE_BF16);
-        assert(plan.helper_io==(target?2:-1) && plan.helper_dequant==(target?20:-1));
+        auto full=quactlize::prefill::dense_full_helpers(p.qtype,p.m,p.n,p.k,1);
+        assert(plan.helper_io==(target?full.io:-1) && plan.helper_dequant==(target?full.dequant:-1));
         for(uintptr_t replay:{1,2}) {
             test::launches.clear();
             assert(!quactlize_ppu_dense_run_v1(raw,reinterpret_cast<float*>(UINT64_C(0x40000000000)+replay*256),

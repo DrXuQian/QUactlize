@@ -758,3 +758,22 @@ K128 wins Q8; Q3 K128/K256 differences are within round variation. Retain
 both until full-call confirmation; BF16 performance was NOT measured in
 that return. ACU forced-cold single launches and rotating event medians
 remain separate protocols. This is not model/native-parity admission.
+
+Q8 shared-exchange follow-up (2026-10-23, SDK2.1.1, local codegen/host only):
+N64 paired Q8 K8 tasks read each shared code word twice; adjacent K8 phases
+use the same physical word and different byte shifts. A naive K16 consumer
+is NOT automatically a coalescing win: an aligned32-byte extended-vector
+store compiled into two16-byte native stores, each with holes in its lane
+footprint. Keep the K8 store map and compare packed-word lane exchange.
+The swizzle seam matters: shared(pair,row+4), not shared(pair,row)+4;
+pair bit2 swaps these vectors. A host ownership oracle catches the latter
+at pair4 and an independent raw-GGUF oracle confirms the repaired mapping.
+This does not justify changing canonical bytes or rounding. The candidate
+lowers to native butterfly shuffle (not extra shared staging), retains zero
+stack, and leaves all42 old device bodies byte-identical. New K128/K256
+vector register counts40/54 versus control44/56 are compile observations,
+not GPU speedups. Measure both precisions on Box and inspect shared conflicts,
+cycles, issue pressure and actual output transactions before promotion.
+Full-only helper measurements must not silently change a shared TC/SF adapter
+lookup; their route-specific scopes now have separate host policy entries.
+Evidence/workload and bounded ACU command: docs/PPU_PREFILL_DENSE_PRODUCTION.md.

@@ -5,10 +5,10 @@ performance admission. `quactlize/dense/runtime.cpp` calls the same compiled
 policy and typed runtime used by the diagnostic. Public caller ABI, offline
 K-pack bytes, NCP wrapper and llama.cpp code are unchanged.
 
-## Admitted scope
+## Initial R4 scope (TC/SF unchanged)
 
 PPU-ZW810, 72 CUs, contiguous dense F32 endpoints, M=2048. Other devices,
-M, strides and unlisted N/K retain their previous helpers. MoE and decode
+M, strides and unlisted N/K retained their previous helpers. MoE and decode
 are unchanged. Full-dequant's existing production route remains BF16 with
 FP32 accumulation, even in the default F16 context. TC F16 stays F16.
 
@@ -85,12 +85,82 @@ The R1–R5 runners and unselected typed helper bodies have been removed from
 develop. Source and historical commands remain at commit
 `8a004d42a91a23664e69762509d34c3b76bbf8e8`; do not run them against a new library.
 
-The retained production helpers are typed IDs 0/8/20/21: direct, pair N32/K128 and cooperative
+The retained R4 production helpers are typed IDs 0/8/20/21: direct, pair N32/K128 and cooperative
 N64/K128,K256. Their IDs, descriptor ABI and the selection table above are
 unchanged. IO0..3 and the separate general SF/full-dequant config namespace
 are retained. All removed typed IDs fail validation rather than falling back.
 Independent GGUF, ownership/tail and changed-address/stream tests now live
 together in `tests/test_prefill_dense.py`.
+
+## Completed Full-only admission, 2026-10-23
+
+The helper campaign is complete: 910 component cells, 700 Asys capture
+batches, 175 shape/M points and 350 separately typed choices. Two labelled
+Q2 extension families are included alongside 33 observed model families;
+no DeepSeek TP4 shapes have been invented. The compact source of truth is
+`policies/dense_full_helpers_20261023.json`; regenerate/check its C++ table
+with `python3 tools/generate_dense_full_helpers.py --check`.
+
+`quactlize_kpack_dense_full_helper_policy_v1` selects the measured Full
+helper pair for exact qtype/N/K/M/storage, M=128/256/512/1024/2048, contiguous
+dense endpoints on ZW810/72CU. Its evidence binds two complete-call GPU-sum
+confirmations per typed point, not just the sum of isolated components.
+The public dense provider and typed Full diagnostic both query this entry.
+Unknown devices/M/shapes/strides retain their old helpers. The old
+`quactlize_kpack_dense_helper_policy_v1` remains unchanged for TC/SF adapters.
+The runtime and public manifest bind both the policy header and generated
+table, and the public build rejects a stale table.
+
+This does NOT select a different GEMM, change Full's default BF16 arithmetic,
+enable automatic Full-Q8 routing or interpolate new buckets. Q8 typed Full
+is still an explicit diagnostic endpoint. Q8's two >5% Full-F16/native
+regressions remain visible: M512/N8192/K2048 (95.101 vs90.100us), and
+M128/N1024/K5120 (27.58025 vs26.160us). No universal native-parity or model
+TPOT admission is claimed. Raw SQLite remains on Box; the local merge
+audited sealed receipts/proofs/samples, not re-exported GPU intervals.
+
+Archive SHA256s:
+`d3d8b1253ffacc29a1bd7af8f5aec449499c7720c8a89a83d560b9d95003ede2`
+and `d1e85e19658192c279a83e9a6ea57f542f088999995bb29436d94f38216c63e1`.
+
+### Bounded Q8 follow-up, not admitted
+
+IDs24/25 preserve the DQ22/23 producer and 2N*K8 output map. Adjacent lanes
+read complementary uint4s and exchange packed words with xor1, eliminating
+the duplicated shared-code reads across two K8 phases. Arithmetic and
+rounding are unchanged. No new shared buffer, output transpose or barrier.
+Exchange offsets are applied BEFORE the shared swizzle, not to its physical
+base; a coordinate negative and independent raw-bit oracle cover this seam.
+Naive per-thread K16 stores were rejected locally: SDK2.1.1 lowers a32-byte
+vector to two16-byte stores, whose per-instruction lane map has holes.
+
+Both candidates are explicit only; default helpers remain the measured table.
+One idle ZW810, no llama rebuild or model weights required:
+
+```bash
+PPU_SDK=/usr/local/PPU_SDK GPU=1 L2_BYTES=67108864 \
+IDLE_CONFIRMED=1 Q8_EXCHANGE=1 PROFILE_ACU=1 \
+bash tools/run_dense_dequant_box.sh
+```
+
+The script freezes sources and locally available actlize (no network submodule
+fetch), requests1700MHz, runs six Q8 N/K families with four configs, two
+precisions and30 alternating samples/config/precision. Setup/JIT and first-use
+are excluded. The ordinary component timer uses rotating input/output rings
+>=2.25L2; it is not a model or a complete GEMM-call timer.
+
+After timing, ACU profiles N8192/K2048 and N1024/K5120, F16 and BF16 separately.
+Each capture has one ordinary kernel launch, one weight copy, no CUDA graph
+or cold-ring loop. It records the current DQ22 and fastest new candidate;
+if K256 wins, it also captures DQ23 as the same-tile control. Both candidate
+and controls must pass the oracle first. Kernel symbol/grid/block and one
+launch are checked in the raw export. Forced-cold ACU cycles/counters are
+separate from unprofiled rotating-event time.
+
+Upload `results/review-*.tgz`; it contains timings, raw counters, identities,
+numerical proofs and logs. `.acurep` files and the DSO stay in the printed
+Box directory. A resume preserves old successful timing points and names
+new ACU reports uniquely. No automatic candidate promotion follows a PASS.
 
 ## One-command remaining-helper closeout
 

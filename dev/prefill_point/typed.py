@@ -37,6 +37,8 @@ class DenseLibrary:
         self.lib=C.CDLL(str(path),mode=C.RTLD_LOCAL)
         self.policy=bind(self.lib,'quactlize_kpack_dense_helper_policy_v1',
             [C.POINTER(Call),C.c_int,C.POINTER(C.c_int),C.POINTER(C.c_int)])
+        self.full_policy=bind(self.lib,'quactlize_kpack_dense_full_helper_policy_v1',
+            [C.POINTER(Call),C.c_int,C.POINTER(C.c_int),C.POINTER(C.c_int)])
         self.io=bind(self.lib,'quactlize_dense_io_v1',
             [C.c_int]*3+[C.c_void_p]*2+[C.c_int]*2+[C.c_int64,C.c_void_p,C.c_void_p])
         self.query=bind(self.lib,'quactlize_kpack_dense_full_workspace_v1',
@@ -54,9 +56,10 @@ class DenseLibrary:
         c.weight=Weight(1,C.sizeof(Weight),w.qtype,w.n,w.k,1,1,5)
         return c
 
-    def choice(self,w,storage,allow_miss=False):
+    def choice(self,w,storage,allow_miss=False,*,full=False):
         c=self.shape(w);dq,io=C.c_int(-1),C.c_int(-1)
-        rc=self.policy(C.byref(c),storage,C.byref(dq),C.byref(io))
+        policy=self.full_policy if full else self.policy
+        rc=policy(C.byref(c),storage,C.byref(dq),C.byref(io))
         if allow_miss and rc==24: return None  # QKG_SHAPE only; runtime errors still fail.
         checked(rc,
                 'production dense helper policy (requires measured ZW810 shape)')
@@ -72,7 +75,7 @@ class TypedFull:
     def __init__(self,b,library,sdk_path,storage,options=None):
         self.b,self.library,self.storage=b,library,storage;self.handle=C.c_void_p()
         self.workspaces=[];w=b.w;self.shape=library.shape(w)
-        choice=library.choice(w,storage) if options is None else dict(options,storage=storage)
+        choice=library.choice(w,storage,full=True) if options is None else dict(options,storage=storage)
         self.options=Options(1,C.sizeof(Options),str(sdk_path).encode(),
                             **choice,math_mode=16,algorithm=-1)
         size=C.c_uint64()

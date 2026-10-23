@@ -294,7 +294,9 @@ void prepare(Plan& p,quactlize_ppu_dense_candidate_v1 const* candidate=nullptr) 
         // Full's admitted route is BF16 even in the default F16 context.
         // Helper promotion must not silently change that arithmetic contract.
         int storage=p.kind==Kind::Full ? 1 : 0;
-        int rc=quactlize_kpack_dense_helper_policy_v1(&shape,storage,&p.helper_dequant,&p.helper_io);
+        auto lookup=p.kind==Kind::Full?quactlize_kpack_dense_full_helper_policy_v1:
+            quactlize_kpack_dense_helper_policy_v1;
+        int rc=lookup(&shape,storage,&p.helper_dequant,&p.helper_io);
         require(rc==QKG_OK || rc==QKG_SHAPE,"dense helper policy query failed");
     }
     if (p.kind==Kind::Full) {

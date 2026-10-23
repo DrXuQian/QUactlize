@@ -35,6 +35,11 @@ def test_c_api_choice_is_single_source_not_python_table():
         dq._obj.value=20;io._obj.value=2;return 0
     library.policy=policy
     assert library.choice(WORKLOAD,0)==dict(dequant_variant=20,vector_io=2,storage=0)
+    def full_policy(c,storage,dq,io):
+        dq._obj.value=21;io._obj.value=3;return 0
+    library.full_policy=full_policy
+    assert library.choice(WORKLOAD,1,full=True)==dict(dequant_variant=21,vector_io=3,storage=1)
+    assert library.choice(WORKLOAD,0)==dict(dequant_variant=20,vector_io=2,storage=0)
     library.policy=lambda *a:1
     import pytest
     with pytest.raises(RuntimeError):library.choice(WORKLOAD,0)

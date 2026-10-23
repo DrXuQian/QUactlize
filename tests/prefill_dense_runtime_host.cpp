@@ -1,5 +1,6 @@
 #include "quactlize/prefill/dense_api.h"
 #include "quactlize/prefill/dynamic.hpp"
+#include "quactlize/prefill/dense_helpers.hpp"
 #include <hggc_runtime_api.h>
 #include <cassert>
 #include <cstdlib>
@@ -51,12 +52,13 @@ int main(int argc,char** argv){
         c.weight.stream=reinterpret_cast<void*>(uintptr_t(i+1));
         const_cast<float*>(c.a)[0]=i+2;static_cast<float*>(const_cast<void*>(c.weight.low))[0]=i+5;
     }
-    for(int type:{0,1})for(int vector:{0,1,2,3})for(int variant=-2;variant<=24;++variant)for(int algorithm:{-1,99}){
-        bool typed=variant==0 || variant==8 || variant==20 || variant==21 || variant==22 || variant==23;
+    for(int type:{0,1})for(int vector:{0,1,2,3})for(int variant=-2;variant<=26;++variant)for(int algorithm:{-1,99}){
+        bool typed=variant==0 || variant==8 || variant==20 || variant==21 || variant==22 || variant==23 || variant==24 || variant==25;
         assert(bool(qkp_dense_dequant_variant_valid(variant))==typed);
         qkp_dense_options_v1 o{1,sizeof(o),argv[1],type,vector,variant,16,algorithm};void* h=nullptr;
         int rc=quactlize_kpack_dense_full_prepare_v1(&shape,&arr,&o,&h);
-        bool supported=variant==0 || (q==8 || q==10 || q==11?(variant==22 || variant==23):(variant==8 || variant==20 || variant==21));
+        bool supported=variant==0 || (q==8 && (variant==24 || variant==25)) ||
+            (q==8 || q==10 || q==11?(variant==22 || variant==23):(variant==8 || variant==20 || variant==21));
         if((variant==-1 && (q==8 || type==0)) || (variant!=-1 && !supported)){assert(rc && !h);continue;}
         assert(!rc && h);
         auto run=[&](int i){for(int r=0;r<8;++r){
@@ -71,7 +73,7 @@ int main(int argc,char** argv){
         bad=calls[0];bad.weight.config++;assert(quactlize_kpack_dense_full_run_v1(h,&bad,-1));
         quactlize_kpack_dense_full_destroy_v1(h);
     }
-    qkp_dense_options_v1 invalid{1,sizeof(invalid),argv[1],0,1,24,16,-1};void* h=nullptr;
+    qkp_dense_options_v1 invalid{1,sizeof(invalid),argv[1],0,1,26,16,-1};void* h=nullptr;
     assert(quactlize_kpack_dense_full_prepare_v1(&shape,&arr,&invalid,&h) && !h);
     invalid.dequant_variant=21;invalid.vector_io=4;
     assert(quactlize_kpack_dense_full_prepare_v1(&shape,&arr,&invalid,&h) && !h);
@@ -94,6 +96,21 @@ int main(int argc,char** argv){
         shape.a_stride++;miss();shape.a_stride--;
         shape.output_stride++;miss();shape.output_stride--;
         shape.weight.experts=256;miss();shape.weight.experts=1;
+        test_name="PPU-ZW610";test_cu=64;miss();test_name="PPU-ZW810";test_cu=72;
+        test_cu=71;miss();test_cu=72;
+    }
+    for(auto const& row:dense_full_families)for(int i=0;i<5;++i)for(int storage:{0,1}) {
+        shape.m=shape.a_rows=dense_full_m[i];
+        shape.weight.qtype=row.q;shape.weight.n=shape.output_stride=row.n;shape.weight.k=shape.a_stride=row.k;
+        int dq=-1,io=-1;
+        assert(!quactlize_kpack_dense_full_helper_policy_v1(&shape,storage,&dq,&io));
+        assert(dq==row.choices[storage][i].dequant && io==row.choices[storage][i].io);
+        auto miss=[&]{dq=io=99;assert(quactlize_kpack_dense_full_helper_policy_v1(&shape,storage,&dq,&io)==QKG_SHAPE);assert(dq==-1 && io==-1);};
+        shape.m++;shape.a_rows++;miss();shape.m--;shape.a_rows--;
+        shape.a_stride++;miss();shape.a_stride--;
+        shape.output_stride++;miss();shape.output_stride--;
+        shape.weight.experts=256;miss();shape.weight.experts=1;
+        shape.src_rows=reinterpret_cast<int*>(uintptr_t(256));miss();shape.src_rows=nullptr;
         test_name="PPU-ZW610";test_cu=64;miss();test_name="PPU-ZW810";test_cu=72;
         test_cu=71;miss();test_cu=72;
     }

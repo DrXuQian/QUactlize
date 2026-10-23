@@ -4,6 +4,7 @@
 #include "dense_q8.hpp"
 #include "dense_cooperative.hpp"
 #include "dense_plane_pair.hpp"
+#include "dense_q8_exchange.cuh"
 #include "packed_exchange.hpp"
 #include "../execution/validation.hpp"
 
@@ -327,6 +328,19 @@ extern "C" int quactlize_kpack_dequant_dense_v1(qzd_call_v1 const* c,
     for (int i=0;i<4;++i) if (len[i]) {
         if (!p[i] || p[i]%16 || !span(p[i],len[i])) return QKG_INVALID;
         for (int j=0;j<i;++j) if(overlap(p[i],len[i],p[j],len[j])) return QKG_INVALID;
+    }
+    if(variant==QKP_DENSE_DEQUANT_Q8_EXCHANGE_K128 || variant==QKP_DENSE_DEQUANT_Q8_EXCHANGE_K256) {
+        auto stream=static_cast<hggcStream_t>(c->stream);
+        auto low=static_cast<uint16_t const*>(c->low),units=static_cast<uint16_t const*>(c->units);
+        auto output=static_cast<uint16_t*>(c->output);
+        if(variant==QKP_DENSE_DEQUANT_Q8_EXCHANGE_K128) {
+            if(storage)dense_dequant_q8_exchange<true,128><<<dim3(c->n/64,c->k/128),128,0,stream>>>(low,units,output,c->n,c->k);
+            else dense_dequant_q8_exchange<false,128><<<dim3(c->n/64,c->k/128),128,0,stream>>>(low,units,output,c->n,c->k);
+        } else {
+            if(storage)dense_dequant_q8_exchange<true,256><<<dim3(c->n/64,c->k/256),128,0,stream>>>(low,units,output,c->n,c->k);
+            else dense_dequant_q8_exchange<false,256><<<dim3(c->n/64,c->k/256),128,0,stream>>>(low,units,output,c->n,c->k);
+        }
+        return hggcGetLastError()==hggcSuccess?QKG_OK:QKG_RUNTIME;
     }
     if(variant==QKP_DENSE_DEQUANT_PLANE_PAIR_K128 || variant==QKP_DENSE_DEQUANT_PLANE_PAIR_K256) {
         if(c->qtype==8) {

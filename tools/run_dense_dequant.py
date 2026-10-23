@@ -39,11 +39,16 @@ def selected(text):
     return values
 
 
-def plan(points, l2):
+def plan(points, l2, exchange=False):
+    variants = (22, 23, 24, 25) if exchange else VARIANTS
+    if exchange and any(POINTS[i][0] != 8 for i in points):
+        raise ValueError('exchange experiment supports Q8 only')
     return dict(schema='quactlize.dense-dequant-ab.v1', scope=SCOPE,
                 points=[dict(index=i, q=POINTS[i][0], n=POINTS[i][1], k=POINTS[i][2]) for i in points],
-                variants=list(VARIANTS), order=list(ORDER), rounds=3, samples_per_visit=5,
-                correctness_storage=['F16', 'BF16'], timed_storage='F16',
+                variants=list(variants), order=list(variants)+list(reversed(variants)), rounds=3, samples_per_visit=5,
+                correctness_storage=['F16', 'BF16'], timed_storage=['F16','BF16'] if exchange else 'F16',
+                experiment='Q8_SHARED_EXCHANGE' if exchange else 'PLANE_PAIR',
+                profile_scope='ONE_CHECKED_LAUNCH_FORCED_COLD_NOT_ROTATING_EVENT_TIME',
                 l2_bytes=l2, cache='INPUT_AND_OUTPUT_RINGS_EACH_EXCEED_2.25_L2',
                 warmup='TWO_COMPLETE_GRAPHS_PER_VARIANT_EXCLUDED',
                 timing='EVENT_AVERAGE_OVER_SINGLE_KERNEL_GRAPH_NODES_INCLUDES_NODE_GAPS',
@@ -61,7 +66,7 @@ def inspect(sdk, image, output):
     for i, match in enumerate(entries):
         body = text[match.end():entries[i+1].start() if i+1 < len(entries) else None]
         ops = Counter(re.findall(r'\t([a-z][\w.]+)\s', body))
-        if 'dense_dequant_plane_pair' in match[1]:
+        if 'dense_dequant_plane_pair' in match[1] or 'dense_dequant_q8_exchange' in match[1]:
             for prefix in ('vmem.ld.b32x4', 'tsm.ld.b32x4', 'vmem.st.b32x4'):
                 if not any(op.startswith(prefix) for op in ops):
                     raise ValueError('candidate vector delivery scalarized: '+prefix)
@@ -70,8 +75,13 @@ def inspect(sdk, image, output):
         result[match[1]] = dict(resources=resources[match[1]], operations=dict(ops),
                                 static_instructions=sum(ops.values()))
     candidates = [s for s in result if 'dense_dequant_plane_pair' in s]
-    if len(candidates) != 12 or set(result) != set(resources):
+    exchange = [s for s in result if 'dense_dequant_q8_exchange' in s]
+    if len(candidates) != 12 or len(exchange) != 4 or set(result) != set(resources):
         raise ValueError('native specialization inventory differs')
+    for bf in (0, 1):
+        for tk in (128, 256):
+            if sum(f'ILb{bf}ELj{tk}E' in s for s in exchange) != 1:
+                raise ValueError('Q8 exchange precision/tile missing')
     for q in (8, 10, 11):
         for bf in (0, 1):
             for tk in (128, 256):
@@ -146,7 +156,7 @@ def verify_receipt(a):
     return receipt
 
 
-def validate_point(data, index, l2):
+def validate_point(data, index, l2, exchange=False):
     if (data.get('status') != 'PASS' or data.get('point') != index or
             tuple(data.get(name) for name in ('q', 'n', 'k')) != POINTS[index] or
             data.get('scope') != SCOPE or data.get('production_changed') is not False or
@@ -157,7 +167,10 @@ def validate_point(data, index, l2):
             raise ValueError('saved point has an undersized weight/output ring')
     if data['calls_per_graph'] != 2*data['ring_copies']:
         raise ValueError('saved graph traversal differs')
-    for variant in VARIANTS:
+    variants=(22,23,24,25) if exchange else VARIANTS
+    if exchange and (data.get('experiment')!='Q8_SHARED_EXCHANGE' or data['q']!=8):
+        raise ValueError('wrong Q8 exchange experiment')
+    for variant in variants:
         key = str(variant)
         values = data['samples_us'][key]
         if (len(values) != 30 or any(not math.isfinite(v) or v <= 0 for v in values) or
@@ -169,6 +182,14 @@ def validate_point(data, index, l2):
             if (proof['bad'] or proof['guard'] != 'PASS' or proof['compared'] != data['n']*data['k'] or
                     variant and not proof['control_raw_bits_equal']):
                 raise ValueError('saved numerical proof incomplete')
+    if exchange:
+        bf=data.get('bf16_timing',{})
+        for v in variants:
+            key=str(v);values=bf.get('samples_us',{}).get(key,[])
+            if (len(values)!=30 or any(not math.isfinite(x) or x<=0 for x in values) or
+                    bf['median_us'][key]!=statistics.median(values) or
+                    bf['round_medians_us'][key]!=[statistics.median(values[i:i+10]) for i in (0,10,20)]):
+                raise ValueError('BF16 timing/proof incomplete')
     return data
 
 
@@ -316,62 +337,86 @@ class Bench:
         self.r.close()
 
 
+def measure_storage(b, variants, storage, point):
+    import numpy as np
+    from quactlize.runtime.native import checked
+    for v in variants:
+        b.check(v,storage);b.graph(v,storage)
+    samples={v:[] for v in variants};round_medians={v:[] for v in variants}
+    for round_index in range(3):
+        current={v:[] for v in variants}
+        for v in (*variants,*reversed(variants)):
+            current[v].extend(t/b.replays for t in b.r.samples(b.graph(v,storage),5))
+        for v in variants:
+            samples[v].extend(current[v]);round_medians[v].append(statistics.median(current[v]))
+        print(f'DENSE_DEQUANT_PROGRESS point={point} storage={storage} round={round_index+1}/3',flush=True)
+    for v in variants:
+        checked(b.graph(v,storage)(),'final changed-address replay')
+        for index in (0,b.copies-1):
+            got,want=b.read(index),b.gold[storage]
+            if np.any((got!=want)&(((got|want)&0x7fff)!=0)):
+                raise ValueError('rotating output oracle mismatch')
+    medians={v:statistics.median(samples[v]) for v in variants}
+    return dict(samples_us=samples,round_medians_us=round_medians,median_us=medians,
+        candidate_delta_pct={v:100*(medians[v]/medians[variants[0]]-1) for v in variants[1:]},
+        spread_pct={v:100*(max(round_medians[v])-min(round_medians[v]))/medians[v] for v in variants},
+        useful_gbps={v:b.traffic['useful_bytes']/medians[v]/1000 for v in variants})
+
+
+def profile_entry(native, point, variant, storage):
+    """Bind ACU to an actually compiled specialization and exact geometry."""
+    q,n,k=POINTS[point]
+    if q!=8 or variant not in (22,23,24,25) or storage not in (0,1):
+        raise ValueError('not a Q8 exchange profile')
+    tile=128 if variant in (22,24) else 256
+    fragment=(f'dense_dequant_plane_pairILi8ELb{storage}ELj{tile}E' if variant in (22,23)
+              else f'dense_dequant_q8_exchangeILb{storage}ELj{tile}E')
+    symbols=[s for s in native['kernels'] if fragment in s]
+    if len(symbols)!=1:raise ValueError('missing/duplicate compiled profile specialization')
+    return dict(symbol=symbols[0],grid=[n//64,k//tile,1],block=[128,1,1])
+
+
 def child(a):
     import numpy as np
     from quactlize.runtime.native import checked
     b = Bench(a)
     try:
+        variants=(22,23,24,25) if a.q8_exchange else VARIANTS
         if a.profile_variant is not None:
             from tools.profile_kpack_gpu_compact import AcuRange
-            control, _ = b.check(0, 0)
-            _, proof = b.check(a.profile_variant, 0, control)
-            checked(b.launch(a.profile_variant), 'direct profile warmup')
+            storage=a.profile_storage
+            print(f'DENSE_DEQUANT_PROFILE point={a.child} storage={storage} copies=1 graphs=0 cold_loops=0',flush=True)
+            control, _ = b.check(0, storage)
+            _, proof = b.check(a.profile_variant, storage, control)
+            checked(b.launch(a.profile_variant,storage), 'direct profile warmup')
             b.sdk.synchronize(b.r.stream)
-            with AcuRange(b.sdk):
-                checked(b.launch(a.profile_variant), 'single isolated dequant profile')
+            with AcuRange(b.sdk,description='direct_kernel_calls=1 graphs=0 cold_loops=0'):
+                checked(b.launch(a.profile_variant,storage), 'single isolated dequant profile')
                 b.sdk.synchronize(b.r.stream)
+            got=b.read()
+            if not np.array_equal(got,control):raise ValueError('post-profile output differs from control')
             result = dict(status='PASS', point=a.child, profile_variant=a.profile_variant, proof=proof,
-                          ring_copies=1, profiled_launches=1, timed_loops=0, production_changed=False)
+                          storage=storage,ring_copies=1, profiled_launches=1, timed_loops=0, production_changed=False)
         else:
             proofs = {}
             for storage in (0, 1):
                 control, proof = b.check(0, storage)
                 proofs[str(storage)] = {'0': proof}
-                for v in VARIANTS[1:]:
+                for v in variants:
+                    if v==0:continue
                     _, proofs[str(storage)][str(v)] = b.check(v, storage, control)
             negative = b.negative()
-            for v in VARIANTS:
-                b.check(v, 0)
-                b.graph(v)
-            samples = {v: [] for v in VARIANTS}
-            round_medians = {v: [] for v in VARIANTS}
-            for round_index in range(3):
-                current = {v: [] for v in VARIANTS}
-                for v in ORDER:
-                    current[v].extend(t/b.replays for t in b.r.samples(b.graph(v), 5))
-                for v in VARIANTS:
-                    samples[v].extend(current[v])
-                    round_medians[v].append(statistics.median(current[v]))
-                print(f'DENSE_DEQUANT_PROGRESS point={a.child} round={round_index+1}/3', flush=True)
-            for v in VARIANTS:
-                checked(b.graph(v)(), 'final changed-address replay')
-                for index in (0, b.copies-1):
-                    got, want = b.read(index), b.gold[0]
-                    if np.any((got != want) & (((got | want) & 0x7fff) != 0)):
-                        raise ValueError('rotating output oracle mismatch')
-            medians = {v: statistics.median(samples[v]) for v in VARIANTS}
+            f16=measure_storage(b,variants,0,a.child)
+            bf16=measure_storage(b,variants,1,a.child) if a.q8_exchange else None
             result = dict(status='PASS', point=a.child, q=b.q, n=b.n, k=b.k, fixture=b.fixture,
-                          proof=proofs, negative_bad=negative, samples_us=samples,
-                          round_medians_us=round_medians, median_us=medians,
-                          candidate_delta_pct={v: 100*(medians[v]/medians[0]-1) for v in VARIANTS[1:]},
-                          spread_pct={v: 100*(max(round_medians[v])-min(round_medians[v]))/medians[v] for v in VARIANTS},
-                          useful_gbps={v: b.traffic['useful_bytes']/medians[v]/1000 for v in VARIANTS},
+                          proof=proofs, negative_bad=negative, **f16,
+                          bf16_timing=bf16,experiment='Q8_SHARED_EXCHANGE' if a.q8_exchange else 'PLANE_PAIR',
                           traffic=b.traffic, ring_copies=b.copies, calls_per_graph=b.replays,
                           scope=SCOPE, production_changed=False, performance_admitted=False)
     finally:
         b.close()
-    name = f'point-{a.child}.json' if a.profile_variant is None else f'profile-{a.child}-{a.profile_variant}-proof-{time.time_ns()}.json'
-    atomic_json(a.output/name, result)
+    name = f'point-{a.child}.json' if a.profile_variant is None else f'profile-{a.child}-{a.profile_variant}-s{a.profile_storage}-proof-{time.time_ns()}.json'
+    atomic_json(a.profile_result or a.output/name, result)
     print('DENSE_DEQUANT_RESULT '+json.dumps({k: result[k] for k in
           ('status', 'point', 'median_us', 'candidate_delta_pct') if k in result}), flush=True)
 
@@ -390,21 +435,33 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--sdk', type=Path, default=Path(os.environ.get('PPU_SDK', '/usr/local/PPU_SDK')))
     p.add_argument('--output', type=Path, required=True)
-    p.add_argument('--points', default='0,1,2,3,4,5,6,7')
+    p.add_argument('--points', help='default: all eight original families, or the six Q8 families with --q8-exchange')
+    p.add_argument('--q8-exchange', action='store_true', help='Q8 only: controls22/23 vs candidates24/25, F16 and BF16')
     p.add_argument('--l2-bytes', type=int, default=0, help='independently verified fallback if SDK reports zero')
     p.add_argument('--confirm-idle', action='store_true')
     p.add_argument('--plan-only', action='store_true')
     p.add_argument('--compile-only', action='store_true')
     p.add_argument('--resume', action='store_true', help='same source/device/plan; missing timing cases, fresh optional profiles')
     p.add_argument('--acu', type=Path)
-    p.add_argument('--profile-points', default='0,1,5,6')
+    p.add_argument('--profile-points', help='default: 5,7 for Q8 exchange, otherwise 0,1,5,6')
     p.add_argument('--smi', type=Path)
     p.add_argument('--child', type=int, choices=range(len(POINTS)), help=argparse.SUPPRESS)
-    p.add_argument('--profile-variant', type=int, choices=VARIANTS, help=argparse.SUPPRESS)
+    p.add_argument('--profile-variant', type=int, choices=(0,22,23,24,25), help=argparse.SUPPRESS)
+    p.add_argument('--profile-storage', type=int, choices=(0,1), default=0, help=argparse.SUPPRESS)
+    p.add_argument('--profile-result', type=Path, help=argparse.SUPPRESS)
     a = p.parse_args()
-    points, profiles = selected(a.points), selected(a.profile_points)
+    points=selected(a.points or ('2,3,4,5,6,7' if a.q8_exchange else '0,1,2,3,4,5,6,7'))
+    profiles=selected(a.profile_points or ('5,7' if a.q8_exchange else '0,1,5,6'))
+    experiment=plan(points,a.l2_bytes,a.q8_exchange)
     if a.profile_variant is not None and a.child is None:
         p.error('--profile-variant requires --child')
+    if a.profile_variant is not None and a.profile_variant not in experiment['variants']:
+        p.error('--profile-variant is outside this experiment')
+    if a.q8_exchange and a.child is not None and POINTS[a.child][0]!=8:
+        p.error('Q8 exchange child must be a Q8 point')
+    if a.profile_result is not None and (a.profile_variant is None or a.profile_result.exists() or
+            a.profile_result.resolve().parent!=a.output.resolve()):
+        p.error('--profile-result must be a new file in --output for a profile child')
     a.output = a.output.resolve()
     if a.child is not None:
         child(a)
@@ -414,13 +471,13 @@ def main():
     if a.resume:
         if a.plan_only or a.compile_only:
             p.error('--resume requires a device run')
-        if json.loads((a.output/'plan.json').read_text()) != plan(points, a.l2_bytes):
+        if json.loads((a.output/'plan.json').read_text()) != experiment:
             raise ValueError('resume plan changed')
     else:
         a.output.mkdir(parents=True, exist_ok=False)
-        atomic_json(a.output/'plan.json', plan(points, a.l2_bytes))
+        atomic_json(a.output/'plan.json', experiment)
     if a.plan_only:
-        print(json.dumps(plan(points, a.l2_bytes), indent=2))
+        print(json.dumps(experiment, indent=2))
         return 0
     summary = dict(status='INCOMPLETE', points={}, profiles={}, scope=SCOPE,
                    production_changed=False, performance_admitted=False)
@@ -443,7 +500,7 @@ def main():
             raise ValueError('ppu-smi required to request 1700MHz')
         with (Path('/tmp')/('quactlize-components-'+digest(pci)[:24]+'.lock')).open('a') as held:
             fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            authority = dict(device=identity, plan=plan(points, a.l2_bytes),
+            authority = dict(device=identity, plan=plan(points, a.l2_bytes,a.q8_exchange),
                              idle='OPERATOR_CONFIRMED', frequency_normalization=False)
             if a.resume and json.loads((a.output/'authority.json').read_text()) != authority:
                 raise ValueError('resume physical device/SDK/L2 differs')
@@ -453,15 +510,17 @@ def main():
                 raise ValueError('1700MHz request failed')
             if not a.resume:
                 atomic_json(a.output/'authority.json', authority)
-            def run(index, variant=None):
-                name = f'point-{index}' if variant is None else f'profile-{index}-{variant}'
+            def run(index, variant=None, storage=0):
+                name = f'point-{index}' if variant is None else f'profile-{index}-{variant}-s{storage}'
                 attempt = name+'-'+str(time.time_ns())
                 command = [sys.executable, '-u', str(Path(__file__).resolve()), '--sdk', str(a.sdk),
                            '--output', str(a.output), '--l2-bytes', str(a.l2_bytes), '--child', str(index)]
+                if a.q8_exchange:command+=['--q8-exchange']
                 if variant is not None:
-                    from tools.profile_kpack_gpu_compact import acu_launch_command
-                    command += ['--profile-variant', str(variant)]
-                    command = acu_launch_command(a.acu, a.output/attempt, command)
+                    from dev.native_components.profile import acu_command
+                    command += ['--profile-variant', str(variant),'--profile-storage',str(storage),
+                                '--profile-result',str(a.output/(attempt+'-proof.json'))]
+                    command = acu_command(a.acu, a.output/attempt, command,graph_profiling='none')
                 atomic_json(a.output/(attempt+'-command.json'), dict(command=command))
                 atomic_json(a.output/(attempt+'-before.json'), observe(smi, pci, 1700, advisory=True))
                 print(f'DENSE_DEQUANT_START case={name} shape={POINTS[index]}', flush=True)
@@ -481,32 +540,52 @@ def main():
                     with (a.output/(attempt+'-raw.csv')).open('x') as raw:
                         subprocess.run([str(a.acu), '--import', str(report), '--page', 'raw', '--csv'],
                                        stdout=raw, stderr=subprocess.STDOUT, check=True)
+                    proof_path=a.output/(attempt+'-proof.json')
+                    proof=json.loads(proof_path.read_text())
+                    if (proof['status']!='PASS' or proof['point']!=index or proof['profile_variant']!=variant or
+                            proof['storage']!=storage or proof['profiled_launches']!=1 or proof['ring_copies']!=1 or
+                            proof['timed_loops']!=0 or proof['proof']['bad'] or not proof['proof']['control_raw_bits_equal']):
+                        raise ValueError('profile child proof incomplete')
+                    if a.q8_exchange:
+                        from dev.native_components.profile import check_report
+                        native=json.loads((a.output/'build/native.json').read_text())
+                        raw_path=a.output/(attempt+'-raw.csv')
+                        check=check_report(raw_path.read_text(errors='replace'),profile_entry(native,index,variant,storage))
+                        atomic_json(a.output/(attempt+'-receipt.json'),dict(**check,point=index,variant=variant,storage=storage,
+                            report=str(report),report_sha256=sha(report),raw_sha256=sha(raw_path),proof_sha256=sha(proof_path),
+                            prior_point_sha256=sha(a.output/f'point-{index}.json'),authority_sha256=digest(authority),
+                            build_receipt_sha256=sha(a.output/'build/receipt.json')))
                 print(f'DENSE_DEQUANT_CASE case={name} rc={rc} log={attempt}.log', flush=True)
                 return rc
             for index in points:
                 saved = a.output/f'point-{index}.json'
                 if a.resume and saved.is_file():
-                    validate_point(json.loads(saved.read_text()), index, a.l2_bytes)
+                    validate_point(json.loads(saved.read_text()), index, a.l2_bytes,a.q8_exchange)
                     print(f'DENSE_DEQUANT_REUSE point={index} raw_results_unchanged=1', flush=True)
                     rc = 0
                 else:
                     rc = run(index)
                 summary['points'][str(index)] = dict(returncode=rc)
                 if rc == 0:
-                    data = validate_point(json.loads(saved.read_text()), index, a.l2_bytes)
+                    data = validate_point(json.loads(saved.read_text()), index, a.l2_bytes,a.q8_exchange)
                     summary['points'][str(index)].update(median_us=data['median_us'], delta_pct=data['candidate_delta_pct'])
+                    if a.q8_exchange:summary['points'][str(index)]['bf16_timing']=data['bf16_timing']
                 atomic_json(a.output/'summary.json', summary)
             if a.acu:
                 for index in profiles:
                     if index not in points or summary['points'][str(index)]['returncode']:
                         continue
-                    medians = summary['points'][str(index)]['median_us']
-                    candidate = min(VARIANTS[1:], key=lambda v: medians[str(v)])
-                    for v in (0, candidate):
-                        # Profiles use fresh report names on a retry; never
-                        # overwrite a prior .acurep with a failed capture.
-                        summary['profiles'][f'{index}-{v}'] = run(index, v)
-                        atomic_json(a.output/'summary.json', summary)
+                    for storage in ((0,1) if a.q8_exchange else (0,)):
+                        timing=summary['points'][str(index)]
+                        if storage:timing=timing['bf16_timing']
+                        medians=timing['median_us']
+                        candidate=min((24,25) if a.q8_exchange else VARIANTS[1:],key=lambda v:medians[str(v)])
+                        # Retain production22 AND same-tile control23 when25 wins.
+                        controls=(22,23) if a.q8_exchange and candidate==25 else (22,) if a.q8_exchange else (0,)
+                        for v in (*controls,candidate):
+                            # Fresh names never replace a prior raw report.
+                            summary['profiles'][f'{index}-{v}-s{storage}']=run(index,v,storage)
+                            atomic_json(a.output/'summary.json',summary)
             if (all(r['returncode'] == 0 for r in summary['points'].values()) and
                     all(rc == 0 for rc in summary['profiles'].values())):
                 summary['status'] = 'PASS'

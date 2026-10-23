@@ -49,7 +49,8 @@ def build(sdk,output,jobs,*,line_info=False):
         if f'quactlize_kpack_prefill_{name}_dynamic_v1' not in symbols:raise ValueError('missing dynamic prefill ABI')
     for name in ('prepare','run','destroy','error','workspace'):
         if f'quactlize_kpack_dense_full_{name}_v1' not in symbols:raise ValueError('missing dense full ABI')
-    if 'quactlize_kpack_dense_helper_policy_v1' not in symbols:raise ValueError('missing dense helper policy')
+    for name in ('quactlize_kpack_dense_helper_policy_v1','quactlize_kpack_dense_full_helper_policy_v1'):
+        if name not in symbols:raise ValueError('missing dense helper policy: '+name)
     manifest=dict(schema='quactlize.prefill-runtime.v1',library=lib.name,sha256=sha(lib),source_hashes=inputs,
         runtime={f'lib{x}.so':sha(sdk/'lib'/f'lib{x}.so') for x in LIBRARIES},compiler_sha256=sha(sdk/'bin/hgcc'),
         commands=commands,seconds=time.monotonic()-start,device_admission='PENDING_COMPOSED_RUNTIME')
@@ -65,7 +66,7 @@ def verify(sdk,output):
     if sha(sdk/'bin/hgcc')!=manifest['compiler_sha256']:raise ValueError('prefill compiler differs')
     for name,want in manifest['source_hashes'].items():
         if sha(ROOT/name)!=want:raise ValueError('prefill source differs: '+name)
-    if 'quactlize/prefill/dense_helpers.hpp' not in manifest['source_hashes']:
+    if not {'quactlize/prefill/dense_helpers.hpp','quactlize/prefill/dense_full_helpers.inc'} <= manifest['source_hashes'].keys():
         raise ValueError('prefill runtime predates production helper policy')
     for name,want in manifest['runtime'].items():
         if sha(sdk/'lib'/name)!=want:raise ValueError('prefill SDK runtime differs: '+name)

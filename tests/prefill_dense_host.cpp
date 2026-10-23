@@ -5,6 +5,7 @@
 #include "quactlize/dequant/dense_q8.hpp"
 #include "quactlize/dequant/dense_cooperative.hpp"
 #include "quactlize/dequant/dense_plane_pair.hpp"
+#include "quactlize/dequant/dense_q8_exchange.hpp"
 #include "quactlize/dequant/packed_exchange.hpp"
 #include "quactlize/prefill/dense_io_layout.hpp"
 #include <cstring>
@@ -29,7 +30,7 @@ int stage(uint16_t const* src,std::vector<uint32_t>& dst,unsigned n,unsigned k,u
     for(unsigned w:writes)if(w!=1)return 3;
     return 0;
 }
-template<int Q,bool BF16,unsigned TK>
+template<int Q,bool BF16,unsigned TK,bool Exchange=false>
 int decode(uint16_t const* low,uint16_t const* high,uint8_t const* units,uint16_t* output,unsigned n,unsigned k,int fault) {
     using namespace quactlize::dequant;
     using L=DensePlanePair<Q,TK>;using Lo=typename L::Low;using Hi=typename L::High;using A=typename L::Affine;
@@ -72,7 +73,14 @@ int decode(uint16_t const* low,uint16_t const* high,uint8_t const* units,uint16_
                    la!=Lo::shared(pair,Lo::row(kk)+(v&~3u))+v%4 ||
                    ha!=Hi::shared(pair,Hi::row(kk)+(v&~3u))+v%4 ||
                    (v%4==0 && (la%4 || ha%4)))return 10;
-                uint32_t raw=L::codes(tile[la],Q==11?upper[ha]:0,kk^(fault==1?8:0));
+                uint32_t word=tile[la];
+                if constexpr(Exchange) {
+                    using X=DenseQ8Exchange<TK>;
+                    unsigned partner=X::partner(i)^(fault==6?2:0);
+                    if((partner/32)!=(i/32))return 14;
+                    word=X::word(i,v,tile[X::source(i)+v%4],tile[X::source(partner)+v%4]);
+                }
+                uint32_t raw=L::codes(word,Q==11?upper[ha]:0,kk^(fault==1?8:0));
                 for(unsigned side=0;side<2;++side) {
                     unsigned row=2*pair+side,out=row*TK+kk+v;
                     if(++wo[out]!=1)return 11;
@@ -88,6 +96,10 @@ int decode(uint16_t const* low,uint16_t const* high,uint8_t const* units,uint16_
     return 0;
 }
 template<int Q,bool BF16> int geometry(int v,uint16_t const* l,uint16_t const* h,uint8_t const* u,uint16_t* o,unsigned n,unsigned k,int f) {
+    if constexpr(Q==8) {
+        if(v==24)return decode<Q,BF16,128,true>(l,h,u,o,n,k,f);
+        if(v==25)return decode<Q,BF16,256,true>(l,h,u,o,n,k,f);
+    }
     if(v==22)return decode<Q,BF16,128>(l,h,u,o,n,k,f);
     if(v==23)return decode<Q,BF16,256>(l,h,u,o,n,k,f);
     return 99;
@@ -102,6 +114,15 @@ extern "C" int dense_plane_pair_host(int q,int b,int v,uint16_t const* l,uint16_
     return 99;
 }
 } // namespace plane_pair_oracle
+
+extern "C" unsigned dense_q8_exchange_address(unsigned tk,unsigned task,unsigned which) {
+    using A=quactlize::dequant::DenseQ8Exchange<128>;
+    using B=quactlize::dequant::DenseQ8Exchange<256>;
+    if(which==0)return tk==128?A::source(task):B::source(task);
+    if(which==1)return tk==128?A::partner(task):B::partner(task);
+    if(which==2)return tk==128?A::pair(task):B::pair(task);
+    return tk==128?A::k(task):B::k(task);
+}
 
 extern "C" int dense_q8_host(int bf,uint16_t const* low,uint16_t const* units,
                             uint16_t* output,unsigned n,unsigned k,int fault) {
