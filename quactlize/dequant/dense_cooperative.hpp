@@ -43,13 +43,22 @@ template<unsigned Groups> struct DenseCooperativeAffine {
 // Byte selection is fixed-register arithmetic, not a dynamically indexed
 // private byte array. Header F16->F32 conversion occurs once per column.
 template<KType T,unsigned TileK> struct DenseRegisterAffine {
-    static_assert(T==KType::Q4_K || T==KType::Q5_K || T==KType::Q6_K);
+    static_assert(T==KType::Q3_K || T==KType::Q4_K || T==KType::Q5_K || T==KType::Q6_K);
     using R=DenseUnsignedReader<T,false>;
     float d,dm;
     uint32_t x,y,z,w;
     CUTLASS_HOST_DEVICE static DenseRegisterAffine load(uint32_t const* p,unsigned k0) {
         DenseRegisterAffine r{};
-        if constexpr(T==KType::Q6_K) {
+        if constexpr(T==KType::Q3_K) {
+            // Two 14-byte superblocks in a 28-byte unit. The odd header
+            // starts in the upper halfword; do not round its stride to 16.
+            unsigned sb=(k0>>8)&1u;
+            uint32_t a=p[sb*3],b=p[sb*3+1],c=p[sb*3+2],e=p[sb*3+3];
+            r.d=float(cutlass::half_t::bitcast(uint16_t(sb?a>>16:a)));
+            uint32_t x=sb?b:(a>>16)|(b<<16),y=sb?c:(b>>16)|(c<<16),z=sb?e:(c>>16)|(e<<16);
+            r.x=x;r.y=(x>>24)|(y<<8);r.z=(y>>16)|(z<<16);r.w=z>>8;
+            if constexpr(TileK==128)if(k0&128u){r.x=r.z;r.y=r.w;}
+        } else if constexpr(T==KType::Q6_K) {
             unsigned sb=(k0>>8)&1u;
             uint32_t a=p[sb*4],b=p[sb*4+1],c=p[sb*4+2],e=p[sb*4+3],f=p[sb*4+4];
             uint16_t header=uint16_t(sb?a>>16:a);
@@ -67,7 +76,11 @@ template<KType T,unsigned TileK> struct DenseRegisterAffine {
         return r;
     }
     CUTLASS_HOST_DEVICE typename R::Affine group(unsigned g) const {
-        if constexpr(T==KType::Q6_K) {
+        if constexpr(T==KType::Q3_K) {
+            uint32_t code=g<4?x:g<8?y:g<12?z:w;
+            int scale=int((code>>(6*(g&3)))&63u)-32;
+            return {d*float(scale),0.f};
+        } else if constexpr(T==KType::Q6_K) {
             uint32_t code=g<4?x:g<8?y:g<12?z:w;
             int scale=int((code>>(8*(g&3)))&255u);scale=(scale^128)-128;
             return {d*float(scale),0.f};

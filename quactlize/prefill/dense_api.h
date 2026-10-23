@@ -12,12 +12,25 @@ enum {
     QKP_DENSE_DEQUANT_PAIR = 8,
     QKP_DENSE_DEQUANT_COOPERATIVE_K128 = 20,
     QKP_DENSE_DEQUANT_COOPERATIVE_K256 = 21,
+    // Explicit Q3_K/Q8_0 candidates; production helper policy is unchanged.
+    QKP_DENSE_DEQUANT_PLANE_PAIR_K128 = 22,
+    QKP_DENSE_DEQUANT_PLANE_PAIR_K256 = 23,
 };
 
 static inline int qkp_dense_dequant_variant_valid(int variant) {
     return variant == QKP_DENSE_DEQUANT_DIRECT || variant == QKP_DENSE_DEQUANT_PAIR ||
            variant == QKP_DENSE_DEQUANT_COOPERATIVE_K128 ||
-           variant == QKP_DENSE_DEQUANT_COOPERATIVE_K256;
+           variant == QKP_DENSE_DEQUANT_COOPERATIVE_K256 ||
+           variant == QKP_DENSE_DEQUANT_PLANE_PAIR_K128 ||
+           variant == QKP_DENSE_DEQUANT_PLANE_PAIR_K256;
+}
+
+static inline int qkp_dense_dequant_variant_supports(int qtype, int variant) {
+    if (!qkp_dense_dequant_variant_valid(variant)) return 0;
+    if (variant == QKP_DENSE_DEQUANT_DIRECT) return qtype == 8 || (qtype >= 10 && qtype <= 14);
+    if (variant == QKP_DENSE_DEQUANT_PLANE_PAIR_K128 || variant == QKP_DENSE_DEQUANT_PLANE_PAIR_K256)
+        return qtype == 8 || qtype == 11;
+    return qtype >= 12 && qtype <= 14;
 }
 
 // Dense-only helpers. Existing BF16/MoE entries are unchanged.
@@ -29,7 +42,7 @@ typedef struct {
     int32_t storage, vector_io;
     // -1: existing full BF16 dequant (call.weight.config).
     // Otherwise use the stable helper IDs above: direct Q2..Q6 and Q8_0; pair and
-    // cooperative Q4/Q5/Q6. This is not the weight.config namespace.
+    // cooperative Q4/Q5/Q6; plane-pair Q3/Q8. Not the weight.config namespace.
     int32_t dequant_variant;
     int32_t math_mode, algorithm; // explicit cuBLAS controls; compute is always 32F
 } qkp_dense_options_v1;

@@ -18,7 +18,7 @@ extern "C" int quactlize_dense_io_v1(int storage,int input,int,void const* src,v
     *static_cast<float*>(dst)=*static_cast<float const*>(src)+(input?100*storage:0);return 0;
 }
 extern "C" int quactlize_kpack_dequant_dense_v1(qzd_call_v1 const* c,quactlize_ppu_placed_arrangement_v2 const*,int storage,int variant){
-    assert(variant==0 || variant==8 || variant==20 || variant==21);
+    assert(qkp_dense_dequant_variant_supports(c->qtype,variant));
     *static_cast<float*>(c->output)=*static_cast<float const*>(c->low)+100*storage;return 0;
 }
 extern "C" int quactlize_kpack_dequant_v1(qzd_call_v1 const* c,quactlize_ppu_placed_arrangement_v2 const* a){return quactlize_kpack_dequant_dense_v1(c,a,1,0);}
@@ -30,10 +30,11 @@ extern "C" int qkp_stage_finish(qkp_call_v1 const* c,quactlize::prefill::Layout 
 }
 int main(int argc,char** argv){
     assert(argc==2);using namespace quactlize::prefill;
-    for(int q:{12,8}) {
+    for(int q:{12,8,11}) {
     qkp_call_v1 shape{};shape.version=1;shape.size=sizeof(shape);shape.m=shape.a_rows=128;
     shape.a_stride=512;shape.output_stride=256;shape.weight={1,sizeof(qzd_call_v1),q,256,512,1,1,5};
-    auto arr=q==8?q8_kpack2::arrangement():ppu_arrangements::q4_kpack4_transpose_v1();Layout l{};
+    auto arr=q==8?q8_kpack2::arrangement():q==12?ppu_arrangements::q4_kpack4_transpose_v1():
+        ppu_arrangements::kquant_kpack_transpose_v1(q);Layout l{};
     assert(!layout(shape,&arr,l,true));
     if(q==8)assert(layout(shape,&arr,l)==QKG_SHAPE);
     uint64_t bytes=0;assert(!quactlize_kpack_dense_full_workspace_v1(&shape,&arr,&bytes));
@@ -42,17 +43,21 @@ int main(int argc,char** argv){
     for(int i=0;i<2;++i){auto& c=calls[i];
         c.a=static_cast<float*>(std::aligned_alloc(256,128*512*4));c.output=static_cast<float*>(std::aligned_alloc(256,128*256*4));
         c.workspace_bytes=dynamic_bytes(c,l);c.workspace=std::aligned_alloc(256,c.workspace_bytes);
-        c.weight.low_bytes=q==8?256*512:256*512/2;c.weight.unit_bytes=q==8?256*512/32*2:256*512/256*16;
+        qkg_sizes_v1 sizes{};assert(!quactlize::execution::sizes(q,256,512,1,&arr,sizes));
+        c.weight.low_bytes=sizes.low_bytes;c.weight.unit_bytes=sizes.units_bytes;
+        c.weight.high_bytes=sizes.high_bytes;
+        if(sizes.high_bytes)c.weight.high=std::aligned_alloc(256,sizes.high_bytes);
         c.weight.low=std::aligned_alloc(256,c.weight.low_bytes);c.weight.units=std::aligned_alloc(256,c.weight.unit_bytes);
         c.weight.stream=reinterpret_cast<void*>(uintptr_t(i+1));
         const_cast<float*>(c.a)[0]=i+2;static_cast<float*>(const_cast<void*>(c.weight.low))[0]=i+5;
     }
     for(int type:{0,1})for(int vector:{0,1,2,3})for(int variant=-2;variant<=24;++variant)for(int algorithm:{-1,99}){
-        bool typed=variant==0 || variant==8 || variant==20 || variant==21;
+        bool typed=variant==0 || variant==8 || variant==20 || variant==21 || variant==22 || variant==23;
         assert(bool(qkp_dense_dequant_variant_valid(variant))==typed);
         qkp_dense_options_v1 o{1,sizeof(o),argv[1],type,vector,variant,16,algorithm};void* h=nullptr;
         int rc=quactlize_kpack_dense_full_prepare_v1(&shape,&arr,&o,&h);
-        if((q==8 && variant!=0) || (variant==-1 && type==0) || (variant!=-1 && !typed)){assert(rc && !h);continue;}
+        bool supported=variant==0 || (q==8 || q==11?(variant==22 || variant==23):(variant==8 || variant==20 || variant==21));
+        if((variant==-1 && (q==8 || type==0)) || (variant!=-1 && !supported)){assert(rc && !h);continue;}
         assert(!rc && h);
         auto run=[&](int i){for(int r=0;r<8;++r){
             auto& c=calls[i];const_cast<float*>(c.a)[0]=i+2+r;
@@ -66,12 +71,12 @@ int main(int argc,char** argv){
         bad=calls[0];bad.weight.config++;assert(quactlize_kpack_dense_full_run_v1(h,&bad,-1));
         quactlize_kpack_dense_full_destroy_v1(h);
     }
-    qkp_dense_options_v1 invalid{1,sizeof(invalid),argv[1],0,1,22,16,-1};void* h=nullptr;
+    qkp_dense_options_v1 invalid{1,sizeof(invalid),argv[1],0,1,24,16,-1};void* h=nullptr;
     assert(quactlize_kpack_dense_full_prepare_v1(&shape,&arr,&invalid,&h) && !h);
     invalid.dequant_variant=21;invalid.vector_io=4;
     assert(quactlize_kpack_dense_full_prepare_v1(&shape,&arr,&invalid,&h) && !h);
     for(auto& c:calls){std::free(const_cast<float*>(c.a));std::free(c.output);std::free(c.workspace);
-        std::free(const_cast<void*>(c.weight.low));std::free(const_cast<void*>(c.weight.units));}
+        std::free(const_cast<void*>(c.weight.low));std::free(const_cast<void*>(c.weight.high));std::free(const_cast<void*>(c.weight.units));}
     }
     // Real runtime lookup, device guard and full table. No GPU timing claim.
     qkp_call_v1 shape{};shape.version=1;shape.size=sizeof(shape);shape.weight.version=1;shape.weight.size=sizeof(qzd_call_v1);

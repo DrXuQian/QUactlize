@@ -4,10 +4,100 @@
 #include "quactlize/dequant/dense_reader.hpp"
 #include "quactlize/dequant/dense_q8.hpp"
 #include "quactlize/dequant/dense_cooperative.hpp"
+#include "quactlize/dequant/dense_plane_pair.hpp"
 #include "quactlize/dequant/packed_exchange.hpp"
 #include "quactlize/prefill/dense_io_layout.hpp"
 #include <cstring>
 #include <vector>
+
+namespace plane_pair_oracle {
+template<unsigned Bits,unsigned TK>
+int stage(uint16_t const* src,std::vector<uint32_t>& dst,unsigned n,unsigned k,unsigned n0,unsigned k0,int fault) {
+    using L=quactlize::dequant::DensePlanePairLayout<Bits,TK>;
+    std::vector<unsigned> writes(dst.size());
+    for(unsigned tid=0;tid<128;++tid)for(unsigned i=tid;i<L::Rows*8;i+=128) {
+        if(fault==2 && i==0)continue;
+        unsigned row=i/8,col=i%8*8;
+        uint64_t at=uint64_t(k0*L::Rows/TK+row)*n+n0+col;
+        if(at%8 || at+8>uint64_t(n)*k*Bits/16)return 1;
+        for(unsigned p=0;p<4;++p) {
+            unsigned out=L::shared(col/2+p,row);
+            if(out>=writes.size() || ++writes[out]!=1)return 2;
+            dst[out]=uint32_t(src[at+2*p])|(uint32_t(src[at+2*p+1])<<16);
+        }
+    }
+    for(unsigned w:writes)if(w!=1)return 3;
+    return 0;
+}
+template<int Q,bool BF16,unsigned TK>
+int decode(uint16_t const* low,uint16_t const* high,uint8_t const* units,uint16_t* output,unsigned n,unsigned k,int fault) {
+    using namespace quactlize::dequant;
+    using L=DensePlanePair<Q,TK>;using Lo=typename L::Low;using Hi=typename L::High;using A=typename L::Affine;
+    std::vector<uint32_t> tile(Lo::Cells),upper(Hi::Cells),metadata(64*7);
+    std::vector<float> scale(64*L::Groups);
+    std::vector<unsigned> wa(scale.size()),wo(64*TK);
+    for(unsigned n0=0;n0<n;n0+=64)for(unsigned k0=0;k0<k;k0+=TK) {
+        if(stage<Q==8?8:2,TK>(low,tile,n,k,n0,k0,fault))return 4;
+        if constexpr(Q==11)if(stage<1,TK>(high,upper,n,k,n0,k0,fault==5?2:0))return 5;
+        std::fill(wa.begin(),wa.end(),0);std::fill(wo.begin(),wo.end(),0);
+        if constexpr(Q==11) {
+            uint64_t start=(uint64_t(k0/512)*n+n0)*28;
+            if(start%16 || start+metadata.size()*4>uint64_t(n)*k/256*14)return 6;
+            std::memcpy(metadata.data(),units+start,metadata.size()*4);
+            for(unsigned col=0;col<64;++col) {
+                auto values=DenseRegisterAffine<gguf_scale::KType::Q3_K,TK>::load(metadata.data()+col*7,k0^(fault==4?256:0));
+                for(unsigned g=0;g<L::Groups;++g) {
+                    unsigned at=A::offset(col,g);
+                    if(at>=wa.size() || ++wa[at]!=1)return 7;
+                    scale[at]=values.group(g).scale;
+                }
+            }
+        } else {
+            for(unsigned i=0;i<64*L::Groups;++i) {
+                unsigned col=i%64,g=i/64,at=A::offset(col,g);
+                uint16_t d=reinterpret_cast<uint16_t const*>(units)[uint64_t(k0/32+g)*n+n0+col];
+                if(at>=wa.size() || ++wa[at]!=1)return 8;
+                scale[at]=float(cutlass::half_t::bitcast(d));
+            }
+        }
+        for(unsigned w:wa)if(w!=1)return 9;
+        for(unsigned tid=0;tid<128;++tid)for(unsigned i=tid;i<32*(TK/8);i+=128) {
+            unsigned pair=i/(TK/8),kk=i%(TK/8)*8;
+            for(unsigned v=0;v<8;++v) {
+                unsigned la=Lo::shared(pair,Lo::row(kk)+v),ha=Hi::shared(pair,Hi::row(kk)+v);
+                if(la>=tile.size() || ha>=upper.size() ||
+                   la!=Lo::shared(pair,Lo::row(kk)+(v&~3u))+v%4 ||
+                   ha!=Hi::shared(pair,Hi::row(kk)+(v&~3u))+v%4 ||
+                   (v%4==0 && (la%4 || ha%4)))return 10;
+                uint32_t raw=L::codes(tile[la],Q==11?upper[ha]:0,kk^(fault==1?8:0));
+                for(unsigned side=0;side<2;++side) {
+                    unsigned row=2*pair+side,out=row*TK+kk+v;
+                    if(++wo[out]!=1)return 11;
+                    auto destination=uint64_t(n0+row)*k+k0+kk+v;
+                    if(v==0 && destination%8)return 12;
+                    output[destination]=L::template weight<BF16>((raw>>(16*(side^(fault==3))))&0xffffu,
+                        scale[A::offset(row,kk/L::Group)]);
+                }
+            }
+        }
+        for(unsigned w:wo)if(w!=1)return 13;
+    }
+    return 0;
+}
+template<int Q,bool BF16> int geometry(int v,uint16_t const* l,uint16_t const* h,uint8_t const* u,uint16_t* o,unsigned n,unsigned k,int f) {
+    if(v==22)return decode<Q,BF16,128>(l,h,u,o,n,k,f);
+    if(v==23)return decode<Q,BF16,256>(l,h,u,o,n,k,f);
+    return 99;
+}
+template<int Q> int typed(int b,int v,uint16_t const* l,uint16_t const* h,uint8_t const* u,uint16_t* o,unsigned n,unsigned k,int f) {
+    return b?geometry<Q,true>(v,l,h,u,o,n,k,f):geometry<Q,false>(v,l,h,u,o,n,k,f);
+}
+extern "C" int dense_plane_pair_host(int q,int b,int v,uint16_t const* l,uint16_t const* h,uint8_t const* u,uint16_t* o,unsigned n,unsigned k,int f) {
+    if(q==8)return typed<8>(b,v,l,h,u,o,n,k,f);
+    if(q==11)return typed<11>(b,v,l,h,u,o,n,k,f);
+    return 99;
+}
+} // namespace plane_pair_oracle
 
 extern "C" int dense_q8_host(int bf,uint16_t const* low,uint16_t const* units,
                             uint16_t* output,unsigned n,unsigned k,int fault) {

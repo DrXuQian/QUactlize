@@ -3,10 +3,98 @@
 #include "dense_reader.hpp"
 #include "dense_q8.hpp"
 #include "dense_cooperative.hpp"
+#include "dense_plane_pair.hpp"
 #include "packed_exchange.hpp"
 #include "../execution/validation.hpp"
 
 namespace quactlize::dequant {
+// N64 paired-word exchange for the formats not covered by the Q4/Q5/Q6
+// cooperative helper. A CTA reads each low/high physical word exactly once.
+template<int Q,bool BF16,unsigned TileK>
+__global__ __launch_bounds__(128) void dense_dequant_plane_pair(
+        uint16_t const* __restrict__ low,uint16_t const* __restrict__ high,
+        uint8_t const* __restrict__ units,uint16_t* __restrict__ output,int n,int k) {
+    using L=DensePlanePair<Q,TileK>;using Lo=typename L::Low;using Hi=typename L::High;
+    using A=typename L::Affine;
+    constexpr unsigned MetaWords=Q==11?64*28/4:1;
+    __shared__ __align__(16) uint32_t tile[Lo::Cells];
+    __shared__ __align__(16) uint32_t upper[Q==11?Hi::Cells:1];
+    __shared__ __align__(16) uint32_t metadata[MetaWords];
+    __shared__ float scale[64*L::Groups];
+    unsigned tid=threadIdx.x,n0=blockIdx.x*64,k0=blockIdx.y*TileK,extent=unsigned(n);
+    if constexpr(Q==11) {
+        auto src=units+(uint64_t(k0/512)*extent+n0)*28;
+        #pragma unroll
+        for(unsigned i=tid;i<MetaWords/4;i+=128)
+            reinterpret_cast<uint4*>(metadata)[i]=reinterpret_cast<uint4 const*>(src)[i];
+    } else {
+        #pragma unroll
+        for(unsigned i=tid;i<64*L::Groups;i+=128) {
+            unsigned col=i%64,g=i/64;
+            uint16_t d=reinterpret_cast<uint16_t const*>(units)[uint64_t(k0/32+g)*extent+n0+col];
+            scale[A::offset(col,g)]=float(cutlass::half_t::bitcast(d));
+        }
+    }
+    #pragma unroll
+    for(unsigned i=tid;i<Lo::Rows*8;i+=128) {
+        unsigned row=i/8,col=i%8*8;
+        uint4 v=*reinterpret_cast<uint4 const*>(low+uint64_t(k0*Lo::Rows/TileK+row)*extent+n0+col);
+        #pragma unroll
+        for(unsigned p=0;p<4;++p)tile[Lo::shared(col/2+p,row)]=p==0?v.x:p==1?v.y:p==2?v.z:v.w;
+    }
+    if constexpr(Q==11) {
+        #pragma unroll
+        for(unsigned i=tid;i<Hi::Rows*8;i+=128) {
+            unsigned row=i/8,col=i%8*8;
+            uint4 v=*reinterpret_cast<uint4 const*>(high+uint64_t(k0/16+row)*extent+n0+col);
+            #pragma unroll
+            for(unsigned p=0;p<4;++p)upper[Hi::shared(col/2+p,row)]=p==0?v.x:p==1?v.y:p==2?v.z:v.w;
+        }
+    }
+    __syncthreads();
+    if constexpr(Q==11) {
+        if(tid<64) {
+            auto values=DenseRegisterAffine<KType::Q3_K,TileK>::load(metadata+tid*7,k0);
+            #pragma unroll
+            for(unsigned g=0;g<L::Groups;++g)scale[A::offset(tid,g)]=values.group(g).scale;
+        }
+        __syncthreads();
+    }
+    #pragma unroll
+    for(unsigned i=tid;i<32*(TileK/8);i+=128) {
+        unsigned pair=i/(TileK/8),kk=(i%(TileK/8))*8;
+        uint4 a=*reinterpret_cast<uint4 const*>(tile+Lo::shared(pair,Lo::row(kk)));
+        uint4 b=*reinterpret_cast<uint4 const*>(tile+Lo::shared(pair,Lo::row(kk)+4));
+        uint4 ha{},hb{};
+        if constexpr(Q==11) {
+            ha=*reinterpret_cast<uint4 const*>(upper+Hi::shared(pair,Hi::row(kk)));
+            hb=*reinterpret_cast<uint4 const*>(upper+Hi::shared(pair,Hi::row(kk)+4));
+        }
+        uint32_t words[8]={a.x,a.y,a.z,a.w,b.x,b.y,b.z,b.w};
+        uint32_t highs[8]={ha.x,ha.y,ha.z,ha.w,hb.x,hb.y,hb.z,hb.w};
+        float s0=scale[A::offset(2*pair,kk/L::Group)],s1=scale[A::offset(2*pair+1,kk/L::Group)];
+        uint32_t out0[4],out1[4];
+        #pragma unroll
+        for(unsigned p=0;p<4;++p) {
+            uint32_t x=L::codes(words[2*p],highs[2*p],kk),y=L::codes(words[2*p+1],highs[2*p+1],kk);
+            out0[p]=uint32_t(L::template weight<BF16>(x&0xffffu,s0))|
+                (uint32_t(L::template weight<BF16>(y&0xffffu,s0))<<16);
+            out1[p]=uint32_t(L::template weight<BF16>(x>>16,s1))|
+                (uint32_t(L::template weight<BF16>(y>>16,s1))<<16);
+        }
+        auto dst=output+uint64_t(n0+2*pair)*unsigned(k)+k0+kk;
+        *reinterpret_cast<uint4*>(dst)={out0[0],out0[1],out0[2],out0[3]};
+        *reinterpret_cast<uint4*>(dst+unsigned(k))={out1[0],out1[1],out1[2],out1[3]};
+    }
+}
+template<int Q,bool BF16> void dense_plane_pair_launch(qzd_call_v1 const& c,int variant) {
+    auto l=static_cast<uint16_t const*>(c.low),h=static_cast<uint16_t const*>(c.high);
+    auto u=static_cast<uint8_t const*>(c.units);auto o=static_cast<uint16_t*>(c.output);
+    auto s=static_cast<hggcStream_t>(c.stream);
+    if(variant==QKP_DENSE_DEQUANT_PLANE_PAIR_K128)
+        dense_dequant_plane_pair<Q,BF16,128><<<dim3(c.n/64,c.k/128),128,0,s>>>(l,h,u,o,c.n,c.k);
+    else dense_dequant_plane_pair<Q,BF16,256><<<dim3(c.n/64,c.k/256),128,0,s>>>(l,h,u,o,c.n,c.k);
+}
 // One read per packed word; shared exchange preserves contiguous K8 stores.
 template<bool BF16>
 __global__ __launch_bounds__(128) void dense_dequant_q8(
@@ -218,7 +306,7 @@ extern "C" int quactlize_kpack_dequant_dense_v1(qzd_call_v1 const* c,
     if (!c || c->version!=1 || c->size!=sizeof(*c) || c->operation!=1 || c->experts!=1 ||
         c->zero || (storage!=0 && storage!=1) || !qkp_dense_dequant_variant_valid(variant)) return QKG_INVALID;
     qkg_sizes_v1 s{};int rc=sizes(c->qtype,c->n,c->k,c->experts,arr,s);if(rc)return rc;
-    if ((c->qtype!=8 && (c->qtype<10 || c->qtype>14)) || (variant && c->qtype<12)) return QKG_FORMAT;
+    if (!qkp_dense_dequant_variant_supports(c->qtype,variant)) return QKG_FORMAT;
     if (c->k/128>65535 || c->n/32>65535 || (int64_t(c->n)*c->k+255)/256>INT32_MAX) return QKG_SHAPE;
     uint64_t bytes=uint64_t(c->n)*c->k*2;
     if (c->low_bytes<s.low_bytes || c->high_bytes<s.high_bytes || c->unit_bytes<s.units_bytes || c->output_bytes<bytes) return QKG_CAPACITY;
@@ -228,6 +316,16 @@ extern "C" int quactlize_kpack_dequant_dense_v1(qzd_call_v1 const* c,
     for (int i=0;i<4;++i) if (len[i]) {
         if (!p[i] || p[i]%16 || !span(p[i],len[i])) return QKG_INVALID;
         for (int j=0;j<i;++j) if(overlap(p[i],len[i],p[j],len[j])) return QKG_INVALID;
+    }
+    if(variant==QKP_DENSE_DEQUANT_PLANE_PAIR_K128 || variant==QKP_DENSE_DEQUANT_PLANE_PAIR_K256) {
+        if(c->qtype==8) {
+            if(storage)dense_plane_pair_launch<8,true>(*c,variant);
+            else dense_plane_pair_launch<8,false>(*c,variant);
+        } else {
+            if(storage)dense_plane_pair_launch<11,true>(*c,variant);
+            else dense_plane_pair_launch<11,false>(*c,variant);
+        }
+        return hggcGetLastError()==hggcSuccess?QKG_OK:QKG_RUNTIME;
     }
     if (c->qtype==8) {
         if (c->k/32>65535) return QKG_SHAPE;

@@ -17,6 +17,7 @@ class DenseHelperHost(unittest.TestCase):
             '-I'+str(ROOT),'-I'+str(ROOT/'quactlize/include'),'-I'+str(ROOT/'third_party/actlize/include'),
             '-I'+str(SDK/'include'),str(ROOT/'tests/prefill_dense_host.cpp'),'-o',str(so)],check=True)
         cls.lib=C.CDLL(str(so));cls.lib.dense_cooperative_host.argtypes=[C.c_int]*3+[C.c_void_p]*4+[C.c_int]*3
+        cls.lib.dense_plane_pair_host.argtypes=[C.c_int]*3+[C.c_void_p]*4+[C.c_int]*3
         cls.lib.dense_cooperative_layout.argtypes=[C.c_uint]*5;cls.lib.dense_cooperative_layout.restype=C.c_uint
         cls.lib.dense_full4.argtypes=[C.c_uint64,C.c_uint,C.c_uint];cls.lib.dense_full4.restype=C.c_uint64
         cls.lib.dense_pair_host.argtypes=[C.c_int]*3+[C.c_void_p]*4+[C.c_int]*3
@@ -94,6 +95,80 @@ class DenseHelperHost(unittest.TestCase):
             for addresses in (loads,stores):
                 self.assertTrue(all(a%16==0 for a in addresses))
                 self.assertEqual(len({(a+b)//32 for a in addresses for b in range(16)}),16)
+
+    def test_q3_q8_plane_pair_oracle_and_faults(self):
+        import numpy as np
+        from gguf import GGMLQuantizationType
+        from gguf.quants import dequantize
+        from reference import gguf_kpack as ref
+        from tools.kpack_warmup_fixture import prepare_expert
+        from dev.bf16_compute.fixture import planes, bf16_bits
+        for q in (8,11):
+            for n,k in ((256,512),(768,1024),(256,1536)):
+                rng=np.random.default_rng(q+n+k)
+                raw=rng.integers(0,256,(n*k//(32 if q==8 else 256),34 if q==8 else ref.SPECS[q].raw_bytes),dtype='u1')
+                offset=0 if q==8 else ref.SPECS[q].d_offset
+                raw[:,offset:offset+2]=rng.uniform(-.009,.009,len(raw)).astype('<f2').view('u1').reshape(-1,2)
+                raw[:10,offset:offset+2]=np.array([0,0x8000,1,0x8001,0x3555,0xb555,0x0400,0x8400,0x7bff,0xfbff],dtype='<u2').view('u1').reshape(-1,2)
+                if q==8:raw[:8,2:]=np.arange(256,dtype='u1').reshape(8,32)
+                packed=planes(raw.reshape(n,k//32,34),8)if q==8 else prepare_expert(raw,q,n,k)
+                gold=dequantize(raw.reshape(-1),GGMLQuantizationType(q)).reshape(n,k)
+                for bf in (0,1):
+                    with np.errstate(over='ignore'):want=bf16_bits(gold)if bf else gold.astype('<f2').view('<u2')
+                    control=np.empty_like(want)
+                    ptrs=[packed[x].ctypes.data if packed[x].size else None for x in ('low','high','units')]
+                    if q==8:self.assertEqual(self.lib.dense_q8_host(bf,ptrs[0],ptrs[2],control.ctypes.data,n,k,0),0)
+                    else:self.assertEqual(self.lib.dense_direct_host(q,bf,*ptrs,control.ctypes.data,n,k),0)
+                    for variant in (22,23):
+                        with self.subTest(q=q,n=n,k=k,bf=bf,variant=variant):
+                            out=np.full_like(want,0x7fff)
+                            args=(q,bf,variant,*ptrs,out.ctypes.data,n,k)
+                            self.assertEqual(self.lib.dense_plane_pair_host(*args,0),0)
+                            # Independent GGUF zero-sign convention may differ;
+                            # control/candidate must still match every raw bit.
+                            self.assertFalse(np.any((out!=want)&(((out|want)&0x7fff)!=0)))
+                            np.testing.assert_array_equal(out,control)
+                            for fault in (1,3,*((4,)if q==11 else())):
+                                self.assertEqual(self.lib.dense_plane_pair_host(*args,fault),0)
+                                self.assertTrue(np.any(out!=control))
+                            self.assertNotEqual(self.lib.dense_plane_pair_host(*args,2),0)
+                            if q==11:self.assertNotEqual(self.lib.dense_plane_pair_host(*args,5),0)
+
+    def test_box_runner_fixture_is_accepted_by_actual_readers(self):
+        import numpy as np
+        from tools.run_dense_dequant import fixture
+        for q in (8,11):
+            packed,golden,receipt=fixture(q,256,512)
+            self.assertEqual(set(receipt['planes']),{'low','high','units'})
+            ptrs=[packed[x].ctypes.data if packed[x].size else None for x in ('low','high','units')]
+            for bf,want in enumerate(golden):
+                for v in (22,23):
+                    out=np.full_like(want,0x7fff)
+                    self.assertEqual(self.lib.dense_plane_pair_host(q,bf,v,*ptrs,out.ctypes.data,256,512,0),0)
+                    self.assertFalse(np.any((out!=want)&(((out|want)&0x7fff)!=0)))
+
+    def test_plane_pair_physical_words_and_sector_footprints(self):
+        from collections import Counter
+        for bits in (1,2,8):
+            for tk in (128,256):
+                rows=tk*bits//16
+                shared=[(p*rows+r)^(p&28&(rows-1))for p in range(32)for r in range(rows)]
+                self.assertEqual(sorted(shared),list(range(32*rows)))
+                for start in range(0,rows*8,32):
+                    addresses=[((i//8)*512+(i%8)*8)*2 for i in range(start,start+32)]
+                    for sector in (32,64,128):
+                        counts=Counter((a+b)//sector for a in addresses for b in range(16))
+                        self.assertEqual(set(counts.values()),{sector})
+                # Unique global word ownership, not one load per logical K8.
+                reads=[(i//8,2*((i%8)*4+p)+half)for i in range(rows*8)for p in range(4)for half in (0,1)]
+                self.assertEqual(len(reads),len(set(reads)))
+                self.assertEqual(len(reads),rows*64)
+                for start in range(0,32*(tk//8),32):
+                    for side in (0,1):
+                        stores=[((2*(i//(tk//8))+side)*1024+i%(tk//8)*8)*2 for i in range(start,start+32)]
+                        for sector in (32,64,128):
+                            counts=Counter((a+b)//sector for a in stores for b in range(16))
+                            self.assertEqual(set(counts.values()),{sector})
 
     def test_pair_geometry_independent_gguf_bits_and_faults(self):
         import numpy as np
