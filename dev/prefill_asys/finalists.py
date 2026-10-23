@@ -135,6 +135,9 @@ def snapshot(plan):
 
 
 def load(document):
+    if document.get('schema') == 'quactlize.dense-tp-supplement.v1':
+        from .supplement import validate as validate_supplement
+        return validate_supplement(document)
     if document.get('schema')==SCHEMA+'.snapshot':
         plan=copy.deepcopy(document['plan'])
         for p in plan['points']:

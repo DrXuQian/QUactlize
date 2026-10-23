@@ -22,6 +22,7 @@ MODEL_PATHS = {
     'deepseek4-flash-tp4': ('DeepSeek-V4-Flash-0731-UD-Q4_K_XL/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00005.gguf', 4),
 }
 TP_LINE = re.compile(r'\[quactlize-dense\] tensor=(.*?) device=(\d+) q=(\d+) m=(\d+) n=(\d+) k=(\d+)(?: |$)')
+META_LINE = re.compile(r'SPLIT_STATE: .* -> (.*?)\[NONE, (0|1|MIRRORED), \{([^}]*)\}\]')
 
 
 def bucket(w):
@@ -55,13 +56,29 @@ def headers(path):
     return rows, tensors
 
 
-def tp_records(paths, world):
+def tp_records(paths, world, tensors=()):
     records = defaultdict(set)
     receipts = []
+    weights = {t['name']: t for t in tensors if len(t['dims_gguf']) == 2}
     for path in paths:
         path = Path(path).resolve(strict=True)
         receipts.append(dict(path=str(path), sha256=sha(path)))
         for line in path.read_text(errors='replace').splitlines():
+            meta = META_LINE.search(line)
+            if meta and meta[1] in weights:
+                t = weights[meta[1]]
+                parts = [re.fullmatch(r'\s*(\d+)x(\d+)\s*', s) for s in meta[3].split(',')]
+                if len(parts) != world or not all(parts):
+                    raise ValueError('native TP split log has invalid rank/segment coverage: '+meta[1])
+                k, n = t['dims_gguf']
+                extents = [int(s[1])*int(s[2]) for s in parts]
+                if meta[2] != 'MIRRORED' and sum(extents) != (k if meta[2] == '0' else n):
+                    # The native debug log prints only its first segment. Never
+                    # silently treat a multi-segment prefix as the whole tensor.
+                    raise ValueError('native TP log does not cover the complete split axis: '+meta[1])
+                for rank, extent in enumerate(extents):
+                    records[meta[1]].add((rank, t['qtype'], extent if meta[2]=='1' else n,
+                                         extent if meta[2]=='0' else k))
             match = TP_LINE.search(line)
             if not match:
                 continue
@@ -107,7 +124,7 @@ def collect(models, ms, *, loader=headers):
         if type(world) is not int or world < 1:
             raise ValueError('positive TP world required')
         rows, tensors = loader(model['path'])
-        records, logs = tp_records(model.get('tp_logs', []), world)
+        records, logs = tp_records(model.get('tp_logs', []), world, tensors)
         identities.append(dict(name=model['name'], tp=world, files=rows, tp_logs=logs,
                                weights_hashed=False, identity_scope='HEADERS_AND_EXTENTS_ONLY'))
         for t in tensors:

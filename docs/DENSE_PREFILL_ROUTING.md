@@ -77,3 +77,68 @@ Leave-one-N/K-family-out audit (all M held out together): 33 comparable
 predictions, worst regret 5.73%; 17 predictions lack a measured held-out
 candidate, 115 requests have no donor in the bounded bin. These are not
 passes or made-up costs. DeepSeek/new shapes still require their own check.
+
+## TP2 / TP4 supplementary measurement
+
+`tools/run_tp_prefill_supplement.py` covers the **local dense prefill** matrices
+of Qwen3.5-122B-A10B-Q4_K_M TP2 and DeepSeek-V4-Flash-0731-UD-Q4_K_XL TP4.
+It does not claim MoE-GEMM, decode, TP correctness, communication or model TPOT
+coverage. Those exclusions remain in the inventory, not counted as passes.
+
+The runner first loads each model with native llama, equal tensor splits,
+Quactlize disabled and `GGML_META_DEBUG=1`. One PP64/TG1 benchmark row (plus
+the binary's own initial warmup) records the actual per-rank partition.
+Replicated weights, N/K cuts and repeated head
+segments are validated against all GGUF shard headers. Missing ranks or a
+debug record describing only a prefix of a segmented axis stop planning.
+It does not divide every N and K by the TP world size. Existing logs can be
+supplied through `--qwen-log` / `--deepseek-log` to skip these inventory passes.
+
+```bash
+cd /sim/eec/shared/junfu.qx/quactlize
+git pull --ff-only origin develop
+PPU_SDK=/usr/local/PPU_SDK \
+LLAMA_CI_DIR=/sim/eec/shared/junfu.qx/llama.cpp.ncp \
+LLAMA_CI_BUILD_DIR=/sim/eec/shared/junfu.qx/llama.cpp.ncp/build-ci-32F-cublas \
+L2_BYTES=67108864 JOBS=8 \
+python3 -u tools/run_tp_prefill_supplement.py \
+  --gpus 1,2,3,4,5,6,7 --confirm-idle --run
+```
+
+Only use `--confirm-idle` when the assigned GPUs are idle. The two native
+inventory passes run sequentially on the first 2 and first 4 assigned GPUs.
+Subsequent standalone local-shard measurements run independently across the
+assigned cards; they do not allocate a complete model or perform all-reduce.
+The model resolver checks both `/sim/eec/shared/AI_workspace/llm-models` and
+its `bench_model_zoo` subdirectory. It requires exactly one matching first
+shard. Override ambiguous or differently named files with `--qwen-model` and
+`--deepseek-model`; it will not choose an arbitrary GGUF quantization.
+
+Default M: 128/256/512/1024/2048. Candidate generation keeps the current exact
+or bounded-bucket choice, legal shipping recipe proposals and nearby per-route
+leaders, plus the new Q8/Q3 Full-F16 helpers. A maximum of 32 candidates per
+point is checked before TC candidate compilation; controls are never silently dropped to
+meet a quota. Q2 geometry transfers are explicitly unmeasured proposals.
+Every point, even an existing table hit, is remeasured against native F16
+operands / FP32 accumulation. Old absolute times are not reused on TP shapes.
+Targets outside the new table are labelled `OUTSIDE_NEW_TABLE`; this is not
+an assertion that their older production fallback has been measured here.
+
+Native and candidate passes alternate in forward/reverse candidate order.
+Asys GPU activities retain separate input/dequant/main/reducer/output samples
+and a sum over each complete call. No CUDA Graph for cuBLAS, no JIT/warmup in
+the admitted samples, no total derived from unrelated component medians.
+1700 MHz is requested; actual frequency remains advisory. This is a bounded
+candidate comparison, not proof of a global optimum.
+
+`TP_PREFILL_PLAN` prints actual deduplicated points, families, cases, modules
+and coverage before timing. The component runner estimates remaining time
+from observed work; startup/model loading and new compilation are separate.
+Omit `--run` to stop after planning. Resume using the same arguments with
+`--resume --output /workspace/kpack-tp-prefill.XXXXXXXX` (the printed retained
+directory); source, model paths and GPU assignment must stay unchanged.
+
+Upload only `timing/review-*.json.xz`. Original Asys reports stay under
+`timing/gpu-*/qwen32-prefill-asys.*/results/batches/*/attempt-*/trace.asysrep`.
+No production policy is updated by the run. Review its complete points before
+adding exact rows or refitting buckets.

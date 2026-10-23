@@ -106,6 +106,15 @@ def summarize(rows, names):
     return result
 
 
+def tc_helper_choice(dense, workload, mode, options):
+    if options is not None:
+        if (mode != 'cohort-current' or set(options) != {'vector_io'} or
+                options['vector_io'] not in (-1, 1, 2, 3)):
+            raise ValueError('explicit TC adapter must be row casts or a supported F16 vector mapping')
+        return dict(options, storage=0) if options['vector_io'] >= 0 else None
+    return dense.choice(workload,0,allow_miss=mode=='cohort-current') if mode in ('production','cohort-current') else None
+
+
 def qz(args, arm):
     from dev.strategy.cold_decode import Ring, Expansion
     from dev.strategy.prefill_fixture import Context, Helpers
@@ -172,7 +181,7 @@ def qz(args, arm):
             a, out = core.a.data_ptr(), core.out.data_ptr()
             names = ['error_reset', 'input', 'expansion', 'main', 'output']
         seq = []
-        helper_choice = dense.choice(w,0,allow_miss=helper_mode=='cohort-current') if promoted and tc else None
+        helper_choice = tc_helper_choice(dense,w,helper_mode,getattr(args,'helper_options',None)) if tc else None
         for i in range(copies):
             if not tc: seq.append(call(None, 3, [b.error.ptr, b.r.stream]))
             if sf_first:
