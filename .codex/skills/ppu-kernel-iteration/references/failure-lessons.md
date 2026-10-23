@@ -1,5 +1,19 @@
 # PPU failure lessons
 
+An Asys capture-boundary omission need not invalidate later complete samples.
+The 2026-10-23 ZW810/SDK2.1.1 dense Q4 M256/N10240/K5120 trace contained48
+successful reset API calls but47GPU reset activities. Only call0 of12already
+discarded primer calls lacked the activity; all36formal calls had stable,
+complete inventories. The old parser rejected before applying primer exclusion.
+Allow only this evidenced first-primer exception: correlate the input launch
+with a successful reset immediately after ProfilerStart, validate every other
+kernel, and retain an explicit audit. Never time the API or invent the absent
+GPU duration. Missing formal/reset/other-helper records still fail. Offline
+corrections retain raw hashes, original failures and old measurement authority;
+they do not mutate PASS receipts or authorize cross-source GPU resume. The
+reason the profiler omitted the first GPU activity remains unknown. Seams:
+`dev/prefill_asys/trace.py`, `tools/review_prefill_cohort.py` and their tests.
+
 Do not use ast.dump as a cross-Python-version measurement compatibility seal.
 Python3.12 adds FunctionDef.type_params=[] to the dump of unmodified Python3.10
 functions. The R26 prefill supplement rejected its unchanged child/jobs before

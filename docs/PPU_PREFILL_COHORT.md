@@ -119,6 +119,25 @@ stale points remain visible in coverage and cannot silently shrink a bucket's
 validation set. Source/SDK/device changes stay attached to their measurements;
 an SDK or hardware domain change requires a separate table.
 
+For a parser-only failure with retained raw evidence, no GPU rerun is needed:
+
+```bash
+python3 tools/review_prefill_cohort.py --previous /workspace/prefill-review.json.xz \
+  --reparse-attempt /workspace/qwen32-prefill-asys.RUN/results/batches/BATCH/attempt-ID \
+  --output /workspace/prefill-review-corrected.json.xz
+```
+
+This accepts only missing configurations of the same workload/authority, with
+a successful profiler process and the original request, numerical receipt,
+SQLite and logs. It preserves existing measurements and failure diagnostics;
+the separate `corrections` section binds the raw hashes and the new parser.
+It does not rewrite `pass.json`, permit cross-source resume, or run any GPU work.
+If the first already-discarded Full-F16/BF16 call lacks its GPU reset activity,
+the parser requires a successful reset API immediately after capture start,
+correlated input launch, and otherwise identical kernel inventory. It never
+invents that reset's duration. Every formal sample still needs all GPU activities;
+other missing or incorrect activities remain failures.
+
 Per-shape rankings use complete GPU-call cost at equal precision. The internal
 bucket experiment remains testable but is not invoked by the inventory, sweep
 or export commands. Bucket rules and their validation will be decided after

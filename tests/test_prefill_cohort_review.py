@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 import copy
 from dataclasses import asdict
 import json
@@ -8,10 +9,10 @@ import subprocess
 import sys
 import tempfile
 
-from quactlize.dispatch.table import Workload
+from quactlize.dispatch.table import Recipe, Workload
 from quactlize.runtime.compiler import sha
 from quactlize.runtime.tuning import digest
-from tools.review_prefill_cohort import ingest, merge, tables
+from tools.review_prefill_cohort import ingest, merge, reparse_attempt, tables
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -187,6 +188,99 @@ class IngestTests(unittest.TestCase):
         other=copy.deepcopy(result)
         next(iter(other['authorities'].values()))['device']['device']['compute_units']=64
         with self.assertRaisesRegex(ValueError,'domain changed'):merge(result,other,set())
+
+    def reparse_fixture(self):
+        root,key,path=self.fixture(complete=False)
+        result=ingest(root);result['history']=[];result['review_sha256']='previous-review'
+        partial=next(iter(result['partial_points'].values()))
+        case=json.loads((root/'execution-plan.json').read_text())['points'][0]['cases'][0]
+        case['id']=Recipe.from_dict(case['recipe']).key
+        partial['missing']=[case['id']]
+        identity={k:v for k,v in case.items() if k not in ('id','roles','launch','module')}
+        result['candidates'][digest(identity)]=identity
+        seal=dict(authority=partial['authority'],workload=partial['workload'],cases=[case])
+        attempt=root/'batches'/digest([key,[case]])/'attempt-123';attempt.mkdir(parents=True)
+        old=json.loads(path.read_text())
+        proof=json.loads((root/'cases.json').read_text())
+        proof[0].update(case_id=case['id'],arm=case['arm'],helper_mode=case['helper_mode'],
+                        recipe=case['recipe'],workload=partial['workload'],roles=case['roles'],zero_a='PASS',
+                        receipt=dict(arithmetic=dict(a='F16',b='F16',c='F16',accumulator='FP32')))
+        parsed=old['parsed'];parsed['cases'][0].update(case_id=case['id'],arm=case['arm'],helper_mode=case['helper_mode'])
+        for name,value in [('request.json',seal),('cases.json',proof),('profile.process.json',
+                dict(returncode=0,command=['asys','-o',str(attempt/'trace'),'--batch',str(attempt/'request.json')]))]:
+            (attempt/name).write_text(json.dumps(value))
+        # Parser behavior has its own real SQLite tests; these tests isolate
+        # correction binding/merge rules from the raw-activity parser.
+        for name in ('trace.sqlite','profile.log','export.log'):(attempt/name).write_text('fixture')
+        parsed['sqlite_sha256']=sha(attempt/'trace.sqlite')
+        result['diagnostics']=[dict(path='original-failure.json',data=dict(point=key,cases=[case['id']],error='reset missing'))]
+        return result,attempt,parsed,key
+
+    def test_reparse_only_completes_missing_rows_and_preserves_raw_evidence(self):
+        result,attempt,parsed,key=self.reparse_fixture()
+        before=copy.deepcopy(result);raw={p.name:p.read_bytes() for p in attempt.iterdir()}
+        with patch('dev.prefill_asys.trace.parse',return_value=parsed):reparse_attempt(result,attempt)
+        self.assertFalse(result['partial_points'])
+        self.assertEqual(len(result['points'][key]['measurements']),2)
+        partial=next(iter(before['partial_points'].values()))
+        self.assertEqual(result['points'][key]['measurements'][0],partial['measurements'][0])
+        self.assertEqual(result['diagnostics'],before['diagnostics'])
+        self.assertEqual(raw,{p.name:p.read_bytes() for p in attempt.iterdir()})
+        self.assertFalse((attempt.parent/'pass.json').exists())
+        correction=next(iter(result['corrections'].values()))
+        self.assertEqual(correction['previous_partial'],partial)
+        self.assertEqual(correction['record_sha256'],digest({k:v for k,v in correction.items() if k!='record_sha256'}))
+        self.assertEqual(correction['raw_files']['trace.sqlite'],sha(attempt/'trace.sqlite'))
+        self.assertFalse(correction['performance_admitted'])
+        self.assertEqual(tables(result['points'])[1],{})
+        with self.assertRaisesRegex(ValueError,'unresolved'):reparse_attempt(result,attempt)
+
+    def test_reparse_rejects_bad_identity_process_and_numerics_without_changes(self):
+        result,attempt,parsed,key=self.reparse_fixture()
+        files={p.name:p.read_text() for p in attempt.glob('*.json')}
+        for variant in ('authority','workload','recipe','process','proof-recipe','proof-workload',
+                        'helper','roles','oracle','weight','zero','coverage','existing','unknown-candidate','arithmetic'):
+            trial=copy.deepcopy(result)
+            for name,body in files.items():(attempt/name).write_text(body)
+            request=json.loads(files['request.json']);proof=json.loads(files['cases.json'])
+            process=json.loads(files['profile.process.json'])
+            if variant=='authority':request['authority']='wrong'
+            elif variant=='workload':request['workload']['m']+=1
+            elif variant=='recipe':request['cases'][0]['recipe']['parameters'][0][1]=99
+            elif variant=='process':process['returncode']=1
+            elif variant=='proof-recipe':proof[0]['recipe']['parameters'][0][1]=99
+            elif variant=='proof-workload':proof[0]['workload']['m']+=1
+            elif variant=='helper':proof[0]['helper_mode']='legacy'
+            elif variant=='roles':proof[0]['roles']=['changed']
+            elif variant=='oracle':proof[0]['correctness'][0]['relative_l1_error']=.1
+            elif variant=='weight':proof[0]['weight_bits'][0]['bad']=1
+            elif variant=='zero':proof[0]['zero_a']='FAIL'
+            elif variant=='coverage':proof=[]
+            elif variant=='existing':next(iter(trial['partial_points'].values()))['missing']=[]
+            elif variant=='arithmetic':proof[0]['receipt']['arithmetic']['accumulator']='F16'
+            else:trial['candidates']={}
+            for name,data in [('request.json',request),('cases.json',proof),('profile.process.json',process)]:
+                (attempt/name).write_text(json.dumps(data))
+            before=copy.deepcopy(trial)
+            with self.subTest(variant=variant),patch('dev.prefill_asys.trace.parse',return_value=parsed):
+                with self.assertRaises(ValueError):reparse_attempt(trial,attempt)
+            self.assertEqual(trial,before)
+
+    def test_reparse_uses_the_same_strict_component_sum_validation(self):
+        result,attempt,parsed,_=self.reparse_fixture();before=copy.deepcopy(result)
+        parsed['cases'][0]['kernel_inventory'][0].update(samples_us=[2]*3,median_us=2)
+        with patch('dev.prefill_asys.trace.parse',return_value=parsed):
+            with self.assertRaisesRegex(ValueError,'component sum'):reparse_attempt(result,attempt)
+        self.assertEqual(result,before)
+
+    def test_reparse_keeps_other_missing_configs_unresolved(self):
+        result,attempt,parsed,key=self.reparse_fixture()
+        next(iter(result['partial_points'].values()))['missing'].append('other-missing-config')
+        with patch('dev.prefill_asys.trace.parse',return_value=parsed):reparse_attempt(result,attempt)
+        self.assertNotIn(key,result['points'])
+        partial=next(iter(result['partial_points'].values()))
+        self.assertEqual(partial['missing'],['other-missing-config'])
+        self.assertEqual(len(partial['measurements']),2)
 
 
 if __name__=='__main__':unittest.main()
