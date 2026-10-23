@@ -58,26 +58,30 @@ def q8_half2():
     return result
 
 
-def variants_for(exchange=False,fast_tail=False,half2=False):
+def variants_for(exchange=False,fast_tail=False,half2=False,native=False):
     if sum((exchange,fast_tail,half2))>1:raise ValueError('choose one Q8 experiment')
+    if native:
+        if not half2:raise ValueError('native comparison requires the F16 half2 cohort')
+        return (-1,22,27,36,38)
     if half2:return (22,27,28,30,*q8_half2()) # all prior F16 per-shape winners
     return (22,*q8_tuning()) if fast_tail else (22,23,24,25) if exchange else VARIANTS
 
 
-def mode(exchange=False,fast_tail=False,half2=False):
+def mode(exchange=False,fast_tail=False,half2=False,native=False):
+    if native:return 'Q8_NATIVE_F16_AB'
     if half2:return 'Q8_F16_HALF2'
     return 'Q8_FAST_TAIL' if fast_tail else 'Q8_SHARED_EXCHANGE' if exchange else 'PLANE_PAIR'
 
 
-def plan(points, l2, exchange=False,fast_tail=False,half2=False):
-    variants=variants_for(exchange,fast_tail,half2)
+def plan(points, l2, exchange=False,fast_tail=False,half2=False,native=False):
+    variants=variants_for(exchange,fast_tail,half2,native)
     if (exchange or fast_tail or half2) and any(POINTS[i][0] != 8 for i in points):
         raise ValueError('experiment supports Q8 only')
     result=dict(schema='quactlize.dense-dequant-ab.v1', scope=SCOPE,
                 points=[dict(index=i, q=POINTS[i][0], n=POINTS[i][1], k=POINTS[i][2]) for i in points],
                 variants=list(variants), order=list(variants)+list(reversed(variants)), rounds=3, samples_per_visit=5,
                 correctness_storage=['F16', 'BF16'], timed_storage=['F16','BF16'] if exchange or fast_tail else 'F16',
-                experiment=mode(exchange,fast_tail,half2),
+                experiment=mode(exchange,fast_tail,half2,native),
                 profile_scope='ONE_CHECKED_LAUNCH_FORCED_COLD_NOT_ROTATING_EVENT_TIME',
                 l2_bytes=l2, cache='INPUT_AND_OUTPUT_RINGS_EACH_EXCEED_2.25_L2',
                 warmup='TWO_COMPLETE_GRAPHS_PER_VARIANT_EXCLUDED',
@@ -91,6 +95,10 @@ def plan(points, l2, exchange=False,fast_tail=False,half2=False):
         result.update(configs={str(k):v for k,v in q8_half2().items()},correctness_storage=['F16'],
             arithmetic_gate='ALL_256_CODES_X_63488_FINITE_F16_SCALES_TWO_LANES_RAW_BITS',
             bf16='CANDIDATES_MUST_REJECT_NOT_ROUND_THROUGH_FP16')
+    if native:
+        result.update(native_entry='EXISTING_LLAMA_Q8_F16_CONVERTER',
+            cache_pairing='EQUAL_RAW_AND_PACKED_RING_BYTES_SAME_OUTPUT_ADDRESSES',
+            native_recompiled=False)
     return result
 
 
@@ -173,6 +181,9 @@ def build(a, extra_sources=()):
                    source_head=os.environ.get('DENSE_DEQUANT_SOURCE_SHA', 'SEE_SOURCE_HASHES'),
                    actlize_head=os.environ.get('DENSE_DEQUANT_ACTLIZE_SHA', 'SEE_SOURCE_HASHES'),
                    runner_sha256=sha(__file__), compile_only=a.compile_only)
+    if getattr(a,'native_library',None):
+        from dev.dense_helpers.native_q8 import describe
+        receipt['native']=describe(a.native_library)
     atomic_json(output/'receipt.json', receipt)
     start = time.monotonic()
     with (output/'compile.log').open('x') as log:
@@ -214,10 +225,16 @@ def verify_receipt(a):
             any(sha(ROOT/p) != value for p, value in receipt['sources'].items()) or
             any(sha(a.sdk/'lib'/('lib'+name+'.so')) != value for name, value in receipt['runtime'].items())):
         raise ValueError('resume source, binary or SDK changed; retain old results and start a new run')
+    if receipt.get('native'):
+        from dev.dense_helpers.native_q8 import verify
+        verify(receipt['native'])
+        if a.native_library is None or a.native_library.resolve()!=Path(receipt['native']['library']):
+            raise ValueError('resume native library path changed')
+    elif getattr(a,'native_library',None):raise ValueError('resume has no native reference receipt')
     return receipt
 
 
-def validate_point(data, index, l2, exchange=False,fast_tail=False,half2=False):
+def validate_point(data, index, l2, exchange=False,fast_tail=False,half2=False,native=False):
     if (data.get('status') != 'PASS' or data.get('point') != index or
             tuple(data.get(name) for name in ('q', 'n', 'k')) != POINTS[index] or
             data.get('scope') != SCOPE or data.get('production_changed') is not False or
@@ -228,12 +245,12 @@ def validate_point(data, index, l2, exchange=False,fast_tail=False,half2=False):
             raise ValueError('saved point has an undersized weight/output ring')
     if data['calls_per_graph'] != 2*data['ring_copies']:
         raise ValueError('saved graph traversal differs')
-    variants=variants_for(exchange,fast_tail,half2)
-    if (exchange or fast_tail or half2) and (data.get('experiment')!=mode(exchange,fast_tail,half2) or data['q']!=8):
+    variants=variants_for(exchange,fast_tail,half2,native)
+    if (exchange or fast_tail or half2) and (data.get('experiment')!=mode(exchange,fast_tail,half2,native) or data['q']!=8):
         raise ValueError('wrong Q8 experiment')
     if fast_tail or half2:
         alignment=data.get('memory_alignment',{})
-        for name in ('low','units','output'):
+        for name in (('low','units','output','raw') if native else ('low','units','output')):
             if alignment.get(name)!={str(w):[0] for w in (16,32,64,128)}:
                 raise ValueError('Q8 footprint experiment requires recorded128B-aligned rings: '+name)
     for variant in variants:
@@ -253,6 +270,11 @@ def validate_point(data, index, l2, exchange=False,fast_tail=False,half2=False):
                                       negative_bad=1,bf16_rejected=list(q8_half2())):
             raise ValueError('exhaustive half2 arithmetic/rejection gate incomplete')
         if data.get('bf16_timing') is not None:raise ValueError('half2 must not time BF16')
+    if native:
+        if data.get('native_raw_sha256')!=data['fixture']['raw_sha256'] or data.get('native_bytes')!=data['traffic']['reads']:
+            raise ValueError('native/canonical fixture or input ring bytes differ')
+        if data.get('changed_address_copies_checked')!=data['ring_copies']:
+            raise ValueError('native comparison did not check every changed-address output')
     if exchange or fast_tail:
         bf=data.get('bf16_timing',{})
         for v in variants:
@@ -264,7 +286,7 @@ def validate_point(data, index, l2, exchange=False,fast_tail=False,half2=False):
     return data
 
 
-def fixture(q, n, k):
+def fixture(q, n, k, *, include_raw=False):
     import numpy as np
     from gguf import GGMLQuantizationType
     from gguf.quants import dequantize
@@ -285,10 +307,11 @@ def fixture(q, n, k):
     gold = dequantize(raw.reshape(-1), GGMLQuantizationType(q)).reshape(n, k)
     if not np.isfinite(gold).all() or not np.any(gold):
         raise ValueError('invalid independent GGUF fixture')
-    return packed, [gold.astype('<f2').view('<u2'), bf16_bits(gold)], dict(
+    result=packed, [gold.astype('<f2').view('<u2'), bf16_bits(gold)], dict(
         raw_sha256=hashlib.sha256(memoryview(raw)).hexdigest(),
         planes={name: hashlib.sha256(memoryview(value)).hexdigest() for name, value in packed.items()},
         oracle='INDEPENDENT_GGUF_FP32_AFFINE_THEN_ONE_RNE_F16_OR_BF16')
+    return (*result,raw) if include_raw else result
 
 
 class Bench:
@@ -316,7 +339,13 @@ class Bench:
         self.fn = self.lib.quactlize_kpack_dequant_dense_v1
         self.fn.argtypes, self.fn.restype = [C.POINTER(Call), C.POINTER(Arrangement), C.c_int, C.c_int], C.c_int
         self.arr = arrangement(self.q)
-        self.planes, self.gold, self.fixture = fixture(self.q, self.n, self.k)
+        self.planes, self.gold, self.fixture,raw = fixture(self.q,self.n,self.k,include_raw=True)
+        self.native=None
+        if getattr(a,'native_library',None):
+            from dev.dense_helpers.native_q8 import NativeQ8
+            if self.q!=8 or a.native_library.resolve()!=Path(receipt['native']['library']):
+                raise ValueError('native Q8 library/workload binding differs')
+            self.native=NativeQ8(receipt['native'])
         reads = sum(v.nbytes for v in self.planes.values())
         self.copies = 1 if a.profile_variant is not None else max(2, math.ceil(2.25*a.l2_bytes/reads))
         self.replays = 2*self.copies
@@ -336,6 +365,15 @@ class Bench:
             for i in range(1, self.copies):
                 checked(copy(base+i*data.nbytes, base, data.nbytes, 3, self.r.stream), 'initialize input ring')
             self.buffers[name] = base
+        if self.native:
+            if raw.nbytes!=reads:raise ValueError('raw/packed weight sizes differ')
+            self.raw_bytes=raw.nbytes
+            self.raw_sha256=hashlib.sha256(memoryview(raw)).hexdigest()
+            self.raw_base=self.r.alloc(raw.nbytes*self.copies)
+            checked(self.sdk.lib.hggcMemcpy(self.raw_base,raw.ctypes.data,raw.nbytes,1),'upload native rawGGUF')
+            self.sdk.synchronize(None)
+            for i in range(1,self.copies):
+                checked(copy(self.raw_base+i*raw.nbytes,self.raw_base,raw.nbytes,3,self.r.stream),'initialize native ring')
         base = self.r.alloc(self.stride*self.copies)
         self.r.fill(base, 0xa5, self.stride*self.copies)
         for i in range(self.copies):
@@ -347,11 +385,18 @@ class Bench:
                 **{name: p+i*self.planes[name].nbytes for name, p in self.buffers.items()}))
         self.memory_alignment={name:{str(width):sorted({int(getattr(c,name))%width for c in self.calls})
                                     for width in (16,32,64,128)} for name in (*self.buffers,'output')}
+        if self.native:
+            self.memory_alignment['raw']={str(w):sorted({(self.raw_base+i*self.raw_bytes)%w for i in range(self.copies)})
+                                          for w in (16,32,64,128)}
         if (getattr(a,'q8_fast_tail',False) or getattr(a,'q8_half2',False)) and any(value['128']!=[0] for value in self.memory_alignment.values()):
             raise ValueError('Q8 footprint experiment requires128B-aligned input/output ring entries')
         self.sdk.synchronize(self.r.stream)
 
     def launch(self, variant, storage=0, index=0):
+        if variant==-1:
+            if not self.native or storage:raise ValueError('native Q8 dequant requires bound F16 converter')
+            self.native.launch(self.raw_base+index*self.raw_bytes,self.calls[index].output,self.n*self.k,self.r.stream)
+            return self.sdk.lib.hggcGetLastError()
         return self.fn(C.byref(self.calls[index]), C.byref(self.arr), storage, variant)
 
     def read(self, index=0):
@@ -426,13 +471,18 @@ def measure_storage(b, variants, storage, point):
             samples[v].extend(current[v]);round_medians[v].append(statistics.median(current[v]))
         print(f'DENSE_DEQUANT_PROGRESS point={point} storage={storage} round={round_index+1}/3',flush=True)
     for v in variants:
+        if b.native:
+            # Outside every timed interval: another arm's correct outputs must
+            # not hide a missing native launch or a stale captured address.
+            for call in b.calls:b.r.fill(call.output,0x7f,b.bytes)
         checked(b.graph(v,storage)(),'final changed-address replay')
-        for index in (0,b.copies-1):
+        for index in (range(b.copies) if b.native else (0,b.copies-1)):
             got,want=b.read(index),b.gold[storage]
             if np.any((got!=want)&(((got|want)&0x7fff)!=0)):
                 raise ValueError('rotating output oracle mismatch')
     medians={v:statistics.median(samples[v]) for v in variants}
     return dict(samples_us=samples,round_medians_us=round_medians,median_us=medians,
+        changed_address_copies_checked=b.copies if b.native else min(2,b.copies),
         candidate_delta_pct={v:100*(medians[v]/medians[variants[0]]-1) for v in variants[1:]},
         spread_pct={v:100*(max(round_medians[v])-min(round_medians[v]))/medians[v] for v in variants},
         useful_gbps={v:b.traffic['useful_bytes']/medians[v]/1000 for v in variants})
@@ -464,8 +514,10 @@ def profile_entry(native, point, variant, storage):
     return dict(symbol=symbols[0],grid=[n//64,k//tile,1],block=[128,1,1])
 
 
-def profile_variants(medians,exchange=False,fast_tail=False,half2=False):
+def profile_variants(medians,exchange=False,fast_tail=False,half2=False,native=False):
     """Small diagnostic basis plus finalist; never profile all ten configs."""
+    if native:
+        return (-1,min((22,27),key=lambda v:medians[str(v)]),min((36,38),key=lambda v:medians[str(v)]))
     if half2:
         candidate=min(q8_half2(),key=lambda v:medians[str(v)])
         ordinary=35 if q8_half2()[candidate]['threads']==128 else 37
@@ -518,7 +570,8 @@ def child(a):
     from quactlize.runtime.native import checked
     b = Bench(a)
     try:
-        variants=variants_for(a.q8_exchange,a.q8_fast_tail,a.q8_half2)
+        native=a.native_library is not None
+        variants=variants_for(a.q8_exchange,a.q8_fast_tail,a.q8_half2,native)
         if a.profile_variant is not None:
             from tools.profile_kpack_gpu_compact import AcuRange
             storage=a.profile_storage
@@ -549,9 +602,10 @@ def child(a):
             bf16=measure_storage(b,variants,1,a.child) if a.q8_exchange or a.q8_fast_tail else None
             result = dict(status='PASS', point=a.child, q=b.q, n=b.n, k=b.k, fixture=b.fixture,
                           proof=proofs, negative_bad=negative, **f16,
-                          bf16_timing=bf16,half2_gate=gate,experiment=mode(a.q8_exchange,a.q8_fast_tail,a.q8_half2),
+                          bf16_timing=bf16,half2_gate=gate,experiment=mode(a.q8_exchange,a.q8_fast_tail,a.q8_half2,native),
                           traffic=b.traffic,memory_alignment=b.memory_alignment,ring_copies=b.copies,calls_per_graph=b.replays,
                           scope=SCOPE, production_changed=False, performance_admitted=False)
+            if native:result.update(native_bytes=b.raw_bytes,native_raw_sha256=b.raw_sha256)
     finally:
         b.close()
     name = f'point-{a.child}.json' if a.profile_variant is None else f'profile-{a.child}-{a.profile_variant}-s{a.profile_storage}-proof-{time.time_ns()}.json'
@@ -579,6 +633,7 @@ def main():
     modes.add_argument('--q8-exchange', action='store_true', help='Q8 only: controls22/23 vs candidates24/25, F16 and BF16')
     modes.add_argument('--q8-fast-tail', action='store_true', help='Q8 only: DQ22 vs fast FP32 conversion, CTA grain and vector-scale factorial')
     modes.add_argument('--q8-half2', action='store_true', help='Q8 F16 only: retained winners vs ordinary/fast half2, exhaustive arithmetic gate')
+    p.add_argument('--native-library',type=Path,help='with --q8-half2: compare existing llama libggml-cuda.so converter directly')
     p.add_argument('--l2-bytes', type=int, default=0, help='independently verified fallback if SDK reports zero')
     p.add_argument('--confirm-idle', action='store_true')
     p.add_argument('--plan-only', action='store_true')
@@ -588,14 +643,18 @@ def main():
     p.add_argument('--profile-points', help='default: 4,6 for half2; 5,7 for other Q8 modes; otherwise 0,1,5,6')
     p.add_argument('--smi', type=Path)
     p.add_argument('--child', type=int, choices=range(len(POINTS)), help=argparse.SUPPRESS)
-    p.add_argument('--profile-variant', type=int, choices=(0,22,23,24,25,*q8_tuning(),*q8_half2()), help=argparse.SUPPRESS)
+    p.add_argument('--profile-variant', type=int, choices=(-1,0,22,23,24,25,*q8_tuning(),*q8_half2()), help=argparse.SUPPRESS)
     p.add_argument('--profile-storage', type=int, choices=(0,1), default=0, help=argparse.SUPPRESS)
     p.add_argument('--profile-result', type=Path, help=argparse.SUPPRESS)
     a = p.parse_args()
+    native=a.native_library is not None
+    if native:
+        if not a.q8_half2:p.error('--native-library requires --q8-half2')
+        a.native_library=a.native_library.resolve(strict=True)
     q8=a.q8_exchange or a.q8_fast_tail or a.q8_half2
     points=selected(a.points or ('2,3,4,5,6,7' if q8 else '0,1,2,3,4,5,6,7'))
-    profiles=selected(a.profile_points or ('4,6' if a.q8_half2 else '5,7' if q8 else '0,1,5,6'))
-    experiment=plan(points,a.l2_bytes,a.q8_exchange,a.q8_fast_tail,a.q8_half2)
+    profiles=selected(a.profile_points or ('2,3,4,5,6,7' if native else '4,6' if a.q8_half2 else '5,7' if q8 else '0,1,5,6'))
+    experiment=plan(points,a.l2_bytes,a.q8_exchange,a.q8_fast_tail,a.q8_half2,native)
     if a.profile_variant is not None and a.child is None:
         p.error('--profile-variant requires --child')
     if a.profile_variant is not None and a.profile_variant not in experiment['variants']:
@@ -644,7 +703,7 @@ def main():
             raise ValueError('ppu-smi required to request 1700MHz')
         with (Path('/tmp')/('quactlize-components-'+digest(pci)[:24]+'.lock')).open('a') as held:
             fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            authority = dict(device=identity, plan=plan(points, a.l2_bytes,a.q8_exchange,a.q8_fast_tail,a.q8_half2),
+            authority = dict(device=identity, plan=plan(points, a.l2_bytes,a.q8_exchange,a.q8_fast_tail,a.q8_half2,native),
                              idle='OPERATOR_CONFIRMED', frequency_normalization=False)
             if a.resume and json.loads((a.output/'authority.json').read_text()) != authority:
                 raise ValueError('resume physical device/SDK/L2 differs')
@@ -662,6 +721,7 @@ def main():
                 if a.q8_exchange:command+=['--q8-exchange']
                 if a.q8_fast_tail:command+=['--q8-fast-tail']
                 if a.q8_half2:command+=['--q8-half2']
+                if native:command+=['--native-library',str(a.native_library)]
                 if variant is not None:
                     from dev.native_components.profile import acu_command
                     command += ['--profile-variant', str(variant),'--profile-storage',str(storage),
@@ -694,9 +754,13 @@ def main():
                         raise ValueError('profile child proof incomplete')
                     if q8:
                         from dev.native_components.profile import check_report
-                        native=json.loads((a.output/'build/native.json').read_text())
+                        codegen=json.loads((a.output/'build/native.json').read_text())
                         raw_path=a.output/(attempt+'-raw.csv')
-                        check=check_report(raw_path.read_text(errors='replace'),profile_entry(native,index,variant,storage))
+                        if variant==-1:
+                            from dev.dense_helpers.native_q8 import check_profile
+                            _,n,k=POINTS[index]
+                            check=check_profile(raw_path.read_text(errors='replace'),n,k)
+                        else:check=check_report(raw_path.read_text(errors='replace'),profile_entry(codegen,index,variant,storage))
                         atomic_json(a.output/(attempt+'-receipt.json'),dict(**check,point=index,variant=variant,storage=storage,
                             report=str(report),report_sha256=sha(report),raw_sha256=sha(raw_path),proof_sha256=sha(proof_path),
                             prior_point_sha256=sha(a.output/f'point-{index}.json'),authority_sha256=digest(authority),
@@ -706,14 +770,14 @@ def main():
             for index in points:
                 saved = a.output/f'point-{index}.json'
                 if a.resume and saved.is_file():
-                    validate_point(json.loads(saved.read_text()), index, a.l2_bytes,a.q8_exchange,a.q8_fast_tail,a.q8_half2)
+                    validate_point(json.loads(saved.read_text()), index, a.l2_bytes,a.q8_exchange,a.q8_fast_tail,a.q8_half2,native)
                     print(f'DENSE_DEQUANT_REUSE point={index} raw_results_unchanged=1', flush=True)
                     rc = 0
                 else:
                     rc = run(index)
                 summary['points'][str(index)] = dict(returncode=rc)
                 if rc == 0:
-                    data = validate_point(json.loads(saved.read_text()), index, a.l2_bytes,a.q8_exchange,a.q8_fast_tail,a.q8_half2)
+                    data = validate_point(json.loads(saved.read_text()), index, a.l2_bytes,a.q8_exchange,a.q8_fast_tail,a.q8_half2,native)
                     summary['points'][str(index)].update(median_us=data['median_us'], delta_pct=data['candidate_delta_pct'])
                     if q8:summary['points'][str(index)]['bf16_timing']=data['bf16_timing']
                 atomic_json(a.output/'summary.json', summary)
@@ -725,7 +789,7 @@ def main():
                         timing=summary['points'][str(index)]
                         if storage:timing=timing['bf16_timing']
                         medians=timing['median_us']
-                        for v in profile_variants(medians,a.q8_exchange,a.q8_fast_tail,a.q8_half2):
+                        for v in profile_variants(medians,a.q8_exchange,a.q8_fast_tail,a.q8_half2,native):
                             # Fresh names never replace a prior raw report.
                             summary['profiles'][f'{index}-{v}-s{storage}']=run(index,v,storage)
                             atomic_json(a.output/'summary.json',summary)

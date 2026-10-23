@@ -10,6 +10,7 @@ GPU=${GPU:-${CUDA_VISIBLE_DEVICES:-1}}
 [[ ${Q8_EXCHANGE:-0} =~ ^[01]$ ]] || { echo 'ERROR: Q8_EXCHANGE must be 0 or 1.' >&2; exit 1; }
 [[ ${Q8_FAST_TAIL:-0} =~ ^[01]$ ]] || { echo 'ERROR: Q8_FAST_TAIL must be 0 or 1.' >&2; exit 1; }
 [[ ${Q8_HALF2:-0} =~ ^[01]$ ]] || { echo 'ERROR: Q8_HALF2 must be 0 or 1.' >&2; exit 1; }
+[[ ${Q8_NATIVE:-0} =~ ^[01]$ ]] || { echo 'ERROR: Q8_NATIVE must be 0 or 1.' >&2; exit 1; }
 (( ${Q8_EXCHANGE:-0} + ${Q8_FAST_TAIL:-0} + ${Q8_HALF2:-0} <= 1 )) || { echo 'ERROR: choose one Q8 experiment.' >&2; exit 1; }
 [[ -z ${RUN:-} ]] || { echo 'ERROR: unset RUN; use RESUME_RUN to retry a retained run.' >&2; exit 1; }
 PPU_SDK=$(realpath -e -- "${PPU_SDK:-/usr/local/PPU_SDK}")
@@ -23,6 +24,17 @@ args=(--confirm-idle --sdk "${PPU_SDK}" --l2-bytes "${L2_BYTES:-67108864}")
 if [[ ${Q8_EXCHANGE:-0} == 1 ]]; then args+=(--q8-exchange); fi
 if [[ ${Q8_FAST_TAIL:-0} == 1 ]]; then args+=(--q8-fast-tail); fi
 if [[ ${Q8_HALF2:-0} == 1 ]]; then args+=(--q8-half2); fi
+if [[ ${Q8_NATIVE:-0} == 1 ]]; then
+    [[ ${Q8_HALF2:-0} == 1 ]] || { echo 'ERROR: Q8_NATIVE requires Q8_HALF2=1.' >&2; exit 1; }
+    if [[ -z ${NATIVE_LIBRARY:-} ]]; then
+        [[ -n ${LLAMA_CI_BUILD_DIR:-} ]] || { echo 'ERROR: set LLAMA_CI_BUILD_DIR or NATIVE_LIBRARY.' >&2; exit 1; }
+        NATIVE_LIBRARY=${LLAMA_CI_BUILD_DIR}/bin/libggml-cuda.so
+    fi
+    NATIVE_LIBRARY=$(realpath -e -- "${NATIVE_LIBRARY}")
+    test -f "${NATIVE_LIBRARY}"
+    export LD_LIBRARY_PATH="$(dirname -- "${NATIVE_LIBRARY}"):${LD_LIBRARY_PATH}"
+    args+=(--native-library "${NATIVE_LIBRARY}")
+fi
 [[ -z ${POINTS:-} ]] || args+=(--points "${POINTS}")
 if [[ -n ${RESUME_RUN:-} ]]; then
     RUN=$(realpath -e -- "${RESUME_RUN}")
@@ -52,12 +64,12 @@ if [[ ${PROFILE_ACU:-0} == 1 ]]; then
     [[ -z ${PROFILE_POINTS:-} ]] || args+=(--profile-points "${PROFILE_POINTS}")
 fi
 [[ -z ${PPU_SMI:-} ]] || args+=(--smi "${PPU_SMI}")
-echo "DENSE_DEQUANT_BOX run=${RUN} gpu=${GPU} q8_exchange=${Q8_EXCHANGE:-0} q8_fast_tail=${Q8_FAST_TAIL:-0} q8_half2=${Q8_HALF2:-0} gemm_calls=0 kernel_default_changed=0"
+echo "DENSE_DEQUANT_BOX run=${RUN} gpu=${GPU} q8_exchange=${Q8_EXCHANGE:-0} q8_fast_tail=${Q8_FAST_TAIL:-0} q8_half2=${Q8_HALF2:-0} q8_native=${Q8_NATIVE:-0} gemm_calls=0 kernel_default_changed=0"
 set +e
 "${PYTHON}" -u "${RUN}/source/tools/run_dense_dequant.py" --output "${RUN}/results" \
     "${args[@]}" 2>&1 | tee "${RUN}/console-$(date +%s%N).log"
 rc=${PIPESTATUS[0]}
 set -e
 echo "runner_rc=${rc} run=${RUN}"
-echo "DENSE_DEQUANT_RESUME RESUME_RUN=${RUN} GPU=${GPU} Q8_EXCHANGE=${Q8_EXCHANGE:-0} Q8_FAST_TAIL=${Q8_FAST_TAIL:-0} Q8_HALF2=${Q8_HALF2:-0} PROFILE_ACU=${PROFILE_ACU:-0} IDLE_CONFIRMED=1 bash tools/run_dense_dequant_box.sh"
+echo "DENSE_DEQUANT_RESUME RESUME_RUN=${RUN} GPU=${GPU} Q8_EXCHANGE=${Q8_EXCHANGE:-0} Q8_FAST_TAIL=${Q8_FAST_TAIL:-0} Q8_HALF2=${Q8_HALF2:-0} Q8_NATIVE=${Q8_NATIVE:-0} NATIVE_LIBRARY=${NATIVE_LIBRARY:-} PROFILE_ACU=${PROFILE_ACU:-0} IDLE_CONFIRMED=1 bash tools/run_dense_dequant_box.sh"
 exit "${rc}"

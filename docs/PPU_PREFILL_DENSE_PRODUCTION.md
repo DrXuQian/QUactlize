@@ -5,7 +5,52 @@ performance admission. `quactlize/dense/runtime.cpp` calls the same compiled
 policy and typed runtime used by the diagnostic. Public caller ABI, offline
 K-pack bytes, NCP wrapper and llama.cpp code are unchanged.
 
-## Q8 F16 half2 experiment (2026-10-23; device result pending)
+## Direct native Q8 F16 comparison (2026-10-23; device pending)
+
+The half2 return passes all6 exhaustive device gates,54whole-tile numeric
+cells,48timed cells and9ACU exports. Archive
+`review-1792744991583632885.tgz`, SHA256
+`1298a1b6baa8cd604c0ae22da11d280f76e36fa201314304ff289723e14d8c69`.
+Against the contemporaneously best old config, half2 wins the two1M-element
+shapes3.20/3.18%,N1024K5120by1.97%; the other three changes are+0.30%,
+-0.72%,-0.53%. At1.7GHz the three fast-half2 ACU cases reduce instructions
+12.2--12.84%, but cycles only0.86/6.37/5.65%. Global/shared transactions and
+shared-store conflicts stay fixed. Cold-ACU cycles are not rotating event
+latency. No old/native Asys time is substituted into this new cohort.
+
+`Q8_NATIVE=1 Q8_HALF2=1` now calls the actual exported
+`ggml_get_to_fp16_cuda(GGML_TYPE_Q8_0)` from an existing llama CUDA DSO.
+No reference kernel is copied or recompiled and no llama source is edited.
+DSO/dependency hashes and symlink targets are sealed; a missing getter fails.
+The native input is the SAME rawGGUF fixture that produced canonical KPACK2.
+Raw/packed ring bytes/counts are equal; output ring addresses, stream,
+warmup, event timing and cold ACU protocol are shared. Native output must
+match the independent oracle and the same strict raw-bit control.
+
+Only native plusDQ22/27/36/38 are timed (30cells,900samples); these include
+the old andnew winners from the returned cohort. All six points profile
+native+bestold+bestnew,18singlelaunchcaptures. The native report must show
+`dequantize_block_q8_0_f16<false>`,2048elements/CTA and32threads. A generic
+or BF16 converter cannot silently stand in. No cuBLAS/GEMM/model work.
+
+```bash
+(
+  set -e
+  cd /sim/eec/shared/junfu.qx/quactlize
+  git pull --ff-only origin develop
+  unset RUN RESUME_RUN POINTS PROFILE_POINTS NATIVE_LIBRARY
+  PPU_SDK=/usr/local/PPU_SDK GPU=1 L2_BYTES=67108864 IDLE_CONFIRMED=1 \
+  LLAMA_CI_BUILD_DIR=/sim/eec/shared/junfu.qx/llama.cpp.ncp/build-ci-32F-cublas \
+  Q8_EXCHANGE=0 Q8_FAST_TAIL=0 Q8_HALF2=1 Q8_NATIVE=1 PROFILE_ACU=1 \
+  bash tools/run_dense_dequant_box.sh
+)
+```
+
+Choose an idle GPU and an already-built llama directory. Neither the native
+library nor the production helper selector is modified. The compact review
+contains samples andACUCSV; originalacurep staysonBox. Device result pending.
+
+## Q8 F16 half2 experiment (2026-10-23; scoped result above)
 
 `Q8_HALF2=1` uses the existing isolated runner for the six Q8 N/K families.
 DQ22/27/28/30 retain every previous F16 per-shape winner. Explicit candidates
