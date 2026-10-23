@@ -190,7 +190,54 @@ device checks prevent resuming older exchange results as fast-tail results.
 writes. Its bandwidth timeline cannot by itself distinguish CTA retirement
 from producer/consumer phase changes; raw timelines were requested. Do not
 call combined logical read+write bytes divided by that ACU time measured HBM
-bandwidth. Candidate performance and any model-level benefit remain pending.
+bandwidth. At handoff, candidate performance and model-level benefit were pending.
+
+### Fast/grain/scale return: scoped gains, no default promotion
+
+Return `review-1792741309128779355.tgz`, SHA256
+`7922754a27eeffd21ebf3e130fc7ece010f8c7ff3ec8311705d45ad92d6db262`,
+source `cd8b9c0`: all132 numeric cells,120 timing cells (3600 samples) and
+18 ACU exports pass the evidence audit;1264 source hashes match. ACU clocks
+are all1.7GHz; event before/after samples report1700/1800MHz core/memory,
+not continuous clock telemetry. Device is ZW810/72CU, PCI0000:7E:00.0.
+The compact upload includes rawCSV/proof hashes, not DSOs or full acurep.
+
+Rotating input/output-ring event medians, microseconds; minimum measured
+config in this bounded inventory, not a model/GEMM/full-call claim:
+
+| N x K | F16 DQ22 -> best | Change | BF16 DQ22 -> best | Change |
+|---|---:|---:|---:|---:|
+|512 x2048|3.9707 ->3.7525 (28)|-5.50%|4.0045 ->3.7425 (28)|-6.54%|
+|2048 x512|4.0054 ->3.7799 (28)|-5.63%|4.0006 ->3.7471 (28)|-6.34%|
+|4096 x2048|15.5741 ->15.5741 (22)|0|15.5394 ->15.5394 (22)|0|
+|8192 x2048|29.7989 ->29.6500 (30)|-0.50%|29.8456 ->29.5700 (29)|-0.92%|
+|2048 x4096|15.5794 ->15.5794 (22)|0|15.5153 ->15.5153 (22)|0|
+|1024 x5120|10.1471 ->10.0339 (28)|-1.12%|10.2004 ->9.9704 (27)|-2.25%|
+
+The small-shape gain is mainly256-thread work partitioning; fast-only26
+versus22 is marginal/mixed. The ordinary256-thread27 is already about5--6%
+faster on the two smallest shapes. Preserve both27/28; their small difference
+is not proof that fast conversion broadly wins. At N1024K5120, ordinary27
+also lowers ACU cycles3.54%/1.22% and lifts active warps about50%->84%.
+
+For N8192K2048/BF16, vector-scale31 truly improves global request packing:
+LSU read transaction bytes18->17MiB, requests49152->36864; DRAM remains
+about17MiB. But shared-store bank conflicts49152->114688, dynamic
+instructions+2.25%, registers44->48, and ACU cycles29892->31493(+5.36%).
+Event latency29.8456->30.3056us also loses. These coexisting changes do not
+prove that one counter exactly cancels another. The source publishes each
+thread's four neighboring scales to `A::offset(col+v,g)` at16-byte strides;
+native still emits scalar shared stores. Next investigate paired scale
+publication/consumer layout while retaining the proved global/output maps;
+do not call a plain float4 cast on these noncontiguous addresses correct.
+
+512-thread29 increases large-shape waves1.78->7.11 and active warps84.1%->
+88.6%, but instructions+20.06%; BF16 ACU cycles+1.03% while rotating time
+is0.92%lower. This does not establish a large tail-removal gain. Raw timelines
+were not included, and forced-cold ACU has0DRAM output writes. Do not replace
+the rotating ranking with this separate cache regime or normalize between
+the two. Keep DQ22 as production default; preserve scoped256-thread candidates,
+reject global promotion of vector-scale/512-thread/fast-only changes.
 
 ### Previous exchange handoff (immutable controls)
 

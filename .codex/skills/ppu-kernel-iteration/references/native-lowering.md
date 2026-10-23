@@ -796,3 +796,23 @@ the grid. Also distinguish write destination: these cold ACU reports have
 0DRAMwritebytes and32MiB outputwrites inL2/LLC. Producer-read and consumer-
 compute/store phases can make HBM bandwidth decay without equal CTA decline.
 Do not equate ACU duration with rotating input/output-ring event time.
+
+The Q8 fast/grain/scale follow-up (cd8b9c0, ZW81072CU/1.7GHz, return
+review-1792741309128779355.tgz, SHA2567922754a27eeffd21ebf3e130fc7ece010f8c7ff3ec8311705d45ad92d6db262)
+passes132 numeric cells/120 timing cells/18 ACU exports. Four-half uint2
+metadata loads actually reduce N8192K2048 LSU reads18->17MiB and global
+requests49152->36864, with essentially unchanged17MiB DRAM. Yet their four
+scalar shared publications use16-byte strides: whole-kernel shared-store
+BC49152->114688, instructions+2.25%, regs44->48 and BF16 cycles+5.36%.
+Global coalescing improved without a speedup. Audit the producer AND consumer
+shared layout; do not cast noncontiguous shared destinations to float4 or
+claim exact latency attribution from aggregate BC without per-PC evidence.
+
+256-thread mapping wins the two smallest Q8 shapes5--6.5% in all3 event
+rounds, mostly without fast conversion. For N1024K5120, ordinary256 lifts
+active warps~50->84% with1--2.3% event gain. At N8192K2048,512threads raise
+waves1.78->7.11/activewarps84->89% but add20% instructions; sub1% event gain
+coexists with slower ACU cycles. Int->float removal alone is not a speedup
+either: fast-only totals+0.32% instructions with mixed latency. Retain scoped
+candidate recipes and separate cache protocols; no global policy promotion.
+Detailed timing table and admission boundary: docs/PPU_PREFILL_DENSE_PRODUCTION.md.
