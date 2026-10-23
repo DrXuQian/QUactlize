@@ -1,0 +1,57 @@
+Q8 paired consumer: bounded helper experiment, NOT production admission
+
+Parent: 6e35f53d9f54749c7f0ea94416fb7456fac98ff8.
+Only Q8 KPACK2 -> F16 [N,K]. Canonical low/units bytes, one final RNE
+product, public structs, BF16 path and production selection are unchanged.
+
+Four candidates (39..42): signed8 or fast-bit reconstruction,128/256 threads.
+Pair neighboring N scales into a single32-bit shared slot and consume each
+packed word as two N lanes. Use byte-permute to restore the original K8
+coalesced output. Vector-index addressing prevents the compiler from splitting
+the first16B store. No additional output transpose, activation quantization,
+approximation, FTZ allowance or clip. BF16 must reject these F16-only arms.
+
+Compile-only evidence, SDK2.1.1, ppu_10, same FLAGS/lineinfo:
+  fast128 old36=517 -> candidate41=421 static instructions (-18.57%).
+  fast256 old38=286 -> candidate42=278 static instructions (-2.80%).
+  scale shared load sites8->4 and4->2; shared allocation9216->8704B.
+  zero stack;32/16 native half2 multiplies;32/16 native byte-permutes;
+  every output store remains vmem.st.b32x4; fast consumers have no floating
+  conversion or FP32 multiply. All68 old native bodies remain byte-identical.
+  Signed char did NOT become a direct i8->half instruction locally: signed
+  candidates retain sign extension + i32 conversion. They remain bounded
+  diagnostic controls, not claimed instruction-optimal winners.
+  Counts are static, not dynamic instructions, device latency or speedup.
+
+Host gates: all256 codes x63488 finite F16 scales x2 byte phases, with distinct
+per-N scales; signed zero/subnormal/overflow raw bits; real shared maps;
+single-writer ownership; GGUF oracle and swapped-scale negative; guards;
+32/64/128B per-instruction global footprints on all six benchmark shapes.
+Device gates repeat exhaustive arithmetic (including actual byte-permute),
+check every rotating output copy and reject BF16 before any timing.
+
+Box: use tools/run_dense_dequant_box.sh with Q8_HALF2=1 Q8_NATIVE=1 Q8_PAIRED=1.
+Native comes from the existing LLAMA_CI_BUILD_DIR/bin/libggml-cuda.so;
+neither llama nor its converter is rebuilt. The script freezes source, builds
+the small helper probe, requests1700MHz (observed clock advisory), compares
+native plus22/27/36/38/39/40/41/42 on six shapes.54 cells,30 samples per cell,
+alternating forward/reverse order, input/output rings each>=2.25 verifiedL2.
+ACU defaults to points4,5,7: native, best retained, best signed, best fast;
+12 direct single-launch profiles, no graph/cold loop under ACU.
+Upload printed results/review-*.tgz only; .acurep and binaries stay on Box.
+Same-source/device RESUME_RUN preserves passing measurements.
+
+Next decision AFTER returned helper measurements:
+Audit compatible existing whole-route observations (SIMT/TC/FQ/SF/Full,
+Split-K, main/reducer/input/output components) by source/binary, SDK/device,
+clock regime, dtype, shape/M/operator and timing context. Do not globally
+resweep unchanged work, but do not replace model-context stage times with
+isolated-helper medians. Check call-context finalists before using the helper
+delta in a whole-route selection table. Bucket means overall configuration
+selection, NOT a dequant-only bucket. Keep unmeasured cells explicit.
+
+Known open discrepancy: old full-call Asys case4 DQ22 vs native was+37.66%,
+current isolated rotating events+0.81%, despite matching DQ22 opcode counts
+and the same native DSO. Native/Quactlize call order differs. This is not a
+proven code-optimization gain or a proven cache-only cause. Resolve the
+decision-relevant context gap before claiming end-to-end no regression.
