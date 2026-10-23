@@ -1,0 +1,10 @@
+// Explicit only: ID, fast FP32 conversion, CTA threads, vector scale load.
+QKP_Q8_TUNE(26, 1, 128, 0)
+QKP_Q8_TUNE(27, 0, 256, 0)
+QKP_Q8_TUNE(28, 1, 256, 0)
+QKP_Q8_TUNE(29, 0, 512, 0)
+QKP_Q8_TUNE(30, 1, 512, 0)
+QKP_Q8_TUNE(31, 0, 128, 1)
+QKP_Q8_TUNE(32, 1, 128, 1)
+QKP_Q8_TUNE(33, 1, 256, 1)
+QKP_Q8_TUNE(34, 1, 512, 1)

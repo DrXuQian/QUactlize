@@ -777,3 +777,22 @@ cycles, issue pressure and actual output transactions before promotion.
 Full-only helper measurements must not silently change a shared TC/SF adapter
 lookup; their route-specific scopes now have separate host policy entries.
 Evidence/workload and bounded ACU command: docs/PPU_PREFILL_DENSE_PRODUCTION.md.
+
+Device follow-up for that exchange hypothesis (source32a8320, return
+review-1792738826567943419.tgz, SHA25683ddbd57ae0882e8eec476712e0e119d431c4e0d7962a11b43d8611445a0dba6):
+all60 numeric cells/48 timed cells/8profiles pass, but all12typedQ8points
+preferDQ22. DQ24 regresses0.91--3.10%; do NOT promote. Shared reads-40%
+coexist with dynamicinstructions+15.1%, scalarinstructions+89.2% and
+unchanged global transactions; control already has0shared-loadbankconflicts.
+Equal1.7GHz profile5 BF16 cycles+4.92%; register44->40 gives nooccupancy
+gain. This supersedes the compile-only impression above.
+
+Separate partial-wave DURATION from wasted capacity:2048CTAs/(72CU*16)
+is1fullwave+896blocks. The partialwave can last50%of a two-wave run,
+but is77.8%filled. The uniform linear empty-slot model is11.1%, not50%.
+Changing a power-of-two CTA grain can add waves without reducing this
+fraction; inspect phase overlap and measured cycles rather than padding
+the grid. Also distinguish write destination: these cold ACU reports have
+0DRAMwritebytes and32MiB outputwrites inL2/LLC. Producer-read and consumer-
+compute/store phases can make HBM bandwidth decay without equal CTA decline.
+Do not equate ACU duration with rotating input/output-ring event time.

@@ -20,6 +20,10 @@ class DenseHelperHost(unittest.TestCase):
         cls.lib.dense_plane_pair_host.argtypes=[C.c_int]*3+[C.c_void_p]*4+[C.c_int]*3
         cls.lib.dense_q8_exchange_address.argtypes=[C.c_uint]*3
         cls.lib.dense_q8_exchange_address.restype=C.c_uint
+        cls.lib.dense_q8_fast_exhaustive.argtypes=[C.POINTER(C.c_uint64)]
+        cls.lib.dense_q8_tuned_address.argtypes=[C.c_uint]*7
+        cls.lib.dense_q8_tuned_address.restype=C.c_uint64
+        cls.lib.dense_q8_tuned_config.argtypes=[C.c_int]+[C.POINTER(C.c_int)]*3
         cls.lib.dense_cooperative_layout.argtypes=[C.c_uint]*5;cls.lib.dense_cooperative_layout.restype=C.c_uint
         cls.lib.dense_full4.argtypes=[C.c_uint64,C.c_uint,C.c_uint];cls.lib.dense_full4.restype=C.c_uint64
         cls.lib.dense_pair_host.argtypes=[C.c_int]*3+[C.c_void_p]*4+[C.c_int]*3
@@ -40,6 +44,46 @@ class DenseHelperHost(unittest.TestCase):
                 '-I'+str(SDK/'include'),str(ROOT/'tests/prefill_dense_runtime_host.cpp'),
                 str(ROOT/'quactlize/prefill/dense_runtime.cpp'),'-ldl','-o',str(exe)],check=True)
             subprocess.run([str(exe),str(root)],check=True)
+
+    def test_q8_fast_all_codes_and_finite_half_scales(self):
+        count=C.c_uint64()
+        self.assertEqual(self.lib.dense_q8_fast_exhaustive(C.byref(count)),0)
+        self.assertEqual(count.value,256*(65536-2048)*2)
+
+    def test_q8_tuning_cpp_launch_inventory(self):
+        from tools.run_dense_dequant import q8_tuning
+        for variant,cfg in q8_tuning().items():
+            values=[C.c_int(-1) for _ in range(3)]
+            self.assertEqual(self.lib.dense_q8_tuned_config(variant,*map(C.byref,values)),1)
+            self.assertEqual([v.value for v in values],[cfg[k] for k in ('fast','threads','vector_scale')])
+        values=[C.c_int(-1) for _ in range(3)]
+        self.assertEqual(self.lib.dense_q8_tuned_config(35,*map(C.byref,values)),0)
+
+    def test_q8_tuning_per_instruction_global_footprints(self):
+        from collections import Counter
+        fn=self.lib.dense_q8_tuned_address
+        for n,k in ((512,2048),(2048,512),(4096,2048),(8192,2048),(2048,4096),(1024,5120)):
+            for n0 in (0,64,n-64):
+                for k0 in (0,128,k-128):
+                    for kind,workers,width in ((0,512,16),(1,256,2),(2,64,8),(3,512,16)):
+                        all_bytes=Counter()
+                        for side in ((0,1) if kind==3 else (0,)):
+                            for first in range(0,workers,32):
+                                addrs=[fn(kind,n,k,n0,k0,t,side)*2 for t in range(first,first+32)]
+                                self.assertTrue(all(a%width==0 for a in addrs))
+                                all_bytes.update(a+b for a in addrs for b in range(width))
+                                for sector in (32,64,128):
+                                    counts=Counter((a+b)//sector for a in addrs for b in range(width))
+                                    # Old scalar scale reads fill64B/warp; only
+                                    # they leave half of a128B segment unused.
+                                    self.assertEqual(set(counts.values()),{64 if kind==1 and sector==128 else sector})
+                        self.assertEqual(set(all_bytes.values()),{1})
+                        self.assertEqual(len(all_bytes),workers*width*(2 if kind==3 else 1))
+        # Thread-count change only partitions exactly the same task set.
+        for threads in (128,256,512):
+            for tasks in (64,256,512):
+                owned=[i for t in range(threads) for i in range(t,tasks,threads)]
+                self.assertEqual(sorted(owned),list(range(tasks)))
 
     def test_direct_all_formats_and_precisions(self):
         import numpy as np
@@ -124,7 +168,7 @@ class DenseHelperHost(unittest.TestCase):
                     ptrs=[packed[x].ctypes.data if packed[x].size else None for x in ('low','high','units')]
                     if q==8:self.assertEqual(self.lib.dense_q8_host(bf,ptrs[0],ptrs[2],control.ctypes.data,n,k,0),0)
                     else:self.assertEqual(self.lib.dense_direct_host(q,bf,*ptrs,control.ctypes.data,n,k),0)
-                    for variant in ((22,23,24,25) if q==8 else (22,23)):
+                    for variant in ((22,23,24,25,*range(26,35)) if q==8 else (22,23)):
                         with self.subTest(q=q,n=n,k=k,bf=bf,variant=variant):
                             out=np.full_like(want,0x7fff)
                             args=(q,bf,variant,*ptrs,out.ctypes.data,n,k)

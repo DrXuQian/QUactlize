@@ -18,9 +18,25 @@ enum {
     // Explicit Q8 shared-load exchange experiment; never selected by policy.
     QKP_DENSE_DEQUANT_Q8_EXCHANGE_K128 = 24,
     QKP_DENSE_DEQUANT_Q8_EXCHANGE_K256 = 25,
+#define QKP_Q8_TUNE(ID, FAST, THREADS, VECTOR) QKP_DENSE_DEQUANT_Q8_TUNE_##ID = ID,
+#include "dense_q8_tuning.inc"
+#undef QKP_Q8_TUNE
 };
 
+// Private helper inventory; no change to caller structs or default policy.
+static inline int qkp_dense_q8_tuning(int variant, int* fast, int* threads, int* vector_scale) {
+    if (!fast || !threads || !vector_scale) return 0;
+    switch (variant) {
+#define QKP_Q8_TUNE(ID, FAST, THREADS, VECTOR) case ID: *fast=FAST; *threads=THREADS; *vector_scale=VECTOR; return 1;
+#include "dense_q8_tuning.inc"
+#undef QKP_Q8_TUNE
+        default: return 0;
+    }
+}
+
 static inline int qkp_dense_dequant_variant_valid(int variant) {
+    int fast,threads,vector_scale;
+    if (qkp_dense_q8_tuning(variant,&fast,&threads,&vector_scale)) return 1;
     return variant == QKP_DENSE_DEQUANT_DIRECT || variant == QKP_DENSE_DEQUANT_PAIR ||
            variant == QKP_DENSE_DEQUANT_COOPERATIVE_K128 ||
            variant == QKP_DENSE_DEQUANT_COOPERATIVE_K256 ||
@@ -31,6 +47,8 @@ static inline int qkp_dense_dequant_variant_valid(int variant) {
 }
 
 static inline int qkp_dense_dequant_variant_supports(int qtype, int variant) {
+    int fast,threads,vector_scale;
+    if (qkp_dense_q8_tuning(variant,&fast,&threads,&vector_scale)) return qtype==8;
     if (!qkp_dense_dequant_variant_valid(variant)) return 0;
     if (variant == QKP_DENSE_DEQUANT_Q8_EXCHANGE_K128 || variant == QKP_DENSE_DEQUANT_Q8_EXCHANGE_K256)
         return qtype == 8;

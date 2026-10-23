@@ -46,6 +46,29 @@ class DenseDequantRunner(unittest.TestCase):
                             '--q8-exchange','--plan-only'],check=True,capture_output=True)
             self.assertEqual(json.loads((out/'plan.json').read_text()),run.plan([2,3,4,5,6,7],0,True))
 
+    def test_q8_fast_tail_uses_cxx_inventory_and_bounded_profiles(self):
+        p=run.plan([2,3,4,5,6,7],67108864,fast_tail=True)
+        self.assertEqual(p['variants'],[22,*range(26,35)])
+        self.assertEqual(p['timed_storage'],['F16','BF16'])
+        self.assertEqual(p['experiment'],'Q8_FAST_TAIL')
+        self.assertEqual(p['configs']['34'],dict(fast=1,threads=512,vector_scale=1))
+        with self.assertRaises(ValueError):run.plan([2],67108864,True,True)
+        with self.assertRaises(ValueError):run.plan([0],67108864,fast_tail=True)
+        for winner in range(26,35):
+            medians={str(v):float(v) for v in p['variants']};medians[str(winner)]=1.
+            profile=run.profile_variants(medians,fast_tail=True)
+            self.assertTrue({22,26,31,winner}<=set(profile))
+            self.assertLessEqual(len(profile),6)
+            self.assertEqual(len(profile),len(set(profile)))
+        symbol='_ZN9quactlize7dequant22dense_dequant_q8_tunedILb1ELb1ELj512ELb1EEEvPKtS3_Ptii'
+        expected=run.profile_entry(dict(kernels={symbol:{}}),5,34,1)
+        self.assertEqual(expected,dict(symbol=symbol,grid=[128,16,1],block=[512,1,1]))
+        with tempfile.TemporaryDirectory() as temp:
+            output=Path(temp)/'fast'
+            subprocess.run([sys.executable,run.__file__,'--output',str(output),'--q8-fast-tail','--plan-only'],
+                           check=True,capture_output=True)
+            self.assertEqual(json.loads((output/'plan.json').read_text()),run.plan([2,3,4,5,6,7],0,fast_tail=True))
+
     def test_q8_bf16_missing_samples_are_not_reused(self):
         q,n,k=run.POINTS[5]
         variants=(22,23,24,25)
@@ -61,6 +84,25 @@ class DenseDequantRunner(unittest.TestCase):
         self.assertIs(run.validate_point(data,5,67108864,True),data)
         data['bf16_timing']['samples_us']['24'].pop()
         with self.assertRaises(ValueError):run.validate_point(data,5,67108864,True)
+
+    def test_q8_fast_tail_resume_cannot_import_exchange_results(self):
+        q,n,k=run.POINTS[5];vs=run.variants_for(fast_tail=True)
+        timing=dict(samples_us={str(v):[10.]*30 for v in vs},median_us={str(v):10. for v in vs},
+                    round_medians_us={str(v):[10.]*3 for v in vs})
+        proof=dict(bad=0,compared=n*k,guard='PASS',control_raw_bits_equal=True)
+        data=dict(status='PASS',point=5,q=q,n=n,k=k,scope=run.SCOPE,experiment='Q8_FAST_TAIL',
+                  production_changed=False,performance_admitted=False,negative_bad=100,
+                  traffic=dict(reads=3*67108864,writes=3*67108864),ring_copies=2,calls_per_graph=4,
+                  **copy.deepcopy(timing),bf16_timing=timing,
+                  memory_alignment={p:{str(w):[0] for w in (16,32,64,128)} for p in ('low','units','output')},
+                  proof={str(s):{str(v):proof.copy() for v in vs} for s in (0,1)})
+        self.assertIs(run.validate_point(data,5,67108864,fast_tail=True),data)
+        with self.assertRaises(ValueError):run.validate_point(data,5,67108864,exchange=True)
+        data['memory_alignment']['units']['128']=[64]
+        with self.assertRaises(ValueError):run.validate_point(data,5,67108864,fast_tail=True)
+        data['memory_alignment']['units']['128']=[0]
+        data['proof']['1']['34']['bad']=1
+        with self.assertRaises(ValueError):run.validate_point(data,5,67108864,fast_tail=True)
 
     def test_q8_profile_symbol_geometry_and_direct_launch_boundary(self):
         from dev.native_components.profile import acu_command,check_report

@@ -123,7 +123,76 @@ Archive SHA256s:
 `d3d8b1253ffacc29a1bd7af8f5aec449499c7720c8a89a83d560b9d95003ede2`
 and `d1e85e19658192c279a83e9a6ea57f542f088999995bb29436d94f38216c63e1`.
 
-### Bounded Q8 follow-up, not admitted
+### Q8 exchange return: rejected
+
+Return `review-1792738826567943419.tgz`, SHA256
+`83ddbd57ae0882e8eec476712e0e119d431c4e0d7962a11b43d8611445a0dba6`,
+source32a8320:60 numerical cells,48 timing cells and8 ACU reports all pass
+coverage/correctness. Every one of the12 typed points still prefersDQ22;
+DQ24 regresses0.91--3.10%, DQ25 also loses. RetainDQ22; no production promotion.
+
+On profile5 BF16(N8192/K2048), equal1.7GHz ACU cycles29213->30649(+4.92%).
+Shared-load transactions-40%, but dynamic instructions+15.1% and scalar
+instructions+89.2%. Global low/store traffic is unchanged. Register reduction
+44->40 does not raise theoretical occupancy (both100%). Control shared-load
+bank conflicts are0; store conflicts are49152 for both. Reducing on-chip
+reads was not the dominant gain here. These forced-cold counters are separate
+from rotating-event medians29.782->30.301us(+1.74%).
+
+### Bounded fast-dequant / CTA / scale-load experiment
+
+KeepDQ22's global/shared/output layout and discard the lane-exchange change
+from this experiment. IDs26--34 in `dense_q8_tuning.inc` enumerate9 explicit
+candidates; the DQ22 control makes10 timed configs, sixN/K families and both
+precisions. Three independent factors:
+
+- Exact fast FP32 construction `bitcast(0x4b000000 | raw) - 8388736.0f`
+  before the unchanged FP32 multiply and final F16/BF16 RNE. No F16
+  intermediate inBF16. All256codes x63488finiteF16scales x2outputtypes
+  are raw-bit checked locally; native fast bodies must have no i32->f32.
+- 128/256/512-thread CTAs with the sameN64/K128tile and no dummy blocks.
+  Low-code and output tasks are repartitioned exactly once. Shorter block
+  phases/more waves are hypotheses, not proof of lower latency. The2048CTA
+  launch has1.78waves at16CTAs/CU;8/4CTAs/CU give3.56/7.11waves. Under a
+  uniform linear model all three still have11.1% empty slot area. The ACU
+  warning's50% is potential partial-wave duration, NOT50% wasted runtime.
+- Four adjacent scale halfwords per8-byte load. Old scalar scale reads
+  occupy64B/warp, half of a128B footprint; the vector mapping fills two
+  128B segments perwarp. Low-plane16Bloads and each16Boutputstore already
+  cover complete32/64/128B segments and are kept. This is checked per native
+  instruction, not by combining two sparse instructions into a full row.
+  Q8 N8192K2048 reported17MiB useful input versus18MiB LSU transaction
+  bytes and32MiB output transactions. The128B footprint model predicts less
+  scale request amplification;32/64B sectors are already full in the scalar
+  mapping. Hardware transaction granularity/counters decide the benefit,
+  not vector width alone. Compulsory HBM data does not change. Every actual
+  input/output ring pointer's16/32/64/128B residue is recorded; this experiment
+  requires128B alignment. Host tests also prove no duplicated global bytes
+  across all tasks and both output stores, not only full sector counts.
+
+Ordinary-convert and scalar-scale controls remain for causal comparison.
+One verified idleZW810; no llama build/model input required:
+
+```bash
+PPU_SDK=/usr/local/PPU_SDK GPU=1 L2_BYTES=67108864 \
+IDLE_CONFIRMED=1 Q8_EXCHANGE=0 Q8_FAST_TAIL=1 PROFILE_ACU=1 \
+bash tools/run_dense_dequant_box.sh
+```
+
+120timing cells,30 alternating samples each. ThenACU on the two priority
+N/K shapes, bothprecisions: baseline, fast-only, vector-scale-only,
+ordinary-convert CTA-grain control and finalist (at most6profiles per typed
+point,16--24total). One direct launch/profile; no cold loop or graph inACU.
+Rawreports stayBox; compactreview includes counters/proofs. Source/config/
+device checks prevent resuming older exchange results as fast-tail results.
+
+`profile-5-24-s1` aggregate counters have0DRAM write bytes but32MiB L2/LLC
+writes. Its bandwidth timeline cannot by itself distinguish CTA retirement
+from producer/consumer phase changes; raw timelines were requested. Do not
+call combined logical read+write bytes divided by that ACU time measured HBM
+bandwidth. Candidate performance and any model-level benefit remain pending.
+
+### Previous exchange handoff (immutable controls)
 
 IDs24/25 preserve the DQ22/23 producer and 2N*K8 output map. Adjacent lanes
 read complementary uint4s and exchange packed words with xor1, eliminating
