@@ -7,6 +7,7 @@
 #include "quactlize/dequant/dense_plane_pair.hpp"
 #include "quactlize/dequant/dense_q8_exchange.hpp"
 #include "quactlize/dequant/dense_q8_tuned.hpp"
+#include "quactlize/dequant/dense_q8_half2.hpp"
 #include "quactlize/prefill/dense_api.h"
 #include "quactlize/dequant/packed_exchange.hpp"
 #include "quactlize/prefill/dense_io_layout.hpp"
@@ -32,7 +33,7 @@ int stage(uint16_t const* src,std::vector<uint32_t>& dst,unsigned n,unsigned k,u
     for(unsigned w:writes)if(w!=1)return 3;
     return 0;
 }
-template<int Q,bool BF16,unsigned TK,bool Exchange=false,bool Fast=false,unsigned Threads=128,bool VectorScale=false>
+template<int Q,bool BF16,unsigned TK,bool Exchange=false,bool Fast=false,unsigned Threads=128,bool VectorScale=false,bool Half2=false>
 int decode(uint16_t const* low,uint16_t const* high,uint8_t const* units,uint16_t* output,unsigned n,unsigned k,int fault) {
     using namespace quactlize::dequant;
     using L=DensePlanePair<Q,TK>;using Lo=typename L::Low;using Hi=typename L::High;using A=typename L::Affine;
@@ -101,7 +102,16 @@ int decode(uint16_t const* low,uint16_t const* high,uint8_t const* units,uint16_
                     if(v==0 && destination%8)return 12;
                     auto code=(raw>>(16*(side^(fault==3))))&0xffffu;
                     auto s=scale[A::offset(row,kk/L::Group)];
-                    output[destination]=Fast?DenseQ8Fast::weight<BF16>(code,s):
+                    if constexpr(Half2) {
+                        // Use adjacent K codes and the same packed helper as
+                        // the device, rather than a scalar surrogate decoder.
+                        unsigned next=Lo::shared(pair,Lo::row(kk)+(v^1u));
+                        uint32_t partner=L::codes(tile[next],0,kk^(fault==1?8:0));
+                        unsigned other=(partner>>(16*(side^(fault==3))))&255u;
+                        uint32_t codes=v%2?other|(code<<16):code|(other<<16);
+                        uint32_t d=cutlass::half_t(s).raw();
+                        output[destination]=uint16_t(DenseQ8Half2::weight<Fast>(codes,d|(d<<16))>>(16*(v%2)));
+                    } else output[destination]=Fast?DenseQ8Fast::weight<BF16>(code,s):
                         L::template weight<BF16>(code,s,minimum[A::offset(row,kk/L::Group)]);
                 }
             }
@@ -115,6 +125,9 @@ template<int Q,bool BF16> int geometry(int v,uint16_t const* l,uint16_t const* h
 #define QKP_Q8_TUNE(ID, FAST, THREADS, VECTOR) if(v==ID)return decode<Q,BF16,128,false,FAST,THREADS,VECTOR>(l,h,u,o,n,k,f);
 #include "quactlize/prefill/dense_q8_tuning.inc"
 #undef QKP_Q8_TUNE
+#define QKP_Q8_HALF2(ID, FAST, THREADS) if(v==ID) { if constexpr(BF16)return 99; else return decode<Q,false,128,false,FAST,THREADS,false,true>(l,h,u,o,n,k,f); }
+#include "quactlize/prefill/dense_q8_half2.inc"
+#undef QKP_Q8_HALF2
         if(v==24)return decode<Q,BF16,128,true>(l,h,u,o,n,k,f);
         if(v==25)return decode<Q,BF16,256,true>(l,h,u,o,n,k,f);
     }
@@ -145,6 +158,22 @@ extern "C" int dense_q8_fast_exhaustive(uint64_t* compared) {
             if(DenseQ8Fast::weight<true>(raw,s)!=DensePlanePair<8,128>::weight<true>(raw,s))return 3;
             *compared+=2;
         }
+    }
+    return 0;
+}
+
+extern "C" int dense_q8_half2_exhaustive(uint64_t* compared) {
+    using namespace quactlize::dequant;
+    *compared=0;
+    for(unsigned raw=0;raw<256;++raw)for(unsigned bits=0;bits<65536;++bits) {
+        if((bits&0x7c00u)==0x7c00u)continue;
+        float scale=float(cutlass::half_t::bitcast(uint16_t(bits)));
+        uint32_t want=uint32_t(DensePlanePair<8,128>::weight<false>(raw,scale))|
+            (uint32_t(DensePlanePair<8,128>::weight<false>(255-raw,scale))<<16);
+        uint32_t codes=raw|((255-raw)<<16),scales=bits|(bits<<16);
+        if(DenseQ8Half2::weight<false>(codes,scales)!=want)return 1;
+        if(DenseQ8Half2::weight<true>(codes,scales)!=want)return 2;
+        *compared+=2;
     }
     return 0;
 }

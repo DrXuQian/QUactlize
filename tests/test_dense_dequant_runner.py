@@ -1,5 +1,6 @@
 """Host-only gates for the bounded Q3/Q8 experiment and its compact handoff."""
 import copy
+import ctypes as C
 import json
 from pathlib import Path
 import subprocess
@@ -7,11 +8,76 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from tools import run_dense_dequant as run
 
 
 class DenseDequantRunner(unittest.TestCase):
+    def test_q8_half2_inventory_preserves_winners_and_separates_bf16(self):
+        p=run.plan([2,3,4,5,6,7],67108864,half2=True)
+        self.assertEqual(p['variants'],[22,27,28,30,35,36,37,38])
+        self.assertEqual(p['correctness_storage'],['F16'])
+        self.assertEqual(p['timed_storage'],'F16')
+        self.assertEqual(p['experiment'],'Q8_F16_HALF2')
+        self.assertEqual(p['configs']['38'],dict(fast=1,threads=256))
+        for kwargs in (dict(exchange=True),dict(fast_tail=True)):
+            with self.assertRaises(ValueError):run.plan([2],67108864,half2=True,**kwargs)
+        with self.assertRaises(ValueError):run.plan([0],67108864,half2=True)
+        for winner in range(35,39):
+            medians={str(v):float(v) for v in p['variants']};medians[str(winner)]=1.
+            variants=run.profile_variants(medians,half2=True)
+            self.assertIn(winner,variants)
+            self.assertTrue(any(v in (22,27,28,30) for v in variants))
+            self.assertLessEqual(len(variants),3)
+        with tempfile.TemporaryDirectory() as temp:
+            out=Path(temp)/'half2'
+            subprocess.run([sys.executable,run.__file__,'--output',str(out),'--q8-half2','--plan-only'],
+                           check=True,capture_output=True)
+            self.assertEqual(json.loads((out/'plan.json').read_text()),run.plan([2,3,4,5,6,7],0,half2=True))
+
+    def test_half2_resume_requires_exhaustive_device_proof(self):
+        q,n,k=run.POINTS[4];vs=run.variants_for(half2=True)
+        proof=dict(bad=0,compared=n*k,guard='PASS',control_raw_bits_equal=True)
+        gate=dict(pairs=256*63488,lanes=2,bad_ordinary=0,bad_fast=0,negative_bad=1,bf16_rejected=[35,36,37,38])
+        data=dict(status='PASS',point=4,q=q,n=n,k=k,scope=run.SCOPE,experiment='Q8_F16_HALF2',
+            production_changed=False,performance_admitted=False,negative_bad=100,
+            traffic=dict(reads=3*67108864,writes=3*67108864),ring_copies=2,calls_per_graph=4,
+            samples_us={str(v):[10.]*30 for v in vs},median_us={str(v):10. for v in vs},
+            round_medians_us={str(v):[10.]*3 for v in vs},proof={'0':{str(v):proof.copy() for v in vs}},
+            memory_alignment={p:{str(w):[0] for w in (16,32,64,128)} for p in ('low','units','output')},
+            bf16_timing=None,half2_gate=gate)
+        self.assertIs(run.validate_point(data,4,67108864,half2=True),data)
+        for field,value in (('pairs',256),('bad_fast',1),('negative_bad',0),('bf16_rejected',[])):
+            bad=copy.deepcopy(data);bad['half2_gate'][field]=value
+            with self.assertRaises(ValueError):run.validate_point(bad,4,67108864,half2=True)
+        with self.assertRaises(ValueError):run.validate_point(data,4,67108864,fast_tail=True)
+
+    def test_half2_profile_cannot_mislabel_fast_as_bf16(self):
+        symbol='_ZN9quactlize7dequant22dense_dequant_q8_half2ILb1ELj256EEEvPKtS3_Ptii'
+        native=dict(kernels={symbol:{}})
+        self.assertEqual(run.profile_entry(native,4,38,0),dict(symbol=symbol,grid=[64,16,1],block=[256,1,1]))
+        with self.assertRaises(ValueError):run.profile_entry(native,4,38,1)
+        with self.assertRaises(ValueError):run.profile_entry(native,4,37,0)
+
+    def test_half2_gate_checks_observed_coverage_and_negative(self):
+        import numpy as np
+        def bench(coverage=256*63488,negative=1,rejection=24):
+            results=[np.array(r,dtype='<u4').tobytes() for r in
+                     ([0,0,0xffffffff,coverage],[0,negative,0,coverage])]
+            return SimpleNamespace(lib=SimpleNamespace(quactlize_q8_half2_gate=Mock(return_value=0)),
+                r=SimpleNamespace(alloc=Mock(return_value=4096),stream=C.c_void_p(16)),
+                sdk=SimpleNamespace(lib=SimpleNamespace(hggcMemcpy=Mock(return_value=0)),
+                    synchronize=Mock(),download=Mock(side_effect=results)),
+                launch=Mock(return_value=rejection))
+        good=bench()
+        self.assertEqual(run.half2_gate(good)['pairs'],256*63488)
+        self.assertEqual(good.sdk.synchronize.call_count,4)
+        self.assertEqual(good.launch.call_count,4)
+        for options in (dict(coverage=256),dict(negative=0),dict(rejection=0),dict(rejection=1)):
+            with self.subTest(options=options),self.assertRaises(ValueError):run.half2_gate(bench(**options))
+
     def test_plan_has_only_eight_families_and_two_candidates(self):
         p = run.plan(run.selected('0,1,2,3,4,5,6,7'), 67108864)
         self.assertEqual(len(p['points']), 8)

@@ -6,6 +6,7 @@
 #include "dense_plane_pair.hpp"
 #include "dense_q8_exchange.cuh"
 #include "dense_q8_tuned.cuh"
+#include "dense_q8_half2.cuh"
 #include "packed_exchange.hpp"
 #include "../execution/validation.hpp"
 
@@ -329,6 +330,19 @@ extern "C" int quactlize_kpack_dequant_dense_v1(qzd_call_v1 const* c,
     for (int i=0;i<4;++i) if (len[i]) {
         if (!p[i] || p[i]%16 || !span(p[i],len[i])) return QKG_INVALID;
         for (int j=0;j<i;++j) if(overlap(p[i],len[i],p[j],len[j])) return QKG_INVALID;
+    }
+    if(variant>=QKP_DENSE_DEQUANT_Q8_HALF2_35 && variant<=QKP_DENSE_DEQUANT_Q8_HALF2_38) {
+        if(storage) return QKG_SHAPE; // BF16 must never round through F16.
+        auto stream=static_cast<hggcStream_t>(c->stream);
+        auto low=static_cast<uint16_t const*>(c->low),units=static_cast<uint16_t const*>(c->units);
+        auto output=static_cast<uint16_t*>(c->output);
+        switch(variant) {
+#define QKP_Q8_HALF2(ID, FAST, THREADS) case ID: \
+            dense_dequant_q8_half2<FAST,THREADS><<<dim3(c->n/64,c->k/128),THREADS,0,stream>>>(low,units,output,c->n,c->k); break;
+#include "../prefill/dense_q8_half2.inc"
+#undef QKP_Q8_HALF2
+        }
+        return hggcGetLastError()==hggcSuccess?QKG_OK:QKG_RUNTIME;
     }
     int fast,threads,vector_scale;
     if(qkp_dense_q8_tuning(variant,&fast,&threads,&vector_scale)) {

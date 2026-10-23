@@ -143,6 +143,17 @@ class PrefillAsysTests(unittest.TestCase):
             self.assertFalse(parsed['cuda_graph'])
             self.assertEqual(len(parsed['measured_rounds_us']),3)
 
+    def test_half2_fast_flag_is_not_an_output_dtype(self):
+        for fast in ('true','false'):
+            rows,case=self.rows('full-fp16')
+            for row in rows:
+                if 'dense_dequant_cooperative' in row['name']:
+                    row['name']=f'void quactlize::dequant::dense_dequant_q8_half2<{fast},256u>(...)'
+            self.assertEqual(parse_rows(rows,[case])[0]['phases_us']['expansion'],1)
+            case['arm']='full-bf16'
+            for row in rows:row['name']=row['name'].replace('vec8<false','vec8<true')
+            with self.assertRaisesRegex(ValueError,'F16-only'):parse_rows(rows,[case])
+
     def test_split_reducer_counted_once(self):
         rows,c=self.rows(split=2);v=parse_rows(rows,[c])[0]
         self.assertEqual(v['phases_us']['reducer'],1)

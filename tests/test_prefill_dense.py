@@ -21,6 +21,7 @@ class DenseHelperHost(unittest.TestCase):
         cls.lib.dense_q8_exchange_address.argtypes=[C.c_uint]*3
         cls.lib.dense_q8_exchange_address.restype=C.c_uint
         cls.lib.dense_q8_fast_exhaustive.argtypes=[C.POINTER(C.c_uint64)]
+        cls.lib.dense_q8_half2_exhaustive.argtypes=[C.POINTER(C.c_uint64)]
         cls.lib.dense_q8_tuned_address.argtypes=[C.c_uint]*7
         cls.lib.dense_q8_tuned_address.restype=C.c_uint64
         cls.lib.dense_q8_tuned_config.argtypes=[C.c_int]+[C.POINTER(C.c_int)]*3
@@ -49,6 +50,11 @@ class DenseHelperHost(unittest.TestCase):
         count=C.c_uint64()
         self.assertEqual(self.lib.dense_q8_fast_exhaustive(C.byref(count)),0)
         self.assertEqual(count.value,256*(65536-2048)*2)
+
+    def test_q8_half2_all_codes_and_finite_scales_bit_equal(self):
+        count=C.c_uint64()
+        self.assertEqual(self.lib.dense_q8_half2_exhaustive(C.byref(count)),0)
+        self.assertEqual(count.value,256*63488*2)
 
     def test_q8_tuning_cpp_launch_inventory(self):
         from tools.run_dense_dequant import q8_tuning
@@ -168,10 +174,14 @@ class DenseHelperHost(unittest.TestCase):
                     ptrs=[packed[x].ctypes.data if packed[x].size else None for x in ('low','high','units')]
                     if q==8:self.assertEqual(self.lib.dense_q8_host(bf,ptrs[0],ptrs[2],control.ctypes.data,n,k,0),0)
                     else:self.assertEqual(self.lib.dense_direct_host(q,bf,*ptrs,control.ctypes.data,n,k),0)
-                    for variant in ((22,23,24,25,*range(26,35)) if q==8 else (22,23)):
+                    for variant in ((22,23,24,25,*range(26,39)) if q==8 else (22,23)):
                         with self.subTest(q=q,n=n,k=k,bf=bf,variant=variant):
                             out=np.full_like(want,0x7fff)
                             args=(q,bf,variant,*ptrs,out.ctypes.data,n,k)
+                            if variant>=35 and bf:
+                                self.assertNotEqual(self.lib.dense_plane_pair_host(*args,0),0)
+                                self.assertTrue(np.all(out==0x7fff))
+                                continue
                             self.assertEqual(self.lib.dense_plane_pair_host(*args,0),0)
                             # Independent GGUF zero-sign convention may differ;
                             # control/candidate must still match every raw bit.

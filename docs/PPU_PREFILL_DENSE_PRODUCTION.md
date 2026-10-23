@@ -5,6 +5,49 @@ performance admission. `quactlize/dense/runtime.cpp` calls the same compiled
 policy and typed runtime used by the diagnostic. Public caller ABI, offline
 K-pack bytes, NCP wrapper and llama.cpp code are unchanged.
 
+## Q8 F16 half2 experiment (2026-10-23; device result pending)
+
+`Q8_HALF2=1` uses the existing isolated runner for the six Q8 N/K families.
+DQ22/27/28/30 retain every previous F16 per-shape winner. Explicit candidates
+35/36 use128threads,37/38 use256; odd IDs convert signed codes to half,
+even IDs construct `1024+unsigned8` from bits and subtract1152 in half2.
+Both multiply directly by the original F16 scale using separately rounded
+half2 operations. BF16 candidates are rejected at prepare and launch, not
+silently routed through F16. This is not a GEMM-accumulator change.
+
+The same N64/K128 code staging and two K8 vector output maps are retained.
+Scale uses the same32-bit shared slots, holding two copies of exact F16 bits
+instead of a widened float. Local native fast bodies use packed F16 add/mul,
+no FP32 arithmetic/code conversion, full128-bit output stores and zero stack.
+Ordinary-half conversion controls partially scalarize output stores in this
+compiler; their codegen is recorded, not assumed identical to fast variants.
+These are compile facts, not measured speedups. Global scale loads still
+span64B/warp and adjacent K8 consumers still reread shared code words.
+
+Before any timings the Box runner compares both arithmetic helpers on all
+256 codes x63488finiteF16scale patterns, with strict signed-zero/subnormal/
+overflow bits and a planted mismatch. Whole-tile GGUF checks, poisoned output
+guards, BF16 rejection and changing-address graph replays remain mandatory.
+Only F16 is timed:48cells x30samples, separate single-launch ACU captures of
+the previous winner and matched ordinary/fast half2 finalists. No profiling
+cold loops; no production table changes or model/native parity admission.
+
+```bash
+(
+  set -e
+  cd /sim/eec/shared/junfu.qx/quactlize
+  git pull --ff-only origin develop
+  unset RUN RESUME_RUN POINTS PROFILE_POINTS
+  PPU_SDK=/usr/local/PPU_SDK GPU=1 L2_BYTES=67108864 IDLE_CONFIRMED=1 \
+  Q8_EXCHANGE=0 Q8_FAST_TAIL=0 Q8_HALF2=1 PROFILE_ACU=1 PROFILE_POINTS=4,5,6 \
+  bash tools/run_dense_dequant_box.sh
+)
+```
+
+Use an idle assigned GPU. The final `review-*.tgz` includes samples, raw
+counter CSVs, errors and source/build/device receipts, not acurep or binaries;
+the original reports remain on Box. Resume only the same source-bound run.
+
 ## Initial R4 scope (TC/SF unchanged)
 
 PPU-ZW810, 72 CUs, contiguous dense F32 endpoints, M=2048. Other devices,
