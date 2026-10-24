@@ -22,7 +22,7 @@ sys.path.insert(0,str(ROOT))
 from dev.prefill_asys.q8_refine import make_plan, dequant_diagnostics, validate
 from dev.strategy.journal import atomic_json
 from quactlize.runtime.tuning import digest
-from tools.run_prefill_cohort_multi import gpu_ordinals
+from tools.run_prefill_cohort_multi import gpu_ordinals, worker_limits
 from tools.run_tp_prefill_supplement import run_coordinator
 
 
@@ -48,6 +48,7 @@ def package(output):
              if (p:=output/name).is_file()]
     paths += sorted((output/'timing').glob('review-*.json.xz'))
     paths += sorted((output/'timing').glob('summary-*.json'))
+    paths += sorted((output/'timing').glob('coordinator.json'))
     paths += sorted((output/'timing').glob('gpu-*/console-*.log'))
     for suffix in ('json','log'):
         for gate in ('io','reducer'):
@@ -72,6 +73,8 @@ def main():
     p.add_argument('--phase',choices=('all','sf','dequant','io','helpers'),default='all',
                    help='io/helpers: fixed winners with cast-only or cast+compact-reducer comparisons')
     p.add_argument('--gpus',default=os.environ.get('GPUS','1,2,3,4,5,7'))
+    p.add_argument('--jobs',type=int,default=8,help='compile jobs per worker; shell JOBS is ignored')
+    p.add_argument('--configs-per-batch',type=int,default=16,help='configs per capture; shell CONFIGS_PER_BATCH is ignored')
     p.add_argument('--llama-source',type=Path,default=Path(os.environ.get('LLAMA_CI_DIR','/sim/eec/shared/junfu.qx/llama.cpp.ncp')))
     p.add_argument('--llama-build',type=Path,default=os.environ.get('LLAMA_CI_BUILD_DIR'))
     p.add_argument('--sdk',type=Path,default=Path(os.environ.get('PPU_SDK','/usr/local/PPU_SDK')))
@@ -84,7 +87,10 @@ def main():
     a = p.parse_args()
     if a.profile_acu and a.phase in ('io','helpers'):
         p.error('--profile-acu covers dequant only; IO/reducer phases collect Asys component timings')
-    gpus = gpu_ordinals(a.gpus)
+    try:
+        gpus = gpu_ordinals(a.gpus)
+        limits=worker_limits(a.jobs,a.configs_per_batch)
+    except ValueError as e:p.error(str(e))
     if a.run and not a.confirm_idle:p.error('--confirm-idle required for device work')
     if a.resume and not a.output:p.error('--resume requires --output')
     review = read_review(a.review)
@@ -103,7 +109,7 @@ def main():
     revision = subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip()
     request = dict(review=review['review_sha256'],plan=plan['sha256'],dequant=digest(diagnostics),
         revision=revision,gpus=gpus,sdk=str(a.sdk),llama_source=str(a.llama_source),
-        llama_build=str(a.llama_build),profile_acu=a.profile_acu)
+        llama_build=str(a.llama_build),profile_acu=a.profile_acu,worker_limits=limits)
     if a.output:
         a.output=a.output.resolve();a.output.mkdir(parents=True,exist_ok=a.resume)
     else:
@@ -124,7 +130,7 @@ def main():
             atomic_json(a.output/(name+'.json'),value)
     print('Q8_TP_REFINE_PLAN '+json.dumps(dict(output=str(a.output),**plan['counts'],
         helper_families=len(diagnostics['points']),max_cases=max(len(x['cases']) for x in plan['points']),
-        scope=plan['scope'],production_changed=False,performance_admitted=False)),flush=True)
+        scope=plan['scope'],worker_limits=limits,production_changed=False,performance_admitted=False)),flush=True)
     if not a.run:
         print('Plan only; add --run --resume --output '+str(a.output)+' with the same arguments.',flush=True)
         return 0
@@ -139,7 +145,8 @@ def main():
             workers=gpus[:min(len(gpus),plan['counts']['families'])]
             command=[sys.executable,'-u',str(ROOT/'tools/run_prefill_cohort_multi.py'),
                 '--finalist-plan',str(a.output/'plan.json'),'--gpus',','.join(workers),
-                '--output',str(a.output/'timing'),'--confirm-idle']
+                '--output',str(a.output/'timing'),'--jobs',str(limits['jobs']),
+                '--configs-per-batch',str(limits['configs_per_batch']),'--confirm-idle']
             if (a.output/'timing').exists():command.append('--resume')
             status['phases'][a.phase if a.phase in ('io','helpers') else 'sf']=run_coordinator(command,env)
             atomic_json(a.output/'status.json',status)

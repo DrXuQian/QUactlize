@@ -344,8 +344,12 @@ def main():
     a=p.parse_args()
     if not 0<=a.shard<a.shards or a.shards>64 or a.max_cases<1 or a.max_modules<1:
         p.error('invalid shard or candidate/module budget')
-    if not a.device.isdigit() or not 1 <= a.configs_per_batch <= 32 or not 1<=a.jobs<=64:
-        p.error('one GPU; 1..32 configs/batch; 1..64 compile jobs')
+    if not a.device.isascii() or not a.device.isdigit():
+        p.error(f'--device requires one GPU ordinal, got {a.device!r}')
+    if not 1<=a.configs_per_batch<=32:
+        p.error(f'--configs-per-batch must be in 1..32, got {a.configs_per_batch!r}')
+    if not 1<=a.jobs<=64:
+        p.error(f'--jobs must be in 1..64, got {a.jobs!r}')
     a.output=a.output.resolve()
     a.sdk=a.sdk.resolve();a.llama_source=a.llama_source.resolve()
     a.llama_build=(a.llama_build or a.llama_source/'build-ci-32F-cublas').resolve()

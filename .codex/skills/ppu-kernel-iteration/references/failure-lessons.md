@@ -211,6 +211,16 @@ Keep diagnostics small: the exact first bad cell, immediate runtime code,
 source/binary identity, and saved detailed logs are more useful than thousands
 of repeated warnings. A CPU/profiler receipt is not device admission.
 
+If every multi-GPU worker exits2 at argument validation, audit the launch
+boundary before touching kernels. In the 20261024 dense-helper attempt, GPU
+ordinals were valid but the shell forwarded ambientJOBS/CONFIGS_PER_BATCH into
+a worker capped at64/32; neither effective value was recorded, so the exact
+bad value cannot be inferred from the archive. Use explicit coordinator limits,
+record/validate them before spawning, and override ambient build settings.
+Test the Python-to-shell-to-worker argv boundary with hostile environment
+values (e.g.JOBS=192), not only direct Python plan-only calls. Preserve strict
+resume/source binding. This is a host-launch repair, not GPU numeric evidence.
+
 Native-component diagnostic pdvGnj2J (ZW810, 2026-10-19) exposed a missing
 producer wait in its changed-input reference download. llama graph compute
 uses a nonblocking stream; tensor_get used cudaStreamPerThread and waited

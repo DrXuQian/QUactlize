@@ -25,9 +25,18 @@ def gpu_ordinals(value):
     return gpus
 
 
-def worker_environment(output,gpu,index,count,revision,*,finalists=False):
+def worker_limits(jobs,configs_per_batch):
+    for flag,value,maximum in (('--jobs',jobs,64),('--configs-per-batch',configs_per_batch,32)):
+        if type(value) is not int or not 1<=value<=maximum:
+            raise ValueError(f'{flag} must be in 1..{maximum}, got {value!r}')
+    return dict(jobs=jobs,configs_per_batch=configs_per_batch)
+
+
+def worker_environment(output,gpu,index,count,revision,*,finalists=False,jobs=8,configs_per_batch=16):
+    limits=worker_limits(jobs,configs_per_batch)
     env=dict(os.environ,GPU=gpu,SHARD=str(index),SHARDS=str(count),
-        OUTPUT_ROOT=str(output/('gpu-'+gpu)),TC_CACHE=str(output/'tc-cache'),SOURCE_REV=revision,IDLE_CONFIRMED='1')
+        OUTPUT_ROOT=str(output/('gpu-'+gpu)),TC_CACHE=str(output/'tc-cache'),SOURCE_REV=revision,IDLE_CONFIRMED='1',
+        JOBS=str(limits['jobs']),CONFIGS_PER_BATCH=str(limits['configs_per_batch']))
     for key in ('RUN','RESUME_RUN','POINT_ID','PREVIOUS_RUN','PLAN_ONLY','COHORT','FINALIST_PLAN','MODEL'):
         env.pop(key,None)
     env['FINALIST_PLAN' if finalists else 'COHORT']=str(output/'cohort.json')
@@ -43,10 +52,14 @@ def main():
     plans.add_argument('--finalist-plan',type=Path)
     p.add_argument('--gpus',default='1,2,3,4,5,6,7')
     p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--jobs',type=int,default=8,help='compile jobs per worker; does not inherit shell JOBS')
+    p.add_argument('--configs-per-batch',type=int,default=16,help='explicit per-capture budget, not shell CONFIGS_PER_BATCH')
     p.add_argument('--confirm-idle',action='store_true')
     p.add_argument('--resume',action='store_true')
     a=p.parse_args()
-    try:gpus=gpu_ordinals(a.gpus)
+    try:
+        gpus=gpu_ordinals(a.gpus)
+        limits=worker_limits(a.jobs,a.configs_per_batch)
     except ValueError as e:p.error(str(e))
     if not a.confirm_idle:p.error('--confirm-idle required')
     if a.finalist_plan:
@@ -63,16 +76,19 @@ def main():
         before=json.loads(receipt.read_text())
         if before['gpus']!=gpus or before['cohort']!=cohort['sha256']:
             raise ValueError('resume GPU assignment/cohort changed')
+        if before.get('worker_limits')!=limits:
+            raise ValueError('resume worker limits changed or were not recorded; do not relabel old timings')
         rev=before['revision']
     else:
         rev=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip()
         atomic_json(a.output/'cohort.json',cohort)
-        atomic_json(receipt,dict(gpus=gpus,cohort=cohort['sha256'],revision=rev))
+        atomic_json(receipt,dict(gpus=gpus,cohort=cohort['sha256'],revision=rev,worker_limits=limits))
+    print('PREFILL_COHORT_START '+json.dumps(dict(gpus=gpus,worker_limits=limits,revision=rev)),flush=True)
     children=[];streams=[];start=time.monotonic()
     try:
         for index,gpu in enumerate(gpus):
             directory=a.output/('gpu-'+gpu);directory.mkdir(exist_ok=a.resume)
-            env=worker_environment(a.output,gpu,index,len(gpus),rev,finalists=bool(a.finalist_plan))
+            env=worker_environment(a.output,gpu,index,len(gpus),rev,finalists=bool(a.finalist_plan),**limits)
             if a.resume:
                 runs=[r for r in directory.glob('qwen32-prefill-asys.*') if r.is_dir()]
                 if len(runs)!=1:raise ValueError('resume needs exactly one retained run in '+str(directory))

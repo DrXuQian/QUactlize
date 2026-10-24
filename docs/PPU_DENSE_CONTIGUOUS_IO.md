@@ -107,6 +107,7 @@ python3 tools/run_q8_tp_refine.py \
   --llama-source /sim/eec/shared/junfu.qx/llama.cpp.ncp \
   --llama-build /sim/eec/shared/junfu.qx/llama.cpp.ncp/build-ci-32F-cublas \
   --sdk /usr/local/PPU_SDK --gpus 1,2,3,4,5,7 \
+  --jobs 8 --configs-per-batch 16 \
   --run --confirm-idle
 ```
 
@@ -114,6 +115,17 @@ The existing runner requests1700MHz; actual-frequency variation is advisory,
 not a failure. Generated source/cache/raw traces stay on Box. Upload the printed
 compact `review-*.tgz`; it also includes IO/reducer gate results/logs. Resume uses
 the same arguments plus `--resume --output <printed run directory>`.
+
+The coordinator takes explicit `--jobs` (1..64, default8) and
+`--configs-per-batch` (1..32, default16), records both, and overrides ambient
+`JOBS`/`CONFIGS_PER_BATCH` for its workers. A parent-shell build setting such as
+`JOBS=192` must not leak into this bounded experiment. Worker logs also print
+the effective values; invalid CLI input is rejected before launching any workers.
+The first uploaded helper attempt (revision731c2db, all six workers rc2) failed
+at argument validation, before compilation/numerics/timing; the old diagnostic
+did not identify which inherited value was invalid. Keep that attempt intact
+and start a fresh run with the fixed launcher, not `--resume` (no completed
+device work exists there to reuse).
 
 No production selection is promoted by this command. Compare complete calls
 and both orderings before choosing IO4 or compact reduction for a measured scope.

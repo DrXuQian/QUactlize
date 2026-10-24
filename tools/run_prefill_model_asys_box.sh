@@ -74,7 +74,7 @@ if [[ -n ${PREVIOUS_RUN:-} ]]; then
     fi
 fi
 [[ -z ${TC_CACHE:-} ]] || args+=(--cache "${TC_CACHE}")
-echo "PREFILL_ASYS_BOX run=${RUN} gpu=${GPU} cohort=${FINALIST_PLAN:-${COHORT:-QWEN3_32B_PP2048}} shard=${SHARD:-0}/${SHARDS:-1} clock_MHz=1700 actual_clock=ADVISORY native_accumulator=FP32"
+echo "PREFILL_ASYS_BOX run=${RUN} gpu=${GPU} cohort=${FINALIST_PLAN:-${COHORT:-QWEN3_32B_PP2048}} shard=${SHARD:-0}/${SHARDS:-1} jobs=${JOBS:-8} configs_per_batch=${CONFIGS_PER_BATCH:-16} clock_MHz=1700 actual_clock=ADVISORY native_accumulator=FP32"
 set +e
 "${PYTHON}" -u "${RUN}/source/tools/run_prefill_model_asys.py" \
     --output "${RUN}/results" --device "${GPU}" \
