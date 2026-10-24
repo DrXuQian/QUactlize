@@ -220,6 +220,15 @@ def test_device_accuracy_never_requests_profilers_or_sweeps():
     assert 'info.route != 3' in source  # cuBLAS remains ordinary calls.
 
 
+def test_followup_public_gate_covers_all_winners_and_retained_controls():
+    from ppu.test_public_library import helper_followup_points
+    points=helper_followup_points()
+    assert len(points)==15 and len({tuple(s) for s,_ in points})==15
+    assert sum(r.get('dequant_first',False) for _,r in points)==3
+    assert sum((r['tc'] or {}).get('dense_reducer')==8 for _,r in points)==6
+    assert sum((r['tc'] or {}).get('dense_reducer')==4 for _,r in points)==1
+
+
 @pytest.mark.parametrize('q', [8, 10, 11, 12, 13, 14])
 @pytest.mark.parametrize('pair', [False, True])
 def test_device_harness_packing_arguments_on_host(library, q, pair):

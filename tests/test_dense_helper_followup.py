@@ -95,9 +95,26 @@ def test_full_order_uses_existing_stages_and_keeps_error_reset(monkeypatch):
     monkeypatch.setattr(typed,'call',lambda fn,kind,ptrs,args:args)
     assert core.descriptors((4,1,0,2,3))==[[s] for _ in range(2) for s in (4,1,0,2,3)]
     with pytest.raises(ValueError):core.descriptors((1,0,2,3))
-    # Diagnostic ordering is not silently serialized as an ordinary production Full recipe.
-    with pytest.raises(ValueError,match='unadmitted Full'):
-        execution(reordered(full_case(41,4)),{}, {})
+    # Order is a sealed execution axis, never silently serialized as the old
+    # Full recipe. The actual captured phase order must agree.
+    candidate=reordered(full_case(41,4))
+    assert candidate==full_case(41,4,dequant_first=True)
+    phases=['error_reset','expansion','input','main','output']
+    definitions={str(i):dict(phase=p) for i,p in enumerate(phases)}
+    row=dict(components=list(definitions))
+    actual=execution(candidate,row,definitions)
+    assert actual==dict(route=2,io=4,dequant=41,tc=None,dequant_first=True)
+    from dev.prefill_asys.supplement import execution_case
+    assert execution_case(actual)==candidate
+    with pytest.raises(ValueError,match='stage order'):
+        execution(full_case(41,4),row,definitions)
+    # A cuBLAS split reduction belongs to the provider, not the input stage.
+    definitions['3']['phase']='reducer'
+    with pytest.raises(ValueError,match='stage order'): execution(candidate,row,definitions)
+    definitions['3']['phase']='main'; definitions['reduce']=dict(phase='reducer')
+    assert execution(candidate,dict(components=['0','1','2','3','reduce','4']),definitions)==actual
+    for order in (1,'true',None):
+        with pytest.raises(ValueError): full_case(41,4,dequant_first=order)
 
 
 def test_ordered_full_trace_still_requires_every_measured_reset():

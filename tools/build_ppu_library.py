@@ -128,6 +128,9 @@ def verify(output):
         if (runtime['source_hashes'].get('quactlize/prefill/dense_helpers.hpp')!=helper['policy_sha256'] or
                 runtime['sha256']!=manifest['payloads'].get('quactlize-runtime/libquactlize_ppu_prefill.so')):
             raise ValueError('public provider and dense helper runtime differ')
+        internal='quactlize/prefill/dense_internal.hpp'
+        if internal in manifest['source_hashes'] and runtime['source_hashes'].get(internal)!=manifest['source_hashes'][internal]:
+            raise ValueError('public provider and Full helper internal interface differ')
         if 'full_table_sha256' in helper:
             table='quactlize/prefill/dense_full_helpers.inc'
             if (helper['full_table_sha256']!=manifest['source_hashes'].get(table) or
@@ -171,6 +174,8 @@ def build(sdk, output, jobs):
     public_sources.update({p: sha(p) for p in (ROOT/'policies').iterdir() if p.suffix in ('.hpp', '.json')})
     helper_policy=ROOT/'quactlize/prefill/dense_helpers.hpp'
     public_sources[helper_policy]=sha(helper_policy)
+    internal=ROOT/'quactlize/prefill/dense_internal.hpp'
+    public_sources[internal]=sha(internal)
     from tools.generate_dense_full_helpers import EVIDENCE as FULL_HELPERS, HEADER as FULL_HELPERS_HEADER, render as full_helpers_header
     if full_helpers_header(json.loads(FULL_HELPERS.read_text()))!=FULL_HELPERS_HEADER.read_text():
         raise ValueError('stale full-only helper table; regenerate before building')

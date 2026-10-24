@@ -3,6 +3,7 @@
 No model, llama.cpp checkout, six-library bundle, timing sweep or profiler.
 """
 import ctypes as C
+import json
 
 import numpy as np
 import pytest
@@ -10,6 +11,17 @@ import pytest
 from tools.run_kpack_grouped_decode_probe import Replay
 from .support import (Arena, Candidate, DENSE_M, Info, Options, Params, Public,
                       QTYPES, check_output, packed)
+from quactlize.dispatch.dense_prefill import EVIDENCE
+
+
+def helper_followup_points():
+    # Immutable measured scope, selected through the public ABI, not a forced
+    # experimental launcher. Includes both retained controls as well as winners.
+    data=json.loads(EVIDENCE.read_text())
+    review='d3eec044e46f3beff68dc1fc5ce6371faaed7232aa73e673d91fb81f7e1f4128'
+    points=[p for p in data['points'] if p.get('admission',{}).get('review_sha256')==review]
+    assert len(points)==15, 'helper followup public coverage changed'
+    return [(p['shape'],data['recipes'][p['winner']]) for p in points]
 
 
 @pytest.mark.parametrize("q", QTYPES)
@@ -32,10 +44,24 @@ def test_full_dequant_provider_ordinary_calls(package, sdk, q, record_property):
     run_dense(package, sdk, q, 128, 1, record_property, full=True)
 
 
-def run_dense(package, sdk, q, m, compute, record_property, *, full=False):
+@pytest.mark.parametrize('shape,recipe',helper_followup_points(),ids=lambda x: str(x) if isinstance(x,list) else '')
+def test_admitted_helper_followup_public_calls(package,sdk,shape,recipe,record_property):
+    from dev.prefill_point.typed import DenseLibrary
+    from quactlize.dispatch.table import Workload
+    # Existing host-only device guard: this fixed helper row exists on ZW810
+    # only. Other supported cards test execution, not a ZW810 policy claim.
+    query=DenseLibrary(package/'quactlize-runtime/libquactlize_ppu_prefill.so')
+    known=Workload(qtype=12,m=2048,n=1024,k=5120,operation='dense',compute='f16',storage='f32')
+    measured_device=query.choice(known,0,allow_miss=True) is not None
+    record_property('selection_domain','ZW810_EXACT' if measured_device else 'OTHER_DEVICE_FALLBACK')
+    q,m,n,k=shape
+    run_dense(package,sdk,q,m,0,record_property,n=n,k=k,expected=recipe,measured_device=measured_device)
+
+
+def run_dense(package, sdk, q, m, compute, record_property, *, full=False,n=256,k=512,expected=None,measured_device=True):
     lib = Public(package)
     with Arena(sdk) as arena:
-        arr, sizes, weight_ptrs, gold = packed(arena, lib, q)
+        arr, sizes, weight_ptrs, gold = packed(arena, lib, q,n=n,k=k)
         n, k = gold.shape[1:]
         padding = 8 if m <= 8 else 0
         p = Params(1, C.sizeof(Params), q, n, k, m, k + padding, n + padding, arr, sizes)
@@ -59,6 +85,28 @@ def run_dense(package, sdk, q, m, compute, record_property, *, full=False):
                 lib.check(lib.prepare(context, C.byref(p), *weight_ptrs, C.byref(handle), C.byref(info)))
             record_property("plan", f"route={info.route} compute={info.compute_type} split={info.split} config={info.config.decode()}")
             assert handle.value and info.config and info.split >= 1
+            if expected and measured_device:
+                assert info.policy==20 and info.compute_type==0, 'expected ZW810 exact F16 recipe'
+                route=expected['route']; assert info.route==(3 if route==2 else route)
+                if route==2:
+                    name=f'full-f16:cublas:typed-dq{expected["dequant"]}:io{expected["io"]}'
+                    if expected.get('dequant_first'): name+=':dq-first'
+                    assert info.split==1
+                else:
+                    name=f'{expected["tc"]["symbol"]}:dq{expected["dequant"]}:io{expected["io"]}'
+                    assert info.split==expected['tc']['split']
+                assert info.config.decode()==name, 'public recipe does not match admitted winner'
+            elif expected:
+                assert info.policy!=20, 'ZW810 exact policy must not run on another device'
+            if expected:
+                record_property('oracle','ALL_OUTPUTS_FINITE; 9x33_SPOTS_FULL_K_FP64_DOT; ALL_PACKED_BYTES; TWO_STREAMS')
+            def check(got,source):
+                if not expected:
+                    return check_output(got,source,gold[0],info.compute_type)
+                assert np.isfinite(got).all(), 'unwritten or nonfinite public output'
+                rows=np.linspace(0,m-1,min(m,9),dtype=int)
+                cols=np.linspace(0,n-1,min(n,33),dtype=int)
+                return check_output(got[np.ix_(rows,cols)],source[rows],gold[0,cols],info.compute_type)
             streams = [arena.stream(), arena.stream()]
             inputs = [arena.buffer(m * p.input_stride * 4) for _ in streams]
             outputs = [arena.buffer(m * p.output_stride * 4) for _ in streams]
@@ -83,7 +131,7 @@ def run_dense(package, sdk, q, m, compute, record_property, *, full=False):
                 for i in range(2):
                     image = outputs[i].bytes()
                     got = np.frombuffer(image, dtype="f4").reshape(m, p.output_stride)
-                    check_output(got[:, :n], sources[i], gold[0], info.compute_type)
+                    check(got[:, :n], sources[i])
                     if padding:
                         assert np.all(got[:, n:].view("u4") == 0xffffffff), "output stride padding overwritten"
                     inputs[i].guard(); scratch[i].guard()
@@ -93,7 +141,7 @@ def run_dense(package, sdk, q, m, compute, record_property, *, full=False):
             got = np.frombuffer(outputs[0].bytes(), dtype="f4").reshape(m, p.output_stride)[:, :n]
             assert np.all(got == 0) and np.isfinite(got).all()
             with pytest.raises(ValueError):
-                check_output(got, sources[0], gold[0], info.compute_type)
+                check(got, sources[0])
             # Validate the actual workspace contract before an enqueue.
             if info.workspace_bytes:
                 assert lib.run(handle, inputs[0].ptr, outputs[0].ptr, scratch[0].ptr,

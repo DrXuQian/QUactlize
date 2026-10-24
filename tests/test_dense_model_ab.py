@@ -83,6 +83,47 @@ def test_workload_and_binary_are_explicit(tmp_path):
         assert '-ot' not in cmd and '--kpack-cache' not in cmd
 
 
+def test_candidate_package_does_not_override_reference_or_caller(tmp_path):
+    a=args(tmp_path); a.quactlize_package=tmp_path/'fresh-package';a.cublas_accumulator='f32'
+    ref=runner.environment(a,tmp_path/'reference','reference')
+    candidate=runner.environment(a,tmp_path/'candidate','quactlize')
+    assert 'QUACTLIZE_PPU_PACK_LIBRARY' not in ref
+    assert ref['GGML_CUDA_CUBLAS_ACCUMULATOR']==candidate['GGML_CUDA_CUBLAS_ACCUMULATOR']=='f32'
+    assert str(a.quactlize_package) not in ref['LD_LIBRARY_PATH']
+    assert candidate['QUACTLIZE_PPU_PACK_LIBRARY']==str(a.quactlize_package/'libquactlize_ppu.so')
+    assert candidate['LD_LIBRARY_PATH'].split(':')[:3]==[
+        str(a.quactlize_package),str(a.quactlize_package/'quactlize-runtime'),str(tmp_path/'candidate/bin')]
+    assert runner.command(a,tmp_path/'candidate',tmp_path/'model.gguf','perf')[0]==str(tmp_path/'candidate/bin/llama-batched-bench')
+
+
+@pytest.mark.parametrize('wrong_sdk',[False,True])
+def test_fresh_package_snapshot_binds_private_payload_not_old_install(tmp_path,monkeypatch,wrong_sdk):
+    from tools import build_ppu_library
+    from quactlize.runtime import native
+    a=args(tmp_path);a.quactlize_package=tmp_path/'fresh'
+    build=tmp_path/'caller';(build/'bin').mkdir(parents=True)
+    (build/'bin/llama-batched-bench').write_bytes(b'host fixture, not an executable')
+    files=['libquactlize_ppu.so','quactlize-runtime/libquactlize_ppu_prefill.so',
+           'quactlize-runtime/dense-prefill.json','quactlize-runtime/jit/kernel.hpp']
+    for name in [*files,'manifest.json']:
+        path=a.quactlize_package/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('{}')
+    manifest=dict(sdk='a',payloads={name:'not-a-real-device-package' for name in files})
+    monkeypatch.setattr(build_ppu_library,'verify',lambda path:manifest)
+    monkeypatch.setattr(native,'sdk_identity',lambda path:'b' if wrong_sdk else 'a')
+    def command(argv,env,log):
+        assert env['QUACTLIZE_PPU_PACK_LIBRARY']==str(a.quactlize_package/'libquactlize_ppu.so')
+        log.write_text('--output-format -npp -ntg --fit');return 0
+    monkeypatch.setattr(runner,'short_command',command)
+    if wrong_sdk:
+        with pytest.raises(ValueError,match='SDK differs'):runner.snapshot(a,'quactlize',build,tmp_path/'snapshot')
+    else:
+        receipt=runner.snapshot(a,'quactlize',build,tmp_path/'snapshot')
+        assert {str(a.quactlize_package/name) for name in files}<=receipt.keys()
+        runner.check_unchanged(receipt)
+        (a.quactlize_package/files[1]).write_bytes(b'changed helper')
+        with pytest.raises(ValueError,match='changed during'):runner.check_unchanged(receipt)
+
+
 def test_route_requires_prefill_and_decode_and_leaves_moe_native():
     text = ('[quactlize-dense] tensor=blk.0.attn.weight m=1 q=8 config=simt\n'
             '[quactlize-dense] tensor=blk.0.attn.weight m=2048 q=8 config=tc\n')

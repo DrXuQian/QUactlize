@@ -131,7 +131,7 @@ def test_dense_prefill_receipt_binds_generated_runtime_selection(tmp_path,fault)
         assert verify(tmp_path)['dense_prefill']==m['dense_prefill']
 
 
-@pytest.mark.parametrize('fault',[None,'policy','private-policy','image','full-table','private-full-table','full-evidence'])
+@pytest.mark.parametrize('fault',[None,'policy','private-policy','image','full-table','private-full-table','full-evidence','internal'])
 def test_public_dense_helper_receipt_binds_policy_and_private_runtime(tmp_path,fault):
     from tools.build_ppu_library import PUBLIC_EXPORTS,verify
     from quactlize.runtime.compiler import sha
@@ -142,14 +142,16 @@ def test_public_dense_helper_receipt_binds_policy_and_private_runtime(tmp_path,f
     image=runtime/'libquactlize_ppu_prefill.so';image.write_bytes(b'HOST RECEIPT TEST ONLY')
     header='quactlize/prefill/dense_helpers.hpp'
     table='quactlize/prefill/dense_full_helpers.inc'
+    internal='quactlize/prefill/dense_internal.hpp'
     evidence='policies/dense_full_helpers_20261023.json'
     receipt=runtime/'prefill-runtime.json'
-    data=dict(source_hashes={header:'a'*64,table:'c'*64},sha256=sha(image))
+    data=dict(source_hashes={header:'a'*64,table:'c'*64,internal:'e'*64},sha256=sha(image))
+    if fault=='internal':data['source_hashes'][internal]='f'*64
     if fault=='private-full-table':data['source_hashes'][table]='b'*64
     if fault=='private-policy':data['source_hashes'][header]='b'*64
     if fault=='image':data['sha256']='b'*64
     receipt.write_text(json.dumps(data))
-    m=dict(schema='quactlize.ppu-library.v1',source_hashes={header:'a'*64,table:'c'*64,evidence:'d'*64},
+    m=dict(schema='quactlize.ppu-library.v1',source_hashes={header:'a'*64,table:'c'*64,evidence:'d'*64,internal:'e'*64},
         payloads={str(p.relative_to(tmp_path)):sha(p) for p in (library,image,receipt)},
         dense_helpers=dict(policy_sha256='b'*64 if fault=='policy' else 'a'*64,
                            full_table_sha256='b'*64 if fault=='full-table' else 'c'*64,

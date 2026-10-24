@@ -22,9 +22,9 @@ def test_all_exact_rows_are_complete_call_minima():
     validate(data)
     assert render(data) == HEADER.read_text()
     assert len(data['points']) == 225
-    assert len(data['reviews']) == 3
+    assert len(data['reviews']) == 4
     assert sum(p['winner_evidence']['captures'] == 2 for p in data['points']) == 107
-    assert sum(p['us'] > p['native_us'] for p in data['points']) == 16
+    assert sum(p['us'] > p['native_us'] for p in data['points']) == 14
     assert not data['model_performance_admitted']
     # Evidence keeps the native losses; export is not a zero-regression claim.
     assert max(100*(p['us']/p['native_us']-1) for p in data['points']) < 5
@@ -69,8 +69,8 @@ def test_bucket_choice_was_measured_at_every_member():
 def test_bucket_audit_does_not_call_missing_measurements_a_win():
     audit = audit_buckets(evidence())
     assert sum(audit['counts'].values()) == 225
-    assert audit['counts']['comparable'] == 39
-    assert audit['counts']['candidate_not_measured_on_held_family'] == 26
+    assert audit['counts']['comparable'] == 38
+    assert audit['counts']['candidate_not_measured_on_held_family'] == 27
     # New exact rows expose poor old-bucket predictions. Keep those losses
     # visible: exact-only helper admission does NOT prove new-family buckets.
     assert 77 < audit['worst_regret_pct'] < 78

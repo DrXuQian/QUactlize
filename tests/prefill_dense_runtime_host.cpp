@@ -1,4 +1,4 @@
-#include "quactlize/prefill/dense_api.h"
+#include "quactlize/prefill/dense_internal.hpp"
 #include "quactlize/prefill/dynamic.hpp"
 #include "quactlize/prefill/dense_helpers.hpp"
 #include <hggc_runtime_api.h>
@@ -6,6 +6,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <thread>
+#include <string>
+
+static thread_local std::string stages;
 
 extern "C" hggcError_t hggcGetDevice(int* p){*p=0;return hggcSuccess;}
 static const char* test_name="PPU-ZW810";
@@ -14,19 +17,23 @@ extern "C" hggcError_t hggcGetDeviceProperties(hggcDeviceProp* p,int){
     *p={};std::strcpy(p->name,test_name);p->multiProcessorCount=test_cu;return hggcSuccess;
 }
 extern "C" hggcError_t hggcStreamIsCapturing(hggcStream_t,hggcStreamCaptureStatus* p){*p=hggcStreamCaptureStatusNone;return hggcSuccess;}
-extern "C" hggcError_t hggcMemsetAsync(void* p,int value,size_t bytes,hggcStream_t){std::memset(p,value,bytes);return hggcSuccess;}
+extern "C" hggcError_t hggcMemsetAsync(void* p,int value,size_t bytes,hggcStream_t){stages+='R';std::memset(p,value,bytes);return hggcSuccess;}
 extern "C" int quactlize_dense_io_v1(int storage,int input,int,void const* src,void* dst,int,int,int64_t,int const*,void*) {
+    stages+=input?'I':'O';
     *static_cast<float*>(dst)=*static_cast<float const*>(src)+(input?100*storage:0);return 0;
 }
 extern "C" int quactlize_kpack_dequant_dense_v1(qzd_call_v1 const* c,quactlize_ppu_placed_arrangement_v2 const*,int storage,int variant){
     assert(qkp_dense_dequant_variant_supports(c->qtype,variant));
+    stages+='D';
     *static_cast<float*>(c->output)=*static_cast<float const*>(c->low)+100*storage;return 0;
 }
 extern "C" int quactlize_kpack_dequant_v1(qzd_call_v1 const* c,quactlize_ppu_placed_arrangement_v2 const* a){return quactlize_kpack_dequant_dense_v1(c,a,1,0);}
 extern "C" int qkp_stage_input(qkp_call_v1 const* c,quactlize::prefill::Layout const* l,void*){
+    stages+='I';
     *reinterpret_cast<float*>(static_cast<char*>(c->workspace)+l->a)=c->a[0]+100;return 0;
 }
 extern "C" int qkp_stage_finish(qkp_call_v1 const* c,quactlize::prefill::Layout const* l,void*){
+    stages+='O';
     c->output[0]=*reinterpret_cast<float*>(static_cast<char*>(c->workspace)+l->out);return 0;
 }
 int main(int argc,char** argv){
@@ -65,7 +72,12 @@ int main(int argc,char** argv){
         assert(!rc && h);
         auto run=[&](int i){for(int r=0;r<8;++r){
             auto& c=calls[i];const_cast<float*>(c.a)[0]=i+2+r;
-            assert(!quactlize_kpack_dense_full_run_v1(h,&c,-1));
+            stages.clear();
+            // Alternate the public legacy entry and the internal reordered
+            // entry, on both changing-address streams sharing one handle.
+            if(r%2) assert(!run_dense_full(h,&c,-1,true));
+            else assert(!quactlize_kpack_dense_full_run_v1(h,&c,-1));
+            assert(stages==(r%2?"RDIO":"RIDO"));
             assert(c.output[0]==float(7+2*i+r+200*type));
         }};
         std::thread first(run,0),second(run,1);first.join();second.join();
@@ -73,6 +85,13 @@ int main(int argc,char** argv){
         bad=calls[0];bad.workspace_bytes=1;assert(quactlize_kpack_dense_full_run_v1(h,&bad,-1));
         bad=calls[0];bad.m++;assert(quactlize_kpack_dense_full_run_v1(h,&bad,-1));
         bad=calls[0];bad.weight.config++;assert(quactlize_kpack_dense_full_run_v1(h,&bad,-1));
+        stages.clear();
+        assert(run_dense_full(h,&bad,-1,true) && stages.empty());
+        assert(run_dense_full(h,&calls[0],5,true) && stages.empty());
+        for(bool order:{false,true})for(int s=0;s<5;++s){
+            stages.clear();assert(!run_dense_full(h,&calls[0],s,order));
+            assert(stages==std::string(s==0?"I":s==1?"D":s==2?"":s==3?"O":"R"));
+        }
         quactlize_kpack_dense_full_destroy_v1(h);
     }
     qkp_dense_options_v1 invalid{1,sizeof(invalid),argv[1],0,1,43,16,-1};void* h=nullptr;

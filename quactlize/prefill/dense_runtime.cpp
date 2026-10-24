@@ -1,4 +1,4 @@
-#include "dense_api.h"
+#include "dense_internal.hpp"
 #include "dynamic.hpp"
 #include "dense_helpers.hpp"
 #include <hggc_runtime_api.h>
@@ -105,7 +105,7 @@ extern "C" int quactlize_kpack_dense_full_prepare_v1(qkp_call_v1 const* c,
         *result=h.release();dense_error.clear();return QKG_OK;
     }catch(std::exception const& e){dense_error=e.what();return QKG_RUNTIME;}
 }
-extern "C" int quactlize_kpack_dense_full_run_v1(void* handle,qkp_call_v1 const* c,int stage) {
+int quactlize::prefill::run_dense_full(void* handle,qkp_call_v1 const* c,int stage,bool dequant_first) {
     if(!handle || !c || stage < -1 || stage>4)return QKG_INVALID;
     auto& h=*static_cast<DensePlan*>(handle);
     if(!same_shape(*c,h.shape))return QKG_INVALID;
@@ -114,15 +114,21 @@ extern "C" int quactlize_kpack_dense_full_run_v1(void* handle,qkp_call_v1 const*
         auto base=static_cast<uint8_t*>(c->workspace);auto stream=c->weight.stream;
         auto error=reinterpret_cast<int*>(base+h.layout.error);
         if(stage==-1 || stage==4)check(hggcMemsetAsync(error,0,4,static_cast<hggcStream_t>(stream)),"reset");
-        if(stage==-1 || stage==0)check(h.storage==1 && !h.vector_io ? qkp_stage_input(c,&h.layout,stream):
-            quactlize_dense_io_v1(h.storage,1,h.vector_io,c->a,
-                base+h.layout.a,c->m,c->weight.k,c->a_stride,error,stream),"input");
+        auto input=[&] {
+            if(stage==-1 || stage==0)check(h.storage==1 && !h.vector_io ? qkp_stage_input(c,&h.layout,stream):
+                quactlize_dense_io_v1(h.storage,1,h.vector_io,c->a,
+                    base+h.layout.a,c->m,c->weight.k,c->a_stride,error,stream),"input");
+        };
         auto w=c->weight;w.output=base+h.layout.weights;w.output_bytes=uint64_t(w.n)*w.k*2;
-        if(stage==-1 || stage==1) {
-            rc=h.dequant_variant==-1 ? quactlize_kpack_dequant_v1(&w,&h.arr):
-                quactlize_kpack_dequant_dense_v1(&w,&h.arr,h.storage,h.dequant_variant);
-            check(rc,"dequant");
-        }
+        auto expand=[&] {
+            if(stage==-1 || stage==1) {
+                rc=h.dequant_variant==-1 ? quactlize_kpack_dequant_v1(&w,&h.arr):
+                    quactlize_kpack_dequant_dense_v1(&w,&h.arr,h.storage,h.dequant_variant);
+                check(rc,"dequant");
+            }
+        };
+        if(dequant_first) { expand();input(); }
+        else { input();expand(); }
         if(stage==-1 || stage==2) {
             // Per-enqueue stream/workspace rebinding. No persistent caller
             // addresses, allocation, synchronization or tuning in this layer.
@@ -138,6 +144,9 @@ extern "C" int quactlize_kpack_dense_full_run_v1(void* handle,qkp_call_v1 const*
                 c->output,c->m,w.n,c->output_stride,error,stream),"output");
         return QKG_OK;
     }catch(std::exception const& e){dense_error=e.what();return QKG_RUNTIME;}
+}
+extern "C" int quactlize_kpack_dense_full_run_v1(void* handle,qkp_call_v1 const* c,int stage) {
+    return quactlize::prefill::run_dense_full(handle,c,stage,false);
 }
 extern "C" void quactlize_kpack_dense_full_destroy_v1(void* h){delete static_cast<DensePlan*>(h);}
 extern "C" char const* quactlize_kpack_dense_full_error_v1(){return dense_error.c_str();}

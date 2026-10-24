@@ -24,9 +24,12 @@ def case_identity(case):
     return {k:v for k,v in case.items() if k not in ('id','roles','module','launch')}
 
 
-def full_case(dequant, io):
+def full_case(dequant, io, *, dequant_first=False):
+    if type(dequant_first) is not bool:
+        raise ValueError('invalid Full stage order')
     options = dict(dequant_variant=dequant, vector_io=io)
-    recipe = Recipe.make('full', 'full', provider='typed-fp16', **options)
+    recipe = Recipe.make('full', 'full', provider='typed-fp16', **options,
+                         **(dict(dequant_first=True) if dequant_first else {}))
     return dict(arm='full-fp16', helper_mode='experimental', helper_options=options,
                 recipe=json.loads(json.dumps(asdict(recipe))))
 
@@ -181,7 +184,8 @@ def validate(plan):
             elif r.kind=='full':
                 o=c['helper_options'];allowed=(0,22,23,36,37,38,41) if w.qtype==8 else (0,8,20,21,22,23)
                 if (o['dequant_variant'] not in allowed or o['vector_io'] not in range(5)
-                        or case_identity(c)!=full_case(o['dequant_variant'],o['vector_io'])):
+                        or case_identity(c)!=full_case(o['dequant_variant'],o['vector_io'],
+                            dequant_first=dict(r.parameters).get('dequant_first',False))):
                     raise ValueError('Full finalist precision/helper differs')
             else: raise ValueError('only measured prefill TC/Full finalists allowed')
         required={'prior-point-winner','current-full-helper','prior-route-winner:sf','prior-route-winner:full-fp16'}

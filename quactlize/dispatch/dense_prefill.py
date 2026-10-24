@@ -75,11 +75,18 @@ def execution(candidate, row, definitions):
     recipe = candidate['recipe']
     p = dict(recipe['parameters'])
     if recipe['kind'] == 'full':
+        dq_first = p.pop('dequant_first', False)
+        require(type(dq_first) is bool, 'invalid Full stage order')
         require(set(p) == {'provider','dequant_variant','vector_io'}, 'unadmitted Full execution option')
         require(candidate['arm'] == 'full-fp16' and p['provider'] == 'typed-fp16', 'not Full-F16')
         require(candidate['helper_options'] == dict(dequant_variant=p['dequant_variant'], vector_io=p['vector_io']),
                 'full helper identity differs')
-        return dict(route=2, io=p['vector_io'], dequant=p['dequant_variant'], tc=None)
+        phases = [definitions[c]['phase'] for c in row['components']]
+        require(len(phases)>=5 and phases[:3] == ['error_reset',*(['expansion','input'] if dq_first else ['input','expansion'])] and
+                phases[3]=='main' and all(p in ('main','reducer') for p in phases[3:-1]) and phases[-1] == 'output',
+                'Full trace stage order differs from recipe')
+        return dict(route=2, io=p['vector_io'], dequant=p['dequant_variant'], tc=None) | (
+            dict(dequant_first=True) if dq_first else {})
     names = [definitions[c]['name'] for c in row['components'] if definitions[c]['phase'] in ('input', 'output')]
     require(len(names) == 2, 'TC adapter coverage differs')
     kinds = {'::convert_rows<': -1, '::dense_convert_vec8<false,': 1,
@@ -90,13 +97,15 @@ def execution(candidate, row, definitions):
     require(recipe['kind'] == 'tc' and recipe['route'] in ('fq', 'sf'), 'unsupported recipe')
     dq = p.pop('dequant_config')
     if p.get('dense_reducer'):
-        require(p['dense_reducer'] == 2 and p['symbol'].endswith('_rc2') and p['split'] in (2,4,8),
+        width = p['dense_reducer']
+        require(type(width) is int and width in (2,4,8) and p['symbol'].endswith(f'_rc{width}') and p['split'] in (2,4,8),
                 'unadmitted compact reducer')
         reducers = [definitions[c] for c in row['components'] if definitions[c]['phase'] == 'reducer']
         require(len(reducers) == 1, 'compact reducer coverage differs')
         c = reducers[0]; w = c['workload']
-        require(f'PpuMixedInputSplitKParallelM1FastReductionKernel<2, {p["split"]}>' in c['name'] and
-                c['grid'] == [(w['m']*w['n']+63)//64,1,1] and c['block'] == [32,1,1] and not c['shared_bytes'],
+        require(f'PpuMixedInputSplitKParallelM1FastReductionKernel<{width},{p["split"]}>' in c['name'].replace(' ','') and
+                w['m']*w['n']%(32*width) == 0 and c['grid'] == [w['m']*w['n']//(32*width),1,1] and
+                c['block'] == [32,1,1] and not c['shared_bytes'],
                 'compact reducer launch differs')
     return dict(route=int(recipe['route'] == 'sf'), io=ios[0], dequant=dq, tc=p)
 
@@ -254,12 +263,16 @@ def validate(data):
     seen = set()
     for key, recipe in data['recipes'].items():
         require(digest(recipe) == key, 'execution identity differs')
+        require('dequant_first' not in recipe or (recipe['dequant_first'] is True and recipe['route'] == 2),
+                'stage order is a Full-only execution axis')
     for p in data['points']:
         q,m,n,k = p['shape']
         require(p['key'] == Workload(qtype=q,m=m,n=n,k=k,operation='dense',compute='f16',storage='f32').key and
                 p['key'] not in seen, 'point identity differs')
         seen.add(p['key'])
         require(p['authority'] in data['authorities'], 'missing authority')
+        if p.get('admission',{}).get('review_sha256'):
+            require(p['admission']['review_sha256'] in data['reviews'], 'missing admission review')
         costs = dict(p['costs'])
         require(len(costs) == len(p['costs']) and all(r in data['recipes'] and math.isfinite(t) and t > 0
                                                    for r,t in costs.items()), 'invalid costs')
@@ -289,7 +302,8 @@ def render(data):
             mapping = '0x51384b5032540001' if q == 8 else '0x51344b5034540001' if q == 12 else '0x514b504b54000001'
             nums = [q,r['route'],*[p[n] for n in ('tm','tn','tk','wm','wn','stages','ap','dn','persistent','split','grid_mode','grid_b')],0]
             tc = '{"dense-prefill","'+p['symbol']+'","WHOLE_CALL",'+','.join(map(str,nums))+f',UINT64_C({mapping})'+'}'
-        out.append(f'    {{{r["route"]},{r["io"]},{r["dequant"]},{tc}}}, // {key}')
+        order = ',true' if r.get('dequant_first') else ''
+        out.append(f'    {{{r["route"]},{r["io"]},{r["dequant"]},{tc}{order}}}, // {key}')
     out += ['};', 'inline constexpr Exact kExact[] = {']
     for p in data['points']:
         out.append('    {'+','.join(map(str, p['shape']+[index[p['winner']]]))+'},')

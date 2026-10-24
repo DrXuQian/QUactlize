@@ -7,7 +7,88 @@ or binaries. IO0..3, the measured helper tables, GEMM and dequant implementation
 are unchanged. The first experiment left IO4/compact selection disabled. The
 reviewed exact-only admission below now enables the confirmed combinations.
 
-## Current admission and next bounded check
+## Bounded followup complete; next is public-library/model validation
+
+Review `d3eec044e46f3beff68dc1fc5ce6371faaed7232aa73e673d91fb81f7e1f4128`
+(source `2be024c`, ZW810/SDK2.1.1,1700MHz request) passed all15points,
+49candidate arms,128captures,24960complete-call samples,1296IO and288reducer
+checks. Maximum independent relative-L1 error was0.00011438. Archive SHA256:
+`cca53222d242a568e10fd922cd3aca086f5fee490602d381376773909f0b8467`.
+No additional geometry sweep is planned.
+
+The existing 225-point catalog now replaces13exact choices and retains2.
+All4missing incumbent comparisons are resolved; historical pending records stay
+in the evidence alongside the explicit resolution. All147bucket predictions
+and their original training costs remain unchanged. A recipe changes only if
+both reversed captures beat the current production control.
+
+| Scope | Admission |
+|---|---|
+| Six S2 outputs with M*N=524288 | compact8; reducer3.68–4.10us ->2.26–2.28us; complete call3.86–6.98% faster |
+| Q8 M512/N512/K4096,S4 | compact4; complete call22.00 ->21.110us |
+| Q8 N4096/K2048,M128/256/512 | Complete incumbent comparisons now admit the measured SF winners |
+| Q8 M2048,(N,K)=(4096,2048),(4096,3072),(8192,1024) | Admit dequant-before-input, retaining same kernels and FP32 accumulation |
+| Q8 M128/N256/K3072 and M2048/N6144/K3072 | Retain current Full recipes |
+
+At the15points,12selected calls beat native;3still trail native by0.95–1.48%.
+This is not a strict zero-regression or TPOT claim. Ordering can improve one
+helper while slowing another: e.g. M2048/N6144/K3072 gets worse overall, so the
+order is NOT a global default. Full uses one internal validation/enqueue entry,
+not five public stage calls; the public v1 ABI/default order is unchanged.
+The20selected compact rows are13width2,1width4 and6width8.
+
+### Final Box round: fresh public package, accuracy, warmed model A/B
+
+Use an idle ZW810 card. Existing caller binaries are reused without changing
+their installed libraries. The reference below is the previously validated
+FP32-accumulator build; an environment request alone does not prove a caller
+honors it. Trace and loaded-image receipts remain necessary.
+
+```bash
+(
+  set -euo pipefail
+  cd /sim/eec/shared/junfu.qx/quactlize
+  git pull --ff-only origin develop
+  export PPU_SDK=/usr/local/PPU_SDK CUDA_VISIBLE_DEVICES=1
+  export PATH="${PPU_SDK}/bin:${PATH}"
+  export LD_LIBRARY_PATH="${PPU_SDK}/lib:${PPU_SDK}/targets/x86_64-linux/lib:${PPU_SDK}/CUDA_SDK/targets/x86_64-linux/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+  export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
+  ppu-smi --id=1 --lock-ppu-clocks=1700,1700 --error-on-warning
+  DENSE_RUN=$(mktemp -d /workspace/kpack-dense-final.XXXXXXXX)
+  test -d "${DENSE_RUN:?}" && test ! -L "${DENSE_RUN}"
+  echo "RUN=${DENSE_RUN}"
+  export QUACTLIZE_PPU_CACHE_DIR="${DENSE_RUN}/jit-cache"
+  bash build.sh --library --sdk "${PPU_SDK}" \
+    --output "${DENSE_RUN}/package" --jobs 8 2>&1 | tee "${DENSE_RUN}/build.log"
+  bash run_tests.sh --suite accuracy --sdk "${PPU_SDK}" \
+    --package "${DENSE_RUN}/package" --output "${DENSE_RUN}/accuracy"
+  python3 tools/run_dense_model_ab.py \
+    --llama-dir /sim/eec/shared/junfu.qx/llama.cpp.ncp \
+    --reference-build /sim/eec/shared/junfu.qx/llama.cpp.ncp/build-ci-32F-cublas \
+    --quactlize-build /sim/eec/shared/junfu.qx/llama.cpp.ncp/build-ci-quactlize-dense-gemm \
+    --quactlize-package "${DENSE_RUN}/package" --jit-cache "${DENSE_RUN}/jit-cache" \
+    --cublas-accumulator f32 --sdk "${PPU_SDK}" --device 1 --idle-confirmed \
+    --pp 2048 --tg 128 --repeats 3 --trace-repeats 2 \
+    --output-root "${DENSE_RUN}"
+)
+```
+
+This runs all3existing single-GPU models: Qwen3-32B,Qwen3.5-35B-A3B,Qwen3.8-27B.
+MoE remains native in this caller MR. Accuracy additionally executes the15
+followup shapes through public prepare/run on2streams with changing addresses,
+finite-output checks, independent FP64 full-K spot dots and full packed-byte
+checks. cuBLAS accuracy calls remain ordinary calls. Only ZW810 is required to
+select these exact recipes; other devices retain their own fallback domain.
+
+The benchmark discards the first complete PP/TG pass of every process, including
+JIT. Unprofiled model latency and profiled diagnostics are separate. Actual
+clock deviations are advisory; the successful lock request is not a guarantee
+against throttling. Upload the printed `dense-model-ab.*.review.tgz` and the
+accuracy summary/logs. The review excludes binaries/JIT/models and raw `.asysrep`;
+Asys GUI files remain under `dense-model-ab.*/MODEL/trace/{reference,quactlize}/`.
+Do not rerun the historical component commands below.
+
+## Initial admission and bounded followup plan (completed)
 
 Review `bd5a4529cbdb2a30b2fd11f918179e81d9e4f382318262cf9da12bfb24495f49`
 passed 65 points, 304 candidate arms, 738 captures, 1296 IO checks and 228
@@ -103,8 +184,8 @@ an isolated experiment, not a new reducer algorithm or a proved speedup.
 Do not switch it globally: CTA grain changes, contiguous/aligned/size checks
 must still pass, and producer/output layouts must agree. A default-zero
 `PreparedMultiformatLauncher` template argument selects a compact width only
-when explicitly nonzero (2 for the admitted rows; 4/8 remain experiments). Generated
-native F16 dense parents carry `dense_reducer=2` and an `_rc2` suffix, with their
+when explicitly nonzero (2/4/8 for their admitted exact rows). Generated
+native F16 dense parents carry `dense_reducer=N` and an `_rcN` suffix, with their
 own source/build identity. Existing parents and bound/dynamic call ABI are
 unchanged. Typed decode and grouped modules reject this option.
 The option changes only the reducer dispatcher: ordinary/Split-K GEMM, partial

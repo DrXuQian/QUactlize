@@ -159,10 +159,15 @@ extern "C" int quactlize_kpack_dense_full_prepare_v1(qkp_call_v1 const* c,quactl
     }
     *out=new TypedFull{*c,o->storage};return 0;
 }
-extern "C" int quactlize_kpack_dense_full_run_v1(void* h,qkp_call_v1 const* c,int stage) {
+int quactlize::prefill::run_dense_full(void* h,qkp_call_v1 const* c,int stage,bool dequant_first) {
     auto& p=*static_cast<TypedFull*>(h);
     assert(stage==-1 && quactlize::prefill::same_shape(p.shape,*c));
-    test::launches.push_back(p.storage?"full-typed-bf16":"full-typed-f16");return 0;
+    assert(!dequant_first || p.storage==0);
+    test::launches.push_back(std::string(p.storage?"full-typed-bf16":"full-typed-f16")+
+        (dequant_first?":dq-first":""));return 0;
+}
+extern "C" int quactlize_kpack_dense_full_run_v1(void* h,qkp_call_v1 const* c,int stage) {
+    return quactlize::prefill::run_dense_full(h,c,stage,false);
 }
 extern "C" void quactlize_kpack_dense_full_destroy_v1(void* h){delete static_cast<TypedFull*>(h);}
 extern "C" char const* quactlize_kpack_dense_full_error_v1(){return "fake typed provider";}
@@ -328,7 +333,10 @@ void reviewed_prefill() {
                 reinterpret_cast<void*>(UINT64_C(0x60000000000)+replay*256),plan.info.workspace_bytes,
                 reinterpret_cast<void*>(replay)));
             std::vector<std::string> expected;
-            if(c.route==2) expected={"full-typed-f16"};
+            if(c.route==2) {
+                expected={c.dequant_first?"full-typed-f16:dq-first":"full-typed-f16"};
+                assert((std::strstr(plan.info.config,":dq-first")!=nullptr)==c.dequant_first);
+            }
             else {
                 if(c.route==1 && p.qtype!=8) expected.push_back("sf-"+std::to_string(c.dequant));
                 expected.push_back(c.io<0?"f16-in":"vector-in-"+std::to_string(c.io));

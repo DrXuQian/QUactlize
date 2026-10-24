@@ -41,9 +41,15 @@ class DenseHelperHost(unittest.TestCase):
             subprocess.run(['g++','-std=c++17','-O2','-shared','-fPIC',str(ROOT/'tests/prefill_dense_provider.cpp'),
                 '-o',str(lib/'libcublas.so')],check=True)
             exe=root/'host'
-            subprocess.run(['g++','-std=c++17','-O2','-pthread','-I'+str(ROOT),'-I'+str(ROOT/'quactlize/include'),
-                '-I'+str(SDK/'include'),str(ROOT/'tests/prefill_dense_runtime_host.cpp'),
-                str(ROOT/'quactlize/prefill/dense_runtime.cpp'),'-ldl','-o',str(exe)],check=True)
+            includes=['-I'+str(ROOT),'-I'+str(ROOT/'quactlize/include'),'-I'+str(SDK/'include')]
+            # Match the package's separate helper DSO: the private ordered
+            # entry and unchanged public v1 entry must both link and execute.
+            subprocess.run(['g++','-std=c++17','-O2','-pthread','-shared','-fPIC','-Wl,-Bsymbolic',
+                *includes,str(ROOT/'quactlize/prefill/dense_runtime.cpp'),'-ldl',
+                '-o',str(root/'libquactlize_ppu_prefill.so')],check=True)
+            subprocess.run(['g++','-std=c++17','-O2','-pthread','-rdynamic',*includes,
+                str(ROOT/'tests/prefill_dense_runtime_host.cpp'),'-L'+str(root),'-Wl,-rpath,'+str(root),
+                '-lquactlize_ppu_prefill','-o',str(exe)],check=True)
             subprocess.run([str(exe),str(root)],check=True)
 
     def test_q8_fast_all_codes_and_finite_half_scales(self):

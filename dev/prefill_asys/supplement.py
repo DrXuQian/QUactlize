@@ -22,7 +22,7 @@ MS = (128, 256, 512, 1024, 2048)
 
 def execution_case(value):
     if value['route'] == 2:
-        return full_case(value['dequant'], value['io'])
+        return full_case(value['dequant'], value['io'], dequant_first=value.get('dequant_first',False))
     recipe = Recipe.make('tc', 'sf' if value['route'] else 'fq',
                          **dict(value['tc'], dequant_config=value['dequant']))
     return dict(arm=recipe.route, helper_mode='cohort-current',
@@ -171,7 +171,8 @@ def validate(plan):
                     raise ValueError('invalid TC helper/config contract')
             elif r.kind == 'full':
                 opts = c['helper_options']
-                if (case_identity(c) != full_case(opts['dequant_variant'],opts['vector_io'])
+                if (case_identity(c) != full_case(opts['dequant_variant'],opts['vector_io'],
+                        dequant_first=dict(r.parameters).get('dequant_first',False))
                         or opts['vector_io'] not in range(5)
                         or opts['dequant_variant'] not in ((0,22,23,36,37,38,41) if w.qtype==8 else (0,8,20,21,22,23))):
                     raise ValueError('invalid Full-F16 supplement')

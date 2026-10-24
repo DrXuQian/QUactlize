@@ -1,5 +1,19 @@
 # PPU failure lessons
 
+Fixed-body helper changes still need whole-call admission. In the20261024
+ZW810/SDK2.1.1 Q8 dense-prefill followup, compact2 lost at six S2 outputs with
+M*N=524288; the same reducer with grain8 won in both capture orders. Do not
+promote a grain globally. Reordering Full dequant before the input cast helped
+three points but hurt M2048/N6144/K3072; the same kernel/launch identities can
+exchange cache benefits across stages. Preserve error reset, checked output and
+FP32 accumulation; compare complete calls, not just the improved helper.
+Public-library realization can use one validation/enqueue entry rather than
+five diagnostic API calls. Keep unchanged stage APIs for evidence replay.
+Evidence and bounded scope: `docs/PPU_DENSE_CONTIGUOUS_IO.md`, review
+`d3eec044e46f3beff68dc1fc5ce6371faaed7232aa73e673d91fb81f7e1f4128`.
+Full's cuBLAS provider can include its own reducer; an importer must preserve
+that measured phase, not assume exactly one GEMM kernel or discard its cost.
+
 An Asys capture-boundary omission need not invalidate later complete samples.
 The 2026-10-23 ZW810/SDK2.1.1 dense Q4 M256/N10240/K5120 trace contained48
 successful reset API calls but47GPU reset activities. Only call0 of12already

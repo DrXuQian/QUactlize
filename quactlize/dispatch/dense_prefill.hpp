@@ -4,7 +4,7 @@
 namespace quactlize::dispatch::dense_prefill {
 // Whole-call F16 dense recipes. dequant is SF's scale-prepass config for TC,
 // or the typed dense weight-helper ID for Full. io=-1 means original row casts.
-struct Choice { int route, io, dequant; Config tc; };
+struct Choice { int route, io, dequant; Config tc; bool dequant_first=false; };
 struct Exact { int q,m,n,k,choice; };
 struct Bucket { int q,mb,nb,kb,aspect,nlo,nhi,klo,khi,choice; };
 #include "dense_prefill.inc"

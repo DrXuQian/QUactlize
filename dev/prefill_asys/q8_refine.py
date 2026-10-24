@@ -168,7 +168,8 @@ def validate(plan):
             elif r.kind=='full':
                 opts = c['helper_options']
                 if (opts['dequant_variant'] not in (0,22,23,36,37,38,41) or opts['vector_io'] not in range(5)
-                        or case_identity(c)!=full_case(opts['dequant_variant'],opts['vector_io'])):
+                        or case_identity(c)!=full_case(opts['dequant_variant'],opts['vector_io'],
+                            dequant_first=dict(r.parameters).get('dequant_first',False))):
                     raise ValueError('invalid Full-F16 control')
             else:
                 raise ValueError('not a dense Q8 prefill recipe')

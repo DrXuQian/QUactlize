@@ -4,7 +4,7 @@
 #include "../dispatch/selection.hpp"
 #include "../dispatch/smallm.hpp"
 #include "../prefill/api.h"
-#include "../prefill/dense_api.h"
+#include "../prefill/dense_internal.hpp"
 #include "../execution/simt_validation.hpp"
 #include <hggc_runtime_api.h>
 #include <dlfcn.h>
@@ -341,7 +341,8 @@ void prepare(Plan& p,quactlize_ppu_dense_candidate_v1 const* candidate=nullptr) 
         info.route=QUACTLIZE_DENSE_FULL;info.compute_type=p.full_storage;
         info.policy=p.dense_prefill?p.dense_prefill.policy:p.confirmed_prefill?QKS_PREFILL_COMPONENT_MEASURED:
             p.prefill.predicted?QKS_PREDICTED:QKS_COMPONENT_MEASURED;info.split=1;
-        if (p.typed_full) std::snprintf(info.config,sizeof(info.config),"full-%s:cublas:typed-dq%d:io%d",p.full_storage?"bf16":"f16",p.helper_dequant,p.helper_io);
+        if (p.typed_full) std::snprintf(info.config,sizeof(info.config),"full-%s:cublas:typed-dq%d:io%d%s",p.full_storage?"bf16":"f16",p.helper_dequant,p.helper_io,
+            p.dense_prefill && p.dense_prefill.choice->dequant_first?":dq-first":"");
         else std::snprintf(info.config,sizeof(info.config),"full-bf16:cublas:dq%d",p.prefill.dequant_config);
         return;
     }
@@ -408,7 +409,8 @@ void run(Plan const& p,float const* a,float* output,void* workspace,uint64_t byt
         c.weight.low_bytes=p.params.sizes.low_bytes;c.weight.high_bytes=p.params.sizes.high_bytes;
         c.weight.unit_bytes=p.params.sizes.units_bytes;c.weight.stream=stream;
         c.a=a;c.output=output;c.workspace=workspace;c.workspace_bytes=bytes;
-        if (p.typed_full) dense_full_check(quactlize_kpack_dense_full_run_v1(p.handle,&c,-1));
+        if (p.typed_full) dense_full_check(prefill::run_dense_full(p.handle,&c,-1,
+            p.dense_prefill && p.dense_prefill.choice->dequant_first));
         else prefill_check(quactlize_kpack_prefill_run_dynamic_v1(p.handle,&c));
         return;
     }
