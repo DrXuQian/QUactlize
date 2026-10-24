@@ -14,7 +14,7 @@ def cases(points):
         w=point['workload']
         for case in point['cases']:
             p=dict(case['recipe']['parameters'])
-            if p.get('dense_reducer')==2:
+            if p.get('dense_reducer'):
                 m,n,s=w['m'],w['n'],p['split']
                 if (case['arm']!='sf' or w['operation']!='dense' or w['compute']!='f16' or
                         not 8<m<=2048 or not 0<n<=65536 or m*n%64 or s not in (2,4,8)):
@@ -75,15 +75,19 @@ def run(sdk_path,library,points):
             mask=np.zeros(size,dtype=bool)
             mask[dst_prefix+2*indices]=True;mask[dst_prefix+2*indices+1]=True
             control=None
-            for compact in (0,1):
+            widths = {dict(c['recipe']['parameters']).get('dense_reducer',2)
+                      for p in points for c in p['cases']} | {2}
+            if not widths <= {0,2,4,8}:raise ValueError('unsupported reducer gate width')
+            for compact in sorted({0,1} | (widths-{0,2})):
                 h=C.c_void_p()
                 checked(prepare(compact,m,n,s,src+src_prefix,x.nbytes,dst+dst_prefix,stride,C.byref(h)),
                         'reducer numerical prepare')
                 if not h.value:raise ValueError('reducer prepare returned null handle')
                 try:
                     count=m*n if compact else n
-                    want_fast=int((compact or m==1) and stride==n and count%64==0 and s in (2,4,8)
-                                  and src_offset%(16 if compact else 128)==0 and dst_offset%16==0)
+                    width=compact if compact in (4,8) else 2
+                    want_fast=int((compact or m==1) and stride==n and count%(32*width)==0 and s in (2,4,8)
+                                  and src_offset%(max(16,width*4) if compact else 128)==0 and dst_offset%16==0)
                     if fast(h)!=want_fast:raise ValueError('reducer path diagnostic differs')
                     for replay in (0,1):
                         r.fill(dst,0xa5,size);checked(launch(h,r.stream),'reducer numerical launch')

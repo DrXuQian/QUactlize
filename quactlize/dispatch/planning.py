@@ -112,7 +112,7 @@ def validate_inventory(plan, execution, modules=(), *, jit=False):
 def prewarm_groups(plan):
     """Only selected TC parents need JIT; compute and endpoints are identity."""
     from quactlize.runtime.tuning import ROUTES
-    from quactlize.runtime.compiler import validate_parent
+    from quactlize.runtime.compiler import materialize_parent
     prefill=plan.get('schema')==PREFILL_SCHEMA
     if not prefill: requirements(plan)
     if any(row['status'] != 0 for row in plan['requests']):
@@ -124,7 +124,7 @@ def prewarm_groups(plan):
         key = ('bf16' if row['request'][-1] else 'f16', row['request'][1] == 0 and not prefill)
         parent = dict(row['parent'])
         parent['route'] = ROUTES[parent['route']]
-        validate_parent(parent)
+        parent = materialize_parent(parent)
         pool = groups.setdefault(key, {})
         if parent['symbol'] in pool and pool[parent['symbol']] != parent:
             raise ValueError('selected symbol aliases different parent tuples')

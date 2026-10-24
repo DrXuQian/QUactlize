@@ -77,7 +77,7 @@ def test_all_old_exact_controls_and_helper_choices_are_retained():
     data=policy()
     workloads=[Workload(q,n,k,m) for q,m,n,k in (p['shape'] for p in data['points'])]
     p=plan(workloads)
-    assert len(p['points'])==165
+    assert len(p['points'])==225
     assert load(p)==p
     for row,old in zip(sorted(p['points'],key=lambda x:x['id']), sorted(data['points'],key=lambda x:x['key'])):
         assert row['table_coverage']=='EXACT' and row['incumbent_recipe']==old['winner']
@@ -190,7 +190,7 @@ def test_fixed_tc_io_does_not_consult_the_old_helper_lookup():
     class NoLookup:
         def choice(self,*_,**__):
             raise AssertionError('explicit measured IO must not be replaced by a second selector')
-    for io in (-1,1,2,3):
+    for io in (-1,1,2,3,4):
         got=tc_helper_choice(NoLookup(),None,'cohort-current',dict(vector_io=io))
         assert got==(dict(vector_io=io,storage=0) if io>=0 else None)
     with pytest.raises(ValueError):tc_helper_choice(NoLookup(),None,'cohort-current',dict(vector_io=0))

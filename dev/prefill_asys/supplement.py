@@ -167,12 +167,12 @@ def validate(plan):
             if r.kind == 'tc':
                 if (c['arm'] != r.route or c['helper_mode'] != 'cohort-current' or rejection(r,w)
                         or c['helper_options'] != dict(vector_io=c['helper_options']['vector_io'])
-                        or c['helper_options']['vector_io'] not in (-1,1,2,3)):
+                        or c['helper_options']['vector_io'] not in (-1,1,2,3,4)):
                     raise ValueError('invalid TC helper/config contract')
             elif r.kind == 'full':
                 opts = c['helper_options']
                 if (case_identity(c) != full_case(opts['dequant_variant'],opts['vector_io'])
-                        or opts['vector_io'] not in range(4)
+                        or opts['vector_io'] not in range(5)
                         or opts['dequant_variant'] not in ((0,22,23,36,37,38,41) if w.qtype==8 else (0,8,20,21,22,23))):
                     raise ValueError('invalid Full-F16 supplement')
             else:

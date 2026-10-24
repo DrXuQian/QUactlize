@@ -15,6 +15,8 @@ def main():
     parser.add_argument('--review', type=Path, action='append', default=[])
     parser.add_argument('--check', action='store_true')
     parser.add_argument('--audit-buckets', action='store_true')
+    parser.add_argument('--base', type=Path, help='existing sealed catalog for an exact-only helper update')
+    parser.add_argument('--helper-plan', type=Path, help='measured fixed-mainloop helper factorial plan')
     args = parser.parse_args()
     if args.check:
         data = json.loads(EVIDENCE.read_text())
@@ -23,7 +25,13 @@ def main():
     else:
         if not args.review:
             parser.error('--review required in chronological replacement order')
-        data = import_reviews(args.review)
+        if args.base or args.helper_plan:
+            if not (args.base and args.helper_plan and len(args.review) == 1):
+                parser.error('helper update needs --base, --helper-plan and one --review')
+            from quactlize.dispatch.dense_prefill_update import update_helpers
+            data = update_helpers(json.loads(args.base.read_text()), args.review[0], args.helper_plan)
+        else:
+            data = import_reviews(args.review)
         # Generated data, not a source rewrite or a GPU measurement.
         EVIDENCE.write_text(json.dumps(data, sort_keys=True, separators=(',', ':'))+'\n')
         HEADER.write_text(render(data))

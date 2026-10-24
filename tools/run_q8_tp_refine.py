@@ -70,7 +70,7 @@ def main():
     signal.signal(signal.SIGTERM,interrupted)
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--review',type=Path,required=True,help='previous TP timing/review-*.json.xz')
-    p.add_argument('--phase',choices=('all','sf','dequant','io','helpers'),default='all',
+    p.add_argument('--phase',choices=('all','sf','dequant','io','helpers','followup'),default='all',
                    help='io/helpers: fixed winners with cast-only or cast+compact-reducer comparisons')
     p.add_argument('--gpus',default=os.environ.get('GPUS','1,2,3,4,5,7'))
     p.add_argument('--jobs',type=int,default=8,help='compile jobs per worker; shell JOBS is ignored')
@@ -85,7 +85,7 @@ def main():
     p.add_argument('--resume',action='store_true')
     p.add_argument('--profile-acu',action='store_true',help='profile largest helper gap and largest slow matrix after timing; one direct launch, no cold loops')
     a = p.parse_args()
-    if a.profile_acu and a.phase in ('io','helpers'):
+    if a.profile_acu and a.phase in ('io','helpers','followup'):
         p.error('--profile-acu covers dequant only; IO/reducer phases collect Asys component timings')
     try:
         gpus = gpu_ordinals(a.gpus)
@@ -94,7 +94,12 @@ def main():
     if a.run and not a.confirm_idle:p.error('--confirm-idle required for device work')
     if a.resume and not a.output:p.error('--resume requires --output')
     review = read_review(a.review)
-    if a.phase in ('io','helpers'):
+    if a.phase == 'followup':
+        from dev.prefill_asys.helper_followup import make_plan as make_followup, validate as validate_followup
+        plan=make_followup(review)
+        diagnostics=dict(points=[],scope='GRAIN_AND_ORDER_NO_MAINLOOP_SEARCH')
+        validate_plan=validate_followup
+    elif a.phase in ('io','helpers'):
         from dev.prefill_asys.io_refine import make_plan as make_io_plan, validate as validate_io
         plan=make_io_plan(review,compact=a.phase=='helpers')
         diagnostics=dict(points=[],scope='FIXED_MAINLOOP_HELPERS_NO_DEQUANT_SEARCH')
@@ -141,14 +146,14 @@ def main():
     status=dict(status='INCOMPLETE',phases={},requested_phases=['sf','dequant'] if a.phase=='all' else [a.phase],
                 production_changed=False,performance_admitted=False)
     try:
-        if a.phase in ('all','sf','io','helpers'):
+        if a.phase in ('all','sf','io','helpers','followup'):
             workers=gpus[:min(len(gpus),plan['counts']['families'])]
             command=[sys.executable,'-u',str(ROOT/'tools/run_prefill_cohort_multi.py'),
                 '--finalist-plan',str(a.output/'plan.json'),'--gpus',','.join(workers),
                 '--output',str(a.output/'timing'),'--jobs',str(limits['jobs']),
                 '--configs-per-batch',str(limits['configs_per_batch']),'--confirm-idle']
             if (a.output/'timing').exists():command.append('--resume')
-            status['phases'][a.phase if a.phase in ('io','helpers') else 'sf']=run_coordinator(command,env)
+            status['phases'][a.phase if a.phase in ('io','helpers','followup') else 'sf']=run_coordinator(command,env)
             atomic_json(a.output/'status.json',status)
         if a.phase in ('all','dequant'):
             helper=a.output/'dequant';helper.mkdir(exist_ok=a.resume)
@@ -162,7 +167,7 @@ def main():
             status['phases']['dequant']=run_coordinator(
                 ['bash',str(ROOT/'tools/run_dense_dequant_box.sh')],helper_env)
         status['status']='MEASURED_NOT_ADMITTED' if not any(status['phases'].values()) else 'INCOMPLETE'
-        phases=(a.phase,) if a.phase in ('io','helpers') else ('sf','dequant')
+        phases=(a.phase,) if a.phase in ('io','helpers','followup') else ('sf','dequant')
         status['not_measured_in_this_invocation']=[stage for stage in phases if stage not in status['phases']]
         print('Q8_TP_REFINE_DONE '+json.dumps(status),flush=True)
         return int(status['status']=='INCOMPLETE')

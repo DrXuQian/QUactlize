@@ -135,10 +135,26 @@ def validate_parent(parent):
     if parent["tk"] % minimum_k:
         raise ValueError("parent does not contain whole K-pack transport tiles")
     reducer = parent.get("dense_reducer", 0)
-    if (type(reducer) is not int or reducer not in (0, 2) or
+    suffix = re.search(r"_rc(\d+)$", parent["symbol"])
+    if (type(reducer) is not int or reducer not in (0, 2, 4, 8) or
             (reducer and not parent["route"].endswith("dense")) or
-            bool(reducer) != parent["symbol"].endswith("_rc2")):
-        raise ValueError("compact dense reducer requires a distinct native dense parent ending _rc2")
+            (int(suffix[1]) if suffix else 0) != reducer or (suffix and not reducer)):
+        raise ValueError("compact dense reducer requires a matching native dense parent suffix _rc2/4/8")
+
+
+def materialize_parent(parent):
+    """Restore optional recipe axes carried in the canonical dispatcher symbol.
+
+    The stable C++ Config tuple predates dense reducers. Its reserved suffix
+    carries this axis, for both lazy resolve and offline prewarm. Do not change
+    unsuffixed parents or silently override an explicitly supplied axis.
+    """
+    parent = dict(parent)
+    match = re.search(r"_rc(\d+)$", parent.get("symbol", ""))
+    if match:
+        parent.setdefault("dense_reducer", int(match[1]))
+    validate_parent(parent)
+    return parent
 
 
 class Compiler:

@@ -101,9 +101,11 @@ class TypedFull:
             cublas_workspace_bytes=4<<20,entry='quactlize_kpack_dense_full_run_v1',
             scope='SAME_PREPARE_AND_RUN_AS_PRODUCTION_FULL; ROUTE_WINNER_NOT_ADMITTED')
 
-    def descriptors(self):
+    def descriptors(self, order=(4,0,1,2,3)):
+        if order not in ((4,0,1,2,3),(4,1,0,2,3)):
+            raise ValueError('unsupported Full diagnostic stage order')
         return [call(self.library.run,4,[self.handle,ptr(C.byref(c))],[stage])
-                for c in self.calls for stage in (4,0,1,2,3)]
+                for c in self.calls for stage in order]
 
     def launch(self,copy,stage=-1):
         rc=self.library.run(self.handle,C.byref(self.calls[copy]),stage)
@@ -132,8 +134,14 @@ def measure_full(args,b,timer,arm,recipe,library):
     storage=int(arm=='full-bf16-typed');core=None
     try:
         core=TypedFull(b,library,args.sdk,storage,getattr(args,'helper_options',None))
-        calls=(Descriptor*(5*b.ring.copies))(*core.descriptors())
-        names=['error_reset','input','expansion','main','output'];proof=[];bits=[]
+        # Isolate native's DQ-before-input order using the same public stage
+        # entries, pointers and error checks. This is not a production option.
+        dq_first=dict(recipe.parameters).get('dequant_first',False)
+        if type(dq_first) is not bool:raise ValueError('invalid diagnostic stage order')
+        order=(4,1,0,2,3) if dq_first else (4,0,1,2,3)
+        calls=(Descriptor*(5*b.ring.copies))(*core.descriptors(order))
+        stages={4:'error_reset',0:'input',1:'expansion',2:'main',3:'output'}
+        names=[stages[s] for s in order];proof=[];bits=[]
         for repeat in (0,1):
             b.update(repeat)
             for i in (0,b.ring.copies-1):
@@ -163,7 +171,7 @@ def measure_full(args,b,timer,arm,recipe,library):
             fixture=b.ring.receipt,stages=names,point_timings=rows,loaded_images=loaded_images(),
             trace=trace_contract(b.ring.copies),summary=None if args.trace_only else summarize(rows,names),
             timing='ASYS_GPU_ACTIVITIES_COMPLETE_CALLS_NO_INNER_EVENTS',
-            sequence='RESET_INPUT_DEQUANT_GEMM_OUTPUT_EVERY_CALL',
+            sequence='RESET_DEQUANT_INPUT_GEMM_OUTPUT_DIAGNOSTIC' if dq_first else 'RESET_INPUT_DEQUANT_GEMM_OUTPUT_EVERY_CALL',
             allocation='ROTATING_PACKED_AND_EXPANDED_B_WITH_PER_COPY_SCRATCH',
             production_changed=False,model_admission=False)
         atomic_json(args.output/'results'/(args.case_id+'.json'),value)

@@ -14,7 +14,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from quactlize.runtime.compiler import Compiler, validate_parent, source_contract, sha
+from quactlize.runtime.compiler import Compiler, validate_parent, materialize_parent, source_contract, sha
 from quactlize.decode.compiler import DecodeCompiler
 from quactlize.decode.grouped_compiler import GroupedComputeCompiler
 from types import SimpleNamespace
@@ -23,12 +23,13 @@ from quactlize.runtime.tuning import ROUTES, digest
 
 def parent_tuple(symbol, values):
     fields = ("qtype", "route", "tm", "tn", "tk", "wm", "wn", "stages", "ap", "dn", "persistent")
+    if len(values) != len(fields):
+        raise ValueError("invalid parent tuple length")
     parent = dict(zip(fields, values), symbol=symbol)
     if parent["route"] not in range(len(ROUTES)):
         raise ValueError("invalid parent route")
     parent["route"] = ROUTES[parent["route"]]
-    validate_parent(parent)
-    return parent
+    return materialize_parent(parent)
 
 
 def inspect_modules(cache, keys, contract):

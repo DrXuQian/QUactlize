@@ -84,7 +84,7 @@ struct MainloopUsesPackedMetadata<
 // call site to the exact collective selected by the format-specific shipping build.
 template <class ShippingTypes, class TileShape, class WarpShape,
           class PlaneB2 = void, bool ExpectPackedMetadata = false,
-          bool CompactReduction = false>
+          int CompactElements = 0>
 class PreparedMultiformatLauncher {
  public:
   using MainloopPolicy = typename ShippingTypes::MainloopPolicy;
@@ -95,8 +95,9 @@ class PreparedMultiformatLauncher {
   using SplitGemm = typename SplitTypes::Gemm;
   // Same FP32[S,M,N] producer and increasing-S sum. Explicit opt-in only;
   // the shared compact dispatcher retains checked tail/stride fallbacks.
-  using Reduction = std::conditional_t<CompactReduction,
-      cutlass::gemm::device::splitk_parallel::PpuMixedInputSplitKParallelCompactReduction<2>,
+  static_assert(CompactElements == 0 || CompactElements == 2 || CompactElements == 4 || CompactElements == 8);
+  using Reduction = std::conditional_t<(CompactElements != 0),
+      cutlass::gemm::device::splitk_parallel::PpuMixedInputSplitKParallelCompactReduction<(CompactElements ? CompactElements : 2)>,
       typename SplitTypes::Reduction>;
   using CollectiveMainloop = typename ShippingTypes::CollectiveMainloop;
   using ElementA = typename MainloopPolicy::ElementA;

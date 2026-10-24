@@ -135,6 +135,9 @@ def snapshot(plan):
 
 
 def load(document):
+    if document.get('schema') == 'quactlize.dense-helper-followup.v1':
+        from .helper_followup import validate as validate_followup
+        return validate_followup(document)
     if document.get('schema') in ('quactlize.dense-contiguous-io.v1','quactlize.dense-helper-reuse.v1'):
         from .io_refine import validate as validate_io
         return validate_io(document)
@@ -177,7 +180,7 @@ def validate(plan):
                     raise ValueError('invalid fixed TC finalist')
             elif r.kind=='full':
                 o=c['helper_options'];allowed=(0,22,23,36,37,38,41) if w.qtype==8 else (0,8,20,21,22,23)
-                if (o['dequant_variant'] not in allowed or o['vector_io'] not in range(4)
+                if (o['dequant_variant'] not in allowed or o['vector_io'] not in range(5)
                         or case_identity(c)!=full_case(o['dequant_variant'],o['vector_io'])):
                     raise ValueError('Full finalist precision/helper differs')
             else: raise ValueError('only measured prefill TC/Full finalists allowed')

@@ -41,11 +41,41 @@ def choose(costs):
     return min(costs, key=lambda c: (costs[c], c))
 
 
+def admitted_costs(point):
+    """Helper updates require improvement in both capture orders, not a lucky median."""
+    costs = dict(point['costs'])
+    a = point.get('admission')
+    if a is None:
+        return costs
+    require(a['rule'] == 'BOTH_CAPTURE_MEDIANS_BEAT_REMEASURED_CONTROL', 'unknown admission rule')
+    captures, controls = a['capture_medians'], a['controls']
+    require(set(captures) == set(costs) and controls and set(controls) <= costs.keys(), 'admission coverage differs')
+    for rid, ts in captures.items():
+        require(len(ts) == 2 and all(math.isfinite(t) and t > 0 for t in ts) and
+                abs(statistics.median(ts)-costs[rid]) < 1e-6, 'admission capture median differs')
+    baseline = a['baseline']
+    require(baseline == choose({r:costs[r] for r in controls}), 'control is not the remeasured old minimum')
+    incumbent = a['incumbent']
+    require(incumbent is None or incumbent in costs, 'incumbent was not remeasured')
+    comparisons = {baseline, incumbent} - {None}
+    keep = incumbent or baseline
+    return {rid:us for rid,us in costs.items() if rid == keep or
+            all(all(x < y for x,y in zip(captures[rid], captures[old])) for old in comparisons-{rid})}
+
+
+def bucket_costs(point):
+    # Exact-only helper admission must not silently widen a measured launch.
+    # For a refreshed existing row, preserve its original bucket observations;
+    # [] marks a new exact-only row, with no bucket-training claim.
+    return dict(point.get('bucket_costs', point['costs']))
+
+
 def execution(candidate, row, definitions):
     """Freeze adapters too: cohort-current is not a stable execution identity."""
     recipe = candidate['recipe']
     p = dict(recipe['parameters'])
     if recipe['kind'] == 'full':
+        require(set(p) == {'provider','dequant_variant','vector_io'}, 'unadmitted Full execution option')
         require(candidate['arm'] == 'full-fp16' and p['provider'] == 'typed-fp16', 'not Full-F16')
         require(candidate['helper_options'] == dict(dequant_variant=p['dequant_variant'], vector_io=p['vector_io']),
                 'full helper identity differs')
@@ -53,11 +83,21 @@ def execution(candidate, row, definitions):
     names = [definitions[c]['name'] for c in row['components'] if definitions[c]['phase'] in ('input', 'output')]
     require(len(names) == 2, 'TC adapter coverage differs')
     kinds = {'::convert_rows<': -1, '::dense_convert_vec8<false,': 1,
-             '::dense_convert_stripe4<false,': 2, '::dense_convert_full4<false,': 3}
+             '::dense_convert_stripe4<false,': 2, '::dense_convert_full4<false,': 3,
+             '::dense_convert_cont<false,': 4}
     ios = [next((io for name, io in kinds.items() if name in n), None) for n in names]
     require(ios[0] is not None and ios[0] == ios[1], 'unrecognized/mixed TC adapters')
     require(recipe['kind'] == 'tc' and recipe['route'] in ('fq', 'sf'), 'unsupported recipe')
     dq = p.pop('dequant_config')
+    if p.get('dense_reducer'):
+        require(p['dense_reducer'] == 2 and p['symbol'].endswith('_rc2') and p['split'] in (2,4,8),
+                'unadmitted compact reducer')
+        reducers = [definitions[c] for c in row['components'] if definitions[c]['phase'] == 'reducer']
+        require(len(reducers) == 1, 'compact reducer coverage differs')
+        c = reducers[0]; w = c['workload']
+        require(f'PpuMixedInputSplitKParallelM1FastReductionKernel<2, {p["split"]}>' in c['name'] and
+                c['grid'] == [(w['m']*w['n']+63)//64,1,1] and c['block'] == [32,1,1] and not c['shared_bytes'],
+                'compact reducer launch differs')
     return dict(route=int(recipe['route'] == 'sf'), io=ios[0], dequant=dq, tc=p)
 
 
@@ -106,11 +146,12 @@ def fit(points):
     """
     groups = defaultdict(list)
     for p in points:
-        groups[bucket_key(p['shape'])].append(p)
+        if bucket_costs(p):
+            groups[bucket_key(p['shape'])].append(p)
     leaves = []
 
     def visit(key, members, bounds):
-        costs = [dict(p['costs']) for p in members]
+        costs = [bucket_costs(p) for p in members]
         common = set.intersection(*(set(c) for c in costs))
         normalized = [{k: v/min(c.values()) for k, v in c.items()} for c in costs]
         best = min(common, key=lambda c: (max(r[c] for r in normalized),
@@ -222,7 +263,13 @@ def validate(data):
         costs = dict(p['costs'])
         require(len(costs) == len(p['costs']) and all(r in data['recipes'] and math.isfinite(t) and t > 0
                                                    for r,t in costs.items()), 'invalid costs')
-        require(choose(costs) == p['winner'] and costs[p['winner']] == p['us'], 'not measured minimum')
+        require(choose(admitted_costs(p)) == p['winner'] and costs[p['winner']] == p['us'], 'not admitted measured minimum')
+        bc = bucket_costs(p)
+        require(all(r in data['recipes'] and math.isfinite(t) and t > 0 for r,t in bc.items()),
+                'invalid bucket training costs')
+        if 'bucket_costs' in p:
+            require(not bc or (p.get('bucket_evidence') and p['bucket_evidence']['authority'] in data['authorities']),
+                    'missing historical bucket evidence')
     require(fit(data['points']) == data['buckets'], 'bucket fitting differs')
 
 

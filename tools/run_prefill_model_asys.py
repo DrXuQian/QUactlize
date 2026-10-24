@@ -471,7 +471,7 @@ def main():
                      '--library',str(a.output/'build/dense/libquactlize_ppu_prefill.so'),
                      '--output',str(a.output/f'io-gate-{time.time_ns()}.json')],
                     a.output/f'io-gate-{time.time_ns()}.log',env)
-        if any(dict(c['recipe']['parameters']).get('dense_reducer')==2
+        if any(dict(c['recipe']['parameters']).get('dense_reducer')
                for p in plan['points'] for c in p.get('cases',[])):
             execute([sys.executable,str(ROOT/'tools/check_dense_reducer.py'),'--sdk',str(a.sdk),
                      '--library',str(Path(payload['path'])/'helpers/libstrategy_prefill.so'),

@@ -4,8 +4,58 @@ IO4 adapts the MIT-licensed contiguous body from llama.cpp's
 `ggml/src/ggml-cuda/convert-ppu.cuh` at
 `d30de5bbe45fabb23bcc7a6832d84f0046c16f23`. It does not depend on llama headers
 or binaries. IO0..3, the measured helper tables, GEMM and dequant implementations
-are unchanged. IO4 and the existing compact reducer are explicit measurement
-candidates; neither is enabled by a production policy in this change.
+are unchanged. The first experiment left IO4/compact selection disabled. The
+reviewed exact-only admission below now enables the confirmed combinations.
+
+## Current admission and next bounded check
+
+Review `bd5a4529cbdb2a30b2fd11f918179e81d9e4f382318262cf9da12bfb24495f49`
+passed 65 points, 304 candidate arms, 738 captures, 1296 IO checks and 228
+reducer checks. The updated catalog has 225 exact points. Of this cohort,
+61 points are imported:53 select a new helper combination and8 retain a
+remeasured old route. Four existing exact incumbents were absent from the
+experiment and remain unchanged, with a pending comparison recorded in the
+catalog. No cross-run microsecond comparison substitutes for that control.
+
+Choose the minimum complete call among candidates beating the remeasured old
+best in both capture orders. Keep all measured costs, including rejected arms.
+All147 old bucket predictions/training remain unchanged; these new helper
+choices are exact-only. This is not an unseen-shape or model-TPOT guarantee.
+The reserved reducer suffix is reconstructed by both lazy JIT and prewarm;
+the actual C++ selector is tested through this source-generation boundary.
+
+Compact2 loses on six larger-output S2 points and is NOT enabled globally.
+The next experiment covers15points/49candidatearms, seven TC modules and
+128native/candidate confirmations (not another GEMM geometry sweep):
+
+- Six reducer regressions plus two small-output controls: generic vs compact2/4/8,
+  with the same GEMM, partials, casts, fixed-S sum and F16 rounding.
+- Four Full residuals: unchanged vs dequant-before-input order using the same
+  public stage APIs. Allocation, error reset/checked output and precision stay
+  unchanged. This diagnoses cache-order effects; it is not a production option.
+- Four missing incumbent comparisons, one overlapping a Full residual.
+
+On idle GPUs1,2,3,4,5,7:
+
+```bash
+cd /sim/eec/shared/junfu.qx/quactlize
+git pull --ff-only origin develop
+python3 tools/run_q8_tp_refine.py \
+  --phase followup \
+  --review /workspace/kpack-q8-tp-refine.mtzrzgb9/timing/review-1792820382106902152.json.xz \
+  --llama-source /sim/eec/shared/junfu.qx/llama.cpp.ncp \
+  --llama-build /sim/eec/shared/junfu.qx/llama.cpp.ncp/build-ci-32F-cublas \
+  --sdk /usr/local/PPU_SDK --gpus 1,2,3,4,5,7 \
+  --jobs 8 --configs-per-batch 16 --run --confirm-idle
+```
+
+The existing runner requests1700MHz, excludes warmup and collects each helper,
+GEMM and reducer from ordinary-call Asys GPU activities. No cuBLAS CUDA Graph
+or Python/API timing. The independent reducer gate now tests every proposed
+width, including tail/stride/alignment fallback, before full-call timing.
+Upload only the printed compact `review-*.tgz`; raw Asys reports stay on Box.
+No llama rebuild or model loading is needed for this component experiment.
+If new candidates lose, retain the already admitted configuration.
 
 ## Contract and local evidence
 
@@ -51,11 +101,12 @@ runtime uses it; `dense_splitk_parallel_ppu.cuh` instead instantiates
 so M>1 falls back to the generic reducer. Reusing the compact dispatcher is
 an isolated experiment, not a new reducer algorithm or a proved speedup.
 Do not switch it globally: CTA grain changes, contiguous/aligned/size checks
-must still pass, and producer/output layouts must agree. A default-false
-`PreparedMultiformatLauncher` template argument selects compact<2>. Generated
+must still pass, and producer/output layouts must agree. A default-zero
+`PreparedMultiformatLauncher` template argument selects a compact width only
+when explicitly nonzero (2 for the admitted rows; 4/8 remain experiments). Generated
 native F16 dense parents carry `dense_reducer=2` and an `_rc2` suffix, with their
-own source/build identity. Existing parents, bound/dynamic call ABI and all
-policies are unchanged. Typed decode and grouped modules reject this option.
+own source/build identity. Existing parents and bound/dynamic call ABI are
+unchanged. Typed decode and grouped modules reject this option.
 The option changes only the reducer dispatcher: ordinary/Split-K GEMM, partial
 layout, workspace size and increasing-S sum are unchanged. Native-code audits
 compare every GPU body/resource against the retained pre-change module, rather
@@ -66,7 +117,7 @@ with PPU SDK2.1.1. Every GPU body/resource in those TC modules matches the
 retained pre-change module. No local PPU runtime was available; this is not
 a device numerical or performance pass.
 
-## Bounded Box check
+## Initial 65-point Box check (completed)
 
 Use the latest completed Q8 TP refinement compact review, not the earlier
 pre-refinement report. `--phase helpers` keeps the best measured SF and Full-F16

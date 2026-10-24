@@ -133,7 +133,7 @@ def one_call(rows, arm, stages, split, *, primer_without_reset=False):
     phases = {i:role for i,role in helpers}
     if arm in ('full-bf16','full-fp16','full-bf16-typed'):
         if primer_without_reset:
-            if helpers[0] != (0,'input') or 'error_reset' not in stages:
+            if helpers[0] != (0,expected[0]) or expected[0] not in ('input','expansion') or 'error_reset' not in stages:
                 raise ValueError('invalid incomplete primer inventory')
         elif helpers[0][0] != 1 or not (rows[0]['kind'] == 'memset' and
                 rows[0]['bytes'] == 4 and rows[0]['value'] == 0):
@@ -185,15 +185,16 @@ def parse_rows(rows, cases, *, apis=()):
             offset += 1
             block = [dict(r) for r in rows[start:offset]]
             missing = (call==0 and arm in ('full-bf16','full-fp16','full-bf16-typed') and
-                       helper_role(block[0],arm)=='input')
+                       helper_role(block[0],arm) in ('input','expansion'))
             if missing: exceptions.append(primer_reset_evidence(block[0],rows,apis))
             calls.append(one_call(block,arm,case['stages'],split,primer_without_reset=missing))
-            if parameters.get('dense_reducer')==2:
+            if parameters.get('dense_reducer'):
+                elements=parameters['dense_reducer']
                 w=case['workload'];reducers=[r for r in block if r['phase']=='reducer']
-                name=f'PpuMixedInputSplitKParallelM1FastReductionKernel<2,{split}>'
-                if (w['m']*w['n']%64 or split not in (2,4,8) or len(reducers)!=1 or
+                name=f'PpuMixedInputSplitKParallelM1FastReductionKernel<{elements},{split}>'
+                if (elements not in (2,4,8) or w['m']*w['n']%(32*elements) or split not in (2,4,8) or len(reducers)!=1 or
                         name not in reducers[0]['name'].replace(' ','') or
-                        reducers[0]['grid']!=[w['m']*w['n']//64,1,1] or
+                        reducers[0]['grid']!=[w['m']*w['n']//(32*elements),1,1] or
                         reducers[0]['block']!=[32,1,1] or reducers[0]['shared_bytes']!=0):
                     raise ValueError('compact reducer did not execute the required native body/launch')
             raw.append(block)

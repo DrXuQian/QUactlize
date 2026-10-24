@@ -6,7 +6,8 @@ import subprocess
 
 import pytest
 
-from quactlize.dispatch.dense_prefill import EVIDENCE, HEADER, bucket_key, render, validate, audit_buckets
+from quactlize.dispatch.dense_prefill import (EVIDENCE, HEADER, admitted_costs, bucket_costs,
+    bucket_key, render, validate, audit_buckets)
 from quactlize.runtime.tuning import digest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,10 +21,10 @@ def test_all_exact_rows_are_complete_call_minima():
     data = evidence()
     validate(data)
     assert render(data) == HEADER.read_text()
-    assert len(data['points']) == 165
-    assert len(data['reviews']) == 2
-    assert sum(p['winner_evidence']['captures'] == 2 for p in data['points']) == 47
-    assert sum(p['us'] > p['native_us'] for p in data['points']) == 12
+    assert len(data['points']) == 225
+    assert len(data['reviews']) == 3
+    assert sum(p['winner_evidence']['captures'] == 2 for p in data['points']) == 107
+    assert sum(p['us'] > p['native_us'] for p in data['points']) == 16
     assert not data['model_performance_admitted']
     # Evidence keeps the native losses; export is not a zero-regression claim.
     assert max(100*(p['us']/p['native_us']-1) for p in data['points']) < 5
@@ -59,18 +60,21 @@ def test_bucket_choice_was_measured_at_every_member():
         for key in b['members']:
             p = points[key]
             assert list(bucket_key(p['shape'])) == b['key']
-            assert dict(p['costs'])[b['recipe']] <= p['us']*1.05
+            costs = bucket_costs(p)
+            assert costs[b['recipe']] <= min(costs.values())*1.05
     # Q4's conflicting coarse cells must be split, not forced to common FQ.
-    assert len(data['buckets']) > len({bucket_key(p['shape']) for p in data['points']})
+    assert len(data['buckets']) > len({bucket_key(p['shape']) for p in data['points'] if bucket_costs(p)})
 
 
 def test_bucket_audit_does_not_call_missing_measurements_a_win():
     audit = audit_buckets(evidence())
-    assert sum(audit['counts'].values()) == 165
-    assert audit['counts']['comparable'] == 33
-    assert audit['counts']['candidate_not_measured_on_held_family'] == 17
-    assert audit['worst_regret_pct'] < 6
-    assert len(audit['over_5pct']) == 1 and not audit['new_model_validated']
+    assert sum(audit['counts'].values()) == 225
+    assert audit['counts']['comparable'] == 39
+    assert audit['counts']['candidate_not_measured_on_held_family'] == 26
+    # New exact rows expose poor old-bucket predictions. Keep those losses
+    # visible: exact-only helper admission does NOT prove new-family buckets.
+    assert 77 < audit['worst_regret_pct'] < 78
+    assert len(audit['over_5pct']) == 3 and not audit['new_model_validated']
     # N/K transposition used to produce 27% leave-family-out regret.
     assert bucket_key((12,2048,6144,5120)) != bucket_key((12,2048,5120,6144))
 

@@ -163,11 +163,11 @@ def validate(plan):
             if r.kind=='tc':
                 if (r.route!='sf' or c['arm']!='sf' or rejection(r,w) or
                         c['helper_mode']!='cohort-current' or
-                        c['helper_options'] not in [dict(vector_io=i) for i in (-1,1,2,3)]):
+                        c['helper_options'] not in [dict(vector_io=i) for i in (-1,1,2,3,4)]):
                     raise ValueError('invalid Q8 SF geometry/helper contract')
             elif r.kind=='full':
                 opts = c['helper_options']
-                if (opts['dequant_variant'] not in (0,22,23,36,37,38,41) or opts['vector_io'] not in range(4)
+                if (opts['dequant_variant'] not in (0,22,23,36,37,38,41) or opts['vector_io'] not in range(5)
                         or case_identity(c)!=full_case(opts['dequant_variant'],opts['vector_io'])):
                     raise ValueError('invalid Full-F16 control')
             else:
