@@ -221,6 +221,15 @@ Test the Python-to-shell-to-worker argv boundary with hostile environment
 values (e.g.JOBS=192), not only direct Python plan-only calls. Preserve strict
 resume/source binding. This is a host-launch repair, not GPU numeric evidence.
 
+For a cast gate that first checks non-NaN bits/NaN classification and then
+rejects scalar-control raw bits, preserve that ordering as evidence: the
+second failure alone localizes differences to NaN encoding for that cell.
+It does not identify the exact encoding or blame the new candidate. Capture
+all three outputs of the same cell (scalar, existing vector, candidate),
+input/expected/actual hex bits and binary identity. Keep the strict gate red
+while diagnosing; do not launch the full performance campaign or relax NaN
+checks merely to get a timing. Reuse the compiled library for this small probe.
+
 Native-component diagnostic pdvGnj2J (ZW810, 2026-10-19) exposed a missing
 producer wait in its changed-input reference download. llama graph compute
 uses a nonblocking stream; tensor_get used cudaStreamPerThread and waited

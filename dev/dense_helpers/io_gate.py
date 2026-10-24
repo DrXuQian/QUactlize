@@ -8,6 +8,30 @@ from dev.bf16_compute.fixture import bf16_bits, bf16_float
 from quactlize.runtime.native import SDK, checked
 from tools.run_kpack_gemv_gate import Resources
 
+SCOPE='ACTUAL_IO_ABI_RAW_BITS_AND_GUARDS_NO_TIMING'
+
+
+class GateFailure(ValueError):
+    def __init__(self, report):
+        self.report=report
+        super().__init__(report['error'])
+
+
+def compare_bits(got, want, storage, input, source):
+    """Explain raw differences without accepting any previously rejected bit."""
+    dtype='<u2' if input else '<u4'
+    a=got.view(dtype).reshape(-1);b=want.view(dtype).reshape(-1)
+    if a.shape!=b.shape:raise ValueError('dense IO comparison shape differs')
+    mask,frac=((0x7f80,0x7f) if storage else (0x7c00,0x3ff)) if input else (0x7f800000,0x7fffff)
+    an=((a&mask)==mask)&((a&frac)!=0);bn=((b&mask)==mask)&((b&frac)!=0)
+    bad=a!=b;both_nan=an&bn
+    src=source.view('<u4' if input else '<u2').reshape(-1)
+    first=[dict(index=int(i),input_bits=hex(int(src[i])),want_bits=hex(int(b[i])),
+                got_bits=hex(int(a[i])),both_nan=bool(both_nan[i])) for i in np.flatnonzero(bad)[:8]]
+    return dict(raw_bad=int(np.count_nonzero(bad)),nan_encoding_bad=int(np.count_nonzero(bad&both_nan)),
+                nan_class_bad=int(np.count_nonzero(an!=bn)),
+                non_nan_bad=int(np.count_nonzero(bad&~(an|bn))),first=first)
+
 
 def inputs(storage, input):
     bits=np.arange(65536,dtype='<u2')
@@ -57,6 +81,9 @@ def run(sdk_path, library):
     fn.argtypes=[C.c_int]*3+[C.c_void_p]*2+[C.c_int]*2+[C.c_int64,C.c_void_p,C.c_void_p]
     fn.restype=C.c_int
     records=[]
+    def fail(message,cell,**details):
+        raise GateFailure(dict(status='FAIL',error=message,first_failure=dict(cell,**details),
+            cases=len(records),records=records,scope=SCOPE,performance_admitted=False))
     for storage in (0,1):
         for input in (0,1):
             data=inputs(storage,input)
@@ -85,7 +112,9 @@ def run(sdk_path, library):
                     written=np.zeros(dst_bytes,dtype=bool)
                     for byte in range(dst_item):written[dst_prefix+indices*dst_item+byte]=True
                     for status in (None,0,1):
-                        r.fill(error,0 if not status else 1,4);control=None
+                        cell=dict(storage=storage,input=input,rows=rows,width=width,stride=stride,
+                                  offset=offset,error=status,input_sha256=hashlib.sha256(useful.tobytes()).hexdigest())
+                        r.fill(error,0 if not status else 1,4);outputs={};issues=[];oracle={}
                         for vector in (0,1,4):
                             r.fill(dst,0xa5,dst_bytes)
                             checked(fn(storage,input,vector,src+src_prefix,dst+dst_prefix,
@@ -93,19 +122,35 @@ def run(sdk_path, library):
                                     'dense IO gate launch')
                             sdk.synchronize(r.stream)
                             raw=np.frombuffer(sdk.download(dst,dst_bytes),dtype='u1')
-                            if np.any(raw[~written]!=0xa5):raise ValueError('dense IO guard/padding overwritten')
+                            if np.any(raw[~written]!=0xa5):
+                                fail('dense IO guard/padding overwritten',cell,vector=vector,
+                                     first_byte=int(np.flatnonzero((raw!=0xa5)&~written)[0]))
                             got=raw[dst_prefix:-256].view('<u2' if input else '<f4')[indices].reshape(rows,width)
                             if not input and status:
-                                if not np.all(got.view('<u4')==0x7fc00000):raise ValueError('dense IO producer error lost')
-                            else:check_oracle(got,want,storage,input)
-                            if control is None:control=got.copy()
-                            elif got.tobytes()!=control.tobytes():raise ValueError('dense IO scalar-control bits differ')
+                                poisoned=np.full(got.shape,0x7fc00000,dtype='<u4').view('<f4')
+                                oracle[vector]=compare_bits(got,poisoned,storage,input,useful)
+                                if oracle[vector]['raw_bad']:issues.append(f'vector={vector}: producer error lost')
+                            else:
+                                oracle[vector]=compare_bits(got,want,storage,input,useful)
+                                try:check_oracle(got,want,storage,input)
+                                except ValueError as e:issues.append(f'vector={vector}: {e}')
+                            outputs[vector]=got.copy()
                             records.append(dict(storage=storage,input=input,vector=vector,rows=rows,
-                                width=width,stride=stride,offset=offset,error=status,bad=0,guard='PASS',
+                                width=width,stride=stride,offset=offset,error=status,guard='PASS',
+                                oracle=oracle[vector],
                                 sha256=hashlib.sha256(got.tobytes()).hexdigest()))
+                        comparisons={f'{a}-vs-{b}':compare_bits(outputs[a],outputs[b],storage,input,useful)
+                                     for a,b in ((1,0),(4,0),(4,1))}
+                        if comparisons['1-vs-0']['raw_bad'] or comparisons['4-vs-0']['raw_bad']:
+                            issues.append('dense IO scalar-control bits differ')
+                        if issues:
+                            # Complete only this cell's three variants, then stop.
+                            # No scalar/old-vector/candidate comparison is waived.
+                            fail('; '.join(issues),cell,oracle=oracle,comparisons=comparisons,
+                                 source_unchanged=sdk.download(src,len(source))==source.tobytes())
                     if sdk.download(src,len(source))!=source.tobytes():raise ValueError('dense IO source modified')
                     if not fn(storage,input,4,src+src_prefix,src+src_prefix,rows,width,stride,None,r.stream):
                         raise ValueError('dense IO overlapping operands not rejected')
                 finally:r.close()
     return dict(status='PASS',cases=len(records),records=records,
-                scope='ACTUAL_IO_ABI_RAW_BITS_AND_GUARDS_NO_TIMING',performance_admitted=False)
+                scope=SCOPE,performance_admitted=False)

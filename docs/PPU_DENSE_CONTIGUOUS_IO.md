@@ -127,6 +127,23 @@ did not identify which inherited value was invalid. Keep that attempt intact
 and start a fresh run with the fixed launcher, not `--resume` (no completed
 device work exists there to reuse).
 
+The next attempt (revision4e069e1) passed argument validation and library builds
+on all six workers, but stopped at `dense IO scalar-control bits differ`.
+The preceding independent IEEE check had passed: for that cell, the raw
+difference is confined to NaN encoding, not a finite/Inf/zero mismatch. Its
+old log does not identify the cell or whether IO1 or IO4 differed; do not
+assume it is a new-candidate defect or declare it harmless without the bits.
+
+`check_dense_io.py` now saves a failure JSON, including the first failing cell,
+input/expected/actual hex bits, fingerprints, per-oracle differences, and all
+three comparisons (IO1-vs-IO0, IO4-vs-IO0, IO4-vs-IO1). It completes only the
+three variants of that cell before stopping; runtime/guard errors stop at once.
+The independent oracle, scalar raw-bit requirement and canonical error NaN
+remain unchanged. A payload-only difference still fails. Run this gate on one
+idle GPU against the already-built `build/dense/libquactlize_ppu_prefill.so`;
+no rebuild, Asys, reducer test or six-card campaign is needed to get the missing
+evidence. Both successful and failed diagnostic runs print their output JSON.
+
 No production selection is promoted by this command. Compare complete calls
 and both orderings before choosing IO4 or compact reduction for a measured scope.
 Do not use `--profile-acu` for the IO/reducer phase: that flag belongs to the
