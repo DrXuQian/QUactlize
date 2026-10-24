@@ -33,6 +33,9 @@ def main():
     if value.get('first_failure'):
         print('DENSE_IO_GATE_FIRST_FAILURE '+json.dumps(value['first_failure'],allow_nan=False),flush=True)
     if value.get('error'):print('DENSE_IO_GATE_ERROR '+value['error'],flush=True)
+    if value.get('baseline_observations'):
+        print(f'DENSE_IO_GATE_BASELINE_NAN cells={len(value["baseline_observations"])} '
+              'scope=BF16_OUTPUT_ONLY candidate_vs_old_vector=BIT_EXACT details=OUTPUT_JSON',flush=True)
     print(f'DENSE_IO_GATE {value["status"]} cases={value.get("cases",0)} output={a.output}',flush=True)
     return int(value['status']!='PASS')
 

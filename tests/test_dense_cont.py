@@ -9,7 +9,7 @@ import sys
 import numpy as np
 import pytest
 
-from dev.dense_helpers.io_gate import inputs, expected, check_oracle, compare_bits, GateFailure
+from dev.dense_helpers.io_gate import inputs, expected, check_oracle, compare_bits, check_controls, GateFailure
 from dev.prefill_asys.finalists import case_identity, load, partition
 from dev.prefill_asys.io_refine import make_plan, validate, converted
 from quactlize.runtime.tuning import digest
@@ -97,7 +97,8 @@ def test_io_plan_reaches_existing_asys_shards_without_a_device(tmp_path):
     assert not (tmp_path/'dry/build').exists()
 
 
-@pytest.mark.parametrize('fault',[None,'write','error','nan-old','nan-new','nan-class','guard'])
+@pytest.mark.parametrize('fault',[None,'write','error','nan-old','nan-new','nan-class','guard',
+    'bf16-baseline','bf16-candidate','bf16-finite','bf16-class','bf16-error','bf16-source'])
 def test_device_gate_harness_with_explicit_host_double(monkeypatch,fault):
     # This checks only the gate orchestration and its negative controls, not
     # CUDA math. The real library/device test remains mandatory on Box.
@@ -125,28 +126,43 @@ def test_device_gate_harness_with_explicit_host_double(monkeypatch,fault):
             source=np.stack([source[r*(stride if input else width):r*(stride if input else width)+width]
                              for r in range(rows)])
             value=expected(source,storage,input)
+            bf16_output=storage==1 and not input and fault and fault.startswith('bf16-')
+            if bf16_output:
+                raw=value.view('<u4');nan=np.isnan(value)
+                canonical=nan.copy()
+                if vector:canonical[:,1::2]=False
+                raw[canonical]=0x7fffffff
             if not input and error and C.c_int.from_address(error).value:
                 if not (vector==4 and fault=='error'):value.view('<u4')[:]=0x7fc00000
+                if bf16_output and fault=='bf16-error' and vector in (1,4):
+                    value.view('<u4')[:]=0x7fc00001
             if vector==4 and fault=='write':value.view('<u2' if input else '<u4')[0,0]^=1
             if not input and not error:
                 raw=value.view('<u4')
                 if (vector in (1,4) and fault=='nan-old') or (vector==4 and fault=='nan-new'):
                     raw[0,0]^=1
                 if vector==4 and fault=='nan-class':raw[0,0]=0
+            if bf16_output and not error:
+                if vector==4 and fault=='bf16-candidate':value.view('<u4')[0,1]^=1
+                if vector in (1,4) and fault=='bf16-finite':value.view('<u4')[0,0]^=1
+                if vector in (1,4) and fault=='bf16-class':value.view('<u4')[0,1]=0
             for r in range(rows):C.memmove(dst+r*(width if input else stride)*value.itemsize,
                                           value[r].ctypes.data,width*value.itemsize)
             if vector==4 and fault=='guard':C.c_uint8.from_address(dst-1).value=0
+            if bf16_output and vector==4 and fault=='bf16-source':C.c_uint8.from_address(src-1).value=0
             return 0
     original=gate.inputs
     def vectors(s,i):
         data=original(s,i)[:33]
         if fault and fault.startswith('nan-') and not i:
             data[0]=0x7fc1 if s else 0x7e01
+        if fault and fault.startswith('bf16-') and s==1 and not i:
+            data[1:4]=[0x7f81,0x7f82,0xff81]
         return data
     monkeypatch.setattr(gate,'inputs',vectors)
     monkeypatch.setattr(gate,'SDK',Sdk);monkeypatch.setattr(gate,'Resources',Buffers)
     monkeypatch.setattr(gate.C,'CDLL',lambda *a,**kw:SimpleNamespace(quactlize_dense_io_v1=Fn()))
-    if fault:
+    if fault not in (None,'bf16-baseline'):
         with pytest.raises(GateFailure) as failed:gate.run('/host-double','/not-a-device-library')
         diagnostic=failed.value.report['first_failure']
         if fault.startswith('nan-'):
@@ -158,9 +174,57 @@ def test_device_gate_harness_with_explicit_host_double(monkeypatch,fault):
             assert diagnostic['comparisons']['4-vs-1']['raw_bad']==int(fault!='nan-old')
             assert diagnostic['source_unchanged']
         elif fault=='guard':assert diagnostic['vector']==4 and diagnostic['first_byte']==255
+        elif fault.startswith('bf16-'):
+            assert diagnostic['storage']==1 and diagnostic['input']==0
+            if fault=='bf16-source':assert diagnostic['source_unchanged'] is False
+            elif fault=='bf16-error':
+                assert diagnostic['error']==1
+                assert 'producer error lost' in failed.value.report['error']
+            elif fault=='bf16-candidate':
+                assert diagnostic['comparisons']['4-vs-1']['nan_encoding_bad']==1
+                assert 'candidate differs' in failed.value.report['error']
+            else:assert 'independent IEEE cast differs' in failed.value.report['error']
     else:
         result=gate.run('/host-double','/not-a-device-library')
         assert result['status']=='PASS' and result['cases']==216
+        observations=result['baseline_observations']
+        if fault=='bf16-baseline':
+            assert len(observations)==12  # six shapes, flag absent or zero
+            assert all(x['storage']==1 and x['input']==0 and not x['error'] and
+                       x['comparisons']['4-vs-1']['raw_bad']==0 for x in observations)
+        else:assert observations==[]
+
+
+@pytest.mark.parametrize('storage,input,error',[(0,0,None),(0,1,None),(1,1,None),
+                                               (1,0,None),(1,0,0),(1,0,1)])
+def test_nan_baseline_contract_is_only_bf16_widening_without_error(storage,input,error):
+    source=np.array([0x7f82,0x7f81],dtype='<u2')
+    scalar=np.array([0x7fffffff,0x7fffffff],dtype='<u4').view('<f4')
+    vector=np.array([0x7fffffff,0x7f810000],dtype='<u4').view('<f4')
+    # Exact observed low/high pair; all other storage/direction/error settings
+    # must keep their stricter scalar contract, even for the same diagnostic.
+    comparisons={f'{a}-vs-{b}':compare_bits(x,y,1,0,source) for a,b,x,y in
+                 ((1,0,vector,scalar),(4,0,vector,scalar),(4,1,vector,vector))}
+    for output in (scalar,vector):check_oracle(output,expected(source,1,0),1,0)
+    assert comparisons['1-vs-0']['first']==[dict(index=1,input_bits='0x7f81',
+        want_bits='0x7fffffff',got_bits='0x7f810000',both_nan=True)]
+    if storage==1 and not input and not error:
+        assert check_controls(comparisons,storage,input,error)
+    else:
+        with pytest.raises(ValueError,match='scalar-control'):
+            check_controls(comparisons,storage,input,error)
+
+
+@pytest.mark.parametrize('word',[0,0x80000000,0x7f800000,0x7f810001,0xff810000,0x7fc10000])
+def test_bf16_candidate_payload_class_sign_and_quiet_bit_remain_strict(word):
+    source=np.array([0x7f81],dtype='<u2')
+    scalar=np.array([0x7fffffff],dtype='<u4').view('<f4')
+    old=np.array([0x7f810000],dtype='<u4').view('<f4')
+    candidate=np.array([word],dtype='<u4').view('<f4')
+    comparisons={f'{a}-vs-{b}':compare_bits(x,y,1,0,source) for a,b,x,y in
+                 ((1,0,old,scalar),(4,0,candidate,scalar),(4,1,candidate,old))}
+    with pytest.raises(ValueError,match='candidate differs'):
+        check_controls(comparisons,1,0,None)
 
 
 @pytest.mark.parametrize('storage',[0,1])

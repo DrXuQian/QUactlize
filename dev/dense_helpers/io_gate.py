@@ -9,6 +9,7 @@ from quactlize.runtime.native import SDK, checked
 from tools.run_kpack_gemv_gate import Resources
 
 SCOPE='ACTUAL_IO_ABI_RAW_BITS_AND_GUARDS_NO_TIMING'
+CONTRACT='IO4_EQUALS_IO1_BITS_BF16_OUTPUT_SCALAR_NAN_ENCODING_RECORDED_V2'
 
 
 class GateFailure(ValueError):
@@ -18,7 +19,7 @@ class GateFailure(ValueError):
 
 
 def compare_bits(got, want, storage, input, source):
-    """Explain raw differences without accepting any previously rejected bit."""
+    """Count every raw difference, including NaN payload/sign/quiet bits."""
     dtype='<u2' if input else '<u4'
     a=got.view(dtype).reshape(-1);b=want.view(dtype).reshape(-1)
     if a.shape!=b.shape:raise ValueError('dense IO comparison shape differs')
@@ -62,7 +63,7 @@ def expected(source, storage, input):
 
 
 def check_oracle(got, want, storage, input):
-    """NaN payload follows scalar device control; finite values compare bits."""
+    """Independent non-NaN bits and NaN class; payload checked against IO1."""
     if input:
         mask=0x7f80 if storage else 0x7c00
         frac=0x7f if storage else 0x3ff
@@ -75,15 +76,34 @@ def check_oracle(got, want, storage, input):
         raise ValueError('dense IO independent IEEE cast differs')
 
 
+def check_controls(comparisons, storage, input, error):
+    """Keep IO4 bit-exact to IO1; disclose the observed BF16 scalar baseline."""
+    if comparisons['4-vs-1']['raw_bad']:
+        raise ValueError('dense IO candidate differs from old vector bits')
+    observed=False
+    for name in ('1-vs-0','4-vs-0'):
+        d=comparisons[name]
+        if not d['raw_bad']:continue
+        # SDK2.1.1's existing BF16 pair widening can preserve the high
+        # half's NaN payload while scalar conversion canonicalizes it.
+        # This is NOT allowed for F16, narrowing, or producer-error poison.
+        if (storage!=1 or input or error or d['raw_bad']!=d['nan_encoding_bad'] or
+                d['nan_class_bad'] or d['non_nan_bad']):
+            raise ValueError('dense IO scalar-control bits differ')
+        observed=True
+    return observed
+
+
 def run(sdk_path, library):
     sdk=SDK(sdk_path);lib=C.CDLL(str(library),mode=C.RTLD_LOCAL)
     fn=lib.quactlize_dense_io_v1
     fn.argtypes=[C.c_int]*3+[C.c_void_p]*2+[C.c_int]*2+[C.c_int64,C.c_void_p,C.c_void_p]
     fn.restype=C.c_int
-    records=[]
+    records=[];baseline_observations=[]
     def fail(message,cell,**details):
         raise GateFailure(dict(status='FAIL',error=message,first_failure=dict(cell,**details),
-            cases=len(records),records=records,scope=SCOPE,performance_admitted=False))
+            cases=len(records),records=records,baseline_observations=baseline_observations,
+            contract=CONTRACT,scope=SCOPE,performance_admitted=False))
     for storage in (0,1):
         for input in (0,1):
             data=inputs(storage,input)
@@ -141,16 +161,22 @@ def run(sdk_path, library):
                                 sha256=hashlib.sha256(got.tobytes()).hexdigest()))
                         comparisons={f'{a}-vs-{b}':compare_bits(outputs[a],outputs[b],storage,input,useful)
                                      for a,b in ((1,0),(4,0),(4,1))}
-                        if comparisons['1-vs-0']['raw_bad'] or comparisons['4-vs-0']['raw_bad']:
-                            issues.append('dense IO scalar-control bits differ')
+                        try:
+                            observed=check_controls(comparisons,storage,input,status)
+                        except ValueError as e:issues.append(str(e))
+                        else:
+                            if observed and not issues:
+                                baseline_observations.append(dict(cell,comparisons=comparisons,
+                                    reason='EXISTING_BF16_OUTPUT_NAN_ENCODING_IO4_EQUALS_IO1'))
                         if issues:
                             # Complete only this cell's three variants, then stop.
-                            # No scalar/old-vector/candidate comparison is waived.
+                            # Candidate-vs-IO1 and the independent oracle stay strict.
                             fail('; '.join(issues),cell,oracle=oracle,comparisons=comparisons,
                                  source_unchanged=sdk.download(src,len(source))==source.tobytes())
-                    if sdk.download(src,len(source))!=source.tobytes():raise ValueError('dense IO source modified')
+                    if sdk.download(src,len(source))!=source.tobytes():
+                        fail('dense IO source modified',cell,source_unchanged=False)
                     if not fn(storage,input,4,src+src_prefix,src+src_prefix,rows,width,stride,None,r.stream):
                         raise ValueError('dense IO overlapping operands not rejected')
                 finally:r.close()
-    return dict(status='PASS',cases=len(records),records=records,
-                scope=SCOPE,performance_admitted=False)
+    return dict(status='PASS',cases=len(records),records=records,baseline_observations=baseline_observations,
+                contract=CONTRACT,scope=SCOPE,performance_admitted=False)

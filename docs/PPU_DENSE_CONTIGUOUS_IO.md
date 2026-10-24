@@ -80,11 +80,14 @@ historical microseconds inserted into new comparisons. Full sums retain input,
 expansion, GEMM, any reducer, output and reset; Asys also records each component.
 
 Each worker first runs `tools/check_dense_io.py` against its actual built
-library. The gate checks scalar/old/new raw equality, all16-bit input words,
+library. The gate checks IO4/IO1 raw equality, all16-bit input words,
 rounding boundaries, overflow, infinities, NaNs, strides/tails, vector-unaligned
 addresses, redzones/padding, source preservation and producer-error propagation.
-NaN payloads must match the scalar device control; independent IEEE checks
-compare every non-NaN bit and NaN classification. This gate is not timed.
+Independent IEEE checks compare every non-NaN bit and NaN classification.
+Scalar equality is additionally required except for the evidenced, existing
+BF16-to-F32 NaN-encoding difference described below. Even in that case IO4 must
+match IO1 in every bit, including NaN payload/sign/quiet bits; producer-error
+output must retain exactly0x7fc00000. This gate is not timed.
 
 Workers with Split-K candidates also run `tools/check_dense_reducer.py` against
 the compiled existing-body diagnostic carrier. It deduplicates [M,N,S] across
@@ -127,22 +130,34 @@ did not identify which inherited value was invalid. Keep that attempt intact
 and start a fresh run with the fixed launcher, not `--resume` (no completed
 device work exists there to reuse).
 
-The next attempt (revision4e069e1) passed argument validation and library builds
-on all six workers, but stopped at `dense IO scalar-control bits differ`.
-The preceding independent IEEE check had passed: for that cell, the raw
-difference is confined to NaN encoding, not a finite/Inf/zero mismatch. Its
-old log does not identify the cell or whether IO1 or IO4 differed; do not
-assume it is a new-candidate defect or declare it harmless without the bits.
-
-`check_dense_io.py` now saves a failure JSON, including the first failing cell,
+`check_dense_io.py` saves a failure JSON, including the first failing cell,
 input/expected/actual hex bits, fingerprints, per-oracle differences, and all
 three comparisons (IO1-vs-IO0, IO4-vs-IO0, IO4-vs-IO1). It completes only the
 three variants of that cell before stopping; runtime/guard errors stop at once.
-The independent oracle, scalar raw-bit requirement and canonical error NaN
-remain unchanged. A payload-only difference still fails. Run this gate on one
-idle GPU against the already-built `build/dense/libquactlize_ppu_prefill.so`;
-no rebuild, Asys, reducer test or six-card campaign is needed to get the missing
-evidence. Both successful and failed diagnostic runs print their output JSON.
+
+The 2026-10-24 follow-up to the six-worker4e069e1 failure identifies the seam:
+BF16-to-F32,1x65536,flag absent. Scalar vs IO1 and scalar vs IO4 both have128
+NaN-encoding differences; IO4 vs IO1 has zero raw differences and identical
+whole-output hashes. All independent non-NaN bits and NaN classifications pass.
+For example input0x7f81 produces scalar0x7fffffff but IO1/IO4 produce0x7f810000.
+Local SDK2.1.1 native lowering explains the pair asymmetry: low BF16 uses
+`v.cnvt.f32.bf16`, high BF16 uses `v.and.b32 ... 0xffff0000`, whereas scalar
+uses conversion for every element. This is an existing scalar/vector NaN
+representation difference, not an IO4 finite-value regression. Local ISA is
+not a disassembly of the uploaded Box binary.
+
+The revised contract records only that BF16 widening baseline difference in
+`baseline_observations`, with all three raw comparisons. It does not permit a
+candidate-only NaN change, scalar differences for F16/BF16 narrowing, NaN-class
+changes, finite/Inf/signed-zero/subnormal differences or altered error poison.
+No kernel, precision, tolerance or production routing is changed. The original
+FAIL receipt stays immutable:147checks were executed (F16's108complete, BF16
+widening39, narrowing not reached), so it cannot certify the full216-check gate.
+Re-run the complete gate on the existing library before starting performance.
+Evidence: diagnostic SHA256
+`cecf03edd4eff9bfdf3beb1b2969a05a55fce7d1c2c3bd96dc274cdf2de645d9`,
+library SHA256
+`d08e81a45126c0be52bff6beb6df0c76642a6344c844f9acaa0337b7a38dc9c0`.
 
 No production selection is promoted by this command. Compare complete calls
 and both orderings before choosing IO4 or compact reduction for a measured scope.

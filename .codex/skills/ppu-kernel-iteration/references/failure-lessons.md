@@ -230,6 +230,20 @@ input/expected/actual hex bits and binary identity. Keep the strict gate red
 while diagnosing; do not launch the full performance campaign or relax NaN
 checks merely to get a timing. Reuse the compiled library for this small probe.
 
+The20261024 follow-up pinned the dense cast case to BF16->F32,1x65536:
+scalar vs old IO1 and scalar vs IO4 each differed on128NaN encodings; IO4 and
+IO1 were raw-bit identical over the entire output. All non-NaN bits/classes
+passed. Local SDK2.1.1 lowering uses conversion for low BF16 but a bit mask
+for high BF16; scalar uses conversion for both. Do not add canonicalization
+instructions to the hot path merely to match a new scalar-only test contract.
+Require independent non-NaN bit equality/NaN classification and strict
+candidate-vs-incumbent equality including NaNs. Record the evidenced BF16
+widening scalar difference explicitly; keep narrowing, F16, poison and guard
+checks strict. This does NOT admit unexecuted cells or performance, and does
+not allow candidate-only payload changes. Details/hashes:
+`docs/PPU_DENSE_CONTIGUOUS_IO.md`; gate/negative tests:
+`dev/dense_helpers/io_gate.py`, `tests/test_dense_cont.py`.
+
 Native-component diagnostic pdvGnj2J (ZW810, 2026-10-19) exposed a missing
 producer wait in its changed-input reference download. llama graph compute
 uses a nonblocking stream; tensor_get used cudaStreamPerThread and waited
