@@ -460,6 +460,19 @@ def main():
             if sha(path)!=receipt[key]:raise ValueError('diagnostic executable changed')
         validate_native(receipt,a)
         payload=validate_payload(a)
+        if any(c.get('helper_options',{}).get('vector_io')==4 for p in plan['points'] for c in p.get('cases',[])):
+            # A fresh process, outside profiling/timing; exact built helper ABI
+            # must pass tails/strides/NaNs/error flags before IO4 can be measured.
+            execute([sys.executable,str(ROOT/'tools/check_dense_io.py'),'--sdk',str(a.sdk),
+                     '--library',str(a.output/'build/dense/libquactlize_ppu_prefill.so'),
+                     '--output',str(a.output/f'io-gate-{time.time_ns()}.json')],
+                    a.output/f'io-gate-{time.time_ns()}.log',env)
+        if any(dict(c['recipe']['parameters']).get('dense_reducer')==2
+               for p in plan['points'] for c in p.get('cases',[])):
+            execute([sys.executable,str(ROOT/'tools/check_dense_reducer.py'),'--sdk',str(a.sdk),
+                     '--library',str(Path(payload['path'])/'helpers/libstrategy_prefill.so'),
+                     '--plan',str(plan_path),'--output',str(a.output/f'reducer-gate-{time.time_ns()}.json')],
+                    a.output/f'reducer-gate-{time.time_ns()}.log',env)
         authority=dict(device=d,payload=payload,build=receipt,harness=source_seal(),plan=plan['plan_sha256'],
             cache=str(a.cache),asys_sha256=sha(a.asys),batch_size=a.configs_per_batch,frequency_normalization=False)
         if old and old!=authority: raise ValueError('resume build/protocol changed')
@@ -488,7 +501,7 @@ def main():
         atomic_json(a.output/'modules.json',modules)
         atomic_json(a.output/'execution-plan.json',dict(points=points,authority=digest(authority)))
         total=sum((len(p['cases'])+1)*p.get('confirmation_captures',1) for p in points)
-        print(f'PREFILL_ASYS_READY shapes={len(points)} configs={total} kernel_changes=0 production_changed=0',flush=True)
+        print(f'PREFILL_ASYS_READY shapes={len(points)} configs={total} production_changed=0',flush=True)
         lock_path=Path('/tmp')/('quactlize-components-'+digest(pci)[:24]+'.lock')
         with lock_path.open('a') as held:
             fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)

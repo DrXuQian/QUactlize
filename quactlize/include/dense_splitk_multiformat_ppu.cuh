@@ -83,7 +83,8 @@ struct MainloopUsesPackedMetadata<
 // pointer accepted by a broad CUTLASS Arguments aggregate.  ExpectPackedMetadata similarly binds the
 // call site to the exact collective selected by the format-specific shipping build.
 template <class ShippingTypes, class TileShape, class WarpShape,
-          class PlaneB2 = void, bool ExpectPackedMetadata = false>
+          class PlaneB2 = void, bool ExpectPackedMetadata = false,
+          bool CompactReduction = false>
 class PreparedMultiformatLauncher {
  public:
   using MainloopPolicy = typename ShippingTypes::MainloopPolicy;
@@ -92,7 +93,11 @@ class PreparedMultiformatLauncher {
   using SplitTypes = KernelTypes<ShippingTypes, TileShape, WarpShape>;
   using SplitKernel = typename SplitTypes::GemmKernel;
   using SplitGemm = typename SplitTypes::Gemm;
-  using Reduction = typename SplitTypes::Reduction;
+  // Same FP32[S,M,N] producer and increasing-S sum. Explicit opt-in only;
+  // the shared compact dispatcher retains checked tail/stride fallbacks.
+  using Reduction = std::conditional_t<CompactReduction,
+      cutlass::gemm::device::splitk_parallel::PpuMixedInputSplitKParallelCompactReduction<2>,
+      typename SplitTypes::Reduction>;
   using CollectiveMainloop = typename ShippingTypes::CollectiveMainloop;
   using ElementA = typename MainloopPolicy::ElementA;
   using ElementB = typename CollectiveMainloop::ElementB;

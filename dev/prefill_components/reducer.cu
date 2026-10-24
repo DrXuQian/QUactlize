@@ -14,17 +14,21 @@ struct Handle {
 };
 }
 
-extern "C" int prefill_reducer_prepare(int compact, int m, int n, int split,
-    float const* partial, uint64_t bytes, cutlass::half_t* output, void** result) {
+extern "C" int prefill_reducer_prepare_strided(int compact, int m, int n, int split,
+    float const* partial, uint64_t bytes, cutlass::half_t* output, int64_t stride, void** result) {
     if (!result || (compact != 0 && compact != 1)) return 1;
     *result = nullptr;
     auto h = std::make_unique<Handle>();
     h->compact = compact != 0;
-    Dense::Arguments args{m, n, split, partial, size_t(bytes), output, n};
+    Dense::Arguments args{m, n, split, partial, size_t(bytes), output, stride};
     auto status = h->compact ? h->grouped.initialize(args) : h->dense.initialize(args);
     if (status != cutlass::Status::kSuccess) return 2;
     *result = h.release();
     return 0;
+}
+extern "C" int prefill_reducer_prepare(int compact, int m, int n, int split,
+    float const* partial, uint64_t bytes, cutlass::half_t* output, void** result) {
+    return prefill_reducer_prepare_strided(compact, m, n, split, partial, bytes, output, n, result);
 }
 extern "C" int prefill_reducer_run(void* handle, void* stream) {
     if (!handle) return 1;

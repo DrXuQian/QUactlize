@@ -13,7 +13,8 @@ from quactlize.runtime.tuning import digest
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCES = ('dev/strategy/prefill_helpers.cu', 'quactlize/dequant/indexed.cu',
-           'dev/strategy/prefill_cublas.cpp', 'dev/strategy/prefill_blas.cpp')
+           'dev/strategy/prefill_cublas.cpp', 'dev/strategy/prefill_blas.cpp',
+           'dev/prefill_components/reducer.cu')
 HEADERS = ('dev/strategy/prefill_capture.hpp', 'dev/strategy/prefill_events.hpp')
 
 

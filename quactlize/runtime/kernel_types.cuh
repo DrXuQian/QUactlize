@@ -30,7 +30,7 @@ template<> struct Format<8> {
 };
 
 template<int Q, int TM, int TN, int TK, int WM, int WN, int ST, int AP, int DN,
-         class Compute = Half>
+         class Compute = Half, bool CompactReduction = false>
 struct DenseTypes {
   using F = Format<Q>;
   using Low = typename F::Low;
@@ -49,7 +49,7 @@ struct DenseTypes {
       cute::Shape<int,int,int,int>, Mainloop, typename Shipping::CollectiveEpilogue>;
   using PersistentGemm = cutlass::gemm::device::GemmUniversalAdapter<PersistentKernel>;
   using Prepared = dense_splitk_parallel_ppu::PreparedMultiformatLauncher<
-      Shipping, Tile, Warp, High, (PPU_PACKED_SCALE != 0)>;
+      Shipping, Tile, Warp, High, (PPU_PACKED_SCALE != 0), CompactReduction>;
 };
 
 template<int Q, int TM, int TN, int TK, int WM, int WN, int ST, int DN, bool Persistent,

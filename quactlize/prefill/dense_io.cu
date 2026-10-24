@@ -1,27 +1,10 @@
 #include "dense_api.h"
 #include "dense_io_layout.hpp"
-#include <hggc_runtime.h>
-#include <hggc_fp16.h>
-#include <hggc_bf16.h>
+#include "dense_cont.cuh"
 #include <climits>
 #include "../execution/validation.hpp"
 
 namespace quactlize::prefill {
-template<bool BF16> struct DenseConvert;
-template<> struct DenseConvert<false> {
-    using Scalar=__half;using Pair=__half2;
-    __device__ static Scalar pack(float x) { return __float2half_rn(x); }
-    __device__ static float unpack(Scalar x) { return __half2float(x); }
-    __device__ static Pair pack2(float2 x) { return __float22half2_rn(x); }
-    __device__ static float2 unpack2(Pair x) { return __half22float2(x); }
-};
-template<> struct DenseConvert<true> {
-    using Scalar=__ppu_bfloat16;using Pair=__ppu_bfloat162;
-    __device__ static Scalar pack(float x) { return __float2bfloat16_rn(x); }
-    __device__ static float unpack(Scalar x) { return __bfloat162float(x); }
-    __device__ static Pair pack2(float2 x) { return __float22bfloat162_rn(x); }
-    __device__ static float2 unpack2(Pair x) { return __bfloat1622float2(x); }
-};
 
 template<bool BF16,bool Input,bool Flat>
 __global__ void dense_convert_vec8(void const* src,void* dst,int width,int64_t stride,
@@ -136,6 +119,25 @@ __global__ void dense_convert_full4(void const* src,void* dst,int const* error) 
 template<bool BF16,bool Input>
 void dense_convert(int vector,void const* src,void* dst,int rows,int width,int64_t stride,int const* error,hggcStream_t stream) {
     bool aligned=!(uintptr_t(src)%16 || uintptr_t(dst)%16);
+    if(vector==4) {
+        if(dense_cont_eligible(uintptr_t(src),uintptr_t(dst),rows,width,stride)) {
+            using Scalar=typename DenseConvert<BF16>::Scalar;
+            using Src=std::conditional_t<Input,float,Scalar>;
+            using Dst=std::conditional_t<Input,Scalar,float>;
+            int const n8=int(int64_t(rows)*width/8);
+            if constexpr(!Input) {
+                if(error) {
+                    dense_convert_cont<BF16,Input,true><<<(n8+255)/256,256,0,stream>>>(
+                        static_cast<Src const*>(src),static_cast<Dst*>(dst),n8,error);
+                    return;
+                }
+            }
+            dense_convert_cont<BF16,Input,false><<<(n8+255)/256,256,0,stream>>>(
+                static_cast<Src const*>(src),static_cast<Dst*>(dst),n8,nullptr);
+            return;
+        }
+        vector=1; // Preserve generic tails, strides, alignment and large spans.
+    }
     if(vector==3) {
         int64_t count=int64_t(rows)*width;
         if(aligned && stride==width && count%4096==0) {
@@ -159,7 +161,7 @@ void dense_convert(int vector,void const* src,void* dst,int rows,int width,int64
 }
 extern "C" int quactlize_dense_io_v1(int storage,int input,int vector,void const* src,void* dst,
         int rows,int width,int64_t stride,int const* error,void* stream) {
-    if ((storage!=0 && storage!=1) || (input!=0 && input!=1) || vector<0 || vector>3 ||
+    if ((storage!=0 && storage!=1) || (input!=0 && input!=1) || vector<0 || vector>4 ||
         !src || !dst || rows<=0 || rows>65535 || width<=0 || stride<width ||
         uint64_t(stride)>uint64_t(INT64_MAX)/4/rows ||
         (uint64_t(rows)*width+2047)/2048>INT_MAX ||

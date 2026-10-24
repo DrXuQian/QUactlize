@@ -19,10 +19,12 @@ from dev.strategy.prefill_candidates import template_family as prefill_template_
 
 def parent(recipe, workload):
     p = dict(recipe.parameters)
-    return {k: p[k] for k in ('symbol', 'tm', 'tn', 'tk', 'wm', 'wn', 'stages', 'ap', 'dn')} | dict(
+    result = {k: p[k] for k in ('symbol', 'tm', 'tn', 'tk', 'wm', 'wn', 'stages', 'ap', 'dn')} | dict(
         qtype=p.get('qtype', workload.qtype),
         route=recipe.route + ('-dense' if workload.operation == 'dense' else '-grouped'),
         persistent=p.get('persistent', 0 if workload.operation != 'dense' and recipe.route == 'fq' else -1))
+    if 'dense_reducer' in p:result['dense_reducer']=p['dense_reducer']
+    return result
 
 
 @lru_cache(maxsize=65536)
@@ -36,6 +38,10 @@ shared storage/register occupancy remain the compiled resource query's job.
     if not recipe.eligible(workload):
         return 'SHAPE_PRECISION_OR_PIPELINE_CONTRACT'
     p = dict(recipe.parameters)
+    if 'dense_reducer' in p and (p['dense_reducer']!=2 or recipe.kind!='tc' or
+            workload.operation!='dense' or workload.compute!='f16' or workload.m<=8 or
+            p.get('split') not in (2,4,8) or p.get('grid_mode',0)!=0):
+        return 'COMPACT_REDUCER_REQUIRES_NATIVE_DENSE_PREFILL_SPLITK'
     if recipe.kind == 'tc':
         try:
             c = parent(recipe, workload)

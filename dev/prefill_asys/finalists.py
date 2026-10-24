@@ -135,6 +135,9 @@ def snapshot(plan):
 
 
 def load(document):
+    if document.get('schema') in ('quactlize.dense-contiguous-io.v1','quactlize.dense-helper-reuse.v1'):
+        from .io_refine import validate as validate_io
+        return validate_io(document)
     if document.get('schema') == 'quactlize.q8-tp-prefill-refine.v1':
         from .q8_refine import validate as validate_refinement
         return validate_refinement(document)

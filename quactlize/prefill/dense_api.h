@@ -111,6 +111,8 @@ char const* quactlize_kpack_dense_full_error_v1(void);
 // row-CTA scalar control; =1 enables aligned 8-element chunks and safe tails;
 // =2 uses two warp-contiguous vec4 chunks, same eight elements/thread.
 // =3 uses four such chunks for aligned contiguous whole CTAs, otherwise =2.
+// =4 is the opt-in native-style contiguous vec8 body (32-bit chunk indices),
+// otherwise =1. Measured default policies are unchanged. Direct F16/BF16 RNE.
 // error is optional; output propagates nonzero status as NaNs, input ignores it.
 int quactlize_dense_io_v1(int storage,int input,int vector_io,void const* src,void* dst,
     int rows,int width,int64_t stride,int const* error,void* stream);

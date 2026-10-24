@@ -34,6 +34,28 @@ Generic signed layout arithmetic, scalar publication, repeated conversions
 and a poor register layout also expand code. Attribute the extra sequence to
 the actual source/IR/native lowering before naming its cause.
 
+Quactlize's dense cast control is a concrete compile-only example (SDK2.1.1,
+PPU1.0,20261024): old and native both use eight values/thread and16B vectors,
+but the generic old body retains64-bit indexing, element-tail paths and an
+optional error flag. A host-guarded typed/restrict32-bit chunk specialization
+matches all four extracted llama F16/BF16 conversion instruction bodies byte
+for byte. F16 input static sites92->52; output166->63 without flag or75 with
+the required flag check (counts include padding). Old24 bodies are unchanged.
+Do not call this a new coalescing pattern or a measured speedup. Guard the
+largest vector-index intermediate (`2*c+1`), retain generic strides/tails,
+and never remove producer-error propagation to match an unchecked reference.
+Evidence/Box protocol: `docs/PPU_DENSE_CONTIGUOUS_IO.md`; device gates pending.
+
+Audit dispatcher applicability before rewriting a slow helper. The existing
+compact Split-K reducer can interpret contiguous FP32[S,M,N] as [S,M*N], but
+the dense M1-only wrapper falls back for M>1. A separately identified dense
+prefill candidate can reuse compact<2> without changing producer bytes, workspace
+or increasing-S FP32 addition/F16 rounding. Seven Q8 TC modules compiled with
+SDK2.1.1 retain every old GPU body/resource; this proves code reuse, not speed.
+Keep generic tail/stride guards. Require the real compact symbol and geometry
+in Asys, a separate raw-bit/cancellation gate, and cast-only/reducer-only/joint
+complete-call comparisons before promotion. More CTAs is not itself a win.
+
 ### Nonnegative coordinates must remain unsigned through reader helpers
 
 Q6 PPU0010 follow-up: an unsigned outer index still incurred sign correction

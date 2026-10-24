@@ -1,7 +1,15 @@
 #pragma once
 #include <cstdint>
+#include <climits>
 
 namespace quactlize::prefill {
+// All int intermediates in the native chunk body, including 2*c+1, must fit.
+// The generic entry validates spans/overlap independently of this fast path.
+inline bool dense_cont_eligible(uintptr_t src,uintptr_t dst,int rows,int width,int64_t stride) {
+    uint64_t const count=uint64_t(rows)*uint64_t(width);
+    return rows>0 && width>0 && !(src%16 || dst%16) && stride==width &&
+           count%8==0 && count/8<=uint64_t(INT_MAX)/2;
+}
 // Same eight elements/thread and CTA work as vec8. Each individual FP32
 // instruction now spans contiguous float4s across the warp, not alternating
 // 16-byte halves of 32-byte lane records. Both parts are independent.

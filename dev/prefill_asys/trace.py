@@ -86,7 +86,7 @@ def helper_role(row, arm):
     if row['kind'] == 'memset': return None
     n = row['name'].replace(' ', '')
     if arm != 'native-fp16':
-        typed=re.search(r'dense_convert_(?:vec8|stripe4|full4|scalar)<(?:true|false),(true|false)(?:,|>)',n)
+        typed=re.search(r'dense_convert_(?:vec8|stripe4|full4|scalar|cont)<(?:true|false),(true|false)(?:,|>)',n)
         if typed:return 'input' if typed[1]=='true' else 'output'
         if re.search(r'dense_dequant_(?:direct|packed|unsigned|pair|cooperative|q8|q8_exchange|q8_tuned|q8_half2|q8_paired|plane_pair)<',n):return 'expansion'
     if arm == 'native-fp16':
@@ -119,7 +119,7 @@ def one_call(rows, arm, stages, split, *, primer_without_reset=False):
         raise ValueError('GPU call helper inventory/order differs: '+repr(helpers))
     for row in rows:
         name=row['name'].replace(' ','')
-        cast=re.search(r'dense_convert_(?:vec8|stripe4|full4|scalar)<(true|false),',name)
+        cast=re.search(r'dense_convert_(?:vec8|stripe4|full4|scalar|cont)<(true|false),',name)
         dq=re.search(r'dense_dequant_(?:direct|packed|unsigned|pair|cooperative|plane_pair)<[^,]+,(true|false)',name)
         if dq is None: dq=re.search(r'dense_dequant_q8(?:_exchange|_tuned)?<(true|false)(?:,|>)',name)
         if re.search(r'dense_dequant_q8_(half2|paired)<',name) and arm!='full-fp16':
@@ -176,7 +176,8 @@ def parse_rows(rows, cases, *, apis=()):
         cut = contract['discarded_calls']
         if cut<=0 or contract['measured_calls']!=3*cut or contract['captured_calls']!=4*cut:
             raise ValueError('incorrect primer/sample count')
-        split = dict(case.get('recipe',{}).get('parameters',[])).get('split',1)
+        parameters = dict(case.get('recipe',{}).get('parameters',[]))
+        split = parameters.get('split',1)
         for call in range(contract['captured_calls']):
             start = offset
             while offset < len(rows) and helper_role(rows[offset],arm) != 'output': offset += 1
@@ -186,7 +187,16 @@ def parse_rows(rows, cases, *, apis=()):
             missing = (call==0 and arm in ('full-bf16','full-fp16','full-bf16-typed') and
                        helper_role(block[0],arm)=='input')
             if missing: exceptions.append(primer_reset_evidence(block[0],rows,apis))
-            calls.append(one_call(block,arm,case['stages'],split,primer_without_reset=missing)); raw.append(block)
+            calls.append(one_call(block,arm,case['stages'],split,primer_without_reset=missing))
+            if parameters.get('dense_reducer')==2:
+                w=case['workload'];reducers=[r for r in block if r['phase']=='reducer']
+                name=f'PpuMixedInputSplitKParallelM1FastReductionKernel<2,{split}>'
+                if (w['m']*w['n']%64 or split not in (2,4,8) or len(reducers)!=1 or
+                        name not in reducers[0]['name'].replace(' ','') or
+                        reducers[0]['grid']!=[w['m']*w['n']//64,1,1] or
+                        reducers[0]['block']!=[32,1,1] or reducers[0]['shared_bytes']!=0):
+                    raise ValueError('compact reducer did not execute the required native body/launch')
+            raw.append(block)
         kept = calls[cut:]
         if len(kept) != contract['measured_calls'] or len(kept) < 3:
             raise ValueError('incorrect primer/sample count')

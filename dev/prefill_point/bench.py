@@ -109,7 +109,7 @@ def summarize(rows, names):
 def tc_helper_choice(dense, workload, mode, options):
     if options is not None:
         if (mode != 'cohort-current' or set(options) != {'vector_io'} or
-                options['vector_io'] not in (-1, 1, 2, 3)):
+                options['vector_io'] not in (-1, 1, 2, 3, 4)):
             raise ValueError('explicit TC adapter must be row casts or a supported F16 vector mapping')
         return dict(options, storage=0) if options['vector_io'] >= 0 else None
     return dense.choice(workload,0,allow_miss=mode=='cohort-current') if mode in ('production','cohort-current') else None

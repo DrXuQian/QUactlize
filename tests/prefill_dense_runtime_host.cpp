@@ -52,7 +52,7 @@ int main(int argc,char** argv){
         c.weight.stream=reinterpret_cast<void*>(uintptr_t(i+1));
         const_cast<float*>(c.a)[0]=i+2;static_cast<float*>(const_cast<void*>(c.weight.low))[0]=i+5;
     }
-    for(int type:{0,1})for(int vector:{0,1,2,3})for(int variant=-2;variant<=43;++variant)for(int algorithm:{-1,99}){
+    for(int type:{0,1})for(int vector:{0,1,2,3,4})for(int variant=-2;variant<=43;++variant)for(int algorithm:{-1,99}){
         bool tuned=variant>=26 && variant<=34;
         bool half2=variant>=35 && variant<=42;
         bool typed=variant==0 || variant==8 || variant==20 || variant==21 || variant==22 || variant==23 || variant==24 || variant==25 || tuned || half2;
@@ -77,7 +77,7 @@ int main(int argc,char** argv){
     }
     qkp_dense_options_v1 invalid{1,sizeof(invalid),argv[1],0,1,43,16,-1};void* h=nullptr;
     assert(quactlize_kpack_dense_full_prepare_v1(&shape,&arr,&invalid,&h) && !h);
-    invalid.dequant_variant=21;invalid.vector_io=4;
+    invalid.dequant_variant=21;invalid.vector_io=5;
     assert(quactlize_kpack_dense_full_prepare_v1(&shape,&arr,&invalid,&h) && !h);
     for(auto& c:calls){std::free(const_cast<float*>(c.a));std::free(c.output);std::free(c.workspace);
         std::free(const_cast<void*>(c.weight.low));std::free(const_cast<void*>(c.weight.high));std::free(const_cast<void*>(c.weight.units));}

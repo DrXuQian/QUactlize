@@ -38,6 +38,8 @@ class DecodeCompiler(Compiler):
         # A BF16 build always has an explicit compiler instance and identity.
         compute_type = getattr(self, "compute_type", "f16")
         validate_parent(parent)
+        if parent.get("dense_reducer"):
+            raise ValueError("compact reducer experiment requires the native F16 prefill endpoint")
         if not parent["route"].endswith("dense"):
             raise ValueError("typed dense decode module requires a dense parent")
         return f"#define QKD_USE_BF16_COMPUTE {int(compute_type == 'bf16')}\n" + Compiler.source(self, parent, key).replace(

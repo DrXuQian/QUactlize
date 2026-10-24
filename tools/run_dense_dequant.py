@@ -106,7 +106,7 @@ def plan(points, l2, exchange=False,fast_tail=False,half2=False,native=False,pai
                 variants=list(variants), order=list(variants)+list(reversed(variants)), rounds=3, samples_per_visit=5,
                 correctness_storage=['F16', 'BF16'], timed_storage=['F16','BF16'] if exchange or fast_tail else 'F16',
                 experiment=mode(exchange,fast_tail,half2,native,paired),
-                profile_scope='ONE_CHECKED_DIRECT_LAUNCH_AFTER_WARMUP_NO_FLUSH_NOT_ROTATING_EVENT_TIME',
+                profile_scope='ONE_CHECKED_DIRECT_LAUNCH_NO_SOFTWARE_FLUSH_ACU_CACHE_CONTROL_ALL_NOT_ROTATING_EVENT_TIME',
                 l2_bytes=l2, cache='INPUT_AND_OUTPUT_RINGS_EACH_EXCEED_2.25_L2',
                 warmup='TWO_COMPLETE_GRAPHS_PER_VARIANT_EXCLUDED',
                 timing='EVENT_AVERAGE_OVER_SINGLE_KERNEL_GRAPH_NODES_INCLUDES_NODE_GAPS',

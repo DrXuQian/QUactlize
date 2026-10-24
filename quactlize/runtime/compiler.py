@@ -134,6 +134,11 @@ def validate_parent(parent):
     minimum_k = {8: 32, 10: 128, 11: 256, 12: 64, 13: 256, 14: 128}[parent["qtype"]]
     if parent["tk"] % minimum_k:
         raise ValueError("parent does not contain whole K-pack transport tiles")
+    reducer = parent.get("dense_reducer", 0)
+    if (type(reducer) is not int or reducer not in (0, 2) or
+            (reducer and not parent["route"].endswith("dense")) or
+            bool(reducer) != parent["symbol"].endswith("_rc2")):
+        raise ValueError("compact dense reducer requires a distinct native dense parent ending _rc2")
 
 
 class Compiler:
@@ -195,6 +200,8 @@ class Compiler:
             },
             "PERSISTENT_PARENT": parent["persistent"],
         }
+        if parent.get("dense_reducer"):
+            fields["DENSE_REDUCER"] = parent["dense_reducer"]
         return (
             "".join(f"#define QK_{k} {v}\n" for k, v in fields.items())
             + f'#define QK_PARENT "{parent["symbol"]}"\n#define QK_BUILD_KEY "{key}"\n'

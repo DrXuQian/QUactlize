@@ -18,6 +18,11 @@ constexpr int qtype = QK_QTYPE, route = QK_ROUTE;
 constexpr int tm = QK_TM, tn = QK_TN, tk = QK_TK, stages = QK_STAGES;
 constexpr bool grouped = route >= QK_GROUPED_FQ;
 constexpr bool packed = route == QK_DENSE_FQ || route == QK_GROUPED_FQ;
+#ifndef QK_DENSE_REDUCER
+#define QK_DENSE_REDUCER 0
+#endif
+static_assert(QK_DENSE_REDUCER==0 || (QK_DENSE_REDUCER==2 && !grouped),
+              "compact dense reducer is an explicit native dense module option");
 #ifndef QK_USE_BF16_COMPUTE
 #define QK_USE_BF16_COMPUTE 0
 #endif
@@ -140,7 +145,8 @@ template<class T> struct DenseHandle final : Handle {
   }
 };
 
-using Dense = DenseTypes<qtype,QK_TM,QK_TN,QK_TK,QK_WM,QK_WN,QK_STAGES,QK_AP,QK_DN>;
+using Dense = DenseTypes<qtype,QK_TM,QK_TN,QK_TK,QK_WM,QK_WN,QK_STAGES,QK_AP,QK_DN,
+                         Half,QK_DENSE_REDUCER==2>;
 template<class T> struct DynamicDenseHandle final : Handle {
   qk_call_v1 shape{};
   qk_recipe_v1 recipe{};

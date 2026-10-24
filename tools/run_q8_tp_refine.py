@@ -49,6 +49,9 @@ def package(output):
     paths += sorted((output/'timing').glob('review-*.json.xz'))
     paths += sorted((output/'timing').glob('summary-*.json'))
     paths += sorted((output/'timing').glob('gpu-*/console-*.log'))
+    for suffix in ('json','log'):
+        for gate in ('io','reducer'):
+            paths += sorted((output/'timing').glob(f'gpu-*/qwen32-prefill-asys.*/results/{gate}-gate-*.'+suffix))
     paths += sorted((output/'dequant').glob('kpack-dense-dequant.*/results/review-*.tgz'))
     paths += sorted((output/'dequant').glob('kpack-dense-dequant.*/console-*.log'))
     path = output/f'review-{time.time_ns()}.tgz'
@@ -66,7 +69,8 @@ def main():
     signal.signal(signal.SIGTERM,interrupted)
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--review',type=Path,required=True,help='previous TP timing/review-*.json.xz')
-    p.add_argument('--phase',choices=('all','sf','dequant'),default='all')
+    p.add_argument('--phase',choices=('all','sf','dequant','io','helpers'),default='all',
+                   help='io/helpers: fixed winners with cast-only or cast+compact-reducer comparisons')
     p.add_argument('--gpus',default=os.environ.get('GPUS','1,2,3,4,5,7'))
     p.add_argument('--llama-source',type=Path,default=Path(os.environ.get('LLAMA_CI_DIR','/sim/eec/shared/junfu.qx/llama.cpp.ncp')))
     p.add_argument('--llama-build',type=Path,default=os.environ.get('LLAMA_CI_BUILD_DIR'))
@@ -78,12 +82,21 @@ def main():
     p.add_argument('--resume',action='store_true')
     p.add_argument('--profile-acu',action='store_true',help='profile largest helper gap and largest slow matrix after timing; one direct launch, no cold loops')
     a = p.parse_args()
+    if a.profile_acu and a.phase in ('io','helpers'):
+        p.error('--profile-acu covers dequant only; IO/reducer phases collect Asys component timings')
     gpus = gpu_ordinals(a.gpus)
     if a.run and not a.confirm_idle:p.error('--confirm-idle required for device work')
     if a.resume and not a.output:p.error('--resume requires --output')
     review = read_review(a.review)
-    plan = make_plan(review)
-    diagnostics = dequant_diagnostics(review,plan)
+    if a.phase in ('io','helpers'):
+        from dev.prefill_asys.io_refine import make_plan as make_io_plan, validate as validate_io
+        plan=make_io_plan(review,compact=a.phase=='helpers')
+        diagnostics=dict(points=[],scope='FIXED_MAINLOOP_HELPERS_NO_DEQUANT_SEARCH')
+        validate_plan=validate_io
+    else:
+        plan=make_plan(review)
+        diagnostics=dequant_diagnostics(review,plan)
+        validate_plan=validate
     a.llama_source = a.llama_source.resolve()
     a.llama_build = (a.llama_build or a.llama_source/'build-ci-32F-cublas').resolve()
     a.sdk = a.sdk.resolve()
@@ -103,7 +116,7 @@ def main():
     if a.resume:
         if json.loads((a.output/'request.json').read_text())!=request:
             raise ValueError('resume source, review, native path or GPU assignment differs')
-        validate(json.loads((a.output/'plan.json').read_text()))
+        validate_plan(json.loads((a.output/'plan.json').read_text()))
         if json.loads((a.output/'dequant.json').read_text())!=diagnostics:
             raise ValueError('resume helper cohort differs')
     else:
@@ -122,13 +135,13 @@ def main():
     status=dict(status='INCOMPLETE',phases={},requested_phases=['sf','dequant'] if a.phase=='all' else [a.phase],
                 production_changed=False,performance_admitted=False)
     try:
-        if a.phase in ('all','sf'):
+        if a.phase in ('all','sf','io','helpers'):
             workers=gpus[:min(len(gpus),plan['counts']['families'])]
             command=[sys.executable,'-u',str(ROOT/'tools/run_prefill_cohort_multi.py'),
                 '--finalist-plan',str(a.output/'plan.json'),'--gpus',','.join(workers),
                 '--output',str(a.output/'timing'),'--confirm-idle']
             if (a.output/'timing').exists():command.append('--resume')
-            status['phases']['sf']=run_coordinator(command,env)
+            status['phases'][a.phase if a.phase in ('io','helpers') else 'sf']=run_coordinator(command,env)
             atomic_json(a.output/'status.json',status)
         if a.phase in ('all','dequant'):
             helper=a.output/'dequant';helper.mkdir(exist_ok=a.resume)
@@ -142,14 +155,16 @@ def main():
             status['phases']['dequant']=run_coordinator(
                 ['bash',str(ROOT/'tools/run_dense_dequant_box.sh')],helper_env)
         status['status']='MEASURED_NOT_ADMITTED' if not any(status['phases'].values()) else 'INCOMPLETE'
-        status['not_measured_in_this_invocation']=[stage for stage in ('sf','dequant') if stage not in status['phases']]
+        phases=(a.phase,) if a.phase in ('io','helpers') else ('sf','dequant')
+        status['not_measured_in_this_invocation']=[stage for stage in phases if stage not in status['phases']]
         print('Q8_TP_REFINE_DONE '+json.dumps(status),flush=True)
         return int(status['status']=='INCOMPLETE')
     finally:
         atomic_json(a.output/'status.json',status)
         package(a.output)
         print('Asys: '+str(a.output/'timing/gpu-*/qwen32-prefill-asys.*/results/batches/*/attempt-*/trace.asysrep'),flush=True)
-        print('ACU: '+str(a.output/'dequant/kpack-dense-dequant.*/results/profile-*.acurep'),flush=True)
+        if a.phase in ('all','dequant'):
+            print('ACU: '+str(a.output/'dequant/kpack-dense-dequant.*/results/profile-*.acurep'),flush=True)
 
 
 if __name__=='__main__':raise SystemExit(main())

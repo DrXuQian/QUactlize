@@ -89,6 +89,22 @@ def test_new_gpu_inventory_and_precision_guard():
             with pytest.raises(ValueError,match='precision'):parse_rows(changed,[c])
 
 
+def test_contiguous_native_body_inventory_keeps_precision_and_error_specialization():
+    import pytest
+    for bf in ('false','true'):
+        for checked in ('false','true'):
+            rows,case=PrefillAsysTests().rows('full-bf16')
+            case['arm']='full-bf16-typed' if bf=='true' else 'full-fp16'
+            for r in rows:
+                if 'gather_bf16' in r['name']:r['name']=f'dense_convert_cont<{bf},true,false>(...)'
+                elif 'finish_bf16' in r['name']:r['name']=f'dense_convert_cont<{bf},false,{checked}>(...)'
+                elif 'full_packed_exchange' in r['name']:r['name']=f'dense_dequant_direct<(gguf_scale::KType)2,{bf}>(...)'
+            out=parse_rows(rows,[case])[0]
+            assert out['phases_us']==dict(error_reset=1,input=1,expansion=1,main=1,output=1)
+            case['arm']='full-fp16' if bf=='true' else 'full-bf16-typed'
+            with pytest.raises(ValueError,match='precision'):parse_rows(rows,[case])
+
+
 def test_q8_dequant_inventory_and_precision_guard():
     import pytest
     rows,case=PrefillAsysTests().rows('full-bf16')
