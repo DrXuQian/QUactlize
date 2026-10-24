@@ -85,16 +85,29 @@ of Qwen3.5-122B-A10B-Q4_K_M TP2 and DeepSeek-V4-Flash-0731-UD-Q4_K_XL TP4.
 It does not claim MoE-GEMM, decode, TP correctness, communication or model TPOT
 coverage. Those exclusions remain in the inventory, not counted as passes.
 
-The runner first loads each model with native llama, equal tensor splits,
-Quactlize disabled and `GGML_META_DEBUG=1`. One PP64/TG1 benchmark row (plus
-the binary's own initial warmup) records the actual per-rank partition.
-No `--no-warmup` option is required or passed: some batched-bench builds do
-not expose it, and this inventory pass is never a performance measurement.
-Replicated weights, N/K cuts and repeated head
-segments are validated against all GGUF shard headers. Missing ranks or a
-debug record describing only a prefix of a segmented axis stop planning.
-It does not divide every N and K by the TP world size. Existing logs can be
-supplied through `--qwen-log` / `--deepseek-log` to skip these inventory passes.
+The default `--inventory-mode headers` reads only the GGUF shard headers. A
+small CPU-only helper executes the unchanged TP split function extracted from
+`LLAMA_CI_DIR/src/llama-model.cpp`, with the caller's actual `llama-hparams.cpp`
+and headers. It allocates no weights, initializes no GPU runtime and never
+loads or runs a model. Planning needs the caller source and `g++`, not a llama
+binary or SDK. No llama rebuild is required for this harness change.
+
+The helper accounts for equal TP splits, replicated weights, N/K cuts, repeated
+Qwen SSM segments, quantization-block alignment and per-layer rounding rotation.
+It does not divide every N and K by the TP world size. Caller-source hashes,
+model metadata and every rank's segment extents are retained in `tp-headers/`.
+These are source-bound CPU inferences, not observed model calls. Missing or
+unsupported rules stop planning; no model-run fallback happens automatically.
+MTP is excluded (the caller default). DeepSeek `attn_output_a.weight` is also
+explicitly excluded: its GGUF 2D shape becomes a grouped 3D projection in llama,
+not an ordinary dense GEMM. MoE weights remain a separate cohort.
+
+Optional `--qwen-log` / `--deepseek-log` provide a cross-check against complete
+observations. `--inventory-mode native` retains the previous diagnostic path:
+short PP64/TG1 native model runs with equal tensor splits, Quactlize disabled
+and `GGML_META_DEBUG=1`, or those supplied logs. Only that explicit native mode
+loads models and requires at least four assigned GPUs when probing both models.
+No `--no-warmup` option is required or passed; inventory is not timed performance.
 
 ```bash
 cd /sim/eec/shared/junfu.qx/quactlize
@@ -104,13 +117,16 @@ LLAMA_CI_DIR=/sim/eec/shared/junfu.qx/llama.cpp.ncp \
 LLAMA_CI_BUILD_DIR=/sim/eec/shared/junfu.qx/llama.cpp.ncp/build-ci-32F-cublas \
 L2_BYTES=67108864 JOBS=8 \
 python3 -u tools/run_tp_prefill_supplement.py \
+  --qwen-model /sim/eec/shared/AI_workspace/llm-models/Qwen3.5-122B-A10B-GGUF-Q4_K_M/Q4_K_M/Qwen3.5-122B-A10B-Q4_K_M-00001-of-00003.gguf \
+  --deepseek-model /sim/eec/shared/AI_workspace/llm-models/DeepSeek-V4-Flash-0731-UD-Q4_K_XL/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00005.gguf \
+  --inventory-mode headers \
   --gpus 1,2,3,4,5,6,7 --confirm-idle --run
 ```
 
-Only use `--confirm-idle` when the assigned GPUs are idle. The two native
-inventory passes run sequentially on the first 2 and first 4 assigned GPUs.
-Subsequent standalone local-shard measurements run independently across the
-assigned cards; they do not allocate a complete model or perform all-reduce.
+Only use `--confirm-idle` when the assigned GPUs are idle. Standalone local-shard
+measurements run independently across the assigned cards; they do not allocate
+a complete model or perform all-reduce. They still use the native llama build
+for the reference operator, not for shape discovery.
 The model resolver checks both `/sim/eec/shared/AI_workspace/llm-models` and
 its `bench_model_zoo` subdirectory. It requires exactly one matching first
 shard. Override ambiguous or differently named files with `--qwen-model` and
@@ -135,8 +151,9 @@ candidate comparison, not proof of a global optimum.
 
 `TP_PREFILL_PLAN` prints actual deduplicated points, families, cases, modules
 and coverage before timing. The component runner estimates remaining time
-from observed work; startup/model loading and new compilation are separate.
-Omit `--run` to stop after planning. Resume using the same arguments with
+from observed work; compilation is separate from admitted timing.
+Omit `--run` to stop after CPU-only planning (no idle confirmation is needed in
+header mode). Resume using the same arguments with
 `--resume --output /workspace/kpack-tp-prefill.XXXXXXXX` (the printed retained
 directory); source, model paths and GPU assignment must stay unchanged.
 

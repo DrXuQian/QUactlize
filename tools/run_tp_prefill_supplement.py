@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Qwen3.5-122B TP2 + DeepSeek-V4-Flash TP4: observed local dense shapes.
+"""Qwen3.5-122B TP2 + DeepSeek-V4-Flash TP4: source-bound local dense shapes.
 
-Default: native short inventory passes and a bounded plan. --run also starts
-the existing multi-GPU Asys component comparison. No caller/model/policy edits.
+Default: GGUF headers + CPU execution of llama's split rules, then a bounded
+plan. --run starts the existing Asys component comparison. No model loads.
+The optional --inventory-mode native retains the original diagnostic path.
 """
 import argparse
 from collections import Counter
@@ -109,6 +110,8 @@ def main():
     p.add_argument('--deepseek-model', type=Path)
     p.add_argument('--qwen-log', type=Path, help='existing actual TP2 local-shape or GGML_META_DEBUG log')
     p.add_argument('--deepseek-log', type=Path, help='existing actual TP4 local-shape or GGML_META_DEBUG log')
+    p.add_argument('--inventory-mode', choices=('headers','native'), default='headers',
+                   help='headers: CPU split rules, no model/GPU load; native: diagnostic short TP runs')
     p.add_argument('--names', nargs='+', choices=[m[0] for m in MODELS], default=[m[0] for m in MODELS])
     p.add_argument('--m', nargs='+', type=int, default=list(MS))
     p.add_argument('--gpus', default=os.environ.get('GPUS', '1,2,3,4,5,6,7'))
@@ -128,8 +131,9 @@ def main():
         p.error('duplicate model names')
     if len(set(a.m)) != len(a.m) or not set(a.m) <= set(MS):
         p.error('M must be a distinct subset of 128,256,512,1024,2048')
-    if not a.confirm_idle and (a.run or any(not getattr(a, 'qwen_log' if world==2 else 'deepseek_log')
-                                          for name,world,_,_ in MODELS if name in a.names)):
+    if not a.confirm_idle and (a.run or (a.inventory_mode=='native' and any(
+            not getattr(a, 'qwen_log' if world==2 else 'deepseek_log')
+            for name,world,_,_ in MODELS if name in a.names))):
         p.error('--confirm-idle required before native inventory or timing')
     if a.resume and not a.output:
         p.error('--resume requires the retained --output directory')
@@ -145,12 +149,13 @@ def main():
             continue
         prefix = 'qwen' if world==2 else 'deepseek'
         log = getattr(a, prefix+'_log')
-        if not log and len(gpus) < world:
+        if a.inventory_mode=='native' and not log and len(gpus) < world:
             p.error(f'{name} inventory needs {world} assigned GPUs or an existing --{prefix}-log')
         path = model_path(a.model_root,directory,filename,getattr(a,prefix+'_model'))
         requested.append(dict(name=name,tp=world,path=str(path),
                               tp_logs=[str(log.resolve(strict=True))] if log else []))
     request = dict(models=requested,ms=a.m,gpus=gpus,revision=revision,policy=policy['sha256'],
+                   inventory_mode=a.inventory_mode,
                    helper_policy=helper_sha,max_cases=a.max_cases,sdk=str(a.sdk),
                    llama_source=str(a.llama_source),llama_build=str(a.llama_build))
     if a.output:
@@ -166,9 +171,13 @@ def main():
     else:
         atomic_json(receipt, request)
     inventory_path, plan_path = a.output/'cohort.json', a.output/'supplement.json'
+    partitioner = None
+    if a.inventory_mode=='headers':
+        from dev.prefill_asys.tp_header import HeaderTP, read_headers
+        partitioner=HeaderTP(a.llama_source,a.output/'tp-headers')
     if not plan_path.exists():
         models = json.loads(json.dumps(requested))
-        for model in models:
+        for model in models if a.inventory_mode=='native' else ():
             if model['tp_logs']:
                 continue
             directory = a.output/(model['name']+'-inventory')
@@ -181,7 +190,8 @@ def main():
                     directory = a.output/(model['name']+'-inventory-'+str(time.time_ns()))
                 log = probe(a,Path(model['path']),model['name'],model['tp'],directory,gpus)
             model['tp_logs'] = [str(log)]
-        cohort = collect(models,a.m)
+        cohort = (collect(models,a.m,loader=read_headers,partitioner=partitioner) if partitioner else
+                  collect(models,a.m))
         atomic_json(inventory_path,cohort)
         if cohort['status'] != 'READY':
             print('TP_PREFILL_BLOCKED '+json.dumps(cohort['blocked'][:12]), flush=True)
@@ -191,6 +201,8 @@ def main():
     else:
         from dev.prefill_asys.supplement import validate
         plan = validate(json.loads(plan_path.read_text()))
+        if partitioner and any(m['static_partition']['identity']!=partitioner.identity for m in plan['models']):
+            raise ValueError('caller CPU TP split sources changed; preserve this plan and start a new run')
     counts = dict(plan['counts'], table_coverage=dict(Counter(p['table_coverage'] for p in plan['points'])),
         excluded=dict(Counter(r['reason'].split(':')[0] for r in plan['exclusions'])),
         production_changed=False,scope=plan['scope'],duration_guaranteed=False)

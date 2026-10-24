@@ -1,7 +1,7 @@
 """Dense prefill inventory and bounded proposals, without GPU work.
 
-GGUF dimensions are not TP dimensions. Multi-rank workloads require actual
-caller records; unknown partitions and unsupported endpoints stay visible.
+GGUF dimensions are not TP dimensions. Multi-rank workloads require caller
+records or source-bound CPU split rules; unsupported endpoints stay visible.
 """
 from collections import defaultdict
 from dataclasses import asdict
@@ -33,7 +33,7 @@ def bucket(w):
                 aspect='wide-n' if w.n >= 2*w.k else 'wide-k' if w.k >= 2*w.n else 'balanced')
 
 
-def headers(path):
+def headers(path, *, capture_keys=()):
     path = Path(path).resolve(strict=True)
     match = re.fullmatch(r'(.*)-(\d{5})-of-(\d{5})\.gguf', path.name)
     if match:
@@ -46,7 +46,7 @@ def headers(path):
     rows = []
     for file in files:
         with file.open('rb') as stream:
-            header = read_gguf_header(stream, str(file))
+            header = read_gguf_header(stream, str(file), capture_keys=capture_keys)
         rows.append(dict(path=str(file), size=file.stat().st_size, header=header))
     rows, _ = _normalise_split(rows, path.name)
     _metadata_authorities(rows, path.name)
@@ -113,7 +113,7 @@ def local_shapes(tensor, world, records):
     return [(r, ln, lk, axis) for r, _, ln, lk in found], None
 
 
-def collect(models, ms, *, loader=headers):
+def collect(models, ms, *, loader=headers, partitioner=None):
     if not ms or len(set(ms)) != len(ms) or any(type(m) is not int or not 128 <= m <= 4096 for m in ms):
         raise ValueError('dense prefill M must be distinct integers in 128..4096')
     if not models or len({m['name'] for m in models}) != len(models):
@@ -125,10 +125,23 @@ def collect(models, ms, *, loader=headers):
             raise ValueError('positive TP world required')
         rows, tensors = loader(model['path'])
         records, logs = tp_records(model.get('tp_logs', []), world, tensors)
-        identities.append(dict(name=model['name'], tp=world, files=rows, tp_logs=logs,
-                               weights_hashed=False, identity_scope='HEADERS_AND_EXTENTS_ONLY'))
+        static, partition_exclusions = None, {}
+        if partitioner is not None:
+            inferred, static, partition_exclusions = partitioner(model, rows, tensors)
+            for name, actual in records.items():
+                if name in inferred and not actual <= inferred[name]:
+                    raise ValueError('observed TP log differs from CPU split rules: '+name)
+            records = inferred
+        identity = dict(name=model['name'], tp=world, files=rows, tp_logs=logs,
+                        weights_hashed=False, identity_scope='HEADERS_AND_EXTENTS_ONLY')
+        if static is not None:
+            identity['static_partition'] = static
+        identities.append(identity)
         for t in tensors:
             ref = dict(model=model['name'], tensor=t['name'], tp=world, qtype=t['qtype'], dims=t['dims_gguf'])
+            if t['name'] in partition_exclusions:
+                excluded.append(dict(ref, reason=partition_exclusions[t['name']]))
+                continue
             dims = t['dims_gguf']
             if len(dims) != 2 or not t['name'].startswith('blk.') or not t['name'].endswith('.weight'):
                 excluded.append(dict(ref, reason='MOE_SEPARATE_COHORT' if len(dims) == 3 and 'exps' in t['name']
@@ -164,7 +177,8 @@ def collect(models, ms, *, loader=headers):
         scope='DENSE_LAYER_MATRIX_MICROBENCH_NOT_MODEL_CALL_COUNTS_OR_TP_COLLECTIVES',
         precision='F32_STORAGE_F16_OPERANDS_FP32_ACCUMULATION',
         bucket_status='PENDING_USER_FEEDBACK',
-        tp_scope='OBSERVED_LOCAL_DENSE_EXTENTS; NOT_TP_CORRECTNESS_OR_ALLREDUCE_TIMING',
+        tp_scope=('SOURCE_BOUND_CPU_SPLIT_EXTENTS' if partitioner else 'OBSERVED_LOCAL_DENSE_EXTENTS')+
+                 '; NOT_TP_CORRECTNESS_OR_ALLREDUCE_TIMING',
         production_changed=False, performance_admitted=False)
     result['sha256'] = digest(result)
     return result

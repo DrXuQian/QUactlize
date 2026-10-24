@@ -149,6 +149,10 @@ def _read_or_skip_metadata(stream: BinaryIO, value_type: int, capture: bool) -> 
         element_type, count = _u32(stream), _u64(stream)
         if element_type == 9:
             raise InventoryError("nested GGUF metadata arrays are forbidden")
+        if capture:
+            if count > 4096:
+                raise InventoryError("selected GGUF metadata array exceeds 4096 entries")
+            return [_read_or_skip_metadata(stream, element_type, True) for _ in range(count)]
         for _ in range(count):
             _read_or_skip_metadata(stream, element_type, False)
         return None
@@ -172,7 +176,7 @@ def _sha256_range(stream: BinaryIO, start: int, end: int) -> str:
     return digest.hexdigest()
 
 
-def read_gguf_header(stream: BinaryIO, source: str) -> dict[str, Any]:
+def read_gguf_header(stream: BinaryIO, source: str, *, capture_keys=()) -> dict[str, Any]:
     if not stream.seekable():
         raise InventoryError(f"{source}: GGUF header source must be seekable")
     if _read_exact(stream, 4) != b"GGUF":
@@ -189,7 +193,7 @@ def read_gguf_header(stream: BinaryIO, source: str) -> dict[str, Any]:
             raise InventoryError(f"{source}: duplicate GGUF metadata key {key!r}")
         value_type = _u32(stream)
         start = stream.tell()
-        capture = _capture_metadata_key(key)
+        capture = _capture_metadata_key(key) or key in capture_keys
         value = _read_or_skip_metadata(stream, value_type, capture)
         end = stream.tell()
         fingerprints[key] = {
