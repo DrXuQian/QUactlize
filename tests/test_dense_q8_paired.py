@@ -87,22 +87,19 @@ class PairedHost(unittest.TestCase):
 
 class PairedRunner(unittest.TestCase):
     def test_inventory_retains_native_and_all_previous_winners(self):
-        p=run.plan(list(range(2,8)),67108864,half2=True,native=True,paired=True)
-        self.assertEqual(p['variants'],[-1,22,27,36,38,39,40,41,42])
+        p=run.plan(list(range(2,8)),67108864,q8=True,native=True)
+        self.assertEqual(p['variants'],[-1,0,22,23,38,41])
         self.assertEqual(p['order'],p['variants']+p['variants'][::-1])
         self.assertEqual(p['correctness_storage'],['F16'])
         self.assertFalse(p['production_changed'])
-        self.assertEqual(p['experiment'],'Q8_PAIRED_F16_AB')
-        for old in (22,27,36,38):
-            for signed in (39,40):
-                for fast in (41,42):
-                    medians={str(v):10. for v in p['variants']}
-                    for v in (old,signed,fast):medians[str(v)]=5.
-                    self.assertEqual(run.profile_variants(medians,half2=True,native=True,paired=True),(-1,old,signed,fast))
-        with self.assertRaises(ValueError):run.plan([2],0,paired=True)
+        self.assertEqual(p['experiment'],'Q8_PRODUCT_NATIVE_F16_AB')
+        for control in (0,22,23):
+            medians={str(v):10. for v in p['variants']};medians[str(control)]=5.
+            self.assertEqual(run.profile_variants(medians,q8=True,native=True),(-1,control,38,41))
+        with self.assertRaises(ValueError):run.plan([2],0,native=True)
         with tempfile.TemporaryDirectory() as temp:
             lib=Path(temp)/'lib.so';lib.touch();out=Path(temp)/'plan'
-            subprocess.run([sys.executable,run.__file__,'--output',str(out),'--q8-half2','--q8-paired',
+            subprocess.run([sys.executable,run.__file__,'--output',str(out),'--q8',
                             '--native-library',str(lib),'--l2-bytes','67108864','--plan-only'],check=True,capture_output=True)
             self.assertEqual(json.loads((out/'plan.json').read_text()),p)
 
@@ -128,20 +125,20 @@ class PairedRunner(unittest.TestCase):
             with self.assertRaises(ValueError):run.paired_gate(bench(**options))
 
     def test_resume_requires_new_exhaustive_gate_and_candidate_rows(self):
-        q,n,k=run.POINTS[4];vs=run.variants_for(half2=True,native=True,paired=True)
+        q,n,k=run.POINTS[4];vs=run.variants_for(q8=True,native=True)
         proof=dict(bad=0,compared=n*k,guard='PASS',control_raw_bits_equal=True)
-        data=dict(status='PASS',point=4,q=q,n=n,k=k,scope=run.SCOPE,experiment='Q8_PAIRED_F16_AB',
+        data=dict(status='PASS',point=4,q=q,n=n,k=k,scope=run.SCOPE,experiment='Q8_PRODUCT_NATIVE_F16_AB',
             production_changed=False,performance_admitted=False,negative_bad=100,
             traffic=dict(reads=3*67108864,writes=3*67108864),ring_copies=2,calls_per_graph=4,
             samples_us={str(v):[10.]*30 for v in vs},median_us={str(v):10. for v in vs},
             round_medians_us={str(v):[10.]*3 for v in vs},proof={'0':{str(v):proof.copy() for v in vs}},
             memory_alignment={p:{str(w):[0] for w in (16,32,64,128)} for p in ('low','units','output','raw')},
             bf16_timing=None,half2_gate=dict(pairs=256*63488,lanes=2,bad_ordinary=0,bad_fast=0,
-                negative_bad=1,bf16_rejected=[35,36,37,38]),paired_gate=run.paired_gate_receipt(),
+                negative_bad=1,bf16_rejected=[38]),paired_gate=run.paired_gate_receipt(),
             fixture=dict(raw_sha256='a'*64),native_raw_sha256='a'*64,native_bytes=3*67108864,
             changed_address_copies_checked=2)
-        self.assertIs(run.validate_point(data,4,67108864,half2=True,native=True,paired=True),data)
+        self.assertIs(run.validate_point(data,4,67108864,q8=True,native=True),data)
         for key,value in (('pairs',0),('distinct_scales',False),('bad_signed',1),('negative_bad',0)):
             bad=copy.deepcopy(data);bad['paired_gate'][key]=value
-            with self.assertRaises(ValueError):run.validate_point(bad,4,67108864,half2=True,native=True,paired=True)
-        with self.assertRaises(ValueError):run.validate_point(data,4,67108864,half2=True,native=True)
+            with self.assertRaises(ValueError):run.validate_point(bad,4,67108864,q8=True,native=True)
+        with self.assertRaises(ValueError):run.validate_point(data,4,67108864,q8=True)

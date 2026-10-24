@@ -18,13 +18,10 @@ class DenseHelperHost(unittest.TestCase):
             '-I'+str(SDK/'include'),str(ROOT/'tests/prefill_dense_host.cpp'),'-o',str(so)],check=True)
         cls.lib=C.CDLL(str(so));cls.lib.dense_cooperative_host.argtypes=[C.c_int]*3+[C.c_void_p]*4+[C.c_int]*3
         cls.lib.dense_plane_pair_host.argtypes=[C.c_int]*3+[C.c_void_p]*4+[C.c_int]*3
-        cls.lib.dense_q8_exchange_address.argtypes=[C.c_uint]*3
-        cls.lib.dense_q8_exchange_address.restype=C.c_uint
-        cls.lib.dense_q8_fast_exhaustive.argtypes=[C.POINTER(C.c_uint64)]
         cls.lib.dense_q8_half2_exhaustive.argtypes=[C.POINTER(C.c_uint64)]
-        cls.lib.dense_q8_tuned_address.argtypes=[C.c_uint]*7
-        cls.lib.dense_q8_tuned_address.restype=C.c_uint64
-        cls.lib.dense_q8_tuned_config.argtypes=[C.c_int]+[C.POINTER(C.c_int)]*3
+        cls.lib.dense_q8_half2_address.argtypes=[C.c_uint]*7
+        cls.lib.dense_q8_half2_address.restype=C.c_uint64
+        cls.lib.dense_dequant_supported.argtypes=[C.c_int]*3
         cls.lib.dense_cooperative_layout.argtypes=[C.c_uint]*5;cls.lib.dense_cooperative_layout.restype=C.c_uint
         cls.lib.dense_full4.argtypes=[C.c_uint64,C.c_uint,C.c_uint];cls.lib.dense_full4.restype=C.c_uint64
         cls.lib.dense_pair_host.argtypes=[C.c_int]*3+[C.c_void_p]*4+[C.c_int]*3
@@ -52,32 +49,50 @@ class DenseHelperHost(unittest.TestCase):
                 '-lquactlize_ppu_prefill','-o',str(exe)],check=True)
             subprocess.run([str(exe),str(root)],check=True)
 
-    def test_q8_fast_all_codes_and_finite_half_scales(self):
-        count=C.c_uint64()
-        self.assertEqual(self.lib.dense_q8_fast_exhaustive(C.byref(count)),0)
-        self.assertEqual(count.value,256*(65536-2048)*2)
-
     def test_q8_half2_all_codes_and_finite_scales_bit_equal(self):
         count=C.c_uint64()
         self.assertEqual(self.lib.dense_q8_half2_exhaustive(C.byref(count)),0)
         self.assertEqual(count.value,256*63488*2)
 
-    def test_q8_tuning_cpp_launch_inventory(self):
-        from tools.run_dense_dequant import q8_tuning
-        for variant,cfg in q8_tuning().items():
-            values=[C.c_int(-1) for _ in range(3)]
-            self.assertEqual(self.lib.dense_q8_tuned_config(variant,*map(C.byref,values)),1)
-            self.assertEqual([v.value for v in values],[cfg[k] for k in ('fast','threads','vector_scale')])
-        values=[C.c_int(-1) for _ in range(3)]
-        self.assertEqual(self.lib.dense_q8_tuned_config(35,*map(C.byref,values)),0)
+    def test_retained_ids_and_retired_ids_fail_closed(self):
+        from tools.run_dense_dequant import q8_half2,q8_paired
+        self.assertEqual(set(q8_half2())|set(q8_paired()),{38,41})
+        for q in (8,10,11,12,13,14):
+            for storage in (0,1):
+                accepted={0,22,23} if q in (8,10,11) else {0,8,20,21}
+                if q==8 and storage==0:accepted|={38,41}
+                for variant in range(-2,44):
+                    with self.subTest(q=q,storage=storage,variant=variant):
+                        self.assertEqual(bool(self.lib.dense_dequant_supported(q,storage,variant)),variant in accepted)
 
-    def test_q8_tuning_per_instruction_global_footprints(self):
+    def test_all_recorded_full_recipes_have_retained_helpers(self):
+        import json
+        policy=json.loads((ROOT/'policies/dense_prefill_v1.json').read_text())
+        checked=set()
+        def check(q,key):
+            recipe=policy['recipes'][key]
+            if recipe['route']==2:
+                self.assertEqual(self.lib.dense_dequant_supported(q,0,recipe['dequant']),1,
+                                 (q,key,recipe['dequant']))
+                checked.add(recipe['dequant'])
+        for point in policy['points']:
+            check(point['shape'][0],point['winner'])
+            for key,_ in point['costs']+point.get('bucket_costs',[]):
+                check(point['shape'][0],key)
+        for bucket in policy['buckets']:
+            check(bucket['key'][0],bucket['recipe'])
+        self.assertTrue({38,41}<=checked)
+        helpers=json.loads((ROOT/'policies/dense_full_helpers_20261023.json').read_text())
+        for row in helpers['rows']:
+            self.assertEqual(self.lib.dense_dequant_supported(row['q'],row['storage'],row['dequant']),1,row)
+
+    def test_q8_half2_per_instruction_global_footprints(self):
         from collections import Counter
-        fn=self.lib.dense_q8_tuned_address
+        fn=self.lib.dense_q8_half2_address
         for n,k in ((512,2048),(2048,512),(4096,2048),(8192,2048),(2048,4096),(1024,5120)):
             for n0 in (0,64,n-64):
                 for k0 in (0,128,k-128):
-                    for kind,workers,width in ((0,512,16),(1,256,2),(2,64,8),(3,512,16)):
+                    for kind,workers,width in ((0,512,16),(1,256,2),(3,512,16)):
                         all_bytes=Counter()
                         for side in ((0,1) if kind==3 else (0,)):
                             for first in range(0,workers,32):
@@ -92,8 +107,8 @@ class DenseHelperHost(unittest.TestCase):
                         self.assertEqual(set(all_bytes.values()),{1})
                         self.assertEqual(len(all_bytes),workers*width*(2 if kind==3 else 1))
         # Thread-count change only partitions exactly the same task set.
-        for threads in (128,256,512):
-            for tasks in (64,256,512):
+        for threads in (256,):
+            for tasks in (256,512):
                 owned=[i for t in range(threads) for i in range(t,tasks,threads)]
                 self.assertEqual(sorted(owned),list(range(tasks)))
 
@@ -180,11 +195,11 @@ class DenseHelperHost(unittest.TestCase):
                     ptrs=[packed[x].ctypes.data if packed[x].size else None for x in ('low','high','units')]
                     if q==8:self.assertEqual(self.lib.dense_q8_host(bf,ptrs[0],ptrs[2],control.ctypes.data,n,k,0),0)
                     else:self.assertEqual(self.lib.dense_direct_host(q,bf,*ptrs,control.ctypes.data,n,k),0)
-                    for variant in ((22,23,24,25,*range(26,39)) if q==8 else (22,23)):
+                    for variant in ((22,23,38) if q==8 else (22,23)):
                         with self.subTest(q=q,n=n,k=k,bf=bf,variant=variant):
                             out=np.full_like(want,0x7fff)
                             args=(q,bf,variant,*ptrs,out.ctypes.data,n,k)
-                            if variant>=35 and bf:
+                            if variant==38 and bf:
                                 self.assertNotEqual(self.lib.dense_plane_pair_host(*args,0),0)
                                 self.assertTrue(np.all(out==0x7fff))
                                 continue
@@ -198,38 +213,6 @@ class DenseHelperHost(unittest.TestCase):
                                 self.assertTrue(np.any(out!=control))
                             self.assertNotEqual(self.lib.dense_plane_pair_host(*args,2),0)
                             if q==11:self.assertNotEqual(self.lib.dense_plane_pair_host(*args,5),0)
-                            if variant in (24,25):
-                                self.assertEqual(self.lib.dense_plane_pair_host(*args,6),0)
-                                self.assertTrue(np.any((out!=want)&(((out|want)&0x7fff)!=0)))
-
-    def test_q8_exchange_unique_shared_reads_and_unchanged_stores(self):
-        from collections import Counter
-        fn=self.lib.dense_q8_exchange_address
-        for tk in (128,256):
-            reads=[]
-            for task in range(32*(tk//8)):
-                source,other,pair,kk=[fn(tk,task,x) for x in range(4)]
-                self.assertEqual(task//32,other//32)
-                self.assertEqual((pair,kk),(task//(tk//8),task%(tk//8)*8))
-                self.assertEqual(source%4,0)
-                reads.extend(range(source,source+4))
-                for residue in range(8):
-                    owner=task if residue//4==task%2 else other
-                    address=fn(tk,owner,0)+residue%4
-                    want=(pair*(tk//2)+(kk//16)*8+residue)^(pair&28)
-                    self.assertEqual(address,want)
-                if pair==4 and task%2==1:
-                    # Exact negative for physical-base+4 instead of logical+4.
-                    wrong=((pair*(tk//2)+(kk//16)*8)^(pair&28))+4
-                    self.assertNotEqual(source,wrong)
-            # All physical code words fetched once, rather than twice.
-            self.assertEqual(sorted(reads),list(range(32*(tk//2))))
-            for start in range(0,32*(tk//8),32):
-                for side in (0,1):
-                    addresses=[((2*fn(tk,t,2)+side)*5120+fn(tk,t,3))*2 for t in range(start,start+32)]
-                    for sector in (32,64,128):
-                        cover=Counter((a+b)//sector for a in addresses for b in range(16))
-                        self.assertEqual(set(cover.values()),{sector})
 
     def test_box_runner_fixture_is_accepted_by_actual_readers(self):
         import numpy as np

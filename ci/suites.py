@@ -26,6 +26,7 @@ HOST = (
     "test_dense_prefill_policy.py", "test_dense_helper_admission.py",
     "test_prefill_dense.py", "test_prefill_production_helpers.py", "test_dense_full_helpers.py",
     "test_dense_cont.py", "test_dense_compact.py",
+    "test_dense_q8_paired.py",
 )
 
 # These are retained, not silently deleted or counted as product CI passes.

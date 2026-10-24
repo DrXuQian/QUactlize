@@ -34,9 +34,10 @@ def read_review(path):
 
 def helper_environment(env, output, diagnostics, gpu, revision, profile):
     result = dict(env, GPU=gpu, OUTPUT_ROOT=str(output), SOURCE_REV=revision,
-        Q8_HALF2='1',Q8_PAIRED='1',Q8_NATIVE='1',Q8_EXCHANGE='0',Q8_FAST_TAIL='0',
+        Q8='1',Q8_NATIVE='1',
         Q8_SHAPES=diagnostics['shapes'], PROFILE_ACU=str(int(profile)),IDLE_CONFIRMED='1')
-    for key in ('RUN','RESUME_RUN','POINTS','PROFILE_POINTS','NATIVE_LIBRARY'):
+    for key in ('RUN','RESUME_RUN','POINTS','PROFILE_POINTS','NATIVE_LIBRARY',
+                'Q8_EXCHANGE','Q8_FAST_TAIL','Q8_HALF2','Q8_PAIRED'):
         result.pop(key,None)
     result['PROFILE_POINTS'] = ','.join(map(str,diagnostics['profile_points']))
     return result

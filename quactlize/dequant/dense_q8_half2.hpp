@@ -1,7 +1,18 @@
 #pragma once
-#include "dense_q8_tuned.hpp"
+#include "dense_plane_pair.hpp"
 
 namespace quactlize::dequant {
+struct DenseQ8Half2Layout {
+    CUTLASS_HOST_DEVICE static uint64_t low(unsigned n,unsigned n0,unsigned k0,unsigned task) {
+        return uint64_t(k0/2+task/8)*n+n0+task%8*8;
+    }
+    CUTLASS_HOST_DEVICE static uint64_t scale(unsigned n,unsigned n0,unsigned k0,unsigned task) {
+        return uint64_t(k0/32+task/64)*n+n0+task%64;
+    }
+    CUTLASS_HOST_DEVICE static uint64_t output(unsigned k,unsigned n0,unsigned k0,unsigned task,unsigned side=0) {
+        return uint64_t(n0+2*(task/16)+side)*k+k0+task%16*8;
+    }
+};
 // Q8 only: every signed code and original F16 scale is exactly representable.
 // Their product is exact in FP32, so one RNE F16 multiply has the same final
 // rounding as the old FP32 product -> F16 path. Device FTZ is separately gated.

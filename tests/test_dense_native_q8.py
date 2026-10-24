@@ -31,21 +31,20 @@ class NativeQ8Tests(unittest.TestCase):
                             str(Path(__file__).with_name('native_q8_stub.cpp')),'-o',str(missing)],check=True)
             with self.assertRaisesRegex(ValueError,'does not export'):describe(missing)
 
-    def test_five_arm_plan_and_profile_selection(self):
-        p=run.plan(list(range(2,8)),67108864,half2=True,native=True)
-        self.assertEqual(p['variants'],[-1,22,27,36,38])
-        self.assertEqual(p['order'],[-1,22,27,36,38,38,36,27,22,-1])
-        self.assertEqual(p['experiment'],'Q8_NATIVE_F16_AB')
+    def test_product_and_native_plan_and_profile_selection(self):
+        p=run.plan(list(range(2,8)),67108864,q8=True,native=True)
+        self.assertEqual(p['variants'],[-1,0,22,23,38,41])
+        self.assertEqual(p['order'],[-1,0,22,23,38,41,41,38,23,22,0,-1])
+        self.assertEqual(p['experiment'],'Q8_PRODUCT_NATIVE_F16_AB')
         self.assertFalse(p['native_recompiled'])
         with self.assertRaises(ValueError):run.plan([2],67108864,native=True)
-        for old in (22,27):
-            for new in (36,38):
-                medians={str(v):10. for v in p['variants']};medians[str(old)]=8;medians[str(new)]=7
-                self.assertEqual(run.profile_variants(medians,half2=True,native=True),(-1,old,new))
+        for control in (0,22,23):
+            medians={str(v):10. for v in p['variants']};medians[str(control)]=8
+            self.assertEqual(run.profile_variants(medians,q8=True,native=True),(-1,control,38,41))
         with tempfile.TemporaryDirectory() as temp:
             lib=Path(temp)/'lib.so';lib.touch()
             out=Path(temp)/'plan'
-            subprocess.run([sys.executable,run.__file__,'--output',str(out),'--q8-half2',
+            subprocess.run([sys.executable,run.__file__,'--output',str(out),'--q8',
                             '--native-library',str(lib),'--l2-bytes','67108864','--plan-only'],check=True,capture_output=True)
             self.assertEqual(json.loads((out/'plan.json').read_text()),p)
 
@@ -72,19 +71,19 @@ class NativeQ8Tests(unittest.TestCase):
         self.assertEqual(gold[0].nbytes,256*512*2)
 
     def test_native_receipt_requires_identical_raw_and_packed_workload(self):
-        q,n,k=run.POINTS[4];vs=run.variants_for(half2=True,native=True)
+        q,n,k=run.POINTS[4];vs=run.variants_for(q8=True,native=True)
         proof=dict(bad=0,compared=n*k,guard='PASS',control_raw_bits_equal=True)
-        data=dict(status='PASS',point=4,q=q,n=n,k=k,scope=run.SCOPE,experiment='Q8_NATIVE_F16_AB',
+        data=dict(status='PASS',point=4,q=q,n=n,k=k,scope=run.SCOPE,experiment='Q8_PRODUCT_NATIVE_F16_AB',
             production_changed=False,performance_admitted=False,negative_bad=100,
             traffic=dict(reads=3*67108864,writes=3*67108864),ring_copies=2,calls_per_graph=4,
             samples_us={str(v):[10.]*30 for v in vs},median_us={str(v):10. for v in vs},
             round_medians_us={str(v):[10.]*3 for v in vs},proof={'0':{str(v):proof.copy() for v in vs}},
             memory_alignment={p:{str(w):[0] for w in (16,32,64,128)} for p in ('low','units','output','raw')},
             bf16_timing=None,half2_gate=dict(pairs=256*63488,lanes=2,bad_ordinary=0,bad_fast=0,
-                                           negative_bad=1,bf16_rejected=[35,36,37,38]),
+                                           negative_bad=1,bf16_rejected=[38]),paired_gate=run.paired_gate_receipt(),
             fixture=dict(raw_sha256='a'*64),native_raw_sha256='a'*64,native_bytes=3*67108864,
             changed_address_copies_checked=2)
-        self.assertIs(run.validate_point(data,4,67108864,half2=True,native=True),data)
+        self.assertIs(run.validate_point(data,4,67108864,q8=True,native=True),data)
         for key,value in (('native_bytes',1),('native_raw_sha256','b'*64),('changed_address_copies_checked',1)):
             bad=copy.deepcopy(data);bad[key]=value
-            with self.assertRaises(ValueError):run.validate_point(bad,4,67108864,half2=True,native=True)
+            with self.assertRaises(ValueError):run.validate_point(bad,4,67108864,q8=True,native=True)

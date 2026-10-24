@@ -14,13 +14,13 @@ __global__ __launch_bounds__(Threads) void dense_dequant_q8_half2(
     unsigned tid=threadIdx.x,n0=blockIdx.x*64,k0=blockIdx.y*128,extent=unsigned(n);
     #pragma unroll
     for(unsigned i=tid;i<64*L::Groups;i+=Threads) {
-        uint32_t d=units[DenseQ8TunedLayout::scale(extent,n0,k0,i,false)];
+        uint32_t d=units[DenseQ8Half2Layout::scale(extent,n0,k0,i)];
         scale[A::offset(i%64,i/64)]=d|(d<<16);
     }
     #pragma unroll
     for(unsigned i=tid;i<Lo::Rows*8;i+=Threads) {
         unsigned row=i/8,col=i%8*8;
-        uint4 v=*reinterpret_cast<uint4 const*>(low+DenseQ8TunedLayout::low(extent,n0,k0,i));
+        uint4 v=*reinterpret_cast<uint4 const*>(low+DenseQ8Half2Layout::low(extent,n0,k0,i));
         #pragma unroll
         for(unsigned p=0;p<4;++p)tile[Lo::shared(col/2+p,row)]=p==0?v.x:p==1?v.y:p==2?v.z:v.w;
     }
@@ -39,7 +39,7 @@ __global__ __launch_bounds__(Threads) void dense_dequant_q8_half2(
             out0[p]=DenseQ8Half2::weight<Fast>((x&255u)|((y&255u)<<16),s0);
             out1[p]=DenseQ8Half2::weight<Fast>((x>>16)|(y&0x00ff0000u),s1);
         }
-        auto dst=output+DenseQ8TunedLayout::output(unsigned(k),n0,k0,i);
+        auto dst=output+DenseQ8Half2Layout::output(unsigned(k),n0,k0,i);
         *reinterpret_cast<uint4*>(dst)={out0[0],out0[1],out0[2],out0[3]};
         *reinterpret_cast<uint4*>(dst+unsigned(k))={out1[0],out1[1],out1[2],out1[3]};
     }

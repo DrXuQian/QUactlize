@@ -60,13 +60,12 @@ int main(int argc,char** argv){
         const_cast<float*>(c.a)[0]=i+2;static_cast<float*>(const_cast<void*>(c.weight.low))[0]=i+5;
     }
     for(int type:{0,1})for(int vector:{0,1,2,3,4})for(int variant=-2;variant<=43;++variant)for(int algorithm:{-1,99}){
-        bool tuned=variant>=26 && variant<=34;
-        bool half2=variant>=35 && variant<=42;
-        bool typed=variant==0 || variant==8 || variant==20 || variant==21 || variant==22 || variant==23 || variant==24 || variant==25 || tuned || half2;
+        bool half2=variant==38 || variant==41;
+        bool typed=variant==0 || variant==8 || variant==20 || variant==21 || variant==22 || variant==23 || half2;
         assert(bool(qkp_dense_dequant_variant_valid(variant))==typed);
         qkp_dense_options_v1 o{1,sizeof(o),argv[1],type,vector,variant,16,algorithm};void* h=nullptr;
         int rc=quactlize_kpack_dense_full_prepare_v1(&shape,&arr,&o,&h);
-        bool supported=variant==0 || (q==8 && (variant==24 || variant==25 || tuned || (half2 && type==0))) ||
+        bool supported=variant==0 || (q==8 && half2 && type==0) ||
             (q==8 || q==10 || q==11?(variant==22 || variant==23):(variant==8 || variant==20 || variant==21));
         if((variant==-1 && (q==8 || type==0)) || (variant!=-1 && !supported)){assert(rc && !h);continue;}
         assert(!rc && h);

@@ -15,12 +15,6 @@ enum {
     // N64 paired-word Q2_K/Q3_K/Q8_0 helpers.
     QKP_DENSE_DEQUANT_PLANE_PAIR_K128 = 22,
     QKP_DENSE_DEQUANT_PLANE_PAIR_K256 = 23,
-    // Explicit Q8 shared-load exchange experiment; never selected by policy.
-    QKP_DENSE_DEQUANT_Q8_EXCHANGE_K128 = 24,
-    QKP_DENSE_DEQUANT_Q8_EXCHANGE_K256 = 25,
-#define QKP_Q8_TUNE(ID, FAST, THREADS, VECTOR) QKP_DENSE_DEQUANT_Q8_TUNE_##ID = ID,
-#include "dense_q8_tuning.inc"
-#undef QKP_Q8_TUNE
 #define QKP_Q8_HALF2(ID, FAST, THREADS) QKP_DENSE_DEQUANT_Q8_HALF2_##ID = ID,
 #include "dense_q8_half2.inc"
 #undef QKP_Q8_HALF2
@@ -29,39 +23,24 @@ enum {
 #undef QKP_Q8_PAIRED
 };
 
-// Private helper inventory; no change to caller structs or default policy.
-static inline int qkp_dense_q8_tuning(int variant, int* fast, int* threads, int* vector_scale) {
-    if (!fast || !threads || !vector_scale) return 0;
-    switch (variant) {
-#define QKP_Q8_TUNE(ID, FAST, THREADS, VECTOR) case ID: *fast=FAST; *threads=THREADS; *vector_scale=VECTOR; return 1;
-#include "dense_q8_tuning.inc"
-#undef QKP_Q8_TUNE
-        default: return 0;
-    }
+// The two measured Q8 packed-half helpers are F16-only. BF16 uses its own
+// direct or plane-pair implementation, never an F16 intermediate.
+static inline int qkp_dense_dequant_f16_only(int variant) {
+    return variant == QKP_DENSE_DEQUANT_Q8_HALF2_38 || variant == QKP_DENSE_DEQUANT_Q8_PAIRED_41;
 }
 
 static inline int qkp_dense_dequant_variant_valid(int variant) {
-    int fast,threads,vector_scale;
-    if (qkp_dense_q8_tuning(variant,&fast,&threads,&vector_scale)) return 1;
-    if (variant>=QKP_DENSE_DEQUANT_Q8_HALF2_35 && variant<=QKP_DENSE_DEQUANT_Q8_HALF2_38) return 1;
-    if (variant>=QKP_DENSE_DEQUANT_Q8_PAIRED_39 && variant<=QKP_DENSE_DEQUANT_Q8_PAIRED_42) return 1;
     return variant == QKP_DENSE_DEQUANT_DIRECT || variant == QKP_DENSE_DEQUANT_PAIR ||
            variant == QKP_DENSE_DEQUANT_COOPERATIVE_K128 ||
            variant == QKP_DENSE_DEQUANT_COOPERATIVE_K256 ||
            variant == QKP_DENSE_DEQUANT_PLANE_PAIR_K128 ||
            variant == QKP_DENSE_DEQUANT_PLANE_PAIR_K256 ||
-           variant == QKP_DENSE_DEQUANT_Q8_EXCHANGE_K128 ||
-           variant == QKP_DENSE_DEQUANT_Q8_EXCHANGE_K256;
+           qkp_dense_dequant_f16_only(variant);
 }
 
 static inline int qkp_dense_dequant_variant_supports(int qtype, int variant) {
-    int fast,threads,vector_scale;
-    if (variant>=QKP_DENSE_DEQUANT_Q8_HALF2_35 && variant<=QKP_DENSE_DEQUANT_Q8_HALF2_38) return qtype==8;
-    if (variant>=QKP_DENSE_DEQUANT_Q8_PAIRED_39 && variant<=QKP_DENSE_DEQUANT_Q8_PAIRED_42) return qtype==8;
-    if (qkp_dense_q8_tuning(variant,&fast,&threads,&vector_scale)) return qtype==8;
+    if (qkp_dense_dequant_f16_only(variant)) return qtype == 8;
     if (!qkp_dense_dequant_variant_valid(variant)) return 0;
-    if (variant == QKP_DENSE_DEQUANT_Q8_EXCHANGE_K128 || variant == QKP_DENSE_DEQUANT_Q8_EXCHANGE_K256)
-        return qtype == 8;
     if (variant == QKP_DENSE_DEQUANT_DIRECT) return qtype == 8 || (qtype >= 10 && qtype <= 14);
     if (variant == QKP_DENSE_DEQUANT_PLANE_PAIR_K128 || variant == QKP_DENSE_DEQUANT_PLANE_PAIR_K256)
         return qtype == 8 || qtype == 10 || qtype == 11;

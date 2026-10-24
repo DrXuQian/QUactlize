@@ -120,29 +120,31 @@ def test_whole_call_and_helper_plans_run_host_only(tmp_path):
 def test_custom_q8_shapes_do_not_change_old_shape_indices_or_profile_binding(tmp_path):
     old=dq.POINTS
     shapes=dq.q8_shapes('8192x3072,4096x2048')
-    p=dq.plan([0,1],67108864,half2=True,native=True,paired=True,shapes=shapes)
+    p=dq.plan([0,1],67108864,q8=True,native=True,shapes=shapes)
     assert p['points'][0]==dict(index=0,q=8,n=8192,k=3072) and dq.POINTS==old
-    assert p['variants']==[-1,22,27,36,38,39,40,41,42]
+    assert p['variants']==[-1,0,22,23,38,41]
     symbol='_ZN9quactlize7dequant22dense_dequant_q8_pairedILb0ELj128EEEvPKtS3_Ptii'
     config=dq.profile_entry(dict(kernels={symbol:{}}),0,41,0,shapes=shapes)
     assert config==dict(symbol=symbol,grid=[128,24,1],block=[128,1,1])
     native=tmp_path/'libggml-cuda.so';native.write_bytes(b'host-only plan, not loaded')
     output=tmp_path/'diagnostic'
     subprocess.run([sys.executable,dq.__file__,'--output',str(output),'--plan-only',
-        '--q8-half2','--q8-paired','--native-library',str(native),'--q8-shapes','8192x3072,4096x2048'],
+        '--q8','--native-library',str(native),'--q8-shapes','8192x3072,4096x2048'],
         check=True,capture_output=True)
-    assert json.loads((output/'plan.json').read_text())==dq.plan([0,1],0,half2=True,native=True,paired=True,shapes=shapes)
-    for text in ('8192,3072','0x128','65x128','64x127','8192x16384','64x128,64x128','64x128;exit'):
+    assert json.loads((output/'plan.json').read_text())==dq.plan([0,1],0,q8=True,native=True,shapes=shapes)
+    assert dq.q8_shapes('256x256')==((8,256,256),)
+    for text in ('8192,3072','0x128','65x128','64x127','128x512','512x128',
+                 '8192x16384','64x128,64x128','64x128;exit'):
         with pytest.raises(ValueError):dq.q8_shapes(text)
 
 
 def test_environment_cannot_redirect_helper_or_inherit_old_point_filter(tmp_path):
-    old=dict(RUN='/old',RESUME_RUN='/old',POINTS='7',PROFILE_POINTS='7',NATIVE_LIBRARY='/old.so')
+    old=dict(RUN='/old',RESUME_RUN='/old',POINTS='7',PROFILE_POINTS='7',NATIVE_LIBRARY='/old.so',Q8_EXCHANGE='1',Q8_FAST_TAIL='1',Q8_HALF2='1',Q8_PAIRED='1')
     d=dict(shapes='8192x3072',profile_points=[0])
     env=helper_environment(old,tmp_path,d,'7','revision',True)
     assert env['GPU']=='7' and env['Q8_SHAPES']==d['shapes'] and env['SOURCE_REV']=='revision'
-    assert env['PROFILE_POINTS']=='0' and env['Q8_NATIVE']=='1'
-    assert not {'RUN','RESUME_RUN','POINTS','NATIVE_LIBRARY'}&env.keys()
+    assert env['PROFILE_POINTS']=='0' and env['Q8_NATIVE']=='1' and env['Q8']=='1'
+    assert not {'RUN','RESUME_RUN','POINTS','NATIVE_LIBRARY','Q8_EXCHANGE','Q8_FAST_TAIL','Q8_HALF2','Q8_PAIRED'}&env.keys()
 
 
 def test_package_excludes_sources_binaries_and_raw_profiles(tmp_path):

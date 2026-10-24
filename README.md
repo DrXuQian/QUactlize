@@ -76,10 +76,13 @@ Production translation units must instantiate only retained implementations;
 unadmitted debug kernels must not accumulate in the installed runtime.
 
 The retired dense-helper rounds R1–R5 are recoverable at commit
-`8a004d42a91a23664e69762509d34c3b76bbf8e8`. Current production keeps typed
-dequant IDs `0/8/20/21`, IO IDs `0..3`, and the existing general SF/full
-routes. Retired dense IDs are rejected, never renumbered or silently aliased.
-Production helper selection, arithmetic and configuration tables are unchanged.
+`8a004d42a91a23664e69762509d34c3b76bbf8e8`. The later unselected Q8 experiments
+are recoverable at `618298d6f8761b8eb4489ad2f1a217dd57f0bd47`.
+Current production keeps typed dequant IDs `0/8/20/21/22/23/38/41`, IO IDs
+`0..4`, compact widths `2/4/8`, and the general SF/full routes. IDs38/41 are
+the measured F16-only Q8 helpers; BF16 retains direct BF16 reconstruction.
+Retired IDs are rejected, never renumbered or silently aliased. Cleanup leaves
+the selection tables, rounding and retained native kernel bodies unchanged.
 Use the current model-specific Asys sweep for new comparisons, not a retired
 round's command.
 
@@ -98,6 +101,11 @@ Current performance entrypoints are separate from CI:
 - `tools/run_kpack_strategy_prefill_box.sh`: prefill component campaign.
 - `tools/run_prefill_model_asys_box.sh`: model-shape prefill Asys sweep.
 - `tools/run_native_components_box.sh`: isolated native/candidate comparison.
+- `tools/run_dense_dequant_box.sh`: retained typed helpers; `Q8=1` tests the
+  Q8 product cohort, optionally against the existing native F16 converter.
+
+The [final public-library/model validation](docs/PPU_DENSE_CONTIGUOUS_IO.md)
+remains pending. Cleanup is not new GPU timing or a claim of model parity.
 
 Use their declared device, SDK, input and measurement requirements; these are
 not substitutes for `run_tests.sh` and do not run during product CI.

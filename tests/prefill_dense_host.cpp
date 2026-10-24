@@ -5,8 +5,6 @@
 #include "quactlize/dequant/dense_q8.hpp"
 #include "quactlize/dequant/dense_cooperative.hpp"
 #include "quactlize/dequant/dense_plane_pair.hpp"
-#include "quactlize/dequant/dense_q8_exchange.hpp"
-#include "quactlize/dequant/dense_q8_tuned.hpp"
 #include "quactlize/dequant/dense_q8_half2.hpp"
 #include "quactlize/prefill/dense_api.h"
 #include "quactlize/dequant/packed_exchange.hpp"
@@ -33,7 +31,7 @@ int stage(uint16_t const* src,std::vector<uint32_t>& dst,unsigned n,unsigned k,u
     for(unsigned w:writes)if(w!=1)return 3;
     return 0;
 }
-template<int Q,bool BF16,unsigned TK,bool Exchange=false,bool Fast=false,unsigned Threads=128,bool VectorScale=false,bool Half2=false>
+template<int Q,bool BF16,unsigned TK,unsigned Threads=128,bool Half2=false>
 int decode(uint16_t const* low,uint16_t const* high,uint8_t const* units,uint16_t* output,unsigned n,unsigned k,int fault) {
     using namespace quactlize::dequant;
     using L=DensePlanePair<Q,TK>;using Lo=typename L::Low;using Hi=typename L::High;using A=typename L::Affine;
@@ -59,17 +57,6 @@ int decode(uint16_t const* low,uint16_t const* high,uint8_t const* units,uint16_
                     if constexpr(Q==10)minimum[at]=values.group(g).minimum;
                 }
             }
-        } else if constexpr(VectorScale) {
-            for(unsigned tid=0;tid<64;++tid) {
-                unsigned col=tid%16*4,g=tid/16;
-                uint16_t words[4];
-                std::memcpy(words,reinterpret_cast<uint16_t const*>(units)+uint64_t(k0/32+g)*n+n0+col,8);
-                for(unsigned v=0;v<4;++v) {
-                    unsigned at=A::offset(col+v,g);
-                    if(at>=wa.size() || ++wa[at]!=1)return 8;
-                    scale[at]=float(cutlass::half_t::bitcast(words[v]));
-                }
-            }
         } else {
             for(unsigned i=0;i<64*L::Groups;++i) {
                 unsigned col=i%64,g=i/64,at=A::offset(col,g);
@@ -88,12 +75,6 @@ int decode(uint16_t const* low,uint16_t const* high,uint8_t const* units,uint16_
                    ha!=Hi::shared(pair,Hi::row(kk)+(v&~3u))+v%4 ||
                    (v%4==0 && (la%4 || ha%4)))return 10;
                 uint32_t word=tile[la];
-                if constexpr(Exchange) {
-                    using X=DenseQ8Exchange<TK>;
-                    unsigned partner=X::partner(i)^(fault==6?2:0);
-                    if((partner/32)!=(i/32))return 14;
-                    word=X::word(i,v,tile[X::source(i)+v%4],tile[X::source(partner)+v%4]);
-                }
                 uint32_t raw=L::codes(word,Q==11?upper[ha]:0,kk^(fault==1?8:0));
                 for(unsigned side=0;side<2;++side) {
                     unsigned row=2*pair+side,out=row*TK+kk+v;
@@ -110,9 +91,8 @@ int decode(uint16_t const* low,uint16_t const* high,uint8_t const* units,uint16_
                         unsigned other=(partner>>(16*(side^(fault==3))))&255u;
                         uint32_t codes=v%2?other|(code<<16):code|(other<<16);
                         uint32_t d=cutlass::half_t(s).raw();
-                        output[destination]=uint16_t(DenseQ8Half2::weight<Fast>(codes,d|(d<<16))>>(16*(v%2)));
-                    } else output[destination]=Fast?DenseQ8Fast::weight<BF16>(code,s):
-                        L::template weight<BF16>(code,s,minimum[A::offset(row,kk/L::Group)]);
+                        output[destination]=uint16_t(DenseQ8Half2::weight<true>(codes,d|(d<<16))>>(16*(v%2)));
+                    } else output[destination]=L::template weight<BF16>(code,s,minimum[A::offset(row,kk/L::Group)]);
                 }
             }
         }
@@ -122,14 +102,9 @@ int decode(uint16_t const* low,uint16_t const* high,uint8_t const* units,uint16_
 }
 template<int Q,bool BF16> int geometry(int v,uint16_t const* l,uint16_t const* h,uint8_t const* u,uint16_t* o,unsigned n,unsigned k,int f) {
     if constexpr(Q==8) {
-#define QKP_Q8_TUNE(ID, FAST, THREADS, VECTOR) if(v==ID)return decode<Q,BF16,128,false,FAST,THREADS,VECTOR>(l,h,u,o,n,k,f);
-#include "quactlize/prefill/dense_q8_tuning.inc"
-#undef QKP_Q8_TUNE
-#define QKP_Q8_HALF2(ID, FAST, THREADS) if(v==ID) { if constexpr(BF16)return 99; else return decode<Q,false,128,false,FAST,THREADS,false,true>(l,h,u,o,n,k,f); }
+#define QKP_Q8_HALF2(ID, FAST, THREADS) if(v==ID) { static_assert(FAST); if constexpr(BF16)return 99; else return decode<Q,false,128,THREADS,true>(l,h,u,o,n,k,f); }
 #include "quactlize/prefill/dense_q8_half2.inc"
 #undef QKP_Q8_HALF2
-        if(v==24)return decode<Q,BF16,128,true>(l,h,u,o,n,k,f);
-        if(v==25)return decode<Q,BF16,256,true>(l,h,u,o,n,k,f);
     }
     if(v==22)return decode<Q,BF16,128>(l,h,u,o,n,k,f);
     if(v==23)return decode<Q,BF16,256>(l,h,u,o,n,k,f);
@@ -145,22 +120,6 @@ extern "C" int dense_plane_pair_host(int q,int b,int v,uint16_t const* l,uint16_
     return 99;
 }
 } // namespace plane_pair_oracle
-
-extern "C" int dense_q8_fast_exhaustive(uint64_t* compared) {
-    using namespace quactlize::dequant;
-    *compared=0;
-    for(unsigned raw=0;raw<256;++raw) {
-        if(DenseQ8Fast::code(raw)!=float(int(raw)-128))return 1;
-        for(unsigned bits=0;bits<65536;++bits) {
-            if((bits&0x7c00u)==0x7c00u)continue;
-            float s=float(cutlass::half_t::bitcast(uint16_t(bits)));
-            if(DenseQ8Fast::weight<false>(raw,s)!=DensePlanePair<8,128>::weight<false>(raw,s))return 2;
-            if(DenseQ8Fast::weight<true>(raw,s)!=DensePlanePair<8,128>::weight<true>(raw,s))return 3;
-            *compared+=2;
-        }
-    }
-    return 0;
-}
 
 extern "C" int dense_q8_half2_exhaustive(uint64_t* compared) {
     using namespace quactlize::dequant;
@@ -178,24 +137,16 @@ extern "C" int dense_q8_half2_exhaustive(uint64_t* compared) {
     return 0;
 }
 
-extern "C" uint64_t dense_q8_tuned_address(unsigned kind,unsigned n,unsigned k,unsigned n0,unsigned k0,unsigned task,unsigned side) {
-    using L=quactlize::dequant::DenseQ8TunedLayout;
+extern "C" uint64_t dense_q8_half2_address(unsigned kind,unsigned n,unsigned k,unsigned n0,unsigned k0,unsigned task,unsigned side) {
+    using L=quactlize::dequant::DenseQ8Half2Layout;
     if(kind==0)return L::low(n,n0,k0,task);
-    if(kind==1 || kind==2)return L::scale(n,n0,k0,task,kind==2);
+    if(kind==1)return L::scale(n,n0,k0,task);
     return L::output(k,n0,k0,task,side);
 }
 
-extern "C" int dense_q8_tuned_config(int variant,int* fast,int* threads,int* vector_scale) {
-    return qkp_dense_q8_tuning(variant,fast,threads,vector_scale);
-}
-
-extern "C" unsigned dense_q8_exchange_address(unsigned tk,unsigned task,unsigned which) {
-    using A=quactlize::dequant::DenseQ8Exchange<128>;
-    using B=quactlize::dequant::DenseQ8Exchange<256>;
-    if(which==0)return tk==128?A::source(task):B::source(task);
-    if(which==1)return tk==128?A::partner(task):B::partner(task);
-    if(which==2)return tk==128?A::pair(task):B::pair(task);
-    return tk==128?A::k(task):B::k(task);
+extern "C" int dense_dequant_supported(int q,int storage,int variant) {
+    return qkp_dense_dequant_variant_supports(q,variant) &&
+        (!qkp_dense_dequant_f16_only(variant) || storage==0);
 }
 
 extern "C" int dense_q8_host(int bf,uint16_t const* low,uint16_t const* units,

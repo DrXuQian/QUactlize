@@ -2,6 +2,7 @@
 import copy
 import ctypes as C
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -15,44 +16,64 @@ from tools import run_dense_dequant as run
 
 
 class DenseDequantRunner(unittest.TestCase):
-    def test_q8_half2_inventory_preserves_winners_and_separates_bf16(self):
-        p=run.plan([2,3,4,5,6,7],67108864,half2=True)
-        self.assertEqual(p['variants'],[22,27,28,30,35,36,37,38])
+    def test_product_inventory_separates_bf16_and_rejects_old_flags(self):
+        p=run.plan([2,3,4,5,6,7],67108864,q8=True)
+        self.assertEqual(p['variants'],[0,22,23,38,41])
         self.assertEqual(p['correctness_storage'],['F16'])
         self.assertEqual(p['timed_storage'],'F16')
-        self.assertEqual(p['experiment'],'Q8_F16_HALF2')
+        self.assertEqual(p['experiment'],'Q8_PRODUCT_F16_AB')
         self.assertEqual(p['configs']['38'],dict(fast=1,threads=256))
-        for kwargs in (dict(exchange=True),dict(fast_tail=True)):
-            with self.assertRaises(ValueError):run.plan([2],67108864,half2=True,**kwargs)
-        with self.assertRaises(ValueError):run.plan([0],67108864,half2=True)
-        for winner in range(35,39):
-            medians={str(v):float(v) for v in p['variants']};medians[str(winner)]=1.
-            variants=run.profile_variants(medians,half2=True)
-            self.assertIn(winner,variants)
-            self.assertTrue(any(v in (22,27,28,30) for v in variants))
-            self.assertLessEqual(len(variants),3)
+        self.assertEqual(p['paired_configs']['41'],dict(signed=0,threads=128))
+        with self.assertRaises(ValueError):run.plan([0],67108864,q8=True)
+        for control in (0,22,23):
+            medians={str(v):10. for v in p['variants']};medians[str(control)]=1.
+            self.assertEqual(run.profile_variants(medians,q8=True),(control,38,41))
         with tempfile.TemporaryDirectory() as temp:
-            out=Path(temp)/'half2'
-            subprocess.run([sys.executable,run.__file__,'--output',str(out),'--q8-half2','--plan-only'],
+            out=Path(temp)/'q8'
+            subprocess.run([sys.executable,run.__file__,'--output',str(out),'--q8','--plan-only'],
                            check=True,capture_output=True)
-            self.assertEqual(json.loads((out/'plan.json').read_text()),run.plan([2,3,4,5,6,7],0,half2=True))
+            self.assertEqual(json.loads((out/'plan.json').read_text()),run.plan([2,3,4,5,6,7],0,q8=True))
+            for flag in ('--q8-exchange','--q8-fast-tail','--q8-half2','--q8-paired'):
+                child=subprocess.run([sys.executable,run.__file__,'--output',str(out),'--plan-only',flag],
+                                     capture_output=True,text=True)
+                self.assertNotEqual(child.returncode,0)
+                self.assertIn('unrecognized arguments',child.stderr)
 
     def test_half2_resume_requires_exhaustive_device_proof(self):
-        q,n,k=run.POINTS[4];vs=run.variants_for(half2=True)
+        q,n,k=run.POINTS[4];vs=run.variants_for(q8=True)
         proof=dict(bad=0,compared=n*k,guard='PASS',control_raw_bits_equal=True)
-        gate=dict(pairs=256*63488,lanes=2,bad_ordinary=0,bad_fast=0,negative_bad=1,bf16_rejected=[35,36,37,38])
-        data=dict(status='PASS',point=4,q=q,n=n,k=k,scope=run.SCOPE,experiment='Q8_F16_HALF2',
+        gate=dict(pairs=256*63488,lanes=2,bad_ordinary=0,bad_fast=0,negative_bad=1,bf16_rejected=[38])
+        data=dict(status='PASS',point=4,q=q,n=n,k=k,scope=run.SCOPE,experiment='Q8_PRODUCT_F16_AB',
             production_changed=False,performance_admitted=False,negative_bad=100,
             traffic=dict(reads=3*67108864,writes=3*67108864),ring_copies=2,calls_per_graph=4,
             samples_us={str(v):[10.]*30 for v in vs},median_us={str(v):10. for v in vs},
             round_medians_us={str(v):[10.]*3 for v in vs},proof={'0':{str(v):proof.copy() for v in vs}},
             memory_alignment={p:{str(w):[0] for w in (16,32,64,128)} for p in ('low','units','output')},
-            bf16_timing=None,half2_gate=gate)
-        self.assertIs(run.validate_point(data,4,67108864,half2=True),data)
+            bf16_timing=None,half2_gate=gate,paired_gate=run.paired_gate_receipt())
+        self.assertIs(run.validate_point(data,4,67108864,q8=True),data)
         for field,value in (('pairs',256),('bad_fast',1),('negative_bad',0),('bf16_rejected',[])):
             bad=copy.deepcopy(data);bad['half2_gate'][field]=value
-            with self.assertRaises(ValueError):run.validate_point(bad,4,67108864,half2=True)
-        with self.assertRaises(ValueError):run.validate_point(data,4,67108864,fast_tail=True)
+            with self.assertRaises(ValueError):run.validate_point(bad,4,67108864,q8=True)
+        with self.assertRaises(ValueError):run.validate_point(data,4,67108864)
+        for mutate in (
+            lambda d:d['memory_alignment']['units'].__setitem__('128',[64]),
+            lambda d:d['proof']['0']['38'].__setitem__('bad',1),
+            lambda d:d['proof']['0']['41'].__setitem__('control_raw_bits_equal',False),
+            lambda d:d.__setitem__('experiment','Q8_PAIRED_F16_AB'),
+        ):
+            bad=copy.deepcopy(data);mutate(bad)
+            with self.assertRaises(ValueError):run.validate_point(bad,4,67108864,q8=True)
+
+    def test_shell_rejects_retired_flags_before_sdk_or_device_access(self):
+        script=Path(run.__file__).with_name('run_dense_dequant_box.sh')
+        retired=('Q8_EXCHANGE','Q8_FAST_TAIL','Q8_HALF2','Q8_PAIRED')
+        env={k:v for k,v in os.environ.items() if k not in (*retired,'Q8','Q8_NATIVE','PROFILE_ACU')}
+        env.update(GPU='1',IDLE_CONFIRMED='1',PPU_SDK='/no-sdk')
+        for name in retired:
+            for value in ('0','1'):
+                child=subprocess.run(['bash',str(script)],env=dict(env,**{name:value}),capture_output=True,text=True)
+                self.assertNotEqual(child.returncode,0)
+                self.assertIn(name+' was retired',child.stderr)
 
     def test_half2_profile_cannot_mislabel_fast_as_bf16(self):
         symbol='_ZN9quactlize7dequant22dense_dequant_q8_half2ILb1ELj256EEEvPKtS3_Ptii'
@@ -74,7 +95,7 @@ class DenseDequantRunner(unittest.TestCase):
         good=bench()
         self.assertEqual(run.half2_gate(good)['pairs'],256*63488)
         self.assertEqual(good.sdk.synchronize.call_count,4)
-        self.assertEqual(good.launch.call_count,4)
+        self.assertEqual(good.launch.call_count,1)
         for options in (dict(coverage=256),dict(negative=0),dict(rejection=0),dict(rejection=1)):
             with self.subTest(options=options),self.assertRaises(ValueError):run.half2_gate(bench(**options))
 
@@ -99,84 +120,13 @@ class DenseDequantRunner(unittest.TestCase):
             self.assertFalse((output/'build').exists())
             self.assertEqual(json.loads((output/'plan.json').read_text())['variants'], [0,22,23])
 
-    def test_q8_bounded_plan_and_both_precisions(self):
-        p=run.plan([2,3,4,5,6,7],67108864,True)
-        self.assertEqual(p['variants'],[22,23,24,25])
-        self.assertEqual(p['order'],[22,23,24,25,25,24,23,22])
-        self.assertEqual(p['timed_storage'],['F16','BF16'])
-        self.assertTrue(all(r['q']==8 for r in p['points']))
-        with self.assertRaises(ValueError):run.plan([0],67108864,True)
-        with tempfile.TemporaryDirectory() as temp:
-            out=Path(temp)/'q8'
-            subprocess.run([sys.executable,run.__file__,'--output',str(out),
-                            '--q8-exchange','--plan-only'],check=True,capture_output=True)
-            self.assertEqual(json.loads((out/'plan.json').read_text()),run.plan([2,3,4,5,6,7],0,True))
-
-    def test_q8_fast_tail_uses_cxx_inventory_and_bounded_profiles(self):
-        p=run.plan([2,3,4,5,6,7],67108864,fast_tail=True)
-        self.assertEqual(p['variants'],[22,*range(26,35)])
-        self.assertEqual(p['timed_storage'],['F16','BF16'])
-        self.assertEqual(p['experiment'],'Q8_FAST_TAIL')
-        self.assertEqual(p['configs']['34'],dict(fast=1,threads=512,vector_scale=1))
-        with self.assertRaises(ValueError):run.plan([2],67108864,True,True)
-        with self.assertRaises(ValueError):run.plan([0],67108864,fast_tail=True)
-        for winner in range(26,35):
-            medians={str(v):float(v) for v in p['variants']};medians[str(winner)]=1.
-            profile=run.profile_variants(medians,fast_tail=True)
-            self.assertTrue({22,26,31,winner}<=set(profile))
-            self.assertLessEqual(len(profile),6)
-            self.assertEqual(len(profile),len(set(profile)))
-        symbol='_ZN9quactlize7dequant22dense_dequant_q8_tunedILb1ELb1ELj512ELb1EEEvPKtS3_Ptii'
-        expected=run.profile_entry(dict(kernels={symbol:{}}),5,34,1)
-        self.assertEqual(expected,dict(symbol=symbol,grid=[128,16,1],block=[512,1,1]))
-        with tempfile.TemporaryDirectory() as temp:
-            output=Path(temp)/'fast'
-            subprocess.run([sys.executable,run.__file__,'--output',str(output),'--q8-fast-tail','--plan-only'],
-                           check=True,capture_output=True)
-            self.assertEqual(json.loads((output/'plan.json').read_text()),run.plan([2,3,4,5,6,7],0,fast_tail=True))
-
-    def test_q8_bf16_missing_samples_are_not_reused(self):
-        q,n,k=run.POINTS[5]
-        variants=(22,23,24,25)
-        timing=dict(samples_us={str(v):[10.0]*30 for v in variants},
-                    median_us={str(v):10.0 for v in variants},
-                    round_medians_us={str(v):[10.0]*3 for v in variants})
-        proof=dict(bad=0,compared=n*k,guard='PASS',control_raw_bits_equal=True)
-        data=dict(status='PASS',point=5,q=q,n=n,k=k,scope=run.SCOPE,experiment='Q8_SHARED_EXCHANGE',
-                  production_changed=False,performance_admitted=False,negative_bad=100,
-                  traffic=dict(reads=3*67108864,writes=3*67108864),ring_copies=2,calls_per_graph=4,
-                  **copy.deepcopy(timing),bf16_timing=timing,
-                  proof={str(s):{str(v):proof.copy() for v in variants} for s in (0,1)})
-        self.assertIs(run.validate_point(data,5,67108864,True),data)
-        data['bf16_timing']['samples_us']['24'].pop()
-        with self.assertRaises(ValueError):run.validate_point(data,5,67108864,True)
-
-    def test_q8_fast_tail_resume_cannot_import_exchange_results(self):
-        q,n,k=run.POINTS[5];vs=run.variants_for(fast_tail=True)
-        timing=dict(samples_us={str(v):[10.]*30 for v in vs},median_us={str(v):10. for v in vs},
-                    round_medians_us={str(v):[10.]*3 for v in vs})
-        proof=dict(bad=0,compared=n*k,guard='PASS',control_raw_bits_equal=True)
-        data=dict(status='PASS',point=5,q=q,n=n,k=k,scope=run.SCOPE,experiment='Q8_FAST_TAIL',
-                  production_changed=False,performance_admitted=False,negative_bad=100,
-                  traffic=dict(reads=3*67108864,writes=3*67108864),ring_copies=2,calls_per_graph=4,
-                  **copy.deepcopy(timing),bf16_timing=timing,
-                  memory_alignment={p:{str(w):[0] for w in (16,32,64,128)} for p in ('low','units','output')},
-                  proof={str(s):{str(v):proof.copy() for v in vs} for s in (0,1)})
-        self.assertIs(run.validate_point(data,5,67108864,fast_tail=True),data)
-        with self.assertRaises(ValueError):run.validate_point(data,5,67108864,exchange=True)
-        data['memory_alignment']['units']['128']=[64]
-        with self.assertRaises(ValueError):run.validate_point(data,5,67108864,fast_tail=True)
-        data['memory_alignment']['units']['128']=[0]
-        data['proof']['1']['34']['bad']=1
-        with self.assertRaises(ValueError):run.validate_point(data,5,67108864,fast_tail=True)
-
     def test_q8_profile_symbol_geometry_and_direct_launch_boundary(self):
         from dev.native_components.profile import acu_command,check_report
         import csv,io
-        symbol='_ZN9quactlize7dequant25dense_dequant_q8_exchangeILb1ELj128EEEvPKtS3_Ptii'
-        expected=run.profile_entry(dict(kernels={symbol:{}}),5,24,1)
+        symbol='_ZN9quactlize7dequant25dense_dequant_plane_pairILi8ELb1ELj128EEEvPKtS3_Ptii'
+        expected=run.profile_entry(dict(kernels={symbol:{}}),5,22,1)
         self.assertEqual(expected,dict(symbol=symbol,grid=[128,16,1],block=[128,1,1]))
-        with self.assertRaises(ValueError):run.profile_entry(dict(kernels={symbol:{}}),5,24,0)
+        with self.assertRaises(ValueError):run.profile_entry(dict(kernels={symbol:{}}),5,22,0)
         cmd=acu_command('acu','report',['python','child'],graph_profiling='none')
         self.assertEqual(cmd[cmd.index('--graph-profiling')+1],'none')
         self.assertEqual(cmd[cmd.index('--launch-count')+1],'1')
@@ -186,10 +136,18 @@ class DenseDequantRunner(unittest.TestCase):
         self.assertEqual(check_report(output.getvalue(),expected)['launches'],1)
         with self.assertRaises(ValueError):check_report(output.getvalue().replace('(128,16,1)','(128,8,1)'),expected)
 
+    def test_direct_control_profile_and_retired_id_rejection(self):
+        symbol='_ZN9quactlize7dequant16dense_dequant_q8ILb0EEEvPKtS3_Ptii'
+        native=dict(kernels={symbol:{}})
+        self.assertEqual(run.profile_entry(native,4,0,0),
+                         dict(symbol=symbol,grid=[64,64,1],block=[128,1,1]))
+        for v in (*range(24,38),39,40,42):
+            with self.assertRaises(ValueError):run.profile_entry(native,4,v,0)
+
     def test_partial_or_changed_results_are_not_reused(self):
         q,n,k = run.POINTS[2]
         proof = dict(bad=0, compared=n*k, guard='PASS', control_raw_bits_equal=True)
-        data = dict(status='PASS', point=2, q=q, n=n, k=k, scope=run.SCOPE,
+        data = dict(status='PASS', point=2, q=q, n=n, k=k, scope=run.SCOPE,experiment='PLANE_PAIR',
                     production_changed=False, performance_admitted=False, negative_bad=100,
                     traffic=dict(reads=3*67108864,writes=3*67108864), ring_copies=2, calls_per_graph=4,
                     samples_us={str(v): [10.0]*30 for v in run.VARIANTS},
