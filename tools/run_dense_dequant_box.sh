@@ -41,6 +41,7 @@ if [[ ${Q8_NATIVE:-0} == 1 ]]; then
     args+=(--native-library "${NATIVE_LIBRARY}")
 fi
 [[ -z ${POINTS:-} ]] || args+=(--points "${POINTS}")
+[[ -z ${Q8_SHAPES:-} ]] || args+=(--q8-shapes "${Q8_SHAPES}")
 if [[ -n ${RESUME_RUN:-} ]]; then
     RUN=$(realpath -e -- "${RESUME_RUN}")
     test -f "${RUN}/source/tools/run_dense_dequant.py"
@@ -48,7 +49,7 @@ if [[ -n ${RESUME_RUN:-} ]]; then
     args+=(--resume)
 else
     test -d "${OUTPUT_ROOT:-/workspace}"
-    REV=$(git -C "${ROOT}" rev-parse --verify HEAD)
+    REV=$(git -C "${ROOT}" rev-parse --verify "${SOURCE_REV:-HEAD}^{commit}")
     ACTLIZE_REV=$(git -C "${ROOT}" rev-parse "${REV}:third_party/actlize")
     [[ ${REV} =~ ^[0-9a-f]{40}$ && ${ACTLIZE_REV} =~ ^[0-9a-f]{40}$ ]] || exit 1
     if ! git -C "${ROOT}/third_party/actlize" cat-file -e "${ACTLIZE_REV}^{commit}"; then
@@ -76,5 +77,5 @@ set +e
 rc=${PIPESTATUS[0]}
 set -e
 echo "runner_rc=${rc} run=${RUN}"
-echo "DENSE_DEQUANT_RESUME RESUME_RUN=${RUN} GPU=${GPU} Q8_EXCHANGE=${Q8_EXCHANGE:-0} Q8_FAST_TAIL=${Q8_FAST_TAIL:-0} Q8_HALF2=${Q8_HALF2:-0} Q8_NATIVE=${Q8_NATIVE:-0} Q8_PAIRED=${Q8_PAIRED:-0} NATIVE_LIBRARY=${NATIVE_LIBRARY:-} PROFILE_ACU=${PROFILE_ACU:-0} IDLE_CONFIRMED=1 bash tools/run_dense_dequant_box.sh"
+echo "DENSE_DEQUANT_RESUME RESUME_RUN=${RUN} GPU=${GPU} Q8_SHAPES=${Q8_SHAPES:-} Q8_EXCHANGE=${Q8_EXCHANGE:-0} Q8_FAST_TAIL=${Q8_FAST_TAIL:-0} Q8_HALF2=${Q8_HALF2:-0} Q8_NATIVE=${Q8_NATIVE:-0} Q8_PAIRED=${Q8_PAIRED:-0} NATIVE_LIBRARY=${NATIVE_LIBRARY:-} PROFILE_ACU=${PROFILE_ACU:-0} IDLE_CONFIRMED=1 bash tools/run_dense_dequant_box.sh"
 exit "${rc}"

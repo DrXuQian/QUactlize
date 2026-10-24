@@ -143,3 +143,44 @@ bucket experiment remains testable but is not invoked by the inventory, sweep
 or export commands. Bucket rules and their validation will be decided after
 the user reviews the measurements. TP/model consumers remain attached to
 deduplicated local workloads; no collective cost is inferred.
+
+## Q8 TP-local refinement (after the TP supplement)
+
+The first TP-local review covered 65 Q8 points but only one SF mainloop. Use
+its compact review for a bounded geometry search, not another full inventory:
+
+```bash
+PPU_SDK=/usr/local/PPU_SDK \
+LLAMA_CI_DIR=/sim/eec/shared/junfu.qx/llama.cpp.ncp \
+LLAMA_CI_BUILD_DIR=/sim/eec/shared/junfu.qx/llama.cpp.ncp/build-ci-32F-cublas \
+L2_BYTES=67108864 \
+python3 -u tools/run_q8_tp_refine.py --review /path/to/previous-review.json.xz \
+  --gpus 1,2,3,4,5,7 --confirm-idle --run --profile-acu
+```
+
+Default output is a fresh `/workspace/kpack-q8-tp-refine.*`. Omit `--run` for
+host-only planning; no model, GPU or SDK is then loaded. To resume, repeat the
+same command with `--resume --output <printed directory>` on the same source,
+libraries and physical GPU assignment. `--phase sf` or `--phase dequant` can
+run the two stages separately. Do not overlap them on an assigned card.
+
+For the reviewed 65 points, there are 914 candidate calls (maximum 15 per point)
+and only 10 unique SF parents. The geometry rules cannot read a prior winner's
+timing. Separate controls retain the old whole-call/route winners, native
+F16/FP32 path, old SF with vector IO, and Full-F16 DQ38/DQ41. Split-K is bounded
+to underfilled grids; persistent grids use actual queried CUs/occupancy. No
+candidate is promoted without numerical and complete-call measurements.
+
+After the parallel Asys stage, one assigned GPU runs six isolated dequant
+families: five largest observed helper gaps and a comparison control. Native,
+previous winners and a small CTA-grain basis share equal input/output rings.
+Only the largest-gap and largest slow matrices get optional ACU captures.
+Each ACU target is one checked direct launch after warmup, without graph/cold
+ring loops. ACU cache state and rotating event timing are distinct evidence;
+neither replaces the Asys whole-call ranking. Q8 SF has native FP16 scales,
+so this diagnostic is **full weight dequant**, not a new SF scale prepass.
+
+Upload the final `review-*.tgz`: compact Asys review, helper JSON/CSV/logs and
+plan/authority only. Raw `.asysrep` and `.acurep` stay under the printed run
+directory. This command does not edit the production table/buckets, change
+arithmetic, measure MoE/collectives, or claim model latency/no-regression.

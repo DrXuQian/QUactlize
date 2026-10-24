@@ -135,6 +135,9 @@ def snapshot(plan):
 
 
 def load(document):
+    if document.get('schema') == 'quactlize.q8-tp-prefill-refine.v1':
+        from .q8_refine import validate as validate_refinement
+        return validate_refinement(document)
     if document.get('schema') == 'quactlize.dense-tp-supplement.v1':
         from .supplement import validate as validate_supplement
         return validate_supplement(document)
