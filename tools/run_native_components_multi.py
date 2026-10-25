@@ -16,8 +16,8 @@ from dev.strategy.journal import atomic_json
 from quactlize.runtime.tuning import digest
 
 
-def worker_failure(output, returncode):
-    log=output/'console.log'
+def worker_failure(output, returncode, *, log=None):
+    log=Path(log) if log is not None else output/'console.log'
     lines=[]
     if log.is_file():
         with log.open('rb')as stream:

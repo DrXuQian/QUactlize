@@ -62,6 +62,21 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(buckets,{})
         self.assertTrue(all('bucket' not in row for row in exact.values()))
 
+    def test_quactlize_only_ranks_against_incumbent_without_native_claim(self):
+        key,point=self.point(5120,dict(a=10,b=12))
+        point['measurements']=point['measurements'][:-1]
+        point['native_comparison']=False
+        point['measurements'][1]['roles']=['model-config']
+        exact,buckets=tables({key:point})
+        self.assertEqual(exact[key]['candidate'],'a')
+        self.assertEqual(exact[key]['incumbent_us'],12)
+        self.assertAlmostEqual(exact[key]['incumbent_delta_pct'],-100/6)
+        self.assertIsNone(exact[key]['native_us']);self.assertIsNone(exact[key]['delta_pct'])
+        self.assertFalse(exact[key]['native_comparison']);self.assertEqual(buckets,{})
+        point['native_comparison']=True
+        self.assertEqual(tables({key:point})[0][key]['status'],'REMEASURE_REQUIRED')
+
+
 
 class IngestTests(unittest.TestCase):
     def setUp(self):
@@ -129,6 +144,22 @@ class IngestTests(unittest.TestCase):
             self.assertEqual(point['resource_unavailable'],rejected)
             self.assertEqual(point['table_coverage'],'MISS')
             self.assertEqual(point['proposal_compute_units'],72)
+
+    def test_explicit_quactlize_only_ingest_does_not_demand_native_receipt(self):
+        root,key,path=self.fixture()
+        plan=json.loads((root/'execution-plan.json').read_text())
+        plan['points'][0]['native_comparison']=False
+        (root/'execution-plan.json').write_text(json.dumps(plan))
+        data=json.loads(path.read_text());proof=json.loads(Path(data['cases_path']).read_text())
+        Path(data['cases_path']).write_text(json.dumps(proof[1:]))
+        data['seal']['cases']=data['seal']['cases'][1:]
+        data['parsed']['cases']=data['parsed']['cases'][1:]
+        data['cases_sha256']=sha(data['cases_path'])
+        data['record_sha256']=digest({k:v for k,v in data.items() if k!='record_sha256'})
+        path.write_text(json.dumps(data))
+        value=ingest(root)
+        self.assertFalse(value['incomplete']);self.assertFalse(value['points'][key]['native_comparison'])
+        self.assertEqual(len(value['points'][key]['measurements']),1)
 
     def paired(self, *, drift=False):
         root,key,path=self.fixture()

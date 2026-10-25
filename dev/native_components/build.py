@@ -17,6 +17,9 @@ from dev.strategy.journal import atomic_json
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
+NATIVE_ONLY_BEGIN = ('// Keep header ABI flags; exclude optional K-pack hooks from the raw-GGUF dispatcher.\n'
+                     '#pragma push_macro("GGML_NCP_QUACTLIZE")\n#undef GGML_NCP_QUACTLIZE\n')
+NATIVE_ONLY_END = '#pragma pop_macro("GGML_NCP_QUACTLIZE")\n'
 
 
 def response_files(flags, workdir):
@@ -121,9 +124,13 @@ def adapter_source(llama):
     dispatch = between(text, 'static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx,',
                        'static bool ggml_cuda_compute_forward(')
     adapted, providers = wrap_providers(blas)
-    result = headers+'\n#include "record.hpp"\n'+adapted+dispatch+'\n#include "bridge.cuh"\n'
+    result = (headers+'\n#include "record.hpp"\n'+NATIVE_ONLY_BEGIN+adapted+dispatch+
+              '\n'+NATIVE_ONLY_END+'#include "bridge.cuh"\n')
     return result, dict(native_dispatch_sha256=digest(dispatch), native_provider_source_sha256=digest(blas),
                         provider_sites=providers, source_file=str(source), source_sha256=sha(source),
+                        native_extension_isolation=dict(macro='GGML_NCP_QUACTLIZE',
+                            scope='DISPATCH_BODY_ONLY_HEADERS_AND_BACKEND_UNCHANGED',
+                            weights='ORDINARY_CUDA_BUFFER_ONLY'),
                         arithmetic_changed=False, selector_changed=False, llama_tree_modified=False)
 
 

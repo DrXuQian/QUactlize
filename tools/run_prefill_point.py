@@ -69,9 +69,11 @@ def build(args):
     target = args.output/'build'
     target.mkdir()
     reuse = getattr(args, 'reuse_build', None)
-    print('PREFILL_POINT_BUILD '+('profile host wrappers only; device_payload=REUSED' if reuse else
-          'native adapter + one SF parent + dequant/helpers')+'; llama_rebuild=0', flush=True)
-    adapter, binary, receipt = build_native(args, target/'native', environment(args))
+    native_reference=not getattr(args,'no_native',False)
+    print('PREFILL_POINT_BUILD '+('native adapter' if native_reference else 'QUACTLIZE_ONLY native_adapter=SKIPPED')+
+          ('; device_payload=REUSED' if reuse else '; dequant/helpers')+'; llama_rebuild=0',flush=True)
+    if native_reference:
+        adapter, binary, receipt = build_native(args, target/'native', environment(args))
     if not reuse:
         helpers(args.sdk, target/'helpers')
         dequant(args.sdk, target/'dequant')
@@ -84,9 +86,10 @@ def build(args):
         '-L'+str(args.sdk/'targets/x86_64-linux/lib'),
         '-lhggc_wrapper', '-lhggcrt1', '-lhggc', '-o', str(target/'libpoint-timer.so')]
     run_commands([command], ROOT, target/'point-timer.log', env=environment(args), stages=['point timer'])
-    data = dict(adapter=str(adapter), adapter_receipt=receipt, carrier=str(binary),
-        carrier_sha256=sha(binary), timer_sha256=sha(target/'libpoint-timer.so'),
+    data = dict(native_reference=native_reference,timer_sha256=sha(target/'libpoint-timer.so'),
         timer_source_sha256=sha(source), timer_command=command)
+    if native_reference:
+        data.update(adapter=str(adapter),adapter_receipt=receipt,carrier=str(binary),carrier_sha256=sha(binary))
     atomic_json(target/'receipt.json', data)
     return data
 

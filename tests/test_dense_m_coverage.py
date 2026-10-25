@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import os
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -124,6 +125,28 @@ def test_span_captures_bound_processes_and_keep_both_directions(span):
         reverse=[c['id'] for cases,direction in jobs[1:-1] if direction==1 for c in cases]
         assert forward==[c['id'] for c in point['cases']] and reverse==list(reversed(forward))
     assert captures==span['counts']['captures']
+
+
+def test_quactlize_only_plan_needs_no_llama_and_keeps_every_config(span,tmp_path):
+    from dev.prefill_asys.finalists import counts
+    from tools.run_prefill_cohort_multi import worker_environment
+    path=tmp_path/'span.json';path.write_text(json.dumps(span));output=tmp_path/'run'
+    subprocess.run([sys.executable,str(ROOT/'tools/run_prefill_model_asys.py'),
+        '--finalist-plan',str(path),'--output',str(output),'--plan-only','--no-native',
+        '--llama-source','/missing-llama','--llama-build','/missing-build','--sdk','/missing-sdk',
+        '--shard','0','--shards','4'],check=True,capture_output=True,text=True)
+    value=json.loads((output/'plan.json').read_text())
+    original={p['id']:p for p in span['points']}
+    assert value['native_comparison'] is False and not (output/'build').exists()
+    assert value['counts']==counts(value['points'])
+    for point in value['points']:
+        assert digest(point['cases'])==digest(original[point['id']]['cases'])
+        assert not point['native_comparison']
+        jobs=confirmation_jobs(point)
+        assert all(c['arm']!='native-fp16' for cases,_ in jobs for c in cases)
+        assert sum(len(cases) for cases,_ in jobs)==2*len(point['cases'])
+    env=worker_environment(tmp_path,'8',3,4,'source',finalists=True,no_native=True)
+    assert env['NATIVE_REFERENCE']=='0' and env['GPU']=='8'
 
 
 def test_legacy_native_core_times_shipping_casts_in_order():

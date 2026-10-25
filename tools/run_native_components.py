@@ -123,8 +123,8 @@ def environment(args):
     env.update(GGML_CUDA_DISABLE_GRAPHS='1',GGML_QUACTLIZE_DENSE='0',GGML_CUDA_PDL='0',
         PPU_SDK=str(args.sdk),CUDA_HOME=str(args.sdk/'CUDA_SDK'),
         OMP_NUM_THREADS='1',OPENBLAS_NUM_THREADS='1',MKL_NUM_THREADS='1')
-    folders=[args.llama_build/'bin',args.sdk/'lib',args.sdk/'targets/x86_64-linux/lib',
-             args.sdk/'CUDA_SDK/targets/x86_64-linux/lib']
+    folders=([] if getattr(args,'no_native',False) else [args.llama_build/'bin'])+[
+             args.sdk/'lib',args.sdk/'targets/x86_64-linux/lib',args.sdk/'CUDA_SDK/targets/x86_64-linux/lib']
     env['LD_LIBRARY_PATH']=':'.join(map(str,folders))+':'+env.get('LD_LIBRARY_PATH','')
     return env
 

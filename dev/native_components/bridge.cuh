@@ -2,6 +2,15 @@
 // Kernels/heuristics are not rewritten. The linked backend owns their code.
 namespace nc {
 inline void dispatch(ggml_backend_cuda_context & ctx, ggml_tensor * out) {
+    const auto native=ggml_backend_cuda_buffer_type(ctx.device);
+    bool bound=false;
+    for (const ggml_tensor * w=out?out->src[0]:nullptr;w;w=w->view_src) {
+        if (!w->buffer) continue;
+        if (ggml_backend_buffer_get_type(w->buffer)!=native)
+            throw std::runtime_error("native adapter requires ordinary CUDA weights, including view roots");
+        bound=true;
+    }
+    if (!bound) throw std::runtime_error("native adapter weight has no CUDA buffer");
     ggml_cuda_set_device(ctx.device);
     if (out->op==GGML_OP_MUL_MAT) ggml_cuda_mul_mat(ctx,out->src[0],out->src[1],out);
     else if (out->op==GGML_OP_MUL_MAT_ID) ggml_cuda_mul_mat_id(ctx,out);

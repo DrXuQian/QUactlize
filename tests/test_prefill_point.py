@@ -16,6 +16,24 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PrefillPointTests(unittest.TestCase):
+    def test_quactlize_only_build_does_not_access_llama_or_build_native_adapter(self):
+        from tools.run_prefill_point import build
+        with tempfile.TemporaryDirectory() as td:
+            output=Path(td)
+            # No llama_source/build fields: they must not be required here.
+            args=SimpleNamespace(output=output,sdk=output/'sdk',no_native=True)
+            def command(commands,*_args,**_kwargs):
+                (output/'build/libpoint-timer.so').write_bytes(b'HOST TEST TIMER')
+            with patch('dev.prefill_point.build.build_native',side_effect=AssertionError('native called'))as native,\
+                 patch('dev.strategy.prefill_build.build')as helpers,\
+                 patch('tools.build_kpack_dequant.build')as dequant,\
+                 patch('dev.native_components.build.run_commands',side_effect=command):
+                receipt=build(args)
+            native.assert_not_called();helpers.assert_called_once();dequant.assert_called_once()
+            self.assertFalse(receipt['native_reference'])
+            self.assertNotIn('carrier',receipt);self.assertNotIn('adapter',receipt)
+            self.assertFalse((output/'build/native').exists())
+
     def rows(self):
         return [dict(round=r, rotate=rotate, mode=mode, stage=stage,
                      width=4 if mode == 1 else 1,

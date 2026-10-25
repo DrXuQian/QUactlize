@@ -1,5 +1,6 @@
 """CMake cwd/options-file regression tests; no synthetic GPU admission."""
 import json
+import ctypes as C
 import os
 from pathlib import Path
 import subprocess
@@ -9,10 +10,126 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from dev.native_components.build import build_adapter, native_flags, response_files, run_commands
+from dev.native_components.build import (adapter_source, build_adapter, native_flags, response_files,
+                                        run_commands, NATIVE_ONLY_BEGIN, NATIVE_ONLY_END, HERE)
 from quactlize.runtime.compiler import sha
 from tools.run_native_components_multi import worker_failure
 from tools.run_native_components import carrier, environment
+
+
+class NativeIsolationTest(unittest.TestCase):
+    def test_real_host_link_excludes_hooks_but_keeps_header_abi_and_native_buffers(self):
+        # The same link failure without a GPU SDK. The optional hook has no
+        # definition: do not make a successful link depend on a permissive stub.
+        native = r'''
+#include <stdexcept>
+#define __global__
+using half=short;
+struct Buffer { void * type; };
+struct ggml_tensor { Buffer * buffer=nullptr; ggml_tensor * view_src=nullptr;
+    ggml_tensor * src[3]={}; int op=1; };
+struct ggml_backend_cuda_context { int device;
+#ifdef GGML_NCP_QUACTLIZE
+    int extension_header_abi;
+#endif
+};
+constexpr int GGML_OP_MUL_MAT=1,GGML_OP_MUL_MAT_ID=2;
+static int native_calls=0;
+static int native_types[2];
+void * ggml_backend_cuda_buffer_type(int d) { return &native_types[d]; }
+void * ggml_backend_buffer_get_type(Buffer * b) { return b->type; }
+void ggml_cuda_set_device(int) {}
+int cudaGetLastError() { return 0; }
+bool ggml_quactlize_is_alias(const ggml_tensor *);
+void ggml_quactlize_mul_mat(ggml_backend_cuda_context &,ggml_tensor *);
+int cublasSgemm(int) { return 0; }
+int cublasGemmEx(int) { return 0; }
+int cublasGemmStridedBatchedEx(int) { return 0; }
+int cublasGemmBatchedEx(int) { return 0; }
+static_assert(sizeof(half)==2);
+static __global__ void k_compute_batched_ptrs() {}
+static float af(float alpha) { static const float val = alpha; return val; }
+static float bf(float beta) { static const float val = beta; return val; }
+static half ah(half alpha) { static const half val = alpha; return val; }
+static half bh(half beta) { static const half val = beta; return val; }
+static void provider_sites() {
+    int main_stream=0;
+    cublasSgemm(0); cublasGemmEx(0); cublasGemmStridedBatchedEx(0); cublasGemmBatchedEx(0);
+}
+static bool ggml_cuda_should_fuse_mul_mat() { return false; }
+static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx,
+        const ggml_tensor * src0,const ggml_tensor *,ggml_tensor * dst) {
+#ifdef GGML_NCP_QUACTLIZE
+    if (ggml_quactlize_is_alias(src0)) { ggml_quactlize_mul_mat(ctx,dst); return; }
+#endif
+    ++native_calls;
+}
+static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx,ggml_tensor * dst) {
+    ggml_cuda_mul_mat(ctx,dst->src[0],dst->src[1],dst);
+}
+static bool ggml_cuda_compute_forward() { return false; }
+'''
+        for enabled in (False,True):
+            with self.subTest(extension=enabled),tempfile.TemporaryDirectory()as td:
+                root=Path(td);llama=root/'llama';directory=llama/'ggml/src/ggml-cuda'
+                directory.mkdir(parents=True);(directory/'ggml-cuda.cu').write_text(native)
+                (root/'record.hpp').write_text('namespace nc {\n'
+                    'template<class F,class... A> int provider(const char*,int,F f,A... a) { return f(a...); }\n'
+                    'inline void check(int,const char*) {}\n}\n')
+                # Compile the shipping adapter guard, not a Python simulation.
+                guard=(HERE/'bridge.cuh').read_text().split('struct Session {',1)[0]+'}\n'
+                (root/'bridge.cuh').write_text(guard+r'''
+extern "C" int header_abi() { return sizeof(ggml_backend_cuda_context); }
+extern "C" int restored_macro() {
+#ifdef GGML_NCP_QUACTLIZE
+    return 1;
+#else
+    return 0;
+#endif
+}
+extern "C" int exercise(int indexed,int bad) {
+    ggml_backend_cuda_context ctx{};
+    int foreign=0; Buffer plain{ggml_backend_cuda_buffer_type(0)},packed{&foreign};
+    Buffer other{ggml_backend_cuda_buffer_type(1)};
+    ggml_tensor weight{},view{},out{};weight.buffer=&plain;
+    out.op=indexed?GGML_OP_MUL_MAT_ID:GGML_OP_MUL_MAT;out.src[0]=&weight;
+    if (bad==1) { view.view_src=&weight;out.src[0]=&view; }
+    if (bad==2) weight.buffer=&packed;
+    if (bad==3) { weight.buffer=&packed;view.buffer=&plain;view.view_src=&weight;out.src[0]=&view; }
+    if (bad==4) { view.buffer=&packed;view.view_src=&weight;out.src[0]=&view; }
+    if (bad==5) weight.buffer=nullptr;
+    if (bad==6) weight.buffer=&other;
+    const int before=native_calls;
+    try { nc::dispatch(ctx,bad==7?nullptr:&out); }
+    catch (const std::runtime_error &) { return native_calls==before?-1:-2; }
+    return native_calls-before;
+}
+''')
+                generated,binding=adapter_source(llama)
+                self.assertEqual(binding['native_extension_isolation']['weights'],'ORDINARY_CUDA_BUFFER_ONLY')
+                self.assertIn(native.split('static void ggml_cuda_mul_mat(',1)[1].split(
+                    'static bool ggml_cuda_compute_forward(',1)[0],generated)
+                src=root/'adapter.cpp';lib=root/'adapter.so'
+                command=['g++','-std=c++17','-O1','-fPIC','-shared','-Wl,--no-undefined',
+                         '-I'+str(root),str(src),'-o',str(lib)]
+                if enabled:command.insert(1,'-DGGML_NCP_QUACTLIZE')
+                if enabled:
+                    src.write_text(generated.replace(NATIVE_ONLY_BEGIN,'').replace(NATIVE_ONLY_END,''))
+                    old=subprocess.run(command,capture_output=True,text=True)
+                    self.assertNotEqual(old.returncode,0)
+                    self.assertIn('undefined reference',old.stderr)
+                    self.assertIn('ggml_quactlize_is_alias',old.stderr)
+                src.write_text(generated)
+                linked=subprocess.run(command,capture_output=True,text=True)
+                self.assertEqual(linked.returncode,0,linked.stdout+linked.stderr)
+                symbols=subprocess.check_output(['nm','-u','-C',str(lib)],text=True)
+                self.assertNotIn('ggml_quactlize_',symbols)
+                api=C.CDLL(str(lib));api.exercise.argtypes=[C.c_int,C.c_int]
+                self.assertEqual(api.header_abi(),8 if enabled else 4)
+                self.assertEqual(api.restored_macro(),int(enabled))
+                for indexed in (0,1):
+                    for bad in range(8):
+                        self.assertEqual(api.exercise(indexed,bad),1 if bad<2 else -1)
 
 
 class NativeBuildTest(unittest.TestCase):
@@ -178,6 +295,15 @@ class NativeBuildTest(unittest.TestCase):
             self.assertEqual(result['returncode'],1)
             missing=worker_failure(root/'absent',1)
             self.assertEqual(missing['diagnostic'],'')
+
+    def test_prefill_coordinator_uses_its_exact_timestamped_log(self):
+        with tempfile.TemporaryDirectory()as td:
+            root=Path(td);log=root/'console-123.log'
+            log.write_text("undefined reference to `ggml_quactlize_is_alias(ggml_tensor const*)'\n")
+            from tools.run_prefill_cohort_multi import worker_failure as prefill_failure
+            failure=prefill_failure(root,1,log=log)
+            self.assertEqual(failure['log'],str(log))
+            self.assertIn('ggml_quactlize_is_alias',failure['diagnostic'])
 
     def test_carrier_compile_and_link_errors_reach_worker_summary(self):
         for message in ('fatal error: ggml.h: No such file or directory',

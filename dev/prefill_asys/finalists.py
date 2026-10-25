@@ -120,8 +120,9 @@ def make_plan(review, helpers, *, noise_pct=5.0):
 def counts(points):
     return dict(points=len(points),families=len({(p['workload']['qtype'],p['workload']['n'],
         p['workload']['k']) for p in points}),configs=sum(len(p['cases']) for p in points),
-        captures=sum(2+2*math.ceil(len(p['cases'])/p.get('capture_batch_limit',len(p['cases'])))
-                     for p in points),timed_arms=2*sum(len(p['cases'])+1 for p in points),
+        captures=sum(2*int(p.get('native_comparison',True))+
+                     2*math.ceil(len(p['cases'])/p.get('capture_batch_limit',len(p['cases'])))
+                     for p in points),timed_arms=2*sum(len(p['cases'])+int(p.get('native_comparison',True)) for p in points),
         **inventory(dict(points=points))['counts'])
 
 

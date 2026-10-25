@@ -98,6 +98,7 @@ def worker(a):
     # Native carrier reads this copy, but all authority fields remain exact.
     atomic_json(a.output/'authority.json',authority)
     if job['cases'][0]['arm'] == 'native-fp16':
+        if a.no_native:raise ValueError('native arm is forbidden in a Quactlize-only run')
         value = native(a,read(root/'build/receipt.json'))
         value['case_id'] = 'native-fp16'
         atomic_json(a.output/'cases.json',[value])
@@ -182,6 +183,7 @@ def profile_batch(a, point, cases, authority, env, confirmation=0):
         '--llama-build',str(a.llama_build),'--device',a.device,'--cache',str(a.cache),
         '--l2-bytes',str(a.l2_bytes)]
     if a.reuse_build: argv += ['--reuse-build',str(a.reuse_build)]
+    if a.no_native: argv.append('--no-native')
     execute(profile_command(a.asys,attempt/'trace',argv),attempt/'profile.log',env)
     report, db = attempt/'trace.asysrep',attempt/'trace.sqlite'
     if not report.is_file(): raise ValueError('Asys report missing: '+str(report))
@@ -210,10 +212,11 @@ def confirmation_jobs(point):
     if not cases or type(limit)is not int or limit<1:
         raise ValueError('invalid paired capture inventory/batch limit')
     native_case=[dict(id='native-fp16',arm='native-fp16')]
-    jobs=[(native_case,0)]
+    native=point.get('native_comparison',True)
+    jobs=[(native_case,0)] if native else []
     for confirmation,ordered in enumerate((cases,list(reversed(cases)))):
         jobs.extend((ordered[i:i+limit],confirmation) for i in range(0,len(ordered),limit))
-    return jobs+[(native_case,1)]
+    return jobs+([(native_case,1)] if native else [])
 
 
 def confirmed_capture(previous, current):
@@ -241,12 +244,14 @@ def summarize(points, measurements):
         native_row = found.get('native-fp16')
         eligible = [r for key,r in found.items() if key != 'native-fp16']
         pool = {c['id']:c for c in point['cases']}
-        complete = set(found) == set(pool) | {'native-fp16'}
+        native_required=point.get('native_comparison',True)
+        complete = set(found) == set(pool) | ({'native-fp16'} if native_required else set())
         if point.get('confirmation_captures'):
             complete &= all(len(r.get('confirmation_samples',[]))==point['confirmation_captures']
                             and not r.get('confirmation_issue') for r in found.values())
         winner = min(eligible,key=lambda r:r['gpu_sum_us']) if eligible else None
         controls = [found[k] for k,c in pool.items() if 'model-config' in c['roles'] and k in found]
+        incumbent=min((r['gpu_sum_us'] for r in controls),default=None)
         same_dtype = [r for r in eligible if pool[r['case_id']].get('arm') in ('sf','fq','full-fp16')
                       and pool[r['case_id']].get('helper_mode') in ('production','cohort-current','experimental')]
         f16 = min(same_dtype,key=lambda r:r['gpu_sum_us']) if same_dtype else None
@@ -254,7 +259,9 @@ def summarize(points, measurements):
         result.append(dict(id=point['id'],workload=point['workload'],
             pp_calls=point.get('call_count',len(point['tensors'])),
             bucket=point.get('bucket'),consumers=point.get('consumers'),
-            status='SCREEN_COMPLETE' if complete else 'INCOMPLETE',measured=len(found),expected=len(pool)+1,
+            status='SCREEN_COMPLETE' if complete else 'INCOMPLETE',measured=len(found),expected=len(pool)+int(native_required),
+            native_comparison=native_required,incumbent_us=incumbent,
+            incumbent_delta_pct=100*(winner['gpu_sum_us']/incumbent-1) if winner and incumbent else None,
             native_us=native_row['gpu_sum_us'] if native_row else None,
             native_phases=native_row['phases_us'] if native_row else None,
             best_us=winner['gpu_sum_us'] if winner else None,
@@ -270,10 +277,13 @@ def summarize(points, measurements):
             model_config_us=[r['gpu_sum_us'] for r in controls],
             model_config_phases=[r['phases_us'] for r in controls],
             delta_pct=100*(winner['gpu_sum_us']/native_row['gpu_sum_us']-1) if winner and native_row else None))
+    native_comparison=any(p.get('native_comparison',True) for p in points)
     return dict(status='SCREEN_COMPLETE' if all(r['status']=='SCREEN_COMPLETE' for r in result) else 'INCOMPLETE',
         points=result,production_changed=False,performance_admitted=False,no_regression_admitted=False,
+        native_comparison=native_comparison,
         timing='ASYS_GPU_ACTIVITY_SUM',warmup_excluded=True,
-        scope='FIXED_MODEL_M_CONFIG_SCREEN; PAIRED_FINALISTS_AND_MODEL_REPLAY_REQUIRED',
+        scope=('FIXED_MODEL_M_CONFIG_SCREEN; PAIRED_FINALISTS_AND_MODEL_REPLAY_REQUIRED' if native_comparison else
+               'QUACTLIZE_CONFIGS_VS_INCUMBENT_NOT_NATIVE_AB'),
         caveat='Use same_dtype fields for native F16/FP32 comparison; Full BF16 is separately labelled')
 
 
@@ -354,6 +364,7 @@ def main():
     p.add_argument('--configs-per-batch',type=int,default=16)
     p.add_argument('--jobs',type=int,default=8)
     p.add_argument('--confirm-idle',action='store_true')
+    p.add_argument('--no-native',action='store_true',help='M-span config selection only; do not build or run llama reference')
     p.add_argument('--plan-only',action='store_true')
     p.add_argument('--resume',action='store_true')
     p.add_argument('--worker',action='store_true',help=argparse.SUPPRESS)
@@ -387,6 +398,8 @@ def main():
     if a.finalist_plan:
         from dev.prefill_asys.finalists import load as validate_finalists
         finalists=validate_finalists(read(a.finalist_plan))
+        if a.no_native and finalists['schema']!='quactlize.dense-m-span.v1':
+            p.error('--no-native currently requires the dense M-span plan with incumbent controls')
         if finalists['inputs']['helper_policy_sha256']!=digest(read(ROOT/'policies/dense_full_helpers_20261023.json')):
             raise ValueError('finalist current-helper policy changed; regenerate the plan')
         identity=dict(finalist_plan_sha256=finalists['sha256'],shard=a.shard,shards=a.shards,
@@ -405,6 +418,9 @@ def main():
         a.model=a.model.resolve(strict=True)
         with a.model.open('rb') as stream: header=read_gguf_header(stream,str(a.model))
         identity=dict(path=str(a.model),bytes=a.model.stat().st_size,header=header)
+    if a.no_native:
+        if not a.finalist_plan:p.error('--no-native requires --finalist-plan')
+        identity['native_reference']=False
     plan_path=a.output/'plan.json'
     if plan_path.exists():
         plan=read(plan_path)
@@ -444,10 +460,16 @@ def main():
             if not plan['points']: raise ValueError('empty shard; reduce shard count')
         else:
             plan=freeze(header,a.output)
+        if a.no_native:
+            plan['points']=[dict(point,native_comparison=False) for point in plan['points']]
+            plan['counts']=finalist_counts(plan['points'])
+            plan['native_comparison']=False
+            plan['comparison']='QUACTLIZE_CONFIGS_VS_INCUMBENT_NOT_NATIVE_AB'
         plan.update(model_identity=identity,harness=source_seal(),source_identity=source_identity(ROOT))
         plan['plan_sha256']=digest({k:v for k,v in plan.items() if k!='plan_sha256'})
         atomic_json(plan_path,plan)
-    print('PREFILL_ASYS_PLAN '+json.dumps(plan['counts']|dict(configs_after_resources='PENDING',production_changed=False)),flush=True)
+    print('PREFILL_ASYS_PLAN '+json.dumps(plan['counts']|dict(configs_after_resources='PENDING',
+        native_reference=not a.no_native,production_changed=False)),flush=True)
     if any(point.get('capture_batch_limit',a.configs_per_batch)!=a.configs_per_batch for point in plan['points']):
         p.error('--configs-per-batch differs from the frozen M-span capture limit')
     if a.plan_only: return 0
@@ -479,9 +501,13 @@ def main():
                 if failed.is_symlink() or not failed.is_dir():raise ValueError('unexpected dense build path')
                 failed.rename(a.output/'build'/('dense-failed-'+str(time.time_ns())))
             build_dense(a.sdk,a.output/'build/dense',a.jobs)
-        for key,path in [('carrier_sha256',Path(receipt['carrier'])),('timer_sha256',a.output/'build/libpoint-timer.so')]:
+        if receipt.get('native_reference',True)!=(not a.no_native):
+            raise ValueError('build receipt reference mode differs')
+        images=[('timer_sha256',a.output/'build/libpoint-timer.so')]
+        if not a.no_native:images.append(('carrier_sha256',Path(receipt['carrier'])))
+        for key,path in images:
             if sha(path)!=receipt[key]:raise ValueError('diagnostic executable changed')
-        validate_native(receipt,a)
+        if not a.no_native:validate_native(receipt,a)
         payload=validate_payload(a)
         if any(c.get('helper_options',{}).get('vector_io')==4 for p in plan['points'] for c in p.get('cases',[])):
             # A fresh process, outside profiling/timing; exact built helper ABI
@@ -523,7 +549,7 @@ def main():
                     point['queries']=queries;point['cases']=runnable(point);point.pop('queries')
         atomic_json(a.output/'modules.json',modules)
         atomic_json(a.output/'execution-plan.json',dict(points=points,authority=digest(authority)))
-        total=sum((len(p['cases'])+1)*p.get('confirmation_captures',1) for p in points)
+        total=sum((len(p['cases'])+int(p.get('native_comparison',True)))*p.get('confirmation_captures',1) for p in points)
         print(f'PREFILL_ASYS_READY shapes={len(points)} configs={total} production_changed=0',flush=True)
         lock_path=Path('/tmp')/('quactlize-components-'+digest(pci)[:24]+'.lock')
         with lock_path.open('a') as held:

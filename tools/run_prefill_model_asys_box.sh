@@ -8,6 +8,9 @@ GPU=${GPU:-1}
 [[ ${GPU} =~ ^[0-9]+$ ]] || { echo 'ERROR: one GPU ordinal required.' >&2; exit 1; }
 [[ -z ${RUN:-} ]] || { echo 'ERROR: unset RUN; use RESUME_RUN for an existing frozen sweep.' >&2; exit 1; }
 args=()
+NATIVE_REFERENCE=${NATIVE_REFERENCE:-1}
+[[ ${NATIVE_REFERENCE} == 0 || ${NATIVE_REFERENCE} == 1 ]] || { echo 'ERROR: NATIVE_REFERENCE must be 0 or 1.' >&2; exit 1; }
+[[ ${NATIVE_REFERENCE} != 0 ]] || args+=(--no-native)
 if [[ -n ${FINALIST_PLAN:-} ]]; then
     [[ -z ${COHORT:-} && -z ${MODEL:-} ]] || { echo 'ERROR: FINALIST_PLAN cannot mix with COHORT/MODEL.' >&2; exit 1; }
     FINALIST_PLAN=$(realpath -e -- "${FINALIST_PLAN}")
@@ -31,12 +34,15 @@ else
         echo 'ERROR: confirm this physical GPU is idle, then set IDLE_CONFIRMED=1.' >&2; exit 1;
     }
     PPU_SDK=$(realpath -e -- "${PPU_SDK:-/usr/local/PPU_SDK}")
-    LLAMA_CI_DIR=$(realpath -e -- "${LLAMA_CI_DIR:-/sim/eec/shared/junfu.qx/llama.cpp.ncp}")
-    LLAMA_CI_BUILD_DIR=$(realpath -e -- "${LLAMA_CI_BUILD_DIR:-${LLAMA_CI_DIR}/build-ci-32F-cublas}")
     test -x "${PPU_SDK}/bin/hgcc"
     test -x "${PPU_SDK}/asight/bin/asys"
-    test -f "${LLAMA_CI_BUILD_DIR}/bin/libggml-cuda.so"
-    args+=(--confirm-idle --sdk "${PPU_SDK}" --llama-source "${LLAMA_CI_DIR}" --llama-build "${LLAMA_CI_BUILD_DIR}")
+    args+=(--confirm-idle --sdk "${PPU_SDK}")
+    if [[ ${NATIVE_REFERENCE} == 1 ]]; then
+        LLAMA_CI_DIR=$(realpath -e -- "${LLAMA_CI_DIR:-/sim/eec/shared/junfu.qx/llama.cpp.ncp}")
+        LLAMA_CI_BUILD_DIR=$(realpath -e -- "${LLAMA_CI_BUILD_DIR:-${LLAMA_CI_DIR}/build-ci-32F-cublas}")
+        test -f "${LLAMA_CI_BUILD_DIR}/bin/libggml-cuda.so"
+        args+=(--llama-source "${LLAMA_CI_DIR}" --llama-build "${LLAMA_CI_BUILD_DIR}")
+    fi
     [[ -z ${PPU_SMI:-} ]] || args+=(--smi "${PPU_SMI}")
     export PATH="${PPU_SDK}/bin:${PATH}"
     export LD_LIBRARY_PATH="${PPU_SDK}/lib:${PPU_SDK}/targets/x86_64-linux/lib:${PPU_SDK}/CUDA_SDK/targets/x86_64-linux/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
@@ -74,7 +80,7 @@ if [[ -n ${PREVIOUS_RUN:-} ]]; then
     fi
 fi
 [[ -z ${TC_CACHE:-} ]] || args+=(--cache "${TC_CACHE}")
-echo "PREFILL_ASYS_BOX run=${RUN} gpu=${GPU} cohort=${FINALIST_PLAN:-${COHORT:-QWEN3_32B_PP2048}} shard=${SHARD:-0}/${SHARDS:-1} jobs=${JOBS:-8} configs_per_batch=${CONFIGS_PER_BATCH:-16} clock_MHz=1700 actual_clock=ADVISORY native_accumulator=FP32"
+echo "PREFILL_ASYS_BOX run=${RUN} gpu=${GPU} cohort=${FINALIST_PLAN:-${COHORT:-QWEN3_32B_PP2048}} shard=${SHARD:-0}/${SHARDS:-1} jobs=${JOBS:-8} configs_per_batch=${CONFIGS_PER_BATCH:-16} clock_MHz=1700 actual_clock=ADVISORY native_reference=${NATIVE_REFERENCE} accumulator=FP32"
 set +e
 "${PYTHON}" -u "${RUN}/source/tools/run_prefill_model_asys.py" \
     --output "${RUN}/results" --device "${GPU}" \

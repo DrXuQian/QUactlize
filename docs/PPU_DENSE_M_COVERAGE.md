@@ -10,7 +10,7 @@ communication or add MoE measurements.
 | Run | Scope | Planned work |
 | --- | --- | --- |
 | `dense-m-gaps` | M1–8, missing exact keys | 243 points, 5064 arms, at most 27/point; 29 TC and 28 vector modules |
-| `plan_dense_m_span.py` | M128,256,512,1024,2048,3072,4096,5120,8192 | 405 points, 9412 configs; 55 TC modules; 2442 Asys captures before resource filtering |
+| `plan_dense_m_span.py` + `--no-native` | M128,256,512,1024,2048,3072,4096,5120,8192 | 405 points, 9412 configs; 55 TC modules; 1632 Asys captures before resource filtering |
 
 The small-M denominator is 360 keys: 117 have existing exact selections and
 are retained, not relabelled as newly measured. A bucket prediction does not
@@ -41,7 +41,17 @@ CU count. An unsupported optional candidate remains a resource rejection in
 the compact review, not a measured loser. Missing/unavailable required
 controls fail rather than silently changing the comparison.
 
-Native large-M uses the existing llama carrier: F32 storage, F16 operands and
+The recommended M-span run uses `--no-native`: compare Quactlize configurations
+with the current/old selector without building or loading a llama adapter.
+No llama source, build directory or model file is required. Same-N/K/format
+dequant comparisons need not be repeated for each M. This run still records
+each current helper/main/reducer activity; it does not substitute historical
+component times. Native time/delta remain null and native no-regression is
+not claimed. The base plan retains optional native inventory; the execution
+plan records its explicit omission and the reduced capture count.
+
+If explicitly enabled (omit `--no-native`), native large-M uses the existing
+llama carrier: F32 storage, F16 operands and
 verified FP32 cuBLAS accumulation. Candidate F16 routes use the same precision
 contract. An old Full-BF16 control stays separately labelled. Each run checks
 numerics before timing; first warmup/JIT/weight-ring passes are excluded.
@@ -52,11 +62,11 @@ does not discard a whole shape's preceding batches.
 
 ## Box commands
 
-Use idle ZW810 cards. These commands exclude card 6. Do not run both tasks on
+Use idle ZW810 cards. The commands below use cards 5,6,7,8. Do not run both tasks on
 the same cards concurrently. Both request 1700 MHz; subsequent TDP-related
 frequency deviations are recorded, not automatically marked as failures.
-No new llama build is needed if the existing FP32-accumulator native build
-is unchanged and passes the runner's binding/precision checks.
+Quactlize-only mode has no llama build dependency. Optional native comparison
+still verifies the existing FP32-accumulator build's bindings/precision.
 
 Small-M gaps:
 
@@ -67,13 +77,13 @@ Small-M gaps:
     git pull --ff-only origin develop
     unset RUN RESUME_RUN CLOCK_RETRY_RUN PLAN_ONLY BUILD_ONLY
     PPU_SDK=/usr/local/PPU_SDK \
-    GPUS=1,2,3,4,5,7 PHASE=dense-m-gaps JOBS=32 \
+    GPUS=5,6,7,8 PHASE=dense-m-gaps JOBS=32 \
     L2_BYTES=67108864 IDLE_CONFIRMED=1 \
     bash tools/run_decode_refresh_box.sh
 )
 ```
 
-Large-M SF/Full and native comparison, after the cards are free:
+Large-M SF/Full config selection, after the cards are free:
 
 ```bash
 (
@@ -85,13 +95,11 @@ Large-M SF/Full and native comparison, after the cards are free:
     python3 tools/plan_dense_m_span.py --output "${M_RUN:?}/plan"
     echo "M_RUN=${M_RUN}"
     PPU_SDK=/usr/local/PPU_SDK \
-    LLAMA_CI_DIR=/sim/eec/shared/junfu.qx/llama.cpp.ncp \
-    LLAMA_CI_BUILD_DIR=/sim/eec/shared/junfu.qx/llama.cpp.ncp/build-ci-32F-cublas \
     L2_BYTES=67108864 \
     python3 tools/run_prefill_cohort_multi.py \
         --finalist-plan "${M_RUN:?}/plan/plan.json" \
-        --output "${M_RUN:?}/run" --gpus 1,2,3,4,5,7 \
-        --jobs 8 --configs-per-batch 16 --confirm-idle
+        --output "${M_RUN:?}/run" --gpus 5,6,7,8 \
+        --jobs 8 --configs-per-batch 16 --no-native --confirm-idle
 )
 ```
 
@@ -102,7 +110,11 @@ than kernel microseconds; no fixed completion duration is promised.
 
 Small-M prints its exact `RESUME_RUN=...` command. For large M retain the
 printed `M_RUN` directory and repeat the same coordinator command with
-`--resume`; keep the same plan, GPU list, jobs and batch limit. Do not update
+`--resume`; keep the same plan, GPU list, jobs, batch limit and `--no-native`
+mode. An old run that failed building the native adapter needs a new output
+directory: its frozen source revision will otherwise repeat that failure.
+The old `run/cohort.json` can be used as the new `--finalist-plan`; do not
+delete its failed logs. Do not update
 or delete the frozen worker sources/caches. Completed valid batches are not
 rerun. Upload only the printed small-M `review-lite-*.tar.xz` and large-M
 `run/review-*.json.xz`; raw Asys/SQLite/binaries remain on Box.

@@ -14,6 +14,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from dev.prefill_asys.cohort import validate
 from dev.strategy.journal import atomic_json
+from tools.run_native_components_multi import worker_failure
 
 
 def gpu_ordinals(value):
@@ -32,11 +33,12 @@ def worker_limits(jobs,configs_per_batch):
     return dict(jobs=jobs,configs_per_batch=configs_per_batch)
 
 
-def worker_environment(output,gpu,index,count,revision,*,finalists=False,jobs=8,configs_per_batch=16):
+def worker_environment(output,gpu,index,count,revision,*,finalists=False,jobs=8,configs_per_batch=16,no_native=False):
     limits=worker_limits(jobs,configs_per_batch)
     env=dict(os.environ,GPU=gpu,SHARD=str(index),SHARDS=str(count),
         OUTPUT_ROOT=str(output/('gpu-'+gpu)),TC_CACHE=str(output/'tc-cache'),SOURCE_REV=revision,IDLE_CONFIRMED='1',
-        JOBS=str(limits['jobs']),CONFIGS_PER_BATCH=str(limits['configs_per_batch']))
+        JOBS=str(limits['jobs']),CONFIGS_PER_BATCH=str(limits['configs_per_batch']),
+        NATIVE_REFERENCE='0' if no_native else '1')
     for key in ('RUN','RESUME_RUN','POINT_ID','PREVIOUS_RUN','PLAN_ONLY','COHORT','FINALIST_PLAN','MODEL'):
         env.pop(key,None)
     env['FINALIST_PLAN' if finalists else 'COHORT']=str(output/'cohort.json')
@@ -55,6 +57,7 @@ def main():
     p.add_argument('--jobs',type=int,default=8,help='compile jobs per worker; does not inherit shell JOBS')
     p.add_argument('--configs-per-batch',type=int,default=16,help='explicit per-capture budget, not shell CONFIGS_PER_BATCH')
     p.add_argument('--confirm-idle',action='store_true')
+    p.add_argument('--no-native',action='store_true',help='Quactlize M-span selection without llama reference')
     p.add_argument('--resume',action='store_true')
     a=p.parse_args()
     try:
@@ -67,6 +70,8 @@ def main():
         cohort=validate_finalists(json.loads(a.finalist_plan.read_text()))
         partition(cohort['points'],0,len(gpus))  # Reject excess GPUs before starting workers.
     else:cohort=validate(json.loads(a.cohort.read_text()))
+    if a.no_native and cohort['schema']!='quactlize.dense-m-span.v1':
+        p.error('--no-native requires a dense M-span plan')
     a.output=a.output.resolve();a.output.mkdir(parents=True,exist_ok=a.resume)
     held=(a.output/'.coordinator.lock').open('a')
     try:fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -78,17 +83,22 @@ def main():
             raise ValueError('resume GPU assignment/cohort changed')
         if before.get('worker_limits')!=limits:
             raise ValueError('resume worker limits changed or were not recorded; do not relabel old timings')
+        if before.get('native_reference',True)!=(not a.no_native):
+            raise ValueError('resume native reference mode changed; use a new output directory')
         rev=before['revision']
     else:
         rev=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip()
         atomic_json(a.output/'cohort.json',cohort)
-        atomic_json(receipt,dict(gpus=gpus,cohort=cohort['sha256'],revision=rev,worker_limits=limits))
-    print('PREFILL_COHORT_START '+json.dumps(dict(gpus=gpus,worker_limits=limits,revision=rev)),flush=True)
+        atomic_json(receipt,dict(gpus=gpus,cohort=cohort['sha256'],revision=rev,worker_limits=limits,
+                                native_reference=not a.no_native))
+    print('PREFILL_COHORT_START '+json.dumps(dict(gpus=gpus,worker_limits=limits,revision=rev,
+                                               native_reference=not a.no_native)),flush=True)
     children=[];streams=[];start=time.monotonic()
     try:
         for index,gpu in enumerate(gpus):
             directory=a.output/('gpu-'+gpu);directory.mkdir(exist_ok=a.resume)
-            env=worker_environment(a.output,gpu,index,len(gpus),rev,finalists=bool(a.finalist_plan),**limits)
+            env=worker_environment(a.output,gpu,index,len(gpus),rev,finalists=bool(a.finalist_plan),
+                                   no_native=a.no_native,**limits)
             if a.resume:
                 runs=[r for r in directory.glob('qwen32-prefill-asys.*') if r.is_dir()]
                 if len(runs)!=1:raise ValueError('resume needs exactly one retained run in '+str(directory))
@@ -103,13 +113,19 @@ def main():
                 workers=len(children),elapsed_minutes=(time.monotonic()-start)/60,output=str(a.output))),flush=True)
             time.sleep(30)
         codes=[proc.returncode for proc,_ in children]
+        failures=[worker_failure(log.parent,proc.returncode,log=log)
+                  for proc,log in children if proc.returncode]
+        for failure in failures:
+            print('PREFILL_COHORT_WORKER_FAIL '+json.dumps(failure),flush=True)
         runs=[r for gpu in gpus for r in (a.output/('gpu-'+gpu)).glob('qwen32-prefill-asys.*')
               if (r/'results/execution-plan.json').is_file()]
         review=a.output/('review-'+str(time.time_ns())+'.json.xz')
         command=[sys.executable,str(ROOT/'tools/review_prefill_cohort.py'),'--output',str(review)]
         for run in runs:command+=['--run',str(run)]
         rc=subprocess.run(command).returncode if runs else 1
-        result=dict(returncodes=codes,review_rc=rc,review=str(review),production_changed=False,
+        result=dict(returncodes=codes,worker_failures=failures,review_rc=rc,review=str(review),
+                    review_written=review.is_file(),production_changed=False,
+                    native_comparison=not a.no_native,no_regression_admitted=False,
                     status='SCREEN_COMPLETE' if not any(codes) and rc==0 else 'INCOMPLETE')
         atomic_json(a.output/('summary-'+str(time.time_ns())+'.json'),result)
         print('PREFILL_COHORT_DONE '+json.dumps(result),flush=True)

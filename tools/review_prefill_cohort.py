@@ -42,14 +42,19 @@ def tables(points, *, include_buckets=False):
             bid = digest(bucket(w)); bounds[bid] = bucket(w)
         valid = [r for r in point['measurements'] if eligible(r)]
         native = next((r for r in point['measurements'] if r['arm']=='native-fp16'), None)
-        if not valid or not native or native['status']!='PASS':
+        native_required=point.get('native_comparison',True)
+        controls=[r for r in point['measurements'] if r['status']=='PASS' and 'model-config' in r.get('roles',[])]
+        if not valid or (native_required and (not native or native['status']!='PASS')) or (not native_required and not controls):
             exact[key] = dict(status='REMEASURE_REQUIRED')
             if include_buckets:groups[bid].append((key, {}))
             continue
         winner = min(valid, key=lambda r:r['gpu_sum_us'])
+        incumbent=min((r['gpu_sum_us'] for r in controls),default=None)
         exact[key] = dict(status='SCREEN_WINNER_NOT_ADMITTED', candidate=winner['candidate'],
-            us=winner['gpu_sum_us'], native_us=native['gpu_sum_us'],
-            delta_pct=100*(winner['gpu_sum_us']/native['gpu_sum_us']-1),
+            us=winner['gpu_sum_us'], native_us=native['gpu_sum_us'] if native else None,
+            delta_pct=100*(winner['gpu_sum_us']/native['gpu_sum_us']-1) if native else None,
+            native_comparison=native_required,incumbent_us=incumbent,
+            incumbent_delta_pct=100*(winner['gpu_sum_us']/incumbent-1) if incumbent else None,
             authority=point['authority'], components=winner['components'])
         # Ratios within each measured point, not absolute microseconds across
         # shapes. A bucket recipe must have been measured at EVERY member.
@@ -182,7 +187,8 @@ def ingest(root):
         proof = read(proof_path)
         recipes = {c['id']:c for c in data['seal']['cases']}
         expected = {c['id']:c for c in specs[w.key]['cases']}
-        expected['native-fp16'] = dict(id='native-fp16',arm='native-fp16')
+        if specs[w.key].get('native_comparison',True):
+            expected['native-fp16'] = dict(id='native-fp16',arm='native-fp16')
         if len(recipes)!=len(data['seal']['cases']) or any(expected.get(k)!=v for k,v in recipes.items()):
             raise ValueError('measured recipe differs from execution plan')
         rows,defs,configs=batch_measurements(data,proof,specs[w.key]['workload'],path)
@@ -202,9 +208,10 @@ def ingest(root):
                      authority=aid, measurements=list(combined.values()))
         # A resource-rejected optional proposal is not a measured loser. Keep
         # its exact query/recipe in the compact upload, including on partials.
-        for field in ('resource_unavailable','sf_screen','table_coverage','proposal_compute_units'):
+        for field in ('resource_unavailable','sf_screen','table_coverage','proposal_compute_units','native_comparison'):
             if field in spec:point[field]=spec[field]
-        missing=sorted(({c['id'] for c in spec['cases']} | {'native-fp16'})-set(combined))
+        expected={c['id'] for c in spec['cases']} | ({'native-fp16'} if spec.get('native_comparison',True) else set())
+        missing=sorted(expected-set(combined))
         unconfirmed=sorted(cid for cid,row in combined.items() if row['status']!='PASS')
         if missing or unconfirmed:
             incomplete.append(key)
