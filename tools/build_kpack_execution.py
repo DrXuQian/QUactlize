@@ -77,6 +77,7 @@ def build(sdk, output, jobs, variant="production"):
               ROOT/'quactlize/execution/simt_codegen.py',
               ROOT/'quactlize/execution/q8_refresh.py',
               ROOT/'policies/kpack_decode_refresh_v1.json',
+              ROOT/'policies/kpack_dense_decode_v1.json',
               ROOT/'policies/kpack_smallm_effective_v1.hpp',
               ROOT/'policies/kpack_smallm_v1.hpp',
               ROOT/'policies/kpack_component_decode_v1.json',

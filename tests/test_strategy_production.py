@@ -46,6 +46,8 @@ def test_every_reviewed_point_and_unaffected_key(evidence, baseline, plan):
     assert effective['excluded'] == baseline['excluded']
     from quactlize.execution.q8_refresh import apply
     effective = apply(effective)
+    from dev.strategy.dense_m_selection import apply as dense_m
+    effective = dense_m(effective)
     expected = {tuple(r['key']): r for r in effective['exact']}
     for actual in plan['requests']:
         row = expected[tuple(actual['request'])]; c = row['config']

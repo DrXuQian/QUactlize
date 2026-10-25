@@ -461,7 +461,7 @@ int main() {
             p=test::params(q,m);p.sizes.units_bytes++;assert(quactlize_ppu_dense_supported_v1(&p)==0);
         }
     }
-    assert(component_sf_count==41);
+    assert(component_sf_count==59); // 41 existing + 18 measured dense-M Q5 SF helpers.
     kImages.clear();auto owner=test::context(0);auto& ctx=*owner;
     // Replay all measured dense weight families over boundary M, not only
     // exact table keys. This exercises both exact and bucket/fallback order.

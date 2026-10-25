@@ -1,11 +1,30 @@
 # Dense M coverage experiment
 
-This is a bounded experiment, not a production selector update. The inventory
+This records a bounded experiment and its subsequent exact-only admission. The inventory
 is the 45 `(qtype,N,K)` families in `policies/dense_prefill_v1.json`, including
 its recorded TP-local dense shapes. It does not exercise tensor-parallel
 communication or add MoE measurements.
 
 ## Scope and controls
+
+The returned 243-point small-M gap run is now recorded in
+`policies/kpack_dense_decode_v1.json`. Its 237 stable keys are generated into
+the production exact catalog: 160 replacements and 77 measured retains.
+Six unstable points keep their original paths. The existing 1852 exact rows
+and 637 bucket entries are unchanged; the total exact catalog is now 2089.
+Within this document's 45 dense families, 354/360 M1-8 keys are exact, with
+six pending. The old counts below describe the frozen experiment, not work
+that must be rerun after this admission.
+
+Q8 admission also generates 36 additional exact body bindings. A geometry
+tuple without its measured body is not an equivalent selection. Regenerate
+and verify with `tools/fit_dense_m_selection.py --archive <review-lite.tar.xz>
+--check`, `tools/generate_decode_selection.py --check`, and
+`tools/generate_q8_refresh.py --check`. The library must be rebuilt to use the
+new header and bindings; an old installed DSO is not updated by changing JSON.
+This is component evidence against the current Quactlize control, not a
+fresh native comparison or a model TPOT result. No large-M/MoE or table-miss
+policy is changed by this exact-only admission.
 
 | Run | Scope | Planned work |
 | --- | --- | --- |

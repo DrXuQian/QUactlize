@@ -75,7 +75,18 @@ def test_q4_exact_recipes_are_existing_compiled_auto_choices(policy):
 
 def test_open_shapes_cannot_sneak_in_through_bucket(probe,policy):
     keys=[r['key'][:-1]+[int(r['key'][-1]=='bf16')] for r in policy['excluded']]
-    assert query(probe,keys)==['MISS']*len(keys)
+    from dev.strategy.dense_m_selection import load
+    admitted={tuple(r['key']) for r in load()['rows'] if r['admitted']}
+    closed=[]
+    for key,result in zip(keys,query(probe,keys)):
+        if tuple(key) in admitted:
+            # These former open cells now have fresh exact numerical/timing
+            # evidence; never count a bucket prediction as closing an error.
+            assert result.startswith('18 ')
+            closed.append(key)
+        else:
+            assert result=='MISS'
+    assert closed==[[14,0,5120,25600,1,1,1,m,0] for m in (6,8)]
     invalid=[[8,0,32,2048,1,1,1,1,0],[14,0,151936,5120,1,1,1,1,1],
              [8,0,512,2048,1,1,1,9,0],[8,2,512,2048,256,8,2,1,0],
              [8,0,1048576,1048576,1,1,1,1,0],[8,0,512,2048,1,1,1,1,99]]

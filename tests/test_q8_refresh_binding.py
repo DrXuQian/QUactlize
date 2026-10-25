@@ -21,7 +21,8 @@ def test_generated_body_and_scope_match_measured_source():
     assert port.catalog() == (ROOT/'quactlize/execution/q8_refresh.inc').read_text()
     assert port.header() == (ROOT/'quactlize/execution/simt_q8_refresh.cuh').read_text()
     assert 'dev/' not in port.header()
-    assert len(binding.rows()) == 27
+    assert len(binding.rows(include_dense=False)) == 27
+    assert len(binding.rows()) == 63
     assert {r['implementation']['body'] for r in binding.rows()} == {1, 3, 4, 5}
 
 
@@ -35,7 +36,7 @@ def test_regeneration_cannot_relabel_a_changed_kernel_with_old_timings(monkeypat
 def test_only_27_exact_keys_change_and_all_bucket_donors_are_retained():
     table = json.loads(binding.TABLE.read_text())
     old = gen.effective(json.loads(gen.EVIDENCE.read_text()), include_refresh=False)
-    new = gen.effective(json.loads(gen.EVIDENCE.read_text()))
+    new = gen.effective(json.loads(gen.EVIDENCE.read_text()), include_dense=False)
     assert digest(old) == table['baseline_sha256']
     assert table['active'] is False  # The other160 replacements remain proposals.
     changed = {tuple(r['key']): r for r in binding.rows()}
@@ -80,7 +81,7 @@ def test_actual_selector_preserves_body_in_future_original_recipe(plan):
         actual = spec(Workload(q, n, k, m), recipe)
         assert actual['q8_body'] == selected['implementation']['body']
         assert asdict(recipe)['kind'] == 'simt'
-    assert count == 27
+    assert count == 63
 
 
 @pytest.mark.parametrize('fault', ['missing', 'body', 'catalog', 'key', 'geometry'])
@@ -133,7 +134,7 @@ f.warps=2;assert(!q8_refresh_body(d,f)); \
 }
 #include "quactlize/execution/q8_refresh.inc"
 #undef Q8R
-assert(checked==27);
+assert(checked==63);
 }
 '''
     path = tmp_path/'scope.cpp'

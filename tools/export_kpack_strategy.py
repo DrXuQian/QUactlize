@@ -44,6 +44,14 @@ def small_workload(key, *, compute=None):
                     topk=topk, channels=channels)
 
 
+def selected_recipe(row):
+    c = dict(row['config'])
+    impl = row.get('implementation', {})
+    if impl.get('kind') == 'q8-address':
+        c['q8_body'] = impl['body']
+    return recipe(c, dequant=row.get('dequant_config', -1))
+
+
 def load_sources(root=ROOT):
     root = Path(root)
     observations, sources = [], {}
@@ -62,12 +70,15 @@ def load_sources(root=ROOT):
     winner = read('policies/kpack_decode_winners_v1.json')
     read('policies/kpack_smallm_matched_v1.json')
     read('policies/kpack_q8_vector_v1.json')
+    read('policies/kpack_component_decode_v1.json')
+    read('policies/kpack_decode_refresh_v1.json')
+    read('policies/kpack_dense_decode_v1.json')
     if root.resolve() != ROOT.resolve():
         raise ValueError('effective board must be imported with its own source checkout')
     board = effective(winner)
-    board_id = digest({name: value for name, value in sources.items()})
+    board_id = digest(dict(sources=sources, effective=board))
     for row in board['exact']:
-        add(small_workload(row['key']), recipe(row['config']), 'effective-decode',
+        add(small_workload(row['key']), selected_recipe(row), 'effective-decode',
             'COMPLETE_CALL', 50, row['status'], board_id,
             policy=row['policy'], router_sensitive=row.get('status') == 'ROUTER_SENSITIVE_PARETO',
             profiles=row.get('profiles', []), guard=row['guard'])

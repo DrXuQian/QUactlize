@@ -319,6 +319,7 @@ def main():
         ROOT / "quactlize/execution/q8_refresh.inc",
         ROOT / "quactlize/execution/q8_refresh.py",
         ROOT / "policies/kpack_decode_refresh_v1.json",
+        ROOT / "policies/kpack_dense_decode_v1.json",
         ROOT / "quactlize/execution/measured_decode.hpp",
         ROOT / "quactlize/execution/measured_decode.inc",
         ROOT / "quactlize/fusion/gate_up.h",

@@ -501,6 +501,9 @@ __global__ void kernel_4_8_4(qkg_call_v1 c) {
 __global__ void kernel_5_4_8(qkg_call_v1 c) {
     address_body_5<1,0,1,4,8,4,true>(c,1);
 }
+__global__ void kernel_5_8_4(qkg_call_v1 c) {
+    address_body_5<1,0,1,8,4,4,true>(c,1);
+}
 inline int launch(qkg_simt_call_v2 const& d,qkg_simt_config_v1 const& f) {
     int body=q8_refresh_body(d,f);
     if(!body) return QKG_INVALID;
@@ -533,6 +536,10 @@ inline int launch(qkg_simt_call_v2 const& d,qkg_simt_config_v1 const& f) {
     }
     if(body==5 && f.columns==4 && f.warps==8) {
         kernel_5_4_8<<<grid,8*32,0,stream>>>(c);
+        return hggcGetLastError()==hggcSuccess ? QKG_OK : QKG_RUNTIME;
+    }
+    if(body==5 && f.columns==8 && f.warps==4) {
+        kernel_5_8_4<<<grid,4*32,0,stream>>>(c);
         return hggcGetLastError()==hggcSuccess ? QKG_OK : QKG_RUNTIME;
     }
     return QKG_INVALID;

@@ -146,7 +146,7 @@ def capture(tp2, fallback):
     return result | dict(evidence_sha256=digest(json.dumps(result,sort_keys=True).encode()))
 
 
-def effective(evidence, *, include_components=True, include_refresh=True):
+def effective(evidence, *, include_components=True, include_refresh=True, include_dense=True):
     if evidence['schema']!='quactlize.decode-winners.v1' or evidence['archives']!=ARCHIVES:
         raise ValueError('winner evidence authority differs')
     if evidence.get('evidence_sha256')!=digest(json.dumps(
@@ -202,14 +202,18 @@ def effective(evidence, *, include_components=True, include_refresh=True):
         if include_refresh:
             from quactlize.execution.q8_refresh import apply as bind_q8
             result = bind_q8(result)
+            if include_dense:
+                from dev.strategy.dense_m_selection import apply as bind_dense
+                result = bind_dense(result)
     return result
 
 
 def header(policy):
-    text=matched_header(policy).replace('tools/fit_smallm_closure.py','tools/generate_decode_selection.py')
+    prefix=next((i for i,r in enumerate(policy['exact']) if r.get('source')=='dense-m-exact-v1'),len(policy['exact']))
+    text=matched_header(policy,config_prefix=prefix).replace('tools/fit_smallm_closure.py','tools/generate_decode_selection.py')
     text=text.replace('smallm_matched_data','smallm_effective_data')
     # Generic donor choices preserve coverage where an exact Q4 body bakes N/K.
-    guards=matched_header(dict(exact=[dict(r,config=r['guard']) for r in policy['exact']],buckets=[],excluded=[]))
+    guards=matched_header(dict(exact=[dict(r,config=r['guard']) for r in policy['exact']],buckets=[],excluded=[]),config_prefix=prefix)
     guard_choices=guards.split('inline constexpr Choice kChoices[]={\n',1)[1].split('\n};',1)[0]
     guard_rows=guards.split('inline constexpr Row kExact[]={\n',1)[1].split('\n};',1)[0]
     indices=[int(line.strip().strip('{},').split(',')[-2]) for line in guard_rows.splitlines()]
@@ -220,7 +224,7 @@ def header(policy):
     # Exact-only Q8 admission must not change an unseen shape's old donor.
     donors = [dict(r, config=r.get('bucket_config', r['guard'] if r['config']['kind']=='q4' else r['config']))
               for r in policy['exact']]
-    buckets = matched_header(dict(exact=donors, buckets=[], excluded=[]))
+    buckets = matched_header(dict(exact=donors, buckets=[], excluded=[]),config_prefix=prefix)
     choices = buckets.split('inline constexpr Choice kChoices[]={\n',1)[1].split('\n};',1)[0]
     rows = buckets.split('inline constexpr Row kExact[]={\n',1)[1].split('\n};',1)[0]
     indices = [int(line.strip().strip('{},').split(',')[-2]) for line in rows.splitlines()]

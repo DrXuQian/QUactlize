@@ -145,7 +145,7 @@ def test_grouped_captured_inventory_retains_one_producer_and_actual_split_finish
 
 def test_historical_audit_has_scope_downgrades_not_deletions():
     report=audit()
-    assert report['counts']['observations']==7237
+    assert report['counts']['observations']==7474
     assert report['counts']['scopes']['PROPOSAL']==305
     assert report['policy']['raw_files_deleted'] is False
     assert report['policy']['default_selection_changed'] is False

@@ -72,7 +72,7 @@ def test_live_cpp_matches_every_measured_recipe(tmp_path):
     make_plan(historical,['1','2','3','4','5','6','7'])
 
 
-def test_smallm_selection_unchanged_from_pre_refresh(tmp_path):
+def test_smallm_unchanged_except_declared_later_dense_exact_additions(tmp_path):
     frozen=tmp_path/'baseline';frozen.mkdir()
     raw=subprocess.check_output(['git','archive',BASELINE,'quactlize','policies','tools/kpack_selection.cpp'],cwd=ROOT)
     with tarfile.open(fileobj=io.BytesIO(raw)) as tar:
@@ -83,16 +83,18 @@ def test_smallm_selection_unchanged_from_pre_refresh(tmp_path):
     subprocess.run(['g++','-std=c++17','-O2','-I'+str(frozen),frozen/'tools/kpack_selection.cpp','-o',exe],check=True)
     before=[json.loads(line) for line in subprocess.check_output([exe,'--inventory'],text=True).splitlines()]
     after=plan_smallm(tmp_path)['requests']
-    assert len(after)==1852 and before==after
+    assert len(before)==1852 and len(after)==2089 and before==after[:len(before)]
     # Neighbor shapes/precision/channels/invalid inputs exercise actual bucket
     # and rejection decisions, not only the exact measured keys.
     from test_selection_refactor import case_keys
-    keys=sorted({k[:9] for k in case_keys()})
+    from dev.strategy.dense_m_selection import load
+    admitted={tuple(r['key']) for r in load()['rows'] if r['admitted']}
+    keys=sorted({k[:9] for k in case_keys()}-admitted)
     text=''.join(' '.join(map(str,k))+'\n' for k in keys)
     old=subprocess.check_output([exe],input=text,text=True)
     new=subprocess.check_output([tmp_path/'selection-query'],input=text,text=True)
     assert old==new
-    print(f'REFRESH_SMALLM_UNCHANGED exact=1852 neighbors_and_invalid={len(keys)}')
+    print(f'REFRESH_SMALLM_UNCHANGED existing_exact=1852 neighbors_and_invalid={len(keys)} declared_new_exact=237')
 
 
 def expected_grid(p, w, occupancy=6, cu=72):

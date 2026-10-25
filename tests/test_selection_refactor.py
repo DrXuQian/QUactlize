@@ -64,6 +64,8 @@ def test_public_final_decisions_equal_frozen_baseline(snapshots):
     promoted|={tuple(w['key']) for w in json.loads(COMPONENTS.read_text())['rows'] if w['changed']}
     from quactlize.execution.q8_refresh import rows as q8_rows
     promoted|={tuple(w['key']) for w in q8_rows()}
+    from dev.strategy.dense_m_selection import load as dense_m
+    promoted|={tuple(w['key']) for w in dense_m()['rows'] if w['admitted']}
     exact={tuple(r['key']) for r in p['exact']}
     changed=[]
     for k,a,b in zip(keys,*results):
@@ -109,9 +111,9 @@ def execution_for(plan):
 
 
 def test_final_catalog_is_exact_and_checks_full_tuple(final_plan):
-    assert len(final_plan['requests'])==1852
+    assert len(final_plan['requests'])==2089
     assert all(r['status']==0 for r in final_plan['requests'])
-    assert len(requirements(final_plan)['simt'])==183
+    assert len(requirements(final_plan)['simt'])==192
     execution=execution_for(final_plan)
     validate_inventory(final_plan,execution,jit=True)
     for mutate in ('config','compute','q4','q8'):
@@ -128,7 +130,7 @@ def test_final_catalog_is_exact_and_checks_full_tuple(final_plan):
 def test_prewarm_keeps_compute_and_endpoint_identity(final_plan):
     groups=prewarm_groups(final_plan)
     assert {(c,d) for c,d,_ in groups}=={('f16',False),('f16',True),('bf16',False),('bf16',True)}
-    assert sum(len(p) for _,_,p in groups)==len(requirements(final_plan)['tc'])==68
+    assert sum(len(p) for _,_,p in groups)==len(requirements(final_plan)['tc'])==70
     assert all(p['route'].endswith('dense')==dense for _,dense,parents in groups for p in parents)
 
 

@@ -26,8 +26,12 @@ ROOT=Path(__file__).resolve().parents[1]
 
 @pytest.fixture(scope='module')
 def originals(tmp_path_factory):
-    return plan_smallm(tmp_path_factory.mktemp('dense-m-host'),
+    from dev.strategy.dense_m_selection import load
+    current=plan_smallm(tmp_path_factory.mktemp('dense-m-host'),
         [request(Workload(**p['workload'])) for p in points()],dense_fallbacks=True)['requests']
+    # Replay the frozen experiment's controls, not today's admitted winners.
+    measured={tuple(r['key']):r['original_cpp'] for r in load()['rows']}
+    return [measured.get(tuple(r['request']),r) for r in current]
 
 
 def test_small_m_complete_denominator_and_real_controls(originals):

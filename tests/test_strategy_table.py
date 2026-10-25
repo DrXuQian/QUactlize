@@ -18,11 +18,11 @@ def observation(w,r,priority=10,scope='COMPLETE_CALL'):
 
 def test_old_box_data_is_imported_not_replaced_with_an_empty_table():
     table,sources=load_sources()
-    assert len(sources)==8
-    assert len(table.observations)==7237
-    assert len(table.exact)==3823
+    assert len(sources)==11
+    assert len(table.observations)==7474
+    assert len(table.exact)==4059
     assert {r.workload.qtype for r in table.observations}=={8,10,11,12,13,14}
-    assert sum(r.source=='effective-decode' for r in table.observations)==1852
+    assert sum(r.source=='effective-decode' for r in table.observations)==2089
     assert sum(r.source=='historical-resident' for r in table.observations)==2982
     assert sum(r.scope=='COMPONENT_SUM' for r in table.observations)==1720
     assert all(r.workload.compute=='f16' and r.details['external_adapters_included'] is False
@@ -33,15 +33,19 @@ def test_old_box_data_is_imported_not_replaced_with_an_empty_table():
 
 def test_effective_decode_promotions_keep_their_exact_recipe():
     from tools.generate_decode_selection import effective,EVIDENCE
-    from tools.export_kpack_strategy import recipe,small_workload
+    from tools.export_kpack_strategy import selected_recipe,small_workload
     board=effective(json.loads(EVIDENCE.read_text()))
     table,_=load_sources()
     for row in board['exact']:
-        r,w=recipe(row['config']),small_workload(row['key'])
+        r,w=selected_recipe(row),small_workload(row['key'])
         records=[x for x in table.exact[w.key] if x.source=='effective-decode']
         assert len(records)==1 and records[0].recipe==r
         if r.eligible(w):
             assert table.lookup(w).recipe==r
+        if row.get('implementation',{}).get('kind')=='q8-address':
+            assert dict(r.parameters)['q8_body']==row['implementation']['body']
+        if row.get('dequant_config',-1)>=0:
+            assert dict(r.parameters)['dequant_config']==row['dequant_config']
 
 
 def test_all_exact_winners_survive_control_inventory_and_small_budget_is_rejected():
