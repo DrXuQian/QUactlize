@@ -16,9 +16,16 @@ def cases(points):
             p=dict(case['recipe']['parameters'])
             if p.get('dense_reducer'):
                 m,n,s=w['m'],w['n'],p['split']
+                # The reducer flattens contiguous M*N; 2048 was an old
+                # experiment limit, not a kernel restriction. Cover the full
+                # M-span inventory while preserving dtype/stride/S contracts.
                 if (case['arm']!='sf' or w['operation']!='dense' or w['compute']!='f16' or
-                        not 8<m<=2048 or not 0<n<=65536 or m*n%64 or s not in (2,4,8)):
-                    raise ValueError('reducer gate workload differs from native dense prefill')
+                        not 8<m<=8192 or not 0<n<=65536 or m*n%64 or s not in (2,4,8) or
+                        type(p['dense_reducer']) is not int or p['dense_reducer'] not in (2,4,8)):
+                    raise ValueError('reducer gate workload differs from dense F16 prefill: '
+                                     f'M={m} N={n} split={s} width={p["dense_reducer"]}; '
+                                     'require 8<M<=8192, 0<N<=65536, M*N aligned to 64, '
+                                     'split/width in {2,4,8}')
                 result.add((m,n,n,s,0,0))
     if not result:raise ValueError('no compact reducer candidates')
     # M1, weak 128B workspace alignment, non-vector tail, strided output,

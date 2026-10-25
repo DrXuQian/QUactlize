@@ -88,6 +88,19 @@ def test_helpers_plan_reaches_existing_worker_and_coordinator(tmp_path,monkeypat
     assert json.loads((tmp_path/'worker/plan.json').read_text())['counts']['configs']==18
 
 
+def test_plan_only_runs_reducer_contract_before_build(tmp_path,monkeypatch):
+    from dev.dense_helpers import reducer_gate
+    from tools import run_prefill_model_asys as runner
+    plan=tmp_path/'plan.json';plan.write_text(json.dumps(make_plan(split_review(),compact=True)))
+    output=tmp_path/'worker'
+    def reject(points):raise ValueError('host reducer preflight sentinel')
+    monkeypatch.setattr(reducer_gate,'cases',reject)
+    monkeypatch.setattr(sys,'argv',[runner.__file__,'--finalist-plan',str(plan),'--output',str(output),
+        '--plan-only','--sdk','/no-sdk','--llama-source','/no-llama'])
+    with pytest.raises(ValueError,match='host reducer preflight sentinel'):runner.main()
+    assert not (output/'build').exists() and not (output/'authority.json').exists()
+
+
 @pytest.mark.parametrize('fault',[None,'generic','split','grid','block','shared'])
 def test_trace_must_prove_compact_body_and_actual_geometry(fault):
     from test_prefill_asys import PrefillAsysTests
@@ -113,6 +126,25 @@ def test_independent_oracle_detects_changed_addition_order():
     assert correct[0]==np.float16(1).view('u2') and correct[1]==0
     assert np.any(correct!=wrong)
     assert correct[2]==np.float16(1).view('u2') and correct[5]==0x7c00
+
+
+@pytest.mark.parametrize('m',[3072,4096,5120,8192])
+@pytest.mark.parametrize('width',[2,4,8])
+def test_reducer_gate_covers_extended_m_span(m,width):
+    point=dict(workload=dict(operation='dense',compute='f16',m=m,n=256),
+               cases=[dict(arm='sf',recipe=dict(parameters=[['split',4],['dense_reducer',width]]))])
+    assert (m,256,256,4,0,0) in cases([point])
+
+
+@pytest.mark.parametrize('change',[dict(m=8193),dict(m=8),dict(n=65537),dict(n=0),
+    dict(m=9,n=7),dict(compute='bf16'),dict(operation='grouped'),dict(split=3),
+    dict(width=3),dict(width=True),dict(arm='fq')])
+def test_reducer_gate_keeps_non_m_contracts(change):
+    w=dict(operation='dense',compute='f16',m=5120,n=256)
+    w.update({k:v for k,v in change.items() if k in w})
+    point=dict(workload=w,cases=[dict(arm=change.get('arm','sf'),recipe=dict(parameters=[
+        ['split',change.get('split',2)],['dense_reducer',change.get('width',2)]]))])
+    with pytest.raises(ValueError,match='M=.*N=.*split=.*width='):cases([point])
 
 
 @pytest.mark.parametrize('fault',[None,'oracle','guard','fast','invalid'])
@@ -154,9 +186,10 @@ def test_gate_orchestration_with_explicit_host_double(monkeypatch,fault):
     monkeypatch.setattr(gate,'bind',lambda _: (prepare,launch,fast,lambda h:handles.pop(h.value)))
     monkeypatch.setattr(gate,'SDK',Sdk);monkeypatch.setattr(gate,'Resources',Buffers)
     monkeypatch.setattr(gate,'cases',lambda _: [(1,512,512,2,0,0),(1,512,512,4,16,0),
-        (3,21,21,4,0,0),(3,64,69,8,0,0),(4,128,128,4,0,2),(3,64,64,8,0,0),(3,64,64,1,0,0)])
+        (3,21,21,4,0,0),(3,64,69,8,0,0),(4,128,128,4,0,2),(3,64,64,8,0,0),
+        (3,64,64,1,0,0),(8192,256,256,2,0,0)])
     if fault:
         with pytest.raises(ValueError):gate.run('/host-double','/not-a-device-library',[])
     else:
         value=gate.run('/host-double','/not-a-device-library',[])
-        assert value['status']=='PASS' and value['cases']==28 and not handles
+        assert value['status']=='PASS' and value['cases']==32 and not handles

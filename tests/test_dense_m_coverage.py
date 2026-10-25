@@ -131,14 +131,15 @@ def test_span_captures_bound_processes_and_keep_both_directions(span):
     assert captures==span['counts']['captures']
 
 
-def test_quactlize_only_plan_needs_no_llama_and_keeps_every_config(span,tmp_path):
+@pytest.mark.parametrize('shard',range(4))
+def test_quactlize_only_plan_needs_no_llama_and_keeps_every_config(span,tmp_path,shard):
     from dev.prefill_asys.finalists import counts
     from tools.run_prefill_cohort_multi import worker_environment
     path=tmp_path/'span.json';path.write_text(json.dumps(span));output=tmp_path/'run'
     subprocess.run([sys.executable,str(ROOT/'tools/run_prefill_model_asys.py'),
         '--finalist-plan',str(path),'--output',str(output),'--plan-only','--no-native',
         '--llama-source','/missing-llama','--llama-build','/missing-build','--sdk','/missing-sdk',
-        '--shard','0','--shards','4'],check=True,capture_output=True,text=True)
+        '--shard',str(shard),'--shards','4'],check=True,capture_output=True,text=True)
     value=json.loads((output/'plan.json').read_text())
     original={p['id']:p for p in span['points']}
     assert value['native_comparison'] is False and not (output/'build').exists()
@@ -151,6 +152,16 @@ def test_quactlize_only_plan_needs_no_llama_and_keeps_every_config(span,tmp_path
         assert sum(len(cases) for cases,_ in jobs)==2*len(point['cases'])
     env=worker_environment(tmp_path,'8',3,4,'source',finalists=True,no_native=True)
     assert env['NATIVE_REFERENCE']=='0' and env['GPU']=='8'
+
+
+def test_all_compact_candidates_pass_gate_before_box_build(span):
+    from dev.dense_helpers.reducer_gate import cases
+    expected={(p['workload']['m'],p['workload']['n'],p['workload']['n'],
+               dict(c['recipe']['parameters'])['split'],0,0)
+              for p in span['points'] for c in p['cases']
+              if dict(c['recipe']['parameters']).get('dense_reducer')}
+    assert expected and max(c[0] for c in expected)==8192
+    assert expected<=set(cases(span['points']))
 
 
 def test_legacy_native_core_times_shipping_casts_in_order():

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run disjoint dense Asys families on explicitly idle GPUs; retain every run."""
 import argparse
+from contextlib import ExitStack
 import fcntl
 import json
 import os
@@ -14,6 +15,8 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from dev.prefill_asys.cohort import validate
 from dev.strategy.journal import atomic_json
+from quactlize.runtime.compiler import sha
+from quactlize.runtime.tuning import digest
 from tools.run_native_components_multi import worker_failure
 
 
@@ -45,6 +48,57 @@ def worker_environment(output,gpu,index,count,revision,*,finalists=False,jobs=8,
     return env
 
 
+def retry_setup(previous,cohort,gpus,limits,no_native,locks):
+    """Retry only the known pre-timing gate failure; never rewrite old evidence."""
+    from dev.prefill_asys.finalists import load, partition
+    previous=previous.resolve(strict=True)
+    held=locks.enter_context((previous/'.coordinator.lock').open('r'))
+    try:fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    except BlockingIOError:raise ValueError('previous coordinator is still running') from None
+    before=json.loads((previous/'coordinator.json').read_text())
+    old=load(json.loads((previous/'cohort.json').read_text()))
+    if (cohort['schema']!='quactlize.dense-m-span.v1' or digest(old)!=digest(cohort) or
+            before['cohort']!=cohort['sha256'] or before['gpus']!=gpus or
+            before.get('worker_limits')!=limits or before.get('native_reference',True)!=(not no_native)):
+        raise ValueError('setup retry cohort/GPU assignment/limits/reference mode changed')
+    if before.get('setup_retry') or not list(previous.glob('summary-*.json')):
+        raise ValueError('setup retry requires a finished original coordinator; resume its retry separately')
+    retained={};failures={}
+    for index,gpu in enumerate(gpus):
+        runs=[r for r in (previous/('gpu-'+gpu)).glob('qwen32-prefill-asys.*') if r.is_dir()]
+        if len(runs)!=1:raise ValueError('setup retry needs exactly one retained run for GPU '+gpu)
+        run=runs[0];output=run/'results';plan=json.loads((output/'plan.json').read_text())
+        expected=partition(cohort['points'],index,len(gpus))
+        if no_native:expected=[dict(p,native_comparison=False) for p in expected]
+        identity=dict(finalist_plan_sha256=cohort['sha256'],shard=index,shards=len(gpus),points=[])
+        if no_native:identity['native_reference']=False
+        if (plan.get('model_identity')!=identity or digest(plan['points'])!=digest(expected) or
+                plan['plan_sha256']!=digest({k:v for k,v in plan.items() if k!='plan_sha256'})):
+            raise ValueError('setup retry original worker plan changed for GPU '+gpu)
+        summary_path=output/'summary.json'
+        summary=json.loads(summary_path.read_text()) if summary_path.is_file() else {}
+        if summary.get('status')=='SCREEN_COMPLETE':
+            authority=json.loads((output/'authority.json').read_text())
+            execution=json.loads((output/'execution-plan.json').read_text())
+            expected_ids={p['id'] for p in expected}
+            if (authority['plan']!=plan['plan_sha256'] or execution['authority']!=digest(authority) or
+                    {p['id'] for p in execution['points']}!=expected_ids or
+                    {p['id'] for p in summary['points']}!=expected_ids or
+                    any(p['status']!='SCREEN_COMPLETE' for p in summary['points'])):
+                raise ValueError('completed worker coverage/authority differs for GPU '+gpu)
+            # The final review still validates every raw PASS/numerical receipt.
+            retained[gpu]=dict(run=str(run),authority=digest(authority),summary_sha256=sha(summary_path))
+            continue
+        if (any((output/name).exists() for name in ('authority.json','execution-plan.json','batches')) or summary):
+            raise ValueError('worker has partial measurements; use its frozen resume, not setup retry: '+str(run))
+        logs=[p for p in output.glob('reducer-gate-*.log')
+              if 'ValueError: reducer gate workload differs from native dense prefill' in p.read_text(errors='replace')]
+        if not logs:raise ValueError('not the known reducer setup failure: '+str(run))
+        failures[gpu]=dict(run=str(run),logs={str(p):sha(p) for p in sorted(logs)})
+    if not failures:raise ValueError('no reducer setup failures to retry')
+    return dict(previous=str(previous),revision=before['revision'],retained=retained,failures=failures)
+
+
 def main():
     def terminate(*_): raise KeyboardInterrupt
     signal.signal(signal.SIGTERM,terminate)
@@ -58,7 +112,10 @@ def main():
     p.add_argument('--configs-per-batch',type=int,default=16,help='explicit per-capture budget, not shell CONFIGS_PER_BATCH')
     p.add_argument('--confirm-idle',action='store_true')
     p.add_argument('--no-native',action='store_true',help='Quactlize M-span selection without llama reference')
-    p.add_argument('--resume',action='store_true')
+    recovery=p.add_mutually_exclusive_group()
+    recovery.add_argument('--resume',action='store_true')
+    recovery.add_argument('--retry-setup-from',type=Path,
+                          help='new source for pre-timing reducer M-limit failures; retain complete shards')
     a=p.parse_args()
     try:
         gpus=gpu_ordinals(a.gpus)
@@ -72,11 +129,18 @@ def main():
     else:cohort=validate(json.loads(a.cohort.read_text()))
     if a.no_native and cohort['schema']!='quactlize.dense-m-span.v1':
         p.error('--no-native requires a dense M-span plan')
+    if a.retry_setup_from and not a.finalist_plan:p.error('--retry-setup-from requires --finalist-plan')
+    with ExitStack() as locks:
+        return run_cohort(a,cohort,gpus,limits,locks)
+
+
+def run_cohort(a,cohort,gpus,limits,locks):
     a.output=a.output.resolve();a.output.mkdir(parents=True,exist_ok=a.resume)
-    held=(a.output/'.coordinator.lock').open('a')
+    held=locks.enter_context((a.output/'.coordinator.lock').open('a'))
     try:fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)
     except BlockingIOError:raise ValueError('this cohort already has a running coordinator') from None
     receipt=a.output/'coordinator.json'
+    retry=None
     if a.resume:
         before=json.loads(receipt.read_text())
         if before['gpus']!=gpus or before['cohort']!=cohort['sha256']:
@@ -86,19 +150,33 @@ def main():
         if before.get('native_reference',True)!=(not a.no_native):
             raise ValueError('resume native reference mode changed; use a new output directory')
         rev=before['revision']
+        if before.get('setup_retry'):
+            retry=retry_setup(Path(before['setup_retry']['previous']),cohort,gpus,limits,a.no_native,locks)
+            if retry!=before['setup_retry']:raise ValueError('setup retry original evidence changed')
     else:
+        if a.retry_setup_from:
+            retry=retry_setup(a.retry_setup_from,cohort,gpus,limits,a.no_native,locks)
         rev=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip()
         atomic_json(a.output/'cohort.json',cohort)
         atomic_json(receipt,dict(gpus=gpus,cohort=cohort['sha256'],revision=rev,worker_limits=limits,
-                                native_reference=not a.no_native))
+                                native_reference=not a.no_native,**(dict(setup_retry=retry) if retry else {})))
+    retained=retry['retained'] if retry else {}
+    if retry:
+        print('PREFILL_COHORT_SETUP_RETRY '+json.dumps(dict(previous=retry['previous'],
+            rerun=list(retry['failures']),retained=list(retained),old_evidence_unchanged=True)),flush=True)
     print('PREFILL_COHORT_START '+json.dumps(dict(gpus=gpus,worker_limits=limits,revision=rev,
                                                native_reference=not a.no_native)),flush=True)
     children=[];streams=[];start=time.monotonic()
     try:
         for index,gpu in enumerate(gpus):
+            if gpu in retained:continue
             directory=a.output/('gpu-'+gpu);directory.mkdir(exist_ok=a.resume)
             env=worker_environment(a.output,gpu,index,len(gpus),rev,finalists=bool(a.finalist_plan),
                                    no_native=a.no_native,**limits)
+            if retry and (Path(retry['previous'])/'tc-cache').is_dir():
+                # Content-addressed modules validate source/SDK identities;
+                # reuse binaries, never import a previous timing as a new one.
+                env['TC_CACHE']=str(Path(retry['previous'])/'tc-cache')
             if a.resume:
                 runs=[r for r in directory.glob('qwen32-prefill-asys.*') if r.is_dir()]
                 if len(runs)!=1:raise ValueError('resume needs exactly one retained run in '+str(directory))
@@ -119,6 +197,7 @@ def main():
             print('PREFILL_COHORT_WORKER_FAIL '+json.dumps(failure),flush=True)
         runs=[r for gpu in gpus for r in (a.output/('gpu-'+gpu)).glob('qwen32-prefill-asys.*')
               if (r/'results/execution-plan.json').is_file()]
+        runs.extend(Path(row['run']) for row in retained.values())
         review=a.output/('review-'+str(time.time_ns())+'.json.xz')
         command=[sys.executable,str(ROOT/'tools/review_prefill_cohort.py'),'--output',str(review)]
         for run in runs:command+=['--run',str(run)]
@@ -126,7 +205,8 @@ def main():
         result=dict(returncodes=codes,worker_failures=failures,review_rc=rc,review=str(review),
                     review_written=review.is_file(),production_changed=False,
                     native_comparison=not a.no_native,no_regression_admitted=False,
-                    status='SCREEN_COMPLETE' if not any(codes) and rc==0 else 'INCOMPLETE')
+                    retained_workers=list(retained),expected_workers=len(gpus),measured_workers=len(runs),
+                    status='SCREEN_COMPLETE' if not any(codes) and rc==0 and len(runs)==len(gpus) else 'INCOMPLETE')
         atomic_json(a.output/('summary-'+str(time.time_ns())+'.json'),result)
         print('PREFILL_COHORT_DONE '+json.dumps(result),flush=True)
         return int(result['status']!='SCREEN_COMPLETE')
@@ -143,7 +223,6 @@ def main():
                 except ProcessLookupError:pass
                 proc.wait()
         for stream in streams:stream.close()
-        held.close()
 
 
 if __name__=='__main__':raise SystemExit(main())

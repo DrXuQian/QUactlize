@@ -472,6 +472,13 @@ def main():
         native_reference=not a.no_native,production_changed=False)),flush=True)
     if any(point.get('capture_batch_limit',a.configs_per_batch)!=a.configs_per_batch for point in plan['points']):
         p.error('--configs-per-batch differs from the frozen M-span capture limit')
+    has_compact_reducer=any(dict(c['recipe']['parameters']).get('dense_reducer')
+                           for point in plan['points'] for c in point.get('cases',[]))
+    if has_compact_reducer:
+        # Also run for --plan-only: reject a stale gate/workload contract
+        # before SDK setup, helper compilation or any device measurements.
+        from dev.dense_helpers.reducer_gate import cases as reducer_cases
+        reducer_cases(plan['points'])
     if a.plan_only: return 0
     if not a.confirm_idle: p.error('check assigned GPU idle then --confirm-idle')
     from tools.run_native_components import environment
@@ -516,8 +523,7 @@ def main():
                      '--library',str(a.output/'build/dense/libquactlize_ppu_prefill.so'),
                      '--output',str(a.output/f'io-gate-{time.time_ns()}.json')],
                     a.output/f'io-gate-{time.time_ns()}.log',env)
-        if any(dict(c['recipe']['parameters']).get('dense_reducer')
-               for p in plan['points'] for c in p.get('cases',[])):
+        if has_compact_reducer:
             execute([sys.executable,str(ROOT/'tools/check_dense_reducer.py'),'--sdk',str(a.sdk),
                      '--library',str(Path(payload['path'])/'helpers/libstrategy_prefill.so'),
                      '--plan',str(plan_path),'--output',str(a.output/f'reducer-gate-{time.time_ns()}.json')],
