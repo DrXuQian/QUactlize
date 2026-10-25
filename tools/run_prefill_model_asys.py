@@ -115,7 +115,7 @@ def worker(a):
             a.module_record = None
             if case.get('module'):
                 spec = module_spec(w,a.recipe)
-                ckey = (spec['endpoint'],spec['compute'])
+                ckey = (spec['endpoint'],spec['compute'],bool(spec.get('legacy_adapters')))
                 if ckey not in compilers: compilers[ckey] = compiler(spec,a.sdk,a.cache)
                 a.module_record = modules[case['module']]
                 current_module(a.module_record,spec,compilers[ckey])
@@ -197,6 +197,23 @@ def profile_batch(a, point, cases, authority, env, confirmation=0):
     saved['record_sha256'] = digest(saved)
     atomic_json(existing,saved)
     return data['cases']
+
+
+def confirmation_jobs(point):
+    """Bracket forward/reverse batches with native; retain both directions.
+
+    The larger M-span shortlist bounds each profiler process, so a late
+    failure cannot discard every preceding config in a 48-config capture.
+    Existing small finalist plans retain their original four-capture protocol.
+    """
+    cases=point['cases'];limit=point.get('capture_batch_limit',len(cases))
+    if not cases or type(limit)is not int or limit<1:
+        raise ValueError('invalid paired capture inventory/batch limit')
+    native_case=[dict(id='native-fp16',arm='native-fp16')]
+    jobs=[(native_case,0)]
+    for confirmation,ordered in enumerate((cases,list(reversed(cases)))):
+        jobs.extend((ordered[i:i+limit],confirmation) for i in range(0,len(ordered),limit))
+    return jobs+[(native_case,1)]
 
 
 def confirmed_capture(previous, current):
@@ -431,6 +448,8 @@ def main():
         plan['plan_sha256']=digest({k:v for k,v in plan.items() if k!='plan_sha256'})
         atomic_json(plan_path,plan)
     print('PREFILL_ASYS_PLAN '+json.dumps(plan['counts']|dict(configs_after_resources='PENDING',production_changed=False)),flush=True)
+    if any(point.get('capture_batch_limit',a.configs_per_batch)!=a.configs_per_batch for point in plan['points']):
+        p.error('--configs-per-batch differs from the frozen M-span capture limit')
     if a.plan_only: return 0
     if not a.confirm_idle: p.error('check assigned GPU idle then --confirm-idle')
     from tools.run_native_components import environment
@@ -526,8 +545,7 @@ def main():
                 if paired:
                     # Native, forward helper pool, reverse helper pool, native.
                     # First complete rings are excluded inside each capture.
-                    native_case=[dict(id='native-fp16',arm='native-fp16')]
-                    jobs=[(native_case,0),(cs,0),(list(reversed(cs)),1),(native_case,1)]
+                    jobs=confirmation_jobs(point)
                 for cases,confirmation in jobs:
                     before=observe(a.smi,pci,1700,advisory=True)
                     try:

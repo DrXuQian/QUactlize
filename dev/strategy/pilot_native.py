@@ -61,9 +61,14 @@ class DenseCore:
         self.b, self.r = b, Resources(b.sdk)
         self.handles, self.buffers = [], []
         self.native = case['spec']['endpoint'] == 'native'
+        self.legacy_adapters = bool(case['spec'].get('legacy_adapters'))
         try:
             probe = NativeProbe(case['spec'], record)
             self.library = probe.lib
+            if self.legacy_adapters:
+                self.convert=self.library.quactlize_dense_convert_f16
+                self.convert.argtypes=[C.c_int,C.c_void_p,C.c_void_p,C.c_int,C.c_int,C.c_int64,C.c_int,C.c_void_p]
+                self.convert.restype=C.c_int
             request = request_abi(query_receipt['request'], probe.device)
             call = request if self.native else request.dense.call
             launch = case['binding']['launch']
@@ -96,8 +101,9 @@ class DenseCore:
                 checked(prepare(C.byref(request), C.byref(self.recipe), C.byref(handle)), 'explicit dense prepare')
                 self.handles.append(handle)
             self.receipt = dict(endpoint=case['spec']['endpoint'], compute=case['spec']['compute'],
-                storage='F16_NATIVE' if self.native else 'F32', host_cast_untimed=self.native,
-                model_adapter_cost_included=False, launch=launch, module_sha256=record['sha256'],
+                storage='F16_NATIVE' if self.native and not self.legacy_adapters else 'F32',
+                host_cast_untimed=self.native and not self.legacy_adapters,
+                model_adapter_cost_included=self.legacy_adapters, launch=launch, module_sha256=record['sha256'],
                 build_key=record['key'], source='SEALED_RESOURCE_MODULE_NOT_DISPATCHER')
         except BaseException:
             self.close()
@@ -115,6 +121,13 @@ class DenseCore:
         return self.out.read((self.b.rows, self.b.p['n']))
 
     def launch(self, index=0):
+        if self.legacy_adapters:
+            b=self.b
+            rc=self.convert(1,b.a.ptr,self.a.ptr,b.rows,b.p['k'],b.p['k'],1,b.r.stream)
+            if rc:return rc
+            rc=self.run_fn(self.handles[index],b.r.stream)
+            if rc:return rc
+            return self.convert(0,self.out.ptr,b.out.ptr,b.rows,b.p['n'],b.p['n'],1,b.r.stream)
         return self.run_fn(self.handles[index], self.b.r.stream)
 
     def close(self):

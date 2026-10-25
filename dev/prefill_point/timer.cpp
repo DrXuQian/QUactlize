@@ -26,6 +26,8 @@ static int invoke(const PointCall & c) {
         case 5: return reinterpret_cast<int(*)(int,int,int,const void*,void*,int,int,int64_t,const int*,void*)>(
             c.function)(c.v[0],c.v[1],c.v[2],c.p[0],c.p[1],c.v[3],c.v[4],c.stride,
                         static_cast<const int*>(c.p[2]),c.p[3]);
+        case 6: return reinterpret_cast<int(*)(int,const void*,void*,int,int,int64_t,int,void*)>(
+            c.function)(c.v[0],c.p[0],c.p[1],c.v[1],c.v[2],c.stride,c.v[3],c.p[2]);
         default: return 1;
     }
 }

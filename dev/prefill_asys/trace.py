@@ -100,8 +100,8 @@ def helper_role(row, arm):
         if '::finish_bf16(' in n: return 'output'
         if re.search(r'\bfull_(direct|wide|transpose|shared|packed_exchange)<',n): return 'expansion'
     else:
-        if 'convert_rows<true>' in n: return 'input'
-        if 'convert_rows<false>' in n: return 'output'
+        if 'convert_rows<true>' in n or 'convert_flat<true>' in n: return 'input'
+        if 'convert_rows<false>' in n or 'convert_flat<false>' in n: return 'output'
         if any(s in n for s in ('sf_unit16<','sf_columns<','prepass_unit_kernel<','sf_bfloat_units<')):
             return 'expansion'
     return None

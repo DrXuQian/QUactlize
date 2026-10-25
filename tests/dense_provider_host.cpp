@@ -374,7 +374,28 @@ void reviewed_prefill() {
     std::cout<<"DENSE_PREFILL_HOST exact="<<exact<<" bucket_replays="<<buckets<<" gpu_execution=0\n";
 }
 
+void dense_m_controls() {
+    std::set<std::tuple<int,int,int>> families;
+    for(auto const& r:quactlize::dispatch::dense_prefill::kExact) families.emplace(r.q,r.n,r.k);
+    kImages.clear();auto ctx=test::context(0,true);
+    for(auto [q,n,k]:families) for(int m=1;m<=8;++m) {
+        auto p=test::params(q,m,n,k);auto raw=test::plan(*ctx,p);
+        auto const& plan=*static_cast<quactlize::dense::Plan*>(raw);
+        int kind=plan.kind==quactlize::dense::Kind::Tc?0:plan.kind==quactlize::dense::Kind::Simt?1:2;
+        std::cout<<"DENSE_M_CONTROL {\"request\":["<<q<<",0,"<<n<<','<<k<<",1,1,1,"<<m
+            <<",0],\"kind\":"<<kind<<",\"policy\":"<<plan.info.policy
+            <<",\"parent\":"<<std::quoted(plan.tc.parent)<<",\"split\":"<<plan.info.split
+            <<",\"native_f16\":"<<(plan.native_f16?"true":"false");
+        auto const& s=plan.small.base.simt;auto const& f=plan.small.q4;
+        if(kind==1)std::cout<<",\"config\":["<<s.variant<<','<<s.columns<<','<<s.warps<<','<<s.values<<','<<s.split<<']';
+        if(kind==2)std::cout<<",\"config\":["<<f.reader<<','<<f.variant<<','<<f.columns<<','<<f.warps<<','<<f.values<<']';
+        std::cout<<"}\n";
+        // Prepared plans are owned by ctx, not separately destroyable handles.
+    }
+}
+
 int main() {
+    dense_m_controls();
     reviewed_prefill();
     using namespace quactlize::dispatch;
     size_t matched_count=0,cost_count=0,component_sf_count=0;

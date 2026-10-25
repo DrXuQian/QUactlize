@@ -120,7 +120,8 @@ def make_plan(review, helpers, *, noise_pct=5.0):
 def counts(points):
     return dict(points=len(points),families=len({(p['workload']['qtype'],p['workload']['n'],
         p['workload']['k']) for p in points}),configs=sum(len(p['cases']) for p in points),
-        captures=4*len(points),timed_arms=2*sum(len(p['cases'])+1 for p in points),
+        captures=sum(2+2*math.ceil(len(p['cases'])/p.get('capture_batch_limit',len(p['cases'])))
+                     for p in points),timed_arms=2*sum(len(p['cases'])+1 for p in points),
         **inventory(dict(points=points))['counts'])
 
 
@@ -138,6 +139,9 @@ def snapshot(plan):
 
 
 def load(document):
+    if document.get('schema') == 'quactlize.dense-m-span.v1':
+        from .m_span import validate as validate_m_span
+        return validate_m_span(document)
     if document.get('schema') == 'quactlize.dense-helper-followup.v1':
         from .helper_followup import validate as validate_followup
         return validate_followup(document)
@@ -222,13 +226,22 @@ def partition(points, shard, shards):
 def bind_cases(point, queries):
     """Resolve only these fixed schedules; unavailable controls are a failure."""
     w=Workload(**point['workload']);cases=copy.deepcopy(point['cases'])
+    ready=[]
     for c in cases:
         r=Recipe.from_dict(c['recipe'])
-        if r.kind!='tc':continue
+        if r.kind!='tc':ready.append(c);continue
         spec=probe_spec(w,r,int(dict(r.parameters).get('grid_mode',0)>=2))
         receipt=queries[digest(spec)]
         if receipt.get('request')!=spec or receipt.get('status')!='READY':
+            if (point.get('m_span') and 'required-control' not in c['roles'] and
+                    receipt.get('request')==spec and receipt.get('status')=='UNAVAILABLE' and
+                    receipt.get('rc')==1 and receipt.get('runtime_status')==0):
+                point.setdefault('resource_unavailable',[]).append(dict(case=c,receipt=receipt))
+                continue
             raise ValueError('required finalist resource unavailable: '+c['id'])
         c['module']=digest(module_spec(w,r))
+        if point.get('m_span') and receipt['device']['compute_units']!=point['proposal_compute_units']:
+            raise ValueError('M-span proposal CU count differs from the actual device')
         c['launch']=resolved_grid(w,r,receipt['device']['compute_units'],receipt['occupancy'])
-    return cases
+        ready.append(c)
+    return ready

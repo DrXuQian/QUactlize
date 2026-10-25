@@ -182,13 +182,23 @@ def qz(args, arm):
             names = ['error_reset', 'input', 'expansion', 'main', 'output']
         seq = []
         helper_choice = tc_helper_choice(dense,w,helper_mode,getattr(args,'helper_options',None)) if tc else None
+        legacy=tc and bool(dict(recipe.parameters).get('legacy_adapters'))
+        if legacy:
+            convert=core.library.quactlize_dense_convert_f16
+            convert.argtypes=[C.c_int,C.c_void_p,C.c_void_p,C.c_int,C.c_int,C.c_int64,C.c_int,C.c_void_p]
+            convert.restype=C.c_int
+            if helper_choice is not None:raise ValueError('legacy control cannot replace its flat casts')
+        def endpoint(src,dst,input):
+            width=w.k if input else w.n
+            if legacy:return call(convert,6,[src,dst,b.r.stream],[int(input),w.m,width,1],width)
+            if helper_choice:return dense.io_call(b,src,dst,input=input,storage=0,vector=helper_choice['vector_io'])
+            return call(b.helpers.io,1,[src,dst,None,b.error.ptr,b.r.stream],
+                        [int(not tc),int(input),w.m,width,w.m],width)
         for i in range(copies):
             if not tc: seq.append(call(None, 3, [b.error.ptr, b.r.stream]))
             if sf_first:
                 seq.append(call(expansion.fn, pointers=[ptr(C.byref(expansion.calls[i])), ptr(C.byref(b.arr))]))
-            seq.append(dense.io_call(b,b.a.ptr,a,input=True,storage=0,vector=helper_choice['vector_io']) if helper_choice else
-                call(b.helpers.io, 1, [b.a.ptr, a, None, b.error.ptr, b.r.stream],
-                            [int(not tc), 1, w.m, w.k, w.m], w.k))
+            seq.append(endpoint(b.a.ptr,a,True))
             if tc:
                 if expansion and not sf_first:
                     seq.append(call(expansion.fn, pointers=[ptr(C.byref(expansion.calls[i])), ptr(C.byref(b.arr))]))
@@ -204,9 +214,7 @@ def qz(args, arm):
                 seq.append(call(core.dequant, pointers=[ptr(C.byref(dq)), ptr(C.byref(b.arr))]))
                 seq.append(call(submit.run, 2, [submit.entry, core.provider.handle, a, target, out],
                                 [w.m, w.n, w.k]))
-            seq.append(dense.io_call(b,out,b.out.ptr,input=False,storage=0,vector=helper_choice['vector_io']) if helper_choice else
-                call(b.helpers.io, 1, [out, b.out.ptr, None, b.error.ptr, b.r.stream],
-                            [int(not tc), 0, w.m, w.n, w.m], w.n))
+            seq.append(endpoint(out,b.out.ptr,False))
         calls = (Call*len(seq))(*seq)
         proof = []
         for repeat in (0, 1):

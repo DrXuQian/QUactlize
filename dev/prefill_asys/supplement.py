@@ -37,6 +37,10 @@ def legal(value, w):
 
 
 def policy_lookup(policy, w):
+    # Match the C++ dense_prefill::domain gate. A log2 M bucket must not
+    # silently claim that M3072 is covered by the M2048-only admission.
+    if not 128<=w.m<=2048:
+        return 'OUTSIDE_NEW_TABLE', None
     shape = [w.qtype, w.m, w.n, w.k]
     for point in policy['points']:
         if point['shape'] == shape:

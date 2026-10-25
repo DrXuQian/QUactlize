@@ -66,11 +66,12 @@ def original_recipe(row):
     r = actual(row)
     if r.kind == 'tc':
         r = Recipe.make(r.kind, r.route, **(dict(r.parameters) |
-                                           {'dequant_config': row.get('dequant_config', -1)}))
+            {'dequant_config': row.get('dequant_config', -1)} |
+            ({'legacy_adapters':True} if row.get('native_f16') else {})))
     return r
 
 
-def proposed(point, original, history, prior):
+def proposed(point, original, history, prior, *, allow_new_family=False):
     """No tile Cartesian product. Preserve exact old recipes plus route donors.
 
     Common SIMT has only the 3/4 geometries just admitted across S1/2/4/8.
@@ -97,9 +98,12 @@ def proposed(point, original, history, prior):
             result[key]['reasons'].append(reason)
 
     add(original, 'CURRENT_CPP_SELECTED_RECIPE', True)
-    old = prior[tuple(request(w))]
-    add(normalize(old['original']), 'PREVIOUS_COMPONENT_INCUMBENT', True)
-    add(normalize(old['config'], dequant=old['dequant_config']), 'CONFIRMED_COMPONENT_CHOICE', True)
+    old = prior.get(tuple(request(w)))
+    if old is None and not allow_new_family:
+        raise ValueError('frozen refresh lost its prior component control')
+    if old is not None:
+        add(normalize(old['original']), 'PREVIOUS_COMPONENT_INCUMBENT', True)
+        add(normalize(old['config'], dequant=old['dequant_config']), 'CONFIRMED_COMPONENT_CHOICE', True)
     matches = [(hw, choices) for hw, choices in history
                if (hw.qtype, hw.operation, hw.compute) == (w.qtype, w.operation, w.compute)]
     def distance(item):

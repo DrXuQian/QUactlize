@@ -1,6 +1,7 @@
 """Complete provider host contracts. Not PPU numeric/performance evidence."""
 from pathlib import Path
 import ctypes as C
+import json
 import os
 import subprocess
 
@@ -57,6 +58,20 @@ def test_public_provider_orchestration_and_poc_selection(tmp_path):
     result=subprocess.run([str(exe)], check=True, text=True, stdout=subprocess.PIPE)
     from test_prefill_refresh_policy import check_materialized
     check_materialized(result.stdout)
+    from quactlize.dispatch.planning import plan_smallm
+    controls=[json.loads(line.split(' ',1)[1]) for line in result.stdout.splitlines()
+              if line.startswith('DENSE_M_CONTROL ')]
+    assert len(controls)==360
+    planned=plan_smallm(tmp_path,[r['request'] for r in controls],dense_fallbacks=True)
+    for actual,expected in zip(controls,planned['requests']):
+        assert expected['status']==0 and actual['kind']==expected['kind']
+        assert actual['policy']==expected['policy'] and actual['native_f16']==expected['native_f16']
+        if actual['kind']==0:
+            assert (actual['parent'],actual['split'])==(expected['parent']['symbol'],expected['split'])
+        else:
+            fields=('variant','columns','warps','values','split') if actual['kind']==1 else (
+                'reader','variant','columns','warps','values')
+            assert actual['config']==[expected['config'][f] for f in fields]
     print(result.stdout)
 
 

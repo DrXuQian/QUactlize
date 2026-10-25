@@ -19,6 +19,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from dev.strategy.refresh import make_plan, request, family, assign
+from dev.strategy.m_coverage import PHASE as M_PHASE, points as m_points, make_decode_plan
 from dev.strategy.refresh_gaps import (PHASE as GAP_PHASE, make_plan as make_gap_plan,
                                        query_points as gap_queries, validate_producers)
 from dev.strategy.refresh_clock import ADVISORY, observe, parse as parse_clock, request_lock
@@ -134,7 +135,7 @@ def compile_all(a, plan):
     vc = VectorCompiler(a.sdk, cache/'cache/vectors')
     compilers = {}
     for item in plan['tc'].values():
-        k = (item['endpoint'], item['compute'])
+        k = (item['endpoint'], item['compute'], bool(item.get('legacy_adapters')))
         if k not in compilers:
             compilers[k] = tc_compiler(item, a.sdk, cache/'cache/tc')
     tasks = [('tc', k, v) for k, v in plan['tc'].items()]
@@ -147,7 +148,7 @@ def compile_all(a, plan):
     def build(task):
         kind, key, item = task
         if kind == 'tc':
-            compiler = compilers[item['endpoint'], item['compute']]
+            compiler = compilers[item['endpoint'], item['compute'], bool(item.get('legacy_adapters'))]
             if prior_records is not None:
                 old = prior_records['tc'][key]
                 expected = digest(dict(identity=compiler.identity, parent=item['parent'],
@@ -528,11 +529,13 @@ def run(a):
             if sha(ROOT/name) != value:
                 raise ValueError('plan source changed')
     else:
-        points = gap_queries() if a.phase == GAP_PHASE else [
+        points = m_points() if a.phase == M_PHASE else gap_queries() if a.phase == GAP_PHASE else [
             p for p in inventory() if p['cohort'] == 'decode']
-        originals = plan_smallm(a.output, [request(Workload(**p['workload'])) for p in points])
+        originals = plan_smallm(a.output, [request(Workload(**p['workload'])) for p in points],
+                               dense_fallbacks=a.phase==M_PHASE)
         atomic_json(a.output/'cpp-originals.json', originals)
-        plan = (make_gap_plan(originals['requests']) if a.phase == GAP_PHASE else
+        plan = (make_decode_plan(originals['requests']) if a.phase == M_PHASE else
+                make_gap_plan(originals['requests']) if a.phase == GAP_PHASE else
                 make_plan(originals['requests'], a.phase))
         if a.clock_retry_from:
             plan = make_retry(a.clock_retry_from, plan, harness_identity(ROOT), saved, authority_for)
@@ -639,7 +642,7 @@ def main():
     p.add_argument('--expected-ce-ghz', type=float, default=1.7)
     p.add_argument('--l2-bytes', type=int, default=67108864)
     p.add_argument('--jobs', type=int, default=192)
-    p.add_argument('--phase', choices=('all', 'pilot', GAP_PHASE), default='all')
+    p.add_argument('--phase', choices=('all', 'pilot', GAP_PHASE, M_PHASE), default='all')
     p.add_argument('--resume', action='store_true')
     p.add_argument('--clock-retry-from', type=Path,
                    help='reviewed strict-clock results; retry only incomplete points in a new run')
@@ -655,7 +658,7 @@ def main():
     if (not cards or len(set(cards)) != len(cards) or any(not c.isdecimal() or str(int(c)) != c for c in cards) or
             a.jobs < 1 or a.l2_bytes <= 0 or not 0 < a.expected_ce_ghz < 10 or
             a.expected_ce_ghz*1000 != int(a.expected_ce_ghz*1000) or
-            a.resume and a.clock_retry_from or a.phase == GAP_PHASE and a.clock_retry_from):
+            a.resume and a.clock_retry_from or a.phase in (GAP_PHASE,M_PHASE) and a.clock_retry_from):
         p.error('invalid worker/jobs/L2/clock parameters')
     a.output = a.output.resolve()
     a.sdk = a.sdk.resolve()

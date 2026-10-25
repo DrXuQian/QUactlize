@@ -7,7 +7,8 @@
 
 using namespace quactlize::dispatch;
 
-static void emit(int q,int mode,int n,int k,int experts,int topk,int channels,int tokens,int compute) {
+static void emit(int q,int mode,int n,int k,int experts,int topk,int channels,int tokens,int compute,
+                 bool dense_fallbacks=false) {
     qkg_call_v1 c{1,sizeof(c)};
     c.qtype=q;c.mode=mode;c.n=n;c.k=k;c.experts=experts;c.topk=topk;c.channels=channels;
     int64_t rows=int64_t(tokens)*(mode==QKG_INDEXED?topk:1);
@@ -16,9 +17,53 @@ static void emit(int q,int mode,int n,int k,int experts,int topk,int channels,in
     auto a=q==8?q8_kpack2::arrangement():q==12?ppu_arrangements::q4_kpack4_transpose_v1():
         q>=10 && q<=14?ppu_arrangements::kquant_kpack_transpose_v1(q):quactlize_ppu_placed_arrangement_v2{};
     auto d=select_smallm({2,sizeof(qkg_simt_call_v2),c,compute},a);
+    // Offline control query only. Mirror the public dense F16 caller's
+    // table-miss chain; a matched MISS is not the executed production recipe.
+    TcDecision fallback;
+    Config fallback_config{};
+    bool native_f16=false;
+    if(dense_fallbacks && d.status==QKS_MISS && mode==QKG_DENSE && compute==QK_COMPUTE_F16 &&
+            tokens>=1 && tokens<=8 && experts==1 && channels==1 && topk==1) {
+        auto& b=d.choice.base;
+        if(q==12) {
+            auto board=quactlize::decode_policy::select(mode,n,k,tokens);
+            if(board && board->simt) {
+                auto f=board->config;
+                b.kind=QKS_SMALLM_Q4;b.policy=QKS_DECODE_MEASURED;
+                d.choice.q4={1,sizeof(d.choice.q4),f.reader,f.variant,f.warps,f.values,f.columns};
+                d.status=QKS_OK;
+            }
+        } else {
+            auto legacy=smallm::select(c);
+            if(legacy.row) {
+                auto const& choice=smallm::data::kChoices[legacy.row->choice];
+                b.policy=legacy.policy;b.source_n=legacy.row->n;b.source_k=legacy.row->k;
+                b.source_tokens=legacy.row->tokens;
+                if(choice.simt) {
+                    auto f=choice.reader;b.kind=QKS_SMALLM_SIMT;
+                    b.simt={1,sizeof(b.simt),f.variant,f.columns,f.warps,f.values,f.split};
+                    d.status=quactlize::execution::simt::query(c,b.simt,&a,b.sizes)==QKG_OK?QKS_OK:QKS_MISS;
+                } else {
+                    qks_request_v1 r{1,sizeof(r),q,choice.tc.route,tokens,n,k,1,tokens,a.mapping_id};
+                    fallback=select_tc(r,false,compute,{&choice.tc,legacy.policy});
+                }
+            }
+        }
+        if(d.status!=QKS_OK && !fallback) {
+            qks_request_v1 r{1,sizeof(r),q,q==8?QK_DENSE_SF:QK_DENSE_FQ,tokens,n,k,1,tokens,a.mapping_id};
+            if(q==12) fallback=select_tc(r,true,compute);
+            if(!fallback) fallback=select_dense_dynamic(r,compute);
+            native_f16=fallback.policy==QKS_LEGACY_DENSE;
+        }
+        if(fallback) {
+            fallback_config=fallback.config();d.tc=&fallback_config;
+            b.kind=QKS_SMALLM_TC;b.policy=fallback.policy;d.status=QKS_OK;
+        }
+    }
     auto const& b=d.choice.base;
     std::cout<<"{\"request\":["<<q<<','<<mode<<','<<n<<','<<k<<','<<experts<<','<<topk<<','<<channels<<','<<tokens<<','<<compute
         <<"],\"status\":"<<d.status;
+    if(dense_fallbacks)std::cout<<",\"control_scope\":\"PUBLIC_DENSE_F16_HOST_CHAIN\",\"native_f16\":"<<(native_f16?"true":"false");
     if(d.status==QKS_OK) {
         std::cout<<",\"kind\":"<<b.kind<<",\"policy\":"<<b.policy
             <<",\"dequant_config\":"<<d.dequant_config
@@ -90,8 +135,9 @@ int main(int argc,char** argv) {
             emit(r.q,r.mode,r.n,r.k,r.experts,r.topk,r.channels,r.tokens,r.compute);
         return 0;
     }
-    if(argc!=1)return 2;
+    bool dense_fallbacks=argc==2 && std::string(argv[1])=="--dense-fallbacks";
+    if(argc!=1 && !dense_fallbacks)return 2;
     int q,mode,n,k,e,top,ch,m,compute;
-    while(std::cin>>q>>mode>>n>>k>>e>>top>>ch>>m>>compute)emit(q,mode,n,k,e,top,ch,m,compute);
+    while(std::cin>>q>>mode>>n>>k>>e>>top>>ch>>m>>compute)emit(q,mode,n,k,e,top,ch,m,compute,dense_fallbacks);
     return std::cin.eof()?0:1;
 }

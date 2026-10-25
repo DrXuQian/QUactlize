@@ -23,7 +23,11 @@ def plan_prefill(output, *, historical=False):
     return dict(schema=PREFILL_SCHEMA,scope='TYPED_PREFILL_COMPONENT_SELECTION_NOT_MODEL_ADMISSION',requests=rows)
 
 
-def plan_smallm(output, requests=None):
+def plan_smallm(output, requests=None, *, dense_fallbacks=False):
+    if requests is not None:requests=[list(r) for r in requests]
+    if dense_fallbacks and (requests is None or any(len(r)!=9 or r[1]!=0 or r[-1]!=0
+            or r[4:7]!=[1,1,1] or not 1<=r[7]<=8 for r in requests)):
+        raise ValueError('complete dense control query requires explicit F16 dense M1..8 requests')
     output = Path(output)
     executable = output / 'selection-query'
     subprocess.run(['g++', '-std=c++17', '-O2', '-I'+str(ROOT),
@@ -34,7 +38,7 @@ def plan_smallm(output, requests=None):
         requests = [list(r) for r in requests]
         if any(len(r) != 9 or any(type(x) is not int for x in r) for r in requests):
             raise ValueError('small-M request requires q/mode/N/K/experts/topk/channels/tokens/compute')
-        text = subprocess.check_output([str(executable)], text=True,
+        text = subprocess.check_output([str(executable)]+(['--dense-fallbacks'] if dense_fallbacks else []), text=True,
             input=''.join(' '.join(map(str, r))+'\n' for r in requests))
     rows = [json.loads(line) for line in text.splitlines()]
     if requests is not None and [r['request'] for r in rows] != requests:

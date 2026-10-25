@@ -18,9 +18,15 @@ from quactlize.runtime.tuning import digest, ROUTES
 def module_spec(w, r):
     if r.kind != 'tc':
         raise ValueError('resource probe requires a TC recipe')
-    return dict(parent=parent(r,w), compute=w.compute,
+    legacy = dict(r.parameters).get('legacy_adapters', False)
+    spec = dict(parent=parent(r,w), compute=w.compute,
                 endpoint='grouped' if w.operation!='dense' else
-                         'native' if w.compute=='f16' and w.m>8 else 'typed')
+                         'native' if w.compute=='f16' and (w.m>8 or legacy) else 'typed')
+    if legacy:
+        if w.operation!='dense' or w.compute!='f16' or r.route!='fq':
+            raise ValueError('legacy flat adapters require dense F16 FQ')
+        spec['legacy_adapters'] = True
+    return spec
 
 
 def probe_spec(w, r, algorithm):
@@ -63,6 +69,19 @@ def compiler(spec, sdk, cache):
     from quactlize.decode.grouped_compiler import GroupedComputeCompiler
     if spec['endpoint']=='native':
         if spec['compute']!='f16':raise ValueError('native dense requires F16')
+        if spec.get('legacy_adapters'):
+            # Compile the unchanged shipping casts alongside the experimental
+            # control parent. Source text participates in the cache key.
+            class LegacyCompiler(Compiler):
+                def __init__(self, sdk, cache):
+                    super().__init__(sdk, cache)
+                    path=Path(__file__).resolve().parents[2]/'quactlize/dense/copy.cu'
+                    self.adapters=path.read_text()
+                    self.identity['legacy_adapters']=digest(self.adapters)
+                    self.input_stats[path]=(path.stat().st_mtime_ns,path.stat().st_size)
+                def source(self, parent, key):
+                    return super().source(parent,key)+'\n'+self.adapters
+            return LegacyCompiler(sdk,cache)
         return Compiler(sdk,cache)
     cls=GroupedComputeCompiler if spec['endpoint']=='grouped' else DecodeCompiler
     return cls(sdk,cache,compute_type=spec['compute'])

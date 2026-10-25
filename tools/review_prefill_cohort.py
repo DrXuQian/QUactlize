@@ -200,6 +200,10 @@ def ingest(root):
         combined={cid:confirmations(rows,spec.get('confirmation_captures',1)) for cid,rows in found[key].items()}
         point = dict(workload=spec['workload'], consumers=spec.get('consumers',spec.get('tensors')),
                      authority=aid, measurements=list(combined.values()))
+        # A resource-rejected optional proposal is not a measured loser. Keep
+        # its exact query/recipe in the compact upload, including on partials.
+        for field in ('resource_unavailable','sf_screen','table_coverage','proposal_compute_units'):
+            if field in spec:point[field]=spec[field]
         missing=sorted(({c['id'] for c in spec['cases']} | {'native-fp16'})-set(combined))
         unconfirmed=sorted(cid for cid,row in combined.items() if row['status']!='PASS')
         if missing or unconfirmed:

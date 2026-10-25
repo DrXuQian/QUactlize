@@ -116,6 +116,20 @@ class IngestTests(unittest.TestCase):
         self.assertEqual([value['components'][c]['phase'] for c in row['components']],['input','main','output'])
         self.assertEqual(row['numerical'][0]['relative_l1_error'],.001)
 
+    def test_optional_resource_rejection_remains_in_compact_review(self):
+        for complete in (True,False):
+            root,key,_=self.fixture(name=str(complete),complete=complete)
+            path=root/'execution-plan.json';plan=json.loads(path.read_text())
+            rejected=[dict(case={'id':'optional-heavy'},receipt={'status':'UNAVAILABLE','rc':1})]
+            plan['points'][0].update(resource_unavailable=rejected,
+                sf_screen={'legal_parents':12},proposal_compute_units=72,table_coverage='MISS')
+            path.write_text(json.dumps(plan))
+            result=ingest(root)
+            point=result['points'][key] if complete else next(iter(result['partial_points'].values()))
+            self.assertEqual(point['resource_unavailable'],rejected)
+            self.assertEqual(point['table_coverage'],'MISS')
+            self.assertEqual(point['proposal_compute_units'],72)
+
     def paired(self, *, drift=False):
         root,key,path=self.fixture()
         plan=json.loads((root/'execution-plan.json').read_text())

@@ -145,7 +145,7 @@ def main():
             if old and old['status']=='PASS':
                 if sha(old['record']['path'])!=old['record']['sha256']:raise ValueError('cached resource DSO differs')
                 continue
-            key=(spec['endpoint'],spec['compute'])
+            key=(spec['endpoint'],spec['compute'],bool(spec.get('legacy_adapters')))
             if key not in compilers:compilers[key]=compiler(spec,a.sdk,a.cache)
             todo.append((mid,spec,compilers[key]))
         available=next(int(l.split()[1])*1024 for l in Path('/proc/meminfo').read_text().splitlines() if l.startswith('MemAvailable:'))
