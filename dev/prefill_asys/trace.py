@@ -187,7 +187,15 @@ def parse_rows(rows, cases, *, apis=()):
             missing = (call==0 and arm in ('full-bf16','full-fp16','full-bf16-typed') and
                        helper_role(block[0],arm) in ('input','expansion'))
             if missing: exceptions.append(primer_reset_evidence(block[0],rows,apis))
-            calls.append(one_call(block,arm,case['stages'],split,primer_without_reset=missing))
+            try:
+                calls.append(one_call(block,arm,case['stages'],split,primer_without_reset=missing))
+            except ValueError as exc:
+                # Keep the strict completeness check. A coordinator's compact
+                # failure must identify the exact call, not just an output
+                # helper with no way to tell primer loss from missing samples.
+                names=[dict(name=r['name'][:240],correlation_id=r.get('correlation_id')) for r in block]
+                raise ValueError(f'{exc}; case={case["case_id"]} arm={arm} call={call} '
+                                 f'discarded_calls={cut} activities={names!r}') from exc
             if parameters.get('dense_reducer'):
                 elements=parameters['dense_reducer']
                 w=case['workload'];reducers=[r for r in block if r['phase']=='reducer']

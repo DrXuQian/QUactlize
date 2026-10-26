@@ -5,7 +5,7 @@
 extern "C" {
 #endif
 
-// Per-call full BF16 expansion. No expanded-weight cache. Dense M>=128;
+// Per-call full BF16 expansion. No expanded-weight cache. Dense M128..8192;
 // grouped top8 E256 with total M>=1024. F32 caller endpoints are preserved.
 // Grouped row maps and offsets are current GPU inputs, rebuilt by the caller
 // on every invocation. src_rows indexes A rows; dst_rows indexes output rows.

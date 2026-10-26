@@ -516,6 +516,12 @@ def main():
             if sha(path)!=receipt[key]:raise ValueError('diagnostic executable changed')
         if not a.no_native:validate_native(receipt,a)
         payload=validate_payload(a)
+        # Full geometry must be executable before compiling/timing thousands
+        # of unrelated TC proposals. Queries allocate no weight/workspace.
+        from dev.prefill_point.typed import DenseLibrary,workspace_gate
+        full_gate=workspace_gate(plan['points'],DenseLibrary(a.output/'build/dense/libquactlize_ppu_prefill.so'))
+        atomic_json(a.output/f'full-workspace-gate-{time.time_ns()}.json',full_gate)
+        print('PREFILL_FULL_WORKSPACE '+json.dumps({k:full_gate[k] for k in ('status','cases','scope')}),flush=True)
         if any(c.get('helper_options',{}).get('vector_io')==4 for p in plan['points'] for c in p.get('cases',[])):
             # A fresh process, outside profiling/timing; exact built helper ABI
             # must pass tails/strides/NaNs/error flags before IO4 can be measured.
@@ -555,6 +561,12 @@ def main():
                     point['queries']=queries;point['cases']=runnable(point);point.pop('queries')
         atomic_json(a.output/'modules.json',modules)
         atomic_json(a.output/'execution-plan.json',dict(points=points,authority=digest(authority)))
+        if any('cases' not in point for point in plan['points']):
+            # Older cohort plans form concrete cases only after resource
+            # resolution. Check those too, still before any timed batch.
+            full_gate=workspace_gate(points,DenseLibrary(a.output/'build/dense/libquactlize_ppu_prefill.so'))
+            atomic_json(a.output/f'full-workspace-gate-resolved-{time.time_ns()}.json',full_gate)
+            print('PREFILL_FULL_WORKSPACE '+json.dumps({k:full_gate[k] for k in ('status','cases','scope')}),flush=True)
         total=sum((len(p['cases'])+int(p.get('native_comparison',True)))*p.get('confirmation_captures',1) for p in points)
         print(f'PREFILL_ASYS_READY shapes={len(points)} configs={total} production_changed=0',flush=True)
         lock_path=Path('/tmp')/('quactlize-components-'+digest(pci)[:24]+'.lock')

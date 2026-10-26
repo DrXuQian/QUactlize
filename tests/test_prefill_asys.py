@@ -181,6 +181,14 @@ class PrefillAsysTests(unittest.TestCase):
         drift=copy.deepcopy(rows);drift[-2]['grid']=[2,1,1]
         with self.assertRaisesRegex(ValueError,'inventory changed'):parse_rows(drift,[a])
 
+    def test_missing_helper_diagnostic_identifies_primer_or_measured_call(self):
+        rows,case=self.rows()
+        for call in (0,case['trace']['discarded_calls']):
+            i=4*call
+            with self.assertRaisesRegex(ValueError,
+                    f'helper inventory/order differs:.*case=case arm=sf call={call} discarded_calls=8'):
+                parse_rows(rows[:i]+rows[i+1:],[case])
+
     def test_no_gpu_table_never_uses_runtime_api(self):
         with tempfile.TemporaryDirectory() as td:
             path=Path(td)/'trace.sqlite'

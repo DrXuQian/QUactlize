@@ -23,6 +23,65 @@ MAX_CASES=48
 CAPTURE_BATCH_LIMIT=16
 
 
+def retry_plan(original, review):
+    """New immutable run for incomplete points; retain complete old points.
+
+    Keep every original candidate and both capture directions for each retried
+    point. This is not a source-hash bypass or a mixture of old/new component
+    timings. The final reviewer replaces each completed point atomically.
+    """
+    validate(original)
+    if (review.get('schema')!='quactlize.prefill-component-review.v1' or
+            review.get('review_sha256')!=digest({k:v for k,v in review.items() if k!='review_sha256'})):
+        raise ValueError('retry requires an unchanged all-worker component review')
+    if original.get('retry'):
+        raise ValueError('supply the original complete M-span plan, not an earlier retry plan')
+    specs={p['id']:p for p in original['points']}
+    complete=review['points'];partial={}
+    for p in review['partial_points'].values():
+        key=p['point_id']
+        if key in complete:continue
+        if key in partial:raise ValueError('ambiguous partial authorities for point '+key)
+        partial[key]=p
+    if (set(complete)|set(partial)!=set(specs) or
+            set(review['pending_points'])!=set(partial)):
+        raise ValueError('retry review does not cover the original all-worker workload')
+    if not partial:raise ValueError('no incomplete points to retry')
+    for key,p in {**complete,**partial}.items():
+        spec=specs[key]
+        if p['workload']!=spec['workload'] or p['authority'] not in review['authorities']:
+            raise ValueError('retry workload/authority changed: '+key)
+        if digest(review['authorities'][p['authority']])!=p['authority']:
+            raise ValueError('retry original authority changed: '+key)
+        expected={c['id']:c for c in spec['cases']}
+        rows=[r for r in p['measurements'] if r['case_id']!='native-fp16']
+        measured={r['case_id'] for r in rows}
+        rejected={r['case']['id'] for r in p.get('resource_unavailable',[])}
+        missing=set(p.get('missing',[]))-{'native-fp16'}
+        if (len(rows)!=len(measured) or measured&missing or rejected&(measured|missing) or
+                measured|missing|rejected!=set(expected)):
+            raise ValueError('retry original config denominator changed: '+key)
+        for row in rows:
+            identity=case_identity(expected[row['case_id']])
+            if row['candidate']!=digest(identity) or review['candidates'].get(row['candidate'])!=identity:
+                raise ValueError('retry original recipe/helper identity changed: '+key)
+        if key in complete and any(r['status']!='PASS' for r in p['measurements']):
+            raise ValueError('unpassed row cannot be retained as complete: '+key)
+    result=copy.deepcopy(original)
+    result['points']=[p for p in result['points'] if p['id'] in partial]
+    for p in result['points']:
+        p['native_comparison']=partial[p['id']].get('native_comparison',True)
+    result['reuse']=[dict(id=key,authority=p['authority'],evidence_sha256=digest(p),
+                          status='RETAIN_ORIGINAL_COMPLETE_POINT') for key,p in sorted(complete.items())]
+    result['retry']=dict(original_plan_sha256=original['sha256'],review_sha256=review['review_sha256'],
+        original_points=len(specs),retained_points=len(complete),retried_points=len(partial),
+        scope='INCOMPLETE_POINTS_ONLY_ALL_ORIGINAL_CONFIGS_BOTH_CAPTURES',
+        old_measurements_unchanged=True)
+    result['counts']=counts(result['points'])
+    result['sha256']=digest({k:v for k,v in result.items() if k!='sha256'})
+    return validate(result)
+
+
 def tc_case(recipe, io=3):
     return dict(arm=recipe.route,helper_mode='cohort-current',
                 helper_options=dict(vector_io=io),recipe=json.loads(json.dumps(asdict(recipe))))

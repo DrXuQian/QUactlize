@@ -10,6 +10,54 @@ import pytest
 ROOT=Path(__file__).resolve().parents[1]
 
 
+def test_dense_full_workspace_covers_declared_m_span(tmp_path):
+    """Real shared validator, including the typed Q8 path; no GPU work."""
+    import json
+    from dev.prefill_asys.m_span import MS
+    from quactlize.dispatch.dense_prefill import EVIDENCE
+    families={(p['shape'][0],*p['shape'][2:]) for p in json.loads(EVIDENCE.read_text())['points']}
+    families.update((q,256,512) for q in (8,10,11,12,13,14))
+    source=tmp_path/'dense-m-span.cpp';exe=tmp_path/'dense-m-span'
+    source.write_text(r'''
+#include "quactlize/prefill/dynamic.hpp"
+#include <cassert>
+#include <cstring>
+#include <iostream>
+int main() {
+ const int families[][3]={@FAMILIES@};
+ for(auto const& family:families) {
+  const int q=family[0],n=family[1],k=family[2];
+  auto arr=q==8?q8_kpack2::arrangement():q==12?ppu_arrangements::q4_kpack4_transpose_v1():
+      ppu_arrangements::kquant_kpack_transpose_v1(q);
+  for(int m:{@MS@}) {
+   qkp_call_v1 c{};c.version=1;c.size=sizeof(c);c.m=c.a_rows=m;
+   c.a_stride=k;c.output_stride=n;c.weight={1,sizeof(qzd_call_v1),q,n,k,1,1,5};
+   quactlize::prefill::Layout l{};
+   int rc=quactlize::prefill::layout(c,&arr,l,true);
+   if(rc)std::cerr<<"q="<<q<<" m="<<m<<" rc="<<rc<<std::endl;
+   assert(rc==0);
+   assert(l.a==uint64_t(n)*k*2 && l.out-l.a==uint64_t(m)*k*2);
+   assert(l.rows-l.out==uint64_t(m)*n*2 && l.directory<l.bytes && l.bytes%256==0);
+   assert(quactlize::prefill::dynamic_bytes(c,l)==l.bytes+(4u<<20));
+   quactlize::prefill::Layout legacy{};
+   if(q==8)assert(quactlize::prefill::layout(c,&arr,legacy)==QKG_SHAPE);
+   else {
+    assert(!quactlize::prefill::layout(c,&arr,legacy));
+    assert(std::memcmp(&legacy,&l,sizeof(l))==0);
+   }
+   auto bad=c;bad.a_rows--;assert(quactlize::prefill::layout(bad,&arr,l,true)==QKG_SHAPE);
+   bad=c;bad.m=bad.a_rows=8193;assert(quactlize::prefill::layout(bad,&arr,l,true)==QKG_SHAPE);
+   bad=c;bad.m=bad.a_rows=127;assert(quactlize::prefill::layout(bad,&arr,l,true)==QKG_SHAPE);
+   bad=c;bad.a_stride=INT64_MAX;assert(quactlize::prefill::layout(bad,&arr,l,true)==QKG_OVERFLOW);
+  }
+ }
+}
+'''.replace('@FAMILIES@',','.join('{'+','.join(map(str,f))+'}' for f in sorted(families)))
+       .replace('@MS@',','.join(map(str,MS))))
+    subprocess.run(['g++','-std=c++17',f'-I{ROOT}',f'-I{ROOT/"quactlize/include"}',str(source),'-o',str(exe)],check=True)
+    subprocess.run([str(exe)],check=True)
+
+
 def test_prefill_workspace_is_shape_bound_and_small_m_declines(tmp_path):
     source=tmp_path/'layout.cpp';exe=tmp_path/'layout'
     source.write_text(r'''
@@ -26,7 +74,7 @@ int main() {
    assert(l.a==uint64_t(experts)*256*512*2 && l.out>l.a && l.directory<l.bytes);
    assert(l.bytes%256==0);
    for (int m:{1,2,4,8,64}) { c.m=m;assert(quactlize::prefill::layout(c,&arr,l)!=0); }
-   c.m=experts==1?4096:32768;c.a_rows=c.m;assert(quactlize::prefill::layout(c,&arr,l)==0);
+   c.m=experts==1?8192:32768;c.a_rows=c.m;assert(quactlize::prefill::layout(c,&arr,l)==0);
    c.m*=2;assert(quactlize::prefill::layout(c,&arr,l)!=0);
    c.m=experts==1?128:1024;c.a_rows=c.m;arr.mapping_id=0;assert(quactlize::prefill::layout(c,&arr,l)!=0);
  }

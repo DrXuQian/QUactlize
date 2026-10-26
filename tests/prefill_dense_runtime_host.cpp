@@ -38,6 +38,26 @@ extern "C" int qkp_stage_finish(qkp_call_v1 const* c,quactlize::prefill::Layout 
 }
 int main(int argc,char** argv){
     assert(argc==2);using namespace quactlize::prefill;
+    // Exercise the exported workspace/prepare ABI, not only a host copy of
+    // layout(). No giant allocations or fictitious device timing are needed.
+    for(int q:{8,10,11,12,13,14})for(int m:{128,4096,5120,8192}) {
+        qkp_call_v1 shape{};shape.version=1;shape.size=sizeof(shape);shape.m=shape.a_rows=m;
+        shape.a_stride=512;shape.output_stride=256;shape.weight={1,sizeof(qzd_call_v1),q,256,512,1,1,5};
+        auto arr=q==8?q8_kpack2::arrangement():q==12?ppu_arrangements::q4_kpack4_transpose_v1():
+            ppu_arrangements::kquant_kpack_transpose_v1(q);
+        Layout l{};assert(!layout(shape,&arr,l,true));
+        uint64_t bytes=0;assert(!quactlize_kpack_dense_full_workspace_v1(&shape,&arr,&bytes));
+        assert(bytes==dynamic_bytes(shape,l));
+        for(int storage:{0,1}) {
+            qkp_dense_options_v1 options{1,sizeof(options),argv[1],storage,3,0,16,-1};void* h=nullptr;
+            assert(!quactlize_kpack_dense_full_prepare_v1(&shape,&arr,&options,&h) && h);
+            quactlize_kpack_dense_full_destroy_v1(h);
+        }
+        for(int bad_m:{0,127,8193,32769}) {
+            auto bad=shape;bad.m=bad.a_rows=bad_m;bytes=123;
+            assert(quactlize_kpack_dense_full_workspace_v1(&bad,&arr,&bytes)==QKG_SHAPE && bytes==0);
+        }
+    }
     for(int q:{8,10,11,12,13,14}) {
     qkp_call_v1 shape{};shape.version=1;shape.size=sizeof(shape);shape.m=shape.a_rows=128;
     shape.a_stride=512;shape.output_stride=256;shape.weight={1,sizeof(qzd_call_v1),q,256,512,1,1,5};

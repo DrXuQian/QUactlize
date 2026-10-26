@@ -13,7 +13,7 @@ import pytest
 from dev.strategy.m_coverage import points, coverage, make_decode_plan
 from dev.strategy.refresh import request, assign
 from dev.strategy.resources import module_spec, probe_spec
-from dev.prefill_asys.m_span import make_plan, sf_rules, validate, MS
+from dev.prefill_asys.m_span import make_plan, retry_plan, sf_rules, validate, MS
 from dev.prefill_asys.finalists import load, bind_cases
 from quactlize.dispatch.dense_prefill import EVIDENCE
 from quactlize.dispatch.planning import plan_smallm
@@ -129,6 +129,57 @@ def test_span_captures_bound_processes_and_keep_both_directions(span):
         reverse=[c['id'] for cases,direction in jobs[1:-1] if direction==1 for c in cases]
         assert forward==[c['id'] for c in point['cases']] and reverse==list(reversed(forward))
     assert captures==span['counts']['captures']
+
+
+def retry_review(span):
+    from dev.prefill_asys.finalists import case_identity
+    authority={'test':'host-only synthetic evidence; no device timing claim'}
+    aid=digest(authority);complete={};partial={};candidates={}
+    for i,p in enumerate(span['points']):
+        cases=p['cases'];missing=[];unconfirmed=[];rows=[]
+        for j,c in enumerate(cases):
+            candidates[c['id']]=case_identity(c)
+            if i==0 and j==0:missing.append(c['id']);continue
+            status='MISSING_CONFIRMATION' if i==1 and j==0 else 'PASS'
+            if status!='PASS':unconfirmed.append(c['id'])
+            rows.append(dict(case_id=c['id'],candidate=c['id'],status=status))
+        value=dict(workload=p['workload'],authority=aid,measurements=rows,native_comparison=False)
+        if missing or unconfirmed:
+            partial[digest([aid,p['id']])]=dict(value,point_id=p['id'],missing=missing,unconfirmed=unconfirmed)
+        else:complete[p['id']]=value
+    result=dict(schema='quactlize.prefill-component-review.v1',authorities={aid:authority},points=complete,
+                partial_points=partial,candidates=candidates,pending_points=[p['id'] for p in span['points'][:2]])
+    result['review_sha256']=digest(result)
+    return result
+
+
+def test_m_span_retry_retains_all_workers_and_every_original_config(span):
+    review=retry_review(span);before=deepcopy(review)
+    result=retry_plan(span,review)
+    assert review==before and load(result)==result
+    assert result['counts']['points']==2 and result['retry']['retained_points']==403
+    assert {p['id'] for p in result['points']}==set(review['pending_points'])
+    assert {p['id'] for p in result['reuse']}==set(review['points'])
+    for p,old in zip(result['points'],span['points']):
+        assert p['cases']==old['cases'] and not p['native_comparison']
+        jobs=confirmation_jobs(p)
+        assert sum(len(cs) for cs,_ in jobs)==2*len(old['cases'])
+    assert not result['production_changed'] and not result['performance_admitted']
+
+
+@pytest.mark.parametrize('fault',['one-worker','recipe','workload','denominator','authority','digest','row-status'])
+def test_m_span_retry_refuses_incomplete_or_changed_original_evidence(span,fault):
+    review=retry_review(span)
+    key=next(iter(review['points']));p=review['points'][key]
+    if fault=='one-worker':del review['points'][key]
+    elif fault=='recipe':review['candidates'][p['measurements'][0]['candidate']]={'changed':True}
+    elif fault=='workload':p['workload']=dict(p['workload'],m=8193)
+    elif fault=='denominator':p['measurements'].pop()
+    elif fault=='authority':review['authorities'][p['authority']]={'changed':True}
+    elif fault=='row-status':p['measurements'][0]['status']='MISSING_CONFIRMATION'
+    if fault!='digest':review['review_sha256']=digest({k:v for k,v in review.items() if k!='review_sha256'})
+    else:review['review_sha256']='changed'
+    with pytest.raises(ValueError):retry_plan(span,review)
 
 
 @pytest.mark.parametrize('shard',range(4))

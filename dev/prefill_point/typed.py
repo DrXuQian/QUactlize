@@ -13,6 +13,23 @@ from quactlize.prefill.native import Call
 from quactlize.runtime.native import checked
 
 
+def workspace_gate(points,library):
+    """Query all proposed Full geometries before fixtures or profiling."""
+    from quactlize.dispatch.table import Workload
+    from quactlize.execution.native import arrangement
+    records=[]
+    for point in points:
+        w=Workload(**point['workload'])
+        if w.operation!='dense':raise ValueError('dense Full workspace gate received grouped work')
+        kinds={c['arm']=='full-bf16' for c in point.get('cases',[]) if c['recipe']['kind']=='full'}
+        for legacy in sorted(kinds):
+            size=library.workspace(w,arrangement(w.qtype),legacy=legacy)
+            records.append(dict(point=point['id'],q=w.qtype,m=w.m,n=w.n,k=w.k,
+                                legacy=legacy,workspace_bytes=size))
+    return dict(status='PASS',cases=len(records),records=records,
+                scope='HOST_WORKSPACE_QUERY_ONLY_NO_ALLOCATION_LAUNCH_OR_TIMING')
+
+
 class Options(C.Structure):
     _fields_=[('version',C.c_uint32),('size',C.c_uint32),('sdk',C.c_char_p)]+[
         (x,C.c_int32)for x in ('storage','vector_io','dequant_variant','math_mode','algorithm')]
@@ -65,6 +82,18 @@ class DenseLibrary:
                 'production dense helper policy (requires measured ZW810 shape)')
         return dict(dequant_variant=dq.value,vector_io=io.value,storage=storage)
 
+    def workspace(self,w,arr,*,legacy=False):
+        shape=self.shape(w);size=C.c_uint64()
+        query=(bind(self.lib,'quactlize_kpack_prefill_query_dynamic_v1',
+                    [C.POINTER(Call),C.POINTER(Arrangement),C.POINTER(C.c_uint64)]) if legacy else self.query)
+        rc=query(C.byref(shape),C.byref(arr),C.byref(size))
+        if rc:
+            raise RuntimeError(f'{"legacy" if legacy else "typed"} full workspace failed: status={rc} '
+                               f'q={w.qtype} M={w.m} N={w.n} K={w.k}; no timing admitted')
+        if not size.value or size.value%256:
+            raise ValueError('invalid full workspace extent')
+        return size.value
+
     def io_call(self,b,src,dst,*,input,storage,vector):
         w=b.w;width=w.k if input else w.n
         return call(self.io,5,[src,dst,None,b.r.stream],
@@ -78,8 +107,7 @@ class TypedFull:
         choice=library.choice(w,storage,full=True) if options is None else dict(options,storage=storage)
         self.options=Options(1,C.sizeof(Options),str(sdk_path).encode(),
                             **choice,math_mode=16,algorithm=-1)
-        size=C.c_uint64()
-        checked(library.query(C.byref(self.shape),C.byref(b.arr),C.byref(size)),'typed full workspace')
+        size=library.workspace(w,b.arr)
         rc=library.prepare(C.byref(self.shape),C.byref(b.arr),C.byref(self.options),C.byref(self.handle))
         if rc:raise ValueError('typed full prepare: '+library.error().decode(errors='replace'))
         self.calls=(Call*b.ring.copies)()
@@ -89,15 +117,15 @@ class TypedFull:
                 for name in ('low','high','units'):setattr(c.weight,name,plane[name])
                 for name,field in (('low','low_bytes'),('high','high_bytes'),('units','unit_bytes')):
                     setattr(c.weight,field,b.ring.w.planes[name].nbytes)
-                ws=Guard(b.r,size.value);b.buffers.append(ws);self.workspaces.append(ws)
-                c.workspace=ws.ptr;c.workspace_bytes=size.value;c.a=b.a.ptr;c.output=b.out.ptr
+                ws=Guard(b.r,size);b.buffers.append(ws);self.workspaces.append(ws)
+                c.workspace=ws.ptr;c.workspace_bytes=size;c.a=b.a.ptr;c.output=b.out.ptr
                 c.weight.stream=b.r.stream.value
         except BaseException:
             self.close();raise
         self.receipt=dict(kind='typed-full',helper_policy=choice,
             arithmetic=dict(a='BF16' if storage else 'F16',b='BF16' if storage else 'F16',
                             c='BF16' if storage else 'F16',accumulator='FP32'),
-            compute_type=68,math_mode=16,algorithm=-1,workspace_bytes=size.value,
+            compute_type=68,math_mode=16,algorithm=-1,workspace_bytes=size,
             cublas_workspace_bytes=4<<20,entry='quactlize_kpack_dense_full_run_v1',
             scope='SAME_PREPARE_AND_RUN_AS_PRODUCTION_FULL; ROUTE_WINNER_NOT_ADMITTED')
 
