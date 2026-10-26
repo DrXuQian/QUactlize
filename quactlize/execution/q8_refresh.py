@@ -13,7 +13,7 @@ DENSE_EVIDENCE = 'c9332467c4921f62fcad73a6845c4244a136f3a218cb07e2d1d02f357b831b
 FIELDS = ('variant', 'columns', 'warps', 'values', 'split')
 
 
-def rows(*, include_dense=True):
+def rows(*, include_dense=True, include_tokens=True):
     table = json.loads(TABLE.read_text())
     if table['evidence_sha256'] != EVIDENCE or digest(
             {k: v for k, v in table.items() if k != 'evidence_sha256'}) != EVIDENCE:
@@ -33,6 +33,16 @@ def rows(*, include_dense=True):
                                    implementation=r['selected']['implementation']))
         if len({tuple(r['key']) for r in result}) != len(result):
             raise ValueError('duplicate exact Q8 body binding')
+        if include_tokens:
+            from quactlize.execution.token_cta_policy import load
+            latest = load()['rows']
+            covered = {tuple(r['key']) for r in latest}
+            result = [r for r in result if tuple(r['key']) not in covered]
+            for r in latest:
+                c = r['selected']
+                if c['implementation']['kind'] == 'q8-address':
+                    result.append(dict(key=r['key'], config=c['config'], implementation=c['implementation']))
+            result.sort(key=lambda r:r['key'])
     return result
 
 
@@ -56,7 +66,9 @@ def apply(baseline):
 
 
 def capability():
+    from quactlize.execution.token_cta_policy import EVIDENCE as token_evidence
     return dict(evidence_sha256=EVIDENCE,
+                token_cta_evidence_sha256=token_evidence,
                 dense_m_evidence_sha256=json.loads((ROOT/'policies/kpack_dense_decode_v1.json').read_bytes())['evidence_sha256'],
                 catalog_sha256=sha(ROOT/'quactlize/execution/q8_refresh.inc'),
                 body_sha256=sha(ROOT/'quactlize/execution/simt_q8_refresh.cuh'),

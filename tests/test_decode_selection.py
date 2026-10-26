@@ -24,7 +24,7 @@ def test_generated_catalog_and_implementation_are_current(evidence):
     assert generate.header(policy)==generate.OUTPUT.read_text()
     assert generate.implementations(evidence)==generate.IMPLEMENTATIONS.read_text()
     assert len(evidence['rows'])==19
-    assert len(policy['exact'])==len({tuple(r['key']) for r in policy['exact']})==2089
+    assert len(policy['exact'])==len({tuple(r['key']) for r in policy['exact']})==2095
     assert all(w['key'][7]==1 for w in evidence['rows'])
     # Reducer controls are not selected minima, and M1 timing is not M2..8 timing.
     assert not any(w['point']['name'].startswith('reducer-') for w in evidence['rows'])

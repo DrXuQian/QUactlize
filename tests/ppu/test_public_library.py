@@ -52,7 +52,8 @@ def test_selected_dense_dynamic_bindings(package, sdk, q, m, compute, record_pro
     run_dense(package, sdk, q, m, compute, record_property)
 
 
-@pytest.mark.parametrize('row',token_choices()['rows'],ids=lambda r:f'q{r["key"][0]}-m{r["key"][7]}')
+@pytest.mark.parametrize('row',token_choices()['rows'],ids=lambda r:
+    f'q{r["key"][0]}-n{r["key"][2]}-k{r["key"][3]}-m{r["key"][7]}')
 def test_token_cta_exact_public_bindings(package,sdk,row,record_property):
     # Verify the final public execution path, including unchanged Q4/TC arms,
     # two streams, moved addresses, padded strides, reducer and Graph replay.

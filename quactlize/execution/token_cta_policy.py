@@ -11,17 +11,19 @@ ROOT = Path(__file__).resolve().parents[2]
 TABLE = ROOT/'policies/kpack_token_cta_v1.json'
 CATALOG = ROOT/'quactlize/execution/token_cta.inc'
 ARCHIVE = '28a8d7dbaea294311ac1d2b61c329b39068c246f8bf3a585e0a146069a3c1631'
-EVIDENCE = '94f0af297eb3c00f225217001453b26bdf6e220be612610a57ba2eb68a53beec'
+EVIDENCE = 'fe131fec811ca2b066efc842312570e52fc351313b003523a5f558cdbf032bbb'
 FIELDS = ('variant', 'columns', 'warps', 'values', 'split')
 
 
 def verify(data):
-    if (data['schema'] != 'quactlize.token-cta-exact.v1' or data['archive_sha256'] != ARCHIVE or
+    if (data['schema'] != 'quactlize.token-cta-exact.v2' or data['archive_sha256'] != ARCHIVE or
             data['evidence_sha256'] != EVIDENCE or digest({k:v for k,v in data.items()
                 if k != 'evidence_sha256'}) != EVIDENCE):
         raise ValueError('token CTA evidence identity differs')
-    keys = {(q,0,1024,5120,1,1,1,m,0) for q in (8,10,11,12,13) for m in range(1,9)}
-    if len(data['rows']) != 40 or {tuple(r['key']) for r in data['rows']} != keys:
+    keys = {tuple(r['key']) for r in data['rows']}
+    if len(data['rows']) != 376 or len(keys) != 376 or any(
+            q not in (8,10,11,12,13,14) or mode or (e,t,ch,compute) != (1,1,1,0) or
+            not 1 <= m <= 8 or n <= 0 or k <= 0 for q,mode,n,k,e,t,ch,m,compute in keys):
         raise ValueError('token CTA exact scope differs')
     if not {'quactlize/execution/simt_token_cta.cuh', 'quactlize/execution/simt_q8_token_cta.cuh'} <= data['body_hashes'].keys():
         raise ValueError('token CTA measured source closure missing')
@@ -33,13 +35,21 @@ def verify(data):
                 not 0 <= chosen['numerical_error'] < .005):
             raise ValueError('token CTA selected mean/numerics differ')
         impl, config = chosen['implementation'], chosen['config']
+        if row['latency_provenance']['quactlize_commit'] != data['cohorts'][row['cohort']]['source_revision']['quactlize_commit']:
+            raise ValueError('token CTA source provenance differs')
         if impl['kind'] == 'token-cta':
             q,_,n,k,_,_,_,m,_ = row['key']
             if (m < 2 or config['kind'] != 'simt' or config['split'] not in (1,2,4,8) or
                     config['variant'] != (5 if q == 8 else 3) or
-                    impl['tokens'] != m or impl['window'] != (1 if q == 8 else 0)):
+                    impl['tokens'] != m or impl['window'] not in ((1,2) if q == 8 else (0,))):
                 raise ValueError('unmeasured token CTA implementation')
-    if sum(r['selected']['implementation']['kind']=='token-cta' for r in data['rows']) != 32:
+        elif impl['kind'] == 'q8-address':
+            if (row['key'][0] != 8 or config['kind'] != 'simt' or config['split'] != 1 or
+                    config['variant'] != 5 or config['values'] != 4 or impl['body'] not in (1,3,4,5)):
+                raise ValueError('unmeasured Q8 address implementation')
+        elif impl['kind'] != 'shipping':
+            raise ValueError('unknown measured implementation')
+    if sum(r['selected']['implementation']['kind']=='token-cta' for r in data['rows']) != 121:
         raise ValueError('token CTA binding denominator differs')
 
 
@@ -60,15 +70,22 @@ def apply(baseline):
     result = copy.deepcopy(baseline)
     exact = {tuple(r['key']): r for r in result['exact']}
     for measured in data['rows']:
-        if not measured['changed']:
+        row = exact.get(tuple(measured['key']))
+        if not measured['changed'] and row is not None:
             continue
-        row = exact[tuple(measured['key'])]
+        chosen = measured['selected']
+        if row is None:
+            # These previously open cells have new complete measurements.
+            # Append exact entries only; never add them as bucket donors.
+            row = dict(key=measured['key'], config=chosen['config'], guard=chosen['config'],
+                       source='dense-m-exact-v1')
+            result['exact'].append(row)
+            exact[tuple(measured['key'])] = row
         # Preserve the complete old donor, including Q4's generic TC guard.
         row['bucket_config'] = copy.deepcopy(row.get('bucket_config',
             row['guard'] if row['config']['kind']=='q4' else row['config']))
         row['bucket_dequant_config'] = row.get('bucket_dequant_config',
             -1 if row['config']['kind']=='q4' else row.get('dequant_config',-1))
-        chosen = measured['selected']
         row['previous_config'] = copy.deepcopy(row['config'])
         # kGuards also controls donor eligibility at unseen K. Keep that old
         # guard: making a SIMT exact choice must not legalize its old TC donor.

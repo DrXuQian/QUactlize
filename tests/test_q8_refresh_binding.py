@@ -22,7 +22,8 @@ def test_generated_body_and_scope_match_measured_source():
     assert port.header() == (ROOT/'quactlize/execution/simt_q8_refresh.cuh').read_text()
     assert 'dev/' not in port.header()
     assert len(binding.rows(include_dense=False)) == 27
-    assert len(binding.rows()) == 63
+    assert len(binding.rows()) == 48
+    assert len(binding.rows(include_tokens=False)) == 63
     assert {r['implementation']['body'] for r in binding.rows()} == {1, 3, 4, 5}
 
 
@@ -39,7 +40,7 @@ def test_only_27_exact_keys_change_and_all_bucket_donors_are_retained():
     new = gen.effective(json.loads(gen.EVIDENCE.read_text()), include_dense=False)
     assert digest(old) == table['baseline_sha256']
     assert table['active'] is False  # The other160 replacements remain proposals.
-    changed = {tuple(r['key']): r for r in binding.rows()}
+    changed = {tuple(r['key']): r for r in binding.rows(include_dense=False)}
     for a, b in zip(old['exact'], new['exact']):
         if tuple(a['key']) not in changed:
             assert a == b
@@ -86,7 +87,7 @@ def test_actual_selector_preserves_body_in_future_original_recipe(plan):
         actual = spec(Workload(q, n, k, m), recipe)
         assert actual['q8_body'] == selected['implementation']['body']
         assert asdict(recipe)['kind'] == 'simt'
-    assert count == 62  # Q8 N1024/K5120/M2 now uses the later measured token body.
+    assert count == 48  # Superseded Q8 bodies are absent, not hidden behind token dispatch.
 
 
 @pytest.mark.parametrize('fault', ['missing', 'body', 'catalog', 'key', 'geometry'])
@@ -103,7 +104,7 @@ def test_old_or_misbound_execution_cannot_pass_as_same_geometry(plan, fault):
     elif fault == 'catalog':
         execution['q8_refresh']['catalog_sha256'] = '0'*64
     elif fault == 'key':
-        p['requests'][0]['request'][2] += 256
+        p['requests'][0]['request'][2] += 16
     else:
         p['requests'][0]['config']['warps'] = 2
     with pytest.raises(ValueError, match='Q8'):
@@ -139,7 +140,7 @@ f.warps=2;assert(!q8_refresh_body(d,f)); \
 }
 #include "quactlize/execution/q8_refresh.inc"
 #undef Q8R
-assert(checked==63);
+assert(checked==48);
 }
 '''
     path = tmp_path/'scope.cpp'
@@ -152,6 +153,9 @@ def test_readiness_closes_source_binding_only():
     from dev.strategy.refresh_selection import readiness
     table = json.loads(binding.TABLE.read_text())
     old = gen.effective(json.loads(gen.EVIDENCE.read_text()), include_refresh=False)
-    report = readiness(table, old, q8_bindings=binding.capability()['keys'])
+    # Replay the historical import contract, not today's superseding catalog.
+    historical=[dict(key=r['key'],body=r['implementation']['body'],
+        config={f:r['config'][f] for f in binding.FIELDS}) for r in binding.rows(include_dense=False)]
+    report = readiness(table, old, q8_bindings=historical)
     assert report['status'] == 'STRUCTURALLY_READY_NOT_DEVICE_ADMITTED'
     assert report['pending'] == [] and report['kernel_launches'] == 0

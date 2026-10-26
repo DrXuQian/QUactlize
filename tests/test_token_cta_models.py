@@ -44,7 +44,9 @@ def test_registry_is_not_a_format_cartesian_product():
 
 def test_model_plan_keeps_current_control_and_all_new_bodies(model_plan):
     p=model_plan
-    assert p['counts']==dict(points=328,arms=9337,tc_modules=23,vector_modules=149,families=41)
+    # A new plan uses today's admitted controls; the frozen 9,337-arm return
+    # remains sealed by its original plan/source hashes, not regenerated here.
+    assert p['counts']==dict(points=328,arms=9286,tc_modules=21,vector_modules=149,families=41)
     assert not p['native_comparison'] and not p['production_changed'] and not p['historical_times_reused']
     assert p['coverage']['excluded_previous_points']==32
     assert 'policies/dense_prefill_v1.json' in p['sources']

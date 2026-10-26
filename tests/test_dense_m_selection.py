@@ -13,6 +13,7 @@ from quactlize.dispatch.planning import plan_smallm, validate_inventory
 from quactlize.dispatch.table import Workload
 from quactlize.execution.q8_refresh import capability, rows as q8_rows
 from quactlize.execution.simt_codegen import runtime_inventory
+from quactlize.execution.token_cta_policy import load as latest_table, capability as token_capability
 from quactlize.runtime.tuning import digest
 from tools import generate_decode_selection as gen
 
@@ -65,14 +66,12 @@ def test_only_new_exact_keys_and_no_bucket_or_old_row_changes(table):
         assert b.startswith(a+'\n') or a==b
 
 
-def test_real_cpp_selects_every_admitted_recipe_and_preserves_six_pending(table,plan):
+def test_real_cpp_selects_latest_evidence_including_six_previously_pending(table,plan):
     got={tuple(r['request']):r for r in plan['requests']}
+    latest={tuple(r['key']):r for r in latest_table()['rows']}
     for row in table['rows']:
         actual=got[tuple(row['key'])]
-        if not row['admitted']:
-            assert actual==row['original_cpp']
-            continue
-        c=row['selected'];f=c['config'];q,mode,n,k,e,top,ch,m,compute=row['key']
+        c=latest.get(tuple(row['key']),row)['selected'];f=c['config'];q,mode,n,k,e,top,ch,m,compute=row['key']
         assert actual['status']==0 and actual['policy']==18 and actual['donor']==[n,k,m]
         assert actual['dequant_config']==c['dequant_config']
         if f['kind']=='tc':
@@ -87,19 +86,24 @@ def test_real_cpp_selects_every_admitted_recipe_and_preserves_six_pending(table,
             assert actual['config']=={k:v for k,v in f.items() if k!='kind'}
             assert actual['implementation'].get('q8_body',0)==c['implementation'].get('body',0)
     audit=coverage(plan['requests'])
-    assert (audit['expected'],audit['exact'],audit['missing'])==(360,354,6)
+    assert (audit['expected'],audit['exact'],audit['missing'])==(360,360,0)
 
 
 def test_q8_body_and_execution_capability_follow_the_new_table(table,plan):
     extra=[r for r in table['rows'] if r['admitted'] and r['selected']['implementation']['kind']=='q8-address']
-    assert len(extra)==36 and len(q8_rows())==63
+    assert len(extra)==36 and len(q8_rows(include_tokens=False))==63
+    latest={tuple(r['key']):r for r in latest_table()['rows']}
     advertised={tuple(r['key']):r for r in capability()['keys']}
     for row in extra:
-        c=row['selected'];binding=advertised[tuple(row['key'])]
+        c=latest.get(tuple(row['key']),row)['selected']
+        if c['implementation']['kind']!='q8-address':
+            assert tuple(row['key']) not in advertised
+            continue
+        binding=advertised[tuple(row['key'])]
         assert binding['body']==c['implementation']['body']
         assert binding['config']=={k:v for k,v in c['config'].items() if k!='kind'}
     execution=dict(simt_configs={str(q):[c.record() for c in runtime_inventory(q)] for q in (8,11,12,13,14)},
-                   q8_refresh=capability())
+                   q8_refresh=capability(),token_cta=token_capability())
     # The complete 360 keys include unchanged shape-specific Q4 legacy calls;
     # here validate the freshly admitted generic SIMT/typed-TC scope only.
     admitted={tuple(r['key']) for r in table['rows'] if r['admitted']}

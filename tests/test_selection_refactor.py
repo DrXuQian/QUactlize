@@ -67,7 +67,7 @@ def test_public_final_decisions_equal_frozen_baseline(snapshots):
     from dev.strategy.dense_m_selection import load as dense_m
     promoted|={tuple(w['key']) for w in dense_m()['rows'] if w['admitted']}
     from quactlize.execution.token_cta_policy import load as token_table
-    promoted|={tuple(w['key']) for w in token_table()['rows'] if w['changed']}
+    promoted|={tuple(w['key']) for w in token_table()['rows']}
     exact={tuple(r['key']) for r in p['exact']}
     changed=[]
     for k,a,b in zip(keys,*results):
@@ -115,9 +115,9 @@ def execution_for(plan):
 
 
 def test_final_catalog_is_exact_and_checks_full_tuple(final_plan):
-    assert len(final_plan['requests'])==2089
+    assert len(final_plan['requests'])==2095
     assert all(r['status']==0 for r in final_plan['requests'])
-    assert len(requirements(final_plan)['simt'])==195
+    assert len(requirements(final_plan)['simt'])==199
     execution=execution_for(final_plan)
     validate_inventory(final_plan,execution,jit=True)
     for mutate in ('config','compute','q4','q8'):
@@ -134,7 +134,7 @@ def test_final_catalog_is_exact_and_checks_full_tuple(final_plan):
 def test_prewarm_keeps_compute_and_endpoint_identity(final_plan):
     groups=prewarm_groups(final_plan)
     assert {(c,d) for c,d,_ in groups}=={('f16',False),('f16',True),('bf16',False),('bf16',True)}
-    assert sum(len(p) for _,_,p in groups)==len(requirements(final_plan)['tc'])==70
+    assert sum(len(p) for _,_,p in groups)==len(requirements(final_plan)['tc'])==69
     assert all(p['route'].endswith('dense')==dense for _,dense,parents in groups for p in parents)
 
 
@@ -172,7 +172,10 @@ def test_implementation_identity_follows_actual_shape(tmp_path):
     plan=plan_smallm(tmp_path,[[8,0,n,k,1,1,1,1,0] for n,k in
                               ((2048,4096),(8192,2048),(4096,2048),(768,2048))])
     rows={tuple(r['request'][2:4]):r for r in plan['requests']}
-    for shape,body in (((2048,4096),3),((8192,2048),1),((4096,2048),3)):
+    fixed=rows[2048,4096]
+    assert fixed['config']['split']==8 and fixed['implementation']['producer']=='q8-vector-fixed'
+    assert fixed['implementation']['reduction']=='ordered-flat-float2-or-row-fallback'
+    for shape,body in (((8192,2048),1),((4096,2048),1)):
         assert rows[shape]['policy']==18
         assert rows[shape]['implementation']['producer']=='q8-address'
         assert rows[shape]['implementation']['q8_body']==body

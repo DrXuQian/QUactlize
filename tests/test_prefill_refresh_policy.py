@@ -84,8 +84,8 @@ def test_smallm_unchanged_except_declared_later_dense_exact_additions(tmp_path):
     before=[json.loads(line) for line in subprocess.check_output([exe,'--inventory'],text=True).splitlines()]
     after=plan_smallm(tmp_path)['requests']
     from quactlize.execution.token_cta_policy import load as token_table
-    tokens={tuple(r['key']) for r in token_table()['rows'] if r['changed']}
-    assert len(before)==1852 and len(after)==2089
+    tokens={tuple(r['key']) for r in token_table()['rows']}
+    assert len(before)==1852 and len(after)==2095
     for a,b in zip(before,after):
         if tuple(a['request']) not in tokens:assert a==b
     # Neighbor shapes/precision/channels/invalid inputs exercise actual bucket
@@ -98,7 +98,7 @@ def test_smallm_unchanged_except_declared_later_dense_exact_additions(tmp_path):
     old=subprocess.check_output([exe],input=text,text=True)
     new=subprocess.check_output([tmp_path/'selection-query'],input=text,text=True)
     assert old==new
-    print(f'REFRESH_SMALLM_UNCHANGED existing_exact=1852 neighbors_and_invalid={len(keys)} declared_new_exact=237')
+    print(f'REFRESH_SMALLM_UNCHANGED existing_exact=1852 neighbors_and_invalid={len(keys)} declared_new_exact=243')
 
 
 def expected_grid(p, w, occupancy=6, cu=72):

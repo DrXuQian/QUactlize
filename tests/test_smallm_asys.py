@@ -65,7 +65,7 @@ def test_current_cpp_bounded_inventory_and_common_candidates(tmp_path):
     assert all(w.n==1024 and w.k==5120 and w.operation=='dense' and w.storage=='f32' and w.compute=='f16' for w in ws)
     original=plan_smallm(tmp_path,[request(w) for w in ws],dense_fallbacks=True)
     plan=make_plan(original['requests'])
-    assert plan['counts']==dict(points=10,arms=202,tc_modules=5,vector_modules=14,families=2)
+    assert plan['counts']==dict(points=10,arms=208,tc_modules=5,vector_modules=20,families=2)
     assert plan['sha256']==digest({k:v for k,v in plan.items() if k!='sha256'})
     assert not plan['historical_times_reused'] and not plan['native_comparison'] and not plan['production_changed']
     assert all(sum(a['id']=='original' for a in p['arms'])==1 for p in plan['points'])

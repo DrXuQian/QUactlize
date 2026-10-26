@@ -77,6 +77,9 @@ def audit(bundle, output):
                 r['implementation'].get('cta_tokens')!=w['key'][7] or
                 r['implementation'].get('cta_window')!=c['implementation']['window']):
             raise ValueError('selected token CTA implementation differs from confirmed body')
+        if c['implementation']['kind']=='q8-address' and (
+                r['implementation'].get('q8_body')!=c['implementation']['body']):
+            raise ValueError('selected Q8 address implementation differs from confirmed body')
     public_count = 0
     d = Dispatch(bundle)
     try:

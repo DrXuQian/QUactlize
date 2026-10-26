@@ -1,5 +1,6 @@
 """Exact Asys winners, actual dispatch, and stale-package rejection; no GPU timing."""
 import copy
+import ctypes as C
 import io
 import json
 import subprocess
@@ -31,20 +32,22 @@ def test_exact_means_and_bodies_are_bound_without_changing_buckets(table):
     old=gen.effective(json.loads(gen.EVIDENCE.read_text()),include_token_cta=False)
     new=gen.effective(json.loads(gen.EVIDENCE.read_text()))
     assert digest(old)==table['baseline_sha256']
-    assert len(table['rows'])==40 and sum(r['changed'] for r in table['rows'])==35
-    assert len(binding.rows())==32
+    assert len(table['rows'])==376 and sum(r['changed'] for r in table['rows'])==157
+    assert len(binding.rows())==121
+    assert len(new['exact'])==len(old['exact'])+6
     changed={tuple(r['key']) for r in table['rows'] if r['changed']}
     for a,b in zip(old['exact'],new['exact']):
         if tuple(a['key']) not in changed:assert a==b
     assert {k:v for k,v in old.items() if k!='exact'}=={k:v for k,v in new.items() if k!='exact'}
-    before,after=gen.header(old),gen.header(new)
-    for array in ('kBucketChoices','kBucketIndex','kBucketDequant'):
-        assert before.split(array+'[]={',1)[1].split('};',1)[0]==after.split(array+'[]={',1)[1].split('};',1)[0]
+    for b in old['buckets']:
+        a,z=old['exact'][b['row']],new['exact'][b['row']]
+        donor=lambda r:r.get('bucket_config',r['guard'] if r['config']['kind']=='q4' else r['config'])
+        assert donor(a)==donor(z) and a['guard']==z['guard']
     for row in table['rows']:
         assert row['selected']['mean_us']==min(row['candidate_means_us'].values())
-        assert row['latency_provenance']['quactlize_commit']==table['source_revision']['quactlize_commit']
+        assert row['latency_provenance']['quactlize_commit']==table['cohorts'][row['cohort']]['source_revision']['quactlize_commit']
     assert binding.CATALOG.read_text()==binding.catalog()
-    assert len(binding.capability()['keys'])==32
+    assert len(binding.capability()['keys'])==121
 
 
 def test_actual_selected_recipes_and_workspace_match_the_measured_calls(table,plan):
@@ -64,9 +67,11 @@ def test_actual_selected_recipes_and_workspace_match_the_measured_calls(table,pl
             assert actual['implementation']['producer']=='token-cta'
             assert actual['implementation']['cta_tokens']==m
             assert actual['implementation']['cta_window']==impl['window']
-            assert actual['workspace_bytes']==m*f['split']*n*4
-        else:assert not actual.get('implementation',{}).get('cta_tokens')
-    assert tc==[(8,8),(12,8)]
+            assert actual['workspace_bytes']==(m*f['split']*n*4 if f['split']>1 else 0)
+        else:
+            assert not actual.get('implementation',{}).get('cta_tokens')
+            if impl['kind']=='q8-address':assert actual['implementation']['q8_body']==impl['body']
+    assert len(tc)==181
 
 
 def test_future_sweeps_preserve_the_actual_incumbent_body(plan):
@@ -78,13 +83,44 @@ def test_future_sweeps_preserve_the_actual_incumbent_body(plan):
         q,mode,n,k,e,top,ch,m,compute=row['request']
         item=spec(Workload(q,n,k,m),original_recipe(row))
         assert item['cta_tokens']==m
-        if q==8:assert item['cta_window']==1
+        if q==8:assert item['cta_window']==row['implementation']['cta_window']
         assert 'token_cta_launch<' in source(item)
+
+
+def test_all_model_keys_choose_exact_measured_winners(plan):
+    from dev.strategy.m_coverage import families
+    model_keys={(q,0,n,k,1,1,1,m,0) for q,n,k in families() for m in range(1,9)}
+    selected=[r for r in plan['requests'] if tuple(r['request']) in model_keys]
+    assert len(selected)==len(model_keys)==360
+    assert all(r['status']==0 and r['donor']==r['request'][2:4]+[r['request'][7]] for r in selected)
+    assert [sum(r['kind']==0 and r['request'][7]==m for r in selected) for m in range(1,9)]==[5,4,13,25,32,33,33,36]
+    assert sum(r['kind']==1 for r in selected)==176 and sum(r['kind']==2 for r in selected)==3
+
+
+def test_actual_dispatch_abi_matches_all_selected_simt_calls(tmp_path,plan):
+    from quactlize.dispatch.native import Dispatch
+    from quactlize.execution.native import Call,arrangement
+    (tmp_path/'catalog.inc').write_text('static std::vector<Image> kImages; static char const kJitSource[]="";\n')
+    subprocess.run(['g++','-std=c++17','-O2','-pthread','-shared','-fPIC','-Wl,-Bsymbolic',
+        '-I'+str(tmp_path),ROOT/'quactlize/dispatch/binding.cpp','-ldl',
+        '-o',tmp_path/'libquactlize_kpack_dispatch.so'],check=True)
+    d=Dispatch(tmp_path)
+    try:
+        for r in plan['requests']:
+            if r['kind']!=1:continue
+            q,mode,n,k,e,top,ch,m,compute=r['request']
+            call=Call(version=1,size=C.sizeof(Call),qtype=q,mode=mode,n=n,k=k,experts=e,topk=top,
+                channels=ch,rows=m,input_type=1,a_row_stride=k,a_token_stride=k,ids_stride=top,out_row_stride=n)
+            got=d.query_smallm_matched(call,arrangement(q),compute)
+            assert got and got.base.kind==1 and got.base.policy==r['policy']
+            assert {f:getattr(got.base.simt,f) for f in binding.FIELDS}==r['config']
+            assert [got.base.source_n,got.base.source_k,got.base.source_tokens]==[n,k,m]
+    finally:d.close()
 
 
 def test_old_execution_with_same_geometry_cannot_pass_readiness(plan):
     p=dict(plan,requests=[r for r in plan['requests'] if r.get('implementation',{}).get('cta_tokens')])
-    execution=dict(simt_configs={str(q):[r.record() for r in runtime_inventory(q)] for q in (8,10,11,12,13)},
+    execution=dict(simt_configs={str(q):[r.record() for r in runtime_inventory(q)] for q in (8,10,11,12,13,14)},
                    token_cta=binding.capability())
     validate_inventory(p,execution,jit=True)
     for field in ('catalog_sha256','body_hashes','keys','evidence_sha256'):
@@ -113,17 +149,17 @@ for(int mode:{QKG_GROUPED,QKG_INDEXED}) {auto bad=d;bad.call.mode=mode;assert(to
 for(int storage:{int(QKG_F16),int(QKG_SIMT_BF16)}) {auto bad=d;bad.call.input_type=storage;assert(token_cta_window(bad,f)<0);} \
 for(int rows:{0,1,9}) {auto bad=d;bad.call.rows=rows;assert(token_cta_window(bad,f)<0);} \
 auto bad=d;bad.compute_type=QKG_COMPUTE_BF16;assert(token_cta_window(bad,f)<0); \
-bad=d;bad.call.n+=256;assert(token_cta_window(bad,f)<0); \
-bad=d;bad.call.k+=512;assert(token_cta_window(bad,f)<0); \
+bad=d;bad.call.n+=16;assert(token_cta_window(bad,f)<0); \
+bad=d;bad.call.k+=32;assert(token_cta_window(bad,f)<0); \
 bad=d;bad.call.experts=256;assert(token_cta_window(bad,f)<0); \
 bad=d;bad.call.topk=8;assert(token_cta_window(bad,f)<0); \
 bad=d;bad.call.channels=8;assert(token_cta_window(bad,f)<0); \
-bad=d;bad.call.qtype=14;assert(token_cta_window(bad,f)<0); \
+bad=d;bad.call.qtype=9;assert(token_cta_window(bad,f)<0); \
 f.split=16;assert(token_cta_window(d,f)<0); \
 }
 #include "quactlize/execution/token_cta.inc"
 #undef QTC
-assert(count==32);
+assert(count==121);
 }
 ''')
     subprocess.run(['g++','-std=c++17','-O2','-I'+str(ROOT),source,'-o',tmp_path/'scope'],check=True)
@@ -141,6 +177,8 @@ def test_old_cpp_all_keys_and_nearby_bucket_choices_are_preserved(tmp_path,table
         stream.extractall(base,members=members,filter='data')
     old=gen.effective(json.loads(gen.EVIDENCE.read_text()),include_token_cta=False)
     keys={tuple(r['key']) for r in old['exact']}
+    prior_keys=set(keys)
+    keys.update(tuple(r['key']) for r in table['rows'])
     for r in table['rows']:
         for axis in (2,3):
             for delta in (-512,-256,256,512):
@@ -152,7 +190,7 @@ def test_old_cpp_all_keys_and_nearby_bucket_choices_are_preserved(tmp_path,table
         exe=tmp_path/('old' if root==base else 'new')
         subprocess.run(['g++','-std=c++17','-O2','-I'+str(root),root/'tools/kpack_selection.cpp','-o',exe],check=True)
         results.append([json.loads(s) for s in subprocess.check_output([exe],input=text,text=True).splitlines()])
-    changes={tuple(r['key']) for r in table['rows'] if r['changed']}
+    changes={tuple(r['key']) for r in table['rows'] if r['changed'] or tuple(r['key']) not in prior_keys}
     observed=set()
     for k,a,b in zip(ordered,*results):
         if a!=b:observed.add(k)
