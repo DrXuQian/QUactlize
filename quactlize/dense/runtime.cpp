@@ -6,6 +6,7 @@
 #include "../prefill/api.h"
 #include "../prefill/dense_internal.hpp"
 #include "../execution/simt_validation.hpp"
+#include "../execution/simt_token_cta_scope.hpp"
 #include <hggc_runtime_api.h>
 #include <dlfcn.h>
 #include <unistd.h>
@@ -364,6 +365,11 @@ void prepare(Plan& p,quactlize_ppu_dense_candidate_v1 const* candidate=nullptr) 
         if (p.kind==Kind::Simt) {
             auto const& f=p.small.base.simt;info.split=f.split;
             std::snprintf(info.config,sizeof(info.config),"simt:v%d:c%d:w%d:x%d:s%d",f.variant,f.columns,f.warps,f.values,f.split);
+            int window=execution::simt::token_cta_window(simt_call(p),f);
+            if(window>=0) {
+                size_t used=std::strlen(info.config);
+                std::snprintf(info.config+used,sizeof(info.config)-used,":tokens%d:window%d",p.params.m,window);
+            }
         } else {
             auto const& f=p.small.q4;info.split=1;
             std::snprintf(info.config,sizeof(info.config),"q4:r%d:v%d:w%d:x%d:c%d",f.reader,f.variant,f.warps,f.values,f.columns);

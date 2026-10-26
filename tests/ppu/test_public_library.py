@@ -12,6 +12,7 @@ from tools.run_kpack_grouped_decode_probe import Replay
 from .support import (Arena, Candidate, DENSE_M, Info, Options, Params, Public,
                       QTYPES, check_output, packed)
 from quactlize.dispatch.dense_prefill import EVIDENCE
+from quactlize.execution.token_cta_policy import load as token_choices
 
 
 def helper_followup_points():
@@ -51,6 +52,19 @@ def test_selected_dense_dynamic_bindings(package, sdk, q, m, compute, record_pro
     run_dense(package, sdk, q, m, compute, record_property)
 
 
+@pytest.mark.parametrize('row',token_choices()['rows'],ids=lambda r:f'q{r["key"][0]}-m{r["key"][7]}')
+def test_token_cta_exact_public_bindings(package,sdk,row,record_property):
+    # Verify the final public execution path, including unchanged Q4/TC arms,
+    # two streams, moved addresses, padded strides, reducer and Graph replay.
+    from dev.prefill_point.typed import DenseLibrary
+    from quactlize.dispatch.table import Workload
+    query=DenseLibrary(package/'quactlize-runtime/libquactlize_ppu_prefill.so')
+    measured=query.choice(Workload(12,1024,5120,2048),0,allow_miss=True) is not None
+    q,mode,n,k,e,top,ch,m,compute=row['key']
+    run_dense(package,sdk,q,m,compute,record_property,n=n,k=k,
+              expected_decode=row['selected'],measured_device=measured)
+
+
 @pytest.mark.parametrize("q", [10, 11, 12, 13, 14])
 def test_full_dequant_provider_ordinary_calls(package, sdk, q, record_property):
     # This is not a cuBLAS graph/timer test. Explicit route admission is logged.
@@ -72,7 +86,7 @@ def test_admitted_helper_followup_public_calls(package,sdk,shape,recipe,record_p
     run_dense(package,sdk,q,m,0,record_property,n=n,k=k,expected=recipe,measured_device=measured_device)
 
 
-def run_dense(package, sdk, q, m, compute, record_property, *, full=False,n=256,k=512,expected=None,measured_device=True):
+def run_dense(package, sdk, q, m, compute, record_property, *, full=False,n=256,k=512,expected=None,measured_device=True,expected_decode=None):
     lib = Public(package)
     with Arena(sdk) as arena:
         arr, sizes, weight_ptrs, gold = packed(arena, lib, q,n=n,k=k)
@@ -99,6 +113,19 @@ def run_dense(package, sdk, q, m, compute, record_property, *, full=False,n=256,
                 lib.check(lib.prepare(context, C.byref(p), *weight_ptrs, C.byref(handle), C.byref(info)))
             record_property("plan", f"route={info.route} compute={info.compute_type} split={info.split} config={info.config.decode()}")
             assert handle.value and info.config and info.split >= 1
+            if expected_decode and measured_device:
+                f=expected_decode['config'];impl=expected_decode['implementation']
+                if f['kind']=='tc':
+                    assert info.route==f['route'] and info.split==f['split']
+                    assert info.config.decode()==f['symbol']
+                elif f['kind']=='q4':
+                    assert info.route==2 and info.split==1
+                    assert info.config.decode()==f'q4:r{f["reader"]}:v{f["variant"]}:w{f["warps"]}:x{f["values"]}:c{f["columns"]}'
+                else:
+                    assert info.route==2 and info.split==f['split']
+                    name=f'simt:v{f["variant"]}:c{f["columns"]}:w{f["warps"]}:x{f["values"]}:s{f["split"]}'
+                    if impl['kind']=='token-cta':name+=f':tokens{m}:window{impl["window"]}'
+                    assert info.config.decode()==name
             if expected and measured_device:
                 assert info.policy==20 and info.compute_type==0, 'expected ZW810 exact F16 recipe'
                 route=expected['route']; assert info.route==(3 if route==2 else route)

@@ -146,7 +146,7 @@ def capture(tp2, fallback):
     return result | dict(evidence_sha256=digest(json.dumps(result,sort_keys=True).encode()))
 
 
-def effective(evidence, *, include_components=True, include_refresh=True, include_dense=True):
+def effective(evidence, *, include_components=True, include_refresh=True, include_dense=True, include_token_cta=True):
     if evidence['schema']!='quactlize.decode-winners.v1' or evidence['archives']!=ARCHIVES:
         raise ValueError('winner evidence authority differs')
     if evidence.get('evidence_sha256')!=digest(json.dumps(
@@ -205,12 +205,19 @@ def effective(evidence, *, include_components=True, include_refresh=True, includ
             if include_dense:
                 from dev.strategy.dense_m_selection import apply as bind_dense
                 result = bind_dense(result)
+                if include_token_cta:
+                    from quactlize.execution.token_cta_policy import apply as bind_tokens
+                    result = bind_tokens(result)
     return result
 
 
 def header(policy):
     prefix=next((i for i,r in enumerate(policy['exact']) if r.get('source')=='dense-m-exact-v1'),len(policy['exact']))
-    text=matched_header(policy,config_prefix=prefix).replace('tools/fit_smallm_closure.py','tools/generate_decode_selection.py')
+    seed=[]
+    if any('previous_config' in r for r in policy['exact']):
+        prior=[json.dumps(r.get('previous_config',r['config']),sort_keys=True) for r in policy['exact']]
+        seed=sorted(set(prior[:prefix]))+sorted(set(prior)-set(prior[:prefix]))
+    text=matched_header(policy,config_prefix=prefix,config_seed=seed).replace('tools/fit_smallm_closure.py','tools/generate_decode_selection.py')
     text=text.replace('smallm_matched_data','smallm_effective_data')
     # Generic donor choices preserve coverage where an exact Q4 body bakes N/K.
     guards=matched_header(dict(exact=[dict(r,config=r['guard']) for r in policy['exact']],buckets=[],excluded=[]),config_prefix=prefix)

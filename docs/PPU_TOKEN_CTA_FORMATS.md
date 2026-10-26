@@ -1,10 +1,48 @@
 # Dense CTA-local token reuse: Q2–Q5 and Q8
 
 Bounded follow-up to [the measured Q6 experiment](PPU_Q6_TOKEN_CTA.md).
-This is an explicit experimental carrier, not a public ABI or production
-selector change. Dense F32 endpoints, F16 activation rounding, FP32 accumulation,
+The explicit experimental carrier is retained. The reviewed mean winners now
+have exact production bindings as described below; there is no public ABI
+change. Dense F32 endpoints, F16 activation rounding, FP32 accumulation,
 canonical planes, per-row operation order and the real Split-K reducer remain.
 MoE/BF16 and other N/K timings are not admitted by this cohort.
+
+## Exact production binding
+
+`policies/kpack_token_cta_v1.json` records all forty decisions, candidate means,
+component identities, numerical errors, module hashes and source/profiler
+provenance. It imports archive SHA256
+`28a8d7dbaea294311ac1d2b61c329b39068c246f8bf3a585e0a146069a3c1631`,
+measured at source `1048a176a468e07abf30685f25344a4bae7c3410`.
+Selection minimizes the arithmetic mean of isolated component sums, including
+Split-K reduction. It is not an end-to-end or model latency claim.
+
+Thirty-five exact decisions change: 32 choose the token-sharing body; Q2/M1,
+Q5/M1 and Q4/M2 choose better existing configurations. Q4/M8 and Q8/M8 keep TC.
+Q4/M3 is a 0.03% mean near-tie, not a demonstrated material speedup. Q8/M7 is
+also marginal (0.51%). These remain mean-selected under the requested policy.
+No MoE, BF16-compute, M>8, other N/K, or bucket donor/eligibility is modified.
+
+`token_cta.inc` is shared by the host explanation and production launcher.
+The ordinary SIMT ABI still validates workspace and dynamic addresses; launch
+uses the unchanged measured template plus its existing reducer. Package
+validation requires the exact body capability, not merely matching V/C/W/P/S.
+Public plan names append `:tokensM:windowW` for the new implementation.
+
+Regenerate/check on the host:
+
+```bash
+python3 tools/generate_token_cta.py --check
+python3 tools/generate_decode_selection.py --check
+bash run_tests.sh --suite host --sdk "$PPU_SDK"
+```
+
+Rebuild the complete public library/runtime package with `build.sh --library`
+before using this selection. `run_tests.sh --suite accuracy --package PACKAGE`
+includes all forty final public calls (two streams, changed addresses, padded
+strides, graph replay and output guards). This production-library device gate
+is separate from the uploaded experimental timings; host tests do not admit
+new model TPOT or native parity for formats without a native baseline.
 
 ## Inventory
 

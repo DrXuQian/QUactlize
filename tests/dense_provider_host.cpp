@@ -398,7 +398,7 @@ int main() {
     dense_m_controls();
     reviewed_prefill();
     using namespace quactlize::dispatch;
-    size_t matched_count=0,cost_count=0,component_sf_count=0;
+    size_t matched_count=0,cost_count=0,component_sf_count=0,token_count=0;
     // Each context has a separate device module cache. The test catalog is
     // reset between contexts; no untracked modules can satisfy a selection.
     for (int compute:{0,1}) {
@@ -429,6 +429,12 @@ int main() {
             } else {
                 assert(plan.info.route==QUACTLIZE_DENSE_SIMT);
                 assert(plan.kind==(d.choice.base.kind==QKS_SMALLM_Q4?quactlize::dense::Kind::Q4:quactlize::dense::Kind::Simt));
+                if(plan.kind==quactlize::dense::Kind::Simt &&
+                   quactlize::execution::simt::token_cta_window(quactlize::dense::simt_call(plan),d.choice.base.simt)>=0) {
+                    assert(std::strstr(plan.info.config,":tokens") && plan.info.split==d.choice.base.simt.split);
+                    assert(plan.kernel_bytes==uint64_t(row.tokens)*row.n*plan.info.split*sizeof(float));
+                    ++token_count;
+                }
             }
             assert(!plan.copy_input && !plan.copy_output);++matched_count;
         }
@@ -461,7 +467,8 @@ int main() {
             p=test::params(q,m);p.sizes.units_bytes++;assert(quactlize_ppu_dense_supported_v1(&p)==0);
         }
     }
-    assert(component_sf_count==59); // 41 existing + 18 measured dense-M Q5 SF helpers.
+    assert(component_sf_count==54); // Q5 N1024/K5120/M4..8 now select token SIMT, not SF.
+    assert(token_count==32);
     kImages.clear();auto owner=test::context(0);auto& ctx=*owner;
     // Replay all measured dense weight families over boundary M, not only
     // exact table keys. This exercises both exact and bucket/fallback order.

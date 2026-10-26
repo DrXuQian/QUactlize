@@ -4,6 +4,7 @@
 #include "measured_decode.hpp"
 #include "simt_common_scope.hpp"
 #include "simt_q8_refresh.hpp"
+#include "simt_token_cta_scope.hpp"
 
 namespace quactlize::execution::simt {
 // Host launcher strategy, shared with planning/explain. These are not new
@@ -42,11 +43,17 @@ struct Implementation {
     int changes=0;
     char const* measured="none";
     int q8_body=0;
+    int cta_tokens=0, cta_window=0;
 };
 
 inline Implementation implementation(qkg_simt_call_v2 const& d,qkg_simt_config_v1 const& f) {
     auto const& c=d.call;
     Implementation out{"register-reuse",f.split==1?"none":"ordered-row-float2-or-scalar"};
+    int window=token_cta_window(d,f);
+    if(window>=0) {
+        out.producer="token-cta";out.cta_tokens=c.rows;out.cta_window=window;
+        return out;
+    }
     if((out.q8_body=q8_refresh_body(d,f))) {
         out.producer="q8-address";out.hoist=true;
         return out;

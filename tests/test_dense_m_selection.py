@@ -44,7 +44,7 @@ def test_complete_source_scope_and_unstable_rows_remain_unpromoted(table):
 
 def test_only_new_exact_keys_and_no_bucket_or_old_row_changes(table):
     old=gen.effective(json.loads(gen.EVIDENCE.read_text()),include_dense=False)
-    new=gen.effective(json.loads(gen.EVIDENCE.read_text()))
+    new=gen.effective(json.loads(gen.EVIDENCE.read_text()),include_token_cta=False)
     assert digest(old)==table['baseline_sha256']
     assert len(old['exact'])==1852 and len(new['exact'])==2089
     assert old['exact']==new['exact'][:len(old['exact'])]

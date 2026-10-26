@@ -66,9 +66,14 @@ def test_actual_selector_preserves_body_in_future_original_recipe(plan):
     from dev.strategy.vector import spec
     from quactlize.dispatch.table import Workload
     rows = {tuple(r['key']): r for r in binding.rows()}
+    from quactlize.execution.token_cta_policy import rows as token_rows
+    superseded = {tuple(r['key']) for r in token_rows()}
     count = 0
     for r in plan['requests']:
         selected = rows.get(tuple(r['request']))
+        if tuple(r['request']) in superseded:
+            assert r['implementation']['producer']=='token-cta'
+            continue
         if not selected:
             assert not r.get('implementation', {}).get('q8_body')
             continue
@@ -81,7 +86,7 @@ def test_actual_selector_preserves_body_in_future_original_recipe(plan):
         actual = spec(Workload(q, n, k, m), recipe)
         assert actual['q8_body'] == selected['implementation']['body']
         assert asdict(recipe)['kind'] == 'simt'
-    assert count == 63
+    assert count == 62  # Q8 N1024/K5120/M2 now uses the later measured token body.
 
 
 @pytest.mark.parametrize('fault', ['missing', 'body', 'catalog', 'key', 'geometry'])

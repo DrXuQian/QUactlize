@@ -66,6 +66,8 @@ def test_public_final_decisions_equal_frozen_baseline(snapshots):
     promoted|={tuple(w['key']) for w in q8_rows()}
     from dev.strategy.dense_m_selection import load as dense_m
     promoted|={tuple(w['key']) for w in dense_m()['rows'] if w['admitted']}
+    from quactlize.execution.token_cta_policy import load as token_table
+    promoted|={tuple(w['key']) for w in token_table()['rows'] if w['changed']}
     exact={tuple(r['key']) for r in p['exact']}
     changed=[]
     for k,a,b in zip(keys,*results):
@@ -105,15 +107,17 @@ def execution_for(plan):
         configs.setdefault(str(q),[]).append(dict(zip(fields,config)))
     from quactlize.execution.q4_decode_codegen import recipes
     from quactlize.execution.q8_refresh import capability
+    from quactlize.execution.token_cta_policy import capability as token_capability
     return dict(simt_configs=configs,simt_compute_v2=dict(compute=['f16','bf16'],formats=[8,10,11,12,13,14]),
                 q4_decode_policy_sha256='host-fixture',q4_decode_compute_v2=dict(compute=['f16','bf16']),
-                q4_decode_configs={f'{n}x{k}':rs for (n,k),rs in recipes().items()},q8_refresh=capability())
+                q4_decode_configs={f'{n}x{k}':rs for (n,k),rs in recipes().items()},q8_refresh=capability(),
+                token_cta=token_capability())
 
 
 def test_final_catalog_is_exact_and_checks_full_tuple(final_plan):
     assert len(final_plan['requests'])==2089
     assert all(r['status']==0 for r in final_plan['requests'])
-    assert len(requirements(final_plan)['simt'])==192
+    assert len(requirements(final_plan)['simt'])==195
     execution=execution_for(final_plan)
     validate_inventory(final_plan,execution,jit=True)
     for mutate in ('config','compute','q4','q8'):

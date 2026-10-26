@@ -49,6 +49,10 @@ def selected_recipe(row):
     impl = row.get('implementation', {})
     if impl.get('kind') == 'q8-address':
         c['q8_body'] = impl['body']
+    if impl.get('kind') == 'token-cta':
+        c['cta_tokens'] = impl['tokens']
+        if row['key'][0] == 8:
+            c['cta_window'] = impl['window']
     return recipe(c, dequant=row.get('dequant_config', -1))
 
 
@@ -73,6 +77,7 @@ def load_sources(root=ROOT):
     read('policies/kpack_component_decode_v1.json')
     read('policies/kpack_decode_refresh_v1.json')
     read('policies/kpack_dense_decode_v1.json')
+    read('policies/kpack_token_cta_v1.json')
     if root.resolve() != ROOT.resolve():
         raise ValueError('effective board must be imported with its own source checkout')
     board = effective(winner)

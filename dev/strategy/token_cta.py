@@ -43,6 +43,8 @@ def augment(point):
                 r=Recipe.make('simt','fq',variant=5 if w.qtype==8 else 3,
                               columns=c,warps=warps,values=p,split=split,cta_tokens=w.m,**extra)
                 s=spec(w,r)
+                if any(a['recipe']==asdict(r) for a in arms):
+                    continue  # An admitted incumbent is already this exact body.
                 arms.append(dict(id=r.key,recipe=asdict(r),roles=['rule'],aliases=[],required=True,
                     reasons=['CTA_LOCAL_TOKEN_REUSE_CANDIDATE_NOT_ADMITTED'],spec=s,module=digest(s)))
     if len({a['id'] for a in arms})!=len(arms):raise ValueError('duplicate token candidate')

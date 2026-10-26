@@ -87,6 +87,7 @@ static void emit(int q,int mode,int n,int k,int experts,int topk,int channels,in
                 <<",\"reduction\":"<<std::quoted(impl.reduction)<<",\"changes\":"<<impl.changes
                 <<",\"hoist\":"<<(impl.hoist?"true":"false")<<",\"fixed\":"<<(impl.fixed?"true":"false");
             if(impl.q8_body)std::cout<<",\"q8_body\":"<<impl.q8_body;
+            if(impl.cta_tokens)std::cout<<",\"cta_tokens\":"<<impl.cta_tokens<<",\"cta_window\":"<<impl.cta_window;
             std::cout<<'}';
         } else {
             auto f=d.choice.q4;

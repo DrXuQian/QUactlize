@@ -23,6 +23,7 @@ HOST = (
     "test_simt_common.py", "test_simt_scale_fields.py",
     "test_decode_selection.py", "test_decode_refresh_selection.py",
     "test_dense_m_selection.py", "test_q8_refresh_binding.py",
+    "test_token_cta_selection.py",
     "test_prefill_refresh_policy.py", "test_selection_refactor.py",
     "test_dense_prefill_policy.py", "test_dense_prefill_mean.py", "test_dense_helper_admission.py",
     "test_prefill_dense.py", "test_prefill_production_helpers.py", "test_dense_full_helpers.py",

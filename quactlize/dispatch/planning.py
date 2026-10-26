@@ -102,6 +102,20 @@ def validate_inventory(plan, execution, modules=(), *, jit=False):
             if (tuple(r['request']), r['implementation']['q8_body'],
                     tuple(r['config'][f] for f in FIELDS)) not in supported:
                 raise ValueError('final selector Q8 body/config is outside the measured scope')
+    tokens = [r for r in plan['requests'] if r['status'] == 0 and
+              r.get('implementation', {}).get('cta_tokens')]
+    if tokens:
+        from quactlize.execution.token_cta_policy import capability as token_capability
+        token_expected = token_capability()
+        if execution.get('token_cta') != token_expected:
+            raise ValueError('final selector token CTA capability differs; rebuild execution')
+        supported = {(tuple(r['key']),tuple(r['config'][f] for f in FIELDS),r['window'])
+                     for r in token_expected['keys']}
+        for r in tokens:
+            if (r['implementation']['cta_tokens'] != r['request'][7] or
+                    (tuple(r['request']),tuple(r['config'][f] for f in FIELDS),
+                     r['implementation']['cta_window']) not in supported):
+                raise ValueError('final selector token CTA body/config outside measured scope')
     compiled = {(m['parent']['symbol'], int(m['identity'].get('compute_type', 'f16') == 'bf16'),
                  m['identity'].get('endpoints') == 'decode-m1-8-f32-bf16-v1') for m in modules}
     missing = [r for r in required['tc'] if tuple(r) not in compiled]
@@ -110,6 +124,8 @@ def validate_inventory(plan, execution, modules=(), *, jit=False):
     result = dict(required=required, jit_required=missing)
     if q8:
         result['q8_refresh'] = expected
+    if tokens:
+        result['token_cta'] = token_expected
     return result
 
 

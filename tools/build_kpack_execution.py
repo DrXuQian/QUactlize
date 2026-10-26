@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 from quactlize.runtime.compiler import FLAGS, LIBRARIES, sha
 from quactlize.execution import q4_decode_codegen, simt_codegen
 from quactlize.execution.q8_refresh import capability as q8_capability
+from quactlize.execution.token_cta_policy import capability as token_capability
 
 
 def build(sdk, output, jobs, variant="production"):
@@ -23,6 +24,7 @@ def build(sdk, output, jobs, variant="production"):
     sdk, output = sdk.resolve(), output.resolve()
     if jobs < 1:
         raise ValueError("jobs must be positive")
+    token_receipt = token_capability()
     from tools.generate_q8_refresh import catalog as q8_catalog, header as q8_header
     for name, text in [('q8_refresh.inc', q8_catalog()), ('simt_q8_refresh.cuh', q8_header())]:
         if (ROOT/'quactlize/execution'/name).read_text() != text:
@@ -76,6 +78,8 @@ def build(sdk, output, jobs, variant="production"):
               ROOT/'quactlize/execution/q4_decode_codegen.py',
               ROOT/'quactlize/execution/simt_codegen.py',
               ROOT/'quactlize/execution/q8_refresh.py',
+              ROOT/'quactlize/execution/token_cta_policy.py',
+              ROOT/'policies/kpack_token_cta_v1.json',
               ROOT/'policies/kpack_decode_refresh_v1.json',
               ROOT/'policies/kpack_dense_decode_v1.json',
               ROOT/'policies/kpack_smallm_effective_v1.hpp',
@@ -209,6 +213,7 @@ def build(sdk, output, jobs, variant="production"):
         },
         simt_selection="EXPLICIT_CALLER_CONFIG_WITH_REVIEWED_EXACT_Q8_BODY_BINDINGS",
         q8_refresh=q8_capability(),
+        token_cta=token_receipt,
     )
     if variant == "fp32-affine":
         manifest["gemv_pair_affine"] = "FP32_GROUP_AFFINE_NO_INTERMEDIATE_FP16_ROUNDING"

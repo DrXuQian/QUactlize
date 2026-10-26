@@ -17,9 +17,12 @@ def recipes():
             groups[r["n"], r["k"]].add(tuple(int(x[1:]) for x in r["recipe"][5:].split("-")))
     from tools.generate_decode_selection import EVIDENCE, effective
     for r in effective(json.loads(EVIDENCE.read_text()))['exact']:
-        if r['config']['kind'] == 'q4':
-            groups[r['key'][2], r['key'][3]].add(tuple(r['config'][f]
-                for f in ('reader', 'variant', 'warps', 'values', 'columns')))
+        # Preserve already-public explicit configurations when an exact policy
+        # chooses a newer reader. This does not change automatic selection.
+        for c in (r['config'],r.get('previous_config',{})):
+            if c.get('kind') == 'q4':
+                groups[r['key'][2], r['key'][3]].add(tuple(c[f]
+                    for f in ('reader', 'variant', 'warps', 'values', 'columns')))
     return {shape: sorted(values) for shape, values in sorted(groups.items())}
 
 

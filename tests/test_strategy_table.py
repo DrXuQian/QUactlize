@@ -18,7 +18,8 @@ def observation(w,r,priority=10,scope='COMPLETE_CALL'):
 
 def test_old_box_data_is_imported_not_replaced_with_an_empty_table():
     table,sources=load_sources()
-    assert len(sources)==11
+    assert len(sources)==12
+    assert 'policies/kpack_token_cta_v1.json' in sources
     assert len(table.observations)==7474
     assert len(table.exact)==4059
     assert {r.workload.qtype for r in table.observations}=={8,10,11,12,13,14}

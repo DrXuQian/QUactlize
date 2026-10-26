@@ -27,6 +27,11 @@ def original_recipe(row):
     config = dict(row['config'],kind='simt' if row['kind']==1 else 'q4')
     if row.get('implementation', {}).get('q8_body'):
         config['q8_body'] = row['implementation']['q8_body']
+    impl = row.get('implementation', {})
+    if impl.get('cta_tokens'):
+        config['cta_tokens'] = impl['cta_tokens']
+        if row['request'][0] == 8:
+            config['cta_window'] = impl['cta_window']
     return normalize(config)
 
 

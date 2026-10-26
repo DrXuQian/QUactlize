@@ -58,12 +58,25 @@ def audit(bundle, output):
             w=dict(w,config=current['config'],policy=18,implementation='existing')
         check_winner(rows[tuple(w['key'])], w)
     components=json.loads(COMPONENTS.read_text())
+    from quactlize.execution.token_cta_policy import load as token_table
+    tokens=token_table()
+    replacements={tuple(w['key']):w for w in tokens['rows'] if w['changed']}
     for w in components['rows']:
         if not w['changed']:continue
         r=rows[tuple(w['key'])]
+        if tuple(w['key']) in replacements:
+            c=replacements[tuple(w['key'])]['selected']
+            w=dict(w,config=c['config'],dequant_config=c['dequant_config'])
         check_winner(r,dict(w,policy=18,implementation='existing',point={'name':str(w['key'])}))
         if r['dequant_config']!=w['dequant_config']:
             raise ValueError('selected SF helper differs from component confirmation')
+    for w in tokens['rows']:
+        r=rows[tuple(w['key'])];c=w['selected'];live=catalog[tuple(w['key'])]
+        check_winner(r,dict(config=c['config'],policy=live['policy'],implementation='existing',point={'name':str(w['key'])}))
+        if c['implementation']['kind']=='token-cta' and (
+                r['implementation'].get('cta_tokens')!=w['key'][7] or
+                r['implementation'].get('cta_window')!=c['implementation']['window']):
+            raise ValueError('selected token CTA implementation differs from confirmed body')
     public_count = 0
     d = Dispatch(bundle)
     try:
@@ -88,6 +101,7 @@ def audit(bundle, output):
     result = dict(schema='quactlize.decode-selection-audit.v1', status='PASS', gpu_used=False,
                   evidence_sha256=sha(EVIDENCE), manifest_sha256=sha(bundle/'manifest.json'),
                   component_evidence_sha256=sha(COMPONENTS), component_confirmations=components['summary'],
+                  token_cta_evidence_sha256=tokens['evidence_sha256'], token_cta_exact_points=len(tokens['rows']),
                   catalog_rows=len(rows), public_simt_queries=public_count,
                   confirmed_ordinary_winners=len(winners), required=available['required'],
                   tc_module_loading='DEFERRED_TO_DEVICE_GATE',

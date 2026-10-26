@@ -83,13 +83,17 @@ def test_smallm_unchanged_except_declared_later_dense_exact_additions(tmp_path):
     subprocess.run(['g++','-std=c++17','-O2','-I'+str(frozen),frozen/'tools/kpack_selection.cpp','-o',exe],check=True)
     before=[json.loads(line) for line in subprocess.check_output([exe,'--inventory'],text=True).splitlines()]
     after=plan_smallm(tmp_path)['requests']
-    assert len(before)==1852 and len(after)==2089 and before==after[:len(before)]
+    from quactlize.execution.token_cta_policy import load as token_table
+    tokens={tuple(r['key']) for r in token_table()['rows'] if r['changed']}
+    assert len(before)==1852 and len(after)==2089
+    for a,b in zip(before,after):
+        if tuple(a['request']) not in tokens:assert a==b
     # Neighbor shapes/precision/channels/invalid inputs exercise actual bucket
     # and rejection decisions, not only the exact measured keys.
     from test_selection_refactor import case_keys
     from dev.strategy.dense_m_selection import load
     admitted={tuple(r['key']) for r in load()['rows'] if r['admitted']}
-    keys=sorted({k[:9] for k in case_keys()}-admitted)
+    keys=sorted({k[:9] for k in case_keys()}-admitted-tokens)
     text=''.join(' '.join(map(str,k))+'\n' for k in keys)
     old=subprocess.check_output([exe],input=text,text=True)
     new=subprocess.check_output([tmp_path/'selection-query'],input=text,text=True)
