@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Bounded 10-point recovery; no event timings, production writes or network fetch.
+# Bounded small-M recovery/candidate cohorts; no event timings or network fetch.
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 PYTHON=${PYTHON:-python3}
 args=()
+[[ -z ${COHORT:-} ]] || args+=(--cohort "${COHORT}")
 if [[ ${PLAN_ONLY:-0} != 1 ]]; then
     [[ ${IDLE_CONFIRMED:-0} == 1 ]] || {
         echo 'ERROR: confirm every assigned GPU is otherwise idle with IDLE_CONFIRMED=1.' >&2
@@ -69,7 +70,7 @@ test -f "${SOURCE}/tools/run_smallm_regressions_asys.py"
 SOURCE_COMMIT=$("${PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1]))["quactlize_commit"])' "${SOURCE}/.quactlize-source.json")
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 GPUS=${GPUS:-0,1,2,3}
-echo "SMALLM_ASYS_BOX run=${RUN} devices=${GPUS} points=10 commit=${SOURCE_COMMIT} clock_request_MHz=1700 actual_clock=ADVISORY production_changed=0"
+echo "SMALLM_ASYS_BOX run=${RUN} devices=${GPUS} cohort=${COHORT:-FROZEN_OR_REGRESSIONS} commit=${SOURCE_COMMIT} clock_request_MHz=1700 actual_clock=ADVISORY production_changed=0"
 set +e
 "${PYTHON}" -u "${SOURCE}/tools/run_smallm_regressions_asys.py" \
     --output "${RUN}/results" --devices "${GPUS}" --jobs "${JOBS:-8}" \

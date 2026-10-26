@@ -17,12 +17,14 @@ ROOT=Path(__file__).resolve().parents[2]
 METHOD='ASYS_GPU_ACTIVITY'
 
 
-def workloads():
+def workloads(cohort='regressions'):
+    if cohort=='q6-token-cta':return [Workload(14,1024,5120,m) for m in range(1,9)]
+    if cohort!='regressions':raise ValueError('unknown bounded small-M cohort')
     return [Workload(q,1024,5120,m) for q,ms in ((13,range(1,5)),(14,range(2,8))) for m in ms]
 
 
-def make_plan(originals):
-    ws=workloads()
+def make_plan(originals,cohort='regressions'):
+    ws=workloads(cohort)
     if [r['request'] for r in originals]!=[request(w) for w in ws]:
         raise ValueError('regression C++ selection inventory differs')
     prior={tuple(r['key']):r for r in json.loads((ROOT/'policies/kpack_component_decode_v1.json').read_bytes())['rows']}
@@ -32,17 +34,24 @@ def make_plan(originals):
         p=proposed(dict(id=w.key,workload=asdict(w),cohort='decode',consumers=[]),
                    original_recipe(old),history,prior,allow_new_family=True)
         p.update(selection=old,execution_contract=execution_contract(w))
+        if cohort=='q6-token-cta':
+            from dev.strategy.token_cta import augment
+            p=augment(p)
         for arm in p['arms']:
             (tc if arm['recipe']['kind']=='tc' else vectors)[arm['module']]=arm['spec']
         points.append(p)
-    result=dict(schema='quactlize.smallm-asys.v1',phase='regression-asys',points=points,tc=tc,vectors=vectors,
+    result=dict(schema='quactlize.smallm-asys.v1',phase='regression-asys',cohort=cohort,points=points,tc=tc,vectors=vectors,
         counts=dict(points=len(points),arms=sum(len(p['arms']) for p in points),tc_modules=len(tc),
-                    vector_modules=len(vectors),families=2),
+                    vector_modules=len(vectors),families=len({w.qtype for w in ws})),
         timing_method=METHOD,selection_metric='MEAN_COMPONENT_SUM',noise_policy='DIAGNOSTIC_NOT_VETO',
         historical_times_reused=False,production_changed=False,native_comparison=False,
-        scope='TEN_DENSE_REGRESSION_POINTS_CURRENT_CONFIG_SWEEP_NOT_NATIVE_OR_MODEL_AB',
+        scope=('Q6_DENSE_M1_TO_8_CTA_TOKEN_AB_NOT_NATIVE_OR_MODEL_ADMISSION' if cohort=='q6-token-cta' else
+               'TEN_DENSE_REGRESSION_POINTS_CURRENT_CONFIG_SWEEP_NOT_NATIVE_OR_MODEL_AB'),
         sources={p:sha(ROOT/p) for p in ('policies/kpack_component_decode_v1.json',
                   'policies/kpack_smallm_effective_v1.hpp','dev/strategy/vector.py')})
+    if cohort=='q6-token-cta':
+        for p in ('dev/strategy/token_cta.py','quactlize/execution/simt_token_cta.cuh'):
+            result['sources'][p]=sha(ROOT/p)
     result['sha256']=digest(result)
     return json.loads(json.dumps(result))
 
@@ -111,8 +120,13 @@ def check_producers(point,data):
             c=spec['config']
             common=c['variant']==3 and ((c['columns']==4 and c['values']==8 and c['warps'] in (2,8)) or
                                        (c['columns']==8 and c['values']==4 and c['warps']==4))
-            expected='quactlize::execution::simt::'+('common_reader' if common else 'register_reuse')
+            expected='quactlize::execution::simt::'+('token_cta_reader' if 'cta_tokens' in spec else
+                                                   'common_reader' if common else 'register_reuse')
             if expected!=n:raise ValueError('candidate executed the wrong production reader: '+n)
+            if 'cta_tokens' in spec:
+                expected_grid=[point['workload']['n']//(c['columns']*c['values']),1,
+                               dict(recipe['parameters'])['split']]
+                if nodes[0]['grid']!=expected_grid:raise ValueError('token rows were not fused into one CTA')
             if measured['receipt'].get('execution_contract')!=point['execution_contract']:
                 raise ValueError('candidate did not submit the planned dense ABI')
 

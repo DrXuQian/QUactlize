@@ -170,6 +170,7 @@ def producer_entry(node):
     if not symbol.startswith('_Z'):
         return display
     for name in ('cutlass::device_kernel', 'cutlass::Kernel',
+                 'quactlize::execution::simt::token_cta_reader',
                  'quactlize::execution::simt::common_reader',
                  'quactlize::execution::simt::register_reuse'):
         *namespace, function = name.split('::')

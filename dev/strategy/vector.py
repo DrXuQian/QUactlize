@@ -1,4 +1,4 @@
-"""Bounded experimental Q4/SIMT entrypoints using unchanged shipping bodies.
+"""Bounded Q4/SIMT entrypoints; changed bodies require explicit recipe flags.
 
 The public Q4 entry deliberately accepts only its selected recipe. This
 private carrier can instantiate a frozen offline candidate without changing
@@ -56,6 +56,13 @@ def spec(w, recipe):
     result = dict(kind=recipe.kind, q=w.qtype, compute=w.compute,
                 n=w.n if recipe.kind == 'q4' else 0, k=w.k if recipe.kind == 'q4' else 0,
                 config={f: p[f] for f in fields})
+    if 'cta_tokens' in p:
+        geometry=tuple(p[f] for f in ('variant','columns','warps','values'))
+        if (w.qtype!=14 or w.operation!='dense' or w.compute!='f16' or recipe.kind!='simt' or
+                type(p['cta_tokens']) is not int or p['cta_tokens']!=w.m or not 2<=w.m<=8 or
+                geometry not in ((3,4,8,8),(3,4,2,8),(3,8,4,4))):
+            raise ValueError('CTA-local tokens require Q6 dense F16 M2..8 and a common-reader geometry')
+        result['cta_tokens']=p['cta_tokens']
     if 'q8_body' in p:
         if (w.qtype != 8 or w.operation != 'dense' or recipe.kind != 'simt' or
                 p.get('split') != 1 or type(p['q8_body']) is not int or p['q8_body'] not in (0, 1, 3, 4, 5) or
@@ -67,6 +74,9 @@ def spec(w, recipe):
 
 
 def source(item):
+    if 'cta_tokens' in item:
+        from dev.strategy.token_cta import source as token_source
+        return token_source(item)
     if 'q8_body' in item:
         from dev.strategy.refresh_vector import source as q8_source
         return q8_source(item)
@@ -239,7 +249,8 @@ class Vector:
             self.receipt = dict(kind=item['kind'],spec=item,split=split,
                 execution_contract=contract,
                 build_key=record['key'],module_sha256=record['sha256'],workspace_bytes=sizes.workspace_bytes,
-                scope=('EXPLICIT_MEASURED_Q8_CANDIDATE_F32_ENDPOINTS_DENSE_S1'
+                scope=('EXPERIMENTAL_Q6_CTA_LOCAL_TOKENS_F32_F16_REAL_REDUCER'
+                       if 'cta_tokens' in item else 'EXPLICIT_MEASURED_Q8_CANDIDATE_F32_ENDPOINTS_DENSE_S1'
                        if 'q8_body' in item else 'EXPLICIT_SHIPPING_BODY_F32_ENDPOINTS_REAL_REDUCER'))
         except BaseException:
             self.close();raise

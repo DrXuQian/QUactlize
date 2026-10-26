@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ten dense regression points, current bodies, Asys-only component means."""
+"""Bounded dense cohorts, current controls, Asys-only component means."""
 import argparse
 from contextlib import ExitStack
 import fcntl
@@ -158,9 +158,12 @@ def worker(a):
                     evidence={str(p):sha(p) for p in (attempt/'capture.json',report,db)})
                 base.sealed(path,value)
                 decision=data['decision'];stats=decision['statistics']
+                winning_recipe=next(x['recipe'] for x in point['arms'] if x['id']==decision['winner'])
                 print('SMALLM_ASYS_POINT '+json.dumps(dict(point=point['id'],status='PASS',
+                    qtype=point['workload']['qtype'],shape=[point['workload'][k] for k in ('m','n','k')],
                     original_us=stats['original']['mean_us'],best_us=stats[decision['winner']]['mean_us'],
                     delta_pct=decision['delta_pct'],winner=decision['winner'],
+                    recipe=winning_recipe,
                     quactlize_commit=run['source_revision']['quactlize_commit'])),flush=True)
             except Exception as exc:
                 traceback.print_exc();failures+=1
@@ -174,9 +177,10 @@ def run(a):
     a.output.mkdir(parents=True,exist_ok=a.resume)
     if (a.output/'plan.json').exists():plan=sealed(a.output/'plan.json')
     else:
-        originals=plan_smallm(a.output,[base.request(w) for w in workloads()],dense_fallbacks=True)
+        originals=plan_smallm(a.output,[base.request(w) for w in workloads(a.cohort or 'regressions')],dense_fallbacks=True)
         atomic_json(a.output/'cpp-originals.json',originals)
-        plan=make_plan(originals['requests']);atomic_json(a.output/'plan.json',plan)
+        plan=make_plan(originals['requests'],a.cohort or 'regressions');atomic_json(a.output/'plan.json',plan)
+    if a.cohort and a.cohort!=plan.get('cohort','regressions'):raise ValueError('resume cohort differs')
     if (plan['schema']!='quactlize.smallm-asys.v1' or
             any(sha(ROOT/p)!=value for p,value in plan['sources'].items())):
         raise ValueError('frozen plan source changed; start a new experiment')
@@ -229,7 +233,7 @@ def run(a):
             if row['status']=='PASS':done(path,next(p for p in plan['points'] if p['id']==pid),run)
             rows.append(dict(point=pid,status=row['status'],decision=row.get('data',{}).get('decision'),error=row.get('error')))
     result=dict(status='COMPLETE' if all(r['status']=='PASS' for r in rows) and all(p.returncode==0 for p in workers) else 'INCOMPLETE',
-        expected=10,points=rows,returncodes=[p.returncode for p in workers],timing_method=METHOD,
+        expected=len(plan['points']),points=rows,returncodes=[p.returncode for p in workers],timing_method=METHOD,
         source_revision=rev,production_changed=False,native_no_regression_admitted=False,model_tpot_admitted=False)
     atomic_json(a.output/'summary.json',result)
     print('SMALLM_ASYS_DONE '+json.dumps({k:v for k,v in result.items() if k!='points'}),flush=True)
@@ -240,6 +244,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output',type=Path,required=True);p.add_argument('--sdk',type=Path,default=Path('/usr/local/PPU_SDK'))
     p.add_argument('--devices',default='0,1,2,3');p.add_argument('--jobs',type=int,default=8)
+    p.add_argument('--cohort',choices=('regressions','q6-token-cta'))
     p.add_argument('--l2-bytes',type=int,default=67108864);p.add_argument('--asys',type=Path);p.add_argument('--smi',type=Path)
     p.add_argument('--resume',action='store_true');p.add_argument('--plan-only',action='store_true');p.add_argument('--confirm-idle',action='store_true')
     p.add_argument('--probe',type=Path);p.add_argument('--worker',type=int);p.add_argument('--point');p.add_argument('--attempt',type=Path)
