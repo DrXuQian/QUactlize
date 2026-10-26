@@ -143,7 +143,7 @@ class Core:
     def __init__(self,b,w,arm,record,query,sf=None):
         r=Recipe.from_dict(arm['recipe']);self.b=b;self.sf=sf if r.route=='sf' and w.qtype!=8 else None
         if r.kind!='tc':
-            self.inner=Vector(b,record,arm['spec'],dict(r.parameters).get('split',1))
+            self.inner=Vector(b,record,arm['spec'],dict(r.parameters).get('split',1),workload=w)
         else:
             view=b if self.sf is None else SimpleNamespace(**(vars(b)|{'ring':SimpleNamespace(planes=self.sf.planes)}))
             self.inner=TensorCore(view,record,r,w) if w.operation=='indexed' else DenseCore(view,record,arm,query)

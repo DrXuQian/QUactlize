@@ -1,5 +1,19 @@
 # PPU failure lessons
 
+Validate the runtime operation, not just the planned workload. The20261026
+ZW810 small-M native A/B runner reused indexed_point without setting dense
+mode:56 Q8 address-body queries returned20, while49 other vector points ran
+the indexed path. E=topk=channels=1 made the output oracle pass despite the
+wrong addressing path. Host replay of the actual query reproduced20->0 by
+changing only mode2->0. Check mode, IDs, strides and compute in the submitted
+ABI and save that contract in receipts. Remeasure all105 affected vector
+points, not only the56 hard failures. Dense TC has its own request constructor;
+preserve its255 old results, including6 regressions/6 uncertain points, under
+their original authority. Do not turn a harness repair into production speedup
+or discard measured TC losses. Original sweep and production entries already
+set dense mode correctly. Seams: tools/run_dense_smallm_ab.py,
+dev/native_components/smallm_retry.py, tests/test_dense_smallm_mode.py.
+
 Fixed-body helper changes still need whole-call admission. In the20261024
 ZW810/SDK2.1.1 Q8 dense-prefill followup, compact2 lost at six S2 outputs with
 M*N=524288; the same reducer with grain8 won in both capture orders. Do not

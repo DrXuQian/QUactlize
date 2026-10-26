@@ -17,7 +17,8 @@ import uuid
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from dev.native_components.smallm_ab import plan, ORDER, SCOPE, candidate_components, native_components, verdict, aggregate
+from dev.native_components.smallm_ab import (plan, ORDER, SCOPE, candidate_components,
+    native_components, verdict, aggregate, fixture_point, checked_fixture)
 from dev.strategy.refresh import assign, family
 from dev.strategy.journal import atomic_json
 from dev.strategy.provenance import harness_identity
@@ -92,7 +93,6 @@ def verify_run(a,run):
 def candidate(a):
     from dev.smallm_closure.bench import Context
     from dev.strategy.cold_decode import Ring, Expansion
-    from dev.strategy.indexed import point as indexed_point
     from dev.strategy.confirm import confirm_point
     from quactlize.runtime.native import SDK
     run=sealed(a.output/'run.json');p,images,dq=verify_run(a,run)
@@ -111,14 +111,16 @@ def candidate(a):
             metadata_b=metadata_sf=None
             if any(r['sf_configs'] for r in rows):
                 mr=Ring(sdk,w0,a.l2_bytes,weights=ring.w,metadata_only=True);stack.callback(mr.close)
-                metadata_b=Context(sdk,mr,indexed_point(w0));stack.callback(metadata_b.close)
+                metadata_b=Context(sdk,mr,fixture_point(w0));stack.callback(metadata_b.close)
+                checked_fixture(metadata_b,w0)
                 metadata_sf=Expansion(metadata_b,dq);stack.callback(metadata_sf.close)
             pci=run['devices'][a.shard]['device']['pci']
             for current in rows:
                 w=Workload(**current['workload']);bound,bindings=refresh.bind_point(current,images)
                 refresh.verify_images(a,p,images,dq,[current])
                 with ExitStack() as local:
-                    b=Context(sdk,ring,indexed_point(w));local.callback(b.close)
+                    b=Context(sdk,ring,fixture_point(w));local.callback(b.close)
+                    checked_fixture(b,w)
                     sf=Expansion(b,dq,gold=metadata_sf.gold) if current['sf_configs'] else None
                     if sf:local.callback(sf.close)
                     clock=lambda:refresh.observe(Path(run['smi']),pci,1700,advisory=True)
@@ -264,6 +266,10 @@ def review(a,p,run,codes):
         authority=dict(run=run['sha256'],shard=i,device=run['devices'][i])
         records[point['id']]=completed(path,point,authority) or sealed(path)
     result=aggregate(p,records)|dict(worker_returncodes=codes)
+    if 'retry' in p:
+        result['retained_prior_tc']=p['retry']['retained_counts']
+        result['retry_scope']='VECTOR_MODE_REPAIR_ONLY_NOT_FULL_COHORT_ADMISSION'
+        result['full_cohort_no_regression']=False
     if any(codes):result.update(status='INCOMPLETE',component_no_regression=False)
     atomic_json(a.output/'summary.json',result)
     with (a.output/'comparison.csv').open('w',newline='') as out:
@@ -290,6 +296,7 @@ def main():
     parser.add_argument('--confirm-idle',action='store_true')
     parser.add_argument('--plan-only',action='store_true')
     parser.add_argument('--resume',action='store_true')
+    parser.add_argument('--retry-from',type=Path,help='New run for all vectors from the affected dense/native run; TC evidence remains historical')
     parser.add_argument('--probe',type=Path,help=argparse.SUPPRESS)
     parser.add_argument('--shard',type=int,help=argparse.SUPPRESS)
     parser.add_argument('--candidate',action='store_true',help=argparse.SUPPRESS)
@@ -297,6 +304,8 @@ def main():
     parser.add_argument('--pass-output',type=Path,help=argparse.SUPPRESS)
     parser.add_argument('--pass-id',help=argparse.SUPPRESS)
     a=parser.parse_args()
+    if a.retry_from and (a.resume or a.shard is not None or a.candidate or a.probe):
+        parser.error('--retry-from creates a new coordinator run, not an old-run resume')
     cards=gpu_ordinals(a.devices)
     if not 1<=a.jobs<=64 or a.l2_bytes<=0:parser.error('jobs 1..64 and verified positive L2 required')
     if not a.plan_only and not a.confirm_idle:parser.error('--confirm-idle required')
@@ -319,6 +328,9 @@ def main():
 
 def coordinate(a,cards):
     p=sealed(a.output/'plan.json') if a.resume else plan(a.output)
+    if not a.resume and getattr(a,'retry_from',None):
+        from dev.native_components.smallm_retry import vector_retry
+        p=vector_retry(p,a.retry_from,completed)
     if not a.resume:atomic_json(a.output/'plan.json',p)
     print('SMALLM_NATIVE_PLAN '+json.dumps(p['counts']|dict(devices=cards,scope=SCOPE)),flush=True)
     if a.plan_only:return 0

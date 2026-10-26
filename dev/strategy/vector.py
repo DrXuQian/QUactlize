@@ -22,6 +22,28 @@ from quactlize.runtime.tuning import digest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def execution_contract(w):
+    if w.operation not in ('dense', 'indexed') or w.storage != 'f32':
+        raise ValueError('vector call requires a dense/indexed F32 workload')
+    return dict(qtype=w.qtype, n=w.n, k=w.k, experts=w.experts, rows=w.m*w.topk,
+        mode=0 if w.operation=='dense' else 2, input_type=1,
+        compute_type=int(w.compute=='bf16'), channels=w.channels, topk=w.topk,
+        a_row_stride=w.input_stride, a_token_stride=w.channels*w.input_stride,
+        ids_stride=w.topk, out_row_stride=w.output_stride,
+        ids_present=w.operation=='indexed')
+
+
+def checked_call(w, request):
+    """Validate the actual ABI request, not just the planner's operation label."""
+    expected=execution_contract(w)
+    actual={k:int(getattr(request.call,k)) for k in expected if k not in ('compute_type','ids_present')}
+    actual.update(compute_type=int(request.compute_type),ids_present=bool(request.call.ids))
+    if actual!=expected:
+        fields=[k for k in expected if actual[k]!=expected[k]]
+        raise ValueError('vector execution contract differs from workload: '+','.join(fields))
+    return actual
+
+
 def spec(w, recipe):
     if (recipe.kind not in ('q4', 'simt') or w.storage != 'f32' or w.m > 8 or
             w.operation not in ('dense', 'indexed') or rejection(recipe, w)):
@@ -180,7 +202,7 @@ class Compiler:
 
 
 class Vector:
-    def __init__(self, b, record, item, split=1):
+    def __init__(self, b, record, item, split=1, *, workload):
         from dev.smallm_closure.bench import Buffer
         from tools.run_kpack_gemv_gate import Resources
         from quactlize.execution.native import Call, SimtCallV2, Sizes, Arrangement
@@ -202,6 +224,7 @@ class Vector:
             a_row_stride=p['k'],a_token_stride=p['channels']*p['k'],ids_stride=p['topk'],out_row_stride=p['n'],
             a=b.a.ptr,ids=b.ids.ptr if b.ids else None,output=b.out.ptr,stream=b.r.stream.value)
         request = SimtCallV2(call,int(p['compute']=='bf16'))
+        contract = checked_call(workload, request)
         sizes = Sizes()
         self.r = Resources(b.sdk)
         try:
@@ -214,6 +237,7 @@ class Vector:
                 c.call.workspace,c.call.workspace_bytes=self.scratch.ptr,self.scratch.size
                 self.calls.append(c)
             self.receipt = dict(kind=item['kind'],spec=item,split=split,
+                execution_contract=contract,
                 build_key=record['key'],module_sha256=record['sha256'],workspace_bytes=sizes.workspace_bytes,
                 scope=('EXPLICIT_MEASURED_Q8_CANDIDATE_F32_ENDPOINTS_DENSE_S1'
                        if 'q8_body' in item else 'EXPLICIT_SHIPPING_BODY_F32_ENDPOINTS_REAL_REDUCER'))

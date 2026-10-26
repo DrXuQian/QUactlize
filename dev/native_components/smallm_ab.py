@@ -8,16 +8,29 @@ import statistics
 from dev.strategy.m_coverage import points
 from dev.strategy.refresh import original_recipe, request, family
 from dev.strategy.resources import module_spec
-from dev.strategy.vector import spec as vector_spec
+from dev.strategy.vector import spec as vector_spec, execution_contract
 from dev.strategy.followup import validate_confirmation
 from dev.native_components.accounting import checked_component
 from quactlize.dispatch.table import Workload, Recipe
 from quactlize.dispatch.planning import plan_smallm
 from quactlize.runtime.tuning import digest
 
-SCHEMA='quactlize.dense-smallm-native-ab.v1'
+SCHEMA='quactlize.dense-smallm-native-ab.v2'
 ORDER=('native','candidate','candidate','native')
 SCOPE='FRESH_SAME_DEVICE_ABBA_ISOLATED_COMPONENT_SUM_NOT_MODEL_TPOT'
+
+
+def fixture_point(w):
+    if (w.operation!='dense' or w.storage!='f32' or w.compute!='f16' or not 1<=w.m<=8 or
+            w.input_stride!=w.k or w.output_stride!=w.n):
+        raise ValueError('dense small-M comparison requires contiguous F32/F16 M1..8')
+    return dict(q=w.qtype,n=w.n,k=w.k,tokens=w.m,mode=0,experts=1,topk=1,channels=1,
+                compute=w.compute,router='real')
+
+
+def checked_fixture(b,w):
+    if b.p!=fixture_point(w) or b.rows!=w.m or b.ids is not None:
+        raise ValueError('dense fixture must use mode0 with no expert IDs')
 
 
 def plan(output):
@@ -29,7 +42,8 @@ def plan(output):
         w=Workload(**p['workload']);r=original_recipe(row)
         spec=module_spec(w,r) if r.kind=='tc' else vector_spec(w,r)
         key=digest(spec);(tc if r.kind=='tc' else vectors)[key]=spec
-        p.update(selection=row,arms=[dict(id='original',recipe=asdict(r),spec=spec,module=key,
+        p.update(selection=row,execution_contract=execution_contract(w),
+            arms=[dict(id='original',recipe=asdict(r),spec=spec,module=key,
             roles=['original'],required=True)],sf_configs=[max(0,dict(r.parameters).get('dequant_config',-1))]
             if r.route=='sf' and w.qtype!=8 else [])
     result=dict(schema=SCHEMA,points=ps,tc=tc,vectors=vectors,
@@ -48,6 +62,13 @@ def candidate_components(data,point):
     validate_confirmation(data)
     if data['point']!=point['id'] or data['workload']!=point['workload'] or set(data['arms'])!={'original'}:
         raise ValueError('candidate workload/selected arm differs')
+    if 'execution_contract' in point:
+        expected=execution_contract(Workload(**point['workload']))
+        if point['execution_contract']!=expected:
+            raise ValueError('planned execution contract differs')
+        if point['arms'][0]['recipe']['kind']!='tc' and data['arms']['original'].get(
+                'receipt',{}).get('execution_contract')!=expected:
+            raise ValueError('measured vector execution contract differs')
     keys=data['arm_components']['original'];records=data['component_records']
     if not keys or len(keys)!=len(set(keys)) or set(keys)!=set(records):
         raise ValueError('candidate stage inventory incomplete/duplicated')

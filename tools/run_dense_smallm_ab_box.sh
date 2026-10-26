@@ -15,11 +15,21 @@ args=(--sdk "$PPU_SDK" --llama-source "$LLAMA_CI_DIR" --llama-build "$LLAMA_CI_B
       --devices "$GPUS" --jobs "${JOBS:-8}" --l2-bytes "${L2_BYTES:-67108864}")
 if [[ ${PLAN_ONLY:-0} == 1 ]]; then args+=(--plan-only); else args+=(--confirm-idle); fi
 if [[ -n ${RESUME_RUN:-} ]]; then
+    [[ -z ${SMALLM_RETRY_FROM:-} ]] || {
+        echo 'ERROR: use SMALLM_RETRY_FROM for a new recovery, or RESUME_RUN for that new run; not both.' >&2
+        exit 1
+    }
     SMALLM_RUN=$(realpath -e -- "$RESUME_RUN")
     test -f "$SMALLM_RUN/run/run.json"
     test -f "$SMALLM_RUN/source/tools/run_dense_smallm_ab.py"
     args+=(--resume)
 else
+    if [[ -n ${SMALLM_RETRY_FROM:-} ]]; then
+        SMALLM_RETRY_FROM=$(realpath -e -- "$SMALLM_RETRY_FROM")
+        test -f "$SMALLM_RETRY_FROM/run.json"
+        test -f "$SMALLM_RETRY_FROM/plan.json"
+        args+=(--retry-from "$SMALLM_RETRY_FROM")
+    fi
     test -d "${OUTPUT_ROOT:-/workspace}"
     REV=$(git -C "$ROOT" rev-parse --verify 'HEAD^{commit}')
     ACTLIZE_REV=$(git -C "$ROOT" rev-parse "$REV:third_party/actlize")
@@ -36,7 +46,7 @@ export PATH="$PPU_SDK/bin:$PATH"
 export LD_LIBRARY_PATH="$LLAMA_CI_BUILD_DIR/bin:$PPU_SDK/lib:$PPU_SDK/targets/x86_64-linux/lib:$PPU_SDK/CUDA_SDK/targets/x86_64-linux/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 echo "SMALLM_RUN=$SMALLM_RUN"
-echo "SMALLM_NATIVE_BOX devices=$GPUS M=1..8 shapes=360 configs=CURRENT_SELECTED_ONLY native=UNCHANGED clock_MHz=1700"
+echo "SMALLM_NATIVE_BOX devices=$GPUS M=1..8 configs=CURRENT_SELECTED_ONLY native=UNCHANGED clock_MHz=1700 retry_from=${SMALLM_RETRY_FROM:-none}"
 set +e
 "$PYTHON" -u "$SMALLM_RUN/source/tools/run_dense_smallm_ab.py" \
     --output "$SMALLM_RUN/run" "${args[@]}" 2>&1 | tee "$SMALLM_RUN/console-$(date +%s).log"
