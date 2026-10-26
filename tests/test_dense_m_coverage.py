@@ -211,8 +211,15 @@ def test_all_compact_candidates_pass_gate_before_box_build(span):
                dict(c['recipe']['parameters'])['split'],0,0)
               for p in span['points'] for c in p['cases']
               if dict(c['recipe']['parameters']).get('dense_reducer')}
-    assert expected and max(c[0] for c in expected)==8192
+    assert expected
     assert expected<=set(cases(span['points']))
+    # Large M now selects Full; the reducer's M8192 contract must still work
+    # when a future experiment proposes it. Do not require a losing kernel to
+    # remain a shipping winner merely to exercise this boundary.
+    point=deepcopy(next(p for p in span['points'] if any(
+        dict(c['recipe']['parameters']).get('dense_reducer') for c in p['cases'])))
+    point['workload']['m']=8192
+    assert any(c[0]==8192 for c in cases([point]))
 
 
 def test_legacy_native_core_times_shipping_casts_in_order():

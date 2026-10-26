@@ -21,13 +21,15 @@ def test_all_exact_rows_are_complete_call_minima():
     data = evidence()
     validate(data)
     assert render(data) == HEADER.read_text()
-    assert len(data['points']) == 225
-    assert len(data['reviews']) == 4
-    assert sum(p['winner_evidence']['captures'] == 2 for p in data['points']) == 107
-    assert sum(p['us'] > p['native_us'] for p in data['points']) == 14
+    assert len(data['points']) == 405
+    assert len(data['reviews']) == 6
+    assert all(p['winner_evidence']['captures'] == 2 for p in data['points'])
+    assert all(p['native_us'] is None for p in data['points'])
+    old = data['superseded_points']
+    assert len(old) == 225 and sum(p['us'] > p['native_us'] for p in old) == 14
     assert not data['model_performance_admitted']
     # Evidence keeps the native losses; export is not a zero-regression claim.
-    assert max(100*(p['us']/p['native_us']-1) for p in data['points']) < 5
+    assert max(100*(p['us']/p['native_us']-1) for p in old) < 5
 
 
 @pytest.mark.parametrize('fault', ['seal', 'winner', 'cost', 'bucket', 'recipe', 'precision'])
@@ -67,7 +69,10 @@ def test_bucket_choice_was_measured_at_every_member():
 
 
 def test_bucket_audit_does_not_call_missing_measurements_a_win():
-    audit = audit_buckets(evidence())
+    data = evidence()
+    # Old bucket holdout evidence stays historical; do not mix its old
+    # predictions and timings with the newly measured means.
+    audit = audit_buckets(dict(data, points=data['superseded_points']))
     assert sum(audit['counts'].values()) == 225
     assert audit['counts']['comparable'] == 38
     assert audit['counts']['candidate_not_measured_on_held_family'] == 27
@@ -101,10 +106,12 @@ int main() {
 
     def predicted(shape):
         q,m,n,k = shape
-        if not (128 <= m <= 2048) or n%256 or k%(512 if q in (11,14) else 256):
+        if not (128 <= m <= 8192) or n%256 or k%(512 if q in (11,14) else 256):
             return -1, 0
         if shape in exact:
             return used.index(exact[shape]), 20
+        if m > 2048:
+            return -1, 0
         matches = [b for b in data['buckets'] if list(bucket_key(shape)) == b['key'] and
                    b['bounds'][0][0] <= n <= b['bounds'][0][1] and
                    b['bounds'][1][0] <= k <= b['bounds'][1][1]]

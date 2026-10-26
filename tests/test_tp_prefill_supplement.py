@@ -75,11 +75,13 @@ def test_native_and_quactlize_conflict_stays_blocked(tmp_path):
 
 def test_all_old_exact_controls_and_helper_choices_are_retained():
     data=policy()
-    workloads=[Workload(q,n,k,m) for q,m,n,k in (p['shape'] for p in data['points'])]
+    # This older TP-supplement planner intentionally covers M<=2048 only.
+    scope=[p for p in data['points'] if p['shape'][1]<=2048]
+    workloads=[Workload(q,n,k,m) for q,m,n,k in (p['shape'] for p in scope)]
     p=plan(workloads)
     assert len(p['points'])==225
     assert load(p)==p
-    for row,old in zip(sorted(p['points'],key=lambda x:x['id']), sorted(data['points'],key=lambda x:x['key'])):
+    for row,old in zip(sorted(p['points'],key=lambda x:x['id']), sorted(scope,key=lambda x:x['key'])):
         assert row['table_coverage']=='EXACT' and row['incumbent_recipe']==old['winner']
         want=execution_case(data['recipes'][old['winner']])
         assert any(case_identity(c)==want and 'model-config' in c['roles'] for c in row['cases'])

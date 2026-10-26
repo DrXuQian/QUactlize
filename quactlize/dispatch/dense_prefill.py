@@ -260,16 +260,18 @@ def validate(data):
             'dense prefill catalog seal differs')
     require(data['arithmetic'] == dict(input='F32', output='F32', compute='F16', accumulator='FP32') and
             not data['model_performance_admitted'], 'arithmetic/admission changed')
-    seen = set()
     for key, recipe in data['recipes'].items():
         require(digest(recipe) == key, 'execution identity differs')
         require('dequant_first' not in recipe or (recipe['dequant_first'] is True and recipe['route'] == 2),
                 'stage order is a Full-only execution axis')
-    for p in data['points']:
+    # Superseded observations remain evidence, not runtime choices or a new
+    # same-run native baseline. Their old helper admission is still checked.
+    seen = set()
+    for p in data['points'] + data.get('superseded_points', []):
         q,m,n,k = p['shape']
         require(p['key'] == Workload(qtype=q,m=m,n=n,k=k,operation='dense',compute='f16',storage='f32').key and
-                p['key'] not in seen, 'point identity differs')
-        seen.add(p['key'])
+                (p['key'],p['authority']) not in seen, 'point identity differs')
+        seen.add((p['key'],p['authority']))
         require(p['authority'] in data['authorities'], 'missing authority')
         if p.get('admission',{}).get('review_sha256'):
             require(p['admission']['review_sha256'] in data['reviews'], 'missing admission review')
@@ -283,6 +285,10 @@ def validate(data):
         if 'bucket_costs' in p:
             require(not bc or (p.get('bucket_evidence') and p['bucket_evidence']['authority'] in data['authorities']),
                     'missing historical bucket evidence')
+        if 'mean_evidence' in p:
+            from quactlize.dispatch.dense_prefill_mean import validate_mean_point
+            validate_mean_point(p, data)
+    require(len({p['key'] for p in data['points']}) == len(data['points']), 'duplicate active point')
     require(fit(data['points']) == data['buckets'], 'bucket fitting differs')
 
 
@@ -316,10 +322,13 @@ def render(data):
 
 
 def summary(data):
+    native = [p for p in data['points'] if p.get('native_us') is not None]
     return dict(exact=len(data['points']), buckets=len(data['buckets']),
         routes=dict(Counter(data['recipes'][p['winner']]['route'] for p in data['points'])),
         worst_bucket_training_regret_pct=max(b['worst_regret_pct'] for b in data['buckets']),
-        slower_than_native=sum(p['us'] > p['native_us'] for p in data['points']),
+        native_comparable=len(native),
+        slower_than_native=sum(p['us'] > p['native_us'] for p in native) if native else None,
+        accepted_control_regressions=sum('accepted_regression' in p.get('mean_evidence', {}) for p in data['points']),
         model_performance_admitted=False)
 
 

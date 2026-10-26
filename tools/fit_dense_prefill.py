@@ -17,6 +17,8 @@ def main():
     parser.add_argument('--audit-buckets', action='store_true')
     parser.add_argument('--base', type=Path, help='existing sealed catalog for an exact-only helper update')
     parser.add_argument('--helper-plan', type=Path, help='measured fixed-mainloop helper factorial plan')
+    parser.add_argument('--mean-plan', type=Path, help='frozen M-span plan, complete original + retry reviews')
+    parser.add_argument('--mean-admission', type=Path, help='explicit source scope and accepted regression keys')
     args = parser.parse_args()
     if args.check:
         data = json.loads(EVIDENCE.read_text())
@@ -25,7 +27,13 @@ def main():
     else:
         if not args.review:
             parser.error('--review required in chronological replacement order')
-        if args.base or args.helper_plan:
+        if args.mean_plan or args.mean_admission:
+            if not (args.base and args.mean_plan and args.mean_admission) or args.helper_plan:
+                parser.error('mean update needs --base, --mean-plan and --mean-admission; no --helper-plan')
+            from quactlize.dispatch.dense_prefill_mean import update_mean
+            data = update_mean(json.loads(args.base.read_text()), args.review,
+                               json.loads(args.mean_plan.read_text()), json.loads(args.mean_admission.read_text()))
+        elif args.base or args.helper_plan:
             if not (args.base and args.helper_plan and len(args.review) == 1):
                 parser.error('helper update needs --base, --helper-plan and one --review')
             from quactlize.dispatch.dense_prefill_update import update_helpers

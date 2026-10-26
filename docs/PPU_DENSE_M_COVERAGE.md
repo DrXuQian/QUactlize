@@ -7,6 +7,15 @@ communication or add MoE measurements.
 
 ## Scope and controls
 
+Large-M closure (2026-10-26): all 405 M-span points are complete and admitted
+as exact mean-ranked selections: 259 Full-F16 / 146 SF / 0 FQ. This replaces
+the old 225 dense prefill exact rows, retaining them as historical evidence,
+and extends exact selection to M8192. The single +0.551429% Full-F16 versus
+old Full-BF16 control is user-accepted. No large-M rerun is needed for that
+exception. Buckets, small-M and MoE are unchanged; native/model A/B was not
+part of this cohort. Details: `DENSE_PREFILL_ROUTING.md`. The commands and
+counts below describe the frozen experiments, not a request to rerun them.
+
 The returned 243-point small-M gap run is now recorded in
 `policies/kpack_dense_decode_v1.json`. Its 237 stable keys are generated into
 the production exact catalog: 160 replacements and 77 measured retains.

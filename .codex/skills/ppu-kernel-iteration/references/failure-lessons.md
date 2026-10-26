@@ -1,5 +1,17 @@
 # PPU failure lessons
 
+The20261026 dense M-span admission exposed a selector-domain boundary:
+adding M3072/4096/5120/8192 rows is ineffective if the C++ domain still stops
+at2048. Extend exact lookup without silently widening the old M2048 log bin
+to4095; replay every measured point through the actual public provider,
+including helper IDs, FP16 operands/FP32 accumulation and dynamic bindings.
+When switching ranking from median to arithmetic mean, recompute from both
+complete capture sample sets;45/405config identities changed in this cohort.
+Keep old native timings historical, and bind an accepted regression to its
+specific point/candidate/control rather than creating a universal tolerance.
+Scope: ZW810/SDK2.1.1,405dense points; no new native/model A/B or bucket proof.
+See `docs/DENSE_PREFILL_ROUTING.md`, `tests/test_dense_prefill_mean.py`.
+
 Validate the runtime operation, not just the planned workload. The20261026
 ZW810 small-M native A/B runner reused indexed_point without setting dense
 mode:56 Q8 address-body queries returned20, while49 other vector points ran

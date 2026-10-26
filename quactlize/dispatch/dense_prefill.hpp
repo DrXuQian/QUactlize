@@ -17,7 +17,7 @@ struct Decision {
 inline int band(int x) { int b=0;while(x>1) {x>>=1;++b;}return b; }
 inline bool domain(qks_request_v1 const& r,int compute) {
     return valid(r) && compute==QK_COMPUTE_F16 && r.route<2 && r.experts==1 &&
-        r.m==r.max_rows && r.m>=128 && r.m<=2048 && int64_t(r.m)*r.n<=INT32_MAX;
+        r.m==r.max_rows && r.m>=128 && r.m<=8192 && int64_t(r.m)*r.n<=INT32_MAX;
 }
 inline bool legal(Choice const& c,qks_request_v1 const& r) {
     if(c.route==2) return true; // typed Full checks actual byte extents at prepare
@@ -33,6 +33,9 @@ inline Decision select(qks_request_v1 const& r,int compute) {
     for(auto const& p:kExact)
         if(p.q==r.qtype && p.m==r.m && p.n==r.n && p.k==r.k)
             return {&kChoices[p.choice],QKS_DENSE_PREFILL_EXACT};
+    // The M-span campaign admits exact observations, not broader predictions.
+    // In particular, the M2048 log bin must not extrapolate through M4095.
+    if(r.m>2048) return {};
     int mb=band(r.m),nb=band(r.n),kb=band(r.k);
     int aspect=int64_t(r.n)>=2LL*r.k?1:int64_t(r.k)>=2LL*r.n?2:r.n>=r.k?0:3;
     for(auto const& b:kBuckets)

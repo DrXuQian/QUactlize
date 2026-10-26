@@ -221,12 +221,24 @@ def test_device_accuracy_never_requests_profilers_or_sweeps():
 
 
 def test_followup_public_gate_covers_all_winners_and_retained_controls():
-    from ppu.test_public_library import helper_followup_points
+    from ppu.test_public_library import helper_followup_points, m_span_boundary_points
+    from quactlize.dispatch.dense_prefill import EVIDENCE
+    data=json.loads(EVIDENCE.read_text())
     points=helper_followup_points()
     assert len(points)==15 and len({tuple(s) for s,_ in points})==15
-    assert sum(r.get('dequant_first',False) for _,r in points)==3
-    assert sum((r['tc'] or {}).get('dense_reducer')==8 for _,r in points)==6
-    assert sum((r['tc'] or {}).get('dense_reducer')==4 for _,r in points)==1
+    exact={tuple(p['shape']):data['recipes'][p['winner']] for p in data['points']}
+    assert all(r==exact[tuple(s)] for s,r in points)
+    # Keep the original grain/order coverage record, without freezing its
+    # winners after a newer complete-call config comparison changes them.
+    keys={tuple(s) for s,_ in points}
+    historical=[data['recipes'][p['winner']] for p in data.get('superseded_points',data['points'])
+                if tuple(p['shape']) in keys]
+    assert sum(r.get('dequant_first',False) for r in historical)==3
+    assert sum((r['tc'] or {}).get('dense_reducer')==8 for r in historical)==6
+    assert sum((r['tc'] or {}).get('dense_reducer')==4 for r in historical)==1
+    boundaries=m_span_boundary_points()
+    assert {s[1] for s,_ in boundaries}=={3072,5120,8192}
+    assert all(r==exact[tuple(s)] for s,r in boundaries)
 
 
 @pytest.mark.parametrize('q', [8, 10, 11, 12, 13, 14])

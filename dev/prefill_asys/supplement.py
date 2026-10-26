@@ -37,14 +37,16 @@ def legal(value, w):
 
 
 def policy_lookup(policy, w):
-    # Match the C++ dense_prefill::domain gate. A log2 M bucket must not
-    # silently claim that M3072 is covered by the M2048-only admission.
-    if not 128<=w.m<=2048:
+    # Exact M-span observations extend to8192. The older bucket predictions
+    # remain bounded to2048, matching the C++ selector.
+    if not 128<=w.m<=8192:
         return 'OUTSIDE_NEW_TABLE', None
     shape = [w.qtype, w.m, w.n, w.k]
     for point in policy['points']:
         if point['shape'] == shape:
             return 'EXACT', point['winner']
+    if w.m>2048:
+        return 'OUTSIDE_NEW_TABLE', None
     for bucket in policy['buckets']:
         if (list(bucket_key(shape)) == bucket['key'] and
                 bucket['bounds'][0][0] <= w.n <= bucket['bounds'][0][1] and
@@ -100,6 +102,16 @@ def make_plan(cohort, policy, helper_sha, *, max_cases=32):
                 costs = [(r, us) for r, us in p['costs'] if policy['recipes'][r]['route'] == route]
                 for rid, _ in sorted(costs, key=lambda v:(v[1],v[0]))[:2]:
                     selected.setdefault(rid, []).append('nearby-per-route-proposal')
+        # The new M-span table admits only SF/Full replacements. Keep FQ as
+        # an explicit experiment control using historical geometry proposals;
+        # never import its old latency or reintroduce it as a runtime fallback.
+        if w.qtype != 8 and not any(policy['recipes'][r]['route'] == 0 for r in selected):
+            history = [p for p in policy.get('superseded_points', [])
+                       if p['shape'][0] == (12 if transfer else w.qtype)]
+            for p in sorted(history,key=distance)[:4]:
+                costs = [(r,us) for r,us in p['costs'] if policy['recipes'][r]['route'] == 0]
+                for rid,_ in sorted(costs,key=lambda v:(v[1],v[0]))[:2]:
+                    selected.setdefault(rid, []).append('historical-fq-control-proposal')
         for rid, roles in sorted(selected.items()):
             value = policy['recipes'][rid]
             if transfer:

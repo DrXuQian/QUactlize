@@ -19,8 +19,21 @@ def helper_followup_points():
     # experimental launcher. Includes both retained controls as well as winners.
     data=json.loads(EVIDENCE.read_text())
     review='d3eec044e46f3beff68dc1fc5ce6371faaed7232aa73e673d91fb81f7e1f4128'
-    points=[p for p in data['points'] if p.get('admission',{}).get('review_sha256')==review]
+    historical=[p for p in data.get('superseded_points',data['points'])
+                if p.get('admission',{}).get('review_sha256')==review]
+    keys={p['key'] for p in historical}
+    points=[p for p in data['points'] if p['key'] in keys]
     assert len(points)==15, 'helper followup public coverage changed'
+    return [(p['shape'],data['recipes'][p['winner']]) for p in points]
+
+
+def m_span_boundary_points():
+    # Exercise public preparation at each new high-M boundary without another
+    # performance sweep or a model. Prefer small matrices for routine CI.
+    data=json.loads(EVIDENCE.read_text())
+    points=[min((p for p in data['points'] if p['shape'][0]==q and p['shape'][1]==m),
+                key=lambda p:(p['shape'][2]*p['shape'][3],p['key']))
+            for q,m in ((8,3072),(12,5120),(14,8192))]
     return [(p['shape'],data['recipes'][p['winner']]) for p in points]
 
 
@@ -44,7 +57,8 @@ def test_full_dequant_provider_ordinary_calls(package, sdk, q, record_property):
     run_dense(package, sdk, q, 128, 1, record_property, full=True)
 
 
-@pytest.mark.parametrize('shape,recipe',helper_followup_points(),ids=lambda x: str(x) if isinstance(x,list) else '')
+@pytest.mark.parametrize('shape,recipe',helper_followup_points()+m_span_boundary_points(),
+                         ids=lambda x: str(x) if isinstance(x,list) else '')
 def test_admitted_helper_followup_public_calls(package,sdk,shape,recipe,record_property):
     from dev.prefill_point.typed import DenseLibrary
     from quactlize.dispatch.table import Workload

@@ -1,0 +1,23 @@
+{
+  "scope": "DENSE_F16_EXACT_MEAN_NOT_BUCKET_OR_NATIVE_OR_MODEL_AB",
+  "plan_sha256": "4b76c2af991c39121f829536de8aab8fea1763d1270acb90bb3c1e8ee2f72e4b",
+  "reviews": [
+    "dcb0fb9c66cf02777a1ec87fad465e5a34edcbc542138945d552b07cc8f53344",
+    "8d9b87e70f14dbb5bd06d8a663e88e3c698c8ede7940bc84378025d887c8b4fe"
+  ],
+  "accepted_regressions": [
+    {
+      "shape": [12, 3072, 25600, 5120],
+      "candidate": "bf1aa887e677296f61b57cc95e1ca56bca7cf5a54e4fe1cdd4e91c0be26700f2",
+      "control": "6e79c87dcea41c437d4d35084e2a0fd0efc2f653afaeb1376ba7218c355721ca",
+      "maximum_delta_pct": 0.552,
+      "decision": "USER_ACCEPTED_20261026_FULL_F16_VS_RECORDED_FULL_BF16"
+    }
+  ],
+  "source_commit": null,
+  "source_binding": "UPLOADED_HARNESS_AND_DSO_HASHES; FULL_NATIVE_BUILD_RECEIPT_NOT_EXPORTED",
+  "harness_matches": {
+    "981824cbefc290025fe3403028f8f13f1dda711a92d058ba2130bbfc482ca103": "8a41376f26dcf10623353d135446aaccd26c4982"
+  },
+  "native_source_commit_proven": false
+}

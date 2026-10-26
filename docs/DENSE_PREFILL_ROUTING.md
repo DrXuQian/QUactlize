@@ -1,5 +1,59 @@
 # Dense prefill whole-call selection
 
+## Current exact admission: 2026-10-26
+
+The M-span results replace all 225 previous exact rows and add 180 rows:
+**45 dense families x M128/256/512/1024/2048/3072/4096/5120/8192 = 405**.
+This includes the recorded TP-local dense families, not MoE or collectives.
+259 select Full-F16 and 146 SF; none select FQ. Input/output are F32,
+operands F16, accumulation FP32. The public provider honors each recipe's
+own dequant, I/O, reducer, schedule and stage order, without a helper override.
+
+Ranking is the arithmetic mean of the complete Asys GPU component sum across
+both forward/reverse captures, including all samples and error reset.
+It is not the fastest sample, the old median ranking, or model wall time.
+Exactly one accepted difference against the same-run recorded control is
+Q4/M3072/N25600/K5120: Full-F16 **2423.915981us** vs old Full-BF16
+**2410.623111us**, **+0.551429%**, explicitly accepted by the user. The
+exception is bound to that point/candidate/control; no blanket tolerance.
+
+The 312 original complete points and 93 retried complete points retain their
+own authorities. Sources are reviews `dcb0fb9c...53344` and `8d9b87e7...b4fe`;
+full digests, archive hashes and approval are in the catalog and
+`policies/dense_prefill_m_span_admission.json`. All candidate samples were
+audited before export. Raw reports/binaries remain on Box. Uploaded harness
+and DSO hashes are preserved; a full native-build commit receipt was not
+exported, so `source_commit` remains null. The retry harness matches local
+`8a41376f`, which is not by itself proof of the native binary's source commit.
+
+These runs explicitly omitted native comparison. The old 225 rows, including
+their native losses and median-based helper admissions, remain in
+`superseded_points`; they are not runtime selections or a fresh native A/B.
+No model speedup or native no-regression claim is made by this table update.
+
+Exact matches now extend to M8192. The existing 147 predicted buckets and
+their historical training remain unchanged and bounded to M<=2048; M3072
+must not accidentally inherit the M2048 log bin. Decode, BF16/MoE and other
+devices are unchanged. This is not admission of arbitrary untested shapes.
+
+Offline reproduction (the base is the frozen pre-update catalog):
+
+```bash
+python3 tools/fit_dense_prefill.py --base BASE_CATALOG.json \
+  --mean-plan FROZEN_M_SPAN_PLAN.json \
+  --mean-admission policies/dense_prefill_m_span_admission.json \
+  --review review-1792993181069001430.json.xz \
+  --review review-1793008645924230352.json.xz
+python3 tools/fit_dense_prefill.py --check
+```
+
+Rebuild the complete public library/package to deploy the new generated table;
+editing JSON alone does not update an installed `.so`. No llama ABI change is
+needed. Host validation replays every exact/bucket decision and the real public
+prepare/run orchestration with device doubles, not simulated GPU performance.
+
+## Historical initial admission
+
 2026-10-23: the complete `quactlize_ppu_dense_prepare_v1` provider now uses
 the reviewed dense **F32 endpoints, F16 operands, FP32 accumulation** winners
 on PPU-ZW810 (72 CUs, warp 32). Selection includes input/output helpers,

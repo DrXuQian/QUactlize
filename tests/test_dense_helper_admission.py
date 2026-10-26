@@ -23,7 +23,7 @@ def test_actual_helper_admission_closes_missing_incumbents_without_changing_buck
     assert (original['reviewed'], original['imported'], len(original['retained_pending'])) == (65,61,4)
     assert (update['reviewed'], update['imported'], update['retained_pending']) == (15,15,[])
     assert set(update['resolved_pending']) == {p['key'] for p in original['retained_pending']}
-    points = {p['key']:p for p in data['points']}
+    points = {p['key']:p for p in data.get('superseded_points', data['points'])}
     changed = [p for p in points.values() if 'admission' in p]
     assert len(changed) == 65
     assert sum(bool(bucket_costs(p)) for p in points.values()) == 165
@@ -62,7 +62,8 @@ def test_fast_single_capture_cannot_promote_a_regression():
 @pytest.mark.parametrize('fault', ['missing-capture','faster-only-one-order','wrong-control'])
 def test_resealed_admission_evidence_is_checked(fault):
     data = json.loads(EVIDENCE.read_text())
-    p = next(p for p in data['points'] if p.get('admission') and p['winner'] != p['admission']['baseline'])
+    p = next(p for p in data.get('superseded_points', data['points'])
+             if p.get('admission') and p['winner'] != p['admission']['baseline'])
     a = p['admission']; w = p['winner']
     if fault == 'missing-capture': a['capture_medians'][w].pop()
     elif fault == 'wrong-control': a['baseline'] = w
@@ -74,7 +75,8 @@ def test_resealed_admission_evidence_is_checked(fault):
 
 def test_cpp_selected_parent_materializes_same_source_for_resolve_and_prewarm(tmp_path):
     data = json.loads(EVIDENCE.read_text())
-    points = [p for p in data['points'] if p.get('admission')]
+    # Revalidate today's actual Q8 recipes, not the superseded helper winners.
+    points = [p for p in data['points'] if p['shape'][0] == 8]
     src = tmp_path/'selected.cpp'
     src.write_text('''#include "quactlize/dispatch/dense_prefill.hpp"
 #include <iostream>
