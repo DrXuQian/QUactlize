@@ -88,6 +88,57 @@ accuracy summary/logs. The review excludes binaries/JIT/models and raw `.asysrep
 Asys GUI files remain under `dense-model-ab.*/MODEL/trace/{reference,quactlize}/`.
 Do not rerun the historical component commands below.
 
+### BF16 control: existing ppu-dev versus dense-enabled build
+
+For further iteration, keep the optimized caller in build-ci. Rebuild/replace
+Quactlize only (with all model/test processes stopped), not llama.cpp, when
+its public ABI is unchanged. The current caller install layout requires
+bin/libquactlize_ppu.so together with the complete bin/quactlize-runtime/
+(private libraries, JIT closure and policy data). bin/quactlize/ holds the
+offline gguf_kpack.py test reference; updating that directory alone does not
+update inference. Keep it consistent when running the loader tests. Preserve
+build-ci-ppu-dev and build-ci-32F-cublas as independent reference builds; the
+latter is the explicit FP32-accumulator comparator. Single-operator experiments
+stay in the Quactlize repository. Do not replace payloads during a comparison.
+
+To isolate build/integration overhead without any quantized Quactlize compute,
+use the original BF16 model. This reuses both installed builds and libraries;
+no compile or model conversion. Select an idle ZW810 card before running.
+
+```bash
+(
+  set -euo pipefail
+  cd /sim/eec/shared/junfu.qx/quactlize
+  git pull --ff-only origin develop
+  GPU=0
+  LLAMA_DIR=/sim/eec/shared/junfu.qx/llama.cpp.ncp
+  [[ "$GPU" =~ ^[0-9]+$ ]] || exit 1
+  ppu-smi --id="$GPU" --lock-ppu-clocks=1700,1700 --error-on-warning
+  python3 tools/run_dense_model_ab.py \
+    --llama-dir "$LLAMA_DIR" \
+    --reference-build "$LLAMA_DIR/build-ci-ppu-dev" \
+    --quactlize-build "$LLAMA_DIR/build-ci" \
+    --bf16-model /sim/eec/shared/AI_workspace/llm-models/bench_model_zoo/Qwen3.5-35B-A3B-GGUF/Qwen3.5-35B-A3B-BF16-00001-of-00002.gguf \
+    --sdk /usr/local/PPU_SDK --device "$GPU" --idle-confirmed \
+    --pp 2048 --tg 1 --warmup-passes 2 --repeats 3 --trace-repeats 3 \
+    --phases perf,trace --output-root /workspace
+)
+```
+
+Each process executes five complete2048-token passes. All five are retained
+in the logs/JSON and raw trace; the first two are excluded from reported
+medians by the fixed protocol. This is not an assertion that the remaining
+passes are stable: inspect their individual times and graph/API activity.
+TG1 is only the benchmark's minimal continuation, not decode/TPOT evidence.
+The reference uses GGML_QUACTLIZE_DENSE=0; build-ci uses1, but neither should
+prepare a quantized plan or execute Quactlize kernels for this BF16 inventory.
+The entry validates all shards and rejects mixed quantized inputs. It retains
+normal native execution and does not force a different cuBLAS accumulator.
+
+Asys files: RUN/bf16-control/trace/{reference,quactlize}/trace.asysrep.
+The printed review archive includes SQLite/logs/JSON, not model weights or raw
+Asys blobs. Unprofiled performance and profiled diagnostics are separate.
+
 ## Initial admission and bounded followup plan (completed)
 
 Review `bd5a4529cbdb2a30b2fd11f918179e81d9e4f382318262cf9da12bfb24495f49`

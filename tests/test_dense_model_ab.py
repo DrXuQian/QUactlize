@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import sqlite3
+import struct
 import sys
 import tarfile
 from types import SimpleNamespace
@@ -33,6 +34,95 @@ def test_complete_warmup_is_excluded_not_just_initial_64_tokens():
     assert result['tpot_ms'] == 8
     assert result['measured_passes'] == 3
     assert [r['excluded'] for r in result['rows']] == [True, False, False, False]
+
+
+def test_two_complete_warmups_are_kept_in_raw_rows_not_steady_median(tmp_path):
+    a=args(tmp_path);a.warmup_passes=2;a.trace_repeats=3
+    rows=[record(t_pp=t) for t in (100,10,.4,.5,.6)]
+    result=runner.parse_rows('\n'.join(map(json.dumps,rows)),2048,128,3,2)
+    assert result['pp_total_ms']==500 and result['excluded_complete_passes']==2
+    assert [r['excluded'] for r in result['rows']]==[True,True,False,False,False]
+    assert result['rows'][0]['pp_total_ms']==100000
+    for phase in ('perf','trace'):
+        cmd=runner.command(a,tmp_path/'build',tmp_path/'model.gguf',phase)
+        assert cmd[cmd.index('-npp')+1]==','.join(['2048']*5)
+    with pytest.raises(ValueError,match='warmup'):
+        runner.parse_rows('',2048,128,3,0)
+
+
+def bf16_files(root, *, qtypes=(30,0), emit=2, duplicate=False):
+    """Real GGUF headers only, not a runnable model or numeric evidence."""
+    root.mkdir(exist_ok=True)
+    def string(text):
+        data=text.encode();return struct.pack('<Q',len(data))+data
+    files=[]
+    for index,qtype in enumerate(qtypes[:emit]):
+        path=root/f'model-BF16-{index+1:05d}-of-{len(qtypes):05d}.gguf'
+        metadata={'split.no':index,'split.count':len(qtypes),'split.tensors.count':len(qtypes)}
+        data=struct.pack('<4sIQQ',b'GGUF',3,1,len(metadata))
+        for key,value in metadata.items():data+=string(key)+struct.pack('<II',4,value)
+        data+=string('tensor' if duplicate else f'tensor-{index}')+struct.pack('<IQQIQ',2,32,64,qtype,0)
+        path.write_bytes(data);files.append(path)
+    return files
+
+
+def test_explicit_bf16_reads_both_shards_without_hashing_weights(tmp_path):
+    files=bf16_files(tmp_path)
+    row=runner.bf16_inventory(files[0])
+    assert [s['path'] for s in row['shards']]==list(map(str,files))
+    assert row['tensor_count']==2 and row['tensor_types']=={30:1,0:1}
+    assert not row['weights_hashed'] and not row['expected_quactlize_compute']
+    with pytest.raises(ValueError,match='first-shard'):runner.bf16_inventory(files[1])
+
+
+@pytest.mark.parametrize('fault',['missing','quantized','no-bf16','duplicate'])
+def test_bf16_control_rejects_incomplete_or_quantized_inventory(tmp_path,fault):
+    files=bf16_files(tmp_path,emit=1 if fault=='missing' else 2,
+        qtypes=(30,8) if fault=='quantized' else (1,0) if fault=='no-bf16' else (30,0),
+        duplicate=fault=='duplicate')
+    with pytest.raises(ValueError):runner.bf16_inventory(files[0])
+
+
+@pytest.mark.parametrize('arm',['reference','quactlize'])
+def test_bf16_does_not_require_quantized_plans_but_rejects_them(arm):
+    result=runner.check_routes('ordinary native BF16 GEMM',arm,2048,require_kpack=False)
+    assert result['plans']==[] and not result['no_regression_admitted']
+    for marker in ('[quactlize-dense] m=2048','[quactlize-plan]','KPACK_JIT_RESOLVE parent=x'):
+        with pytest.raises(ValueError,match='BF16 control'):
+            runner.check_routes(marker,arm,2048,require_kpack=False)
+
+
+def test_bf16_trace_checks_kernel_names_not_unused_host_strings(tmp_path):
+    path=tmp_path/'bf16.sqlite'
+    with sqlite3.connect(path) as db:
+        db.execute('CREATE TABLE StringIds(id,value)')
+        db.executemany('INSERT INTO StringIds VALUES(?,?)',[(1,'native_bf16'),(2,'quactlize::gemm')])
+        db.execute('CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL(start,end,demangledName)')
+        db.execute('INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES(1,2,1)')
+    row=runner.trace_inventory(path,native_only=True,warmup_passes=2)
+    assert row['quactlize_kernel_names']==[] and row['excluded_complete_passes']==2
+    with sqlite3.connect(path) as db:db.execute('INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES(3,4,2)')
+    with pytest.raises(ValueError,match='Quactlize kernels'):runner.trace_inventory(path,native_only=True)
+
+
+def test_bf16_run_accepts_no_loaded_quactlize_but_quantized_stays_strict(tmp_path,monkeypatch):
+    a=args(tmp_path);a.bf16_model=tmp_path/'bf16.gguf';a.warmup_passes=2
+    build=tmp_path/'build-ci';(build/'bin').mkdir(parents=True)
+    images=[]
+    for name in ('libggml-cuda.so','libllama.so'):
+        path=build/'bin'/name;path.write_text('host fixture');images.append(str(path))
+    monkeypatch.setattr(runner.shutil,'which',lambda _:None)
+    def execute(argv,env,directory,label):
+        rows='\n'.join(json.dumps(record()) for _ in range(5))
+        plans='' if a.bf16_model else '[quactlize-dense] m=1\n[quactlize-dense] m=2048\n'
+        (directory/'run.log').write_text(plans+rows)
+        runner.save(directory/'process.json',dict(loaded_images=images))
+    monkeypatch.setattr(runner,'execute',execute)
+    result=runner.run_arm(a,a.bf16_model,'quactlize','perf',build,tmp_path/'bf16-run')
+    assert result['excluded_complete_passes']==2 and result['measured_passes']==3
+    a.bf16_model=None
+    with pytest.raises(ValueError,match='public Quactlize library'):
+        runner.run_arm(a,tmp_path/'q4.gguf','quactlize','perf',build,tmp_path/'q4-run')
 
 
 @pytest.mark.parametrize('change', [dict(pl=2), dict(n_ubatch=512), dict(pp=1024),
@@ -187,7 +277,7 @@ def test_subprocess_failure_keeps_log_and_return_code(tmp_path):
 def test_three_model_orchestrator_continues_independent_arms(tmp_path, monkeypatch, fail_arm):
     llama, sdk, models, output = [tmp_path / s for s in ('llama', 'sdk', 'models', 'output')]
     for path in (llama, sdk, models, output, llama / 'build-ci-ppu-dev',
-                 llama / 'build-ci-quactlize-dense-gemm'):
+                 llama / 'build-ci'):
         path.mkdir(exist_ok=True)
     asys = sdk / 'asight/bin/asys'
     asys.parent.mkdir(parents=True)
@@ -222,3 +312,33 @@ def test_three_model_orchestrator_continues_independent_arms(tmp_path, monkeypat
     assert len(summary['failures']) == (6 if fail_arm else 0)
     assert not summary['no_regression_admitted']
     assert len(summary['results']) == 3
+
+
+def test_bf16_orchestrator_uses_requested_builds_and_model_only(tmp_path,monkeypatch):
+    llama,sdk,models,output=[tmp_path/s for s in ('llama','sdk','models','output')]
+    for path in (llama,sdk,models,output,llama/'build-ci-ppu-dev',llama/'build-ci'):
+        path.mkdir(exist_ok=True)
+    model=bf16_files(models)[0]
+    asys=sdk/'asight/bin/asys';asys.parent.mkdir(parents=True);asys.touch();asys.chmod(0o700)
+    monkeypatch.setattr(runner,'snapshot',lambda *a:{})
+    calls=[]
+    def run(a,model,arm,phase,build,directory):
+        directory.mkdir(parents=True);env=runner.environment(a,build,arm)
+        calls.append((model,arm,phase,build.name,env['GGML_QUACTLIZE_DENSE']))
+        assert a.warmup_passes==2 and a.pp==2048 and a.tg==1 and a.bf16_model
+        assert env['CUDA_VISIBLE_DEVICES']=='0'
+        return dict(pp_total_ms=123,tpot_ms=4,profiler_attached=phase=='trace')
+    monkeypatch.setattr(runner,'run_arm',run)
+    monkeypatch.setattr(sys,'argv',['run_dense_model_ab.py','--llama-dir',str(llama),
+        '--sdk',str(sdk),'--bf16-model',str(model),'--quactlize-build',str(llama/'build-ci'),
+        '--output-root',str(output),'--device','0','--idle-confirmed',
+        '--warmup-passes','2','--tg','1','--trace-repeats','3'])
+    assert runner.main()==0
+    assert len(calls)==4 and {v[0] for v in calls}=={model}
+    assert [(c[1],c[2],c[3],c[4]) for c in calls]==[
+        ('reference','perf','build-ci-ppu-dev','0'),('quactlize','perf','build-ci','1'),
+        ('quactlize','trace','build-ci','1'),('reference','trace','build-ci-ppu-dev','0')]
+    with tarfile.open(next(output.glob('*.review.tgz'))) as tar:
+        summary=json.load(tar.extractfile('summary.json'))
+    assert list(summary['results'])==['bf16-control'] and summary['warmup_passes']==2
+    assert summary['scope']=='BF16_NATIVE_COMPUTE_BUILD_CONTROL_NOT_QUANTIZED_KERNEL_AB'

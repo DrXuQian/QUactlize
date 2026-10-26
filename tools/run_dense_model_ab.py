@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Two existing llama builds, three single-GPU models: warmed timings + Asys.
+"""Two existing llama builds: quantized models or an explicit BF16 control.
 
 No build, model conversion tool, numerical evaluation, online config sweep or
 production-policy modification. Raw traces INCLUDE warmup; analysis must exclude
-the first complete PP/TG pass, not just the benchmark's 64-token initial warmup.
+the requested complete PP/TG warmup passes, not just the 64-token initial warmup.
 """
 import argparse
+from collections import Counter
 import hashlib
 import json
 import math
@@ -50,6 +51,32 @@ def candidate_library(args, build):
     return (package if package else build / 'bin') / 'libquactlize_ppu.so'
 
 
+def bf16_inventory(first):
+    from tools.resolve_internal_sweep_models import resolve_binding
+    from tools.gguf_internal_shape_inventory import _normalise_split
+    first = first.parent.resolve(strict=True) / first.name
+    paths = resolve_binding(first)
+    if not first.is_file() or paths[0] != first:
+        raise ValueError('--bf16-model requires the exact first-shard GGUF file')
+    shards, names, types = [], set(), Counter()
+    for path in paths:
+        with path.open('rb') as stream:
+            header = read_gguf_header(stream, str(path))
+        stat = path.stat()
+        shards.append(dict(path=str(path), file_bytes=stat.st_size, mtime_ns=stat.st_mtime_ns, header=header))
+        for tensor in header['tensors']:
+            if tensor['name'] in names:
+                raise ValueError('duplicate tensor across BF16 shards: ' + tensor['name'])
+            names.add(tensor['name']); types[tensor['qtype']] += 1
+    shards, total = _normalise_split(shards, str(first))
+    # Reject mixed quantized models rather than silently declaring their native
+    # tensors a clean BF16 control. Non-matrix integer constants are allowed.
+    if not types[30] or set(types) - {0, 1, 24, 25, 26, 27, 28, 30}:
+        raise ValueError('BF16 control needs BF16 tensors and no quantized tensors: ' + repr(dict(types)))
+    return dict(path=str(first), shards=shards, tensor_count=total, tensor_types=dict(types),
+                weights_hashed=False, expected_quactlize_compute=False)
+
+
 def environment(args, build, arm):
     # Never let old PoC flags, -ot environment defaults, or a library override
     # leak into this comparison. SDK/system paths remain available after bin.
@@ -84,15 +111,18 @@ def environment(args, build, arm):
 
 def command(args, build, model, phase):
     repeats = args.repeats if phase == 'perf' else args.trace_repeats
+    warmups = getattr(args, 'warmup_passes', 1)
     return [str(build / 'bin/llama-batched-bench'), '-m', str(model),
-            '-npp', ','.join([str(args.pp)] * (1 + repeats)), '-ntg', str(args.tg), '-npl', '1',
+            '-npp', ','.join([str(args.pp)] * (warmups + repeats)), '-ntg', str(args.tg), '-npl', '1',
             '-b', str(args.pp), '-ub', str(args.pp), '-c', str(args.pp + args.tg),
             '-ngl', 'all', '-sm', 'none', '-fa', '1', '--fit', 'off', '--mmap',
             '-t', str(args.threads), '-tb', str(args.threads_batch),
             '--output-format', 'jsonl', '--log-colors', 'off', '--verbosity', '4']
 
 
-def parse_rows(text, pp, tg, repeats):
+def parse_rows(text, pp, tg, repeats, warmup_passes=1):
+    if warmup_passes < 1 or repeats < 1:
+        raise ValueError('positive full-pass warmup and measurement counts required')
     rows = []
     for line in text.splitlines():
         start = line.find('{"n_kv_max"')
@@ -112,20 +142,25 @@ def parse_rows(text, pp, tg, repeats):
                 raise ValueError('invalid benchmark timer')
             if not math.isclose(seconds * speed, tokens, rel_tol=2e-4, abs_tol=1e-3):
                 raise ValueError('timer/token denominator differs')
-        row.update(pass_index=len(rows), excluded=not rows,
+        row.update(pass_index=len(rows), excluded=len(rows) < warmup_passes,
                    pp_total_ms=row['t_pp'] * 1000, tpot_ms=row['t_tg'] * 1000 / tg)
         rows.append(row)
-    if len(rows) != repeats + 1:
-        raise ValueError(f'benchmark rows={len(rows)}/{repeats+1}; see run.log')
-    kept = rows[1:]
-    return dict(rows=rows, measured_passes=len(kept), excluded_complete_passes=1,
+    if len(rows) != repeats + warmup_passes:
+        raise ValueError(f'benchmark rows={len(rows)}/{repeats+warmup_passes}; see run.log')
+    kept = rows[warmup_passes:]
+    return dict(rows=rows, measured_passes=len(kept), excluded_complete_passes=warmup_passes,
                 pp_total_ms=statistics.median(r['pp_total_ms'] for r in kept),
                 tpot_ms=statistics.median(r['tpot_ms'] for r in kept))
 
 
-def check_routes(text, arm, pp):
+def check_routes(text, arm, pp, require_kpack=True):
     plans = [dict(re.findall(r'(\w+)=([^\s]+)', line)) for line in text.splitlines()
              if '[quactlize-dense]' in line]
+    if not require_kpack:
+        if plans or '[quactlize-plan]' in text or 'KPACK_JIT_RESOLVE' in text:
+            raise ValueError('BF16 control unexpectedly prepares Quactlize quantized compute')
+        return dict(plans=plans, scope='BF16_MODEL_NATIVE_COMPUTE_WITH_DENSE_INTEGRATION_COMPILED',
+                    kernel_execution='REQUIRES_TRACE_MATCHING', no_regression_admitted=False)
     if arm == 'reference':
         if plans or '[quactlize-plan]' in text:
             raise ValueError('reference unexpectedly uses Quactlize')
@@ -189,20 +224,31 @@ def execute(argv, env, directory, label):
         raise ValueError(f'process rc={process.returncode}; see {directory / "run.log"}')
 
 
-def trace_inventory(path):
+def trace_inventory(path, *, warmup_passes=1, native_only=False):
     with sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True) as db:
-        counts = {}
-        for (table,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'"):
+        counts, names = {}, set()
+        tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        strings = dict(db.execute('SELECT id,value FROM StringIds')) if 'StringIds' in tables else {}
+        for table in sorted(tables):
             if 'KERNEL' not in table.upper():
                 continue
             quoted = '"' + table.replace('"', '""') + '"'
             cols = {r[1].lower() for r in db.execute('PRAGMA table_info(' + quoted + ')')}
             if {'start', 'end'} <= cols:
                 counts[table] = db.execute('SELECT count(*) FROM ' + quoted).fetchone()[0]
+                column = next((name for name in ('demangledname','shortname','name') if name in cols), None)
+                if column:
+                    for (value,) in db.execute('SELECT DISTINCT "' + column + '" FROM ' + quoted):
+                        name = strings.get(value, value if isinstance(value, str) else None)
+                        if name: names.add(name)
     if not sum(counts.values()):
         raise ValueError('Asys contains no GPU kernel activities; NOT a valid timing trace')
+    quantized = sorted(name for name in names if 'quactlize' in name.lower())
+    if native_only and (not names or quantized):
+        raise ValueError('BF16 trace has unresolved names or Quactlize kernels: ' + repr(quantized))
     return dict(kernel_tables=counts, includes_initial_warmup=True,
-                exclude_first_complete_pp_tg_pass=True, steady_state_analysis='PENDING',
+                exclude_first_complete_pp_tg_pass=True, excluded_complete_passes=warmup_passes,
+                quactlize_kernel_names=quantized, steady_state_analysis='PENDING',
                 no_regression_admitted=False)
 
 
@@ -271,11 +317,13 @@ def run_arm(args, model, arm, phase, build, directory):
     execute(argv, env, directory, f'model={model.parent.name} arm={arm} phase={phase}')
     text = (directory / 'run.log').read_text(errors='replace')
     repeats = args.repeats if phase == 'perf' else args.trace_repeats
-    timings = parse_rows(text, args.pp, args.tg, repeats)
+    warmups = getattr(args, 'warmup_passes', 1)
+    native_only = bool(getattr(args, 'bf16_model', None))
+    timings = parse_rows(text, args.pp, args.tg, repeats, warmups)
     timings['profiler_attached'] = phase == 'trace'
     timings['scope'] = 'UNPROFILED_MODEL_LATENCY' if phase == 'perf' else 'PROFILED_DIAGNOSTIC_NOT_MODEL_PERF'
     save(directory / 'timings.json', timings)
-    save(directory / 'selection.json', check_routes(text, arm, args.pp))
+    save(directory / 'selection.json', check_routes(text, arm, args.pp, require_kpack=not native_only))
     if phase == 'perf':
         maps = json.loads((directory / 'process.json').read_text())['loaded_images']
         for stem in ('libggml-cuda.so', 'libllama.so'):
@@ -286,7 +334,7 @@ def run_arm(args, model, arm, phase, build, directory):
         if arm == 'quactlize':
             loaded = {Path(p).resolve() for p in maps}
             library = candidate_library(args, build).resolve()
-            if library not in loaded:
+            if not native_only and library not in loaded:
                 raise ValueError('candidate public Quactlize library not found in loaded images')
             for path in loaded:
                 if path.name.startswith('libquactlize') and path.parent not in (
@@ -299,7 +347,7 @@ def run_arm(args, model, arm, phase, build, directory):
         with (directory / 'export.log').open('xb') as log:
             subprocess.run([str(args.asys), 'export', '-o', str(database), str(report)], env=env,
                            stdout=log, stderr=subprocess.STDOUT, check=True)
-        save(directory / 'trace-scope.json', trace_inventory(database))
+        save(directory / 'trace-scope.json', trace_inventory(database, warmup_passes=warmups, native_only=native_only))
     if smi:
         short_command([str(smi)], env, directory / 'device-after.log')
     print(f'DENSE_MODEL_AB_RESULT arm={arm} phase={phase} '
@@ -331,7 +379,10 @@ def main():
     p.add_argument('--sdk', type=Path, default=Path(os.environ.get('PPU_SDK', '/usr/local/PPU_SDK')))
     p.add_argument('--asys', type=Path)
     p.add_argument('--model-root', type=Path, default=Path('/sim/eec/shared/AI_workspace/llm-models/bench_model_zoo'))
-    p.add_argument('--model', action='append', choices=list(MODELS))
+    model_args = p.add_mutually_exclusive_group()
+    model_args.add_argument('--model', action='append', choices=list(MODELS))
+    model_args.add_argument('--bf16-model', type=Path,
+                            help='exact BF16 GGUF first shard; native-compute control, no K-pack plan expected')
     p.add_argument('--device', default=os.environ.get('CUDA_VISIBLE_DEVICES', '0'))
     p.add_argument('--idle-confirmed', action='store_true', required=True,
                    help='the selected physical GPU must remain idle except for this serial comparison')
@@ -339,13 +390,15 @@ def main():
     p.add_argument('--tg', type=int, default=128)
     p.add_argument('--repeats', type=int, default=3)
     p.add_argument('--trace-repeats', type=int, default=2)
+    p.add_argument('--warmup-passes', type=int, default=1,
+                   help='complete untallied PP/TG passes inside EVERY process; raw traces retain them')
     p.add_argument('--threads', type=int, default=16)
     p.add_argument('--threads-batch', type=int, default=32)
     p.add_argument('--phases', choices=('perf,trace', 'perf', 'trace'), default='perf,trace', metavar='perf,trace')
     p.add_argument('--jit-cache', type=Path, help='optional existing absolute cache; default library cache unchanged')
     p.add_argument('--output-root', type=Path, default=Path('/workspace'))
     a = p.parse_args()
-    if not a.device.isdigit() or min(a.pp, a.tg, a.repeats, a.trace_repeats, a.threads, a.threads_batch) < 1:
+    if not a.device.isdigit() or min(a.pp, a.tg, a.repeats, a.trace_repeats, a.warmup_passes, a.threads, a.threads_batch) < 1:
         p.error('one GPU ordinal and positive workload sizes/repeats are required')
     if a.jit_cache and not a.jit_cache.is_absolute():
         p.error('--jit-cache must be absolute')
@@ -354,7 +407,7 @@ def main():
         a.quactlize_package = a.quactlize_package.resolve(strict=True)
     builds = {arm: (value or a.llama_dir / default).resolve(strict=True) for arm, value, default in (
         ('reference', a.reference_build, 'build-ci-ppu-dev'),
-        ('quactlize', a.quactlize_build, 'build-ci-quactlize-dense-gemm'))}
+        ('quactlize', a.quactlize_build, 'build-ci'))}
     if builds['reference'] == builds['quactlize']:
         p.error('two distinct existing build directories are required')
     a.asys = (a.asys or a.sdk / 'asight/bin/asys').resolve()
@@ -362,27 +415,35 @@ def main():
         p.error('missing Asys executable: ' + str(a.asys))
     run = Path(tempfile.mkdtemp(prefix='dense-model-ab.', dir=a.output_root.resolve(strict=True)))
     summary = dict(status='INCOMPLETE', run=str(run), device=a.device, pp=a.pp, tg=a.tg,
-                   request_batch=1, token_batch=a.pp, warmup='EXCLUDE_FIRST_COMPLETE_PASS_EACH_PROCESS',
+                   request_batch=1, token_batch=a.pp,
+                   warmup=('EXCLUDE_FIRST_COMPLETE_PASS_EACH_PROCESS' if a.warmup_passes==1 else
+                           'EXCLUDE_FIRST_N_COMPLETE_PASSES_EACH_PROCESS'), warmup_passes=a.warmup_passes,
                    input_protocol='BATCHED_BENCH_PSEUDORANDOM_TOKENS_NOT_GENERATED_TEXT_OR_ACCURACY_TEST',
                    builds={k: str(v) for k, v in builds.items()}, results={}, failures=[],
                    candidate_package=str(a.quactlize_package) if a.quactlize_package else None,
                    caller_accumulator_request=a.cublas_accumulator,
                    no_regression_admitted=False, correctness_admitted=False,
-                   scope='DENSE_INTEGRATION_AB_NOT_CONFIG_SWEEP_MOE_REMAINS_NATIVE')
+                   scope=('BF16_NATIVE_COMPUTE_BUILD_CONTROL_NOT_QUANTIZED_KERNEL_AB' if a.bf16_model else
+                          'DENSE_INTEGRATION_AB_NOT_CONFIG_SWEEP_MOE_REMAINS_NATIVE'))
     print(f'DENSE_MODEL_AB_RUN run={run} device={a.device} pp={a.pp} tg={a.tg} '
           'request_batch=1 phases=' + a.phases, flush=True)
     try:
         save(run / 'protocol.json', summary)
         save(run / 'sdk.json', dict(path=str(a.sdk), receipts={str(f.relative_to(a.sdk)): f.read_text(errors='replace')
              for f in (a.sdk / 'VERSION.txt', a.sdk / 'release.yaml') if f.is_file()}))
-        models = {name: (a.model_root / MODELS[name]).resolve(strict=True) for name in (a.model or MODELS)}
-        for name, model in models.items():
-            with model.open('rb') as stream:
-                header = read_gguf_header(stream, str(model))
-            if header['metadata'].get('split.count', 1) != 1:
-                raise ValueError('this exact-file protocol expects an unsplit model: ' + str(model))
-            save(run / (name + '.inventory.json'), dict(path=str(model), file_bytes=model.stat().st_size,
-                 mtime_ns=model.stat().st_mtime_ns, header=header, weights_hashed=False))
+        if a.bf16_model:
+            inventory = bf16_inventory(a.bf16_model)
+            models = {'bf16-control': Path(inventory['path'])}
+            save(run / 'bf16-control.inventory.json', inventory)
+        else:
+            models = {name: (a.model_root / MODELS[name]).resolve(strict=True) for name in (a.model or MODELS)}
+            for name, model in models.items():
+                with model.open('rb') as stream:
+                    header = read_gguf_header(stream, str(model))
+                if header['metadata'].get('split.count', 1) != 1:
+                    raise ValueError('this exact-file protocol expects an unsplit model: ' + str(model))
+                save(run / (name + '.inventory.json'), dict(path=str(model), file_bytes=model.stat().st_size,
+                     mtime_ns=model.stat().st_mtime_ns, header=header, weights_hashed=False))
         receipts = {arm: snapshot(a, arm, build, run / ('build-' + arm)) for arm, build in builds.items()}
         for name, model in models.items():
             summary['results'][name] = {}
