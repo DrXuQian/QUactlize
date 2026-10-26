@@ -139,6 +139,47 @@ Asys files: RUN/bf16-control/trace/{reference,quactlize}/trace.asysrep.
 The printed review archive includes SQLite/logs/JSON, not model weights or raw
 Asys blobs. Unprofiled performance and profiled diagnostics are separate.
 
+### Qwen3.5-122B-A10B Q4_K_M: the same protocol on TP2
+
+Use the exact first shard below (not a recursive search through duplicated
+model directories). Both builds must already support tensor parallelism.
+`--tp 2 --device 0,1` makes both arms use `-sm tensor -ts 1,1`; it does not use
+layer/row split, change libraries, rebuild callers or enable quantized MoE.
+Confirm BOTH selected physical GPUs are idle before running; keep the same
+pair for all four processes. Change GPUS to another idle pair if needed.
+
+```bash
+(
+  set -euo pipefail
+  cd /sim/eec/shared/junfu.qx/quactlize
+  git pull --ff-only origin develop
+  GPUS=0,1
+  LLAMA_DIR=/sim/eec/shared/junfu.qx/llama.cpp.ncp
+  MODEL=/sim/eec/shared/AI_workspace/llm-models/bench_model_zoo/Qwen3.5-122B-A10B-GGUF-Q4_K_M/Qwen3.5-122B-A10B-Q4_K_M-00001-of-00003.gguf
+  test -f "$MODEL"
+  [[ "$GPUS" =~ ^[0-9]+,[0-9]+$ ]] || exit 1
+  for GPU in ${GPUS//,/ }; do
+    ppu-smi --id="$GPU" --lock-ppu-clocks=1700,1700 --error-on-warning
+  done
+  python3 tools/run_dense_model_ab.py \
+    --llama-dir "$LLAMA_DIR" \
+    --reference-build "$LLAMA_DIR/build-ci-ppu-dev" \
+    --quactlize-build "$LLAMA_DIR/build-ci" \
+    --model-file "$MODEL" --tp 2 --device "$GPUS" \
+    --sdk /usr/local/PPU_SDK --idle-confirmed \
+    --pp 2048 --tg 1 --warmup-passes 2 --repeats 3 --trace-repeats 3 \
+    --phases perf,trace --output-root /workspace
+)
+```
+
+The runner validates all three shard headers before model loading, requires
+candidate M1/M2048 dense plans on both logical ranks, and requires GPU kernel
+activity on two devices in each Asys export. These are coverage checks, not a
+numerical or no-regression pass. Perf excludes the two complete warmups in each
+process. TG1 remains a minimal continuation, not steady decode TPOT evidence.
+Upload the printed `.review.tgz`; GUI reports remain at
+`RUN/explicit-model/trace/{reference,quactlize}/trace.asysrep`.
+
 ## Initial admission and bounded followup plan (completed)
 
 Review `bd5a4529cbdb2a30b2fd11f918179e81d9e4f382318262cf9da12bfb24495f49`

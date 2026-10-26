@@ -50,14 +50,14 @@ def test_two_complete_warmups_are_kept_in_raw_rows_not_steady_median(tmp_path):
         runner.parse_rows('',2048,128,3,0)
 
 
-def bf16_files(root, *, qtypes=(30,0), emit=2, duplicate=False):
+def bf16_files(root, *, qtypes=(30,0), emit=2, duplicate=False, stem='model-BF16'):
     """Real GGUF headers only, not a runnable model or numeric evidence."""
     root.mkdir(exist_ok=True)
     def string(text):
         data=text.encode();return struct.pack('<Q',len(data))+data
     files=[]
     for index,qtype in enumerate(qtypes[:emit]):
-        path=root/f'model-BF16-{index+1:05d}-of-{len(qtypes):05d}.gguf'
+        path=root/f'{stem}-{index+1:05d}-of-{len(qtypes):05d}.gguf'
         metadata={'split.no':index,'split.count':len(qtypes),'split.tensors.count':len(qtypes)}
         data=struct.pack('<4sIQQ',b'GGUF',3,1,len(metadata))
         for key,value in metadata.items():data+=string(key)+struct.pack('<II',4,value)
@@ -73,6 +73,17 @@ def test_explicit_bf16_reads_both_shards_without_hashing_weights(tmp_path):
     assert row['tensor_count']==2 and row['tensor_types']=={30:1,0:1}
     assert not row['weights_hashed'] and not row['expected_quactlize_compute']
     with pytest.raises(ValueError,match='first-shard'):runner.bf16_inventory(files[1])
+
+
+def test_explicit_quantized_model_validates_all_three_shards(tmp_path):
+    files=bf16_files(tmp_path,qtypes=(12,14,8),emit=3,stem='Qwen3.5-122B-A10B-Q4_K_M')
+    row=runner.model_inventory(files[0])
+    assert [s['path'] for s in row['shards']]==list(map(str,files))
+    assert row['tensor_count']==3 and row['tensor_types']=={12:1,14:1,8:1}
+    assert not row['weights_hashed'] and row['expected_quactlize_compute']
+    with pytest.raises(ValueError,match='first-shard'):runner.model_inventory(files[1])
+    files[2].unlink()
+    with pytest.raises(ValueError):runner.model_inventory(files[0])
 
 
 @pytest.mark.parametrize('fault',['missing','quantized','no-bf16','duplicate'])
@@ -173,6 +184,45 @@ def test_workload_and_binary_are_explicit(tmp_path):
         assert '-ot' not in cmd and '--kpack-cache' not in cmd
 
 
+@pytest.mark.parametrize('device,tp', [('0,1',2),('7,5',2),('0,1,2,3',4),('7',1)])
+def test_tp_device_mapping_is_explicit_and_ordered(device,tp):
+    assert runner.device_ordinals(device,tp)==[int(v) for v in device.split(',')]
+
+
+@pytest.mark.parametrize('device,tp', [('0',2),('0,1',1),('0,0',2),('',1),('0, 1',2),
+                                      ('-1,0',2),('0,01',2),('0,',2),('0',0)])
+def test_tp_device_mapping_rejects_wrong_count_and_duplicates(device,tp):
+    with pytest.raises(ValueError):runner.device_ordinals(device,tp)
+
+
+def test_tp2_command_and_both_environments_use_same_cards_and_tensor_split(tmp_path):
+    a=args(tmp_path);a.tp=2;a.device='7,5';a.warmup_passes=2;a.tg=1
+    for arm in ('reference','quactlize'):
+        cmd=runner.command(a,tmp_path/arm,tmp_path/'first-shard.gguf','perf')
+        assert cmd[cmd.index('-sm')+1]=='tensor' and cmd[cmd.index('-ts')+1]=='1,1'
+        assert cmd[cmd.index('-npp')+1]==','.join(['2048']*5)
+        assert cmd[cmd.index('-ntg')+1]=='1'
+        assert runner.environment(a,tmp_path/arm,arm)['CUDA_VISIBLE_DEVICES']=='7,5'
+        assert '--no-warmup' not in cmd and '-ot' not in cmd
+
+
+@pytest.mark.parametrize('tp_supported',[False,True])
+def test_tp2_snapshot_requires_split_flags_not_no_warmup(tmp_path,monkeypatch,tp_supported):
+    a=args(tmp_path);a.tp=2
+    build=tmp_path/'build';(build/'bin').mkdir(parents=True)
+    (build/'bin/llama-batched-bench').write_bytes(b'host fixture only')
+    def command(argv,env,log):
+        log.write_text('--output-format -npp -ntg --fit'+
+                       (' --split-mode --tensor-split' if tp_supported else ''))
+        return 0
+    monkeypatch.setattr(runner,'short_command',command)
+    if tp_supported:
+        assert runner.snapshot(a,'reference',build,tmp_path/'snapshot')
+    else:
+        with pytest.raises(ValueError,match='required flags'):
+            runner.snapshot(a,'reference',build,tmp_path/'snapshot')
+
+
 def test_candidate_package_does_not_override_reference_or_caller(tmp_path):
     a=args(tmp_path); a.quactlize_package=tmp_path/'fresh-package';a.cublas_accumulator='f32'
     ref=runner.environment(a,tmp_path/'reference','reference')
@@ -227,6 +277,16 @@ def test_route_requires_prefill_and_decode_and_leaves_moe_native():
     runner.check_routes('mul_mat_vec_q', 'reference', 2048)
 
 
+def test_tp2_requires_decode_and_prefill_plans_on_each_logical_rank():
+    lines=[f'[quactlize-dense] device={rank} m={m} q=8'
+           for rank in (0,1) for m in (1,2048)]
+    assert runner.check_routes('\n'.join(lines),'quactlize',2048,tp=2)['tp']==2
+    for omitted in range(len(lines)):
+        with pytest.raises(ValueError,match='TP logical rank'):
+            runner.check_routes('\n'.join(lines[:omitted]+lines[omitted+1:]),'quactlize',2048,tp=2)
+    runner.check_routes('ordinary native TP compute','reference',2048,tp=2)
+
+
 def test_sqlite_requires_gpu_not_host_timers(tmp_path):
     path = tmp_path / 'trace.sqlite'
     with sqlite3.connect(path) as db:
@@ -241,6 +301,20 @@ def test_sqlite_requires_gpu_not_host_timers(tmp_path):
     assert result['kernel_tables']['CUPTI_ACTIVITY_KIND_KERNEL'] == 1
     assert result['exclude_first_complete_pp_tg_pass']
     assert not result['no_regression_admitted']
+
+
+def test_tp_trace_requires_both_gpus_but_does_not_assume_device_id_numbering(tmp_path):
+    path=tmp_path/'tp.sqlite'
+    with sqlite3.connect(path) as db:
+        db.execute('CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL(start,end,deviceId,name)')
+        db.execute("INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES(1,2,5,'native')")
+    with pytest.raises(ValueError,match='TP GPU coverage'):runner.trace_inventory(path,tp=2)
+    with sqlite3.connect(path) as db:
+        db.execute("INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES(2,3,7,'quactlize::dense')")
+    result=runner.trace_inventory(path,tp=2,warmup_passes=2)
+    assert result['gpu_device_ids']==[5,7] and result['tp']==2
+    assert result['quactlize_kernel_names']==['quactlize::dense']
+    assert result['excluded_complete_passes']==2 and not result['no_regression_admitted']
 
 
 def test_review_only_includes_needed_evidence(tmp_path):
@@ -342,3 +416,36 @@ def test_bf16_orchestrator_uses_requested_builds_and_model_only(tmp_path,monkeyp
         summary=json.load(tar.extractfile('summary.json'))
     assert list(summary['results'])==['bf16-control'] and summary['warmup_passes']==2
     assert summary['scope']=='BF16_NATIVE_COMPUTE_BUILD_CONTROL_NOT_QUANTIZED_KERNEL_AB'
+
+
+def test_tp2_orchestrator_uses_only_explicit_three_shard_model(tmp_path,monkeypatch):
+    llama,sdk,models,output=[tmp_path/s for s in ('llama','sdk','models','output')]
+    for path in (llama,sdk,models,output,llama/'build-ci-ppu-dev',llama/'build-ci'):
+        path.mkdir(exist_ok=True)
+    files=bf16_files(models,qtypes=(12,14,8),emit=3,stem='Qwen3.5-122B-A10B-Q4_K_M')
+    asys=sdk/'asight/bin/asys';asys.parent.mkdir(parents=True);asys.touch();asys.chmod(0o700)
+    monkeypatch.setattr(runner,'snapshot',lambda *a:{})
+    calls=[]
+    def run(a,model,arm,phase,build,directory):
+        directory.mkdir(parents=True)
+        assert a.tp==2 and a.device=='0,1' and not a.bf16_model and a.warmup_passes==2
+        assert a.model_file==model==files[0] and a.pp==2048 and a.tg==1
+        assert runner.command(a,build,model,phase)[runner.command(a,build,model,phase).index('-sm')+1]=='tensor'
+        calls.append((arm,phase,build.name))
+        return dict(pp_total_ms=123,tpot_ms=4,profiler_attached=phase=='trace')
+    monkeypatch.setattr(runner,'run_arm',run)
+    monkeypatch.setattr(sys,'argv',['run_dense_model_ab.py','--llama-dir',str(llama),
+        '--sdk',str(sdk),'--model-file',str(files[0]),'--output-root',str(output),
+        '--device','0,1','--tp','2','--idle-confirmed','--warmup-passes','2',
+        '--tg','1','--trace-repeats','3'])
+    assert runner.main()==0
+    assert calls==[('reference','perf','build-ci-ppu-dev'),('quactlize','perf','build-ci'),
+                   ('quactlize','trace','build-ci'),('reference','trace','build-ci-ppu-dev')]
+    with tarfile.open(next(output.glob('*.review.tgz'))) as tar:
+        summary=json.load(tar.extractfile('summary.json'))
+        inventory=json.load(tar.extractfile('explicit-model.inventory.json'))
+    assert list(summary['results'])==['explicit-model']
+    assert summary['tp']==2 and summary['physical_devices']==[0,1]
+    assert summary['split_mode']=='tensor' and summary['tensor_split']==[1,1]
+    assert summary['warmup_passes']==2 and len(inventory['shards'])==3
+    assert not summary['no_regression_admitted'] and not summary['correctness_admitted']

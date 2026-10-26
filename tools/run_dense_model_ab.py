@@ -51,13 +51,13 @@ def candidate_library(args, build):
     return (package if package else build / 'bin') / 'libquactlize_ppu.so'
 
 
-def bf16_inventory(first):
+def model_inventory(first, *, bf16=False):
     from tools.resolve_internal_sweep_models import resolve_binding
     from tools.gguf_internal_shape_inventory import _normalise_split
     first = first.parent.resolve(strict=True) / first.name
     paths = resolve_binding(first)
     if not first.is_file() or paths[0] != first:
-        raise ValueError('--bf16-model requires the exact first-shard GGUF file')
+        raise ValueError('model input requires the exact first-shard GGUF file')
     shards, names, types = [], set(), Counter()
     for path in paths:
         with path.open('rb') as stream:
@@ -66,15 +66,28 @@ def bf16_inventory(first):
         shards.append(dict(path=str(path), file_bytes=stat.st_size, mtime_ns=stat.st_mtime_ns, header=header))
         for tensor in header['tensors']:
             if tensor['name'] in names:
-                raise ValueError('duplicate tensor across BF16 shards: ' + tensor['name'])
+                raise ValueError('duplicate tensor across GGUF shards: ' + tensor['name'])
             names.add(tensor['name']); types[tensor['qtype']] += 1
     shards, total = _normalise_split(shards, str(first))
     # Reject mixed quantized models rather than silently declaring their native
     # tensors a clean BF16 control. Non-matrix integer constants are allowed.
-    if not types[30] or set(types) - {0, 1, 24, 25, 26, 27, 28, 30}:
+    if bf16 and (not types[30] or set(types) - {0, 1, 24, 25, 26, 27, 28, 30}):
         raise ValueError('BF16 control needs BF16 tensors and no quantized tensors: ' + repr(dict(types)))
     return dict(path=str(first), shards=shards, tensor_count=total, tensor_types=dict(types),
-                weights_hashed=False, expected_quactlize_compute=False)
+                weights_hashed=False, expected_quactlize_compute=not bf16)
+
+
+def bf16_inventory(first):
+    return model_inventory(first, bf16=True)
+
+
+def device_ordinals(device, tp):
+    parts = device.split(',')
+    if tp < 1 or len(parts) != tp or any(not re.fullmatch(r'0|[1-9][0-9]*', p) for p in parts):
+        raise ValueError('--device must list exactly --tp physical GPU ordinals (e.g. --device 0,1 --tp 2)')
+    if len(set(parts)) != len(parts):
+        raise ValueError('--device ordinals must be distinct')
+    return [int(p) for p in parts]
 
 
 def environment(args, build, arm):
@@ -112,10 +125,12 @@ def environment(args, build, arm):
 def command(args, build, model, phase):
     repeats = args.repeats if phase == 'perf' else args.trace_repeats
     warmups = getattr(args, 'warmup_passes', 1)
+    tp = getattr(args, 'tp', 1)
+    placement = ['-sm', 'none'] if tp == 1 else ['-sm', 'tensor', '-ts', ','.join(['1'] * tp)]
     return [str(build / 'bin/llama-batched-bench'), '-m', str(model),
             '-npp', ','.join([str(args.pp)] * (warmups + repeats)), '-ntg', str(args.tg), '-npl', '1',
             '-b', str(args.pp), '-ub', str(args.pp), '-c', str(args.pp + args.tg),
-            '-ngl', 'all', '-sm', 'none', '-fa', '1', '--fit', 'off', '--mmap',
+            '-ngl', 'all', *placement, '-fa', '1', '--fit', 'off', '--mmap',
             '-t', str(args.threads), '-tb', str(args.threads_batch),
             '--output-format', 'jsonl', '--log-colors', 'off', '--verbosity', '4']
 
@@ -153,7 +168,7 @@ def parse_rows(text, pp, tg, repeats, warmup_passes=1):
                 tpot_ms=statistics.median(r['tpot_ms'] for r in kept))
 
 
-def check_routes(text, arm, pp, require_kpack=True):
+def check_routes(text, arm, pp, require_kpack=True, tp=1):
     plans = [dict(re.findall(r'(\w+)=([^\s]+)', line)) for line in text.splitlines()
              if '[quactlize-dense]' in line]
     if not require_kpack:
@@ -166,7 +181,12 @@ def check_routes(text, arm, pp, require_kpack=True):
             raise ValueError('reference unexpectedly uses Quactlize')
     elif not plans or not {'1', str(pp)} <= {p.get('m') for p in plans}:
         raise ValueError('missing Quactlize dense plans for BOTH decode M1 and prefill; see run.log')
+    elif tp > 1:
+        for rank in range(tp):
+            if not {'1', str(pp)} <= {p.get('m') for p in plans if p.get('device') == str(rank)}:
+                raise ValueError(f'missing Quactlize dense M1/prefill plans on TP logical rank {rank}; see run.log')
     return dict(plans=plans, scope='DENSE_ONLY_MOE_REMAINS_NATIVE',
+                tp=tp,
                 kernel_execution='REQUIRES_TRACE_MATCHING', no_regression_admitted=False)
 
 
@@ -224,9 +244,9 @@ def execute(argv, env, directory, label):
         raise ValueError(f'process rc={process.returncode}; see {directory / "run.log"}')
 
 
-def trace_inventory(path, *, warmup_passes=1, native_only=False):
+def trace_inventory(path, *, warmup_passes=1, native_only=False, tp=1):
     with sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True) as db:
-        counts, names = {}, set()
+        counts, names, devices = {}, set(), set()
         tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         strings = dict(db.execute('SELECT id,value FROM StringIds')) if 'StringIds' in tables else {}
         for table in sorted(tables):
@@ -236,6 +256,9 @@ def trace_inventory(path, *, warmup_passes=1, native_only=False):
             cols = {r[1].lower() for r in db.execute('PRAGMA table_info(' + quoted + ')')}
             if {'start', 'end'} <= cols:
                 counts[table] = db.execute('SELECT count(*) FROM ' + quoted).fetchone()[0]
+                if 'deviceid' in cols:
+                    devices.update(r[0] for r in db.execute('SELECT DISTINCT deviceId FROM ' + quoted)
+                                   if r[0] is not None)
                 column = next((name for name in ('demangledname','shortname','name') if name in cols), None)
                 if column:
                     for (value,) in db.execute('SELECT DISTINCT "' + column + '" FROM ' + quoted):
@@ -243,10 +266,13 @@ def trace_inventory(path, *, warmup_passes=1, native_only=False):
                         if name: names.add(name)
     if not sum(counts.values()):
         raise ValueError('Asys contains no GPU kernel activities; NOT a valid timing trace')
+    if tp > 1 and len(devices) != tp:
+        raise ValueError(f'Asys TP GPU coverage differs: devices={sorted(devices)}, expected {tp}')
     quantized = sorted(name for name in names if 'quactlize' in name.lower())
     if native_only and (not names or quantized):
         raise ValueError('BF16 trace has unresolved names or Quactlize kernels: ' + repr(quantized))
     return dict(kernel_tables=counts, includes_initial_warmup=True,
+                gpu_device_ids=sorted(devices), tp=tp,
                 exclude_first_complete_pp_tg_pass=True, excluded_complete_passes=warmup_passes,
                 quactlize_kernel_names=quantized, steady_state_analysis='PENDING',
                 no_regression_admitted=False)
@@ -284,7 +310,10 @@ def snapshot(args, arm, build, output):
     short_command([str(build / 'bin/llama-batched-bench'), '--version'], env, output / 'version.log')
     help_rc = short_command([str(build / 'bin/llama-batched-bench'), '--help'], env, output / 'help.log')
     help_text = (output / 'help.log').read_text(errors='replace')
-    if help_rc or any(flag not in help_text for flag in ('--output-format', '-npp', '-ntg', '--fit')):
+    required = ['--output-format', '-npp', '-ntg', '--fit']
+    if getattr(args, 'tp', 1) > 1:
+        required += ['--split-mode', '--tensor-split']
+    if help_rc or any(flag not in help_text for flag in required):
         raise ValueError(f'{arm}: batched-bench lacks required flags; see {output / "help.log"}')
     for source in [build / 'CMakeCache.txt', build / 'bin/quactlize-runtime/final-selection.json',
                    build / 'bin/quactlize-runtime/prefill-confirmed.json']:
@@ -323,7 +352,8 @@ def run_arm(args, model, arm, phase, build, directory):
     timings['profiler_attached'] = phase == 'trace'
     timings['scope'] = 'UNPROFILED_MODEL_LATENCY' if phase == 'perf' else 'PROFILED_DIAGNOSTIC_NOT_MODEL_PERF'
     save(directory / 'timings.json', timings)
-    save(directory / 'selection.json', check_routes(text, arm, args.pp, require_kpack=not native_only))
+    tp = getattr(args, 'tp', 1)
+    save(directory / 'selection.json', check_routes(text, arm, args.pp, require_kpack=not native_only, tp=tp))
     if phase == 'perf':
         maps = json.loads((directory / 'process.json').read_text())['loaded_images']
         for stem in ('libggml-cuda.so', 'libllama.so'):
@@ -347,7 +377,8 @@ def run_arm(args, model, arm, phase, build, directory):
         with (directory / 'export.log').open('xb') as log:
             subprocess.run([str(args.asys), 'export', '-o', str(database), str(report)], env=env,
                            stdout=log, stderr=subprocess.STDOUT, check=True)
-        save(directory / 'trace-scope.json', trace_inventory(database, warmup_passes=warmups, native_only=native_only))
+        save(directory / 'trace-scope.json', trace_inventory(database, warmup_passes=warmups,
+                                                           native_only=native_only, tp=tp))
     if smi:
         short_command([str(smi)], env, directory / 'device-after.log')
     print(f'DENSE_MODEL_AB_RESULT arm={arm} phase={phase} '
@@ -381,11 +412,16 @@ def main():
     p.add_argument('--model-root', type=Path, default=Path('/sim/eec/shared/AI_workspace/llm-models/bench_model_zoo'))
     model_args = p.add_mutually_exclusive_group()
     model_args.add_argument('--model', action='append', choices=list(MODELS))
+    model_args.add_argument('--model-file', type=Path,
+                            help='exact quantized GGUF file or first shard; validates the complete shard set')
     model_args.add_argument('--bf16-model', type=Path,
                             help='exact BF16 GGUF first shard; native-compute control, no K-pack plan expected')
-    p.add_argument('--device', default=os.environ.get('CUDA_VISIBLE_DEVICES', '0'))
+    p.add_argument('--device', default=os.environ.get('CUDA_VISIBLE_DEVICES', '0'),
+                   help='physical GPU ordinal, or ordered comma-separated ordinals for --tp')
+    p.add_argument('--tp', type=int, default=1,
+                   help='number of GPUs; >1 uses equal-weight tensor split, never layer or row split')
     p.add_argument('--idle-confirmed', action='store_true', required=True,
-                   help='the selected physical GPU must remain idle except for this serial comparison')
+                   help='all selected physical GPUs must remain idle except for this serial comparison')
     p.add_argument('--pp', type=int, default=2048)
     p.add_argument('--tg', type=int, default=128)
     p.add_argument('--repeats', type=int, default=3)
@@ -398,8 +434,12 @@ def main():
     p.add_argument('--jit-cache', type=Path, help='optional existing absolute cache; default library cache unchanged')
     p.add_argument('--output-root', type=Path, default=Path('/workspace'))
     a = p.parse_args()
-    if not a.device.isdigit() or min(a.pp, a.tg, a.repeats, a.trace_repeats, a.warmup_passes, a.threads, a.threads_batch) < 1:
-        p.error('one GPU ordinal and positive workload sizes/repeats are required')
+    try:
+        physical_devices = device_ordinals(a.device, a.tp)
+    except ValueError as exc:
+        p.error(str(exc))
+    if min(a.pp, a.tg, a.repeats, a.trace_repeats, a.warmup_passes, a.threads, a.threads_batch) < 1:
+        p.error('positive workload sizes/repeats are required')
     if a.jit_cache and not a.jit_cache.is_absolute():
         p.error('--jit-cache must be absolute')
     a.llama_dir, a.sdk = a.llama_dir.resolve(strict=True), a.sdk.resolve(strict=True)
@@ -415,6 +455,9 @@ def main():
         p.error('missing Asys executable: ' + str(a.asys))
     run = Path(tempfile.mkdtemp(prefix='dense-model-ab.', dir=a.output_root.resolve(strict=True)))
     summary = dict(status='INCOMPLETE', run=str(run), device=a.device, pp=a.pp, tg=a.tg,
+                   tp=a.tp, physical_devices=physical_devices,
+                   split_mode='tensor' if a.tp > 1 else 'none',
+                   tensor_split=[1] * a.tp if a.tp > 1 else None,
                    request_batch=1, token_batch=a.pp,
                    warmup=('EXCLUDE_FIRST_COMPLETE_PASS_EACH_PROCESS' if a.warmup_passes==1 else
                            'EXCLUDE_FIRST_N_COMPLETE_PASSES_EACH_PROCESS'), warmup_passes=a.warmup_passes,
@@ -425,7 +468,7 @@ def main():
                    no_regression_admitted=False, correctness_admitted=False,
                    scope=('BF16_NATIVE_COMPUTE_BUILD_CONTROL_NOT_QUANTIZED_KERNEL_AB' if a.bf16_model else
                           'DENSE_INTEGRATION_AB_NOT_CONFIG_SWEEP_MOE_REMAINS_NATIVE'))
-    print(f'DENSE_MODEL_AB_RUN run={run} device={a.device} pp={a.pp} tg={a.tg} '
+    print(f'DENSE_MODEL_AB_RUN run={run} device={a.device} tp={a.tp} pp={a.pp} tg={a.tg} '
           'request_batch=1 phases=' + a.phases, flush=True)
     try:
         save(run / 'protocol.json', summary)
@@ -435,6 +478,10 @@ def main():
             inventory = bf16_inventory(a.bf16_model)
             models = {'bf16-control': Path(inventory['path'])}
             save(run / 'bf16-control.inventory.json', inventory)
+        elif a.model_file:
+            inventory = model_inventory(a.model_file)
+            models = {'explicit-model': Path(inventory['path'])}
+            save(run / 'explicit-model.inventory.json', inventory)
         else:
             models = {name: (a.model_root / MODELS[name]).resolve(strict=True) for name in (a.model or MODELS)}
             for name, model in models.items():
@@ -447,7 +494,7 @@ def main():
         receipts = {arm: snapshot(a, arm, build, run / ('build-' + arm)) for arm, build in builds.items()}
         for name, model in models.items():
             summary['results'][name] = {}
-            # Same physical GPU, serial arms. Reverse trace order, but do NOT
+            # Same physical GPUs, serial arms. Reverse trace order, but do NOT
             # mix profiler timings with the unprofiled model comparison.
             for phase in a.phases.split(','):
                 for arm in (('reference', 'quactlize') if phase == 'perf' else ('quactlize', 'reference')):
