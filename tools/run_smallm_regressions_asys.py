@@ -117,6 +117,7 @@ def stop_process(p):
 
 def worker(a):
     from dev.strategy.asys_components import parse
+    from dev.strategy.asys_reparse import measurement_provenance
     from tools.run_prefill_model_asys import profile_command
     plan=sealed(a.output/'plan.json');run=sealed(a.output/'run.json')
     if not 0<=a.worker<len(run['cards']):raise ValueError('invalid worker index')
@@ -148,10 +149,7 @@ def worker(a):
                 captured=sealed(attempt/'capture.json')
                 auth=dict(run=run['sha256'],shard=a.worker,device=run['devices'][a.worker])
                 if captured['authority']!=auth or captured['point']!=point['id']:raise ValueError('capture authority differs')
-                provenance=dict(run['source_revision'],harness_sha256=run['harness']['sha256'],
-                    source_sha256=run['source']['sha256'],
-                    images_sha256=digest(run['images']),sdk=run['sdk'],device=run['devices'][a.worker],
-                    asys_sha256=run['asys_sha256'],python_version=run['python_version'])
+                provenance=measurement_provenance(run,a.worker)
                 data=parse(captured['data'],db,report,provenance);check_producers(point,data)
                 value=dict(status='PASS',point=point['id'],run=run['sha256'],data=data,
                     clocks=dict(before=before,after=after),elapsed_seconds=time.monotonic()-started,
@@ -247,12 +245,14 @@ def main():
     p.add_argument('--cohort',choices=('regressions','q6-token-cta'))
     p.add_argument('--l2-bytes',type=int,default=67108864);p.add_argument('--asys',type=Path);p.add_argument('--smi',type=Path)
     p.add_argument('--resume',action='store_true');p.add_argument('--plan-only',action='store_true');p.add_argument('--confirm-idle',action='store_true')
+    p.add_argument('--reparse-only',action='store_true',help='CPU only: recover timestamp-only failures without overwriting old results')
     p.add_argument('--probe',type=Path);p.add_argument('--worker',type=int);p.add_argument('--point');p.add_argument('--attempt',type=Path)
     a=p.parse_args();a.output=a.output.resolve();a.sdk=a.sdk.resolve();cards=a.devices.split(',')
     if not 1<=len(cards)<=10 or len(set(cards))!=len(cards) or any(not c.isdecimal() or str(int(c))!=c for c in cards) or not 1<=a.jobs<=64:
         p.error('invalid GPU ordinals or jobs (1..64)')
     if a.l2_bytes<=0:p.error('--l2-bytes must be a verified positive capacity')
-    if sum((bool(a.point),a.worker is not None,bool(a.probe)))>1:p.error('internal child modes are exclusive')
+    if sum((bool(a.point),a.worker is not None,bool(a.probe),a.reparse_only))>1:p.error('internal child modes are exclusive')
+    if a.reparse_only and (a.resume or a.plan_only or a.cohort):p.error('--reparse-only uses the old sealed plan, not a new cohort or GPU resume')
     if a.point:
         if a.attempt is None:p.error('--point requires --attempt')
         a.attempt=a.attempt.resolve(strict=True)
@@ -266,7 +266,14 @@ def main():
     a.output.parent.mkdir(parents=True,exist_ok=True)
     with a.output.with_name(a.output.name+'.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        try:return run(a)
+        try:
+            if a.reparse_only:
+                from dev.strategy.asys_reparse import reparse
+                target,result=reparse(a.output,ROOT)
+                print('SMALLM_ASYS_REPARSE '+json.dumps(dict(status=result['status'],expected=result['expected'],
+                    output=str(target),gpu_work=False,old_receipts_modified=False)),flush=True)
+                return int(result['status']!='COMPLETE')
+            return run(a)
         finally:
             if a.output.is_dir():package(a.output)
 

@@ -12,6 +12,7 @@
 #include "nlohmann/json.hpp"
 #include "ggml-cuda/mmid.cuh"
 #include "kernel_node.hpp"
+#include <cuda_profiler_api.h>
 
 namespace nc {
 using Json = nlohmann::ordered_json;

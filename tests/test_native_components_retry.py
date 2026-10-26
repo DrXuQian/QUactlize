@@ -5,6 +5,7 @@ import io
 import json
 from pathlib import Path
 import tempfile
+import tarfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -33,7 +34,19 @@ class RetryTest(unittest.TestCase):
     def test_reviewed_probe_requires_actual_output_equality_and_source_identity(self):
         path=Path('/root/review_new.tgz')
         if not path.exists():self.skipTest('optional uploaded diagnostic')
-        self.assertEqual(retry.verify_diagnostic(path)['archive_sha256'],retry.DIAGNOSTIC_SHA)
+        # A new Asys carrier is intentionally NOT covered by the old event
+        # diagnostic. Keep that guard closed instead of relabelling its proof.
+        with tarfile.open(path) as archive:
+            old=json.load(archive.extractfile('build/adapter.json'))['identity']['test_sources']
+            carrier=json.load(archive.extractfile('build/carrier.json'))['identity']
+        matches=all(retry.sha(retry.ROOT/'dev/native_components'/n)==s for n,s in old.items())
+        matches=matches and retry.sha(retry.ROOT/'dev/native_components/carrier.cpp')==carrier['source']
+        matches=matches and retry.sha(retry.ROOT/'dev/llama_ab/carrier.cpp')==carrier['fixture']
+        if matches:
+            self.assertEqual(retry.verify_diagnostic(path)['archive_sha256'],retry.DIAGNOSTIC_SHA)
+        else:
+            with self.assertRaisesRegex(ValueError,'diagnostic-tested .*source changed'):
+                retry.verify_diagnostic(path)
         real_sha=retry.sha
         with patch.object(retry,'sha',side_effect=lambda p:'changed'if Path(p).name=='bridge.cuh'else real_sha(p)):
             with self.assertRaisesRegex(ValueError,'source changed: bridge'):retry.verify_diagnostic(path)

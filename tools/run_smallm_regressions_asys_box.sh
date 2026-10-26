@@ -4,7 +4,21 @@ set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 PYTHON=${PYTHON:-python3}
 args=()
-[[ -z ${COHORT:-} ]] || args+=(--cohort "${COHORT}")
+entry=run_smallm_regressions_asys.py
+case ${BASELINE:-quactlize} in
+    quactlize) [[ -z ${COHORT:-} ]] || args+=(--cohort "${COHORT}") ;;
+    native)
+        entry=run_smallm_native_asys.py
+        [[ -z ${COHORT:-} ]] || { echo 'ERROR: native baseline uses QTYPES/N/K, not COHORT.' >&2; exit 1; }
+        args+=(--qtypes "${QTYPES:-13,14}" --n "${N:-1024}" --k "${K:-5120}")
+        if [[ ${PLAN_ONLY:-0} != 1 ]]; then
+            LLAMA_CI_DIR=${LLAMA_CI_DIR:-/sim/eec/shared/junfu.qx/llama.cpp.ncp}
+            LLAMA_CI_BUILD_DIR=${LLAMA_CI_BUILD_DIR:-${LLAMA_CI_DIR}/build-ci-32F-cublas}
+            test -f "${LLAMA_CI_BUILD_DIR}/CMakeCache.txt"
+            args+=(--llama-source "${LLAMA_CI_DIR}" --llama-build "${LLAMA_CI_BUILD_DIR}")
+        fi ;;
+    *) echo 'ERROR: BASELINE must be quactlize or native.' >&2; exit 1 ;;
+esac
 if [[ ${PLAN_ONLY:-0} != 1 ]]; then
     [[ ${IDLE_CONFIRMED:-0} == 1 ]] || {
         echo 'ERROR: confirm every assigned GPU is otherwise idle with IDLE_CONFIRMED=1.' >&2
@@ -31,6 +45,8 @@ if [[ -n ${RESUME_RUN:-} ]]; then
     SOURCE=${RUN}/source
     if [[ -f ${RUN}/results/inputs.json ]]; then
         GPUS=${GPUS:-$("${PYTHON}" -c 'import json,sys; print(",".join(json.load(open(sys.argv[1]))["cards"]))' "${RUN}/results/inputs.json")}
+    elif [[ -f ${RUN}/results/run.json ]]; then
+        GPUS=${GPUS:-$("${PYTHON}" -c 'import json,sys; print(",".join(json.load(open(sys.argv[1]))["cards"]))' "${RUN}/results/run.json")}
     fi
     args+=(--resume)
 else
@@ -39,7 +55,7 @@ else
     TREE=$(git -C "${ROOT}" rev-parse "${REV}^{tree}")
     ACTLIZE_REV=$(git -C "${ROOT}" rev-parse "${REV}:third_party/actlize")
     [[ ${REV} =~ ^[0-9a-f]{40}$ && ${TREE} =~ ^[0-9a-f]{40}$ && ${ACTLIZE_REV} =~ ^[0-9a-f]{40}$ ]] || exit 1
-    git -C "${ROOT}" cat-file -e "${REV}:tools/run_smallm_regressions_asys.py"
+    git -C "${ROOT}" cat-file -e "${REV}:tools/${entry}"
     ACTLIZE_ROOT=$(realpath -e -- "${ROOT}/third_party/actlize")
     [[ $(git -C "${ACTLIZE_ROOT}" rev-parse --show-toplevel) == "${ACTLIZE_ROOT}" ]] || {
         echo 'ERROR: third_party/actlize must be an initialized local Git checkout.' >&2
@@ -66,19 +82,20 @@ with (Path(root)/'.quactlize-source.json').open('x') as f:
                    snapshot='COMMITTED_ARCHIVE'),f,sort_keys=True)
 PY
 fi
-test -f "${SOURCE}/tools/run_smallm_regressions_asys.py"
+test -f "${SOURCE}/tools/${entry}"
 SOURCE_COMMIT=$("${PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1]))["quactlize_commit"])' "${SOURCE}/.quactlize-source.json")
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 GPUS=${GPUS:-0,1,2,3}
-echo "SMALLM_ASYS_BOX run=${RUN} devices=${GPUS} cohort=${COHORT:-FROZEN_OR_REGRESSIONS} commit=${SOURCE_COMMIT} clock_request_MHz=1700 actual_clock=ADVISORY production_changed=0"
+echo "SMALLM_ASYS_BOX run=${RUN} devices=${GPUS} baseline=${BASELINE:-quactlize} cohort=${COHORT:-FROZEN_OR_REGRESSIONS} commit=${SOURCE_COMMIT} clock_request_MHz=1700 actual_clock=ADVISORY production_changed=0"
+[[ ${BASELINE:-quactlize} == native ]] || args+=(--jobs "${JOBS:-8}")
 set +e
-"${PYTHON}" -u "${SOURCE}/tools/run_smallm_regressions_asys.py" \
-    --output "${RUN}/results" --devices "${GPUS}" --jobs "${JOBS:-8}" \
+"${PYTHON}" -u "${SOURCE}/tools/${entry}" \
+    --output "${RUN}/results" --devices "${GPUS}" \
     --l2-bytes "${L2_BYTES:-67108864}" "${args[@]}" \
     2>&1 | tee "${RUN}/console-$(date +%s%N).log"
 rc=${PIPESTATUS[0]}
 set -e
-echo "SMALLM_ASYS_RESUME RESUME_RUN=${RUN} IDLE_CONFIRMED=1 bash tools/run_smallm_regressions_asys_box.sh"
+echo "SMALLM_ASYS_RESUME BASELINE=${BASELINE:-quactlize} RESUME_RUN=${RUN} IDLE_CONFIRMED=1 bash tools/run_smallm_regressions_asys_box.sh (keep the same QTYPES/N/K or COHORT)"
 echo "Asys=${RUN}/results/gpu-*/attempts/*/trace.asysrep"
 echo "runner_rc=${rc}; upload only results/review-lite-*.tar.xz; original traces stay on Box."
 echo 'Current Docker shell is preserved.'

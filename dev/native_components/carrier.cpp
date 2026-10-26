@@ -18,6 +18,7 @@ struct NativeComponents {
     int (*route)(void *, int, int, int, int, const int *);
     int (*reset_samples)(void *, int, double *);
     int (*zero_weight)(void *, void *, uint64_t);
+    const char * (*profile)(void *, const int *, int, int, int);
     void * session = nullptr;
     explicit NativeComponents(const std::string & path) {
         void * lib=dlopen(path.c_str(),RTLD_NOW|RTLD_LOCAL);
@@ -27,6 +28,7 @@ struct NativeComponents {
         NC_BIND(replay);NC_BIND(seed);NC_BIND(inventory);NC_BIND(measure);
         NC_BIND(route);NC_BIND(reset_samples);
         NC_BIND(zero_weight);
+        NC_BIND(profile);
 #undef NC_BIND
         session=create(0);require(session,error());
     }
@@ -140,6 +142,8 @@ int main(int argc,char ** argv) {
         if(request.contains("helper_points"))return helpers(request,argv[2]);
         Runtime rt(request["runtime_library"]);
         const auto & rows=request["points"];require(!rows.empty(),"empty native family");
+        const bool asys=request.value("timing_method","")=="ASYS_GPU_ACTIVITY";
+        require(!asys || rows.size()==1,"Asys range requires one point per process");
         int copies=0;for(const auto & row:rows) copies=std::max(copies,int(row["copies"]));
         Weights weights(rows[0]["workload"],copies,rt,1,request.at("raw_fixture").get<std::string>());
         for(const auto & row:rows) {
@@ -243,11 +247,21 @@ int main(int argc,char ** argv) {
             require(timing_input==0||timing_input==1,"invalid timing input repeat");
             point.set_input(timing_input);
             const int rounds=request.value("rounds",3),samples=request.value("samples",3);
-            json components=json::array();
+            json components=json::array(),trace;std::vector<int> rotate_stages;
             for(size_t i=0;i<inventory.size();++i) {
                 auto stage=inventory[i];std::string role=stage["role"];
                 bool rotate=role=="producer"||role=="provider"||role=="expansion";
                 nc.check(nc.seed(nc.session,int(i)));
+                if(asys) {
+                    require(stage["entry"]=="KERNEL","native Asys baseline does not graph cuBLAS providers");
+                    rotate_stages.push_back(rotate?1:0);
+                    stage.update({{"correctness","PASS"},{"first_use_excluded",true},
+                        {"host_launch_cost_added",false},{"timed_kernel_types",1},
+                        {"timing","ASYS_GPU_ACTIVITY"},{"cuda_graph",true},{"internal_reduction_included",false},
+                        {"cache",rotate?"ROTATING_ACTIVE_READ_SET_AT_LEAST_2P25_L2":"REPEATED_RESIDENT_SCRATCH"},
+                        {"identity",request["authority"]},{"stage",i}});
+                    components.push_back(stage);continue;
+                }
                 int width=samples*(role=="provider"?point.copies:1);
                 std::vector<double> values(rounds*width);
                 nc.check(nc.measure(nc.session,int(i),rotate,rounds,samples,values.data()));
@@ -263,6 +277,11 @@ int main(int argc,char ** argv) {
                     {"identity",request["authority"]},{"stage",i}});
                 components.push_back(stage);
             }
+            if(asys) {
+                const char * captured=nc.profile(nc.session,rotate_stages.data(),int(inventory.size()),rounds,samples);
+                require(captured,nc.error());trace=json::parse(captured);
+                for(size_t i=0;i<components.size();++i)components[i]["calls_per_graph"]=trace["calls_per_graph"][i];
+            }
             for(int copy=0;copy<point.copies;++copy) {
                 poison(point,copy);nc.check(nc.replay(nc.session,copy,-1));proofs.push_back(proof(copy));
             }
@@ -274,6 +293,13 @@ int main(int argc,char ** argv) {
                 {"scope","NATIVE_INDEPENDENT_COMPONENTS_NOT_MODEL_TPOT"}};
             result["fixture"]=request["raw_fixture_receipt"];
             result["timing_input_repeat"]=timing_input;
+            if(asys) {
+                result["status"]="CAPTURED_NOT_TIMED";
+                result["timing_method"]="ASYS_GPU_ACTIVITY";
+                result["trace_schedule"]=trace["schedule"];
+                result["protocol"]={{"rounds",rounds},{"samples",samples},{"order","FORWARD_REVERSE_ALTERNATING"}};
+                result["native_activation_contract"]=q8_1?"Q8_1_QUANTIZED_FROM_F32":"NATIVE_DISPATCH_UNMODIFIED";
+            }
             std::ifstream maps("/proc/self/maps");std::string line;std::vector<std::string> images;
             while(std::getline(maps,line)) {auto pos=line.find('/');
                 if(pos!=std::string::npos && line.find(".so",pos)!=std::string::npos)images.push_back(line.substr(pos));}

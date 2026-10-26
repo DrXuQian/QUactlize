@@ -122,6 +122,49 @@ extern "C" int nc_zero_weight(void * p, void * weight, uint64_t bytes) {
         nc::check(cudaStreamSynchronize(s.ctx.stream()),"weight negative complete");
     });
 }
+// Asys owns the clock. Prepare/seed and upload every isolated graph before
+// ProfilerStart; no events, allocation, readback or provider calls in range.
+extern "C" const char * nc_profile(void * p, const int * rotate, int count, int rounds, int samples) {
+    auto & s=*static_cast<nc::Session *>(p);
+    int rc=nc::guard([&] {
+        if(!rotate || rounds!=6 || samples!=5 || s.records.empty() ||
+                count!=int(s.records.at(0)->stages.size()))
+            throw std::runtime_error("invalid isolated Asys protocol");
+        auto stream=s.ctx.stream();
+        std::vector<std::unique_ptr<nc::KernelGraph>> graphs;
+        std::vector<int> calls;
+        for(int stage=0;stage<count;++stage) {
+            const size_t copies=rotate[stage]?s.records.size():1;
+            if(rotate[stage] && copies<2) throw std::runtime_error("cold native stage has no ring");
+            std::vector<nc::Stage *> repeated;
+            do {
+                for(size_t i=0;i<copies;++i) repeated.push_back(&s.records.at(i)->stages.at(stage));
+            } while(repeated.size()<16);
+            graphs.push_back(std::make_unique<nc::KernelGraph>(repeated));
+            calls.push_back(int(repeated.size()));
+            graphs.back()->run(stream);graphs.back()->run(stream);
+        }
+        nc::check(cudaStreamSynchronize(stream),"native isolated warmup complete");
+        nc::Json schedule=nc::Json::array();bool profiling=false;
+        try {
+            nc::check(cudaProfilerStart(),"native Asys start");profiling=true;
+            for(int r=0;r<rounds;++r) for(int position=0;position<count;++position) {
+                const int stage=r%2?count-1-position:position;
+                for(int sample=0;sample<samples;++sample) {
+                    nc::check(cudaStreamSynchronize(stream),"native before isolated sample");
+                    graphs[stage]->run(stream);
+                    nc::check(cudaStreamSynchronize(stream),"native after isolated sample");
+                    schedule.push_back({{"stage",stage},{"round",r},{"sample",sample},{"kernels",calls[stage]}});
+                }
+            }
+            nc::check(cudaProfilerStop(),"native Asys stop");profiling=false;
+        } catch(...) {
+            cudaStreamSynchronize(stream);if(profiling)cudaProfilerStop();throw;
+        }
+        s.text=nc::Json{{"schedule",schedule},{"calls_per_graph",calls}}.dump();
+    });
+    return rc?nullptr:s.text.c_str();
+}
 // The shared llama GPU routing helper used by the PoC Quactlize caller. It is
 // independent of N/K/qtype; never charge top-k selection (IDs are input here).
 extern "C" int nc_route(void * p, int tokens, int experts, int topk, int channels, const int * host_ids) {

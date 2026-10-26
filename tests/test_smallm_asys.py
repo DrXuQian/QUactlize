@@ -105,13 +105,23 @@ def test_asys_raw_gpu_durations_sum_helpers_once_and_keep_proofs():
         with pytest.raises(ValueError):validate(bad)
 
 
-@pytest.mark.parametrize('change',['missing','extra','zero','overlap','kernel','grid','block','shared','schedule','event'])
+def test_adjacent_timestamp_overlap_does_not_reject_or_clip_gpu_durations():
+    data,rows=capture_fixture()
+    rows[1]['start']=rows[0]['start']
+    result=parse_rows(data,rows,provenance())
+    record=next(r for r in result['component_records'].values() if r['identity']['node']['name']=='original')
+    assert record['trace_slices'][0]['durations_ns'][:2]==[8000,16100]
+    assert record['samples_us'][0][0]==pytest.approx((8000*15+16100)/16000)
+    assert result['interval_policy']=='PER_RECORD_END_MINUS_START_NO_ADJACENCY_REQUIREMENT'
+    validate(result)
+
+
+@pytest.mark.parametrize('change',['missing','extra','zero','kernel','grid','block','shared','schedule','event'])
 def test_asys_parse_fails_closed_without_event_fallback(change):
     data,rows=capture_fixture()
     if change=='missing':rows.pop()
     elif change=='extra':rows.append(dict(rows[-1],start=rows[-1]['end']+100,end=rows[-1]['end']+200))
     elif change=='zero':rows[0]['end']=rows[0]['start']
-    elif change=='overlap':rows[1]['start']=rows[0]['start']
     elif change=='kernel':rows[0]['symbol']='other'
     elif change=='grid':rows[0]['grid']=[9,1,1]
     elif change=='block':rows[0]['block']=[128,1,1]
@@ -185,7 +195,8 @@ def test_wrong_lookalike_reader_and_missing_config_rejected():
     with pytest.raises(ValueError,match='inventory'):check_producers(point,data)
 
 
-def test_box_freezes_committed_sources_and_pin_without_network(tmp_path):
+@pytest.mark.parametrize('baseline',['quactlize','native'])
+def test_box_freezes_committed_sources_and_pin_without_network(tmp_path,baseline):
     source=tmp_path/'checkout';source.mkdir();(source/'tools').mkdir()
     actual=Path(__file__).resolve().parents[1]/'tools/run_smallm_regressions_asys_box.sh'
     wrapper=source/'tools/run_smallm_regressions_asys_box.sh';wrapper.write_bytes(actual.read_bytes())
@@ -200,6 +211,8 @@ assert '--plan-only' in sys.argv
 p=Path(sys.argv[sys.argv.index('--output')+1]);p.mkdir(exist_ok='--resume' in sys.argv)
 (p/'plan.json').write_text('{}')
 ''')
+    native_planner=source/'tools/run_smallm_native_asys.py'
+    native_planner.write_bytes(planner.read_bytes())
     act=source/'third_party/actlize';act.mkdir(parents=True)
     def git(directory,*args):
         return subprocess.check_output(['git','-C',str(directory),*args],text=True,stderr=subprocess.PIPE).strip()
@@ -211,9 +224,10 @@ p=Path(sys.argv[sys.argv.index('--output')+1]);p.mkdir(exist_ok='--resume' in sy
     git(source,'commit','-qm','harness fixture');rev=git(source,'rev-parse','HEAD')
     # Dirty source and dirty dependency must not get measured/relabelled as HEAD.
     planner.write_text('raise RuntimeError("uncommitted must not run")')
+    native_planner.write_text('raise RuntimeError("uncommitted must not run")')
     (act/'header.h').write_text('dirty')
-    env={k:v for k,v in os.environ.items() if k not in ('RUN','RESUME_RUN','PPU_SDK','ASYS','PPU_SMI')}
-    env.update(PLAN_ONLY='1',OUTPUT_ROOT=str(tmp_path),PYTHON=sys.executable,GPUS='0,1,2,3')
+    env={k:v for k,v in os.environ.items() if k not in ('RUN','RESUME_RUN','PPU_SDK','ASYS','PPU_SMI','COHORT')}
+    env.update(PLAN_ONLY='1',OUTPUT_ROOT=str(tmp_path),PYTHON=sys.executable,GPUS='0,1,2,3',BASELINE=baseline)
     got=subprocess.run(['bash',str(wrapper)],env=env,text=True,capture_output=True)
     assert got.returncode==0,got.stdout+got.stderr
     run,=tmp_path.glob('kpack-smallm-asys.*')

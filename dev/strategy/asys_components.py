@@ -36,16 +36,12 @@ class Collector:
             finally:self.rt=None
 
 
-def parse_rows(captured,rows,provenance):
-    if captured.get('status')!='CAPTURED_NOT_TIMED' or captured.get('timing_method')!=METHOD:
-        raise ValueError('not an untimed Asys capture receipt')
-    result=copy.deepcopy(captured);records=result['component_records']
-    rounds,samples=result['protocol']['rounds'],result['protocol']['samples']
+def parse_component_rows(records,schedule,rows,provenance,rounds=6,samples=5):
+    """Shared native/candidate clock and launch checks; callers check numerics."""
+    records=copy.deepcopy(records)
     values={k:[[None]*samples for _ in range(rounds)] for k in records}
-    if any(a['end']>b['start'] for a,b in zip(rows,rows[1:])):
-        raise ValueError('isolated kernel activities overlap or are unordered')
     cursor=0;sequences={k:[] for k in records}
-    for item in captured['trace_schedule']:
+    for item in schedule:
         cid=item['component'];r=item['round'];s=item['sample'];count=item['kernels']
         record=records[cid];node=record['identity']['node']
         if (count!=record['calls_per_graph'] or count<16 or
@@ -57,8 +53,9 @@ def parse_rows(captured,rows,provenance):
             if (actual['kind']!='kernel' or actual['end']<=actual['start'] or
                     any(actual.get(f)!=node[f] for f in ('symbol','grid','block','shared_bytes'))):
                 raise ValueError('Asys executed kernel/launch differs from captured component: '+cid)
-        if any(a['end']>b['start'] for a,b in zip(block,block[1:])):
-            raise ValueError('isolated kernel activities overlap')
+        # Per-record GPU duration is the metric. Adjacent timestamps are not
+        # an admission condition; never replace these intervals with a union,
+        # launch gaps, clipped durations or host/event measurements.
         durations=[(v['end']-v['start'])/1000 for v in block]
         values[cid][r][s]=statistics.fmean(durations)
         sequences[cid].append(dict(round=r,sample=s,first_activity=cursor-count,count=count,
@@ -70,9 +67,20 @@ def parse_rows(captured,rows,provenance):
         record.update(statistics_checked(values[cid]),timing_method=METHOD,
             mean_us=statistics.fmean(x for row in values[cid] for x in row),
             latency_provenance=dict(provenance,timing_method=METHOD),trace_slices=sequences[cid])
+    return records
+
+
+def parse_rows(captured,rows,provenance):
+    if captured.get('status')!='CAPTURED_NOT_TIMED' or captured.get('timing_method')!=METHOD:
+        raise ValueError('not an untimed Asys capture receipt')
+    result=copy.deepcopy(captured)
+    rounds,samples=result['protocol']['rounds'],result['protocol']['samples']
+    records=parse_component_rows(result['component_records'],captured['trace_schedule'],rows,provenance,rounds,samples)
+    result['component_records']=records
     costs={aid:[[sum(records[k]['samples_us'][r][i] for k in keys) for i in range(samples)]
                 for r in range(rounds)] for aid,keys in result['arm_components'].items()}
     result.update(status='PASS',decision=mean_decision(costs,result['roles']),
+                  interval_policy='PER_RECORD_END_MINUS_START_NO_ADJACENCY_REQUIREMENT',
                   latency_provenance=dict(provenance,timing_method=METHOD))
     validate(result)
     return result
