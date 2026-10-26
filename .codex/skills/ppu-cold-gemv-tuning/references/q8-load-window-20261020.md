@@ -64,3 +64,26 @@ The pre/post host selector audit checked12,294requests and changed only27.
 All seven new production native bodies matched the corresponding measured
 source under the same local compiler, with zero reported stack. This proves
 the local port, not binary equality to another SDK or model-level speedup.
+
+## CTA-local tokens: change reuse, then re-evaluate the ranking
+
+Q6 dense/F32/F16, N1024/K5120, PPU-ZW810 SDK2.1.1, candidate `724b1ed2`:
+moving M2–8 into one CTA shared packed loads, metadata exchange and code
+reconstruction without changing each row's FP32 dot order. Asys isolated
+producer-plus-reducer means for M5/6/7 fell from the best old TC/SIMT
+18.984/19.013/19.043us to13.128/13.833/14.437us. Changing the selector alone
+could not have produced that gain: the old per-row SIMT implementation lost.
+M8 selected C8/P4, not C4/P8. Local C4/M8 codegen reported28B stack versus
+zero for C8; this is a liveness hypothesis, not a Box ACU causal proof.
+Details, source-bound archives, completed M4 and native comparison are in
+`docs/PPU_Q6_TOKEN_CTA.md`.
+
+Derive traffic per CTA AND across tokens. Sharing across M removes repeated
+requests/unpack; it does not repair existing within-warp plane duplication or
+guarantee a proportionate HBM-byte reduction. Useful FMA and A traffic still
+scale with M. Keep C4/C8, actual reducers and current TC controls. Generic
+Q2–Q5 instantiations retain their different group widths/high maps; Q8 needs
+its scale-only fast-code path. These extensions were only host/codegen-checked
+at this checkpoint (`docs/PPU_TOKEN_CTA_FORMATS.md`), not device-admitted.
+Compare new implementations under the requested timing protocol, and never
+carry Q6's speedup or old source identity into unmeasured formats or MoE.

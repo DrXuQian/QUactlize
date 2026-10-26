@@ -171,12 +171,17 @@ def producer_entry(node):
         return display
     for name in ('cutlass::device_kernel', 'cutlass::Kernel',
                  'quactlize::execution::simt::token_cta_reader',
+                 'quactlize::execution::simt::q8_token_cta_reader',
+                 'quactlize::execution::simt::q8_vector::kernel',
+                 'quactlize::execution::q4_decode::kernel',
                  'quactlize::execution::simt::common_reader',
-                 'quactlize::execution::simt::register_reuse'):
+                 'quactlize::execution::simt::register_reuse',
+                 *('quactlize::execution::simt::q8_address_0_'+str(i) for i in (0,1,3,4,5))):
         *namespace, function = name.split('::')
         outer = '_ZN' + ''.join(str(len(p))+p for p in namespace)
         for internal in ('', 'L'):
-            prefix = outer + internal + str(len(function)) + function + 'I'
+            boundary='E' if function.startswith('q8_address_0_') else 'I'
+            prefix = outer + internal + str(len(function)) + function + boundary
             if symbol.startswith(prefix) and len(symbol) > len(prefix):
                 if display not in (symbol, name):
                     raise ValueError('producer symbol/display name disagree')

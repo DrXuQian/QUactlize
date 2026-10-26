@@ -242,7 +242,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output',type=Path,required=True);p.add_argument('--sdk',type=Path,default=Path('/usr/local/PPU_SDK'))
     p.add_argument('--devices',default='0,1,2,3');p.add_argument('--jobs',type=int,default=8)
-    p.add_argument('--cohort',choices=('regressions','q6-token-cta'))
+    p.add_argument('--cohort',choices=('regressions','q6-token-cta','token-cta-formats'))
     p.add_argument('--l2-bytes',type=int,default=67108864);p.add_argument('--asys',type=Path);p.add_argument('--smi',type=Path)
     p.add_argument('--resume',action='store_true');p.add_argument('--plan-only',action='store_true');p.add_argument('--confirm-idle',action='store_true')
     p.add_argument('--reparse-only',action='store_true',help='CPU only: recover timestamp-only failures without overwriting old results')

@@ -106,3 +106,36 @@ This cohort answers whether CTA-token reuse beats the current Q6 implementation.
 It does not by itself establish native llama.cpp parity, other N/K performance,
 MoE correctness, model TPOT or production admission. Do not compare its Asys
 means to historical native event numbers as if they were paired measurements.
+
+## Returned evidence, 2026-10-26
+
+Candidate source `724b1ed290f6f8468135bf847662c256ef20ce13`; native baseline
+source `691fb9976be4a3192a533ccec8c7eea90c9c21dd`. Offline reparse recovered M4
+without rerunning the GPU or rewriting the original failure. All eight Q6
+points and all 16 native Q5/Q6 points now pass their respective gates.
+
+| M | Q6 best full call, us | Native full call, us | Delta |
+|---|---:|---:|---:|
+| 1 | 8.550 | 10.106 | -15.4% |
+| 2 | 9.356 | 10.584 | -11.6% |
+| 3 | 10.677 | 12.112 | -11.8% |
+| 4 | 11.538 | 13.652 | -15.5% |
+| 5 | 13.128 | 16.043 | -18.2% |
+| 6 | 13.833 | 17.488 | -20.9% |
+| 7 | 14.437 | 19.261 | -25.0% |
+| 8 | 15.957 | 21.200 | -24.7% |
+
+Both columns are arithmetic means of separately profiled Asys component sums,
+same physical device per M, separate runs (not interleaved native/candidate ABBA
+or model TPOT). Q6 includes its actual reducer; native includes quantize_q8_1
+plus MMVQ, retaining the native quantized-activation arithmetic. M1 is unchanged;
+M2–4 choose C4/W8/P8/S8, M5–7 C4/W8/P8/S4, M8 C8/W4/P4/S8. Production remains
+unchanged pending scoped selector admission, not a blanket all-format rule.
+
+Evidence: `review-lite-1793007776590791557.tar.xz`
+SHA256 `c43f3b1a549c92a5d7ec241276519300c20c20199a404dde2d942a1a94b16224`,
+and native `review-lite-1793007713415405126.tar.xz`
+SHA256 `f75e2e3a37548ae3fb23251b7f3dcd41ea168371d9d9e87870bfda49726c4b2d`.
+All transferred hashes, raw interval means, source/device bindings and numeric
+proofs checked; full Asys/DSO bytes stay on Box and were not reimported locally.
+Next bounded format extension: [Q2–Q5 and Q8](PPU_TOKEN_CTA_FORMATS.md).

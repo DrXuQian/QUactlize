@@ -183,7 +183,7 @@ def test_wrong_lookalike_reader_and_missing_config_rejected():
     w=Workload(13,1024,5120,2)
     from dev.strategy.vector import execution_contract
     contract=execution_contract(w)
-    arm=dict(id='original',spec=dict(config=dict(variant=3,columns=4,warps=8,values=8)),recipe=dict(kind='simt'))
+    arm=dict(id='original',spec=dict(q=13,config=dict(variant=3,columns=4,warps=8,values=8)),recipe=dict(kind='simt'))
     point=dict(arms=[arm],execution_contract=contract)
     data=dict(arms=dict(original=dict(receipt=dict(execution_contract=contract))),arm_components=dict(original=['c']),
         component_records=dict(c=dict(kind='producer',identity=dict(node=dict(name='quactlize::execution::simt::common_reader<13>',

@@ -3,15 +3,15 @@
 
 namespace quactlize::execution::simt {
 
-// Dense Q6 candidate: one N/K partition owns ALL rows. Keep the canonical
+// Dense Q2--Q6 candidate: one N/K partition owns ALL rows. Keep the canonical
 // planes and each row's original group/half/slot/residue FMA order. Only the
 // token ownership changes; low/high loads, metadata and code extraction are
 // shared across tokens. The public selector does not enable this candidate.
-template<int Tokens,int Columns,int Warps,int P>
+template<int Tokens,int Columns,int Warps,int P,int Q=14>
 __global__ void token_cta_reader(qkg_call_v1 call,int split) {
     static_assert(Tokens>=2 && Tokens<=8);
-    static_assert(kCommonReader<14,3,Columns,Warps,P>);
-    using F=CommonFormat<14>;
+    static_assert(kCommonReader<Q,3,Columns,Warps,P>);
+    using F=CommonFormat<Q>;
     constexpr int TileN=Columns*P,Workers=Warps*32/Columns,Pairs=P/2;
     constexpr int Segments=(F::group+F::Low::kLogicalKPerDelivery-1)/F::Low::kLogicalKPerDelivery;
     unsigned const tid=threadIdx.x,lane=tid%32,worker=tid/Columns;
@@ -26,11 +26,11 @@ __global__ void token_cta_reader(qkg_call_v1 call,int split) {
         // participates in a different group while full-mask shuffles execute.
         common_metadata::Packet cooperative{};
         if(lane<TileN)
-            cooperative=common_metadata::load<14>(call.units+F::unit_offset(call.n,tile*TileN+lane,g),g);
+            cooperative=common_metadata::load<Q>(call.units+F::unit_offset(call.n,tile*TileN+lane,g),g);
         float2 metadata[P];
         #pragma unroll
         for(int p=0;p<P;++p)
-            metadata[p]=common_metadata::affine<14>(common_metadata::share(cooperative,(lane%Columns)*P+p),g);
+            metadata[p]=common_metadata::affine<Q>(common_metadata::share(cooperative,(lane%Columns)*P+p),g);
         uint4 packet[Tokens];
         #pragma unroll
         for(int t=0;t<Tokens;++t) {
@@ -41,7 +41,7 @@ __global__ void token_cta_reader(qkg_call_v1 call,int split) {
         float a_sum[Tokens]{};
         #pragma unroll
         for(int half=0;half<2;++half) {
-            uint32_t lo[Segments][4][Pairs],hi[4][Pairs];
+            uint32_t lo[Segments][4][Pairs],hi[4][Pairs]{};
             #pragma unroll
             for(int segment=0;segment<Segments;++segment) {
                 #pragma unroll
@@ -50,10 +50,12 @@ __global__ void token_cta_reader(qkg_call_v1 call,int split) {
                     load_words<P>(low+F::Low::word_index(col,k,call.n),lo[segment][residue]);
                 }
             }
-            #pragma unroll
-            for(int residue=0;residue<4;++residue) {
-                unsigned const k=g*F::group+half*4+residue;
-                load_words<P>(high+F::High::word_index(col,k,call.n),hi[residue]);
+            if constexpr(F::high_bits) {
+                #pragma unroll
+                for(int residue=0;residue<4;++residue) {
+                    unsigned const k=g*F::group+half*4+residue;
+                    load_words<P>(high+F::High::word_index(col,k,call.n),hi[residue]);
+                }
             }
             #pragma unroll
             for(int slot=0;slot<F::group/8;++slot) {
@@ -70,7 +72,7 @@ __global__ void token_cta_reader(qkg_call_v1 call,int split) {
                     unsigned const k=g*F::group+slot*8+half*4+residue;
                     #pragma unroll
                     for(int p=0;p<Pairs;++p) {
-                        float2 code=common_codes<14>(lo[slot/F::Low::kPack][residue][p],hi[residue][p],col+2*p,k);
+                        float2 code=common_codes<Q>(lo[slot/F::Low::kPack][residue][p],hi[residue][p],col+2*p,k);
                         #pragma unroll
                         for(int t=0;t<Tokens;++t) {
                             dot[t][p].x=fmaf(values[t][residue],code.x,dot[t][p].x);
@@ -119,16 +121,16 @@ __global__ void token_cta_reader(qkg_call_v1 call,int split) {
 
 // Query/buffer validation belongs to the enclosing ABI carrier, just as for
 // common_reader_launch. Reject a mismatched token count instead of truncating.
-template<int Tokens,int Columns,int Warps,int P>
+template<int Tokens,int Columns,int Warps,int P,int Q=14>
 int token_cta_launch(qkg_simt_call_v2 const& d,int split) {
     auto const& c=d.call;
-    if(c.qtype!=14 || c.mode!=QKG_DENSE || c.rows!=Tokens || c.experts!=1 ||
+    if(c.qtype!=Q || c.mode!=QKG_DENSE || c.rows!=Tokens || c.experts!=1 ||
        c.input_type!=QKG_F32 || d.compute_type!=QKG_COMPUTE_F16)return QKG_SHAPE;
     auto stream=static_cast<hggcStream_t>(c.stream);
     if(hggcGetLastError()!=hggcSuccess)return QKG_RUNTIME;
-    token_cta_reader<Tokens,Columns,Warps,P><<<dim3(c.n/(Columns*P),1,split),Warps*32,0,stream>>>(c,split);
+    token_cta_reader<Tokens,Columns,Warps,P,Q><<<dim3(c.n/(Columns*P),1,split),Warps*32,0,stream>>>(c,split);
     if(hggcGetLastError()!=hggcSuccess)return QKG_RUNTIME;
-    launch_reduction<14>(c,split,stream);
+    launch_reduction<Q>(c,split,stream);
     return hggcGetLastError()==hggcSuccess?QKG_OK:QKG_RUNTIME;
 }
 } // namespace quactlize::execution::simt

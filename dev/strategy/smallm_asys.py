@@ -15,10 +15,13 @@ from quactlize.runtime.tuning import digest
 
 ROOT=Path(__file__).resolve().parents[2]
 METHOD='ASYS_GPU_ACTIVITY'
+TOKEN_COHORTS=('q6-token-cta','token-cta-formats')
 
 
 def workloads(cohort='regressions'):
     if cohort=='q6-token-cta':return [Workload(14,1024,5120,m) for m in range(1,9)]
+    if cohort=='token-cta-formats':
+        return [Workload(q,1024,5120,m) for q in (10,11,12,13,8) for m in range(1,9)]
     if cohort!='regressions':raise ValueError('unknown bounded small-M cohort')
     return [Workload(q,1024,5120,m) for q,ms in ((13,range(1,5)),(14,range(2,8))) for m in ms]
 
@@ -34,7 +37,10 @@ def make_plan(originals,cohort='regressions'):
         p=proposed(dict(id=w.key,workload=asdict(w),cohort='decode',consumers=[]),
                    original_recipe(old),history,prior,allow_new_family=True)
         p.update(selection=old,execution_contract=execution_contract(w))
-        if cohort=='q6-token-cta':
+        if cohort=='token-cta-formats':
+            from dev.strategy.token_cta import retain_tc_controls
+            p=retain_tc_controls(p)
+        if cohort in TOKEN_COHORTS:
             from dev.strategy.token_cta import augment
             p=augment(p)
         for arm in p['arms']:
@@ -45,12 +51,14 @@ def make_plan(originals,cohort='regressions'):
                     vector_modules=len(vectors),families=len({w.qtype for w in ws})),
         timing_method=METHOD,selection_metric='MEAN_COMPONENT_SUM',noise_policy='DIAGNOSTIC_NOT_VETO',
         historical_times_reused=False,production_changed=False,native_comparison=False,
-        scope=('Q6_DENSE_M1_TO_8_CTA_TOKEN_AB_NOT_NATIVE_OR_MODEL_ADMISSION' if cohort=='q6-token-cta' else
+        scope=('Q2_TO_Q5_Q8_DENSE_M1_TO_8_CTA_TOKEN_AB_NOT_NATIVE_OR_MODEL_ADMISSION' if cohort=='token-cta-formats' else
+               'Q6_DENSE_M1_TO_8_CTA_TOKEN_AB_NOT_NATIVE_OR_MODEL_ADMISSION' if cohort=='q6-token-cta' else
                'TEN_DENSE_REGRESSION_POINTS_CURRENT_CONFIG_SWEEP_NOT_NATIVE_OR_MODEL_AB'),
         sources={p:sha(ROOT/p) for p in ('policies/kpack_component_decode_v1.json',
                   'policies/kpack_smallm_effective_v1.hpp','dev/strategy/vector.py')})
-    if cohort=='q6-token-cta':
-        for p in ('dev/strategy/token_cta.py','quactlize/execution/simt_token_cta.cuh'):
+    if cohort in TOKEN_COHORTS:
+        for p in ('dev/strategy/token_cta.py','quactlize/execution/simt_token_cta.cuh',
+                  'quactlize/execution/simt_q8_token_cta.cuh'):
             result['sources'][p]=sha(ROOT/p)
     result['sha256']=digest(result)
     return json.loads(json.dumps(result))
@@ -119,14 +127,28 @@ def check_producers(point,data):
         else:
             c=spec['config']
             common=c['variant']==3 and ((c['columns']==4 and c['values']==8 and c['warps'] in (2,8)) or
-                                       (c['columns']==8 and c['values']==4 and c['warps']==4))
-            expected='quactlize::execution::simt::'+('token_cta_reader' if 'cta_tokens' in spec else
-                                                   'common_reader' if common else 'register_reuse')
+                                       (c['columns']==8 and c['values']==4 and c['warps']==4) or
+                                       (spec['q']==12 and (c['columns'],c['warps'],c['values'])==(4,4,4)))
+            if recipe['kind']=='q4':
+                expected='quactlize::execution::q4_decode::kernel'
+            elif 'cta_tokens' in spec:
+                expected='quactlize::execution::simt::'+('q8_token_cta_reader' if spec['q']==8 else 'token_cta_reader')
+            elif 'q8_body' in spec:
+                expected='quactlize::execution::simt::q8_address_0_'+str(spec['q8_body'])
+            elif spec['q']==8 and c['variant']>=4:
+                # This bounded cohort is N1024/K5120, not a fixed-shape Q8
+                # measured_decode endpoint or the special M1/C4W2 S1 path.
+                if (point['workload']['n'],point['workload']['k'])!=(1024,5120):
+                    raise ValueError('declare Q8 control entry for the new shape')
+                expected='quactlize::execution::simt::q8_vector::kernel'
+            else:
+                expected='quactlize::execution::simt::'+('common_reader' if common else 'register_reuse')
             if expected!=n:raise ValueError('candidate executed the wrong production reader: '+n)
             if 'cta_tokens' in spec:
                 expected_grid=[point['workload']['n']//(c['columns']*c['values']),1,
                                dict(recipe['parameters'])['split']]
-                if nodes[0]['grid']!=expected_grid:raise ValueError('token rows were not fused into one CTA')
+                if (nodes[0]['grid']!=expected_grid or nodes[0]['block']!=[c['warps']*32,1,1]):
+                    raise ValueError('token CTA grid/block differs from the planned ownership')
             if measured['receipt'].get('execution_contract')!=point['execution_contract']:
                 raise ValueError('candidate did not submit the planned dense ABI')
 

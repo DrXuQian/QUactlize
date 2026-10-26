@@ -55,7 +55,7 @@ def test_bounded_plan_keeps_current_controls_and_all_m(tmp_path):
 @pytest.mark.parametrize('change',['q','bf16','mode','tokens','m1','m9','geometry','storage'])
 def test_explicit_candidate_scope(change):
     w=Workload(14,1024,5120,5);r=recipe(5)
-    if change=='q':w=replace(w,qtype=13)
+    if change=='q':w=replace(w,qtype=8)
     elif change=='bf16':w=replace(w,compute='bf16')
     elif change=='mode':w=replace(w,operation='indexed',experts=4,topk=2)
     elif change=='tokens':r=recipe(4)
@@ -166,12 +166,12 @@ def test_reused_reader_math_and_split_contract_remain_explicit():
     body=(ROOT/'quactlize/execution/simt_token_cta.cuh').read_text()
     assert 'blockIdx.y' not in body
     assert 'dim3(c.n/(Columns*P),1,split)' in body
-    assert 'common_codes<14>' in body and body.count('common_codes<14>')==1
-    assert body.index('float2 code=common_codes<14>')<body.index('dot[t][p].x=fmaf')
+    assert 'common_codes<Q>' in body and body.count('common_codes<Q>')==1
+    assert body.index('float2 code=common_codes<Q>')<body.index('dot[t][p].x=fmaf')
     assert 'Activation<QKG_F32,0>' in body and 'float2 total[Tokens][Pairs]' in body
     assert 'dot[t][p].x=fmaf(values[t][residue],code.x,dot[t][p].x)' in body
     assert 'total[t][p].x+=fmaf(metadata[2*p].x,dot[t][p].x,metadata[2*p].y*a_sum[t])' in body
-    assert 'launch_reduction<14>(c,split,stream)' in body
+    assert 'launch_reduction<Q>(c,split,stream)' in body
     assert '[(int64_t(t)*split+partition)*call.n+n]' in body
     assert body.count('__syncthreads()')==1
 
@@ -181,7 +181,7 @@ def test_real_entry_and_grid_checked_not_lookalike():
     contract=execution_contract(w)
     point=dict(workload=asdict(w),execution_contract=contract,
                arms=[dict(id='candidate',spec=s,recipe=asdict(r))])
-    node=dict(name='void quactlize::execution::simt::token_cta_reader<7,4,8,8>(qkg_call_v1,int)',grid=[32,1,4])
+    node=dict(name='void quactlize::execution::simt::token_cta_reader<7,4,8,8>(qkg_call_v1,int)',grid=[32,1,4],block=[256,1,1])
     data=dict(arms=dict(candidate=dict(receipt=dict(execution_contract=contract))),
               arm_components=dict(candidate=['producer']),
               component_records=dict(producer=dict(kind='producer',identity=dict(node=node))))
