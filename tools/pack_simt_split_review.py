@@ -25,6 +25,7 @@ def result_root(source):
                              ('plan.json', 'q8-address-window-v1'),
                              ('plan.json', 'quactlize.smallm-asys.v1'),
                              ('plan.json', 'quactlize.native-smallm-asys.v1'),
+                             ('plan.json', 'quactlize.selected-native-asys.v1'),
                              ('plan.json', 'quactlize.decode-clock-refresh.v1')):
             marker = root / name
             if marker.is_file() and json.loads(marker.read_bytes()).get('schema') == schema:

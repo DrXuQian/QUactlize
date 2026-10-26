@@ -1,6 +1,55 @@
-# Small-M native baseline
+# Small-M native Asys measurements
 
-The default cohort is Q5_K/Q6_K, N1024 K5120, each M1–8 (16 points).
+## Final selected configuration against native: 360 points
+
+`BASELINE=native-ab` tests the five-model registry's 45 actual `(qtype,N,K)`
+families at every M1–8, including recorded TP-local dense shapes. It queries
+the current C++ selector and builds only its selected recipes (no config
+sweep). Neither the caller nor production routing is changed.
+
+```bash
+(
+    set -euo pipefail
+    cd /sim/eec/shared/junfu.qx/quactlize
+    git pull --ff-only origin develop
+    unset RUN RESUME_RUN PLAN_ONLY COHORT QTYPES N K
+    BASELINE=native-ab GPUS=0,1,2,3 JOBS=8 \
+    LLAMA_CI_DIR=/sim/eec/shared/junfu.qx/llama.cpp.ncp \
+    LLAMA_CI_BUILD_DIR=/sim/eec/shared/junfu.qx/llama.cpp.ncp/build-ci-32F-cublas \
+    PPU_SDK=/usr/local/PPU_SDK L2_BYTES=67108864 IDLE_CONFIRMED=1 \
+    bash tools/run_smallm_regressions_asys_box.sh
+)
+```
+
+Keep the cards idle and do not overlap this with the intermediate-M sweep.
+Each point runs native / Quactlize / Quactlize / native on the same card,
+with identical raw GGUF weights and F32 input fixture. Both sides use six
+rounds of five **Asys GPU-activity samples**, not historical/event timings.
+Main, adapters, metadata and Split-K reduction are independently timed and
+summed. Selection uses arithmetic means, not minima. Clock deviations/noise
+are diagnostics, not automatic failures or permission to omit losing cells.
+
+`results/comparison.csv` lists all 360 points, selected recipes, component
+sums, deltas and source commit. `summary.json` returns `PASS` only if all 360
+have valid evidence and each selected call is no slower than native.
+`REGRESSION` returns rc=2; missing/incorrect/failed coverage is `INCOMPLETE`,
+rc=1. There is no cross-shape averaging or slowdown allowance. This is a
+component gate, not proof of public-runtime wiring or whole-model TPOT.
+Native Q8_1 activation quantization remains separately labelled and charged.
+A native cuBLAS/provider route is explicitly unsupported by this kernel-only
+collector; it fails visibly rather than silently switching to event timing.
+
+Upload only `results/review-lite-*.tar.xz`. Traces remain in
+`results/gpu-*/attempts/*/trace.asysrep`. Resume with `BASELINE=native-ab`, the
+printed `RESUME_RUN`, and the same build/cards. Valid PASS **and REGRESSION**
+points are retained; only failed/incomplete points get fresh ABBA passes.
+All timings bind the source commit/tree, actlize, SDK, physical PCI, selected
+recipe, binaries and trace hashes. Local host tests are not Box performance.
+
+## Standalone native baseline: 16 points
+
+With `BASELINE=native`, the default cohort is Q5_K/Q6_K, N1024 K5120,
+each M1–8 (16 points).
 This is a native llama.cpp baseline, not a configuration sweep, a paired
 no-regression certificate, or whole-model TPOT. No caller source or build is
 changed. A small test adapter records the exact native dispatcher and links

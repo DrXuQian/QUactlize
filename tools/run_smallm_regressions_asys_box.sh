@@ -7,17 +7,22 @@ args=()
 entry=run_smallm_regressions_asys.py
 case ${BASELINE:-quactlize} in
     quactlize) [[ -z ${COHORT:-} ]] || args+=(--cohort "${COHORT}") ;;
-    native)
-        entry=run_smallm_native_asys.py
-        [[ -z ${COHORT:-} ]] || { echo 'ERROR: native baseline uses QTYPES/N/K, not COHORT.' >&2; exit 1; }
-        args+=(--qtypes "${QTYPES:-13,14}" --n "${N:-1024}" --k "${K:-5120}")
+    native|native-ab)
+        [[ -z ${COHORT:-} ]] || { echo 'ERROR: native modes do not accept COHORT.' >&2; exit 1; }
+        if [[ ${BASELINE} == native-ab ]]; then
+            entry=run_smallm_native_gate.py
+            [[ -z ${QTYPES:-}${N:-}${K:-} ]] || { echo 'ERROR: native-ab covers all 360 model points; unset QTYPES/N/K.' >&2; exit 1; }
+        else
+            entry=run_smallm_native_asys.py
+            args+=(--qtypes "${QTYPES:-13,14}" --n "${N:-1024}" --k "${K:-5120}")
+        fi
         if [[ ${PLAN_ONLY:-0} != 1 ]]; then
             LLAMA_CI_DIR=${LLAMA_CI_DIR:-/sim/eec/shared/junfu.qx/llama.cpp.ncp}
             LLAMA_CI_BUILD_DIR=${LLAMA_CI_BUILD_DIR:-${LLAMA_CI_DIR}/build-ci-32F-cublas}
             test -f "${LLAMA_CI_BUILD_DIR}/CMakeCache.txt"
             args+=(--llama-source "${LLAMA_CI_DIR}" --llama-build "${LLAMA_CI_BUILD_DIR}")
         fi ;;
-    *) echo 'ERROR: BASELINE must be quactlize or native.' >&2; exit 1 ;;
+    *) echo 'ERROR: BASELINE must be quactlize, native or native-ab.' >&2; exit 1 ;;
 esac
 if [[ ${PLAN_ONLY:-0} != 1 ]]; then
     [[ ${IDLE_CONFIRMED:-0} == 1 ]] || {

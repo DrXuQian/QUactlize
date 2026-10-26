@@ -5,6 +5,29 @@ is the 45 `(qtype,N,K)` families in `policies/dense_prefill_v1.json`, including
 its recorded TP-local dense shapes. It does not exercise tensor-parallel
 communication or add MoE measurements.
 
+Current small-M admission at `28180f7f` covers all 360 keys exactly: 181 TC,
+176 generic SIMT and 3 specialized Q4 SIMT. The six gaps mentioned in the
+historical sections below are now closed. This is still not a fresh native
+no-regression certificate; use the Asys gate linked below.
+
+## Intermediate-M bucket observations
+
+Run `plan_dense_m_span.py --m 16 32 64 128 256`, then the existing
+`run_prefill_cohort_multi.py --finalist-plan ... --no-native --confirm-idle`.
+This is 225 points from the same 45 real families; not a dtype Cartesian
+product. M16/32/64 retain legal incumbent and nearby controls, light FQ tile
+strata, SF geometry, persistent and legal Split-K proposals. M128/256 also
+include Full-F16. The existing SIMT M<=8 and Full M>=128 contracts are not
+extended. Unsupported donor recipes are explicitly listed, not called losses.
+Default large-M plans are unchanged. At most 48 configs per point and 16 per
+capture; the current five-M plan has 5897 cases and 59 reusable TC modules
+before resource filtering. These are bounded candidates, not global optima.
+
+Both forward/reverse captures remain; every helper/main/reducer is separately
+measured by Asys. Frozen commit/tree and actlize identity accompany the review.
+This collects bucket-training observations; no table or bucket is updated
+until the returned evidence is reviewed. No native timing is claimed.
+
 ## Scope and controls
 
 Large-M closure (2026-10-26): all 405 M-span points are complete and admitted
@@ -147,7 +170,12 @@ or delete the frozen worker sources/caches. Completed valid batches are not
 rerun. Upload only the printed small-M `review-lite-*.tar.xz` and large-M
 `run/review-*.json.xz`; raw Asys/SQLite/binaries remain on Box.
 
-## Current selected small-M versus native
+## Historical event-based selected small-M comparison
+
+**For current acceptance use `BASELINE=native-ab` in
+[PPU_SMALLM_NATIVE_ASYS.md](PPU_SMALLM_NATIVE_ASYS.md), not this older entry.**
+The old event/median/stability policy below is retained as historical context;
+it is not interchangeable with the current Asys mean-based acceptance rule.
 
 `run_dense_smallm_ab_box.sh` is a different task from `dense-m-gaps`:
 45 existing dense `(q,N,K)` families crossed with **every M1..8 = 360 points**,
@@ -208,8 +236,8 @@ MoE, TP communication or model TPOT claims.
 - M9–127: the current native carrier intentionally requires a verified
   Full-F16/cuBLAS path. Native MMQ/Q8-activation paths need their own labelled
   precision contract; they cannot silently stand in for that comparator.
-- Import and adjudication of the prior 1700-MHz small-M winners, then fresh
-  native small-M regression comparisons for the final selected calls.
+- Fresh native small-M regression comparisons for the admitted final
+  selected calls (the 1700-MHz winner import itself is complete).
 - Bucket holdouts and unsampled M/N/K shapes, additional MoE families, and
   model integration/TPOT. Training-point minima are not holdout evidence.
 - Production M5120 routing is unchanged by these scripts. The old FQ miss

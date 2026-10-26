@@ -198,7 +198,7 @@ def test_wrong_lookalike_reader_and_missing_config_rejected():
     with pytest.raises(ValueError,match='inventory'):check_producers(point,data)
 
 
-@pytest.mark.parametrize('baseline',['quactlize','native'])
+@pytest.mark.parametrize('baseline',['quactlize','native','native-ab'])
 def test_box_freezes_committed_sources_and_pin_without_network(tmp_path,baseline):
     source=tmp_path/'checkout';source.mkdir();(source/'tools').mkdir()
     actual=Path(__file__).resolve().parents[1]/'tools/run_smallm_regressions_asys_box.sh'
@@ -216,6 +216,8 @@ p=Path(sys.argv[sys.argv.index('--output')+1]);p.mkdir(exist_ok='--resume' in sy
 ''')
     native_planner=source/'tools/run_smallm_native_asys.py'
     native_planner.write_bytes(planner.read_bytes())
+    gate_planner=source/'tools/run_smallm_native_gate.py'
+    gate_planner.write_bytes(planner.read_bytes())
     act=source/'third_party/actlize';act.mkdir(parents=True)
     def git(directory,*args):
         return subprocess.check_output(['git','-C',str(directory),*args],text=True,stderr=subprocess.PIPE).strip()
@@ -228,6 +230,7 @@ p=Path(sys.argv[sys.argv.index('--output')+1]);p.mkdir(exist_ok='--resume' in sy
     # Dirty source and dirty dependency must not get measured/relabelled as HEAD.
     planner.write_text('raise RuntimeError("uncommitted must not run")')
     native_planner.write_text('raise RuntimeError("uncommitted must not run")')
+    gate_planner.write_text('raise RuntimeError("uncommitted must not run")')
     (act/'header.h').write_text('dirty')
     env={k:v for k,v in os.environ.items() if k not in ('RUN','RESUME_RUN','PPU_SDK','ASYS','PPU_SMI','COHORT')}
     env.update(PLAN_ONLY='1',OUTPUT_ROOT=str(tmp_path),PYTHON=sys.executable,GPUS='0,1,2,3',BASELINE=baseline)
