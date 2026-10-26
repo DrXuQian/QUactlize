@@ -10,7 +10,7 @@ from quactlize.runtime.compiler import sha
 from quactlize.runtime.tuning import digest
 
 
-def activities(path):
+def activities(path, *, launch_shared=False):
     path = Path(path).resolve(strict=True)
     with sqlite3.connect(path.as_uri()+'?mode=ro',uri=True) as db:
         db.row_factory = sqlite3.Row
@@ -26,7 +26,8 @@ def activities(path):
             if not name: raise ValueError('unresolved GPU kernel name')
             result.append(dict(start=r['start'],end=r['end'],kind='kernel',name=name,
                 symbol=strings.get(r.get('mangledName')),grid=[r['grid'+d] for d in 'XYZ'],
-                block=[r['block'+d] for d in 'XYZ'],shared_bytes=r['staticSharedMemory']+r['dynamicSharedMemory'],
+                block=[r['block'+d] for d in 'XYZ'],
+                shared_bytes=r['dynamicSharedMemory']+(0 if launch_shared else r['staticSharedMemory']),
                 device=r['deviceId'],context=r['contextId'],stream=r['streamId'],pid=r.get('globalPid'),
                 correlation_id=r.get('correlationId')))
         for prefix in ('HGPTI','CUPTI'):

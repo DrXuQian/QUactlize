@@ -11,7 +11,7 @@ from quactlize.dispatch.table import Recipe,Workload
 
 
 def confirm_point(b,metadata_b,sf,metadata_sf,point,screen,shortlist,record_for,authority,source,
-                  *,rounds=6,samples=5,round_observer=None):
+                  *,rounds=6,samples=5,round_observer=None,trace_collector=None):
     if shortlist['status']!='READY' or rounds<6 or rounds%2 or samples<3:
         raise ValueError('confirmation requires a ready shortlist and >=6 even rounds x >=3 samples')
     started=time.monotonic();w=Workload(**point['workload'])
@@ -68,36 +68,44 @@ def confirm_point(b,metadata_b,sf,metadata_sf,point,screen,shortlist,record_for,
                     keys.append(sf_keys[cfg])
                 else:keys.append(timer(session.capture,i,r))
             arm_keys[aid]=keys
-        for round_no in range(rounds):
-            before=round_observer() if round_observer else None
-            order=list(shortlist['arms'])
-            if round_no%2:order.reverse()
-            sampled=set()
-            for aid in order:
-                for cid in arm_keys[aid]:
-                    if cid in sampled:continue
-                    values[cid].append([timers[cid].sample() for _ in range(samples)])
-                    sampled.add(cid)
-            if sampled!=set(timers):raise ValueError('unmeasured finalist component')
-            if round_observer:
-                observations.append(dict(round=round_no,before=before,after=round_observer()))
+        if trace_collector:trace_collector.start(next(iter(timers.values())).rt)
+        try:
+            for round_no in range(rounds):
+                before=round_observer() if round_observer else None
+                order=list(shortlist['arms'])
+                if round_no%2:order.reverse()
+                sampled=set()
+                for aid in order:
+                    for cid in arm_keys[aid]:
+                        if cid in sampled:continue
+                        values[cid].append([trace_collector.sample(cid,timers[cid],round_no,i)
+                            if trace_collector else timers[cid].sample() for i in range(samples)])
+                        sampled.add(cid)
+                if sampled!=set(timers):raise ValueError('unmeasured finalist component')
+                if round_observer:
+                    observations.append(dict(round=round_no,before=before,after=round_observer()))
+        finally:
+            if trace_collector:trace_collector.stop()
         for buffer in [*(sf.buffers if sf else []),*(metadata_sf.buffers if metadata_sf else [])]:buffer.guard()
         if metadata_b:
             for buffer in metadata_b.ring.buffers:buffer.guard()
     # ExitStack performs extracted-sequence correctness and final redzone
     # checks before a single confirmation receipt may be published.
     if any(s.data['correctness']!='PASS' for s in sessions.values()):raise ValueError('finalist correctness incomplete')
-    costs={aid:[[sum(values[k][rnd][i] for k in keys) for i in range(samples)]
+    costs={} if trace_collector else {aid:[[sum(values[k][rnd][i] for k in keys) for i in range(samples)]
                 for rnd in range(rounds)] for aid,keys in arm_keys.items()}
-    decision=paired_verdict(costs,roles)
+    decision=None if trace_collector else paired_verdict(costs,roles)
     result=dict(status='PASS',correctness='PASS',components=list(timers),point=point['id'],
                 workload=point['workload'],
                 decision=decision,arms={a:s.data for a,s in sessions.items()},roles=roles,
-                arm_components=arm_keys,component_records={k:dict(nodes[k],**statistics_checked(v)) for k,v in values.items()},
+                arm_components=arm_keys,component_records={k:dict(nodes[k],**({} if trace_collector else statistics_checked(v))) for k,v in values.items()},
                 expansion_proofs=sf_proofs,protocol=dict(rounds=rounds,samples=samples,order='FORWARD_REVERSE_ALTERNATING',
                 cache='SEPARATE_METADATA_AND_PRODUCER_RINGS_AT_LEAST_2P25_L2'),
                 expansion_fixture=metadata_b.ring.receipt if required_sf else None,
                 wall_seconds=time.monotonic()-started,production_changed=False,performance_admitted=False)
     if round_observer:
         result['clock_observations']=observations
+    if trace_collector:
+        result.update(status='CAPTURED_NOT_TIMED',timing_method='ASYS_GPU_ACTIVITY',
+                      trace_schedule=trace_collector.schedule)
     return result

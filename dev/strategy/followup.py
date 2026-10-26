@@ -214,7 +214,7 @@ def paired_verdict(cost_rounds,roles,*,baseline='original'):
                 scope='ALTERNATING_ISOLATED_COMPONENT_SUM_NOT_MODEL_AB')
 
 
-def validate_confirmation(data):
+def validate_confirmation(data, *, decision_verifier=paired_verdict):
     """Recompute selected costs from individual raw component samples."""
     if data.get('correctness')!='PASS' or data.get('production_changed') is not False:
         raise ValueError('confirmation lacks correctness or changed production')
@@ -269,5 +269,5 @@ def validate_confirmation(data):
             raise ValueError('confirmation SF oracle/cold ring differs')
     costs={aid:[[sum(records[k]['samples_us'][r][i] for k in keys) for i in range(5)]
                 for r in range(6)] for aid,keys in data['arm_components'].items()}
-    if paired_verdict(costs,data['roles'])!=data['decision']:
+    if decision_verifier(costs,data['roles'])!=data['decision']:
         raise ValueError('confirmation decision differs from raw stages')

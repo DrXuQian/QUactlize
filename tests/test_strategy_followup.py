@@ -100,7 +100,8 @@ def test_family_groups_weights_not_tokens_but_never_merges_precision():
 
 
 @pytest.mark.parametrize('late_failure',[False,True])
-def test_confirmation_alternates_single_components_and_checks_late_guards(monkeypatch,late_failure):
+@pytest.mark.parametrize('trace_mode',[False,True])
+def test_confirmation_alternates_single_components_and_checks_late_guards(monkeypatch,late_failure,trace_mode):
     pytest.importorskip('torch')
     import dev.strategy.confirm as c
     p=point();w=Workload(**p['workload'])
@@ -110,9 +111,13 @@ def test_confirmation_alternates_single_components_and_checks_late_guards(monkey
     events=[];calls=[]
     class Graph:
         count=16
+        rt='fake-runtime'
         def __init__(self,name,us):self.name,self.us=name,us
         def close(self):events.append('close-'+self.name)
-        def sample(self):calls.append(self.name);return self.us
+        def sample(self):
+            assert not trace_mode,'Asys mode must not use event timers'
+            calls.append(self.name);return self.us
+        def run(self):calls.append(self.name)
     class Capture:
         def __init__(self,aid):
             self.groups=[[0],[1]];self.aid=aid
@@ -134,10 +139,22 @@ def test_confirmation_alternates_single_components_and_checks_late_guards(monkey
     def observe_clock():
         clock_calls.append(len(calls))
         return dict(cu_mhz=1700, call_position=len(calls))
+    class Trace:
+        def __init__(self):self.schedule=[]
+        def start(self,rt):assert rt=='fake-runtime';events.append('profiler-start')
+        def sample(self,cid,graph,r,i):
+            graph.run();self.schedule.append(dict(component=cid,round=r,sample=i,kernels=graph.count))
+        def stop(self):events.append('profiler-stop')
     run=lambda:c.confirm_point(None,None,None,None,p,{},short,lambda a:(None,None),{},'source',
-                              round_observer=observe_clock)
+                              round_observer=observe_clock,trace_collector=Trace() if trace_mode else None)
     if late_failure:
         with pytest.raises(ValueError,match='late guard'):run()
+    elif trace_mode:
+        result=run()
+        assert result['status']=='CAPTURED_NOT_TIMED' and result['decision'] is None
+        assert result['timing_method']=='ASYS_GPU_ACTIVITY' and len(result['trace_schedule'])==90
+        assert all(a['correctness']=='PASS' for a in result['arms'].values())
+        assert all('samples_us' not in r for r in result['component_records'].values())
     else:
         result=run()
         assert result['decision']['winner']=='fast'
@@ -156,3 +173,5 @@ def test_confirmation_alternates_single_components_and_checks_late_guards(monkey
     assert calls[:15]==['original']*5+['reduce']*5+['fast']*5
     assert calls[15:30]==['fast']*5+['reduce']*5+['original']*5
     assert 'close-original' in events and 'close-fast' in events and 'close-reduce' in events
+    if trace_mode:
+        assert 'profiler-start' in events and 'profiler-stop' in events
