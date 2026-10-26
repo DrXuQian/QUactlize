@@ -81,7 +81,7 @@ does not discard a whole shape's preceding batches.
 
 ## Box commands
 
-Use idle ZW810 cards. The commands below use cards 5,6,7,8. Do not run both tasks on
+Use idle ZW810 cards. The sweep commands below use cards 5,6,7,8. Do not run both tasks on
 the same cards concurrently. Both request 1700 MHz; subsequent TDP-related
 frequency deviations are recorded, not automatically marked as failures.
 Quactlize-only mode has no llama build dependency. Optional native comparison
@@ -137,6 +137,62 @@ delete its failed logs. Do not update
 or delete the frozen worker sources/caches. Completed valid batches are not
 rerun. Upload only the printed small-M `review-lite-*.tar.xz` and large-M
 `run/review-*.json.xz`; raw Asys/SQLite/binaries remain on Box.
+
+## Current selected small-M versus native
+
+`run_dense_smallm_ab_box.sh` is a different task from `dense-m-gaps`:
+45 existing dense `(q,N,K)` families crossed with **every M1..8 = 360 points**,
+including the six unresolved exact keys' current fallback. It queries the
+current C++ selector and measures **one selected recipe per point**, not another
+candidate sweep or a comparison against old historical microseconds.
+
+Use idle device ordinals **0,1,2,3** (zero based), separate from the large-M
+workers. All four devices are probed before shared compilation/timing. The
+wrapper freezes source and actlize locally; it never fetches or rebuilds llama.
+
+```bash
+(
+    set -euo pipefail
+    cd /sim/eec/shared/junfu.qx/quactlize
+    git pull --ff-only origin develop
+    unset RESUME_RUN PLAN_ONLY
+    GPUS=0,1,2,3 JOBS=8 IDLE_CONFIRMED=1 \
+    PPU_SDK=/usr/local/PPU_SDK L2_BYTES=67108864 \
+    LLAMA_CI_DIR=/sim/eec/shared/junfu.qx/llama.cpp.ncp \
+    LLAMA_CI_BUILD_DIR=/sim/eec/shared/junfu.qx/llama.cpp.ncp/build-ci \
+    bash tools/run_dense_smallm_ab_box.sh
+)
+```
+
+Each whole family's measurement order is native / Quactlize / Quactlize /
+native. Every pass has six rounds of five samples per stage. Raw GGUF hashes,
+F32 activation fixture (repeat 1), physical card and SDK are matched. Producer
+addresses rotate over at least 2.25 L2; helpers/reducers are independently
+measured, and their actual costs are included in the sum. No estimated launch
+penalty. Native cuBLAS, if selected, uses ordinary provider events, never graph
+capture. Native activation quantization remains present and is charged; the
+report labels it separately from Quactlize F16-compute/F32-accumulate semantics.
+
+`run/comparison.csv` gives native/current sums and deltas. Point records contain
+the selected recipe, component names/configurations, all samples, numerical
+and negative proofs, and source/device authority. `COMPLETE` means measurement
+coverage, **not** no-regression: check `component_no_regression`, `REGRESSION`
+and `INCONCLUSIVE`. There is no allowed slowdown percentage; 5% is only the
+stability check, not a regression allowance. Actual clock deviations after the
+1700MHz request are advisory. Nothing is silently rerouted or promoted.
+
+Upload the printed `run/review-lite-*.tar.xz`, not the entire run directory.
+The compact archive excludes fixture weights, binaries and JIT objects. Once
+`run/run.json` exists, resume with the printed `SMALLM_RUN` as `RESUME_RUN` and
+the same card list/SDK/caller build. Valid completed comparisons, including
+regressions, are not retimed; an incomplete point gets all four passes in a
+fresh attempt, preserving its earlier raw files. Do not resume by editing the
+frozen source or copying results to another GPU. Setup failures before the
+run receipt require a new run after fixing their cause.
+
+This entry is host-tested; device correctness/performance admission remains
+pending the Box run. Large-M remains `--no-native`; this experiment adds no
+MoE, TP communication or model TPOT claims.
 
 ## What this does not close
 

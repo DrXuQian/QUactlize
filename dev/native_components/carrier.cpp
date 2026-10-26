@@ -239,7 +239,9 @@ int main(int argc,char ** argv) {
             // Original library vs extracted call with changed activation as well.
             auto changed=download(point,0);point.launch(0,0);proof(0);
             compare_native(changed,download(point,0));
-            point.set_input(0);
+            const int timing_input=request.value("timing_input_repeat",0);
+            require(timing_input==0||timing_input==1,"invalid timing input repeat");
+            point.set_input(timing_input);
             const int rounds=request.value("rounds",3),samples=request.value("samples",3);
             json components=json::array();
             for(size_t i=0;i<inventory.size();++i) {
@@ -271,6 +273,7 @@ int main(int argc,char ** argv) {
                 {"wall_seconds",seconds(start)},{"production_changed",false},
                 {"scope","NATIVE_INDEPENDENT_COMPONENTS_NOT_MODEL_TPOT"}};
             result["fixture"]=request["raw_fixture_receipt"];
+            result["timing_input_repeat"]=timing_input;
             std::ifstream maps("/proc/self/maps");std::string line;std::vector<std::string> images;
             while(std::getline(maps,line)) {auto pos=line.find('/');
                 if(pos!=std::string::npos && line.find(".so",pos)!=std::string::npos)images.push_back(line.substr(pos));}
