@@ -27,12 +27,12 @@ if [[ ${PLAN_ONLY:-0} != 1 ]]; then
     PPU_SDK=${PPU_SDK:-/usr/local/PPU_SDK}
     test -x "${PPU_SDK}/bin/hgcc"
     test -x "${ASYS:-${PPU_SDK}/asight/bin/asys}"
-    "${PYTHON}" -c 'import numpy; from gguf.quants import dequantize'
     args+=(--confirm-idle --sdk "${PPU_SDK}")
     [[ -z ${ASYS:-} ]] || args+=(--asys "${ASYS}")
     [[ -z ${PPU_SMI:-} ]] || args+=(--smi "${PPU_SMI}")
     export PATH="${PPU_SDK}/bin:${PATH}"
     export LD_LIBRARY_PATH="${PPU_SDK}/lib:${PPU_SDK}/targets/x86_64-linux/lib:${PPU_SDK}/CUDA_SDK/targets/x86_64-linux/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+    "${PYTHON}" -c 'import numpy, torch; from gguf.quants import dequantize'
 else
     args+=(--plan-only)
 fi

@@ -15,10 +15,43 @@ from quactlize.runtime.tuning import digest
 
 ROOT=Path(__file__).resolve().parents[2]
 METHOD='ASYS_GPU_ACTIVITY'
-TOKEN_COHORTS=('q6-token-cta','token-cta-formats')
+MODEL_TOKEN_COHORTS=('token-cta-models','token-cta-model-gaps')
+TOKEN_COHORTS=('q6-token-cta','token-cta-formats',*MODEL_TOKEN_COHORTS)
+COHORTS=('regressions',*TOKEN_COHORTS)
+
+
+def model_coverage(cohort):
+    """Actual model tuples, not N/K crossed with every supported format.
+
+    The old N1024/K5120 measurements are coverage only; their latencies are
+    never imported as new samples or counted as passes in this run.
+    """
+    from dev.strategy.m_coverage import families
+    if cohort not in MODEL_TOKEN_COHORTS:raise ValueError('not a model token cohort')
+    previous={(q,1024,5120) for q in (8,12,13,14)}
+    if cohort=='token-cta-model-gaps':
+        from quactlize.execution.token_cta_policy import capability
+        capability()  # Do not skip old coverage after an unvalidated body change.
+    all_families=families()
+    covered=[f for f in all_families if f in previous]
+    selected=[f for f in all_families if cohort=='token-cta-models' or f not in previous]
+    return dict(registry='policies/dense_prefill_v1.json',families=all_families,
+        total_families=len(all_families),total_points=8*len(all_families),selected_families=selected,
+        excluded_previous_families=covered if cohort=='token-cta-model-gaps' else [],
+        excluded_previous_points=8*len(covered) if cohort=='token-cta-model-gaps' else 0,
+        previous_evidence={
+            'q6':dict(source='724b1ed290f6f8468135bf847662c256ef20ce13',
+                archive_sha256='c43f3b1a549c92a5d7ec241276519300c20c20199a404dde2d942a1a94b16224',
+                reference='docs/PPU_Q6_TOKEN_CTA.md'),
+            'formats':dict(source='1048a176a468e07abf30685f25344a4bae7c3410',
+                archive_sha256='28a8d7dbaea294311ac1d2b61c329b39068c246f8bf3a585e0a146069a3c1631',
+                reference='policies/kpack_token_cta_v1.json')},
+        prior_timings_reused=False,prior_passes_added=False)
 
 
 def workloads(cohort='regressions'):
+    if cohort in MODEL_TOKEN_COHORTS:
+        return [Workload(q,n,k,m) for q,n,k in model_coverage(cohort)['selected_families'] for m in range(1,9)]
     if cohort=='q6-token-cta':return [Workload(14,1024,5120,m) for m in range(1,9)]
     if cohort=='token-cta-formats':
         return [Workload(q,1024,5120,m) for q in (10,11,12,13,8) for m in range(1,9)]
@@ -37,7 +70,7 @@ def make_plan(originals,cohort='regressions'):
         p=proposed(dict(id=w.key,workload=asdict(w),cohort='decode',consumers=[]),
                    original_recipe(old),history,prior,allow_new_family=True)
         p.update(selection=old,execution_contract=execution_contract(w))
-        if cohort=='token-cta-formats':
+        if cohort=='token-cta-formats' or cohort in MODEL_TOKEN_COHORTS:
             from dev.strategy.token_cta import retain_tc_controls
             p=retain_tc_controls(p)
         if cohort in TOKEN_COHORTS:
@@ -48,10 +81,11 @@ def make_plan(originals,cohort='regressions'):
         points.append(p)
     result=dict(schema='quactlize.smallm-asys.v1',phase='regression-asys',cohort=cohort,points=points,tc=tc,vectors=vectors,
         counts=dict(points=len(points),arms=sum(len(p['arms']) for p in points),tc_modules=len(tc),
-                    vector_modules=len(vectors),families=len({w.qtype for w in ws})),
+                    vector_modules=len(vectors),families=len({(w.qtype,w.n,w.k) for w in ws})),
         timing_method=METHOD,selection_metric='MEAN_COMPONENT_SUM',noise_policy='DIAGNOSTIC_NOT_VETO',
         historical_times_reused=False,production_changed=False,native_comparison=False,
-        scope=('Q2_TO_Q5_Q8_DENSE_M1_TO_8_CTA_TOKEN_AB_NOT_NATIVE_OR_MODEL_ADMISSION' if cohort=='token-cta-formats' else
+        scope=('REAL_MODEL_DENSE_M1_TO_8_CTA_TOKEN_SWEEP_NOT_NATIVE_OR_MODEL_ADMISSION' if cohort in MODEL_TOKEN_COHORTS else
+               'Q2_TO_Q5_Q8_DENSE_M1_TO_8_CTA_TOKEN_AB_NOT_NATIVE_OR_MODEL_ADMISSION' if cohort=='token-cta-formats' else
                'Q6_DENSE_M1_TO_8_CTA_TOKEN_AB_NOT_NATIVE_OR_MODEL_ADMISSION' if cohort=='q6-token-cta' else
                'TEN_DENSE_REGRESSION_POINTS_CURRENT_CONFIG_SWEEP_NOT_NATIVE_OR_MODEL_AB'),
         sources={p:sha(ROOT/p) for p in ('policies/kpack_component_decode_v1.json',
@@ -60,8 +94,33 @@ def make_plan(originals,cohort='regressions'):
         for p in ('dev/strategy/token_cta.py','quactlize/execution/simt_token_cta.cuh',
                   'quactlize/execution/simt_q8_token_cta.cuh'):
             result['sources'][p]=sha(ROOT/p)
+    if cohort in MODEL_TOKEN_COHORTS:
+        result['coverage']=model_coverage(cohort)
+        for p in ('policies/dense_prefill_v1.json','policies/kpack_token_cta_v1.json','dev/strategy/m_coverage.py',
+                  'quactlize/execution/measured_decode.inc','quactlize/execution/simt_strategy.hpp'):
+            result['sources'][p]=sha(ROOT/p)
     result['sha256']=digest(result)
     return json.loads(json.dumps(result))
+
+
+def assignments(plan,workers):
+    """Balance whole paired points; the score is scheduling only, not a time.
+
+    M-ordered round robin would give one card M1/M5 and another M4/M8 for
+    every N/K. All comparison arms of a point must stay on one physical GPU.
+    Preserve the old cohorts' assignment so their frozen resumes still work.
+    """
+    if not 1<=workers<=len(plan['points']):raise ValueError('invalid worker count')
+    if plan.get('cohort') not in MODEL_TOKEN_COHORTS:
+        return [[p['id'] for j,p in enumerate(plan['points']) if j%workers==i] for i in range(workers)]
+    def weight(p):
+        w=p['workload']
+        return (w['n']*w['k']+4*1024*1024)*len(p['arms'])*(8+w['m'])
+    result=[[] for _ in range(workers)];loads=[0]*workers
+    for p in sorted(plan['points'],key=lambda p:(-weight(p),p['id'])):
+        i=min(range(workers),key=lambda j:(loads[j],j))
+        result[i].append(p['id']);loads[i]+=weight(p)
+    return result
 
 
 def revision(root):
@@ -136,11 +195,8 @@ def check_producers(point,data):
             elif 'q8_body' in spec:
                 expected='quactlize::execution::simt::q8_address_0_'+str(spec['q8_body'])
             elif spec['q']==8 and c['variant']>=4:
-                # This bounded cohort is N1024/K5120, not a fixed-shape Q8
-                # measured_decode endpoint or the special M1/C4W2 S1 path.
-                if (point['workload']['n'],point['workload']['k'])!=(1024,5120):
-                    raise ValueError('declare Q8 control entry for the new shape')
-                expected='quactlize::execution::simt::q8_vector::kernel'
+                from dev.strategy.token_cta import q8_control_entry
+                expected=q8_control_entry(Workload(**point['workload']),c,dict(recipe['parameters'])['split'])
             else:
                 expected='quactlize::execution::simt::'+('common_reader' if common else 'register_reuse')
             if expected!=n:raise ValueError('candidate executed the wrong production reader: '+n)

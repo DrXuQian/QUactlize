@@ -1,5 +1,67 @@
 # Dense CTA-local token reuse: Q2–Q5 and Q8
 
+## Next sweep: actual model shapes, not all-format expansion
+
+Use `COHORT=token-cta-model-gaps` for the remaining model scope. The source is
+the existing `policies/dense_prefill_v1.json` registry: **45 real (q,N,K)
+families × M1–8 = 360 points**, from the five requested models (including TP
+local shapes). At N1024/K5120 the models contain Q4/Q5/Q6/Q8 only. The previous
+Q2/Q3 tests at that N/K are synthetic format checks, not model coverage.
+
+The gap cohort excludes the 32 already measured real-model points at that
+N/K, leaving **41 families / 328 points**: Q8 136, Q3 16, Q4 80, Q5 48, Q6 48.
+It contains **9,337 arms**, at most 37 per point, with 23 TC modules and 149
+vector modules after compile deduplication. The plan keeps every current C++
+selection, previous exact control and same-point near-winner. It adds the
+declared token-CTA geometries/Split-K choices; TC geometry transfers and their
+Split-K neighbors are excluded explicitly. This is not an exhaustive TC search.
+
+No historical times are reused or relabelled as new passes. The plan records
+the excluded families and old evidence IDs; changed measured kernel bodies
+invalidate gap-only reuse. `COHORT=token-cta-models` explicitly reruns all 360
+real points when fresh full coverage is needed. Neither cohort forms a format
+Cartesian product, adds MoE, or promotes the resulting choices automatically.
+
+```bash
+(
+    set -e
+    cd /sim/eec/shared/junfu.qx/quactlize
+    git pull --ff-only origin develop
+    unset RUN RESUME_RUN PLAN_ONLY BASELINE QTYPES N K
+    COHORT=token-cta-model-gaps GPUS=0,1,2,3 \
+    PPU_SDK=/usr/local/PPU_SDK L2_BYTES=67108864 \
+    IDLE_CONFIRMED=1 JOBS=8 \
+    bash tools/run_smallm_regressions_asys_box.sh
+)
+```
+
+Set GPUS to otherwise-idle physical cards. No llama rebuild or GGUF model read
+is needed: independent GGUF-format fixtures use the registered local shapes.
+The scheduler distributes complete paired points by estimated work, so one
+card is not assigned M8 for every family. That score is not a measured latency.
+Production Q8 fixed/measured/S1 entrypoints remain intact as controls.
+
+Asys-only, six alternating rounds × five samples, each helper/producer/reducer
+timed separately then summed by arithmetic mean. Same physical GPU per paired
+point; source commit/tree, dependency, SDK, binary and raw intervals are bound
+to the result. Request 1700MHz; actual clocks are advisory. Warmup/JIT/upload
+are excluded. Native llama comparison and model TPOT are separate experiments.
+
+Upload the printed `results/review-lite-*.tar.xz`, not the Asys/SQLite trees.
+To resume only failed/missing points (preserve the original source/cache):
+
+```bash
+COHORT=token-cta-model-gaps RESUME_RUN=/workspace/kpack-smallm-asys.XXXXXXXX \
+PPU_SDK=/usr/local/PPU_SDK L2_BYTES=67108864 IDLE_CONFIRMED=1 JOBS=8 \
+bash tools/run_smallm_regressions_asys_box.sh
+```
+
+The resume reads the original GPU list automatically. `PLAN_ONLY=1` generates
+the plan without GPU work. The earlier 40-point command below remains a format
+experiment; do not use it to claim model-shape closure.
+
+## Earlier format extension and exact admission
+
 Bounded follow-up to [the measured Q6 experiment](PPU_Q6_TOKEN_CTA.md).
 The explicit experimental carrier is retained. The reviewed mean winners now
 have exact production bindings as described below; there is no public ABI

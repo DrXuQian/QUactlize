@@ -1,11 +1,39 @@
 """Explicit CTA-local M candidates, not an implicit production override."""
 from dataclasses import asdict
+from pathlib import Path
 
 from quactlize.dispatch.table import Workload,Recipe
 from quactlize.runtime.tuning import digest
 
 GEOMETRIES=((4,8,8),(4,2,8),(8,4,4))
 Q8_GEOMETRIES=((4,8,4),(8,4,4))
+
+
+def q8_control_entry(w,c,split):
+    """Outer entry of the existing vector carrier, not a new body selector.
+
+    Host tests compare every model/config prediction against the production
+    C++ predicates. Do not replace fixed/measured controls with generic Q8.
+    """
+    prefix='quactlize::execution::simt::'
+    if w.qtype!=8 or w.operation!='dense' or w.compute!='f16':
+        raise ValueError('Q8 control entry requires a dense F16 model workload')
+    if w.m==1:
+        fields=(w.qtype,0,w.n,w.k,1,1,1,0,c['variant'],c['columns'],c['warps'],c['values'],split)
+        path=Path(__file__).resolve().parents[2]/'quactlize/execution/measured_decode.inc'
+        for line in path.read_text().splitlines():
+            if line.startswith('QDM('):
+                values=line[4:-1].split(',')
+                if tuple(map(int,values[1:14]))==fields:
+                    return prefix+'measured_decode_kernel'
+        if c['variant']==5 and c['values']==4:
+            if (c['columns'],c['warps'])==(8,4) and (
+                    (split,w.n,w.k) in ((8,2048,4096),(1,8192,2048))):
+                return prefix+'q8_vector::kernel_model'
+            if c['columns']==4 and split==1 and (c['warps']==2 or
+                    (c['warps']==8 and (w.n,w.k)==(4096,2048))):
+                return prefix+'q8_vector::kernel_s1'
+    return prefix+'q8_vector::kernel'
 
 
 def retain_tc_controls(point):

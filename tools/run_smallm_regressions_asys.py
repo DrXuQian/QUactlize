@@ -15,7 +15,7 @@ import uuid
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from dev.strategy.smallm_asys import workloads,make_plan,revision,validate,check_producers,METHOD
+from dev.strategy.smallm_asys import workloads,make_plan,revision,validate,check_producers,assignments,METHOD,COHORTS
 from dev.strategy.provenance import harness_identity,source_identity
 from dev.strategy.journal import atomic_json
 from quactlize.dispatch.table import Workload
@@ -198,7 +198,7 @@ def run(a):
     base.check_devices(devices)
     inputs=dict(plan=plan['sha256'],source_revision=rev,harness=harness_identity(ROOT),source=source_identity(ROOT),
         sdk=sdk_identity(a.sdk),cards=cards,devices=devices,l2_bytes=a.l2_bytes,
-        assignments=[[p['id'] for j,p in enumerate(plan['points']) if j%len(cards)==i] for i in range(len(cards))],
+        assignments=assignments(plan,len(cards)),
         asys=str(asys),asys_sha256=sha(asys),smi=str(a.smi),smi_sha256=sha(a.smi),
         python_version=sys.version,timing_method=METHOD)
     base.freeze(a.output/'inputs.json',inputs)
@@ -242,7 +242,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output',type=Path,required=True);p.add_argument('--sdk',type=Path,default=Path('/usr/local/PPU_SDK'))
     p.add_argument('--devices',default='0,1,2,3');p.add_argument('--jobs',type=int,default=8)
-    p.add_argument('--cohort',choices=('regressions','q6-token-cta','token-cta-formats'))
+    p.add_argument('--cohort',choices=COHORTS)
     p.add_argument('--l2-bytes',type=int,default=67108864);p.add_argument('--asys',type=Path);p.add_argument('--smi',type=Path)
     p.add_argument('--resume',action='store_true');p.add_argument('--plan-only',action='store_true');p.add_argument('--confirm-idle',action='store_true')
     p.add_argument('--reparse-only',action='store_true',help='CPU only: recover timestamp-only failures without overwriting old results')
