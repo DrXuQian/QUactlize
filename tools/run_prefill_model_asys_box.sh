@@ -57,8 +57,9 @@ if [[ -n ${RESUME_RUN:-} ]]; then
 else
     test -d "${OUTPUT_ROOT:-/workspace}"
     REV=$(git -C "${ROOT}" rev-parse --verify "${SOURCE_REV:-HEAD}^{commit}")
+    TREE=$(git -C "${ROOT}" rev-parse "${REV}^{tree}")
     ACTLIZE_REV=$(git -C "${ROOT}" rev-parse "${REV}:third_party/actlize")
-    [[ ${REV} =~ ^[0-9a-f]{40}$ && ${ACTLIZE_REV} =~ ^[0-9a-f]{40}$ ]] || exit 1
+    [[ ${REV} =~ ^[0-9a-f]{40}$ && ${TREE} =~ ^[0-9a-f]{40}$ && ${ACTLIZE_REV} =~ ^[0-9a-f]{40}$ ]] || exit 1
     if ! git -C "${ROOT}/third_party/actlize" cat-file -e "${ACTLIZE_REV}^{commit}"; then
         echo "ERROR: local actlize lacks pinned ${ACTLIZE_REV}; no network fetch attempted." >&2; exit 1
     fi
@@ -68,6 +69,14 @@ else
     git -C "${ROOT}" archive "${REV}" | tar -x -C "${RUN}/source"
     mkdir -p "${RUN}/source/third_party/actlize"
     git -C "${ROOT}/third_party/actlize" archive "${ACTLIZE_REV}" | tar -x -C "${RUN}/source/third_party/actlize"
+    "${PYTHON}" - "${RUN}/source" "${REV}" "${TREE}" "${ACTLIZE_REV}" <<'PY'
+import json,sys
+from pathlib import Path
+root,commit,tree,actlize=sys.argv[1:]
+with (Path(root)/'.quactlize-source.json').open('x') as f:
+    json.dump(dict(quactlize_commit=commit,quactlize_tree=tree,actlize_commit=actlize,
+                   snapshot='COMMITTED_ARCHIVE'),f,sort_keys=True)
+PY
 fi
 # Reuse is optional. The run's authority remembers its payload path on resume.
 if [[ -n ${PREVIOUS_RUN:-} ]]; then

@@ -466,6 +466,9 @@ def main():
             plan['native_comparison']=False
             plan['comparison']='QUACTLIZE_CONFIGS_VS_INCUMBENT_NOT_NATIVE_AB'
         plan.update(model_identity=identity,harness=source_seal(),source_identity=source_identity(ROOT))
+        if (ROOT/'.quactlize-source.json').is_file():
+            from dev.strategy.smallm_asys import revision
+            plan['source_revision']=revision(ROOT)
         plan['plan_sha256']=digest({k:v for k,v in plan.items() if k!='plan_sha256'})
         atomic_json(plan_path,plan)
     print('PREFILL_ASYS_PLAN '+json.dumps(plan['counts']|dict(configs_after_resources='PENDING',
@@ -536,6 +539,10 @@ def main():
                     a.output/f'reducer-gate-{time.time_ns()}.log',env)
         authority=dict(device=d,payload=payload,build=receipt,harness=source_seal(),plan=plan['plan_sha256'],
             cache=str(a.cache),asys_sha256=sha(a.asys),batch_size=a.configs_per_batch,frequency_normalization=False)
+        if 'source_revision' in plan:
+            from dev.strategy.smallm_asys import revision
+            if plan['source_revision']!=revision(ROOT):raise ValueError('frozen measurement commit changed')
+            authority['source_revision']=plan['source_revision']
         if old and old!=authority: raise ValueError('resume build/protocol changed')
         if not old:atomic_json(a.output/'authority.json',authority)
         clock=request_lock(a.smi,pci,1700);atomic_json(a.output/('clock-lock-'+str(time.time_ns())+'.json'),clock)

@@ -21,6 +21,7 @@ SCHEMA='quactlize.dense-m-span.v1'
 MS=(128,256,512,1024,2048,3072,4096,5120,8192)
 MAX_CASES=48
 CAPTURE_BATCH_LIMIT=16
+TRANSITION_MS=(16,32,64)
 
 
 def retry_plan(original, review):
@@ -144,17 +145,50 @@ def sf_rules(w, recipes, compute_units):
         actual_resources='REQUIRED_COMPILED_QUERY_NOT_ESTIMATED')
 
 
+def transition_fq_rules(w, recipes, compute_units):
+    """Two light tile strata, with legal underfilled Split-K alternatives.
+
+    M16..64 sits outside the SIMT and Full-provider contracts. Do not turn a
+    prefill FQ fallback into policy, but do measure legal FQ alongside SF here.
+    The observed geometry inventory supplies templates, never target timings.
+    """
+    if w.m not in TRANSITION_MS:return []
+    pool={}
+    for value in recipes.values():
+        if value['route']!=0 or value['tc']['qtype']!=w.qtype:continue
+        p=dict(value['tc']);p.pop('dense_reducer',None)
+        p['symbol']=p['symbol'].split('_rc')[0]
+        p.update(split=1,grid_mode=0,grid_b=0,dequant_config=-1)
+        r=Recipe.make('tc','fq',**p)
+        if p['tm']<=max(32,w.m) and not rejection(r,w):pool[r.key]=r
+    # Keep a narrow and a wide N tile; nearest M tile within each stratum.
+    # This ranking deliberately has no costs or winner labels as inputs.
+    groups=defaultdict(list)
+    for r in pool.values():groups[dict(r.parameters)['tn']>=64].append(r)
+    result=[]
+    for rows in groups.values():
+        r=min(rows,key=lambda r:(abs(math.log2(dict(r.parameters)['tm']/w.m)),
+            dict(r.parameters)['stages'],r.key))
+        p=dict(r.parameters)
+        work=math.ceil(w.m/p['tm'])*math.ceil(w.n/p['tn'])
+        for split in ((1,2,4,8) if work<2*compute_units else (1,)):
+            candidate=Recipe.make('tc','fq',**(p|dict(split=split)))
+            if not rejection(candidate,w):result.append((tc_case(candidate),'rule:transition-fq'))
+    return sorted(result,key=lambda row:digest(row[0]))
+
+
 def make_plan(policy, helper_sha, output, *, ms=MS, compute_units=72):
     validate_policy(policy)
-    if (not ms or len(set(ms))!=len(ms) or any(type(m)is not int or not 128<=m<=8192 for m in ms)
+    if (not ms or len(set(ms))!=len(ms) or any(type(m)is not int or not
+            (m in TRANSITION_MS or 128<=m<=8192) for m in ms)
             or type(compute_units)is not int or compute_units<=0):
-        raise ValueError('distinct M128..8192 and positive device CU count required')
+        raise ValueError('distinct M16/32/64 or M128..8192 and positive device CU count required')
     families=sorted({(p['shape'][0],*p['shape'][2:]) for p in policy['points']})
     points=[dict(id=w.key,workload=asdict(w),consumers=[],tensors=[])
             for q,n,k in families for m in ms for w in [Workload(q,n,k,m)]]
     bind_original(points,output)
     for point in points:
-        w=Workload(**point['workload']);pool={}
+        w=Workload(**point['workload']);pool={};excluded=[]
         def add(case, role, *, required=False):
             r=Recipe.from_dict(case['recipe'])
             if rejection(r,w):
@@ -186,7 +220,12 @@ def make_plan(policy, helper_sha, output, *, ms=MS, compute_units=72):
         donors=sorted((p for p in policy['points'] if p['shape'][0]==w.qtype and
             p['shape'][2:]==[w.n,w.k]),key=lambda p:(abs(math.log2(p['shape'][1]/w.m)),p['key']))
         for p in donors[:2]:
-            add(execution_case(policy['recipes'][p['winner']]),'nearby-M-winner-control',required=True)
+            def add_donor(rid,role):
+                c=execution_case(policy['recipes'][rid]);r=Recipe.from_dict(c['recipe'])
+                if w.m in TRANSITION_MS and rejection(r,w):
+                    excluded.append(dict(recipe=rid,role=role,reason=rejection(r,w)))
+                else:add(c,role,required=True)
+            add_donor(p['winner'],'nearby-M-winner-control')
             # Protect the closest per-route champions even if the blind
             # geometric shortlist has missed their stage/warp/DN combination.
             if p is donors[0]:
@@ -194,12 +233,14 @@ def make_plan(policy, helper_sha, output, *, ms=MS, compute_units=72):
                     rows=[(rid,us) for rid,us in p['costs'] if policy['recipes'][rid]['route']==route]
                     if rows:
                         rid=min(rows,key=lambda x:(x[1],x[0]))[0]
-                        add(execution_case(policy['recipes'][rid]),'nearby-route-control',required=True)
+                        add_donor(rid,'nearby-route-control')
         proposed,report=sf_rules(w,policy['recipes'],compute_units)
         for c,role in proposed:add(c,role)
-        variants=(38,41) if w.qtype==8 else (22,23) if w.qtype==11 else (20,21) if w.qtype>=12 else (0,)
-        for dq in variants:add(full_case(dq,3),'rule:full-f16')
-        add(full_case(0,0),'full-f16-functional-floor',required=True)
+        for c,role in transition_fq_rules(w,policy['recipes'],compute_units):add(c,role)
+        if w.m>=128:
+            variants=(38,41) if w.qtype==8 else (22,23) if w.qtype==11 else (20,21) if w.qtype>=12 else (0,)
+            for dq in variants:add(full_case(dq,3),'rule:full-f16')
+            add(full_case(0,0),'full-f16-functional-floor',required=True)
         if len(pool)>MAX_CASES:
             raise ValueError(f'{w}: {len(pool)} cases exceed {MAX_CASES}; no controls silently dropped')
         cases=sorted(pool.values(),key=lambda c:digest([w.key,c['id']]))
@@ -207,6 +248,9 @@ def make_plan(policy, helper_sha, output, *, ms=MS, compute_units=72):
             champion_controls=[],fixed_schedules=True,confirmation_captures=2,m_span=True,
             capture_batch_limit=CAPTURE_BATCH_LIMIT,
             table_coverage=coverage,proposal_compute_units=compute_units,sf_screen=report,
+            **(dict(excluded_proposals=excluded,
+                route_contract='TC_FQ_SF; SIMT_M_LE_8_AND_FULL_M_GE_128_NOT_EXTENDED')
+               if w.m in TRANSITION_MS else {}),
             # Resources come from cases (which include the exact control), not
             # a duplicate unwrapped legacy-native endpoint.
             original_recipe=None)
@@ -217,7 +261,9 @@ def make_plan(policy, helper_sha, output, *, ms=MS, compute_units=72):
         scope='DENSE_MODEL_AND_TP_LOCAL_FAMILIES_M_EXTENSION_NOT_MOE_OR_MODEL_TPOT',
         historical_timing_used='PROPOSALS_AND_CONTROLS_ONLY_NOT_IMPORTED_LATENCY',
         pending=['M9_TO_127_NATIVE_PRECISION_CONTRACT','BUCKET_HOLDOUT_VALIDATION','MODEL_AB'],
-        no_fq_fallback='FQ_RETAINED_AS_CONTROL_ONLY; NO_PRODUCTION_POLICY_EDIT')
+        no_fq_fallback=('FQ_RULES_ONLY_AT_M16_32_64; NO_PRODUCTION_POLICY_EDIT'
+            if any(m in TRANSITION_MS for m in ms) else
+            'FQ_RETAINED_AS_CONTROL_ONLY; NO_PRODUCTION_POLICY_EDIT'))
     result['sha256']=digest(result)
     return validate(result)
 
@@ -231,7 +277,7 @@ def validate(plan):
     for p in plan['points']:
         w=Workload(**p['workload'])
         if (w.key!=p['id'] or w.key in seen or w.operation!='dense' or w.compute!='f16' or w.storage!='f32'
-                or w.m not in plan['ms'] or not 128<=w.m<=8192 or not p.get('m_span')
+                or w.m not in plan['ms'] or not (w.m in TRANSITION_MS or 128<=w.m<=8192) or not p.get('m_span')
                 or p.get('confirmation_captures')!=2 or not p.get('fixed_schedules')
                 or p.get('capture_batch_limit')!=CAPTURE_BATCH_LIMIT):
             raise ValueError('M-span workload changed')
@@ -252,7 +298,8 @@ def validate(plan):
             elif (c['arm']!='full-bf16' or c['helper_mode']!='legacy' or
                     'old-selector-control' not in c['roles'] or dict(r.parameters).get('provider')!='bf16-default'):
                 raise ValueError('unexpected M-span route')
-        if (not 3<=len(ids)<=MAX_CASES or not {'old-selector-control','full-f16-functional-floor'}<=roles or
+        required={'old-selector-control'}|({'full-f16-functional-floor'} if w.m>=128 else set())
+        if (not 3<=len(ids)<=MAX_CASES or not required<=roles or
                 not any(c['arm']=='sf' for c in p['cases']) or
                 p['candidates']!=[c['recipe'] for c in p['cases'] if c['recipe']['kind']=='tc']):
             raise ValueError('M-span required baseline/config coverage changed')

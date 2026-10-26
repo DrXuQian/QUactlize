@@ -13,7 +13,7 @@ import pytest
 from dev.strategy.m_coverage import points, coverage, make_decode_plan
 from dev.strategy.refresh import request, assign
 from dev.strategy.resources import module_spec, probe_spec
-from dev.prefill_asys.m_span import make_plan, retry_plan, sf_rules, validate, MS
+from dev.prefill_asys.m_span import make_plan, retry_plan, sf_rules, transition_fq_rules, validate, MS
 from dev.prefill_asys.finalists import load, bind_cases
 from quactlize.dispatch.dense_prefill import EVIDENCE
 from quactlize.dispatch.planning import plan_smallm
@@ -84,6 +84,35 @@ def test_rule_proposals_do_not_depend_on_winner_or_cost_labels():
         p['winner']='deliberately-invalid'
         p['costs']=[]
     assert sf_rules(w,dict(reversed(list(policy['recipes'].items()))),72)==a
+
+
+def test_transition_m_sweep_keeps_real_families_and_supported_routes(tmp_path):
+    policy=json.loads(EVIDENCE.read_text())
+    result=make_plan(policy,'host-test',tmp_path,ms=(16,32,64,128,256))
+    assert load(result)==result
+    assert result['counts']['points']==225 and result['counts']['families']==45
+    assert result['counts']['modules']<96
+    assert {p['workload']['m'] for p in result['points']}=={16,32,64,128,256}
+    for p in result['points']:
+        w=Workload(**p['workload'])
+        assert len(p['cases'])<=48
+        assert any('old-selector-control' in c['roles'] for c in p['cases'])
+        if w.m<128:
+            # Do not widen production Full/SIMT contracts to run a benchmark.
+            assert {c['recipe']['kind'] for c in p['cases']}=={'tc'}
+            assert any(dict(c['recipe']['parameters'])['tm']<=max(32,w.m)
+                       for c in p['cases'] if c['arm']=='sf')
+            if w.qtype!=8:
+                assert any('rule:transition-fq' in c['roles'] for c in p['cases'])
+                expected=transition_fq_rules(w,policy['recipes'],72)
+                assert expected==transition_fq_rules(w,dict(reversed(list(policy['recipes'].items()))),72)
+        else:
+            assert any(c['arm']=='full-fp16' for c in p['cases'])
+        p=dict(p,native_comparison=False)
+        jobs=confirmation_jobs(p)
+        assert sum(len(cs) for cs,_ in jobs)==2*len(p['cases'])
+        assert not any(c['arm']=='native-fp16' for cs,_ in jobs for c in cs)
+    assert not result['production_changed'] and not result['performance_admitted']
 
 
 def test_span_resource_rejections_preserve_controls_and_denominator(span):
