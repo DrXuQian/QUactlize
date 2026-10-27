@@ -171,6 +171,7 @@ def producer_entry(node):
         return display
     for name in ('cutlass::device_kernel', 'cutlass::Kernel',
                  'quactlize::execution::simt::token_cta_reader',
+                 'quactlize::execution::simt::moe_token_pair_reader',
                  'quactlize::execution::simt::q8_token_cta_reader',
                  'quactlize::execution::simt::q8_vector::kernel',
                  'quactlize::execution::simt::q8_vector::kernel_model',
@@ -179,6 +180,7 @@ def producer_entry(node):
                  'quactlize::execution::q4_decode::kernel',
                  'quactlize::execution::simt::common_reader',
                  'quactlize::execution::simt::register_reuse',
+                 'quactlize::execution::simt::register_reuse_model',
                  *('quactlize::execution::simt::q8_address_0_'+str(i) for i in (0,1,3,4,5))):
         *namespace, function = name.split('::')
         outer = '_ZN' + ''.join(str(len(p))+p for p in namespace)

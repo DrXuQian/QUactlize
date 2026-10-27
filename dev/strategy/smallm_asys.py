@@ -17,7 +17,7 @@ ROOT=Path(__file__).resolve().parents[2]
 METHOD='ASYS_GPU_ACTIVITY'
 MODEL_TOKEN_COHORTS=('token-cta-models','token-cta-model-gaps')
 TOKEN_COHORTS=('q6-token-cta','token-cta-formats',*MODEL_TOKEN_COHORTS)
-COHORTS=('regressions',*TOKEN_COHORTS)
+COHORTS=('regressions',*TOKEN_COHORTS,'moe-token-pair')
 
 
 def model_coverage(cohort):
@@ -50,6 +50,9 @@ def model_coverage(cohort):
 
 
 def workloads(cohort='regressions'):
+    if cohort=='moe-token-pair':
+        from dev.strategy.moe_token_pair_plan import workloads as pair_workloads
+        return pair_workloads()
     if cohort in MODEL_TOKEN_COHORTS:
         return [Workload(q,n,k,m) for q,n,k in model_coverage(cohort)['selected_families'] for m in range(1,9)]
     if cohort=='q6-token-cta':return [Workload(14,1024,5120,m) for m in range(1,9)]
@@ -60,6 +63,9 @@ def workloads(cohort='regressions'):
 
 
 def make_plan(originals,cohort='regressions'):
+    if cohort=='moe-token-pair':
+        from dev.strategy.moe_token_pair_plan import make_plan as pair_plan
+        return pair_plan(originals)
     ws=workloads(cohort)
     if [r['request'] for r in originals]!=[request(w) for w in ws]:
         raise ValueError('regression C++ selection inventory differs')
@@ -193,6 +199,8 @@ def check_producers(point,data):
                                        (spec['q']==12 and (c['columns'],c['warps'],c['values'])==(4,4,4)))
             if recipe['kind']=='q4':
                 expected='quactlize::execution::q4_decode::kernel'
+            elif point.get('same_expert_pair'):
+                expected=arms[aid]['expected_producer']
             elif 'cta_tokens' in spec:
                 expected='quactlize::execution::simt::'+('q8_token_cta_reader' if spec['q']==8 else 'token_cta_reader')
             elif 'q8_body' in spec:
@@ -203,6 +211,11 @@ def check_producers(point,data):
             else:
                 expected='quactlize::execution::simt::'+('common_reader' if common else 'register_reuse')
             if expected!=n:raise ValueError('candidate executed the wrong production reader: '+n)
+            if 'moe_pair_rows' in spec:
+                w=point['workload']
+                if (nodes[0]['grid']!=[w['n']//(c['columns']*c['values']),w['m']*w['topk'],dict(recipe['parameters'])['split']] or
+                        nodes[0]['block']!=[c['warps']*32,1,1]):
+                    raise ValueError('indexed pair grid/block differs from routed-row ownership')
             if 'cta_tokens' in spec:
                 expected_grid=[point['workload']['n']//(c['columns']*c['values']),1,
                                dict(recipe['parameters'])['split']]

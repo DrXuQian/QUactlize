@@ -112,7 +112,7 @@ def parameters(metadata, tensors):
     return dict(architecture=arch,scalars=h,layers=per_layer)
 
 
-def runtime_tensors(tensors, params):
+def runtime_tensors(tensors, params, *, indexed=False):
     """Only metadata reshapes/exclusions; no packed bytes or weight allocation."""
     h=params['scalars']; result=[]; excluded={}
     for tensor in tensors:
@@ -130,8 +130,14 @@ def runtime_tensors(tensors, params):
         if not 1<=len(dims)<=4:
             raise ValueError('invalid GGUF rank: '+name)
         t['runtime_dims']=dims+[1]*(4-len(dims))
+        if indexed:
+            from quactlize.gguf_roles import match_role
+            role = match_role(name, len(dims)) if 'exps' in name else None
+            matrix = role is not None and role[0].operation == 'MUL_MAT_ID'
+        else:
+            matrix = len(dims) == 2
         t['target']=bool(name not in excluded and layer and name.endswith('.weight') and
-                         len(dims)==2 and t['qtype'] in QTYPES)
+                         matrix and t['qtype'] in QTYPES)
         result.append(t)
     return result,excluded
 
@@ -172,15 +178,19 @@ def parse(text, tensors, world):
             raise ValueError('CPU TP split extent sum differs: '+t['name'])
         for rank,e in enumerate(extents):
             records[t['name']].add((rank,t['qtype'],e if axis==1 else n,e if axis==0 else k))
-        if local_shapes(t,world,records)[1]:
+        # N/K tensor parallelism leaves the expert dimension replicated.
+        # axis=2 (expert parallelism) is deliberately not accepted above.
+        matrix = dict(t, dims_gguf=t['runtime_dims'][:2])
+        if local_shapes(matrix,world,records)[1]:
             raise ValueError('CPU TP split does not describe a full local matrix')
     return records,rows
 
 
 class HeaderTP:
-    def __init__(self, llama_source, output):
+    def __init__(self, llama_source, output, *, indexed=False):
         self.source=Path(llama_source).resolve(strict=True)
         self.output=Path(output);self.output.mkdir(parents=True,exist_ok=True)
+        self.indexed=indexed
         hashes={name:sha(self.source/name) for name in SOURCE_FILES}
         body=split_function((self.source/'src/llama-model.cpp').read_text())
         self.identity=dict(schema='quactlize.tp-header-cpu.v1',caller_sources=hashes,
@@ -188,6 +198,9 @@ class HeaderTP:
             metadata_binding_sha256=sha(__file__),storage_traits_sha256=sha(
                 HERE.parents[1]/'tools/gguf_internal_shape_inventory.py'),tensor_split='EQUAL_EXPLICIT',
             device_work=False,weights_read=False,scope='SOURCE_BOUND_CPU_METADATA_NOT_RUNTIME_OBSERVATION')
+        if indexed:
+            self.identity.update(operation='MUL_MAT_ID', expert_partition='REPLICATED',
+                                 role_source_sha256=sha(HERE.parents[1]/'quactlize/gguf_roles.py'))
         key=digest(self.identity);self.build=self.output/('host-'+key[:16])
         self.binary=self.build/'tp-header'
         receipt=self.build/'receipt.json'
@@ -220,7 +233,7 @@ class HeaderTP:
         if world not in (2,4):
             raise ValueError('header-only supplement supports TP2/TP4 equal splits')
         params=parameters(rows[0]['header']['metadata'],tensors)
-        runtime,excluded=runtime_tensors(tensors,params)
+        runtime,excluded=runtime_tensors(tensors,params,indexed=self.indexed)
         payload=encode(params,runtime,world)
         result=subprocess.run([str(self.binary)],input=payload,text=True,capture_output=True)
         path=self.output/(model['name']+'-cpu.json')

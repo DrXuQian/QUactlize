@@ -42,11 +42,15 @@ struct header_model {
         auto it = weights.find(name);
         return it == weights.end() ? nullptr : &it->second;
     }
+    const ggml_tensor * get_tensor_meta(const char * name) const { return get_tensor(name); }
 };
 
 struct llama_meta_device_get_split_state_userdata {
     const header_model * model;
     size_t n_devices;
+    // Newer callers may consult loader metadata before model placement. This
+    // carrier registers ALL header tensors above; no lazy loader is needed.
+    const header_model * loader = nullptr;
 };
 
 // Generated from LLAMA_CI_DIR/src/llama-model.cpp, never a copied TP rule set.

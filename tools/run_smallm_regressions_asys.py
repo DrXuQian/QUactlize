@@ -54,7 +54,12 @@ def child(a):
     sdk=SDK(a.sdk);w=Workload(**point['workload']);auth=dict(run=run['sha256'],shard=shard,device=run['devices'][shard])
     with ExitStack() as stack:
         ring=Ring(sdk,w,a.l2_bytes);stack.callback(ring.close)
-        b=Context(sdk,ring,fixture_point(w));stack.callback(b.close);checked_fixture(b,w)
+        if point.get('same_expert_pair'):
+            from dev.strategy.indexed import point as indexed_point
+            b=Context(sdk,ring,indexed_point(w));stack.callback(b.close)
+            if b.rows!=w.m*w.topk or b.ids is None:raise ValueError('indexed fixture lost routed rows/IDs')
+        else:
+            b=Context(sdk,ring,fixture_point(w));stack.callback(b.close);checked_fixture(b,w)
         mb=msf=sf=None
         if point['sf_configs']:
             # The bounded recovery currently has one measured SF geometry/helper.
@@ -175,7 +180,8 @@ def run(a):
     a.output.mkdir(parents=True,exist_ok=a.resume)
     if (a.output/'plan.json').exists():plan=sealed(a.output/'plan.json')
     else:
-        originals=plan_smallm(a.output,[base.request(w) for w in workloads(a.cohort or 'regressions')],dense_fallbacks=True)
+        originals=plan_smallm(a.output,[base.request(w) for w in workloads(a.cohort or 'regressions')],
+                             dense_fallbacks=a.cohort!='moe-token-pair')
         atomic_json(a.output/'cpp-originals.json',originals)
         plan=make_plan(originals['requests'],a.cohort or 'regressions');atomic_json(a.output/'plan.json',plan)
     if a.cohort and a.cohort!=plan.get('cohort','regressions'):raise ValueError('resume cohort differs')

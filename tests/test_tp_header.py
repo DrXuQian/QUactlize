@@ -149,6 +149,38 @@ def test_deepseek_output_reshape_uses_swa_head_size():
     assert wo_a['runtime_dims']==[2048,512,6,1]
 
 
+@pytest.mark.parametrize('arch,world', [('qwen35moe',2), ('deepseek4',4)])
+def test_indexed_tp_uses_same_caller_splits_without_sharding_expert_axis(tmp_path,arch,world):
+    source=os.environ.get('LLAMA_TP_SOURCE')
+    if not source:
+        pytest.skip('set LLAMA_TP_SOURCE for CPU MoE split execution')
+    meta,tensors=fixtures(arch)
+    k,n=(2048,1024) if world==2 else (4096,2048)
+    names=['blk.0.ffn_gate_exps.weight','blk.0.ffn_up_exps.weight','blk.0.ffn_down_exps.weight']
+    tensors += [dict(name=name,qtype=12,dims_gguf=[k,n,256]) for name in names[:2]]
+    tensors += [dict(name=names[2],qtype=13,dims_gguf=[n,k,256])]
+    helper=HeaderTP(source,tmp_path,indexed=True)
+    records,receipt,_=helper(dict(name=arch,tp=world),[dict(header=dict(metadata=meta))],tensors)
+    assert set(records)==set(names)
+    assert receipt['identity']['operation']=='MUL_MAT_ID'
+    assert receipt['identity']['expert_partition']=='REPLICATED'
+    for name in names[:2]:
+        assert {(q,ln,lk) for _,q,ln,lk in records[name]}=={(12,n//world,k)}
+    assert {(q,ln,lk) for _,q,ln,lk in records[names[2]]}=={(13,k,n//world)}
+    assert not receipt['gpu_work'] and not receipt['weights_read']
+
+
+def test_indexed_target_filter_does_not_change_dense_default():
+    meta,tensors=fixtures('qwen35moe')
+    expert=dict(name='blk.0.ffn_up_exps.weight',qtype=12,dims_gguf=[2048,1024,256])
+    tensors.append(expert)
+    params=parameters(meta,tensors)
+    dense,_=runtime_tensors(tensors,params)
+    indexed,_=runtime_tensors(tensors,params,indexed=True)
+    assert not next(t for t in dense if t['name']==expert['name'])['target']
+    assert {t['name'] for t in indexed if t['target']}=={expert['name']}
+
+
 def test_source_change_during_planning_is_rejected(helper,monkeypatch):
     from dev.prefill_asys import tp_header
     real_sha=tp_header.sha

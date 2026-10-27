@@ -56,6 +56,15 @@ def spec(w, recipe):
     result = dict(kind=recipe.kind, q=w.qtype, compute=w.compute,
                 n=w.n if recipe.kind == 'q4' else 0, k=w.k if recipe.kind == 'q4' else 0,
                 config={f: p[f] for f in fields})
+    if 'moe_pair_rows' in p:
+        from dev.strategy.moe_token_pair import GEOMETRIES
+        if (w.qtype not in range(10,15) or w.operation!='indexed' or w.compute!='bf16' or
+                recipe.kind!='simt' or w.fusion!='none' or w.topk>8 or
+                type(p['moe_pair_rows']) is not int or p['moe_pair_rows'] not in (1,2) or p['variant']!=3 or
+                tuple(p[f] for f in ('columns','warps','values')) not in GEOMETRIES or
+                any(f in p for f in ('cta_tokens','cta_window','q8_body'))):
+            raise ValueError('MoE pair reuse requires indexed BF16 F32 Q2-Q6 T1..8/topk<=8')
+        result['moe_pair_rows']=p['moe_pair_rows']
     if 'cta_tokens' in p:
         geometry=tuple(p[f] for f in ('variant','columns','warps','values'))
         allowed=((5,4,8,4),(5,8,4,4)) if w.qtype==8 else ((3,4,8,8),(3,4,2,8),(3,8,4,4))
@@ -81,6 +90,9 @@ def spec(w, recipe):
 
 
 def source(item):
+    if 'moe_pair_rows' in item:
+        from dev.strategy.moe_token_pair import source as pair_source
+        return pair_source(item)
     if 'cta_tokens' in item:
         from dev.strategy.token_cta import source as token_source
         return token_source(item)
@@ -167,6 +179,7 @@ class Compiler:
         # Extra source is experiment-only; seal all generators consumed by it.
         self.includes.append(ROOT)
         self.paths += [ROOT/p for p in ('dev/strategy/refresh_vector.py','dev/strategy/token_cta.py',
+            'dev/strategy/moe_token_pair.py','dev/strategy/moe_token_pair.cuh','dev/strategy/moe_token_pair.hpp',
             'dev/gemv_simt/q8_address_source.py', 'dev/gemv_simt/q8_dense_source.py',
             'dev/gemv_simt/general_locate.hpp', 'dev/gemv_simt/model_followup.py')]
         self.identity = dict(sdk=sdk_identity(self.sdk), flags=FLAGS,
@@ -256,7 +269,8 @@ class Vector:
             self.receipt = dict(kind=item['kind'],spec=item,split=split,
                 execution_contract=contract,
                 build_key=record['key'],module_sha256=record['sha256'],workspace_bytes=sizes.workspace_bytes,
-                scope=('EXPERIMENTAL_CTA_LOCAL_TOKENS_F32_F16_REAL_REDUCER'
+                scope=('EXPERIMENTAL_INDEXED_PAIR_F32_BF16_REAL_REDUCER'
+                       if 'moe_pair_rows' in item else 'EXPERIMENTAL_CTA_LOCAL_TOKENS_F32_F16_REAL_REDUCER'
                        if 'cta_tokens' in item else 'EXPLICIT_MEASURED_Q8_CANDIDATE_F32_ENDPOINTS_DENSE_S1'
                        if 'q8_body' in item else 'EXPLICIT_SHIPPING_BODY_F32_ENDPOINTS_REAL_REDUCER'))
             if 'cta_tokens' in item:

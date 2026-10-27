@@ -15,11 +15,11 @@ def template_family(w):
             w.input_stride == w.k, w.output_stride == w.n)
 
 
-def regime(recipe):
+def regime(recipe, exact_tiles=False):
     p = dict(recipe.parameters)
     return (recipe.route,
-            0 if p['tm'] == 8 else 1 if p['tm'] <= 32 else 2,
-            0 if p['tn'] == 16 else 1 if p['tn'] <= 64 else 2,
+            p['tm'] if exact_tiles else 0 if p['tm'] == 8 else 1 if p['tm'] <= 32 else 2,
+            p['tn'] if exact_tiles else 0 if p['tn'] == 16 else 1 if p['tn'] <= 64 else 2,
             p['tk'], p['stages'], p['dn'], bool(p['ap']),
             p.get('persistent', -1) if recipe.route == 'fq' else -1)
 
@@ -31,7 +31,7 @@ def delivery_family(recipe):
             p.get('persistent', -1))
 
 
-def delivery_peers(w, seeds, rows, *, max_threads=1024):
+def delivery_peers(w, seeds, rows, *, max_threads=1024, portable_sf=False):
     """Retain observed DN variants of a selected parent, without cross products.
 
     The entire target N/K family is withheld. Only same-format/operation
@@ -46,10 +46,16 @@ def delivery_peers(w, seeds, rows, *, max_threads=1024):
     selected, reasons = {}, {}
     for row in rows:
         ow, r = row.workload, row.recipe
+        portable = (portable_sf and r.kind == 'tc' and r.route == 'sf' and
+                    not dict(r.parameters)['ap'] and ow.operation in ('dense', 'indexed') and
+                    template_family(ow) == template_family(w))
         if (r.kind != 'tc' or ow.m <= 8 or (ow.n, ow.k) == (w.n, w.k) or
-                proposal_family(ow) != proposal_family(w) or delivery_family(r) not in families):
+                (proposal_family(ow) != proposal_family(w) and not portable) or
+                delivery_family(r) not in families):
             continue
         r = prototype(r)
+        if ow.qtype != w.qtype:
+            r = rebind_template(r, w.qtype)
         if producer_key(r) in known or rejection(r, w, max_threads):
             continue
         # Scheduling is expanded after resource query. Preserve the seed's
@@ -68,14 +74,17 @@ def delivery_peers(w, seeds, rows, *, max_threads=1024):
     out = sorted(selected.values(), key=lambda r: r.key)
     for r in out:
         reasons[r.key] = ['PREFILL_OBSERVED_DELIVERY_PEER_LEAVE_NK_OUT']
+        if portable_sf:
+            reasons[r.key].append('PORTABLE_SF_GEOMETRY_ONLY')
     return out, reasons
 
 
-def supplement(w, seeds, rows, *, max_threads=1024, k_weight=1.0):
+def supplement(w, seeds, rows, *, max_threads=1024, k_weight=1.0, exact_tiles=False):
     from dev.strategy.prescreen import rejection, proposal_family
     if w.m <= 8:
         return [], {}
-    covered = {regime(r) for r in seeds if r.kind == 'tc'}
+    classify = lambda r: regime(r, exact_tiles)
+    covered = {classify(r) for r in seeds if r.kind == 'tc'}
     available = []
     for row in rows:
         ow, r = row.workload, row.recipe
@@ -91,18 +100,18 @@ def supplement(w, seeds, rows, *, max_threads=1024, k_weight=1.0):
         r = prototype(r)
         if ow.qtype != w.qtype:
             r = rebind_template(r, w.qtype)
-        if regime(r) in covered or rejection(r, w, max_threads):
+        if classify(r) in covered or rejection(r, w, max_threads):
             continue
         available.append((row, r, local))
     # Cross-format templates fill a genuinely vacant row/column/K regime,
     # not every pipeline/delivery variant of an already available regime.
     # This is a sparse coverage backstop, not a format x template product.
-    domestic = {regime(r)[:4] for r in seeds if r.kind == 'tc'}
-    domestic.update(regime(r)[:4] for row,r,_ in available if row.workload.qtype == w.qtype)
+    domestic = {classify(r)[:4] for r in seeds if r.kind == 'tc'}
+    domestic.update(classify(r)[:4] for row,r,_ in available if row.workload.qtype == w.qtype)
     pool = {}
     for row, r, local in available:
         ow = row.workload
-        if ow.qtype != w.qtype and regime(r)[:4] in domestic:
+        if ow.qtype != w.qtype and classify(r)[:4] in domestic:
             continue
         distance = (abs(math.log2(ow.n/w.n)) + k_weight*abs(math.log2(ow.k/w.k)) +
                     2*abs(math.log2(ow.m/w.m)))
@@ -116,7 +125,7 @@ def supplement(w, seeds, rows, *, max_threads=1024, k_weight=1.0):
     boundary = {}
     selected, reasons = [], {}
     for rank, r, source, transferred, cross_format in sorted(pool.values(), key=lambda item:(item[0], item[1].key)):
-        tag = regime(r)
+        tag = classify(r)
         if tag not in boundary:
             boundary[tag] = rank
         if rank != boundary[tag]:

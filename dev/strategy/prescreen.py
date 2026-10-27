@@ -168,7 +168,8 @@ class Prescreen:
 
     def select(self, w, *, mandatory=(), limit=8, optional=1, max_threads=1024, blind=False,
                per_stratum=1, factorized=True, k_weight=1.0, cross_format=False,
-               reader_strata=False, stencil='none', prefill_breadth=True):
+               reader_strata=False, stencil='none', prefill_breadth=True,
+               prefill_exact_tiles=False, portable_sf_delivery=False):
         if not 2 <= limit <= 32 or not 0 <= optional <= 8 or not 0 < max_threads <= 1024:
             raise ValueError('invalid pre-JIT candidate limits')
         if not 1 <= per_stratum <= 16:
@@ -339,12 +340,14 @@ class Prescreen:
             from dev.strategy.prefill_candidates import supplement
             additions, why = supplement(w, selected,
                 [*rows, *self.prefill_sf.get(prefill_template_family(w), ())],
-                max_threads=max_threads, k_weight=k_weight)
+                max_threads=max_threads, k_weight=k_weight, exact_tiles=prefill_exact_tiles)
             selected += additions
             prefill_added = len(additions)
             for key, values in why.items(): reasons[key].update(values)
             from dev.strategy.prefill_candidates import delivery_peers
-            additions, why = delivery_peers(w, selected, rows, max_threads=max_threads)
+            delivery_rows = [*rows, *self.prefill_sf.get(prefill_template_family(w), ())] if portable_sf_delivery else rows
+            additions, why = delivery_peers(w, selected, delivery_rows, max_threads=max_threads,
+                                           portable_sf=portable_sf_delivery)
             selected += additions
             delivery_added = len(additions)
             for key, values in why.items(): reasons[key].update(values)
@@ -392,6 +395,7 @@ class Prescreen:
             rule_revision=(27 if prefill_breadth and w.m>8 else 25) if blind and factorized else 2 if blind else None,per_stratum=per_stratum,
             prefill_geometry_supplement=prefill_added,
             prefill_delivery_peers=delivery_added,
+            prefill_exact_tiles=prefill_exact_tiles, portable_sf_delivery=portable_sf_delivery,
             cross_format_templates=bool(blind and factorized and cross_format),
             reader_strata=reader_strata,
             neighbor_stencil=stencil,seed_prototype_count=seed_count,
