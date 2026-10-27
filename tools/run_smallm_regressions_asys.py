@@ -15,7 +15,7 @@ import uuid
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from dev.strategy.smallm_asys import workloads,make_plan,revision,validate,check_producers,assignments,METHOD,COHORTS
+from dev.strategy.smallm_asys import workloads,make_plan,revision,validate,check_producers,assignments,METHOD,COHORTS,MOE_PAIR_COHORTS
 from dev.strategy.provenance import harness_identity,source_identity
 from dev.strategy.journal import atomic_json
 from quactlize.dispatch.table import Workload
@@ -76,9 +76,11 @@ def child(a):
             dict(status='READY',arms=[x['id'] for x in bound['arms']],aliases={}),
             lambda arm:bindings[arm['id']],auth,run['source']['sha256'],trace_collector=collector)
         data['resource_unavailable']=bound['resource_unavailable']
-        check_producers(point,data)
         for buf in ring.buffers:buf.guard()
+    # Keep the unadmitted capture after correctness/guards/cleanup, even when
+    # a host symbol check rejects it. Only the worker can publish a timed PASS.
     base.sealed(a.attempt/'capture.json',dict(point=point['id'],authority=auth,data=data))
+    check_producers(point,data)
     return 0
 
 
@@ -181,7 +183,7 @@ def run(a):
     if (a.output/'plan.json').exists():plan=sealed(a.output/'plan.json')
     else:
         originals=plan_smallm(a.output,[base.request(w) for w in workloads(a.cohort or 'regressions')],
-                             dense_fallbacks=a.cohort!='moe-token-pair')
+                             dense_fallbacks=a.cohort not in MOE_PAIR_COHORTS)
         atomic_json(a.output/'cpp-originals.json',originals)
         plan=make_plan(originals['requests'],a.cohort or 'regressions');atomic_json(a.output/'plan.json',plan)
     if a.cohort and a.cohort!=plan.get('cohort','regressions'):raise ValueError('resume cohort differs')

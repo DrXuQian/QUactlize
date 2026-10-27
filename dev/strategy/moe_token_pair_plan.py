@@ -12,27 +12,33 @@ from quactlize.runtime.tuning import digest
 
 ROOT=Path(__file__).resolve().parents[2]
 COHORT='moe-token-pair'
+COHORTS=(COHORT,COHORT+'-q4')
 
 
-def workloads():
+def workloads(cohort=COHORT):
     # Actual separate gate/up and down families in Qwen35 GGUF headers. Paired
     # G4/U4 physical-2N weights belong to the BACKUP fusion experiment instead.
+    if cohort not in COHORTS:raise ValueError('unknown bounded MoE pair cohort')
     return [Workload(q,n,k,m,operation='indexed',compute='bf16',experts=256,topk=8,channels=ch,router=router)
             for q,n,k,ch in ((12,512,2048,1),(13,2048,512,8))
+            if cohort==COHORT or q==12
             for m,router in ((1,'spread'),(4,'repeat2'),(8,'spread'),(8,'cluster'))]
 
 
 def production_entry(row):
     prefix='quactlize::execution::'
     if row['kind']==0:return 'cutlass::device_kernel'
-    if row['kind']==2:return prefix+'q4_decode::kernel'
+    if row['kind']==2:
+        compute=row['request'][-1]
+        if compute not in (0,1):raise ValueError('invalid Q4 production compute type')
+        return prefix+'q4_decode::'+('kernel_bf16' if compute==1 else 'kernel')
     names={'common-packet-3d':'common_reader','register-reuse':'register_reuse',
            'register-reuse-fixed':'register_reuse_model','measured-constant-split':'measured_decode_kernel'}
     return prefix+'simt::'+names[row['implementation']['producer']]
 
 
-def make_plan(originals):
-    ws=workloads()
+def make_plan(originals,cohort=COHORT):
+    ws=workloads(cohort)
     if [x['request'] for x in originals]!=[request(w) for w in ws]:
         raise ValueError('MoE pair production control inventory differs')
     points=[];tc={};vectors={}
@@ -58,10 +64,10 @@ def make_plan(originals):
         points.append(dict(id=w.key,workload=asdict(w),cohort='decode',selection=old,
             execution_contract=execution_contract(w),arms=arms,sf_configs=sf,
             same_expert_pair=True,excluded=[],consumers=[]))
-    result=dict(schema='quactlize.smallm-asys.v1',phase='regression-asys',cohort=COHORT,
+    result=dict(schema='quactlize.smallm-asys.v1',phase='regression-asys',cohort=cohort,
         points=points,tc=tc,vectors=vectors,
         counts=dict(points=len(points),arms=sum(len(p['arms']) for p in points),tc_modules=len(tc),
-                    vector_modules=len(vectors),families=2),
+                    vector_modules=len(vectors),families=len({(w.qtype,w.n,w.k) for w in ws})),
         timing_method='ASYS_GPU_ACTIVITY',selection_metric='MEAN_COMPONENT_SUM',noise_policy='DIAGNOSTIC_NOT_VETO',
         historical_times_reused=False,production_changed=False,native_comparison=False,
         scope='INDEXED_BF16_TWO_ROW_REUSE_CAUSAL_AB_NOT_FULL_SWEEP_OR_PRODUCTION_ADMISSION',

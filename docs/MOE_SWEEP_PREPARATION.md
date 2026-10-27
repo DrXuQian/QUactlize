@@ -57,6 +57,59 @@ Only `review-lite-*.tar.xz` needs uploading initially; raw traces stay on Box.
 GPU correctness, measured benefit, all-M/model coverage, native comparison
 and production admission remain separate pending gates.
 
+### First Box result and Q4-only retry (2026-10-28)
+
+Source `98f5cd4b94922653f928555d96c54a9abeb9cba1`, ZW810/72 CUs,
+requested CE clock 1700 MHz, GPU 4. Uploaded
+`review-lite-1793141000861683287.tar.xz` SHA256:
+`709144bef858b1cef681f0e559285a43f5edadfeb638c7c2639f9ad2048d6a82`.
+All 87 payload hashes, run/source/harness seals and the four passing Q5
+receipts' saved raw durations, component sums, producer identities and numeric
+proofs were revalidated locally. Raw Asys reports and device binaries remain
+on Box, not in this small archive.
+
+The run is correctly marked **INCOMPLETE: 4 PASS / 4 FAIL**. The four Q4
+controls executed `q4_decode::kernel_bf16`; the host checker only recognized
+`q4_decode::kernel`. This is a post-capture name-check failure, not a reported
+numeric error. Because the old child failed before saving `capture.json`,
+those four points cannot be admitted by reparsing logs alone. Do not edit
+their status, source identity or old frozen checkout.
+
+Q5 down N2048/K512, E256/top8/channels8, BF16 compute with F32 storage:
+
+| Tokens / synthetic routing | Production (us) | Best matched single-row (us) | Best pair (us) | Winner vs production |
+|---|---:|---:|---:|---:|
+| 1 / spread | 9.320 | 9.155 | not launched | -1.8% |
+| 4 / repeat2 | 23.601 | 23.703 | 21.359 | -9.5% |
+| 8 / spread | 56.704 | 46.695 | 50.731 | -17.7%, single-row |
+| 8 / cluster | 51.816 | 42.256 | 33.892 | -34.6% |
+
+These are fresh Asys arithmetic means of separately profiled producer and
+reducer calls, not model latency or native-comparison admission. The numerical
+proofs passed (largest recorded relative L1 error < 1.7e-7).
+Do not attribute all gains to pairing: M1 has no pair; M8 spread improves
+from a different single-row geometry and pairing loses 8.6% to its matched
+C4/W2/P8/S1 single-row control. With M4 repeat2, C8/W4/P4/S1 pairing saves
+27.1% against that same geometry; with M8 cluster, C4/W2/P8/S1 saves 19.8%.
+Split-4 pairing lost to its matched controls in all measured multi-token Q5
+points. No universal pair selection or production change is justified.
+
+The fixed checker distinguishes FP16/BF16 entries by the declared workload
+and submitted ABI; it still rejects the wrong reader and unknown lookalikes.
+It now saves an unadmitted capture after correctness, guard and cleanup checks
+but before host name validation. A failed name check still exits nonzero;
+only the timed worker can publish a PASS.
+The harness fix passed 224 host/regression tests (135 optional/native tests
+skipped); no GPU rerun was performed locally and no device kernel changed.
+
+After delivering the fix, use `COHORT=moe-token-pair-q4` in a **new** run
+(`unset RUN RESUME_RUN`), on the same otherwise-idle GPU 4. This is precisely
+the original four Q4 workloads/32 arms/7 vector modules, not a reduced config
+search. The source commit and hashes are recorded anew. Keep the four old Q5
+PASS receipts under their original source identity; no Q5 rerun or relabeling
+is needed for this harness-only fix. A new partial run does not itself certify
+the complete eight-point experiment or native/model parity.
+
 Local checkpoint: 170 host/regression tests passed; 15 PPU1.0 SDK2.1.1
 Q2–Q6/geometry instantiations compiled with zero stack. The embedded common
 reader/reducer code retained 75 identical machine-code bodies across the

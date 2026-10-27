@@ -105,6 +105,8 @@ def test_plan_keeps_shipping_and_matched_controls(tmp_path):
     for point,old in zip(plan['points'],originals):
         assert Recipe.from_dict(point['arms'][0]['recipe'])==original_recipe(old)
         assert point['arms'][0]['id']=='original' and not point['sf_configs']
+        if old['kind']==2:
+            assert point['arms'][0]['expected_producer']=='quactlize::execution::q4_decode::kernel_bf16'
         for arm in point['arms'][1:]:
             p=dict(arm['recipe']['parameters'])
             if p['moe_pair_rows']==2:
@@ -116,15 +118,23 @@ def test_plan_keeps_shipping_and_matched_controls(tmp_path):
     # causal plan or be imported into new Asys samples.
     poisoned=[dict(o,median_us=1e-9) for o in originals]
     assert [p['arms'] for p in make_plan(poisoned)['points']]==[p['arms'] for p in plan['points']]
+    # A fresh Q4-only run preserves the exact four requested workloads/arms.
+    # It does not rerun or relabel the Q5 receipts from the original campaign.
+    subset=make_plan(originals[:4],'moe-token-pair-q4')
+    assert subset['points']==plan['points'][:4]
+    assert subset['counts']==dict(points=4,arms=32,tc_modules=0,vector_modules=7,families=1)
+    assert subset['cohort']=='moe-token-pair-q4' and not subset['historical_times_reused']
+    with pytest.raises(ValueError,match='control inventory'):make_plan(originals,'moe-token-pair-q4')
 
 
-def test_plan_only_cli(tmp_path):
+@pytest.mark.parametrize('cohort,count',[('moe-token-pair',8),('moe-token-pair-q4',4)])
+def test_plan_only_cli(tmp_path,cohort,count):
     command=[sys.executable,str(ROOT/'tools/run_smallm_regressions_asys.py'),
-             '--output',str(tmp_path/'plan'),'--cohort','moe-token-pair','--plan-only']
+             '--output',str(tmp_path/'plan'),'--cohort',cohort,'--plan-only']
     for extra in ([],['--resume']):
         result=subprocess.run(command+extra,capture_output=True,text=True)
         assert result.returncode==0,result.stdout+result.stderr
-        assert '"points": 8' in result.stdout and 'ASYS_GPU_ACTIVITY' in result.stdout
+        assert f'"points": {count}' in result.stdout and 'ASYS_GPU_ACTIVITY' in result.stdout
     assert not (tmp_path/'plan/run.json').exists()
 
 

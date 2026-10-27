@@ -178,6 +178,7 @@ def producer_entry(node):
                  'quactlize::execution::simt::q8_vector::kernel_s1',
                  'quactlize::execution::simt::measured_decode_kernel',
                  'quactlize::execution::q4_decode::kernel',
+                 'quactlize::execution::q4_decode::kernel_bf16',
                  'quactlize::execution::simt::common_reader',
                  'quactlize::execution::simt::register_reuse',
                  'quactlize::execution::simt::register_reuse_model',

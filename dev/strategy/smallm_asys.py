@@ -9,6 +9,7 @@ import subprocess
 from dev.strategy.refresh import proposed, historical, original_recipe, request
 from dev.strategy.components import statistics_checked
 from dev.strategy.vector import execution_contract
+from dev.strategy.moe_token_pair_plan import COHORTS as MOE_PAIR_COHORTS
 from quactlize.dispatch.table import Workload
 from quactlize.runtime.compiler import sha
 from quactlize.runtime.tuning import digest
@@ -17,7 +18,7 @@ ROOT=Path(__file__).resolve().parents[2]
 METHOD='ASYS_GPU_ACTIVITY'
 MODEL_TOKEN_COHORTS=('token-cta-models','token-cta-model-gaps')
 TOKEN_COHORTS=('q6-token-cta','token-cta-formats',*MODEL_TOKEN_COHORTS)
-COHORTS=('regressions',*TOKEN_COHORTS,'moe-token-pair')
+COHORTS=('regressions',*TOKEN_COHORTS,*MOE_PAIR_COHORTS)
 
 
 def model_coverage(cohort):
@@ -50,9 +51,9 @@ def model_coverage(cohort):
 
 
 def workloads(cohort='regressions'):
-    if cohort=='moe-token-pair':
+    if cohort in MOE_PAIR_COHORTS:
         from dev.strategy.moe_token_pair_plan import workloads as pair_workloads
-        return pair_workloads()
+        return pair_workloads(cohort)
     if cohort in MODEL_TOKEN_COHORTS:
         return [Workload(q,n,k,m) for q,n,k in model_coverage(cohort)['selected_families'] for m in range(1,9)]
     if cohort=='q6-token-cta':return [Workload(14,1024,5120,m) for m in range(1,9)]
@@ -63,9 +64,9 @@ def workloads(cohort='regressions'):
 
 
 def make_plan(originals,cohort='regressions'):
-    if cohort=='moe-token-pair':
+    if cohort in MOE_PAIR_COHORTS:
         from dev.strategy.moe_token_pair_plan import make_plan as pair_plan
-        return pair_plan(originals)
+        return pair_plan(originals,cohort)
     ws=workloads(cohort)
     if [r['request'] for r in originals]!=[request(w) for w in ws]:
         raise ValueError('regression C++ selection inventory differs')
@@ -198,7 +199,11 @@ def check_producers(point,data):
                                        (c['columns']==8 and c['values']==4 and c['warps']==4) or
                                        (spec['q']==12 and (c['columns'],c['warps'],c['values'])==(4,4,4)))
             if recipe['kind']=='q4':
-                expected='quactlize::execution::q4_decode::kernel'
+                compute=spec['compute']
+                if (compute not in ('f16','bf16') or compute!=point['workload']['compute'] or
+                        point['execution_contract']['compute_type']!=int(compute=='bf16')):
+                    raise ValueError('Q4 producer compute type differs from workload/ABI')
+                expected='quactlize::execution::q4_decode::'+('kernel_bf16' if compute=='bf16' else 'kernel')
             elif point.get('same_expert_pair'):
                 expected=arms[aid]['expected_producer']
             elif 'cta_tokens' in spec:

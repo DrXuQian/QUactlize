@@ -217,6 +217,94 @@ def test_wrong_lookalike_reader_and_missing_config_rejected():
     with pytest.raises(ValueError,match='inventory'):check_producers(point,data)
 
 
+@pytest.mark.parametrize('compute',['f16','bf16'])
+@pytest.mark.parametrize('readable',[False,True])
+@pytest.mark.parametrize('geometry',[(6,16,4,8),(7,8,4,8),(6,2,8,4)])
+def test_q4_compute_specific_producer_name(compute,readable,geometry):
+    from dev.strategy.refresh_gaps import producer_entry
+    from dev.strategy.moe_token_pair_plan import production_entry
+    from dev.strategy.vector import execution_contract,spec
+    from quactlize.dispatch.table import Recipe
+    from dev.strategy.refresh import request
+    v,warps,p,c=geometry
+    w=Workload(12,512,2048,4,operation='indexed',compute=compute,experts=256,topk=8)
+    recipe=Recipe.make('q4','fq',reader=2,variant=v,columns=c,warps=warps,values=p,split=1)
+    fn='kernel_bf16' if compute=='bf16' else 'kernel'
+    entry='quactlize::execution::q4_decode::'+fn
+    # Exact three kernel_bf16 instantiations from the failed Box trace logs;
+    # also exercise an unchanged raw symbol when c++filt does not decode it.
+    template=[1,2,v,warps,p,c,512,2048]
+    symbol='_ZN9quactlize9execution9q4_decode'+str(len(fn))+fn+'I'+''.join('Li'+str(i)+'E' for i in template)+'EEv11qkg_call_v1'
+    node=dict(name='void '+entry+'<'+','.join(map(str,template))+'>(qkg_call_v1)' if readable else symbol,symbol=symbol)
+    contract=execution_contract(w)
+    point=dict(workload=asdict(w),execution_contract=contract,
+        arms=[dict(id='original',spec=spec(w,recipe),recipe=asdict(recipe))])
+    data=dict(arms=dict(original=dict(receipt=dict(execution_contract=contract))),
+        arm_components=dict(original=['p']),component_records=dict(p=dict(kind='producer',identity=dict(node=node))))
+    assert producer_entry(node)==entry
+    assert production_entry(dict(kind=2,request=request(w)))==entry
+    check_producers(point,data)
+    wrong='quactlize::execution::q4_decode::'+('kernel' if compute=='bf16' else 'kernel_bf16')
+    bad=deepcopy(data);bad['component_records']['p']['identity']['node'].update(name=wrong,symbol=wrong)
+    with pytest.raises(ValueError,match='wrong production reader'):check_producers(point,bad)
+    with pytest.raises(ValueError,match='symbol/display'):producer_entry(dict(node,name=wrong))
+    for name in ('kernel_bf16_helper','kernel_helper'):
+        unknown='_ZN9quactlize9execution9q4_decode'+str(len(name))+name+'ILi1EEEv11qkg_call_v1'
+        assert producer_entry(dict(name=unknown,symbol=unknown))==unknown
+    bad=deepcopy(point);bad['arms'][0]['spec']['compute']='bf16' if compute=='f16' else 'f16'
+    with pytest.raises(ValueError,match='compute type'):check_producers(bad,data)
+    bad=deepcopy(point);bad['execution_contract']['compute_type']=1-contract['compute_type']
+    with pytest.raises(ValueError,match='compute type'):check_producers(bad,data)
+
+
+@pytest.mark.parametrize('failure',['numeric','guard','cleanup','symbol',None])
+def test_capture_saved_before_symbol_check_but_after_correctness_and_cleanup(tmp_path,monkeypatch,failure):
+    from tools import run_smallm_regressions_asys as runner
+    from dev.smallm_closure import bench
+    from dev.strategy import cold_decode,confirm,asys_components
+    from dev.native_components import smallm_ab
+    from quactlize.runtime import native
+    data,_=capture_fixture();events=[]
+    point=dict(id='p',workload=data['workload'],arms=[dict(id='original')],sf_configs=[])
+    plan=dict(points=[point],sha256='plan')
+    run=dict(plan='plan',source_revision='rev',source=dict(sha256='source'),harness='harness',
+             devices=['device'],assignments=[['p']],images='images',sha256='run')
+    def step(name):
+        events.append(name)
+        if name==failure:raise ValueError(name+' failed')
+    def measured(*args,**kw):step('numeric');return deepcopy(data)
+    a=SimpleNamespace(output=tmp_path,point='p',attempt=tmp_path/'attempt',sdk=tmp_path,l2_bytes=64)
+    a.attempt.mkdir()
+    monkeypatch.setattr(runner,'sealed',lambda path:plan if path.name=='plan.json' else run)
+    monkeypatch.setattr(runner,'revision',lambda root:'rev')
+    monkeypatch.setattr(runner,'source_identity',lambda root:run['source'])
+    monkeypatch.setattr(runner,'harness_identity',lambda root:'harness')
+    monkeypatch.setattr(runner.base,'device',lambda a:'device')
+    monkeypatch.setattr(runner.base,'read',lambda path:{})
+    monkeypatch.setattr(runner.base,'image_identity',lambda *args:'images')
+    monkeypatch.setattr(runner.base,'verify_images',lambda *args:None)
+    monkeypatch.setattr(runner.base,'bind_point',lambda p,images:(dict(p,resource_unavailable={}),{}))
+    monkeypatch.setattr(native,'SDK',lambda path:None)
+    monkeypatch.setattr(cold_decode,'Ring',lambda *args:SimpleNamespace(
+        buffers=[SimpleNamespace(guard=lambda:step('guard'))],close=lambda:step('cleanup')))
+    monkeypatch.setattr(bench,'Context',lambda *args:SimpleNamespace(close=lambda:step('context-close')))
+    monkeypatch.setattr(smallm_ab,'checked_fixture',lambda *args:None)
+    monkeypatch.setattr(asys_components,'Collector',lambda:None)
+    monkeypatch.setattr(confirm,'confirm_point',measured)
+    def check(point,data):
+        assert events==['numeric','guard','context-close','cleanup']
+        saved=json.loads((a.attempt/'capture.json').read_bytes())
+        assert saved['data']['status']=='CAPTURED_NOT_TIMED'
+        assert saved['sha256']==digest({k:v for k,v in saved.items() if k!='sha256'})
+        step('symbol')
+    monkeypatch.setattr(runner,'check_producers',check)
+    if failure:
+        with pytest.raises(ValueError,match=failure+' failed'):runner.child(a)
+    else:assert runner.child(a)==0
+    assert (a.attempt/'capture.json').exists()==(failure in ('symbol',None))
+    assert not (tmp_path/'gpu-0/points/p.json').exists()  # Only the timed worker may publish PASS.
+
+
 @pytest.mark.parametrize('baseline',['quactlize','native','native-ab'])
 def test_box_freezes_committed_sources_and_pin_without_network(tmp_path,baseline):
     source=tmp_path/'checkout';source.mkdir();(source/'tools').mkdir()
