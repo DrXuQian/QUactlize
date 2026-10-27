@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from dev.prefill_point.bench import Call, SF, WORKLOAD, call, summarize
-from dev.prefill_point.build import build_native, carrier_source, once
+from dev.prefill_point.build import build_native, carrier_source, fp32_accumulator_source, once
 from tools.run_prefill_point import ARMS, native_stage_names, plan
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,12 +62,120 @@ class PrefillPointTests(unittest.TestCase):
     def test_diagnostic_keeps_oracles_not_old_timers(self):
         text = carrier_source()
         self.assertIn('#include "carrier_timing.cuh"', text)
+        self.assertLess(text.index('#include "carrier_contract.cuh"'),text.index('proofs.push_back(proof(0));'))
+        self.assertLess(text.index('publish(fs::path(argv[2])/(point.id+".inventory.json"),inventory);'),
+                        text.index('#include "carrier_contract.cuh"'))
         self.assertIn('last_weight_copy_negative', text)
         self.assertIn('omitted_producer', text)
         self.assertIn('nc.replay(nc.session,copy,-1)', text)
         self.assertNotIn('nc.measure(nc.session,int(i),rotate', text)
         self.assertEqual(text.count('NC_BIND(point_samples)'), 1)
         with self.assertRaises(ValueError): once('two two', 'two', 'one')
+
+    def traits(self):
+        return '''
+template<ggml_type T> struct batched_mul_mat_traits;
+template<>
+struct batched_mul_mat_traits<GGML_TYPE_F16> {
+    using cuda_type = half;
+    static inline const cublasComputeType_t compute_type = CUBLAS_COMPUTE_16F;
+    static inline const cudaDataType_t data_type = CUDA_R_16F;
+    static inline const ggml_type ggml_type_val = GGML_TYPE_F16;
+    static inline const half alpha = 1.0;
+    static inline const half beta = 0.0;
+    static inline const void* get_alpha() { static const half val = alpha; return &val; }
+    static inline const void* get_beta() { static const half val = beta; return &val; }
+    static inline auto convert(ggml_type src_type) { return ggml_get_to_fp16_cuda(src_type); }
+    static inline auto convert_nc(ggml_type src_type) { return ggml_get_to_fp16_nc_cuda(src_type); }
+};
+'''
+
+    def test_explicit_accumulator_keeps_f16_storage_and_native_dispatch(self):
+        source=self.traits()+'\n// native-dispatch-with-no-accumulator-env\n'
+        adapted,receipt=fp32_accumulator_source(source)
+        self.assertEqual(source,self.traits()+'\n// native-dispatch-with-no-accumulator-env\n')
+        self.assertIn('compute_type = CUBLAS_COMPUTE_32F;',adapted)
+        self.assertIn('using cuda_type = half;',adapted)
+        self.assertIn('data_type = CUDA_R_16F;',adapted)
+        self.assertIn('static const float val = alpha;',adapted)
+        self.assertIn('static const float val = beta;',adapted)
+        self.assertIn('// native-dispatch-with-no-accumulator-env',adapted)
+        self.assertIn('nc_point_batched_mul_mat_traits',adapted)
+        self.assertTrue(receipt['arithmetic_changed'])
+        self.assertFalse(receipt['selector_changed']);self.assertFalse(receipt['llama_tree_modified'])
+        self.assertEqual(receipt['linked_backend_required'],'PASS_TWO_INPUTS')
+
+    def test_existing_f32_traits_and_unsupported_seams(self):
+        source=self.traits().replace('CUBLAS_COMPUTE_16F','CUBLAS_COMPUTE_32F').replace('const half','const float')
+        _,receipt=fp32_accumulator_source(source)
+        self.assertFalse(receipt['arithmetic_changed'])
+        for bad in (source+source,source.replace('CUDA_R_16F','CUDA_R_16BF'),
+                    source.replace('static const float val = alpha;','float val = alpha;'),
+                    source.replace('CUBLAS_COMPUTE_32F','CUBLAS_COMPUTE_32F_FAST_16F'),
+                    source.replace('ggml_get_to_fp16_cuda','ggml_get_to_fp32_cuda')):
+            with self.subTest(source=bad),self.assertRaises(ValueError):fp32_accumulator_source(bad)
+
+    @unittest.skipUnless(shutil.which('g++'), 'host C++ compiler unavailable')
+    def test_real_scalar_bytes_lifetime_and_symbol_isolation(self):
+        header='''
+#include <cassert>
+#include <cstdint>
+#include <cstring>
+// Only the scalar constants 0/1 are used; no host/GPU arithmetic is simulated.
+struct half {
+    uint16_t bits;
+    constexpr half(double v):bits(v==0 ? 0 : 0x3c00) {}
+    bool operator==(half other) const { return bits==other.bits; }
+};
+enum ggml_type { GGML_TYPE_F16=1 };
+enum cudaDataType_t { CUDA_R_16F=2 };
+enum cublasComputeType_t { CUBLAS_COMPUTE_16F=64, CUBLAS_COMPUTE_32F=68 };
+int ggml_get_to_fp16_cuda(ggml_type) { return 17; }
+int ggml_get_to_fp16_nc_cuda(ggml_type) { return 19; }
+'''
+        adapted,_=fp32_accumulator_source(self.traits())
+        checked=adapted.replace('return &val;',
+            'static_assert(sizeof(val)==4,"provider scalar must be FP32"); return &val;')
+        original_getters='''
+extern "C" const void * original_alpha() { return batched_mul_mat_traits<GGML_TYPE_F16>::get_alpha(); }
+extern "C" const void * original_beta() { return batched_mul_mat_traits<GGML_TYPE_F16>::get_beta(); }
+'''
+        body='''
+extern "C" const void * original_alpha();
+extern "C" const void * original_beta();
+int main() {
+    using Traits=nc_point_batched_mul_mat_traits<GGML_TYPE_F16>;
+    static_assert(Traits::compute_type==CUBLAS_COMPUTE_32F);
+    static_assert(Traits::data_type==CUDA_R_16F);
+    static_assert(sizeof(Traits::cuda_type)==2);
+    const void * a=Traits::get_alpha(), * b=Traits::get_beta();
+    // Force the old DSO's identically named original traits to be loaded too.
+    assert(*static_cast<const half *>(original_alpha())==half(1));
+    assert(*static_cast<const half *>(original_beta())==half(0));
+    for(int i=0;i<8;++i) {
+        assert(Traits::get_alpha()==a && Traits::get_beta()==b);
+        uint32_t ab=0,bb=1;
+        std::memcpy(&ab,a,4);std::memcpy(&bb,b,4);
+        assert(ab==0x3f800000 && bb==0);
+    }
+    assert(Traits::convert(GGML_TYPE_F16)==17);
+    assert(Traits::convert_nc(GGML_TYPE_F16)==19);
+}
+'''
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);old=root/'original.cpp';new=root/'adapter.cpp';binary=root/'test'
+            old.write_text(header+self.traits()+original_getters)
+            new.write_text(header+checked+body)
+            subprocess.run(['g++','-std=c++17','-O0','-fPIC','-shared',str(old),'-o',str(root/'liboriginal.so')],check=True)
+            command=['g++','-std=c++17','-O0',str(new),'-L'+str(root),'-Wl,-rpath,'+str(root),
+                     '-loriginal','-o',str(binary)]
+            subprocess.run(command,check=True);subprocess.run([str(binary)],check=True)
+            # Merely changing the compute enum leaves half scalar storage.
+            bad=checked.replace('static const float val','static const half val')
+            new.write_text(header+bad+body)
+            failed=subprocess.run(command,capture_output=True,text=True)
+            self.assertNotEqual(failed.returncode,0)
+            self.assertIn('provider scalar must be FP32',failed.stderr)
 
     def test_payload_reuse_builds_native_adapter_in_new_run(self):
         with tempfile.TemporaryDirectory()as td:

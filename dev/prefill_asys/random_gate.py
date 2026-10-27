@@ -175,6 +175,13 @@ def compare(plan, review):
                 contracts[arm]=arithmetic
             if arm=='quactlize' and contracts[arm]!=dict(input='F32',output='F32',compute='F16',accumulator='FP32'):
                 raise ValueError('random candidate arithmetic changed')
+            if arm=='native' and contracts[arm] not in (
+                    dict(input='F32',output='F32',compute='F16',accumulator='FP32',native_activation_quantization=False),
+                    dict(input='F32',output='F32',compute='LINKED_NATIVE_FLOAT',accumulator='LINKED_NATIVE_BODY',
+                         native_activation_quantization=False),
+                    dict(input='F32',output='F32',compute='LINKED_NATIVE_QUANTIZED_ACTIVATION',
+                         accumulator='LINKED_NATIVE_BODY',native_activation_quantization=True)):
+                raise ValueError('random native arithmetic contract differs')
             costs[arm]=statistics.fmean(t for cap in caps for t in cap['complete_samples_us'])
             components[arm]=[dict(name=review['components'][k]['name'],phase=review['components'][k]['phase'],
                 mean_us=statistics.fmean(t for cap in caps for t in cap['component_samples_us'][i]))

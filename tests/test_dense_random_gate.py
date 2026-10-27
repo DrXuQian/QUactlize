@@ -100,6 +100,7 @@ class RandomDenseTests(unittest.TestCase):
                 case=dict(arm='native-fp16') if native else case_identity(spec['cases'][0])
                 cid=digest(case);result['candidates'][cid]=case
                 arithmetic=dict(input='F32',output='F32',compute='F16',accumulator='FP32')
+                if native:arithmetic['native_activation_quantization']=False
                 values=[100.,100.,100.] if native else [90.,90.,90.]
                 # A minimum/median would wrongly admit this candidate.
                 if slow and index==0 and not native:values=[40.,40.,240.]
@@ -158,6 +159,15 @@ class RandomDenseTests(unittest.TestCase):
                 point['authority']=aid
             with self.subTest(change=change),self.assertRaises(ValueError):
                 gate.compare(self.plan,seal(review,'review_sha256'))
+
+    def test_native_fp16_accumulator_is_not_a_valid_fp32_reference(self):
+        review=self.review()
+        for row in next(iter(review['points'].values()))['measurements']:
+            if row['case_id']=='native-fp16':
+                for cap in row['confirmation_captures']:
+                    cap['random_gate_evidence']['arithmetic']['accumulator']='F16'
+        with self.assertRaisesRegex(ValueError,'native arithmetic'):
+            gate.compare(self.plan,seal(review,'review_sha256'))
 
     def test_compact_packet_keeps_evidence_not_binary_reports(self):
         with tempfile.TemporaryDirectory() as td:
