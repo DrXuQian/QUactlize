@@ -38,6 +38,17 @@ def m_span_boundary_points():
     return [(p['shape'],data['recipes'][p['winner']]) for p in points]
 
 
+def middle_m_points():
+    # A bounded public-ABI smoke for both newly admitted TC routes at each
+    # transition M. The exhaustive 540-row selection replay remains host-only.
+    data=json.loads(EVIDENCE.read_text())
+    points=[min((p for p in data['points'] if p['shape'][1]==m and
+                 data['recipes'][p['winner']]['route']==route),
+                key=lambda p:(p['shape'][2]*p['shape'][3],p['key']))
+            for m in (16,32,64) for route in (0,1)]
+    return [(p['shape'],data['recipes'][p['winner']]) for p in points]
+
+
 @pytest.mark.parametrize("q", QTYPES)
 @pytest.mark.parametrize("pair", [False, True])
 def test_device_pack_all_formats_and_experts(package, sdk, q, pair):
@@ -72,7 +83,7 @@ def test_full_dequant_provider_ordinary_calls(package, sdk, q, record_property):
     run_dense(package, sdk, q, 128, 1, record_property, full=True)
 
 
-@pytest.mark.parametrize('shape,recipe',helper_followup_points()+m_span_boundary_points(),
+@pytest.mark.parametrize('shape,recipe',helper_followup_points()+m_span_boundary_points()+middle_m_points(),
                          ids=lambda x: str(x) if isinstance(x,list) else '')
 def test_admitted_helper_followup_public_calls(package,sdk,shape,recipe,record_property):
     from dev.prefill_point.typed import DenseLibrary

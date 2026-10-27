@@ -1,0 +1,14 @@
+{
+  "plan_sha256": "9ec9ae141c16486767e4e23ee40c87d76ac90734d30d10ee8513ef1fd4d8ea56",
+  "reviews": ["7e3a278e855215cf16baf13dbe6f7a3f3e688513a656a53b4511a45a354a3928"],
+  "source_commit": "d3537c36f495fde486700a568fff2703372bbe67",
+  "native_source_commit_proven": false,
+  "transition_fq": true,
+  "refresh_buckets": true,
+  "accepted_regressions": [],
+  "scope": "225_DENSE_POINTS_M16_32_64_128_256_F32_IO_F16_COMPUTE_FP32_ACC",
+  "criterion": "ALL_SAMPLE_MEAN_WITH_HELPERS_AND_REDUCER; EXACT_FIRST; INTERVAL_SAFE_BUCKETS",
+  "cross_device_confirmations": "EXPLICIT_USER_AUTHORIZED_SAME_MODEL; ORIGINAL_DEVICE_IDENTITIES_RETAINED",
+  "native_comparison": false,
+  "model_performance_admitted": false
+}

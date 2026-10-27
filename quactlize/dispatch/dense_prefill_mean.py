@@ -1,8 +1,9 @@
-"""Exact-only import of complete M-span Asys observations, ranked by mean.
+"""Import complete M-span Asys observations, ranked by mean.
 
 The old median-based catalog and its native comparisons stay historical.
 Every new mean includes both capture directions and every measured component;
 the importer never joins helper timings from different runs or drops outliers.
+An explicitly admitted complete campaign can also refit bounded buckets.
 """
 import copy
 import hashlib
@@ -12,7 +13,7 @@ import math
 from pathlib import Path
 import statistics
 
-from quactlize.dispatch.dense_prefill import (audit_row, bucket_costs, choose,
+from quactlize.dispatch.dense_prefill import (audit_row, bucket_costs, bucket_training_costs, choose,
     execution, fit, require, validate)
 from quactlize.dispatch.table import Workload
 from quactlize.runtime.tuning import digest
@@ -72,14 +73,22 @@ def validate_proof(value):
 def validate_mean_point(p, data):
     e = p['mean_evidence']
     require(e['statistic'] == STATISTIC and p.get('native_us') is None, 'mean/native scope differs')
-    require(e['review_sha256'] in data['reviews'] and e['source_commit'] is None and
-            not e['native_source_commit_proven'], 'missing review or invented commit binding')
+    require(e['review_sha256'] in data['reviews'] and not e['native_source_commit_proven'],
+            'missing review or invented native commit binding')
+    update = next(u for u in data['mean_updates'] if u['plan_sha256'] == e['plan_sha256'])
+    require(e['source_commit'] == update['admission']['source_commit'], 'source commit admission differs')
+    if e['source_commit'] is not None:
+        receipt = data['authorities'][p['authority']]['receipt']
+        require(receipt.get('source_revision', {}).get('quactlize_commit') == e['source_commit'],
+                'source commit differs from measured authority')
     costs = dict(p['costs'])
     captures = e['capture_means']
     require(set(captures) == set(costs), 'mean cost coverage differs')
     for rid, pairs in captures.items():
         require(close(mean_from_pairs(pairs), costs[rid]), 'mean cost differs')
-    require(data['recipes'][p['winner']]['route'] in (1, 2), 'FQ cannot be a prefill replacement')
+    transition = update['admission'].get('transition_fq', False) and p['shape'][1] in (16,32,64)
+    require(data['recipes'][p['winner']]['route'] in ((0,1) if transition else (1,2)),
+            'unadmitted FQ/Full prefill replacement')
     require(p['winner_evidence']['captures'] == 2 and close(p['winner_evidence']['mean_us'], p['us']),
             'winner evidence differs')
     control = e['control']
@@ -89,7 +98,6 @@ def validate_mean_point(p, data):
     delta = 100*(p['us']/control['mean_us']-1)
     require(close(delta, e['delta_pct']), 'control mean delta differs')
     if delta > 0:
-        update = next(u for u in data['mean_updates'] if u['plan_sha256'] == e['plan_sha256'])
         approved = accepted_exception(p['shape'], p['winner_evidence']['candidate'],
                                       control['candidate'], delta, update['admission'])
         require(e.get('accepted_regression') == approved, 'regression approval differs')
@@ -106,8 +114,10 @@ def update_mean(base, paths, plan, admission):
     validate_plan(plan)
     require(plan['sha256'] == admission['plan_sha256'] and plan['inputs']['policy_sha256'] == base['sha256'],
             'mean admission plan/base differs')
-    require(admission['source_commit'] is None and not admission['native_source_commit_proven'],
-            'full native source binding is not in these uploads')
+    require(not admission['native_source_commit_proven'], 'native comparison is not in these uploads')
+    refresh_buckets = admission.get('refresh_buckets', False)
+    require(not refresh_buckets or admission.get('transition_fq') is True,
+            'bucket refresh requires the complete transition campaign')
     specs = {p['id']: p for p in plan['points']}
     data = copy.deepcopy(base)
     points = {p['key']: p for p in data['points']}
@@ -126,8 +136,11 @@ def update_mean(base, paths, plan, admission):
         pending.update(review['pending_points'])
         for aid, authority in review['authorities'].items():
             require(aid == digest(authority) and domain(authority) == base['domain'], 'authority/domain differs')
+            if admission['source_commit'] is not None:
+                require(authority.get('source_revision', {}).get('quactlize_commit') == admission['source_commit'],
+                        'measured source commit differs from admission')
             data['authorities'][aid] = dict(domain=domain(authority), receipt_sha256=aid,
-                source_commit=None, native_source_commit_proven=False, receipt=authority)
+                source_commit=admission['source_commit'], native_source_commit_proven=False, receipt=authority)
         for key, point in sorted(review['points'].items()):
             require(key in specs and key not in seen and point['workload'] == specs[key]['workload'],
                     'complete point not in plan or measured twice')
@@ -147,15 +160,22 @@ def update_mean(base, paths, plan, admission):
                 audit_row(row, review, point)
                 us, pair = capture_mean(row)
                 means[row['candidate']] = us
-                # FQ/legacy-FP16 remain comparison controls. This campaign's
-                # permitted replacement routes are SF and Full-F16 only.
-                if not eligible(row) or row['arm'] not in ('sf', 'full-fp16'):
+                # Only the measured transition anchors may promote light FQ.
+                # Large prefill still admits SF/Full-F16, never an FQ fallback.
+                allowed = ('fq','sf') if admission.get('transition_fq') and w.m in (16,32,64) else ('sf','full-fp16')
+                if not eligible(row) or row['arm'] not in allowed:
+                    continue
+                # Old flat-cast controls remain in means/control evidence, not
+                # a recipe whose adapter semantics the new selector cannot
+                # reproduce. The overall-minimum check below still rejects an
+                # admission if any such control is faster.
+                if dict(identity['recipe']['parameters']).get('legacy_adapters'):
                     continue
                 recipe = execution(identity, row, review['components']); recipe_id = digest(recipe)
                 require(recipe_id not in costs, 'duplicate complete execution identity')
                 data['recipes'][recipe_id] = recipe
                 costs[recipe_id] = us; captures[recipe_id] = pair; observations[recipe_id] = row
-            require(costs, 'missing SF/Full candidates')
+            require(costs, 'missing eligible candidates')
             winner = choose(costs); row = observations[winner]
             all_best = min((r for r in point['measurements'] if eligible(r)),
                            key=lambda r: (means[r['candidate']], r['candidate']))
@@ -168,7 +188,7 @@ def update_mean(base, paths, plan, admission):
             evidence = dict(statistic=STATISTIC, review_sha256=rid, plan_sha256=plan['sha256'],
                 capture_means=captures, control=dict(proof(control), arm=control['arm']), delta_pct=delta,
                 all_candidate_means_sha256=digest(means), measured_candidates=len(measured),
-                source_commit=None, native_source_commit_proven=False)
+                source_commit=admission['source_commit'], native_source_commit_proven=False)
             if delta > 0:
                 approval = accepted_exception(shape,row['candidate'],control['candidate'],delta,admission)
                 evidence['accepted_regression'] = approval; used_exceptions.append(approval)
@@ -189,11 +209,25 @@ def update_mean(base, paths, plan, admission):
     data['points'] = sorted(points.values(), key=lambda p:p['shape'])
     data['superseded_points'].sort(key=lambda p:p['shape'])
     data.setdefault('mean_updates', []).append(dict(plan_sha256=plan['sha256'], base_sha256=base['sha256'],
-        admission=admission, sources=sources, imported=len(seen), exact_only=True,
-        statistic=STATISTIC, native_comparison=False, bucket_predictions_changed=False))
-    data['buckets'] = fit(data['points'])
-    require(data['buckets'] == base['buckets'], 'mean exact admission changed bucket predictions')
-    data['criterion'] = STATISTIC+'; HISTORICAL_BUCKET_TRAINING_UNCHANGED'
+        admission=admission, sources=sources, imported=len(seen), exact_only=not refresh_buckets,
+        statistic=STATISTIC, native_comparison=False, bucket_predictions_changed=refresh_buckets))
+    if refresh_buckets:
+        data.setdefault('bucket_history', []).append(dict(policy=base.get('bucket_policy', 'HISTORICAL_NK_V1'),
+            base_sha256=base['sha256'], buckets=base['buckets'],
+            training=[dict(key=p['key'],costs=sorted(bucket_costs(p).items()),
+                evidence=p.get('bucket_evidence') or dict(authority=p['authority'], evidence_sha256=p['evidence_sha256']))
+                for p in base['points'] if bucket_costs(p)]))
+        for p in data['points']:
+            p['bucket_costs'] = sorted(bucket_training_costs(p, data['recipes']).items())
+            require(p['bucket_costs'], 'no interval-safe measured bucket candidate')
+            p['bucket_evidence'] = dict(authority=p['authority'], evidence_sha256=p['evidence_sha256'])
+        data['bucket_policy'] = 'ACTIVE_MEANS_MNK_INTERVALS_V2'
+        data['buckets'] = fit(data['points'], split_m=True)
+        data['criterion'] = STATISTIC+'; INTERVAL_SAFE_BUCKETS_MINIMAX_NORMALIZED_REGRET'
+    else:
+        data['buckets'] = fit(data['points'], split_m=base.get('bucket_policy') == 'ACTIVE_MEANS_MNK_INTERVALS_V2')
+        require(data['buckets'] == base['buckets'], 'mean exact admission changed bucket predictions')
+        data['criterion'] = STATISTIC+'; HISTORICAL_BUCKET_TRAINING_UNCHANGED'
     data['sha256'] = digest({k:v for k,v in data.items() if k != 'sha256'})
     validate(data)
     return data

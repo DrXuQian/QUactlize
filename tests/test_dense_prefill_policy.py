@@ -21,11 +21,11 @@ def test_all_exact_rows_are_complete_call_minima():
     data = evidence()
     validate(data)
     assert render(data) == HEADER.read_text()
-    assert len(data['points']) == 405
-    assert len(data['reviews']) == 6
+    assert len(data['points']) == 540
+    assert len(data['reviews']) == 7
     assert all(p['winner_evidence']['captures'] == 2 for p in data['points'])
     assert all(p['native_us'] is None for p in data['points'])
-    old = data['superseded_points']
+    old = [p for p in data['superseded_points'] if p['native_us'] is not None]
     assert len(old) == 225 and sum(p['us'] > p['native_us'] for p in old) == 14
     assert not data['model_performance_admitted']
     # Evidence keeps the native losses; export is not a zero-regression claim.
@@ -62,6 +62,7 @@ def test_bucket_choice_was_measured_at_every_member():
         for key in b['members']:
             p = points[key]
             assert list(bucket_key(p['shape'])) == b['key']
+            assert b['m_bounds'][0] <= p['shape'][1] <= b['m_bounds'][1]
             costs = bucket_costs(p)
             assert costs[b['recipe']] <= min(costs.values())*1.05
     # Q4's conflicting coarse cells must be split, not forced to common FQ.
@@ -72,7 +73,8 @@ def test_bucket_audit_does_not_call_missing_measurements_a_win():
     data = evidence()
     # Old bucket holdout evidence stays historical; do not mix its old
     # predictions and timings with the newly measured means.
-    audit = audit_buckets(dict(data, points=data['superseded_points']))
+    audit = audit_buckets(dict(data, bucket_policy='HISTORICAL_NK_V1',
+        points=[p for p in data['superseded_points'] if p['native_us'] is not None]))
     assert sum(audit['counts'].values()) == 225
     assert audit['counts']['comparable'] == 38
     assert audit['counts']['candidate_not_measured_on_held_family'] == 27
@@ -106,13 +108,12 @@ int main() {
 
     def predicted(shape):
         q,m,n,k = shape
-        if not (128 <= m <= 8192) or n%256 or k%(512 if q in (11,14) else 256):
+        if not (9 <= m <= 8192) or n%256 or k%(512 if q in (11,14) else 256):
             return -1, 0
         if shape in exact:
             return used.index(exact[shape]), 20
-        if m > 2048:
-            return -1, 0
         matches = [b for b in data['buckets'] if list(bucket_key(shape)) == b['key'] and
+                   b['m_bounds'][0] <= m <= b['m_bounds'][1] and
                    b['bounds'][0][0] <= n <= b['bounds'][0][1] and
                    b['bounds'][1][0] <= k <= b['bounds'][1][1]]
         assert len(matches) <= 1
@@ -120,7 +121,9 @@ int main() {
             return -1, 0
         recipe = data['recipes'][matches[0]['recipe']]
         tc = recipe['tc']
-        if tc and (k%(tc['tk']*tc['split']) or k//(tc['tk']*tc['split']) < tc['stages']-1 or n%tc['tn']):
+        if tc and (k%(tc['tk']*tc['split']) or k//(tc['tk']*tc['split']) < tc['stages']-1 or n%tc['tn'] or
+                   (tc['tm']==8 and m>(64 if recipe['route']==0 else 8)) or
+                   (recipe['route']==0 and m>64) or tc['ap']):
             return -1, 0
         return used.index(matches[0]['recipe']), 21
 
@@ -130,10 +133,23 @@ int main() {
         cases.extend(((*shape,0,0),(*shape,1,0),(*shape,0,1)))
         cases.extend((q,mm,nn,kk,0,0) for mm in (m-1,m+1) for nn in (n-256,n,n+256)
                      for kk in (k-256,k,k+256) if nn>0 and kk>0)
-    cases += [(12,m,1024,5120,0,0) for m in (0,1,8,9,64,127,4096)]
+    cases += [(12,m,1024,5120,0,0) for m in
+              (0,1,8,9,15,16,31,32,63,64,65,127,128,255,256,2048,2560,3072,4096,4608,5120,8192,8193)]
     cases += [(10,2048,5120,5120,0,0)] # Q2 has no measurement in this cohort
     text = ''.join(' '.join(map(str,c))+'\n' for c in cases)
     rows = [tuple(map(int,line.split())) for line in subprocess.check_output([exe],input=text,text=True).splitlines()]
     assert len(rows) == len(cases)
     for c,actual in zip(cases,rows):
         assert actual == ((-1,0) if c[4] or c[5] else predicted(c[:4])), c
+        # The offline planner must protect the same production incumbent;
+        # otherwise later sweeps may silently drop a new exact or M bucket.
+        if not c[4] and not c[5]:
+            from dev.prefill_asys.supplement import policy_lookup
+            from quactlize.dispatch.table import Workload
+            try:
+                w = Workload(c[0],c[2],c[3],c[1])
+            except ValueError:
+                continue
+            coverage, rid = policy_lookup(data,w)
+            expected = (used.index(rid),20 if coverage=='EXACT' else 21) if rid else (-1,0)
+            assert actual == expected, (c,coverage,rid)

@@ -23,7 +23,7 @@ def test_actual_helper_admission_closes_missing_incumbents_without_changing_buck
     assert (original['reviewed'], original['imported'], len(original['retained_pending'])) == (65,61,4)
     assert (update['reviewed'], update['imported'], update['retained_pending']) == (15,15,[])
     assert set(update['resolved_pending']) == {p['key'] for p in original['retained_pending']}
-    points = {p['key']:p for p in data.get('superseded_points', data['points'])}
+    points = {p['key']:p for p in data.get('superseded_points', data['points']) if p['native_us'] is not None}
     changed = [p for p in points.values() if 'admission' in p]
     assert len(changed) == 65
     assert sum(bool(bucket_costs(p)) for p in points.values()) == 165
@@ -43,7 +43,8 @@ def test_actual_helper_admission_closes_missing_incumbents_without_changing_buck
         elif width == 8:
             assert r['tc']['split'] == 2 and p['shape'][1]*p['shape'][2] == 524288
     assert all(not data['recipes'][b['recipe']].get('dequant_first') and data['recipes'][b['recipe']]['io'] != 4 and
-               not (data['recipes'][b['recipe']]['tc'] or {}).get('dense_reducer') for b in data['buckets'])
+               not (data['recipes'][b['recipe']]['tc'] or {}).get('dense_reducer')
+               for b in data['bucket_history'][0]['buckets'])
 
 
 def test_fast_single_capture_cannot_promote_a_regression():

@@ -18,8 +18,8 @@ def catalog():
 def test_all_measured_m_families_and_exception_are_exact():
     data = catalog(); validate(data)
     assert Counter(p['shape'][1] for p in data['points']) == dict.fromkeys(
-        [128,256,512,1024,2048,3072,4096,5120,8192], 45)
-    assert Counter(data['recipes'][p['winner']]['route'] for p in data['points']) == {1:146,2:259}
+        [16,32,64,128,256,512,1024,2048,3072,4096,5120,8192], 45)
+    assert Counter(data['recipes'][p['winner']]['route'] for p in data['points']) == {0:17,1:264,2:259}
     exceptions = [p for p in data['points'] if p['mean_evidence']['delta_pct'] > 0]
     assert len(exceptions) == 1
     p = exceptions[0]
@@ -29,20 +29,21 @@ def test_all_measured_m_families_and_exception_are_exact():
     assert p['mean_evidence']['delta_pct'] == pytest.approx(.5514288114595978)
     assert p['mean_evidence']['accepted_regression']['decision'].startswith('USER_ACCEPTED')
     assert all(p['mean_evidence']['statistic'] == STATISTIC for p in data['points'])
-    assert all(not bucket_costs(p) for p in data['points'] if p['shape'][1] > 2048)
+    assert all(bucket_costs(p) for p in data['points'])
     assert not data['model_performance_admitted']
 
 
 def test_old_native_and_bucket_evidence_is_not_relabelled():
-    data = catalog(); update = data['mean_updates'][-1]
+    data = catalog(); update = data['mean_updates'][0]
     assert update['imported'] == 405 and update['exact_only'] and not update['native_comparison']
     assert [s['complete_points'] for s in update['sources']] == [312,93]
     assert all(p['native_us'] is None for p in data['points'])
-    assert len(data['superseded_points']) == 225 and len(data['buckets']) == 147
-    original = {p['key']:p for p in data['superseded_points']}
-    for p in data['points']:
-        if p['key'] in original:
-            assert bucket_costs(p) == bucket_costs(original[p['key']])
+    assert len(data['superseded_points']) == 315
+    history = data['bucket_history'][0]
+    assert len(history['buckets']) == 147
+    original = {p['key']:p for p in data['superseded_points'] if p['native_us'] is not None}
+    for p in history['training']:
+        assert dict(p['costs']) == bucket_costs(original[p['key']])
     assert update['admission']['source_commit'] is None
     assert not update['admission']['native_source_commit_proven']
     assert all(data['authorities'][p['authority']]['receipt']['harness'] for p in data['points'])
@@ -76,7 +77,7 @@ def test_mean_keeps_slow_samples_and_both_directions():
 
 
 def test_exception_is_not_a_blanket_point_or_candidate_tolerance():
-    admission = catalog()['mean_updates'][-1]['admission']
+    admission = catalog()['mean_updates'][0]['admission']
     e = admission['accepted_regressions'][0]
     assert accepted_exception(e['shape'],e['candidate'],e['control'],.5515,admission) == e
     for shape, candidate, control, delta in (

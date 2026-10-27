@@ -34,7 +34,8 @@ def bucket_key(shape):
     q, m, n, k = shape
     # N and K are not interchangeable: scale expansion and weight delivery
     # differ even for equal N*K. Keep both balanced orientations separate.
-    return q, band(m), band(n), band(k), (1 if n >= 2*k else 2 if k >= 2*n else 0 if n >= k else 3)
+    # M9..15 use the first measured M16 interval, not the decode M1..8 table.
+    return q, band(max(16,m)), band(n), band(k), (1 if n >= 2*k else 2 if k >= 2*n else 0 if n >= k else 3)
 
 
 def choose(costs):
@@ -68,6 +69,28 @@ def bucket_costs(point):
     # For a refreshed existing row, preserve its original bucket observations;
     # [] marks a new exact-only row, with no bucket-training claim.
     return dict(point.get('bucket_costs', point['costs']))
+
+
+def bucket_interval(shape):
+    mb = bucket_key(shape)[1]
+    return [9 if mb == 4 else 1 << mb, min(8192, (1 << (mb+1))-1)]
+
+
+def bucket_training_costs(point, recipes):
+    """Only recipes legal throughout the predicted M interval.
+
+    The exact row retains every measured minimum. TM8 and lightweight FQ
+    stop at M64; do not extrapolate them to M65..127 or large prefill.
+    """
+    lo, hi = bucket_interval(point['shape'])
+    def legal(recipe):
+        if recipe['route'] == 2:
+            return lo >= 128
+        tc = recipe['tc']
+        return (not tc['ap'] and not tc.get('legacy_adapters') and
+                (tc['tm'] != 8 or (recipe['route'] == 0 and hi <= 64)) and
+                (recipe['route'] != 0 or hi <= 64))
+    return {rid:us for rid,us in point['costs'] if legal(recipes[rid])}
 
 
 def execution(candidate, row, definitions):
@@ -120,8 +143,30 @@ def audit_row(row, review, point):
                 row['aggregation'] == 'MEDIAN_OF_TWO_CAPTURE_MEDIANS_NOT_FASTEST_CAPTURE', 'confirmation differs')
         require(abs(statistics.median(c['gpu_sum_us'] for c in captures)-row['gpu_sum_us']) < 1e-6,
                 'confirmation median differs')
+    joint = review['authorities'][point['authority']]
+    cross = point.get('cross_device_confirmations', False)
+    if cross:
+        from tools.retry_prefill_confirmation import equivalent_authorities
+        sources = joint.get('source_authorities', [])
+        require(joint.get('authority_kind') == 'USER_AUTHORIZED_EQUIVALENT_DEVICE_COHORT' and
+                point.get('source_authorities') == sources and len(sources) == 2,
+                'cross-device cohort binding differs')
+        old, new = (review['authorities'][a] for a in sources)
+        equivalent_authorities(old, new)
+        require(new.get('confirmation_retry', {}).get('parent_authority') == sources[0] and
+                new['confirmation_retry'].get('equivalent_cards_user_authorized') is True,
+                'cross-device confirmation not authorized')
     for cap in captures:
-        require(cap['status'] == 'PASS' and cap['candidate'] == cid and cap['components'] == row['components'],
+        authority = cap.get('authority', point['authority']) if cross else point['authority']
+        if cross:
+            require(authority in sources, 'unknown cross-device capture authority')
+        normalized = []
+        for key in cap['components']:
+            definition = review['components'][key]
+            require(digest(definition) == key and definition['authority'] == authority,
+                    'capture component authority differs')
+            normalized.append(digest(dict(definition, authority=point['authority'])))
+        require(cap['status'] == 'PASS' and cap['candidate'] == cid and normalized == row['components'],
                 'capture identity differs')
         samples = cap['complete_samples_us']
         require(len(samples) >= 3 and all(math.isfinite(t) and t > 0 for t in samples), 'invalid samples')
@@ -132,7 +177,7 @@ def audit_row(row, review, point):
         for key, ts in zip(cap['components'], times):
             definition = review['components'][key]
             require(digest(definition) == key and definition['workload'] == point['workload'] and
-                    definition['authority'] == point['authority'], 'component binding differs')
+                    definition['authority'] == authority, 'component binding differs')
             require(all(math.isfinite(t) and t > 0 for t in ts), 'invalid component samples')
         require(all(abs(total-sum(t[i] for t in times)) < 1e-6 for i, total in enumerate(samples)),
                 'whole-call sum differs')
@@ -146,10 +191,10 @@ def audit_row(row, review, point):
             require(cap['arithmetic'] == dict(a='F16', b='F16', c='F16', accumulator='FP32'), 'full arithmetic differs')
 
 
-def fit(points):
+def fit(points, *, split_m=False):
     """Log bins, subdivided only where a common recipe exceeds 5% regret.
 
-    Subdivision uses the largest normalized N/K gap, not a model/tensor name.
+    Subdivision uses the largest normalized N/K (optionally M) gap, not a model/tensor name.
     Single-member leaves are explicitly predictions, never holdout evidence.
     All leaves stay inside one octave in M/N/K; no remote nearest-neighbor.
     """
@@ -167,19 +212,20 @@ def fit(points):
                    statistics.mean(r[c] for r in normalized), c)) if common else None
         regret = max(r[best] for r in normalized)-1 if best else math.inf
         if best is not None and regret <= REGRET_LIMIT:
-            leaves.append(dict(key=list(key), bounds=bounds, recipe=best,
+            leaves.append(dict(key=list(key), bounds=bounds[:2], recipe=best,
                 members=[p['key'] for p in members], worst_regret_pct=100*regret,
-                predicted=True, holdout_validated=False))
+                predicted=True, holdout_validated=False,
+                **(dict(m_bounds=bounds[2]) if split_m else {})))
             return
         # Different N/K in a coarse bin require a finer rule, not a slower
         # shared FQ fallback. Distinct exact rows always terminate this split.
         gaps = []
-        for dim in (2, 3):
+        for dim in ((1, 2, 3) if split_m else (2, 3)):
             values = sorted({p['shape'][dim] for p in members})
             gaps += [(math.log2(b/a), dim, (a+b)//2) for a, b in zip(values, values[1:])]
         require(gaps, 'cannot subdivide incompatible observations at one shape')
         _, dim, cut = max(gaps)
-        axis = dim-2
+        axis = 2 if dim == 1 else dim-2
         for lower in (True, False):
             subset = [p for p in members if (p['shape'][dim] <= cut) == lower]
             limits = [list(b) for b in bounds]
@@ -187,8 +233,10 @@ def fit(points):
             visit(key, subset, limits)
 
     for key, members in sorted(groups.items()):
-        visit(key, sorted(members, key=lambda p:p['shape']),
-              [[1 << key[2], (1 << (key[2]+1))-1], [1 << key[3], (1 << (key[3]+1))-1]])
+        bounds = [[1 << key[2], (1 << (key[2]+1))-1], [1 << key[3], (1 << (key[3]+1))-1]]
+        if split_m:
+            bounds.append(bucket_interval(members[0]['shape']))
+        visit(key, sorted(members, key=lambda p:p['shape']), bounds)
     return leaves
 
 
@@ -289,7 +337,19 @@ def validate(data):
             from quactlize.dispatch.dense_prefill_mean import validate_mean_point
             validate_mean_point(p, data)
     require(len({p['key'] for p in data['points']}) == len(data['points']), 'duplicate active point')
-    require(fit(data['points']) == data['buckets'], 'bucket fitting differs')
+    refreshed = data.get('bucket_policy') == 'ACTIVE_MEANS_MNK_INTERVALS_V2'
+    if refreshed:
+        observations = {(p['key'],p['authority'],p['evidence_sha256']):p
+                        for p in data['points']+data.get('superseded_points', [])}
+        for p in data['points']:
+            if not bucket_costs(p):
+                continue  # a later exact-only addition cannot invent bucket evidence
+            e = p['bucket_evidence']
+            source = observations.get((p['key'],e['authority'],e['evidence_sha256']))
+            require(source is not None and 'mean_evidence' in source and
+                    bucket_costs(p) == bucket_training_costs(source, data['recipes']),
+                    'bucket training observation differs')
+    require(fit(data['points'], split_m=refreshed) == data['buckets'], 'bucket fitting differs')
 
 
 def render(data):
@@ -315,7 +375,7 @@ def render(data):
         out.append('    {'+','.join(map(str, p['shape']+[index[p['winner']]]))+'},')
     out += ['};', 'inline constexpr Bucket kBuckets[] = {']
     for b in data['buckets']:
-        nums = [*b['key'],*b['bounds'][0],*b['bounds'][1],index[b['recipe']]]
+        nums = [*b['key'],*b['bounds'][0],*b['bounds'][1],index[b['recipe']],*b.get('m_bounds', [])]
         out.append('    {'+','.join(map(str,nums))+'},')
     out += ['};', '']
     return '\n'.join(out)
@@ -338,11 +398,13 @@ def audit_buckets(data):
     counts, rows = Counter(), []
     for family in families:
         held = [p for p in data['points'] if (p['shape'][0],*p['shape'][2:]) == family]
-        buckets = fit([p for p in data['points'] if p not in held])
+        buckets = fit([p for p in data['points'] if p not in held],
+                      split_m=data.get('bucket_policy') == 'ACTIVE_MEANS_MNK_INTERVALS_V2')
         for p in held:
             q,m,n,k = p['shape']
             matches = [b for b in buckets if list(bucket_key(p['shape'])) == b['key'] and
-                       b['bounds'][0][0] <= n <= b['bounds'][0][1] and b['bounds'][1][0] <= k <= b['bounds'][1][1]]
+                       b['bounds'][0][0] <= n <= b['bounds'][0][1] and b['bounds'][1][0] <= k <= b['bounds'][1][1]
+                       and b.get('m_bounds', [0,8192])[0] <= m <= b.get('m_bounds', [0,8192])[1]]
             require(len(matches) <= 1, 'overlapping bucket predictions')
             if not matches:
                 counts['uncovered'] += 1

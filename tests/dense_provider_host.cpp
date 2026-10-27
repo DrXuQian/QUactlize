@@ -358,9 +358,9 @@ void reviewed_prefill() {
             auto raw=test::plan(*ctx,other);
             assert(!static_cast<quactlize::dense::Plan*>(raw)->dense_prefill);
         }
-        // An interior M exercises the prediction without shadowing the exact
-        // row. Only exact observations were extended beyond M2048.
-        if(row.m<2048) {
+        // An interior M exercises every fitted interval, including large M,
+        // without shadowing the exact row.
+        if(row.m<8192) {
             auto neighbor=p;++neighbor.m;
             if(data::select(quactlize::dense::request_for(neighbor),0)) {
                 check(neighbor,QKS_DENSE_PREFILL_BUCKET);++buckets;

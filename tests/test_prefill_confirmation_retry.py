@@ -140,6 +140,24 @@ class ConfirmationRetryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'duplicates'):
             combine(self.result, self.original, self.retry, self.point_id)
 
+    def test_policy_audit_preserves_physical_capture_authorities(self):
+        from quactlize.dispatch.dense_prefill import audit_row
+        merged = combine(self.result, self.original, self.retry, self.point_id)
+        point = merged['points'][self.point_id]
+        row = next(r for r in point['measurements'] if r['case_id'] == 'pending')
+        audit_row(row, merged, point)
+        row['confirmation_captures'][1]['authority'] = digest(self.old)
+        with self.assertRaisesRegex(ValueError, 'component authority differs'):
+            audit_row(row, merged, point)
+
+    def test_policy_audit_cannot_invent_cross_device_permission(self):
+        from quactlize.dispatch.dense_prefill import audit_row
+        merged = combine(self.result, self.original, self.retry, self.point_id)
+        point = merged['points'][self.point_id]
+        merged['authorities'][digest(self.new)]['confirmation_retry']['equivalent_cards_user_authorized'] = False
+        with self.assertRaisesRegex(ValueError, 'not authorized'):
+            audit_row(point['measurements'][0], merged, point)
+
     def test_kernel_or_arithmetic_drift_does_not_mutate_previous_review(self):
         for drift in ('launch', 'arithmetic'):
             retry = copy.deepcopy(self.retry)

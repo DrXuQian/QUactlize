@@ -221,7 +221,7 @@ def test_device_accuracy_never_requests_profilers_or_sweeps():
 
 
 def test_followup_public_gate_covers_all_winners_and_retained_controls():
-    from ppu.test_public_library import helper_followup_points, m_span_boundary_points
+    from ppu.test_public_library import helper_followup_points, m_span_boundary_points, middle_m_points
     from quactlize.dispatch.dense_prefill import EVIDENCE
     data=json.loads(EVIDENCE.read_text())
     points=helper_followup_points()
@@ -232,13 +232,17 @@ def test_followup_public_gate_covers_all_winners_and_retained_controls():
     # winners after a newer complete-call config comparison changes them.
     keys={tuple(s) for s,_ in points}
     historical=[data['recipes'][p['winner']] for p in data.get('superseded_points',data['points'])
-                if tuple(p['shape']) in keys]
+                if tuple(p['shape']) in keys and p['native_us'] is not None]
     assert sum(r.get('dequant_first',False) for r in historical)==3
     assert sum((r['tc'] or {}).get('dense_reducer')==8 for r in historical)==6
     assert sum((r['tc'] or {}).get('dense_reducer')==4 for r in historical)==1
     boundaries=m_span_boundary_points()
     assert {s[1] for s,_ in boundaries}=={3072,5120,8192}
     assert all(r==exact[tuple(s)] for s,r in boundaries)
+    middle=middle_m_points()
+    assert len(middle)==6
+    assert {(s[1],r['route']) for s,r in middle}=={(m,r) for m in (16,32,64) for r in (0,1)}
+    assert all(r==exact[tuple(s)] for s,r in middle)
 
 
 @pytest.mark.parametrize('q', [8, 10, 11, 12, 13, 14])

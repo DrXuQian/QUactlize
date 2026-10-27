@@ -1,0 +1,31 @@
+{
+  "schema": "quactlize.dense-native-admission.v1",
+  "source_commit": "5fce733ff8f82e23b645da2adb06e8f0c8527cb2",
+  "actlize_commit": "021c69300864e03926108867d318572871a44d35",
+  "llama_commit": "a6bb8c17572945e09ed2bbe6596ce491de1eed04",
+  "run_sha256": "4c82d6730921866b45b8a35383e2c8b1d431c7df01bc566674e5b1ce1a341edf",
+  "summary_file_sha256": "468234d627b16fc944710e26015cc282ed779c635651104fe0857eb0030c14d8",
+  "timing_method": "ASYS_GPU_ACTIVITY",
+  "metric": "MEAN_OF_SEPARATE_COMPONENT_SUMS_NATIVE_QZ_QZ_NATIVE",
+  "families": 45,
+  "m": [1,2,3,4,5,6,7,8],
+  "measured": 360,
+  "raw_counts": {"PASS": 359, "REGRESSION": 1},
+  "failed": 0,
+  "strict_zero_regression": false,
+  "admission": "ACCEPTED_WITH_ONE_MEASUREMENT_SPECIFIC_EXCEPTION",
+  "accepted_regressions": [{
+    "point": "8306fb932a0b77a0746b2db18d7c820ac0a8d097f1a19bd3163e8d6e93df10bf",
+    "shape_q_m_n_k": [8,1,512,4096],
+    "candidate": "q8-vector:variant5:columns8:warps4:values4:split8",
+    "native_us": 6.473067708333334,
+    "quactlize_us": 6.544764093137255,
+    "delta_us": 0.0716963848039205,
+    "delta_pct": 1.1076106111422401,
+    "raw_status": "REGRESSION",
+    "decision": "USER_ACCEPTED_NEGLIGIBLE_ABSOLUTE_DIFFERENCE_20261027"
+  }],
+  "global_tolerance_changed": false,
+  "future_measurements_automatically_accepted": false,
+  "model_tpot_admitted": false
+}

@@ -70,12 +70,14 @@ def update_helpers(base, review_path, plan_path):
         if old:
             p['bucket_evidence'] = old.get('bucket_evidence') or dict(
                 authority=old['authority'], evidence_sha256=old['evidence_sha256'])
+            data.setdefault('superseded_points', []).append(old)
         points[p['key']] = p
     data['points'] = sorted(points.values(), key=lambda p:p['shape'])
     data['reviews'] += measured['reviews']
     data['authorities'].update(measured['authorities'])
     data['recipes'].update(measured['recipes'])
-    used = {r for p in data['points'] for r,_ in p['costs']} | {r for p in data['points'] for r in bucket_costs(p)}
+    observations = data['points']+data.get('superseded_points', [])
+    used = {r for p in observations for r,_ in p['costs']} | {r for p in observations for r in bucket_costs(p)}
     data['recipes'] = {r:data['recipes'][r] for r in sorted(used)}
     previously_pending = {p['key'] for u in base.get('helper_updates',[]) for p in u['retained_pending']}
     previously_resolved = {k for u in base.get('helper_updates',[]) for k in u.get('resolved_pending',[])}
@@ -83,7 +85,7 @@ def update_helpers(base, review_path, plan_path):
         review_sha256=review['review_sha256'], exact_only=True, reviewed=len(specs),
         imported=len(specs)-len(pending), retained_pending=pending,
         **(dict(resolved_pending=sorted((previously_pending-previously_resolved)&specs.keys())) if followup else {})))
-    data['buckets'] = fit(data['points'])
+    data['buckets'] = fit(data['points'], split_m=base.get('bucket_policy') == 'ACTIVE_MEANS_MNK_INTERVALS_V2')
     require(data['buckets'] == base['buckets'], 'exact helper update changed bucket predictions')
     data['criterion'] = 'MINIMUM_ADMITTED_COMPLETE_GPU_CALL; NO_CROSS_POINT_ABSOLUTE_TIME_COMPARISON'
     data['sha256'] = digest({k:v for k,v in data.items() if k != 'sha256'})

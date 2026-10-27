@@ -37,18 +37,22 @@ def legal(value, w):
 
 
 def policy_lookup(policy, w):
-    # Exact M-span observations extend to8192. The older bucket predictions
-    # remain bounded to2048, matching the C++ selector.
-    if not 128<=w.m<=8192:
+    # Match the C++ selector, while still accepting a frozen older catalog in
+    # historical experiment replays. A split M bucket is not the whole octave.
+    intervals = policy.get('bucket_policy') == 'ACTIVE_MEANS_MNK_INTERVALS_V2'
+    if (not (9 if intervals else 128)<=w.m<=8192 or w.operation!='dense' or
+            w.compute!='f16' or w.storage!='f32' or w.input_stride!=w.k or w.output_stride!=w.n or
+            w.m*w.n>2147483647):
         return 'OUTSIDE_NEW_TABLE', None
     shape = [w.qtype, w.m, w.n, w.k]
     for point in policy['points']:
         if point['shape'] == shape:
             return 'EXACT', point['winner']
-    if w.m>2048:
+    if not intervals and w.m>2048:
         return 'OUTSIDE_NEW_TABLE', None
     for bucket in policy['buckets']:
         if (list(bucket_key(shape)) == bucket['key'] and
+                bucket.get('m_bounds',[0,8192])[0] <= w.m <= bucket.get('m_bounds',[0,8192])[1] and
                 bucket['bounds'][0][0] <= w.n <= bucket['bounds'][0][1] and
                 bucket['bounds'][1][0] <= w.k <= bucket['bounds'][1][1] and
                 legal(policy['recipes'][bucket['recipe']], w)):
@@ -80,12 +84,14 @@ def make_plan(cohort, policy, helper_sha, *, max_cases=32):
         if incumbent:
             add(execution_case(policy['recipes'][incumbent]), 'model-config')
 
-        donors = [p for p in policy['points'] if p['shape'][0] == w.qtype]
+        # This planner only targets M>=128. Newly admitted transition winners
+        # must not inflate its bounded prefill inventory with decode tiles.
+        donors = [p for p in policy['points'] if p['shape'][0] == w.qtype and p['shape'][1] >= 128]
         # Q2 has no measurements in the current cohort. Generic K-quant TC
         # geometry can be proposed, but its symbol/format is re-instantiated.
         transfer = not donors
         if transfer:
-            donors = [p for p in policy['points'] if p['shape'][0] == 12]
+            donors = [p for p in policy['points'] if p['shape'][0] == 12 and p['shape'][1] >= 128]
         def distance(p):
             _, m, n, k = p['shape']
             return (abs(math.log2(m/w.m)), abs(math.log2(n/w.n))+abs(math.log2(k/w.k)), p['key'])

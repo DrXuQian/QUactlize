@@ -75,8 +75,8 @@ def test_native_and_quactlize_conflict_stays_blocked(tmp_path):
 
 def test_all_old_exact_controls_and_helper_choices_are_retained():
     data=policy()
-    # This older TP-supplement planner intentionally covers M<=2048 only.
-    scope=[p for p in data['points'] if p['shape'][1]<=2048]
+    # This older TP-supplement planner intentionally covers M128..2048 only.
+    scope=[p for p in data['points'] if 128<=p['shape'][1]<=2048]
     workloads=[Workload(q,n,k,m) for q,m,n,k in (p['shape'] for p in scope)]
     p=plan(workloads)
     assert len(p['points'])==225
