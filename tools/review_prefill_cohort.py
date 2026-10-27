@@ -128,6 +128,7 @@ def batch_measurements(data, proof, workload, path):
             raw_receipt=str(path), raw_receipt_sha256=data['record_sha256'],
             asysrep=data['asysrep'],sqlite=data['sqlite'])
         if r.get('primer_exceptions'):row['primer_exceptions']=r['primer_exceptions']
+        if p.get('random_gate_evidence'):row['random_gate_evidence']=p['random_gate_evidence']
         found[r['case_id']]=row
     return found,definitions,candidates
 

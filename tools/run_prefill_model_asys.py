@@ -90,6 +90,7 @@ def worker(a):
     root = a.output
     w = Workload(**job['workload'])
     a.workload, a.trace_only, a.model_prefill_probe = w, True, True
+    a.random_dense_probe = read(a.output/'plan.json').get('schema')=='quactlize.dense-random-native.v1'
     a.cohort_prefill_probe = any(k in read(a.output/'plan.json') for k in
                                ('cohort_sha256','helper_plan_sha256','finalist_plan_sha256'))
     a.rounds, a.samples = 3, 17
@@ -125,6 +126,9 @@ def worker(a):
             start = time.monotonic()
             print(f'PREFILL_ASYS_CONFIG_START id={case["id"]} arm={case["arm"]}',flush=True)
             value = qz(a,case['arm'])
+            if a.random_dense_probe:
+                value['random_gate_evidence']=dict(raw_sha256=value['fixture']['fixture']['raw_sha256'],
+                    arithmetic=dict(input='F32',output='F32',compute='F16',accumulator='FP32'))
             value.update(case_id=case['id'],roles=case['roles'])
             values.append(value); atomic_json(a.output/'cases.json',values)
             print(f'PREFILL_ASYS_CONFIG_PASS id={case["id"]} seconds={time.monotonic()-start:.2f}',flush=True)

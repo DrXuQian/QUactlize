@@ -37,7 +37,10 @@ def plan():
         cuda_graph_timing=False, cublas_graph=False, profiler=False)
 
 
-def native_stage_names(inventory):
+def native_stage_names(inventory, *, random_dense_probe=False):
+    if random_dense_probe and all(s['entry']=='KERNEL' for s in inventory):
+        from dev.prefill_asys.trace import native_direct_phases
+        return native_direct_phases(inventory)
     names = []
     for stage in inventory:
         name = stage.get('name', stage['symbol'])
@@ -114,6 +117,7 @@ def native(args, receipt):
         samples=args.samples, point_probe=True, trace_only=getattr(args, 'trace_only', False),
         cohort_prefill_probe=getattr(args, 'cohort_prefill_probe', False),
         model_prefill_probe=getattr(args, 'model_prefill_probe', False))
+    if getattr(args,'random_dense_probe',False):request['random_dense_probe']=True
     atomic_json(out/'request.json', request)
     command = [receipt['carrier'], str(out/'request.json'), str(out)]
     atomic_json(out/'command.json', command)
@@ -124,7 +128,18 @@ def native(args, receipt):
         wait(proc, 'native-fp16', out/'run.log')
     data = json.loads((out/(w.key+'.json')).read_text())
     if data['correctness'] != 'PASS': raise ValueError('native correctness failed')
-    names = native_stage_names(data['inventory'])
+    generic=getattr(args,'random_dense_probe',False)
+    names = native_stage_names(data['inventory'],random_dense_probe=generic)
+    if generic:
+        direct=all(s['entry']=='KERNEL' for s in data['inventory'])
+        if direct:data['native_direct_inventory']=data['inventory']
+        quantized=any('quantize_q8' in s.get('name','') for s in data['inventory'])
+        arithmetic=dict(input='F32',output='F32',
+            compute='LINKED_NATIVE_QUANTIZED_ACTIVATION' if quantized else 'LINKED_NATIVE_FLOAT' if direct else 'F16',
+            accumulator='LINKED_NATIVE_BODY' if direct else 'FP32',
+            native_activation_quantization=quantized)
+        data['receipt']=dict(arithmetic=arithmetic)
+        data['random_gate_evidence']=dict(raw_sha256=data['fixture']['raw_sha256'],arithmetic=arithmetic)
     trace_only = getattr(args, 'trace_only', False)
     data.update(status='PASS', arm='native-fp16', stages=names,
                 allocation='PER_WEIGHT_COPY_NATIVE_POOL_AND_OUTPUT; ISOLATED_CASTS_USE_COPY0',

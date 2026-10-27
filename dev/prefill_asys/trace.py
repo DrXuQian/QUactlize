@@ -113,6 +113,44 @@ def signature(row):
             ('start','end','stream','pid','device','context','phase','correlation_id')}
 
 
+def native_direct_phases(inventory):
+    roles={'producer':'main','adapter':'input','expansion':'expansion',
+           'reducer':'reducer','prepare':'prepare','postprocess':'output'}
+    phases=[]
+    for node in inventory:
+        if (node.get('entry')!='KERNEL' or node.get('role') not in roles or
+                'quactlize' in node.get('name','').lower()):
+            raise ValueError('unclassified/non-native direct stage')
+        phases.append(helper_role(dict(node,kind='kernel'),'native-fp16') or roles[node['role']])
+    if 'main' not in phases:raise ValueError('native direct path has no producer')
+    return phases
+
+
+def native_direct_call(rows, inventory):
+    phases=native_direct_phases(inventory)
+    if len(rows)!=len(inventory):raise ValueError('native direct call inventory incomplete')
+    for row,expected,phase in zip(rows,inventory,phases):
+        if (row['kind']!='kernel' or any(row.get(k)!=expected[k] for k in
+                ('symbol','grid','block','shared_bytes'))):
+            raise ValueError('native direct kernel/launch differs from linked capture')
+        row['phase']=phase
+    return call_times(rows)
+
+
+def call_times(rows):
+    times = defaultdict(float)
+    for r in rows: times[r['phase']] += (r['end']-r['start'])/1000
+    cursor, union = rows[0]['start'], 0
+    for r in rows:
+        union += max(0,r['end']-max(cursor,r['start']))
+        cursor = max(cursor,r['end'])
+    span = (max(r['end'] for r in rows)-rows[0]['start'])/1000
+    total = sum(times.values())
+    return dict(phases_us=dict(times),gpu_sum_us=total,gpu_span_us=span,
+                idle_gap_us=span-union/1000,overlap_us=total-union/1000,
+                fingerprint=digest([(r['phase'],signature(r)) for r in rows]))
+
+
 def one_call(rows, arm, stages, split, *, primer_without_reset=False):
     helpers = [(i,helper_role(r,arm)) for i,r in enumerate(rows) if helper_role(r,arm)]
     expected = [s for s in stages if s not in ('main','error_reset')]
@@ -153,17 +191,7 @@ def one_call(rows, arm, stages, split, *, primer_without_reset=False):
     # The exception is only an inventory check. Do not synthesize a reset or
     # even return a partial duration for this already-discarded call.
     if primer_without_reset: return None
-    times = defaultdict(float)
-    for i,r in enumerate(rows): times[phases[i]] += (r['end']-r['start'])/1000
-    cursor, union = rows[0]['start'], 0
-    for r in rows:
-        union += max(0,r['end']-max(cursor,r['start']))
-        cursor = max(cursor,r['end'])
-    span = (max(r['end'] for r in rows)-rows[0]['start'])/1000
-    total = sum(times.values())
-    return dict(phases_us=dict(times),gpu_sum_us=total,gpu_span_us=span,
-                idle_gap_us=span-union/1000,overlap_us=total-union/1000,
-                fingerprint=digest([(r['phase'],signature(r)) for r in rows]))
+    return call_times(rows)
 
 
 def parse_rows(rows, cases, *, apis=()):
@@ -179,17 +207,25 @@ def parse_rows(rows, cases, *, apis=()):
             raise ValueError('incorrect primer/sample count')
         parameters = dict(case.get('recipe',{}).get('parameters',[]))
         split = parameters.get('split',1)
+        direct = case.get('native_direct_inventory')
+        if direct is not None:
+            if arm!='native-fp16' or case['stages']!=native_direct_phases(direct):
+                raise ValueError('direct native stage contract differs')
         for call in range(contract['captured_calls']):
             start = offset
-            while offset < len(rows) and helper_role(rows[offset],arm) != 'output': offset += 1
-            if offset == len(rows): raise ValueError('Asys complete-call coverage missing: '+case['case_id'])
-            offset += 1
+            if direct is not None:
+                offset += len(direct)
+            else:
+                while offset < len(rows) and helper_role(rows[offset],arm) != 'output': offset += 1
+                if offset == len(rows): raise ValueError('Asys complete-call coverage missing: '+case['case_id'])
+                offset += 1
             block = [dict(r) for r in rows[start:offset]]
             missing = (call==0 and arm in ('full-bf16','full-fp16','full-bf16-typed') and
                        helper_role(block[0],arm) in ('input','expansion'))
             if missing: exceptions.append(primer_reset_evidence(block[0],rows,apis))
             try:
-                calls.append(one_call(block,arm,case['stages'],split,primer_without_reset=missing))
+                calls.append(native_direct_call(block,direct) if direct is not None else
+                             one_call(block,arm,case['stages'],split,primer_without_reset=missing))
             except ValueError as exc:
                 # Keep the strict completeness check. A coordinator's compact
                 # failure must identify the exact call, not just an output
@@ -243,7 +279,8 @@ def parse(path, cases):
         if proof != 'PASS' and (not isinstance(proof,list) or not proof or any(
                 p.get('nonfinite') != 0 or not 0<=p.get('relative_l1_error',1)<.005 for p in proof)):
             raise ValueError('case numerical proof missing or failed')
-    result = parse_rows(activities(path),cases,apis=runtime_activities(path))
+    result = parse_rows(activities(path,launch_shared=any(c.get('native_direct_inventory') for c in cases)),
+                        cases,apis=runtime_activities(path))
     return dict(status='PASS',cases=result,sqlite_sha256=sha(path),production_changed=False,
                 performance_admitted=False)
 
