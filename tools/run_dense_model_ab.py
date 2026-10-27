@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Two existing llama builds: quantized models or an explicit BF16 control.
+"""Existing llama builds, or one build with Quactlize dense disabled/enabled.
 
 No build, model conversion tool, numerical evaluation, online config sweep or
 production-policy modification. Raw traces INCLUDE warmup; analysis must exclude
@@ -126,13 +126,17 @@ def command(args, build, model, phase):
     repeats = args.repeats if phase == 'perf' else args.trace_repeats
     warmups = getattr(args, 'warmup_passes', 1)
     tp = getattr(args, 'tp', 1)
+    caller_defaults = getattr(args, 'caller_defaults', False)
     placement = ['-sm', 'none'] if tp == 1 else ['-sm', 'tensor', '-ts', ','.join(['1'] * tp)]
-    return [str(build / 'bin/llama-batched-bench'), '-m', str(model),
+    if caller_defaults and tp == 1:
+        placement = []
+    argv = [str(build / 'bin/llama-batched-bench'), '-m', str(model),
             '-npp', ','.join([str(args.pp)] * (warmups + repeats)), '-ntg', str(args.tg), '-npl', '1',
-            '-b', str(args.pp), '-ub', str(args.pp), '-c', str(args.pp + args.tg),
-            '-ngl', 'all', *placement, '-fa', '1', '--fit', 'off', '--mmap',
-            '-t', str(args.threads), '-tb', str(args.threads_batch),
-            '--output-format', 'jsonl', '--log-colors', 'off', '--verbosity', '4']
+            '-b', str(args.pp), '-ub', str(args.pp), '-ngl', 'all', *placement, '-fa', '1']
+    if not caller_defaults:
+        argv += ['-c', str(args.pp + args.tg), '--fit', 'off', '--mmap',
+                 '-t', str(args.threads), '-tb', str(args.threads_batch)]
+    return argv + ['--output-format', 'jsonl', '--log-colors', 'off', '--verbosity', '4']
 
 
 def parse_rows(text, pp, tg, repeats, warmup_passes=1):
@@ -310,7 +314,9 @@ def snapshot(args, arm, build, output):
     short_command([str(build / 'bin/llama-batched-bench'), '--version'], env, output / 'version.log')
     help_rc = short_command([str(build / 'bin/llama-batched-bench'), '--help'], env, output / 'help.log')
     help_text = (output / 'help.log').read_text(errors='replace')
-    required = ['--output-format', '-npp', '-ntg', '--fit']
+    required = ['--output-format', '-npp', '-ntg']
+    if not getattr(args, 'caller_defaults', False):
+        required += ['--fit']
     if getattr(args, 'tp', 1) > 1:
         required += ['--split-mode', '--tensor-split']
     if help_rc or any(flag not in help_text for flag in required):
@@ -430,6 +436,9 @@ def main():
                    help='complete untallied PP/TG passes inside EVERY process; raw traces retain them')
     p.add_argument('--threads', type=int, default=16)
     p.add_argument('--threads-batch', type=int, default=32)
+    p.add_argument('--caller-defaults', action='store_true',
+                   help='leave context size, threads, mmap/fit and single-GPU split mode at binary defaults; '
+                        'ambient LLAMA_ARG_* overrides remain excluded')
     p.add_argument('--phases', choices=('perf,trace', 'perf', 'trace'), default='perf,trace', metavar='perf,trace')
     p.add_argument('--jit-cache', type=Path, help='optional existing absolute cache; default library cache unchanged')
     p.add_argument('--output-root', type=Path, default=Path('/workspace'))
@@ -448,28 +457,30 @@ def main():
     builds = {arm: (value or a.llama_dir / default).resolve(strict=True) for arm, value, default in (
         ('reference', a.reference_build, 'build-ci-ppu-dev'),
         ('quactlize', a.quactlize_build, 'build-ci'))}
-    if builds['reference'] == builds['quactlize']:
-        p.error('two distinct existing build directories are required')
+    same_build = builds['reference'] == builds['quactlize']
     a.asys = (a.asys or a.sdk / 'asight/bin/asys').resolve()
     if 'trace' in a.phases and not os.access(a.asys, os.X_OK):
         p.error('missing Asys executable: ' + str(a.asys))
     run = Path(tempfile.mkdtemp(prefix='dense-model-ab.', dir=a.output_root.resolve(strict=True)))
     summary = dict(status='INCOMPLETE', run=str(run), device=a.device, pp=a.pp, tg=a.tg,
                    tp=a.tp, physical_devices=physical_devices,
-                   split_mode='tensor' if a.tp > 1 else 'none',
+                   split_mode='tensor' if a.tp > 1 else 'binary-default' if a.caller_defaults else 'none',
                    tensor_split=[1] * a.tp if a.tp > 1 else None,
                    request_batch=1, token_batch=a.pp,
                    warmup=('EXCLUDE_FIRST_COMPLETE_PASS_EACH_PROCESS' if a.warmup_passes==1 else
                            'EXCLUDE_FIRST_N_COMPLETE_PASSES_EACH_PROCESS'), warmup_passes=a.warmup_passes,
                    input_protocol='BATCHED_BENCH_PSEUDORANDOM_TOKENS_NOT_GENERATED_TEXT_OR_ACCURACY_TEST',
                    builds={k: str(v) for k, v in builds.items()}, results={}, failures=[],
+                   caller_control='SAME_BUILD_DENSE_ON_OFF' if same_build else 'TWO_BUILD_AB',
+                   caller_defaults=a.caller_defaults,
                    candidate_package=str(a.quactlize_package) if a.quactlize_package else None,
                    caller_accumulator_request=a.cublas_accumulator,
                    no_regression_admitted=False, correctness_admitted=False,
                    scope=('BF16_NATIVE_COMPUTE_BUILD_CONTROL_NOT_QUANTIZED_KERNEL_AB' if a.bf16_model else
                           'DENSE_INTEGRATION_AB_NOT_CONFIG_SWEEP_MOE_REMAINS_NATIVE'))
     print(f'DENSE_MODEL_AB_RUN run={run} device={a.device} tp={a.tp} pp={a.pp} tg={a.tg} '
-          'request_batch=1 phases=' + a.phases, flush=True)
+          f'request_batch=1 same_build={int(same_build)} caller_defaults={int(a.caller_defaults)} phases=' + a.phases,
+          flush=True)
     try:
         save(run / 'protocol.json', summary)
         save(run / 'sdk.json', dict(path=str(a.sdk), receipts={str(f.relative_to(a.sdk)): f.read_text(errors='replace')

@@ -181,7 +181,23 @@ def test_workload_and_binary_are_explicit(tmp_path):
         assert cmd[cmd.index('-npp') + 1] == ','.join(['2048'] * count)
         assert cmd[cmd.index('-npl') + 1] == '1'
         assert cmd[cmd.index('-sm') + 1] == 'none'
+        for flag,value in [('-c','2176'),('-t','16'),('-tb','32'),('--fit','off')]:
+            assert cmd[cmd.index(flag)+1]==value
+        assert '--mmap' in cmd
         assert '-ot' not in cmd and '--kpack-cache' not in cmd
+
+
+def test_caller_defaults_keep_workload_but_do_not_override_runtime_defaults(tmp_path):
+    a=args(tmp_path);a.caller_defaults=True;a.pp=5120;a.tg=512;a.warmup_passes=2
+    for phase,count in [('perf',5),('trace',4)]:
+        cmd=runner.command(a,tmp_path/'build-ci',tmp_path/'model.gguf',phase)
+        assert cmd[cmd.index('-npp')+1]==','.join(['5120']*count)
+        for flag,value in [('-ntg','512'),('-b','5120'),('-ub','5120'),('-ngl','all'),('-fa','1')]:
+            assert cmd[cmd.index(flag)+1]==value
+        assert not {'-c','-t','-tb','--fit','--mmap','-sm','-ot'} & set(cmd)
+    a.tp=2
+    cmd=runner.command(a,tmp_path/'build-ci',tmp_path/'model.gguf','perf')
+    assert cmd[cmd.index('-sm')+1]=='tensor' and cmd[cmd.index('-ts')+1]=='1,1'
 
 
 @pytest.mark.parametrize('device,tp', [('0,1',2),('7,5',2),('0,1,2,3',4),('7',1)])
@@ -416,6 +432,43 @@ def test_bf16_orchestrator_uses_requested_builds_and_model_only(tmp_path,monkeyp
         summary=json.load(tar.extractfile('summary.json'))
     assert list(summary['results'])==['bf16-control'] and summary['warmup_passes']==2
     assert summary['scope']=='BF16_NATIVE_COMPUTE_BUILD_CONTROL_NOT_QUANTIZED_KERNEL_AB'
+
+
+def test_same_build_control_runs_one_quantized_model_with_only_dense_toggled(tmp_path,monkeypatch):
+    llama,sdk,models,output=[tmp_path/s for s in ('llama','sdk','models','output')]
+    for path in (llama,sdk,models,output,llama/'build-ci'):
+        path.mkdir(exist_ok=True)
+    model=bf16_files(models,qtypes=(12,),emit=1,stem='Qwen3-32B-Q4_K_M')[0]
+    asys=sdk/'asight/bin/asys';asys.parent.mkdir(parents=True);asys.touch();asys.chmod(0o700)
+    monkeypatch.setenv('LLAMA_ARG_CTX_SIZE','64')
+    monkeypatch.setattr(runner,'snapshot',lambda *a:{})
+    calls=[]
+    def run(a,requested,arm,phase,build,directory):
+        directory.mkdir(parents=True)
+        env=runner.environment(a,build,arm);cmd=runner.command(a,build,requested,phase)
+        assert requested==model and a.pp==5120 and a.tg==512 and a.caller_defaults
+        assert a.warmup_passes==2 and a.device=='7' and build==llama/'build-ci'
+        assert not {'-c','-t','-tb','--fit','--mmap'} & set(cmd)
+        assert 'LLAMA_ARG_CTX_SIZE' not in env
+        calls.append((arm,phase,cmd[0],env['GGML_QUACTLIZE_DENSE'],env['LD_LIBRARY_PATH']))
+        return dict(pp_total_ms=123,tpot_ms=4,profiler_attached=phase=='trace')
+    monkeypatch.setattr(runner,'run_arm',run)
+    monkeypatch.setattr(sys,'argv',['run_dense_model_ab.py','--llama-dir',str(llama),
+        '--reference-build',str(llama/'build-ci'),'--quactlize-build',str(llama/'build-ci'),
+        '--sdk',str(sdk),'--model-file',str(model),'--output-root',str(output),
+        '--device','7','--idle-confirmed','--warmup-passes','2','--pp','5120','--tg','512',
+        '--caller-defaults'])
+    assert runner.main()==0
+    assert [(v[0],v[1],v[3]) for v in calls]==[
+        ('reference','perf','0'),('quactlize','perf','1'),
+        ('quactlize','trace','1'),('reference','trace','0')]
+    assert len({(v[2],v[4]) for v in calls})==1
+    with tarfile.open(next(output.glob('*.review.tgz'))) as tar:
+        summary=json.load(tar.extractfile('summary.json'))
+    assert list(summary['results'])==['explicit-model']
+    assert summary['caller_control']=='SAME_BUILD_DENSE_ON_OFF' and summary['caller_defaults']
+    assert summary['split_mode']=='binary-default'
+    assert not summary['no_regression_admitted'] and not summary['correctness_admitted']
 
 
 def test_tp2_orchestrator_uses_only_explicit_three_shard_model(tmp_path,monkeypatch):

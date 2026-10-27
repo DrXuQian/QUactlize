@@ -88,6 +88,60 @@ accuracy summary/logs. The review excludes binaries/JIT/models and raw `.asysrep
 Asys GUI files remain under `dense-model-ab.*/MODEL/trace/{reference,quactlize}/`.
 Do not rerun the historical component commands below.
 
+### Same-build control: Qwen3-32B, PP5120
+
+Both arms may use the same installed `build-ci/bin/llama-batched-bench`.
+The reference sets `GGML_QUACTLIZE_DENSE=0`; the candidate sets it to1 and
+binds `build-ci/bin/libquactlize_ppu.so`. Loaded caller/runtime paths, both
+M1 and prefill plans, binary hashes and raw traces are still checked/retained.
+This does not rebuild or replace the installed package: an old installed
+selection is intentionally observable rather than silently upgraded.
+
+The uploaded `batched_bench.sh` fixes batch/ubatch to5120, runs PP
+5120/4096/2048/1024/512 twice against TG2048/1024/512, and excludes its first
+15 complete rows. It leaves context size, threads, fit and mmap at binary or
+environment defaults. Our older diagnostic commands instead used TG1,
+context PP+TG and threads16/32, with batch/ubatch equal to PP.
+
+`--caller-defaults` omits context/thread/fit/mmap and single-GPU split flags.
+It retains explicit GPU/model/PP/TG/batch/flash-attention settings and clears
+ambient `LLAMA_ARG_*` overrides as before. Effective context and thread values
+remain in the benchmark JSON rows. This reproduces the chosen workload with
+binary defaults, not arbitrary overrides or the entire multi-M execution
+history of the uploaded script. No accumulator override is added; precision
+must be checked separately before calling this a same-precision comparison.
+
+Only Qwen3-32B, PP5120/TG512, on one otherwise idle GPU:
+
+```bash
+(
+  set -euo pipefail
+  cd /sim/eec/shared/junfu.qx/quactlize
+  git pull --ff-only origin develop
+  GPU=7
+  LLAMA_DIR=/sim/eec/shared/junfu.qx/llama.cpp.ncp
+  MODEL=/sim/eec/shared/AI_workspace/llm-models/bench_model_zoo/Qwen3-32B-Q4_K_M-GGUF/Qwen3-32B-Q4_K_M.gguf
+  test -f "$MODEL"
+  [[ "$GPU" =~ ^[0-9]+$ ]] || exit 1
+  ppu-smi --id="$GPU" --lock-ppu-clocks=1700,1700 --error-on-warning
+  python3 tools/run_dense_model_ab.py \
+    --llama-dir "$LLAMA_DIR" \
+    --reference-build "$LLAMA_DIR/build-ci" \
+    --quactlize-build "$LLAMA_DIR/build-ci" \
+    --model-file "$MODEL" --device "$GPU" --idle-confirmed \
+    --sdk /usr/local/PPU_SDK --caller-defaults \
+    --pp 5120 --tg 512 --warmup-passes 2 --repeats 3 --trace-repeats 3 \
+    --phases perf,trace --output-root /workspace
+)
+```
+
+Each process excludes two full workload passes and reports the next three;
+unprofiled timings and Asys diagnostics remain separate. The protocol records
+`caller_control=SAME_BUILD_DENSE_ON_OFF`. Return the printed `*.review.tgz`;
+raw reports remain at `RUN/explicit-model/trace/{reference,quactlize}/trace.asysrep`.
+This is an installed-integration diagnosis, not a new kernel sweep or a
+whole-model accuracy/performance admission.
+
 ### BF16 control: existing ppu-dev versus dense-enabled build
 
 For further iteration, keep the optimized caller in build-ci. Rebuild/replace
