@@ -88,6 +88,54 @@ accuracy summary/logs. The review excludes binaries/JIT/models and raw `.asysrep
 Asys GUI files remain under `dense-model-ab.*/MODEL/trace/{reference,quactlize}/`.
 Do not rerun the historical component commands below.
 
+### Installed versus fresh Quactlize: one caller, one model
+
+Use `--compare-quactlize-packages` with the same build for both arms and an
+explicit fresh `--quactlize-package`. BOTH arms enable Quactlize dense:
+`reference` binds the installed build/bin package, `quactlize` binds the fresh
+package. This is not native-versus-Quactlize. Both must produce decode/prefill
+plans and load their own public/private libraries. Each arm records its own
+dense policy and runtime hashes; the fresh policy must not be overwritten in
+the receipt by the old caller install. No files in build-ci are replaced.
+
+The NCP build script compiles its pinned `third_party/quactlize` gitlink, not
+an independent Quactlize develop checkout. Build the candidate directly from
+the latter to diagnose that version difference before changing any NCP pin.
+
+```bash
+(
+  set -euo pipefail
+  cd /sim/eec/shared/junfu.qx/quactlize
+  git pull --ff-only origin develop
+  export PPU_SDK=/usr/local/PPU_SDK
+  GPU=7
+  QZ_AB_DIR=$(mktemp -d /workspace/qwen32-qz-library-ab.XXXXXXXX)
+  test -d "${QZ_AB_DIR:?}"
+  LLAMA_DIR=/sim/eec/shared/junfu.qx/llama.cpp.ncp
+  MODEL=/sim/eec/shared/AI_workspace/llm-models/bench_model_zoo/Qwen3-32B-Q4_K_M-GGUF/Qwen3-32B-Q4_K_M.gguf
+  test -f "$MODEL"
+  bash build.sh --library --sdk "$PPU_SDK" \
+    --output "$QZ_AB_DIR/package" --jobs "${JOBS:-8}"
+  [[ "$GPU" =~ ^[0-9]+$ ]] || exit 1
+  ppu-smi --id="$GPU" --lock-ppu-clocks=1700,1700 --error-on-warning
+  python3 tools/run_dense_model_ab.py \
+    --llama-dir "$LLAMA_DIR" \
+    --reference-build "$LLAMA_DIR/build-ci" \
+    --quactlize-build "$LLAMA_DIR/build-ci" \
+    --compare-quactlize-packages --quactlize-package "$QZ_AB_DIR/package" \
+    --model-file "$MODEL" --device "$GPU" --idle-confirmed \
+    --sdk "$PPU_SDK" --caller-defaults \
+    --pp 5120 --tg 512 --warmup-passes 2 --repeats 3 \
+    --phases perf --output-root "$QZ_AB_DIR"
+)
+```
+
+Only this model and PP5120/TG512 are run. Context and thread counts use the
+binary defaults; ambient LLAMA_ARG overrides remain cleared. This first check
+is unprofiled performance, not Asys and not an accuracy test. Return the printed
+`*.review.tgz`, not the new package. If needed, `--phases perf,trace` retains the
+same per-arm library binding for a later Asys diagnosis.
+
 ### Same-build control: Qwen3-32B, PP5120
 
 Both arms may use the same installed `build-ci/bin/llama-batched-bench`.

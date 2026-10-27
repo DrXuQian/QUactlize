@@ -46,9 +46,13 @@ def digest(path):
     return h.hexdigest()
 
 
-def candidate_library(args, build):
-    package = getattr(args, 'quactlize_package', None)
+def candidate_library(args, build, arm='quactlize'):
+    package = getattr(args, 'quactlize_package', None) if arm == 'quactlize' else None
     return (package if package else build / 'bin') / 'libquactlize_ppu.so'
+
+
+def quactlize_enabled(args, arm):
+    return arm == 'quactlize' or bool(getattr(args, 'compare_quactlize_packages', False))
 
 
 def model_inventory(first, *, bf16=False):
@@ -106,15 +110,15 @@ def environment(args, build, arm):
                CUDA_HOME=str(args.sdk / 'CUDA_SDK'), CUDA_PATH=str(args.sdk / 'CUDA_SDK'),
                CUDA_TOOLKIT_ROOT=str(args.sdk / 'CUDA_SDK'),
                CUDA_VISIBLE_DEVICES=args.device, LC_ALL='C',
-               GGML_QUACTLIZE_DENSE='1' if arm == 'quactlize' else '0',
+               GGML_QUACTLIZE_DENSE='1' if quactlize_enabled(args, arm) else '0',
                LD_LIBRARY_PATH=':'.join(map(str, paths)) + ':' + env.get('LD_LIBRARY_PATH', ''),
                PATH=str(args.sdk / 'bin') + ':' + str(args.sdk / 'CUDA_SDK/bin') + ':' + env.get('PATH', ''))
     if getattr(args,'cublas_accumulator',None):
         # A request to the caller build, not proof it implements this knob.
         # Retain the binaries and trace for actual provider verification.
         env['GGML_CUDA_CUBLAS_ACCUMULATOR']=args.cublas_accumulator
-    if arm == 'quactlize':
-        env['QUACTLIZE_PPU_PACK_LIBRARY'] = str(candidate_library(args, build))
+    if quactlize_enabled(args, arm):
+        env['QUACTLIZE_PPU_PACK_LIBRARY'] = str(candidate_library(args, build, arm))
         # Reuse the installed package's own helper and the normal JIT cache.
         # Never point this binary at the source checkout's newer helper.
         if args.jit_cache:
@@ -287,6 +291,8 @@ def snapshot(args, arm, build, output):
     env = environment(args, build, arm)
     files = [build / 'bin/llama-batched-bench']
     files += sorted((build / 'bin').glob('lib*.so*'))
+    library = candidate_library(args, build, arm)
+    runtime = library.parent / 'quactlize-runtime'
     if arm == 'quactlize' and getattr(args, 'quactlize_package', None):
         from tools.build_ppu_library import verify
         from quactlize.runtime.native import sdk_identity
@@ -299,9 +305,8 @@ def snapshot(args, arm, build, output):
         files += [package / name for name in manifest['payloads']]
         files.append(package / 'manifest.json')
         shutil.copyfile(package / 'manifest.json', output / 'candidate-manifest.json')
-        policy = package / 'quactlize-runtime/dense-prefill.json'
-        if policy.is_file():
-            shutil.copyfile(policy, output / 'dense-prefill.json')
+    if quactlize_enabled(args, arm):
+        files += sorted(p for p in runtime.rglob('*') if p.is_file())
     receipts, seen = {}, set()
     for path in files:
         real = path.resolve(strict=True)
@@ -321,12 +326,12 @@ def snapshot(args, arm, build, output):
         required += ['--split-mode', '--tensor-split']
     if help_rc or any(flag not in help_text for flag in required):
         raise ValueError(f'{arm}: batched-bench lacks required flags; see {output / "help.log"}')
-    for source in [build / 'CMakeCache.txt', build / 'bin/quactlize-runtime/final-selection.json',
-                   build / 'bin/quactlize-runtime/prefill-confirmed.json']:
+    for source in [build / 'CMakeCache.txt', runtime / 'final-selection.json',
+                   runtime / 'prefill-confirmed.json', runtime / 'dense-prefill.json']:
         if source.is_file():
             shutil.copyfile(source, output / source.name)
-    if arm == 'quactlize' and not candidate_library(args, build).is_file():
-        raise ValueError('missing candidate unified library')
+    if quactlize_enabled(args, arm) and not library.is_file():
+        raise ValueError(f'missing {arm} unified library')
     return receipts
 
 
@@ -359,7 +364,8 @@ def run_arm(args, model, arm, phase, build, directory):
     timings['scope'] = 'UNPROFILED_MODEL_LATENCY' if phase == 'perf' else 'PROFILED_DIAGNOSTIC_NOT_MODEL_PERF'
     save(directory / 'timings.json', timings)
     tp = getattr(args, 'tp', 1)
-    save(directory / 'selection.json', check_routes(text, arm, args.pp, require_kpack=not native_only, tp=tp))
+    route_arm = 'quactlize' if quactlize_enabled(args, arm) else 'reference'
+    save(directory / 'selection.json', check_routes(text, route_arm, args.pp, require_kpack=not native_only, tp=tp))
     if phase == 'perf':
         maps = json.loads((directory / 'process.json').read_text())['loaded_images']
         for stem in ('libggml-cuda.so', 'libllama.so'):
@@ -367,11 +373,11 @@ def run_arm(args, model, arm, phase, build, directory):
             actual = {Path(p).resolve() for p in maps if Path(p).name.startswith(stem)}
             if not actual or not actual <= expected:
                 raise ValueError(f'{stem}: loaded image not from this build, or missing maps evidence: {actual}')
-        if arm == 'quactlize':
+        if quactlize_enabled(args, arm):
             loaded = {Path(p).resolve() for p in maps}
-            library = candidate_library(args, build).resolve()
+            library = candidate_library(args, build, arm).resolve()
             if not native_only and library not in loaded:
-                raise ValueError('candidate public Quactlize library not found in loaded images')
+                raise ValueError(f'{arm} public Quactlize library not found in loaded images')
             for path in loaded:
                 if path.name.startswith('libquactlize') and path.parent not in (
                         library.parent, library.parent / 'quactlize-runtime'):
@@ -411,6 +417,9 @@ def main():
     p.add_argument('--quactlize-build', type=Path)
     p.add_argument('--quactlize-package', type=Path,
                    help='fresh build.sh --library package; overrides only the candidate, no caller installation')
+    p.add_argument('--compare-quactlize-packages', action='store_true',
+                   help='enable Quactlize in BOTH arms: installed build/bin library versus --quactlize-package; '
+                        'requires the same caller build and a quantized model')
     p.add_argument('--cublas-accumulator',choices=('f16','f32'),
                    help='explicit request for caller builds supporting GGML_CUDA_CUBLAS_ACCUMULATOR')
     p.add_argument('--sdk', type=Path, default=Path(os.environ.get('PPU_SDK', '/usr/local/PPU_SDK')))
@@ -458,6 +467,9 @@ def main():
         ('reference', a.reference_build, 'build-ci-ppu-dev'),
         ('quactlize', a.quactlize_build, 'build-ci'))}
     same_build = builds['reference'] == builds['quactlize']
+    if a.compare_quactlize_packages and (not same_build or not a.quactlize_package or a.bf16_model):
+        p.error('--compare-quactlize-packages requires the same caller build, --quactlize-package, '
+                'and a quantized model')
     a.asys = (a.asys or a.sdk / 'asight/bin/asys').resolve()
     if 'trace' in a.phases and not os.access(a.asys, os.X_OK):
         p.error('missing Asys executable: ' + str(a.asys))
@@ -471,12 +483,15 @@ def main():
                            'EXCLUDE_FIRST_N_COMPLETE_PASSES_EACH_PROCESS'), warmup_passes=a.warmup_passes,
                    input_protocol='BATCHED_BENCH_PSEUDORANDOM_TOKENS_NOT_GENERATED_TEXT_OR_ACCURACY_TEST',
                    builds={k: str(v) for k, v in builds.items()}, results={}, failures=[],
-                   caller_control='SAME_BUILD_DENSE_ON_OFF' if same_build else 'TWO_BUILD_AB',
+                   caller_control=('SAME_BUILD_TWO_QUACTLIZE_PACKAGES' if a.compare_quactlize_packages else
+                                   'SAME_BUILD_DENSE_ON_OFF' if same_build else 'TWO_BUILD_AB'),
+                   compare_quactlize_packages=a.compare_quactlize_packages,
                    caller_defaults=a.caller_defaults,
                    candidate_package=str(a.quactlize_package) if a.quactlize_package else None,
                    caller_accumulator_request=a.cublas_accumulator,
                    no_regression_admitted=False, correctness_admitted=False,
-                   scope=('BF16_NATIVE_COMPUTE_BUILD_CONTROL_NOT_QUANTIZED_KERNEL_AB' if a.bf16_model else
+                   scope=('QUACTLIZE_PACKAGE_AB_NOT_NATIVE_AB' if a.compare_quactlize_packages else
+                          'BF16_NATIVE_COMPUTE_BUILD_CONTROL_NOT_QUANTIZED_KERNEL_AB' if a.bf16_model else
                           'DENSE_INTEGRATION_AB_NOT_CONFIG_SWEEP_MOE_REMAINS_NATIVE'))
     print(f'DENSE_MODEL_AB_RUN run={run} device={a.device} tp={a.tp} pp={a.pp} tg={a.tg} '
           f'request_batch=1 same_build={int(same_build)} caller_defaults={int(a.caller_defaults)} phases=' + a.phases,

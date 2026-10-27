@@ -259,6 +259,8 @@ def test_fresh_package_snapshot_binds_private_payload_not_old_install(tmp_path,m
     a=args(tmp_path);a.quactlize_package=tmp_path/'fresh'
     build=tmp_path/'caller';(build/'bin').mkdir(parents=True)
     (build/'bin/llama-batched-bench').write_bytes(b'host fixture, not an executable')
+    old_policy=build/'bin/quactlize-runtime/dense-prefill.json'
+    old_policy.parent.mkdir();old_policy.write_text('{"old_install":true}')
     files=['libquactlize_ppu.so','quactlize-runtime/libquactlize_ppu_prefill.so',
            'quactlize-runtime/dense-prefill.json','quactlize-runtime/jit/kernel.hpp']
     for name in [*files,'manifest.json']:
@@ -275,6 +277,7 @@ def test_fresh_package_snapshot_binds_private_payload_not_old_install(tmp_path,m
     else:
         receipt=runner.snapshot(a,'quactlize',build,tmp_path/'snapshot')
         assert {str(a.quactlize_package/name) for name in files}<=receipt.keys()
+        assert (tmp_path/'snapshot/dense-prefill.json').read_text()=='{}'
         runner.check_unchanged(receipt)
         (a.quactlize_package/files[1]).write_bytes(b'changed helper')
         with pytest.raises(ValueError,match='changed during'):runner.check_unchanged(receipt)
@@ -434,11 +437,13 @@ def test_bf16_orchestrator_uses_requested_builds_and_model_only(tmp_path,monkeyp
     assert summary['scope']=='BF16_NATIVE_COMPUTE_BUILD_CONTROL_NOT_QUANTIZED_KERNEL_AB'
 
 
-def test_same_build_control_runs_one_quantized_model_with_only_dense_toggled(tmp_path,monkeypatch):
+@pytest.mark.parametrize('compare_packages',[False,True])
+def test_same_build_control_runs_one_quantized_model(tmp_path,monkeypatch,compare_packages):
     llama,sdk,models,output=[tmp_path/s for s in ('llama','sdk','models','output')]
     for path in (llama,sdk,models,output,llama/'build-ci'):
         path.mkdir(exist_ok=True)
     model=bf16_files(models,qtypes=(12,),emit=1,stem='Qwen3-32B-Q4_K_M')[0]
+    package=tmp_path/'fresh';package.mkdir()
     asys=sdk/'asight/bin/asys';asys.parent.mkdir(parents=True);asys.touch();asys.chmod(0o700)
     monkeypatch.setenv('LLAMA_ARG_CTX_SIZE','64')
     monkeypatch.setattr(runner,'snapshot',lambda *a:{})
@@ -450,25 +455,82 @@ def test_same_build_control_runs_one_quantized_model_with_only_dense_toggled(tmp
         assert a.warmup_passes==2 and a.device=='7' and build==llama/'build-ci'
         assert not {'-c','-t','-tb','--fit','--mmap'} & set(cmd)
         assert 'LLAMA_ARG_CTX_SIZE' not in env
+        if compare_packages:
+            assert env['GGML_QUACTLIZE_DENSE']=='1'
+            expected=package if arm=='quactlize' else build/'bin'
+            assert env['QUACTLIZE_PPU_PACK_LIBRARY']==str(expected/'libquactlize_ppu.so')
         calls.append((arm,phase,cmd[0],env['GGML_QUACTLIZE_DENSE'],env['LD_LIBRARY_PATH']))
         return dict(pp_total_ms=123,tpot_ms=4,profiler_attached=phase=='trace')
     monkeypatch.setattr(runner,'run_arm',run)
-    monkeypatch.setattr(sys,'argv',['run_dense_model_ab.py','--llama-dir',str(llama),
+    argv=['run_dense_model_ab.py','--llama-dir',str(llama),
         '--reference-build',str(llama/'build-ci'),'--quactlize-build',str(llama/'build-ci'),
         '--sdk',str(sdk),'--model-file',str(model),'--output-root',str(output),
         '--device','7','--idle-confirmed','--warmup-passes','2','--pp','5120','--tg','512',
-        '--caller-defaults'])
+        '--caller-defaults']
+    if compare_packages:argv+=['--compare-quactlize-packages','--quactlize-package',str(package)]
+    monkeypatch.setattr(sys,'argv',argv)
     assert runner.main()==0
     assert [(v[0],v[1],v[3]) for v in calls]==[
-        ('reference','perf','0'),('quactlize','perf','1'),
-        ('quactlize','trace','1'),('reference','trace','0')]
-    assert len({(v[2],v[4]) for v in calls})==1
+        ('reference','perf','1' if compare_packages else '0'),('quactlize','perf','1'),
+        ('quactlize','trace','1'),('reference','trace','1' if compare_packages else '0')]
+    assert len({v[2] for v in calls})==1
+    assert len({v[4] for v in calls})==(2 if compare_packages else 1)
     with tarfile.open(next(output.glob('*.review.tgz'))) as tar:
         summary=json.load(tar.extractfile('summary.json'))
     assert list(summary['results'])==['explicit-model']
-    assert summary['caller_control']=='SAME_BUILD_DENSE_ON_OFF' and summary['caller_defaults']
+    assert summary['caller_control']==('SAME_BUILD_TWO_QUACTLIZE_PACKAGES' if compare_packages else 'SAME_BUILD_DENSE_ON_OFF')
+    assert summary['caller_defaults'] and summary['compare_quactlize_packages']==compare_packages
+    if compare_packages:assert summary['scope']=='QUACTLIZE_PACKAGE_AB_NOT_NATIVE_AB'
     assert summary['split_mode']=='binary-default'
     assert not summary['no_regression_admitted'] and not summary['correctness_admitted']
+
+
+@pytest.mark.parametrize('arm',['reference','quactlize'])
+@pytest.mark.parametrize('fault',[None,'wrong-library','mixed-runtime'])
+def test_package_comparison_checks_both_arms_plans_and_loaded_images(tmp_path,monkeypatch,arm,fault):
+    a=args(tmp_path);a.compare_quactlize_packages=True;a.warmup_passes=2
+    a.pp=5120;a.tg=512;a.quactlize_package=tmp_path/'fresh'
+    build=tmp_path/'build-ci';(build/'bin').mkdir(parents=True)
+    images=[]
+    for name in ('libggml-cuda.so','libllama.so'):
+        path=build/'bin'/name;path.write_text('host fixture');images.append(str(path))
+    installed=build/'bin';fresh=a.quactlize_package;fresh.mkdir()
+    for root in (installed,fresh):
+        (root/'libquactlize_ppu.so').write_text('public fixture')
+        (root/'quactlize-runtime').mkdir()
+        (root/'quactlize-runtime/libquactlize_ppu_prefill.so').write_text('private fixture')
+    expected=installed if arm=='reference' else fresh
+    other=fresh if arm=='reference' else installed
+    images.append(str((other if fault=='wrong-library' else expected)/'libquactlize_ppu.so'))
+    images.append(str((other if fault=='mixed-runtime' else expected)/'quactlize-runtime/libquactlize_ppu_prefill.so'))
+    monkeypatch.setattr(runner.shutil,'which',lambda _:None)
+    def execute(argv,env,directory,label):
+        assert env['GGML_QUACTLIZE_DENSE']=='1'
+        plans='[quactlize-dense] m=1\n[quactlize-dense] m=5120\n'
+        row=record(pp=5120,tg=512)|dict(n_kv_max=5632)
+        (directory/'run.log').write_text(plans+'\n'.join([json.dumps(row)]*5))
+        runner.save(directory/'process.json',dict(loaded_images=images))
+    monkeypatch.setattr(runner,'execute',execute)
+    if fault:
+        with pytest.raises(ValueError,match='public Quactlize library|mixed old/candidate'):
+            runner.run_arm(a,tmp_path/'model.gguf',arm,'perf',build,tmp_path/'result')
+    else:
+        result=runner.run_arm(a,tmp_path/'model.gguf',arm,'perf',build,tmp_path/'result')
+        assert result['measured_passes']==3 and result['excluded_complete_passes']==2
+
+
+@pytest.mark.parametrize('fault',['missing-package','different-build','bf16'])
+def test_package_comparison_rejects_invalid_control(tmp_path,monkeypatch,fault):
+    for name in ('llama','sdk','package','reference','candidate'):(tmp_path/name).mkdir()
+    argv=['run_dense_model_ab.py','--llama-dir',str(tmp_path/'llama'),'--sdk',str(tmp_path/'sdk'),
+          '--reference-build',str(tmp_path/'reference'),
+          '--quactlize-build',str(tmp_path/('candidate' if fault=='different-build' else 'reference')),
+          '--compare-quactlize-packages','--idle-confirmed','--phases','perf']
+    if fault!='missing-package':argv+=['--quactlize-package',str(tmp_path/'package')]
+    if fault=='bf16':argv+=['--bf16-model',str(tmp_path/'bf16.gguf')]
+    monkeypatch.setattr(sys,'argv',argv)
+    with pytest.raises(SystemExit) as exc:runner.main()
+    assert exc.value.code==2
 
 
 def test_tp2_orchestrator_uses_only_explicit_three_shard_model(tmp_path,monkeypatch):
