@@ -19,6 +19,7 @@ Typed dense dequant has its own stable ID namespace in
 | 22/23 | N64 plane-pair K128/K256 | Q2_K/Q3_K/Q8_0 | F16 or BF16 |
 | 38 | N64/K128 fast half2, 256 threads | Q8_0 | F16 only |
 | 41 | N64/K128 paired-scale fast half2, 128 threads | Q8_0 | F16 only |
+| 43 | Same as41, byte-permute reconstruction; opt-in candidate | Q8_0 | F16 only |
 
 IDs 24..37, 39, 40 and 42 were unselected experiments and are retired.
 They fail validation; no ID is renumbered or reinterpreted. Their source,
@@ -29,7 +30,7 @@ scripts and binaries, not resume against the current library.
 
 Q8 packed-half arithmetic preserves exact signed codes and original F16
 scale bits. It does not change GEMM accumulation. BF16 must not pass through
-rounded F16: IDs38/41 reject BF16 at both prepare and launch. Canonical
+rounded F16: IDs38/41/43 reject BF16 at both prepare and launch. Canonical
 planes, metadata, output layout and arithmetic of all retained kernels are
 unchanged by cleanup.
 
@@ -53,6 +54,13 @@ workspace contract and dynamic pointers/streams remain unchanged.
 `tools/generate_dense_full_helpers.py --check` verify generated tables.
 This cleanup changes neither catalog nor generated selection tables.
 
+DQ43 passed the bounded six-shape Box comparison on20261027. It reduced
+integer instructions and the two focus cases' ACU cycles, but the normal
+rotating-event gains overDQ41 were only0.25%/0.57%. Small shapes still prefer
+DQ38. The [measurement record](measurements/q8_paired_dequant_20261023.txt)
+keeps both timing contexts and the source/archive identities. DQ43 remains
+opt-in: no complete-call table or bucket has been changed to select it.
+
 The first helper rounds R1–R5 are recoverable at
 `8a004d42a91a23664e69762509d34c3b76bbf8e8`.
 The high-plane R5 candidate was not admitted; removing it does not invalidate
@@ -72,7 +80,7 @@ must obey the execution API's N256/K256 alignment, not just the helper tile.
   cd /sim/eec/shared/junfu.qx/quactlize
   git pull --ff-only origin develop
   unset RUN RESUME_RUN POINTS PROFILE_POINTS Q8_SHAPES
-  unset Q8_EXCHANGE Q8_FAST_TAIL Q8_HALF2 Q8_PAIRED
+  unset Q8_EXCHANGE Q8_FAST_TAIL Q8_HALF2 Q8_PAIRED Q8_BYTEPERM
   PPU_SDK=/usr/local/PPU_SDK GPU=1 L2_BYTES=67108864 IDLE_CONFIRMED=1 \
   LLAMA_CI_BUILD_DIR=/sim/eec/shared/junfu.qx/llama.cpp.ncp/build-ci-32F-cublas \
   Q8=1 Q8_NATIVE=1 PROFILE_ACU=1 \
@@ -85,6 +93,11 @@ default six Q8 families, without changing their historical point numbering.
 Omit `Q8_NATIVE=1` to avoid a llama dependency. Without `Q8=1`, the runner
 compares the generic Q3/Q8 helpers0/22/23, checking both F16/BF16 and timing
 F16. Retired experiment switches fail explicitly.
+
+For the retained byte-permute candidate, add `Q8_BYTEPERM=1` with `Q8=1`.
+This compares38/41/43 and, with `Q8_NATIVE=1`, the existing native converter.
+It uses the same runner and correctness gates, not a separate experiment
+entrypoint. Omit or unset `Q8_BYTEPERM` for the default product cohort.
 
 All256codes x63488finiteF16scales, distinct paired scales, subnormals,
 signed zeros, overflow bits and planted faults are checked before Q8
@@ -115,3 +128,9 @@ identical before/after with SDK2.1.1. This is compile evidence, not a fresh
 GPU accuracy or performance run. The outstanding public-library/whole-model
 validation remains the single final round linked above; cleanup adds no
 new parameter sweep.
+
+The20261027 follow-up factors the identical fast half2 reconstruction and
+scale multiply of38/41/43 into `DenseQ8Half2::weight_encoded`. All45 dense
+kernel instruction hashes, opcode inventories and resource records match the
+pre-cleanup bc06873b build using the same local SDK/compiler. The56 related
+host checks pass. This is a code cleanup, not a new device performance claim.

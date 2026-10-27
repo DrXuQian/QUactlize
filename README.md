@@ -81,6 +81,8 @@ are recoverable at `618298d6f8761b8eb4489ad2f1a217dd57f0bd47`.
 Current production keeps typed dequant IDs `0/8/20/21/22/23/38/41`, IO IDs
 `0..4`, compact widths `2/4/8`, and the general SF/full routes. IDs38/41 are
 the measured F16-only Q8 helpers; BF16 retains direct BF16 reconstruction.
+The measured byte-permute candidate43 remains opt-in, shares the same exact
+half2 arithmetic, and does not replace the default38/41 selections.
 Retired IDs are rejected, never renumbered or silently aliased. Cleanup leaves
 the selection tables, rounding and retained native kernel bodies unchanged.
 Use the current model-specific Asys sweep for new comparisons, not a retired
@@ -102,7 +104,8 @@ Current performance entrypoints are separate from CI:
 - `tools/run_prefill_model_asys_box.sh`: model-shape prefill Asys sweep.
 - `tools/run_native_components_box.sh`: isolated native/candidate comparison.
 - `tools/run_dense_dequant_box.sh`: retained typed helpers; `Q8=1` tests the
-  Q8 product cohort, optionally against the existing native F16 converter.
+  Q8 product cohort, optionally against the existing native F16 converter;
+  add `Q8_BYTEPERM=1` to compare the retained43 candidate.
 
 The [final public-library/model validation](docs/PPU_DENSE_CONTIGUOUS_IO.md)
 remains pending. Cleanup is not new GPU timing or a claim of model parity.

@@ -30,25 +30,7 @@ struct DenseQ8Paired {
             uint32_t word,unsigned shift,uint32_t scales) {
         static_assert(!Signed || !BytePerm,"byte permutation consumes canonical biased bytes");
         if constexpr(BytePerm) {
-            uint32_t encoded=byte_encoded(word,shift);
-#if defined(__CUDA_ARCH__) || defined(__HGGC_ARCH__)
-            uint32_t bias=0x64806480u;
-            __half2 q,offset,s;
-            __builtin_memcpy(&q,&encoded,4);
-            __builtin_memcpy(&offset,&bias,4);
-            __builtin_memcpy(&s,&scales,4);
-            q=__hsub2_rn(q,offset); // exact u-128; keep scale multiply separate
-            __half2 value=__hmul2_rn(q,s);
-            uint32_t bits;__builtin_memcpy(&bits,&value,4);return bits;
-#else
-            uint32_t result=0;
-            for(unsigned side=0;side<2;++side) {
-                float code=float(cutlass::half_t::bitcast(uint16_t(encoded>>(16*side))))-1152.f;
-                volatile float product=code*float(cutlass::half_t::bitcast(uint16_t(scales>>(16*side))));
-                result|=uint32_t(cutlass::half_t(product).raw())<<(16*side);
-            }
-            return result;
-#endif
+            return DenseQ8Half2::weight_encoded(byte_encoded(word,shift),scales);
         }
         if constexpr(!Signed) return DenseQ8Half2::weight<true>((word>>shift)&0x00ff00ffu,scales);
 #if defined(__CUDA_ARCH__) || defined(__HGGC_ARCH__)

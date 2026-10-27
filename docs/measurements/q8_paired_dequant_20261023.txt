@@ -30,7 +30,8 @@ single-writer ownership; GGUF oracle and swapped-scale negative; guards;
 Device gates repeat exhaustive arithmetic (including actual byte-permute),
 check every rotating output copy and reject BF16 before any timing.
 
-Box: use tools/run_dense_dequant_box.sh with Q8_HALF2=1 Q8_NATIVE=1 Q8_PAIRED=1.
+Historical20261023 command (frozen source only; these switches are retired):
+tools/run_dense_dequant_box.sh with Q8_HALF2=1 Q8_NATIVE=1 Q8_PAIRED=1.
 Native comes from the existing LLAMA_CI_BUILD_DIR/bin/libggml-cuda.so;
 neither llama nor its converter is rebuilt. The script freezes source, builds
 the small helper probe, requests1700MHz (observed clock advisory), compares
@@ -86,3 +87,41 @@ reported, not a failure or normalization. Compare cycles separately from the
 rotating event samples. Upload only printed review-*.tgz (JSON/log/CSV);
 raw .acurep and binaries remain on Box. Use a new run for this new source.
 This script does not install a candidate into llama/build-ci or change routes.
+
+20261027 returned Box evidence and closeout:
+Source bc06873ba66cfb689bce3442395a62bf99fd09f7,
+actlize021c69300864e03926108867d318572871a44d35.
+Run /workspace/kpack-dense-dequant.WN7AHf8D/results.
+Archive review-1793082910437708350.tgz, SHA256
+f9dc805760807b2deb0aacf1e0a014cc4a6a99cd5bf295f403d5cacd431bc89b.
+ZW81072CU, verified64MiBL2; all observed clocks1700MHz. Audited30 numeric
+cells,6 exhaustive candidate gates,24 timed cells/720 samples,8 ACU exports.
+Source hashes, build/device receipts, profile symbols and geometry match.
+Raw acurep/binaries stayed on Box; counters are the returned CSV exports,
+not an independent re-import of the raw reports.
+
+Rotating-event medians, microseconds (native,38,41,43):
+  N512  K2048 :  3.7385,  3.6443,  3.7093,  3.6532
+  N2048 K512  :  3.7371,  3.6460,  3.7166,  3.6613
+  N4096 K2048 : 15.2512, 15.6353, 15.2476, 15.2512
+  N8192 K2048 : 27.7167, 29.5033, 28.9911, 28.9178
+  N2048 K4096 : 15.2576, 15.4488, 15.2524, 15.2512
+  N1024 K5120 :  9.3436,  9.7800,  9.6507,  9.5954
+
+Matched ACU41->43 cycles: N8192/K2048 26011->24560 (-5.58%);
+N1024/K5120 11614->10846 (-6.61%). Native cycles25134/11101.
+Both focus points: integer ALU instructions-26.27%, total instructions-14.29%;
+40vregs,8704Bshared,zero stack and memory-transaction/bank-conflict counts
+unchanged. Box compiler produced441->381static sites (local compiler421->361);
+these are different compiler binaries despite the same SDK release family.
+Current integer ALU count is2.96%above native, not the earlier39.65%gap.
+
+Do not substitute ACU single-launch cycles for normal rotating-event time:
+DQ43 still trails native4.33%/2.69% on these two points in the latter protocol.
+Both have0DRAMwritebytes under ACU, despite cached output stores. Stall ratios
+alone do not prove a causal latency split. The old model's3ms prefill gap is
+not closed by this isolated helper result.
+
+Decision: retain43 as a measured opt-in candidate, keep38 for small shapes and
+all current production policies unchanged. Stop further Q8 tuning for now.
+No additional Box run is required just to record these results.

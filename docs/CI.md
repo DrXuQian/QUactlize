@@ -104,10 +104,12 @@ been retired. Their product numerical, layout, negative and dynamic-call checks
 live in `tests/test_prefill_dense.py` and `tests/test_dense_q8_paired.py`.
 Product host CI checks all256Q8 codes against all63488finiteF16scale patterns,
 paired distinct scales, signed zeros, subnormals and raw GGUF mappings. Typed
-prepare checks retired IDs and rejects BF16 on the F16-only helpers38/41.
-The reusable isolated runner retains only the current product cohort; it is
-optional tooling, not a second CI entrypoint. No archived experiment PASS
-replaces a live correctness gate.
+prepare checks retired IDs and rejects BF16 on the F16-only helpers38/41/43.
+The byte-permute candidate43 shares the live arithmetic/layout gates; its
+Box results do not make it a default route. The reusable isolated runner's
+default is the product cohort, with43 available through `Q8_BYTEPERM=1`.
+It is optional tooling, not a second CI entrypoint. No archived experiment
+PASS replaces a live correctness gate.
 
 ## CI artifacts and verdict
 
