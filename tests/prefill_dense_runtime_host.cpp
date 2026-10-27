@@ -80,7 +80,7 @@ int main(int argc,char** argv){
         const_cast<float*>(c.a)[0]=i+2;static_cast<float*>(const_cast<void*>(c.weight.low))[0]=i+5;
     }
     for(int type:{0,1})for(int vector:{0,1,2,3,4})for(int variant=-2;variant<=43;++variant)for(int algorithm:{-1,99}){
-        bool half2=variant==38 || variant==41;
+        bool half2=variant==38 || variant==41 || variant==43;
         bool typed=variant==0 || variant==8 || variant==20 || variant==21 || variant==22 || variant==23 || half2;
         assert(bool(qkp_dense_dequant_variant_valid(variant))==typed);
         qkp_dense_options_v1 o{1,sizeof(o),argv[1],type,vector,variant,16,algorithm};void* h=nullptr;
@@ -113,7 +113,7 @@ int main(int argc,char** argv){
         }
         quactlize_kpack_dense_full_destroy_v1(h);
     }
-    qkp_dense_options_v1 invalid{1,sizeof(invalid),argv[1],0,1,43,16,-1};void* h=nullptr;
+    qkp_dense_options_v1 invalid{1,sizeof(invalid),argv[1],0,1,44,16,-1};void* h=nullptr;
     assert(quactlize_kpack_dense_full_prepare_v1(&shape,&arr,&invalid,&h) && !h);
     invalid.dequant_variant=21;invalid.vector_io=5;
     assert(quactlize_kpack_dense_full_prepare_v1(&shape,&arr,&invalid,&h) && !h);

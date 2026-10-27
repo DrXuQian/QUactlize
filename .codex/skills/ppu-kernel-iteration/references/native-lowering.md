@@ -838,3 +838,16 @@ coexists with slower ACU cycles. Int->float removal alone is not a speedup
 either: fast-only totals+0.32% instructions with mixed latency. Retain scoped
 candidate recipes and separate cache protocols; no global policy promotion.
 Detailed timing table and admission boundary: docs/PPU_PREFILL_DENSE_PRODUCTION.md.
+
+Q8 byte reconstruction can be integer-instruction-bound even when fast dequant
+is already present. In the SDK2.1.1 ppu_10 DQ41 body, each half2 still uses
+SHR/AND/OR to select two bytes and add the FP16 exponent. A byte-permute with
+a constant exponent-byte operand combines these three operations without
+changing packing, shared/output maps, half2 rounding or memory instructions.
+The isolated DQ43 compile reduces421->361static sites, with40vregs/8704Bshared/
+zero stack unchanged; all44 old dense bodies remain instruction-byte-identical.
+Do not claim a14.3% speedup: byte-permute throughput, dependencies and memory
+phases still need actual cycles. Reuse the old per-shape winner as a control,
+gate all code/finite-scale bits and preserve full-call context before routing.
+Evidence/protocol: docs/measurements/q8_paired_dequant_20261023.txt (20261027
+follow-up; compile/host only at handoff, not PPU performance admission).

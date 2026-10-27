@@ -18,15 +18,16 @@ enum {
 #define QKP_Q8_HALF2(ID, FAST, THREADS) QKP_DENSE_DEQUANT_Q8_HALF2_##ID = ID,
 #include "dense_q8_half2.inc"
 #undef QKP_Q8_HALF2
-#define QKP_Q8_PAIRED(ID, SIGNED, THREADS) QKP_DENSE_DEQUANT_Q8_PAIRED_##ID = ID,
+#define QKP_Q8_PAIRED(ID, SIGNED, THREADS, BYTEPERM) QKP_DENSE_DEQUANT_Q8_PAIRED_##ID = ID,
 #include "dense_q8_paired.inc"
 #undef QKP_Q8_PAIRED
 };
 
-// The two measured Q8 packed-half helpers are F16-only. BF16 uses its own
+// Q8 packed-half helpers (including opt-in candidates) are F16-only. BF16 uses its own
 // direct or plane-pair implementation, never an F16 intermediate.
 static inline int qkp_dense_dequant_f16_only(int variant) {
-    return variant == QKP_DENSE_DEQUANT_Q8_HALF2_38 || variant == QKP_DENSE_DEQUANT_Q8_PAIRED_41;
+    return variant == QKP_DENSE_DEQUANT_Q8_HALF2_38 || variant == QKP_DENSE_DEQUANT_Q8_PAIRED_41 ||
+           variant == QKP_DENSE_DEQUANT_Q8_PAIRED_43;
 }
 
 static inline int qkp_dense_dequant_variant_valid(int variant) {

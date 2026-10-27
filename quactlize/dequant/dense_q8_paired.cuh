@@ -2,7 +2,7 @@
 #include "dense_q8_paired.hpp"
 
 namespace quactlize::dequant {
-template<bool Signed,unsigned Threads>
+template<bool Signed,unsigned Threads,bool BytePerm=false>
 __global__ __launch_bounds__(Threads) void dense_dequant_q8_paired(
         uint16_t const* __restrict__ low,uint16_t const* __restrict__ units,
         uint16_t* __restrict__ output,int n,int k) {
@@ -41,8 +41,8 @@ __global__ __launch_bounds__(Threads) void dense_dequant_q8_paired(
         uint32_t scale=scales[P::scale(pair,g)],out0[4],out1[4];
         #pragma unroll
         for(unsigned p=0;p<4;++p) {
-            uint32_t x=P::weight<Signed>(words[2*p],shift,scale);
-            uint32_t y=P::weight<Signed>(words[2*p+1],shift,scale);
+            uint32_t x=P::weight<Signed,BytePerm>(words[2*p],shift,scale);
+            uint32_t y=P::weight<Signed,BytePerm>(words[2*p+1],shift,scale);
             out0[p]=P::output0(x,y);out1[p]=P::output1(x,y);
         }
         dst[part*out_step]={out0[0],out0[1],out0[2],out0[3]};

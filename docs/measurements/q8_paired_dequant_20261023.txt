@@ -55,3 +55,34 @@ current isolated rotating events+0.81%, despite matching DQ22 opcode counts
 and the same native DSO. Native/Quactlize call order differs. This is not a
 proven code-optimization gain or a proven cache-only cause. Resolve the
 decision-relevant context gap before claiming end-to-end no regression.
+
+20261027 instruction-only follow-up (base ef6c1cbc):
+DQ43 reuses DQ41's entire N64/K128/128-thread producer, shared map and vector
+output. One byte-permute replaces the repeated shift/mask/OR code construction.
+It keeps the exact half2 bias subtraction and separate rounded multiply;
+canonical bytes, F16 scales and output [N,K] are unchanged. No policy or bucket
+selects43 yet. DQ41/DQ38 and BF16 paths remain controls.
+
+SDK2.1.1 ppu_10 compile-only: DQ41 421 -> DQ43 361 static instructions;
+v.shrl.b32 35->3, v.and.b32 37->5, v.or.b32 41->10, byte-permute32->64.
+Both40vregs/80sregs,8704Bshared,zero stack, same global/shared memory instruction
+inventory. All44 baseline dense instruction bodies remain byte-identical
+(the paired template symbol gains its explicit decoder flag). These are NOT
+latency or dynamic-instruction measurements. Host exhaustive arithmetic,
+encoded-byte negatives, independent GGUF layout/guards and typed-provider
+contracts passed. GPU raw-bit gates are required before timing.
+
+Current bounded Box command (six Q8 shapes; existing llama DSO, no rebuild):
+  Q8=1 Q8_BYTEPERM=1 Q8_NATIVE=1 GPU=1 IDLE_CONFIRMED=1 \
+  PPU_SDK=/usr/local/PPU_SDK L2_BYTES=67108864 \
+  LLAMA_CI_BUILD_DIR=/sim/eec/shared/junfu.qx/llama.cpp.ncp/build-ci-32F-cublas \
+  PROFILE_ACU=1 PROFILE_POINTS=7,5 bash tools/run_dense_dequant_box.sh
+
+Four timed arms: native(-1), retained38, matched41, candidate43. Thirty samples
+per arm/shape, alternating order, first complete graph warmups excluded.
+ACU points7=N1024/K5120,5=N8192/K2048: one direct checked kernel per arm,
+no graph/cold ring under ACU. Request1700MHz; actual clocks are advisory and
+reported, not a failure or normalization. Compare cycles separately from the
+rotating event samples. Upload only printed review-*.tgz (JSON/log/CSV);
+raw .acurep and binaries remain on Box. Use a new run for this new source.
+This script does not install a candidate into llama/build-ci or change routes.

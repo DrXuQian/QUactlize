@@ -27,6 +27,7 @@ class PairedHost(unittest.TestCase):
                         str(root/'tests/dense_q8_paired_host.cpp'),'-o',str(out)],check=True)
         cls.lib=C.CDLL(str(out))
         cls.lib.dense_q8_paired_exhaustive.argtypes=[C.POINTER(C.c_uint64)]
+        cls.lib.dense_q8_byteperm_encoded.argtypes=[C.POINTER(C.c_uint64),C.c_int]
         cls.lib.dense_q8_paired_map.argtypes=[C.c_uint]*3
         cls.lib.dense_q8_paired_map.restype=C.c_uint
         cls.lib.dense_q8_paired_host.argtypes=[C.c_int,C.c_uint]+[C.c_void_p]*3+[C.c_uint]*2+[C.c_int]
@@ -39,11 +40,17 @@ class PairedHost(unittest.TestCase):
         self.assertEqual(self.lib.dense_q8_paired_exhaustive(C.byref(count)),0)
         self.assertEqual(count.value,2*256*63488)
 
+    def test_byteperm_all_retained_pairs_discarded_bytes_and_wrong_phase(self):
+        count=C.c_uint64()
+        self.assertEqual(self.lib.dense_q8_byteperm_encoded(C.byref(count),0),0)
+        self.assertEqual(count.value,2*256*256*4)
+        self.assertNotEqual(self.lib.dense_q8_byteperm_encoded(C.byref(count),1),0)
+
     def test_actual_layout_matches_gguf_all_candidates_and_fault(self):
         import numpy as np
         for n,k in ((256,256),(512,512),(256,1024)):
             packed,gold,_=run.fixture(8,n,k)
-            for signed in (0,1):
+            for signed in (0,1,2):
                 for threads in (128,256):
                     for fault in (0,1):
                         with self.subTest(n=n,k=k,signed=signed,threads=threads,fault=fault):
@@ -104,8 +111,8 @@ class PairedRunner(unittest.TestCase):
             self.assertEqual(json.loads((out/'plan.json').read_text()),p)
 
     def test_profile_identity_and_bf16_rejection(self):
-        for variant,c in run.q8_paired().items():
-            symbol=f'_dense_dequant_q8_pairedILb{c["signed"]}ELj{c["threads"]}E'
+        for variant,c in run.q8_paired(True).items():
+            symbol=f'_dense_dequant_q8_pairedILb{c["signed"]}ELj{c["threads"]}ELb{c["byteperm"]}E'
             native=dict(kernels={symbol:{}})
             self.assertEqual(run.profile_entry(native,5,variant,0),
                              dict(symbol=symbol,grid=[128,16,1],block=[c['threads'],1,1]))
@@ -116,13 +123,39 @@ class PairedRunner(unittest.TestCase):
         def bench(coverage=2*256*63488,negative=1,reject=24):
             values=[np.array(row,dtype='<u4').tobytes() for row in
                     ([0,0,0xffffffff,coverage],[0,negative,0,coverage])]
-            return SimpleNamespace(lib=SimpleNamespace(quactlize_q8_paired_gate=Mock(return_value=0)),
+            return SimpleNamespace(lib=SimpleNamespace(quactlize_q8_paired_gate=Mock(return_value=0),
+                quactlize_q8_byteperm_gate=Mock(return_value=0)),
                 r=SimpleNamespace(alloc=Mock(return_value=4096),stream=C.c_void_p(16)),
                 sdk=SimpleNamespace(lib=SimpleNamespace(hggcMemcpy=Mock(return_value=0)),
                     synchronize=Mock(),download=Mock(side_effect=values)),launch=Mock(return_value=reject))
         self.assertEqual(run.paired_gate(bench()),run.paired_gate_receipt())
+        self.assertEqual(run.paired_gate(bench(),True),run.paired_gate_receipt(True))
         for options in (dict(coverage=256),dict(negative=0),dict(reject=0),dict(reject=1)):
             with self.assertRaises(ValueError):run.paired_gate(bench(**options))
+            with self.assertRaises(ValueError):run.paired_gate(bench(**options),True)
+
+    def test_byteperm_opt_in_inventory_plan_and_precise_profile_identity(self):
+        p=run.plan(list(range(2,8)),67108864,q8=True,native=True,byteperm=True)
+        self.assertEqual(p['variants'],[-1,38,41,43])
+        self.assertEqual(p['order'],[-1,38,41,43,43,41,38,-1])
+        self.assertEqual(p['candidate'],43)
+        self.assertEqual(p['matched_control'],41)
+        self.assertEqual(p['numeric_anchor'],0)
+        self.assertFalse(p['production_changed'])
+        self.assertEqual(run.profile_variants({},True,True,True),(-1,38,41,43))
+        self.assertNotIn(43,run.variants_for(q8=True,native=True))
+        with self.assertRaises(ValueError):run.variants_for(byteperm=True)
+        old='_dense_dequant_q8_pairedILb0ELj128ELb0E'
+        new='_dense_dequant_q8_pairedILb0ELj128ELb1E'
+        native=dict(kernels={old:{},new:{}})
+        self.assertEqual(run.profile_entry(native,7,41,0)['symbol'],old)
+        self.assertEqual(run.profile_entry(native,7,43,0)['symbol'],new)
+        with self.assertRaises(ValueError):run.profile_entry(dict(kernels={old:{}}),7,43,0)
+        with tempfile.TemporaryDirectory() as temp:
+            lib=Path(temp)/'lib.so';lib.touch();out=Path(temp)/'plan'
+            subprocess.run([sys.executable,run.__file__,'--output',str(out),'--q8','--q8-byteperm',
+                '--native-library',str(lib),'--l2-bytes','67108864','--plan-only'],check=True,capture_output=True)
+            self.assertEqual(json.loads((out/'plan.json').read_text()),p)
 
     def test_resume_requires_new_exhaustive_gate_and_candidate_rows(self):
         q,n,k=run.POINTS[4];vs=run.variants_for(q8=True,native=True)
@@ -142,3 +175,13 @@ class PairedRunner(unittest.TestCase):
             bad=copy.deepcopy(data);bad['paired_gate'][key]=value
             with self.assertRaises(ValueError):run.validate_point(bad,4,67108864,q8=True,native=True)
         with self.assertRaises(ValueError):run.validate_point(data,4,67108864,q8=True)
+        candidate=copy.deepcopy(data)
+        candidate['experiment']='Q8_BYTEPERM_NATIVE_F16_AB'
+        for name in ('samples_us','median_us','round_medians_us'):
+            candidate[name]['43']=copy.deepcopy(candidate[name]['41'])
+        candidate['proof']['0']['43']=proof.copy()
+        with self.assertRaises(ValueError):run.validate_point(candidate,4,67108864,q8=True,native=True,byteperm=True)
+        candidate['byteperm_gate']=run.paired_gate_receipt(True)
+        self.assertIs(run.validate_point(candidate,4,67108864,q8=True,native=True,byteperm=True),candidate)
+        candidate['byteperm_gate']['negative_bad']=0
+        with self.assertRaises(ValueError):run.validate_point(candidate,4,67108864,q8=True,native=True,byteperm=True)

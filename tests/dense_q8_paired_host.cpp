@@ -28,6 +28,7 @@ extern "C" int dense_q8_paired_exhaustive(uint64_t* count) {
                 if(P::weight<true>(P::stage<true>(word),phase*8,scales)!=want[phase])return 1;
                 got[phase]=P::weight<false>(word,phase*8,scales);
                 if(got[phase]!=want[phase])return 2;
+                if(P::weight<false,true>(word,phase*8,scales)!=want[phase])return 4;
                 ++*count;
             }
             if(P::output0(got[0],got[1])!=((want[0]&65535u)|(want[1]<<16)) ||
@@ -37,7 +38,22 @@ extern "C" int dense_q8_paired_exhaustive(uint64_t* count) {
     return 0;
 }
 
-template<bool Signed,unsigned Threads> int layout(uint16_t const* low,uint16_t const* units,
+extern "C" int dense_q8_byteperm_encoded(uint64_t* count,int fault) {
+    *count=0;
+    for(unsigned phase=0;phase<2;++phase)
+    for(unsigned x=0;x<256;++x)for(unsigned y=0;y<256;++y)
+    for(unsigned discarded : {0u,0xffffu,0x7f80u,0x80ffu}) {
+        unsigned shift=phase*8;
+        uint32_t other=((discarded&255u)|((discarded>>8)<<16))<<(8-shift);
+        uint32_t word=((x|(y<<16))<<shift)|other;
+        uint32_t expected=((word>>shift)&0x00ff00ffu)|0x64006400u;
+        if(P::byte_encoded(word,fault?8-shift:shift)!=expected)return 1;
+        ++*count;
+    }
+    return 0;
+}
+
+template<bool Signed,unsigned Threads,bool BytePerm=false> int layout(uint16_t const* low,uint16_t const* units,
         uint16_t* output,unsigned n,unsigned k,int fault) {
     std::vector<unsigned char> out_writes(uint64_t(n)*k);
     for(unsigned n0=0;n0<n;n0+=64)for(unsigned k0=0;k0<k;k0+=128) {
@@ -72,8 +88,8 @@ template<bool Signed,unsigned Threads> int layout(uint16_t const* low,uint16_t c
             uint64_t dst=(uint64_t(n0+2*(t/16))*(k/8)+k0/8+t%16+uint64_t(part)*2*(Threads/16)*(k/8))*8;
             uint32_t scale=scales[P::scale(pair,g)];
             for(unsigned p=0;p<4;++p) {
-                uint32_t x=P::weight<Signed>(words[2*p],L::shift(kk),scale);
-                uint32_t y=P::weight<Signed>(words[2*p+1],L::shift(kk),scale);
+                uint32_t x=P::weight<Signed,BytePerm>(words[2*p],L::shift(kk),scale);
+                uint32_t y=P::weight<Signed,BytePerm>(words[2*p+1],L::shift(kk),scale);
                 uint32_t values[2]={P::output0(x,y),P::output1(x,y)};
                 for(unsigned side=0;side<2;++side)for(unsigned v=0;v<2;++v) {
                     uint64_t at=dst+side*k+2*p+v;
@@ -90,6 +106,11 @@ template<bool Signed,unsigned Threads> int layout(uint16_t const* low,uint16_t c
 extern "C" int dense_q8_paired_host(int sign,unsigned threads,uint16_t const* low,uint16_t const* units,
                                     uint16_t* output,unsigned n,unsigned k,int fault) {
     if(n%64 || k%128 || (fault!=0 && fault!=1))return 99;
+    if(sign==2) {
+        if(threads==128)return layout<false,128,true>(low,units,output,n,k,fault);
+        if(threads==256)return layout<false,256,true>(low,units,output,n,k,fault);
+        return 99;
+    }
     if(threads==128)return sign?layout<true,128>(low,units,output,n,k,fault):layout<false,128>(low,units,output,n,k,fault);
     if(threads==256)return sign?layout<true,256>(low,units,output,n,k,fault):layout<false,256>(low,units,output,n,k,fault);
     return 99;

@@ -23,7 +23,7 @@ class DenseDequantRunner(unittest.TestCase):
         self.assertEqual(p['timed_storage'],'F16')
         self.assertEqual(p['experiment'],'Q8_PRODUCT_F16_AB')
         self.assertEqual(p['configs']['38'],dict(fast=1,threads=256))
-        self.assertEqual(p['paired_configs']['41'],dict(signed=0,threads=128))
+        self.assertEqual(p['paired_configs']['41'],dict(signed=0,threads=128,byteperm=0))
         with self.assertRaises(ValueError):run.plan([0],67108864,q8=True)
         for control in (0,22,23):
             medians={str(v):10. for v in p['variants']};medians[str(control)]=1.
@@ -74,6 +74,15 @@ class DenseDequantRunner(unittest.TestCase):
                 child=subprocess.run(['bash',str(script)],env=dict(env,**{name:value}),capture_output=True,text=True)
                 self.assertNotEqual(child.returncode,0)
                 self.assertIn(name+' was retired',child.stderr)
+
+    def test_byteperm_cli_requires_q8_before_creating_output(self):
+        with tempfile.TemporaryDirectory() as temp:
+            out=Path(temp)/'plan'
+            child=subprocess.run([sys.executable,run.__file__,'--output',str(out),
+                '--q8-byteperm','--plan-only'],capture_output=True,text=True)
+            self.assertNotEqual(child.returncode,0)
+            self.assertIn('--q8-byteperm requires --q8',child.stderr)
+            self.assertFalse(out.exists())
 
     def test_half2_profile_cannot_mislabel_fast_as_bf16(self):
         symbol='_ZN9quactlize7dequant22dense_dequant_q8_half2ILb1ELj256EEEvPKtS3_Ptii'

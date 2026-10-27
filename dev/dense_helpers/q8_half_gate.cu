@@ -27,7 +27,7 @@ extern "C" int quactlize_q8_half2_gate(uint32_t* bad,int fault,void* stream) {
     return int(hggcGetLastError());
 }
 
-__global__ void q8_paired_arithmetic_gate(uint32_t* bad,unsigned fault) {
+template<bool BytePerm> __global__ void q8_paired_arithmetic_gate(uint32_t* bad,unsigned fault) {
     using P=quactlize::dequant::DenseQ8Paired;
     unsigned i=blockIdx.x*blockDim.x+threadIdx.x,d=i>>8,raw=i&255u;
     if((d&0x7c00u)==0x7c00u) return;
@@ -45,7 +45,7 @@ __global__ void q8_paired_arithmetic_gate(uint32_t* bad,unsigned fault) {
         want[phase]=__half_as_ushort(__float2half_rn(__fmul_rn(float(int(r)-128),s0)))|
             (uint32_t(__half_as_ushort(__float2half_rn(__fmul_rn(float(127-int(r)),s1))))<<16);
         signed_value[phase]=P::weight<true>(P::stage<true>(word),phase*8,scales);
-        fast[phase]=P::weight<false>(word,phase*8,scales);
+        fast[phase]=P::weight<false,BytePerm>(word,phase*8,scales);
         if(fault && i==0 && phase==0)fast[phase]^=1;
         if(signed_value[phase]!=want[phase])atomicAdd(bad,1u);
         if(fast[phase]!=want[phase])atomicAdd(bad+1,1u);
@@ -60,6 +60,11 @@ __global__ void q8_paired_arithmetic_gate(uint32_t* bad,unsigned fault) {
 }
 extern "C" int quactlize_q8_paired_gate(uint32_t* bad,int fault,void* stream) {
     if(!bad || (fault!=0 && fault!=1)) return 1;
-    q8_paired_arithmetic_gate<<<65536,256,0,static_cast<hggcStream_t>(stream)>>>(bad,unsigned(fault));
+    q8_paired_arithmetic_gate<false><<<65536,256,0,static_cast<hggcStream_t>(stream)>>>(bad,unsigned(fault));
+    return int(hggcGetLastError());
+}
+extern "C" int quactlize_q8_byteperm_gate(uint32_t* bad,int fault,void* stream) {
+    if(!bad || (fault!=0 && fault!=1)) return 1;
+    q8_paired_arithmetic_gate<true><<<65536,256,0,static_cast<hggcStream_t>(stream)>>>(bad,unsigned(fault));
     return int(hggcGetLastError());
 }

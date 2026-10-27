@@ -9,6 +9,7 @@ GPU=${GPU:-${CUDA_VISIBLE_DEVICES:-1}}
 [[ ${PROFILE_ACU:-0} =~ ^[01]$ ]] || { echo 'ERROR: PROFILE_ACU must be 0 or 1.' >&2; exit 1; }
 [[ ${Q8:-0} =~ ^[01]$ ]] || { echo 'ERROR: Q8 must be 0 or 1.' >&2; exit 1; }
 [[ ${Q8_NATIVE:-0} =~ ^[01]$ ]] || { echo 'ERROR: Q8_NATIVE must be 0 or 1.' >&2; exit 1; }
+[[ ${Q8_BYTEPERM:-0} =~ ^[01]$ ]] || { echo 'ERROR: Q8_BYTEPERM must be 0 or 1.' >&2; exit 1; }
 # Do not silently reinterpret an old experiment as a product-cohort run.
 for retired in Q8_EXCHANGE Q8_FAST_TAIL Q8_HALF2 Q8_PAIRED; do
     [[ ! -v ${retired} ]] || { echo "ERROR: ${retired} was retired; unset it and use Q8=1, or use the old run's frozen script." >&2; exit 1; }
@@ -23,6 +24,10 @@ export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 "${PYTHON}" -c 'import numpy,torch;from gguf.quants import dequantize'
 args=(--confirm-idle --sdk "${PPU_SDK}" --l2-bytes "${L2_BYTES:-67108864}")
 if [[ ${Q8:-0} == 1 ]]; then args+=(--q8); fi
+if [[ ${Q8_BYTEPERM:-0} == 1 ]]; then
+    [[ ${Q8:-0} == 1 ]] || { echo 'ERROR: Q8_BYTEPERM requires Q8=1.' >&2; exit 1; }
+    args+=(--q8-byteperm)
+fi
 if [[ ${Q8_NATIVE:-0} == 1 ]]; then
     [[ ${Q8:-0} == 1 ]] || { echo 'ERROR: Q8_NATIVE requires Q8=1.' >&2; exit 1; }
     if [[ -z ${NATIVE_LIBRARY:-} ]]; then
@@ -64,12 +69,12 @@ if [[ ${PROFILE_ACU:-0} == 1 ]]; then
     [[ -z ${PROFILE_POINTS:-} ]] || args+=(--profile-points "${PROFILE_POINTS}")
 fi
 [[ -z ${PPU_SMI:-} ]] || args+=(--smi "${PPU_SMI}")
-echo "DENSE_DEQUANT_BOX run=${RUN} gpu=${GPU} q8=${Q8:-0} q8_native=${Q8_NATIVE:-0} gemm_calls=0 kernel_default_changed=0"
+echo "DENSE_DEQUANT_BOX run=${RUN} gpu=${GPU} q8=${Q8:-0} q8_native=${Q8_NATIVE:-0} q8_byteperm=${Q8_BYTEPERM:-0} gemm_calls=0 kernel_default_changed=0"
 set +e
 "${PYTHON}" -u "${RUN}/source/tools/run_dense_dequant.py" --output "${RUN}/results" \
     "${args[@]}" 2>&1 | tee "${RUN}/console-$(date +%s%N).log"
 rc=${PIPESTATUS[0]}
 set -e
 echo "runner_rc=${rc} run=${RUN}"
-echo "DENSE_DEQUANT_RESUME RESUME_RUN=${RUN} GPU=${GPU} Q8_SHAPES=${Q8_SHAPES:-} Q8=${Q8:-0} Q8_NATIVE=${Q8_NATIVE:-0} NATIVE_LIBRARY=${NATIVE_LIBRARY:-} PROFILE_ACU=${PROFILE_ACU:-0} IDLE_CONFIRMED=1 bash tools/run_dense_dequant_box.sh"
+echo "DENSE_DEQUANT_RESUME RESUME_RUN=${RUN} GPU=${GPU} Q8_SHAPES=${Q8_SHAPES:-} Q8=${Q8:-0} Q8_NATIVE=${Q8_NATIVE:-0} Q8_BYTEPERM=${Q8_BYTEPERM:-0} NATIVE_LIBRARY=${NATIVE_LIBRARY:-} PROFILE_ACU=${PROFILE_ACU:-0} IDLE_CONFIRMED=1 bash tools/run_dense_dequant_box.sh"
 exit "${rc}"

@@ -60,7 +60,7 @@ class DenseHelperHost(unittest.TestCase):
         for q in (8,10,11,12,13,14):
             for storage in (0,1):
                 accepted={0,22,23} if q in (8,10,11) else {0,8,20,21}
-                if q==8 and storage==0:accepted|={38,41}
+                if q==8 and storage==0:accepted|={38,41,43}
                 for variant in range(-2,44):
                     with self.subTest(q=q,storage=storage,variant=variant):
                         self.assertEqual(bool(self.lib.dense_dequant_supported(q,storage,variant)),variant in accepted)
@@ -82,9 +82,11 @@ class DenseHelperHost(unittest.TestCase):
         for bucket in policy['buckets']:
             check(bucket['key'][0],bucket['recipe'])
         self.assertTrue({38,41}<=checked)
+        self.assertNotIn(43,checked) # opt-in instruction candidate is not admitted
         helpers=json.loads((ROOT/'policies/dense_full_helpers_20261023.json').read_text())
         for row in helpers['rows']:
             self.assertEqual(self.lib.dense_dequant_supported(row['q'],row['storage'],row['dequant']),1,row)
+            self.assertNotEqual(row['dequant'],43)
 
     def test_q8_half2_per_instruction_global_footprints(self):
         from collections import Counter

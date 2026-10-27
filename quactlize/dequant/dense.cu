@@ -330,14 +330,14 @@ extern "C" int quactlize_kpack_dequant_dense_v1(qzd_call_v1 const* c,
         if (!p[i] || p[i]%16 || !span(p[i],len[i])) return QKG_INVALID;
         for (int j=0;j<i;++j) if(overlap(p[i],len[i],p[j],len[j])) return QKG_INVALID;
     }
-    if(variant==QKP_DENSE_DEQUANT_Q8_PAIRED_41) {
+    if(variant==QKP_DENSE_DEQUANT_Q8_PAIRED_41 || variant==QKP_DENSE_DEQUANT_Q8_PAIRED_43) {
         if(storage) return QKG_SHAPE;
         auto stream=static_cast<hggcStream_t>(c->stream);
         auto low=static_cast<uint16_t const*>(c->low),units=static_cast<uint16_t const*>(c->units);
         auto output=static_cast<uint16_t*>(c->output);
         switch(variant) {
-#define QKP_Q8_PAIRED(ID, SIGNED, THREADS) case ID: \
-            dense_dequant_q8_paired<SIGNED,THREADS><<<dim3(c->n/64,c->k/128),THREADS,0,stream>>>(low,units,output,c->n,c->k); break;
+#define QKP_Q8_PAIRED(ID, SIGNED, THREADS, BYTEPERM) case ID: \
+            dense_dequant_q8_paired<SIGNED,THREADS,BYTEPERM><<<dim3(c->n/64,c->k/128),THREADS,0,stream>>>(low,units,output,c->n,c->k); break;
 #include "../prefill/dense_q8_paired.inc"
 #undef QKP_Q8_PAIRED
         }
