@@ -1,5 +1,70 @@
 # Dense M coverage experiment
 
+## Targeted prefill/native gate: Qwen35 and Qwen32 M5120
+
+`tools/run_dense_model_native_gate.py` closes a different coverage gap from
+the config sweeps below. It reads the actual GGUF headers and tests one
+current production exact/bucket recipe against native at each requested point:
+
+| Model | M | Shapes in the previously uploaded headers |
+| --- | --- | --- |
+| Qwen3.5-35B-A3B Q4_K_M | 512,1024,2048,4096,5120 | 5 Q8 dense families, 25 points |
+| Qwen3-32B Q4_K_M | 5120 | 7 Q4/Q6 dense families, 7 points |
+
+The Box re-derives these counts from its files. The current inventory totals
+32 points, 128 Asys captures (native/Qz/Qz/native), and three TC modules. This
+is **not** a config sweep. Shared experts' dense weights are included; routed
+expert MUL_MAT_ID, floating/native-only matrices and non-layer/output tensors
+are explicitly listed in `plan.json` exclusions. The output head may execute
+at M1 in a prefill graph and is not silently charged as M5120 here.
+
+Operands are F16, endpoints F32, accumulation FP32. Use the existing
+`build-ci-32F-cublas` reference. The narrow test adapter must match the linked
+backend on changed inputs; no caller rebuild, source-mtime gate or installed
+Quactlize library replacement occurs. This measures the frozen repository's
+selected production stage implementations, **not** proof that a model loaded
+the same installed DSO or that its default native GEMM accumulates in FP32.
+Do not relabel the result as parity with default F16 accumulation.
+
+All component durations come from Asys GPU activities, with ordinary calls,
+no cuBLAS CUDA Graph, first-ring/warmup exclusion, and same-card paired arms.
+Input conversion, dequant/scale expansion, main, every reducer and output
+conversion are individually recorded and summed. Compare arithmetic means,
+not minima; one slower point remains REGRESSION even if the weighted model
+sum improves. Missing/failed points are INCOMPLETE, not zero-time passes.
+
+On an otherwise idle card (or replace `--gpus 7` with idle ordinals):
+
+```bash
+(
+  set -euo pipefail
+  cd /sim/eec/shared/junfu.qx/quactlize
+  git pull --ff-only origin develop
+  python3 tools/run_dense_model_native_gate.py \
+    --llama-source /sim/eec/shared/junfu.qx/llama.cpp.ncp \
+    --llama-build /sim/eec/shared/junfu.qx/llama.cpp.ncp/build-ci-32F-cublas \
+    --sdk /usr/local/PPU_SDK --gpus 7 --jobs 8 \
+    --l2-bytes 67108864 --confirm-idle
+)
+```
+
+Defaults use the exact two `bench_model_zoo` GGUF files already named in the
+model A/B commands. Override `--qwen35-model` and `--qwen32-model` with exact
+files if needed. `--plan-only` needs neither SDK nor llama build; it still
+checks the real C++ selector. Resume with the same flags plus the printed
+`--output ... --resume`. Completed paired measurements, including regressions,
+are retained; no resampling until a pass. GPU assignment, source, models,
+precision, build and SDK must remain unchanged.
+
+Upload only the printed `review-*.json.xz`. It includes the complete plan,
+raw component samples, numerical proofs, commit/DSO/device identities and
+errors, without binaries, weights or Asys blobs. On Box `comparison.csv`,
+`components.csv`, `coverage.csv` and `model-summary.csv` expose the per-point,
+per-kernel and model/tensor mappings. Model sums assume one call per layer
+weight and are explicitly **not** whole-network prefill predictions; compare
+actual model graph counts and timings separately. Return codes: 0 PASS,
+2 REGRESSION, 1 INCOMPLETE. No selectors or kernels are modified by the gate.
+
 This records a bounded experiment and its subsequent exact-only admission. The inventory
 is the 45 `(qtype,N,K)` families in `policies/dense_prefill_v1.json`, including
 its recorded TP-local dense shapes. It does not exercise tensor-parallel

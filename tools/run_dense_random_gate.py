@@ -49,10 +49,14 @@ def finish(output, plan):
     try:
         if not paths:raise ValueError('no component review produced; inspect worker logs')
         with lzma.open(paths[-1],'rt') as f:review=json.load(f)
-        summary=compare(plan,review)
+        if plan.get('schema')=='quactlize.dense-model-native.v1':
+            from dev.prefill_asys.model_gate import compare as compare_model
+            summary=compare_model(plan,review)
+        else:
+            summary=compare(plan,review)
     except Exception as exc:
         error=repr(exc)
-        summary=dict(status='INCOMPLETE',error=error,expected=len(plan['points']),scope=SCOPE,
+        summary=dict(status='INCOMPLETE',error=error,expected=len(plan['points']),scope=plan.get('scope',SCOPE),
                      production_changed=False,model_tpot_admitted=False)
     coordinator=sorted((output/'run').glob('summary-*.json'))
     state=read(coordinator[-1]) if coordinator else None
@@ -60,12 +64,15 @@ def finish(output, plan):
         summary['status']='INCOMPLETE'
     summary['coordinator']=state
     atomic_json(output/'summary.json',summary);csv_result(output/'comparison.csv',summary)
-    packet=dict(schema='quactlize.dense-random-native-review.v1',plan=plan,summary=summary,evidence=review,
+    model=plan.get('schema')=='quactlize.dense-model-native.v1'
+    packet=dict(schema='quactlize.dense-model-native-review.v1' if model else 'quactlize.dense-random-native-review.v1',
+                plan=plan,summary=summary,evidence=review,
                 raw_reports='RETAINED_ON_BOX_NOT_EMBEDDED',review_sha256=sha(paths[-1]) if paths else None)
     packet['sha256']=digest(packet)
     path=output/('review-'+str(time.time_ns())+'.json.xz')
     with lzma.open(path,'xt') as f:json.dump(packet,f,separators=(',',':'),sort_keys=True)
-    print('RANDOM_DENSE_DONE '+json.dumps({k:v for k,v in summary.items() if k not in ('points','coordinator')}),flush=True)
+    print(('MODEL_PREFILL_NATIVE_DONE ' if model else 'RANDOM_DENSE_DONE ')+
+          json.dumps({k:v for k,v in summary.items() if k not in ('points','coordinator')}),flush=True)
     print('results='+str(path),flush=True)
     return 0 if summary['status']=='PASS' else 2 if summary['status']=='REGRESSION' else 1
 

@@ -90,7 +90,8 @@ def worker(a):
     root = a.output
     w = Workload(**job['workload'])
     a.workload, a.trace_only, a.model_prefill_probe = w, True, True
-    a.random_dense_probe = read(a.output/'plan.json').get('schema')=='quactlize.dense-random-native.v1'
+    a.random_dense_probe = read(a.output/'plan.json').get('schema') in (
+        'quactlize.dense-random-native.v1','quactlize.dense-model-native.v1')
     a.cohort_prefill_probe = any(k in read(a.output/'plan.json') for k in
                                ('cohort_sha256','helper_plan_sha256','finalist_plan_sha256'))
     a.rounds, a.samples = 3, 17

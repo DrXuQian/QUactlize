@@ -140,6 +140,9 @@ def snapshot(plan):
 
 
 def load(document):
+    if document.get('schema') == 'quactlize.dense-model-native.v1':
+        from .model_gate import validate as validate_model
+        return validate_model(document)
     if document.get('schema') == 'quactlize.dense-random-native.v1':
         from .random_gate import validate as validate_random
         return validate_random(document)

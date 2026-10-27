@@ -56,7 +56,7 @@ def draws(policy, seed):
     return result
 
 
-def cpp_choices(workloads, policy, output):
+def cpp_choices(workloads, policy, output, *, bucket_only=True):
     source=ROOT/'dev/prefill_asys/random_lookup.cpp';binary=output/'selector-query'
     subprocess.run(['g++','-std=c++17','-O2','-I'+str(ROOT),str(source),'-o',str(binary)],check=True)
     raw=subprocess.check_output([str(binary)],text=True,
@@ -67,8 +67,10 @@ def cpp_choices(workloads, policy, output):
     result=[]
     for w,(index,kind) in zip(workloads,rows):
         coverage,rid=policy_lookup(policy,w)
-        if coverage!='BUCKET_PREDICTION' or not 0<=index<len(used) or kind!=21 or used[index]!=rid:
-            raise ValueError(f'random point must hit the actual production bucket, not an exact or generic fallback: {w}')
+        expected_kind={'EXACT':20,'BUCKET_PREDICTION':21}.get(coverage)
+        if ((bucket_only and coverage!='BUCKET_PREDICTION') or expected_kind is None or
+                not 0<=index<len(used) or kind!=expected_kind or used[index]!=rid):
+            raise ValueError(f'point must hit the matching production exact/bucket recipe: {w}')
         result.append(dict(coverage=coverage,policy=kind,recipe=rid))
     return result
 
@@ -131,6 +133,11 @@ def validate(plan):
 
 def compare(plan, review):
     validate(plan)
+    return compare_selected(plan,review)
+
+
+def compare_selected(plan, review):
+    """Compare validated fixed-selection plans; never import historical timing."""
     if (review.get('schema')!='quactlize.prefill-component-review.v1' or
             review.get('review_sha256')!=digest({k:v for k,v in review.items() if k!='review_sha256'})):
         raise ValueError('random review hash differs')
@@ -197,6 +204,6 @@ def compare(plan, review):
             quactlize_commit=revision['quactlize_commit']))
     tally=Counter(p['status'] for p in result)
     status='INCOMPLETE' if tally['INCOMPLETE'] else 'REGRESSION' if tally['REGRESSION'] else 'PASS'
-    return dict(status=status,counts=dict(tally),points=result,seed=plan['seed'],expected=len(expected),
-        metric=plan['metric'],scope=SCOPE,all_shapes_no_regression_proven=False,
+    return dict(status=status,counts=dict(tally),points=result,seed=plan.get('seed'),expected=len(expected),
+        metric=plan['metric'],scope=plan['scope'],all_shapes_no_regression_proven=False,
         production_changed=False,model_tpot_admitted=False)
