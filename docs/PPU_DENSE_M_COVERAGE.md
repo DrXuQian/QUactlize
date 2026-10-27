@@ -56,6 +56,11 @@ checks the real C++ selector. Resume with the same flags plus the printed
 are retained; no resampling until a pass. GPU assignment, source, models,
 precision, build and SDK must remain unchanged.
 
+This archive-based entry does not reject a dirty checkout. Workers still
+execute the committed HEAD and pinned actlize archives; uncommitted kernel
+edits are not included. Commit/tree, payload and resume identity checks remain
+in place, so ignored checkout edits are never relabelled as measured HEAD code.
+
 Upload only the printed `review-*.json.xz`. It includes the complete plan,
 raw component samples, numerical proofs, commit/DSO/device identities and
 errors, without binaries, weights or Asys blobs. On Box `comparison.csv`,

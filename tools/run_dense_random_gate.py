@@ -89,7 +89,7 @@ def main():
     if a.resume and not a.output:p.error('--resume requires the original --output')
     if not a.plan_only:
         if not a.confirm_idle:p.error('--confirm-idle required')
-        revision(ROOT)  # Workers snapshot committed sources, not dirty working-tree edits.
+        revision(ROOT,require_clean=False)  # Workers execute HEAD archives, not working-tree edits.
     if a.output is None:
         parent=Path('/workspace') if Path('/workspace').is_dir() else Path(tempfile.gettempdir())
         a.output=Path(tempfile.mkdtemp(prefix='kpack-random-dense.',dir=parent))/'results'

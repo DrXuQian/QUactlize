@@ -182,6 +182,25 @@ def test_frozen_source_requires_full_commit_and_lite_repack_recognizes_schema(tm
     assert exclusion(Path('point.json')) is None
 
 
+def test_archive_revision_ignores_dirty_checkout_and_staged_gitlink(tmp_path):
+    def git(*args):
+        return subprocess.check_output(['git','-C',str(tmp_path),*args],text=True,stderr=subprocess.PIPE).strip()
+    git('init','-q');git('config','user.name','Host Test');git('config','user.email','test@example.invalid')
+    tracked=tmp_path/'kernel.cu';tracked.write_text('committed kernel')
+    git('add','kernel.cu');git('commit','-qm','kernel fixture')
+    pin=git('rev-parse','HEAD')
+    git('update-index','--add','--cacheinfo','160000,'+pin+',third_party/actlize')
+    git('commit','-qm','pin fixture')
+    clean=revision(tmp_path,require_clean=False)
+    tracked.write_text('uncommitted kernel')
+    (tmp_path/'box.log').write_text('untracked output')
+    git('add','kernel.cu')
+    git('update-index','--cacheinfo','160000,'+clean['quactlize_commit']+',third_party/actlize')
+    assert revision(tmp_path,require_clean=False)==clean
+    assert clean['actlize_commit']==pin  # HEAD gitlink, not the staged replacement.
+    with pytest.raises(ValueError,match='commit the sweep sources'):revision(tmp_path)
+
+
 def test_wrong_lookalike_reader_and_missing_config_rejected():
     w=Workload(13,1024,5120,2)
     from dev.strategy.vector import execution_contract

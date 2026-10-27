@@ -123,7 +123,10 @@ def assignments(plan,workers):
     return result
 
 
-def revision(root):
+def revision(root, *, require_clean=True):
+    # Archive coordinators execute HEAD in separate workers, so unrelated
+    # checkout edits need not block them. Direct checkout execution must not
+    # label modified kernel bodies as an immutable committed archive.
     root=Path(root)
     receipt=root/'.quactlize-source.json'
     if receipt.exists():
@@ -134,7 +137,7 @@ def revision(root):
         def git(*args):return subprocess.check_output(['git','-C',str(root),*args],text=True).strip()
         if Path(git('rev-parse','--show-toplevel')).resolve()!=root.resolve():
             raise ValueError('source has neither its own Git checkout nor a frozen commit receipt')
-        if git('status','--porcelain','--untracked-files=normal'):
+        if require_clean and git('status','--porcelain','--untracked-files=normal'):
             raise ValueError('commit the sweep sources before a Box measurement')
         value=dict(quactlize_commit=git('rev-parse','HEAD'),quactlize_tree=git('rev-parse','HEAD^{tree}'),
                    actlize_commit=git('rev-parse','HEAD:third_party/actlize'),snapshot='COMMITTED_ARCHIVE')
