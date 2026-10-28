@@ -36,9 +36,14 @@ class Collector:
             finally:self.rt=None
 
 
-def parse_component_rows(records,schedule,rows,provenance,rounds=6,samples=5):
+def parse_component_rows(records,schedule,rows,provenance,rounds=6,samples=5,
+                         *,runtime_apis=None,allow_terminal_short=False):
     """Shared native/candidate clock and launch checks; callers check numerics."""
     records=copy.deepcopy(records)
+    exception=None
+    if allow_terminal_short and len(rows)<sum(x['kernels'] for x in schedule):
+        from dev.strategy.asys_tail import terminal_loss
+        exception=terminal_loss(records,schedule,rows,runtime_apis or [])
     values={k:[[None]*samples for _ in range(rounds)] for k in records}
     cursor=0;sequences={k:[] for k in records}
     for item in schedule:
@@ -47,13 +52,16 @@ def parse_component_rows(records,schedule,rows,provenance,rounds=6,samples=5):
         if (count!=record['calls_per_graph'] or count<16 or
                 not 0<=r<rounds or not 0<=s<samples or values[cid][r][s] is not None):
             raise ValueError('duplicate/invalid Asys sample schedule')
-        block=rows[cursor:cursor+count];cursor+=count
-        if len(block)!=count:
+        first=cursor
+        actual_count=(count-1 if exception and (cid,r,s)==
+                      (exception['component'],exception['round'],exception['sample']) else count)
+        block=rows[cursor:cursor+actual_count];cursor+=actual_count
+        if len(block)!=actual_count:
             expected=sum(v['kernels'] for v in schedule)
             raise ValueError('Asys kernel activity coverage incomplete: '
                 f'expected_total={expected} actual_total={len(rows)} '
                 f'missing_total={expected-len(rows)} component={cid} '
-                f'round={r} sample={s} first_activity={cursor-count} '
+                f'round={r} sample={s} first_activity={first} '
                 f'expected_sample={count} actual_sample={len(block)}; no timing admitted')
         for actual in block:
             if (actual['kind']!='kernel' or actual['end']<=actual['start'] or
@@ -64,9 +72,12 @@ def parse_component_rows(records,schedule,rows,provenance,rounds=6,samples=5):
         # launch gaps, clipped durations or host/event measurements.
         durations=[(v['end']-v['start'])/1000 for v in block]
         values[cid][r][s]=statistics.fmean(durations)
-        sequences[cid].append(dict(round=r,sample=s,first_activity=cursor-count,count=count,
+        sequences[cid].append(dict(round=r,sample=s,first_activity=first,count=actual_count,
                                    mean_us=values[cid][r][s],min_us=min(durations),max_us=max(durations),
                                    durations_ns=[v['end']-v['start'] for v in block]))
+        if actual_count!=count:
+            sequences[cid][-1]['expected_count']=count
+            record['terminal_activity_exception']=exception
     if cursor!=len(rows):raise ValueError('unaccounted Asys GPU activity; no timing admitted')
     for cid,record in records.items():
         if any(x is None for row in values[cid] for x in row):raise ValueError('missing component sample')

@@ -392,3 +392,25 @@ Full remains unavailable outside routed rows1024..32768 (top8 token M128..4096).
 All-M native comparison and public runtime/model validation remain separate
 gates after this fresh configuration sweep; COMPLETE here does not claim
 native no-regression, fused-chain performance or model TPOT.
+
+### 2026-10-28: one short final Asys sample
+
+The uploaded `mPwSAs3o` Full preflight has 120 successful graph launches,
+119 complete groups of 16 GPU activities and a final group of 15. Its numerical
+checks passed. Use the final group's 15 observed durations as its denominator;
+do not pad it, divide by 16, or replace GPU time with API time. Kernel identity,
+positive intervals and sample-to-launch correlation remain checked. Missing
+whole samples, interior-group loss or more than one missing interval still fail.
+No graph-node-ID, CPU/GPU timestamp overlap or profiler-stop gate is needed.
+
+`tools/inspect_asys_component_coverage.py --attempt PATH --repair-moe-preflight`
+reparses that saved Full batch and writes its missing batch/preflight receipts.
+The raw files and `run.json` stay untouched. Measurement commit/source hashes
+remain the original ones; parser revision/hashes are separate. The old checkout's
+normal `--resume` skips this batch. Fetch the repair into a separate worktree;
+do not pull into the old measurement checkout during a frozen run. New sweeps
+on this experiment branch apply the observed-count rule automatically.
+
+Local evidence: the actual 1919/1920 SQLite reparses successfully; `finish_bf16`
+mean is 3.3391184 us. This repairs one batch, not a completed sweep, native
+no-regression result or production selection. No new GPU measurement was made.
