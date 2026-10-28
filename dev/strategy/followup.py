@@ -225,7 +225,11 @@ def validate_confirmation(data, *, decision_verifier=paired_verdict):
         if original.get('correctness')!='PASS' or sorted(original.get('components',[]))!=sorted(data['components']):
             raise ValueError('unchanged incumbent lacks its original numerical receipt')
         return
-    if data.get('protocol')!=dict(rounds=6,samples=5,order='FORWARD_REVERSE_ALTERNATING',
+    screening=data.get('measurement_phase')=='screen'
+    rounds,samples=(4,3) if screening else (6,5)
+    if screening and (data.get('timing_method')!='ASYS_GPU_ACTIVITY' or decision_verifier is paired_verdict):
+        raise ValueError('short screen is not a confirmation/performance admission')
+    if data.get('protocol')!=dict(rounds=rounds,samples=samples,order='FORWARD_REVERSE_ALTERNATING',
                                  cache='SEPARATE_METADATA_AND_PRODUCER_RINGS_AT_LEAST_2P25_L2'):
         raise ValueError('confirmation protocol differs')
     w=Workload(**data['workload'])
@@ -252,7 +256,7 @@ def validate_confirmation(data, *, decision_verifier=paired_verdict):
             set(records)!={k for keys in data['arm_components'].values() for k in keys}):
         raise ValueError('confirmation component coverage differs')
     for cid,record in records.items():
-        if cid!=digest(record['identity']) or len(record['samples_us'])!=6 or any(len(r)!=5 for r in record['samples_us']):
+        if cid!=digest(record['identity']) or len(record['samples_us'])!=rounds or any(len(r)!=samples for r in record['samples_us']):
             raise ValueError('confirmation component identity/sample coverage differs')
         stats=statistics_checked(record['samples_us'])
         if (any(record.get(k)!=v for k,v in stats.items()) or record.get('timed_kernel_types')!=1 or
@@ -267,7 +271,7 @@ def validate_confirmation(data, *, decision_verifier=paired_verdict):
                     len(v)!=2 or any(len(pair)!=2 or any(p['bad'] for p in pair) for pair in v)
                     for v in proofs.values())):
             raise ValueError('confirmation SF oracle/cold ring differs')
-    costs={aid:[[sum(records[k]['samples_us'][r][i] for k in keys) for i in range(5)]
-                for r in range(6)] for aid,keys in data['arm_components'].items()}
+    costs={aid:[[sum(records[k]['samples_us'][r][i] for k in keys) for i in range(samples)]
+                for r in range(rounds)] for aid,keys in data['arm_components'].items()}
     if decision_verifier(costs,data['roles'])!=data['decision']:
         raise ValueError('confirmation decision differs from raw stages')

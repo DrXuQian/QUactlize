@@ -153,12 +153,13 @@ def test_cpp_controls_match_real_public_dispatch_not_python_guess(planned,tmp_pa
             assert [a['config'][f] for f in fields]==b['config'],(a,b)
 
 
-def test_three_model_plan_cli_real_caller_cpu_only(tmp_path):
+@pytest.mark.parametrize('cohort',[models.COHORT,'moe-config-models'])
+def test_three_model_plan_cli_real_caller_cpu_only(tmp_path,cohort):
     llama=os.environ.get('LLAMA_TP_SOURCE')
     if not llama:pytest.skip('set LLAMA_TP_SOURCE for actual CPU TP derivation')
     from test_tp_header import fixtures
     command=[sys.executable,str(ROOT/'tools/run_smallm_regressions_asys.py'),
-        '--cohort',models.COHORT,'--output',str(tmp_path/'plan'),
+        '--cohort',cohort,'--output',str(tmp_path/'plan'),
         '--llama-source',llama,'--sdk','/no-sdk','--devices','7','--plan-only']
     for name,tp,flag,_ in models.MODELS:
         arch='deepseek4' if tp==4 else 'qwen35moe'

@@ -12,6 +12,7 @@ from dev.strategy.vector import execution_contract
 from dev.strategy.moe_token_pair_plan import COHORTS as MOE_PAIR_COHORTS
 from dev.strategy.moe_single_row_plan import COHORT as MOE_SINGLE_COHORT
 from dev.strategy.moe_model_plan import COHORT as MOE_MODEL_COHORT
+from dev.strategy.moe_sweep_plan import COHORT as MOE_SWEEP_COHORT
 from quactlize.dispatch.table import Workload
 from quactlize.runtime.compiler import sha
 from quactlize.runtime.tuning import digest
@@ -20,7 +21,8 @@ ROOT=Path(__file__).resolve().parents[2]
 METHOD='ASYS_GPU_ACTIVITY'
 MODEL_TOKEN_COHORTS=('token-cta-models','token-cta-model-gaps')
 TOKEN_COHORTS=('q6-token-cta','token-cta-formats',*MODEL_TOKEN_COHORTS)
-MOE_COHORTS=(*MOE_PAIR_COHORTS,MOE_SINGLE_COHORT,MOE_MODEL_COHORT)
+MODEL_MOE_COHORTS=(MOE_MODEL_COHORT,MOE_SWEEP_COHORT)
+MOE_COHORTS=(*MOE_PAIR_COHORTS,MOE_SINGLE_COHORT,*MODEL_MOE_COHORTS)
 COHORTS=('regressions',*TOKEN_COHORTS,*MOE_COHORTS)
 
 
@@ -54,7 +56,7 @@ def model_coverage(cohort):
 
 
 def workloads(cohort='regressions'):
-    if cohort==MOE_MODEL_COHORT:
+    if cohort in MODEL_MOE_COHORTS:
         raise ValueError('model MoE cohort requires the actual GGUF header/TP inventory')
     if cohort==MOE_SINGLE_COHORT:
         from dev.strategy.moe_single_row_plan import workloads as single_workloads
@@ -129,7 +131,7 @@ def assignments(plan,workers):
     Preserve the old cohorts' assignment so their frozen resumes still work.
     """
     if not 1<=workers<=len(plan['points']):raise ValueError('invalid worker count')
-    if plan.get('cohort') not in (*MODEL_TOKEN_COHORTS,MOE_MODEL_COHORT):
+    if plan.get('cohort') not in (*MODEL_TOKEN_COHORTS,*MODEL_MOE_COHORTS):
         return [[p['id'] for j,p in enumerate(plan['points']) if j%workers==i] for i in range(workers)]
     def weight(p):
         w=p['workload']
@@ -250,7 +252,9 @@ def check_producers(point,data):
 def validate(data):
     from dev.strategy.followup import validate_confirmation
     if data.get('timing_method')!=METHOD:raise ValueError('event/host timing is not admitted to Asys selection')
+    if data.get('measurement_phase') not in (None,'screen','confirm'):raise ValueError('unknown Asys sweep phase')
     validate_confirmation(data,decision_verifier=mean_decision)
+    rounds,samples=(4,3) if data.get('measurement_phase')=='screen' else (6,5)
     intervals=[]
     for r in data['component_records'].values():
         p=r.get('latency_provenance',{})
@@ -264,7 +268,7 @@ def validate(data):
         seen=set()
         for item in r.get('trace_slices',[]):
             slot=item['round'],item['sample'];ns=item['durations_ns']
-            if (slot in seen or not 0<=slot[0]<6 or not 0<=slot[1]<5 or
+            if (slot in seen or not 0<=slot[0]<rounds or not 0<=slot[1]<samples or
                     item['count']!=r['calls_per_graph'] or len(ns)!=item['count'] or
                     any(type(x)!=int or x<=0 for x in ns)):
                 raise ValueError('Asys raw component sample coverage differs')
@@ -273,7 +277,7 @@ def validate(data):
                     r['samples_us'][slot[0]][slot[1]]!=mean):
                 raise ValueError('component mean differs from raw GPU activity')
             seen.add(slot);intervals.append((item['first_activity'],item['count']))
-        if len(seen)!=30 or r.get('mean_us')!=statistics.fmean(x for row in r['samples_us'] for x in row):
+        if len(seen)!=rounds*samples or r.get('mean_us')!=statistics.fmean(x for row in r['samples_us'] for x in row):
             raise ValueError('missing raw Asys samples or invalid mean')
     cursor=0
     for first,count in sorted(intervals):

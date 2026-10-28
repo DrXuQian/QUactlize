@@ -273,7 +273,8 @@ def test_capture_saved_before_symbol_check_but_after_correctness_and_cleanup(tmp
         events.append(name)
         if name==failure:raise ValueError(name+' failed')
     def measured(*args,**kw):step('numeric');return deepcopy(data)
-    a=SimpleNamespace(output=tmp_path,point='p',attempt=tmp_path/'attempt',sdk=tmp_path,l2_bytes=64)
+    a=SimpleNamespace(output=tmp_path,point='p',attempt=tmp_path/'attempt',sdk=tmp_path,l2_bytes=64,
+                      phase='confirm',screen=None)
     a.attempt.mkdir()
     monkeypatch.setattr(runner,'sealed',lambda path:plan if path.name=='plan.json' else run)
     monkeypatch.setattr(runner,'revision',lambda root:'rev')

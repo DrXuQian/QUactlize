@@ -60,7 +60,7 @@ def model_inventory(args):
 
 
 def verify_inventory(output, plan):
-    if plan.get('cohort') != COHORT:
+    if plan.get('cohort') not in (COHORT, 'moe-config-models'):
         return
     inventory = json.loads((Path(output)/'moe-inventory.json').read_bytes())
     headers = json.loads((Path(output)/'moe-headers.json').read_bytes())

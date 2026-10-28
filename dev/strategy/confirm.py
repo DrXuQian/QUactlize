@@ -11,8 +11,10 @@ from quactlize.dispatch.table import Recipe,Workload
 
 
 def confirm_point(b,metadata_b,sf,metadata_sf,point,screen,shortlist,record_for,authority,source,
-                  *,rounds=6,samples=5,round_observer=None,trace_collector=None):
-    if shortlist['status']!='READY' or rounds<6 or rounds%2 or samples<3:
+                  *,rounds=6,samples=5,round_observer=None,trace_collector=None,screening=False):
+    if screening and (rounds!=4 or samples!=3 or trace_collector is None):
+        raise ValueError('short screen requires Asys and exactly 4 alternating rounds x 3 samples')
+    if shortlist['status']!='READY' or rounds<(4 if screening else 6) or rounds%2 or samples<3:
         raise ValueError('confirmation requires a ready shortlist and >=6 even rounds x >=3 samples')
     started=time.monotonic();w=Workload(**point['workload'])
     selected={a['id']:a for a in point['arms'] if a['id'] in shortlist['arms']}
@@ -108,4 +110,6 @@ def confirm_point(b,metadata_b,sf,metadata_sf,point,screen,shortlist,record_for,
     if trace_collector:
         result.update(status='CAPTURED_NOT_TIMED',timing_method='ASYS_GPU_ACTIVITY',
                       trace_schedule=trace_collector.schedule)
+    if screening:
+        result['measurement_phase']='screen'
     return result

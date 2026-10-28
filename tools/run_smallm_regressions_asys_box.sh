@@ -24,7 +24,7 @@ case ${BASELINE:-quactlize} in
         fi ;;
     *) echo 'ERROR: BASELINE must be quactlize, native or native-ab.' >&2; exit 1 ;;
 esac
-if [[ ${COHORT:-} == moe-single-row-models ]]; then
+if [[ ${COHORT:-} == moe-single-row-models || ${COHORT:-} == moe-config-models ]]; then
     args+=(--llama-source "${LLAMA_CI_DIR:-/sim/eec/shared/junfu.qx/llama.cpp.ncp}")
     [[ -z ${MODEL_ROOT:-} ]] || args+=(--model-root "${MODEL_ROOT}")
     [[ -z ${QWEN35_MODEL:-} ]] || args+=(--qwen35-model "${QWEN35_MODEL}")
