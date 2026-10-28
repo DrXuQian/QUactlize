@@ -231,7 +231,10 @@ python3 -u tools/run_moe_prefill_pilot.py \
     --devices 3,4,5,6,7 --jobs 8 --l2-bytes 67108864 --confirm-idle
 ```
 
-Use a fresh committed checkout and retain it unchanged through resume.
+Local uncommitted/staged/untracked files do not block this direct runner.
+It records HEAD as the revision anchor, labels execution `WORKTREE`, and binds
+the actual source/harness hashes separately. Retain those files unchanged
+through resume. Archive wrappers still execute committed HEAD, not local edits.
 `--resume --output <same results>` with the same devices/model subset keeps
 successful cases and retries only failed/missing cases. `--plan-only` stops
 after header/CPU TP/rule/capability checks, without needing a PPU or llama DSO.

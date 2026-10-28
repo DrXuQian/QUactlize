@@ -182,23 +182,36 @@ def test_frozen_source_requires_full_commit_and_lite_repack_recognizes_schema(tm
     assert exclusion(Path('point.json')) is None
 
 
-def test_archive_revision_ignores_dirty_checkout_and_staged_gitlink(tmp_path):
+def test_revision_allows_dirty_checkout_and_distinguishes_archived_sources(tmp_path):
+    from dev.strategy.provenance import source_identity,harness_identity,verify_unchanged
     def git(*args):
         return subprocess.check_output(['git','-C',str(tmp_path),*args],text=True,stderr=subprocess.PIPE).strip()
     git('init','-q');git('config','user.name','Host Test');git('config','user.email','test@example.invalid')
-    tracked=tmp_path/'kernel.cu';tracked.write_text('committed kernel')
-    git('add','kernel.cu');git('commit','-qm','kernel fixture')
+    scope=tmp_path/'dev/strategy';scope.mkdir(parents=True)
+    tracked=scope/'kernel.cu';tracked.write_text('committed kernel')
+    git('add','dev/strategy/kernel.cu');git('commit','-qm','kernel fixture')
     pin=git('rev-parse','HEAD')
     git('update-index','--add','--cacheinfo','160000,'+pin+',third_party/actlize')
     git('commit','-qm','pin fixture')
-    clean=revision(tmp_path,require_clean=False)
+    clean=revision(tmp_path)
+    archived=revision(tmp_path,archive=True)
+    assert clean['snapshot']=='WORKTREE'
+    assert archived==dict(clean,snapshot='COMMITTED_ARCHIVE')
+    source=source_identity(tmp_path);harness=harness_identity(tmp_path)
     tracked.write_text('uncommitted kernel')
+    (scope/'local_helper.py').write_text('untracked helper')
     (tmp_path/'box.log').write_text('untracked output')
-    git('add','kernel.cu')
+    git('add','dev/strategy/kernel.cu')
     git('update-index','--cacheinfo','160000,'+clean['quactlize_commit']+',third_party/actlize')
-    assert revision(tmp_path,require_clean=False)==clean
+    assert revision(tmp_path)==clean
+    assert revision(tmp_path,archive=True)==archived
     assert clean['actlize_commit']==pin  # HEAD gitlink, not the staged replacement.
-    with pytest.raises(ValueError,match='commit the sweep sources'):revision(tmp_path)
+    current=source_identity(tmp_path)
+    assert current['files']['dev/strategy/kernel.cu']!=source['files']['dev/strategy/kernel.cu']
+    assert 'dev/strategy/local_helper.py' in current['files']
+    assert harness_identity(tmp_path)!=harness
+    with pytest.raises(ValueError,match='inputs changed'):verify_unchanged(source,tmp_path)
+    assert verify_unchanged(current,tmp_path)==current
 
 
 def test_wrong_lookalike_reader_and_missing_config_rejected():

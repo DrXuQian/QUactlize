@@ -73,7 +73,7 @@ def main():
     if a.resume and not a.output:p.error('--resume requires the original --output')
     if not a.plan_only:
         if not a.confirm_idle:p.error('--confirm-idle required; no concurrent GPU workloads')
-        revision(ROOT,require_clean=False)
+        revision(ROOT,archive=True)
         a.sdk=a.sdk.resolve(strict=True);a.llama_source=a.llama_source.resolve(strict=True)
         a.llama_build=(a.llama_build or a.llama_source/'build-ci-32F-cublas').resolve(strict=True)
         for path in (a.sdk/'bin/hgcc',a.sdk/'asight/bin/asys',a.llama_build/'bin/libggml-cuda.so'):
@@ -104,7 +104,7 @@ def main():
              PPU_SDK=str(a.sdk),L2_BYTES=str(a.l2_bytes))
     binding=dict(llama_source=str(a.llama_source),llama_build=str(a.llama_build),sdk=str(a.sdk),
         gpus=gpus,jobs=a.jobs,l2_bytes=a.l2_bytes,precision=plan['precision'],
-        source=revision(ROOT,require_clean=False),installed_quactlize_library_used=False,
+        source=revision(ROOT,archive=True),installed_quactlize_library_used=False,
         candidate='FROZEN_REPO_PRODUCTION_RECIPE_AND_STAGE_IMPLEMENTATIONS')
     binding_path=a.output/'binding.json'
     if a.resume:

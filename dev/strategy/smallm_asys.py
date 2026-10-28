@@ -143,10 +143,9 @@ def assignments(plan,workers,*,balanced=False):
     return result
 
 
-def revision(root, *, require_clean=True):
-    # Archive coordinators execute HEAD in separate workers, so unrelated
-    # checkout edits need not block them. Direct checkout execution must not
-    # label modified kernel bodies as an immutable committed archive.
+def revision(root, *, archive=False):
+    # HEAD is an anchor, not proof that live files equal that commit. Direct
+    # runs bind source/harness hashes separately; coordinators may archive HEAD.
     root=Path(root)
     receipt=root/'.quactlize-source.json'
     if receipt.exists():
@@ -157,10 +156,9 @@ def revision(root, *, require_clean=True):
         def git(*args):return subprocess.check_output(['git','-C',str(root),*args],text=True).strip()
         if Path(git('rev-parse','--show-toplevel')).resolve()!=root.resolve():
             raise ValueError('source has neither its own Git checkout nor a frozen commit receipt')
-        if require_clean and git('status','--porcelain','--untracked-files=normal'):
-            raise ValueError('commit the sweep sources before a Box measurement')
         value=dict(quactlize_commit=git('rev-parse','HEAD'),quactlize_tree=git('rev-parse','HEAD^{tree}'),
-                   actlize_commit=git('rev-parse','HEAD:third_party/actlize'),snapshot='COMMITTED_ARCHIVE')
+                   actlize_commit=git('rev-parse','HEAD:third_party/actlize'),
+                   snapshot='COMMITTED_ARCHIVE' if archive else 'WORKTREE')
     if any(not re.fullmatch('[0-9a-f]{40}',value[k]) for k in ('quactlize_commit','quactlize_tree','actlize_commit')):
         raise ValueError('source revision is not a full commit/tree ID')
     return value
