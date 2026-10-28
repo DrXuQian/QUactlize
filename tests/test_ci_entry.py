@@ -21,6 +21,7 @@ def test_inventory_has_one_owner_and_separates_legacy_and_device():
     assert "test_ci_entry.py" in HOST
     assert "test_q8_kpack2.py" in HOST
     assert "test_dense_provider.py" in HOST
+    assert "test_moe_decode_policy.py" in HOST
     assert "test_gguf_routes.py" in groups["separate"]
 
 

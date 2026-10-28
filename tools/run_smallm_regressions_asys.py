@@ -15,7 +15,7 @@ import uuid
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from dev.strategy.smallm_asys import workloads,make_plan,revision,validate,check_producers,assignments,METHOD,COHORTS,MOE_PAIR_COHORTS
+from dev.strategy.smallm_asys import workloads,make_plan,revision,validate,check_producers,assignments,METHOD,COHORTS,MOE_COHORTS
 from dev.strategy.provenance import harness_identity,source_identity
 from dev.strategy.journal import atomic_json
 from quactlize.dispatch.table import Workload
@@ -54,7 +54,7 @@ def child(a):
     sdk=SDK(a.sdk);w=Workload(**point['workload']);auth=dict(run=run['sha256'],shard=shard,device=run['devices'][shard])
     with ExitStack() as stack:
         ring=Ring(sdk,w,a.l2_bytes);stack.callback(ring.close)
-        if point.get('same_expert_pair'):
+        if w.operation=='indexed':
             from dev.strategy.indexed import point as indexed_point
             b=Context(sdk,ring,indexed_point(w));stack.callback(b.close)
             if b.rows!=w.m*w.topk or b.ids is None:raise ValueError('indexed fixture lost routed rows/IDs')
@@ -183,7 +183,7 @@ def run(a):
     if (a.output/'plan.json').exists():plan=sealed(a.output/'plan.json')
     else:
         originals=plan_smallm(a.output,[base.request(w) for w in workloads(a.cohort or 'regressions')],
-                             dense_fallbacks=a.cohort not in MOE_PAIR_COHORTS)
+                             dense_fallbacks=a.cohort not in MOE_COHORTS)
         atomic_json(a.output/'cpp-originals.json',originals)
         plan=make_plan(originals['requests'],a.cohort or 'regressions');atomic_json(a.output/'plan.json',plan)
     if a.cohort and a.cohort!=plan.get('cohort','regressions'):raise ValueError('resume cohort differs')

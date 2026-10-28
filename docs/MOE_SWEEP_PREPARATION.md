@@ -1,8 +1,8 @@
 # MoE sweep preparation
 
-This is a **host planning/coverage gate**, not a timing runner, a new production
-selector, or a claim that the dense PR now executes MoE. Keep the caller PR
-unchanged during this stage.
+Host planning, bounded device experiments and the explicitly scoped exact
+admissions below are separate milestones. None claims that the dense PR now
+executes MoE or that all models are covered. Keep the caller PR unchanged.
 
 ## Current priority and backup list (2026-10-27)
 
@@ -15,6 +15,11 @@ or table update follows from host tests or compilation alone.
 
 Backup, retained but not on this experiment's critical path:
 
+- After SIMT optimization closes, compare SIMT **and TC** in the final config
+  sweep for every M, including M2–8. A SIMT-only improvement is not proof of
+  the fastest implementation. Include both ordinary/persistent grouped TC
+  and its real prepare/reducer/finish costs. Retain generated-rule recall of
+  historical winners; do not inject a missing champion into the candidate set.
 - Merged/paired gate-up and fused SwiGLU configuration scanning, including
   physical 2N shapes and each output/rounding contract below.
 - Broader fused TC/SF/full-provider implementation and large-M MoE scanning.
@@ -56,6 +61,37 @@ new cohort; do not execute its archived HEAD and call it this experiment.
 Only `review-lite-*.tar.xz` needs uploading initially; raw traces stay on Box.
 GPU correctness, measured benefit, all-M/model coverage, native comparison
 and production admission remain separate pending gates.
+
+### Q5 single-row M1–8 completion
+
+The `moe-single-row-q5` cohort completes **SIMT validation first**, before the
+TC configuration sweep. It runs the public shipping bodies, not the private
+pair-only launcher. This preserves the fixed M1 C4/W2/P8/S1 body and catches
+an accidental benchmark of a similar-looking but different implementation.
+
+- Q5 N2048/K512, E256/top8/channels8, F32 endpoints/BF16 A/FP32 affine math.
+- 36 points: M1 spread; each M2–8 with spread, cluster, repeat2, repeat4 and
+  synthetic hot-expert `real`. `real` is not a captured model trace.
+- Current production choice plus the pre-admission control, both remeasured;
+  three common geometries C4/W2/P8, C4/W8/P8 and C8/W4/P4, each S1/2/4/8.
+- At this revision: 442 arms, five vector modules shared across all M/router/
+  split cases. No pair candidate, no new TC search, no old timings reused.
+- Fresh Asys component means with full source/commit/binary provenance;
+  producer and real reducer are isolated, measured once per component and
+  included in each arm's complete-call sum. Existing guards/oracle remain.
+
+Local validation without a GPU:
+
+```bash
+python3 tools/run_smallm_regressions_asys.py \
+    --cohort moe-single-row-q5 --plan-only --output /tmp/moe-single-row-plan
+```
+
+After this source is committed and delivered, use the existing Box wrapper
+with `COHORT=moe-single-row-q5`, idle `GPUS`, and no `RESUME_RUN` from the older
+pair experiment. This cohort is not all-model coverage or a TC/SIMT selection
+admission. Qwen122B TP2 and DeepSeek TP4 still require their actual local expert
+shapes, and Q8/BF16-storage reader optimization remains open.
 
 ### First Box result and Q4-only retry (2026-10-28)
 
@@ -116,6 +152,42 @@ reader/reducer code retained 75 identical machine-code bodies across the
 initial and simplified carriers. These are not GPU numerical/performance
 results. C4/P8 pair registers rise by 18–26 over the one-row body; C8/P4 by
 12–14. Pairing is deliberately not enabled in production.
+
+### Q5 single-row exact integration
+
+`policies/kpack_moe_decode_exact_v1.json` binds the reviewed Q5 run to the
+existing flat decode catalog. Regenerate/verify it with
+`tools/fit_moe_decode.py --review <first-review-lite.tar.xz> [--check]`, then
+`tools/generate_decode_selection.py [--check]`. This is build-time admission,
+not another runtime heuristic, JIT tuner or router readback.
+
+Only Q5 indexed N2048/K512/E256/top8/channels8, F32 input/output with BF16
+activation compute, changes at these exact token counts:
+
+| Tokens | Selected public single-row recipe | Measured gain vs old production |
+|---|---|---:|
+| 1 | V3/C8/W4/P4/S1 | 1.76%, spread |
+| 8 | V3/C4/W2/P8/S1 | 17.65%, spread; 18.45%, cluster |
+
+Recipes are selected from the intersection of non-regressing public
+single-row candidates across the available fresh profiles, minimizing worst
+mean ratio. The experiment-only `moe_pair_rows` flag is never aliased to a
+shipping config. M4 remains unchanged. All other exact choices, old bucket
+donors, Q4 paths and BF16-storage/grouped endpoints remain unchanged.
+The 34.59% clustered two-row gain is retained as a candidate result, not
+claimed as the benefit of this conservative single-row integration.
+
+No arithmetic, device kernel, public ABI or llama caller change is needed.
+Host tests exercise the compiled C++ selector and the public C ABI, including
+unseen shapes/M and storage negatives. Local PPU compilation confirms both
+selected kernel machine-code bodies are identical to the measured control
+bodies and have zero stack; this is not a new GPU/model run.
+
+Current network coverage is NOT complete: Qwen35 has two unfused expert
+families at the four synthetic routing/token points per family; no new model
+run. Qwen3-32B and Qwen3.8-27B have no MoE operators. Qwen122B TP2 and
+DeepSeek TP4 still require current expert-weight inventories and fresh MoE
+device/model validation. Historical dense sweeps do not supply that evidence.
 
 At aligned bases, the unchanged source footprint model gives low-plane
 32/64/128-byte unique-sector use of 100/100/50 percent for both geometries.

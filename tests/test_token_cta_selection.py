@@ -30,7 +30,7 @@ def plan(tmp_path_factory, table):
 
 def test_exact_means_and_bodies_are_bound_without_changing_buckets(table):
     old=gen.effective(json.loads(gen.EVIDENCE.read_text()),include_token_cta=False)
-    new=gen.effective(json.loads(gen.EVIDENCE.read_text()))
+    new=gen.effective(json.loads(gen.EVIDENCE.read_text()),include_moe=False)
     assert digest(old)==table['baseline_sha256']
     assert len(table['rows'])==376 and sum(r['changed'] for r in table['rows'])==157
     assert len(binding.rows())==121
@@ -191,6 +191,8 @@ def test_old_cpp_all_keys_and_nearby_bucket_choices_are_preserved(tmp_path,table
         subprocess.run(['g++','-std=c++17','-O2','-I'+str(root),root/'tools/kpack_selection.cpp','-o',exe],check=True)
         results.append([json.loads(s) for s in subprocess.check_output([exe],input=text,text=True).splitlines()])
     changes={tuple(r['key']) for r in table['rows'] if r['changed'] or tuple(r['key']) not in prior_keys}
+    from quactlize.execution.moe_decode_policy import load as moe_table
+    changes.update(tuple(r['key']) for r in moe_table()['rows'] if r['changed'])
     observed=set()
     for k,a,b in zip(ordered,*results):
         if a!=b:observed.add(k)

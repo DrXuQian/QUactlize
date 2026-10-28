@@ -63,7 +63,10 @@ int main() {
     auto selected=matched::select(d);
     if(selected.row && selected.policy==QKS_MATCHED_BUCKET) {
       auto const& donor=*selected.row;
-      auto const& f=matched::data::kChoices[donor.choice];
+      // Exact-only refreshes intentionally leave the generic donor intact.
+      // The public ABI must use the selected bucket choice, not the donor's
+      // independently updated exact choice.
+      auto const& f=*selected.choice;
       if(f.kind==QKS_SMALLM_SIMT && f.reader.variant>=4) {
         auto r=f.reader;actual={1,sizeof(actual),r.variant,r.columns,r.warps,r.values,r.split};
         Runtime runtime; // Empty module catalog; a reader upgrade must not JIT.

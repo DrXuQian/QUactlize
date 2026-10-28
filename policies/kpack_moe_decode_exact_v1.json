@@ -1,0 +1,800 @@
+{
+  "archive_sha256": "709144bef858b1cef681f0e559285a43f5edadfeb638c7c2639f9ad2048d6a82",
+  "body_hashes": {
+    "quactlize/execution/api.h": "997fa438055f0cc7b4d79ac85c228eef5db8d5b473975f01e5f8f577d6d5f7ab",
+    "quactlize/execution/measured_decode.cuh": "1cb97b60d3ae9844376b3ee2c669442a532157b96db57c65e0a8ae6a712f59b5",
+    "quactlize/execution/measured_decode.hpp": "03a2452e95c0ba71a704a1f7ce48dae566e22e51eb264ed034e9c549f390eaff",
+    "quactlize/execution/measured_decode.inc": "1af7e8f8080565033f9b6dd72175f8323ac8ba15cbc6814a2888803172b0a6bc",
+    "quactlize/execution/model_gemv_scope.hpp": "84fa94008e2617fdba55170860370a4cf8438920e73bae088525bdb0e7d0a99e",
+    "quactlize/execution/moe.h": "801557be45b4013b01202c94ce72bfbb992cffdbde6c62095f40b825e213eacc",
+    "quactlize/execution/moe_prepare.cuh": "c50bf433f0b9ac7b24a4b8b1c81d17869ff3e618125cd48158748e4d05a7906c",
+    "quactlize/execution/moe_router_warp.cuh": "2c24298d5662c81794d04858920648714db8a2348896d850f8ab4774be632802",
+    "quactlize/execution/q4_decode.h": "2cce4e3229c0f6ad561a4456c7a0c0e87fe1b79718a1ba3231792c8fa9879be9",
+    "quactlize/execution/q4_decode_kernel.cuh": "db7a7059988d03ed28aec45dc63cc16ea443177af28b45507d83f0d31c0307a9",
+    "quactlize/execution/q4_s1_activation.cuh": "513cfd9c92d9805e5bf91066b9d064eb7f39953fd03b871008501f05855aab90",
+    "quactlize/execution/q4_s1_api.h": "56fbe034fa931150f4f03da43cf6342f28926f3a8f903b42ce4400273cf2112f",
+    "quactlize/execution/q4_s1_helpers.cuh": "4407f5b8b16f54b41a0caadf443f0c459952b0f1dc38d0492784470a1c7e5e3d",
+    "quactlize/execution/q4_s1_kernel.cuh": "0c4c5d8fea73cd3a8ea3f31fe94450848b438df0557f9dec328c5b40e6d30f97",
+    "quactlize/execution/q4_s1_readers.cuh": "59e0bc27a9f3dfb14b2ac33f292edf9cd1595d1eb363245592d302c6c570bbe0",
+    "quactlize/execution/q4_s1_typed_activation.cuh": "7f5b92ed6b13f99dd093aa48140fc06cea30c810ff4b48d340930b006bc1f0df",
+    "quactlize/execution/q4_s1_validation.hpp": "e8b57680d9fa6f74d6e76803cf93015573d232ce6daf67aea5d9dfea4695b02d",
+    "quactlize/execution/q8_refresh.inc": "e48598902cb4feed2800ce2fdb36895c6d4a0486679935fe1fa9e11aedf3a727",
+    "quactlize/execution/reader.hpp": "8e064fc00685890cf21805ec365ce82acc1ea926dd64fb98c02567456f4f8342",
+    "quactlize/execution/simt.h": "53ef558fc2872305c9d070d02a9d44b64bcb7fea0fa0b66fecf993bb07ca2d04",
+    "quactlize/execution/simt_activation.cuh": "13c61c4a1334d080c96f44de5285c645286a019001b5919a2778f61e5da0af73",
+    "quactlize/execution/simt_common.cuh": "58d505d1fd41a72cb79ec43740f6c712dff99de85673ebced0678f0454113600",
+    "quactlize/execution/simt_common_scope.hpp": "547d15805190cfbb4c6eac784534e55820def3f0df9d5fe55142d4ad43102ad0",
+    "quactlize/execution/simt_format.cuh": "262fe74393b0a7bcf65e06d6b64d5246208f0dcf86280f45d9e431fe19d390b8",
+    "quactlize/execution/simt_kernel.cuh": "f2ddaea01f36bc41eabbbb4edd531772b01eb578c5aa75b99c03551981b94172",
+    "quactlize/execution/simt_q8_refresh.cuh": "71d845466f6e608a0ca9aeb76dee6173055c979f1a44ca4b26b93a57746652d2",
+    "quactlize/execution/simt_q8_refresh.hpp": "1808588d61b83447b1cde7a45c6cfd6a499c676fb5c15cc1670df712c4626d3e",
+    "quactlize/execution/simt_q8_token_cta.cuh": "609b9aabcdfed4855e05ab9a5ae97233626ba041d9dd8b3513280c387575f8f5",
+    "quactlize/execution/simt_q8_vector.cuh": "75a61cef0b57ae3cfbe765acbed0ffd5a33353bf46f569d6c630aca73374b856",
+    "quactlize/execution/simt_reducer.cuh": "8e50566dadb58b50177400347decc3e6ae75e0efd9f51daa7c1a42791030924d",
+    "quactlize/execution/simt_strategy.hpp": "e68c7b8fe31009faf797e383c2deffe9d095da13b4bf398a5e924e497dada73c",
+    "quactlize/execution/simt_token_cta.cuh": "72fe34c34470923842ee6676d4482eb10a3a6675b4f565b867bdb8a40aa25973",
+    "quactlize/execution/simt_token_cta_dispatch.cuh": "1df6d8ce3f724cef95401626b1310ef25a331d88bd41feff0f5f9125ceb6088a",
+    "quactlize/execution/simt_token_cta_scope.hpp": "89fbf757cc8b3135758eeeea8d1ab44f446f2596a23aa603aa29e3d0e6e29f8e",
+    "quactlize/execution/simt_validation.hpp": "552f558a4bb2982e7b5a3fc482d9cf0fc2334fc0a4788f69cba1a8169e6ace7b",
+    "quactlize/execution/token_cta.inc": "97aaacb5e05b020d9a637ddc007519ac43ac312cf25bc39f432885ebe56cb4c8",
+    "quactlize/execution/validation.hpp": "1302a38bb0bf2d659a195a0a26823717f69d20fc5f178e940660aeea6b328062"
+  },
+  "bucket_changes": false,
+  "deferred": [
+    {
+      "candidates": [
+        {
+          "arm": "26175bc37061e71399475ea6ca53f494d53a41006c46e51a8c76432c3b8d8de8",
+          "mean_us": 34.96701095679012
+        },
+        {
+          "arm": "425a656a2ec8e235005309df149c0a677be185c70f9037edd5abbd16256f36ed",
+          "mean_us": 21.35924012345679
+        },
+        {
+          "arm": "84df5bb50a8944d4c0366477bca89dfb00e1264359b71414dc693d22982141b6",
+          "mean_us": 29.487852932098765
+        },
+        {
+          "arm": "8ab6cae69573a0a2ecf23e7eaaf88538c08c7b1a2a5db9aaa3985776dc59f50d",
+          "mean_us": 22.16317037037037
+        }
+      ],
+      "point": "f9109dd5ebd899b3847d01aab39a027b000ef641285865fd40bd04ab7f4ab91a",
+      "reason": "PAIR_READER_NOT_ADMITTED_AS_A_SHIPPING_SINGLE_ROW_CONFIG",
+      "router": "repeat2"
+    },
+    {
+      "candidates": [
+        {
+          "arm": "26175bc37061e71399475ea6ca53f494d53a41006c46e51a8c76432c3b8d8de8",
+          "mean_us": 82.71316288580246
+        },
+        {
+          "arm": "425a656a2ec8e235005309df149c0a677be185c70f9037edd5abbd16256f36ed",
+          "mean_us": 53.96992654320988
+        },
+        {
+          "arm": "84df5bb50a8944d4c0366477bca89dfb00e1264359b71414dc693d22982141b6",
+          "mean_us": 71.38361844135802
+        },
+        {
+          "arm": "8ab6cae69573a0a2ecf23e7eaaf88538c08c7b1a2a5db9aaa3985776dc59f50d",
+          "mean_us": 50.73051790123456
+        }
+      ],
+      "point": "32d0efa6cc3015fc495b47ccee53d950d80f816b0f8b66d5c52d94f107776675",
+      "reason": "PAIR_READER_NOT_ADMITTED_AS_A_SHIPPING_SINGLE_ROW_CONFIG",
+      "router": "spread"
+    },
+    {
+      "candidates": [
+        {
+          "arm": "26175bc37061e71399475ea6ca53f494d53a41006c46e51a8c76432c3b8d8de8",
+          "mean_us": 68.91975084876543
+        },
+        {
+          "arm": "425a656a2ec8e235005309df149c0a677be185c70f9037edd5abbd16256f36ed",
+          "mean_us": 40.02820308641976
+        },
+        {
+          "arm": "84df5bb50a8944d4c0366477bca89dfb00e1264359b71414dc693d22982141b6",
+          "mean_us": 53.818076157407404
+        },
+        {
+          "arm": "8ab6cae69573a0a2ecf23e7eaaf88538c08c7b1a2a5db9aaa3985776dc59f50d",
+          "mean_us": 33.89195432098765
+        }
+      ],
+      "point": "1130047bc2dee1bf6bafb66301b84942f05fedc651f2f192cc75ea094754360b",
+      "reason": "PAIR_READER_NOT_ADMITTED_AS_A_SHIPPING_SINGLE_ROW_CONFIG",
+      "router": "cluster"
+    }
+  ],
+  "device": {
+    "device": {
+      "DriverGetVersion": 13000,
+      "RuntimeGetVersion": 13000,
+      "compute_units": 72,
+      "host": "aiswu52.eng.t-head.cn",
+      "max_threads": 1024,
+      "ordinal": 0,
+      "pci": "0001:10:00.0",
+      "warp_size": 32
+    },
+    "l2": {
+      "bytes": 67108864,
+      "reported": 67108864,
+      "source": "SDK_ATTRIBUTE"
+    },
+    "sdk": "d22a00a15fb7f378b7fd81d2ebee94275d2a686db6dc284f1fbdefef6f459772"
+  },
+  "evidence_sha256": "35f20d9c9d8bce30d3e0b594d22dd6e8e1407753a8081901ae70e7e5d345e725",
+  "model_tpot_admitted": false,
+  "rows": [
+    {
+      "changed": true,
+      "config": {
+        "columns": 8,
+        "kind": "simt",
+        "split": 1,
+        "values": 4,
+        "variant": 3,
+        "warps": 4
+      },
+      "key": [
+        13,
+        2,
+        2048,
+        512,
+        256,
+        8,
+        8,
+        1,
+        1
+      ],
+      "original_config": {
+        "columns": 4,
+        "kind": "simt",
+        "split": 1,
+        "values": 8,
+        "variant": 3,
+        "warps": 2
+      },
+      "profiles": [
+        {
+          "latency_provenance": {
+            "actlize_commit": "021c69300864e03926108867d318572871a44d35",
+            "asys_sha256": "94ed6242066307526345e4183f6d3fe99fd77ee52130b0c6c5a87b9046b02819",
+            "device": {
+              "device": {
+                "DriverGetVersion": 13000,
+                "RuntimeGetVersion": 13000,
+                "compute_units": 72,
+                "host": "aiswu52.eng.t-head.cn",
+                "max_threads": 1024,
+                "ordinal": 0,
+                "pci": "0001:10:00.0",
+                "warp_size": 32
+              },
+              "l2": {
+                "bytes": 67108864,
+                "reported": 67108864,
+                "source": "SDK_ATTRIBUTE"
+              },
+              "sdk": "d22a00a15fb7f378b7fd81d2ebee94275d2a686db6dc284f1fbdefef6f459772"
+            },
+            "harness_sha256": "329c58527cead9f143b560c93f7239ce9f7250effc78a715d724e6718e16a144",
+            "images_sha256": "0abadc483ab3e846ec9a1a4d6d573e2fb91fae0cb83ef6fbeca6e79924bc9d29",
+            "python_version": "3.12.3 (main, Jun  2 2026, 03:50:53) [GCC 13.3.0]",
+            "quactlize_commit": "98f5cd4b94922653f928555d96c54a9abeb9cba1",
+            "quactlize_tree": "a40545856a23a9e025f411cee2aa94c06097aba6",
+            "sdk": "d22a00a15fb7f378b7fd81d2ebee94275d2a686db6dc284f1fbdefef6f459772",
+            "snapshot": "COMMITTED_ARCHIVE",
+            "source_sha256": "3632f07734b5377e553a37fe4e6b6edaaaa4b07d2c60508acc6c680157e2d238",
+            "sqlite_sha256": "1415c539240cd8fbf1333672b73b1f93f33dda071ac27e014e631aa6db1dd105",
+            "timing_method": "ASYS_GPU_ACTIVITY",
+            "trace_sha256": "e5d0dfaf9b67c9e492d9beb8d21f14f2131ab16742b4b5aea12723614704cf83"
+          },
+          "original": {
+            "max_relative_l1": 1.2251384997409923e-07,
+            "mean_us": 9.319560493827161,
+            "module_sha256": "6597d3503887b6225dbe018472e81068a713b90ffdc38e25077263af72476c9c",
+            "producer": "quactlize::execution::simt::register_reuse_model",
+            "samples_us": [
+              [
+                9.433425925925926,
+                9.377851851851851,
+                9.352685185185186,
+                9.344518518518518,
+                9.372685185185185
+              ],
+              [
+                9.383037037037036,
+                9.32525925925926,
+                9.358592592592592,
+                9.304518518518519,
+                9.31712962962963
+              ],
+              [
+                9.28674074074074,
+                9.274907407407406,
+                9.31711111111111,
+                9.27787037037037,
+                9.294888888888888
+              ],
+              [
+                9.35562962962963,
+                9.306,
+                9.26674074074074,
+                9.277851851851851,
+                9.334907407407407
+              ],
+              [
+                9.329703703703704,
+                9.279351851851851,
+                9.34674074074074,
+                9.258592592592592,
+                9.269685185185185
+              ],
+              [
+                9.356370370370371,
+                9.313425925925927,
+                9.29637037037037,
+                9.245259259259258,
+                9.328962962962963
+              ]
+            ]
+          },
+          "point": "3a1d93d457227b197156868cb7ca8192e49cf0485c7f3d8ae86c4b6b09b431d2",
+          "record_sha256": "465c269bef39afe95b94137223884fa22bff33f8dc0e9e713b8312b5ce000fbc",
+          "router": "spread",
+          "selected": {
+            "max_relative_l1": 1.3279163435366679e-07,
+            "mean_us": 9.155407407407408,
+            "module_sha256": "5354124bed4c841d950dc658d032105d21cb7b374444e6304324d192e36f9af5",
+            "producer": "quactlize::execution::simt::common_reader",
+            "samples_us": [
+              [
+                9.202296296296296,
+                9.143777777777778,
+                9.179333333333332,
+                9.213407407407407,
+                9.18898148148148
+              ],
+              [
+                9.177870370370371,
+                9.185259259259258,
+                9.132666666666667,
+                9.218574074074073,
+                9.160814814814815
+              ],
+              [
+                9.17711111111111,
+                9.147481481481481,
+                9.131166666666665,
+                9.151185185185184,
+                9.144518518518518
+              ],
+              [
+                9.17562962962963,
+                9.139333333333333,
+                9.120074074074074,
+                9.16598148148148,
+                9.130444444444445
+              ],
+              [
+                9.15711111111111,
+                9.158592592592592,
+                9.126,
+                9.159333333333333,
+                9.12675925925926
+              ],
+              [
+                9.150444444444444,
+                9.126740740740741,
+                9.098574074074074,
+                9.152685185185184,
+                9.120074074074074
+              ]
+            ]
+          },
+          "selected_arm": "07c6d09c7de5828220fa39ff6e34cb65d8a41528dc5d9542117cf8022614bd67"
+        }
+      ]
+    },
+    {
+      "changed": false,
+      "config": {
+        "columns": 4,
+        "kind": "simt",
+        "split": 1,
+        "values": 8,
+        "variant": 3,
+        "warps": 2
+      },
+      "key": [
+        13,
+        2,
+        2048,
+        512,
+        256,
+        8,
+        8,
+        4,
+        1
+      ],
+      "original_config": {
+        "columns": 4,
+        "kind": "simt",
+        "split": 1,
+        "values": 8,
+        "variant": 3,
+        "warps": 2
+      },
+      "profiles": [
+        {
+          "latency_provenance": {
+            "actlize_commit": "021c69300864e03926108867d318572871a44d35",
+            "asys_sha256": "94ed6242066307526345e4183f6d3fe99fd77ee52130b0c6c5a87b9046b02819",
+            "device": {
+              "device": {
+                "DriverGetVersion": 13000,
+                "RuntimeGetVersion": 13000,
+                "compute_units": 72,
+                "host": "aiswu52.eng.t-head.cn",
+                "max_threads": 1024,
+                "ordinal": 0,
+                "pci": "0001:10:00.0",
+                "warp_size": 32
+              },
+              "l2": {
+                "bytes": 67108864,
+                "reported": 67108864,
+                "source": "SDK_ATTRIBUTE"
+              },
+              "sdk": "d22a00a15fb7f378b7fd81d2ebee94275d2a686db6dc284f1fbdefef6f459772"
+            },
+            "harness_sha256": "329c58527cead9f143b560c93f7239ce9f7250effc78a715d724e6718e16a144",
+            "images_sha256": "0abadc483ab3e846ec9a1a4d6d573e2fb91fae0cb83ef6fbeca6e79924bc9d29",
+            "python_version": "3.12.3 (main, Jun  2 2026, 03:50:53) [GCC 13.3.0]",
+            "quactlize_commit": "98f5cd4b94922653f928555d96c54a9abeb9cba1",
+            "quactlize_tree": "a40545856a23a9e025f411cee2aa94c06097aba6",
+            "sdk": "d22a00a15fb7f378b7fd81d2ebee94275d2a686db6dc284f1fbdefef6f459772",
+            "snapshot": "COMMITTED_ARCHIVE",
+            "source_sha256": "3632f07734b5377e553a37fe4e6b6edaaaa4b07d2c60508acc6c680157e2d238",
+            "sqlite_sha256": "9ab9da52aee22441c1d692f6c56e97383d147207a4251f6eb089215c5811bc02",
+            "timing_method": "ASYS_GPU_ACTIVITY",
+            "trace_sha256": "e81e7d21d48a8683c5fd77273bb4bdaef4f10cb00325c25ee662ecf8780fda9f"
+          },
+          "original": {
+            "max_relative_l1": 1.2251384997409923e-07,
+            "mean_us": 23.600789506172838,
+            "module_sha256": "6597d3503887b6225dbe018472e81068a713b90ffdc38e25077263af72476c9c",
+            "producer": "quactlize::execution::simt::common_reader",
+            "samples_us": [
+              [
+                23.63277777777778,
+                23.61724074074074,
+                23.60538888888889,
+                23.581685185185187,
+                23.621666666666666
+              ],
+              [
+                23.630555555555556,
+                23.597962962962963,
+                23.621685185185182,
+                23.589092592592593,
+                23.600203703703706
+              ],
+              [
+                23.570555555555554,
+                23.608351851851854,
+                23.603166666666667,
+                23.61724074074074,
+                23.628333333333334
+              ],
+              [
+                23.60462962962963,
+                23.570574074074074,
+                23.6165,
+                23.564648148148148,
+                23.600925925925928
+              ],
+              [
+                23.560203703703703,
+                23.58538888888889,
+                23.617981481481483,
+                23.57277777777778,
+                23.603166666666667
+              ],
+              [
+                23.628333333333334,
+                23.631314814814814,
+                23.576500000000003,
+                23.578722222222222,
+                23.586111111111112
+              ]
+            ]
+          },
+          "point": "f9109dd5ebd899b3847d01aab39a027b000ef641285865fd40bd04ab7f4ab91a",
+          "record_sha256": "e9d076143565de3f2af2fb9495c35730998f977b0a4402c203d5ebedd1e03814",
+          "router": "repeat2",
+          "selected": {
+            "max_relative_l1": 1.2251384997409923e-07,
+            "mean_us": 23.600789506172838,
+            "module_sha256": "6597d3503887b6225dbe018472e81068a713b90ffdc38e25077263af72476c9c",
+            "producer": "quactlize::execution::simt::common_reader",
+            "samples_us": [
+              [
+                23.63277777777778,
+                23.61724074074074,
+                23.60538888888889,
+                23.581685185185187,
+                23.621666666666666
+              ],
+              [
+                23.630555555555556,
+                23.597962962962963,
+                23.621685185185182,
+                23.589092592592593,
+                23.600203703703706
+              ],
+              [
+                23.570555555555554,
+                23.608351851851854,
+                23.603166666666667,
+                23.61724074074074,
+                23.628333333333334
+              ],
+              [
+                23.60462962962963,
+                23.570574074074074,
+                23.6165,
+                23.564648148148148,
+                23.600925925925928
+              ],
+              [
+                23.560203703703703,
+                23.58538888888889,
+                23.617981481481483,
+                23.57277777777778,
+                23.603166666666667
+              ],
+              [
+                23.628333333333334,
+                23.631314814814814,
+                23.576500000000003,
+                23.578722222222222,
+                23.586111111111112
+              ]
+            ]
+          },
+          "selected_arm": "original"
+        }
+      ]
+    },
+    {
+      "changed": true,
+      "config": {
+        "columns": 4,
+        "kind": "simt",
+        "split": 1,
+        "values": 8,
+        "variant": 3,
+        "warps": 2
+      },
+      "key": [
+        13,
+        2,
+        2048,
+        512,
+        256,
+        8,
+        8,
+        8,
+        1
+      ],
+      "original_config": {
+        "columns": 4,
+        "kind": "simt",
+        "split": 1,
+        "values": 8,
+        "variant": 2,
+        "warps": 2
+      },
+      "profiles": [
+        {
+          "latency_provenance": {
+            "actlize_commit": "021c69300864e03926108867d318572871a44d35",
+            "asys_sha256": "94ed6242066307526345e4183f6d3fe99fd77ee52130b0c6c5a87b9046b02819",
+            "device": {
+              "device": {
+                "DriverGetVersion": 13000,
+                "RuntimeGetVersion": 13000,
+                "compute_units": 72,
+                "host": "aiswu52.eng.t-head.cn",
+                "max_threads": 1024,
+                "ordinal": 0,
+                "pci": "0001:10:00.0",
+                "warp_size": 32
+              },
+              "l2": {
+                "bytes": 67108864,
+                "reported": 67108864,
+                "source": "SDK_ATTRIBUTE"
+              },
+              "sdk": "d22a00a15fb7f378b7fd81d2ebee94275d2a686db6dc284f1fbdefef6f459772"
+            },
+            "harness_sha256": "329c58527cead9f143b560c93f7239ce9f7250effc78a715d724e6718e16a144",
+            "images_sha256": "0abadc483ab3e846ec9a1a4d6d573e2fb91fae0cb83ef6fbeca6e79924bc9d29",
+            "python_version": "3.12.3 (main, Jun  2 2026, 03:50:53) [GCC 13.3.0]",
+            "quactlize_commit": "98f5cd4b94922653f928555d96c54a9abeb9cba1",
+            "quactlize_tree": "a40545856a23a9e025f411cee2aa94c06097aba6",
+            "sdk": "d22a00a15fb7f378b7fd81d2ebee94275d2a686db6dc284f1fbdefef6f459772",
+            "snapshot": "COMMITTED_ARCHIVE",
+            "source_sha256": "3632f07734b5377e553a37fe4e6b6edaaaa4b07d2c60508acc6c680157e2d238",
+            "sqlite_sha256": "03550c69f05ae209100784c4a866ad2fc133e6abb53d89d9af43575bb90a061d",
+            "timing_method": "ASYS_GPU_ACTIVITY",
+            "trace_sha256": "e4f0f8d5171ee536bfc297236f1a7ce4c6ef3855873c251b9b82955940215ee3"
+          },
+          "original": {
+            "max_relative_l1": 1.4799779135906085e-07,
+            "mean_us": 51.81617654320988,
+            "module_sha256": "675d402f332802acd1187b0c117aa01264489eb5d39af9332cfb26d6a0cea1ca",
+            "producer": "quactlize::execution::simt::register_reuse",
+            "samples_us": [
+              [
+                51.947074074074074,
+                51.78188888888889,
+                51.86783333333333,
+                51.7707962962963,
+                51.898944444444446
+              ],
+              [
+                51.88857407407408,
+                51.82709259259259,
+                51.844129629629634,
+                51.816722222222225,
+                51.82040740740741
+              ],
+              [
+                51.789314814814816,
+                51.81227777777777,
+                51.86709259259259,
+                51.88487037037037,
+                51.84114814814815
+              ],
+              [
+                51.816722222222225,
+                51.81227777777777,
+                51.785611111111116,
+                51.77968518518519,
+                51.738203703703704
+              ],
+              [
+                51.82412962962963,
+                51.78709259259259,
+                51.78487037037036,
+                51.78783333333334,
+                51.777462962962964
+              ],
+              [
+                51.85301851851852,
+                51.762648148148145,
+                51.74931481481482,
+                51.78561111111111,
+                51.78264814814815
+              ]
+            ]
+          },
+          "point": "1130047bc2dee1bf6bafb66301b84942f05fedc651f2f192cc75ea094754360b",
+          "record_sha256": "a71590770dcc2bd16cf9f764458973335dabf917dfa6d120c6478dab09782766",
+          "router": "cluster",
+          "selected": {
+            "max_relative_l1": 1.4799779135906085e-07,
+            "mean_us": 42.25631975308642,
+            "module_sha256": "f832da959c1caa339aa69ba0890d6d2982e9e0fa866790944e16d02e4d719e11",
+            "producer": "quactlize::execution::simt::common_reader",
+            "samples_us": [
+              [
+                42.33812962962963,
+                42.31516666666667,
+                42.29885185185185,
+                42.355148148148146,
+                42.3032962962963
+              ],
+              [
+                42.283314814814815,
+                42.26774074074074,
+                42.26255555555555,
+                42.23738888888889,
+                42.265537037037035
+              ],
+              [
+                42.28627777777778,
+                42.24627777777778,
+                42.229222222222226,
+                42.241814814814816,
+                42.25811111111111
+              ],
+              [
+                42.232925925925926,
+                42.248481481481484,
+                42.23072222222222,
+                42.275166666666664,
+                42.21812962962963
+              ],
+              [
+                42.28998148148148,
+                42.25072222222223,
+                42.21738888888889,
+                42.18775925925926,
+                42.25442592592593
+              ],
+              [
+                42.22331481481482,
+                42.23368518518519,
+                42.201092592592595,
+                42.256629629629636,
+                42.18033333333333
+              ]
+            ]
+          },
+          "selected_arm": "4a4476f90a3e71c101b41756cdd019e85faeb9cf460f130c5d2010139684ad71"
+        },
+        {
+          "latency_provenance": {
+            "actlize_commit": "021c69300864e03926108867d318572871a44d35",
+            "asys_sha256": "94ed6242066307526345e4183f6d3fe99fd77ee52130b0c6c5a87b9046b02819",
+            "device": {
+              "device": {
+                "DriverGetVersion": 13000,
+                "RuntimeGetVersion": 13000,
+                "compute_units": 72,
+                "host": "aiswu52.eng.t-head.cn",
+                "max_threads": 1024,
+                "ordinal": 0,
+                "pci": "0001:10:00.0",
+                "warp_size": 32
+              },
+              "l2": {
+                "bytes": 67108864,
+                "reported": 67108864,
+                "source": "SDK_ATTRIBUTE"
+              },
+              "sdk": "d22a00a15fb7f378b7fd81d2ebee94275d2a686db6dc284f1fbdefef6f459772"
+            },
+            "harness_sha256": "329c58527cead9f143b560c93f7239ce9f7250effc78a715d724e6718e16a144",
+            "images_sha256": "0abadc483ab3e846ec9a1a4d6d573e2fb91fae0cb83ef6fbeca6e79924bc9d29",
+            "python_version": "3.12.3 (main, Jun  2 2026, 03:50:53) [GCC 13.3.0]",
+            "quactlize_commit": "98f5cd4b94922653f928555d96c54a9abeb9cba1",
+            "quactlize_tree": "a40545856a23a9e025f411cee2aa94c06097aba6",
+            "sdk": "d22a00a15fb7f378b7fd81d2ebee94275d2a686db6dc284f1fbdefef6f459772",
+            "snapshot": "COMMITTED_ARCHIVE",
+            "source_sha256": "3632f07734b5377e553a37fe4e6b6edaaaa4b07d2c60508acc6c680157e2d238",
+            "sqlite_sha256": "380c0a2383b91f9fe09a44eeee90cb50d4d7fcbff6f71bf339549f5fbd028b25",
+            "timing_method": "ASYS_GPU_ACTIVITY",
+            "trace_sha256": "35ded9e92f358defb00e7014d845000e13fa68c986ae25224f0b7c37629c92da"
+          },
+          "original": {
+            "max_relative_l1": 1.669508388993707e-07,
+            "mean_us": 56.704196296296296,
+            "module_sha256": "675d402f332802acd1187b0c117aa01264489eb5d39af9332cfb26d6a0cea1ca",
+            "producer": "quactlize::execution::simt::register_reuse",
+            "samples_us": [
+              [
+                56.529370370370366,
+                56.76638888888889,
+                56.767148148148145,
+                56.57675925925926,
+                56.65307407407408
+              ],
+              [
+                56.80268518518518,
+                56.60344444444444,
+                56.9012037037037,
+                56.6864074074074,
+                56.741203703703704
+              ],
+              [
+                56.72418518518518,
+                56.872314814814814,
+                56.72861111111111,
+                56.53231481481481,
+                56.66046296296296
+              ],
+              [
+                56.70564814814815,
+                56.64194444444444,
+                56.6975,
+                56.76048148148148,
+                56.63601851851851
+              ],
+              [
+                56.87675925925925,
+                56.62712962962963,
+                56.7375,
+                56.65379629629629,
+                56.77824074074074
+              ],
+              [
+                56.66564814814815,
+                56.7175,
+                56.573055555555555,
+                56.907148148148146,
+                56.60194444444445
+              ]
+            ]
+          },
+          "point": "32d0efa6cc3015fc495b47ccee53d950d80f816b0f8b66d5c52d94f107776675",
+          "record_sha256": "a6a7baff84761a18f39f65dfe9937be2fb8129382f9517190faa2607cd3c0f8c",
+          "router": "spread",
+          "selected": {
+            "max_relative_l1": 1.669508388993707e-07,
+            "mean_us": 46.695273456790126,
+            "module_sha256": "f832da959c1caa339aa69ba0890d6d2982e9e0fa866790944e16d02e4d719e11",
+            "producer": "quactlize::execution::simt::common_reader",
+            "samples_us": [
+              [
+                46.73075925925926,
+                46.72481481481481,
+                46.67890740740741,
+                46.670759259259256,
+                46.735203703703704
+              ],
+              [
+                46.75372222222222,
+                46.77372222222222,
+                46.67001851851852,
+                46.77668518518518,
+                46.66555555555556
+              ],
+              [
+                46.558166666666665,
+                46.728537037037036,
+                46.64853703703704,
+                46.74112962962963,
+                46.755944444444445
+              ],
+              [
+                46.61518518518518,
+                46.71001851851852,
+                46.69075925925926,
+                46.79372222222222,
+                46.7389074074074
+              ],
+              [
+                46.628537037037034,
+                46.63298148148148,
+                46.71224074074074,
+                46.67816666666667,
+                46.64555555555556
+              ],
+              [
+                46.675925925925924,
+                46.61740740740741,
+                46.605555555555554,
+                46.7389074074074,
+                46.761870370370374
+              ]
+            ]
+          },
+          "selected_arm": "4a4476f90a3e71c101b41756cdd019e85faeb9cf460f130c5d2010139684ad71"
+        }
+      ]
+    }
+  ],
+  "run_sha256": "48fbd8722e78f1dfe58a803a968026e6c5dda18c4cd43c9fbaddd726d22dc2b3",
+  "runtime_router_readback": false,
+  "schema": "quactlize.moe-decode-exact.v1",
+  "scope": "Q5_INDEXED_F32_STORAGE_BF16_COMPUTE_EXACT_M1_M8_NOT_GROUPED_OR_MODEL_AB",
+  "selection": "MINIMAX_MEAN_RATIO_OF_COMMON_PUBLIC_RECIPES",
+  "source_revision": {
+    "actlize_commit": "021c69300864e03926108867d318572871a44d35",
+    "quactlize_commit": "98f5cd4b94922653f928555d96c54a9abeb9cba1",
+    "quactlize_tree": "a40545856a23a9e025f411cee2aa94c06097aba6",
+    "snapshot": "COMMITTED_ARCHIVE"
+  },
+  "timing_method": "ASYS_GPU_ACTIVITY_MEAN_COMPONENT_SUM"
+}

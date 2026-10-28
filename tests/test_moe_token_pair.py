@@ -241,6 +241,14 @@ def test_no_format_precision_or_production_selector_change():
     assert not any('moe_token_pair' in p.read_text() for p in (ROOT/'quactlize/execution').glob('*') if p.is_file())
 
 
+def test_archive_recapture_is_deterministic_when_review_is_available():
+    archive=Path('/root/review-lite-1793141000861683287.tar.xz')
+    if not archive.exists():pytest.skip('review archive not installed; product sealed-table checks are unconditional')
+    from tools.fit_moe_decode import capture
+    from quactlize.execution.moe_decode_policy import load
+    assert capture(archive)==load()
+
+
 @pytest.mark.parametrize('q',range(10,15))
 @pytest.mark.parametrize('g',GEOMETRIES)
 def test_native_compile(tmp_path,q,g):

@@ -10,6 +10,7 @@ from dev.strategy.refresh import proposed, historical, original_recipe, request
 from dev.strategy.components import statistics_checked
 from dev.strategy.vector import execution_contract
 from dev.strategy.moe_token_pair_plan import COHORTS as MOE_PAIR_COHORTS
+from dev.strategy.moe_single_row_plan import COHORT as MOE_SINGLE_COHORT
 from quactlize.dispatch.table import Workload
 from quactlize.runtime.compiler import sha
 from quactlize.runtime.tuning import digest
@@ -18,7 +19,8 @@ ROOT=Path(__file__).resolve().parents[2]
 METHOD='ASYS_GPU_ACTIVITY'
 MODEL_TOKEN_COHORTS=('token-cta-models','token-cta-model-gaps')
 TOKEN_COHORTS=('q6-token-cta','token-cta-formats',*MODEL_TOKEN_COHORTS)
-COHORTS=('regressions',*TOKEN_COHORTS,*MOE_PAIR_COHORTS)
+MOE_COHORTS=(*MOE_PAIR_COHORTS,MOE_SINGLE_COHORT)
+COHORTS=('regressions',*TOKEN_COHORTS,*MOE_COHORTS)
 
 
 def model_coverage(cohort):
@@ -51,6 +53,9 @@ def model_coverage(cohort):
 
 
 def workloads(cohort='regressions'):
+    if cohort==MOE_SINGLE_COHORT:
+        from dev.strategy.moe_single_row_plan import workloads as single_workloads
+        return single_workloads()
     if cohort in MOE_PAIR_COHORTS:
         from dev.strategy.moe_token_pair_plan import workloads as pair_workloads
         return pair_workloads(cohort)
@@ -64,6 +69,9 @@ def workloads(cohort='regressions'):
 
 
 def make_plan(originals,cohort='regressions'):
+    if cohort==MOE_SINGLE_COHORT:
+        from dev.strategy.moe_single_row_plan import make_plan as single_plan
+        return single_plan(originals)
     if cohort in MOE_PAIR_COHORTS:
         from dev.strategy.moe_token_pair_plan import make_plan as pair_plan
         return pair_plan(originals,cohort)
@@ -204,7 +212,7 @@ def check_producers(point,data):
                         point['execution_contract']['compute_type']!=int(compute=='bf16')):
                     raise ValueError('Q4 producer compute type differs from workload/ABI')
                 expected='quactlize::execution::q4_decode::'+('kernel_bf16' if compute=='bf16' else 'kernel')
-            elif point.get('same_expert_pair'):
+            elif point.get('same_expert_pair') or point.get('indexed_single_row'):
                 expected=arms[aid]['expected_producer']
             elif 'cta_tokens' in spec:
                 expected='quactlize::execution::simt::'+('q8_token_cta_reader' if spec['q']==8 else 'token_cta_reader')
@@ -216,11 +224,11 @@ def check_producers(point,data):
             else:
                 expected='quactlize::execution::simt::'+('common_reader' if common else 'register_reuse')
             if expected!=n:raise ValueError('candidate executed the wrong production reader: '+n)
-            if 'moe_pair_rows' in spec:
+            if 'moe_pair_rows' in spec or point.get('indexed_single_row'):
                 w=point['workload']
                 if (nodes[0]['grid']!=[w['n']//(c['columns']*c['values']),w['m']*w['topk'],dict(recipe['parameters'])['split']] or
                         nodes[0]['block']!=[c['warps']*32,1,1]):
-                    raise ValueError('indexed pair grid/block differs from routed-row ownership')
+                    raise ValueError('indexed reader grid/block differs from routed-row ownership')
             if 'cta_tokens' in spec:
                 expected_grid=[point['workload']['n']//(c['columns']*c['values']),1,
                                dict(recipe['parameters'])['split']]
