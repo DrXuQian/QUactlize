@@ -8,7 +8,8 @@
 using namespace quactlize::dispatch;
 
 static void emit(int q,int mode,int n,int k,int experts,int topk,int channels,int tokens,int compute,
-                 bool dense_fallbacks=false) {
+                 bool dense_fallbacks=false,bool indexed_fallbacks=false,
+                 qkg_simt_config_v1 const* explicit_simt=nullptr) {
     qkg_call_v1 c{1,sizeof(c)};
     c.qtype=q;c.mode=mode;c.n=n;c.k=k;c.experts=experts;c.topk=topk;c.channels=channels;
     int64_t rows=int64_t(tokens)*(mode==QKG_INDEXED?topk:1);
@@ -22,6 +23,46 @@ static void emit(int q,int mode,int n,int k,int experts,int topk,int channels,in
     TcDecision fallback;
     Config fallback_config{};
     bool native_f16=false;
+    // Offline replay of the POC caller's BF16 auto chain: v3 -> v2 ->
+    // typed Q4 selector. Keep the actual generic/legacy control on new E/top-k
+    // families; never pretend a v3 table MISS is the executed recipe.
+    if(indexed_fallbacks && d.status==QKS_MISS && mode==QKG_INDEXED &&
+            compute==QK_COMPUTE_BF16 && tokens>=1 && tokens<=8) {
+        auto& b=d.choice.base;
+        b.kind=QKS_SMALLM_SIMT;b.policy=QKS_COMPUTE_INITIAL;
+        b.source_n=n;b.source_k=k;b.source_tokens=tokens;
+        b.simt={1,sizeof(b.simt),0,4,4,4,1};
+        auto legacy=smallm::select(c);
+        if(legacy.row) {
+            auto const& row=*legacy.row;
+            auto const& choice=smallm::data::kChoices[row.choice];
+            b.source_n=row.n;b.source_k=row.k;b.source_tokens=row.tokens;
+            if(choice.simt) {
+                auto f=choice.reader;
+                b.simt={1,sizeof(b.simt),f.variant,f.columns,f.warps,f.values,f.split};
+            } else {
+                qks_request_v1 r{1,sizeof(r),q,choice.tc.route,c.rows,n,k,experts,tokens,a.mapping_id};
+                fallback=select_tc(r,false,compute,{&choice.tc,QKS_COMPUTE_INITIAL});
+                if(!fallback) {std::cerr<<"indexed TC control has no host proposal\n"; std::exit(1);}
+                fallback_config=fallback.config();d.tc=&fallback_config;b.kind=QKS_SMALLM_TC;
+            }
+        }
+        d.status=quactlize::execution::simt::query_v2({2,sizeof(qkg_simt_call_v2),c,compute},
+            b.simt,&a,b.sizes)==QKG_OK?QKS_OK:QKS_INVALID;
+        if(d.status==QKS_OK && b.kind==QKS_SMALLM_SIMT && q==12 && experts==256 && topk==8 &&
+                (channels==1 || channels==8)) {
+            auto board=quactlize::decode_policy::select(mode,n,k,tokens);
+            if(board && board->simt) {
+                auto f=board->config;b.kind=QKS_SMALLM_Q4;
+                d.choice.q4={1,sizeof(d.choice.q4),f.reader,f.variant,f.warps,f.values,f.columns};
+            }
+        }
+    }
+    if(explicit_simt) {
+        auto& b=d.choice.base;b.kind=QKS_SMALLM_SIMT;b.simt=*explicit_simt;
+        d.status=quactlize::execution::simt::query_v2({2,sizeof(qkg_simt_call_v2),c,compute},
+            b.simt,&a,b.sizes)==QKG_OK?QKS_OK:QKS_INVALID;
+    }
     if(dense_fallbacks && d.status==QKS_MISS && mode==QKG_DENSE && compute==QK_COMPUTE_F16 &&
             tokens>=1 && tokens<=8 && experts==1 && channels==1 && topk==1) {
         auto& b=d.choice.base;
@@ -64,6 +105,7 @@ static void emit(int q,int mode,int n,int k,int experts,int topk,int channels,in
     std::cout<<"{\"request\":["<<q<<','<<mode<<','<<n<<','<<k<<','<<experts<<','<<topk<<','<<channels<<','<<tokens<<','<<compute
         <<"],\"status\":"<<d.status;
     if(dense_fallbacks)std::cout<<",\"control_scope\":\"PUBLIC_DENSE_F16_HOST_CHAIN\",\"native_f16\":"<<(native_f16?"true":"false");
+    if(indexed_fallbacks)std::cout<<",\"control_scope\":\"POC_INDEXED_BF16_AUTO_HOST_CHAIN\"";
     if(d.status==QKS_OK) {
         std::cout<<",\"kind\":"<<b.kind<<",\"policy\":"<<b.policy
             <<",\"dequant_config\":"<<d.dequant_config
@@ -137,8 +179,14 @@ int main(int argc,char** argv) {
         return 0;
     }
     bool dense_fallbacks=argc==2 && std::string(argv[1])=="--dense-fallbacks";
-    if(argc!=1 && !dense_fallbacks)return 2;
+    bool indexed_fallbacks=argc==2 && std::string(argv[1])=="--indexed-bf16-fallbacks";
+    bool explicit_simt=argc==2 && std::string(argv[1])=="--simt-configs";
+    if(argc!=1 && !dense_fallbacks && !indexed_fallbacks && !explicit_simt)return 2;
     int q,mode,n,k,e,top,ch,m,compute;
-    while(std::cin>>q>>mode>>n>>k>>e>>top>>ch>>m>>compute)emit(q,mode,n,k,e,top,ch,m,compute,dense_fallbacks);
+    while(std::cin>>q>>mode>>n>>k>>e>>top>>ch>>m>>compute) {
+        qkg_simt_config_v1 f{1,sizeof(f)};
+        if(explicit_simt && !(std::cin>>f.variant>>f.columns>>f.warps>>f.values>>f.split))return 1;
+        emit(q,mode,n,k,e,top,ch,m,compute,dense_fallbacks,indexed_fallbacks,explicit_simt?&f:nullptr);
+    }
     return std::cin.eof()?0:1;
 }

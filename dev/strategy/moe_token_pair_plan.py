@@ -34,6 +34,8 @@ def production_entry(row):
         return prefix+'q4_decode::'+('kernel_bf16' if compute==1 else 'kernel')
     names={'common-packet-3d':'common_reader','register-reuse':'register_reuse',
            'register-reuse-fixed':'register_reuse_model','measured-constant-split':'measured_decode_kernel'}
+    if row['implementation']['producer']=='q8-vector':
+        return prefix+'simt::q8_vector::kernel'
     return prefix+'simt::'+names[row['implementation']['producer']]
 
 

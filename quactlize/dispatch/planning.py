@@ -23,11 +23,14 @@ def plan_prefill(output, *, historical=False):
     return dict(schema=PREFILL_SCHEMA,scope='TYPED_PREFILL_COMPONENT_SELECTION_NOT_MODEL_ADMISSION',requests=rows)
 
 
-def plan_smallm(output, requests=None, *, dense_fallbacks=False):
+def plan_smallm(output, requests=None, *, dense_fallbacks=False, indexed_fallbacks=False):
     if requests is not None:requests=[list(r) for r in requests]
     if dense_fallbacks and (requests is None or any(len(r)!=9 or r[1]!=0 or r[-1]!=0
             or r[4:7]!=[1,1,1] or not 1<=r[7]<=8 for r in requests)):
         raise ValueError('complete dense control query requires explicit F16 dense M1..8 requests')
+    if indexed_fallbacks and (dense_fallbacks or requests is None or any(len(r)!=9 or r[1]!=2 or
+            r[-1]!=1 or not 1<=r[7]<=8 for r in requests)):
+        raise ValueError('indexed control query requires explicit BF16 indexed M1..8 requests')
     output = Path(output)
     executable = output / 'selection-query'
     subprocess.run(['g++', '-std=c++17', '-O2', '-I'+str(ROOT),
@@ -38,12 +41,31 @@ def plan_smallm(output, requests=None, *, dense_fallbacks=False):
         requests = [list(r) for r in requests]
         if any(len(r) != 9 or any(type(x) is not int for x in r) for r in requests):
             raise ValueError('small-M request requires q/mode/N/K/experts/topk/channels/tokens/compute')
-        text = subprocess.check_output([str(executable)]+(['--dense-fallbacks'] if dense_fallbacks else []), text=True,
+        option = ['--dense-fallbacks'] if dense_fallbacks else ['--indexed-bf16-fallbacks'] if indexed_fallbacks else []
+        text = subprocess.check_output([str(executable)]+option, text=True,
             input=''.join(' '.join(map(str, r))+'\n' for r in requests))
     rows = [json.loads(line) for line in text.splitlines()]
     if requests is not None and [r['request'] for r in rows] != requests:
         raise ValueError('final selector omitted or reordered requests')
     return dict(schema=SCHEMA, scope='TYPED_SMALLM_FINAL_SELECTION_NOT_FIXED_ROUTE', requests=rows)
+
+
+def plan_simt_configs(output, requests):
+    """Query real host launch validation/body dispatch, after plan_smallm built the tool.
+
+    Each row has the nine workload fields then V/C/W/P/S. This is not a
+    configuration selector and launches no GPU work.
+    """
+    requests = [list(r) for r in requests]
+    if any(len(r)!=14 or any(type(x) is not int for x in r) for r in requests):
+        raise ValueError('SIMT query requires workload and V/C/W/P/S')
+    text = subprocess.check_output([str(Path(output)/'selection-query'), '--simt-configs'], text=True,
+        input=''.join(' '.join(map(str, r))+'\n' for r in requests))
+    rows = [json.loads(line) for line in text.splitlines()]
+    if len(rows)!=len(requests) or any(row['request']!=r[:9] or row['status']==0 and
+            [row['config'][f] for f in FIELDS]!=r[9:] for row,r in zip(rows,requests)):
+        raise ValueError('SIMT query inventory differs')
+    return rows
 
 
 def requirements(plan):

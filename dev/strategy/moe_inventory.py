@@ -43,7 +43,7 @@ def collect(models, *, loader=read_headers, partitioner=None, ms=MS):
         if any(type(v) is not int or v <= 0 for v in (experts, topk)) or topk > experts:
             raise ValueError('missing/invalid GGUF expert_count or expert_used_count')
         records, partition_exclusions = {}, {}
-        if world > 1 and partitioner is not None:
+        if partitioner is not None:
             records, proof, partition_exclusions = partitioner(model, rows, tensors)
             if proof.get('identity', {}).get('operation') != 'MUL_MAT_ID':
                 raise ValueError('TP splitter did not bind indexed targets')

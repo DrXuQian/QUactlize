@@ -11,6 +11,7 @@ from dev.strategy.components import statistics_checked
 from dev.strategy.vector import execution_contract
 from dev.strategy.moe_token_pair_plan import COHORTS as MOE_PAIR_COHORTS
 from dev.strategy.moe_single_row_plan import COHORT as MOE_SINGLE_COHORT
+from dev.strategy.moe_model_plan import COHORT as MOE_MODEL_COHORT
 from quactlize.dispatch.table import Workload
 from quactlize.runtime.compiler import sha
 from quactlize.runtime.tuning import digest
@@ -19,7 +20,7 @@ ROOT=Path(__file__).resolve().parents[2]
 METHOD='ASYS_GPU_ACTIVITY'
 MODEL_TOKEN_COHORTS=('token-cta-models','token-cta-model-gaps')
 TOKEN_COHORTS=('q6-token-cta','token-cta-formats',*MODEL_TOKEN_COHORTS)
-MOE_COHORTS=(*MOE_PAIR_COHORTS,MOE_SINGLE_COHORT)
+MOE_COHORTS=(*MOE_PAIR_COHORTS,MOE_SINGLE_COHORT,MOE_MODEL_COHORT)
 COHORTS=('regressions',*TOKEN_COHORTS,*MOE_COHORTS)
 
 
@@ -53,6 +54,8 @@ def model_coverage(cohort):
 
 
 def workloads(cohort='regressions'):
+    if cohort==MOE_MODEL_COHORT:
+        raise ValueError('model MoE cohort requires the actual GGUF header/TP inventory')
     if cohort==MOE_SINGLE_COHORT:
         from dev.strategy.moe_single_row_plan import workloads as single_workloads
         return single_workloads()
@@ -126,11 +129,11 @@ def assignments(plan,workers):
     Preserve the old cohorts' assignment so their frozen resumes still work.
     """
     if not 1<=workers<=len(plan['points']):raise ValueError('invalid worker count')
-    if plan.get('cohort') not in MODEL_TOKEN_COHORTS:
+    if plan.get('cohort') not in (*MODEL_TOKEN_COHORTS,MOE_MODEL_COHORT):
         return [[p['id'] for j,p in enumerate(plan['points']) if j%workers==i] for i in range(workers)]
     def weight(p):
         w=p['workload']
-        return (w['n']*w['k']+4*1024*1024)*len(p['arms'])*(8+w['m'])
+        return (w['n']*w['k']+4*1024*1024)*len(p['arms'])*(8+w['m'])*w['topk']
     result=[[] for _ in range(workers)];loads=[0]*workers
     for p in sorted(plan['points'],key=lambda p:(-weight(p),p['id'])):
         i=min(range(workers),key=lambda j:(loads[j],j))
@@ -224,9 +227,15 @@ def check_producers(point,data):
             else:
                 expected='quactlize::execution::simt::'+('common_reader' if common else 'register_reuse')
             if expected!=n:raise ValueError('candidate executed the wrong production reader: '+n)
-            if 'moe_pair_rows' in spec or point.get('indexed_single_row'):
+            if 'moe_pair_rows' in spec or point.get('indexed_single_row') and recipe['kind']=='simt':
                 w=point['workload']
-                if (nodes[0]['grid']!=[w['n']//(c['columns']*c['values']),w['m']*w['topk'],dict(recipe['parameters'])['split']] or
+                grid=[w['n']//(c['columns']*c['values']),w['m']*w['topk'],dict(recipe['parameters'])['split']]
+                # Common/pair readers use 3-D ownership; retained generic,
+                # measured fixed and Q8-vector controls flatten the same work.
+                if n not in ('quactlize::execution::simt::common_reader',
+                             'quactlize::execution::simt::moe_token_pair_reader'):
+                    grid=[grid[0]*grid[1]*grid[2],1,1]
+                if (nodes[0]['grid']!=grid or
                         nodes[0]['block']!=[c['warps']*32,1,1]):
                     raise ValueError('indexed reader grid/block differs from routed-row ownership')
             if 'cta_tokens' in spec:

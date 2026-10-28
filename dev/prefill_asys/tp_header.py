@@ -230,8 +230,8 @@ class HeaderTP:
     def __call__(self, model, rows, tensors):
         self.check_sources()
         world=model['tp']
-        if world not in (2,4):
-            raise ValueError('header-only supplement supports TP2/TP4 equal splits')
+        if world not in (1,2,4):
+            raise ValueError('header-only supplement supports TP1/TP2/TP4 equal splits')
         params=parameters(rows[0]['header']['metadata'],tensors)
         runtime,excluded=runtime_tensors(tensors,params,indexed=self.indexed)
         payload=encode(params,runtime,world)

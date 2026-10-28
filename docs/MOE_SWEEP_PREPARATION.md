@@ -93,6 +93,47 @@ pair experiment. This cohort is not all-model coverage or a TC/SIMT selection
 admission. Qwen122B TP2 and DeepSeek TP4 still require their actual local expert
 shapes, and Q8/BF16-storage reader optimization remains open.
 
+### Three-model local-shape completion
+
+`COHORT=moe-single-row-models` replaces the Q5-only handoff when all requested
+models are required: Qwen3.5-35B-A3B TP1, Qwen3.5-122B-A10B TP2, and
+DeepSeek-V4-Flash-0731 TP4. It reads all GGUF shard **headers**, then executes
+the caller's source-bound TP split function on CPU. It neither launches llama
+nor loads model weights. No llama binary or multi-device communication is
+needed for these per-rank operator timings.
+
+- Gate/up and down use their actual local N/K, quantization, expert count,
+  selected-expert count and channel semantics. No all-formats Cartesian
+  product or naive N/TP division; unknown/unsupported local shapes stay visible.
+- Every weight family gets M1 spread and M2–8 across five synthetic routing
+  profiles (36 points/family). Identical families across layers/models/ranks
+  share measurements, retaining every consumer in the plan.
+- Existing common SIMT geometries plus S1/2/4/8; the actual current auto
+  incumbent remains even if it is TC or specialized Q4. Table misses use the
+  old BF16 caller's v2/Q4 chain as control, checked against real public APIs
+  by host tests. New TC and fused gate-up/SwiGLU candidates remain deferred.
+- No historical latency reuse. Independent oracle, guards, rotating-weight
+  Asys component means, commit/source/device/binary identities, and separate
+  prepare/main/reducer/finish costs remain mandatory. These are shape-based
+  synthetic operators, not model inference or captured routing distributions.
+
+After committing/delivering these sources, run the existing Box wrapper with
+`COHORT=moe-single-row-models`, `BASELINE=quactlize`, idle `GPUS`,
+`LLAMA_CI_DIR` (the caller **source**, not its build directory), and verified
+`L2_BYTES`. `MODEL_ROOT` defaults to
+`/sim/eec/shared/AI_workspace/llm-models/bench_model_zoo`.
+`QWEN35_MODEL`, `QWEN122_MODEL`, `DEEPSEEK_MODEL` override exact first-shard
+paths. `PLAN_ONLY=1` prints per-model local shape/format/point coverage without
+GPU work. A timing run prints the same inventory before compilation. GPU
+workers distribute whole comparison points; TP4 does not require four GPUs.
+
+Use a new run, not a resume of the frozen Q5-only/pair experiment. The new
+run's `RESUME_RUN` preserves its header inventory and original card bindings.
+Only upload `results/review-lite-*.tar.xz`; headers/TP receipts/coverage,
+numeric results, separate component timings and errors are included, while
+raw Asys reports and binaries stay on Box. No new production routing is
+admitted by generating this plan or by passing host tests.
+
 ### First Box result and Q4-only retry (2026-10-28)
 
 Source `98f5cd4b94922653f928555d96c54a9abeb9cba1`, ZW810/72 CUs,

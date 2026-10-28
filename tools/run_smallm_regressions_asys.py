@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded dense cohorts, current controls, Asys-only component means."""
+"""Bounded dense/indexed cohorts, current controls, Asys-only component means."""
 import argparse
 from contextlib import ExitStack
 import fcntl
@@ -16,6 +16,7 @@ import uuid
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from dev.strategy.smallm_asys import workloads,make_plan,revision,validate,check_producers,assignments,METHOD,COHORTS,MOE_COHORTS
+from dev.strategy.moe_model_plan import COHORT as MOE_MODEL_COHORT
 from dev.strategy.provenance import harness_identity,source_identity
 from dev.strategy.journal import atomic_json
 from quactlize.dispatch.table import Workload
@@ -66,7 +67,8 @@ def child(a):
             # Never choose a helper using an event timer under the Asys policy.
             if len(point['sf_configs'])!=1:raise ValueError('declare SF helper arms separately before extending this recovery')
             mr=Ring(sdk,w,a.l2_bytes,weights=ring.w,metadata_only=True);stack.callback(mr.close)
-            mb=Context(sdk,mr,fixture_point(w));stack.callback(mb.close);checked_fixture(mb,w)
+            mb=Context(sdk,mr,indexed_point(w) if w.operation=='indexed' else fixture_point(w));stack.callback(mb.close)
+            if w.operation!='indexed':checked_fixture(mb,w)
             msf=Expansion(mb,dq);stack.callback(msf.close)
             sf=Expansion(b,dq,gold=msf.gold);stack.callback(sf.close)
         bound,bindings=base.bind_point(point,images)
@@ -181,6 +183,9 @@ def run(a):
     from quactlize.runtime.native import sdk_identity
     a.output.mkdir(parents=True,exist_ok=a.resume)
     if (a.output/'plan.json').exists():plan=sealed(a.output/'plan.json')
+    elif a.cohort==MOE_MODEL_COHORT:
+        from dev.strategy.moe_model_plan import model_inventory, make_plan as model_plan
+        plan=model_plan(a.output,model_inventory(a));atomic_json(a.output/'plan.json',plan)
     else:
         originals=plan_smallm(a.output,[base.request(w) for w in workloads(a.cohort or 'regressions')],
                              dense_fallbacks=a.cohort not in MOE_COHORTS)
@@ -190,8 +195,13 @@ def run(a):
     if (plan['schema']!='quactlize.smallm-asys.v1' or
             any(sha(ROOT/p)!=value for p,value in plan['sources'].items())):
         raise ValueError('frozen plan source changed; start a new experiment')
+    from dev.strategy.moe_model_plan import verify_inventory
+    verify_inventory(a.output,plan)
     print('SMALLM_ASYS_PLAN '+json.dumps(dict(plan['counts'],timing_method=METHOD,
         scope=plan['scope'],selection='MEAN_NOT_MIN',native_comparison=False)),flush=True)
+    if plan.get('cohort')==MOE_MODEL_COHORT:
+        for model in plan['coverage']['models']:
+            print('MOE_MODEL_COVERAGE '+json.dumps(model),flush=True)
     if a.plan_only:return 0
     if not a.confirm_idle:raise ValueError('confirm the assigned cards are otherwise idle')
     rev=revision(ROOT);a.smi=base.selected_smi(a)
@@ -241,6 +251,11 @@ def run(a):
     result=dict(status='COMPLETE' if all(r['status']=='PASS' for r in rows) and all(p.returncode==0 for p in workers) else 'INCOMPLETE',
         expected=len(plan['points']),points=rows,returncodes=[p.returncode for p in workers],timing_method=METHOD,
         source_revision=rev,production_changed=False,native_no_regression_admitted=False,model_tpot_admitted=False)
+    if plan.get('cohort')==MOE_MODEL_COHORT:
+        passed={r['point'] for r in rows if r['status']=='PASS'}
+        result['models']=[dict(model=m['model'],tp=m['tp'],expected=m['points'],
+            passed=sum(p['id'] in passed for p in plan['points'] if any(c['model']==m['model'] for c in p['consumers'])))
+            for m in plan['coverage']['models']]
     atomic_json(a.output/'summary.json',result)
     print('SMALLM_ASYS_DONE '+json.dumps({k:v for k,v in result.items() if k!='points'}),flush=True)
     return int(result['status']!='COMPLETE')
@@ -251,6 +266,9 @@ def main():
     p.add_argument('--output',type=Path,required=True);p.add_argument('--sdk',type=Path,default=Path('/usr/local/PPU_SDK'))
     p.add_argument('--devices',default='0,1,2,3');p.add_argument('--jobs',type=int,default=8)
     p.add_argument('--cohort',choices=COHORTS)
+    p.add_argument('--model-root',type=Path,default=Path('/sim/eec/shared/AI_workspace/llm-models/bench_model_zoo'))
+    p.add_argument('--qwen35-model',type=Path);p.add_argument('--qwen122-model',type=Path);p.add_argument('--deepseek-model',type=Path)
+    p.add_argument('--llama-source',type=Path,help='CPU-only caller TP split rules for moe-single-row-models; no binary required')
     p.add_argument('--l2-bytes',type=int,default=67108864);p.add_argument('--asys',type=Path);p.add_argument('--smi',type=Path)
     p.add_argument('--resume',action='store_true');p.add_argument('--plan-only',action='store_true');p.add_argument('--confirm-idle',action='store_true')
     p.add_argument('--reparse-only',action='store_true',help='CPU only: recover timestamp-only failures without overwriting old results')

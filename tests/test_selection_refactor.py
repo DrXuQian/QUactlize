@@ -117,7 +117,9 @@ def execution_for(plan):
 def test_final_catalog_is_exact_and_checks_full_tuple(final_plan):
     assert len(final_plan['requests'])==2095
     assert all(r['status']==0 for r in final_plan['requests'])
-    assert len(requirements(final_plan)['simt'])==199
+    # Q5 indexed M1 admission added BF16 V3/C8/W4/P4/S1 in d71763e9.
+    simt=requirements(final_plan)['simt']
+    assert len(simt)==200 and (13,1,3,8,4,4,1) in simt
     execution=execution_for(final_plan)
     validate_inventory(final_plan,execution,jit=True)
     for mutate in ('config','compute','q4','q8'):

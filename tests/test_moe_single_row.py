@@ -107,6 +107,8 @@ def test_asys_checks_single_row_producer_grid_and_precision(planned):
         f = dict(a['recipe']['parameters'])
         node = dict(name=a['expected_producer'], symbol=a['expected_producer'],
             grid=[2048//(f['columns']*f['values']), 8, f['split']], block=[f['warps']*32, 1, 1])
+        if not a['expected_producer'].endswith('::common_reader'):
+            node['grid']=[node['grid'][0]*node['grid'][1]*node['grid'][2],1,1]
         components[a['id']] = dict(kind='producer', identity=dict(node=node))
         arm_components[a['id']] = [a['id']]
         arms[a['id']] = dict(receipt=dict(execution_contract=p['execution_contract']))
@@ -116,7 +118,7 @@ def test_asys_checks_single_row_producer_grid_and_precision(planned):
         bad = deepcopy(data)
         node = bad['component_records']['original']['identity']['node']
         if field == 'entry':node.update(name='wrong', symbol='wrong')
-        elif field == 'grid':node['grid'][1] = 1
+        elif field == 'grid':node['grid'][1] += 1
         elif field == 'block':node['block'][0] = 32
         else:bad['arms']['original']['receipt']['execution_contract']['compute_type'] = 0
         with pytest.raises(ValueError):check_producers(p, bad)
