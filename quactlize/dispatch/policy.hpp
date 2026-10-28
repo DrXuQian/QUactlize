@@ -91,6 +91,8 @@ inline Selected select_same_family(qks_request_v1 const& r) {
     q.experts=r.experts; q.max_rows=r.max_rows;
     q.route=static_cast<policy::base::Route>(r.route);
     q.group_size=(r.qtype == 12 || r.qtype == 13) ? 32 : 16;
+    // Policy keys/latencies are from ZW810, also reused by ZW610 (see
+    // ppu_device.hpp). These are NOT the physical resources used by recipe().
     q.device_name="PPU-ZW810"; q.compute_units=72; q.mapping_id=r.mapping_id;
     q.kernel_source=policy::kKernelSource; q.sdk_digest=policy::kSdkDigest;
     if (r.route < 2) {

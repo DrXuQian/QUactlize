@@ -21,8 +21,10 @@ def resolve(args):
         raise ValueError('outside measured prefill domain')
     torch.cuda.set_device(args.device)
     prop=torch.cuda.get_device_properties(args.device)
-    if prop.multi_processor_count!=72 or 'PPU-ZW810' not in prop.name:
-        raise ValueError('DeepGEMM prefill requires measured PPU class')
+    # Match ppu_device.hpp policy compatibility, but compile/launch using the
+    # actual device CUs. Reusing ZW810 routing does not make ZW610 have 72 CUs.
+    if (prop.name,prop.multi_processor_count) not in (('PPU-ZW810',72),('PPU-ZW610',64)):
+        raise ValueError('DeepGEMM prefill requires supported PPU1.0 device')
     mod=importlib.import_module('deep_gemm.jit_kernels.m_grouped_gemm')
     fn=mod.m_grouped_gemm_bf16_bf16_bf16_nt_nopad
     if not inspect.isfunction(fn) or fn.__module__!=mod.__name__:
@@ -47,7 +49,8 @@ def resolve(args):
         if (root/'kernel.args').read_text()!=declared or (root/'kernel.cu').read_text()!=generated:
             raise ValueError('cached provider source or launch arguments differ')
         actual=kw['args']
-        if actual[5]!=args.m or actual[6]!=(args.m+args.experts-1)//args.experts or actual[8]!=72:
+        if (actual[5]!=args.m or actual[6]!=(args.m+args.experts-1)//args.experts or
+                actual[8]!=prop.multi_processor_count):
             raise ValueError('provider launch scalars changed')
         seen.append((runtime,actual[8],actual[9],actual[4].numel()*4,kw['keys']))
         return runtime

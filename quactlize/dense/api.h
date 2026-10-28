@@ -56,6 +56,8 @@ int quactlize_ppu_dense_supported_v1(quactlize_ppu_dense_params_v1 const*);
 // with create_with_options_v1; finite F32 values need not fit FP16.
 // Internal resources are resolved relative to libquactlize_ppu.so. Optional
 // environment: PPU_SDK, QUACTLIZE_PPU_CACHE_DIR, QUACTLIZE_PPU_PYTHON.
+// PPU1.0 ZW610 uses ZW810 exact-table latencies/configs and bucket rules as
+// selection estimates (not ZW610 measurements), with its actual resources.
 int quactlize_ppu_dense_create_v1(int device,void** context);
 int quactlize_ppu_dense_create_with_options_v1(int device,
     quactlize_ppu_dense_options_v1 const*,void** context);

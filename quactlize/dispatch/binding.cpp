@@ -8,6 +8,7 @@
 #include "../execution/moe.h"
 #include "../execution/simt_validation.hpp"
 #include "../fusion/validation.hpp"
+#include "../include/ppu_device.hpp"
 #include <dlfcn.h>
 #include <cstring>
 #include <filesystem>
@@ -384,11 +385,11 @@ std::shared_ptr<Module> load(Runtime& r,Image const& image,Config const& c,bool 
     auto probe=symbol<decltype(&quactlize_kpack_device_v1)>(module->library,
         dense_io?"quactlize_kpack_decode_dense_device_v1":"quactlize_kpack_device_v1");
     int probe_rc=probe(name,sizeof(name),&device,&cu);
-    if (probe_rc!=QK_OK || std::strcmp(name,"PPU-ZW810") || cu!=72 ||
+    if (probe_rc!=QK_OK || !quactlize::device::uses_zw810_policy(name,cu) ||
         (r.device>=0 && (r.device!=device || r.cu!=cu)))
         throw std::runtime_error("loaded module device differs from policy: probe_rc="+std::to_string(probe_rc)+
             " name="+std::string(name)+" ordinal="+std::to_string(device)+" compute_units="+std::to_string(cu)+
-            " expected_name=PPU-ZW810 expected_compute_units=72 previous_ordinal="+std::to_string(r.device)+
+            " supported_devices=PPU-ZW810/72,PPU-ZW610/64 previous_ordinal="+std::to_string(r.device)+
             " previous_compute_units="+std::to_string(r.cu));
     r.device=device; r.cu=cu;
     if (dense_io) {

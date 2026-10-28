@@ -1,6 +1,7 @@
 #include "layout.hpp"
 #include "dynamic.hpp"
 #include "../dequant/indexed.h"
+#include "../include/ppu_device.hpp"
 #include <hggc_runtime.h>
 #include <dlfcn.h>
 #include <cerrno>
@@ -83,7 +84,7 @@ std::string prewarm(qkp_call_v1 const& c,qkp_options_v1 const& o) {
     return reply;
 }
 
-std::shared_ptr<Deep> deep(qkp_call_v1 const& c,qkp_options_v1 const& o,Layout const& layout) {
+std::shared_ptr<Deep> deep(qkp_call_v1 const& c,qkp_options_v1 const& o,Layout const& layout,int compute_units) {
     static std::mutex mutex;
     static std::map<std::string,std::shared_ptr<Deep>> cache;
     std::string key=std::string(o.sdk)+"|"+(o.deepgemm_helper ? o.deepgemm_helper : "")+
@@ -94,7 +95,7 @@ std::shared_ptr<Deep> deep(qkp_call_v1 const& c,qkp_options_v1 const& o,Layout c
     auto reply=prewarm(c,o);std::istringstream in(reply);
     std::string tag,path,hash,extra;int m,n,k,e,sms,smem;uint64_t bytes;
     if (!(in>>tag>>m>>n>>k>>e>>sms>>smem>>bytes) || tag!="QKP_DEEPGEMM_V1" ||
-        m!=c.m || n!=c.weight.n || k!=c.weight.k || e!=c.weight.experts || sms!=72 || smem<0 ||
+        m!=c.m || n!=c.weight.n || k!=c.weight.k || e!=c.weight.experts || sms!=compute_units || smem<0 ||
         bytes>layout.bytes-layout.directory) throw std::runtime_error("provider shape/scratch receipt differs");
     in.ignore(1);std::getline(in,path);std::getline(in,hash);
     if (!std::filesystem::path(path).is_absolute() || hash.size()!=64 ||
@@ -129,8 +130,8 @@ int prepare_provider(Handle& h,qkp_call_v1 const& c,qkp_options_v1 const& o) {
     int device=-1;check(hggcGetDevice(&device),"device query");
     hggcDeviceProp prop{};check(hggcGetDeviceProperties(&prop,device),"device properties");
     int sms=0;check(hggcDeviceGetAttribute(&sms,hggcDevAttrMultiProcessorCount,device),"SM attribute");
-    if (device!=c.device || sms!=72 || !std::strstr(prop.name,"PPU-ZW810")) return QKG_INVALID;
-    if (c.weight.experts>1) h.dg=deep(c,o,h.layout);
+    if (device!=c.device || !quactlize::device::uses_zw810_policy(prop.name,sms)) return QKG_INVALID;
+    if (c.weight.experts>1) h.dg=deep(c,o,h.layout,sms);
     else {
         auto path=std::filesystem::path(o.sdk)/"CUDA_SDK/targets/x86_64-linux/lib/libcublas.so";
         h.blas_lib=std::make_shared<Library>(path.string());

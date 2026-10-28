@@ -144,7 +144,8 @@ int main() {
 
 
 @pytest.mark.parametrize('grouped', [False, True])
-def test_actual_native_provider_composition_with_cpu_abi_stubs(tmp_path, grouped):
+@pytest.mark.parametrize('device_name,compute_units', [('PPU-ZW810', 72), ('PPU-ZW610', 64)])
+def test_actual_native_provider_composition_with_cpu_abi_stubs(tmp_path, grouped, device_name, compute_units):
     sdk=Path(os.environ.get('PPU_SDK', '/usr/local/PPU_SDK'))
     provider=tmp_path/'CUDA_SDK/targets/x86_64-linux/lib'
     provider.mkdir(parents=True)
@@ -166,12 +167,12 @@ extern "C" int cublasGemmEx(void*,int ta,int tb,int n,int m,int k,void const* al
 }
 extern "C" void launch(void const* a,void const* b,void* out,int const* rows,void* directory,
  int m,int expected_m,void* stream,int sms,int smem,void* signal,int* rc) {
- assert(m==1024 && expected_m==4 && sms==72 && smem==8192 && !stream && !signal && directory && rows);
+ assert(m==1024 && expected_m==4 && sms==TEST_CU && smem==8192 && !stream && !signal && directory && rows);
  assert(*static_cast<uint16_t const*>(a)==0x4000 && *static_cast<uint16_t const*>(b)==0x3f80);
  *static_cast<uint16_t*>(out)=0x4000;*rc=0;
 }
 ''')
-    subprocess.run(['g++','-shared','-fPIC',str(stub),'-o',str(provider/'libcublas.so')],check=True)
+    subprocess.run(['g++','-shared','-fPIC',f'-DTEST_CU={compute_units}',str(stub),'-o',str(provider/'libcublas.so')],check=True)
     test=tmp_path/'native.cpp'
     test.write_text(r'''
 #include <hggc_runtime.h>
@@ -184,10 +185,10 @@ using quactlize::prefill::Layout;
 int expanded=0,inputs=0,outputs=0;
 extern "C" hggcError_t hggcGetDevice(int* d) { *d=0;return hggcSuccess; }
 extern "C" hggcError_t hggcGetDeviceProperties(hggcDeviceProp* p,int) {
- std::strcpy(p->name,"PPU-ZW810");p->multiProcessorCount=1;return hggcSuccess;
+ std::strcpy(p->name,TEST_DEVICE);p->multiProcessorCount=1;return hggcSuccess;
 }
 extern "C" hggcError_t hggcDeviceGetAttribute(int* n,hggcDeviceAttr attr,int) {
- assert(attr==hggcDevAttrMultiProcessorCount);*n=72;return hggcSuccess;
+ assert(attr==hggcDevAttrMultiProcessorCount);*n=TEST_CU;return hggcSuccess;
 }
 extern "C" hggcError_t hggcStreamIsCapturing(hggcStream_t,hggcStreamCaptureStatus* s) { *s=hggcStreamCaptureStatusNone;return hggcSuccess; }
 extern "C" hggcError_t hggcGetLastError() {return hggcSuccess;}
@@ -239,19 +240,21 @@ int main(int argc,char** argv) {
 }
 ''')
     exe=tmp_path/'native'
-    subprocess.run(['g++','-std=c++17','-O1',f'-I{ROOT}',f'-I{ROOT/"quactlize/include"}',
+    subprocess.run(['g++','-std=c++17','-O1',f'-DTEST_CU={compute_units}',f'-DTEST_DEVICE="{device_name}"',
+        f'-I{ROOT}',f'-I{ROOT/"quactlize/include"}',
         f'-I{sdk/"include"}',str(test),str(ROOT/'quactlize/prefill/runtime.cpp'),'-ldl','-pthread','-o',str(exe)],check=True)
     args = [str(exe),str(tmp_path)]
     if grouped:
         helper = tmp_path/'provider helper.py'
-        helper.write_text('print("QKP_DEEPGEMM_V1 1024 256 512 256 72 8192 16384")\n' +
+        helper.write_text(f'print("QKP_DEEPGEMM_V1 1024 256 512 256 {compute_units} 8192 16384")\n' +
             f'print({str(provider/"libcublas.so")!r})\nprint({"a"*64!r})\n')
         args += [sys.executable,str(helper)]
     subprocess.run(args,check=True)
 
 
-@pytest.mark.parametrize('fault', [None, 'abi', 'tuning', 'source', 'args', 'scalars', 'omitted'])
-def test_installed_provider_compile_only_handoff(tmp_path, monkeypatch, fault):
+@pytest.mark.parametrize('fault', [None, 'abi', 'tuning', 'source', 'args', 'scalars', 'cu', 'omitted'])
+@pytest.mark.parametrize('device_name,compute_units', [('PPU-ZW810', 72), ('PPU-ZW610', 64)])
+def test_installed_provider_compile_only_handoff(tmp_path, monkeypatch, fault, device_name, compute_units):
     from tools.kpack_deepgemm_prewarm import resolve
 
     class Tensor:
@@ -269,7 +272,7 @@ def test_installed_provider_compile_only_handoff(tmp_path, monkeypatch, fault):
     torch.bfloat16, torch.int32 = 'bf16', 'i32'
     torch.empty = lambda shape, dtype, device: Tensor(shape, dtype, device)
     torch.cuda = types.SimpleNamespace(Stream=Stream, set_device=lambda _: None,
-        get_device_properties=lambda _: types.SimpleNamespace(multi_processor_count=72, name='PPU-ZW810'))
+        get_device_properties=lambda _: types.SimpleNamespace(multi_processor_count=compute_units, name=device_name))
     monkeypatch.setitem(sys.modules, 'torch', torch)
     module = types.ModuleType('deep_gemm.jit_kernels.m_grouped_gemm')
     module.__file__ = str(tmp_path/'provider.py')
@@ -310,7 +313,8 @@ def test_installed_provider_compile_only_handoff(tmp_path, monkeypatch, fault):
         if fault == 'abi':
             defs = defs[:-1]
         args = (lhs,rhs,out,m_rows,Tensor(4096,'i32','meta'),
-            1 if fault=='scalars' else 1024,4,Stream(),72,8192,Tensor(0,'i32','meta'))
+            1 if fault=='scalars' else 1024,4,Stream(),
+            compute_units+1 if fault=='cu' else compute_units,8192,Tensor(0,'i32','meta'))
         image = module.jit_tuner.compile_and_tune(name='m_grouped_gemm_bf16_bf16_bf16_nt',
             space=(1,) if fault=='tuning' else (), includes=[], arg_defs=defs,
             template='provider-selected-source', keys={'N':256,'K':512}, args=args)
@@ -327,7 +331,7 @@ def test_installed_provider_compile_only_handoff(tmp_path, monkeypatch, fault):
         assert not (tmp_path/'quactlize-launch-m1024.json').exists()
     else:
         reply = resolve(args)
-        assert reply.startswith('QKP_DEEPGEMM_V1 1024 256 512 256 72 8192 16384\n')
+        assert reply.startswith(f'QKP_DEEPGEMM_V1 1024 256 512 256 {compute_units} 8192 16384\n')
         assert state['calls'] == 1
         assert (tmp_path/'quactlize-launch-m1024.json').is_file()
     assert state['mode'] == 0

@@ -33,9 +33,12 @@ def prepare_selected(backend, request, selection, *, allow_prediction=False):
         or module.record["identity"] != selection["module_contract"]
     ):
         raise UnsupportedTactic("selected module parent/compiler contract differs")
+    # Same policy sharing as include/ppu_device.hpp: ZW810 times are selection
+    # estimates on ZW610, not measurements of that device. prepare() still
+    # queries the real CUs/occupancy; never substitute 72 into the launch.
     if (
-        backend.identity["device"] != "PPU-ZW810"
-        or backend.identity["compute_units"] != 72
+        (backend.identity["device"], backend.identity["compute_units"])
+        not in (("PPU-ZW810", 72), ("PPU-ZW610", 64))
         or any(
             backend.identity[k] != selection["module_contract"][k]
             for k in ("sdk", "kernel")

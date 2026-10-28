@@ -8,15 +8,21 @@ struct StubHandle {
     qk_call_v1 shape{};
     int endpoint=0;
 };
+static char stub_device_name[128]="PPU-ZW810";
+static int stub_device=0,stub_cu=72;
+extern "C" void quactlize_test_device(char const* name,int device,int cu) {
+    std::strncpy(stub_device_name,name,sizeof(stub_device_name)-1);
+    stub_device=device;stub_cu=cu;
+}
 
 extern "C" qk_identity_v1 const* quactlize_kpack_identity_v1() { return &stub_identity; }
 extern "C" int quactlize_kpack_device_v1(char* name,int capacity,int32_t* ordinal,int32_t* cu) {
-    if (capacity<16) return QK_INVALID;
-    std::strcpy(name,"PPU-ZW810"); *ordinal=0; *cu=72; return 0;
+    if (capacity<=0 || size_t(capacity)<=std::strlen(stub_device_name)) return QK_INVALID;
+    std::strcpy(name,stub_device_name); *ordinal=stub_device; *cu=stub_cu; return 0;
 }
 extern "C" int quactlize_kpack_query_v1(qk_call_v1 const* c,qk_recipe_v1 const* r,qk_resources_v1* out) {
     if (!c || !r || !out || c->rows_host || c->rows_device) return QK_INVALID;
-    if (c->device!=0 || c->compute_units!=72 || r->split!=stub_expected_split) return QK_INVALID;
+    if (c->device!=stub_device || c->compute_units!=stub_cu || r->split!=stub_expected_split) return QK_INVALID;
     if (stub_expected_n && c->n!=stub_expected_n) return QK_INVALID;
     uint64_t bytes=stub_expected_n ? uint64_t(c->m)*c->n*r->split*4 : 256;
     *out={1,sizeof(*out),bytes,4096,6,0,0}; return QK_OK;

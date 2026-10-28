@@ -7,12 +7,13 @@
 #include <cstring>
 #include <thread>
 
+static int compute_units=72;
 extern "C" hggcError_t hggcGetDevice(int* d) { *d=0;return hggcSuccess; }
 extern "C" hggcError_t hggcGetDeviceProperties(hggcDeviceProp* p,int) {
-    std::strcpy(p->name,"PPU-ZW810");return hggcSuccess;
+    std::strcpy(p->name,compute_units==64?"PPU-ZW610":"PPU-ZW810");return hggcSuccess;
 }
 extern "C" hggcError_t hggcDeviceGetAttribute(int* n,hggcDeviceAttr attr,int) {
-    assert(attr==hggcDevAttrMultiProcessorCount);*n=72;return hggcSuccess;
+    assert(attr==hggcDevAttrMultiProcessorCount);*n=compute_units;return hggcSuccess;
 }
 extern "C" hggcError_t hggcStreamIsCapturing(hggcStream_t,hggcStreamCaptureStatus* s) {
     *s=hggcStreamCaptureStatusNone;return hggcSuccess;
@@ -34,6 +35,8 @@ extern "C" int quactlize_kpack_dequant_indexed_v1(qzd_call_v1 const*,quactlize_p
 
 int main(int argc,char** argv) {
     assert(argc==2);
+    for(int cu:{72,64}) {
+    compute_units=cu;
     auto arr=ppu_arrangements::q4_kpack4_transpose_v1();
     qkp_call_v1 shape{};shape.version=1;shape.size=sizeof(shape);shape.m=shape.a_rows=128;
     shape.a_stride=512;shape.output_stride=256;shape.device=0;
@@ -84,5 +87,6 @@ int main(int argc,char** argv) {
     for (auto& c:calls) {
         std::free(const_cast<float*>(c.a));std::free(c.output);std::free(c.workspace);
         std::free(const_cast<void*>(c.weight.low));std::free(const_cast<void*>(c.weight.units));
+    }
     }
 }

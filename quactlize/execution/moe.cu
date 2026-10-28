@@ -8,6 +8,7 @@ namespace quactlize::runtime { using Half=cutlass::half_t; }
 #include "../runtime/moe_chain.cuh"
 #include "moe.h"
 #include "moe_prepare.cuh"
+#include "../include/ppu_device.hpp"
 #include <algorithm>
 #include <cstring>
 
@@ -60,7 +61,7 @@ extern "C" int quactlize_kpack_moe_simt_bind_v1(qkg_call_v1 const* call,int devi
   if (hggcGetDevice(&current)!=hggcSuccess || hggcGetDeviceProperties(&prop,current)!=hggcSuccess ||
       hggcDeviceGetAttribute(&cu,hggcDevAttrMultiProcessorCount,current)!=hggcSuccess ||
       hggcStreamIsCapturing(static_cast<hggcStream_t>(call->stream),&capture)!=hggcSuccess) return QKG_RUNTIME;
-  if ((device>=0 && current!=device) || std::strcmp(prop.name,"PPU-ZW810") || cu!=72 ||
+  if ((device>=0 && current!=device) || !quactlize::device::uses_zw810_policy(prop.name,cu) ||
       capture!=hggcStreamCaptureStatusNone) return QKG_SHAPE;
   device=current;
   auto const& c=*call;auto base=static_cast<char*>(scratch);

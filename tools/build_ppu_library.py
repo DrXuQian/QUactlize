@@ -172,6 +172,8 @@ def build(sdk, output, jobs):
     public_sources = {p: sha(p) for directory in ('quactlize/dense', 'quactlize/dispatch')
                       for p in (ROOT / directory).iterdir() if p.is_file()}
     public_sources.update({p: sha(p) for p in (ROOT/'policies').iterdir() if p.suffix in ('.hpp', '.json')})
+    device_policy=ROOT/'quactlize/include/ppu_device.hpp'
+    public_sources[device_policy]=sha(device_policy)
     helper_policy=ROOT/'quactlize/prefill/dense_helpers.hpp'
     public_sources[helper_policy]=sha(helper_policy)
     internal=ROOT/'quactlize/prefill/dense_internal.hpp'

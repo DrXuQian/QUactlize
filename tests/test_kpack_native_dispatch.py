@@ -395,6 +395,65 @@ def test_doubled_n_reaches_runtime_resource_and_prepare(tmp_path,probe,route,spl
     finally:f['close'](r)
 
 
+@pytest.mark.parametrize('values', [(12, 3, 8, 1024, 2048, 256, 1),
+                                    (8, 1, 128, 1024, 5120, 1, 128)])
+def test_zw610_loads_same_policy_with_actual_resources(tmp_path, probe, values):
+    f, initial, req = build_stub(tmp_path, probe, values=values)
+    f['close'](initial)
+    image = C.CDLL(str(tmp_path / 'modules' / ('a' * 64) / 'kernel.so'))
+    device = image.quactlize_test_device
+    device.argtypes, device.restype = [C.c_char_p, C.c_int, C.c_int], None
+    baseline = None
+    for name, cu, accepted in [('PPU-ZW810', 72, True), ('PPU-ZW610', 64, True),
+                               ('PPU-ZW610', 72, False), ('PPU-ZW810', 0, False),
+                               ('OTHER_PPU', 64, False)]:
+        device(name.encode(), 1, cu)
+        runtime, choice = C.c_void_p(), Choice()
+        assert f['open'](str(tmp_path).encode(), C.byref(runtime)) == 0
+        try:
+            rc = f['query'](runtime, C.byref(req), C.byref(choice))
+            if not accepted:
+                assert rc == 3 and not choice.ticket
+                assert b'loaded module device differs from policy' in f['error']()
+                continue
+            assert rc == 0, f['error']()
+            assert (choice.device, choice.compute_units) == (1, cu)
+            selected = (choice.parent, choice.policy, choice.algorithm, choice.split)
+            if baseline is None:
+                baseline = selected
+            assert selected == baseline  # Device alone cannot force another rule/fallback.
+            if req.route == 3:
+                assert choice.grid == 4 * cu  # 256, not the ZW810 grid of 288.
+        finally:
+            f['close'](runtime)
+
+
+def test_python_selected_policy_shares_zw810_without_changing_device():
+    from dataclasses import asdict
+    from types import SimpleNamespace
+    from quactlize.runtime.candidates import PARENT_FIELDS
+    from quactlize.runtime.dispatch import prepare_selected
+    from quactlize.runtime.tuning import Request as TypedRequest, UnsupportedTactic
+    config = dict(symbol='host-policy', route='fq-dense', qtype=12, tm=8, tn=64, tk=256,
+                  wm=8, wn=16, stages=2, ap=0, dn=64, persistent=-1,
+                  algorithm='TC_S1', split=1, grid_mode='implicit', grid_b=0)
+    request = TypedRequest('fq-dense', 12, 256, 512, 1)
+    contract = dict(sdk='sdk', kernel='kernel')
+    selection = dict(status='MEASURED_RECENT', request=asdict(request),
+                     config=config, module_contract=contract)
+    module = SimpleNamespace(record=dict(parent={k: config[k] for k in PARENT_FIELDS}, identity=contract))
+    for name, cu in [('PPU-ZW810', 72), ('PPU-ZW610', 64)]:
+        backend = SimpleNamespace(identity=dict(contract, device=name, compute_units=cu),
+            modules={'host-policy': module}, is_capturing=lambda: False,
+            prepare=lambda request, tactic: tactic)
+        tactic = prepare_selected(backend, request, selection)
+        assert tactic.parent == 'host-policy' and tactic.split == 1
+        assert (backend.identity['device'], backend.identity['compute_units']) == (name, cu)
+        backend.identity['sdk'] = 'other-sdk'
+        with pytest.raises(UnsupportedTactic, match='device/SDK/kernel'):
+            prepare_selected(backend, request, selection)
+
+
 @pytest.mark.parametrize(
     "values,split",
     [((12, 2, 8, 512, 2048, 256, 1), 4), ((13, 2, 8, 2048, 512, 256, 1), 1)],

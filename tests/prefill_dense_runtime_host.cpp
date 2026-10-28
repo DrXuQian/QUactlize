@@ -136,7 +136,10 @@ int main(int argc,char** argv){
         shape.a_stride++;miss();shape.a_stride--;
         shape.output_stride++;miss();shape.output_stride--;
         shape.weight.experts=256;miss();shape.weight.experts=1;
-        test_name="PPU-ZW610";test_cu=64;miss();test_name="PPU-ZW810";test_cu=72;
+        test_name="PPU-ZW610";test_cu=64;
+        assert(!quactlize_kpack_dense_helper_policy_v1(&shape,storage,&dq,&io));
+        assert(dq==row[3] && io==row[4+storage]);
+        test_name="OTHER_PPU";miss();test_name="PPU-ZW810";test_cu=72;
         test_cu=71;miss();test_cu=72;
     }
     for(auto const& row:dense_full_families)for(int i=0;i<5;++i)for(int storage:{0,1}) {
@@ -151,7 +154,10 @@ int main(int argc,char** argv){
         shape.output_stride++;miss();shape.output_stride--;
         shape.weight.experts=256;miss();shape.weight.experts=1;
         shape.src_rows=reinterpret_cast<int*>(uintptr_t(256));miss();shape.src_rows=nullptr;
-        test_name="PPU-ZW610";test_cu=64;miss();test_name="PPU-ZW810";test_cu=72;
+        test_name="PPU-ZW610";test_cu=64;
+        assert(!quactlize_kpack_dense_full_helper_policy_v1(&shape,storage,&dq,&io));
+        assert(dq==row.choices[storage][i].dequant && io==row.choices[storage][i].io);
+        test_name="OTHER_PPU";miss();test_name="PPU-ZW810";test_cu=72;
         test_cu=71;miss();test_cu=72;
     }
 }

@@ -7,6 +7,7 @@
 #include "../prefill/dense_internal.hpp"
 #include "../execution/simt_validation.hpp"
 #include "../execution/simt_token_cta_scope.hpp"
+#include "../include/ppu_device.hpp"
 #include <hggc_runtime_api.h>
 #include <dlfcn.h>
 #include <unistd.h>
@@ -114,7 +115,7 @@ struct Context {
         if(dense_device<0) {
             hggcDeviceProp prop{};
             require(hggcGetDeviceProperties(&prop,device)==hggcSuccess,"dense device properties unavailable");
-            dense_device=!std::strcmp(prop.name,"PPU-ZW810") && prop.multiProcessorCount==72 && prop.warpSize==32;
+            dense_device=quactlize::device::uses_zw810_policy(prop.name,prop.multiProcessorCount) && prop.warpSize==32;
         }
         return dense_device==1;
     }

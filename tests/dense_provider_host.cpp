@@ -15,6 +15,8 @@ namespace test {
 std::vector<std::string> launches;
 int device=0,capture=0;
 bool helper_device=true;
+char const* device_name="PPU-ZW810";
+int compute_units=72;
 struct Handle {qk_call_v1 shape;bool typed;};
 int resource(qk_call_v1 const* c,qk_recipe_v1 const* r,qk_resources_v1* out) {
     *out={1,sizeof(*out),r->split>1 ? uint64_t(c->m)*c->n*r->split*4 : 0,4096,6,0,0};return 0;
@@ -65,7 +67,7 @@ std::unique_ptr<quactlize::dense::Context> context(int compute,bool reviewed=fal
     // Frozen PoC comparisons exclude the new whole-call policy; the separate
     // reviewed_prefill() suite exercises EVERY new row through the public ABI.
     ctx.dense_device=reviewed?1:0;
-    auto r=new Runtime;r->device=0;r->cu=72;ctx.dispatcher=r;
+    auto r=new Runtime;r->device=0;r->cu=compute_units;ctx.dispatcher=r;
     r->moe=std::make_shared<MoeExecution>();r->moe->select=&quactlize_kpack_q4_decode_select_v1;
     r->moe->select_compute=&quactlize_kpack_q4_decode_select_v2;
     r->moe->q4_compute=&quactlize_kpack_q4_decode_run_v2;
@@ -117,8 +119,8 @@ void* plan(quactlize::dense::Context& ctx,quactlize_ppu_dense_params_v1 const& p
 
 extern "C" hggcError_t hggcGetDevice(int* out) {*out=test::device;return hggcSuccess;}
 extern "C" hggcError_t hggcGetDeviceProperties(hggcDeviceProp* out,int) {
-    *out={};std::strcpy(out->name,test::helper_device?"PPU-ZW810":"PPU-ZW610");
-    out->multiProcessorCount=test::helper_device?72:64;out->warpSize=32;return hggcSuccess;
+    *out={};std::strcpy(out->name,test::helper_device?test::device_name:"OTHER_PPU");
+    out->multiProcessorCount=test::compute_units;out->warpSize=32;return hggcSuccess;
 }
 extern "C" hggcError_t hggcStreamIsCapturing(hggcStream_t,hggcStreamCaptureStatus* out) {
     *out=test::capture?hggcStreamCaptureStatusActive:hggcStreamCaptureStatusNone;return hggcSuccess;
@@ -311,6 +313,7 @@ void reviewed_prefill() {
     int exact=0,buckets=0;
     auto check=[&](quactlize_ppu_dense_params_v1 const& p,int policy) {
         kImages.clear();auto ctx=test::context(0,true);
+        ctx->dense_device=-1;assert(ctx->dense_policy_device());
         auto d=data::select(quactlize::dense::request_for(p),0);
         assert(d && d.policy==policy);
         auto raw=test::plan(*ctx,p);auto& plan=*static_cast<quactlize::dense::Plan*>(raw);
@@ -324,7 +327,8 @@ void reviewed_prefill() {
         } else {
             assert(plan.native_f16 && plan.request.route==c.route && plan.tc.policy==policy);
             assert(std::string(plan.tc.parent)==c.tc.symbol && plan.tc.split==c.tc.split);
-            assert(plan.tc.grid==quactlize::dispatch::recipe(c.tc,plan.request,6,72).grid);
+            assert(plan.tc.compute_units==test::compute_units);
+            assert(plan.tc.grid==quactlize::dispatch::recipe(c.tc,plan.request,6,test::compute_units).grid);
         }
         for(uintptr_t replay:{1,2}) {
             test::launches.clear();
@@ -346,6 +350,10 @@ void reviewed_prefill() {
             assert(test::launches==expected);
         }
     };
+    // Every exact row and fitted bucket selects the same recipe on ZW610.
+    // Only the launch resources differ; all recorded times remain ZW810 data.
+    for(int cu:{72,64}) {
+    test::compute_units=cu;test::device_name=cu==72?"PPU-ZW810":"PPU-ZW610";
     for(auto const& row:data::kExact) {
         auto p=test::params(row.q,row.m,row.n,row.k);
         check(p,QKS_DENSE_PREFILL_EXACT);++exact;
@@ -367,6 +375,8 @@ void reviewed_prefill() {
             }
         }
     }
+    }
+    test::compute_units=72;test::device_name="PPU-ZW810";
     test::helper_device=false;
     auto ctx=test::context(0,true);ctx->dense_device=-1;
     assert(!ctx->dense_policy_device());test::helper_device=true;
@@ -377,10 +387,19 @@ void reviewed_prefill() {
 void dense_m_controls() {
     std::set<std::tuple<int,int,int>> families;
     for(auto const& r:quactlize::dispatch::dense_prefill::kExact) families.emplace(r.q,r.n,r.k);
-    kImages.clear();auto ctx=test::context(0,true);
     for(auto [q,n,k]:families) for(int m=1;m<=8;++m) {
+        kImages.clear();auto ctx=test::context(0,true);
         auto p=test::params(q,m,n,k);auto raw=test::plan(*ctx,p);
         auto const& plan=*static_cast<quactlize::dense::Plan*>(raw);
+        test::compute_units=64;test::device_name="PPU-ZW610";
+        kImages.clear();
+        auto other_ctx=test::context(0,true);other_ctx->dense_device=-1;
+        assert(other_ctx->dense_policy_device());
+        auto other=static_cast<quactlize::dense::Plan*>(test::plan(*other_ctx,p));
+        assert(other->kind==plan.kind && other->info.policy==plan.info.policy &&
+            other->info.split==plan.info.split && !std::strcmp(other->info.config,plan.info.config));
+        if(other->kind==quactlize::dense::Kind::Tc) assert(other->tc.compute_units==64);
+        test::compute_units=72;test::device_name="PPU-ZW810";
         int kind=plan.kind==quactlize::dense::Kind::Tc?0:plan.kind==quactlize::dense::Kind::Simt?1:2;
         std::cout<<"DENSE_M_CONTROL {\"request\":["<<q<<",0,"<<n<<','<<k<<",1,1,1,"<<m
             <<",0],\"kind\":"<<kind<<",\"policy\":"<<plan.info.policy

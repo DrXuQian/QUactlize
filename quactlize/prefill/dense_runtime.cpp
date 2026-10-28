@@ -1,6 +1,7 @@
 #include "dense_internal.hpp"
 #include "dynamic.hpp"
 #include "dense_helpers.hpp"
+#include "../include/ppu_device.hpp"
 #include <hggc_runtime_api.h>
 #include <dlfcn.h>
 #include <filesystem>
@@ -57,7 +58,7 @@ static int dense_helper_policy(qkp_call_v1 const* c, int storage,
     if (choice.dequant<0) return QKG_SHAPE;
     hggcDeviceProp prop{};
     if (hggcGetDeviceProperties(&prop,c->device)!=hggcSuccess) return QKG_RUNTIME;
-    if (std::strcmp(prop.name,"PPU-ZW810") || prop.multiProcessorCount!=72) return QKG_SHAPE;
+    if (!quactlize::device::uses_zw810_policy(prop.name,prop.multiProcessorCount)) return QKG_SHAPE;
     *dequant_variant=choice.dequant;*vector_io=choice.io;return QKG_OK;
 }
 extern "C" int quactlize_kpack_dense_helper_policy_v1(qkp_call_v1 const* c, int storage,
