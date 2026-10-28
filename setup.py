@@ -29,8 +29,8 @@ except ImportError:
     sys.exit("quactlize's extension needs torch installed to build")
 
 if WITH_DEVICE:
-    sys.exit("QUACTLIZE_WITH_DEVICE is not implemented yet: the kernels are built through actlize's PPUToolchain by "
-             "build.sh, and moving them into this extension is the open structural work. See docs/CHECKPOINT.md.")
+    sys.exit("QUACTLIZE_WITH_DEVICE is not supported by the Torch extension. "
+             "Build the standalone PPU library with bash build.sh; see docs/CI.md.")
 
 # HEADERS ARE NOT TRACKED BY setuptools. Editing weight_layout.h and rebuilding produced a .so with the OLD table
 # and a test failure that read like a logic error. `depends` makes the headers part of the extension's dependency

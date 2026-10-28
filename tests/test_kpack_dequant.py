@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from quactlize.dequant.native import Call, traffic
-from tools import kpack_dequant_fixture as fixture
+from ci.support import dequant_fixture as fixture
 
 ROOT=Path(__file__).resolve().parents[1]
 SDK=Path(os.environ.get('PPU_SDK', '/usr/local/PPU_SDK'))
@@ -125,7 +125,7 @@ def test_full_vector_words_cover_exact_codes_and_alignment(q):
 
 
 def test_vector_output_and_metadata_footprints():
-    from tools.run_kpack_dequant_gate import pattern
+    from ci.support.dequant import pattern
     from quactlize.dequant.native import config_ids
     w=dict(q=12,n=512,k=2048,operation=1)
     fields=pattern(w,5)['fields']
@@ -139,7 +139,7 @@ def test_vector_output_and_metadata_footprints():
 
 def test_full_reader_inventory_preserves_both_measured_controls():
     from quactlize.dequant.native import selected_configs,config_ids
-    from tools.run_kpack_dequant_gate import selected_work,pattern,control_config
+    from ci.support.dequant import selected_work,pattern,control_config
     plan=selected_work([12,13],'full-reader')
     assert len(plan)==36 and sum(w['smoke'] for w in plan)==2
     assert all(w['operation']==1 and w['q'] in (12,13) for w in plan)
@@ -224,7 +224,7 @@ def test_packed_exchange_actual_layout_and_unique_bank_addresses(host,tile_k):
 
 def test_full_packed_inventory_and_traffic_keep_v2_controls():
     from quactlize.dequant.native import selected_configs,config_ids
-    from tools.run_kpack_dequant_gate import selected_work,pattern,control_config
+    from ci.support.dequant import selected_work,pattern,control_config
     plan=selected_work([12,13],'full-packed')
     assert len(plan)==36 and sum(w['smoke'] for w in plan)==2
     assert sum(len(selected_configs(w['q'],1,4,'full-packed')) for w in plan if not w['smoke'])==170
@@ -280,7 +280,7 @@ def test_nonfinite_or_incomplete_output_cannot_pass():
 
 
 def test_bounded_plan_and_load_footprints():
-    from tools.run_kpack_dequant_gate import work,pattern
+    from ci.support.dequant import work,pattern
     plan=work([12,13])
     assert len(plan)==len({w['id'] for w in plan})==78
     assert sum(3 if w['operation'] else 4 for w in plan if not w['smoke'])==238
@@ -311,7 +311,7 @@ def test_sf_warp_ownership_is_complete_unique():
 @pytest.mark.parametrize('fault',['scope','device','missing','nan','time','bytes','ring','proof'])
 def test_invalid_result_cannot_be_resumed(fault):
     import copy
-    from tools.run_kpack_dequant_gate import validate_result
+    from ci.support.dequant import validate_result
     w=dict(id='one',q=12,n=512,k=2048,experts=1,operation=1,smoke=False)
     b=traffic(12,512,2048,1,1);dev=dict(l2_bytes=1024);peak=2700.
     rows=[dict(config=c,proof=dict(bad=0,guard='PASS',negative_bad=99,signed_zero_differences=0),

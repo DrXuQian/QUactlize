@@ -1,3 +1,0 @@
-#pragma once
-#include <cassert>
-namespace hggc { namespace std { using namespace ::std; } }

@@ -10,7 +10,7 @@ import pytest
 from quactlize import ppu_bundle
 
 
-ORACLE_PATH = Path(__file__).resolve().parents[1] / "tools" / "verify_kquant_selected_config.py"
+ORACLE_PATH = Path(__file__).resolve().parents[1] / "ci/support/selected_config.py"
 ORACLE_SPEC = importlib.util.spec_from_file_location(
     "quactlize_verify_kquant_selected_config", ORACLE_PATH)
 assert ORACLE_SPEC is not None and ORACLE_SPEC.loader is not None

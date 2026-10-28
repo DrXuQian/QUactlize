@@ -22,7 +22,7 @@ def test_inventory_has_one_owner_and_separates_legacy_and_device():
     assert "test_q8_kpack2.py" in HOST
     assert "test_dense_provider.py" in HOST
     assert "test_moe_decode_policy.py" in HOST
-    assert "test_gguf_routes.py" in groups["separate"]
+    assert set(groups) == {"host", "accuracy"}
 
 
 @pytest.mark.parametrize("body,expected", [
@@ -81,7 +81,6 @@ def test_missing_dependencies_and_existing_output_are_not_success(tmp_path, monk
     ("build", ["build"]),
     ("accuracy", ["accuracy"]),
     ("all", ["host", "build", "accuracy"]),
-    ("tooling", ["tooling"]),
 ])
 def test_shell_entry_works_outside_checkout_and_lists_without_dependencies(tmp_path, suite, phases):
     env = dict(os.environ, PYTHON=sys.executable, PPU_SDK=str(tmp_path / "missing"))
@@ -194,7 +193,7 @@ def test_accuracy_inventory_and_independent_oracle():
     import ctypes as C
     import numpy as np
     from ppu.support import QTYPES, DECODE_M, DENSE_M, Params, Info, check_output
-    from dev.bf16_compute.fixture import raw_weight, round_compute
+    from ci.support.fixture import raw_weight, round_compute
     assert QTYPES == (8, 10, 11, 12, 13, 14)
     assert DECODE_M == tuple(range(1, 9))
     assert DENSE_M == tuple(range(1, 10)) + (16, 128, 256)

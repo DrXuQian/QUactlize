@@ -88,7 +88,7 @@ def compiler_for(sdk,cache,jobs,dense_io,compute_type):
 
 
 def model_requests(path, tokens, include_sf=False, tensor_pattern=None):
-    from tools.gguf_internal_shape_inventory import read_gguf_header
+    from tools.gguf_header import read_gguf_header
     from quactlize.gguf_roles import match_role
     if not tokens or any(type(t) is not int or t <= 0 for t in tokens):
         raise ValueError("tokens must be positive")

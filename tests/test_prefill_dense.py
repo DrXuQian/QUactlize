@@ -55,7 +55,7 @@ class DenseHelperHost(unittest.TestCase):
         self.assertEqual(count.value,256*63488*2)
 
     def test_retained_ids_and_retired_ids_fail_closed(self):
-        from tools.run_dense_dequant import q8_half2,q8_paired
+        from ci.support.dense_dequant import q8_half2,q8_paired
         self.assertEqual(set(q8_half2())|set(q8_paired()),{38,41})
         for q in (8,10,11,12,13,14):
             for storage in (0,1):
@@ -119,8 +119,8 @@ class DenseHelperHost(unittest.TestCase):
         from gguf import GGMLQuantizationType
         from gguf.quants import dequantize
         from reference import gguf_kpack as ref
-        from tools.kpack_warmup_fixture import prepare_expert
-        from dev.bf16_compute.fixture import bf16_bits
+        from ci.support.weights import prepare_expert
+        from ci.support.fixture import bf16_bits
         for q in range(10,15):
             n,k=256,512
             s=ref.SPECS[q];rng=np.random.default_rng(100+q)
@@ -143,7 +143,7 @@ class DenseHelperHost(unittest.TestCase):
         import numpy as np
         from gguf import GGMLQuantizationType
         from gguf.quants import dequantize
-        from dev.bf16_compute.fixture import planes, bf16_bits
+        from ci.support.fixture import planes, bf16_bits
         for n,k in ((256,256),(256,512),(512,1024)):
             rng=np.random.default_rng(n+k)
             raw=rng.integers(0,256,(n,k//32,34),dtype='u1')
@@ -176,8 +176,8 @@ class DenseHelperHost(unittest.TestCase):
         from gguf import GGMLQuantizationType
         from gguf.quants import dequantize
         from reference import gguf_kpack as ref
-        from tools.kpack_warmup_fixture import prepare_expert
-        from dev.bf16_compute.fixture import planes, bf16_bits
+        from ci.support.weights import prepare_expert
+        from ci.support.fixture import planes, bf16_bits
         for q in (8,10,11):
             for n,k in ((256,512),(768,1024),(256,1536)):
                 rng=np.random.default_rng(q+n+k)
@@ -218,7 +218,7 @@ class DenseHelperHost(unittest.TestCase):
 
     def test_box_runner_fixture_is_accepted_by_actual_readers(self):
         import numpy as np
-        from tools.run_dense_dequant import fixture
+        from ci.support.dense_dequant import fixture
         for q in (8,10,11,12,13,14):
             packed,golden,receipt=fixture(q,256,512)
             self.assertEqual(set(receipt['planes']),{'low','high','units'})
@@ -258,8 +258,8 @@ class DenseHelperHost(unittest.TestCase):
         from gguf import GGMLQuantizationType
         from gguf.quants import dequantize
         from reference import gguf_kpack as ref
-        from tools.kpack_warmup_fixture import prepare_expert
-        from dev.bf16_compute.fixture import bf16_bits
+        from ci.support.weights import prepare_expert
+        from ci.support.fixture import bf16_bits
         for q in (12,13,14):
             for n,k in ((256,512),(256,1024),(512,512)):
                 s=ref.SPECS[q];rng=np.random.default_rng(q+n+k)
@@ -332,8 +332,8 @@ class DenseHelperHost(unittest.TestCase):
         from gguf import GGMLQuantizationType
         from gguf.quants import dequantize
         from reference import gguf_kpack as ref
-        from tools.kpack_warmup_fixture import prepare_expert
-        from dev.bf16_compute.fixture import bf16_bits
+        from ci.support.weights import prepare_expert
+        from ci.support.fixture import bf16_bits
         for q in (12,13,14):
             for n,k in ((256,512),(256,1024),(512,512)):
                 s=ref.SPECS[q];rng=np.random.default_rng(q+n+k+4)

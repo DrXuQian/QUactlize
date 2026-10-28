@@ -5,7 +5,6 @@ from __future__ import annotations
 import pathlib
 import shutil
 import subprocess
-import sys
 
 import pytest
 
@@ -14,14 +13,11 @@ ROOT = pathlib.Path(__file__).parents[1]
 INCLUDE = ROOT / "quactlize" / "include"
 
 
-def test_kquant_measured_policy_generator_contract():
-    result = subprocess.run(
-        [sys.executable, "-B",
-         str(ROOT / "tools/generate_fq_kquant_measured_policy.py"),
-         "self-test"],
-        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    assert result.returncode == 0, result.stdout
-    assert "PASS deterministic generation" in result.stdout
+def test_kquant_measured_policy_generator_contract(capsys):
+    from ci.support.kquant_policy_oracle import self_test
+
+    self_test()
+    assert "PASS deterministic generation" in capsys.readouterr().out
     generated = (INCLUDE / "ppu_kquant_measured_policy_data.inc").read_text()
     assert "quactlize.ppu-kquant-dense-exact-policy.v1" in generated
     assert "compiled-default" in generated

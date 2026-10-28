@@ -144,7 +144,7 @@ int main() {
         # The offline planner must protect the same production incumbent;
         # otherwise later sweeps may silently drop a new exact or M bucket.
         if not c[4] and not c[5]:
-            from dev.prefill_asys.supplement import policy_lookup
+            from ci.support.policy_lookup import policy_lookup
             from quactlize.dispatch.table import Workload
             try:
                 w = Workload(c[0],c[2],c[3],c[1])

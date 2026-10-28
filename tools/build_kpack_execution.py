@@ -19,7 +19,7 @@ from quactlize.execution.token_cta_policy import capability as token_capability
 
 
 def build(sdk, output, jobs, variant="production"):
-    if variant not in ("production", "fp32-affine"):
+    if variant != "production":
         raise ValueError("unknown GEMV variant")
     sdk, output = sdk.resolve(), output.resolve()
     if jobs < 1:
@@ -36,20 +36,6 @@ def build(sdk, output, jobs, variant="production"):
     source = ROOT / "quactlize/execution"
     gemv_source = source / "gemv.cu"
     extra_sources = []
-    if variant == "fp32-affine":
-        # Reuse only the device-independent arithmetic/source transformation
-        # that was tested on CUDA. No CUDA runtime/compiler compatibility
-        # header enters this hgcc build, and production gemv.cu is unchanged.
-        from dev.gemv_cuda.build import affine_source, grid_schedule
-
-        generated = grid_schedule(affine_source(gemv_source.read_text()))
-        tag = "QKG_CONCAT(kpack_q,QKG_QTYPE)"
-        if generated.count(tag) != 3:
-            raise ValueError("GEMV namespace seams changed")
-        generated = generated.replace(tag, "QKG_CONCAT(kpack_affine_q,QKG_QTYPE)")
-        gemv_source = output / "gemv_affine.cu"
-        gemv_source.write_text(generated)
-        extra_sources = [ROOT / "dev/gemv_fq_sf/adapters.cu"]
     includes = [
         source,
         ROOT / "quactlize/include",
@@ -89,13 +75,6 @@ def build(sdk, output, jobs, variant="production"):
               ROOT/'policies/kpack_zw810_runtime_v1.hpp',
               ROOT/'policies/kpack_zw810_v1.hpp'):
         hashes[str(p.relative_to(ROOT))] = sha(p)
-    if variant == "fp32-affine":
-        for p in [
-            ROOT / "dev/gemv_cuda/build.py",
-            ROOT / "dev/gemv_cuda/affine_dot.cuh",
-            *extra_sources,
-        ]:
-            hashes[str(p.relative_to(ROOT))] = sha(p)
     commands = []
     selected_sources = []
     for name, text in q4_decode_codegen.sources().items():
@@ -215,9 +194,6 @@ def build(sdk, output, jobs, variant="production"):
         q8_refresh=q8_capability(),
         token_cta=token_receipt,
     )
-    if variant == "fp32-affine":
-        manifest["gemv_pair_affine"] = "FP32_GROUP_AFFINE_NO_INTERMEDIATE_FP16_ROUNDING"
-        manifest["grid"] = "GRID_X_N_TILE_Y_SPLIT_Z_ROW_ROWS_LE65535"
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(
         f"KPACK_EXECUTION_BUILD status=COMPILED device_validated=0 seconds={manifest['compile_seconds']:.3f} library={library}"
@@ -231,7 +207,7 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--jobs", type=int, default=8)
     parser.add_argument(
-        "--variant", choices=("production", "fp32-affine"), default="production"
+        "--variant", choices=("production",), default="production"
     )
     args = parser.parse_args()
     build(args.sdk, args.output, args.jobs, args.variant)

@@ -23,7 +23,7 @@ def function(path, marker):
 
 class SimtScaleFields(unittest.TestCase):
     def test_isa_inventory_rejects_missing_or_duplicate_instructions(self):
-        from dev.gemv_simt.tp2_scale_isa import instructions
+        from ci.support.scale_fields import instructions
         text = ' 0: 00 00 00 00 00 00 00 00\ts.nop\n 8: 00 00 00 00 00 00 00 00\ts.nop\n'
         self.assertEqual(len(instructions(text)[0]),2)
         for broken in ('',text+text,text.replace(' 8:', ' 10:')):
@@ -31,7 +31,7 @@ class SimtScaleFields(unittest.TestCase):
                 instructions(broken)
 
     def test_mask_model_explains_both_k_groups_and_column_residues(self):
-        from dev.gemv_simt.tp2_scale_isa import mask_model
+        from ci.support.scale_fields import mask_model
         rows = mask_model()
         self.assertEqual([r['groups'] for r in rows],[[6],[14]])
         for r in rows:

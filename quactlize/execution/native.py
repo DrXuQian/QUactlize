@@ -3,7 +3,7 @@
 import ctypes as C
 from dataclasses import asdict
 from reference import gguf_kpack as ref
-from tools.run_kpack_pack_gate import Arrangement
+from quactlize.packing.native import Arrangement
 
 
 class Call(C.Structure):

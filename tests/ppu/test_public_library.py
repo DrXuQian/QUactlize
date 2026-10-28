@@ -8,7 +8,7 @@ import json
 import numpy as np
 import pytest
 
-from tools.run_kpack_grouped_decode_probe import Replay
+from ci.support.graph import Replay
 from .support import (Arena, Candidate, DENSE_M, Info, Options, Params, Public,
                       QTYPES, check_output, packed)
 from quactlize.dispatch.dense_prefill import EVIDENCE
@@ -68,7 +68,7 @@ def test_selected_dense_dynamic_bindings(package, sdk, q, m, compute, record_pro
 def test_token_cta_exact_public_bindings(package,sdk,row,record_property):
     # Verify the final public execution path, including unchanged Q4/TC arms,
     # two streams, moved addresses, padded strides, reducer and Graph replay.
-    from dev.prefill_point.typed import DenseLibrary
+    from ci.support.typed import DenseLibrary
     from quactlize.dispatch.table import Workload
     query=DenseLibrary(package/'quactlize-runtime/libquactlize_ppu_prefill.so')
     measured=query.choice(Workload(12,1024,5120,2048),0,allow_miss=True) is not None
@@ -86,7 +86,7 @@ def test_full_dequant_provider_ordinary_calls(package, sdk, q, record_property):
 @pytest.mark.parametrize('shape,recipe',helper_followup_points()+m_span_boundary_points()+middle_m_points(),
                          ids=lambda x: str(x) if isinstance(x,list) else '')
 def test_admitted_helper_followup_public_calls(package,sdk,shape,recipe,record_property):
-    from dev.prefill_point.typed import DenseLibrary
+    from ci.support.typed import DenseLibrary
     from quactlize.dispatch.table import Workload
     # Existing host-only device guard: this fixed helper row exists on ZW810
     # only. Other supported cards test execution, not a ZW810 policy claim.

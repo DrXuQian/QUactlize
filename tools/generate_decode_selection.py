@@ -1,29 +1,29 @@
-#!/usr/bin/env python3
-"""Generate final decode choices from reviewed, complete-call measurements.
-
-Runtime consumes one catalog. Old matched/Q8 boards are immutable import
-sources, not successive runtime heuristics. Timing revisions and implementation
-identity are separate; a geometry tuple alone is not a measured kernel.
-"""
-import argparse
+"""Production ABI/catalog support."""
 import copy
 import hashlib
 import json
-import math
-from pathlib import Path, PurePosixPath
-import statistics
-import sys
-import tarfile
-
+from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
+import sys
 sys.path.insert(0, str(ROOT))
-from tools.fit_smallm_closure import header as matched_header
 
+
+from tools.fit_smallm_closure import header as matched_header
 FIELDS = ('variant', 'columns', 'warps', 'values', 'split')
+
+
 EVIDENCE = ROOT/'policies/kpack_decode_winners_v1.json'
+
+
 COMPONENTS = ROOT/'policies/kpack_component_decode_v1.json'
+
+
 OUTPUT = ROOT/'policies/kpack_smallm_effective_v1.hpp'
+
+
 IMPLEMENTATIONS = ROOT/'quactlize/execution/measured_decode.inc'
+
+
 ARCHIVES = {
     'tp2': '5944aa7547e4dd5c9b87dae0f906102d7df5d4e39f42d7007c25731408fee075',
     'fallback': '6a1b416f7ec91683b15ac886b0d364bcc275a5aa19ca5db8ce5d70ef46ade4c6',
@@ -32,118 +32,6 @@ ARCHIVES = {
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
-
-
-def archive(path, expected):
-    if digest(path.read_bytes()) != expected:
-        raise ValueError('unreviewed result archive')
-    result = {}
-    with tarfile.open(path) as stream:
-        for item in stream:
-            p = PurePosixPath(item.name)
-            if p.is_absolute() or '..' in p.parts or not (item.isdir() or item.isfile()):
-                raise ValueError('unsafe result member')
-            if item.isfile():
-                if item.name in result:
-                    raise ValueError('duplicate result member')
-                result[item.name] = stream.extractfile(item).read()
-    return result
-
-
-def measure(value):
-    rounds = value['samples_us']
-    if len(rounds) != 6 or any(len(r) != 15 for r in rounds):
-        raise ValueError('confirmation denominator differs')
-    flat = [t for r in rounds for t in r]
-    if not all(math.isfinite(t) and t > 0 for t in flat):
-        raise ValueError('invalid timing')
-    median = statistics.median(map(statistics.median, rounds))
-    if not math.isclose(median, value['median_us'], rel_tol=1e-12):
-        raise ValueError('reported median differs')
-    return dict(median_us=median, round_medians_us=list(map(statistics.median, rounds)),
-                samples_sha256=digest(json.dumps(rounds, separators=(',', ':')).encode()))
-
-
-def key(p):
-    return [p['q'], p['mode'], p['n'], p['k'], 256 if p['mode'] else 1,
-            8 if p['mode'] else 1, p['channels'], 1, p['compute']]
-
-
-def numerical(proof):
-    if isinstance(proof, dict):
-        if proof['status']!='PASS':raise ValueError('numerical proof failed')
-        proof=proof['controls']
-    if not set(range(1,9)) <= {r['tokens'] for r in proof} or any(
-            not math.isfinite(r['error']) or r['error']>=.005 for r in proof):
-        raise ValueError('numerical coverage/error differs')
-
-
-def capture(tp2, fallback):
-    old, new = archive(tp2, ARCHIVES['tp2']), archive(fallback, ARCHIVES['fallback'])
-    manifests = {name: json.loads(data['results/gemv-manifest.json'])
-                 for name, data in [('tp2', old), ('fallback', new)]}
-    # Recheck saved counters; do not require the box to repeat parser failures.
-    from dev.tp2_decode.run_fallback import profile_check
-    for r in manifests['fallback']['records']:
-        for arm in ('reference', 'fallback'):
-            profile_check(new[f"results/sweep/{r['point']['name']}-{arm}.acu.csv"].decode(), r, arm)
-    old_summary = json.loads(old['results/sweep/summary.json'])
-    if not old_summary['complete'] or old_summary['status'] != 'PASS' or len(old_summary['records']) != 17:
-        raise ValueError('TP2 confirmed pool incomplete')
-    winners = []
-    for record in manifests['tp2']['records']:
-        p = record['point']; name = p['name']; member = f'results/sweep/{name}.json'
-        raw = json.loads(old[member]); values = raw['summary']; source = 'tp2'
-        if raw['status'] != 'PASS' or raw['failures']:
-            raise ValueError('invalid source point: '+name)
-        for arm in values:
-            numerical(raw['numerics'][arm])
-        summaries = {arm: measure(v) for arm, v in values.items()}
-        arm = min(summaries, key=lambda a: summaries[a]['median_us'])
-        # A newer paired comparison takes precedence, not an across-run
-        # comparison of absolute microseconds from different epochs.
-        if not p['paired'] and member in new:
-            source = 'fallback'; raw = json.loads(new[member]); values = raw['timing']
-            if raw['status'] != 'PASS':
-                raise ValueError('fallback numerical evidence differs')
-            for v in raw['numerics'].values():numerical(v)
-            summaries = {a: measure(v) for a, v in values.items()}
-            latest = min(summaries, key=lambda a: summaries[a]['median_us'])
-            arm = values[latest].get('arm', 'incumbent') if latest == 'reference' else 'production'
-            selected = values[latest]
-        else:
-            selected = values[arm]
-        c = copy.deepcopy(selected['config'])
-        kind = selected['kind']
-        if kind == 'tc':
-            c.update(kind='tc', route=0 if c['route']=='fq-dense' else 1,
-                     parent_persistent=c.pop('persistent'), grid_mode=0, grid_b=0)
-        else:
-            c = dict(kind='simt', **{f: c[f] for f in FIELDS})
-        impl = 'existing' if arm in ('incumbent', 'production') else 'constant-split'
-        winners.append(dict(point=p, key=key(p), config=c, implementation=impl,
-            body=selected['config'], scope='GATE_UP_SWIGLU' if p['paired'] else 'GEMV_WITH_REDUCER',
-            # Q4 paired and unfused+activation still need comparable chain costs.
-            automatic=not (p['paired'] and name=='tp2-q4-paired-routed'),
-            source=source, arm=arm, measurements=summaries,
-            result_sha256=digest((old if source=='tp2' else new)[member])))
-    for record in manifests['fallback']['records']:
-        p = record['point']
-        if not p['name'].startswith('unseen-'):
-            continue
-        member=f"results/sweep/{p['name']}.json";raw=json.loads(new[member])
-        summaries={a:measure(v) for a,v in raw['timing'].items()}
-        if raw['status']!='PASS' or min(summaries,key=lambda a:summaries[a]['median_us'])!='fallback':
-            raise ValueError('table-miss promotion is not a winner')
-        c=raw['timing']['fallback']['config']
-        winners.append(dict(point=p,key=key(p),config=dict(kind='simt',**{f:c[f] for f in FIELDS}),
-            implementation='existing',body=c,scope='GEMV_WITH_REDUCER',automatic=True,source='fallback',
-            arm='production',measurements=summaries,result_sha256=digest(new[member])))
-    result=dict(schema='quactlize.decode-winners.v1',archives=ARCHIVES,rows=winners,
-        timing='ROTATING_M1_COMPLETE_CALL',numerical='TOKENS_1_TO_8',
-        admission='COMPONENT_CONFIRMED_PRODUCTION_INTEGRATION_PENDING',
-        idle_audit='NO_INDEPENDENT_AUDIT',device='PPU-ZW810',policy_tokens=[1])
-    return result | dict(evidence_sha256=digest(json.dumps(result,sort_keys=True).encode()))
 
 
 def effective(evidence, *, include_components=True, include_refresh=True, include_dense=True, include_token_cta=True,
@@ -198,13 +86,13 @@ def effective(evidence, *, include_components=True, include_refresh=True, includ
     promoted={tuple(w['key']) for w in evidence['rows'] if w['automatic'] and not w['point']['paired']}
     result['excluded']=[r for r in base['excluded'] if tuple(r['key'][:-1]+[int(r['key'][-1]=='bf16')]) not in promoted]
     if include_components:
-        from dev.strategy.production import apply
+        from quactlize.dispatch.catalog_components import apply
         result = apply(json.loads(COMPONENTS.read_text()), result)
         if include_refresh:
             from quactlize.execution.q8_refresh import apply as bind_q8
             result = bind_q8(result)
             if include_dense:
-                from dev.strategy.dense_m_selection import apply as bind_dense
+                from quactlize.dispatch.catalog_dense import apply as bind_dense
                 result = bind_dense(result)
                 if include_token_cta:
                     from quactlize.execution.token_cta_policy import apply as bind_tokens
@@ -260,26 +148,23 @@ def implementations(evidence):
 
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--tp2',type=Path);p.add_argument('--fallback',type=Path)
-    p.add_argument('--paired-chain',type=Path,help='import the reviewed full-chain paired result')
-    p.add_argument('--check',action='store_true')
-    a=p.parse_args()
+    import argparse
     from tools import paired_decode_selection as paired
-    if a.paired_chain:
-        if a.check:p.error('capture is not a --check operation')
-        paired.EVIDENCE.write_text(json.dumps(paired.capture(a.paired_chain),indent=2)+'\n')
-    if a.tp2 or a.fallback:
-        if not a.tp2 or not a.fallback or a.check:p.error('capture requires both archives')
-        EVIDENCE.write_text(json.dumps(capture(a.tp2,a.fallback),indent=2)+'\n')
-    e=json.loads(EVIDENCE.read_text());policy=effective(e)
-    paired_evidence=json.loads(paired.EVIDENCE.read_text())
-    for path,text in ((OUTPUT,header(policy)),(IMPLEMENTATIONS,implementations(e)),
-                      (paired.OUTPUT,paired.header(paired_evidence))):
-        if a.check:
-            if path.read_text()!=text:raise ValueError('stale generated selection: '+str(path))
-        else:path.write_text(text)
-    print(f'DECODE_SELECTION_GENERATED exact={len(policy["exact"])} buckets={len(policy["buckets"])} winners={len(e["rows"])}')
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--check', action='store_true')
+    args = parser.parse_args()
+    evidence = json.loads(EVIDENCE.read_text())
+    policy = effective(evidence)
+    outputs = ((OUTPUT, header(policy)), (IMPLEMENTATIONS, implementations(evidence)),
+               (paired.OUTPUT, paired.header(json.loads(paired.EVIDENCE.read_text()))))
+    for path, text in outputs:
+        if args.check:
+            if path.read_text() != text:
+                raise ValueError('stale generated selection: ' + str(path))
+        else:
+            path.write_text(text)
+    print(f'DECODE_SELECTION_GENERATED exact={len(policy["exact"])} buckets={len(policy["buckets"])}')
 
 
-if __name__=='__main__':main()
+if __name__ == '__main__':
+    main()

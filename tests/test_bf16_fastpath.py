@@ -1,7 +1,7 @@
+"""Production contract and numerical regression tests."""
 from pathlib import Path
 import os
 import subprocess
-
 ROOT=Path(__file__).resolve().parents[1]
 
 
@@ -17,23 +17,6 @@ def test_actual_packed_writer_and_typed_s1_query(tmp_path):
     result=subprocess.run([str(executable)],capture_output=True,text=True)
     assert result.returncode==0,result.stdout+result.stderr
     assert 'BF16_FASTPATH_HOST PASS' in result.stdout
-
-
-def test_typed_q4_generation_retains_every_selected_reader():
-    from quactlize.execution import q4_decode_codegen
-    from dev.gemv_ppu import moe_s1
-    sources=q4_decode_codegen.sources()
-    for (n,k),recipes in q4_decode_codegen.recipes().items():
-        source=sources[f'q4decode_{n}_{k}.cu']
-        for r,v,w,p,c in recipes:
-            assert f'launch<{r},{v},{w},{p},{c},{n},{k}>(c)' in source
-            assert f'launch<{r},{v},{w},{p},{c},{n},{k},1>(c)' in source
-    for n,k in moe_s1.SHAPES:
-        source=moe_s1.source_v2(n,k)
-        for r in moe_s1.inventory():
-            args=f'{r.reader},{r.variant},{r.warps},{r.values},{n},{k}'
-            assert f'launch<{args}>(*c)' in source
-            assert f'launch<{args},1>(d->call)' in source
 
 
 def test_ap1_bf16_admission_keeps_the_existing_single_plane_domain(tmp_path,monkeypatch):

@@ -27,7 +27,6 @@ SUITE_PHASES = {
     "build": ("build",),
     "accuracy": ("accuracy",),
     "all": ("host", "build", "accuracy"),
-    "tooling": ("tooling",),
 }
 
 
@@ -76,10 +75,10 @@ def run_command(command, log, env, timeout):
 
 def preflight(phase, sdk, package):
     missing = []
-    if phase in ("host", "tooling", "accuracy"):
+    if phase in ("host", "accuracy"):
         missing += [f"Python module {m}" for m in ("pytest", "numpy", "torch", "gguf")
                     if importlib.util.find_spec(m) is None]
-    if phase in ("host", "tooling", "build"):
+    if phase in ("host", "build"):
         missing += [name for name in ("git", "gcc", "g++") if shutil.which(name) is None]
         if not (sdk / "include/hggc_runtime.h").is_file():
             missing.append(f"SDK headers: {sdk}/include/hggc_runtime.h (set PPU_SDK/--sdk)")

@@ -1,22 +1,16 @@
-"""Raw-backed policy and real host wiring, never a simulated performance pass."""
+"""Production contract and numerical regression tests."""
 import copy
-import io
 import json
 from pathlib import Path
 import subprocess
-import tarfile
-
 import pytest
-
-from dev.strategy.prefill_refresh import recipe_of, request, same_recipe, make_plan
-from quactlize.dispatch.planning import plan_prefill, plan_smallm, prewarm_groups
+from quactlize.dispatch.catalog_prefill import recipe_of, request, same_recipe
+from quactlize.dispatch.planning import plan_prefill, prewarm_groups
 from quactlize.dispatch.prefill_policy import EVIDENCE, HEADER, LEGACY, STEM, check_receipt, receipt_fields
 from quactlize.dispatch.table import Recipe, Workload
 from quactlize.runtime.tuning import digest
 from tools.fit_prefill_refresh import header, validate
-
 ROOT = Path(__file__).resolve().parents[1]
-BASELINE = 'ceccd4494e6bd9cefaa1ab6a9fde9baab30300a2'
 
 
 def evidence():
@@ -62,43 +56,6 @@ def test_live_cpp_matches_every_measured_recipe(tmp_path):
         assert selected==Recipe.from_dict(p['recipe'])  # symbols too, not just geometry
     groups=prewarm_groups(live)
     assert {(c,d) for c,d,_ in groups}=={('f16',False),('bf16',False)}
-    # Original finalist scripts must reject a current selector as a historical
-    # control; their frozen test fixture is explicit and never used at runtime.
-    with pytest.raises(ValueError,match='incumbent differs'):
-        make_plan(live,['1','2','3','4','5','6','7'])
-    historical=plan_prefill(tmp_path,historical=True)
-    old={tuple(r['request']):r for r in historical['requests']}
-    assert sum(old[k]!=v for k,v in rows.items())==94
-    make_plan(historical,['1','2','3','4','5','6','7'])
-
-
-def test_smallm_unchanged_except_declared_later_dense_exact_additions(tmp_path):
-    frozen=tmp_path/'baseline';frozen.mkdir()
-    raw=subprocess.check_output(['git','archive',BASELINE,'quactlize','policies','tools/kpack_selection.cpp'],cwd=ROOT)
-    with tarfile.open(fileobj=io.BytesIO(raw)) as tar:
-        assert all((m.isfile() or m.isdir()) and not Path(m.name).is_absolute() and '..' not in Path(m.name).parts
-                   for m in tar.getmembers())
-        tar.extractall(frozen,filter='data')
-    exe=tmp_path/'before'
-    subprocess.run(['g++','-std=c++17','-O2','-I'+str(frozen),frozen/'tools/kpack_selection.cpp','-o',exe],check=True)
-    before=[json.loads(line) for line in subprocess.check_output([exe,'--inventory'],text=True).splitlines()]
-    after=plan_smallm(tmp_path)['requests']
-    from quactlize.execution.token_cta_policy import load as token_table
-    tokens={tuple(r['key']) for r in token_table()['rows']}
-    assert len(before)==1852 and len(after)==2095
-    for a,b in zip(before,after):
-        if tuple(a['request']) not in tokens:assert a==b
-    # Neighbor shapes/precision/channels/invalid inputs exercise actual bucket
-    # and rejection decisions, not only the exact measured keys.
-    from test_selection_refactor import case_keys
-    from dev.strategy.dense_m_selection import load
-    admitted={tuple(r['key']) for r in load()['rows'] if r['admitted']}
-    keys=sorted({k[:9] for k in case_keys()}-admitted-tokens)
-    text=''.join(' '.join(map(str,k))+'\n' for k in keys)
-    old=subprocess.check_output([exe],input=text,text=True)
-    new=subprocess.check_output([tmp_path/'selection-query'],input=text,text=True)
-    assert old==new
-    print(f'REFRESH_SMALLM_UNCHANGED existing_exact=1852 neighbors_and_invalid={len(keys)} declared_new_exact=243')
 
 
 def expected_grid(p, w, occupancy=6, cu=72):

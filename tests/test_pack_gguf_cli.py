@@ -64,11 +64,10 @@ def test_console_entry_targets_the_installed_module_and_tool_is_only_a_wrapper()
 
 
 def test_role_authority_is_shared_by_installed_packer_and_inventory_tool():
-    import tools.gguf_internal_shape_inventory as inventory
+    from tools import gguf_header, model_inventory
 
-    assert inventory.InventoryError is gguf_roles.InventoryError
-    assert inventory.ROLE_RULES is gguf_roles.ROLE_RULES
-    assert inventory.classify_role is gguf_roles.classify_role
+    assert gguf_header.InventoryError is gguf_roles.InventoryError
+    assert model_inventory.match_role is gguf_roles.match_role
     assert pack_gguf._route_role_authority(
         "blk.12.ffn_down_exps.weight", 3, "grouped") == (True, None)
 

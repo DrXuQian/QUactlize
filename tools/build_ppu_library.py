@@ -40,7 +40,7 @@ JIT_PYTHON = (
     'quactlize/runtime/compiler.py', 'quactlize/runtime/tuning.py',
     'quactlize/runtime/dispatch.py', 'quactlize/runtime/candidates.py',
     'quactlize/decode/compiler.py', 'quactlize/decode/grouped_compiler.py',
-    'tools/kpack_jit.py',
+    'tools/kpack_jit.py', 'tools/gguf_header.py', 'quactlize/gguf_roles.py',
 )
 
 

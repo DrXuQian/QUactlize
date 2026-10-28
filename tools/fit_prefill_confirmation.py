@@ -1,17 +1,19 @@
-#!/usr/bin/env python3
-"""Audit uploaded confirmation evidence and emit the exact prefill selector."""
-import argparse
+"""Sealed production catalog validation/generation; no device experiments."""
 import json
+
+
 from pathlib import Path
-import sys
+
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-from dev.strategy.prefill_review import review
+
+
 from quactlize.runtime.tuning import digest
-from tools.export_kpack_strategy import load_sources
+
 
 EVIDENCE = ROOT / 'policies/kpack_prefill_confirmation_v1.json'
+
+
 HEADER = ROOT / 'policies/kpack_prefill_confirmation_v1.hpp'
 
 
@@ -44,26 +46,3 @@ def header(evidence):
     lines += ['    {' + ','.join(map(str, k)) + '},' for k in sorted(knots)]
     lines += ['};', '} // namespace quactlize_prefill_confirmation_v1', '']
     return '\n'.join(lines)
-
-
-def main():
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--archive', type=Path)
-    p.add_argument('--check', action='store_true')
-    args = p.parse_args()
-    if args.archive:
-        evidence = review(args.archive, load_sources()[0])
-    else:
-        evidence = json.loads(EVIDENCE.read_text())
-    text = json.dumps(evidence, sort_keys=True, separators=(',', ':')) + '\n'
-    generated = header(evidence)
-    if args.check:
-        if EVIDENCE.read_text() != text or HEADER.read_text() != generated:
-            raise ValueError('generated prefill selector differs from reviewed evidence')
-    else:
-        EVIDENCE.write_text(text); HEADER.write_text(generated)
-    print('PREFILL_CONFIRMED ' + json.dumps(evidence['summary']))
-
-
-if __name__ == '__main__':
-    main()

@@ -1,20 +1,12 @@
-"""Paired Q8 helper: actual arithmetic/maps, independent GGUF and runner gates."""
+"""Production contract and numerical regression tests."""
 from collections import Counter
-import copy
 import ctypes as C
-import json
 import os
 from pathlib import Path
 import subprocess
-import sys
 import tempfile
-from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
-
-from tools import run_dense_dequant as run
-
-
+from ci.support import dense_dequant as run
 class PairedHost(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -73,7 +65,8 @@ class PairedHost(unittest.TestCase):
                     per_bank={}
                     for a in addresses:per_bank.setdefault(a%32,set()).add(a)
                     self.assertTrue(all(len(v)==1 for v in per_bank.values()))
-        for _,n,k in run.POINTS[2:]:
+        for n,k in ((512,2048),(2048,512),(4096,2048),(8192,2048),
+                    (2048,4096),(1024,5120)):
             for n0 in (0,n-64):
                 for k0 in (0,k-128):
                     for tasks,width,address in (
@@ -90,98 +83,3 @@ class PairedHost(unittest.TestCase):
                                 histogram=Counter((a+b)//sector for a in addrs for b in range(width))
                                 self.assertEqual(set(histogram.values()),{sector})
                         self.assertEqual(set(unique.values()),{1})
-
-
-class PairedRunner(unittest.TestCase):
-    def test_inventory_retains_native_and_all_previous_winners(self):
-        p=run.plan(list(range(2,8)),67108864,q8=True,native=True)
-        self.assertEqual(p['variants'],[-1,0,22,23,38,41])
-        self.assertEqual(p['order'],p['variants']+p['variants'][::-1])
-        self.assertEqual(p['correctness_storage'],['F16'])
-        self.assertFalse(p['production_changed'])
-        self.assertEqual(p['experiment'],'Q8_PRODUCT_NATIVE_F16_AB')
-        for control in (0,22,23):
-            medians={str(v):10. for v in p['variants']};medians[str(control)]=5.
-            self.assertEqual(run.profile_variants(medians,q8=True,native=True),(-1,control,38,41))
-        with self.assertRaises(ValueError):run.plan([2],0,native=True)
-        with tempfile.TemporaryDirectory() as temp:
-            lib=Path(temp)/'lib.so';lib.touch();out=Path(temp)/'plan'
-            subprocess.run([sys.executable,run.__file__,'--output',str(out),'--q8',
-                            '--native-library',str(lib),'--l2-bytes','67108864','--plan-only'],check=True,capture_output=True)
-            self.assertEqual(json.loads((out/'plan.json').read_text()),p)
-
-    def test_profile_identity_and_bf16_rejection(self):
-        for variant,c in run.q8_paired(True).items():
-            symbol=f'_dense_dequant_q8_pairedILb{c["signed"]}ELj{c["threads"]}ELb{c["byteperm"]}E'
-            native=dict(kernels={symbol:{}})
-            self.assertEqual(run.profile_entry(native,5,variant,0),
-                             dict(symbol=symbol,grid=[128,16,1],block=[c['threads'],1,1]))
-            with self.assertRaises(ValueError):run.profile_entry(native,5,variant,1)
-
-    def test_device_gate_observed_counts_negative_and_bf16(self):
-        import numpy as np
-        def bench(coverage=2*256*63488,negative=1,reject=24):
-            values=[np.array(row,dtype='<u4').tobytes() for row in
-                    ([0,0,0xffffffff,coverage],[0,negative,0,coverage])]
-            return SimpleNamespace(lib=SimpleNamespace(quactlize_q8_paired_gate=Mock(return_value=0),
-                quactlize_q8_byteperm_gate=Mock(return_value=0)),
-                r=SimpleNamespace(alloc=Mock(return_value=4096),stream=C.c_void_p(16)),
-                sdk=SimpleNamespace(lib=SimpleNamespace(hggcMemcpy=Mock(return_value=0)),
-                    synchronize=Mock(),download=Mock(side_effect=values)),launch=Mock(return_value=reject))
-        self.assertEqual(run.paired_gate(bench()),run.paired_gate_receipt())
-        self.assertEqual(run.paired_gate(bench(),True),run.paired_gate_receipt(True))
-        for options in (dict(coverage=256),dict(negative=0),dict(reject=0),dict(reject=1)):
-            with self.assertRaises(ValueError):run.paired_gate(bench(**options))
-            with self.assertRaises(ValueError):run.paired_gate(bench(**options),True)
-
-    def test_byteperm_opt_in_inventory_plan_and_precise_profile_identity(self):
-        p=run.plan(list(range(2,8)),67108864,q8=True,native=True,byteperm=True)
-        self.assertEqual(p['variants'],[-1,38,41,43])
-        self.assertEqual(p['order'],[-1,38,41,43,43,41,38,-1])
-        self.assertEqual(p['candidate'],43)
-        self.assertEqual(p['matched_control'],41)
-        self.assertEqual(p['numeric_anchor'],0)
-        self.assertFalse(p['production_changed'])
-        self.assertEqual(run.profile_variants({},True,True,True),(-1,38,41,43))
-        self.assertNotIn(43,run.variants_for(q8=True,native=True))
-        with self.assertRaises(ValueError):run.variants_for(byteperm=True)
-        old='_dense_dequant_q8_pairedILb0ELj128ELb0E'
-        new='_dense_dequant_q8_pairedILb0ELj128ELb1E'
-        native=dict(kernels={old:{},new:{}})
-        self.assertEqual(run.profile_entry(native,7,41,0)['symbol'],old)
-        self.assertEqual(run.profile_entry(native,7,43,0)['symbol'],new)
-        with self.assertRaises(ValueError):run.profile_entry(dict(kernels={old:{}}),7,43,0)
-        with tempfile.TemporaryDirectory() as temp:
-            lib=Path(temp)/'lib.so';lib.touch();out=Path(temp)/'plan'
-            subprocess.run([sys.executable,run.__file__,'--output',str(out),'--q8','--q8-byteperm',
-                '--native-library',str(lib),'--l2-bytes','67108864','--plan-only'],check=True,capture_output=True)
-            self.assertEqual(json.loads((out/'plan.json').read_text()),p)
-
-    def test_resume_requires_new_exhaustive_gate_and_candidate_rows(self):
-        q,n,k=run.POINTS[4];vs=run.variants_for(q8=True,native=True)
-        proof=dict(bad=0,compared=n*k,guard='PASS',control_raw_bits_equal=True)
-        data=dict(status='PASS',point=4,q=q,n=n,k=k,scope=run.SCOPE,experiment='Q8_PRODUCT_NATIVE_F16_AB',
-            production_changed=False,performance_admitted=False,negative_bad=100,
-            traffic=dict(reads=3*67108864,writes=3*67108864),ring_copies=2,calls_per_graph=4,
-            samples_us={str(v):[10.]*30 for v in vs},median_us={str(v):10. for v in vs},
-            round_medians_us={str(v):[10.]*3 for v in vs},proof={'0':{str(v):proof.copy() for v in vs}},
-            memory_alignment={p:{str(w):[0] for w in (16,32,64,128)} for p in ('low','units','output','raw')},
-            bf16_timing=None,half2_gate=dict(pairs=256*63488,lanes=2,bad_ordinary=0,bad_fast=0,
-                negative_bad=1,bf16_rejected=[38]),paired_gate=run.paired_gate_receipt(),
-            fixture=dict(raw_sha256='a'*64),native_raw_sha256='a'*64,native_bytes=3*67108864,
-            changed_address_copies_checked=2)
-        self.assertIs(run.validate_point(data,4,67108864,q8=True,native=True),data)
-        for key,value in (('pairs',0),('distinct_scales',False),('bad_signed',1),('negative_bad',0)):
-            bad=copy.deepcopy(data);bad['paired_gate'][key]=value
-            with self.assertRaises(ValueError):run.validate_point(bad,4,67108864,q8=True,native=True)
-        with self.assertRaises(ValueError):run.validate_point(data,4,67108864,q8=True)
-        candidate=copy.deepcopy(data)
-        candidate['experiment']='Q8_BYTEPERM_NATIVE_F16_AB'
-        for name in ('samples_us','median_us','round_medians_us'):
-            candidate[name]['43']=copy.deepcopy(candidate[name]['41'])
-        candidate['proof']['0']['43']=proof.copy()
-        with self.assertRaises(ValueError):run.validate_point(candidate,4,67108864,q8=True,native=True,byteperm=True)
-        candidate['byteperm_gate']=run.paired_gate_receipt(True)
-        self.assertIs(run.validate_point(candidate,4,67108864,q8=True,native=True,byteperm=True),candidate)
-        candidate['byteperm_gate']['negative_bad']=0
-        with self.assertRaises(ValueError):run.validate_point(candidate,4,67108864,q8=True,native=True,byteperm=True)

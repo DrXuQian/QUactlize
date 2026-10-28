@@ -13,7 +13,7 @@ import pytest
 import torch
 
 from reference import gguf_kpack as ref
-from tools.run_kpack_pack_gate import Arrangement, Sizes, device_identity, run_case
+from ci.support.packing import Arrangement, Sizes, device_identity, run_case
 
 ROOT = Path(__file__).resolve().parents[1]
 

@@ -13,7 +13,7 @@ ROOT=Path(__file__).resolve().parents[1]
 def test_dense_full_workspace_covers_declared_m_span(tmp_path):
     """Real shared validator, including the typed Q8 path; no GPU work."""
     import json
-    from dev.prefill_asys.m_span import MS
+    MS = (512, 1024, 2048, 4096, 5120)
     from quactlize.dispatch.dense_prefill import EVIDENCE
     families={(p['shape'][0],*p['shape'][2:]) for p in json.loads(EVIDENCE.read_text())['points']}
     families.update((q,256,512) for q in (8,10,11,12,13,14))
@@ -113,7 +113,7 @@ def test_prefill_sync_only_updates_documented_public_includes(tmp_path):
 def test_prefill_ctypes_and_gate_domains(tmp_path):
     import ctypes as C
     from quactlize.prefill.native import Call, Options, Choice
-    from tools.run_kpack_prefill_runtime import workloads, routing, require_guards
+    from ci.support.prefill_gate import workloads, routing, require_guards
     source = tmp_path/'abi.cpp'
     source.write_text(r'''
 #include "quactlize/prefill/api.h"

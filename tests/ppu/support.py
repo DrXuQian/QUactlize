@@ -6,8 +6,8 @@ import ctypes as C
 
 import numpy as np
 
-from dev.bf16_compute.fixture import compare, planes, raw_weight, round_compute
-from dev.strategy.dense import Arrangement, Candidate, Info, Options, Params, Sizes
+from ci.support.fixture import compare, planes, raw_weight, round_compute
+from ci.support.dense import Arrangement, Candidate, Info, Options, Params, Sizes
 from quactlize.runtime.native import checked
 from quactlize.execution.native import arrangement
 

@@ -6,8 +6,8 @@ import pytest
 
 from quactlize.runtime.native import SDK, sdk_identity
 from tools.build_ppu_library import verify
-from tools.run_kpack_pack_gate import bind, device_identity
-from tools.run_kpack_grouped_device_gate import graph_bind
+from ci.support.packing import bind, device_identity
+from ci.support.graph_api import graph_bind
 
 
 @pytest.fixture(scope="session")

@@ -37,8 +37,8 @@ def test_metadata_abi_layout(tmp_path):
 
 @pytest.mark.parametrize("q", range(10,15))
 def test_device_metadata_fixture_rejects_decoded_half(q):
-    from dev.bf16_compute.check_metadata import fixture
-    from dev.bf16_compute.fixture import bf16_bits, bf16_float
+    from ci.support.bf16_metadata import fixture
+    from ci.support.fixture import bf16_bits, bf16_float
     _, typed, full, half = fixture(q,n=256,k=512,experts=1)
     assert typed.shape == half.shape
     assert np.isfinite(bf16_float(typed)).all() and np.isfinite(bf16_float(full)).all()
@@ -46,7 +46,7 @@ def test_device_metadata_fixture_rejects_decoded_half(q):
 
 
 def test_matched_prefill_inventory_has_identical_geometry():
-    from dev.bf16_compute.matched import parents
+    from ci.support.bf16_matched import parents
     from quactlize.runtime.compiler import validate_parent
     inventory = parents()
     assert len(inventory) == 8 and len({key for key, _, _ in inventory}) == 8

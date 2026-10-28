@@ -1,17 +1,14 @@
-"""The public production decision must not omit a confirmed winner."""
+"""Production contract and numerical regression tests."""
 import copy
 import ctypes as C
 import json
 from pathlib import Path
 import subprocess
-
 import pytest
-
 from tools import generate_decode_selection as generate
-from quactlize.dispatch.planning import plan_smallm, requirements
+from quactlize.dispatch.planning import plan_smallm
 from quactlize.dispatch.native import Dispatch
 from quactlize.execution.native import Call, arrangement
-
 ROOT=Path(__file__).resolve().parents[1]
 
 
@@ -142,25 +139,6 @@ def test_fallback_uses_updated_donor_but_not_its_fixed_dimensions(tmp_path):
     assert r['config']['variant']==5
 
 
-def test_device_handoff_is_numerical_only_and_keeps_tc_winners():
-    from tools.run_selected_decode_numerics import gate_rows
-    rows=gate_rows()
-    assert len(rows)==17 and sum(r['config']['kind']=='simt' for r in rows)==16
-    assert sum(r['config']['kind']=='q4' for r in rows)==1
-    assert sum(r['point']['paired'] for r in rows)==3
-    assert not any(r['point']['name']=='tp2-q4-paired-routed' for r in rows)
-    from tools.run_selected_decode_numerics import entry_checks
-    catalog={tuple(r['key']):r for r in generate.effective(json.loads(generate.EVIDENCE.read_text()))['exact']}
-    for row in rows:
-        if not row['point']['paired']:
-            assert row['config']==catalog[tuple(row['key'])]['config']
-    assert all(entry=='v2' for row,entry in entry_checks(rows) if row['config']['kind']=='q4')
-    text=(ROOT/'tools/run_selected_decode_numerics.py').read_text()
-    assert 'timing_graph' not in text and 'token_controls=(1,) if provider.q4 else range(1, 9)' in text
-    box=(ROOT/'tools/run_kpack_tp2_box.sh').read_text()
-    assert box.index('stage=selected-entry-numerics')<box.index('stage=model-perf')
-
-
 def test_tc_source_does_not_depend_on_simt_row_reducer():
     # TC and SIMT partial layouts differ. Preserve old TC module identities
     # rather than rebuilding or relabeling them for a SIMT-only improvement.
@@ -169,15 +147,6 @@ def test_tc_source_does_not_depend_on_simt_row_reducer():
     assert (ROOT/'quactlize/decode/reducer.cuh').read_bytes()==old
     body=(ROOT/'quactlize/execution/simt_kernel.cuh').read_text()
     assert '#include "simt_reducer.cuh"' in body
-
-
-def test_instruction_comparison_is_not_only_opcode_counts():
-    from tools.inspect_selected_decode import instruction_bytes
-    text='Disassembly of section .text.kernel.a:\n 0: 00 01 02 03 \ts.foo r0\n'
-    assert instruction_bytes(text,'a')==bytes((0,1,2,3))
-    assert instruction_bytes(text.replace('00 01','00 02'),'a')!=instruction_bytes(text,'a')
-    with pytest.raises(ValueError):instruction_bytes(text,'b')
-    with pytest.raises(ValueError):instruction_bytes(text+text,'a')
 
 
 def test_actual_generated_v1_and_v2_dispatch_share_implementation(tmp_path):

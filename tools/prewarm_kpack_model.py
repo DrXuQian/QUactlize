@@ -16,8 +16,8 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from tools.kpack_jit import compiler_for, parent_tuple
-from tools.run_kpack_batched_bench import inventory, save
-from tools.gguf_internal_shape_inventory import read_gguf_header
+from tools.model_inventory import inventory, save
+from tools.gguf_header import read_gguf_header
 from quactlize.runtime.compiler import sha, source_contract
 
 

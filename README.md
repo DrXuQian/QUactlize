@@ -1,114 +1,66 @@
 # Quactlize
 
-Weight-only quantized GEMM/GEMV for T-Head PPU. Use **develop** for current
-integration, builds and tests; main is the separately curated product snapshot.
-PPU1.0/1.5 use pinned actlize. The PPU1.7 backend is isolated under
-[quactlize/backends/ppu17](quactlize/backends/ppu17/README.md).
+Weight-only quantized GEMM/GEMV for T-Head PPU.
+
+`develop` contains production code, admitted selection tables, package builders
+and product correctness tests. `main` is the separately curated release line.
+Debug kernels, benchmarks, Asys/ACU sweeps, historical results and their tests
+are maintained on [`experiments/ppu-tuning`](https://github.com/DrXuQian/QUactlize/tree/experiments/ppu-tuning).
+The complete pre-cleanup snapshot is `c436ce5e4dc14ec60149b973342749d16125dba4`.
 
 ## Build and test
 
-Checkout the exact `third_party/actlize` gitlink before building. CI owns the
-authenticated checkout; the public-library builder never fetches dependencies.
+Checkout the pinned `third_party/actlize` gitlink using your environment's Git
+credentials. The public builder never fetches or modifies dependencies.
 
 ```bash
-git switch develop
-git pull --ff-only origin develop
-git submodule update --init third_party/actlize
-
-# Output directory must be new. PPU_SDK may also be supplied with --sdk.
 PPU_SDK=/usr/local/PPU_SDK bash build.sh --library \
   --output /workspace/quactlize-package-RUN_ID --jobs 8
 
-# CI test job: host contracts + real PPU numerical tests; no package rebuild.
 CUDA_VISIBLE_DEVICES=0 PPU_SDK=/usr/local/PPU_SDK \
-  bash run_tests.sh --suite test --package /workspace/quactlize-package-RUN_ID \
-  --output /workspace/quactlize-tests-RUN_ID
+  bash run_tests.sh --suite test --package /workspace/quactlize-package-RUN_ID
 
-# Inventory / host-only checks.
-bash run_tests.sh --suite test --list
+# Host contracts / test inventory (no GPU execution).
 PPU_SDK=/usr/local/PPU_SDK bash run_tests.sh --suite host
+bash run_tests.sh --suite test --list
 ```
 
-The package contains `libquactlize_ppu.so`, exported `include/`, a private
-`quactlize-runtime/` closure (including JIT sources) and a hash manifest.
-Install the whole package, not just the public .so. ncp_flash_lib builds and
-installs it; selection, packing and execution remain in Quactlize.
+Build output must be a new directory. Tests without `--output` create a unique
+temporary directory and print its path. Both entrypoints honor `PYTHON`.
+See [CI integration](docs/CI.md) for prerequisites and result handling.
 
-See [CI.md](docs/CI.md) for dependencies, host/build/accuracy coverage, logs and
-JUnit. `--suite test` only tests; the compatible `--suite all` also builds.
-Both scripts honor `PYTHON=/path/to/python`. Tooling, historical Torch
-tests, TP/model benchmarks and PPU1.7 tests have separate prerequisites and are
-not implied by product CI passing.
+Install the complete package: `libquactlize_ppu.so`, `include/`,
+`quactlize-runtime/` and `manifest.json`. ncp_flash_lib only builds/installs it;
+packing, config selection and execution remain in Quactlize. The public ABI is
+declared in [packing/api.h](quactlize/packing/api.h) and
+[dense/api.h](quactlize/dense/api.h).
 
-Legacy CMake/Torch targets remain available through explicit `TARGET=...`
-build.sh invocations and setup.py. They are not the default integration API.
-Do not use historical six-library/prebuilt commands as a fresh installation.
+## Source layout
 
-## Product boundaries
-
-| Path | Responsibility |
+| Directory | Responsibility |
 |---|---|
-| `quactlize/packing/` | Canonical GGUF-to-K-pack producer and arrangement ABI |
-| `quactlize/dense/` | Public dense provider; dynamic input/output/workspace binding |
-| `quactlize/dispatch/`, `policies/` | Measured selection tables, buckets and deterministic fallback |
-| `quactlize/execution/`, `quactlize/decode/` | SIMT/GEMV, indexed execution and MoE helpers |
-| `quactlize/prefill/`, `quactlize/dequant/` | Online SF/full dequant, provider composition and typed dense helpers |
-| `quactlize/include/`, `quactlize/runtime/` | TC collectives, launchers, JIT and resident modules |
-| `reference/`, `tests/`, `ci/` | Independent format oracles and regression tests |
-| `dev/`, `benchmarks/`, `tools/` | Maintained experiments, profiling, sweeps, build internals and policy generation |
+| `quactlize/` | Formats, kernels, dispatch, JIT and public runtime |
+| `policies/` | Admitted measurements, exact tables, buckets and required validation inputs |
+| `tools/` | Package builders, deterministic table generators, GGUF metadata and JIT prewarm |
+| `reference/` | Independent GGUF/K-pack format oracle |
+| `ci/`, `tests/` | Product CI, reusable numerical fixtures and ABI/selection regressions |
 
-Canonical formats are Q8_0 K-pack2; Q2_K low2; Q3_K low2+high1;
-Q4_K low4; Q5_K low4+high1; Q6_K low4+high2. Packed-unit metadata is
-separate. Consumers validate the arrangement descriptor; unknown layouts
-must not be guessed. Offline formats and rounding are independent of tuning.
+PPU1.0/1.5 use pinned actlize; [PPU1.7](quactlize/backends/ppu17/README.md)
+remains an isolated backend. Canonical formats are Q8_0 K-pack2 and
+Q2_K–Q6_K per-plane K-pack. Consumers validate versioned arrangements; they
+must not guess an unknown layout.
 
-Useful references:
+## Performance work
 
-- [Selection and prewarm](docs/KPACK_SELECTION.md)
-- [Dynamic execution ABI](docs/KPACK_DYNAMIC_EXECUTION.md)
-- [Measured dense prefill helpers and native comparison](docs/PPU_PREFILL_DENSE_PRODUCTION.md)
-- [Branch/build policy](docs/BRANCHES.md)
+Use a separate worktree so profiling does not change the integration checkout:
 
-## Development cleanup
+```bash
+git fetch origin
+git worktree add --detach ../quactlize-tuning origin/experiments/ppu-tuning
+```
 
-Keep reusable tests and sweeps, not one runner per completed experiment.
-Production translation units must instantiate only retained implementations;
-unadmitted debug kernels must not accumulate in the installed runtime.
-
-The retired dense-helper rounds R1–R5 are recoverable at commit
-`8a004d42a91a23664e69762509d34c3b76bbf8e8`. The later unselected Q8 experiments
-are recoverable at `618298d6f8761b8eb4489ad2f1a217dd57f0bd47`.
-Current production keeps typed dequant IDs `0/8/20/21/22/23/38/41`, IO IDs
-`0..4`, compact widths `2/4/8`, and the general SF/full routes. IDs38/41 are
-the measured F16-only Q8 helpers; BF16 retains direct BF16 reconstruction.
-The measured byte-permute candidate43 remains opt-in, shares the same exact
-half2 arithmetic, and does not replace the default38/41 selections.
-Retired IDs are rejected, never renumbered or silently aliased. Cleanup leaves
-the selection tables, rounding and retained native kernel bodies unchanged.
-Use the current model-specific Asys sweep for new comparisons, not a retired
-round's command.
-
-The old `benchmarks/` batch/format/shape wrappers and completed 5090 experiments
-are retired (recoverable at `138ad8b`). Their dedicated checks and log parser
-are retired with them; product tests and recorded measurement evidence remain.
-The four remaining Python scripts have live consumers: `analyse.py` for
-selection analysis, `fixtures.py` / `workloads.py` for shared shape definitions,
-and `sweep_gemv_perf.py` for the legacy GEMV sweep entry. CMake benchmark targets,
-their generated configuration inputs and the Q4 comparison fixture headers
-remain because builds, oracles or current PPU comparisons still use them.
-
-Current performance entrypoints are separate from CI:
-
-- `tools/run_kpack_strategy_campaign_box.sh`: small-M selection campaign.
-- `tools/run_kpack_strategy_prefill_box.sh`: prefill component campaign.
-- `tools/run_prefill_model_asys_box.sh`: model-shape prefill Asys sweep.
-- `tools/run_native_components_box.sh`: isolated native/candidate comparison.
-- `tools/run_dense_dequant_box.sh`: retained typed helpers; `Q8=1` tests the
-  Q8 product cohort, optionally against the existing native F16 converter;
-  add `Q8_BYTEPERM=1` to compare the retained43 candidate.
-
-The [final public-library/model validation](docs/PPU_DENSE_CONTIGUOUS_IO.md)
-remains pending. Cleanup is not new GPU timing or a claim of model parity.
-
-Use their declared device, SDK, input and measurement requirements; these are
-not substitutes for `run_tests.sh` and do not run during product CI.
+Run sweeps and inspect their documentation there. Promote only validated
+kernel changes, selection tables and focused regression tests to `develop`;
+do not merge the experimental branch wholesale. Keep result archives and
+compiled packages outside source branches. Repository cleanup is not a new
+GPU performance admission.

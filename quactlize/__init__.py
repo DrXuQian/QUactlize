@@ -377,9 +377,8 @@ def _add_bias_and_interleave_int8s(w):
 def matmul_w4a16(a, b_packed, scales, zeros=None, group_size: int = 128,
                  fmt: Literal["gptq-sym", "gguf-q4k"] = "gptq-sym"):
     raise NotImplementedError(
-        "the GEMM is not bound as a torch op yet -- it is reached through the C++ harnesses in tests/ and "
-        "benchmarks/. Binding it needs csrc/ to build under the PPU toolchain, which the overlay-based build.sh "
-        "does not currently support. See docs/CHECKPOINT.md.")
+        "legacy GPTQ GEMM is not bound as a Torch op. PPU runtime APIs are built "
+        "with bash build.sh; historical GPTQ harnesses live on experiments/ppu-tuning.")
 
 
 __all__ = [

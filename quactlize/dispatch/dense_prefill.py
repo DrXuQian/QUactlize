@@ -1,23 +1,22 @@
-"""Compile reviewed whole-call dense measurements into exact rows and bounded buckets.
-
-This is an offline exporter, not a runtime tuner. A newer COMPLETE point
-replaces its predecessor atomically; old and new component costs are never
-spliced. Buckets minimize normalized regret, not microseconds across shapes.
-"""
+"""Production catalog validation."""
 from collections import Counter, defaultdict
-import json
-import lzma
 import math
 from pathlib import Path
 import statistics
-
 from quactlize.dispatch.table import Workload
 from quactlize.runtime.tuning import digest
-
 ROOT = Path(__file__).resolve().parents[2]
+
+
 EVIDENCE = ROOT / 'policies/dense_prefill_v1.json'
+
+
 HEADER = ROOT / 'quactlize/dispatch/dense_prefill.inc'
+
+
 SCHEMA = 'quactlize.dense-prefill-policy.v1'
+
+
 REGRET_LIMIT = .05  # in-sample fitting bound, NOT a new-shape/native guarantee
 
 
@@ -93,104 +92,6 @@ def bucket_training_costs(point, recipes):
     return {rid:us for rid,us in point['costs'] if legal(recipes[rid])}
 
 
-def execution(candidate, row, definitions):
-    """Freeze adapters too: cohort-current is not a stable execution identity."""
-    recipe = candidate['recipe']
-    p = dict(recipe['parameters'])
-    if recipe['kind'] == 'full':
-        dq_first = p.pop('dequant_first', False)
-        require(type(dq_first) is bool, 'invalid Full stage order')
-        require(set(p) == {'provider','dequant_variant','vector_io'}, 'unadmitted Full execution option')
-        require(candidate['arm'] == 'full-fp16' and p['provider'] == 'typed-fp16', 'not Full-F16')
-        require(candidate['helper_options'] == dict(dequant_variant=p['dequant_variant'], vector_io=p['vector_io']),
-                'full helper identity differs')
-        phases = [definitions[c]['phase'] for c in row['components']]
-        require(len(phases)>=5 and phases[:3] == ['error_reset',*(['expansion','input'] if dq_first else ['input','expansion'])] and
-                phases[3]=='main' and all(p in ('main','reducer') for p in phases[3:-1]) and phases[-1] == 'output',
-                'Full trace stage order differs from recipe')
-        return dict(route=2, io=p['vector_io'], dequant=p['dequant_variant'], tc=None) | (
-            dict(dequant_first=True) if dq_first else {})
-    names = [definitions[c]['name'] for c in row['components'] if definitions[c]['phase'] in ('input', 'output')]
-    require(len(names) == 2, 'TC adapter coverage differs')
-    kinds = {'::convert_rows<': -1, '::dense_convert_vec8<false,': 1,
-             '::dense_convert_stripe4<false,': 2, '::dense_convert_full4<false,': 3,
-             '::dense_convert_cont<false,': 4}
-    ios = [next((io for name, io in kinds.items() if name in n), None) for n in names]
-    require(ios[0] is not None and ios[0] == ios[1], 'unrecognized/mixed TC adapters')
-    require(recipe['kind'] == 'tc' and recipe['route'] in ('fq', 'sf'), 'unsupported recipe')
-    dq = p.pop('dequant_config')
-    if p.get('dense_reducer'):
-        width = p['dense_reducer']
-        require(type(width) is int and width in (2,4,8) and p['symbol'].endswith(f'_rc{width}') and p['split'] in (2,4,8),
-                'unadmitted compact reducer')
-        reducers = [definitions[c] for c in row['components'] if definitions[c]['phase'] == 'reducer']
-        require(len(reducers) == 1, 'compact reducer coverage differs')
-        c = reducers[0]; w = c['workload']
-        require(f'PpuMixedInputSplitKParallelM1FastReductionKernel<{width},{p["split"]}>' in c['name'].replace(' ','') and
-                w['m']*w['n']%(32*width) == 0 and c['grid'] == [w['m']*w['n']//(32*width),1,1] and
-                c['block'] == [32,1,1] and not c['shared_bytes'],
-                'compact reducer launch differs')
-    return dict(route=int(recipe['route'] == 'sf'), io=ios[0], dequant=dq, tc=p)
-
-
-def audit_row(row, review, point):
-    require(row['status'] == 'PASS', 'failed row')
-    cid = row['candidate']
-    require(cid == digest(review['candidates'][cid]), 'candidate seal differs')
-    captures = row.get('confirmation_captures') or [row]
-    if len(captures) == 2:
-        require([c['confirmation'] for c in captures] == [0, 1] and
-                row['aggregation'] == 'MEDIAN_OF_TWO_CAPTURE_MEDIANS_NOT_FASTEST_CAPTURE', 'confirmation differs')
-        require(abs(statistics.median(c['gpu_sum_us'] for c in captures)-row['gpu_sum_us']) < 1e-6,
-                'confirmation median differs')
-    joint = review['authorities'][point['authority']]
-    cross = point.get('cross_device_confirmations', False)
-    if cross:
-        from tools.retry_prefill_confirmation import equivalent_authorities
-        sources = joint.get('source_authorities', [])
-        require(joint.get('authority_kind') == 'USER_AUTHORIZED_EQUIVALENT_DEVICE_COHORT' and
-                point.get('source_authorities') == sources and len(sources) == 2,
-                'cross-device cohort binding differs')
-        old, new = (review['authorities'][a] for a in sources)
-        equivalent_authorities(old, new)
-        require(new.get('confirmation_retry', {}).get('parent_authority') == sources[0] and
-                new['confirmation_retry'].get('equivalent_cards_user_authorized') is True,
-                'cross-device confirmation not authorized')
-    for cap in captures:
-        authority = cap.get('authority', point['authority']) if cross else point['authority']
-        if cross:
-            require(authority in sources, 'unknown cross-device capture authority')
-        normalized = []
-        for key in cap['components']:
-            definition = review['components'][key]
-            require(digest(definition) == key and definition['authority'] == authority,
-                    'capture component authority differs')
-            normalized.append(digest(dict(definition, authority=point['authority'])))
-        require(cap['status'] == 'PASS' and cap['candidate'] == cid and normalized == row['components'],
-                'capture identity differs')
-        samples = cap['complete_samples_us']
-        require(len(samples) >= 3 and all(math.isfinite(t) and t > 0 for t in samples), 'invalid samples')
-        require(abs(statistics.median(samples)-cap['gpu_sum_us']) < 1e-6, 'sample median differs')
-        times = cap['component_samples_us']
-        require(len(times) == len(cap['components']) and all(len(t) == len(samples) for t in times),
-                'component coverage differs')
-        for key, ts in zip(cap['components'], times):
-            definition = review['components'][key]
-            require(digest(definition) == key and definition['workload'] == point['workload'] and
-                    definition['authority'] == authority, 'component binding differs')
-            require(all(math.isfinite(t) and t > 0 for t in ts), 'invalid component samples')
-        require(all(abs(total-sum(t[i] for t in times)) < 1e-6 for i, total in enumerate(samples)),
-                'whole-call sum differs')
-        if row['arm'] == 'native-fp16':
-            require(cap['numerical'] == 'PASS', 'native correctness failed')
-        else:
-            require(cap['numerical'] and all(c['nonfinite'] == 0 and 0 <= c['relative_l1_error'] < .005
-                                          for c in cap['numerical']), 'numerical gate failed')
-            require(all(c['bad'] == 0 for c in cap.get('weight_bits') or []), 'weight bits differ')
-        if row['arm'] == 'full-fp16':
-            require(cap['arithmetic'] == dict(a='F16', b='F16', c='F16', accumulator='FP32'), 'full arithmetic differs')
-
-
 def fit(points, *, split_m=False):
     """Log bins, subdivided only where a common recipe exceeds 5% regret.
 
@@ -238,69 +139,6 @@ def fit(points, *, split_m=False):
             bounds.append(bucket_interval(members[0]['shape']))
         visit(key, sorted(members, key=lambda p:p['shape']), bounds)
     return leaves
-
-
-def import_reviews(paths):
-    from tools.review_prefill_cohort import eligible, domain
-    points, recipes, sources, authorities = {}, {}, [], {}
-    timing_domain = None
-    for path in paths:
-        path = Path(path)
-        raw = path.read_bytes()
-        review = json.loads(lzma.decompress(raw) if path.suffix == '.xz' else raw)
-        require(review['review_sha256'] == digest({k:v for k,v in review.items() if k != 'review_sha256'}),
-                'review seal differs')
-        require(not review['incomplete'] and not review['pending_points'] and not review['partial_points'],
-                'review incomplete: do not promote partial points')
-        for aid, a in review['authorities'].items():
-            require(aid == digest(a), 'authority seal differs')
-            d = domain(a)
-            if timing_domain is None:
-                timing_domain = d
-            require(d == timing_domain, 'cannot merge different timing domains')
-            authorities[aid] = dict(domain=d, receipt_sha256=aid)
-        sources.append(review['review_sha256'])
-        for key, point in sorted(review['points'].items()):
-            w = Workload(**point['workload'])
-            require(key == w.key and w.operation == 'dense' and w.compute == 'f16' and w.storage == 'f32' and
-                    w.experts == w.channels == w.topk == 1 and w.fusion == 'none' and not w.router and
-                    w.input_stride == w.k and w.output_stride == w.n and 128 <= w.m <= 2048,
-                    'outside reviewed dense prefill domain')
-            costs, observations = {}, {}
-            native = None
-            for row in point['measurements']:
-                if not eligible(row) and row['arm'] != 'native-fp16':
-                    continue
-                audit_row(row, review, point)
-                if row['arm'] == 'native-fp16':
-                    require(native is None, 'duplicate native row')
-                    native = row['gpu_sum_us']
-                    continue
-                recipe = execution(review['candidates'][row['candidate']], row, review['components'])
-                rid = digest(recipe)
-                recipes[rid] = recipe
-                # Two identities can have identical execution (e.g. a legacy
-                # alias). Do not cherry-pick the faster duplicate observation.
-                require(rid not in costs, 'duplicate complete execution identity')
-                costs[rid] = row['gpu_sum_us']
-                observations[rid] = dict(candidate=row['candidate'], receipt_sha256=digest(row),
-                    captures=len(row.get('confirmation_captures') or [row]), components=row['components'])
-            require(costs and native, 'missing native or candidates')
-            winner = choose(costs)
-            points[key] = dict(key=key, shape=[w.qtype, w.m, w.n, w.k], winner=winner,
-                costs=sorted(costs.items()), us=costs[winner], native_us=native,
-                authority=point['authority'], evidence_sha256=digest(point), winner_evidence=observations[winner])
-    result = dict(schema=SCHEMA, reviews=sources, domain=timing_domain, authorities=authorities,
-        recipes={k:recipes[k] for k in sorted({r for p in points.values() for r,_ in p['costs']})},
-        points=sorted(points.values(), key=lambda p:p['shape']),
-        criterion='MINIMUM_COMPLETE_GPU_CALL; NO_CROSS_POINT_ABSOLUTE_TIME_COMPARISON',
-        arithmetic=dict(input='F32', output='F32', compute='F16', accumulator='FP32'),
-        bucket_scope='BOUNDED_PREDICTION; IN_SAMPLE_REGRET_NOT_HOLDOUT_OR_NATIVE_GUARANTEE',
-        model_performance_admitted=False)
-    result['buckets'] = fit(result['points'])
-    result['sha256'] = digest(result)
-    validate(result)
-    return result
 
 
 def validate(data):
@@ -419,3 +257,48 @@ def audit_buckets(data):
     return dict(scope='LEAVE_ONE_NK_FAMILY_OUT; NOT_NEW_MODEL_HOLDOUT', counts=dict(counts),
                 worst_regret_pct=max((r['regret_pct'] for r in rows), default=None),
                 over_5pct=[r for r in rows if r['regret_pct'] > 5], new_model_validated=False)
+
+
+def require(ok, message):
+    if not ok:
+        raise ValueError(message)
+
+
+def execution(candidate, row, definitions):
+    """Freeze adapters too: cohort-current is not a stable execution identity."""
+    recipe = candidate['recipe']
+    p = dict(recipe['parameters'])
+    if recipe['kind'] == 'full':
+        dq_first = p.pop('dequant_first', False)
+        require(type(dq_first) is bool, 'invalid Full stage order')
+        require(set(p) == {'provider','dequant_variant','vector_io'}, 'unadmitted Full execution option')
+        require(candidate['arm'] == 'full-fp16' and p['provider'] == 'typed-fp16', 'not Full-F16')
+        require(candidate['helper_options'] == dict(dequant_variant=p['dequant_variant'], vector_io=p['vector_io']),
+                'full helper identity differs')
+        phases = [definitions[c]['phase'] for c in row['components']]
+        require(len(phases)>=5 and phases[:3] == ['error_reset',*(['expansion','input'] if dq_first else ['input','expansion'])] and
+                phases[3]=='main' and all(p in ('main','reducer') for p in phases[3:-1]) and phases[-1] == 'output',
+                'Full trace stage order differs from recipe')
+        return dict(route=2, io=p['vector_io'], dequant=p['dequant_variant'], tc=None) | (
+            dict(dequant_first=True) if dq_first else {})
+    names = [definitions[c]['name'] for c in row['components'] if definitions[c]['phase'] in ('input', 'output')]
+    require(len(names) == 2, 'TC adapter coverage differs')
+    kinds = {'::convert_rows<': -1, '::dense_convert_vec8<false,': 1,
+             '::dense_convert_stripe4<false,': 2, '::dense_convert_full4<false,': 3,
+             '::dense_convert_cont<false,': 4}
+    ios = [next((io for name, io in kinds.items() if name in n), None) for n in names]
+    require(ios[0] is not None and ios[0] == ios[1], 'unrecognized/mixed TC adapters')
+    require(recipe['kind'] == 'tc' and recipe['route'] in ('fq', 'sf'), 'unsupported recipe')
+    dq = p.pop('dequant_config')
+    if p.get('dense_reducer'):
+        width = p['dense_reducer']
+        require(type(width) is int and width in (2,4,8) and p['symbol'].endswith(f'_rc{width}') and p['split'] in (2,4,8),
+                'unadmitted compact reducer')
+        reducers = [definitions[c] for c in row['components'] if definitions[c]['phase'] == 'reducer']
+        require(len(reducers) == 1, 'compact reducer coverage differs')
+        c = reducers[0]; w = c['workload']
+        require(f'PpuMixedInputSplitKParallelM1FastReductionKernel<{width},{p["split"]}>' in c['name'].replace(' ','') and
+                w['m']*w['n']%(32*width) == 0 and c['grid'] == [w['m']*w['n']//(32*width),1,1] and
+                c['block'] == [32,1,1] and not c['shared_bytes'],
+                'compact reducer launch differs')
+    return dict(route=int(recipe['route'] == 'sf'), io=ios[0], dequant=dq, tc=p)

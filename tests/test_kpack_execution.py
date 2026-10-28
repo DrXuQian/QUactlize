@@ -71,7 +71,7 @@ def raw_fixture(q, n, k, experts):
 
 @pytest.mark.parametrize("pair", [False, True])
 def test_q8_signed_codes_original_scale_and_expert_slices(host, pair):
-    from tools.run_q8_kpack2_gate import fixture
+    from ci.support.q8 import fixture
 
     n, k, experts = 256, 512, 3
     raw, low, units, weight = fixture(n, k, experts)
@@ -124,7 +124,7 @@ def test_independent_offline_bytes_and_affine_reader(host, q):
         raw.reshape(-1), gguf.GGMLQuantizationType(q)
     ).reshape(e, n, k)
     assert np.isfinite(w).all() and np.isfinite(s).all() and np.isfinite(z).all()
-    from tools.run_kpack_gemv_gate import metadata_oracle
+    from ci.support.gemv import metadata_oracle
 
     want_s, want_z = metadata_oracle(art.units.numpy(), q, n, k, e)
     assert np.array_equal(s.view("u2"), want_s.view("u2"))
@@ -161,7 +161,7 @@ def test_independent_offline_bytes_and_affine_reader(host, q):
 
 def warmup_metadata_host(host, q, n, k, e):
     """Decode the gate's exact bytes through production unit_group on the CPU."""
-    from tools.kpack_warmup_fixture import Weights
+    from ci.support.weights import Weights
 
     fixture = Weights(q, n, k, e)
     weights = np.empty((e, n, k), dtype="<u2")
@@ -198,7 +198,7 @@ def metadata_readback(scale, zero):
     + [(11, 1024, 5120, 1), (14, 1024, 5120, 1)],
 )
 def test_native_prepass_checks_production_metadata_not_timing_fixture(host, q, n, k, e):
-    from tools.run_kpack_native_gate import check_prepass
+    from ci.support.native_gate import check_prepass
 
     w, scale, zero = warmup_metadata_host(host, q, n, k, e)
     if q in (11, 14):
@@ -237,7 +237,7 @@ def test_native_prepass_checks_production_metadata_not_timing_fixture(host, q, n
     ],
 )
 def test_native_prepass_rejects_bit_and_coordinate_faults(host, fault, capsys):
-    from tools.run_kpack_native_gate import check_prepass
+    from ci.support.native_gate import check_prepass
 
     w, scale, zero = warmup_metadata_host(host, 11, 256, 512, 3)
     if fault == "historical-zero":
@@ -355,8 +355,8 @@ def test_indexed_strides_and_canonical_identity(host):
 
 
 def test_bounded_gate_inventory_and_routing():
-    from tools.run_kpack_gemv_gate import plan, fixture, CONFIGS
-    from tools.kpack_execution_fixture import IndexedWeights
+    from ci.support.gemv import plan, fixture, CONFIGS
+    from ci.support.indexed import IndexedWeights
 
     assert len(CONFIGS) == len(set(CONFIGS)) == 8
     assert len(plan(False)) == 5 and len(plan(True)) == 7

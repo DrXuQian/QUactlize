@@ -14,7 +14,7 @@ import pytest
 
 from quactlize.execution.native import Arrangement, Call, SimtCallV2, SimtConfig, Sizes, bind_simt_compute
 from quactlize.runtime.native import checked
-from tools.run_kpack_grouped_decode_probe import Replay
+from ci.support.graph import Replay
 from .support import Arena, DECODE_M, Public, QTYPES, check_output, packed
 
 
@@ -74,8 +74,8 @@ def test_selected_grouped_tc_existing_oracle(package, sdk, tmp_path, q, n, k, ro
     # Reuse the existing independently checked eager + changed-router replay
     # gate, not a new copy of the grouped launcher/reference. Its diagnostic
     # sample is NOT exported as performance evidence by CI.
-    from tools.kpack_warmup_fixture import Weights
-    from tools.run_kpack_native_gate import run
+    from ci.support.weights import Weights
+    from ci.support.native_gate import run
     runtime = package / "quactlize-runtime"
     jit = dict(python=sys.executable, helper=runtime / "jit/tools/kpack_jit.py",
                sdk=Path(os.environ["PPU_SDK"]),
@@ -89,7 +89,7 @@ def test_selected_grouped_tc_existing_oracle(package, sdk, tmp_path, q, n, k, ro
 @pytest.mark.parametrize("tokens", [1, 2, 8])
 @pytest.mark.parametrize("router", [False, True])
 def test_selected_moe_chain_existing_oracle(package, sdk, tmp_path, compute, tokens, router):
-    from tools.run_kpack_moe_gate import chain_case
+    from ci.support.moe_gate import chain_case
     # The existing chain gate validates standalone gate/up/down and the fused
     # chain, including its SwiGLU range/rounding, GPU router and indexed finish.
     args = SimpleNamespace(sdk=Path(os.environ["PPU_SDK"]), bundle=package / "quactlize-runtime",
