@@ -141,11 +141,15 @@ def test_typed_c_abi_can_pick_measured_simt_without_gpu_or_jit(host_dispatch,pol
 
 def test_companion_query_exports_all_component_helpers_without_jit(host_dispatch):
     from quactlize.execution.native import SimtCallV2
+    from tools.generate_decode_selection import EVIDENCE, effective
+    from quactlize.execution.token_cta_policy import load as token_table
     rows = json.loads((ROOT/'policies/kpack_component_decode_v1.json').read_text())['rows']
+    current = {tuple(r['key']):r for r in effective(json.loads(EVIDENCE.read_bytes()))['exact']}
+    token_keys = {tuple(r['key']) for r in token_table()['rows']}
     fn = host_dispatch.lib.quactlize_kpack_dispatch_smallm_dequant_v1
     fn.argtypes = [C.POINTER(SimtCallV2), C.POINTER(type(arrangement(12))), C.POINTER(C.c_int32)]
     fn.restype = C.c_int
-    checked = 0
+    checked, superseded = 0, 0
     for row in rows:
         if not row['changed']:
             continue
@@ -155,9 +159,16 @@ def test_companion_query_exports_all_component_helpers_without_jit(host_dispatch
                  a_row_stride=k, a_token_stride=k*ch, ids_stride=top, out_row_stride=n)
         typed, a, config = SimtCallV2(c, compute), arrangement(q), C.c_int32(-999)
         assert fn(C.byref(typed), C.byref(a), C.byref(config)) == 0
-        assert config.value == row['dequant_config']
+        selected = current[tuple(row['key'])]
+        assert config.value == selected.get('dequant_config', -1)
+        if config.value != row['dequant_config']:
+            # Earlier dense token-CTA admissions replaced six SF endpoints.
+            # They must no longer expose the old standalone scale expansion.
+            assert tuple(row['key']) in token_keys
+            assert selected['config']['kind'] == 'simt' and config.value == -1
+            superseded += 1
         checked += config.value >= 0
-    assert checked == 41
+    assert (checked, superseded) == (35, 6)
     config = C.c_int32(99)
     assert fn(None, None, C.byref(config)) == 2 and config.value == -1
 

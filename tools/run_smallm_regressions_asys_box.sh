@@ -8,10 +8,12 @@ entry=run_smallm_regressions_asys.py
 case ${BASELINE:-quactlize} in
     quactlize) [[ -z ${COHORT:-} ]] || args+=(--cohort "${COHORT}") ;;
     native|native-ab)
-        [[ -z ${COHORT:-} ]] || { echo 'ERROR: native modes do not accept COHORT.' >&2; exit 1; }
+        [[ -z ${COHORT:-} || ${BASELINE} == native-ab && ${COHORT} == moe-native-models ]] || {
+            echo 'ERROR: native-ab accepts only COHORT=moe-native-models; native is dense-only.' >&2; exit 1; }
         if [[ ${BASELINE} == native-ab ]]; then
             entry=run_smallm_native_gate.py
-            [[ -z ${QTYPES:-}${N:-}${K:-} ]] || { echo 'ERROR: native-ab covers all 360 model points; unset QTYPES/N/K.' >&2; exit 1; }
+            [[ -z ${COHORT:-} ]] || args+=(--cohort "${COHORT}")
+            [[ -z ${QTYPES:-}${N:-}${K:-} ]] || { echo 'ERROR: native-ab covers the frozen model cohort; unset QTYPES/N/K.' >&2; exit 1; }
         else
             entry=run_smallm_native_asys.py
             args+=(--qtypes "${QTYPES:-13,14}" --n "${N:-1024}" --k "${K:-5120}")
@@ -24,8 +26,10 @@ case ${BASELINE:-quactlize} in
         fi ;;
     *) echo 'ERROR: BASELINE must be quactlize, native or native-ab.' >&2; exit 1 ;;
 esac
-if [[ ${COHORT:-} == moe-single-row-models || ${COHORT:-} == moe-config-models ]]; then
-    args+=(--llama-source "${LLAMA_CI_DIR:-/sim/eec/shared/junfu.qx/llama.cpp.ncp}")
+if [[ ${COHORT:-} == moe-single-row-models || ${COHORT:-} == moe-config-models || ${COHORT:-} == moe-native-models ]]; then
+    if [[ ${BASELINE:-quactlize} != native-ab || ${PLAN_ONLY:-0} == 1 ]]; then
+        args+=(--llama-source "${LLAMA_CI_DIR:-/sim/eec/shared/junfu.qx/llama.cpp.ncp}")
+    fi
     [[ -z ${MODEL_ROOT:-} ]] || args+=(--model-root "${MODEL_ROOT}")
     [[ -z ${QWEN35_MODEL:-} ]] || args+=(--qwen35-model "${QWEN35_MODEL}")
     [[ -z ${QWEN122_MODEL:-} ]] || args+=(--qwen122-model "${QWEN122_MODEL}")

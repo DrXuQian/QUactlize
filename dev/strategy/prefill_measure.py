@@ -143,7 +143,8 @@ def prepared(b, core, recipe, *, config=0, full=False):
         if capture: capture.close()
 
 
-def measure_core(b, core, recipe, authority, source, output, *, config=0, full=False):
+def measure_core(b, core, recipe, authority, source, output, *, config=0, full=False, stage_measure=None):
+    stage_measure = stage_measure or stages
     with prepared(b, core, recipe, config=config, full=full) as (capture, data):
         images = None
         if full:
@@ -151,7 +152,7 @@ def measure_core(b, core, recipe, authority, source, output, *, config=0, full=F
             images = loaded_images()
             if not images: raise ValueError('no installed BF16 provider image identity')
             source = digest([source, images])
-        rows, pending = stages(capture, b, recipe, authority, source, output, b.check)
+        rows, pending = stage_measure(capture, b, recipe, authority, source, output, b.check)
         data.update(components=[r['id'] for r in rows], stages=rows)
         if full and images != loaded_images():
             raise ValueError('provider images changed during component timing')
@@ -159,7 +160,8 @@ def measure_core(b, core, recipe, authority, source, output, *, config=0, full=F
     return data
 
 
-def measure_full_expansion(b, full, config, authority, source, output):
+def measure_full_expansion(b, full, config, authority, source, output, *, stage_measure=None):
+    stage_measure = stage_measure or stages
     b.update(0); full.update(); full.poison_weights()
     for i in range(b.ring.copies): checked(full.dq(i, config), 'full expansion independent gate')
     proof = full.check_weights()
@@ -185,7 +187,7 @@ def measure_full_expansion(b, full, config, authority, source, output):
             finally: b.route['active'] = old
             full.update()
         full.poison_weights()
-        rows, pending = stages(capture, b, None, authority, source, output, full.check_weights, helper=True)
+        rows, pending = stage_measure(capture, b, None, authority, source, output, full.check_weights, helper=True)
         full.guards()
         for buf in b.ring.buffers: buf.guard()
         result = dict(correctness='PASS', components=[r['id'] for r in rows], stages=rows,

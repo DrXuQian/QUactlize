@@ -100,7 +100,9 @@ def test_plan_keeps_shipping_and_matched_controls(tmp_path):
     from quactlize.dispatch.planning import plan_smallm
     originals=plan_smallm(tmp_path,[request(w) for w in workloads()])['requests']
     plan=make_plan(originals)
-    assert plan['counts']==dict(points=8,arms=64,tc_modules=0,vector_modules=13,families=2)
+    # The refreshed Q5 M1 control now shares its public carrier with M8.
+    # Keep all 64 arms; only the compiled-module deduplication changes.
+    assert plan['counts']==dict(points=8,arms=64,tc_modules=0,vector_modules=12,families=2)
     assert plan['timing_method']=='ASYS_GPU_ACTIVITY' and not plan['production_changed']
     for point,old in zip(plan['points'],originals):
         assert Recipe.from_dict(point['arms'][0]['recipe'])==original_recipe(old)
@@ -242,8 +244,9 @@ def test_no_format_precision_or_production_selector_change():
 
 
 def test_archive_recapture_is_deterministic_when_review_is_available():
-    archive=Path('/root/review-lite-1793141000861683287.tar.xz')
+    archive=Path('/root/review-lite-1793162603239819679.tar.xz')
     if not archive.exists():pytest.skip('review archive not installed; product sealed-table checks are unconditional')
+    if sys.version_info[:2] != (3,12):pytest.skip('raw multi-component replay uses the measured Python 3.12 float sum')
     from tools.fit_moe_decode import capture
     from quactlize.execution.moe_decode_policy import load
     assert capture(archive)==load()

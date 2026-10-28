@@ -194,11 +194,16 @@ initial and simplified carriers. These are not GPU numerical/performance
 results. C4/P8 pair registers rise by 18–26 over the one-row body; C8/P4 by
 12–14. Pairing is deliberately not enabled in production.
 
-### Q5 single-row exact integration
+### Historical Q5 single-row exact integration
+
+The fresh 32-key Qwen table in
+[the config sweep handoff](ppu-moe-config-sweep.md#reviewed-qwen-selection-table-refresh)
+supersedes this partial admission. The numbers below describe the earlier
+paired experiment, not the current table or new measurements.
 
 `policies/kpack_moe_decode_exact_v1.json` binds the reviewed Q5 run to the
 existing flat decode catalog. Regenerate/verify it with
-`tools/fit_moe_decode.py --review <first-review-lite.tar.xz> [--check]`, then
+the current `tools/fit_moe_decode.py` command documented in that handoff, then
 `tools/generate_decode_selection.py [--check]`. This is build-time admission,
 not another runtime heuristic, JIT tuner or router readback.
 

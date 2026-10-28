@@ -60,7 +60,9 @@ def make_plan(originals):
     if [row['request'] for row in originals] != [request(w) for w in ws]:
         raise ValueError('single-row production control inventory differs')
     # These are immutable prior recipes, not ranking data or reused samples.
-    previous = {tuple(row['key']): row['original_config'] for row in load()['rows']}
+    previous = {tuple(row['key']): list({digest(c):c for c in
+                (row['base_config'], row['original_config']) if c['kind'] == 'simt'}.values())
+                for row in load()['rows']}
     points, tc, vectors = [], {}, {}
     for w, old in zip(ws, originals):
         if old['status']:
@@ -84,8 +86,8 @@ def make_plan(originals):
 
         r = original_recipe(old)
         add(r, 'CURRENT_CPP_SELECTED_RECIPE', production_entry(old), original=True)
-        if tuple(request(w)) in previous:
-            cfg = dict(previous[tuple(request(w))])
+        for prior in previous.get(tuple(request(w)), []):
+            cfg = dict(prior)
             r = Recipe.make(cfg.pop('kind'), 'fq', **cfg)
             add(r, 'PRE_ADMISSION_CONTROL_REMEASURED_NOT_OLD_LATENCY', single_row_entry(w, r))
         for cfg in configs(13):

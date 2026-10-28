@@ -68,6 +68,9 @@ def test_public_final_decisions_equal_frozen_baseline(snapshots):
     promoted|={tuple(w['key']) for w in dense_m()['rows'] if w['admitted']}
     from quactlize.execution.token_cta_policy import load as token_table
     promoted|={tuple(w['key']) for w in token_table()['rows']}
+    from quactlize.execution.moe_decode_policy import load as moe_table
+    # Fresh confirmations also refresh the policy tag when the control wins.
+    promoted|={tuple(w['key']) for w in moe_table()['rows']}
     exact={tuple(r['key']) for r in p['exact']}
     changed=[]
     for k,a,b in zip(keys,*results):

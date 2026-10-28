@@ -50,7 +50,7 @@ def model_paths(args):
             for name, tp, flag, relative in select_models(getattr(args, 'moe_models', None))]
 
 
-def model_inventory(args):
+def model_inventory(args, *, ms=tuple(range(1, 9))):
     from dev.prefill_asys.tp_header import HeaderTP, read_headers
     from dev.strategy.journal import atomic_json
     if args.llama_source is None:
@@ -64,7 +64,7 @@ def model_inventory(args):
         return rows, tensors
 
     requested = model_paths(args)
-    result = collect(requested, loader=loader, partitioner=splitter, ms=list(range(1, 9)))
+    result = collect(requested, loader=loader, partitioner=splitter, ms=list(ms))
     result['requested_models'] = [m['name'] for m in requested]
     # Retain the actual headers, not weights, so model/type/TP coverage can be
     # audited from the small review archive without another Box round.
@@ -75,7 +75,7 @@ def model_inventory(args):
 
 
 def verify_inventory(output, plan, selected=None):
-    if plan.get('cohort') not in (COHORT, 'moe-config-models'):
+    if plan.get('cohort') not in (COHORT, 'moe-config-models', 'moe-native-models', 'moe-prefill-models'):
         if selected is not None:
             raise ValueError('--moe-models is only valid for model MoE cohorts')
         return
@@ -89,14 +89,14 @@ def verify_inventory(output, plan, selected=None):
         raise ValueError('resume requested models differ from frozen inventory')
 
 
-def coverage_report(inventory):
+def coverage_report(inventory, *, ms=tuple(range(1, 9))):
     """Explain a missing model instead of mistaking zero points for M holes.
 
     A family shared by two models must not hide missing M for one consumer.
     Exclusions are diagnostics, never permission to drop a requested model.
     This reads the already saved inventory; no model/SDK/device is needed.
     """
-    wanted = set(range(1, 9))
+    wanted = set(ms)
     models = []
     families = {}
     for model in inventory['models']:
@@ -123,10 +123,10 @@ def coverage_report(inventory):
                 scope='HEADER_INVENTORY_COVERAGE_NOT_DEVICE_CAPABILITY_OR_PERFORMANCE')
 
 
-def expanded_points(inventory):
+def expanded_points(inventory, *, ms=tuple(range(1, 9))):
     if (inventory.get('schema')!='quactlize.moe-model-inventory.v1' or
             inventory.get('status')!='PASS' or inventory.get('blocked') or
-            inventory.get('tokens')!=list(range(1, 9))):
+            inventory.get('tokens')!=list(ms)):
         raise ValueError('incomplete MoE header/TP inventory; inspect moe-inventory.json')
     expected = {(name, tp) for name, tp, _, _ in select_models(inventory.get('requested_models'))}
     if {(m['name'], m['tp']) for m in inventory['models']} != expected:
@@ -150,11 +150,12 @@ def expanded_points(inventory):
             if value.key in points:
                 raise ValueError('duplicate model workload; inventory must deduplicate consumers')
             points[value.key] = dict(id=value.key, workload=asdict(value), consumers=source['consumers'])
-    coverage = coverage_report(inventory)
+    coverage = coverage_report(inventory, ms=ms)
     if coverage['status'] != 'PASS':
         empty = [row for row in coverage['models'] if not row['points']]
         reason = ('requested model has no supported expert workloads' if empty else
-                  'M1..8 coverage missing for a model or weight family')
+                  ('M1..8' if tuple(ms)==tuple(range(1, 9)) else str(list(ms)))+
+                  ' coverage missing for a model or weight family')
         raise ValueError(reason+'; '
                          'inspect saved moe-inventory.json: '+json.dumps(coverage, sort_keys=True))
     return sorted(points.values(), key=lambda p: (
@@ -172,24 +173,30 @@ def candidate_recipes(w):
                 yield r
 
 
-def make_plan(output, inventory):
+def make_plan(output, inventory, *, selected_only=False):
     from dev.strategy.journal import atomic_json
     source_points = expanded_points(inventory)
     originals = plan_smallm(output, [request(Workload(**p['workload'])) for p in source_points],
                             indexed_fallbacks=True)
     atomic_json(Path(output)/'cpp-originals.json', originals)
-    previous = {tuple(row['key']): row['original_config'] for row in load()['rows']}
+    # The SIMT-completion cohort may retain older SIMT bodies. Historical Q4
+    # and TC recipes are audited by the subsequent config sweep, not introduced
+    # as extra compute families in this single-row completion stage.
+    previous = {tuple(row['key']): list({digest(c):c for c in
+                (row['base_config'], row['original_config']) if c['kind'] == 'simt'}.values())
+                for row in load()['rows']}
     pending, queries = [], {}
     for source, old in zip(source_points, originals['requests']):
         w = Workload(**source['workload'])
         if old['status']:
             raise ValueError('current indexed control unavailable: '+str(request(w)))
         recipes = [(original_recipe(old), 'CURRENT_CPP_SELECTED_RECIPE')]
-        if tuple(request(w)) in previous:
-            cfg = dict(previous[tuple(request(w))])
+        for prior in (() if selected_only else previous.get(tuple(request(w)), [])):
+            cfg = dict(prior)
             recipes.append((Recipe.make(cfg.pop('kind'), 'fq', **cfg),
                             'PRE_ADMISSION_CONTROL_REMEASURED_NOT_OLD_LATENCY'))
-        recipes.extend((r, 'COMMON_SIMT_GEOMETRIES_WITH_LEGAL_SPLIT_NEIGHBORS') for r in candidate_recipes(w))
+        if not selected_only:
+            recipes.extend((r, 'COMMON_SIMT_GEOMETRIES_WITH_LEGAL_SPLIT_NEIGHBORS') for r in candidate_recipes(w))
         for r, _ in recipes:
             if r.kind == 'simt':
                 key = tuple(request(w)+[dict(r.parameters)[f] for f in FIELDS])

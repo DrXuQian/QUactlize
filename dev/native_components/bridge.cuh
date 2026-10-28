@@ -75,6 +75,7 @@ template<class F> int guard(F fn) {
     catch (const std::exception & e) {error=e.what();return 1;}
 }
 } // namespace nc
+#include "kernel_bridge.hpp"
 extern "C" const char * nc_error() { return nc::error.c_str(); }
 extern "C" void * nc_create(int device) {
     void * result=nullptr; nc::guard([&] {result=new nc::Session(device);}); return result;
@@ -167,6 +168,19 @@ extern "C" const char * nc_profile(void * p, const int * rotate, int count, int 
 }
 // The shared llama GPU routing helper used by the PoC Quactlize caller. It is
 // independent of N/K/qtype; never charge top-k selection (IDs are input here).
+// Test-only external-pointer entry: the large-M candidate consumes these
+// actual GPU-produced maps. No private routing implementation or host sort.
+extern "C" int nc_route_launch(int tokens, int experts, int topk, int channels,
+        const int * ids, int * src, int * dst, int * bounds, void * stream) {
+    return nc::guard([&] {
+        if(tokens<=0 || tokens>5120 || experts!=256 || topk!=8 ||
+                (channels!=1&&channels!=topk) || !ids || !src || !dst || !bounds)
+            throw std::runtime_error("invalid external routing request");
+        ggml_cuda_launch_mm_ids_helper(ids,src,dst,bounds,experts,tokens,topk,channels,
+            topk,channels,false,static_cast<cudaStream_t>(stream));
+        nc::check(cudaGetLastError(),"external routing helper launch");
+    });
+}
 extern "C" int nc_route(void * p, int tokens, int experts, int topk, int channels, const int * host_ids) {
     return nc::guard([&] {
         auto & s=*static_cast<nc::Session *>(p);auto stream=s.ctx.stream();

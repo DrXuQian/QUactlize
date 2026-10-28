@@ -192,7 +192,11 @@ def test_old_cpp_all_keys_and_nearby_bucket_choices_are_preserved(tmp_path,table
         results.append([json.loads(s) for s in subprocess.check_output([exe],input=text,text=True).splitlines()])
     changes={tuple(r['key']) for r in table['rows'] if r['changed'] or tuple(r['key']) not in prior_keys}
     from quactlize.execution.moe_decode_policy import load as moe_table
-    changes.update(tuple(r['key']) for r in moe_table()['rows'] if r['changed'])
+    # A retained recipe can change its policy/router diagnostic, but already
+    # identical measured rows are not fabricated public-selector changes.
+    old_rows={tuple(r['key']):r for r in old['exact']}
+    changes.update(tuple(r['key']) for r in moe_table()['rows'] if r['changed'] or
+        old_rows[tuple(r['key'])]['policy']!=18)
     observed=set()
     for k,a,b in zip(ordered,*results):
         if a!=b:observed.add(k)

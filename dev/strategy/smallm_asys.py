@@ -123,7 +123,7 @@ def make_plan(originals,cohort='regressions'):
     return json.loads(json.dumps(result))
 
 
-def assignments(plan,workers):
+def assignments(plan,workers,*,balanced=False):
     """Balance whole paired points; the score is scheduling only, not a time.
 
     M-ordered round robin would give one card M1/M5 and another M4/M8 for
@@ -131,7 +131,7 @@ def assignments(plan,workers):
     Preserve the old cohorts' assignment so their frozen resumes still work.
     """
     if not 1<=workers<=len(plan['points']):raise ValueError('invalid worker count')
-    if plan.get('cohort') not in (*MODEL_TOKEN_COHORTS,*MODEL_MOE_COHORTS):
+    if not balanced and plan.get('cohort') not in (*MODEL_TOKEN_COHORTS,*MODEL_MOE_COHORTS):
         return [[p['id'] for j,p in enumerate(plan['points']) if j%workers==i] for i in range(workers)]
     def weight(p):
         w=p['workload']

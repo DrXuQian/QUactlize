@@ -47,7 +47,8 @@ def test_all_m_and_router_profiles_with_both_incumbents(planned):
             assert {c['split'] for c in configs if tuple(c[k] for k in ('columns', 'warps', 'values')) == geometry} == {1, 2, 4, 8}
         assert all('moe_pair_rows' not in dict(a['recipe']['parameters']) for a in p['arms'])
         if p['workload']['m'] == 8:
-            prior, = [a for a in p['arms'] if 'PRE_ADMISSION_CONTROL_REMEASURED_NOT_OLD_LATENCY' in a['reasons']]
+            prior, = [a for a in p['arms'] if 'PRE_ADMISSION_CONTROL_REMEASURED_NOT_OLD_LATENCY' in a['reasons'] and
+                      dict(a['recipe']['parameters'])['variant']==2]
             assert dict(prior['recipe']['parameters'])['variant'] == 2
             assert prior['id'] != 'original'
 
@@ -57,8 +58,8 @@ def test_prior_times_and_production_latency_labels_do_not_rank_candidates(planne
     rows = single.load()
     for r in rows['rows']:
         for p in r['profiles']:
-            p['original']['mean_us'] = 1e-10
-            p['selected']['mean_us'] = 1e30
+            for c in p['candidates'].values():c['mean_us'] = 1e30
+            p['candidates'][p['original']]['mean_us'] = 1e-10
     monkeypatch.setattr(single, 'load', lambda: rows)
     changed = single.make_plan([dict(o, median_us=1e-12) for o in original])
     assert [p['arms'] for p in plan['points']] == [p['arms'] for p in changed['points']]

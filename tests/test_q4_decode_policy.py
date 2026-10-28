@@ -161,9 +161,10 @@ def test_compile_only_selected_closure(policy):
     expected={(r['n'],r['k'],tuple(int(x[1:]) for x in r['recipe'][5:].split('-')))
         for r in policy['ranges'] if r['role']=='auto' and r['recipe'].startswith('simt:')}
     from tools.generate_decode_selection import EVIDENCE,effective
-    expected|={(r['key'][2],r['key'][3],tuple(r['config'][f] for f in
+    expected|={(r['key'][2],r['key'][3],tuple(c[f] for f in
         ('reader','variant','warps','values','columns')))
-        for r in effective(json.loads(EVIDENCE.read_text()))['exact'] if r['config']['kind']=='q4'}
+        for r in effective(json.loads(EVIDENCE.read_text()))['exact']
+        for c in (r['config'],r.get('previous_config',{})) if c.get('kind')=='q4'}
     assert {(n,k,tuple(c)) for (n,k),rs in shapes.items() for c in rs}==expected
     assert len(sources)==len(shapes)+1
     assert all('dev/' not in s and 'cuda' not in s for s in sources.values())

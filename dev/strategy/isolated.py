@@ -103,6 +103,7 @@ class Captured:
     def __init__(self, rt, calls, *, owned_graph=None, allocation_owner=None):
         self.rt, self.graph, self.params, self.descriptions = rt, C.c_void_p(), [], []
         self.allocation_owner = allocation_owner
+        self.node_adapter = getattr(rt, 'kernel_nodes', None)
         signatures = {
             'GraphGetNodes': [C.c_void_p, C.POINTER(C.c_void_p), C.POINTER(C.c_size_t)],
             'GraphGetEdges': [C.c_void_p, C.POINTER(C.c_void_p), C.POINTER(C.c_void_p), C.POINTER(EdgeData), C.POINTER(C.c_size_t)],
@@ -153,6 +154,11 @@ class Captured:
                 checked(self.GraphNodeGetType(node, C.byref(kind)), 'node type')
                 if kind.value != 0:
                     raise ValueError(f'non-kernel graph node type={kind.value}; do not silently omit work')
+                if self.node_adapter is not None:
+                    handle, description = self.node_adapter.capture(node)
+                    self.params.append(handle)
+                    self.descriptions.append(dict(description, name=readable_symbol(description['symbol'])))
+                    continue
                 checked(self.GraphKernelNodeGetParams(node, C.byref(params)), 'kernel parameters')
                 checked(self.FuncGetName(C.byref(name), params.func), 'kernel symbol')
                 if not name.value:
@@ -180,6 +186,10 @@ class Captured:
         return Isolated(self, indices * passes)
 
     def close(self):
+        if self.node_adapter is not None:
+            for handle in self.params:
+                self.node_adapter.destroy(handle)
+            self.params = []
         if self.graph.value:
             checked(self.rt.GraphDestroy(self.graph), 'destroy untimed capture')
             self.graph = C.c_void_p()
@@ -199,8 +209,11 @@ class Isolated:
             for i in indices:
                 node = C.c_void_p()
                 deps = (C.c_void_p * 1)(previous) if previous else None
-                checked(captured.GraphAddKernelNode(C.byref(node), self.graph, deps,
-                    int(previous is not None), C.byref(captured.params[i])), 'isolated add kernel')
+                if getattr(captured, 'node_adapter', None) is not None:
+                    captured.node_adapter.add(captured.params[i], C.byref(node), self.graph, previous)
+                else:
+                    checked(captured.GraphAddKernelNode(C.byref(node), self.graph, deps,
+                        int(previous is not None), C.byref(captured.params[i])), 'isolated add kernel')
                 previous = node.value
             checked(self.rt.GraphInstantiateWithFlags(C.byref(self.instance), self.graph, 0), 'isolated instantiate')
             for _ in range(2 if timing else 0):

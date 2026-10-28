@@ -5,6 +5,7 @@
 #undef main
 #include <cxxabi.h>
 #include "oracle.hpp"
+#include "fixture_fingerprint.hpp"
 
 struct NativeComponents {
     const char * (*error)();
@@ -293,6 +294,10 @@ int main(int argc,char ** argv) {
                 {"scope","NATIVE_INDEPENDENT_COMPONENTS_NOT_MODEL_TPOT"}};
             result["fixture"]=request["raw_fixture_receipt"];
             result["timing_input_repeat"]=timing_input;
+            result["timed_fixture"]={{"a_bytes",point.input.size()*sizeof(float)},
+                {"a_crc32",nc_fixture_crc32(point.input.data(),point.input.size()*sizeof(float))},
+                {"ids_bytes",point.indexed ? point.owners.size()*sizeof(int32_t) : 0},
+                {"ids_crc32",point.indexed ? nc_fixture_crc32(point.owners.data(),point.owners.size()*sizeof(int32_t)) : 0}};
             if(asys) {
                 result["status"]="CAPTURED_NOT_TIMED";
                 result["timing_method"]="ASYS_GPU_ACTIVITY";

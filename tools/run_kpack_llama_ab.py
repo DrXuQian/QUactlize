@@ -160,11 +160,11 @@ def device(args):
                 source='SDK_ATTRIBUTE' if value.value else 'OPERATOR_VERIFIED'), sdk=sdk_identity(args.sdk))
 
 
-def point_request(row, l2):
+def point_request(row, l2, *, routing_repeat=0):
     from dev.strategy.prefill_fixture import routing
     from quactlize.dispatch.table import Workload
     w = Workload(**row['workload'])
-    route = routing(w, 0)
+    route = routing(w, routing_repeat)
     # Canonical K-pack is byte neutral with GGUF. Active experts, NOT E*N*K,
     # determine the read set. SF metadata residency is not a separate cold
     # prepass claim here; this is the complete weight-consuming operator.

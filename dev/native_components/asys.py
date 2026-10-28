@@ -50,7 +50,8 @@ def validate_capture(data, point, authority):
     proofs = data.get('proof', [])
     if len(proofs) != 3*ring['copies']+4 or {p['copy'] for p in proofs} != set(range(ring['copies'])):
         raise ValueError('native per-copy numerical coverage differs')
-    expected_cells = point['workload']['m']*point['workload']['n']
+    w = point['workload']
+    expected_cells = w['m']*w['n']*(w['topk'] if w['operation'] == 'indexed' else 1)
     quantized = data.get('native_activation_contract') == 'Q8_1_QUANTIZED_FROM_F32'
     for p in proofs:
         if (p.get('status') != 'PASS' or p.get('finite_cells_per_arm') != expected_cells or

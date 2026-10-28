@@ -13,8 +13,12 @@ ORDER = ('native', 'quactlize', 'quactlize', 'native')
 SCOPE = 'SAME_DEVICE_SELECTED_VS_NATIVE_ASYS_ISOLATED_COMPONENT_MEANS_NOT_MODEL_TPOT'
 
 
-def plan(output):
-    value = selected_plan(output)
+def plan(output, inventory=None):
+    if inventory is None:
+        value = selected_plan(output)
+    else:
+        from dev.native_components.moe_gate import plan as selected_moe_plan
+        value = selected_moe_plan(output,inventory)
     value.update(schema=SCHEMA, timing_method=METHOD, selection_metric='MEAN_COMPONENT_SUM',
         scope=SCOPE, allowed_slowdown_pct=0, config_sweep=False,
         protocol=dict(order=list(ORDER), rounds=6, samples=5, requested_clock_mhz=1700,
@@ -22,6 +26,9 @@ def plan(output):
             producer_ring='AT_LEAST_2P25_L2', warmup='EXCLUDED_BEFORE_PROFILER_START',
             native_arithmetic='UNCHANGED_LINKED_NATIVE_INCLUDING_Q8_1_IF_SELECTED',
             candidate_arithmetic='F32_IO_F16_COMPUTE_FP32_ACC_CURRENT_SELECTED_RECIPE'))
+    if inventory is not None:
+        value['protocol']['candidate_arithmetic'] = 'F32_IO_BF16_COMPUTE_FP32_ACC_CURRENT_SELECTED_RECIPE'
+        value['counts'].update(native_passes=2,candidate_passes=2)
     value['sha256'] = digest({k:v for k,v in value.items() if k != 'sha256'})
     return value
 
@@ -104,6 +111,8 @@ def comparison(point, passes, run, shard):
         if p['arm'] != arm or p['block'] != index or p['point'] != point['id']:
             raise ValueError('ABBA order/point changed')
         data = p['data']; provenance = data['latency_provenance']
+        from dev.native_components.moe_gate import check_fixture
+        check_fixture(point,data,native=arm=='native')
         required = dict(run['source_revision'], device=run['devices'][shard], sdk=run['sdk'],
             source_sha256=run['source']['sha256'], harness_sha256=run['harness']['sha256'],
             asys_sha256=run['asys_sha256'], images_sha256=digest(run['images']), timing_method=METHOD)
@@ -148,7 +157,8 @@ def comparison(point, passes, run, shard):
         raise ValueError('native arithmetic changed within ABBA')
     return dict(verdict(parsed),point=point['id'],workload=point['workload'],selection=point['selection'],
         native_activation_contract=passes[0]['data']['native_activation_contract'],
-        candidate_arithmetic='F32_IO_F16_COMPUTE_FP32_ACC',
+        candidate_arithmetic=('F32_IO_BF16_COMPUTE_FP32_ACC' if point['workload']['compute']=='bf16'
+                              else 'F32_IO_F16_COMPUTE_FP32_ACC'),
         arithmetic_equivalence_claimed=False,model_tpot_admitted=False,production_changed=False)
 
 

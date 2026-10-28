@@ -272,8 +272,10 @@ def prepared_arm(b,w,arm,record,query,sf,*,expansion_proven=False):
         for i in range(b.ring.copies): checked(core.launch(i),'changed-input ring setup')
         b.out.poison()
         replay_extracted(capture,b.check)
+        from dev.strategy.fixture_identity import fingerprint
         result=dict(correctness='PENDING',numerical=proofs,pointer_negatives=pointer_checks,
             omitted_producer='DETECTED',zero_input='PASS',receipt=core.receipt,fixture=b.ring.receipt,
+            timed_fixture=fingerprint(b.data['a'],b.data['ids']), timing_input_repeat=1,
             performance_admitted=False,cost_scope='ISOLATED_KERNEL_SUM_SCREEN_NOT_MODEL')
         yield SimpleNamespace(capture=capture,core=core,rt=rt,proof=b.check,data=result,recipe=r)
         # Another finalist may have used the shared output. Verify this arm's
@@ -297,7 +299,9 @@ def measure_arm(b,w,arm,record,query,sf,authority,source,output,*,separate_expan
     return session.data
 
 
-def measure_expansion(b,w,sf,config,authority,source,output,*,separate_expansion=False):
+def measure_expansion(b,w,sf,config,authority,source,output,*,separate_expansion=False,
+                      stage_measure=None):
+    stage_measure=stage_measure or component_capture
     rt=RuntimeView(b)
     # Do not let a no-op/new config inherit correct output from a previous one.
     sf.poison()
@@ -307,7 +311,7 @@ def measure_expansion(b,w,sf,config,authority,source,output,*,separate_expansion
     capture=Captured(rt,[lambda i=i:sf.launch(i,config) for i in range(b.ring.copies)])
     try:
         options=dict(separate_expansion=True) if separate_expansion else {}
-        rows,pending=component_capture(rt,capture,w,None,authority,source,output,lambda:sf.check(0),**options)
+        rows,pending=stage_measure(rt,capture,w,None,authority,source,output,lambda:sf.check(0),**options)
         for buffer in [*b.ring.buffers,*sf.buffers]: buffer.guard()
         result=dict(correctness='PASS',components=[x['id'] for x in rows],stages=rows,
                     numerical=proof,config=config,scope='SF_EXPANSION_ONLY_NO_GEMM',

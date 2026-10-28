@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Final selected dense recipes vs linked native llama: fresh Asys ABBA only."""
+"""Final selected dense/indexed recipes vs linked native llama: fresh Asys ABBA."""
 import argparse
 import csv
 import fcntl
@@ -38,6 +38,9 @@ from tools.pack_simt_split_review import package
 
 
 def assignments(plan,workers):
+    if plan.get('cohort') == 'moe-native-models':
+        from dev.strategy.smallm_asys import assignments as balanced_points
+        return balanced_points(plan,workers,balanced=True)
     groups=assign(plan,workers)
     return [[p['id'] for p in plan['points'] if family(Workload(**p['workload'])) in group]
             for group in groups]
@@ -48,10 +51,11 @@ def comparison_csv(path,points,records,commit):
              'native_helper_us','quactlize_helper_us','native_reducer_us','quactlize_reducer_us')
     with path.open('w',newline='') as f:
         out=csv.writer(f)
-        out.writerow(('point','qtype','m','n','k','status',*metrics,'quactlize_commit','recipe','error'))
+        dims=('qtype','m','n','k','operation','experts','topk','channels','router')
+        out.writerow(('point',*dims,'status',*metrics,'quactlize_commit','recipe','error'))
         for p in points:
             w=p['workload'];r=records.get(p['id'],dict(status='MISSING'))
-            out.writerow((p['id'],*[w[k] for k in ('qtype','m','n','k')],r['status'],
+            out.writerow((p['id'],*[w[k] for k in dims],r['status'],
                 *[r.get(k,'') for k in metrics],commit,json.dumps(p['arms'][0]['recipe'],sort_keys=True),r.get('error','')))
 
 
@@ -72,7 +76,10 @@ def load_saved(path,point,run,shard):
 
 
 def native_request(point,run,shard,folder):
-    row=point_request(point,run['l2_bytes']);row['input_fixture']=activation(row)
+    # The candidate's independent changed-input test leaves repeat1 resident
+    # for timing. MoE must match both A and IDs, not just the router label.
+    row=point_request(point,run['l2_bytes'],routing_repeat=1 if point['workload']['operation']=='indexed' else 0)
+    row['input_fixture']=activation(row)
     raw,receipt=weights(point['workload'],folder/'fixtures'/family(Workload(**point['workload'])))
     return dict(runtime_library=run['runtime'],adapter_library=run['adapter'],
         authority=native_authority(run,shard),rounds=6,samples=5,timing_method=METHOD,
@@ -160,7 +167,17 @@ def worker(a):
 
 def run(a):
     a.output.mkdir(parents=True,exist_ok=a.resume)
-    frozen=sealed(a.output/'plan.json') if (a.output/'plan.json').exists() else gate.plan(a.output)
+    if (a.output/'plan.json').exists():
+        frozen=sealed(a.output/'plan.json')
+    elif getattr(a,'cohort',None) == 'moe-native-models':
+        from dev.strategy.moe_model_plan import model_inventory
+        frozen=gate.plan(a.output,model_inventory(a))
+    else:
+        frozen=gate.plan(a.output)
+    if getattr(a,'cohort',None) and a.cohort!=frozen.get('cohort','dense'):
+        raise ValueError('resume native comparison cohort differs')
+    from dev.strategy.moe_model_plan import verify_inventory
+    verify_inventory(a.output,frozen,getattr(a,'moe_models',None))
     if frozen['schema']!=gate.SCHEMA:raise ValueError('not a selected/native Asys plan')
     base.freeze(a.output/'plan.json',frozen)
     print('SELECTED_NATIVE_PLAN '+json.dumps(dict(frozen['counts'],timing_method=METHOD,
@@ -199,7 +216,7 @@ def run(a):
         asys=str(a.asys),asys_sha256=sha(a.asys),smi=str(a.smi),smi_sha256=sha(a.smi),
         python_version=sys.version,timing_method=METHOD,
         immutable_files={str(p):sha(p) for p in (adapter,binary,runtime,a.asys,a.smi,
-            a.output/'build/adapter.json',a.output/'build/carrier.json')})
+            a.output/'build/adapter.json',a.output/'build/carrier.json')} | receipt['identity']['libraries'])
     base.freeze(a.output/'inputs.json',inputs)
     images,dq=base.compile_all(a,frozen)
     run=dict(inputs,images=base.image_identity(images,dq));run['sha256']=digest(run)
@@ -244,6 +261,10 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output',type=Path,required=True);p.add_argument('--sdk',type=Path,default=Path('/usr/local/PPU_SDK'))
     p.add_argument('--llama-source',type=Path);p.add_argument('--llama-build',type=Path)
+    p.add_argument('--cohort',choices=('dense','moe-native-models'))
+    p.add_argument('--model-root',type=Path,default=Path('/sim/eec/shared/AI_workspace/llm-models/bench_model_zoo'))
+    p.add_argument('--moe-models');p.add_argument('--qwen35-model',type=Path)
+    p.add_argument('--qwen122-model',type=Path);p.add_argument('--deepseek-model',type=Path)
     p.add_argument('--devices',default='0,1,2,3');p.add_argument('--jobs',type=int,default=8)
     p.add_argument('--l2-bytes',type=int,default=67108864);p.add_argument('--asys',type=Path);p.add_argument('--smi',type=Path)
     p.add_argument('--resume',action='store_true');p.add_argument('--plan-only',action='store_true');p.add_argument('--confirm-idle',action='store_true')
