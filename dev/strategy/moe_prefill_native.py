@@ -93,9 +93,12 @@ class AsysStages:
     No event timer/cache fallback. Results remain untimed until the exact raw
     Asys activity inventory is parsed; publication is the pilot parent's job.
     """
-    def __init__(self):
+    def __init__(self, *, rounds=6, samples=5, known=None):
+        if (rounds,samples) not in ((4,3),(6,5)):
+            raise ValueError('prefill Asys requires screen4x3 or confirm6x5')
         self.collector = Collector()
-        self.records = {}
+        self.rounds,self.samples=rounds,samples
+        self.records = dict(known or {})
 
     def collect(self, capture, w, recipe, authority, source, proof, *, active=None, sf=False):
         split = dict(recipe.parameters).get('split',1) if recipe else 1
@@ -123,6 +126,8 @@ class AsysStages:
                 cid,identity = component_key(w,recipe,node,authority=authority,source=source,cache=cache)
                 result.append(dict(id=cid,role=role,median_us=None,spread_pct=None))
                 if cid in self.records or cid in new:
+                    old=(self.records if cid in self.records else new)[cid]
+                    if old['identity']!=identity:raise ValueError('shared prefill component identity changed')
                     continue
                 graph = capture.isolate(i,weight_ring=rotating,repeats=16)
                 graphs.append((cid,graph))
@@ -133,9 +138,9 @@ class AsysStages:
             # only measured range. Every graph repeats ONE kernel type.
             if graphs:
                 self.collector.start(capture.rt)
-                for r in range(6):
+                for r in range(self.rounds):
                     for cid,graph in (graphs if r%2==0 else reversed(graphs)):
-                        for s in range(5):
+                        for s in range(self.samples):
                             self.collector.sample(cid,graph,r,s)
         finally:
             self.collector.stop()

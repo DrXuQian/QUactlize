@@ -38,7 +38,7 @@ from tools.pack_simt_split_review import package
 
 
 def verify_run(a,run,shard):
-    if (run['plan']!=sealed(a.output/'plan.json')['sha256'] or
+    if (a.l2_bytes!=run['l2_bytes'] or run['plan']!=sealed(a.output/'plan.json')['sha256'] or
             run['source_revision']!=revision(ROOT) or run['source']!=source_identity(ROOT) or
             run['harness']!=harness_identity(ROOT) or run['devices'][shard]!=base.device(a)):
         raise ValueError('pilot source/SDK/physical device changed')
@@ -183,18 +183,11 @@ def worker(a):
     return int(bool(failed))
 
 
-def run(a):
+def prepare_run(a,plan,*,script=None,assign=None):
+    """Shared immutable build/device binding; no timing or policy admission."""
     from dev.strategy.prefill_build import build as build_helpers, verify as verify_helpers
-    a.output.mkdir(parents=True,exist_ok=a.resume)
-    if (a.output/'plan.json').exists():
-        plan=sealed(a.output/'plan.json')
-    else:
-        audit=plans.make_plan(a.output,models.model_inventory(a,ms=plans.MS))
-        base.freeze(a.output/'audit.json',audit)
-        plan=plans.pilot_plan(audit);base.freeze(a.output/'plan.json',plan)
-    models.verify_inventory(a.output,dict(cohort=plans.COHORT,coverage=sealed(a.output/'audit.json')['coverage']),a.moe_models)
-    print('MOE_PREFILL_PILOT_PLAN '+json.dumps(dict(plan['counts'],full_campaign=False,config_sweep=False)),flush=True)
-    if a.plan_only:return 0
+    script=Path(script or __file__).resolve()
+    assign=assign or (lambda p,n:assignments(p,n,balanced=True))
     if not a.confirm_idle or not a.llama_build:raise ValueError('--confirm-idle and native --llama-build required')
     env=environment(a)
     for name in list(os.environ):
@@ -218,21 +211,37 @@ def run(a):
     cards=a.devices.split(',');devices=[]
     for card in cards:
         path=a.output/('device-'+card+'.json')
-        subprocess.run([sys.executable,str(Path(__file__).resolve()),'--output',str(a.output),
-            '--sdk',str(a.sdk),'--probe',str(path)],check=True,env=dict(os.environ,CUDA_VISIBLE_DEVICES=card))
+        subprocess.run([sys.executable,str(script),'--output',str(a.output),
+            '--sdk',str(a.sdk),'--l2-bytes',str(a.l2_bytes),'--probe',str(path)],
+            check=True,env=dict(os.environ,CUDA_VISIBLE_DEVICES=card))
         devices.append(base.read(path))
     base.check_devices(devices)
     immutable=[adapter,a.output/'native/adapter.json',helper/'manifest.json',helper/'libstrategy_prefill.so',
                dq/'manifest.json',dq/'libquactlize_ppu_dequant.so',a.asys,a.smi]
     immutable += [Path(r['path']) for r in images['tc'].values()]
     run=dict(plan=plan['sha256'],source_revision=rev,source=source_identity(ROOT),harness=harness_identity(ROOT),
-        cards=cards,devices=devices,l2_bytes=a.l2_bytes,assignments=assignments(plan,len(cards),balanced=True),
+        cards=cards,devices=devices,l2_bytes=a.l2_bytes,assignments=assign(plan,len(cards)),
         adapter=str(adapter),adapter_sha256=sha(adapter),backend=receipt['identity']['libraries'],
         helpers=str(helper),dequant=str(dq),images=base.image_identity(images,dq),
-        asys=str(a.asys),smi=str(a.smi),
+        asys=str(a.asys),smi=str(a.smi),asys_sha256=sha(a.asys),sdk=devices[0]['sdk'],python_version=sys.version,
         immutable_files={str(p):sha(p) for p in immutable} | receipt['identity']['libraries'])
     run['sha256']=digest(run);base.freeze(a.output/'run.json',run)
     a.expected_ce_ghz=1.7;base.lock_clocks(a,devices)
+    return run
+
+
+def run(a):
+    a.output.mkdir(parents=True,exist_ok=a.resume)
+    if (a.output/'plan.json').exists():
+        plan=sealed(a.output/'plan.json')
+    else:
+        audit=plans.make_plan(a.output,models.model_inventory(a,ms=plans.MS))
+        base.freeze(a.output/'audit.json',audit)
+        plan=plans.pilot_plan(audit);base.freeze(a.output/'plan.json',plan)
+    models.verify_inventory(a.output,dict(cohort=plans.COHORT,coverage=sealed(a.output/'audit.json')['coverage']),a.moe_models)
+    print('MOE_PREFILL_PILOT_PLAN '+json.dumps(dict(plan['counts'],full_campaign=False,config_sweep=False)),flush=True)
+    if a.plan_only:return 0
+    run=prepare_run(a,plan);cards=run['cards']
     logs=a.output/'workers'/uuid.uuid4().hex;logs.mkdir(parents=True);workers=[]
     started=time.monotonic()
     try:

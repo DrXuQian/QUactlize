@@ -22,10 +22,10 @@ from tools.gguf_internal_shape_inventory import _synthetic_gguf, read_gguf_heade
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def synthetic_inventory(*, deepseek_qtype=None):
+def synthetic_inventory(*, deepseek_qtype=None, shapes=None):
     # Test-only shapes, not claims about the deployed checkpoints. Vary E/top
     # too: an out-of-table family must retain the real v2 control, not vanish.
-    shapes = [(12,13,2048,512,256,8), (10,14,2048,2048,256,8), (11,8,4096,2048,128,6)]
+    shapes = shapes or [(12,13,2048,512,256,8), (10,14,2048,2048,256,8), (11,8,4096,2048,128,6)]
     inputs, headers = [], {}
     for (name,tp,_,_), (gate,down,k,n,e,top) in zip(models.MODELS, shapes):
         if tp==4 and deepseek_qtype is not None:gate=down=deepseek_qtype

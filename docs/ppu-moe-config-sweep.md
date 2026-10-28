@@ -1,4 +1,4 @@
-# MoE decoding configuration sweep
+# MoE configuration sweeps
 
 `moe-config-models` extends the existing Asys runner. It is **not** the old
 SIMT-only `moe-single-row-models` cohort; old runs keep their frozen sources.
@@ -276,3 +276,119 @@ and model AB remain pending even if it passes. Provider graph incompatibility
 is a device failure with its original log, never permission to omit nodes or
 substitute event times. `review-lite-*.tar.xz` includes compact correctness,
 component times, failure logs and provenance; raw reports stay on Box.
+
+## Large-M continuation after the passed pilot
+
+The uploaded `kpack-moe-prefill.0blqj2En` pilot passed all 8 points / 20 arms.
+That admits the GPU-map, BF16 general TC and provider capture mechanisms for
+the tested recipes, not an optimal configuration or native large-M parity.
+`tools/run_moe_prefill_sweep.py` now performs the bounded screen/confirmation.
+Use the checkout containing this entrypoint; it is not in the earlier pilot
+revision `84839327`. No production policy or kernel is changed by this runner.
+
+The two requested Qwen checkpoints give four local weight families:
+
+| Model placement | qtype | local N/K | activation channels |
+|---|---|---|---|
+| 35B-A3B TP1 | Q4_K | 512/2048 | 1 |
+| 35B-A3B TP1 | Q5_K | 2048/512 | 8 |
+| 122B-A10B TP2 | Q4_K | 512/3072 | 1 |
+| 122B-A10B TP2 | Q5_K | 3072/512 | 8 |
+
+Each has E256/top8, ten token-M values (16,32,64,128,256,512,1024,2048,4096,5120)
+and five synthetic router profiles: **200 points**. TP here means actual local
+expert shapes, not a multi-GPU collective/model timing. Headers and the real
+CPU split function are checked again on Box. DeepSeek MXFP4 and fused
+gate/up/SwiGLU are still explicitly deferred.
+
+The blind shortlist uses donor strata, delivery peers and a narrow-row tile
+floor: large total token M is not large M per expert. It excludes the target
+N/K family's observations and does not read historical times. Historical
+recipes are revealed only to audit recall; a gap stops the plan, rather than
+appending that recipe. The current public selector is a separate control.
+For the inspected headers this reduces 20,810 audit seeds / 99 TC modules to
+5,790 seeds / 53 modules. These are **not** final launch counts. Real resource
+queries add a logarithmic persistent-grid ladder and remove duplicate launches;
+Split-K proposals with two resident waves already available without splitting
+are deferred. Exact current controls are never pruned. Historical **actual
+launches**, not merely parent tuples, must remain in the rule pool.
+
+Screening is 4 rounds x 3 samples; confirmation is 6 x 5. Every graph times
+one kernel. At most four TC configurations share a fixture/process; arms
+alternate order, each retains its own prepared handles/allocations through
+the final numerical gate. Full is a singleton batch. Shared GPU route/input/
+finish and expansion timings are reused only within the same source, physical
+card, phase, semantic workload and cold/resident protocol. SF and Full helpers
+are factored separately: selecting a new helper does not require re-timing
+every producer. The original control keeps its original helper choice.
+
+Finalists include the original, the best of each route/scheduler stratum,
+and candidates within 5% by mean or a full-round mean. More than 32 competitive
+finalists is explicit incomplete work, not silent truncation. Mean complete
+component sums determine selection; noisy results are retained and labelled,
+not vetoed or replaced by their minimum samples.
+
+Before launching workers, the runner tests one ordinary Full screen batch.
+Besides the already-passed kernel capture, this checks separately profiled
+GPU duration of the public Full API's four-byte error-reset memset. A fixed
+primer is excluded, and every measured reset must have successful API and GPU
+activity correlation. Missing activity fails preflight; it is not estimated
+from host API time or assigned zero cost. The successful batch is reused.
+This new reset-accounting seam still needs its first Box execution.
+
+```bash
+cd /sim/eec/shared/junfu.qx/quactlize
+moe_sweep_root=$(mktemp -d /workspace/kpack-moe-prefill-sweep.XXXXXXXX)
+test -n "${moe_sweep_root}" && test -d "${moe_sweep_root}"
+python3 -u tools/run_moe_prefill_sweep.py \
+    --output "${moe_sweep_root:?}/results" --sdk /usr/local/PPU_SDK \
+    --llama-source /sim/eec/shared/junfu.qx/llama.cpp.ncp \
+    --llama-build /sim/eec/shared/junfu.qx/llama.cpp.ncp/build-ci-32F-cublas \
+    --moe-models qwen35-35b-a3b,qwen35-122b-a10b \
+    --devices 3,4,5,6,7 --jobs 8 --l2-bytes 67108864 \
+    --budget-hours 8 --confirm-idle
+```
+
+Choose only idle physical cards. Compilation is shared once; entire points
+(including their controls and finalists) stay on one card. Assignment balances
+estimated validation/output volume rather than equal point counts. CU clock
+lock requests 1700 MHz; observed throttling is advisory, not a numeric failure.
+The eight-hour budget is a **soft per-worker time slice**, not a promise that
+all 200 points finish. It stops between batches, never kills an active profile.
+Use batch wall times, including independent correctness and Asys overhead,
+to judge duration; raw GPU microseconds are not a completion estimate.
+
+`MOE_PREFILL_BATCH_START/DONE` shows point, phase, completed arms and batch
+seconds. `MOE_PREFILL_POINT_DONE` shows control/winner means and point count.
+Logs are under `results/workers/*/gpu-*.log`. An infrastructure failure is
+saved; independent points continue in fresh processes. An incomplete point
+does not receive a partial winner. Rerun the **same checkout and directory**:
+
+```bash
+python3 -u tools/run_moe_prefill_sweep.py \
+    --resume --output /workspace/kpack-moe-prefill-sweep.REPLACE/results \
+    --sdk /usr/local/PPU_SDK \
+    --llama-source /sim/eec/shared/junfu.qx/llama.cpp.ncp \
+    --llama-build /sim/eec/shared/junfu.qx/llama.cpp.ncp/build-ci-32F-cublas \
+    --devices 3,4,5,6,7 --jobs 8 --l2-bytes 67108864 \
+    --budget-hours 8 --confirm-idle
+```
+
+No dirty-checkout gate is reinstated. The direct runner records the HEAD tag
+and actual source/harness/DSO/SDK/device hashes, and rejects a changed source
+or binary during resume. Do not pull or rebuild dependencies in an active
+run. Successful point and batch receipts retain raw evidence hashes; retries
+reuse them, not old historical timings or a different card's measurements.
+
+Only upload the printed `results/review-lite-*.tar.xz`: it contains precision,
+raw duration samples, recipe/helper bindings, provenance, status and errors.
+Raw `.asysrep`, `.sqlite`, compiled modules and caches stay on Box. To repack:
+
+```bash
+python3 tools/pack_simt_split_review.py /workspace/kpack-moe-prefill-sweep.REPLACE/results
+```
+
+Full remains unavailable outside routed rows1024..32768 (top8 token M128..4096).
+All-M native comparison and public runtime/model validation remain separate
+gates after this fresh configuration sweep; COMPLETE here does not claim
+native no-regression, fused-chain performance or model TPOT.

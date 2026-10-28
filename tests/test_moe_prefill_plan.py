@@ -10,8 +10,8 @@ from quactlize.runtime.tuning import digest
 from test_moe_model_plan import synthetic_inventory
 
 
-def large_inventory():
-    source = synthetic_inventory()
+def large_inventory(source=None):
+    source = source or synthetic_inventory()
     source['points'] = [dict(p, id=w.key, workload=asdict(w)) for p in source['points']
                         if p['workload']['m'] == 1 and p['workload']['experts'] == 256
                         for m in prefill.MS for w in [replace(Workload(**p['workload']), m=m)]]

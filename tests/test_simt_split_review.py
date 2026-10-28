@@ -77,6 +77,18 @@ def test_q8_evidence_without_full_reports(tmp_path, schema):
             *(f'r0-a{arm}.raw.csv' for arm in range(6))}
 
 
+@pytest.mark.parametrize('schema', ['quactlize.moe-prefill-pilot.v1','quactlize.moe-prefill-sweep.v1'])
+def test_moe_prefill_review_omits_raw_asys_but_keeps_samples(tmp_path,schema):
+    (tmp_path/'plan.json').write_text(json.dumps(dict(schema=schema)))
+    (tmp_path/'trace.asysrep').write_bytes(b'retained-only-on-box')
+    (tmp_path/'trace.sqlite').write_bytes(b'retained-only-on-box')
+    (tmp_path/'capture.json').write_text('{"samples_us":[1,2,3]}')
+    assert result_root(tmp_path)==tmp_path
+    archive=package(tmp_path)
+    with tarfile.open(archive) as reader:
+        assert set(reader.getnames())=={'plan.json','capture.json','transfer-manifest.json'}
+
+
 def test_no_link_traversal_or_overwrite(tmp_path):
     root = tmp_path / 'results'
     fixture(root)
