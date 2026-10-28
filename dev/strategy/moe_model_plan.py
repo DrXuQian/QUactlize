@@ -17,6 +17,7 @@ from quactlize.dispatch.table import Recipe, Workload
 from quactlize.execution.moe_decode_policy import load
 from quactlize.runtime.compiler import sha
 from quactlize.runtime.tuning import digest
+from tools.gguf_internal_shape_inventory import qtype_name
 
 ROOT = Path(__file__).resolve().parents[2]
 COHORT = 'moe-single-row-models'
@@ -30,11 +31,23 @@ MODELS = (
 )
 
 
+def select_models(value=None):
+    """Explicit scope only: unsupported formats never remove a model for us."""
+    if value is None:
+        return MODELS
+    names = value.split(',') if isinstance(value, str) else value
+    known = {m[0] for m in MODELS}
+    if (not isinstance(names, (list, tuple)) or not names or
+            any(not isinstance(n, str) or n not in known for n in names) or len(set(names)) != len(names)):
+        raise ValueError('--moe-models requires distinct names from '+','.join(m[0] for m in MODELS))
+    return tuple(m for m in MODELS if m[0] in names)
+
+
 def model_paths(args):
     """Exact first shards, not an ambiguous recursive filename search."""
     return [dict(name=name, tp=tp,
                  path=str((getattr(args, flag, None) or args.model_root/relative).resolve(strict=True)))
-            for name, tp, flag, relative in MODELS]
+            for name, tp, flag, relative in select_models(getattr(args, 'moe_models', None))]
 
 
 def model_inventory(args):
@@ -50,7 +63,9 @@ def model_inventory(args):
         snapshots[path] = rows
         return rows, tensors
 
-    result = collect(model_paths(args), loader=loader, partitioner=splitter, ms=list(range(1, 9)))
+    requested = model_paths(args)
+    result = collect(requested, loader=loader, partitioner=splitter, ms=list(range(1, 9)))
+    result['requested_models'] = [m['name'] for m in requested]
     # Retain the actual headers, not weights, so model/type/TP coverage can be
     # audited from the small review archive without another Box round.
     result['headers_snapshot_sha256'] = digest(snapshots)
@@ -59,14 +74,53 @@ def model_inventory(args):
     return result
 
 
-def verify_inventory(output, plan):
+def verify_inventory(output, plan, selected=None):
     if plan.get('cohort') not in (COHORT, 'moe-config-models'):
+        if selected is not None:
+            raise ValueError('--moe-models is only valid for model MoE cohorts')
         return
     inventory = json.loads((Path(output)/'moe-inventory.json').read_bytes())
     headers = json.loads((Path(output)/'moe-headers.json').read_bytes())
     if (digest(inventory)!=plan['coverage']['inventory_sha256'] or
             digest(headers)!=inventory['headers_snapshot_sha256']):
         raise ValueError('frozen model headers/TP inventory changed')
+    if selected is not None and {(m[0], m[1]) for m in select_models(selected)} != {
+            (m['name'], m['tp']) for m in inventory['models']}:
+        raise ValueError('resume requested models differ from frozen inventory')
+
+
+def coverage_report(inventory):
+    """Explain a missing model instead of mistaking zero points for M holes.
+
+    A family shared by two models must not hide missing M for one consumer.
+    Exclusions are diagnostics, never permission to drop a requested model.
+    This reads the already saved inventory; no model/SDK/device is needed.
+    """
+    wanted = set(range(1, 9))
+    models = []
+    families = {}
+    for model in inventory['models']:
+        name = model['name']
+        rows = [p for p in inventory['points'] if any(c['model'] == name for c in p['consumers'])]
+        tokens = {p['workload']['m'] for p in rows}
+        excluded = [e for e in inventory['excluded'] if e['model'] == name]
+        counts = Counter((e.get('qtype'), e['reason']) for e in excluded)
+        models.append(dict(model=name, tp=model['tp'], points=len(rows),
+            formats=sorted({p['workload']['qtype'] for p in rows}), tokens=sorted(tokens),
+            missing=sorted(wanted-tokens), unexpected=sorted(tokens-wanted),
+            excluded=[dict(qtype=q, format=qtype_name(q), reason=reason, records=count)
+                      for (q, reason), count in sorted(counts.items(), key=lambda kv: str(kv[0]))]))
+        for point in rows:
+            w = point['workload']
+            family = (name, *(w[k] for k in ('qtype', 'n', 'k', 'experts', 'topk', 'channels')))
+            families.setdefault(family, set()).add(w['m'])
+    missing = [dict(model=key[0], family=list(key[1:]), tokens=sorted(ms),
+                    missing=sorted(wanted-ms), unexpected=sorted(ms-wanted))
+               for key, ms in sorted(families.items()) if ms != wanted]
+    return dict(status='INCOMPLETE' if missing or not families or any(
+                    row['missing'] or row['unexpected'] for row in models) else 'PASS',
+                models=models, incomplete_families=missing,
+                scope='HEADER_INVENTORY_COVERAGE_NOT_DEVICE_CAPABILITY_OR_PERFORMANCE')
 
 
 def expanded_points(inventory):
@@ -74,35 +128,35 @@ def expanded_points(inventory):
             inventory.get('status')!='PASS' or inventory.get('blocked') or
             inventory.get('tokens')!=list(range(1, 9))):
         raise ValueError('incomplete MoE header/TP inventory; inspect moe-inventory.json')
-    expected = {(name, tp) for name, tp, _, _ in MODELS}
+    expected = {(name, tp) for name, tp, _, _ in select_models(inventory.get('requested_models'))}
     if {(m['name'], m['tp']) for m in inventory['models']} != expected:
-        raise ValueError('this cohort requires Qwen35 TP1, Qwen122 TP2 and DeepSeek Flash TP4')
+        raise ValueError('model inventory differs from explicit requested models (default: all three)')
     if any(m.get('expert_weights', 0)<=0 for m in inventory['models']):
         raise ValueError('requested model has no expert weights')
     if any(e['reason'].startswith('NATIVE_ONLY_SHAPE:') for e in inventory['excluded']):
         raise ValueError('unsupported local shape in requested formats; not silently omitted')
     points = {}
-    model_ms = {name: set() for name, _ in expected}
-    family_ms = {}
     for source in inventory['points']:
         w = Workload(**source['workload'])
         if (w.operation, w.compute, w.storage, w.fusion) != ('indexed', 'bf16', 'f32', 'none'):
             raise ValueError('model completion requires unfused indexed BF16/F32 endpoints')
-        family = w.qtype, w.n, w.k, w.experts, w.topk, w.channels
-        family_ms.setdefault(family, set()).add(w.m)
         if not source['consumers']:
             raise ValueError('model point has no actual tensor consumer')
         for consumer in source['consumers']:
             if (consumer['model'], consumer['tp']) not in expected:
                 raise ValueError('unexpected model consumer')
-            model_ms[consumer['model']].add(w.m)
         for router in (('spread',) if w.m == 1 else ROUTERS):
             value = replace(w, router=router)
             if value.key in points:
                 raise ValueError('duplicate model workload; inventory must deduplicate consumers')
             points[value.key] = dict(id=value.key, workload=asdict(value), consumers=source['consumers'])
-    if not family_ms or any(ms != set(range(1, 9)) for ms in [*model_ms.values(), *family_ms.values()]):
-        raise ValueError('M1..8 coverage missing for a model or weight family')
+    coverage = coverage_report(inventory)
+    if coverage['status'] != 'PASS':
+        empty = [row for row in coverage['models'] if not row['points']]
+        reason = ('requested model has no supported expert workloads' if empty else
+                  'M1..8 coverage missing for a model or weight family')
+        raise ValueError(reason+'; '
+                         'inspect saved moe-inventory.json: '+json.dumps(coverage, sort_keys=True))
     return sorted(points.values(), key=lambda p: (
         *(p['workload'][k] for k in ('qtype', 'n', 'k', 'experts', 'topk', 'channels', 'm')), p['id']))
 
@@ -178,6 +232,8 @@ def make_plan(output, inventory):
                            for p in rows})
         model_coverage.append(dict(model=model['name'], tp=model['tp'], points=len(rows), families=families,
                                    formats=sorted({f[0] for f in families})))
+    requested = [m['name'] for m in inventory['models']]
+    deferred = [name for name, _, _, _ in MODELS if name not in requested]
     result = dict(schema='quactlize.smallm-asys.v1', phase='regression-asys', cohort=COHORT,
         points=points, tc=tc, vectors=vectors,
         counts=dict(points=len(points), arms=sum(len(p['arms']) for p in points), tc_modules=len(tc),
@@ -185,8 +241,9 @@ def make_plan(output, inventory):
         timing_method='ASYS_GPU_ACTIVITY', selection_metric='MEAN_COMPONENT_SUM',
         noise_policy='DIAGNOSTIC_NOT_VETO', historical_times_reused=False,
         production_changed=False, native_comparison=False,
-        scope='THREE_MODEL_TP_LOCAL_MOE_SIMT_M1_TO_8_NOT_TC_SEARCH_OR_MODEL_ADMISSION',
+        scope='REQUESTED_MODEL_TP_LOCAL_MOE_SIMT_M1_TO_8_NOT_TC_SEARCH_OR_MODEL_ADMISSION',
         coverage=dict(models=model_coverage, tokens=list(range(1, 9)), m1_profiles=['spread'],
+            requested_models=requested, deferred_models=deferred,
             multi_token_profiles=list(ROUTERS), profiles='SYNTHETIC_IDS_NOT_CAPTURED_MODEL_ROUTES',
             inventory_sha256=digest(inventory), excluded=inventory['excluded'],
             production_kinds=dict(Counter(p['arms'][0]['recipe']['kind'] for p in points)),

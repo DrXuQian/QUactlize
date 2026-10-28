@@ -271,10 +271,13 @@ def run(a):
             any(sha(ROOT/p)!=value for p,value in plan['sources'].items())):
         raise ValueError('frozen plan source changed; start a new experiment')
     from dev.strategy.moe_model_plan import verify_inventory
-    verify_inventory(a.output,plan)
+    verify_inventory(a.output,plan,getattr(a,'moe_models',None))
     print('SMALLM_ASYS_PLAN '+json.dumps(dict(plan['counts'],timing_method=METHOD,
         scope=plan['scope'],selection='MEAN_NOT_MIN',native_comparison=False)),flush=True)
     if plan.get('cohort') in MODEL_MOE_COHORTS:
+        print('MOE_MODEL_SCOPE '+json.dumps(dict(
+            requested=[m['model'] for m in plan['coverage']['models']],
+            deferred=plan['coverage'].get('deferred_models',[]))),flush=True)
         for model in plan['coverage']['models']:
             print('MOE_MODEL_COVERAGE '+json.dumps(model),flush=True)
     if a.plan_only:return 0
@@ -331,6 +334,7 @@ def run(a):
         result['models']=[dict(model=m['model'],tp=m['tp'],expected=m['points'],
             passed=sum(p['id'] in passed for p in plan['points'] if any(c['model']==m['model'] for c in p['consumers'])))
             for m in plan['coverage']['models']]
+        result['deferred_models']=plan['coverage'].get('deferred_models',[])
     atomic_json(a.output/'summary.json',result)
     print('SMALLM_ASYS_DONE '+json.dumps({k:v for k,v in result.items() if k!='points'}),flush=True)
     return int(result['status']!='COMPLETE')
@@ -342,6 +346,7 @@ def main():
     p.add_argument('--devices',default='0,1,2,3');p.add_argument('--jobs',type=int,default=8)
     p.add_argument('--cohort',choices=COHORTS)
     p.add_argument('--model-root',type=Path,default=Path('/sim/eec/shared/AI_workspace/llm-models/bench_model_zoo'))
+    p.add_argument('--moe-models',help='comma-separated model MoE subset; default all three, resume inherits frozen scope')
     p.add_argument('--qwen35-model',type=Path);p.add_argument('--qwen122-model',type=Path);p.add_argument('--deepseek-model',type=Path)
     p.add_argument('--llama-source',type=Path,help='CPU-only caller TP split rules for model MoE cohorts; no binary required')
     p.add_argument('--l2-bytes',type=int,default=67108864);p.add_argument('--asys',type=Path);p.add_argument('--smi',type=Path)
@@ -355,6 +360,12 @@ def main():
     if a.l2_bytes<=0:p.error('--l2-bytes must be a verified positive capacity')
     if sum((bool(a.point),a.worker is not None,bool(a.probe),a.reparse_only))>1:p.error('internal child modes are exclusive')
     if a.reparse_only and (a.resume or a.plan_only or a.cohort):p.error('--reparse-only uses the old sealed plan, not a new cohort or GPU resume')
+    if a.moe_models is not None:
+        from dev.strategy.moe_model_plan import select_models
+        try:select_models(a.moe_models)
+        except ValueError as exc:p.error(str(exc))
+        if a.cohort not in MODEL_MOE_COHORTS and not (a.resume and a.cohort is None):
+            p.error('--moe-models is only valid for model MoE cohorts')
     if a.point:
         if a.attempt is None:p.error('--point requires --attempt')
         a.attempt=a.attempt.resolve(strict=True)

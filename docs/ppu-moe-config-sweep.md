@@ -6,7 +6,8 @@ SIMT-only `moe-single-row-models` cohort; old runs keep their frozen sources.
 ## Scope
 
 - Actual GGUF headers: Qwen3.5-35B-A3B TP1, Qwen3.5-122B-A10B TP2,
-  DeepSeek-V4-Flash TP4. Use the caller's CPU split function, not N/K division.
+  DeepSeek-V4-Flash TP4. An explicit model subset is supported; the default
+  requires all three. Use the caller's CPU split function, not N/K division.
 - All actual supported expert qtypes and local N/K/E/top-k/channel families,
   M=1..8. Gate/up and down keep their different activation indexing.
 - M1 spread; M2..8 spread/cluster/repeat2/repeat4/synthetic-real routing.
@@ -37,6 +38,7 @@ cd /sim/eec/shared/junfu.qx/quactlize
 git pull --ff-only origin develop
 unset RUN RESUME_RUN PLAN_ONLY
 BASELINE=quactlize COHORT=moe-config-models \
+MOE_MODELS=qwen35-35b-a3b,qwen35-122b-a10b \
 LLAMA_CI_DIR=/sim/eec/shared/junfu.qx/llama.cpp.ncp \
 GPUS=4 JOBS=8 PPU_SDK=/usr/local/PPU_SDK \
 L2_BYTES=67108864 IDLE_CONFIRMED=1 \
@@ -49,6 +51,16 @@ No llama binary is built or run. `MODEL_ROOT` defaults to
 `/sim/eec/shared/AI_workspace/llm-models/bench_model_zoo`;
 `QWEN35_MODEL`, `QWEN122_MODEL`, `DEEPSEEK_MODEL` override exact first shards.
 `PLAN_ONLY=1` performs header/CPU selection checks without a GPU or SDK.
+
+`MOE_MODELS` maps to `--moe-models`. The current example explicitly defers
+DeepSeek: the inspected `UD-Q4_K_XL` checkpoint contains MXFP4 (qtype 39)
+expert weights, not Q4_K. MXFP4 is not a supported K-pack MoE format. The file
+name does not authorize interpreting its tensors as Q4_K. Omitting a model
+is never automatic: `MOE_MODEL_SCOPE`, the sealed plan and the final summary
+record the requested/deferred sets, and COMPLETE refers only to that request.
+Every requested model/family must still cover M1..8; an entirely filtered
+model fails with its qtypes and exclusion reasons. The two-Qwen selection
+does not resolve DeepSeek or establish native/model no-regression.
 
 The runner archives the committed sources and initialized, pinned local
 actlize. No HTTPS nested submodule fetch is attempted. All latency records
@@ -82,6 +94,10 @@ RESUME_RUN=/workspace/kpack-smallm-asys.REPLACE_WITH_RUN \
 PPU_SDK=/usr/local/PPU_SDK IDLE_CONFIRMED=1 \
 bash tools/run_smallm_regressions_asys_box.sh
 ```
+
+Resume inherits the frozen model subset if `MOE_MODELS` is unset; supplying a
+different subset is rejected. A failure before `plan.json` (such as an
+unsupported checkpoint) needs a new run after changing scope, not resume.
 
 Passed points and valid screens are verified and not remeasured. Upload only
 `results/review-lite-*.tar.xz`; raw `.asysrep`, SQLite and binaries stay on Box.

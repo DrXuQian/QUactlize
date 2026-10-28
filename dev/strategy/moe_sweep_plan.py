@@ -91,7 +91,7 @@ def make_plan(output, inventory):
         for a in point['arms']:
             (tc if a['recipe']['kind'] == 'tc' else vectors)[a['module']] = a['spec']
     plan.update(cohort=COHORT, tc=tc, vectors=vectors,
-        scope='THREE_MODEL_TP_LOCAL_MOE_M1_TO_8_SIMT_TC_SCREEN_AND_CONFIRM_NOT_MODEL_AB',
+        scope='REQUESTED_MODEL_TP_LOCAL_MOE_M1_TO_8_SIMT_TC_SCREEN_AND_CONFIRM_NOT_MODEL_AB',
         rules=RULES, catalog_sources=sources,
         protocol=dict(screen=[4, 3], confirm=[6, 5], screen_live_arms=12,
                       finalist_window_pct=5, finalist_limit=32,

@@ -31,6 +31,7 @@ if [[ ${COHORT:-} == moe-single-row-models || ${COHORT:-} == moe-config-models ]
     [[ -z ${QWEN122_MODEL:-} ]] || args+=(--qwen122-model "${QWEN122_MODEL}")
     [[ -z ${DEEPSEEK_MODEL:-} ]] || args+=(--deepseek-model "${DEEPSEEK_MODEL}")
 fi
+[[ -z ${MOE_MODELS:-} ]] || args+=(--moe-models "${MOE_MODELS}")
 if [[ ${PLAN_ONLY:-0} != 1 ]]; then
     [[ ${IDLE_CONFIRMED:-0} == 1 ]] || {
         echo 'ERROR: confirm every assigned GPU is otherwise idle with IDLE_CONFIRMED=1.' >&2
