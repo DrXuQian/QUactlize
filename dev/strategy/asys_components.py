@@ -48,7 +48,13 @@ def parse_component_rows(records,schedule,rows,provenance,rounds=6,samples=5):
                 not 0<=r<rounds or not 0<=s<samples or values[cid][r][s] is not None):
             raise ValueError('duplicate/invalid Asys sample schedule')
         block=rows[cursor:cursor+count];cursor+=count
-        if len(block)!=count:raise ValueError('Asys kernel activity coverage incomplete')
+        if len(block)!=count:
+            expected=sum(v['kernels'] for v in schedule)
+            raise ValueError('Asys kernel activity coverage incomplete: '
+                f'expected_total={expected} actual_total={len(rows)} '
+                f'missing_total={expected-len(rows)} component={cid} '
+                f'round={r} sample={s} first_activity={cursor-count} '
+                f'expected_sample={count} actual_sample={len(block)}; no timing admitted')
         for actual in block:
             if (actual['kind']!='kernel' or actual['end']<=actual['start'] or
                     any(actual.get(f)!=node[f] for f in ('symbol','grid','block','shared_bytes'))):
