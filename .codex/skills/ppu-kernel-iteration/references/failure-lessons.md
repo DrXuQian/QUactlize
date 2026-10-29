@@ -29,6 +29,24 @@ fused wins the other 20. This is component evidence, not native GEMM/model
 admission. Archive SHA256:
 fa3e1a90b2c432f1fc7b8254b1c2abf20ab617baef71bc3b64757072a4c32b8f.
 
+Model-shaped follow-up7169721d (1284/1284 helper points PASS, ZW810,
+1700MHz requested/observed, same-math Asys component means) breaks the
+all-parallel-finish-beats-decomposition observation outside its old scope.
+Of896finish points,30prefer decomposition:22S8 and8S4, grouped partials,
+largeM; noneS1/S2. AtM2048/N3072/top8/S8/repeat4, decomposition1615.005us
+beats serial4438.762us and both slot-parallel arms. Non-overlapping samples
+exclude ordinary timing noise for this cell. Fused finish follows inverse
+rows before reading every partial plane; materialization reduces contiguous
+grouped rows first. Traversal/footprint interaction remains a hypothesis,
+not an ACU-proven cause. Test materialize-plus-fused-finish as a separate
+two-stage job; do not claim its latency by adding unrelated measurements.
+Preserve the measured decomposition. Synthetic route-profile names are not
+host runtime selector keys; equal M/N/S can have different profile winners.
+Prepare selects fused3 for all sampled M<=16 and hybrid4 for M>=32; the
+M17..31 gap is unmeasured. Transition wins216/216. These are helper geometry
+results, not actual GEMM chains, native-model regressions or TPOT. Evidence
+archiveSHA2567cf59b73d62cd0f23d29d5a1ac186ed31e99abea1df50777a31e8c6e2ac257c7.
+
 The20261026 dense M-span admission exposed a selector-domain boundary:
 adding M3072/4096/5120/8192 rows is ineffective if the C++ domain still stops
 at2048. Extend exact lookup without silently widening the old M2048 log bin
