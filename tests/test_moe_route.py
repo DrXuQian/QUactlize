@@ -5,7 +5,7 @@ import subprocess
 import numpy as np
 import pytest
 
-from dev.moe_route.protocol import Call, Config, Sizes, Case, ids_for, oracle, tiled_model, parse, workloads
+from dev.moe_route.protocol import Call, Config, Sizes, Case, ids_for, oracle, tiled_model, register_model, parse, workloads
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -41,6 +41,26 @@ def test_profiles_and_changed_ids(profile):
     assert not np.array_equal(first, second)
     for ids in (first, second):
         for a,b in zip(oracle(ids,case),tiled_model(ids,case,256)): np.testing.assert_array_equal(a,b)
+
+
+@pytest.mark.parametrize('m,k', [(m,k) for m in (1,2,3,4,5,7,8,9,16,17,31,32)
+                               for k in (1,2,4,5,6,8,16,32) if m*k<=256])
+def test_register_maps(m, k):
+    for inverse in (0,1):
+        for profile in ('random','cluster'):
+            case=Case(m, max(33,k), k, max(1,k//2), profile, padding=3, inverse=inverse)
+            ids=ids_for(case, 7)
+            for actual,want in zip(register_model(ids,case),oracle(ids,case)):
+                np.testing.assert_array_equal(actual,want)
+
+
+def test_register_scope_and_production_isolation():
+    for m in (0,33):
+        case=Case(m)
+        with pytest.raises(ValueError):register_model(ids_for(case,0),case)
+    src=(ROOT/'quactlize/routing/route.cu').read_text()
+    assert src.index('qzr_test_register_v1')>src.index('#ifdef QZR_TESTING')
+    assert 'warp_register' not in src[:src.index('#ifdef QZR_TESTING')]
 
 
 def trace_fixture():

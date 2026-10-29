@@ -64,6 +64,36 @@ __global__ __launch_bounds__(32) void warp_compact(qzr_call_v1 c,int rows) {
     }
 }
 
+#ifdef QZR_TESTING
+// Bounded candidate: retain one ballot per 32 flat rows in registers. Once
+// the expert base is known, matching lanes publish directly in stable order.
+// No shared selected-list handoff is needed. The measured WARP body above
+// remains the control; this candidate is not used by AUTO or the public run.
+template<int TopK,int Groups>
+__global__ __launch_bounds__(32) void warp_register(qzr_call_v1 c,int rows) {
+    int lane=int(threadIdx.x),expert=int(blockIdx.x),lower=0;
+    unsigned hits[Groups];
+    #pragma unroll
+    for(int g=0;g<Groups;++g) {
+        int r=g*32+lane,id=r<rows?read_id<TopK>(c,r):INT_MAX;
+        lower+=id<expert;
+        hits[g]=__ballot_sync(0xffffffff,id==expert);
+    }
+    int begin=warp_sum(lower),count=0;
+    #pragma unroll
+    for(int g=0;g<Groups;++g) {
+        unsigned hit=hits[g];
+        if(hit&(1u<<lane))
+            store_map<TopK>(c,g*32+lane,begin+count+__popc(hit&((1u<<lane)-1)));
+        count+=__popc(hit);
+    }
+    if(!lane) {
+        c.offsets[expert]=begin;
+        if(expert==c.experts-1) c.offsets[c.experts]=begin+count;
+    }
+}
+#endif
+
 // Stable per-chunk ranks. Warp-private histograms avoid global atomics and
 // contention between tokens choosing the same expert. Rows in each warp are
 // contiguous, so both ID reads and temporary rank stores are coalesced.

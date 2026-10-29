@@ -72,6 +72,34 @@ extern "C" int quactlize_ppu_moe_route_run_v1(qzr_call_v1 const* c,qzr_config_v1
     return quactlize::routing::run(c,p,-1);
 }
 #ifdef QZR_TESTING
+namespace quactlize::routing {
+template<int TopK> int register_launch(qzr_call_v1 const& c,int rows) {
+    auto stream=static_cast<RouteStream>(c.stream);
+    if(rows<=32) warp_register<TopK,1><<<c.experts,32,0,stream>>>(c,rows);
+    else if(rows<=64) warp_register<TopK,2><<<c.experts,32,0,stream>>>(c,rows);
+    else if(rows<=128) warp_register<TopK,4><<<c.experts,32,0,stream>>>(c,rows);
+    else warp_register<TopK,8><<<c.experts,32,0,stream>>>(c,rows);
+    return launch_error();
+}
+}
+extern "C" int qzr_test_register_v1(qzr_call_v1 const* c) {
+    using namespace quactlize::routing;
+    if(!c) return QZR_INVALID;
+    qzr_config_v1 config{1,sizeof(config),QZR_WARP,512};
+    Layout l;int rc=layout(*c,config,l);if(rc) return rc;
+    if(l.rows<1 || l.rows>256) return QZR_CAPACITY;
+    rc=buffers(*c,l);if(rc) return rc;
+    switch(c->topk) {
+        case 1:return register_launch<1>(*c,l.rows);
+        case 2:return register_launch<2>(*c,l.rows);
+        case 4:return register_launch<4>(*c,l.rows);
+        case 6:return register_launch<6>(*c,l.rows);
+        case 8:return register_launch<8>(*c,l.rows);
+        case 16:return register_launch<16>(*c,l.rows);
+        case 32:return register_launch<32>(*c,l.rows);
+        default:return register_launch<0>(*c,l.rows);
+    }
+}
 extern "C" int qzr_test_device_v1(char* name,int* ordinal,int* cu,int* warp) {
 #ifdef QZR_CUDA_TEST
     cudaDeviceProp p{};int rc=int(cudaGetDevice(ordinal));

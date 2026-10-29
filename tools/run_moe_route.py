@@ -101,7 +101,7 @@ def main(a):
     if a.worker is not None: return worker(a)
     cases = [asdict(c) for c in workloads(a.smoke)]
     if a.plan:
-        print(json.dumps(dict(points=len(cases), cases=cases, stages='WARP or HISTOGRAM+PREFIX+SCATTER', production_changed=False), indent=2)); return 0
+        print(json.dumps(dict(points=len(cases), cases=cases, stages='WARP / REGISTER(<=256 rows) / HISTOGRAM+PREFIX+SCATTER', production_changed=False), indent=2)); return 0
     if not a.confirm_idle: raise ValueError('use --confirm-idle only after the assigned GPUs are free')
     if not a.llama_source or not a.llama_build: raise ValueError('--llama-source and --llama-build are required for the native A/B wrapper')
     devices = [str(int(v)) for v in a.devices.split(',')]
@@ -141,6 +141,7 @@ def main(a):
     complete = len(points)==len(cases) and not any(returncodes)
     report = dict(status='PASS' if complete else 'INCOMPLETE', expected=len(cases), measured=len(points),
                   returncodes=returncodes, regressions=[p for p in points if p['no_regression'] is False],
+                  elapsed_seconds=time.monotonic()-start,
                   points=points, production_changed=False, no_regression_admitted=False,
                   scope='STANDALONE_ROUTING_CANDIDATE_SCREEN_NOT_GEMM_OR_MODEL_TPOT')
     atomic_json(a.output/'summary.json', report)
