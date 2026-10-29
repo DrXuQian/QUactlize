@@ -14,6 +14,7 @@ import traceback
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from dev.moe_grouped.build import build,verify
+from dev.moe_route.build import revision
 from dev.strategy.journal import atomic_json
 from quactlize.runtime.compiler import sha
 from quactlize.runtime.tuning import digest
@@ -80,7 +81,8 @@ def main(a):
         receipt=read(a.output/'build/receipt.json');verify(receipt);config=read(a.output/'run.json')
         capture=measure(a.sdk,receipt['helper'],receipt['modules'],read(a.batch/'jobs.json'),
                         Path(config['smi']),config['clock_mhz'])
-        capture['provenance']=dict(commit=receipt['helper']['quactlize'],build_sha256=sha(a.output/'build/receipt.json'))
+        capture['provenance']=dict(commit=revision(ROOT),build_commit=receipt['helper']['quactlize'],
+            build_sha256=sha(a.output/'build/receipt.json'))
         atomic_json(a.batch/'capture.json',capture);return 0
     if a.gate:
         from dev.moe_grouped.bench import contract_gate
@@ -102,8 +104,12 @@ def main(a):
     else:
         if (a.output/'run.json').exists():raise ValueError('use --resume or a new output')
         atomic_json(a.output/'run.json',config)
-        print('MOE_GROUPED_BUILD '+str(a.output),flush=True)
-        build(a.sdk,a.output/'build',a.jobs)
+        if a.reuse_build:
+            from dev.moe_grouped.reuse import reuse
+            reuse(a.sdk,a.reuse_build,a.output/'build')
+        else:
+            print('MOE_GROUPED_BUILD '+str(a.output),flush=True)
+            build(a.sdk,a.output/'build',a.jobs)
     gate=a.output/'contract.json'
     if not a.resume or not gate.exists() or read(gate).get('status')!='PASS':
         command=[sys.executable,'-u',str(Path(__file__).resolve()),'--sdk',str(a.sdk),'--output',str(a.output),'--gate']
@@ -154,6 +160,7 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--sdk',type=Path,default=Path(os.environ.get('PPU_SDK','/usr/local/PPU_SDK')))
     parser.add_argument('--output',type=Path);parser.add_argument('--devices',default='3,5,6,7')
+    parser.add_argument('--reuse-build',type=Path,help='verified unchanged device build; new results and harness provenance')
     parser.add_argument('--jobs',type=int,default=4);parser.add_argument('--asys',type=Path)
     parser.add_argument('--smi',type=Path);parser.add_argument('--clock-mhz',type=int,default=1700)
     for flag in ('smoke','resume','confirm-idle','plan','gate'):parser.add_argument('--'+flag,action='store_true')

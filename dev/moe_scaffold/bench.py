@@ -104,7 +104,8 @@ class Fixture:
 
     def ptr(self, name): return self.buffers[name].ptr
 
-    def update(self, seed):
+    def update_inputs(self, seed):
+        """Refresh caller inputs only; real GEMM producers own their outputs."""
         c = self.case; rng = np.random.default_rng(seed)
         for b in self.buffers.values(): b.poison()
         ids = ids_for(c.route_case, seed)
@@ -116,6 +117,18 @@ class Fixture:
         if a.size and c.dtype == 2: a[0, 0] = 243383.484
         self.buffers['prepare_input'].upload(a.tobytes())
         self.prepared_expected = encode(a[src, :c.columns], c.dtype)
+        return rng
+
+    def update_weights(self, rng):
+        c = self.case
+        w = rng.uniform(0, 1, (c.tokens, self.f.weights_stride)).astype(np.float32)
+        self.buffers['weights'].upload(w.tobytes())
+        return w
+
+    def update(self, seed):
+        # Synthetic helper-only fixtures retain their original RNG sequence.
+        # Do not call this after binding a real final/partial producer value.
+        c = self.case; rng = self.update_inputs(seed); dst = self.maps[1]
         values = {}
         for name, v, nc in [('gate', self.t.gate, self.gcols), ('up', self.t.up, c.hidden), ('down', self.f.down, c.output)]:
             # Stream planes so host RAM does not scale with Split-K. Keep the
@@ -138,8 +151,7 @@ class Fixture:
             up = values['gate'][:, c.hidden:] if c.merged else values['up']
             act = activation(gate, up)
         self.activation_expected = rounded(act[dst] if c.output_order == 0 else act, c.dtype)
-        w = rng.uniform(0, 1, (c.tokens, self.f.weights_stride)).astype(np.float32)
-        self.buffers['weights'].upload(w.tobytes())
+        w = self.update_weights(rng)
         self.finish_expected = weighted(values['down'].reshape(c.tokens, c.topk, c.output), w[:, :c.topk])
 
     def prepare_check(self):

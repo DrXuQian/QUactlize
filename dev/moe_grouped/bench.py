@@ -164,8 +164,13 @@ class Chain:
         if not np.isfinite(np.frombuffer(values[1],'<f4')).all():raise ValueError('nonfinite real-chain output')
         return values
 
+    def update(self,seed):
+        # Final descriptors have no partial stride; partial descriptors point
+        # into producer-owned scratch. Neither is a synthetic fixture plane.
+        self.b.update_weights(self.b.update_inputs(seed))
+
     def check(self,seed):
-        self.b.update(seed);self.bind(0)
+        self.update(seed);self.bind(0)
         checked(self.launch(legacy=True,unfused=True),'legacy TC plus decomposed helpers')
         self.b.prepare_check();expected=self.snapshots()
         spots=[p.numerical_spots(self.b.maps[2]) for p in self.producers]
@@ -253,11 +258,12 @@ def measure(sdk,receipt,records,jobs,smi,clock_mhz):
                     w=DeviceWeights(rt,q,n,inner,256,seed,'fq-grouped');family.callback(w.close);weights.append(w)
                 for job in (j for j in jobs if j['k']==k):
                     with ExitStack() as point:
+                        print('MOE_GROUPED_CHECK '+json.dumps(job),flush=True)
                         b=Chain(rt,lib,job,records,weights);point.callback(b.close)
                         proof=[]
                         for seed in (7,19):proof.append(b.check(seed))
                         b.bind(1);graph=Graph(rt,b.launch,1);point.callback(graph.close)
-                        b.b.update(31);b.bind(0);checked(b.launch(legacy=True,unfused=True),'changed-ID control')
+                        b.update(31);b.bind(0);checked(b.launch(legacy=True,unfused=True),'changed-ID control')
                         expected=b.snapshots();graph.run()
                         if b.snapshots()!=expected:raise ValueError('changed-ID chain graph differs')
                         groups={};graphs={}
