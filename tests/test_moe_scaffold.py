@@ -181,7 +181,8 @@ def test_profile_diagnostics(fault):
 @pytest.mark.parametrize('state',[0,1,2])
 @pytest.mark.parametrize('dtype',[0,1,2])
 @pytest.mark.parametrize('tokens',[0,9])
-def test_fixture_storage_and_recipe_wiring(state,dtype,tokens):
+@pytest.mark.parametrize('padding,projection_dtype',[(3,-1),(0,-1),(0,0)])
+def test_fixture_storage_and_recipe_wiring(state,dtype,tokens,padding,projection_dtype):
     # Exercise the real Box fixture's allocation/strides and encoded source
     # bytes on host. This does not simulate a GPU launch or admit performance.
     from dev.moe_scaffold.bench import Fixture
@@ -207,7 +208,8 @@ def test_fixture_storage_and_recipe_wiring(state,dtype,tokens):
             return 0
         def __getattr__(self,name):return lambda *args:0
     rt=Memory();c=Case(tokens,columns=7,hidden=5,output=9,dtype=dtype,state=state,
-        splits=4 if state==1 else 1,down_splits=4,merged=0,gate_order=1,up_order=0,output_order=1,down_order=0)
+        splits=4 if state==1 else 1,down_splits=4,merged=0,gate_order=1,up_order=0,output_order=1,down_order=0,
+        padding=padding,projection_dtype=projection_dtype)
     b=Fixture(rt,Query(),c)
     try:
         b.update(31)
@@ -222,8 +224,10 @@ def test_fixture_storage_and_recipe_wiring(state,dtype,tokens):
         a=g if state==2 else activation(g,u)
         np.testing.assert_array_equal(rounded(a,dtype),b.activation_expected)
         down=read_value('down',b.f.down,c.output).reshape(tokens,c.topk,c.output)
-        w=np.frombuffer(b.buffers['weights'].read(),np.float32).reshape(tokens,c.topk+3)
+        w=np.frombuffer(b.buffers['weights'].read(),np.float32).reshape(tokens,c.topk+padding)
         np.testing.assert_array_equal(weighted(down,w[:,:c.topk]),b.finish_expected)
+        assert b.p.route.source_stride==1+padding and b.p.route.ids_stride==c.topk+padding
+        assert b.t.output_stride==c.hidden+padding and b.f.output_stride==c.output+padding
         groups=b.component_groups()
         if tokens:
             assert len(groups['prepare/fused'])==3 and len(groups['prepare/unfused'])==5
@@ -238,3 +242,80 @@ def test_fixture_storage_and_recipe_wiring(state,dtype,tokens):
         else:assert not groups
     finally:b.close()
     assert not rt.allocations
+
+
+def test_qwen_model_phase_inventory_and_deduplication():
+    from dev.moe_scaffold.models import model_plan,MS,ROUTERS,MODELS,assignments,estimated_work
+    from collections import Counter
+    cases,coverage=model_plan()
+    assert len(cases)==1284 and len({c.key for c in cases})==1284
+    assert coverage['phases']==dict(finish=896,prepare=172,transition=216)
+    assert len(model_plan(True)[0])==12
+    assert all(c.padding==0 and c.dtype==2 for c in cases)
+    for name,_,k in MODELS:
+        for m in MS:
+            for router in (('spread',) if m==1 else ROUTERS):
+                prep=[c for c in cases if c.phase=='prepare' and c.columns==k and c.tokens==m and c.profile==router]
+                assert len(prep)==1 and coverage['consumers'][prep[0].key]==[name]
+                finish=[c for c in cases if c.phase=='finish' and c.output==k and c.tokens==m and c.profile==router and c.down_order==0]
+                assert {(c.down_splits,c.projection_dtype) for c in finish}=={(1,-1),(1,0),(2,-1),(4,-1),(8,-1)}
+            direct=[c for c in cases if c.phase=='finish' and c.output==k and c.tokens==m and c.down_order==1]
+            assert len(direct)==1 and direct[0].projection_dtype==0 and direct[0].down_splits==1
+    for m in MS:
+        transition=[c for c in cases if c.phase=='transition' and c.tokens==m]
+        assert len(transition)==12
+        assert all(c.hidden==512 and c.gate_order==c.up_order==c.output_order==0 for c in transition)
+        assert all(len(coverage['consumers'][c.key])==2 for c in transition)
+    assigned=assignments(cases,4)
+    flat=[Case(**c) for shard in assigned for c in shard]
+    assert Counter(c.key for c in flat)==Counter(c.key for c in cases)
+    loads=[sum(estimated_work(Case(**c)) for c in shard) for shard in assigned]
+    assert max(loads)-min(loads)<=max(map(estimated_work,cases))
+    assert Case(2048,columns=2048,hidden=512,output=2048).key=='ddaf4c78b0815ff0b07f'
+    assert Case(2048,columns=2048,hidden=512,output=2048,padding=0).key!='ddaf4c78b0815ff0b07f'
+
+
+def test_model_cli_plan_without_gpu_or_sdk():
+    import json,sys
+    output=subprocess.check_output([sys.executable,str(ROOT/'tools/run_moe_scaffold.py'),
+        '--cohort','qwen-models','--smoke','--plan'],text=True)
+    plan=json.loads(output)
+    assert plan['count']==12 and plan['coverage']['full_cases']==1284
+    assert not plan['coverage']['actual_model_weights_used'] and not plan['production_changed']
+
+
+def test_batched_worker_retains_pass_and_retries_failed_batch(tmp_path,monkeypatch):
+    from argparse import Namespace
+    from dataclasses import asdict
+    from tools import run_moe_scaffold as runner
+    from dev.prefill_asys import trace
+    from dev.strategy.journal import atomic_json
+    from quactlize.runtime.compiler import sha
+    (tmp_path/'build').mkdir()
+    atomic_json(tmp_path/'build/receipt.json',{})
+    cases=[asdict(Case(m,phase='finish')) for m in (1,2)]
+    atomic_json(tmp_path/'run.json',dict(devices=['3'],assignments=[cases],batch_size=1))
+    monkeypatch.setattr(runner,'verify',lambda receipt:None)
+    monkeypatch.setattr(trace,'activities',lambda *args,**kwargs:[])
+    monkeypatch.setattr(trace,'runtime_activities',lambda *args,**kwargs:[])
+    monkeypatch.setattr(runner,'parse',lambda capture,*args:dict(status='PASS',points=[]))
+    visited=[];fail_once=[True]
+    def execute(command,log):
+        if command[1]!='profile':return
+        attempt=Path(command[command.index('--batch')+1]);job=runner.read(attempt/'job.json')
+        visited.append(job['batch'])
+        if job['batch']==1 and fail_once[0]:
+            fail_once[0]=False;raise RuntimeError('intentional first-batch failure')
+        (attempt/'trace.asysrep').write_bytes(b'host-test-not-a-real-trace')
+        atomic_json(attempt/'capture.json',dict(cases=job['cases'],clock={},
+            latency_provenance=dict(build_sha256=sha(tmp_path/'build/receipt.json'))))
+    monkeypatch.setattr(runner,'run',execute)
+    args=Namespace(output=tmp_path,worker=0,sdk=Path('/unused-sdk'),asys=Path('/unused-asys'),resume=False)
+    assert runner.worker(args)==1 and visited==[1,2]
+    first=tmp_path/'gpu-3/batch-0/result.json';second=tmp_path/'gpu-3/batch-1/result.json'
+    assert runner.read(first)['status']=='FAIL' and runner.read(second)['status']=='PASS'
+    before=second.read_bytes();args.resume=True
+    assert runner.worker(args)==0 and visited==[1,2,1]
+    assert second.read_bytes()==before
+    with pytest.raises(ValueError,match='does not match'):
+        runner.reusable(runner.read(second),cases[:1],tmp_path)

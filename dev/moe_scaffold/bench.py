@@ -8,7 +8,7 @@ import numpy as np
 
 from dev.moe_route.bench import Runtime, Buffer, Graph, bind
 from dev.moe_scaffold.protocol import (Call, Config, Sizes, Value, Prepare, Transition, Finish,
-    Case, ids_for, oracle, encode, decode, rounded, projected, activation, weighted)
+    Case, ids_for, oracle, encode, decode, rounded, activation, weighted)
 from quactlize.runtime.native import checked
 from dev.strategy.refresh_clock import ADVISORY, observe, pci_key, request_lock
 
@@ -43,33 +43,36 @@ class Library:
 class Fixture:
     def __init__(self, rt, lib, case):
         self.rt, self.lib, self.case, self.buffers = rt, lib, case, {}
+        if case.padding<0 or case.projection_dtype not in (-1,0) or case.phase not in ('all','prepare','transition','finish'):
+            raise ValueError('invalid helper layout/storage/phase')
+        padding = case.padding
         self.rows = case.tokens*case.topk
         self.gcols = case.hidden*(2 if case.merged and case.state != 2 else 1)
         route = Call(version=1, size=C.sizeof(Call), tokens=case.tokens, experts=case.experts,
-                     topk=case.topk, channels=1, ids_stride=case.topk+3, source_stride=4, stream=rt.stream.value)
+                     topk=case.topk, channels=1, ids_stride=case.topk+padding, source_stride=1+padding, stream=rt.stream.value)
         self.p = Prepare(version=1, size=C.sizeof(Prepare), route=route,
                          config=Config(1, C.sizeof(Config), 2, 512), columns=case.columns,
-                         dtype=case.dtype, input_row_stride=case.columns+3)
+                         dtype=case.dtype, input_row_stride=case.columns+padding)
         self.sizes = Sizes(); checked(lib.query(C.byref(self.p), C.byref(self.sizes)), 'helper query')
         try:
-            for name, n in [('ids', case.tokens*(case.topk+3)*4), ('src_rows', self.rows*4),
+            for name, n in [('ids', case.tokens*(case.topk+padding)*4), ('src_rows', self.rows*4),
                             ('dst_rows', self.rows*4), ('offsets', (case.experts+1)*4), ('workspace', self.sizes.workspace_bytes)]:
                 setattr(self.p.route, name, self.alloc(name, n))
             self.p.route.workspace_bytes = self.sizes.workspace_bytes
-            self.input_rows = (case.tokens-1)*4+1 if case.tokens else 0
-            for name, n in [('input', self.input_rows*(case.columns+3)*4),
+            self.input_rows = (case.tokens-1)*(1+padding)+1 if case.tokens else 0
+            for name, n in [('input', self.input_rows*(case.columns+padding)*4),
                             ('output', self.rows*case.columns*(4 if case.dtype == 0 else 2)),
                             ('inverse_rows', self.rows*4), ('expert_rows', case.experts*4),
                             ('active_experts', case.experts*4), ('active_count', 4)]:
                 setattr(self.p, name, self.alloc('prepare_'+name, n))
             self.t = Transition(version=1, size=C.sizeof(Transition), tokens=case.tokens, topk=case.topk,
                 hidden=case.hidden, merged=case.merged, output_dtype=case.dtype, output_order=case.output_order,
-                output_stride=case.hidden+3, row_ids=self.p.route.dst_rows, inverse_rows=self.p.inverse_rows,
-                output=self.alloc('activation', self.rows*(case.hidden+3)*(4 if case.dtype==0 else 2)), stream=rt.stream.value)
+                output_stride=case.hidden+padding, row_ids=self.p.route.dst_rows, inverse_rows=self.p.inverse_rows,
+                output=self.alloc('activation', self.rows*(case.hidden+padding)*(4 if case.dtype==0 else 2)), stream=rt.stream.value)
             self.f = Finish(version=1, size=C.sizeof(Finish), tokens=case.tokens, topk=case.topk,
-                columns=case.output, inverse_rows=self.p.inverse_rows, weights_stride=case.topk+3,
-                output_stride=case.output+3, weights=self.alloc('weights', case.tokens*(case.topk+3)*4),
-                output=self.alloc('finish', case.tokens*(case.output+3)*4), stream=rt.stream.value)
+                columns=case.output, inverse_rows=self.p.inverse_rows, weights_stride=case.topk+padding,
+                output_stride=case.output+padding, weights=self.alloc('weights', case.tokens*(case.topk+padding)*4),
+                output=self.alloc('finish', case.tokens*(case.output+padding)*4), stream=rt.stream.value)
             for name, n in [('tmp_gate', self.rows*self.gcols*4), ('tmp_up', self.rows*case.hidden*4),
                             ('tmp_act', self.rows*case.hidden*4), ('tmp_down', self.rows*case.output*4),
                             ('tmp_weighted', self.rows*case.output*4)]: self.alloc(name, n)
@@ -77,10 +80,10 @@ class Fixture:
                     ('gate', self.gcols, case.state, case.splits if case.state == 1 else 1, case.gate_order),
                     ('up', case.hidden, 1 if case.state == 1 else 0, case.splits if case.state == 1 else 1, case.up_order),
                     ('down', case.output, int(case.down_splits > 1), case.down_splits, case.down_order)]:
-                dtype = 0 if state == 1 else case.dtype
-                pitch = self.rows*(nc+3)+5
+                dtype = 0 if state == 1 else case.dtype if case.projection_dtype == -1 else case.projection_dtype
+                pitch = self.rows*(nc+padding)+(5 if padding else 0)
                 v = Value(self.alloc(name, splits*pitch*(4 if dtype == 0 else 2)), dtype, order, state,
-                          splits, nc+3, pitch, 0 if state == 2 else case.dtype, 0)
+                          splits, nc+padding, pitch, 0 if state == 2 else case.dtype, 0)
                 if name == 'down': self.f.down = v
                 else: setattr(self.t, name, v)
         except BaseException:
@@ -99,31 +102,33 @@ class Fixture:
         inverse = np.empty(self.rows, dtype=np.int32); inverse[dst] = np.arange(self.rows, dtype=np.int32)
         self.maps = src, dst, offsets, inverse
         self.buffers['ids'].upload(ids.tobytes())
-        a = rng.uniform(-3, 3, (self.input_rows, c.columns+3)).astype(np.float32)
+        a = rng.uniform(-3, 3, (self.input_rows, self.p.input_row_stride)).astype(np.float32)
         if a.size and c.dtype == 2: a[0, 0] = 243383.484
         self.buffers['prepare_input'].upload(a.tobytes())
         self.prepared_expected = encode(a[src, :c.columns], c.dtype)
         values = {}
         for name, v, nc in [('gate', self.t.gate, self.gcols), ('up', self.t.up, c.hidden), ('down', self.f.down, c.output)]:
-            planes = rng.uniform(-2, 2, (v.partial_count, self.rows, nc)).astype(np.float32)
-            if planes.size and c.dtype == 2 and name == 'up': planes[0, 0, 0] = 100000
-            # Independent CPU oracle sums partials in declared order; source is
-            # then physically permuted, not generated by the device algorithm.
-            logical = projected(planes, c.dtype)
-            if v.state == 2: logical = rounded(planes[0], c.dtype)
-            values[name] = logical
-            raw = np.zeros(v.partial_count*v.partial_stride, dtype=np.float32)
+            # Stream planes so host RAM does not scale with Split-K. Keep the
+            # same RNG order, independent slot order and explicit rounding.
+            logical = np.zeros((self.rows, nc), dtype=np.float32)
             for i in range(v.partial_count):
-                rows = planes[i, dst] if v.order == 0 else planes[i]
-                raw[i*v.partial_stride:i*v.partial_stride+self.rows*v.row_stride].reshape(self.rows, v.row_stride)[:, :nc] = rows
-            self.buffers[name].upload(encode(raw, v.dtype).tobytes())
+                plane = rng.uniform(-2, 2, (self.rows, nc)).astype(np.float32)
+                if plane.size and not i and c.dtype == 2 and name == 'up': plane[0, 0] = 100000
+                if v.state == 1: np.add(logical, plane, out=logical)
+                else: logical = rounded(plane, v.dtype)
+                raw = np.zeros(v.partial_stride, dtype=np.float32)
+                raw[:self.rows*v.row_stride].reshape(self.rows, v.row_stride)[:, :nc] = plane[dst] if v.order == 0 else plane
+                data = encode(raw, v.dtype).tobytes()
+                self.rt.write(self.ptr(name)+i*v.partial_stride*(4 if v.dtype==0 else 2), data)
+                del plane, raw, data
+            values[name] = logical if v.state == 2 else rounded(logical, v.round_type)
         if c.state == 2: act = values['gate']
         else:
             gate = values['gate'][:, :c.hidden]
             up = values['gate'][:, c.hidden:] if c.merged else values['up']
             act = activation(gate, up)
         self.activation_expected = rounded(act[dst] if c.output_order == 0 else act, c.dtype)
-        w = rng.uniform(0, 1, (c.tokens, c.topk+3)).astype(np.float32)
+        w = rng.uniform(0, 1, (c.tokens, self.f.weights_stride)).astype(np.float32)
         self.buffers['weights'].upload(w.tobytes())
         self.finish_expected = weighted(values['down'].reshape(c.tokens, c.topk, c.output), w[:, :c.topk])
 
@@ -158,7 +163,7 @@ class Fixture:
         checked(self.lib.prepare_hybrid(C.byref(self.p), -1), 'hybrid prepare'); self.prepare_check()
         checked(self.lib.transition(C.byref(self.t)), 'fused transition'); self.rt.sync()
         act = self.buffers['activation'].read()
-        actual = self.values('activation', c.dtype, self.rows, c.hidden+3, c.hidden)
+        actual = self.values('activation', c.dtype, self.rows, self.t.output_stride, c.hidden)
         # expf/libm differences may move the last BF16/FP16 bit. The device
         # decomposition below must still match the fused device result EXACTLY.
         np.testing.assert_allclose(actual, self.activation_expected, rtol=(3e-6,.0011,.009)[c.dtype], atol=2e-6)
@@ -167,7 +172,7 @@ class Fixture:
         if self.buffers['activation'].read() != act: raise ValueError('fused vs unfused transition bits differ')
         checked(self.lib.finish(C.byref(self.f)), 'fused finish'); self.rt.sync()
         finish = self.buffers['finish'].read()
-        np.testing.assert_array_equal(self.values('finish', 0, c.tokens, c.output+3, c.output), self.finish_expected)
+        np.testing.assert_array_equal(self.values('finish', 0, c.tokens, self.f.output_stride, c.output), self.finish_expected)
         for call, _, _ in self.finish_control(): checked(call(), 'unfused finish')
         self.rt.sync()
         if self.buffers['finish'].read() != finish: raise ValueError('fused vs unfused finish bits differ')
@@ -237,7 +242,7 @@ class Fixture:
         for warps in (4, 8):
             grouped[f'finish/slots{warps}']=[(lambda w=warps:self.lib.finish_parallel(C.byref(self.f),w),
                 f'finish_slots<{warps}>', [min(c.tokens*((c.output+31)//32),65535),1,1], [warps*32,1,1])]
-        return grouped
+        return {key:items for key,items in grouped.items() if c.phase=='all' or key.split('/')[0]==c.phase}
 
     def close(self):
         self.rt.sync()
@@ -258,7 +263,7 @@ def start_clock(rt, device, smi, mhz):
                 before=observe(smi,device['pci'],mhz,advisory=True))
 
 
-def measure(sdk, receipt, cases, rounds=4, samples=2, repeats=32, *, smi, clock_mhz=1700):
+def measure(sdk, receipt, cases, rounds=4, samples=2, repeats=32, *, smi, clock_mhz=1700, progress=None):
     points,schedule=[],[]
     with ExitStack() as root:
         rt=Runtime(sdk);root.callback(rt.close);lib=Library(receipt['candidate'])
@@ -285,10 +290,11 @@ def measure(sdk, receipt, cases, rounds=4, samples=2, repeats=32, *, smi, clock_
                 for g in graphs:g.run()
                 for b in fixtures:
                     b.prepare_check()
-                    np.testing.assert_allclose(b.values('activation',b.case.dtype,b.rows,b.case.hidden+3,b.case.hidden),
+                    np.testing.assert_allclose(b.values('activation',b.case.dtype,b.rows,b.t.output_stride,b.case.hidden),
                                                b.activation_expected,rtol=.009,atol=2e-6)
-                    np.testing.assert_array_equal(b.values('finish',0,b.case.tokens,b.case.output+3,b.case.output),b.finish_expected)
-        for case in cases:
+                    np.testing.assert_array_equal(b.values('finish',0,b.case.tokens,b.f.output_stride,b.case.output),b.finish_expected)
+        for index,case in enumerate(cases):
+            if progress:progress(index,len(cases),case)
             with ExitStack() as stack:
                 b=Fixture(rt,lib,case);stack.callback(b.close)
                 for seed in (7,19):b.update(seed);b.numerical()
@@ -321,7 +327,9 @@ def measure(sdk, receipt, cases, rounds=4, samples=2, repeats=32, *, smi, clock_
                     rt.sync();checked(rt.ProfilerStop(),'scaffold profiler end')
                 for buffer in b.buffers.values():buffer.guard()
                 points.extend(case_points.values())
-                print('MOE_SCAFFOLD_POINT '+case.key+' M='+str(case.tokens)+' exact_device_controls=PASS',flush=True)
+                if progress:progress(index+1,len(cases),None)
+                print('MOE_SCAFFOLD_POINT '+case.key+' M='+str(case.tokens)+' phase='+case.phase+
+                      f' completed={index+1}/{len(cases)} exact_device_controls=PASS',flush=True)
         clock['after']=observe(smi,lib.device['pci'],clock_mhz,advisory=True)
         return dict(points=points,schedule=schedule,device=lib.device,clock=clock,correctness='PASS',
                     cases=[asdict(c) for c in cases],production_changed=False,

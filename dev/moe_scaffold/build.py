@@ -18,7 +18,7 @@ def build(sdk, output):
         ('quactlize/moe', 'quactlize/routing', 'dev/moe_scaffold', 'dev/moe_route')
         for p in (ROOT/directory).glob('*') if p.is_file()}
     for name in ('tools/run_moe_scaffold.py', 'dev/prefill_asys/trace.py', 'quactlize/runtime/compiler.py',
-                 'dev/strategy/refresh_clock.py'):
+                 'dev/strategy/refresh_clock.py', 'dev/strategy/journal.py'):
         sources[name] = sha(ROOT/name)
     target = output/'libmoe-scaffold.so'
     commands = [[str(sdk/'bin/hgcc'), *FLAGS, '-DQZR_TESTING', '-DQZM_TESTING', '-c',

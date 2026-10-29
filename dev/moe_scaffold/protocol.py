@@ -55,12 +55,20 @@ class Case:
     output_order: int = 0
     down_order: int = 0
     profile: str = 'random'
+    padding: int = 3
+    projection_dtype: int = -1  # -1: use dtype; 0: final producer storage is F32.
+    phase: str = 'all'
 
     @property
-    def key(self): return hashlib.sha256(json.dumps(asdict(self), sort_keys=True).encode()).hexdigest()[:20]
+    def key(self):
+        value=asdict(self)
+        # Preserve the original mechanism-cohort identities, not its timings.
+        for name,default in (('padding',3),('projection_dtype',-1),('phase','all')):
+            if value[name]==default:value.pop(name)
+        return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()[:20]
 
     @property
-    def route_case(self): return RouteCase(self.tokens, self.experts, self.topk, 1, self.profile, padding=3)
+    def route_case(self): return RouteCase(self.tokens, self.experts, self.topk, 1, self.profile, padding=self.padding)
 
 
 def encode(values, dtype):
