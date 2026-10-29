@@ -36,10 +36,6 @@ __device__ __forceinline__ int warp_scan(int v) {
     }
     return v;
 }
-__global__ void empty_offsets(int* out,int experts) {
-    int e=int(blockIdx.x)*blockDim.x+threadIdx.x;
-    if(e<=experts) out[e]=0;
-}
 
 // Flatten token/slot lanes. One ballot replaces the per-token subgroup OR
 // and four-token shuffle scan in the incumbent top8 helper. The stored item
@@ -178,32 +174,6 @@ __global__ __launch_bounds__(128) void histogram_rank(qzr_call_v1 c,int rows,int
         #pragma unroll
         for(int w=0;w<4;++w) if(w<warp && id>=0) rank+=counts[w*c.experts+id];
         if(first+pos<rows) ranks[first+pos]=rank;
-    }
-}
-
-// Prefix chunks for each expert, then experts in two warp scans. Storage
-// grows with chunk count, not shared memory. All chunks are consumed, even
-// beyond the native helper's per-CTA shared-memory/token limit.
-__global__ void prefix_chunks(int const* histogram,int* prefix_chunks,int* offsets,int experts,int tiles) {
-    __shared__ int warp_totals[32];
-    int e=int(threadIdx.x),lane=e&31,warp=e/32,total=0;
-    if(e<experts) for(int t=0;t<tiles;++t) {
-        int64_t index=int64_t(t)*experts+e;
-        int value=histogram[index];prefix_chunks[index]=total;total+=value;
-    }
-    int inclusive=warp_scan(total);
-    if(lane==31) warp_totals[warp]=inclusive;
-    __syncthreads();
-    if(warp==0) {
-        int value=lane<int(blockDim.x)/32?warp_totals[lane]:0;
-        int prefix=warp_scan(value)-value;
-        warp_totals[lane]=prefix;
-    }
-    __syncthreads();
-    if(e<experts) {
-        int begin=warp_totals[warp]+inclusive-total;
-        offsets[e]=begin;
-        if(e==experts-1) offsets[experts]=begin+total;
     }
 }
 

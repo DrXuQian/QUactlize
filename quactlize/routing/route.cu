@@ -14,6 +14,37 @@ static int launch_error() { return hggcGetLastError()==hggcSuccess?QZR_OK:QZR_RU
 #endif
 
 namespace quactlize::routing {
+// Non-template entry definitions belong to one TU. Template producers in
+// kernels.cuh are also instantiated by the optional fused prepare library.
+__global__ void empty_offsets(int* out,int experts) {
+    int e=int(blockIdx.x)*blockDim.x+threadIdx.x;
+    if(e<=experts) out[e]=0;
+}
+// Prefix chunks for each expert, then experts in two warp scans. Storage
+// grows with chunk count, not shared memory. All chunks are consumed, even
+// beyond the native helper's per-CTA shared-memory/token limit.
+__global__ void prefix_chunks(int const* histogram,int* prefix_chunks,int* offsets,int experts,int tiles) {
+    __shared__ int warp_totals[32];
+    int e=int(threadIdx.x),lane=e&31,warp=e/32,total=0;
+    if(e<experts) for(int t=0;t<tiles;++t) {
+        int64_t index=int64_t(t)*experts+e;
+        int value=histogram[index];prefix_chunks[index]=total;total+=value;
+    }
+    int inclusive=warp_scan(total);
+    if(lane==31) warp_totals[warp]=inclusive;
+    __syncthreads();
+    if(warp==0) {
+        int value=lane<int(blockDim.x)/32?warp_totals[lane]:0;
+        int prefix=warp_scan(value)-value;
+        warp_totals[lane]=prefix;
+    }
+    __syncthreads();
+    if(e<experts) {
+        int begin=warp_totals[warp]+inclusive-total;
+        offsets[e]=begin;
+        if(e==experts-1) offsets[experts]=begin+total;
+    }
+}
 template<int TopK,int Tile>
 int launch(qzr_call_v1 const& c,Layout const& l,int stage) {
     auto stream=static_cast<RouteStream>(c.stream);
