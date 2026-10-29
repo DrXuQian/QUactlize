@@ -14,7 +14,20 @@ rounding. All comparisons here are same-math helper decompositions, NOT old
 decode-fusion, GEMM or model parity. ArchiveSHA256
 c37ace424a69c57e1d2bc829bd512e7433540e547accf94fa96489d68f07b1ae;
 seams: dev/moe_scaffold, quactlize/moe/scaffold.cu. No v1 clock records, so no
-cycle/frequency claim. Follow-up candidates remain test-only until measured.
+cycle/frequency claim.
+
+Follow-up 52b5a7a8 (31/31 exact PASS, 30 nonempty cases, 1700 MHz requested
+and observed before/after) confirms hybrid4 prepare restores grouped gather:
+M2048/K2048 costs 266.871us vs 267.431us decomposed and 373.038us old fused.
+This is only ~0.56us better than the good control, not a large new gather
+speedup. Both 4/8-warp slot-parallel finishes beat decomposition at all 30
+points and close the five earlier regressions, but neither dominates old
+serial fusion. At M2048/N2048/top8/S1, serial 180.204us beats parallel
+264.563/399.621us. Preserve shape/topk/partials-dependent alternatives rather
+than one M-only switch. Hybrid prepare wins 10/30 against old fused; old
+fused wins the other 20. This is component evidence, not native GEMM/model
+admission. Archive SHA256:
+fa3e1a90b2c432f1fc7b8254b1c2abf20ab617baef71bc3b64757072a4c32b8f.
 
 The20261026 dense M-span admission exposed a selector-domain boundary:
 adding M3072/4096/5120/8192 rows is ineffective if the C++ domain still stops
