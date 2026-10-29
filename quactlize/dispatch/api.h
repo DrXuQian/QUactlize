@@ -222,6 +222,14 @@ int quactlize_kpack_dispatch_run_v1(void* handle, void* stream);
 // parent, never silently substitute another tactic. Use destroy_v1 to release.
 int quactlize_kpack_dispatch_prepare_dynamic_v1(void* runtime,qks_choice_v1 const*,void**);
 int quactlize_kpack_dispatch_run_dynamic_v1(void* handle,qk_call_v1 const*);
+// General grouped counterpart, preserving the EXACT selected TC ticket and
+// BF16/F16 metadata contract. Unlike the old indexed chain it has no M<=8 cap.
+// Missing module exports are BINDING, never a changed config. Output describes
+// either the completed typed result or producer-only F32 partial planes.
+int quactlize_kpack_dispatch_prepare_grouped_dynamic_v1(void* runtime,qks_choice_v1 const*,void**);
+int quactlize_kpack_dispatch_run_grouped_dynamic_v1(void* handle,qk_compute_device_call_v4 const*,int32_t mode);
+int quactlize_kpack_dispatch_grouped_output_v1(void* handle,qk_compute_device_call_v4 const*,
+    int32_t mode,qk_grouped_result_v1*);
 // Optional, once-per-handle adapter binding, outside capture. A miss leaves
 // the handle unchanged and requires the unfused caller's preparation path.
 int quactlize_kpack_dispatch_bind_llama_indexed_v1(void*,qk_llama_indexed_v1 const*);

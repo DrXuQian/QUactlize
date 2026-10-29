@@ -102,6 +102,13 @@ inline int validate(qk_call_v1 const& c, qk_recipe_v1 const& r, int& max_rows, i
 struct Handle {
   virtual int run(hggcStream_t) = 0;
   virtual int run_dynamic(qk_call_v1 const&) const { return QK_UNSUPPORTED; }
+  virtual int run_grouped_dynamic(qk_compute_device_call_v4 const&,int) const { return QK_UNSUPPORTED; }
+  virtual int grouped_output(qk_compute_device_call_v4 const&,int,qk_grouped_result_v1&) const {
+    return QK_UNSUPPORTED;
+  }
+#ifdef QK_GROUPED_DYNAMIC_TESTING
+  virtual int grouped_stage(qk_compute_device_call_v4 const&,int,int) const { return QK_UNSUPPORTED; }
+#endif
   virtual int bind_indexed(qk_llama_indexed_v1 const&) { return QK_UNSUPPORTED; }
   virtual int moe_projection(qk_moe_projection_v1&) { return QK_UNSUPPORTED; }
   virtual int moe_stage(qk_moe_plan_v1 const&,int,hggcStream_t) { return QK_UNSUPPORTED; }
@@ -700,6 +707,7 @@ extern "C" int quactlize_kpack_grouped_prepare_v4(qk_compute_device_call_v4 cons
   if(!qk_compute_matches(d)) return QK_INVALID;
   return qk_grouped_prepare(&d->device_call,r,handle);
 }
+#include "grouped_dynamic.cuh"
 extern "C" int quactlize_kpack_moe_projection_v2(void* handle,qk_moe_projection_v2* out) {
   if(!handle || !out) return QK_INVALID;
   *out={2,sizeof(*out),{},quactlize::runtime::compute_type};

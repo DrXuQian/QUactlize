@@ -261,6 +261,8 @@ def build(sdk, output, jobs):
         'quactlize/dense/api.h': 'quactlize/dense/api.h',
         'quactlize/routing/api.h': 'quactlize/routing/api.h',
         'quactlize/moe/api.h': 'quactlize/moe/api.h',
+        'quactlize/moe/grouped.hpp': 'quactlize/moe/grouped.hpp',
+        'quactlize/runtime/abi.h': 'quactlize/runtime/abi.h',
         'quactlize/include/quactlize_ppu_config.h': 'quactlize_ppu_config.h',
     }
     for source, target in headers.items():

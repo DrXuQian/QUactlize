@@ -7,6 +7,7 @@ struct StubHandle {
     bool dynamic=false;
     qk_call_v1 shape{};
     int endpoint=0;
+    qk_compute_device_call_v4 grouped{};
 };
 
 extern "C" qk_identity_v1 const* quactlize_kpack_identity_v1() { return &stub_identity; }
@@ -37,6 +38,33 @@ extern "C" int quactlize_kpack_grouped_prepare_v2(qk_device_call_v2 const* d,qk_
 }
 extern "C" int quactlize_kpack_run_v1(void* h,void*) { return h && !static_cast<StubHandle*>(h)->dynamic ? QK_OK : QK_INVALID; }
 extern "C" void quactlize_kpack_destroy_v1(void* h) { delete static_cast<StubHandle*>(h); }
+
+#ifdef QK_TEST_GROUPED_DYNAMIC
+#include "quactlize/runtime/grouped_dynamic.hpp"
+extern "C" int quactlize_kpack_grouped_prepare_dynamic_v1(qk_compute_device_call_v4 const* d,
+    qk_recipe_v1 const* r,void** out) {
+    if(!d || !out || d->version!=4 || d->size!=sizeof(*d) || d->compute_type || d->metadata_type ||
+       !quactlize::runtime::address_free(d->device_call.call)) return QK_INVALID;
+    qk_resources_v1 resources{};
+    int rc=quactlize_kpack_grouped_query_v2(&d->device_call,r,&resources);if(rc) return rc;
+    auto h=new StubHandle{};h->dynamic=true;h->grouped=*d;*out=h;return 0;
+}
+extern "C" int quactlize_kpack_grouped_output_dynamic_v1(void* h,qk_compute_device_call_v4 const* d,
+    int mode,qk_grouped_result_v1* out) {
+    if(!h || !d || !out || !quactlize::runtime::same_grouped_shape(*d,static_cast<StubHandle*>(h)->grouped))
+      return QK_INVALID;
+    auto const& c=d->device_call.call;
+    if(!quactlize::runtime::grouped_buffers(c,256,false,stub_identity.route==3,16,0,16)) return QK_INVALID;
+    quactlize::runtime::GroupedWorkspace layout;layout.partials=16;
+    return quactlize::runtime::grouped_result(*d,stub_expected_split,mode,layout,*out);
+}
+extern "C" int quactlize_kpack_grouped_run_dynamic_v1(void* h,qk_compute_device_call_v4 const* d,int mode) {
+    qk_grouped_result_v1 out{};int rc=quactlize_kpack_grouped_output_dynamic_v1(h,d,mode,&out);if(rc) return rc;
+    auto const& c=d->device_call.call;
+    *static_cast<float*>(c.output)=*static_cast<float const*>(c.a)+float(uintptr_t(c.stream));
+    return 0;
+}
+#endif
 
 #ifdef QK_TEST_DYNAMIC
 #include "quactlize/runtime/dynamic.hpp"
