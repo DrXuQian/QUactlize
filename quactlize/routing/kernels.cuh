@@ -92,6 +92,49 @@ __global__ __launch_bounds__(32) void warp_register(qzr_call_v1 c,int rows) {
         if(expert==c.experts-1) c.offsets[c.experts]=begin+count;
     }
 }
+
+// Isolated reduction ablation: every lane already participates in the two
+// comparisons. Ballot/popcount yields a warp-uniform expert base without
+// the five cross-lane additions in warp_sum. Keep warp_register unchanged.
+template<int TopK,int Groups>
+__device__ __forceinline__ void register_ballots(qzr_call_v1 const& c,int rows) {
+    int lane=int(threadIdx.x),expert=int(blockIdx.x),begin=0;
+    unsigned hits[Groups];
+    #pragma unroll
+    for(int g=0;g<Groups;++g) {
+        int r=g*32+lane,id=r<rows?read_id<TopK>(c,r):INT_MAX;
+        begin+=__popc(__ballot_sync(0xffffffff,id<expert));
+        hits[g]=__ballot_sync(0xffffffff,id==expert);
+    }
+    int count=0;
+    #pragma unroll
+    for(int g=0;g<Groups;++g) {
+        unsigned hit=hits[g];
+        if(hit&(1u<<lane))
+            store_map<TopK>(c,g*32+lane,begin+count+__popc(hit&((1u<<lane)-1)));
+        count+=__popc(hit);
+    }
+    if(!lane) {
+        c.offsets[expert]=begin;
+        if(expert==c.experts-1) c.offsets[c.experts]=begin+count;
+    }
+}
+template<int TopK,int Groups>
+__global__ __launch_bounds__(32) void warp_ballot(qzr_call_v1 c,int rows) {
+    register_ballots<TopK,Groups>(c,rows);
+}
+// Same device algorithm, different kernel-argument delivery only. Do not
+// narrow strides or bake channels/inverse into either timing arm.
+template<int TopK,int Groups>
+__global__ __launch_bounds__(32) void warp_scalar(
+        int const* ids,int* src,int* dst,int* offsets,int64_t ids_stride,
+        int64_t source_stride,int experts,int topk,int channels,int inverse,int rows) {
+    qzr_call_v1 c{};
+    c.ids=ids;c.src_rows=src;c.dst_rows=dst;c.offsets=offsets;
+    c.ids_stride=ids_stride;c.source_stride=source_stride;
+    c.experts=experts;c.topk=topk;c.channels=channels;c.inverse=inverse;
+    register_ballots<TopK,Groups>(c,rows);
+}
 #endif
 
 // Stable per-chunk ranks. Warp-private histograms avoid global atomics and

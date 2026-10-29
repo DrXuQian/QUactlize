@@ -87,6 +87,7 @@ class Library:
         self.run = bind(self.lib, 'quactlize_ppu_moe_route_run_v1', [C.POINTER(Call), C.POINTER(Config)])
         self.stage = bind(self.lib, 'qzr_test_stage_v1', [C.POINTER(Call), C.POINTER(Config), C.c_int])
         self.register = bind(self.lib, 'qzr_test_register_v1', [C.POINTER(Call)])
+        self.ballot = bind(self.lib, 'qzr_test_ballot_v1', [C.POINTER(Call), C.c_int])
         other = C.CDLL(str(native), mode=C.RTLD_LOCAL)
         self.native = bind(other, 'qzr_native_run_v1', [C.POINTER(Call), C.c_int])
         name, ordinal, cu, warp = C.create_string_buffer(256), C.c_int(), C.c_int(), C.c_int()
@@ -141,12 +142,14 @@ class Fixture:
 def stream_gate(sdk, lib):
     with ExitStack() as stack:
         fixtures, graphs = [], []
-        for algorithm, tokens in ((2, 513), (1, 17)):
+        for variant, tokens in (('tiled', 513), ('register', 17), ('ballot', 17), ('scalar', 17)):
             for seed in (3, 19):
                 rt = Runtime(sdk); stack.callback(rt.close)
                 case = Case(tokens, 33, 6, 3, padding=5, inverse=1)
-                b = Fixture(rt, lib, case, algorithm, 512); stack.callback(b.close)
-                launch = b.launch if algorithm==2 else lambda b=b: lib.register(C.byref(b.call))
+                b = Fixture(rt, lib, case, 2 if variant=='tiled' else 1, 512); stack.callback(b.close)
+                if variant=='tiled': launch=b.launch
+                elif variant=='register': launch=lambda b=b: lib.register(C.byref(b.call))
+                else: launch=lambda b=b, scalar=int(variant=='scalar'): lib.ballot(C.byref(b.call),scalar)
                 b.update(seed); checked(launch(), 'two-stream initialize')
                 g = Graph(rt, launch, 1); stack.callback(g.close)
                 fixtures.append(b); graphs.append(g)
@@ -166,6 +169,7 @@ def measure(sdk, receipt, cases, rounds=4, samples=3, repeats=32):
             entries = [('tile256', 2, 256), ('tile512', 2, 512), ('tile1024', 2, 1024)]
             if case.tokens <= 8192: entries.insert(0, ('warp', 1, 512))
             if 0 < case.tokens*case.topk <= 256: entries.insert(1, ('register', 1, 512))
+            if 0 < case.tokens*case.topk <= 512: entries[1:1]=[('ballot',1,512),('scalar',1,512)]
             # AUTO aliases one tested body, not another timed copy.
             p = dict(case=asdict(case), key=case.key, components={},
                      auto='warp' if case.tokens*case.topk <= 1024 else 'tile512', native_status='SUPPORTED')
@@ -179,6 +183,8 @@ def measure(sdk, receipt, cases, rounds=4, samples=3, repeats=32):
                     launch = lambda b=b: lib.native(C.byref(b.call), 1)
                 elif arm == 'register':
                     launch = lambda b=b: lib.register(C.byref(b.call))
+                elif arm in ('ballot','scalar'):
+                    launch = lambda b=b, scalar=int(arm=='scalar'): lib.ballot(C.byref(b.call),scalar)
                 else:
                     launch = b.launch
                 for seed in range(3):
@@ -191,11 +197,12 @@ def measure(sdk, receipt, cases, rounds=4, samples=3, repeats=32):
                 stages = 1 if arm == 'native' else b.sizes.stages
                 for stage in range(stages):
                     key = f'{case.key}/{arm}/{stage}'; keys.append(key)
-                    call = launch if arm in ('native', 'register') else lambda b=b, s=stage: b.launch(s)
+                    call = launch if arm in ('native','register','ballot','scalar') else lambda b=b, s=stage: b.launch(s)
                     g = Graph(rt, call, repeats); stack.callback(g.close); graphs[key] = g
                     g.run(); rt.sync()
                     if arm == 'native': kernel, grid, block = 'mm_ids_helper<', case.experts, 32
                     elif arm == 'register': kernel, grid, block = 'warp_register<', case.experts, 32
+                    elif arm in ('ballot','scalar'): kernel, grid, block = 'warp_'+arm+'<', case.experts, 32
                     elif not case.tokens: kernel, grid, block = 'empty_offsets(', (case.experts+256)//256, 256
                     elif algorithm == 1: kernel, grid, block = 'warp_compact<', case.experts, 32
                     elif stage == 0: kernel, grid, block = 'histogram_rank<', b.sizes.tiles, 128

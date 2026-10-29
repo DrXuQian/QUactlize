@@ -81,6 +81,21 @@ template<int TopK> int register_launch(qzr_call_v1 const& c,int rows) {
     else warp_register<TopK,8><<<c.experts,32,0,stream>>>(c,rows);
     return launch_error();
 }
+template<int TopK,int Groups> void ballot_launch_body(qzr_call_v1 const& c,int rows,int scalar) {
+    auto stream=static_cast<RouteStream>(c.stream);
+    if(scalar)
+        warp_scalar<TopK,Groups><<<c.experts,32,0,stream>>>(c.ids,c.src_rows,c.dst_rows,c.offsets,
+            c.ids_stride,c.source_stride,c.experts,c.topk,c.channels,c.inverse,rows);
+    else warp_ballot<TopK,Groups><<<c.experts,32,0,stream>>>(c,rows);
+}
+template<int TopK> int ballot_launch(qzr_call_v1 const& c,int rows,int scalar) {
+    if(rows<=32) ballot_launch_body<TopK,1>(c,rows,scalar);
+    else if(rows<=64) ballot_launch_body<TopK,2>(c,rows,scalar);
+    else if(rows<=128) ballot_launch_body<TopK,4>(c,rows,scalar);
+    else if(rows<=256) ballot_launch_body<TopK,8>(c,rows,scalar);
+    else ballot_launch_body<TopK,16>(c,rows,scalar);
+    return launch_error();
+}
 }
 extern "C" int qzr_test_register_v1(qzr_call_v1 const* c) {
     using namespace quactlize::routing;
@@ -98,6 +113,24 @@ extern "C" int qzr_test_register_v1(qzr_call_v1 const* c) {
         case 16:return register_launch<16>(*c,l.rows);
         case 32:return register_launch<32>(*c,l.rows);
         default:return register_launch<0>(*c,l.rows);
+    }
+}
+extern "C" int qzr_test_ballot_v1(qzr_call_v1 const* c,int scalar) {
+    using namespace quactlize::routing;
+    if(!c || scalar<0 || scalar>1) return QZR_INVALID;
+    qzr_config_v1 config{1,sizeof(config),QZR_WARP,512};
+    Layout l;int rc=layout(*c,config,l);if(rc) return rc;
+    if(l.rows<1 || l.rows>512) return QZR_CAPACITY;
+    rc=buffers(*c,l);if(rc) return rc;
+    switch(c->topk) {
+        case 1:return ballot_launch<1>(*c,l.rows,scalar);
+        case 2:return ballot_launch<2>(*c,l.rows,scalar);
+        case 4:return ballot_launch<4>(*c,l.rows,scalar);
+        case 6:return ballot_launch<6>(*c,l.rows,scalar);
+        case 8:return ballot_launch<8>(*c,l.rows,scalar);
+        case 16:return ballot_launch<16>(*c,l.rows,scalar);
+        case 32:return ballot_launch<32>(*c,l.rows,scalar);
+        default:return ballot_launch<0>(*c,l.rows,scalar);
     }
 }
 extern "C" int qzr_test_device_v1(char* name,int* ordinal,int* cu,int* warp) {

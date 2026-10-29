@@ -63,6 +63,26 @@ def test_register_scope_and_production_isolation():
     assert 'warp_register' not in src[:src.index('#ifdef QZR_TESTING')]
 
 
+@pytest.mark.parametrize('m,k', [(m,k) for m in (1,7,16,17,31,32,33,63,64,65,127,128,129,255,256,257,511,512)
+                               for k in (1,2,4,5,6,8,16,32) if m*k<=512])
+def test_ballot_maps(m, k):
+    for inverse in (0,1):
+        for profile in ('random','cluster'):
+            case=Case(m, max(33,k), k, max(1,k//2), profile, padding=5, inverse=inverse)
+            ids=ids_for(case, 9)
+            for actual,want in zip(register_model(ids,case,ballot=True),oracle(ids,case)):
+                np.testing.assert_array_equal(actual,want)
+
+
+def test_ballot_boundary_and_production_isolation():
+    for case in (Case(0),Case(65),Case(513,1,1,1)):
+        with pytest.raises(ValueError):register_model(ids_for(case,0),case,ballot=True)
+    src=(ROOT/'quactlize/routing/route.cu').read_text()
+    assert src.index('qzr_test_ballot_v1')>src.index('#ifdef QZR_TESTING')
+    assert 'warp_ballot' not in src[:src.index('#ifdef QZR_TESTING')]
+    assert 'warp_scalar' not in src[:src.index('#ifdef QZR_TESTING')]
+
+
 def trace_fixture():
     c=Case(1);components={'warp':['candidate'],'native':['native']}
     capture=dict(points=[dict(key=c.key,case=dict(tokens=1),components=components,auto='warp',native_status='SUPPORTED')],

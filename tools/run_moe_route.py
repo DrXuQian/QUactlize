@@ -101,7 +101,7 @@ def main(a):
     if a.worker is not None: return worker(a)
     cases = [asdict(c) for c in workloads(a.smoke)]
     if a.plan:
-        print(json.dumps(dict(points=len(cases), cases=cases, stages='WARP / REGISTER(<=256 rows) / HISTOGRAM+PREFIX+SCATTER', production_changed=False), indent=2)); return 0
+        print(json.dumps(dict(points=len(cases), cases=cases, stages='WARP / REGISTER(<=256 rows) / BALLOT+SCALAR(<=512 rows) / HISTOGRAM+PREFIX+SCATTER', production_changed=False), indent=2)); return 0
     if not a.confirm_idle: raise ValueError('use --confirm-idle only after the assigned GPUs are free')
     if not a.llama_source or not a.llama_build: raise ValueError('--llama-source and --llama-build are required for the native A/B wrapper')
     devices = [str(int(v)) for v in a.devices.split(',')]

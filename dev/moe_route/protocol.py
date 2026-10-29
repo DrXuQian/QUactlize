@@ -41,9 +41,11 @@ def workloads(smoke=False):
     edge = [Case(0), Case(17, 33, 6, 3, padding=5, inverse=1),
             Case(513, 1, 1, 1, padding=3), Case(4097, 1024, 32, 32),
             Case(5121), Case(32769, profile='cluster'), Case(65536, 64, 4, 4),
-            Case(31, 17, 5, 2, padding=3, inverse=1), Case(33, channels=8)]
+            Case(31, 17, 5, 2, padding=3, inverse=1), Case(33, channels=8), Case(65, channels=8),
+            Case(1,1,1,1), Case(512,1,1,1), Case(256,64,2,2),
+            Case(128,64,4,4), Case(32,33,16,16), Case(16,64,32,32)]
     if smoke:
-        return [Case(m, channels=8) for m in (1, 4, 8, 16, 32, 129, 2048, 5120)] + edge
+        return [Case(m, channels=8) for m in (1, 4, 8, 16, 32, 64, 129, 2048, 5120)] + edge
     return [Case(m, channels=c, profile=p) for m in
             (*range(1, 9), 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 5120)
             for p in ('spread', 'cluster', 'repeat2', 'repeat4', 'random') for c in (1, 8)] + edge
@@ -98,24 +100,27 @@ def tiled_model(ids, case, tile):
     return source, order, offsets
 
 
-def register_model(ids, case):
+def register_model(ids, case, ballot=False):
     """Model warp ballots/lane-prefix ranks; no shared selected-list."""
     import numpy as np
     flat = ids[:, :case.topk].reshape(-1); n = len(flat)
-    if not 0 < n <= 256: raise ValueError('register candidate scope is 1..256 routed rows')
+    limit=512 if ballot else 256
+    if not 0 < n <= limit: raise ValueError(f'register candidate scope is 1..{limit} routed rows')
     source, order = np.empty(n, dtype=np.int32), np.empty(n, dtype=np.int32)
     offsets = np.empty(case.experts+1, dtype=np.int32)
     for e in range(case.experts):
-        lower = [0]*32; masks = []
+        lower = [0]*32; masks = []; ballot_begin=0
         for g in range((n+31)//32):
-            hit = 0
+            hit = 0; lower_mask=0
             for lane in range(32):
                 r = g*32+lane
                 if r<n:
                     lower[lane] += int(flat[r]<e)
+                    if flat[r]<e: lower_mask |= 1<<lane
                     if flat[r]==e: hit |= 1<<lane
             masks.append(hit)
-        begin, count = sum(lower), 0
+            ballot_begin += lower_mask.bit_count()
+        begin, count = ballot_begin if ballot else sum(lower), 0
         for g, hit in enumerate(masks):
             for lane in range(32):
                 if hit&(1<<lane):
