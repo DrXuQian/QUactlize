@@ -5,6 +5,7 @@ from collections import Counter
 import fcntl
 import json
 from pathlib import Path
+import shutil
 import sys
 import time
 
@@ -14,7 +15,7 @@ from dev.prefill_asys.trace import activities, runtime_activities
 from dev.strategy.asys_components import parse_component_rows
 
 
-def inspect(attempt, *, allow_terminal_short=False):
+def inspect(attempt, *, allow_short_sample=False):
     attempt = Path(attempt).resolve(strict=True)
     captured = json.loads((attempt / 'capture.json').read_text())
     if 'component_records' not in captured and 'data' in captured:
@@ -39,17 +40,17 @@ def inspect(attempt, *, allow_terminal_short=False):
         scope='EXISTING_TRACE_COMPONENT_COVERAGE_ONLY_NOT_NUMERICAL_OR_TIMING_ADMISSION')
     try:
         parsed=parse_component_rows(records, schedule, kernels, {}, protocol['rounds'], protocol['samples'],
-                                    runtime_apis=apis,allow_terminal_short=allow_terminal_short)
+                                    runtime_apis=apis,allow_short_sample=allow_short_sample)
     except (KeyError, TypeError, ValueError) as error:
         result.update(status='COVERAGE_OR_CONTRACT_FAIL', error=str(error))
     else:
-        exceptions=[r['terminal_activity_exception'] for r in parsed.values() if 'terminal_activity_exception' in r]
-        result.update(status='COMPONENT_COVERAGE_MATCHES_WITH_TERMINAL_EXCEPTION' if exceptions else
-                      'COMPONENT_COVERAGE_MATCHES',terminal_activity_exceptions=exceptions)
+        exceptions=[r['activity_count_exception'] for r in parsed.values() if 'activity_count_exception' in r]
+        result.update(status='COMPONENT_COVERAGE_MATCHES_WITH_COUNT_EXCEPTION' if exceptions else
+                      'COMPONENT_COVERAGE_MATCHES',activity_count_exceptions=exceptions)
     return result
 
 
-def reparse_moe(attempt,output,*,repair_preflight=False):
+def reparse_moe(attempt,output,*,repair_preflight=False,repair_batch=False):
     from dev.strategy.moe_prefill_search import parse
     from dev.strategy.journal import atomic_json
     from dev.strategy.smallm_asys import revision
@@ -70,7 +71,7 @@ def reparse_moe(attempt,output,*,repair_preflight=False):
         trace_sha256=sha(attempt/'trace.asysrep') if (attempt/'trace.asysrep').exists() else None,
         scope='OFFLINE_REPARSE_NOT_CAMPAIGN_CHECKPOINT')
     run=None
-    if repair_preflight:
+    if repair_preflight or repair_batch:
         run=sealed(attempt.parents[2]/'run.json')
         provenance.update(run['source_revision'],source_sha256=run['source']['sha256'],
             harness_sha256=run['harness']['sha256'],images_sha256=digest(run['images']),
@@ -83,79 +84,102 @@ def reparse_moe(attempt,output,*,repair_preflight=False):
                 scope=provenance['scope'])
     atomic_json(output,data)
     result=dict(output=str(output),status=data['status'],gpu_work=False,
-                terminal_activity_exceptions=data['terminal_activity_exceptions'])
-    if repair_preflight:
+                activity_count_exceptions=data['activity_count_exceptions'])
+    if repair_preflight or repair_batch:
         root=attempt.parents[2]
         with root.with_name(root.name+'.lock').open('a') as held:
             fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)
-            result['preflight']=repair_moe_preflight(attempt,captured,data,run)
+            result['repair']=repair_moe_batch(attempt,captured,data,run,preflight=repair_preflight)
     return result
 
 
 def repair_moe_preflight(attempt,capture,data,run):
+    return repair_moe_batch(attempt,capture,data,run,preflight=True)
+
+
+def repair_moe_batch(attempt,capture,data,run,*,preflight=False):
     """Publish only this passed old batch; never edit run.json or raw evidence."""
     from quactlize.runtime.compiler import sha
     from tools import run_decode_refresh as base
     from tools.run_smallm_regressions_asys import sealed
     from tools.run_moe_prefill_sweep import batch_path,cache_folder,saved
     root=attempt.parents[2];job=sealed(attempt/'job.json');point=job['point']
-    authority=capture['authority'];shard=authority['shard']
+    authority=capture['authority'];shard=authority['shard'];phase=job['phase']
     if (data['status']!='PASS' or job['run']!=run['sha256'] or capture['job']!=job['sha256'] or
-            capture['point']!=point['id'] or capture['phase']!='screen' or job['phase']!='screen' or
-            set(capture['arms'])!=set(job['arms']) or len(job['arms'])!=1 or
-            next(a for a in point['arms'] if a['id']==job['arms'][0])['recipe']['kind']!='full' or
-            authority!=dict(run=run['sha256'],shard=shard,device=run['devices'][shard],phase='screen')):
+            capture['point']!=point['id'] or phase not in ('screen','confirm') or capture['phase']!=phase or
+            set(capture['arms'])!=set(job['arms']) or
+            authority!=dict(run=run['sha256'],shard=shard,device=run['devices'][shard],phase=phase)):
+        raise ValueError('capture is not the original measurement batch')
+    if preflight and (phase!='screen' or len(job['arms'])!=1 or
+            next(a for a in point['arms'] if a['id']==job['arms'][0])['recipe']['kind']!='full'):
         raise ValueError('capture is not the original Full preflight batch')
     process=json.loads((attempt/'profile.process.json').read_text())
     if process['returncode']!=0:raise ValueError('profiled child did not exit successfully')
-    folder=root/('gpu-'+run['cards'][shard]);path=batch_path(folder,point['id'],'screen',job['arms'])
+    folder=root/('gpu-'+run['cards'][shard]);path=batch_path(folder,point['id'],phase,job['arms'])
     gate=root/'preflight.json'
-    if gate.exists():
+    if preflight and gate.exists():
         old=sealed(gate)
         if old['status']!='PASS' or old['run']!=run['sha256']:raise ValueError('existing preflight differs')
         if saved(path,run) is None:raise ValueError('existing preflight has no passed batch')
         return dict(status='ALREADY_REPAIRED',path=str(gate))
-    if path.exists():raise ValueError('batch already exists; keep it rather than overwrite')
+    failed_receipt=None
+    if path.exists():
+        old=sealed(path)
+        if old.get('run')!=run['sha256'] or old.get('point')!=point['id']:
+            raise ValueError('existing batch belongs to another run/point')
+        if old['status']=='PASS':
+            saved(path,run)
+            return dict(status='ALREADY_REPAIRED',batch=str(path),gpu_work=False)
+        if old['status']!='FAIL':raise ValueError('existing batch is not a completed failure')
+        failed_receipt=path.with_name(path.stem+'.failed-'+sha(path)[:16]+'.json')
+        if failed_receipt.exists():
+            if sha(failed_receipt)!=sha(path):raise ValueError('failed batch backup differs')
+        else:shutil.copyfile(path,failed_receipt)
     evidence={str(attempt/name):sha(attempt/name) for name in
         ('job.json','capture.json','profile.process.json','trace.sqlite','trace.asysrep')
         if (attempt/name).is_file()}
     for cid,row in data['component_records'].items():
         if row['kind']=='producer':continue
-        target=cache_folder(folder,'screen',point)/(cid+'.json')
+        target=cache_folder(folder,phase,point)/(cid+'.json')
         if not target.exists():base.sealed(target,dict(record=row,run=run['sha256'],evidence=evidence))
-    base.sealed(path,dict(status='PASS',run=run['sha256'],point=point['id'],phase='screen',
-        data=data,evidence=evidence,clock_observation='NOT_SAVED_BY_ORIGINAL_FAILED_PARSE'))
-    base.sealed(gate,dict(status='PASS',run=run['sha256'],point=point['id'],reset=data['reset'],
-        scope='FULL_RESET_CAPTURE_GATE_NOT_CAMPAIGN',parser_revision=data['latency_provenance']['parser_revision']))
-    return dict(status='REPAIRED',path=str(gate),batch=str(path),gpu_work=False)
+    base.sealed(path,dict(status='PASS',run=run['sha256'],point=point['id'],phase=phase,
+        data=data,evidence=evidence,clock_observation='NOT_SAVED_BY_ORIGINAL_FAILED_PARSE',
+        previous_failure=str(failed_receipt) if failed_receipt else None))
+    if preflight:
+        base.sealed(gate,dict(status='PASS',run=run['sha256'],point=point['id'],reset=data['reset'],
+            scope='FULL_RESET_CAPTURE_GATE_NOT_CAMPAIGN',parser_revision=data['latency_provenance']['parser_revision']))
+    return dict(status='REPAIRED',path=str(gate) if preflight else str(path),batch=str(path),gpu_work=False)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--attempt', type=Path, required=True)
-    parser.add_argument('--allow-terminal-short',action='store_true',
-                        help='use the observed count for a single short final sample')
+    parser.add_argument('--allow-short-sample','--allow-terminal-short',action='store_true',
+                        help='use observed intervals for one uniquely correlated short sample')
     parser.add_argument('--reparse-moe-output',type=Path,
                         help='write a new offline result; never overwrites the old capture/run')
-    parser.add_argument('--repair-moe-preflight',action='store_true',
+    repair=parser.add_mutually_exclusive_group()
+    repair.add_argument('--repair-moe-preflight',action='store_true',
                         help='reparse the saved Full preflight and let the original run resume')
+    repair.add_argument('--repair-moe-batch',action='store_true',
+                        help='repair only this saved screen/confirmation batch, preserving its failure')
     args = parser.parse_args()
     try:
-        if args.repair_moe_preflight:
-            args.allow_terminal_short=True
+        if args.repair_moe_preflight or args.repair_moe_batch:
+            args.allow_short_sample=True
             if args.reparse_moe_output is None:
                 args.reparse_moe_output=args.attempt/('reparsed-'+str(time.time_ns())+'.json')
-        if args.reparse_moe_output and not args.allow_terminal_short:
-            parser.error('--reparse-moe-output requires --allow-terminal-short')
-        result = inspect(args.attempt,allow_terminal_short=args.allow_terminal_short)
+        if args.reparse_moe_output and not args.allow_short_sample:
+            parser.error('--reparse-moe-output requires --allow-short-sample')
+        result = inspect(args.attempt,allow_short_sample=args.allow_short_sample)
         if args.reparse_moe_output and result['status'].startswith('COMPONENT_COVERAGE_MATCHES'):
             result['moe_reparse']=reparse_moe(args.attempt,args.reparse_moe_output,
-                                             repair_preflight=args.repair_moe_preflight)
+                repair_preflight=args.repair_moe_preflight,repair_batch=args.repair_moe_batch)
     except (OSError, KeyError, TypeError, ValueError) as error:
         parser.error(str(error))
-    if args.repair_moe_preflight and 'moe_reparse' in result:
+    if (args.repair_moe_preflight or args.repair_moe_batch) and 'moe_reparse' in result:
         repair=result['moe_reparse']
-        print('MOE_PREFILL_REPAIR '+json.dumps(dict(repair['preflight'],
+        print('MOE_PREFILL_REPAIR '+json.dumps(dict(repair['repair'],
             expected_kernels=result['expected_kernels'],observed_kernels=result['actual_kernels'],
             output=repair['output'],gpu_work=False),allow_nan=False))
     else:

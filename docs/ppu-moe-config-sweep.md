@@ -400,7 +400,8 @@ The uploaded `mPwSAs3o` Full preflight has 120 successful graph launches,
 checks passed. Use the final group's 15 observed durations as its denominator;
 do not pad it, divide by 16, or replace GPU time with API time. Kernel identity,
 positive intervals and sample-to-launch correlation remain checked. Missing
-whole samples, interior-group loss or more than one missing interval still fail.
+whole samples or more than one missing interval still fail. Initially this
+exception was restricted to the final sample; see the extension below.
 No graph-node-ID, CPU/GPU timestamp overlap or profiler-stop gate is needed.
 
 `tools/inspect_asys_component_coverage.py --attempt PATH --repair-moe-preflight`
@@ -414,3 +415,27 @@ on this experiment branch apply the observed-count rule automatically.
 Local evidence: the actual 1919/1920 SQLite reparses successfully; `finish_bf16`
 mean is 3.3391184 us. This repairs one batch, not a completed sweep, native
 no-regression result or production selection. No new GPU measurement was made.
+
+### 2026-10-29: a single short sample need not be last
+
+The `wAVjENxB` run passed 199/200 points. Qwen122 TP2 Q5 down at
+M4096/N3072/K512/E256/top8/repeat2 stopped in confirmation parsing: 360
+successful graph calls, 5879/5880 GPU intervals, and all numerical/replay
+checks passed. Sample index 30 (zero-based), correlation 32103, has 17/18
+`sf_bfloat_units<Fmt1,8,256>` intervals. The other 359 samples are complete.
+This is missing profiler evidence, not evidence of a skipped kernel launch.
+
+The opt-in parser now locates one short sample by its successful graph-call
+correlation, independent of position. It divides that sample's sum by the
+observed count, retains every real interval, and records expected/observed
+counts and the parser revision. Multiple gaps, extra activities, missing
+whole samples, bad kernel/launch identity or failed numerical checks still
+reject timing. Strict callers are unchanged; no kernel or routing is changed.
+
+`tools/inspect_asys_component_coverage.py --attempt PATH --repair-moe-batch`
+restores just the saved screen/confirmation batch. Any failed batch receipt
+is retained as a `.failed-<hash>.json` sibling. Raw captures and `run.json`
+are unchanged; the measurement commit stays original. The old source's
+`--resume` reuses this batch, the point's 51-arm screen and the other 199
+points. This run still needs the remaining two finalists (Full and FQ);
+repairing four captured finalists does not mark the whole point complete.

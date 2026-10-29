@@ -37,13 +37,13 @@ class Collector:
 
 
 def parse_component_rows(records,schedule,rows,provenance,rounds=6,samples=5,
-                         *,runtime_apis=None,allow_terminal_short=False):
+                         *,runtime_apis=None,allow_short_sample=False):
     """Shared native/candidate clock and launch checks; callers check numerics."""
     records=copy.deepcopy(records)
     exception=None
-    if allow_terminal_short and len(rows)<sum(x['kernels'] for x in schedule):
-        from dev.strategy.asys_tail import terminal_loss
-        exception=terminal_loss(records,schedule,rows,runtime_apis or [])
+    if allow_short_sample and len(rows)<sum(x['kernels'] for x in schedule):
+        from dev.strategy.asys_tail import single_activity_loss
+        exception=single_activity_loss(records,schedule,rows,runtime_apis or [])
     values={k:[[None]*samples for _ in range(rounds)] for k in records}
     cursor=0;sequences={k:[] for k in records}
     for item in schedule:
@@ -77,7 +77,7 @@ def parse_component_rows(records,schedule,rows,provenance,rounds=6,samples=5,
                                    durations_ns=[v['end']-v['start'] for v in block]))
         if actual_count!=count:
             sequences[cid][-1]['expected_count']=count
-            record['terminal_activity_exception']=exception
+            record['activity_count_exception']=exception
     if cursor!=len(rows):raise ValueError('unaccounted Asys GPU activity; no timing admitted')
     for cid,record in records.items():
         if any(x is None for row in values[cid] for x in row):raise ValueError('missing component sample')

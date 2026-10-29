@@ -254,13 +254,13 @@ def parse(capture,known,rows,apis,provenance):
         if cid not in known or digest(known[cid])!=want:raise ValueError('reused stage binding differs')
     p=capture['protocol'];kernel_rows=[r for r in rows if r['kind']=='kernel']
     records=parse_component_rows(capture['component_records'],capture['trace_schedule'],kernel_rows,
-                                 provenance,p['rounds'],p['samples'],runtime_apis=apis,allow_terminal_short=True)
+                                 provenance,p['rounds'],p['samples'],runtime_apis=apis,allow_short_sample=True)
     records.update({cid:known[cid] for cid in capture['reused_components']})
     reset=parse_reset(capture['reset'],rows,apis)
     result=deepcopy(capture)
     result.update(status='PASS',component_records=records,reset=reset,latency_provenance=provenance)
-    result['terminal_activity_exceptions']=[r['terminal_activity_exception'] for r in records.values()
-                                           if 'terminal_activity_exception' in r]
+    result['activity_count_exceptions']=[r['activity_count_exception'] for r in records.values()
+                                        if 'activity_count_exception' in r]
     for part in [*result['arms'].values(),*[v for pool in result['expansions'].values() for v in pool.values()]]:
         for s in part['stages']:s.update({k:records[s['id']][k] for k in ('mean_us','median_us','spread_pct')})
     return result

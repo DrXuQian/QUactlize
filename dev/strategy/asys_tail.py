@@ -1,12 +1,12 @@
-"""Use observed intervals for a single short final sample, without imputation."""
+"""Locate one missing interval by launch correlation, without imputation."""
 from collections import defaultdict
 
-POLICY='OBSERVED_COUNT_SINGLE_SHORT_FINAL_SAMPLE_V1'
+POLICY='OBSERVED_COUNT_SINGLE_SHORT_SAMPLE_V2'
 
 
-def terminal_loss(records,schedule,rows,apis):
+def single_activity_loss(records,schedule,rows,apis):
     def require(ok,message):
-        if not ok:raise ValueError('terminal Asys activity exception rejected: '+message)
+        if not ok:raise ValueError('single Asys activity exception rejected: '+message)
     expected=sum(x['kernels'] for x in schedule)
     require(bool(schedule) and len(rows)==expected-1,'not exactly one missing activity')
     calls=[a for a in apis if a['name'] in ('hggcGraphLaunch','cudaGraphLaunch')]
@@ -18,18 +18,21 @@ def terminal_loss(records,schedule,rows,apis):
     grouped=defaultdict(list)
     for row in rows:grouped[row.get('correlation_id')].append(row)
     require(set(grouped)==set(ids),'unassigned or entirely missing graph activity')
-    cursor=0
+    cursor=0;short=None
     for index,(item,call) in enumerate(zip(schedule,calls)):
         group=grouped[call['correlation_id']]
-        want=item['kernels']-int(index==len(calls)-1)
-        require(len(group)==want,'non-terminal missing or extra activity')
-        require(rows[cursor:cursor+want]==group,'interleaved graph activity')
-        cursor+=want
+        count=item['kernels']
+        if len(group)!=count:
+            require(short is None and len(group)==count-1,'multiple missing or extra activities')
+            require(count==records[item['component']]['calls_per_graph'] and count>=16,
+                    'invalid repeat count')
+            short=dict(component=item['component'],round=item['round'],sample=item['sample'],
+                sample_index=index,expected_count=count,observed_count=len(group),
+                launch_correlation_id=call['correlation_id'])
+        require(rows[cursor:cursor+len(group)]==group,'interleaved graph activity')
+        cursor+=len(group)
         # The normal parser below checks kernel identity and positive durations.
-    last=schedule[-1];call=calls[-1];count=last['kernels']
-    require(count==records[last['component']]['calls_per_graph'] and count>=16,'invalid repeat count')
-    return dict(policy=POLICY,component=last['component'],round=last['round'],sample=last['sample'],
-        expected_total=expected,observed_total=len(rows),expected_count=count,observed_count=count-1,
-        launch_correlation_id=call['correlation_id'],
+    require(short is not None,'no uniquely identified short sample')
+    return dict(short,policy=POLICY,expected_total=expected,observed_total=len(rows),
         denominator='OBSERVED_GPU_ACTIVITIES',imputed_intervals=0,
         interpretation='EXECUTION_COUNT_UNCHANGED_ONE_TRACE_INTERVAL_MISSING')
