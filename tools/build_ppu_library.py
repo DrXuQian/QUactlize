@@ -30,7 +30,8 @@ PUBLIC_EXPORTS = (
     'quactlize_ppu_moe_route_query_v1',
     'quactlize_ppu_moe_route_run_v1',
     *('quactlize_ppu_moe_' + suffix for suffix in (
-        'prepare_query_v1', 'prepare_run_v1', 'transition_query_v1', 'transition_run_v1', 'finish_run_v1')),
+        'prepare_query_v1', 'prepare_run_v1', 'transition_query_v1', 'transition_run_v1', 'finish_run_v1',
+        'prepare_select_v1', 'prepare_execute_v1', 'finish_select_v1', 'finish_execute_v1')),
     'quactlize_ppu_kpack_canonical_arrangement_v1',
     'quactlize_ppu_kpack_sizes_for_arrangement_v1',
     'quactlize_ppu_prepare_fully_quantized_dev_for_arrangement_v2',
@@ -247,7 +248,8 @@ def build(sdk, output, jobs):
 
     with ThreadPoolExecutor(max_workers=min(jobs, 2)) as pool:
         objects = list(pool.map(compile_one, ('quactlize/dense/runtime.cpp', 'quactlize/dense/copy.cu',
-                                            'quactlize/routing/route.cu', 'quactlize/moe/scaffold.cu')))
+                                            'quactlize/routing/route.cu', 'quactlize/moe/scaffold.cu',
+                                            'quactlize/moe/selection.cpp')))
     objects += [work / 'packing' / (name + '.o') for name in ('sizes.cpp', 'ppu_pack.cu')]
     run('public', ['g++', '-shared', '-pthread', '-Wl,-Bsymbolic', '-Wl,-z,defs',
         '-Wl,-soname,libquactlize_ppu.so', '-Wl,-rpath,$ORIGIN/quactlize-runtime',

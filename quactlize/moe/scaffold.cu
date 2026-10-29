@@ -1,8 +1,14 @@
 #include <hggc_runtime.h>
 #include <hggc_fp16.h>
 #include <hggc_bf16.h>
-#include "validation.hpp"
+#include "selection.hpp"
 #include "../routing/kernels.cuh"
+
+namespace quactlize::routing {
+// Internal stage launcher defined by route.cu; production helpers must not
+// depend on a QZR_TESTING entry to publish their maps.
+int run(qzr_call_v1 const*,qzr_config_v1 const*,int);
+}
 
 namespace quactlize::moe {
 static int launch_status() { return hggcGetLastError()==hggcSuccess?QZR_OK:QZR_RUNTIME; }
@@ -232,19 +238,15 @@ extern "C" int quactlize_ppu_moe_finish_run_v1(qzm_finish_v1 const* c) {
     finish_kernel<<<int(count>65535?65535:count),256,0,static_cast<hggcStream_t>(c->stream)>>>(*c);
     return launch_status();
 }
-#ifdef QZM_TESTING
-extern "C" int qzm_test_prepare_stage_v1(qzm_prepare_v1 const* c,int stage) {
-    return quactlize::moe::run_prepare(c,stage);
-}
-extern "C" int qzr_test_stage_v1(qzr_call_v1 const*,qzr_config_v1 const*,int);
-extern "C" int qzm_test_prepare_unfused_v1(qzm_prepare_v1 const* c,int stage) {
+namespace quactlize::moe {
+int prepare_separate(qzm_prepare_v1 const* c,int stage) {
     using namespace quactlize;
     if(!c) return QZR_INVALID;
     routing::Layout l;int rc=moe::prepare(*c,l,true);if(rc) return rc;
     if(!l.rows) return moe::run_prepare(c,stage);
     int route_stages=l.stages;
     if(stage<0 || stage>=route_stages+2) return QZR_INVALID;
-    if(stage<route_stages) return qzr_test_stage_v1(&c->route,&c->config,stage);
+    if(stage<route_stages) return routing::run(&c->route,&c->config,stage);
     auto stream=static_cast<hggcStream_t>(c->route.stream);
     if(stage==route_stages)
         moe::prepare_prefix<false><<<1,((c->route.experts+31)/32)*32,0,stream>>>(*c,0,nullptr,nullptr);
@@ -256,7 +258,7 @@ extern "C" int qzm_test_prepare_unfused_v1(qzm_prepare_v1 const* c,int stage) {
 }
 // Keep routing publication separate from grouped-row traversal. This candidate
 // saves only the standalone expert-metadata launch, not the map dependency.
-extern "C" int qzm_test_prepare_hybrid_v1(qzm_prepare_v1 const* c,int stage) {
+int prepare_hybrid(qzm_prepare_v1 const* c,int stage) {
     using namespace quactlize;
     if(!c || stage<-1 || stage>3 || c->config.algorithm!=QZR_TILED) return QZR_INVALID;
     routing::Layout l;int rc=moe::prepare(*c,l,true);if(rc) return rc;
@@ -264,13 +266,12 @@ extern "C" int qzm_test_prepare_hybrid_v1(qzm_prepare_v1 const* c,int stage) {
     for(int s=0;s<4;++s) {
         if(stage>=0 && stage!=s) continue;
         if(s<2) rc=moe::run_prepare(c,s);
-        else if(s==2) rc=qzr_test_stage_v1(&c->route,&c->config,2);
-        else rc=qzm_test_prepare_unfused_v1(c,4);
+        else if(s==2) rc=routing::run(&c->route,&c->config,2);
+        else rc=prepare_separate(c,4);
         if(rc) return rc;
     }
     return QZR_OK;
 }
-namespace quactlize::moe {
 // A warp owns 32 columns of one slot. Each slot keeps the original ordered
 // Split-K reduction and projection rounding; only independent slots run in
 // parallel. The final warp still sums slots 0..topk-1 without reassociation.
@@ -307,10 +308,12 @@ __global__ void materialize(qzm_value_v1 v,int nr,int nc,float* out) {
     for(int64_t i=int64_t(blockIdx.x)*256+threadIdx.x;i<int64_t(nr)*nc;i+=int64_t(gridDim.x)*256)
         out[i]=projection(v,int(i/nc),int(i%nc));
 }
+#ifdef QZM_TESTING
 __global__ void cast_materialized(float const* in,void* out,int nr,int nc,int type,int64_t stride) {
     for(int64_t i=int64_t(blockIdx.x)*256+threadIdx.x;i<int64_t(nr)*nc;i+=int64_t(gridDim.x)*256)
         store(out,(i/nc)*stride+i%nc,type,in[i]);
 }
+#endif
 __global__ void weight_slots(qzm_finish_v1 c,float const* projected,float* weighted) {
     int64_t nr=int64_t(c.tokens)*c.topk;
     for(int64_t i=int64_t(blockIdx.x)*256+threadIdx.x;i<nr*c.columns;i+=int64_t(gridDim.x)*256) {
@@ -334,8 +337,7 @@ inline int flat_blocks(int rows,int columns) {
     int64_t n=(int64_t(rows)*columns+255)/256;
     return int(n>65535?65535:n);
 }
-}
-extern "C" int qzm_test_finish_parallel_v1(qzm_finish_v1 const* c,int warps) {
+int finish_parallel(qzm_finish_v1 const* c,int warps) {
     using namespace quactlize::moe;
     if(!c || (warps!=4 && warps!=8)) return QZR_INVALID;
     int rc=finish(*c,true);if(rc || !c->tokens) return rc;
@@ -345,6 +347,55 @@ extern "C" int qzm_test_finish_parallel_v1(qzm_finish_v1 const* c,int warps) {
     if(warps==4) finish_slots<4><<<blocks,128,0,stream>>>(*c);
     else finish_slots<8><<<blocks,256,0,stream>>>(*c);
     return launch_status();
+}
+} // namespace quactlize::moe
+
+extern "C" int quactlize_ppu_moe_prepare_execute_v1(qzm_prepare_v1 const* c,qzm_plan_v1 const* plan) {
+    using namespace quactlize::moe;
+    if(!c || !plan) return QZR_INVALID;
+    qzm_plan_v1 expected{};int rc=prepare_plan(*c,plan->implementation,expected);if(rc) return rc;
+    if(!same_plan(*plan,expected)) return QZR_INVALID;
+    if(plan->implementation==QZM_PREPARE_FUSED) return run_prepare(c,-1);
+    if(plan->implementation==QZM_PREPARE_HYBRID) return prepare_hybrid(c,-1);
+    for(int stage=0;stage<plan->stages;++stage) {
+        rc=prepare_separate(c,stage);if(rc) return rc;
+    }
+    return QZR_OK;
+}
+extern "C" int quactlize_ppu_moe_finish_execute_v1(qzm_finish_v1 const* c,qzm_plan_v1 const* plan,
+                                                  void* workspace,uint64_t bytes) {
+    using namespace quactlize::moe;
+    if(!c || !plan) return QZR_INVALID;
+    qzm_plan_v1 expected{};int rc=finish_plan(*c,plan->implementation,expected);if(rc) return rc;
+    if(!same_plan(*plan,expected)) return QZR_INVALID;
+    rc=finish(*c,true);if(rc) return rc;
+    rc=finish_workspace(*c,plan->workspace_bytes,workspace,bytes);if(rc || !c->tokens) return rc;
+    if(plan->implementation==QZM_FINISH_SERIAL) return quactlize_ppu_moe_finish_run_v1(c);
+    if(plan->implementation==QZM_FINISH_SLOTS4 || plan->implementation==QZM_FINISH_SLOTS8)
+        return finish_parallel(c,plan->implementation==QZM_FINISH_SLOTS4?4:8);
+    auto projected=static_cast<float*>(workspace);
+    auto weighted=reinterpret_cast<float*>(static_cast<uint8_t*>(workspace)+plan->workspace_bytes/2);
+    auto stream=static_cast<hggcStream_t>(c->stream);int nr=c->tokens*c->topk;
+    materialize<<<flat_blocks(nr,c->columns),256,0,stream>>>(c->down,nr,c->columns,projected);
+    rc=launch_status();if(rc) return rc;
+    weight_slots<<<flat_blocks(nr,c->columns),256,0,stream>>>(*c,projected,weighted);
+    rc=launch_status();if(rc) return rc;
+    sum_slots<<<flat_blocks(c->tokens,c->columns),256,0,stream>>>(*c,weighted);
+    return launch_status();
+}
+
+#ifdef QZM_TESTING
+extern "C" int qzm_test_prepare_stage_v1(qzm_prepare_v1 const* c,int stage) {
+    return quactlize::moe::run_prepare(c,stage);
+}
+extern "C" int qzm_test_prepare_unfused_v1(qzm_prepare_v1 const* c,int stage) {
+    return quactlize::moe::prepare_separate(c,stage);
+}
+extern "C" int qzm_test_prepare_hybrid_v1(qzm_prepare_v1 const* c,int stage) {
+    return quactlize::moe::prepare_hybrid(c,stage);
+}
+extern "C" int qzm_test_finish_parallel_v1(qzm_finish_v1 const* c,int warps) {
+    return quactlize::moe::finish_parallel(c,warps);
 }
 extern "C" int qzm_test_materialize_v1(qzm_value_v1 const* v,int rows,int columns,float* out,void* stream) {
     using namespace quactlize::moe;

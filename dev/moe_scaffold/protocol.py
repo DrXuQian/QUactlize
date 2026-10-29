@@ -37,6 +37,11 @@ class Finish(C.Structure):
         (n, C.c_int64) for n in ('weights_stride', 'output_stride')] + [('stream', C.c_void_p)]
 
 
+class Plan(C.Structure):
+    _fields_ = [('version', C.c_uint32), ('size', C.c_uint32),
+                ('implementation', C.c_int32), ('stages', C.c_int32), ('workspace_bytes', C.c_uint64)]
+
+
 @dataclass(frozen=True)
 class Case:
     tokens: int
@@ -69,6 +74,21 @@ class Case:
 
     @property
     def route_case(self): return RouteCase(self.tokens, self.experts, self.topk, 1, self.profile, padding=self.padding)
+
+
+def plan_calls(c):
+    """Pointer-free public-query descriptors, also used by offline C++ replay."""
+    route=Call(version=1,size=C.sizeof(Call),tokens=c.tokens,experts=c.experts,topk=c.topk,
+               channels=1,ids_stride=c.topk+c.padding,source_stride=1+c.padding)
+    prepare=Prepare(version=1,size=C.sizeof(Prepare),route=route,
+        config=Config(1,C.sizeof(Config),2,512),columns=c.columns,dtype=c.dtype,input_row_stride=c.columns+c.padding)
+    state=int(c.down_splits>1)
+    dtype=0 if state else c.dtype if c.projection_dtype==-1 else c.projection_dtype
+    down=Value(None,dtype,c.down_order,state,c.down_splits,c.output+c.padding,
+               c.tokens*c.topk*(c.output+c.padding)+(5 if c.padding else 0),c.dtype,0)
+    finish=Finish(version=1,size=C.sizeof(Finish),tokens=c.tokens,topk=c.topk,columns=c.output,
+                  down=down,weights_stride=c.topk+c.padding,output_stride=c.output+c.padding)
+    return prepare,finish
 
 
 def encode(values, dtype):
@@ -148,6 +168,8 @@ def parse(capture, rows, apis):
     points = []
     for point in capture['points']:
         arms = {arm: sum(costs[k] for k in keys) for arm, keys in point['components'].items()}
+        if point.get('selected_arm') is not None and point['selected_arm'] not in arms:
+            raise ValueError('public selected implementation was not measured')
         points.append(dict(point, arms_us=arms,
                            delta_pct=100*(arms['fused']/arms['unfused']-1) if arms['unfused'] else None,
                            versus_fused_pct={k:100*(v/arms['fused']-1) for k,v in arms.items()} if arms['fused'] else {},
@@ -156,4 +178,5 @@ def parse(capture, rows, apis):
                 observed_counts=dict(observed), missing_intervals=missing, imputed_intervals=0,
                 device=capture['device'], baseline='SAME_MATH_UNFUSED_HELPERS_NOT_LLAMA_GEMM',
                 timing_method='ASYS_SEPARATE_COMPONENT_MEANS_SUM', production_changed=False,
+                public_selected_correctness=capture.get('public_selected_correctness','NOT_CHECKED'),
                 no_regression_admitted=False, model_tpot_admitted=False)

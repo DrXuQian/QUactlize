@@ -89,6 +89,38 @@ typedef struct {
 // not expert order or floating atomics. No fixed token/route-row capacity.
 int quactlize_ppu_moe_finish_run_v1(qzm_finish_v1 const*);
 
+// Selected helpers are additive: the original v1 calls above keep their
+// fixed implementations. AUTO ranks only the measured model-shaped domain;
+// outside it the original implementation is retained. Explicit alternatives
+// remain available for any shape allowed by their query, not just measured M.
+enum {
+    QZM_AUTO=0,
+    QZM_PREPARE_FUSED=1, QZM_PREPARE_HYBRID=2, QZM_PREPARE_SEPARATE=3,
+    QZM_FINISH_SERIAL=16, QZM_FINISH_SLOTS4=17, QZM_FINISH_SLOTS8=18,
+    QZM_FINISH_SEPARATE=19
+};
+typedef struct {
+    uint32_t version, size;
+    int32_t implementation, stages;
+    uint64_t workspace_bytes;
+} qzm_plan_v1;
+
+// Host-only query; no pointers, IDs or route distribution are read. Prepare
+// retains the caller's WARP/TILED and tile_rows choice. Its workspace is the
+// existing route.workspace. The measured TILED512 choice is NOT a claim of
+// optimality over every mm_ids implementation. Transition already selects its
+// required operations from the actual producer state, including zero-op.
+int quactlize_ppu_moe_prepare_select_v1(qzm_prepare_v1 const*,int32_t implementation,qzm_plan_v1*);
+int quactlize_ppu_moe_prepare_execute_v1(qzm_prepare_v1 const*,qzm_plan_v1 const*);
+int quactlize_ppu_moe_finish_select_v1(qzm_finish_v1 const*,int32_t implementation,qzm_plan_v1*);
+
+// A plan contains no addresses/stream. Pass current call bindings every time;
+// query again if its shape/state changes. Separate finish needs two compact
+// F32 [tokens*topk,columns] scratch planes, each aligned to 16 bytes. Caller
+// owns per-stream scratch and keeps it alive through graph replay. Insufficient
+// or overlapping scratch is rejected before any launch, never silently fused.
+int quactlize_ppu_moe_finish_execute_v1(qzm_finish_v1 const*,qzm_plan_v1 const*,void* workspace,uint64_t bytes);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1,4 +1,4 @@
-#include "quactlize/moe/validation.hpp"
+#include "quactlize/moe/selection.hpp"
 #include <cassert>
 #include <cstdio>
 #include <initializer_list>
@@ -71,5 +71,65 @@ int main() {
     uint64_t bytes=0;
     assert(matrix_bytes(INT_MAX,INT_MAX,INT64_MAX,QZM_F32,bytes)==QZR_OVERFLOW);
     assert(matrix_bytes(2,8,8,QZM_F32,bytes,INT_MAX,INT64_MAX)==QZR_OVERFLOW);
+
+    static_assert(sizeof(qzm_plan_v1)==24);
+    qzm_plan_v1 plan{},other{};
+    p.input_row_stride=p.columns;p.route.tokens=16;p.config.algorithm=QZR_TILED;
+    assert(quactlize_ppu_moe_prepare_select_v1(&p,QZM_AUTO,&plan)==0);
+    assert(plan.implementation==QZM_PREPARE_FUSED && plan.stages==3);
+    p.route.tokens=32;
+    assert(quactlize_ppu_moe_prepare_select_v1(&p,QZM_AUTO,&plan)==0);
+    assert(plan.implementation==QZM_PREPARE_HYBRID && plan.stages==4);
+    p.route.tokens=17; // Not a measured M: retain the original implementation.
+    assert(quactlize_ppu_moe_prepare_select_v1(&p,QZM_AUTO,&plan)==0 && plan.implementation==QZM_PREPARE_FUSED);
+    p.config.algorithm=QZR_WARP;
+    assert(quactlize_ppu_moe_prepare_select_v1(&p,QZM_PREPARE_SEPARATE,&plan)==0 && plan.stages==3 && !plan.workspace_bytes);
+    assert(quactlize_ppu_moe_prepare_select_v1(&p,QZM_PREPARE_HYBRID,&plan)==QZR_INVALID);
+    for(int tile:{256,512,1024}) {
+        p.config={1,sizeof(p.config),QZR_TILED,tile};
+        assert(quactlize_ppu_moe_prepare_select_v1(&p,QZM_PREPARE_SEPARATE,&plan)==0 && plan.stages==5);
+        assert(quactlize_ppu_moe_prepare_select_v1(&p,QZM_PREPARE_HYBRID,&plan)==0 && plan.stages==4);
+    }
+    p.route.tokens=0;
+    assert(quactlize_ppu_moe_prepare_select_v1(&p,QZM_AUTO,&plan)==0 && plan.stages==1 && !plan.workspace_bytes);
+
+    f.tokens=2048;f.topk=8;f.columns=3072;f.weights_stride=8;f.output_stride=3072;
+    f.down=value_at(0x1000000000ULL,3072,QZM_PARTIALS);
+    f.down.partial_count=8;f.down.partial_stride=int64_t(f.tokens)*8*3072;
+    f.weights=reinterpret_cast<float*>(0x3000000000ULL);
+    f.output=reinterpret_cast<float*>(0x4000000000ULL);f.inverse_rows=reinterpret_cast<int*>(0x5000000000ULL);
+    assert(quactlize_ppu_moe_finish_select_v1(&f,QZM_AUTO,&plan)==0);
+    assert(plan.implementation==QZM_FINISH_SEPARATE && plan.stages==3 && plan.workspace_bytes==402653184);
+    assert(finish(f,true)==0);
+    void* scratch=reinterpret_cast<void*>(0x6000000000ULL);
+    assert(finish_workspace(f,plan.workspace_bytes,scratch,plan.workspace_bytes)==0);
+    assert(finish_workspace(f,plan.workspace_bytes,scratch,plan.workspace_bytes-1)==QZR_CAPACITY);
+    for(auto ptr:{f.down.data,static_cast<void const*>(f.weights),static_cast<void const*>(f.output),
+                  static_cast<void const*>(f.inverse_rows)})
+        assert(finish_workspace(f,plan.workspace_bytes,const_cast<void*>(ptr),plan.workspace_bytes)==QZR_INVALID);
+    assert(finish_workspace(f,plan.workspace_bytes,reinterpret_cast<void*>(0x6000000004ULL),plan.workspace_bytes)==QZR_INVALID);
+    assert(finish_workspace(f,plan.workspace_bytes,reinterpret_cast<void*>(UINTPTR_MAX-15),plan.workspace_bytes)==QZR_INVALID);
+    // Dynamic addresses/streams are not cached in the plan.
+    f.down.data=reinterpret_cast<void*>(0x7000000000ULL);f.stream=reinterpret_cast<void*>(2);
+    assert(quactlize_ppu_moe_finish_select_v1(&f,QZM_AUTO,&other)==0 && same_plan(plan,other));
+    ++other.workspace_bytes;assert(!same_plan(plan,other));
+    other=plan;++other.stages;assert(!same_plan(plan,other));
+    other=plan;other.version=2;assert(!same_plan(plan,other));
+    assert(quactlize_ppu_moe_finish_select_v1(&f,QZM_PREPARE_FUSED,&other)==QZR_INVALID);
+    // Original producer split is irrelevant after it returns final output.
+    f.down.state=QZM_PROJECTED;f.down.partial_count=1;
+    assert(quactlize_ppu_moe_finish_select_v1(&f,QZM_AUTO,&other)==0 && other.implementation==QZM_FINISH_SERIAL);
+    f.tokens=1;
+    assert(quactlize_ppu_moe_finish_select_v1(&f,QZM_AUTO,&other)==0 && other.implementation==QZM_FINISH_SLOTS8);
+    f.tokens=8;
+    assert(quactlize_ppu_moe_finish_select_v1(&f,QZM_AUTO,&other)==0 && other.implementation==QZM_FINISH_SLOTS4);
+    f.tokens=17;
+    assert(quactlize_ppu_moe_finish_select_v1(&f,QZM_AUTO,&other)==0 && other.implementation==QZM_FINISH_SERIAL);
+    assert(quactlize_ppu_moe_finish_select_v1(&f,QZM_FINISH_SLOTS4,&other)==0); // Explicit arbitrary M remains legal.
+    f.tokens=0;f.down.data=nullptr;f.weights=f.output=nullptr;f.inverse_rows=nullptr;
+    assert(quactlize_ppu_moe_finish_select_v1(&f,QZM_FINISH_SEPARATE,&other)==0 && !other.stages && !other.workspace_bytes);
+    f.tokens=INT_MAX;assert(quactlize_ppu_moe_finish_select_v1(&f,QZM_AUTO,&other)==QZR_OVERFLOW);
+    assert(quactlize_ppu_moe_finish_select_v1(nullptr,QZM_AUTO,&other)==QZR_INVALID);
+    assert(quactlize_ppu_moe_finish_select_v1(&f,QZM_AUTO,nullptr)==QZR_INVALID);
     puts("MOE_SCAFFOLD_HOST PASS");
 }

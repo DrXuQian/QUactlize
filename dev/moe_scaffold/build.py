@@ -1,4 +1,4 @@
-"""Two small TUs; no llama, actlize checkout, TC compilation, or JIT sweep."""
+"""Two device TUs and host selection; no llama, actlize, TC or JIT sweep."""
 import os
 from pathlib import Path
 import subprocess
@@ -24,8 +24,10 @@ def build(sdk, output):
     commands = [[str(sdk/'bin/hgcc'), *FLAGS, '-DQZR_TESTING', '-DQZM_TESTING', '-c',
         str(ROOT/source), '-o', str(output/(Path(source).stem+'.o'))]
         for source in ('quactlize/routing/route.cu', 'quactlize/moe/scaffold.cu')]
+    commands.append(['g++','-std=c++17','-O2','-fPIC','-c',str(ROOT/'quactlize/moe/selection.cpp'),
+                     '-o',str(output/'selection.o')])
     commands.append(['g++', '-shared', '-Wl,-z,defs', '-Wl,-Bsymbolic',
-        str(output/'route.o'), str(output/'scaffold.o'), '-L'+str(sdk/'lib'),
+        str(output/'route.o'), str(output/'scaffold.o'), str(output/'selection.o'), '-L'+str(sdk/'lib'),
         '-Wl,-rpath,'+str(sdk/'lib'), *['-l'+name for name in LIBRARIES], '-o', str(target)])
     start = time.monotonic()
     env = dict(os.environ, PATH=str(sdk/'bin')+':'+os.environ.get('PATH', ''))

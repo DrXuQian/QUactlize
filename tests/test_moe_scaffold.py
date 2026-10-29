@@ -5,7 +5,7 @@ import subprocess
 import numpy as np
 import pytest
 
-from dev.moe_scaffold.protocol import (Value,Prepare,Transition,Finish,Case,workloads,
+from dev.moe_scaffold.protocol import (Value,Prepare,Transition,Finish,Plan,Case,workloads,plan_calls,
     encode,decode,rounded,projected,activation,weighted,ids_for,oracle,parse)
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -14,9 +14,11 @@ ROOT=Path(__file__).resolve().parents[1]
 def test_host_contract(tmp_path):
     target=tmp_path/'contract'
     subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror','-fsanitize=undefined',
-                    '-I'+str(ROOT),str(ROOT/'tests/moe_scaffold_host.cpp'),'-o',str(target)],check=True)
+                    '-I'+str(ROOT),str(ROOT/'tests/moe_scaffold_host.cpp'),
+                    str(ROOT/'quactlize/moe/selection.cpp'),'-o',str(target)],check=True)
     assert 'MOE_SCAFFOLD_HOST PASS' in subprocess.check_output([target],text=True)
     assert [C.sizeof(t) for t in (Value,Prepare,Transition,Finish)]==[48,192,168,120]
+    assert C.sizeof(Plan)==24
     header='#include "quactlize/moe/api.h"\nint main(void) { return 0; }\n'
     subprocess.run(['gcc','-std=c11','-Wall','-Wextra','-Werror','-I'+str(ROOT),'-x','c','-fsyntax-only','-'],
                    input=header,text=True,check=True)
@@ -228,6 +230,13 @@ def test_fixture_storage_and_recipe_wiring(state,dtype,tokens,padding,projection
         np.testing.assert_array_equal(weighted(down,w[:,:c.topk]),b.finish_expected)
         assert b.p.route.source_stride==1+padding and b.p.route.ids_stride==c.topk+padding
         assert b.t.output_stride==c.hidden+padding and b.f.output_stride==c.output+padding
+        p,f=plan_calls(c)
+        assert (p.columns,p.dtype,p.input_row_stride,p.route.tokens,p.route.ids_stride,p.route.source_stride)==(
+            b.p.columns,b.p.dtype,b.p.input_row_stride,b.p.route.tokens,b.p.route.ids_stride,b.p.route.source_stride)
+        assert (f.tokens,f.topk,f.columns,f.down.dtype,f.down.order,f.down.state,f.down.partial_count,
+                f.down.row_stride,f.down.partial_stride,f.down.round_type,f.weights_stride,f.output_stride)==(
+            b.f.tokens,b.f.topk,b.f.columns,b.f.down.dtype,b.f.down.order,b.f.down.state,b.f.down.partial_count,
+            b.f.down.row_stride,b.f.down.partial_stride,b.f.down.round_type,b.f.weights_stride,b.f.output_stride)
         groups=b.component_groups()
         if tokens:
             assert len(groups['prepare/fused'])==3 and len(groups['prepare/unfused'])==5

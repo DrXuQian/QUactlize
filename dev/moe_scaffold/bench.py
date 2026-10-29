@@ -8,7 +8,7 @@ import numpy as np
 
 from dev.moe_route.bench import Runtime, Buffer, Graph, bind
 from dev.moe_scaffold.protocol import (Call, Config, Sizes, Value, Prepare, Transition, Finish,
-    Case, ids_for, oracle, encode, decode, rounded, activation, weighted)
+    Case, Plan, ids_for, oracle, encode, decode, rounded, activation, weighted)
 from quactlize.runtime.native import checked
 from dev.strategy.refresh_clock import ADVISORY, observe, pci_key, request_lock
 
@@ -21,7 +21,11 @@ class Library:
             ('prepare', 'prepare_run_v1', [C.POINTER(Prepare)]),
             ('transition_query', 'transition_query_v1', [C.POINTER(Transition), C.POINTER(C.c_uint)]),
             ('transition', 'transition_run_v1', [C.POINTER(Transition)]),
-            ('finish', 'finish_run_v1', [C.POINTER(Finish)])):
+            ('finish', 'finish_run_v1', [C.POINTER(Finish)]),
+            ('prepare_select', 'prepare_select_v1', [C.POINTER(Prepare), C.c_int, C.POINTER(Plan)]),
+            ('prepare_execute', 'prepare_execute_v1', [C.POINTER(Prepare), C.POINTER(Plan)]),
+            ('finish_select', 'finish_select_v1', [C.POINTER(Finish), C.c_int, C.POINTER(Plan)]),
+            ('finish_execute', 'finish_execute_v1', [C.POINTER(Finish), C.POINTER(Plan), C.c_void_p, C.c_uint64])):
             setattr(self, name, bind(self.lib, 'quactlize_ppu_moe_'+suffix, args))
         for name, symbol, args in (
             ('prepare_stage', 'qzm_test_prepare_stage_v1', [C.POINTER(Prepare), C.c_int]),
@@ -86,6 +90,12 @@ class Fixture:
                           splits, nc+padding, pitch, 0 if state == 2 else case.dtype, 0)
                 if name == 'down': self.f.down = v
                 else: setattr(self.t, name, v)
+            self.prepare_plan,self.finish_plan=Plan(),Plan()
+            checked(lib.prepare_select(C.byref(self.p),0,C.byref(self.prepare_plan)),'public prepare selection')
+            checked(lib.finish_select(C.byref(self.f),0,C.byref(self.finish_plan)),'public finish selection')
+            self.split_plan=Plan()
+            checked(lib.finish_select(C.byref(self.f),19,C.byref(self.split_plan)),'public split finish query')
+            self.alloc('selected_scratch',self.split_plan.workspace_bytes)
         except BaseException:
             self.close(); raise
 
@@ -152,6 +162,13 @@ class Fixture:
                      'prepare_inverse_rows', 'prepare_expert_rows', 'prepare_active_experts', 'prepare_active_count'):
             self.buffers[name].poison()
 
+    def selected_prepare(self):
+        return self.lib.prepare_execute(C.byref(self.p),C.byref(self.prepare_plan))
+
+    def selected_finish(self,plan=None):
+        return self.lib.finish_execute(C.byref(self.f),C.byref(self.finish_plan if plan is None else plan),
+            self.ptr('selected_scratch'),self.buffers['selected_scratch'].size)
+
     def numerical(self):
         c = self.case
         self.reset_prepare()
@@ -161,6 +178,14 @@ class Fixture:
         self.prepare_check()
         self.reset_prepare()
         checked(self.lib.prepare_hybrid(C.byref(self.p), -1), 'hybrid prepare'); self.prepare_check()
+        self.reset_prepare()
+        checked(self.selected_prepare(),'public selected prepare'); self.prepare_check()
+        if c.phase=='all' and c.tokens<=8192:
+            alternate=Prepare.from_buffer_copy(self.p);alternate.config.algorithm=1
+            plan=Plan();checked(self.lib.prepare_select(C.byref(alternate),3,C.byref(plan)),'public WARP route plan')
+            self.reset_prepare()
+            checked(self.lib.prepare_execute(C.byref(alternate),C.byref(plan)),'public WARP route prepare')
+            self.prepare_check()
         checked(self.lib.transition(C.byref(self.t)), 'fused transition'); self.rt.sync()
         act = self.buffers['activation'].read()
         actual = self.values('activation', c.dtype, self.rows, self.t.output_stride, c.hidden)
@@ -181,6 +206,24 @@ class Fixture:
             checked(self.lib.finish_parallel(C.byref(self.f), warps), f'parallel finish {warps}')
             self.rt.sync()
             if self.buffers['finish'].read() != finish: raise ValueError(f'parallel finish {warps} bits differ')
+        self.buffers['finish'].poison();self.buffers['selected_scratch'].poison()
+        checked(self.selected_finish(),'public selected finish');self.rt.sync()
+        if self.buffers['finish'].read()!=finish:raise ValueError('public selected finish bits differ')
+        if c.phase=='all':
+            self.buffers['finish'].poison();self.buffers['selected_scratch'].poison()
+            checked(self.selected_finish(self.split_plan),'public separate finish');self.rt.sync()
+            if self.buffers['finish'].read()!=finish:raise ValueError('public separate finish bits differ')
+            if c.tokens:
+                self.buffers['finish'].poison();self.rt.sync()
+                poison=self.buffers['finish'].read()
+                for ptr,size,want in ((self.ptr('selected_scratch'),self.split_plan.workspace_bytes-1,37),
+                                      (self.f.output,self.split_plan.workspace_bytes,20)):
+                    rc=self.lib.finish_execute(C.byref(self.f),C.byref(self.split_plan),ptr,size)
+                    if rc!=want:raise ValueError(f'public finish scratch rejection differs: {rc}/{want}')
+                bad=Plan.from_buffer_copy(self.split_plan);bad.stages+=1
+                if self.selected_finish(bad)!=20:raise ValueError('public finish accepted a damaged plan')
+                self.rt.sync()
+                if self.buffers['finish'].read()!=poison:raise ValueError('rejected public finish launched or wrote output')
         for b in self.buffers.values(): b.guard()
         if c.state == 2:
             noop = Transition.from_buffer_copy(self.t)
@@ -272,12 +315,23 @@ def measure(sdk, receipt, cases, rounds=4, samples=2, repeats=32, *, smi, clock_
         # replay. No graph cloning or KernelNodeGetParams is used.
         with ExitStack() as gate:
             fixtures=[];graphs=[]
-            for i in range(6):
-                warps=(0,4,8)[i//2]
+            for i in range(8):
+                warps=(0,4,8,-1)[i//2]
                 r=Runtime(sdk);gate.callback(r.close)
                 b=Fixture(r,lib,Case(17,experts=33,topk=6,state=1,splits=2,down_splits=4))
                 gate.callback(b.close);b.update(i);b.numerical()
+                if warps==-1:
+                    checked(lib.prepare_select(C.byref(b.p),2,C.byref(b.prepare_plan)),'graph hybrid plan')
+                    if i==7:
+                        # Reuse the exact same address-free plans on independent
+                        # storage/streams; only the call descriptors are rebound.
+                        b.prepare_plan=fixtures[-1].prepare_plan;b.split_plan=fixtures[-1].split_plan
                 def call(b=b,w=warps):
+                    if w==-1:
+                        for fn in (b.selected_prepare,lambda:lib.transition(C.byref(b.t)),lambda:b.selected_finish(b.split_plan)):
+                            rc=fn()
+                            if rc:return rc
+                        return 0
                     for fn in (lambda:lib.prepare_hybrid(C.byref(b.p),-1) if w else lib.prepare(C.byref(b.p)),
                                lambda:lib.transition(C.byref(b.t)),
                                lambda:lib.finish_parallel(C.byref(b.f),w) if w else lib.finish(C.byref(b.f))):
@@ -308,7 +362,11 @@ def measure(sdk, receipt, cases, rounds=4, samples=2, repeats=32, *, smi, clock_
                 groups=b.component_groups();graphs={};entries={};case_points={}
                 for group,components in groups.items():
                     phase,arm=group.split('/')
-                    p=case_points.setdefault(phase,dict(key=case.key+'/'+phase,case=asdict(case),phase=phase,components={}))
+                    selected={1:'fused',2:'hybrid',3:'unfused',16:'fused',17:'slots4',18:'slots8',19:'unfused'}
+                    chosen=selected[b.prepare_plan.implementation] if phase=='prepare' else (
+                        selected[b.finish_plan.implementation] if phase=='finish' else 'fused')
+                    p=case_points.setdefault(phase,dict(key=case.key+'/'+phase,case=asdict(case),phase=phase,
+                        selected_arm=chosen,components={}))
                     keys=[]
                     for i,(launch,symbol,grid,block) in enumerate(components):
                         key=case.key+'/'+group+'/'+str(i);keys.append(key)
@@ -333,4 +391,5 @@ def measure(sdk, receipt, cases, rounds=4, samples=2, repeats=32, *, smi, clock_
         clock['after']=observe(smi,lib.device['pci'],clock_mhz,advisory=True)
         return dict(points=points,schedule=schedule,device=lib.device,clock=clock,correctness='PASS',
                     cases=[asdict(c) for c in cases],production_changed=False,
+                    public_selected_correctness='PASS',
                     scope='HELPERS_ONLY_SYNTHETIC_PROJECTION_OUTPUTS_NO_GEMM_OR_MODEL')
