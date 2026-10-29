@@ -1,5 +1,21 @@
 # PPU failure lessons
 
+MoE prepare fusion can change traversal, not just launch count. The20261029
+scaffold-v1 run (e14a5dde, ZW810/SDK2.1.1,28/28 exactPASS) fused map generation
+with gather in original token/slot order. Each column CTA recomputed the
+grouped destination; the unfused gather instead traversed completed grouped
+maps. AtK2048,M2048/M5120, prepare sums regressed267.565->373.131us and
+469.521->716.200us. Repeated address work and changed traversal are hypotheses,
+not ACU-proven causes. Test fused prefix/metadata plus separate map publication
+and grouped gather before promoting a lower launch count. Preserve global
+publication boundaries. A serial slot-weighted finish also lost at narrow N
+and small-M Split-K; parallel slots must still preserve slot-sum order and
+rounding. All comparisons here are same-math helper decompositions, NOT old
+decode-fusion, GEMM or model parity. ArchiveSHA256
+c37ace424a69c57e1d2bc829bd512e7433540e547accf94fa96489d68f07b1ae;
+seams: dev/moe_scaffold, quactlize/moe/scaffold.cu. No v1 clock records, so no
+cycle/frequency claim. Follow-up candidates remain test-only until measured.
+
 The20261026 dense M-span admission exposed a selector-domain boundary:
 adding M3072/4096/5120/8192 rows is ineffective if the C++ domain still stops
 at2048. Extend exact lookup without silently widening the old M2048 log bin

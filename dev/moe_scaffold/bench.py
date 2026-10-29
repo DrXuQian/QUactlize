@@ -2,6 +2,7 @@
 import ctypes as C
 from contextlib import ExitStack
 from dataclasses import asdict
+import json
 
 import numpy as np
 
@@ -9,6 +10,7 @@ from dev.moe_route.bench import Runtime, Buffer, Graph, bind
 from dev.moe_scaffold.protocol import (Call, Config, Sizes, Value, Prepare, Transition, Finish,
     Case, ids_for, oracle, encode, decode, rounded, projected, activation, weighted)
 from quactlize.runtime.native import checked
+from dev.strategy.refresh_clock import ADVISORY, observe, pci_key, request_lock
 
 
 class Library:
@@ -24,6 +26,8 @@ class Library:
         for name, symbol, args in (
             ('prepare_stage', 'qzm_test_prepare_stage_v1', [C.POINTER(Prepare), C.c_int]),
             ('prepare_unfused', 'qzm_test_prepare_unfused_v1', [C.POINTER(Prepare), C.c_int]),
+            ('prepare_hybrid', 'qzm_test_prepare_hybrid_v1', [C.POINTER(Prepare), C.c_int]),
+            ('finish_parallel', 'qzm_test_finish_parallel_v1', [C.POINTER(Finish), C.c_int]),
             ('materialize', 'qzm_test_materialize_v1', [C.POINTER(Value), C.c_int, C.c_int, C.c_void_p, C.c_void_p]),
             ('cast', 'qzm_test_cast_v1', [C.c_void_p, C.c_void_p, C.c_int, C.c_int, C.c_int, C.c_int64, C.c_void_p]),
             ('weight', 'qzm_test_weight_v1', [C.POINTER(Finish), C.c_void_p, C.c_void_p]),
@@ -138,11 +142,20 @@ class Fixture:
         storage = np.float32 if dtype == 0 else np.float16 if dtype == 1 else np.uint16
         return decode(np.frombuffer(self.buffers[name].read(), storage).reshape(rows, stride)[:, :columns], dtype)
 
+    def reset_prepare(self):
+        for name in ('src_rows', 'dst_rows', 'offsets', 'workspace', 'prepare_output',
+                     'prepare_inverse_rows', 'prepare_expert_rows', 'prepare_active_experts', 'prepare_active_count'):
+            self.buffers[name].poison()
+
     def numerical(self):
         c = self.case
+        self.reset_prepare()
         checked(self.lib.prepare(C.byref(self.p)), 'fused prepare'); self.prepare_check()
+        self.reset_prepare()
         for stage in range(1 if not c.tokens else 5): checked(self.lib.prepare_unfused(C.byref(self.p), stage), 'unfused prepare')
         self.prepare_check()
+        self.reset_prepare()
+        checked(self.lib.prepare_hybrid(C.byref(self.p), -1), 'hybrid prepare'); self.prepare_check()
         checked(self.lib.transition(C.byref(self.t)), 'fused transition'); self.rt.sync()
         act = self.buffers['activation'].read()
         actual = self.values('activation', c.dtype, self.rows, c.hidden+3, c.hidden)
@@ -158,6 +171,11 @@ class Fixture:
         for call, _, _ in self.finish_control(): checked(call(), 'unfused finish')
         self.rt.sync()
         if self.buffers['finish'].read() != finish: raise ValueError('fused vs unfused finish bits differ')
+        for warps in (4, 8):
+            self.buffers['finish'].poison()
+            checked(self.lib.finish_parallel(C.byref(self.f), warps), f'parallel finish {warps}')
+            self.rt.sync()
+            if self.buffers['finish'].read() != finish: raise ValueError(f'parallel finish {warps} bits differ')
         for b in self.buffers.values(): b.guard()
         if c.state == 2:
             noop = Transition.from_buffer_copy(self.t)
@@ -201,12 +219,13 @@ class Fixture:
         c=self.case
         if not c.tokens:return {}
         grouped={}
-        for arm, count, method in [('fused',3,self.lib.prepare_stage),('unfused',5,self.lib.prepare_unfused)]:
+        for arm, count, method in [('fused',3,self.lib.prepare_stage),('unfused',5,self.lib.prepare_unfused),
+                                   ('hybrid',4,self.lib.prepare_hybrid)]:
             items=[]
             for stage in range(count):
                 if stage==0: symbol,grid,threads='histogram_rank<',[self.sizes.tiles,1,1],128
-                elif stage==1: symbol,grid,threads=('prepare_prefix<' if arm=='fused' else 'prefix_chunks('),[1,1,1],((c.experts+31)//32)*32
-                elif arm=='unfused' and stage==2: symbol,grid,threads='scatter_maps<',[(self.rows+255)//256,1,1],256
+                elif stage==1: symbol,grid,threads=('prefix_chunks(' if arm=='unfused' else 'prepare_prefix<'),[1,1,1],((c.experts+31)//32)*32
+                elif arm!='fused' and stage==2: symbol,grid,threads='scatter_maps<',[(self.rows+255)//256,1,1],256
                 elif arm=='unfused' and stage==3: symbol,grid,threads='prepare_prefix<',[1,1,1],((c.experts+31)//32)*32
                 else: symbol,grid,threads='prepare_gather<',self.row_grid(self.rows,c.columns),256
                 items.append((lambda s=stage,m=method:m(C.byref(self.p),s),symbol,grid,[threads,1,1]))
@@ -215,6 +234,9 @@ class Fixture:
         grouped['transition/unfused']=[(*x,[256,1,1]) for x in self.transition_control()]
         grouped['finish/fused']=[(lambda:self.lib.finish(C.byref(self.f)),'finish_kernel(',self.row_grid(c.tokens,c.output),[256,1,1])]
         grouped['finish/unfused']=[(*x,[256,1,1]) for x in self.finish_control()]
+        for warps in (4, 8):
+            grouped[f'finish/slots{warps}']=[(lambda w=warps:self.lib.finish_parallel(C.byref(self.f),w),
+                f'finish_slots<{warps}>', [min(c.tokens*((c.output+31)//32),65535),1,1], [warps*32,1,1])]
         return grouped
 
     def close(self):
@@ -222,21 +244,39 @@ class Fixture:
         for b in self.buffers.values(): b.close()
 
 
-def measure(sdk, receipt, cases, rounds=4, samples=2, repeats=32):
+def start_clock(rt, device, smi, mhz):
+    # Resolve the masked runtime ordinal to the physical card. Never feed a
+    # CUDA_VISIBLE_DEVICES logical ordinal to the system-wide management CLI.
+    pci=C.create_string_buffer(32)
+    query=bind(rt.lib,'hggcDeviceGetPCIBusId',[C.c_void_p,C.c_int,C.c_int])
+    checked(query(pci,len(pci),device['ordinal']),'helper PCI identity')
+    device['pci']=pci.value.decode();pci_key(device['pci'])
+    lock=request_lock(smi,device['pci'],mhz)
+    print('MOE_SCAFFOLD_CLOCK '+json.dumps(lock),flush=True)
+    if lock['returncode']:raise RuntimeError('assigned-device clock request failed; see MOE_SCAFFOLD_CLOCK')
+    return dict(policy=ADVISORY,request=lock,smi=str(smi),
+                before=observe(smi,device['pci'],mhz,advisory=True))
+
+
+def measure(sdk, receipt, cases, rounds=4, samples=2, repeats=32, *, smi, clock_mhz=1700):
     points,schedule=[],[]
     with ExitStack() as root:
         rt=Runtime(sdk);root.callback(rt.close);lib=Library(receipt['candidate'])
+        clock=start_clock(rt,lib.device,smi,clock_mhz)
         # Two independent per-stream scratch owners, changing IDs and graph
         # replay. No graph cloning or KernelNodeGetParams is used.
         with ExitStack() as gate:
             fixtures=[];graphs=[]
-            for i in range(2):
+            for i in range(6):
+                warps=(0,4,8)[i//2]
                 r=Runtime(sdk);gate.callback(r.close)
                 b=Fixture(r,lib,Case(17,experts=33,topk=6,state=1,splits=2,down_splits=4))
                 gate.callback(b.close);b.update(i);b.numerical()
-                def call(b=b):
-                    for fn,arg in ((lib.prepare,b.p),(lib.transition,b.t),(lib.finish,b.f)):
-                        rc=fn(C.byref(arg))
+                def call(b=b,w=warps):
+                    for fn in (lambda:lib.prepare_hybrid(C.byref(b.p),-1) if w else lib.prepare(C.byref(b.p)),
+                               lambda:lib.transition(C.byref(b.t)),
+                               lambda:lib.finish_parallel(C.byref(b.f),w) if w else lib.finish(C.byref(b.f))):
+                        rc=fn()
                         if rc:return rc
                     return 0
                 g=Graph(r,call,1);gate.callback(g.close);fixtures.append(b);graphs.append(g)
@@ -282,6 +322,7 @@ def measure(sdk, receipt, cases, rounds=4, samples=2, repeats=32):
                 for buffer in b.buffers.values():buffer.guard()
                 points.extend(case_points.values())
                 print('MOE_SCAFFOLD_POINT '+case.key+' M='+str(case.tokens)+' exact_device_controls=PASS',flush=True)
-        return dict(points=points,schedule=schedule,device=lib.device,correctness='PASS',
+        clock['after']=observe(smi,lib.device['pci'],clock_mhz,advisory=True)
+        return dict(points=points,schedule=schedule,device=lib.device,clock=clock,correctness='PASS',
                     cases=[asdict(c) for c in cases],production_changed=False,
                     scope='HELPERS_ONLY_SYNTHETIC_PROJECTION_OUTPUTS_NO_GEMM_OR_MODEL')

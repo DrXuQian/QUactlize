@@ -113,6 +113,10 @@ def workloads(smoke=False):
         cases += [Case(8193, columns=17, hidden=19, output=23, state=1, splits=2),
                   Case(2048, columns=2048, hidden=512, output=2048),
                   Case(5120, columns=2048, hidden=512, output=2048, state=2)]
+    cases += [Case(1, columns=2048, hidden=512, output=2048),
+              Case(8, columns=2048, hidden=512, output=2048, state=1, splits=4, down_splits=8),
+              Case(65, columns=33, hidden=31, output=37, dtype=0, topk=6, experts=33,
+                   state=1, splits=4, down_splits=8, down_order=1)]
     return cases
 
 
@@ -137,7 +141,9 @@ def parse(capture, rows, apis):
     for point in capture['points']:
         arms = {arm: sum(costs[k] for k in keys) for arm, keys in point['components'].items()}
         points.append(dict(point, arms_us=arms,
-                           delta_pct=100*(arms['fused']/arms['unfused']-1) if arms['unfused'] else None))
+                           delta_pct=100*(arms['fused']/arms['unfused']-1) if arms['unfused'] else None,
+                           versus_fused_pct={k:100*(v/arms['fused']-1) for k,v in arms.items()} if arms['fused'] else {},
+                           versus_unfused_pct={k:100*(v/arms['unfused']-1) for k,v in arms.items()} if arms['unfused'] else {}))
     return dict(status='PASS', points=points, component_us=costs, samples_us=dict(samples),
                 observed_counts=dict(observed), missing_intervals=missing, imputed_intervals=0,
                 device=capture['device'], baseline='SAME_MATH_UNFUSED_HELPERS_NOT_LLAMA_GEMM',

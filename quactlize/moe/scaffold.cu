@@ -254,7 +254,55 @@ extern "C" int qzm_test_prepare_unfused_v1(qzm_prepare_v1 const* c,int stage) {
     }
     return moe::launch_status();
 }
+// Keep routing publication separate from grouped-row traversal. This candidate
+// saves only the standalone expert-metadata launch, not the map dependency.
+extern "C" int qzm_test_prepare_hybrid_v1(qzm_prepare_v1 const* c,int stage) {
+    using namespace quactlize;
+    if(!c || stage<-1 || stage>3 || c->config.algorithm!=QZR_TILED) return QZR_INVALID;
+    routing::Layout l;int rc=moe::prepare(*c,l,true);if(rc) return rc;
+    if(!l.rows) return stage<=0?moe::run_prepare(c,0):QZR_INVALID;
+    for(int s=0;s<4;++s) {
+        if(stage>=0 && stage!=s) continue;
+        if(s<2) rc=moe::run_prepare(c,s);
+        else if(s==2) rc=qzr_test_stage_v1(&c->route,&c->config,2);
+        else rc=qzm_test_prepare_unfused_v1(c,4);
+        if(rc) return rc;
+    }
+    return QZR_OK;
+}
 namespace quactlize::moe {
+// A warp owns 32 columns of one slot. Each slot keeps the original ordered
+// Split-K reduction and projection rounding; only independent slots run in
+// parallel. The final warp still sums slots 0..topk-1 without reassociation.
+template<int Warps>
+__global__ void finish_slots(qzm_finish_v1 c) {
+    __shared__ float weighted[32][32];
+    int lane=int(threadIdx.x)&31,warp=int(threadIdx.x)/32;
+    int64_t tiles=(int64_t(c.columns)+31)/32;
+    for(int64_t tile=blockIdx.x;tile<int64_t(c.tokens)*tiles;tile+=gridDim.x) {
+        int token=int(tile/tiles);
+        int64_t col=(tile%tiles)*32+lane;
+        for(int slot=warp;slot<c.topk;slot+=Warps) {
+            float value=0.f;
+            if(col<c.columns) {
+                int original=token*c.topk+slot;
+                int row=c.down.order==QZM_GROUPED?c.inverse_rows[original]:original;
+                value=__fmul_rn(projection(c.down,row,int(col)),
+                                c.weights[int64_t(token)*c.weights_stride+slot]);
+            }
+            weighted[slot][lane]=value;
+        }
+        __syncthreads();
+        if(!warp && col<c.columns) {
+            float sum=weighted[0][lane];
+            for(int slot=1;slot<c.topk;++slot) sum=__fadd_rn(sum,weighted[slot][lane]);
+            c.output[int64_t(token)*c.output_stride+col]=sum;
+        }
+        // All consumers finish before any producer overwrites shared storage
+        // on the next grid-stride iteration, including invalid column lanes.
+        __syncthreads();
+    }
+}
 __global__ void materialize(qzm_value_v1 v,int nr,int nc,float* out) {
     for(int64_t i=int64_t(blockIdx.x)*256+threadIdx.x;i<int64_t(nr)*nc;i+=int64_t(gridDim.x)*256)
         out[i]=projection(v,int(i/nc),int(i%nc));
@@ -286,6 +334,17 @@ inline int flat_blocks(int rows,int columns) {
     int64_t n=(int64_t(rows)*columns+255)/256;
     return int(n>65535?65535:n);
 }
+}
+extern "C" int qzm_test_finish_parallel_v1(qzm_finish_v1 const* c,int warps) {
+    using namespace quactlize::moe;
+    if(!c || (warps!=4 && warps!=8)) return QZR_INVALID;
+    int rc=finish(*c,true);if(rc || !c->tokens) return rc;
+    int64_t count=int64_t(c->tokens)*((int64_t(c->columns)+31)/32);
+    int blocks=int(count>65535?65535:count);
+    auto stream=static_cast<hggcStream_t>(c->stream);
+    if(warps==4) finish_slots<4><<<blocks,128,0,stream>>>(*c);
+    else finish_slots<8><<<blocks,256,0,stream>>>(*c);
+    return launch_status();
 }
 extern "C" int qzm_test_materialize_v1(qzm_value_v1 const* v,int rows,int columns,float* out,void* stream) {
     using namespace quactlize::moe;

@@ -5,6 +5,7 @@ from dataclasses import asdict
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -21,6 +22,15 @@ from quactlize.runtime.compiler import sha
 
 
 def read(path):return json.loads(Path(path).read_text())
+
+
+def selected_smi(a):
+    if a.smi:return a.smi.resolve(strict=True)
+    for path in (a.sdk/'ppu-smi/bin/ppu-smi',a.sdk/'bin/ppu-smi'):
+        if path.is_file():return path.resolve()
+    binary=shutil.which('ppu-smi')
+    if binary:return Path(binary).resolve()
+    raise ValueError('PPU-SMI not found; supply --smi or PPU_SMI')
 
 
 def run(command,log):
@@ -49,7 +59,7 @@ def worker(a):
         capture=read(folder/'capture.json')
         result=parse(capture,activities(folder/'trace.sqlite',launch_shared=True),runtime_activities(folder/'trace.sqlite'))
         verify(receipt)
-        result.update(cases=capture['cases'],latency_provenance=capture['latency_provenance'],
+        result.update(cases=capture['cases'],latency_provenance=capture['latency_provenance'],clock=capture['clock'],
                       trace=str(folder/'trace.asysrep'),trace_sha256=sha(folder/'trace.asysrep'))
         atomic_json(folder/'result.json',result)
         return 0
@@ -73,7 +83,8 @@ def main(a):
         from dev.moe_scaffold.bench import measure
         receipt=read(a.output/'build/receipt.json');verify(receipt)
         plan=read(a.output/'run.json');selected=plan['cases'][a.child::len(plan['devices'])]
-        data=measure(a.sdk,receipt,[Case(**c) for c in selected],a.rounds,a.samples)
+        data=measure(a.sdk,receipt,[Case(**c) for c in selected],a.rounds,a.samples,
+                     smi=plan['smi'],clock_mhz=plan['clock_mhz'])
         verify(receipt)
         data['latency_provenance']=dict(quactlize=receipt['quactlize'],build_sha256=sha(a.output/'build/receipt.json'))
         atomic_json(a.output/('gpu-'+plan['devices'][a.child])/'capture.json',data)
@@ -84,12 +95,14 @@ def main(a):
     if len(devices)>len(cases)-1:raise ValueError('more workers than nonempty test cases')
     a.devices=','.join(devices)
     a.asys=(a.asys or a.sdk/'asight/bin/asys').resolve(strict=True)
+    a.smi=selected_smi(a)
     a.output.mkdir(parents=True,exist_ok=True)
     if (a.output/'run.json').exists():raise ValueError('use a new output directory; previous results are preserved')
     print('MOE_SCAFFOLD_BUILD '+str(a.output),flush=True)
     build(a.sdk,a.output/'build')
     atomic_json(a.output/'run.json',dict(cases=[asdict(c) for c in cases],devices=devices,
-        rounds=a.rounds,samples=a.samples,asys=str(a.asys),asys_sha256=sha(a.asys)))
+        rounds=a.rounds,samples=a.samples,asys=str(a.asys),asys_sha256=sha(a.asys),
+        smi=str(a.smi),smi_sha256=sha(a.smi),clock_mhz=a.clock_mhz))
     processes=[];start=time.monotonic()
     for i,device in enumerate(devices):
         folder=a.output/('gpu-'+device);folder.mkdir(exist_ok=True)
@@ -131,10 +144,13 @@ if __name__=='__main__':
     parser.add_argument('--sdk',type=Path,default=Path(os.environ.get('PPU_SDK','/usr/local/PPU_SDK')))
     parser.add_argument('--output',type=Path);parser.add_argument('--devices',default='0')
     parser.add_argument('--asys',type=Path);parser.add_argument('--smoke',action='store_true')
+    parser.add_argument('--smi',type=Path,default=os.environ.get('PPU_SMI'))
+    parser.add_argument('--clock-mhz',type=int,default=1700)
     parser.add_argument('--plan',action='store_true');parser.add_argument('--confirm-idle',action='store_true')
     parser.add_argument('--rounds',type=int,default=4);parser.add_argument('--samples',type=int,default=2)
     parser.add_argument('--worker',type=int);parser.add_argument('--child',type=int)
     args=parser.parse_args()
     if args.rounds<2 or args.samples<1:parser.error('need >=2 alternating rounds and >=1 sample')
+    if not 0<args.clock_mhz<10000:parser.error('--clock-mhz must be a positive integer below 10000')
     try:raise SystemExit(main(args))
     except Exception:traceback.print_exc();raise SystemExit(1)

@@ -68,6 +68,7 @@ def test_plan_has_boundary_and_recipe_coverage():
     assert set(range(10))<={c.tokens for c in cases}
     assert {16,32,64,128,512,1024,2048,4096,5120,8193}<={c.tokens for c in cases}
     assert {0,1,2}=={c.state for c in cases}
+    assert {0,1,2}=={c.dtype for c in cases}
     assert {1,2,4,8}<={c.down_splits for c in cases}
     source=(ROOT/'quactlize/moe/scaffold.cu').read_text()
     assert 'atomicAdd' not in source and 'GraphKernelNodeGetParams' not in source
@@ -95,6 +96,75 @@ def test_profile_means_actual_intervals_no_native_claim():
     assert data['points'][0]['arms_us']==dict(fused=1,unfused=1.4)
     assert data['baseline']=='SAME_MATH_UNFUSED_HELPERS_NOT_LLAMA_GEMM'
     assert not data['model_tpot_admitted'] and not data['no_regression_admitted']
+
+
+def test_candidate_costs_compare_both_measured_controls():
+    c,r,a=trace_fixture()
+    c['schedule'].append(dict(component='new',kernel='new',grid=[1,1,1],block=[128,1,1],repeats=32))
+    a.append(dict(name='hggcGraphLaunch',return_value=0,correlation_id=4))
+    r.extend(dict(kind='kernel',name='new',grid=[1,1,1],block=[128,1,1],
+                  start=i*800,end=(i+1)*800,correlation_id=4) for i in range(32))
+    c['points'][0]['components']['slots4']=['new']
+    p=parse(c,r,a)['points'][0]
+    assert p['arms_us']['slots4']==pytest.approx(.8)
+    assert p['versus_fused_pct']['slots4']==pytest.approx(-20)
+    assert p['versus_unfused_pct']['slots4']==pytest.approx(100*(.8/1.4-1))
+
+
+@pytest.mark.parametrize('warps',[4,8])
+@pytest.mark.parametrize('topk',[1,6,8,17,32])
+def test_slot_parallel_ownership_preserves_order(warps,topk):
+    # Every shared cell has exactly one producer. Ordered slots must not be
+    # replaced with a warp/tree sum (the cancellation example is order-sensitive).
+    values=np.zeros((2,topk,37),np.float32)
+    values[:,0,:]=1e20
+    if topk>=4:
+        values[:,1,:]=1;values[:,2,:]=-1e20;values[:,3,:]=3
+    expected=weighted(values,np.ones((2,topk),np.float32))
+    got=np.empty_like(expected)
+    for token in range(2):
+        for tile in range(2):
+            scratch=np.full((topk,32),np.nan,np.float32)
+            writes=np.zeros((topk,32),np.int32)
+            for warp in range(warps):
+                for slot in range(warp,topk,warps):
+                    for lane in range(32):
+                        col=tile*32+lane
+                        scratch[slot,lane]=values[token,slot,col] if col<37 else 0
+                        writes[slot,lane]+=1
+            assert np.all(writes==1)
+            for lane in range(32):
+                if tile*32+lane>=37:continue
+                value=scratch[0,lane]
+                for slot in range(1,topk):value=np.float32(value+scratch[slot,lane])
+                got[token,tile*32+lane]=value
+    np.testing.assert_array_equal(got,expected)
+
+
+def test_clock_uses_physical_identity_and_throttling_is_advisory(monkeypatch):
+    from dev.moe_scaffold import bench
+    class Runtime:
+        lib=object()
+    def fake_bind(lib,name,args):
+        assert name=='hggcDeviceGetPCIBusId'
+        def query(ptr,length,ordinal):
+            assert ordinal==0 and length==32
+            C.memmove(ptr,b'0000:08:00.0\0',13)
+            return 0
+        return query
+    calls=[]
+    monkeypatch.setattr(bench,'bind',fake_bind)
+    monkeypatch.setattr(bench,'request_lock',lambda binary,pci,mhz:
+        calls.append((str(binary),pci,mhz)) or dict(returncode=0))
+    def observed(binary,pci,mhz,*,advisory):
+        assert advisory
+        return dict(cu_mhz=1500,affects_verdict=False)
+    monkeypatch.setattr(bench,'observe',observed)
+    device=dict(ordinal=0)
+    receipt=bench.start_clock(Runtime(),device,'ppu-smi',1700)
+    assert calls==[('ppu-smi','0000:08:00.0',1700)]
+    assert device['pci']=='0000:08:00.0'
+    assert receipt['before']['cu_mhz']==1500 and not receipt['before']['affects_verdict']
 
 
 @pytest.mark.parametrize('fault',['empty','grid','symbol','rc','few'])
@@ -157,7 +227,14 @@ def test_fixture_storage_and_recipe_wiring(state,dtype,tokens):
         groups=b.component_groups()
         if tokens:
             assert len(groups['prepare/fused'])==3 and len(groups['prepare/unfused'])==5
+            assert len(groups['prepare/hybrid'])==4
+            assert [item[1] for item in groups['prepare/hybrid']]==[
+                'histogram_rank<','prepare_prefix<','scatter_maps<','prepare_gather<']
             assert len(groups['transition/fused'])==1 and len(groups['finish/fused'])==1
+            for warps in (4,8):
+                component=groups[f'finish/slots{warps}'][0]
+                assert component[1]==f'finish_slots<{warps}>'
+                assert component[2]==[tokens,1,1] and component[3]==[warps*32,1,1]
         else:assert not groups
     finally:b.close()
     assert not rt.allocations
