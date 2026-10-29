@@ -27,6 +27,8 @@ from quactlize.dispatch.prefill_policy import check_receipt, receipt_fields
 from quactlize.dispatch.dense_prefill import EVIDENCE as DENSE_PREFILL_EVIDENCE, HEADER as DENSE_PREFILL_HEADER, render as dense_prefill_header
 
 PUBLIC_EXPORTS = (
+    'quactlize_ppu_moe_route_query_v1',
+    'quactlize_ppu_moe_route_run_v1',
     'quactlize_ppu_kpack_canonical_arrangement_v1',
     'quactlize_ppu_kpack_sizes_for_arrangement_v1',
     'quactlize_ppu_prepare_fully_quantized_dev_for_arrangement_v2',
@@ -169,7 +171,7 @@ def build(sdk, output, jobs):
     runtime = output / 'quactlize-runtime'
     runtime.mkdir()
     start = time.monotonic()
-    public_sources = {p: sha(p) for directory in ('quactlize/dense', 'quactlize/dispatch')
+    public_sources = {p: sha(p) for directory in ('quactlize/dense', 'quactlize/dispatch', 'quactlize/routing')
                       for p in (ROOT / directory).iterdir() if p.is_file()}
     public_sources.update({p: sha(p) for p in (ROOT/'policies').iterdir() if p.suffix in ('.hpp', '.json')})
     helper_policy=ROOT/'quactlize/prefill/dense_helpers.hpp'
@@ -242,7 +244,8 @@ def build(sdk, output, jobs):
         return obj
 
     with ThreadPoolExecutor(max_workers=min(jobs, 2)) as pool:
-        objects = list(pool.map(compile_one, ('quactlize/dense/runtime.cpp', 'quactlize/dense/copy.cu')))
+        objects = list(pool.map(compile_one, ('quactlize/dense/runtime.cpp', 'quactlize/dense/copy.cu',
+                                            'quactlize/routing/route.cu')))
     objects += [work / 'packing' / (name + '.o') for name in ('sizes.cpp', 'ppu_pack.cu')]
     run('public', ['g++', '-shared', '-pthread', '-Wl,-Bsymbolic', '-Wl,-z,defs',
         '-Wl,-soname,libquactlize_ppu.so', '-Wl,-rpath,$ORIGIN/quactlize-runtime',
@@ -252,6 +255,7 @@ def build(sdk, output, jobs):
     headers = {
         'quactlize/packing/api.h': 'quactlize/packing/api.h',
         'quactlize/dense/api.h': 'quactlize/dense/api.h',
+        'quactlize/routing/api.h': 'quactlize/routing/api.h',
         'quactlize/include/quactlize_ppu_config.h': 'quactlize_ppu_config.h',
     }
     for source, target in headers.items():
