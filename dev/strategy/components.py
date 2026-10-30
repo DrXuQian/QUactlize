@@ -20,6 +20,10 @@ def kernel_entry(name):
 
 def role(name):
     n = kernel_entry(name).lower()
+    if n in ('quactlize::routing::warp_scalar','quactlize::routing::warp_compact',
+             'quactlize::routing::histogram_rank','quactlize::routing::prefix_chunks',
+             'quactlize::moe::prepare_prefix','quactlize::moe::provider_expert_ids'):
+        return 'prepare'
     if n in ('cutlass::device_kernel', 'cutlass::kernel'):
         # CUTLASS's outer callable is generic. Classify its first kernel TYPE,
         # never the nested scheduler, collective, epilogue or argument types.

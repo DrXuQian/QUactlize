@@ -115,14 +115,20 @@ def completed(path,run):
     return value
 
 
-def invocation(a,run,job,*,profile):
+def invocation(a,run,job,*,profile,entrypoint=None):
     folder=a.output/('gpu-'+run['cards'][a.worker]);attempt=folder/'attempts'/uuid.uuid4().hex
     attempt.mkdir(parents=True);base.sealed(attempt/'job.json',dict(job,run=run['sha256']))
-    command=[sys.executable,'-u',str(Path(__file__).resolve()),'--output',str(a.output),
+    command=[sys.executable,'-u',str(Path(entrypoint or __file__).resolve()),'--output',str(a.output),
         '--sdk',str(a.sdk),'--l2-bytes',str(a.l2_bytes),'--worker',str(a.worker),
         '--job',str(attempt/'job.json'),'--attempt',str(attempt)]
     pci=run['devices'][a.worker]['device']['pci'];before=base.observe(Path(run['smi']),pci,1700,advisory=True)
-    execute(profile_command(run['asys'],attempt/'trace',command) if profile else command,attempt/'profile.log')
+    try:
+        execute(profile_command(run['asys'],attempt/'trace',command) if profile else command,attempt/'profile.log')
+    except RuntimeError as exc:
+        if entrypoint:
+            detail='\n'.join((attempt/'profile.log').read_text(errors='replace').splitlines()[-25:])
+            raise RuntimeError(str(exc)+'\n'+detail) from exc
+        raise
     after=base.observe(Path(run['smi']),pci,1700,advisory=True)
     if not profile:return attempt,sealed(attempt/'resources.json')
     report,db=attempt/'trace.asysrep',attempt/'trace.sqlite'

@@ -22,17 +22,21 @@ from quactlize.runtime.native import checked
 
 
 class AlternatingStages(AsysStages):
-    def __init__(self,*,helper_source=None,**kwargs):
+    def __init__(self,*,helper_source=None,quactlize_prepare=False,**kwargs):
         super().__init__(**kwargs);self.graphs={};self.groups=[]
         self.helper_source=helper_source
+        self.quactlize_prepare=quactlize_prepare
 
     def collect(self,capture,w,recipe,authority,source,proof,**kwargs):
         if recipe is None:return super().collect(capture,w,recipe,authority,source,proof,**kwargs)
         split=dict(recipe.parameters).get('split',1)
         nodes=capture.descriptions[:len(capture.groups)]
         roles=[stage_role(n['name'],split) for n in nodes]
+        direct=self.quactlize_prepare and recipe.kind in ('q4','simt')
+        routed=any(('quactlize::moe::prepare_gather' if self.quactlize_prepare else 'mm_ids_helper')
+                   in n['name'] for n in nodes)
         if (roles.count('producer')!=1 or 'unclassified' in roles or
-                not any('mm_ids_helper' in n['name'] for n in nodes) or
+                not (direct or routed) or
                 split>1 and not any(r in ('reducer','reducer_finish') for r in roles)):
             raise ValueError('prefill main/helper/reducer inventory differs')
         replay_extracted(capture,proof);out=[];keys=[]
@@ -42,9 +46,16 @@ class AlternatingStages(AsysStages):
             entry=kernel_entry(n['name'])
             # This exact adapter's addressing depends on the sorted row map,
             # K/strides and BF16 type, never on the downstream GEMM tile.
-            key_recipe=None if entry=='quactlize::prefill::gather_bf16' else recipe
+            gather=entry in ('quactlize::prefill::gather_bf16','quactlize::moe::prepare_gather',
+                            'quactlize::routing::scatter_maps')
+            key_recipe=None if gather else recipe
             common=(entry in ('quactlize::prefill::gather_bf16','quactlize::prefill::finish_bf16',
-                               'quactlize::prefill::active_experts','mm_ids_helper'))
+                               'quactlize::prefill::active_experts','mm_ids_helper',
+                               'quactlize::routing::warp_scalar','quactlize::routing::warp_compact',
+                               'quactlize::routing::histogram_rank','quactlize::routing::prefix_chunks',
+                               'quactlize::routing::scatter_maps',
+                               'quactlize::moe::prepare_prefix','quactlize::moe::prepare_gather',
+                               'quactlize::moe::provider_expert_ids'))
             implementation=self.helper_source if common and self.helper_source else source
             # These exact generic helpers do not consume the GEMM's Split-K
             # count. Tile-dependent grouped metadata is deliberately excluded.
@@ -101,7 +112,7 @@ activity. Missing measured activity is a failure, never a zero-cost guess.
                 scope='SEPARATE_GPU_MEMSET_DURATION_NOT_HOST_API_TIME')
 
 
-def measure(a,point,arms,images,queries,run,phase,known):
+def measure(a,point,arms,images,queries,run,phase,known,*,backend=None):
     from dev.strategy.cold_decode import Ring,Expansion,measure_expansion
     from dev.strategy.prefill_fixture import Helpers,routing
     from dev.strategy.prefill_measure import prepared,measure_full_expansion
@@ -111,18 +122,25 @@ def measure(a,point,arms,images,queries,run,phase,known):
     w=Workload(**point['workload']);sdk=SDK(a.sdk)
     rounds,samples=(4,3) if phase=='screen' else (6,5)
     authority=dict(run=run['sha256'],shard=a.worker,device=run['devices'][a.worker],phase=phase)
-    source=digest([run['source']['sha256'],run['images'],run['adapter_sha256']])
-    timer=AlternatingStages(rounds=rounds,samples=samples,known=known,helper_source=source)
+    source_parts=[run['source']['sha256'],run['images'],run['adapter_sha256']]
+    if backend:source_parts.append(run['moe_helpers'])
+    source=digest(source_parts)
+    timer=AlternatingStages(rounds=rounds,samples=samples,known=known,helper_source=source,
+                            quactlize_prepare=backend is not None)
+    context_type=backend.Context if backend else RoutedContext
+    tc_type=backend.TensorCore if backend else RoutedTC
+    full_type=backend.Full if backend else RoutedFull
+    context_binding=run['moe_helpers'] if backend else run['adapter']
     result=dict(arms={},expansions={'sf':{},'full':{}},reset=None)
     with ExitStack() as owners:
         active=min(len(routing(w,r)['active']) for r in (0,1,2))
         ring=Ring(sdk,w,a.l2_bytes,minimum_active=active);owners.callback(ring.close)
-        b=RoutedContext(sdk,ring,w,Helpers(Path(run['helpers'])/'libstrategy_prefill.so'),run['adapter'])
+        b=context_type(sdk,ring,w,Helpers(Path(run['helpers'])/'libstrategy_prefill.so'),context_binding)
         owners.callback(b.close)
         sf=None
         if any(x['recipe']['route']=='sf' for x in arms):
             mr=Ring(sdk,w,a.l2_bytes,weights=ring.w,metadata_only=True);owners.callback(mr.close)
-            mb=RoutedContext(sdk,mr,w,b.helpers,run['adapter']);owners.callback(mb.close)
+            mb=context_type(sdk,mr,w,b.helpers,context_binding);owners.callback(mb.close)
             msf=Expansion(mb,Path(run['dequant']));owners.callback(msf.close)
             for config in point['sf_configs']:
                 result['expansions']['sf'][str(config)]=measure_expansion(mb,w,msf,config,authority,source,a.attempt,
@@ -135,14 +153,19 @@ def measure(a,point,arms,images,queries,run,phase,known):
                         recipe=Recipe.from_dict(arm['recipe'])
                         full=recipe.kind=='full'
                         if full:
-                            core=RoutedFull(b,Path(run['dequant']),a.l2_bytes,a.sdk)
+                            core=full_type(b,Path(run['dequant']),a.l2_bytes,a.sdk)
                             sessions.callback(core.close)
                             for config in point['full_configs']:
                                 result['expansions']['full'][str(config)]=measure_full_expansion(
                                     b,core,config,authority,source,a.attempt,stage_measure=timer.stages)
                             result['reset']=reset_measurement(b,timer)
+                        elif recipe.kind=='tc':
+                            core=tc_type(b,arm,images['tc'][arm['module']],queries[arm['binding']['query']],sf)
+                            sessions.callback(core.close)
                         else:
-                            core=RoutedTC(b,arm,images['tc'][arm['module']],queries[arm['binding']['query']],sf)
+                            if backend is None:raise ValueError('vector requires the explicit confirmation backend')
+                            core=backend.Vector(b,images['vectors'][arm['module']],arm['spec'],
+                                dict(recipe.parameters).get('split',1),workload=w)
                             sessions.callback(core.close)
                         config=control_helper_config(w,recipe)
                         capture,data=sessions.enter_context(prepared(b,core,recipe,config=config,full=full))
@@ -151,7 +174,11 @@ def measure(a,point,arms,images,queries,run,phase,known):
                         implementation=digest([source,full_images]) if full else source
                         stages,_=timer.stages(capture,b,recipe,authority,implementation,a.attempt,b.check)
                         data.update(components=[s['id'] for s in stages],stages=stages)
-                        data['receipt']['row_maps']='GPU_MM_IDS_HELPER_EVERY_CALL_ACTUAL_CONSUMER_POINTERS'
+                        data['receipt']['row_maps']=(backend.ROW_MAPS if backend else
+                            'GPU_MM_IDS_HELPER_EVERY_CALL_ACTUAL_CONSUMER_POINTERS')
+                        if backend:
+                            data['receipt']['prepare']=(backend.prepare_receipt(b.prepare_plan)
+                                if recipe.kind in ('tc','full') else 'DIRECT_INDEXED_SIMT_NO_PREPARE')
                         if full:data['timing_provider_images']=full_images
                         result['arms'][arm['id']]=data
                     timer.run()
@@ -228,8 +255,9 @@ def validate_capture(capture):
     for part in capture['arms'].values():
         if (len(part['numerical'])!=6 or part['omitted_producer']!='DETECTED' or
                 part['changed_input_and_router']!='PASS' or part['zero_a']!='PASS' or
-                not part['pointer_negatives'] or part['receipt']['row_maps']!=
-                'GPU_MM_IDS_HELPER_EVERY_CALL_ACTUAL_CONSUMER_POINTERS'):
+                not part['pointer_negatives'] or part['receipt']['row_maps'] not in
+                ('GPU_MM_IDS_HELPER_EVERY_CALL_ACTUAL_CONSUMER_POINTERS',
+                 'PUBLIC_QUACTLIZE_PREPARE_OR_DIRECT_INDEXED_SIMT')):
             raise ValueError('missing prefill replay/negative controls')
         for proof in part['numerical']:
             error=proof['relative_l1_error']
@@ -266,7 +294,7 @@ def parse(capture,known,rows,apis,provenance):
     return result
 
 
-def compose(point,results):
+def compose(point,results,*,explicit_helpers=False):
     """Fresh mean component sum, helper choice factored from producer config."""
     records={};data={};helpers={'sf':{},'full':{}};reset=None;authority=None
     for value in results:
@@ -309,7 +337,7 @@ def compose(point,results):
         helper='full' if r.kind=='full' else 'sf' if r.route=='sf' else None
         config=None
         if helper:
-            config=str(control_helper_config(w,r)) if aid=='original' else best[helper]
+            config=str(control_helper_config(w,r)) if aid=='original' or explicit_helpers else best[helper]
             if config not in helpers[helper]:raise ValueError('missing explicit helper config')
             keys+=helpers[helper][config]
         full=r.kind=='full'
