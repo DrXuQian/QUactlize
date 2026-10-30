@@ -86,7 +86,7 @@ class Arena:
 
 class Public:
     def __init__(self, package):
-        self.lib = C.CDLL(str(package / "libquactlize_ppu.so"), mode=C.RTLD_LOCAL)
+        self.lib = C.CDLL(str(package / "libncp_quactlize.so"), mode=C.RTLD_LOCAL)
         def api(name, args, result=C.c_int):
             return bind(self.lib, "quactlize_ppu_" + name, args, result)
         self.canonical = api("kpack_canonical_arrangement_v1", [C.c_int, C.POINTER(Arrangement)])

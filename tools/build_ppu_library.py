@@ -26,6 +26,7 @@ from quactlize.dispatch.planning import plan_smallm, validate_inventory
 from quactlize.dispatch.prefill_policy import check_receipt, receipt_fields
 from quactlize.dispatch.dense_prefill import EVIDENCE as DENSE_PREFILL_EVIDENCE, HEADER as DENSE_PREFILL_HEADER, render as dense_prefill_header
 
+PUBLIC_LIBRARY = 'libncp_quactlize.so'
 PUBLIC_EXPORTS = (
     'quactlize_ppu_kpack_canonical_arrangement_v1',
     'quactlize_ppu_kpack_sizes_for_arrangement_v1',
@@ -93,12 +94,14 @@ def verify(output):
     manifest = json.loads((output / 'manifest.json').read_text())
     if manifest.get('schema') != 'quactlize.ppu-library.v1':
         raise ValueError('unknown public library manifest')
+    if manifest.get('library') != PUBLIC_LIBRARY or PUBLIC_LIBRARY not in manifest['payloads']:
+        raise ValueError('public library must be ' + PUBLIC_LIBRARY)
     for name, expected in manifest['payloads'].items():
         path = output / name
         if not path.resolve().is_relative_to(output.resolve()) or not path.is_file() or sha(path) != expected:
             raise ValueError('library payload differs: ' + name)
     exports = {line.split()[-1] for line in subprocess.check_output(
-        ['nm', '-D', '--defined-only', str(output / 'libquactlize_ppu.so')], text=True).splitlines() if line.split()}
+        ['nm', '-D', '--defined-only', str(output / PUBLIC_LIBRARY)], text=True).splitlines() if line.split()}
     if set(PUBLIC_EXPORTS) - exports:
         raise ValueError('public exports missing: ' + repr(sorted(set(PUBLIC_EXPORTS) - exports)))
     if 'final_selection' in manifest:
@@ -247,10 +250,10 @@ def build(sdk, output, jobs):
         objects = list(pool.map(compile_one, ('quactlize/dense/runtime.cpp', 'quactlize/dense/copy.cu')))
     objects += [work / 'packing' / (name + '.o') for name in ('sizes.cpp', 'ppu_pack.cu')]
     run('public', ['g++', '-shared', '-pthread', '-Wl,-Bsymbolic', '-Wl,-z,defs',
-        '-Wl,-soname,libquactlize_ppu.so', '-Wl,-rpath,$ORIGIN/quactlize-runtime',
+        '-Wl,-soname,' + PUBLIC_LIBRARY, '-Wl,-rpath,$ORIGIN/quactlize-runtime',
         *map(str, objects), '-L' + str(runtime), '-lquactlize_kpack_dispatch',
         '-lquactlize_ppu_execution', '-lquactlize_ppu_prefill', '-L' + str(sdk / 'lib'),
-        *['-l' + name for name in LIBRARIES], '-ldl', '-o', str(output / 'libquactlize_ppu.so')])
+        *['-l' + name for name in LIBRARIES], '-ldl', '-o', str(output / PUBLIC_LIBRARY)])
     headers = {
         'quactlize/packing/api.h': 'quactlize/packing/api.h',
         'quactlize/dense/api.h': 'quactlize/dense/api.h',
@@ -265,7 +268,7 @@ def build(sdk, output, jobs):
         raise ValueError('provider/dispatcher sources changed during build')
     payloads = {str(p.relative_to(output)): sha(p) for p in sorted(output.rglob('*'))
                 if p.is_file() and not p.is_relative_to(work)}
-    manifest = dict(schema='quactlize.ppu-library.v1', library='libquactlize_ppu.so',
+    manifest = dict(schema='quactlize.ppu-library.v1', library=PUBLIC_LIBRARY,
         payloads=payloads, commands=commands, jit_source_contract=contract,
         sdk=compiler.sdk_identity, formats=[8, 10, 11, 12, 13, 14],
         source_hashes={str(p.relative_to(ROOT)): digest for p, digest in public_sources.items()},
@@ -282,7 +285,7 @@ def build(sdk, output, jobs):
         performance_admission='NOT_MEASURED', seconds=time.monotonic() - start)
     (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     verify(output)
-    print(f'QUACTLIZE_PPU_BUILD COMPLETE library={output / "libquactlize_ppu.so"} device=PENDING', flush=True)
+    print(f'QUACTLIZE_PPU_BUILD COMPLETE library={output / PUBLIC_LIBRARY} device=PENDING', flush=True)
     return manifest
 
 

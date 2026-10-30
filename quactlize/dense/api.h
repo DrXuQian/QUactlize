@@ -54,7 +54,7 @@ int quactlize_ppu_dense_supported_v1(quactlize_ppu_dense_params_v1 const*);
 // Outside graph capture; current device must equal device. v1 retains the
 // PoC's F16 dense compute. Wider-range callers must explicitly choose BF16
 // with create_with_options_v1; finite F32 values need not fit FP16.
-// Internal resources are resolved relative to libquactlize_ppu.so. Optional
+// Internal resources are resolved relative to libncp_quactlize.so. Optional
 // environment: PPU_SDK, QUACTLIZE_PPU_CACHE_DIR, QUACTLIZE_PPU_PYTHON.
 // PPU1.0 ZW610 uses ZW810 exact-table latencies/configs and bucket rules as
 // selection estimates (not ZW610 measurements), with its actual resources.

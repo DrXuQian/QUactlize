@@ -29,5 +29,5 @@ def sdk(package):
     print("QUACTLIZE_CI_DEVICE", device_identity(sdk), flush=True)
     graph_bind(sdk)
     # Also declares stream, event and memset functions used by the harness.
-    bind(sdk, C.CDLL(str(package / "libquactlize_ppu.so"), mode=C.RTLD_LOCAL))
+    bind(sdk, C.CDLL(str(package / "libncp_quactlize.so"), mode=C.RTLD_LOCAL))
     return sdk

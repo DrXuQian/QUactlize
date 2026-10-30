@@ -29,7 +29,7 @@ Build output must be a new directory. Tests without `--output` create a unique
 temporary directory and print its path. Both entrypoints honor `PYTHON`.
 See [CI integration](docs/CI.md) for prerequisites and result handling.
 
-Install the complete package: `libquactlize_ppu.so`, `include/`,
+Install the complete package: `libncp_quactlize.so`, `include/`,
 `quactlize-runtime/` and `manifest.json`. ncp_flash_lib only builds/installs it;
 packing, config selection and execution remain in Quactlize. The public ABI is
 declared in [packing/api.h](quactlize/packing/api.h) and

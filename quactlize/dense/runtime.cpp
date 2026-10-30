@@ -42,7 +42,7 @@ std::string environment(char const* name,std::string fallback) {
 fs::path runtime_directory() {
     Dl_info image{};
     require(dladdr(reinterpret_cast<void*>(&quactlize_ppu_dense_create_v1),&image) && image.dli_fname,
-        "cannot locate libquactlize_ppu.so");
+        "cannot locate libncp_quactlize.so");
     return fs::canonical(fs::path(image.dli_fname)).parent_path()/"quactlize-runtime";
 }
 std::string python_executable() {

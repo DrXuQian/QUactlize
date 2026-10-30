@@ -8,7 +8,32 @@ import sys
 import pytest
 
 from quactlize.runtime.compiler import Compiler, LIBRARIES, source_contract, validate_actlize_headers
-from tools.build_ppu_library import ROOT, stage_jit, validate_actlize_checkout
+from tools.build_ppu_library import PUBLIC_LIBRARY, ROOT, stage_jit, validate_actlize_checkout
+
+
+@pytest.mark.parametrize('fault', [None, 'old-name', 'unsealed'])
+def test_public_ncp_library_name(tmp_path, fault):
+    from tools.build_ppu_library import PUBLIC_EXPORTS, verify
+    from quactlize.runtime.compiler import sha
+    source = tmp_path / 'stub.c'
+    library = tmp_path / PUBLIC_LIBRARY
+    source.write_text('\n'.join('int ' + name + '(void) {return 0;}' for name in PUBLIC_EXPORTS))
+    subprocess.run(['cc', '-shared', '-fPIC', '-Wl,-soname,' + PUBLIC_LIBRARY,
+                    source, '-o', library], check=True)
+    manifest = dict(schema='quactlize.ppu-library.v1', library=PUBLIC_LIBRARY,
+                    payloads={PUBLIC_LIBRARY: sha(library)})
+    if fault == 'old-name':
+        manifest['library'] = 'libquactlize_ppu.so'
+    elif fault == 'unsealed':
+        manifest['payloads'] = {}
+    (tmp_path / 'manifest.json').write_text(json.dumps(manifest))
+    if fault:
+        with pytest.raises(ValueError, match='public library must be libncp_quactlize.so'):
+            verify(tmp_path)
+    else:
+        assert verify(tmp_path) == manifest
+        dynamic = subprocess.check_output(['readelf', '-d', library], text=True)
+        assert '(SONAME)' in dynamic and '[' + PUBLIC_LIBRARY + ']' in dynamic
 
 
 def test_jit_snapshot_has_the_same_source_identity_without_checkout(tmp_path):
@@ -109,7 +134,7 @@ def test_dense_prefill_receipt_binds_generated_runtime_selection(tmp_path,fault)
     from tools.build_ppu_library import PUBLIC_EXPORTS,verify
     from quactlize.dispatch.dense_prefill import EVIDENCE,HEADER
     from quactlize.runtime.compiler import sha
-    source=tmp_path/'stub.c';library=tmp_path/'libquactlize_ppu.so'
+    source=tmp_path/'stub.c';library=tmp_path/'libncp_quactlize.so'
     source.write_text('\n'.join('int '+name+'(void){return 0;}' for name in PUBLIC_EXPORTS))
     subprocess.run(['cc','-shared','-fPIC',source,'-o',library],check=True)
     path=tmp_path/'quactlize-runtime/dense-prefill.json';path.parent.mkdir()
@@ -117,7 +142,7 @@ def test_dense_prefill_receipt_binds_generated_runtime_selection(tmp_path,fault)
     if fault=='table':
         data=json.loads(path.read_text());data['points'][0]['us']*=2
         path.write_text(json.dumps(data))
-    m=dict(schema='quactlize.ppu-library.v1',
+    m=dict(schema='quactlize.ppu-library.v1', library=PUBLIC_LIBRARY,
         payloads={str(p.relative_to(tmp_path)):sha(p) for p in (library,path)},
         source_hashes={'policies/dense_prefill_v1.json':sha(path),
                       'quactlize/dispatch/dense_prefill.inc':sha(HEADER)},
@@ -135,7 +160,7 @@ def test_dense_prefill_receipt_binds_generated_runtime_selection(tmp_path,fault)
 def test_public_dense_helper_receipt_binds_policy_and_private_runtime(tmp_path,fault):
     from tools.build_ppu_library import PUBLIC_EXPORTS,verify
     from quactlize.runtime.compiler import sha
-    source=tmp_path/'host.c';library=tmp_path/'libquactlize_ppu.so'
+    source=tmp_path/'host.c';library=tmp_path/'libncp_quactlize.so'
     source.write_text('\n'.join('int '+name+'(void){return 0;}' for name in PUBLIC_EXPORTS))
     subprocess.run(['cc','-shared','-fPIC',source,'-o',library],check=True)
     runtime=tmp_path/'quactlize-runtime';runtime.mkdir()
@@ -151,7 +176,7 @@ def test_public_dense_helper_receipt_binds_policy_and_private_runtime(tmp_path,f
     if fault=='private-policy':data['source_hashes'][header]='b'*64
     if fault=='image':data['sha256']='b'*64
     receipt.write_text(json.dumps(data))
-    m=dict(schema='quactlize.ppu-library.v1',source_hashes={header:'a'*64,table:'c'*64,evidence:'d'*64,internal:'e'*64},
+    m=dict(schema='quactlize.ppu-library.v1',library=PUBLIC_LIBRARY,source_hashes={header:'a'*64,table:'c'*64,evidence:'d'*64,internal:'e'*64},
         payloads={str(p.relative_to(tmp_path)):sha(p) for p in (library,image,receipt)},
         dense_helpers=dict(policy_sha256='b'*64 if fault=='policy' else 'a'*64,
                            full_table_sha256='b'*64 if fault=='full-table' else 'c'*64,
@@ -168,7 +193,7 @@ def test_public_library_binds_actual_selected_execution(tmp_path, fault):
     from tools.build_ppu_library import PUBLIC_EXPORTS, verify
     from quactlize.dispatch.planning import validate_inventory
     from quactlize.runtime.compiler import sha
-    source=tmp_path/'stub.c';library=tmp_path/'libquactlize_ppu.so'
+    source=tmp_path/'stub.c';library=tmp_path/'libncp_quactlize.so'
     source.write_text('\n'.join('int '+name+'(void) {return 0;}' for name in PUBLIC_EXPORTS))
     subprocess.run(['cc','-shared','-fPIC',source,'-o',library],check=True)
     path=tmp_path/'quactlize-runtime/final-selection.json';path.parent.mkdir()
@@ -178,7 +203,7 @@ def test_public_library_binds_actual_selected_execution(tmp_path, fault):
     path.write_text(json.dumps(plan))
     execution=dict(q4_decode_policy_sha256='host-test',smallm_effective_sha256='a'*64,
         q4_decode_configs={'1024x2048':[[2,7,8,4,4]]},q4_decode_compute_v2=dict(compute=['f16','bf16']))
-    m=dict(schema='quactlize.ppu-library.v1',payloads={str(p.relative_to(tmp_path)):sha(p) for p in (path,library)},
+    m=dict(schema='quactlize.ppu-library.v1',library=PUBLIC_LIBRARY,payloads={str(p.relative_to(tmp_path)):sha(p) for p in (path,library)},
         execution_receipt=copy.deepcopy(execution),source_hashes={'policies/kpack_smallm_effective_v1.hpp':'a'*64},
         final_selection=dict(path=str(path.relative_to(tmp_path)),capabilities=validate_inventory(plan,execution,jit=True)))
     if fault=='missing-q4':m['execution_receipt']['q4_decode_configs']={}
