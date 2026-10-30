@@ -132,11 +132,44 @@ def worker(a):
     return int(bool(failed or budget))
 
 
+def reuse_build(a,plan):
+    """Reuse binaries after a coordinator fix, never copy old measurements."""
+    from copy import copy
+    from dev.strategy.prefill_build import verify as verify_prefill
+    previous=a.reuse_build.resolve(strict=True)
+    old=sealed(previous/'run.json');old_plan=sealed(previous/'plan.json')
+    if old['plan']!=plan['sha256'] or old_plan['sha256']!=plan['sha256']:
+        raise ValueError('build reuse requires the same workload/config plan')
+    coordinator='tools/run_moe_confirmation.py'
+    for field,current in (('source',source_identity(ROOT)),('harness',harness_identity(ROOT))):
+        before,after=old[field]['files'],current['files']
+        changed={p for p in before.keys()|after.keys() if before.get(p)!=after.get(p)}
+        if changed-{coordinator}:
+            raise ValueError('build reuse changed non-coordinator sources: '+','.join(sorted(changed)))
+    for name,want in old['immutable_files'].items():
+        if sha(name)!=want:raise ValueError('previous build artifact changed: '+name)
+    helpers=old['moe_helpers'];verify_moe(helpers)
+    helper_dir=Path(old['helpers']);verify_prefill(a.sdk,helper_dir)
+    images=base.read(previous/'images.json');dq=Path(old['dequant']) if old['dequant'] else None
+    check=copy(a);check.output=previous
+    module_points=[dict(p,arms=[r for r in p['arms'] if r['recipe']['kind']!='full']) for p in plan['points']]
+    base.verify_images(check,plan,images,dq,points=module_points)
+    reference=dict(output=str(previous),run=old['sha256'],sdk=old['sdk'],
+                   compiled_artifacts_only=True,previous_measurements_reused=False)
+    return images,dq,helpers,helper_dir,reference
+
+
 def build(a,plan):
     from dev.strategy.prefill_build import build as build_prefill
-    images,dq=base.compile_all(a,plan)
-    build_prefill(a.sdk,a.output/'helpers')
-    helpers=build_moe(a.sdk,a.output/'moe-helpers')
+    reused=None
+    if a.reuse_build:
+        images,dq,helpers,helper_dir,reused=reuse_build(a,plan)
+        atomic_json(a.output/'images.json',images)
+        print('MOE_CONFIRM_REUSE_BUILD '+json.dumps(reused),flush=True)
+    else:
+        images,dq=base.compile_all(a,plan)
+        helper_dir=a.output/'helpers';build_prefill(a.sdk,helper_dir)
+        helpers=build_moe(a.sdk,a.output/'moe-helpers')
     devices=[]
     for card in a.devices.split(','):
         path=a.output/('device-'+card+'.json')
@@ -144,19 +177,20 @@ def build(a,plan):
             '--probe',str(path)],env=dict(os.environ,CUDA_VISIBLE_DEVICES=card),check=True)
         devices.append(base.read(path))
     base.check_devices(devices)
+    if reused and reused['sdk']!=devices[0]['sdk']:raise ValueError('reused build SDK differs')
     a.asys=(a.asys or a.sdk/'asight/bin/asys').resolve(strict=True);a.smi=base.selected_smi(a)
     files=[a.asys,a.smi,Path(helpers['bridge']),Path(helpers['scaffold']['candidate']),
-           a.output/'helpers/manifest.json',a.output/'helpers/libstrategy_prefill.so',
-           a.output/'images.json',a.output/'moe-helpers/receipt.json']
+           helper_dir/'manifest.json',helper_dir/'libstrategy_prefill.so',
+           a.output/'images.json',Path(helpers['bridge']).parent/'receipt.json']
     files += [Path(r['path']) for pool in images.values() for r in pool.values()]
     if dq:files += [dq/'manifest.json',dq/'libquactlize_ppu_dequant.so']
     run=dict(plan=plan['sha256'],source_revision=revision(ROOT),source=source_identity(ROOT),
         harness=harness_identity(ROOT),l2_bytes=a.l2_bytes,cards=a.devices.split(','),devices=devices,
         assignments=assignments(plan,len(devices)),adapter_sha256=helpers['sha256'],moe_helpers=helpers,
-        helpers=str(a.output/'helpers'),dequant=str(dq) if dq else None,images=base.image_identity(images,dq),
+        helpers=str(helper_dir),dequant=str(dq) if dq else None,images=base.image_identity(images,dq),
         asys=str(a.asys),asys_sha256=sha(a.asys),smi=str(a.smi),sdk=devices[0]['sdk'],
         immutable_files={str(p):sha(p) for p in files},mode=a.mode,native_comparison=False,
-        scope=plan['scope'])
+        scope=plan['scope'],reused_build=reused)
     base.sealed(a.output/'run.json',run);return sealed(a.output/'run.json')
 
 
@@ -249,31 +283,31 @@ def main(a):
     if gate.get('status')!='PASS' or gate.get('run')!=run['sha256']:
         raise ValueError('helper gate does not belong to this run')
     for pid in plans.preflight_points(plan):
-        worker=next(i for i,ids in enumerate(run['assignments']) if pid in ids)
-        card=run['cards'][worker];folder=a.output/('gpu-'+card);folder.mkdir(exist_ok=True)
+        worker_id=next(i for i,ids in enumerate(run['assignments']) if pid in ids)
+        card=run['cards'][worker_id];folder=a.output/('gpu-'+card);folder.mkdir(exist_ok=True)
         if completed(folder/'points'/(pid+'.json'),run):continue
         print('MOE_CONFIRM_PREFLIGHT '+json.dumps(dict(point=pid,device=card,reused_in_campaign=True)),flush=True)
         command=[sys.executable,'-u',__file__,'--output',str(a.output),'--sdk',str(a.sdk),
-                 '--l2-bytes',str(a.l2_bytes),'--worker',str(worker),'--preflight',pid,
+                 '--l2-bytes',str(a.l2_bytes),'--worker',str(worker_id),'--preflight',pid,
                  '--budget-hours',str(a.budget_hours)]
         checked_child(command,folder/('preflight-'+pid+'.log'),card)
     active=[];started=time.monotonic()
     try:
-        for worker,card in enumerate(run['cards']):
+        for worker_id,card in enumerate(run['cards']):
             folder=a.output/('gpu-'+card);folder.mkdir(exist_ok=True)
             path=folder/('console-'+str(time.time_ns())+'.log')
             command=[sys.executable,'-u',__file__,'--output',str(a.output),'--sdk',str(a.sdk),
-                     '--l2-bytes',str(a.l2_bytes),'--worker',str(worker),'--budget-hours',str(a.budget_hours)]
+                     '--l2-bytes',str(a.l2_bytes),'--worker',str(worker_id),'--budget-hours',str(a.budget_hours)]
             with path.open('w') as log:
                 p=subprocess.Popen(command,env=dict(os.environ,CUDA_VISIBLE_DEVICES=card),stdout=log,
                                    stderr=subprocess.STDOUT,start_new_session=True)
             active.append((p,path))
         while any(p.poll() is None for p,_ in active):
             counts={}
-            for worker,card in enumerate(run['cards']):
+            for worker_id,card in enumerate(run['cards']):
                 done=[base.read(p) for p in (a.output/('gpu-'+card)/'points').glob('*.json')]
                 counts[card]=dict(passed=sum(r['status']=='PASS' for r in done),failed=sum(r['status']!='PASS' for r in done),
-                                  expected=len(run['assignments'][worker]))
+                                  expected=len(run['assignments'][worker_id]))
             print('MOE_CONFIRM_WAIT '+json.dumps(dict(alive=sum(p.poll() is None for p,_ in active),
                 minutes=round((time.monotonic()-started)/60,1),points=counts,logs=str(a.output/'gpu-*/console-*.log'))),flush=True)
             time.sleep(30)
@@ -290,6 +324,7 @@ if __name__=='__main__':
     p.add_argument('--output',type=Path);p.add_argument('--sdk',type=Path,default=Path(os.environ.get('PPU_SDK','/usr/local/PPU_SDK')))
     p.add_argument('--devices',default='3,5,6,7');p.add_argument('--jobs',type=int,default=8)
     p.add_argument('--mode',choices=('all','prefill','decode'),default='all')
+    p.add_argument('--reuse-build',type=Path,help='reuse a prior confirmation build, not its timings; use a new output')
     p.add_argument('--l2-bytes',type=int,default=67108864);p.add_argument('--budget-hours',type=float,default=8)
     p.add_argument('--asys',type=Path);p.add_argument('--smi',type=Path);p.add_argument('--probe',type=Path)
     p.add_argument('--worker',type=int);p.add_argument('--job',type=Path);p.add_argument('--attempt',type=Path)

@@ -23,6 +23,60 @@ from quactlize.runtime.tuning import digest
 ROOT=Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize('worker_id',[0,1])
+@pytest.mark.parametrize('preflight',[None,'representative-point'])
+def test_worker_entry_dispatches_before_coordinator_locals(tmp_path,monkeypatch,worker_id,preflight):
+    from tools import run_moe_confirmation as runner
+    args=SimpleNamespace(plan=False,probe=None,output=tmp_path,job=None,helper_gate=False,
+                         worker=worker_id,preflight=preflight)
+    seen=[]
+    monkeypatch.setattr(runner,'worker',lambda a:seen.append(a) or 7)
+    assert runner.main(args)==7
+    assert seen==[args] and seen[0].worker==worker_id and seen[0].preflight==preflight
+
+
+@pytest.mark.parametrize('changed',['coordinator','kernel','plan','artifact'])
+def test_build_reuse_keeps_old_results_and_rejects_unrelated_changes(tmp_path,monkeypatch,changed):
+    from tools import run_moe_confirmation as runner
+    from dev.strategy import prefill_build
+    from quactlize.runtime.compiler import sha
+    previous=tmp_path/'old';previous.mkdir()
+    artifact=previous/'library.so';artifact.write_bytes(b'unchanged-test-library')
+    toy_plan=dict(points=[dict(id='p',arms=[dict(module='tc',recipe=dict(kind='tc')),
+                                          dict(recipe=dict(kind='full'))])])
+    runner.base.sealed(previous/'plan.json',toy_plan);planned=runner.sealed(previous/'plan.json')
+    files={'tools/run_moe_confirmation.py':'before','quactlize/kernel.cuh':'same'}
+    before=dict(plan=planned['sha256'],source=dict(files=files),harness=dict(files=files),
+                immutable_files={str(artifact):sha(artifact)},moe_helpers=dict(test=True),
+                helpers=str(previous/'helpers'),dequant=None,sdk=dict(test=True))
+    runner.base.sealed(previous/'run.json',before)
+    (previous/'images.json').write_text('{"tc":{},"vectors":{}}')
+    old_bytes=(previous/'run.json').read_bytes()
+    current=files|{'tools/run_moe_confirmation.py':'after'}
+    if changed=='kernel':current['quactlize/kernel.cuh']='changed'
+    if changed=='plan':planned=planned|dict(sha256='different')
+    if changed=='artifact':artifact.write_bytes(b'changed-library')
+    monkeypatch.setattr(runner,'source_identity',lambda root:dict(files=current))
+    monkeypatch.setattr(runner,'harness_identity',lambda root:dict(files=current))
+    monkeypatch.setattr(runner,'verify_moe',lambda value:None)
+    monkeypatch.setattr(prefill_build,'verify',lambda sdk,folder:None)
+    verified=[]
+    def images(a,p,records,dq,*,points):
+        assert a.output==previous
+        assert all(r['recipe']['kind']!='full' for pt in points for r in pt['arms'])
+        verified.append(True)
+    monkeypatch.setattr(runner.base,'verify_images',images)
+    args=SimpleNamespace(reuse_build=previous,output=tmp_path/'new',sdk=Path('/mock-sdk'))
+    if changed!='coordinator':
+        with pytest.raises(ValueError):runner.reuse_build(args,planned)
+        assert not verified
+    else:
+        *_,reference=runner.reuse_build(args,planned)
+        assert verified and reference['compiled_artifacts_only'] and not reference['previous_measurements_reused']
+    assert (previous/'run.json').read_bytes()==old_bytes
+    assert args.output==tmp_path/'new' and not args.output.exists()
+
+
 @pytest.fixture(scope='module')
 def inventory():return plan.make_plan()
 
