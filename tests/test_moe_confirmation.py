@@ -35,7 +35,7 @@ def test_worker_entry_dispatches_before_coordinator_locals(tmp_path,monkeypatch,
     assert seen==[args] and seen[0].worker==worker_id and seen[0].preflight==preflight
 
 
-@pytest.mark.parametrize('changed',['coordinator','kernel','plan','artifact'])
+@pytest.mark.parametrize('changed',['coordinator','reused-coordinator','kernel','plan','artifact'])
 def test_build_reuse_keeps_old_results_and_rejects_unrelated_changes(tmp_path,monkeypatch,changed):
     from tools import run_moe_confirmation as runner
     from dev.strategy import prefill_build
@@ -49,6 +49,11 @@ def test_build_reuse_keeps_old_results_and_rejects_unrelated_changes(tmp_path,mo
     before=dict(plan=planned['sha256'],source=dict(files=files),harness=dict(files=files),
                 immutable_files={str(artifact):sha(artifact)},moe_helpers=dict(test=True),
                 helpers=str(previous/'helpers'),dequant=None,sdk=dict(test=True))
+    cache=previous
+    if changed=='reused-coordinator':
+        cache=tmp_path/'original-build'
+        runner.base.sealed(cache/'run.json',dict(reused_build=None))
+        before['reused_build']=dict(output=str(cache))
     runner.base.sealed(previous/'run.json',before)
     (previous/'images.json').write_text('{"tc":{},"vectors":{}}')
     old_bytes=(previous/'run.json').read_bytes()
@@ -62,19 +67,86 @@ def test_build_reuse_keeps_old_results_and_rejects_unrelated_changes(tmp_path,mo
     monkeypatch.setattr(prefill_build,'verify',lambda sdk,folder:None)
     verified=[]
     def images(a,p,records,dq,*,points):
-        assert a.output==previous
+        assert a.output==cache
         assert all(r['recipe']['kind']!='full' for pt in points for r in pt['arms'])
         verified.append(True)
     monkeypatch.setattr(runner.base,'verify_images',images)
     args=SimpleNamespace(reuse_build=previous,output=tmp_path/'new',sdk=Path('/mock-sdk'))
-    if changed!='coordinator':
+    if changed not in ('coordinator','reused-coordinator'):
         with pytest.raises(ValueError):runner.reuse_build(args,planned)
         assert not verified
     else:
         *_,reference=runner.reuse_build(args,planned)
         assert verified and reference['compiled_artifacts_only'] and not reference['previous_measurements_reused']
+        assert reference['cache_output']==str(cache)
     assert (previous/'run.json').read_bytes()==old_bytes
     assert args.output==tmp_path/'new' and not args.output.exists()
+
+
+def continuation_fixture(tmp_path):
+    from tools import run_moe_confirmation as runner
+    from quactlize.runtime.compiler import sha
+    old=tmp_path/'old'
+    runner.base.sealed(old/'run.json',dict(cards=['3'],assignments=[['a','b','c']],
+                                         source_revision=dict(quactlize_commit='old-source')))
+    run=runner.sealed(old/'run.json')
+    batch=old/'gpu-3/batches/complete.json'
+    runner.base.sealed(batch,dict(run=run['sha256'],status='PASS',evidence={},
+                                 numerical=dict(host_test=True)))
+    good=old/'gpu-3/points/a.json'
+    w=asdict(Workload(12,512,2048,1,'indexed','bf16',experts=256,topk=8))
+    value=dict(point='a',run=run['sha256'],status='PASS',workload=w,
+               decision=dict(statistics=dict(original=dict(mean_us=1.))),bindings=dict(original={}),
+               batch_receipts={str(batch):sha(batch)})
+    runner.base.sealed(good,value)
+    # One partial point and one unstarted point must be wholly remeasured.
+    runner.base.sealed(old/'gpu-3/points/b.json',dict(point='b',run=run['sha256'],status='FAIL'))
+    plan=dict(points=[dict(id=i,workload=w,arms=[{}],full_configs=[]) for i in ('a','b','c')],scope='HOST_TEST')
+    return runner,old,run,plan
+
+
+def test_gpu_change_keeps_complete_pairs_but_not_partial_timings(tmp_path):
+    runner,old,old_run,plan=continuation_fixture(tmp_path)
+    before={p:p.read_bytes() for p in old.rglob('*.json')}
+    args=SimpleNamespace(continue_from=old,output=tmp_path/'new')
+    keep=runner.retain_complete(args,plan)
+    assert set(keep)=={'a'}
+    value=runner.retained_point(keep['a'])
+    assert value['run']==old_run['sha256']
+    payload=runner.sealed(Path(keep['a']['path']))
+    assert payload['origin']['source_revision']['quactlize_commit']=='old-source'
+    assert payload['batches'][0]['numerical']==dict(host_test=True)
+    assert {p:p.read_bytes() for p in old.rglob('*.json')}==before
+    assigned=runner.assign_remaining(plan,4,keep)
+    assert len(assigned)==4 and sorted(i for ids in assigned for i in ids)==['b','c']
+    assert sum(not ids for ids in assigned)==2
+    assert runner.assign_remaining(plan,4,dict.fromkeys(('a','b','c')))==[[],[],[],[]]
+
+
+def test_second_gpu_change_preserves_original_provenance_and_review(tmp_path):
+    runner,old,old_run,plan=continuation_fixture(tmp_path)
+    middle=tmp_path/'middle'
+    keep=runner.retain_complete(SimpleNamespace(continue_from=old,output=middle),plan)
+    runner.base.sealed(middle/'run.json',dict(cards=['0','1'],assignments=[['b'],['c']],
+        retained_points=keep,source_revision=dict(quactlize_commit='middle-source')))
+    args=SimpleNamespace(continue_from=middle,output=tmp_path/'last')
+    keep=runner.retain_complete(args,plan)
+    assert set(keep)=={'a'} and runner.retained_point(keep['a'])['run']==old_run['sha256']
+    runner.base.sealed(args.output/'run.json',dict(cards=['2','3'],assignments=[['b'],['c']],
+        retained_points=keep,source_revision=dict(quactlize_commit='new-source')))
+    run=runner.sealed(args.output/'run.json')
+    assert runner.review(args,plan,run,[0,0])==1
+    summary=runner.base.read(args.output/'summary.json')
+    assert (summary['retained'],summary['passed'],summary['expected'])==(1,1,3)
+    assert summary['points'][0]['source_run']==old_run['sha256']
+    assert not summary['native_no_regression_admitted']
+
+
+def test_existing_output_has_actionable_resume_or_gpu_change_message(tmp_path):
+    from tools import run_moe_confirmation as runner
+    args=SimpleNamespace(plan=False,probe=None,output=tmp_path,job=None,helper_gate=False,
+                         worker=None,confirm_idle=True,resume=False)
+    with pytest.raises(ValueError,match='--continue-from OLD --output NEW'):runner.main(args)
 
 
 @pytest.fixture(scope='module')

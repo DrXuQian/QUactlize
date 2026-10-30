@@ -151,12 +151,68 @@ def reuse_build(a,plan):
     helpers=old['moe_helpers'];verify_moe(helpers)
     helper_dir=Path(old['helpers']);verify_prefill(a.sdk,helper_dir)
     images=base.read(previous/'images.json');dq=Path(old['dequant']) if old['dequant'] else None
-    check=copy(a);check.output=previous
+    # A continued run can itself reference an older build. Follow only the
+    # build lineage; measurement ownership always stays with its original run.
+    cache,owner=previous,old;seen={cache}
+    while owner.get('reused_build'):
+        ref=owner['reused_build'];cache=Path(ref.get('cache_output',ref['output'])).resolve(strict=True)
+        if cache in seen:raise ValueError('cyclic build reuse')
+        seen.add(cache);owner=sealed(cache/'run.json')
+    check=copy(a);check.output=cache
     module_points=[dict(p,arms=[r for r in p['arms'] if r['recipe']['kind']!='full']) for p in plan['points']]
     base.verify_images(check,plan,images,dq,points=module_points)
-    reference=dict(output=str(previous),run=old['sha256'],sdk=old['sdk'],
+    reference=dict(output=str(previous),cache_output=str(cache),run=old['sha256'],sdk=old['sdk'],
                    compiled_artifacts_only=True,previous_measurements_reused=False)
     return images,dq,helpers,helper_dir,reference
+
+
+def retained_point(binding):
+    payload=sealed(Path(binding['path']));value=payload['point']
+    if (payload['sha256']!=binding['sha256'] or payload['schema']!='quactlize.moe-confirm-retained.v1' or
+            value['point']!=binding['point'] or value['status']!='PASS' or
+            value['run']!=payload['origin']['run_sha256']):
+        raise ValueError('retained complete-point evidence changed')
+    return value
+
+
+def retain_complete(a,plan):
+    """Carry whole paired points; partial points restart all arms on a new GPU."""
+    if not a.continue_from:return {}
+    previous=a.continue_from.resolve(strict=True);old=sealed(previous/'run.json')
+    where={pid:previous/('gpu-'+old['cards'][i])/'points'/(pid+'.json')
+           for i,ids in enumerate(old['assignments']) for pid in ids}
+    retained={}
+    for index,p in enumerate(plan['points']):
+        if index%16==0:
+            print('MOE_CONFIRM_CONTINUE_CHECK '+json.dumps(dict(checked=index,total=len(plan['points']),
+                retained=len(retained),gpu_work=False)),flush=True)
+        pid=p['id']
+        if pid in old.get('retained_points',{}):
+            binding=old['retained_points'][pid];retained_point(binding)
+            payload=sealed(Path(binding['path']))
+        else:
+            path=where.get(pid)
+            value=completed(path,old) if path is not None else None
+            if value is None:continue
+            # Keep original numerical proofs, samples and commit/device tags in
+            # the compact upload too. Never rewrite them as a new-card result.
+            payload=dict(schema='quactlize.moe-confirm-retained.v1',point=value,
+                batches=[sealed(Path(b)) for b in value['batch_receipts']],
+                origin=dict(run_sha256=old['sha256'],source_revision=old['source_revision'],
+                            point_path=str(path),point_sha256=sha(path)))
+        dest=a.output/'retained'/(pid+'.json');base.sealed(dest,payload)
+        retained[pid]=dict(point=pid,path=str(dest),sha256=sealed(dest)['sha256'])
+    print('MOE_CONFIRM_CONTINUE '+json.dumps(dict(retained=len(retained),
+        pending=len(plan['points'])-len(retained),partial_points_restarted=True,
+        cross_device_partial_timing_reused=False)),flush=True)
+    return retained
+
+
+def assign_remaining(plan,count,retained):
+    pending=[p for p in plan['points'] if p['id'] not in retained]
+    active=min(len(pending),count)
+    assigned=assignments(dict(plan,points=pending),active) if active else []
+    return assigned+[[] for _ in range(count-active)]
 
 
 def build(a,plan):
@@ -184,9 +240,11 @@ def build(a,plan):
            a.output/'images.json',Path(helpers['bridge']).parent/'receipt.json']
     files += [Path(r['path']) for pool in images.values() for r in pool.values()]
     if dq:files += [dq/'manifest.json',dq/'libquactlize_ppu_dequant.so']
+    retained=retain_complete(a,plan)
     run=dict(plan=plan['sha256'],source_revision=revision(ROOT),source=source_identity(ROOT),
         harness=harness_identity(ROOT),l2_bytes=a.l2_bytes,cards=a.devices.split(','),devices=devices,
-        assignments=assignments(plan,len(devices)),adapter_sha256=helpers['sha256'],moe_helpers=helpers,
+        assignments=assign_remaining(plan,len(devices),retained),retained_points=retained,
+        adapter_sha256=helpers['sha256'],moe_helpers=helpers,
         helpers=str(helper_dir),dequant=str(dq) if dq else None,images=base.image_identity(images,dq),
         asys=str(a.asys),asys_sha256=sha(a.asys),smi=str(a.smi),sdk=devices[0]['sdk'],
         immutable_files={str(p):sha(p) for p in files},mode=a.mode,native_comparison=False,
@@ -226,12 +284,14 @@ def checked_child(command,path,card):
 
 def review(a,plan,run,codes):
     rows=[];groups=defaultdict(list)
-    for worker,ids in enumerate(run['assignments']):
-        for pid in ids:
-            path=a.output/('gpu-'+run['cards'][worker])/'points'/(pid+'.json')
-            value=completed(path,run)
-            rows.append(dict(point=pid,status='PASS' if value else 'MISSING_OR_FAILED'))
-            if value:groups[plans.key(value['workload'])].append(value)
+    owners={pid:i for i,ids in enumerate(run['assignments']) for pid in ids}
+    for p in plan['points']:
+        pid=p['id'];binding=run.get('retained_points',{}).get(pid)
+        value=(retained_point(binding) if binding else
+            completed(a.output/('gpu-'+run['cards'][owners[pid]])/'points'/(pid+'.json'),run))
+        rows.append(dict(point=pid,status='PASS' if value else 'MISSING_OR_FAILED',
+                         retained=bool(binding),source_run=value['run'] if value else run['sha256']))
+        if value:groups[plans.key(value['workload'])].append(value)
     selected=[];needed=defaultdict(int)
     for p in plan['points']:needed[plans.key(p['workload'])]+=1
     for host,count in sorted(needed.items()):
@@ -245,7 +305,8 @@ def review(a,plan,run,codes):
                            original_us=p['decision']['statistics']['original']['mean_us']) for p in profiles]))
     passed=sum(r['status']=='PASS' for r in rows)
     summary=dict(status='PASS' if not any(codes) and passed==len(rows) else 'INCOMPLETE',
-        passed=passed,expected=len(rows),points=rows,selections=selected,host_keys=len(needed),returncodes=codes,
+        passed=passed,expected=len(rows),retained=sum(r['retained'] for r in rows),
+        points=rows,selections=selected,host_keys=len(needed),returncodes=codes,
         source_revision=run['source_revision'],scope=plan['scope'],production_changed=False,
         native_no_regression_admitted=False,model_tpot_admitted=False)
     atomic_json(a.output/'summary.json',summary)
@@ -265,14 +326,18 @@ def main(a):
     if a.helper_gate:return helper_gate(a)
     if a.worker is not None:return worker(a)
     if not a.confirm_idle:raise ValueError('use --confirm-idle only on idle assigned GPUs')
-    a.output.mkdir(parents=True,exist_ok=a.resume)
+    try:a.output.mkdir(parents=True,exist_ok=a.resume)
+    except FileExistsError:
+        raise ValueError('output exists: use --resume on the same GPUs, or --continue-from OLD --output NEW to change GPUs') from None
     if a.resume:
         plan,run=(sealed(a.output/n) for n in ('plan.json','run.json'));verify(a,run)
         if run['cards']!=a.devices.split(',') or run['mode']!=a.mode:raise ValueError('resume GPU/mode differs')
     else:
+        if a.continue_from:a.reuse_build=a.continue_from
         base.sealed(a.output/'plan.json',plans.make_plan(a.mode));plan=sealed(a.output/'plan.json')
         print('MOE_CONFIRM_PLAN '+json.dumps(plan['counts']),flush=True)
         run=build(a,plan)
+    if not any(run['assignments']):return review(a,plan,run,[])
     a.smi=Path(run['smi'])
     a.expected_ce_ghz=1.7;base.lock_clocks(a,run['devices'])
     if not (a.output/'helper-gate.json').exists():
@@ -283,6 +348,7 @@ def main(a):
     if gate.get('status')!='PASS' or gate.get('run')!=run['sha256']:
         raise ValueError('helper gate does not belong to this run')
     for pid in plans.preflight_points(plan):
+        if pid in run.get('retained_points',{}):continue
         worker_id=next(i for i,ids in enumerate(run['assignments']) if pid in ids)
         card=run['cards'][worker_id];folder=a.output/('gpu-'+card);folder.mkdir(exist_ok=True)
         if completed(folder/'points'/(pid+'.json'),run):continue
@@ -294,6 +360,7 @@ def main(a):
     active=[];started=time.monotonic()
     try:
         for worker_id,card in enumerate(run['cards']):
+            if not run['assignments'][worker_id]:continue
             folder=a.output/('gpu-'+card);folder.mkdir(exist_ok=True)
             path=folder/('console-'+str(time.time_ns())+'.log')
             command=[sys.executable,'-u',__file__,'--output',str(a.output),'--sdk',str(a.sdk),
@@ -309,7 +376,8 @@ def main(a):
                 counts[card]=dict(passed=sum(r['status']=='PASS' for r in done),failed=sum(r['status']!='PASS' for r in done),
                                   expected=len(run['assignments'][worker_id]))
             print('MOE_CONFIRM_WAIT '+json.dumps(dict(alive=sum(p.poll() is None for p,_ in active),
-                minutes=round((time.monotonic()-started)/60,1),points=counts,logs=str(a.output/'gpu-*/console-*.log'))),flush=True)
+                minutes=round((time.monotonic()-started)/60,1),retained=len(run.get('retained_points',{})),
+                points=counts,logs=str(a.output/'gpu-*/console-*.log'))),flush=True)
             time.sleep(30)
     finally:
         for p,_ in active:stop_process(p)
@@ -325,6 +393,7 @@ if __name__=='__main__':
     p.add_argument('--devices',default='3,5,6,7');p.add_argument('--jobs',type=int,default=8)
     p.add_argument('--mode',choices=('all','prefill','decode'),default='all')
     p.add_argument('--reuse-build',type=Path,help='reuse a prior confirmation build, not its timings; use a new output')
+    p.add_argument('--continue-from',type=Path,help='new GPU assignment/output, retaining complete paired points and build')
     p.add_argument('--l2-bytes',type=int,default=67108864);p.add_argument('--budget-hours',type=float,default=8)
     p.add_argument('--asys',type=Path);p.add_argument('--smi',type=Path);p.add_argument('--probe',type=Path)
     p.add_argument('--worker',type=int);p.add_argument('--job',type=Path);p.add_argument('--attempt',type=Path)
@@ -334,6 +403,7 @@ if __name__=='__main__':
     if (not cards or len(cards)>8 or len(set(cards))!=len(cards) or any(not x.isdecimal() for x in cards) or
         not 1<=a.jobs<=64 or a.l2_bytes<=0 or not 0<a.budget_hours<=24):p.error('invalid GPU/jobs/L2/budget')
     if bool(a.job)!=bool(a.attempt) or a.job and a.worker is None:p.error('incomplete child arguments')
+    if a.continue_from and (a.resume or a.reuse_build):p.error('--continue-from uses a new output; do not combine with --resume/--reuse-build')
     def stop(*_):raise KeyboardInterrupt('termination requested')
     signal.signal(signal.SIGTERM,stop);rc=1
     try:
