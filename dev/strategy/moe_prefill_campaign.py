@@ -136,6 +136,7 @@ def query_requests(point):
 
 def resolve(point,receipts,images):
     w=Workload(**point['workload']);requests=query_requests(point)
+    protocol=point.get('search_protocol',PROTOCOL)
     if set(receipts)!=set(requests):raise ValueError('prefill resource coverage differs')
     devices=set()
     for qid,request in requests.items():
@@ -150,7 +151,7 @@ def resolve(point,receipts,images):
     arms=[];seen={};rejected=[];deferred=[]
     def add(a,r,role,q):
         launch=resolved_grid(w,r,q['device']['compute_units'],q['occupancy']) if q else None
-        helper_control=role=='original' and r.route in ('sf','full')
+        helper_control=role in ('original','old-control') and r.route in ('sf','full')
         signature=digest([a.get('module'),scheduled_key(r),launch,helper_control])
         if signature in seen:
             row=arms[seen[signature]];row['roles']=sorted(set(row['roles']+[role]))
@@ -179,7 +180,7 @@ def resolve(point,receipts,images):
                     deferred.append(dict(recipe=r.key,algorithm=int(mode>=2),
                         reason='TWO_RESIDENT_WAVES_WITHOUT_SPLIT',minimum_blocks=blocks,capacity=cu*occ));continue
                 bs=([p.get('grid_b',0)] if not domain else [0] if mode==0 else
-                    sorted(set(PROTOCOL['grid_blocks_per_cu'])|{min(32,occ)}))
+                    sorted(set(protocol['grid_blocks_per_cu'])|{min(32,occ)}))
                 for b in bs:
                     variant=Recipe.make(r.kind,r.route,**(p|dict(grid_mode=mode,grid_b=b)))
                     add(a,variant,role,q)
@@ -220,7 +221,7 @@ def finalists(point,statistics):
         strata[a['recipe']['route'],dict(a['recipe']['parameters']).get('persistent',-1)].append(aid)
         if r['mean_us']<=floor or min(map(lambda x:sum(x)/len(x),r['samples_us']))<=floor:chosen.add(aid)
     for ids in strata.values():chosen.add(min(ids,key=lambda a:(statistics[a]['mean_us'],a)))
-    if len(chosen)>PROTOCOL['finalist_limit']:
+    if len(chosen)>point.get('search_protocol',PROTOCOL)['finalist_limit']:
         raise ValueError('too many competitive finalists; screen saved, no silent top-K truncation')
     return sorted(chosen,key=lambda a:(a!='original',statistics[a]['mean_us'],a))
 

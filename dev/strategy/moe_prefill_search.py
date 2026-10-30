@@ -348,7 +348,8 @@ def compose(point,results,*,explicit_helpers=False):
         parts[aid]=keys
     decision=mean_decision(costs,roles)
     return dict(status='PASS',point=point['id'],workload=point['workload'],decision=decision,
-        component_records=records,arm_components=parts,bindings=bindings,best_helpers=best,reset=reset,
+        component_records=records,arm_components=parts,bindings=bindings,best_helpers=best,
+        helper_components=helpers,reset=reset,
         authority=authority,protocol=protocol,
         precision='F32_IO_BF16_OPERANDS_FP32_ACC',timing_method='ASYS_GPU_ACTIVITY',
         production_changed=False,native_no_regression_admitted=False,model_tpot_admitted=False)

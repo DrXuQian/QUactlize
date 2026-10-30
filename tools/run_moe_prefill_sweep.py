@@ -156,19 +156,19 @@ def invocation(a,run,job,*,profile,entrypoint=None):
         data=data,clocks=dict(before=before,after=after),evidence=proof)
 
 
-def resource(a,run,point):
+def resource(a,run,point,*,entrypoint=None):
     folder=a.output/('gpu-'+run['cards'][a.worker]);path=folder/'resources'/(point['id']+'.json')
     if path.exists():
         value=sealed(path)
         if value['run']!=run['sha256'] or value['point']!=campaign.resolve(point,value['queries'],base.read(a.output/'images.json')):
             raise ValueError('saved resource resolution changed')
         return value
-    _,value=invocation(a,run,dict(operation='resources',point=point,phase='screen'),profile=False)
+    _,value=invocation(a,run,dict(operation='resources',point=point,phase='screen'),profile=False,entrypoint=entrypoint)
     base.sealed(path,value)
     return value
 
 
-def phase(a,run,point,queries,which,deadline):
+def phase(a,run,point,queries,which,deadline,*,entrypoint=None,explicit_helpers=False):
     folder=a.output/('gpu-'+run['cards'][a.worker]);results=[]
     first=0
     for arms in batches(point):
@@ -183,7 +183,8 @@ def phase(a,run,point,queries,which,deadline):
             print('MOE_PREFILL_BATCH_START '+json.dumps(dict(point=point['id'],phase=which,
                 first=first,arms=len(arms),total=len(point['arms']))),flush=True)
             try:
-                _,value=invocation(a,run,dict(operation='measure',phase=which,point=point,arms=arms,queries=queries),profile=True)
+                _,value=invocation(a,run,dict(operation='measure',phase=which,point=point,arms=arms,queries=queries),
+                                   profile=True,entrypoint=entrypoint)
                 value['elapsed_seconds']=time.monotonic()-start;base.sealed(path,value)
             except Exception as exc:
                 # Preserve this failure; only an explicit resume retries it.
@@ -194,7 +195,7 @@ def phase(a,run,point,queries,which,deadline):
                 seconds=value['elapsed_seconds'])),flush=True)
         results.append(value['data'])
         first+=len(arms)
-    return compose(point,results)
+    return compose(point,results,explicit_helpers=explicit_helpers)
 
 
 def worker(a):

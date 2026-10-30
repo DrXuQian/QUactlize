@@ -4,6 +4,8 @@
 #include <stdexcept>
 
 namespace quactlize::prefill {
+// Routed rows, not token M. E256/top8 permits token M through8192.
+inline constexpr int max_grouped_rows=65536;
 struct Layout {
     uint64_t weights, a, out, rows, ids, count, error, directory, bytes;
 };
@@ -20,9 +22,9 @@ inline int layout(qkp_call_v1 const& c,quactlize_ppu_placed_arrangement_v2 const
     if (c.version!=1 || c.size!=sizeof(c) || w.version!=1 || w.size!=sizeof(w) ||
         (w.qtype==8 && !(typed_dense_q8 && w.experts==1)) || w.operation!=1 || w.zero || c.device<0 ||
         c.a_stride<w.k || c.output_stride<w.n || w.n>INT32_MAX-256 ||
-        w.k>INT32_MAX-256 || c.m>32768 || c.a_rows<=0 ||
+        w.k>INT32_MAX-256 || c.a_rows<=0 ||
         (w.experts==1 ? c.m<128 || c.m>8192 || c.a_rows!=c.m || c.src_rows || c.dst_rows || c.offsets :
-                       w.experts!=256 || c.m<1024 || c.m%8)) return QKG_SHAPE;
+                       w.experts!=256 || c.m<1024 || c.m>max_grouped_rows || c.m%8)) return QKG_SHAPE;
     if (w.experts>1 && !(w.config==4 || w.config==5 ||
         ((w.qtype==12 || w.qtype==13) && (w.config==10 || w.config==11)))) return QKG_INVALID;
     if (w.experts==1 && (w.config<0 || w.config>12 ||
@@ -35,7 +37,7 @@ inline int layout(qkp_call_v1 const& c,quactlize_ppu_placed_arrangement_v2 const
     l.a=reserve(cursor,uint64_t(c.m)*w.k*2);l.out=reserve(cursor,uint64_t(c.m)*w.n*2);
     l.rows=reserve(cursor,uint64_t(w.experts)*4);l.ids=reserve(cursor,uint64_t(w.experts)*4);
     l.count=reserve(cursor,4);l.error=reserve(cursor,4);
-    l.directory=reserve(cursor,uint64_t(c.m+w.experts+1)*16);
+    l.directory=reserve(cursor,(uint64_t(c.m)+w.experts+1)*16);
     l.bytes=cursor;
     return 0;
 }

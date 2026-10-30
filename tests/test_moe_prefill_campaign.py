@@ -48,7 +48,7 @@ def test_bounded_generation_keeps_actual_m_route_coverage_and_historical_recall(
         assert p['rule_reasons']['parents']<=32
         assert p['arms'][0]['id']=='original'
         assert {'fq','sf'}<={r['route'] for r in candidates}
-        assert bool(p['full_configs'])==(128<=w['m']<=4096)
+        assert bool(p['full_configs'])==(128<=w['m']<=8192)
         assert p['sf_configs']==[0,4,5]
 
 

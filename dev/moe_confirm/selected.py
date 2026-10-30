@@ -1,6 +1,5 @@
 """Exercise the public C++ selector/ticket, not a second Python recipe choice."""
 import ctypes as C
-import numpy as np
 from pathlib import Path
 import shutil
 import subprocess
@@ -84,14 +83,6 @@ class TensorCore(backend.TensorCore):
         c.stream=self.b.r.stream.value
         checked(self.dynamic_run(self.dynamic,C.byref(self.current),0),'selected complete grouped call')
         return self.b.finish(self.out.ptr,True)
-
-    def timing_fixture(self):
-        # Once, outside profiling: bind the native comparison to the actual
-        # restored F32 input and raw IDs, not just a router profile name.
-        from dev.strategy.fixture_identity import fingerprint
-        b=self.b;b.rt.sync()
-        return fingerprint(np.frombuffer(b.sdk.download(b.a.ptr,b.a.size),dtype='<f4'),
-                           np.frombuffer(b.sdk.download(b.ids.ptr,b.ids.size),dtype='<i4'))
 
     def close(self):
         if self.dispatch:

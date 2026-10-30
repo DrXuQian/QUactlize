@@ -49,15 +49,14 @@ def test_current_full_limits_are_actual_cpp_rejections_not_token_m_guess(plan):
     for point in plan['points']:
         m = point['workload']['m']
         legal = [r for r in point['full_capability'] if r['rc']==0]
-        assert bool(legal) == (128 <= m <= 4096)
+        assert bool(legal) == (128 <= m <= 8192)
         assert all(r['rows']==m*8 and bool(r['workspace_bytes'])==(r['rc']==0)
                    for r in point['full_capability'])
-        if m == 5120:
+        if m < 128:
             assert not any(r['kind']=='full' for r in point['candidates'])
-            assert point['rejected_candidates']
         if legal:
             assert any(r['kind']=='full' for r in point['candidates'])
-    assert plan['counts']['full_unavailable_points']==80
+    assert plan['counts']['full_unavailable_points']==60
 
 
 def test_router_never_changes_blind_candidate_generation(plan):
@@ -70,7 +69,7 @@ def test_router_never_changes_blind_candidate_generation(plan):
 
 def test_execution_pilot_is_bounded_and_separate_from_selection(plan):
     pilot=prefill.pilot_plan(plan)
-    assert pilot['counts']['points']==8 and pilot['counts']['arms']==20
+    assert pilot['counts']['points']==8 and pilot['counts']['arms']==22
     assert pilot['counts']['modules']==len(pilot['tc'])
     assert not pilot['performance_admitted'] and not pilot['production_changed']
     assert {'NATIVE_LARGE_M_AB','FULL_CONFIG_SCREEN_CONFIRM'}<=set(pilot['pending'])
@@ -78,7 +77,7 @@ def test_execution_pilot_is_bounded_and_separate_from_selection(plan):
     assert {p['workload']['channels'] for p in pilot['points']}=={1,8}
     for point in pilot['points']:
         assert {a['recipe']['route'] for a in point['arms']}==(
-            {'fq','sf','full'} if point['workload']['m']==128 else {'fq','sf'})
+            {'fq','sf','full'} if point['workload']['m']>=128 else {'fq','sf'})
         assert all(dict(a['recipe']['parameters']).get('split',1)==1 for a in point['arms'])
 
 

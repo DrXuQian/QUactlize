@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Fixed MoE shortlist, public Quactlize preparation, isolated Asys confirmation.
 
-No new config expansion, historical latency reuse or model claim. By default
-no llama dependency; --native-compare uses an existing llama build as control.
+Fixed modes do not expand configs; refine-prefill screens missing geometries.
+No historical latency reuse or model claim. By default no llama dependency;
+--native-compare uses an existing llama build as control.
 Run --plan first for the exact denominator. --resume retains successful batches.
 """
 import argparse
@@ -58,14 +59,18 @@ def child(a):
         raise ValueError('confirmation job is outside its assigned point set')
     images=base.read(a.output/'images.json')
     if job['operation']=='resources':
-        point,queries=plans.bind(point,images)
+        if run['mode']=='refine-prefill':
+            from dev.strategy.moe_prefill_campaign import bind
+            point,queries=bind(point,images)
+        else:point,queries=plans.bind(point,images)
         base.sealed(a.attempt/'resources.json',dict(run=run['sha256'],point=point,queries=queries));return 0
-    if job['operation']!='measure' or job['phase']!='confirm':raise ValueError('invalid confirmation job')
+    phases=('screen','confirm') if run['mode']=='refine-prefill' else ('confirm',)
+    if job['operation']!='measure' or job['phase'] not in phases:raise ValueError('invalid confirmation job')
     check_sdk_graph_abi(a.sdk)
     folder=a.output/('gpu-'+run['cards'][a.worker])
-    known={} if job.get('fresh_components') else engine.component_cache(folder,run,a.worker,'confirm',point)
+    known={} if job.get('fresh_components') else engine.component_cache(folder,run,a.worker,job['phase'],point)
     by_id={r['id']:r for r in point['arms']}
-    captured=measure(a,point,[by_id[i] for i in job['arms']],images,job['queries'],run,'confirm',known,backend=backend)
+    captured=measure(a,point,[by_id[i] for i in job['arms']],images,job['queries'],run,job['phase'],known,backend=backend)
     base.sealed(a.attempt/'capture.json',dict(captured,job=job['sha256']));return 0
 
 
@@ -124,7 +129,10 @@ def worker(a):
         for pid in run['assignments'][a.worker]:
             if a.preflight and pid!=a.preflight:continue
             try:
-                if run.get('native_comparison'):
+                if run.get('mode')=='refine-prefill':
+                    from dev.moe_confirm.refine import point as refine_point
+                    complete=refine_point(a,run,points[pid],deadline)
+                elif run.get('native_comparison'):
                     from dev.moe_confirm.native_ab import point as compare_point
                     complete=compare_point(a,run,points[pid],deadline)
                 else:complete=point(a,run,points[pid],deadline)
@@ -132,7 +140,8 @@ def worker(a):
                 done+=1
             except Exception as exc:
                 failed+=1;traceback.print_exc()
-                base.sealed(folder/'points'/(pid+'.json'),dict(status='FAIL',point=pid,run=run['sha256'],error=str(exc)))
+                target=('failures-'+a.refine_stage) if run.get('mode')=='refine-prefill' else 'points'
+                base.sealed(folder/target/(pid+'.json'),dict(status='FAIL',point=pid,run=run['sha256'],error=str(exc)))
                 print('MOE_CONFIRM_FAIL '+json.dumps(dict(point=pid,error=str(exc))),flush=True)
     atomic_json(folder/('preflight-status.json' if a.preflight else 'status.json'),
         dict(completed=done,failed=failed,budget_reached=budget))
@@ -370,6 +379,9 @@ def main(a):
     gate=sealed(a.output/'helper-gate.json')
     if gate.get('status')!='PASS' or gate.get('run')!=run['sha256']:
         raise ValueError('helper gate does not belong to this run')
+    if a.mode=='refine-prefill':
+        from dev.moe_confirm.refine import run as refine_run
+        return refine_run(a,plan,run)
     for pid in plans.preflight_points(plan):
         if pid in run.get('retained_points',{}):continue
         worker_id=next(i for i,ids in enumerate(run['assignments']) if pid in ids)
@@ -417,9 +429,10 @@ if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output',type=Path);p.add_argument('--sdk',type=Path,default=Path(os.environ.get('PPU_SDK','/usr/local/PPU_SDK')))
     p.add_argument('--devices',default='3,5,6,7');p.add_argument('--jobs',type=int,default=8)
-    p.add_argument('--mode',choices=('all','prefill','decode','wired-prefill'),default='all')
+    p.add_argument('--mode',choices=('all','prefill','decode','wired-prefill','refine-prefill'),default='all')
+    p.add_argument('--refine-stage',choices=('screen','confirm','native'),default='screen',help=argparse.SUPPRESS)
     p.add_argument('--reuse-build',type=Path,help='reuse a prior confirmation build, not its timings; use a new output')
-    p.add_argument('--native-compare',action='store_true',help='wired-prefill only: fresh Asys native/selected/selected/native')
+    p.add_argument('--native-compare',action='store_true',help='wired/refine-prefill: fresh Asys native/selected/selected/native')
     p.add_argument('--llama-source',type=Path,default=Path(os.environ['LLAMA_CI_DIR']) if os.environ.get('LLAMA_CI_DIR') else None)
     p.add_argument('--llama-build',type=Path,default=Path(os.environ['LLAMA_CI_BUILD_DIR']) if os.environ.get('LLAMA_CI_BUILD_DIR') else None)
     p.add_argument('--continue-from',type=Path,help='new GPU assignment/output, retaining complete paired points and build')
@@ -433,8 +446,10 @@ if __name__=='__main__':
         not 1<=a.jobs<=64 or a.l2_bytes<=0 or not 0<a.budget_hours<=24):p.error('invalid GPU/jobs/L2/budget')
     if bool(a.job)!=bool(a.attempt) or a.job and a.worker is None:p.error('incomplete child arguments')
     if a.continue_from and (a.resume or a.reuse_build):p.error('--continue-from uses a new output; do not combine with --resume/--reuse-build')
-    if a.native_compare and (a.mode!='wired-prefill' or not a.llama_source or not a.llama_build):
-        p.error('--native-compare requires --mode wired-prefill and --llama-source/--llama-build')
+    if a.native_compare and (a.mode not in ('wired-prefill','refine-prefill') or not a.llama_source or not a.llama_build):
+        p.error('--native-compare requires --mode wired-prefill/refine-prefill and --llama-source/--llama-build')
+    if a.mode=='refine-prefill' and (a.continue_from or a.reuse_build):
+        p.error('refinement starts fresh or uses --resume; old sweep data stays unchanged')
     if a.native_compare and (a.continue_from or a.reuse_build):
         p.error('native comparison uses a fresh build/output or --resume; not confirmation timing reuse')
     def stop(*_):raise KeyboardInterrupt('termination requested')

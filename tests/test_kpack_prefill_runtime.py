@@ -74,7 +74,7 @@ int main() {
    assert(l.a==uint64_t(experts)*256*512*2 && l.out>l.a && l.directory<l.bytes);
    assert(l.bytes%256==0);
    for (int m:{1,2,4,8,64}) { c.m=m;assert(quactlize::prefill::layout(c,&arr,l)!=0); }
-   c.m=experts==1?8192:32768;c.a_rows=c.m;assert(quactlize::prefill::layout(c,&arr,l)==0);
+   c.m=experts==1?8192:65536;c.a_rows=c.m;assert(quactlize::prefill::layout(c,&arr,l)==0);
    c.m*=2;assert(quactlize::prefill::layout(c,&arr,l)!=0);
    c.m=experts==1?128:1024;c.a_rows=c.m;arr.mapping_id=0;assert(quactlize::prefill::layout(c,&arr,l)!=0);
  }
@@ -143,8 +143,9 @@ int main() {
     with pytest.raises(ValueError):require_guards(b'bad',0xA5,2)
 
 
-@pytest.mark.parametrize('grouped', [False, True])
-def test_actual_native_provider_composition_with_cpu_abi_stubs(tmp_path, grouped):
+@pytest.mark.parametrize('rows', [128,1024,40960,65536])
+def test_actual_native_provider_composition_with_cpu_abi_stubs(tmp_path, rows):
+    grouped=rows!=128
     sdk=Path(os.environ.get('PPU_SDK', '/usr/local/PPU_SDK'))
     provider=tmp_path/'CUDA_SDK/targets/x86_64-linux/lib'
     provider.mkdir(parents=True)
@@ -166,12 +167,12 @@ extern "C" int cublasGemmEx(void*,int ta,int tb,int n,int m,int k,void const* al
 }
 extern "C" void launch(void const* a,void const* b,void* out,int const* rows,void* directory,
  int m,int expected_m,void* stream,int sms,int smem,void* signal,int* rc) {
- assert(m==1024 && expected_m==4 && sms==72 && smem==8192 && !stream && !signal && directory && rows);
+ assert(m==HOST_TEST_ROWS && expected_m==(HOST_TEST_ROWS+255)/256 && sms==72 && smem==8192 && !stream && !signal && directory && rows);
  assert(*static_cast<uint16_t const*>(a)==0x4000 && *static_cast<uint16_t const*>(b)==0x3f80);
  *static_cast<uint16_t*>(out)=0x4000;*rc=0;
 }
 ''')
-    subprocess.run(['g++','-shared','-fPIC',str(stub),'-o',str(provider/'libcublas.so')],check=True)
+    subprocess.run(['g++','-shared','-fPIC',f'-DHOST_TEST_ROWS={rows}',str(stub),'-o',str(provider/'libcublas.so')],check=True)
     test=tmp_path/'native.cpp'
     test.write_text(r'''
 #include <hggc_runtime.h>
@@ -209,13 +210,13 @@ int main(int argc,char** argv) {
  bool grouped=argc==4;
  qkp_call_v1 c{};c.version=1;c.size=sizeof(c);c.m=128;c.a_rows=128;c.a_stride=512;c.output_stride=256;c.device=0;
  c.weight={1,sizeof(qzd_call_v1),12,256,512,1,1,5};
- if (grouped) {c.m=c.a_rows=1024;c.weight.experts=256;}
+ if (grouped) {c.m=c.a_rows=HOST_TEST_ROWS;c.weight.experts=256;}
  c.weight.low_bytes=uint64_t(c.weight.experts)*256*512/2;c.weight.unit_bytes=uint64_t(c.weight.experts)*256*512/256*16;
  c.weight.low=std::aligned_alloc(256,c.weight.low_bytes);c.weight.units=std::aligned_alloc(256,c.weight.unit_bytes);
  c.a=static_cast<float*>(std::aligned_alloc(256,c.m*512*4));c.output=static_cast<float*>(std::aligned_alloc(256,c.m*256*4));
  if (grouped) {
-   c.src_rows=static_cast<int*>(std::aligned_alloc(256,4096));
-   c.dst_rows=static_cast<int*>(std::aligned_alloc(256,4096));
+   c.src_rows=static_cast<int*>(std::aligned_alloc(256,size_t(c.m)*4));
+   c.dst_rows=static_cast<int*>(std::aligned_alloc(256,size_t(c.m)*4));
    c.offsets=static_cast<int*>(std::aligned_alloc(256,1280));
  }
  assert(quactlize_kpack_prefill_query_v1(&c,&arr,&c.workspace_bytes)==0);
@@ -239,19 +240,20 @@ int main(int argc,char** argv) {
 }
 ''')
     exe=tmp_path/'native'
-    subprocess.run(['g++','-std=c++17','-O1',f'-I{ROOT}',f'-I{ROOT/"quactlize/include"}',
+    subprocess.run(['g++','-std=c++17','-O1',f'-DHOST_TEST_ROWS={rows}',f'-I{ROOT}',f'-I{ROOT/"quactlize/include"}',
         f'-I{sdk/"include"}',str(test),str(ROOT/'quactlize/prefill/runtime.cpp'),'-ldl','-pthread','-o',str(exe)],check=True)
     args = [str(exe),str(tmp_path)]
     if grouped:
         helper = tmp_path/'provider helper.py'
-        helper.write_text('print("QKP_DEEPGEMM_V1 1024 256 512 256 72 8192 16384")\n' +
+        helper.write_text(f'print("QKP_DEEPGEMM_V1 {rows} 256 512 256 72 8192 16384")\n' +
             f'print({str(provider/"libcublas.so")!r})\nprint({"a"*64!r})\n')
         args += [sys.executable,str(helper)]
     subprocess.run(args,check=True)
 
 
-@pytest.mark.parametrize('fault', [None, 'abi', 'tuning', 'source', 'args', 'scalars', 'omitted'])
-def test_installed_provider_compile_only_handoff(tmp_path, monkeypatch, fault):
+@pytest.mark.parametrize('m,fault', [(1024,f) for f in
+    (None,'abi','tuning','source','args','scalars','omitted')]+[(40960,None),(65536,None)])
+def test_installed_provider_compile_only_handoff(tmp_path, monkeypatch, m, fault):
     from tools.kpack_deepgemm_prewarm import resolve
 
     class Tensor:
@@ -310,7 +312,7 @@ def test_installed_provider_compile_only_handoff(tmp_path, monkeypatch, fault):
         if fault == 'abi':
             defs = defs[:-1]
         args = (lhs,rhs,out,m_rows,Tensor(4096,'i32','meta'),
-            1 if fault=='scalars' else 1024,4,Stream(),72,8192,Tensor(0,'i32','meta'))
+            1 if fault=='scalars' else m,(m+255)//256,Stream(),72,8192,Tensor(0,'i32','meta'))
         image = module.jit_tuner.compile_and_tune(name='m_grouped_gemm_bf16_bf16_bf16_nt',
             space=(1,) if fault=='tuning' else (), includes=[], arg_defs=defs,
             template='provider-selected-source', keys={'N':256,'K':512}, args=args)
@@ -320,15 +322,48 @@ def test_installed_provider_compile_only_handoff(tmp_path, monkeypatch, fault):
     module.m_grouped_gemm_bf16_bf16_bf16_nt_nopad = entry
     for item in (module, runtime, template):
         monkeypatch.setitem(sys.modules, item.__name__, item)
-    args = types.SimpleNamespace(m=1024,n=256,k=512,experts=256,device=0)
+    args = types.SimpleNamespace(m=m,n=256,k=512,experts=256,device=0)
     if fault:
         with pytest.raises(ValueError):
             resolve(args)
-        assert not (tmp_path/'quactlize-launch-m1024.json').exists()
+        assert not (tmp_path/f'quactlize-launch-m{m}.json').exists()
     else:
         reply = resolve(args)
-        assert reply.startswith('QKP_DEEPGEMM_V1 1024 256 512 256 72 8192 16384\n')
+        assert reply.startswith(f'QKP_DEEPGEMM_V1 {m} 256 512 256 72 8192 16384\n')
         assert state['calls'] == 1
-        assert (tmp_path/'quactlize-launch-m1024.json').is_file()
+        assert (tmp_path/f'quactlize-launch-m{m}.json').is_file()
     assert state['mode'] == 0
     assert module.jit_tuner.compile_and_tune is compile_and_tune
+
+
+def test_grouped_full_5120_workspace_and_provider_bounds_agree(tmp_path):
+    from tools.kpack_deepgemm_prewarm import MAX_GROUPED_ROWS,valid_shape
+    source=tmp_path/'large-grouped.cpp';exe=tmp_path/'large-grouped'
+    source.write_text(r'''
+#include "quactlize/prefill/layout.hpp"
+#include <cassert>
+int main() {
+ static_assert(quactlize::prefill::max_grouped_rows==@LIMIT@);
+ for (int q=10;q<=14;++q) for(int n:{2048,3072}) for(int m:{1024,32768,40960,65536}) {
+  auto arr=q==12?ppu_arrangements::q4_kpack4_transpose_v1():ppu_arrangements::kquant_kpack_transpose_v1(q);
+  qkp_call_v1 c{};c.version=1;c.size=sizeof(c);c.m=c.a_rows=m;c.a_stride=512;c.output_stride=n;
+  c.weight={1,sizeof(qzd_call_v1),q,n,512,256,1,4};
+  quactlize::prefill::Layout l{};
+  assert(quactlize::prefill::layout(c,&arr,l)==0);
+  assert(l.a==uint64_t(256)*n*512*2);
+  assert(l.out-l.a==uint64_t(m)*512*2 && l.rows-l.out==uint64_t(m)*n*2);
+  assert(l.bytes-l.directory>=uint64_t(m+256+1)*16 && l.bytes%256==0);
+  auto bad=c;bad.m=65544;assert(quactlize::prefill::layout(bad,&arr,l)==QKG_SHAPE);
+  bad=c;bad.m=m+1;assert(quactlize::prefill::layout(bad,&arr,l)==QKG_SHAPE);
+  bad=c;bad.a_stride=INT64_MAX;assert(quactlize::prefill::layout(bad,&arr,l)==QKG_OVERFLOW);
+  bad=c;bad.output_stride=INT64_MAX;assert(quactlize::prefill::layout(bad,&arr,l)==QKG_OVERFLOW);
+ }
+}
+'''.replace('@LIMIT@',str(MAX_GROUPED_ROWS)))
+    subprocess.run(['g++','-std=c++17',f'-I{ROOT}',f'-I{ROOT/"quactlize/include"}',str(source),'-o',str(exe)],check=True)
+    subprocess.run([str(exe)],check=True)
+    for m in (1024,32768,40960,65536):
+        args=types.SimpleNamespace(m=m,n=3072,k=512,experts=256)
+        assert valid_shape(args)
+    for m in (0,1023,1025,65537,65544):
+        assert not valid_shape(types.SimpleNamespace(m=m,n=3072,k=512,experts=256))

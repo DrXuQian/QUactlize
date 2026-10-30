@@ -29,6 +29,7 @@ def result_root(source):
                              ('plan.json', 'quactlize.moe-prefill-pilot.v1'),
                              ('plan.json', 'quactlize.moe-prefill-sweep.v1'),
                              ('plan.json', 'quactlize.moe-confirm.v1'),
+                             ('plan.json', 'quactlize.moe-prefill-refine.v1'),
                              ('plan.json', 'quactlize.decode-clock-refresh.v1')):
             marker = root / name
             if marker.is_file() and json.loads(marker.read_bytes()).get('schema') == schema:

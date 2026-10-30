@@ -388,7 +388,8 @@ Raw `.asysrep`, `.sqlite`, compiled modules and caches stay on Box. To repack:
 python3 tools/pack_simt_split_review.py /workspace/kpack-moe-prefill-sweep.REPLACE/results
 ```
 
-Full remains unavailable outside routed rows1024..32768 (top8 token M128..4096).
+At the original campaign revision Full was unavailable outside routed
+rows1024..32768 (top8 token M128..4096); see the bounded extension below.
 All-M native comparison and public runtime/model validation remain separate
 gates after this fresh configuration sweep; COMPLETE here does not claim
 native no-regression, fused-chain performance or model TPOT.
@@ -439,3 +440,64 @@ are unchanged; the measurement commit stays original. The old source's
 `--resume` reuses this batch, the point's 51-arm screen and the other 199
 points. This run still needs the remaining two finalists (Full and FQ);
 repairing four captured finalists does not mark the whole point complete.
+
+### 2026-10-30: bounded M5120 geometry refinement
+
+The selected/native AB found seven regressions among 200 points, concentrated
+in Q5 down at M5120, N2048/3072, K512, E256/top8/channels8. The old FQ control
+was already measured; the gap is not its omission. The old M-distance filter
+removed TM64 donors at M5120, and the Full API rejected its 40960 routed rows.
+
+`run_moe_confirmation.py --mode refine-prefill --native-compare` reuses the
+existing component timers, not a new benchmarking path. It runs only these
+two shapes across five synthetic router profiles (10 points):
+
+1. Audit all 40 prefill host keys against generic geometry strata. Exclude
+   the entire target N/K family and ignore donor latencies. Keep exact
+   TM16/32/64/128 and TN strata, up to two observed warp layouts per stratum,
+   one observed K/stage pair per layout plus its observed DN variants.
+   Preserve the old generator's pool. No winner is injected from the table.
+2. Measure missing geometries, current selection, old FQ control and Full.
+   The plan has 22 shared TC modules and 39 seed arms per point; actual grid
+   aliases are resolved from device resources. The grid ladder is 1/2/4
+   blocks per CU plus the actual occupancy endpoint, with legal Split-K.
+3. First check Full on both new M5120 shapes. The shared C++ workspace
+   validator and provider prewarm accept routed rows1024..65536, still E256,
+   in multiples of eight. Dense limits and accumulation are unchanged.
+   The Box gate verifies actual provider execution, original-GGUF numerical
+   results, changed IDs/inputs and replay. A workspace query alone is not
+   execution proof. The public Full C++ execution entry remains a separate
+   integration check; this harness uses the installed BF16 provider directly.
+4. Screen separately profiled helpers/main/reducers with 4x3 Asys samples.
+   Union finalists across all five profiles, select a common helper config,
+   and confirm the same inventory on every profile with 6x5 samples. Up to
+   48 common finalists; exceeding this saves screens and reports incomplete
+   work, not silent truncation. Identical helpers are reused only within the
+   same run, card and phase.
+5. Choose one confirmed recipe per host key, then run fresh native/candidate/
+   candidate/native component ABBA on every profile. Full's error reset is
+   counted once. This is an explicit candidate test, not a claim that the
+   shipping selector already uses it. Production tables and llama are untouched.
+
+Use a fresh experiment checkout and initialized local actlize, with no
+recursive HTTPS submodule fetch. For example, after preparing that checkout:
+
+```bash
+python3 -u tools/run_moe_confirmation.py \
+    --mode refine-prefill --native-compare \
+    --output /workspace/kpack-moe-refine.NEW/results --sdk /usr/local/PPU_SDK \
+    --llama-source /sim/eec/shared/junfu.qx/llama.cpp.ncp \
+    --llama-build /sim/eec/shared/junfu.qx/llama.cpp.ncp/build-ci-32F-cublas \
+    --devices 0,1,2,3 --jobs 8 --l2-bytes 67108864 \
+    --budget-hours 8 --confirm-idle
+```
+
+The budget stops between batches; it does not kill an active profile. Add
+`--resume` to the same command, source, output and cards to finish missing
+batches. Do not copy timing files from the earlier 200-point run. Valid
+native regressions remain recorded, not resampled until a win appears.
+`MOE_REFINE_WAIT` shows screen/confirm/native progress per GPU; batch logs
+show completed/total arms. Upload only `results/review-lite-*.tar.xz`.
+Raw Asys/SQLite remain on Box. Every measurement retains commit, actual
+source/image hashes and SDK/device tags. This round does not establish
+global config optimality, fused-FFN performance or model TPOT.

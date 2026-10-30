@@ -16,6 +16,13 @@ from quactlize.runtime.native import checked
 ROW_MAPS='PUBLIC_QUACTLIZE_PREPARE_OR_DIRECT_INDEXED_SIMT'
 
 
+def timing_fixture(core):
+    from dev.strategy.fixture_identity import fingerprint
+    b=core.b;b.rt.sync()
+    return fingerprint(np.frombuffer(b.sdk.download(b.a.ptr,b.a.size),dtype='<f4'),
+                       np.frombuffer(b.sdk.download(b.ids.ptr,b.ids.size),dtype='<i4'))
+
+
 def prepare_receipt(plan):
     return dict(version=plan.version,route=dict(algorithm=plan.config.algorithm,tile_rows=plan.config.tile_rows),
         helper=dict(implementation=plan.helper.implementation,stages=plan.helper.stages,
@@ -80,6 +87,7 @@ class Context(BaseContext):
 
 
 class TensorCore(BaseTC):
+    timing_fixture=timing_fixture
     def launch(self,copy=0):
         checked(self.b.prepare(self.a.ptr),'combined Quactlize prepare')
         checked(self.run_fn(self.handles[copy],self.b.r.stream),'confirmed TC call')
@@ -87,6 +95,21 @@ class TensorCore(BaseTC):
 
 
 class Full(BaseFull):
+    timing_fixture=timing_fixture
+
+    def __init__(self,b,*args,**kwargs):
+        from quactlize.prefill.native import Call as FullCall
+        from quactlize.dequant.native import Call as Weight
+        from quactlize.execution.native import Arrangement
+        w=b.w
+        shape=FullCall(version=1,size=C.sizeof(FullCall),m=b.rows,device=0,a_rows=w.m*w.channels,
+            a_stride=w.k,output_stride=w.n,weight=Weight(1,C.sizeof(Weight),w.qtype,w.n,w.k,w.experts,1,4))
+        query=bind(b.bridge,'qzm_test_full_workspace',[C.POINTER(FullCall),C.POINTER(Arrangement),C.POINTER(C.c_uint64)])
+        size=C.c_uint64();checked(query(C.byref(shape),C.byref(b.arr),C.byref(size)),'shipping Full workspace')
+        super().__init__(b,*args,**kwargs)
+        self.receipt['shipping_workspace_bytes']=size.value
+        self.receipt['shipping_routed_rows']=b.rows
+
     def update(self):
         # CPU sorted expert IDs are an oracle only, never provider input.
         checked(self.b.launch_route(),'full setup row maps')

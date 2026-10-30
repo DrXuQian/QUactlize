@@ -85,8 +85,15 @@ def candidate_pass(a,run,p,queries,block):
     data=value['data'];composed=compose(p,[data],explicit_helpers=True)
     parts=[composed['component_records'][cid] for cid in composed['arm_components']['original']]
     core=data['arms']['original']
-    if core['receipt'].get('selection')!='PUBLIC_CPP_POLICY22':raise ValueError('candidate bypassed public selector')
-    return dict(arm='quactlize',block=block,data=value,components=[dict(c,role=c['kind'],node=c['identity']['node']) for c in parts],
+    refined=run.get('mode')=='refine-prefill'
+    if not refined and core['receipt'].get('selection')!='PUBLIC_CPP_POLICY22':
+        raise ValueError('candidate bypassed public selector')
+    if refined and p.get('selection_source')!='MEASURED_REFINEMENT_NOT_PRODUCTION':
+        raise ValueError('unbound refinement candidate')
+    components=[dict(c,role=c['kind'],node=c['identity']['node']) for c in parts]
+    if composed['reset'] is not None:
+        components.append(dict(composed['reset'],role='error_reset',node=dict(kind='memset',bytes=4,value=0)))
+    return dict(arm='quactlize',block=block,data=value,components=components,
         raw_sha256=core['fixture']['fixture']['raw_sha256'],timed_router_sha256=core['timed_router_sha256'],
         timing_input_repeat=core['timing_input_repeat'],timed_fixture=core['timed_fixture'],
         evidence=value['evidence'])
@@ -107,6 +114,9 @@ def comparison(p,passes):
     result.update(point=p['id'],workload=p['workload'],scope='SELECTED_MOE_PROJECTION_COMPONENT_AB_NOT_FUSED_FFN_OR_MODEL',
         candidate_arithmetic='F32_IO_BF16_OPERANDS_FP32_ACC',arithmetic_equivalence_claimed=False,
         native_activation_contract=passes[0]['data']['native_activation_contract'],model_tpot_admitted=False)
+    if p.get('selection_source')=='MEASURED_REFINEMENT_NOT_PRODUCTION':
+        result.update(scope='EXPLICIT_REFINEMENT_NATIVE_AB_NOT_PRODUCTION_OR_MODEL',
+                      candidate_recipe=p['arms'][0]['recipe'],production_changed=False)
     return result
 
 
@@ -121,8 +131,14 @@ def saved(path,run):
 
 
 def point(a,run,p,deadline):
-    folder=a.output/('gpu-'+run['cards'][a.worker]);path=folder/'points'/(p['id']+'.json')
-    if saved(path,run):return True  # A valid regression is retained, not sampled until lucky.
+    folder=a.output/('gpu-'+run['cards'][a.worker])
+    directory='native-points' if run.get('mode')=='refine-prefill' else 'points'
+    path=folder/directory/(p['id']+'.json')
+    prior=saved(path,run)
+    if prior:
+        if directory=='native-points' and prior['candidate_recipe']!=p['arms'][0]['recipe']:
+            raise ValueError('confirmed native candidate changed')
+        return True  # A valid regression is retained, not sampled until lucky.
     if time.monotonic()>=deadline:return False
     print('MOE_SELECTED_NATIVE_START '+json.dumps(dict(point=p['id'],workload=p['workload'],order=gate.ORDER)),flush=True)
     _,resource=engine.invocation(a,run,dict(operation='resources',point=p,phase='confirm'),profile=False,entrypoint=ENTRY)
@@ -135,9 +151,12 @@ def point(a,run,p,deadline):
             print('MOE_SELECTED_NATIVE_PASS '+json.dumps(dict(point=p['id'],block=block+1,total=4,arm=arm)),flush=True)
             value=(native_pass(a,run,p,folder,block) if arm=='native' else
                    candidate_pass(a,run,p,resource['queries'],block))
-            base.sealed(destination,dict(value,status='PASS',run=run['sha256'],point=p['id']))
+            base.sealed(destination,dict(value,status='PASS',run=run['sha256'],point=p['id'],
+                                       candidate_recipe=p['arms'][0]['recipe']))
             old=sealed(destination)
         if old['arm']!=arm or old['block']!=block or old['point']!=p['id']:raise ValueError('saved ABBA binding differs')
+        if directory=='native-points' and old['candidate_recipe']!=p['arms'][0]['recipe']:
+            raise ValueError('saved ABBA candidate changed')
         passes.append(old);evidence[str(destination)]=sha(destination);evidence.update(old['evidence'])
     result=comparison(p,passes)
     base.sealed(path,dict(result,run=run['sha256'],evidence=evidence))
@@ -146,20 +165,22 @@ def point(a,run,p,deadline):
 
 
 def review(a,plan,run,codes):
+    refined=run.get('mode')=='refine-prefill'
     rows=[]
     for worker,ids in enumerate(run['assignments']):
         for pid in ids:
-            value=saved(a.output/('gpu-'+run['cards'][worker])/'points'/(pid+'.json'),run)
+            value=saved(a.output/('gpu-'+run['cards'][worker])/('native-points' if refined else 'points')/(pid+'.json'),run)
             rows.append(value or dict(point=pid,status='MISSING_OR_FAILED'))
     counts=Counter(r['status'] for r in rows)
     status='INCOMPLETE' if any(codes) or counts['MISSING_OR_FAILED'] else 'REGRESSION' if counts['REGRESSION'] else 'PASS'
     summary=dict(status=status,counts=dict(counts),expected=len(rows),returncodes=codes,
         source_revision=run['source_revision'],native_no_regression_admitted=status=='PASS',
         model_tpot_admitted=False,scope='SELECTED_MOE_PROJECTION_COMPONENT_AB_NOT_FUSED_FFN_OR_MODEL')
-    atomic_json(a.output/'summary.json',summary)
+    if refined:summary['scope']='EXPLICIT_REFINEMENT_NATIVE_AB_NOT_PRODUCTION_OR_MODEL'
+    atomic_json(a.output/('native-summary.json' if refined else 'summary.json'),summary)
     fields=['point','status','native_us','quactlize_us','delta_pct','native_main_us','quactlize_main_us',
             'native_helper_us','quactlize_helper_us','native_reducer_us','quactlize_reducer_us']
-    with (a.output/'comparison.csv').open('w') as stream:
+    with (a.output/('native-comparison.csv' if refined else 'comparison.csv')).open('w') as stream:
         writer=csv.DictWriter(stream,fields+['workload']);writer.writeheader()
         for row in rows:writer.writerow({k:json.dumps(row[k]) if k=='workload' and k in row else row.get(k,'') for k in fields+['workload']})
     print('MOE_SELECTED_NATIVE_DONE '+json.dumps(summary),flush=True)

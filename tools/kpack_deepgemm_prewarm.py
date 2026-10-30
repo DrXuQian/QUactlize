@@ -14,11 +14,18 @@ import os
 from pathlib import Path
 import sys
 
+MAX_GROUPED_ROWS=65536  # Same routed-row limit as prefill/layout.hpp, not token M.
+
+
+def valid_shape(args):
+    return (args.experts==256 and 1024<=args.m<=MAX_GROUPED_ROWS and args.m%8==0 and
+            0<args.n<=2**31-257 and 0<args.k<=2**31-257)
+
 
 def resolve(args):
     import torch
-    if args.experts!=256 or not 1024<=args.m<=32768 or args.m%8 or args.n<=0 or args.k<=0:
-        raise ValueError('outside measured prefill domain')
+    if not valid_shape(args):
+        raise ValueError('outside supported grouped prefill shape/routed-row domain')
     torch.cuda.set_device(args.device)
     prop=torch.cuda.get_device_properties(args.device)
     if prop.multi_processor_count!=72 or 'PPU-ZW810' not in prop.name:

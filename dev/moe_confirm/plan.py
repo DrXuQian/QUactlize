@@ -84,6 +84,9 @@ def seed(plan,summary):
 
 
 def make_plan(mode='all',*,native_compare=False):
+    if mode=='refine-prefill':
+        from dev.moe_confirm.refine_plan import make_plan as refine
+        p=refine();p['native_comparison']=native_compare;return p
     if native_compare and mode!='wired-prefill':raise ValueError('native gate requires selected wiring')
     if mode=='wired-prefill':
         p=wired_plan()

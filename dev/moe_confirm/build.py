@@ -19,9 +19,10 @@ def build(sdk,output):
     output.mkdir(parents=True,exist_ok=False)
     scaffold=build_scaffold(sdk,output/'scaffold')
     sources={p:sha(ROOT/p) for p in ('dev/moe_confirm/bridge.cpp','dev/moe_confirm/provider_rows.cu',
-        'dev/native_components/kernel_node.hpp','dev/native_components/kernel_bridge.hpp',__file__.removeprefix(str(ROOT)+'/'))}
+        'dev/native_components/kernel_node.hpp','dev/native_components/kernel_bridge.hpp',
+        'quactlize/prefill/layout.hpp',__file__.removeprefix(str(ROOT)+'/'))}
     bridge=output/'libmoe-confirm.so';cuda_lib=sdk/'CUDA_SDK/targets/x86_64-linux/lib'
-    commands=[['g++','-std=c++17','-O2','-fPIC','-I'+str(ROOT),'-I'+str(sdk/'CUDA_SDK/include'),
+    commands=[['g++','-std=c++17','-O2','-fPIC','-I'+str(ROOT),'-I'+str(ROOT/'quactlize/include'),'-I'+str(sdk/'CUDA_SDK/include'),
         '-c',str(ROOT/'dev/moe_confirm/bridge.cpp'),'-o',str(output/'bridge.o')],
         [str(sdk/'bin/hgcc'),*FLAGS,'-c',str(ROOT/'dev/moe_confirm/provider_rows.cu'),'-o',str(output/'rows.o')],
         ['g++','-shared','-Wl,-z,defs','-Wl,-Bsymbolic',str(output/'bridge.o'),str(output/'rows.o'),
