@@ -20,7 +20,8 @@ enum { QKS_RECENT = 1, QKS_HISTORICAL = 2, QKS_PREDICTED = 3,
        QKS_MATCHED_BUCKET = 13, QKS_MATCHED_ROUTER = 14,
        QKS_Q8_VECTOR_MEASURED = 15, QKS_DENSE_FALLBACK = 16, QKS_LEGACY_DENSE = 17,
        QKS_DECODE_COMPONENT_MEASURED = 18, QKS_PREFILL_COMPONENT_MEASURED = 19,
-       QKS_DENSE_PREFILL_EXACT = 20, QKS_DENSE_PREFILL_BUCKET = 21 };
+       QKS_DENSE_PREFILL_EXACT = 20, QKS_DENSE_PREFILL_BUCKET = 21,
+       QKS_MOE_PREFILL_CONFIRMED = 22 };
 
 // Additive Q8_0/W8A16 intake capability, without a device/context or JIT.
 // Returns 1 for supported weight geometry and SF route (1=dense,3=grouped).
@@ -113,6 +114,12 @@ int quactlize_kpack_dispatch_prefill_compute_v1(qks_request_v1 const*, uint32_t 
 // BF16 weights/activations and FP32 accumulation. These sums are not model TPOT.
 // MISS: out of domain. BINDING: known winner's helper/provider is unavailable;
 // never silently replace a covered winner with the previous selector.
+// Policy22 overrides the ordinary Qwen MoE Q4 gate/up and Q5 down keys at
+// tokens16..5120, including channels8. It requires public prepare v2 and
+// per-call BF16 SF expansion with base.dequant_config. No fused-gate/up or
+// weighted-finish timing is claimed. Its costs are unreported (0), since a
+// router-independent key has no single latency; per-router evidence is kept
+// in the package. Unmeasured keys retain the prior confirmed policy.
 typedef struct {
     uint32_t version,size;
     qks_prefill_choice_v1 base;

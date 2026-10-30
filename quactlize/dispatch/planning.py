@@ -18,7 +18,7 @@ def plan_prefill(output, *, historical=False):
     option='--historical-prefill-inventory' if historical else '--prefill-inventory'
     text=subprocess.check_output([str(executable),option],text=True)
     rows=[json.loads(line) for line in text.splitlines()]
-    if len(rows)!=430 or any(r['status']!=0 or r['policy']!=19 for r in rows):
+    if len(rows)!=(430 if historical else 460) or any(r['status']!=0 or r['policy'] not in (19,22) for r in rows):
         raise ValueError('confirmed prefill selector denominator differs')
     return dict(schema=PREFILL_SCHEMA,scope='TYPED_PREFILL_COMPONENT_SELECTION_NOT_MODEL_ADMISSION',requests=rows)
 

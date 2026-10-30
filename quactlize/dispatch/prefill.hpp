@@ -1,6 +1,7 @@
 #pragma once
 #include "api.h"
 #include "../../policies/kpack_prefill_refresh_v1.hpp"
+#include "moe_prefill.hpp"
 
 namespace quactlize::dispatch::prefill {
 namespace data = quactlize_prefill_refresh_v1;
@@ -46,6 +47,8 @@ inline int query_in(qks_request_v1 const& r,unsigned mask,int compute,int channe
 }
 
 inline int query(qks_request_v1 const& r,unsigned mask,int compute,int channels,qks_prefill_choice_v2& out) {
+    int rc=moe_prefill::query(r,mask,compute,channels,out);
+    if(rc!=QKS_MISS) return rc;
     return query_in(r,mask,compute,channels,out,data::kKnots);
 }
 } // namespace quactlize::dispatch::prefill

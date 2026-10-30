@@ -171,10 +171,10 @@ def measure_once(a,point,run,attempt,*,phase='confirm',screen=None):
     return value
 
 
-def execute(command,log):
+def execute(command,log,*,env=None):
     atomic_json(log.with_suffix('.command.json'),command)
     with log.open('x') as stream:
-        p=subprocess.Popen(command,stdout=stream,stderr=subprocess.STDOUT,start_new_session=True)
+        p=subprocess.Popen(command,stdout=stream,stderr=subprocess.STDOUT,start_new_session=True,env=env)
         atomic_json(log.with_suffix('.process.json'),dict(pid=p.pid,returncode=None))
         try:
             while p.poll() is None:

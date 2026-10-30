@@ -133,6 +133,33 @@ def test_dense_prefill_receipt_binds_generated_runtime_selection(tmp_path,fault)
         assert verify(tmp_path)['dense_prefill']==m['dense_prefill']
 
 
+@pytest.mark.parametrize('fault',[None,'header','payload','table','path'])
+def test_moe_prefill_receipt_binds_generated_runtime_selection(tmp_path,fault):
+    from tools.build_ppu_library import PUBLIC_EXPORTS,verify
+    from quactlize.dispatch.moe_prefill_policy import TABLE,HEADER,load
+    from quactlize.runtime.compiler import sha
+    source=tmp_path/'stub.c';library=tmp_path/'libquactlize_ppu.so'
+    source.write_text('\n'.join('int '+name+'(void){return 0;}' for name in PUBLIC_EXPORTS))
+    subprocess.run(['cc','-shared','-fPIC',source,'-o',library],check=True)
+    path=tmp_path/'quactlize-runtime/moe-prefill.json';path.parent.mkdir()
+    path.write_bytes(TABLE.read_bytes())
+    if fault=='table':
+        data=json.loads(path.read_text());data['rows'][0]['profiles'][0]['selected_us']*=2
+        path.write_text(json.dumps(data))
+    m=dict(schema='quactlize.ppu-library.v1',
+        payloads={str(p.relative_to(tmp_path)):sha(p) for p in (library,path)},
+        source_hashes={'policies/kpack_moe_prefill_exact_v1.json':sha(path),
+                      'policies/kpack_moe_prefill_exact_v1.hpp':sha(HEADER)},
+        moe_prefill=dict(path=str(path.relative_to(tmp_path)),header_sha256=sha(HEADER),evidence_sha256=load()['sha256']))
+    if fault=='header':m['moe_prefill']['header_sha256']='b'*64
+    if fault=='payload':m['source_hashes']['policies/kpack_moe_prefill_exact_v1.json']='b'*64
+    if fault=='path':m['moe_prefill']['path']='../outside.json'
+    (tmp_path/'manifest.json').write_text(json.dumps(m))
+    if fault:
+        with pytest.raises(ValueError):verify(tmp_path)
+    else:assert verify(tmp_path)['moe_prefill']==m['moe_prefill']
+
+
 @pytest.mark.parametrize('fault',[None,'policy','private-policy','image','full-table','private-full-table','full-evidence','internal'])
 def test_public_dense_helper_receipt_binds_policy_and_private_runtime(tmp_path,fault):
     from tools.build_ppu_library import PUBLIC_EXPORTS,verify

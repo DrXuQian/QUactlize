@@ -131,6 +131,8 @@ def prepared(b, core, recipe, *, config=0, full=False):
             omitted_producer='DETECTED', changed_input_and_router='PASS', zero_a='PASS',
             receipt=core.receipt, fixture=b.ring.receipt, timed_router_sha256=b.route['sha256'],
             timed_active_experts=len(b.route['active']), production_changed=False, performance_admitted=False)
+        if hasattr(core, 'timing_fixture'):
+            data.update(timing_input_repeat=0, timed_fixture=core.timing_fixture())
         yield capture, data
         b.out.poison(); replay_extracted(capture, b.check)
         checked(core.launch(), 'final complete call'); numerical.append(b.check())

@@ -153,6 +153,18 @@ def verify(output):
         import hashlib
         if hashlib.sha256(dense_prefill_header(data).encode()).hexdigest()!=receipt['header_sha256']:
             raise ValueError('dense prefill catalog/generated selector differs')
+    if 'moe_prefill' in manifest:
+        from quactlize.dispatch import moe_prefill_policy
+        receipt=manifest['moe_prefill'];path=receipt.get('path')
+        if (path!='quactlize-runtime/moe-prefill.json' or path not in manifest['payloads'] or
+                manifest['payloads'][path]!=manifest['source_hashes'].get('policies/kpack_moe_prefill_exact_v1.json') or
+                receipt['header_sha256']!=manifest['source_hashes'].get('policies/kpack_moe_prefill_exact_v1.hpp')):
+            raise ValueError('MoE prefill evidence/header binding differs')
+        data=json.loads((output/path).read_text())
+        import hashlib
+        if (receipt['evidence_sha256']!=data['sha256'] or
+                hashlib.sha256(moe_prefill_policy.header(data).encode()).hexdigest()!=receipt['header_sha256']):
+            raise ValueError('MoE prefill generated selector differs')
     return manifest
 
 
@@ -194,6 +206,11 @@ def build(sdk, output, jobs):
     if prefill_header(confirmed)!=PREFILL_HEADER.read_text():
         raise ValueError('stale confirmed prefill catalog; regenerate before building')
     shutil.copy2(PREFILL_EVIDENCE,runtime/'prefill-confirmed.json')
+    from quactlize.dispatch import moe_prefill_policy
+    moe_policy=moe_prefill_policy.load()
+    if moe_prefill_policy.header(moe_policy)!=moe_prefill_policy.HEADER.read_text():
+        raise ValueError('stale MoE prefill selector; regenerate before building')
+    shutil.copy2(moe_prefill_policy.TABLE,runtime/'moe-prefill.json')
     dense_policy=json.loads(DENSE_PREFILL_EVIDENCE.read_text())
     if dense_prefill_header(dense_policy)!=DENSE_PREFILL_HEADER.read_text():
         raise ValueError('stale whole-call dense prefill selector; regenerate before building')
@@ -285,6 +302,9 @@ def build(sdk, output, jobs):
             header_sha256=sha(PREFILL_HEADER), **receipt_fields()),
         dense_prefill=dict(path='quactlize-runtime/dense-prefill.json',header_sha256=sha(DENSE_PREFILL_HEADER),
             scope='ZW810_DENSE_F16_COMPLETE_GPU_CALL; EXACT_THEN_PREDICTED_BUCKET; MODEL_AB_PENDING'),
+        moe_prefill=dict(path='quactlize-runtime/moe-prefill.json',
+            header_sha256=sha(moe_prefill_policy.HEADER),evidence_sha256=moe_policy['sha256'],
+            scope='40_EXACT_KEYS_F32_IO_BF16_WITH_PUBLIC_PREPARE_V2; NATIVE_CHAIN_MODEL_AB_PENDING'),
         default_dense_compute='F16_POC', device_admission='PENDING',
         dense_helpers=dict(policy_sha256=sha(helper_policy),runtime_receipt='quactlize-runtime/prefill-runtime.json',
                            full_table_sha256=sha(FULL_HELPERS_HEADER),full_evidence_sha256=sha(FULL_HELPERS),

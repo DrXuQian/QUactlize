@@ -501,13 +501,16 @@ int main() {
     // key, including BF16 indexed. Device resources are explicitly fake here.
     size_t confirmed_count=0;
     for(auto const& row:prefill::data::kKnots) if(row.config>=0) {
-        auto const& c=prefill::data::kConfigs[row.config];
-        qks_request_v1 request{1,sizeof(request),row.q,c.route,row.tokens*(row.experts==1?1:8),
-            row.n,row.k,row.experts,row.tokens,c.mapping_id};
-        test::install(ctx,select_tc(request,false,row.compute,{&c,QKS_PREFILL_COMPONENT_MEASURED}),false,row.compute);
+        auto const& old=prefill::data::kConfigs[row.config];
+        qks_request_v1 request{1,sizeof(request),row.q,old.route,row.tokens*(row.experts==1?1:8),
+            row.n,row.k,row.experts,row.tokens,old.mapping_id};
+        auto override=moe_prefill::select(request,row.compute,1);
+        auto const& c=override?override->config:old;request.route=c.route;
+        int policy=override?QKS_MOE_PREFILL_CONFIRMED:QKS_PREFILL_COMPONENT_MEASURED;
+        test::install(ctx,select_tc(request,false,row.compute,{&c,policy}),false,row.compute);
         qks_choice_v1 choice{};
         assert(!quactlize_kpack_dispatch_query_prefill_v1(ctx.dispatcher,&request,row.compute,1,&choice));
-        assert(choice.policy==19 && std::string(choice.parent)==c.symbol && choice.split==c.split);
+        assert(choice.policy==policy && std::string(choice.parent)==c.symbol && choice.split==c.split);
         auto& runtime=*static_cast<Runtime*>(ctx.dispatcher);
         assert(runtime.plans.at(choice.ticket-1).compute_type==row.compute);
         auto wanted=recipe(c,request,6,72);
@@ -520,7 +523,10 @@ int main() {
             <<",\"algorithm\":"<<materialized.recipe.algorithm<<",\"endpoint\":"<<materialized.endpoint_type<<"}\n";
         auto ticket=choice.ticket;
         assert(!quactlize_kpack_dispatch_query_prefill_v1(ctx.dispatcher,&request,row.compute,1,&choice) && choice.ticket==ticket);
-        assert(quactlize_kpack_dispatch_query_prefill_v1(ctx.dispatcher,&request,row.compute,8,&choice)==QKS_MISS && !choice.ticket);
+        // Channels8 is no longer globally out of domain: Q5 down now has a
+        // confirmed parent, tested exhaustively in moe_prefill_policy_host.
+        if(!moe_prefill::select(request,row.compute,8))
+            assert(quactlize_kpack_dispatch_query_prefill_v1(ctx.dispatcher,&request,row.compute,8,&choice)==QKS_MISS && !choice.ticket);
         request.route^=1;
         assert(quactlize_kpack_dispatch_query_prefill_v1(ctx.dispatcher,&request,row.compute,1,&choice)==QKS_INVALID);
         ++confirmed_count;

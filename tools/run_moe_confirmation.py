@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Fixed MoE shortlist, public Quactlize preparation, isolated Asys confirmation.
 
-No llama build, new config expansion, historical latency reuse or model claim.
+No new config expansion, historical latency reuse or model claim. By default
+no llama dependency; --native-compare uses an existing llama build as control.
 Run --plan first for the exact denominator. --resume retains successful batches.
 """
 import argparse
@@ -48,6 +49,8 @@ def child(a):
     from dev.moe_confirm import backend
     from dev.strategy.isolated import check_sdk_graph_abi
     run=sealed(a.output/'run.json');verify(a,run,a.worker)
+    if run['mode']=='wired-prefill':
+        from dev.moe_confirm import selected as backend
     if a.job.resolve().parent!=a.attempt.resolve() or a.output not in a.attempt.resolve().parents:
         raise ValueError('child job must stay inside its run directory')
     job=sealed(a.job);point=job['point']
@@ -60,7 +63,7 @@ def child(a):
     if job['operation']!='measure' or job['phase']!='confirm':raise ValueError('invalid confirmation job')
     check_sdk_graph_abi(a.sdk)
     folder=a.output/('gpu-'+run['cards'][a.worker])
-    known=engine.component_cache(folder,run,a.worker,'confirm',point)
+    known={} if job.get('fresh_components') else engine.component_cache(folder,run,a.worker,'confirm',point)
     by_id={r['id']:r for r in point['arms']}
     captured=measure(a,point,[by_id[i] for i in job['arms']],images,job['queries'],run,'confirm',known,backend=backend)
     base.sealed(a.attempt/'capture.json',dict(captured,job=job['sha256']));return 0
@@ -121,7 +124,11 @@ def worker(a):
         for pid in run['assignments'][a.worker]:
             if a.preflight and pid!=a.preflight:continue
             try:
-                if not point(a,run,points[pid],deadline):budget=True;break
+                if run.get('native_comparison'):
+                    from dev.moe_confirm.native_ab import point as compare_point
+                    complete=compare_point(a,run,points[pid],deadline)
+                else:complete=point(a,run,points[pid],deadline)
+                if not complete:budget=True;break
                 done+=1
             except Exception as exc:
                 failed+=1;traceback.print_exc()
@@ -226,6 +233,9 @@ def build(a,plan):
         images,dq=base.compile_all(a,plan)
         helper_dir=a.output/'helpers';build_prefill(a.sdk,helper_dir)
         helpers=build_moe(a.sdk,a.output/'moe-helpers')
+        if a.mode=='wired-prefill':
+            from dev.moe_confirm.selected import build as build_selected
+            helpers['selected_dispatch']=build_selected(a.output/'selected-dispatch',images)
     devices=[]
     for card in a.devices.split(','):
         path=a.output/('device-'+card+'.json')
@@ -239,6 +249,12 @@ def build(a,plan):
            helper_dir/'manifest.json',helper_dir/'libstrategy_prefill.so',
            a.output/'images.json',Path(helpers['bridge']).parent/'receipt.json']
     files += [Path(r['path']) for pool in images.values() for r in pool.values()]
+    if 'selected_dispatch' in helpers:files += list(map(Path,helpers['selected_dispatch']['files']))
+    native={}
+    if getattr(a,'native_compare',False):
+        from dev.moe_confirm.native_ab import build as build_native
+        native=build_native(a,a.output/'native-build')
+        files+=list(map(Path,native['immutable_files']))
     if dq:files += [dq/'manifest.json',dq/'libquactlize_ppu_dequant.so']
     retained=retain_complete(a,plan)
     run=dict(plan=plan['sha256'],source_revision=revision(ROOT),source=source_identity(ROOT),
@@ -247,8 +263,8 @@ def build(a,plan):
         adapter_sha256=helpers['sha256'],moe_helpers=helpers,
         helpers=str(helper_dir),dequant=str(dq) if dq else None,images=base.image_identity(images,dq),
         asys=str(a.asys),asys_sha256=sha(a.asys),smi=str(a.smi),sdk=devices[0]['sdk'],
-        immutable_files={str(p):sha(p) for p in files},mode=a.mode,native_comparison=False,
-        scope=plan['scope'],reused_build=reused)
+        immutable_files={str(p):sha(p) for p in files},mode=a.mode,native_comparison=bool(native),
+        native=native,scope=plan['scope'],reused_build=reused)
     base.sealed(a.output/'run.json',run);return sealed(a.output/'run.json')
 
 
@@ -283,6 +299,9 @@ def checked_child(command,path,card):
 
 
 def review(a,plan,run,codes):
+    if run.get('native_comparison'):
+        from dev.moe_confirm.native_ab import review as review_native
+        return review_native(a,plan,run,codes)
     rows=[];groups=defaultdict(list)
     owners={pid:i for i,ids in enumerate(run['assignments']) for pid in ids}
     for p in plan['points']:
@@ -316,7 +335,8 @@ def review(a,plan,run,codes):
 
 def main(a):
     if a.plan:
-        p=plans.make_plan(a.mode);print(json.dumps(dict(p['counts'],scope=p['scope'],mode=a.mode),indent=2));return 0
+        p=plans.make_plan(a.mode,native_compare=getattr(a,'native_compare',False))
+        print(json.dumps(dict(p['counts'],scope=p['scope'],mode=a.mode),indent=2));return 0
     if a.probe:atomic_json(a.probe,base.device(a));return 0
     if a.output is None:
         if a.resume:raise ValueError('--resume requires --output')
@@ -332,9 +352,12 @@ def main(a):
     if a.resume:
         plan,run=(sealed(a.output/n) for n in ('plan.json','run.json'));verify(a,run)
         if run['cards']!=a.devices.split(',') or run['mode']!=a.mode:raise ValueError('resume GPU/mode differs')
+        if bool(run.get('native_comparison'))!=bool(getattr(a,'native_compare',False)):
+            raise ValueError('resume native comparison scope differs')
     else:
         if a.continue_from:a.reuse_build=a.continue_from
-        base.sealed(a.output/'plan.json',plans.make_plan(a.mode));plan=sealed(a.output/'plan.json')
+        base.sealed(a.output/'plan.json',plans.make_plan(a.mode,native_compare=getattr(a,'native_compare',False)))
+        plan=sealed(a.output/'plan.json')
         print('MOE_CONFIRM_PLAN '+json.dumps(plan['counts']),flush=True)
         run=build(a,plan)
     if not any(run['assignments']):return review(a,plan,run,[])
@@ -351,7 +374,10 @@ def main(a):
         if pid in run.get('retained_points',{}):continue
         worker_id=next(i for i,ids in enumerate(run['assignments']) if pid in ids)
         card=run['cards'][worker_id];folder=a.output/('gpu-'+card);folder.mkdir(exist_ok=True)
-        if completed(folder/'points'/(pid+'.json'),run):continue
+        if run.get('native_comparison'):
+            from dev.moe_confirm.native_ab import saved as point_completed
+        else:point_completed=completed
+        if point_completed(folder/'points'/(pid+'.json'),run):continue
         print('MOE_CONFIRM_PREFLIGHT '+json.dumps(dict(point=pid,device=card,reused_in_campaign=True)),flush=True)
         command=[sys.executable,'-u',__file__,'--output',str(a.output),'--sdk',str(a.sdk),
                  '--l2-bytes',str(a.l2_bytes),'--worker',str(worker_id),'--preflight',pid,
@@ -391,8 +417,11 @@ if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output',type=Path);p.add_argument('--sdk',type=Path,default=Path(os.environ.get('PPU_SDK','/usr/local/PPU_SDK')))
     p.add_argument('--devices',default='3,5,6,7');p.add_argument('--jobs',type=int,default=8)
-    p.add_argument('--mode',choices=('all','prefill','decode'),default='all')
+    p.add_argument('--mode',choices=('all','prefill','decode','wired-prefill'),default='all')
     p.add_argument('--reuse-build',type=Path,help='reuse a prior confirmation build, not its timings; use a new output')
+    p.add_argument('--native-compare',action='store_true',help='wired-prefill only: fresh Asys native/selected/selected/native')
+    p.add_argument('--llama-source',type=Path,default=Path(os.environ['LLAMA_CI_DIR']) if os.environ.get('LLAMA_CI_DIR') else None)
+    p.add_argument('--llama-build',type=Path,default=Path(os.environ['LLAMA_CI_BUILD_DIR']) if os.environ.get('LLAMA_CI_BUILD_DIR') else None)
     p.add_argument('--continue-from',type=Path,help='new GPU assignment/output, retaining complete paired points and build')
     p.add_argument('--l2-bytes',type=int,default=67108864);p.add_argument('--budget-hours',type=float,default=8)
     p.add_argument('--asys',type=Path);p.add_argument('--smi',type=Path);p.add_argument('--probe',type=Path)
@@ -404,6 +433,10 @@ if __name__=='__main__':
         not 1<=a.jobs<=64 or a.l2_bytes<=0 or not 0<a.budget_hours<=24):p.error('invalid GPU/jobs/L2/budget')
     if bool(a.job)!=bool(a.attempt) or a.job and a.worker is None:p.error('incomplete child arguments')
     if a.continue_from and (a.resume or a.reuse_build):p.error('--continue-from uses a new output; do not combine with --resume/--reuse-build')
+    if a.native_compare and (a.mode!='wired-prefill' or not a.llama_source or not a.llama_build):
+        p.error('--native-compare requires --mode wired-prefill and --llama-source/--llama-build')
+    if a.native_compare and (a.continue_from or a.reuse_build):
+        p.error('native comparison uses a fresh build/output or --resume; not confirmation timing reuse')
     def stop(*_):raise KeyboardInterrupt('termination requested')
     signal.signal(signal.SIGTERM,stop);rc=1
     try:

@@ -83,7 +83,17 @@ def seed(plan,summary):
         old_plan_sha256=plan['sha256'],families=families,historical_times_reused=False)
 
 
-def make_plan(mode='all'):
+def make_plan(mode='all',*,native_compare=False):
+    if native_compare and mode!='wired-prefill':raise ValueError('native gate requires selected wiring')
+    if mode=='wired-prefill':
+        p=wired_plan()
+        if native_compare:
+            p.update(native_comparison=True,baseline='CURRENT_LINKED_NATIVE_UNMODIFIED',
+                protocol=dict(order=['native','quactlize','quactlize','native'],rounds=6,samples=5,
+                    timing='ASYS_SEPARATE_COMPONENT_MEANS',helper_reuse=False),
+                scope='SELECTED_MOE_PROJECTION_COMPONENT_AB_NOT_FUSED_FFN_OR_MODEL')
+            p['counts'].update(native_passes=400,candidate_passes=400)
+        return p
     if mode not in ('all','prefill','decode'):raise ValueError('unknown confirmation mode')
     points=[];modules={};vectors={}
     def add(w,candidates,original,reference):
@@ -136,6 +146,25 @@ def make_plan(mode='all'):
         scope='FIXED_SHORTLIST_F32_IO_PROJECTION_CONFIRMATION_NOT_FUSED_CHAIN_OR_MODEL_AB')
 
 
+def wired_plan():
+    """One actual selected recipe per point; no candidate/parameter expansion."""
+    from quactlize.dispatch.moe_prefill_policy import load
+    points=[];modules={}
+    for row in load()['rows']:
+        q,n,k,ch,m=row['key'];r=Recipe.from_dict(row['recipe'])
+        for router in ROUTERS:
+            w=Workload(q,n,k,m,operation='indexed',experts=256,topk=8,channels=ch,compute='bf16',router=router)
+            spec=module_spec(w,r);mid=digest(spec);modules[mid]=spec
+            points.append(dict(id=w.key,workload=asdict(w),cohort='prefill',
+                arms=[dict(id='original',recipe=row['recipe'],roles=['original'],aliases=[],spec=spec,module=mid)],
+                sf_configs=[dict(r.parameters)['dequant_config']] if r.route=='sf' else [],full_configs=[],
+                fixed_candidates=True,selection_source='PRODUCTION_PREFILL_QUERY_POLICY22'))
+    return dict(schema='quactlize.moe-confirm.v1',points=points,tc=modules,vectors={},
+        counts=dict(points=len(points),arms=len(points),tc_modules=len(modules),vector_modules=0,maximum_candidates=1),
+        historical_times_reused=False,production_changed=False,native_comparison=False,
+        scope='PRODUCTION_SELECTED_PROJECTION_WIRING_NOT_FUSED_CHAIN_OR_MODEL_AB')
+
+
 def bind(point,images):
     """Bind only frozen schedules; no occupancy/grid/Split-K expansion."""
     point=json.loads(json.dumps(point));queries={};probes={};w=Workload(**point['workload'])
@@ -173,7 +202,10 @@ def choose(profiles):
 
 def preflight_points(plan):
     """Existing, reusable points covering every selected implementation family."""
-    def kinds(p):return {(a['recipe']['kind'],a['recipe']['route']) for a in p['arms']}
+    def kinds(p):
+        endpoint=((p['workload']['qtype'],p['workload']['channels'])
+                  if p.get('selection_source')=='PRODUCTION_PREFILL_QUERY_POLICY22' else ())
+        return {(a['recipe']['kind'],a['recipe']['route'],*endpoint) for a in p['arms']}
     remaining=set.union(*(kinds(p) for p in plan['points']));out=[]
     points=sorted(plan['points'],key=lambda p:(p['workload']['m'],
         p['workload']['router']!='spread',len(p['arms']),p['id']))

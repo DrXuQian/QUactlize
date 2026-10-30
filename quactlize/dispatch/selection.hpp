@@ -35,7 +35,8 @@ inline TcDecision select_tc(qks_request_v1 const& r, bool decode, int compute,
     auto selected = preferred.config ? preferred : decode ? select_decode_tc(r) : select(r);
     bool matched = preferred.config && (preferred.policy == QKS_MATCHED_EXACT ||
         preferred.policy == QKS_MATCHED_BUCKET || preferred.policy == QKS_MATCHED_ROUTER ||
-        preferred.policy == QKS_DECODE_COMPONENT_MEASURED || preferred.policy == QKS_PREFILL_COMPONENT_MEASURED);
+        preferred.policy == QKS_DECODE_COMPONENT_MEASURED || preferred.policy == QKS_PREFILL_COMPONENT_MEASURED ||
+        preferred.policy == QKS_MOE_PREFILL_CONFIRMED);
     if (compute == QK_COMPUTE_BF16 && !matched) {
         if (!selected.config) selected = select(r);
         out.value = compute_proposal(r, selected, out.symbol);

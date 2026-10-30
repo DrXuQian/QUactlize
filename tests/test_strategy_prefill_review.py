@@ -85,7 +85,7 @@ def test_compact_review_rejects_coverage_or_cost_mutation(fault):
 def test_prefill_prewarm_uses_native_dense_and_bf16_grouped_only(tmp_path):
     from quactlize.dispatch.planning import plan_prefill,prewarm_groups
     plan=plan_prefill(tmp_path)
-    assert len(plan['requests'])==430
+    assert len(plan['requests'])==460
     groups=prewarm_groups(plan)
     assert {(compute,typed) for compute,typed,_ in groups}=={('f16',False),('bf16',False)}
     for compute,typed,parents in groups:
@@ -106,11 +106,13 @@ int main() {
    qks_request_v1 r{1,sizeof(r),k.q,grouped?2:0,k.tokens*(grouped?8:1),k.n,k.k,k.experts,k.tokens,
      k.q==12?UINT64_C(0x51344b5034540001):UINT64_C(0x514b504b54000001)};
    qks_prefill_choice_v2 out{};
-   assert(prefill::query(r,7,k.compute,1,out)==QKS_OK);
+   // Frozen refresh evidence; the later MoE overlay has its own exhaustive
+   // public-query and materializer tests (test_moe_prefill_policy.py).
+   assert(prefill::query_in(r,7,k.compute,1,out,prefill::data::kKnots)==QKS_OK);
    assert(out.policy==19 && out.compute_type==k.compute && !out.base.predicted);
    assert(out.base.route==k.route && out.base.dequant_config==k.dequant && out.base.measured_tokens==k.tokens);
    for(unsigned mask:{1U,3U,7U})
-     assert(prefill::query(r,mask,k.compute,1,out)==((mask&(1U<<k.route))?QKS_OK:QKS_BINDING));
+     assert(prefill::query_in(r,mask,k.compute,1,out,prefill::data::kKnots)==((mask&(1U<<k.route))?QKS_OK:QKS_BINDING));
    assert(!prefill::knot(r,1-k.compute,1));
    assert(!prefill::knot(r,k.compute,8));
    auto bad=r;bad.m++;assert(!prefill::knot(bad,k.compute,1));

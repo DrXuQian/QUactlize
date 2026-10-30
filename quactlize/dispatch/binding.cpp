@@ -606,6 +606,11 @@ extern "C" int quactlize_kpack_dispatch_query_prefill_v1(void* runtime,qks_reque
         int32_t compute,int32_t channels,qks_choice_v1* out) {
     if (!req || !out || !valid(*req) || !compute_valid(compute) || channels<=0) return QKS_INVALID;
     *out={};
+    if(auto row=moe_prefill::select(*req,compute,channels)) {
+        if(req->route!=row->config.route) return QKS_INVALID;
+        return query(runtime,req,out,{SelectionProfile::ConfirmedPrefill,channels},0,
+                     {&row->config,QKS_MOE_PREFILL_CONFIRMED},compute);
+    }
     auto k=prefill::knot(*req,compute,channels);
     if (!k || k->config<0) return QKS_MISS;
     if (req->route%2!=k->route) return QKS_INVALID;

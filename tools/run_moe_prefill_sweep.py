@@ -139,7 +139,7 @@ def invocation(a,run,job,*,profile,entrypoint=None):
             capture['authority']!=dict(run=run['sha256'],shard=a.worker,
                 device=run['devices'][a.worker],phase=job['phase'])):
         raise ValueError('profile capture job differs')
-    known=component_cache(folder,run,a.worker,job['phase'],job['point'])
+    known={} if job.get('fresh_components') else component_cache(folder,run,a.worker,job['phase'],job['point'])
     provenance=dict(run['source_revision'],source_sha256=run['source']['sha256'],
         harness_sha256=run['harness']['sha256'],images_sha256=digest(run['images']),
         device=run['devices'][a.worker],sdk=run['sdk'],asys_sha256=run['asys_sha256'],
@@ -149,7 +149,7 @@ def invocation(a,run,job,*,profile,entrypoint=None):
     # Timings become reusable only after the child has closed all owners and
     # passed its final precision/guard checks and all raw intervals parsed.
     for cid,row in data['component_records'].items():
-        if cid in known or row['kind']=='producer':continue
+        if job.get('fresh_components') or cid in known or row['kind']=='producer':continue
         base.sealed(cache_folder(folder,job['phase'],job['point'])/(cid+'.json'),
                     dict(record=row,run=run['sha256'],evidence=proof))
     return attempt,dict(status='PASS',run=run['sha256'],point=job['point']['id'],phase=job['phase'],

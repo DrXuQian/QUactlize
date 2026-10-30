@@ -143,11 +143,12 @@ static void emit(int q,int mode,int n,int k,int experts,int topk,int channels,in
 // Historical inventory is an explicit offline replay fixture, never a runtime
 // policy switch. Live callers and package planning always use the active table.
 template<class Knot,size_t NK,class Config,size_t NC>
-static void emit_prefill(Knot const (&knots)[NK],Config const (&configs)[NC]) {
+static void emit_prefill(Knot const (&knots)[NK],Config const (&configs)[NC],bool live=false) {
         for(auto const& k:knots) {
             qks_request_v1 r{1,sizeof(r),k.q,k.experts==1?0:2,k.tokens*(k.experts==1?1:8),k.n,k.k,k.experts,k.tokens,
                 k.q==12?UINT64_C(0x51344b5034540001):UINT64_C(0x514b504b54000001)};
             qks_prefill_choice_v2 out{};
+            if(live && moe_prefill::select(r,k.compute,k.channels)) continue;
             int rc=prefill::query_in(r,7,k.compute,k.channels,out,knots);
             std::cout<<"{\"request\":["<<k.q<<','<<(k.experts==1?0:2)<<','<<k.n<<','<<k.k<<','<<k.experts<<','
                 <<(k.experts==1?1:8)<<','<<k.channels<<','<<k.tokens<<','<<k.compute<<"],\"status\":"<<rc
@@ -164,9 +165,31 @@ static void emit_prefill(Knot const (&knots)[NK],Config const (&configs)[NC]) {
         }
 }
 
+static void emit_moe_prefill() {
+    for(auto const& k:moe_prefill::data::kRows) {
+        auto const& c=k.config;
+        qks_request_v1 r{1,sizeof(r),k.q,c.route,k.tokens*8,k.n,k.k,256,k.tokens,c.mapping_id};
+        qks_prefill_choice_v2 out{};
+        int rc=prefill::query(r,7,QK_COMPUTE_BF16,k.channels,out);
+        std::cout<<"{\"request\":["<<k.q<<",2,"<<k.n<<','<<k.k<<",256,8,"<<k.channels<<','<<k.tokens
+            <<",1],\"status\":"<<rc<<",\"route\":"<<out.base.route<<",\"policy\":"<<out.policy
+            <<",\"dequant_config\":"<<out.base.dequant_config<<",\"kind\":0,\"parent\":{\"symbol\":"
+            <<std::quoted(c.symbol)<<",\"qtype\":"<<c.qtype<<",\"route\":"<<c.route
+            <<",\"tm\":"<<c.tm<<",\"tn\":"<<c.tn<<",\"tk\":"<<c.tk<<",\"wm\":"<<c.wm
+            <<",\"wn\":"<<c.wn<<",\"stages\":"<<c.stages<<",\"ap\":"<<c.ap<<",\"dn\":"<<c.dn
+            <<",\"persistent\":"<<c.parent_persistent<<"},\"split\":"<<c.split
+            <<",\"grid_mode\":"<<c.grid_mode<<",\"grid_b\":"<<c.grid_b<<"}\n";
+    }
+}
+
 int main(int argc,char** argv) {
     if(argc==2 && std::string(argv[1])=="--prefill-inventory") {
-        emit_prefill(prefill::data::kKnots,prefill::data::kConfigs);
+        emit_prefill(prefill::data::kKnots,prefill::data::kConfigs,true);
+        emit_moe_prefill();
+        return 0;
+    }
+    if(argc==2 && std::string(argv[1])=="--moe-prefill-inventory") {
+        emit_moe_prefill();
         return 0;
     }
     if(argc==2 && std::string(argv[1])=="--historical-prefill-inventory") {

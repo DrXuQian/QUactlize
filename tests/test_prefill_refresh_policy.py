@@ -11,6 +11,7 @@ import pytest
 from dev.strategy.prefill_refresh import recipe_of, request, same_recipe, make_plan
 from quactlize.dispatch.planning import plan_prefill, plan_smallm, prewarm_groups
 from quactlize.dispatch.prefill_policy import EVIDENCE, HEADER, LEGACY, STEM, check_receipt, receipt_fields
+from quactlize.dispatch.moe_prefill_policy import load as moe_prefill
 from quactlize.dispatch.table import Recipe, Workload
 from quactlize.runtime.tuning import digest
 from tools.fit_prefill_refresh import header, validate
@@ -21,6 +22,10 @@ BASELINE = 'ceccd4494e6bd9cefaa1ab6a9fde9baab30300a2'
 
 def evidence():
     return json.loads(EVIDENCE.read_text())
+
+
+def moe_overrides():
+    return {(q,2,n,k,256,8,ch,m,1):r for r in moe_prefill()['rows'] for q,n,k,ch,m in [r['key']]}
 
 
 def test_all_decisions_replay_unchanged_gate_and_keep_pending():
@@ -54,9 +59,14 @@ def test_evidence_mutation_fails_closed(fault):
 def test_live_cpp_matches_every_measured_recipe(tmp_path):
     live=plan_prefill(tmp_path)
     rows={tuple(r['request']):r for r in live['requests']}
-    assert len(rows)==430
+    overrides=moe_overrides()
+    assert len(rows)==460
     for p in evidence()['points']:
-        row=rows[request(Workload(**p['workload']))]
+        key=request(Workload(**p['workload']))
+        row=rows[key]
+        if key in overrides:
+            assert row['policy']==22
+            continue
         selected=recipe_of(row)
         assert same_recipe(selected,Recipe.from_dict(p['recipe']))
         assert selected==Recipe.from_dict(p['recipe'])  # symbols too, not just geometry
@@ -64,15 +74,17 @@ def test_live_cpp_matches_every_measured_recipe(tmp_path):
     assert {(c,d) for c,d,_ in groups}=={('f16',False),('bf16',False)}
     # Original finalist scripts must reject a current selector as a historical
     # control; their frozen test fixture is explicit and never used at runtime.
-    with pytest.raises(ValueError,match='incumbent differs'):
+    with pytest.raises(ValueError,match='denominator differs|incumbent differs'):
         make_plan(live,['1','2','3','4','5','6','7'])
     historical=plan_prefill(tmp_path,historical=True)
     old={tuple(r['request']):r for r in historical['requests']}
-    assert sum(old[k]!=v for k,v in rows.items())==94
+    assert len(old)==430 and len(set(rows)-set(old))==30
+    # Six of the old 94 refresh changes belong to the ten superseded MoE keys.
+    assert sum(old[k]!=v for k,v in rows.items() if k in old and k not in overrides)==88
     make_plan(historical,['1','2','3','4','5','6','7'])
 
 
-def test_smallm_unchanged_except_declared_later_dense_exact_additions(tmp_path):
+def test_smallm_unchanged_except_declared_later_dense_and_moe_additions(tmp_path):
     frozen=tmp_path/'baseline';frozen.mkdir()
     raw=subprocess.check_output(['git','archive',BASELINE,'quactlize','policies','tools/kpack_selection.cpp'],cwd=ROOT)
     with tarfile.open(fileobj=io.BytesIO(raw)) as tar:
@@ -84,7 +96,8 @@ def test_smallm_unchanged_except_declared_later_dense_exact_additions(tmp_path):
     before=[json.loads(line) for line in subprocess.check_output([exe,'--inventory'],text=True).splitlines()]
     after=plan_smallm(tmp_path)['requests']
     from quactlize.execution.token_cta_policy import load as token_table
-    tokens={tuple(r['key']) for r in token_table()['rows']}
+    from quactlize.execution.moe_decode_policy import load as moe_table
+    tokens={tuple(r['key']) for r in token_table()['rows']}|{tuple(r['key']) for r in moe_table()['rows']}
     assert len(before)==1852 and len(after)==2095
     for a,b in zip(before,after):
         if tuple(a['request']) not in tokens:assert a==b
@@ -119,7 +132,9 @@ def check_materialized(text):
     assert len(tickets)==len({tuple(r['request']) for r in tickets})==257
     assert len(dense)==len({tuple(r['request']) for r in dense})==280
     for r in tickets:
-        item=expected[tuple(r['request'])];p=dict(item['recipe']['parameters']);w=item['workload']
+        item=expected[tuple(r['request'])];w=item['workload']
+        override=moe_overrides().get(tuple(r['request']))
+        p=dict((override or item)['recipe']['parameters'])
         assert r['parent']==p['symbol'] and r['split']==p['split']
         assert r['compute']==int(w['compute']=='bf16') and r['endpoint']==0
         assert r['grid']==expected_grid(p,w) and r['algorithm']==int(p['grid_mode']>=2)
@@ -134,6 +149,10 @@ def check_materialized(text):
 
 def test_materializer_uses_measured_resources_not_a_mock_grid(tmp_path):
     data=evidence()
+    # The ten overlapping MoE keys now use a separately confirmed parent.
+    # Do not feed their old occupancy/workspace to the new recipe. New MoE
+    # materialization is tested separately, without claiming live resources.
+    data['points']=[p for p in data['points'] if request(Workload(**p['workload'])) not in moe_overrides()]
     (tmp_path/'catalog.inc').write_text('static std::vector<Image> kImages; static char kJitSource[]="";\n')
     exe=tmp_path/'tickets'
     subprocess.run(['g++','-std=c++17','-O2','-pthread','-I'+str(ROOT),'-I'+str(tmp_path),
@@ -145,7 +164,7 @@ def test_materializer_uses_measured_resources_not_a_mock_grid(tmp_path):
     text=''.join(' '.join(map(str,line))+'\n' for line in lines)
     out=subprocess.check_output([exe],input=text,text=True)
     rows=[json.loads(line) for line in out.splitlines()]
-    assert len(rows)==430
+    assert len(rows)==420
     for p,row in zip(data['points'],rows):
         assert row['request']==list(request(Workload(**p['workload'])))
         recipe=p['recipe'];params=dict(recipe['parameters'])
@@ -158,7 +177,7 @@ def test_materializer_uses_measured_resources_not_a_mock_grid(tmp_path):
             assert row['shared']==p['selected_resource']['shared_bytes']
         else:assert not row['parent']
     (tmp_path/'tickets.json').write_text(json.dumps(rows,indent=2)+'\n')
-    print('REFRESH_ACTUAL_TICKETS PASS points=430 tc=257 full=173 resources=UPLOADED_NOT_LIVE')
+    print('REFRESH_ACTUAL_TICKETS PASS points=420 resources=UPLOADED_NOT_LIVE superseded_moe=10')
 
 
 @pytest.mark.parametrize('legacy',[False,True])
