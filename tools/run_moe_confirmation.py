@@ -152,16 +152,22 @@ def reuse_build(a,plan):
     """Reuse binaries after a coordinator fix, never copy old measurements."""
     from copy import copy
     from dev.strategy.prefill_build import verify as verify_prefill
-    previous=a.reuse_build.resolve(strict=True)
+    native_from=getattr(a,'native_from',None)
+    previous=(native_from or a.reuse_build).resolve(strict=True)
     old=sealed(previous/'run.json');old_plan=sealed(previous/'plan.json')
-    if old['plan']!=plan['sha256'] or old_plan['sha256']!=plan['sha256']:
+    if native_from:
+        if (old['mode']!='refine-prefill' or not plan.get('native_only') or
+                old['sha256']!=plan['origin']['run'] or old_plan['sha256']!=plan['origin']['plan']):
+            raise ValueError('native continuation origin differs')
+    elif old['plan']!=plan['sha256'] or old_plan['sha256']!=plan['sha256']:
         raise ValueError('build reuse requires the same workload/config plan')
-    coordinator='tools/run_moe_confirmation.py'
+    allowed={'tools/run_moe_confirmation.py'}
+    if native_from:allowed.add('dev/moe_confirm/native_ab.py')
     for field,current in (('source',source_identity(ROOT)),('harness',harness_identity(ROOT))):
         before,after=old[field]['files'],current['files']
         changed={p for p in before.keys()|after.keys() if before.get(p)!=after.get(p)}
-        if changed-{coordinator}:
-            raise ValueError('build reuse changed non-coordinator sources: '+','.join(sorted(changed)))
+        if changed-allowed:
+            raise ValueError('build reuse changed non-coordinator sources: '+','.join(sorted(changed-allowed)))
     for name,want in old['immutable_files'].items():
         if sha(name)!=want:raise ValueError('previous build artifact changed: '+name)
     helpers=old['moe_helpers'];verify_moe(helpers)
@@ -179,6 +185,7 @@ def reuse_build(a,plan):
     base.verify_images(check,plan,images,dq,points=module_points)
     reference=dict(output=str(previous),cache_output=str(cache),run=old['sha256'],sdk=old['sdk'],
                    compiled_artifacts_only=True,previous_measurements_reused=False)
+    if native_from:reference['native']=old['native']
     return images,dq,helpers,helper_dir,reference
 
 
@@ -234,7 +241,7 @@ def assign_remaining(plan,count,retained):
 def build(a,plan):
     from dev.strategy.prefill_build import build as build_prefill
     reused=None
-    if a.reuse_build:
+    if a.reuse_build or getattr(a,'native_from',None):
         images,dq,helpers,helper_dir,reused=reuse_build(a,plan)
         atomic_json(a.output/'images.json',images)
         print('MOE_CONFIRM_REUSE_BUILD '+json.dumps(reused),flush=True)
@@ -259,10 +266,10 @@ def build(a,plan):
            a.output/'images.json',Path(helpers['bridge']).parent/'receipt.json']
     files += [Path(r['path']) for pool in images.values() for r in pool.values()]
     if 'selected_dispatch' in helpers:files += list(map(Path,helpers['selected_dispatch']['files']))
-    native={}
+    native=reused.get('native',{}) if reused else {}
     if getattr(a,'native_compare',False):
         from dev.moe_confirm.native_ab import build as build_native
-        native=build_native(a,a.output/'native-build')
+        if not native:native=build_native(a,a.output/'native-build')
         files+=list(map(Path,native['immutable_files']))
     if dq:files += [dq/'manifest.json',dq/'libquactlize_ppu_dequant.so']
     retained=retain_complete(a,plan)
@@ -273,7 +280,7 @@ def build(a,plan):
         helpers=str(helper_dir),dequant=str(dq) if dq else None,images=base.image_identity(images,dq),
         asys=str(a.asys),asys_sha256=sha(a.asys),smi=str(a.smi),sdk=devices[0]['sdk'],
         immutable_files={str(p):sha(p) for p in files},mode=a.mode,native_comparison=bool(native),
-        native=native,scope=plan['scope'],reused_build=reused)
+        native=native,scope=plan['scope'],reused_build=reused,native_only=bool(plan.get('native_only')))
     base.sealed(a.output/'run.json',run);return sealed(a.output/'run.json')
 
 
@@ -344,7 +351,10 @@ def review(a,plan,run,codes):
 
 def main(a):
     if a.plan:
-        p=plans.make_plan(a.mode,native_compare=getattr(a,'native_compare',False))
+        if getattr(a,'native_from',None):
+            from dev.moe_confirm.native_ab import retry_plan
+            p=retry_plan(a.native_from,a.native_route)
+        else:p=plans.make_plan(a.mode,native_compare=getattr(a,'native_compare',False))
         print(json.dumps(dict(p['counts'],scope=p['scope'],mode=a.mode),indent=2));return 0
     if a.probe:atomic_json(a.probe,base.device(a));return 0
     if a.output is None:
@@ -363,9 +373,15 @@ def main(a):
         if run['cards']!=a.devices.split(',') or run['mode']!=a.mode:raise ValueError('resume GPU/mode differs')
         if bool(run.get('native_comparison'))!=bool(getattr(a,'native_compare',False)):
             raise ValueError('resume native comparison scope differs')
+        if run.get('native_only') and plan['origin']['requested_route']!=a.native_route:
+            raise ValueError('resume native candidate route differs')
     else:
         if a.continue_from:a.reuse_build=a.continue_from
-        base.sealed(a.output/'plan.json',plans.make_plan(a.mode,native_compare=getattr(a,'native_compare',False)))
+        if getattr(a,'native_from',None):
+            from dev.moe_confirm.native_ab import retry_plan
+            prepared_plan=retry_plan(a.native_from,a.native_route)
+        else:prepared_plan=plans.make_plan(a.mode,native_compare=getattr(a,'native_compare',False))
+        base.sealed(a.output/'plan.json',prepared_plan)
         plan=sealed(a.output/'plan.json')
         print('MOE_CONFIRM_PLAN '+json.dumps(plan['counts']),flush=True)
         run=build(a,plan)
@@ -380,6 +396,9 @@ def main(a):
     if gate.get('status')!='PASS' or gate.get('run')!=run['sha256']:
         raise ValueError('helper gate does not belong to this run')
     if a.mode=='refine-prefill':
+        if run.get('native_only'):
+            from dev.moe_confirm.native_ab import run_retry
+            return run_retry(a,plan,run)
         from dev.moe_confirm.refine import run as refine_run
         return refine_run(a,plan,run)
     for pid in plans.preflight_points(plan):
@@ -433,6 +452,9 @@ if __name__=='__main__':
     p.add_argument('--refine-stage',choices=('screen','confirm','native'),default='screen',help=argparse.SUPPRESS)
     p.add_argument('--reuse-build',type=Path,help='reuse a prior confirmation build, not its timings; use a new output')
     p.add_argument('--native-compare',action='store_true',help='wired/refine-prefill: fresh Asys native/selected/selected/native')
+    p.add_argument('--native-from',type=Path,help='new output: reuse a completed refinement choice/build, run only fresh native ABBA')
+    p.add_argument('--native-route',choices=('selected','sf','full'),default='selected',
+                   help='with --native-from: confirmed common route, not another sweep')
     p.add_argument('--llama-source',type=Path,default=Path(os.environ['LLAMA_CI_DIR']) if os.environ.get('LLAMA_CI_DIR') else None)
     p.add_argument('--llama-build',type=Path,default=Path(os.environ['LLAMA_CI_BUILD_DIR']) if os.environ.get('LLAMA_CI_BUILD_DIR') else None)
     p.add_argument('--continue-from',type=Path,help='new GPU assignment/output, retaining complete paired points and build')
@@ -446,8 +468,13 @@ if __name__=='__main__':
         not 1<=a.jobs<=64 or a.l2_bytes<=0 or not 0<a.budget_hours<=24):p.error('invalid GPU/jobs/L2/budget')
     if bool(a.job)!=bool(a.attempt) or a.job and a.worker is None:p.error('incomplete child arguments')
     if a.continue_from and (a.resume or a.reuse_build):p.error('--continue-from uses a new output; do not combine with --resume/--reuse-build')
-    if a.native_compare and (a.mode not in ('wired-prefill','refine-prefill') or not a.llama_source or not a.llama_build):
+    if a.native_compare and (a.mode not in ('wired-prefill','refine-prefill') or
+            not a.native_from and (not a.llama_source or not a.llama_build)):
         p.error('--native-compare requires --mode wired-prefill/refine-prefill and --llama-source/--llama-build')
+    if a.native_from and (a.mode!='refine-prefill' or not a.native_compare or a.reuse_build or a.continue_from):
+        p.error('--native-from requires --mode refine-prefill --native-compare, not --reuse-build/--continue-from')
+    if a.native_route!='selected' and not (a.native_from or a.resume):
+        p.error('--native-route requires --native-from (or its --resume)')
     if a.mode=='refine-prefill' and (a.continue_from or a.reuse_build):
         p.error('refinement starts fresh or uses --resume; old sweep data stays unchanged')
     if a.native_compare and (a.continue_from or a.reuse_build):

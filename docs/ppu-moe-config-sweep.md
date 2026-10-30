@@ -501,3 +501,38 @@ show completed/total arms. Upload only `results/review-lite-*.tar.xz`.
 Raw Asys/SQLite remain on Box. Every measurement retains commit, actual
 source/image hashes and SDK/device tags. This round does not establish
 global config optimality, fused-FFN performance or model TPOT.
+
+### Refinement native-request continuation
+
+The `yVVdzpig` run at `514335d2` completed all 10 screens and confirmations.
+Native ABBA then failed before the first launch because the fixture request
+lacked `cohort`. The native MoE entry now supplies its own `prefill` metadata;
+kernel, fixture arithmetic and production routing are unchanged.
+
+The common minimax choice was Full, but this is not universal Full superiority:
+the new TM64 SF wins eight non-cluster profiles, while Full wins the two
+cluster profiles. `--native-route sf` and `--native-route full` each import
+one common, already-confirmed recipe per host key. Both need fresh native
+comparisons before a production decision.
+
+From the repaired source checkout, use a **new** output for each route:
+
+```bash
+python3 -u tools/run_moe_confirmation.py \
+    --mode refine-prefill --native-compare --native-route sf \
+    --native-from /workspace/kpack-moe-refine.yVVdzpig/results \
+    --output /workspace/kpack-moe-native.NEW/results-sf \
+    --sdk /usr/local/PPU_SDK --devices 0,1,2,3 --jobs 8 \
+    --l2-bytes 67108864 --budget-hours 4 --confirm-idle
+```
+
+Then use `--native-route full` and `results-full`. The native baseline and
+unchanged helper/TC/dequant binaries are reused from the original run; no
+llama or TC recompilation, screen or confirmation sweep is performed.
+Each route measures 10 paired points, 20 native and 20 candidate passes,
+with separately timed Asys components and fresh helpers in every ABBA pass.
+Old timing records retain their original source tag. New results record the
+new harness revision and the original selection/build identities. Do not
+delete the original run or replace its compiled libraries. To finish an
+interrupted comparison, add `--resume` with the same source, output, route
+and cards. Upload the two new `results-*/review-lite-*.tar.xz` files only.

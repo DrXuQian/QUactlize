@@ -28,6 +28,86 @@ ROOT=Path(__file__).resolve().parents[2]
 ENTRY=ROOT/'tools/run_moe_confirmation.py'
 
 
+def request(p,l2_bytes):
+    # This entry compares MoE prefill projections. A candidate recipe does
+    # not carry the native carrier's fixture metadata (notably Full arms).
+    row=point_request(dict(p,cohort='prefill'),l2_bytes,routing_repeat=0)
+    row['input_fixture']=activation(row)
+    return row
+
+
+def retry_plan(previous,route='selected'):
+    """Import confirmed recipes only; all native/candidate timings are fresh."""
+    from tools.run_moe_confirmation import completed
+    from dev.moe_confirm import plan as confirmation
+    if route not in ('selected','sf','full'):raise ValueError('unknown native comparison route')
+    previous=Path(previous).resolve(strict=True)
+    old=sealed(previous/'run.json');original=sealed(previous/'plan.json')
+    chosen=sealed(previous/'selection.json')
+    finals=sealed(previous/'finalists.json')
+    if (old['mode']!='refine-prefill' or old['plan']!=original['sha256'] or
+            chosen['run']!=old['sha256'] or finals['run']!=old['sha256'] or not old['native_comparison']):
+        raise ValueError('native continuation requires a completed refinement selection')
+    ids={p['id'] for p in original['points']}
+    if set(chosen['points'])!=ids or set(finals['points'])!=ids:raise ValueError('selected point coverage differs')
+    profiles={};groups={}
+    for worker,pids in enumerate(old['assignments']):
+        for pid in pids:
+            path=previous/('gpu-'+old['cards'][worker])/'points'/(pid+'.json')
+            value=completed(path,old)
+            if value is None:raise ValueError('missing confirmed point: '+str(path))
+            profiles[pid]=value
+            groups.setdefault(confirmation.key(value['workload']),[]).append(value)
+    if set(profiles)!=ids:raise ValueError('confirmed point coverage differs')
+    replacements={}
+    for group in groups.values():
+        winner=confirmation.choose(group)
+        for value in group:
+            p=chosen['points'][value['point']]
+            if (len(p['arms'])!=1 or p['arms'][0]['id']!='original' or
+                    p['workload']!=value['workload'] or
+                    digest(p['arms'][0]['recipe'])!=digest(confirmation.canonical(value['bindings'][winner])) or
+                    p.get('selection_source')!='MEASURED_REFINEMENT_NOT_PRODUCTION'):
+                raise ValueError('native continuation recipe differs from confirmation')
+        if route!='selected':
+            restricted=[dict(v,decision=dict(statistics={aid:s for aid,s in v['decision']['statistics'].items()
+                if aid=='original' or v['bindings'][aid]['recipe']['route']==route})) for v in group]
+            winner=confirmation.choose(restricted)
+            bindings=[v['bindings'][winner] for v in group]
+            if any(b!=bindings[0] for b in bindings) or bindings[0]['recipe']['route']!=route:
+                raise ValueError('no common confirmed non-regressing recipe for route '+route)
+            for v in group:
+                p=finals['points'][v['point']];binding=v['bindings'][winner]
+                arm=next(a for a in p['arms'] if a['id']==winner)
+                replacements[p['id']]=dict(p,
+                    arms=[dict(arm,id='original',roles=['original'],recipe=confirmation.canonical(binding))],
+                    sf_configs=[binding['helper_config']] if route=='sf' else [],
+                    full_configs=[binding['helper_config']] if route=='full' else [],
+                    selection_source='MEASURED_REFINEMENT_NOT_PRODUCTION')
+    points=[replacements.get(p['id'],chosen['points'][p['id']]) for p in original['points']]
+    modules={a['module']:a['spec'] for p in points for a in p['arms'] if a['recipe']['kind']=='tc'}
+    return dict(schema=original['schema'],points=points,tc=modules,vectors={},native_only=True,
+        native_comparison=True,historical_times_reused=False,production_changed=False,
+        counts=dict(points=len(points),arms=len(points),maximum_candidates=1,tc_modules=len(modules),
+                    vector_modules=0,native_passes=2*len(points),candidate_passes=2*len(points)),
+        origin=dict(output=str(previous),run=old['sha256'],plan=original['sha256'],
+                    selection=chosen['sha256'],source_revision=old['source_revision'],requested_route=route),
+        protocol=dict(order=list(gate.ORDER),rounds=6,samples=5,helper_reuse=False),
+        scope='CONFIRMED_RECIPES_FRESH_NATIVE_ABBA_NO_RESWEEP_OR_PRODUCTION_CHANGE')
+
+
+def run_retry(a,plan,run):
+    from dev.moe_confirm.refine import spawn
+    base.sealed(a.output/'selection.json',dict(run=run['sha256'],origin=plan['origin'],
+        points={p['id']:p for p in plan['points']},historical_times_reused=False))
+    codes=spawn(a,run,'native',time.monotonic()+a.budget_hours*3600)
+    rc=review(a,plan,run,codes)
+    result=base.read(a.output/'native-summary.json')
+    atomic_json(a.output/'summary.json',dict(result,origin=plan['origin'],
+        scope=plan['scope'],historical_times_reused=False,production_changed=False))
+    return rc
+
+
 def build(a,output):
     a.llama_source=a.llama_source.resolve(strict=True);a.llama_build=a.llama_build.resolve(strict=True)
     output.mkdir()
@@ -48,7 +128,7 @@ def native_pass(a,run,p,folder,block):
     auth=dict(run=run['sha256'],device=run['devices'][a.worker],adapter=n['adapter_sha256'],
         carrier=n['carrier_sha256'],backend=n['backend'],source_revision=run['source_revision'],
         harness=run['harness']['sha256'],timing_method='ASYS_GPU_ACTIVITY')
-    row=point_request(p,run['l2_bytes'],routing_repeat=0);row['input_fixture']=activation(row)
+    row=request(p,run['l2_bytes'])
     w=p['workload'];family=digest([w[k] for k in ('qtype','n','k','experts')])
     raw,receipt=weights(w,folder/'fixtures'/family)
     atomic_json(attempt/'request.json',dict(runtime_library=n['runtime'],adapter_library=n['adapter'],
