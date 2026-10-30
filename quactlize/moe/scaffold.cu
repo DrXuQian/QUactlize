@@ -125,7 +125,7 @@ int prepare_launch(qzm_prepare_v1 const& c,routing::Layout const& l,int stage) {
         return launch_status();
     }
     int threads=((c.route.experts+31)/32)*32;
-    if(l.algorithm==QZR_WARP) {
+    if(l.algorithm!=QZR_TILED) {
         if(stage<0 || stage==0) {
             int rc=quactlize_ppu_moe_route_run_v1(&c.route,&c.config);if(rc) return rc;
         }
@@ -361,6 +361,17 @@ extern "C" int quactlize_ppu_moe_prepare_execute_v1(qzm_prepare_v1 const* c,qzm_
         rc=prepare_separate(c,stage);if(rc) return rc;
     }
     return QZR_OK;
+}
+extern "C" int quactlize_ppu_moe_prepare_execute_v2(qzm_prepare_v1 const* c,qzm_prepare_plan_v2 const* plan) {
+    using namespace quactlize::moe;
+    if(!c || !plan) return QZR_INVALID;
+    qzm_prepare_plan_v2 expected{};int rc=prepare_plan_v2(*c,expected);if(rc) return rc;
+    if(plan->version!=expected.version || plan->size!=sizeof(*plan) ||
+       plan->config.version!=expected.config.version || plan->config.size!=expected.config.size ||
+       plan->config.algorithm!=expected.config.algorithm || plan->config.tile_rows!=expected.config.tile_rows ||
+       !same_plan(plan->helper,expected.helper)) return QZR_INVALID;
+    qzm_prepare_v1 selected=*c;selected.config=plan->config;
+    return quactlize_ppu_moe_prepare_execute_v1(&selected,&plan->helper);
 }
 extern "C" int quactlize_ppu_moe_finish_execute_v1(qzm_finish_v1 const* c,qzm_plan_v1 const* plan,
                                                   void* workspace,uint64_t bytes) {

@@ -31,7 +31,8 @@ PUBLIC_EXPORTS = (
     'quactlize_ppu_moe_route_run_v1',
     *('quactlize_ppu_moe_' + suffix for suffix in (
         'prepare_query_v1', 'prepare_run_v1', 'transition_query_v1', 'transition_run_v1', 'finish_run_v1',
-        'prepare_select_v1', 'prepare_execute_v1', 'finish_select_v1', 'finish_execute_v1')),
+        'prepare_select_v1', 'prepare_execute_v1', 'prepare_select_v2', 'prepare_execute_v2',
+        'finish_select_v1', 'finish_execute_v1')),
     'quactlize_ppu_kpack_canonical_arrangement_v1',
     'quactlize_ppu_kpack_sizes_for_arrangement_v1',
     'quactlize_ppu_prepare_fully_quantized_dev_for_arrangement_v2',

@@ -14,7 +14,7 @@ inline int layout(qzr_call_v1 const& c,qzr_config_v1 const& p,Layout& l) {
        c.tokens<0 || c.experts<1 || c.experts>1024 || c.topk<1 || c.topk>32 ||
        c.topk>c.experts || c.channels<1 || c.channels>c.topk ||
        c.inverse<0 || c.inverse>1 || c.reserved || c.ids_stride<c.topk ||
-       c.source_stride<c.channels || p.algorithm<QZR_AUTO || p.algorithm>QZR_TILED ||
+       c.source_stride<c.channels || p.algorithm<QZR_AUTO || p.algorithm>QZR_SCALAR ||
        (p.tile_rows && p.tile_rows!=256 && p.tile_rows!=512 && p.tile_rows!=1024)) return QZR_INVALID;
     int64_t rows=int64_t(c.tokens)*c.topk;
     if(rows>INT_MAX || (c.tokens>1 &&
@@ -23,8 +23,9 @@ inline int layout(qzr_call_v1 const& c,qzr_config_v1 const& p,Layout& l) {
     l.rows=int(rows);l.tile=p.tile_rows?p.tile_rows:512;
     l.algorithm=p.algorithm?p.algorithm:(rows<=1024?QZR_WARP:QZR_TILED);
     if(l.algorithm==QZR_WARP && c.tokens>8192) return QZR_CAPACITY;
+    if(l.algorithm==QZR_SCALAR && rows>512) return QZR_CAPACITY;
     l.tiles=int((rows+l.tile-1)/l.tile);
-    l.stages=rows==0 || l.algorithm==QZR_WARP?1:3;
+    l.stages=rows==0 || l.algorithm!=QZR_TILED?1:3;
     l.prefix=aligned(uint64_t(l.tiles)*c.experts*4);
     l.ranks=2*l.prefix;
     l.bytes=rows && l.algorithm==QZR_TILED?l.ranks+aligned(uint64_t(rows)*4):0;

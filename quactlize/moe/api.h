@@ -112,6 +112,20 @@ typedef struct {
 // required operations from the actual producer state, including zero-op.
 int quactlize_ppu_moe_prepare_select_v1(qzm_prepare_v1 const*,int32_t implementation,qzm_plan_v1*);
 int quactlize_ppu_moe_prepare_execute_v1(qzm_prepare_v1 const*,qzm_plan_v1 const*);
+
+// Additive combined route/helper selection. v1 keeps the caller's explicit
+// route. In v2, config={1,sizeof(config),QZR_AUTO,0} requests measured host-key
+// selection; an explicit route keeps v1 selection. Unmeasured AUTO geometry
+// uses the previous general TILED512 preparation, not a small-M-only kernel.
+// The returned plan owns no addresses/stream. Its helper.workspace_bytes is
+// the required route.workspace capacity; allocate it before execute/capture.
+typedef struct {
+    uint32_t version, size;
+    qzr_config_v1 config;
+    qzm_plan_v1 helper;
+} qzm_prepare_plan_v2;
+int quactlize_ppu_moe_prepare_select_v2(qzm_prepare_v1 const*,qzm_prepare_plan_v2*);
+int quactlize_ppu_moe_prepare_execute_v2(qzm_prepare_v1 const*,qzm_prepare_plan_v2 const*);
 int quactlize_ppu_moe_finish_select_v1(qzm_finish_v1 const*,int32_t implementation,qzm_plan_v1*);
 
 // A plan contains no addresses/stream. Pass current call bindings every time;

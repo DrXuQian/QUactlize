@@ -13,6 +13,7 @@ static qzm_value_v1 value_at(uintptr_t address,int width,int state=QZM_PROJECTED
 }
 int main() {
     static_assert(sizeof(qzm_value_v1)==48);
+    static_assert(sizeof(qzm_prepare_plan_v2)==48);
     qzm_prepare_v1 p{};p.version=1;p.size=sizeof(p);
     p.route.version=1;p.route.size=sizeof(p.route);p.route.experts=256;p.route.topk=8;
     p.route.channels=1;p.route.ids_stride=8;p.route.source_stride=1;
@@ -120,7 +121,7 @@ int main() {
     f.down.state=QZM_PROJECTED;f.down.partial_count=1;
     assert(quactlize_ppu_moe_finish_select_v1(&f,QZM_AUTO,&other)==0 && other.implementation==QZM_FINISH_SERIAL);
     f.tokens=1;
-    assert(quactlize_ppu_moe_finish_select_v1(&f,QZM_AUTO,&other)==0 && other.implementation==QZM_FINISH_SLOTS8);
+    assert(quactlize_ppu_moe_finish_select_v1(&f,QZM_AUTO,&other)==0 && other.implementation==QZM_FINISH_SLOTS4);
     f.tokens=8;
     assert(quactlize_ppu_moe_finish_select_v1(&f,QZM_AUTO,&other)==0 && other.implementation==QZM_FINISH_SLOTS4);
     f.tokens=17;

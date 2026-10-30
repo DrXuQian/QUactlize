@@ -8,7 +8,7 @@ import numpy as np
 
 from dev.moe_route.bench import Runtime, Buffer, Graph, bind
 from dev.moe_scaffold.protocol import (Call, Config, Sizes, Value, Prepare, Transition, Finish,
-    Case, Plan, ids_for, oracle, encode, decode, rounded, activation, weighted)
+    Case, Plan, PreparePlanV2, ids_for, oracle, encode, decode, rounded, activation, weighted)
 from quactlize.runtime.native import checked
 from dev.strategy.refresh_clock import ADVISORY, observe, pci_key, request_lock
 
@@ -24,6 +24,8 @@ class Library:
             ('finish', 'finish_run_v1', [C.POINTER(Finish)]),
             ('prepare_select', 'prepare_select_v1', [C.POINTER(Prepare), C.c_int, C.POINTER(Plan)]),
             ('prepare_execute', 'prepare_execute_v1', [C.POINTER(Prepare), C.POINTER(Plan)]),
+            ('prepare_select_v2', 'prepare_select_v2', [C.POINTER(Prepare), C.POINTER(PreparePlanV2)]),
+            ('prepare_execute_v2', 'prepare_execute_v2', [C.POINTER(Prepare), C.POINTER(PreparePlanV2)]),
             ('finish_select', 'finish_select_v1', [C.POINTER(Finish), C.c_int, C.POINTER(Plan)]),
             ('finish_execute', 'finish_execute_v1', [C.POINTER(Finish), C.POINTER(Plan), C.c_void_p, C.c_uint64])):
             setattr(self, name, bind(self.lib, 'quactlize_ppu_moe_'+suffix, args))
@@ -92,6 +94,11 @@ class Fixture:
                 else: setattr(self.t, name, v)
             self.prepare_plan,self.finish_plan=Plan(),Plan()
             checked(lib.prepare_select(C.byref(self.p),0,C.byref(self.prepare_plan)),'public prepare selection')
+            auto=Prepare.from_buffer_copy(self.p);auto.config.algorithm=auto.config.tile_rows=0
+            self.combined_plan=PreparePlanV2()
+            checked(lib.prepare_select_v2(C.byref(auto),C.byref(self.combined_plan)),'combined prepare selection')
+            if self.combined_plan.helper.workspace_bytes>self.sizes.workspace_bytes:
+                raise ValueError('combined prepare needs a larger route workspace')
             checked(lib.finish_select(C.byref(self.f),0,C.byref(self.finish_plan)),'public finish selection')
             self.split_plan=Plan()
             checked(lib.finish_select(C.byref(self.f),19,C.byref(self.split_plan)),'public split finish query')
@@ -177,6 +184,10 @@ class Fixture:
     def selected_prepare(self):
         return self.lib.prepare_execute(C.byref(self.p),C.byref(self.prepare_plan))
 
+    def combined_prepare(self,plan=None):
+        call=Prepare.from_buffer_copy(self.p);call.config.algorithm=call.config.tile_rows=0
+        return self.lib.prepare_execute_v2(C.byref(call),C.byref(self.combined_plan if plan is None else plan))
+
     def selected_finish(self,plan=None):
         return self.lib.finish_execute(C.byref(self.f),C.byref(self.finish_plan if plan is None else plan),
             self.ptr('selected_scratch'),self.buffers['selected_scratch'].size)
@@ -192,6 +203,10 @@ class Fixture:
         checked(self.lib.prepare_hybrid(C.byref(self.p), -1), 'hybrid prepare'); self.prepare_check()
         self.reset_prepare()
         checked(self.selected_prepare(),'public selected prepare'); self.prepare_check()
+        self.reset_prepare()
+        checked(self.combined_prepare(),'combined route/helper prepare'); self.prepare_check()
+        bad=PreparePlanV2.from_buffer_copy(self.combined_plan);bad.helper.stages+=1
+        if self.combined_prepare(bad)!=20:raise ValueError('combined prepare accepted a damaged plan')
         if c.phase=='all' and c.tokens<=8192:
             alternate=Prepare.from_buffer_copy(self.p);alternate.config.algorithm=1
             plan=Plan();checked(self.lib.prepare_select(C.byref(alternate),3,C.byref(plan)),'public WARP route plan')
@@ -327,10 +342,12 @@ def measure(sdk, receipt, cases, rounds=4, samples=2, repeats=32, *, smi, clock_
         # replay. No graph cloning or KernelNodeGetParams is used.
         with ExitStack() as gate:
             fixtures=[];graphs=[]
-            for i in range(8):
-                warps=(0,4,8,-1)[i//2]
+            for i in range(10):
+                warps=(0,4,8,-1,-2)[i//2]
                 r=Runtime(sdk);gate.callback(r.close)
-                b=Fixture(r,lib,Case(17,experts=33,topk=6,state=1,splits=2,down_splits=4))
+                case=(Case(16,columns=2048,hidden=31,output=33,padding=0,state=1,splits=2,down_splits=4)
+                      if warps==-2 else Case(17,experts=33,topk=6,state=1,splits=2,down_splits=4))
+                b=Fixture(r,lib,case)
                 gate.callback(b.close);b.update(i);b.numerical()
                 if warps==-1:
                     checked(lib.prepare_select(C.byref(b.p),2,C.byref(b.prepare_plan)),'graph hybrid plan')
@@ -338,9 +355,11 @@ def measure(sdk, receipt, cases, rounds=4, samples=2, repeats=32, *, smi, clock_
                         # Reuse the exact same address-free plans on independent
                         # storage/streams; only the call descriptors are rebound.
                         b.prepare_plan=fixtures[-1].prepare_plan;b.split_plan=fixtures[-1].split_plan
+                if i==9:b.combined_plan=fixtures[-1].combined_plan
                 def call(b=b,w=warps):
-                    if w==-1:
-                        for fn in (b.selected_prepare,lambda:lib.transition(C.byref(b.t)),lambda:b.selected_finish(b.split_plan)):
+                    if w in (-1,-2):
+                        for fn in (b.combined_prepare if w==-2 else b.selected_prepare,
+                                   lambda:lib.transition(C.byref(b.t)),lambda:b.selected_finish(b.split_plan)):
                             rc=fn()
                             if rc:return rc
                         return 0

@@ -88,6 +88,7 @@ __global__ __launch_bounds__(32) void warp_register(qzr_call_v1 c,int rows) {
         if(expert==c.experts-1) c.offsets[c.experts]=begin+count;
     }
 }
+#endif
 
 // Isolated reduction ablation: every lane already participates in the two
 // comparisons. Ballot/popcount yields a warp-uniform expert base without
@@ -115,10 +116,12 @@ __device__ __forceinline__ void register_ballots(qzr_call_v1 const& c,int rows) 
         if(expert==c.experts-1) c.offsets[c.experts]=begin+count;
     }
 }
+#ifdef QZR_TESTING
 template<int TopK,int Groups>
 __global__ __launch_bounds__(32) void warp_ballot(qzr_call_v1 c,int rows) {
     register_ballots<TopK,Groups>(c,rows);
 }
+#endif
 // Same device algorithm, different kernel-argument delivery only. Do not
 // narrow strides or bake channels/inverse into either timing arm.
 template<int TopK,int Groups>
@@ -131,7 +134,6 @@ __global__ __launch_bounds__(32) void warp_scalar(
     c.experts=experts;c.topk=topk;c.channels=channels;c.inverse=inverse;
     register_ballots<TopK,Groups>(c,rows);
 }
-#endif
 
 // Stable per-chunk ranks. Warp-private histograms avoid global atomics and
 // contention between tokens choosing the same expert. Rows in each warp are

@@ -45,6 +45,17 @@ __global__ void prefix_chunks(int const* histogram,int* prefix_chunks,int* offse
         if(e==experts-1) offsets[experts]=begin+total;
     }
 }
+template<int TopK,int Groups> void scalar_launch_body(qzr_call_v1 const& c,int rows,RouteStream stream) {
+    warp_scalar<TopK,Groups><<<c.experts,32,0,stream>>>(c.ids,c.src_rows,c.dst_rows,c.offsets,
+        c.ids_stride,c.source_stride,c.experts,c.topk,c.channels,c.inverse,rows);
+}
+template<int TopK> void scalar_launch(qzr_call_v1 const& c,int rows,RouteStream stream) {
+    if(rows<=32) scalar_launch_body<TopK,1>(c,rows,stream);
+    else if(rows<=64) scalar_launch_body<TopK,2>(c,rows,stream);
+    else if(rows<=128) scalar_launch_body<TopK,4>(c,rows,stream);
+    else if(rows<=256) scalar_launch_body<TopK,8>(c,rows,stream);
+    else scalar_launch_body<TopK,16>(c,rows,stream);
+}
 template<int TopK,int Tile>
 int launch(qzr_call_v1 const& c,Layout const& l,int stage) {
     auto stream=static_cast<RouteStream>(c.stream);
@@ -52,6 +63,8 @@ int launch(qzr_call_v1 const& c,Layout const& l,int stage) {
         empty_offsets<<<(c.experts+256)/256,256,0,stream>>>(c.offsets,c.experts);
     } else if(l.algorithm==QZR_WARP) {
         warp_compact<TopK><<<c.experts,32,size_t(c.tokens)*4,stream>>>(c,l.rows);
+    } else if(l.algorithm==QZR_SCALAR) {
+        scalar_launch<TopK>(c,l.rows,stream);
     } else {
         auto histogram=static_cast<int*>(c.workspace);
         auto prefix=reinterpret_cast<int*>(static_cast<uint8_t*>(c.workspace)+l.prefix);

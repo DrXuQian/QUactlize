@@ -173,6 +173,9 @@ class Chain:
         self.update(seed);self.bind(0)
         checked(self.launch(legacy=True,unfused=True),'legacy TC plus decomposed helpers')
         self.b.prepare_check();expected=self.snapshots()
+        self.b.reset_prepare()
+        checked(self.b.combined_prepare(),'combined prepare with real producer bindings')
+        self.b.prepare_check()
         spots=[p.numerical_spots(self.b.maps[2]) for p in self.producers]
         projected=[self.b.buffers[n].read() for n in ('gate','up','down')]
         for n in ('gate','up','down','activation','finish'):self.b.buffers[n].poison()

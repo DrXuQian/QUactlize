@@ -28,6 +28,14 @@ int main() {
     c.tokens=1;assert(layout(c,p,l)==0);
     c.ids_stride=8;c.tokens=8193;p.algorithm=QZR_WARP;assert(layout(c,p,l)==QZR_CAPACITY);
     c.tokens=8192;assert(layout(c,p,l)==0 && l.bytes==0);
+    p.algorithm=QZR_SCALAR;
+    for(int m:{0,1,3,8,9,16,32,63,64}) {
+        c.tokens=m;assert(layout(c,p,l)==0 && l.algorithm==QZR_SCALAR && l.stages==1 && !l.bytes);
+    }
+    c.tokens=65;assert(layout(c,p,l)==QZR_CAPACITY);
+    c.tokens=512;c.topk=c.channels=c.source_stride=c.ids_stride=1;
+    assert(layout(c,p,l)==0);c.tokens=513;assert(layout(c,p,l)==QZR_CAPACITY);
+    c.topk=c.channels=c.source_stride=c.ids_stride=8;
     p.algorithm=QZR_AUTO;c.tokens=129;assert(layout(c,p,l)==0 && l.algorithm==QZR_TILED);
     c.tokens=128;assert(layout(c,p,l)==0 && l.algorithm==QZR_WARP);
     p.algorithm=QZR_TILED;c.tokens=4;assert(layout(c,p,l)==0);

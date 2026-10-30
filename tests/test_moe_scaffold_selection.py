@@ -7,7 +7,7 @@ import subprocess
 
 import pytest
 
-from dev.moe_scaffold.protocol import Case,Plan,Prepare,Finish,plan_calls
+from dev.moe_scaffold.protocol import Case,Plan,Prepare,Finish,PreparePlanV2,plan_calls
 from dev.moe_scaffold.models import model_plan
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -23,6 +23,8 @@ def library(tmp_path_factory):
         fn=getattr(lib,'quactlize_ppu_moe_'+name+'_select_v1')
         fn.argtypes=[C.POINTER(typ),C.c_int32,C.POINTER(Plan)];fn.restype=C.c_int
         setattr(lib,name,fn)
+    lib.prepare_v2=lib.quactlize_ppu_moe_prepare_select_v2
+    lib.prepare_v2.argtypes=[C.POINTER(Prepare),C.POINTER(PreparePlanV2)];lib.prepare_v2.restype=C.c_int
     return lib
 
 
@@ -51,7 +53,7 @@ def test_model_query_inventory_uses_host_keys_not_route_names(library):
         else:assert plan.stages==1 and plan.workspace_bytes==0
     assert len(keys)==216
     assert prepare==Counter({1:82,2:90})
-    assert counts==Counter({16:424,17:244,18:158,19:70})
+    assert counts==Counter({16:424,17:402,19:70})
 
 
 @pytest.mark.parametrize('m',[0,9,17,31,33,65,129,257,513,1025,2049,4097,5121,65537])
@@ -112,3 +114,78 @@ def test_query_is_dynamic_binding_independent_and_rejects_bad_abi(library):
     p.config.algorithm=0;assert library.prepare(C.byref(p),0,C.byref(out))==20
     assert library.finish(None,0,C.byref(out))==20
     assert library.finish(C.byref(f),0,None)==20
+
+
+def query_v2(lib,call):
+    result=PreparePlanV2()
+    assert lib.prepare_v2(C.byref(call),C.byref(result))==0
+    assert (result.version,result.size,C.sizeof(result))==(2,48,48)
+    return result
+
+
+@pytest.mark.parametrize('columns',[2048,3072])
+@pytest.mark.parametrize('m',list(range(1,10))+[16,32,64,128,256,512,1024,2048,4096,5120])
+def test_combined_prepare_uses_measured_route_and_helper(library,columns,m):
+    p,_=plan_calls(Case(m,columns=columns,padding=0))
+    old=query(library,p)
+    p.config.algorithm=p.config.tile_rows=0
+    plan=query_v2(library,p)
+    scalar=m<=9 or m in (16,32)
+    if scalar:
+        assert plan.config.algorithm==3
+        assert (plan.helper.implementation,plan.helper.stages,plan.helper.workspace_bytes)==(3,3,0)
+    else:
+        assert (plan.config.algorithm,plan.config.tile_rows)==(2,512)
+        assert bytes(plan.helper)==bytes(old)
+    # The plan is immutable and does not capture live pointer or stream values.
+    p.input=0x1234;p.route.ids=0x5678;p.output=0x9000;p.route.stream=0x1111
+    assert bytes(query_v2(library,p))==bytes(plan)
+
+
+@pytest.mark.parametrize('m',[0,10,15,17,31,33,65,129,257,513,1025,2049,4097,5121,65537])
+def test_combined_prepare_unknown_m_keeps_general_path(library,m):
+    p,_=plan_calls(Case(m,columns=2048,padding=0))
+    old=query(library,p);p.config.algorithm=p.config.tile_rows=0
+    plan=query_v2(library,p)
+    assert (plan.config.algorithm,plan.config.tile_rows)==(2,512)
+    assert bytes(plan.helper)==bytes(old)
+
+
+@pytest.mark.parametrize('change',[dict(columns=4096),dict(dtype=1),dict(padding=3),dict(experts=128),dict(topk=6)])
+def test_combined_prepare_scope_and_explicit_overrides(library,change):
+    p,_=plan_calls(replace(Case(8,columns=2048,padding=0),**change))
+    old=query(library,p);p.config.algorithm=p.config.tile_rows=0
+    plan=query_v2(library,p)
+    assert (plan.config.algorithm,plan.config.tile_rows)==(2,512)
+    assert bytes(plan.helper)==bytes(old)
+    for algorithm,tile in ((1,512),(2,256),(2,512),(2,1024),(3,512)):
+        p.config.algorithm,p.config.tile_rows=algorithm,tile
+        explicit=query_v2(library,p)
+        assert bytes(explicit.config)==bytes(p.config)
+        assert bytes(explicit.helper)==bytes(query(library,p))
+
+
+def test_combined_prepare_invalid_call_is_not_masked(library):
+    p,_=plan_calls(Case(8,columns=2048,padding=0));out=PreparePlanV2()
+    p.config.algorithm=0  # AUTO tile must also be zero, not silently ignored.
+    assert library.prepare_v2(C.byref(p),C.byref(out))==20
+    p.config.tile_rows=0;p.config.version=0
+    assert library.prepare_v2(C.byref(p),C.byref(out))==20
+    p.config.version=1;p.route.tokens=-1
+    assert library.prepare_v2(C.byref(p),C.byref(out))==20
+    p.route.tokens=2**31-1
+    assert library.prepare_v2(C.byref(p),C.byref(out))==26
+    assert library.prepare_v2(None,C.byref(out))==20
+    assert library.prepare_v2(C.byref(p),None)==20
+
+
+@pytest.mark.parametrize('n',[2048,3072])
+@pytest.mark.parametrize('m',[1,4,5,8,16,32,128,512,1024,2048,4096,5120])
+@pytest.mark.parametrize('splits',[1,2,4,8])
+def test_simple_finish_keeps_material_partial_exceptions(library,n,m,splits):
+    _,f=plan_calls(Case(m,output=n,padding=0,down_splits=splits))
+    separate=(n==2048 and (splits==8 and m>=1024 or splits==4 and m==4096) or
+              n==3072 and (splits==8 and m>=512 or splits==4 and m>=1024))
+    expected=17 if m*n<=32768 else 19 if separate else 16
+    assert query(library,f).implementation==expected
+    assert query(library,f,18).implementation==18  # explicit SLOTS8 remains ABI-compatible

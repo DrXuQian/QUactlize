@@ -74,13 +74,15 @@ def test_ballot_maps(m, k):
                 np.testing.assert_array_equal(actual,want)
 
 
-def test_ballot_boundary_and_production_isolation():
+def test_ballot_boundary_and_explicit_scalar_promotion():
     for case in (Case(0),Case(65),Case(513,1,1,1)):
         with pytest.raises(ValueError):register_model(ids_for(case,0),case,ballot=True)
     src=(ROOT/'quactlize/routing/route.cu').read_text()
     assert src.index('qzr_test_ballot_v1')>src.index('#ifdef QZR_TESTING')
     assert 'warp_ballot' not in src[:src.index('#ifdef QZR_TESTING')]
-    assert 'warp_scalar' not in src[:src.index('#ifdef QZR_TESTING')]
+    assert 'warp_scalar' in src[:src.index('#ifdef QZR_TESTING')]
+    assert 'else if(l.algorithm==QZR_SCALAR)' in src
+    assert 'rows<=1024?QZR_WARP:QZR_TILED' in (ROOT/'quactlize/routing/layout.hpp').read_text()
 
 
 def trace_fixture():

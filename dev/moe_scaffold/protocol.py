@@ -42,6 +42,10 @@ class Plan(C.Structure):
                 ('implementation', C.c_int32), ('stages', C.c_int32), ('workspace_bytes', C.c_uint64)]
 
 
+class PreparePlanV2(C.Structure):
+    _fields_ = [('version', C.c_uint32), ('size', C.c_uint32), ('config', Config), ('helper', Plan)]
+
+
 @dataclass(frozen=True)
 class Case:
     tokens: int
