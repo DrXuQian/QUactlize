@@ -8,6 +8,7 @@
 #include "../execution/simt_validation.hpp"
 #include "../execution/simt_token_cta_scope.hpp"
 #include "../include/ppu_device.hpp"
+#include "../runtime/library.hpp"
 #include <hggc_runtime_api.h>
 #include <dlfcn.h>
 #include <unistd.h>
@@ -26,44 +27,18 @@ extern "C" int quactlize_dense_convert_f16(int,void const*,void*,int,int,int64_t
 namespace quactlize::dense {
 namespace fs=std::filesystem;
 thread_local std::string error;
-void require(bool condition,char const* message) {
-    if (!condition) throw std::runtime_error(message && *message ? message : "dense runtime failure");
-}
-void dispatch_check(int rc) { require(rc==QKS_OK,quactlize_kpack_dispatch_error_v1()); }
+using library::require;
+using library::dispatch_check;
+using library::environment;
+using library::python_executable;
 void prefill_check(int rc) { require(rc==QKG_OK,quactlize_kpack_prefill_error_v1()); }
 void dense_full_check(int rc) { require(rc==QKG_OK,quactlize_kpack_dense_full_error_v1()); }
 void device_check(int expected) {
     int current=-1;
     require(hggcGetDevice(&current)==hggcSuccess && current==expected,"dense context/current device mismatch");
 }
-std::string environment(char const* name,std::string fallback) {
-    auto value=std::getenv(name);return value && *value ? value : std::move(fallback);
-}
 fs::path runtime_directory() {
-    Dl_info image{};
-    require(dladdr(reinterpret_cast<void*>(&quactlize_ppu_dense_create_v1),&image) && image.dli_fname,
-        "cannot locate libncp_quactlize.so");
-    return fs::canonical(fs::path(image.dli_fname)).parent_path()/"quactlize-runtime";
-}
-std::string python_executable() {
-    auto requested=environment("QUACTLIZE_PPU_PYTHON","");
-    if (!requested.empty()) {
-        require(fs::path(requested).is_absolute() && access(requested.c_str(),X_OK)==0,
-            "QUACTLIZE_PPU_PYTHON must name an executable absolute path");
-        return fs::canonical(requested).string();
-    }
-    auto path=environment("PATH","/usr/bin:/bin");size_t begin=0;
-    for (;;) {
-        auto end=path.find(':',begin);auto dir=path.substr(begin,end-begin);
-        if (!dir.empty()) {
-            auto candidate=fs::path(dir)/"python3";
-            if (fs::is_regular_file(candidate) && access(candidate.c_str(),X_OK)==0)
-                return fs::canonical(candidate).string();
-        }
-        if (end==std::string::npos) break;
-        begin=end+1;
-    }
-    throw std::runtime_error("python3 not found for selected-parent JIT");
+    return library::runtime_directory(reinterpret_cast<void*>(&quactlize_ppu_dense_create_v1));
 }
 
 struct Context;
@@ -123,12 +98,7 @@ struct Context {
     // pure SIMT plan need neither Python nor a writable compilation cache.
     void enable_jit() {
         if (jit) return;
-        auto cache=environment("QUACTLIZE_PPU_CACHE_DIR",environment("XDG_CACHE_HOME",
-            environment("HOME","/tmp")+"/.cache")+"/quactlize/ppu");
-        auto python=python_executable();auto helper=(root/"jit/tools/kpack_jit.py").string();
-        require(fs::path(cache).is_absolute(),"QUACTLIZE_PPU_CACHE_DIR must be absolute");
-        qks_jit_options_v1 options{1,sizeof(options),python.c_str(),helper.c_str(),sdk.c_str(),cache.c_str()};
-        dispatch_check(quactlize_kpack_dispatch_enable_jit_v1(dispatcher,&options));jit=true;
+        library::enable_jit(dispatcher,root,sdk);jit=true;
     }
 };
 

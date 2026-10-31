@@ -1,8 +1,4 @@
-"""MoE accuracy using the private closure shipped with the public package.
-
-These low-level interfaces remain separate from the public dense caller API.
-No llama checkout is needed. Recipes are bounded CI witnesses, not a sweep.
-"""
+"""Complete public MoE accuracy plus low-level witnesses. No llama or timers."""
 import ctypes as C
 import os
 from pathlib import Path
@@ -16,6 +12,58 @@ from quactlize.execution.native import Arrangement, Call, SimtCallV2, SimtConfig
 from quactlize.runtime.native import checked
 from ci.support.graph import Replay
 from .support import Arena, DECODE_M, Public, QTYPES, check_output, packed
+
+
+@pytest.mark.parametrize('q',QTYPES)
+@pytest.mark.parametrize('channels',[1,2])
+def test_public_indexed_projection(package,sdk,q,channels):
+    from ci.support.moe import Params,Info,Public as MoE
+    from ci.support.fixture import compare
+    public=Public(package);api=MoE(public.lib);context=C.c_void_p()
+    api.check(api.create(0,C.byref(context)))
+    try:
+        with Arena(sdk) as arena:
+            arr,sizes,weights_ptr,weights=packed(arena,public,q,experts=4)
+            n,k,topk=256,512,2
+            for m in (*DECODE_M,9,16,128,5120):
+                params=Params(1,C.sizeof(Params),q,n,k,4,m,topk,channels,0,k,k*channels,topk,n,arr,sizes)
+                assert api.supported(C.byref(params))==1
+                handle=C.c_void_p();info=Info(1,C.sizeof(Info))
+                api.check(api.prepare(context,C.byref(params),*weights_ptr,C.byref(handle),C.byref(info)))
+                assert info.compute_type==1 and info.config and info.route in (0,1,2)
+                lanes=[];graphs=[]
+                try:
+                    for lane in range(2):
+                        lanes.append((arena.stream(),arena.buffer(m*channels*k*4),arena.buffer(m*topk*4),
+                                      arena.buffer(m*topk*n*4),arena.buffer(info.workspace_bytes)))
+                    for repeat in range(3):
+                        expected=[]
+                        for lane,(stream,a,ids,out,scratch) in enumerate(lanes):
+                            js=(np.arange(m)[:,None]*31+np.arange(channels)[None,:]*17+repeat*13)%k
+                            amplitude=262144.0 if repeat==2 else (-1.0 if lane else 1.0)
+                            values=np.zeros((m,channels,k),'f4')
+                            values[np.arange(m)[:,None],np.arange(channels)[None,:],js]=amplitude
+                            routes=((np.arange(m)[:,None]+np.arange(topk)[None,:]+repeat+lane)%4).astype('i4')
+                            cols=js[:,np.arange(topk)%channels]
+                            want=amplitude*weights[routes[:,:,None],np.arange(n),cols[:,:,None]].astype('f8')
+                            expected.append(want)
+                            a.write(values);ids.write(routes);out.poison()
+                        arena.sync()
+                        for lane,(stream,a,ids,out,scratch) in enumerate(lanes):
+                            def run(a=a,ids=ids,out=out,scratch=scratch,stream=stream):
+                                return api.run(handle,a.ptr,ids.ptr,out.ptr,scratch.ptr,scratch.size,stream)
+                            if repeat==1:graphs.append(Replay(sdk,stream,run,1))
+                            api.check(graphs[lane]() if graphs else run())
+                        arena.sync()
+                        for lane,(_,a,ids,out,scratch) in enumerate(lanes):
+                            got=np.frombuffer(out.bytes(),'f4').reshape(m*topk,n)
+                            want=expected[lane].reshape(m*topk,n)
+                            compare(got,want,np.abs(want))
+                            for b in (a,ids,scratch):b.guard()
+                finally:
+                    arena.sync()
+                    for graph in graphs:graph.close()
+    finally:api.destroy(context)
 
 
 @pytest.mark.parametrize("q", QTYPES)

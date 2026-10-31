@@ -118,6 +118,7 @@ def test_exported_headers_need_no_private_source_include(tmp_path):
     import shutil
     for source, target in (
             ('quactlize/dense/api.h', 'quactlize/dense/api.h'),
+            ('quactlize/moe/matmul.h', 'quactlize/moe/matmul.h'),
             ('quactlize/packing/api.h', 'quactlize/packing/api.h'),
             ('quactlize/include/quactlize_ppu_config.h', 'quactlize_ppu_config.h')):
         output = tmp_path / 'include' / target
@@ -125,7 +126,7 @@ def test_exported_headers_need_no_private_source_include(tmp_path):
         shutil.copy2(ROOT / source, output)
     for compiler, language in [('gcc', 'c'), ('g++', 'c++')]:
         subprocess.run([compiler, '-x', language, '-fsyntax-only', '-I' + str(tmp_path / 'include'), '-'],
-            cwd=tmp_path, input='#include "quactlize/dense/api.h"\n#include "quactlize/packing/api.h"\n',
+            cwd=tmp_path, input='#include "quactlize/dense/api.h"\n#include "quactlize/packing/api.h"\n#include "quactlize/moe/matmul.h"\n',
             text=True, check=True)
 
 

@@ -17,6 +17,16 @@ def evidence():
     return json.loads(EVIDENCE.read_text())
 
 
+def current_recipe(p):
+    from quactlize.dispatch.moe_prefill_policy import load
+    w=p['workload']
+    if w['operation']=='indexed' and w['experts']==256 and w['topk']==8 and w['compute']=='bf16':
+        key=[w['qtype'],w['n'],w['k'],w['channels'],w['m']]
+        for r in load()['rows']:
+            if r['key']==key:return r['recipe']
+    return p['recipe']
+
+
 def test_all_decisions_replay_unchanged_gate_and_keep_pending():
     data=evidence();before=copy.deepcopy(data)
     validate(data)
@@ -48,12 +58,12 @@ def test_evidence_mutation_fails_closed(fault):
 def test_live_cpp_matches_every_measured_recipe(tmp_path):
     live=plan_prefill(tmp_path)
     rows={tuple(r['request']):r for r in live['requests']}
-    assert len(rows)==430
+    assert len(rows)==460
     for p in evidence()['points']:
         row=rows[request(Workload(**p['workload']))]
         selected=recipe_of(row)
-        assert same_recipe(selected,Recipe.from_dict(p['recipe']))
-        assert selected==Recipe.from_dict(p['recipe'])  # symbols too, not just geometry
+        assert same_recipe(selected,Recipe.from_dict(current_recipe(p)))
+        assert selected==Recipe.from_dict(current_recipe(p))  # symbols too, not just geometry
     groups=prewarm_groups(live)
     assert {(c,d) for c,d,_ in groups}=={('f16',False),('bf16',False)}
 
@@ -76,7 +86,7 @@ def check_materialized(text):
     assert len(tickets)==len({tuple(r['request']) for r in tickets})==257
     assert len(dense)==len({tuple(r['request']) for r in dense})==280
     for r in tickets:
-        item=expected[tuple(r['request'])];p=dict(item['recipe']['parameters']);w=item['workload']
+        item=expected[tuple(r['request'])];p=dict(current_recipe(item)['parameters']);w=item['workload']
         assert r['parent']==p['symbol'] and r['split']==p['split']
         assert r['compute']==int(w['compute']=='bf16') and r['endpoint']==0
         assert r['grid']==expected_grid(p,w) and r['algorithm']==int(p['grid_mode']>=2)
@@ -105,17 +115,18 @@ def test_materializer_uses_measured_resources_not_a_mock_grid(tmp_path):
     assert len(rows)==430
     for p,row in zip(data['points'],rows):
         assert row['request']==list(request(Workload(**p['workload'])))
-        recipe=p['recipe'];params=dict(recipe['parameters'])
+        recipe=current_recipe(p);params=dict(recipe['parameters'])
         assert row['route']=={'fq':0,'sf':1,'full':2}[recipe['route']]
         assert row['dequant']==params['dequant_config']
         if recipe['kind']=='tc':
             assert row['parent']==params['symbol']
-            assert all(row[k]==p['selected_launch'][k] for k in ('split','grid','algorithm'))
+            assert row['split']==params['split'] and row['algorithm']==int(params['grid_mode']>=2)
+            assert row['grid']==expected_grid(params,p['workload'],p['selected_resource']['occupancy'])
             assert row['workspace']==p['selected_resource']['workspace_bytes']
             assert row['shared']==p['selected_resource']['shared_bytes']
         else:assert not row['parent']
     (tmp_path/'tickets.json').write_text(json.dumps(rows,indent=2)+'\n')
-    print('REFRESH_ACTUAL_TICKETS PASS points=430 tc=257 full=173 resources=UPLOADED_NOT_LIVE')
+    print('REFRESH_ACTUAL_TICKETS PASS points=430 tc=257 full=173 resources=HOST_TEST_INPUTS_NOT_DEVICE_EVIDENCE')
 
 
 @pytest.mark.parametrize('legacy',[False,True])

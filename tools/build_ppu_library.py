@@ -25,6 +25,7 @@ from tools.build_kpack_dispatch import catalog
 from quactlize.dispatch.planning import plan_smallm, validate_inventory
 from quactlize.dispatch.prefill_policy import check_receipt, receipt_fields
 from quactlize.dispatch.dense_prefill import EVIDENCE as DENSE_PREFILL_EVIDENCE, HEADER as DENSE_PREFILL_HEADER, render as dense_prefill_header
+from quactlize.dispatch.moe_prefill_policy import TABLE as MOE_PREFILL_EVIDENCE, HEADER as MOE_PREFILL_HEADER, header as moe_prefill_header
 
 PUBLIC_LIBRARY = 'libncp_quactlize.so'
 PUBLIC_EXPORTS = (
@@ -35,6 +36,8 @@ PUBLIC_EXPORTS = (
     *('quactlize_ppu_dense_' + suffix for suffix in (
         'supported_v1', 'create_v1', 'create_with_options_v1', 'prepare_v1', 'prepare_candidate_v1',
         'run_v1', 'destroy_v1', 'error_v1')),
+    *('quactlize_ppu_moe_matmul_' + suffix for suffix in (
+        'supported_v1', 'create_v1', 'prepare_v1', 'run_v1', 'destroy_v1', 'error_v1')),
 )
 JIT_PYTHON = (
     'quactlize/__init__.py', 'quactlize/runtime/__init__.py',
@@ -150,6 +153,15 @@ def verify(output):
         import hashlib
         if hashlib.sha256(dense_prefill_header(data).encode()).hexdigest()!=receipt['header_sha256']:
             raise ValueError('dense prefill catalog/generated selector differs')
+    if 'moe_prefill' in manifest:
+        receipt=manifest['moe_prefill'];path=receipt.get('path')
+        if (path!='quactlize-runtime/moe-prefill.json' or path not in manifest['payloads'] or
+                manifest['payloads'][path]!=manifest['source_hashes'].get('policies/kpack_moe_prefill_exact_v1.json') or
+                receipt['header_sha256']!=manifest['source_hashes'].get('policies/kpack_moe_prefill_exact_v1.hpp')):
+            raise ValueError('MoE prefill evidence binding differs')
+        import hashlib
+        if hashlib.sha256(moe_prefill_header(json.loads((output/path).read_text())).encode()).hexdigest()!=receipt['header_sha256']:
+            raise ValueError('MoE prefill catalog/generated selector differs')
     return manifest
 
 
@@ -172,7 +184,7 @@ def build(sdk, output, jobs):
     runtime = output / 'quactlize-runtime'
     runtime.mkdir()
     start = time.monotonic()
-    public_sources = {p: sha(p) for directory in ('quactlize/dense', 'quactlize/dispatch')
+    public_sources = {p: sha(p) for directory in ('quactlize/dense', 'quactlize/dispatch', 'quactlize/moe', 'quactlize/routing')
                       for p in (ROOT / directory).iterdir() if p.is_file()}
     public_sources.update({p: sha(p) for p in (ROOT/'policies').iterdir() if p.suffix in ('.hpp', '.json')})
     device_policy=ROOT/'quactlize/include/ppu_device.hpp'
@@ -181,6 +193,8 @@ def build(sdk, output, jobs):
     public_sources[helper_policy]=sha(helper_policy)
     internal=ROOT/'quactlize/prefill/dense_internal.hpp'
     public_sources[internal]=sha(internal)
+    for name in ('quactlize/runtime/library.hpp','quactlize/prefill/scatter.hpp'):
+        public_sources[ROOT/name]=sha(ROOT/name)
     from tools.generate_dense_full_helpers import EVIDENCE as FULL_HELPERS, HEADER as FULL_HELPERS_HEADER, render as full_helpers_header
     if full_helpers_header(json.loads(FULL_HELPERS.read_text()))!=FULL_HELPERS_HEADER.read_text():
         raise ValueError('stale full-only helper table; regenerate before building')
@@ -197,6 +211,9 @@ def build(sdk, output, jobs):
     if dense_prefill_header(dense_policy)!=DENSE_PREFILL_HEADER.read_text():
         raise ValueError('stale whole-call dense prefill selector; regenerate before building')
     shutil.copy2(DENSE_PREFILL_EVIDENCE,runtime/'dense-prefill.json')
+    if moe_prefill_header(json.loads(MOE_PREFILL_EVIDENCE.read_text()))!=MOE_PREFILL_HEADER.read_text():
+        raise ValueError('stale MoE prefill table; regenerate before building')
+    shutil.copy2(MOE_PREFILL_EVIDENCE,runtime/'moe-prefill.json')
     final_selection = plan_smallm(work)
     (runtime/'final-selection.json').write_text(json.dumps(final_selection, indent=2)+'\n')
     # The existing device builders retain the exact production flags and
@@ -246,8 +263,10 @@ def build(sdk, output, jobs):
             '-c', str(ROOT / source), '-o', str(obj)])
         return obj
 
-    with ThreadPoolExecutor(max_workers=min(jobs, 2)) as pool:
-        objects = list(pool.map(compile_one, ('quactlize/dense/runtime.cpp', 'quactlize/dense/copy.cu')))
+    with ThreadPoolExecutor(max_workers=min(jobs, 6)) as pool:
+        objects = list(pool.map(compile_one, ('quactlize/dense/runtime.cpp', 'quactlize/dense/copy.cu',
+            'quactlize/moe/matmul.cpp','quactlize/moe/selection.cpp',
+            'quactlize/moe/scaffold.cu','quactlize/routing/route.cu')))
     objects += [work / 'packing' / (name + '.o') for name in ('sizes.cpp', 'ppu_pack.cu')]
     run('public', ['g++', '-shared', '-pthread', '-Wl,-Bsymbolic', '-Wl,-z,defs',
         '-Wl,-soname,' + PUBLIC_LIBRARY, '-Wl,-rpath,$ORIGIN/quactlize-runtime',
@@ -257,6 +276,7 @@ def build(sdk, output, jobs):
     headers = {
         'quactlize/packing/api.h': 'quactlize/packing/api.h',
         'quactlize/dense/api.h': 'quactlize/dense/api.h',
+        'quactlize/moe/matmul.h': 'quactlize/moe/matmul.h',
         'quactlize/include/quactlize_ppu_config.h': 'quactlize_ppu_config.h',
     }
     for source, target in headers.items():
@@ -278,6 +298,8 @@ def build(sdk, output, jobs):
             header_sha256=sha(PREFILL_HEADER), **receipt_fields()),
         dense_prefill=dict(path='quactlize-runtime/dense-prefill.json',header_sha256=sha(DENSE_PREFILL_HEADER),
             scope='ZW810_DENSE_F16_COMPLETE_GPU_CALL; EXACT_THEN_PREDICTED_BUCKET; MODEL_AB_PENDING'),
+        moe_prefill=dict(path='quactlize-runtime/moe-prefill.json',header_sha256=sha(MOE_PREFILL_HEADER),
+            scope='ORDINARY_BF16_PROJECTION; SAME_FAMILY_M_BUCKET; PUBLIC_COMPOSITION_DEVICE_GATE_PENDING'),
         default_dense_compute='F16_POC', device_admission='PENDING',
         dense_helpers=dict(policy_sha256=sha(helper_policy),runtime_receipt='quactlize-runtime/prefill-runtime.json',
                            full_table_sha256=sha(FULL_HELPERS_HEADER),full_evidence_sha256=sha(FULL_HELPERS),

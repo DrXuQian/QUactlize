@@ -20,7 +20,8 @@ enum { QKS_RECENT = 1, QKS_HISTORICAL = 2, QKS_PREDICTED = 3,
        QKS_MATCHED_BUCKET = 13, QKS_MATCHED_ROUTER = 14,
        QKS_Q8_VECTOR_MEASURED = 15, QKS_DENSE_FALLBACK = 16, QKS_LEGACY_DENSE = 17,
        QKS_DECODE_COMPONENT_MEASURED = 18, QKS_PREFILL_COMPONENT_MEASURED = 19,
-       QKS_DENSE_PREFILL_EXACT = 20, QKS_DENSE_PREFILL_BUCKET = 21 };
+       QKS_DENSE_PREFILL_EXACT = 20, QKS_DENSE_PREFILL_BUCKET = 21,
+       QKS_MOE_PREFILL_CONFIRMED = 22, QKS_MOE_PREFILL_BUCKET = 23 };
 
 // Additive Q8_0/W8A16 intake capability, without a device/context or JIT.
 // Returns 1 for supported weight geometry and SF route (1=dense,3=grouped).
@@ -113,6 +114,12 @@ int quactlize_kpack_dispatch_prefill_compute_v1(qks_request_v1 const*, uint32_t 
 // BF16 weights/activations and FP32 accumulation. These sums are not model TPOT.
 // MISS: out of domain. BINDING: known winner's helper/provider is unavailable;
 // never silently replace a covered winner with the previous selector.
+// Policy22 overrides the ordinary Qwen MoE Q4 gate/up and Q5 down keys at
+// tokens16..5120, including channels8. It requires public prepare v2 and
+// per-call BF16 SF expansion with base.dequant_config. No fused-gate/up or
+// weighted-finish timing is claimed. Its costs are unreported (0), since a
+// router-independent key has no single latency; per-router evidence is kept
+// in the package. Unmeasured keys retain the prior confirmed policy.
 typedef struct {
     uint32_t version,size;
     qks_prefill_choice_v1 base;
@@ -192,6 +199,10 @@ int quactlize_kpack_dispatch_query_candidate_v1(void* runtime,qks_request_v1 con
 // its symbol. Dense metadata remains FP16 (including BF16-compute parents).
 int quactlize_kpack_dispatch_dense_contract_v1(void* runtime,qks_choice_v1 const*,
     qks_request_v1*,int32_t* compute_type,int32_t* metadata_type);
+// Same ticket inspection for a grouped plan; K-quant SF metadata follows its
+// compute type, while Q8 retains original half scales. No second selection.
+int quactlize_kpack_dispatch_grouped_contract_v1(void* runtime,qks_choice_v1 const*,
+    qks_request_v1*,int32_t* compute_type,int32_t* metadata_type);
 int quactlize_kpack_dispatch_prepare_dense_io_v1(void* runtime,qks_choice_v1 const*,
                                                qkd_dense_call_v1 const*,void** handle);
 // compute_type is QK_COMPUTE_F16/BF16. endpoint_type is 0 for grouped native
@@ -222,6 +233,14 @@ int quactlize_kpack_dispatch_run_v1(void* handle, void* stream);
 // parent, never silently substitute another tactic. Use destroy_v1 to release.
 int quactlize_kpack_dispatch_prepare_dynamic_v1(void* runtime,qks_choice_v1 const*,void**);
 int quactlize_kpack_dispatch_run_dynamic_v1(void* handle,qk_call_v1 const*);
+// General grouped counterpart, preserving the EXACT selected TC ticket and
+// BF16/F16 metadata contract. Unlike the old indexed chain it has no M<=8 cap.
+// Missing module exports are BINDING, never a changed config. Output describes
+// either the completed typed result or producer-only F32 partial planes.
+int quactlize_kpack_dispatch_prepare_grouped_dynamic_v1(void* runtime,qks_choice_v1 const*,void**);
+int quactlize_kpack_dispatch_run_grouped_dynamic_v1(void* handle,qk_compute_device_call_v4 const*,int32_t mode);
+int quactlize_kpack_dispatch_grouped_output_v1(void* handle,qk_compute_device_call_v4 const*,
+    int32_t mode,qk_grouped_result_v1*);
 // Optional, once-per-handle adapter binding, outside capture. A miss leaves
 // the handle unchanged and requires the unfused caller's preparation path.
 int quactlize_kpack_dispatch_bind_llama_indexed_v1(void*,qk_llama_indexed_v1 const*);

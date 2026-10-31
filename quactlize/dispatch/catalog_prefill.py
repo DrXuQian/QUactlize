@@ -27,7 +27,7 @@ def request(w):
 
 
 def recipe_of(row):
-    require(row['status'] == 0 and row['policy'] == 19, 'current C++ prefill selector missed')
+    require(row['status'] == 0 and row['policy'] in (19,22,23), 'current C++ prefill selector missed')
     if row['kind'] == 3 and row['route'] == 2:
         return Recipe.make('full', 'full', dequant_config=row['dequant_config'], provider='bf16-default')
     require(row['kind'] == 0 and row['route'] in (0, 1), 'unexpected current prefill family')

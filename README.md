@@ -32,8 +32,13 @@ See [CI integration](docs/CI.md) for prerequisites and result handling.
 Install the complete package: `libncp_quactlize.so`, `include/`,
 `quactlize-runtime/` and `manifest.json`. ncp_flash_lib only builds/installs it;
 packing, config selection and execution remain in Quactlize. The public ABI is
-declared in [packing/api.h](quactlize/packing/api.h) and
-[dense/api.h](quactlize/dense/api.h).
+declared in [packing/api.h](quactlize/packing/api.h),
+[dense/api.h](quactlize/dense/api.h) and [moe/matmul.h](quactlize/moe/matmul.h).
+The independent MoE projection takes F32 activations/output and GPU IDs, with
+BF16 operands and FP32 accumulation. The library owns routing, preparation,
+selection and reduction; the caller only supplies per-stream scratch.
+This is not FFN fusion. New complete-call device/integration gates remain
+required even when the selected kernel/helper recipes were measured earlier.
 
 ## Source layout
 

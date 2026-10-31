@@ -22,6 +22,7 @@ HOST = (
     "test_bf16_metadata.py", "test_bf16_fastpath.py", "test_kpack_dequant.py",
     "test_kpack_prefill_runtime.py", "test_simt_scale_fields.py",
     "test_decode_selection.py", "test_moe_decode_policy.py",
+    "test_grouped_dynamic.py", "test_moe_matmul.py",
     "test_prefill_refresh_policy.py", "test_dense_prefill_policy.py",
     "test_dense_helper_admission.py",
     "test_prefill_dense.py", "test_dense_full_helpers.py",

@@ -19,12 +19,13 @@ int main() {
             q==12?UINT64_C(0x51344b5034540001):UINT64_C(0x514b504b54000001)};
         qks_prefill_choice_v2 pure{};
         assert(!quactlize_kpack_dispatch_prefill_v2(&req,7,compute,ch,&pure));
-        auto knot=prefill::knot(req,compute,ch);assert(knot);
+        auto moe=moe_prefill::select(req,compute,ch);
+        auto knot=prefill::knot(req,compute,ch);assert(moe || knot);
         Runtime runtime;runtime.device=0;runtime.cu=72;kImages.clear();
         qks_choice_v1 out{};
         if(pure.base.route!=2) {
-            assert(knot->config>=0);
-            auto const& c=prefill::data::kConfigs[knot->config];req.route=c.route;
+            assert(moe || knot->config>=0);
+            auto const& c=moe?moe->config:prefill::data::kConfigs[knot->config];req.route=c.route;
             Image image{c.symbol,std::string(64,'a'),std::string(64,'b'),c.qtype,c.route,
                 c.tm,c.tn,c.tk,c.wm,c.wn,c.stages,c.ap,c.dn,{},false,compute};
             auto mod=std::make_shared<Module>();mod->compute_type=compute;
@@ -37,7 +38,7 @@ int main() {
             kImages={image};runtime.modules[image.key]=mod;
             observed={1,sizeof(observed),workspace,shared,occupancy,0,0};
             assert(!quactlize_kpack_dispatch_query_prefill_v1(&runtime,&req,compute,ch,&out));
-            assert(out.ticket && out.policy==19);
+            assert(out.ticket && out.policy==(moe?QKS_MOE_PREFILL_CONFIRMED:19));
             auto const& p=runtime.plans.at(out.ticket-1);
             assert(p.recipe.split==out.split && p.recipe.grid==out.grid && p.compute_type==compute);
             auto ticket=out.ticket;

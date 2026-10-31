@@ -136,6 +136,33 @@ qk_compute_identity_v4 const* quactlize_kpack_compute_identity_v4(void);
 int quactlize_kpack_grouped_query_v4(qk_compute_device_call_v4 const*,qk_recipe_v1 const*,qk_resources_v1*);
 int quactlize_kpack_grouped_prepare_v4(qk_compute_device_call_v4 const*,qk_recipe_v1 const*,void**);
 
+// Additive general grouped recipe, not the small-M indexed/chain endpoint.
+// Prepare takes shape only (all data/workspace pointers NULL), outside capture.
+// Each run supplies current buffers/offsets/stream with unchanged geometry and
+// precision. The handle stores no data pointers and is shareable across streams
+// with disjoint live scratch/output. Caller keeps buffers through graph use.
+// COMPLETE retains v4's ordered reducer. PRODUCER leaves F32 partial planes
+// for a fused transition/finish; split1 is the same typed final in both modes.
+// No allocation, resource query, JIT, D2H or synchronization occurs in run.
+enum { QK_GROUPED_COMPLETE=0, QK_GROUPED_PRODUCER=1 };
+enum { QK_RESULT_F16=0, QK_RESULT_BF16=1, QK_RESULT_F32=2 };
+typedef struct {
+  uint32_t version, size;
+  void const* data;
+  int32_t dtype, partial_count, compute_type, reserved;
+  int64_t row_stride, partial_stride;
+} qk_grouped_result_v1;
+int quactlize_kpack_grouped_prepare_dynamic_v1(qk_compute_device_call_v4 const* shape,
+    qk_recipe_v1 const*,void** handle);
+int quactlize_kpack_grouped_run_dynamic_v1(void* handle,qk_compute_device_call_v4 const*,int32_t mode);
+// Host-only output description, also validates current bindings without launch.
+// partial_count>1 means ordered F32 planes, not a finalized projection. Apply
+// compute_type rounding AFTER reducing, before activation/weighting. No implied
+// SwiGLU here. Descriptions are in grouped row order. Destroy with destroy_v1;
+// run_v1 and old indexed/MoE binds reject these dynamic handles.
+int quactlize_kpack_grouped_output_dynamic_v1(void* handle,qk_compute_device_call_v4 const*,
+    int32_t mode,qk_grouped_result_v1*);
+
 #ifdef __cplusplus
 }
 #endif

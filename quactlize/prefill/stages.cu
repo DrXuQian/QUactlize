@@ -1,6 +1,7 @@
 #include <hggc_runtime.h>
 #include <hggc_bf16.h>
 #include "layout.hpp"
+#include "scatter.hpp"
 
 namespace quactlize::prefill {
 __global__ void gather_bf16(float const* a,__ppu_bfloat16* out,int const* ids,int k,int64_t stride,
@@ -75,4 +76,11 @@ extern "C" int qkp_stage_finish(qkp_call_v1 const* c,quactlize::prefill::Layout 
         reinterpret_cast<__ppu_bfloat16 const*>(base+l->out),c->output,c->dst_rows,c->weight.n,c->output_stride,
         c->m,reinterpret_cast<int*>(base+l->error));
     return hggcGetLastError()==hggcSuccess ? 0 : QKG_RUNTIME;
+}
+
+extern "C" int quactlize_prefill_scatter_bf16(void const* input,float* output,int32_t const* rows,
+    int m,int n,int64_t stride,int32_t* error,void* stream) {
+    quactlize::prefill::finish_bf16<<<m,256,0,static_cast<hggcStream_t>(stream)>>>(
+        static_cast<__ppu_bfloat16 const*>(input),output,rows,n,stride,m,error);
+    return hggcGetLastError()==hggcSuccess?0:QKG_RUNTIME;
 }
