@@ -169,7 +169,7 @@ class Prescreen:
     def select(self, w, *, mandatory=(), limit=8, optional=1, max_threads=1024, blind=False,
                per_stratum=1, factorized=True, k_weight=1.0, cross_format=False,
                reader_strata=False, stencil='none', prefill_breadth=True,
-               prefill_exact_tiles=False, portable_sf_delivery=False):
+               prefill_exact_tiles=False, portable_sf_delivery=False, decode_exact_tiles=False):
         if not 2 <= limit <= 32 or not 0 <= optional <= 8 or not 0 < max_threads <= 1024:
             raise ValueError('invalid pre-JIT candidate limits')
         if not 1 <= per_stratum <= 16:
@@ -265,7 +265,10 @@ class Prescreen:
                     # Preserve both width regimes instead of allowing two
                     # similar narrow-tile donors to hide the wide family.
                     column_band=int(p['tn']>64) if w.m<=8 else 0
+                    if w.m<=8 and decode_exact_tiles:
+                        row_band,column_band=p['tm'],p['tn']
                     extra=(row_band,column_band,bool(p.get('ap')),p.get('grid_mode',0)!=0)
+                    if w.m<=8 and decode_exact_tiles:extra+=(p['tk'],)
                 elif r.kind=='simt':extra=(p['variant'] if reader_strata else p['variant']>=4,)
                 elif r.kind=='q4':extra=(p['reader'],)
                 elif r.kind=='full':extra=(p['dequant_config']>=10,)

@@ -34,9 +34,15 @@ def production_entry(row):
         return prefix+'q4_decode::'+('kernel_bf16' if compute==1 else 'kernel')
     names={'common-packet-3d':'common_reader','register-reuse':'register_reuse',
            'register-reuse-fixed':'register_reuse_model','measured-constant-split':'measured_decode_kernel'}
-    if row['implementation']['producer']=='q8-vector':
-        return prefix+'simt::q8_vector::kernel'
-    return prefix+'simt::'+names[row['implementation']['producer']]
+    impl=row['implementation'];producer=impl['producer']
+    if producer=='token-cta':
+        return prefix+'simt::'+('q8_token_cta_reader' if row['request'][0]==8 else 'token_cta_reader')
+    if producer=='q8-address':return prefix+'simt::q8_address_0_'+str(impl['q8_body'])
+    if producer.startswith('q8-vector'):
+        suffix=('kernel_model' if producer=='q8-vector-fixed' else
+                'kernel_s1' if producer in ('q8-vector-s1-hoisted','q8-vector-s1-narrow') else 'kernel')
+        return prefix+'simt::q8_vector::'+suffix
+    return prefix+'simt::'+names[producer]
 
 
 def make_plan(originals,cohort=COHORT):

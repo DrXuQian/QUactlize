@@ -36,6 +36,11 @@ struct header_model {
     llama_hparams hparams{};
     llm_arch arch;
     std::map<std::string, ggml_tensor> weights;
+    // Compatibility with the caller's virtual-model guard. This carrier
+    // reads real GGUF headers, and registers every sibling before querying.
+    // loader stays null; these fields never substitute a model's weights.
+    const std::map<std::string, ggml_tensor> & tensors_by_name = weights;
+    std::vector<std::string> files;
     std::vector<float> splits;
     const float * tensor_split() const { return splits.data(); }
     const ggml_tensor * get_tensor(const char * name) const {

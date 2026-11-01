@@ -56,19 +56,42 @@ def parents(screen, catalog, w):
         best=min(map(rank,rows))
         for r in rows:
             if rank(r)==best:pool.setdefault(scheduled_key(r),r)
+    if w.qtype==8 and not pool:
+        # Q8 has no FQ/Full fallback. In a new expert topology, transfer the
+        # SF template from dense observations, never their timings. Narrow
+        # and throughput row tiles survive independently of token M.
+        from dev.strategy.space import prototype
+        portable=defaultdict(list)
+        for row in catalog.observations:
+            ow,r=row.workload,row.recipe
+            if (ow.qtype!=8 or r.kind!='tc' or r.route!='sf' or ow.fusion!=w.fusion or
+                    (ow.n,ow.k)==(w.n,w.k) or ow.input_stride!=ow.k or ow.output_stride!=ow.n):continue
+            r=prototype(r);p=dict(r.parameters)
+            if p['ap'] or rejection(r,w):continue
+            stratum=(p['tm']<=32,p['tn']<=64,p.get('grid_mode',0)>=2)
+            rank=(abs(math.log2(ow.m/w.m)),abs(math.log2(ow.n/w.n))+abs(math.log2(ow.k/w.k)),r.key)
+            portable[stratum].append((rank,r))
+        for rows in portable.values():
+            r=min(rows,key=lambda x:x[0])[1];pool.setdefault(scheduled_key(r),r)
     result=sorted(pool.values(),key=lambda r:r.key)
-    if len(result)>32 or {r.route for r in result if r.kind=='tc'}!={'fq','sf'}:
+    if len(result)>32 or {r.route for r in result if r.kind=='tc'}!=({'sf'} if w.qtype==8 else {'fq','sf'}):
         raise ValueError('blind MoE parent pool empty/unbounded; revise rules, not target injection')
     return result,dict(rule=RULE,parents=len(result),blind=True,champion_injection=False,
                       donor_strata=report['coverage_selected'],
                       dropped='OTHER_GEOMETRIES_DEFERRED_NOT_PROVEN_SLOWER')
 
 
-def from_audit(audit):
+def from_audit(audit, *, expanded_geometry=False):
     if audit['sha256']!=digest({k:v for k,v in audit.items() if k!='sha256'}):
         raise ValueError('large-M audit seal differs')
     catalog,_,_=load_catalog();screen=Prescreen(catalog)
-    generate=lru_cache(None)(lambda w:parents(screen,catalog,w))
+    def propose(w):
+        if expanded_geometry:
+            from dev.moe_confirm.refine_plan import parents as expanded, RULE as refined_rule
+            _,pool=expanded(w,catalog,screen)
+            return pool,dict(rule=refined_rule,parents=len(pool),blind=True,champion_injection=False)
+        return parents(screen,catalog,w)
+    generate=lru_cache(None)(propose)
     points=[];modules={}
     for original in audit['points']:
         w=Workload(**original['workload'])
@@ -116,9 +139,9 @@ def from_audit(audit):
         pending=['NATIVE_LARGE_M_AB','PUBLIC_RUNTIME_AND_MODEL_AB','FUSED_GATE_UP_SWIGLU']))
 
 
-def make_plan(output,inventory):
-    audit=audit_plan.make_plan(output,inventory)
-    return audit,from_audit(audit)
+def make_plan(output,inventory,*,source_points=None):
+    audit=audit_plan.make_plan(output,inventory,source_points=source_points)
+    return audit,from_audit(audit,expanded_geometry=source_points is not None)
 
 
 def query_requests(point):

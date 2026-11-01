@@ -112,7 +112,7 @@ def spawn(a,run,stage,deadline):
 def choose(a,plan,run,records):
     groups=defaultdict(list);points={};selections=[]
     finals=sealed(a.output/'finalists.json')
-    for p in plan['points']:groups[confirmation.key(p['workload'])].append(records[p['id']])
+    for p in plan['points']:groups[refine_plan.routing_key(p['workload'])].append(records[p['id']])
     for key,profiles in groups.items():
         chosen=confirmation.choose(profiles)
         bindings=[p['bindings'][chosen] for p in profiles]
@@ -125,7 +125,8 @@ def choose(a,plan,run,records):
             arm=next(r for r in original['arms'] if r['id']==chosen)
             r=bindings[0]['recipe'];config=bindings[0]['helper_config']
             points[p['point']]=dict(original,arms=[dict(arm,id='original',roles=['original'],recipe=r)],
-                sf_configs=[config] if r['route']=='sf' else [],full_configs=[config] if r['kind']=='full' else [],
+                sf_configs=[config] if r['route']=='sf' and config is not None else [],
+                full_configs=[config] if r['kind']=='full' else [],
                 selection_source='MEASURED_REFINEMENT_NOT_PRODUCTION')
     base.sealed(a.output/'selection.json',dict(run=run['sha256'],selections=selections,points=points,
         production_changed=False,scope='ONE_CONFIRMED_RECIPE_PER_HOST_KEY_NOT_PRODUCTION'))
@@ -136,8 +137,10 @@ def run(a,plan,run):
     from tools.run_moe_confirmation import checked_child
     deadline=time.monotonic()+a.budget_hours*3600
     # The two newly legal provider shapes fail early, before the TC sweep.
-    for n in sorted({p['workload']['n'] for p in plan['points']}):
-        p=next(p for p in plan['points'] if p['workload']['n']==n and p['workload']['router']=='spread')
+    provider_points=[p for p in plan['points'] if p['workload']['router']=='spread' and
+                     any(arm['recipe']['kind']=='full' for arm in p['arms'])]
+    for n in sorted({p['workload']['n'] for p in provider_points}):
+        p=next(p for p in provider_points if p['workload']['n']==n)
         worker=next(i for i,ids in enumerate(run['assignments']) if p['id'] in ids)
         where=folder(a,run,worker);where.mkdir(exist_ok=True)
         if completed(where/'full-gate'/(p['id']+'.json'),run):continue

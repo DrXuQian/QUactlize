@@ -177,14 +177,14 @@ def transition_fq_rules(w, recipes, compute_units):
     return sorted(result,key=lambda row:digest(row[0]))
 
 
-def make_plan(policy, helper_sha, output, *, ms=MS, compute_units=72):
+def make_plan(policy, helper_sha, output, *, ms=MS, compute_units=72, source_points=None):
     validate_policy(policy)
     if (not ms or len(set(ms))!=len(ms) or any(type(m)is not int or not
             (m in TRANSITION_MS or 128<=m<=8192) for m in ms)
             or type(compute_units)is not int or compute_units<=0):
         raise ValueError('distinct M16/32/64 or M128..8192 and positive device CU count required')
     families=sorted({(p['shape'][0],*p['shape'][2:]) for p in policy['points']})
-    points=[dict(id=w.key,workload=asdict(w),consumers=[],tensors=[])
+    points=copy.deepcopy(source_points) if source_points is not None else [dict(id=w.key,workload=asdict(w),consumers=[],tensors=[])
             for q,n,k in families for m in ms for w in [Workload(q,n,k,m)]]
     bind_original(points,output)
     for point in points:

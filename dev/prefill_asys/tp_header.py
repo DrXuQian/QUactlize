@@ -136,7 +136,7 @@ def runtime_tensors(tensors, params, *, indexed=False):
             matrix = role is not None and role[0].operation == 'MUL_MAT_ID'
         else:
             matrix = len(dims) == 2
-        t['target']=bool(name not in excluded and layer and name.endswith('.weight') and
+        t['target']=bool(name not in excluded and (layer or name=='output.weight') and name.endswith('.weight') and
                          matrix and t['qtype'] in QTYPES)
         result.append(t)
     return result,excluded

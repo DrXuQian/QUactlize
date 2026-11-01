@@ -24,10 +24,12 @@ def geometry(w):
     return replace(w, router='').key
 
 
-def make_plan(output, inventory):
+def make_plan(output, inventory, *, source_points=None):
     # Reuse actual GGUF/TP coverage and the real current public selector.
-    plan = models.make_plan(output, inventory)
-    table, references, sources = load_catalog()
+    plan = models.make_plan(output, inventory, source_points=source_points)
+    dense=source_points is not None and all(p['workload']['operation']=='dense' for p in source_points)
+    table, references, sources = load_catalog(include_dense=True) if dense else load_catalog()
+    options=dict(RULES,decode_exact_tiles=True) if dense else RULES
     screen = Prescreen(table)
     reference_by_geometry = defaultdict(list)
     for row in references:
@@ -37,8 +39,36 @@ def make_plan(output, inventory):
 
     @lru_cache(maxsize=None)
     def generate(w):
-        rules, why = moe_candidates(screen, w, RULES)
-        return factor_candidates([*rules, *models.candidate_recipes(w)]), why
+        rules, why = moe_candidates(screen, w,options)
+        if dense:
+            from dev.model_tuning.candidates import decode_delivery_peers
+            rules+=decode_delivery_peers(w,rules,table.observations)
+        common=list(models.candidate_recipes(w))
+        if w.operation=='dense' and w.m>1:
+            from dev.strategy.token_cta import GEOMETRIES,Q8_GEOMETRIES
+            for c,warps,p in Q8_GEOMETRIES if w.qtype==8 else GEOMETRIES:
+                for split in (1,2,4,8):
+                    for window in (1,2) if w.qtype==8 else (None,):
+                        r=Recipe.make('simt','fq',variant=5 if w.qtype==8 else 3,columns=c,
+                            warps=warps,values=p,split=split,cta_tokens=w.m,
+                            **(dict(cta_window=window) if window is not None else {}))
+                        if not rejection(r,w):common.append(r)
+        if w.operation=='dense' and w.qtype==8:
+            # The existing signed/window reader family is a declared S1
+            # axis, independent of N/K and of the target's historical winner.
+            for columns,warps in ((4,8),(8,4)):
+                for body in (0,1,3,4,5):
+                    common.append(Recipe.make('simt','fq',variant=5,columns=columns,warps=warps,
+                                               values=4,split=1,q8_body=body))
+        legal=[]
+        for r in factor_candidates([*rules, *common]):
+            if r.kind!='tc':
+                try:spec(w,r)
+                except ValueError as exc:
+                    why.setdefault('carrier_rejections',[]).append(dict(recipe=asdict(r),reason=str(exc)))
+                    continue
+            legal.append(r)
+        return legal, why
 
     queries, pending = {}, []
     for point in plan['points']:
@@ -78,7 +108,8 @@ def make_plan(output, inventory):
                 required=r.kind != 'tc', reasons=why['selected_reasons'].get(r.key, ['COMMON_SIMT_RULE']),
                 spec=item, module=digest(item), expected_producer=entry)
         point.update(arms=list(arms.values()), config_sweep=True, rule_recall=recall,
-                     historical_references=refs, rule_seed_count=why['seed_prototype_count'])
+                     historical_references=refs, rule_seed_count=why['seed_prototype_count'],
+                     carrier_rejections=why.get('carrier_rejections',[]))
         point['sf_configs'] = sorted({max(0, dict(a['recipe']['parameters']).get('dequant_config', -1))
             for a in point['arms'] if a['recipe']['route'] == 'sf' and w.qtype != 8})
         # No historical small-M K-quant SF winner is hidden behind this guard.
@@ -92,7 +123,7 @@ def make_plan(output, inventory):
             (tc if a['recipe']['kind'] == 'tc' else vectors)[a['module']] = a['spec']
     plan.update(cohort=COHORT, tc=tc, vectors=vectors,
         scope='REQUESTED_MODEL_TP_LOCAL_MOE_M1_TO_8_SIMT_TC_SCREEN_AND_CONFIRM_NOT_MODEL_AB',
-        rules=RULES, catalog_sources=sources,
+        rules=options, catalog_sources=sources,
         protocol=dict(screen=[4, 3], confirm=[6, 5], screen_live_arms=12,
                       finalist_window_pct=5, finalist_limit=32,
                       grid='EXPAND_AFTER_COMPILED_RESOURCE_QUERY_DEDUP_ACTUAL_LAUNCH'),

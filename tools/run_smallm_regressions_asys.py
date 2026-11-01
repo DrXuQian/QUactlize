@@ -256,6 +256,10 @@ def run(a):
     from quactlize.runtime.native import sdk_identity
     a.output.mkdir(parents=True,exist_ok=a.resume)
     if (a.output/'plan.json').exists():plan=sealed(a.output/'plan.json')
+    elif getattr(a,'external_plan',None):
+        from dev.model_tuning.plans import validate_engine
+        plan=validate_engine(sealed(a.external_plan),'smallm')
+        atomic_json(a.output/'plan.json',plan)
     elif a.cohort in MODEL_MOE_COHORTS:
         from dev.strategy.moe_model_plan import model_inventory, make_plan as model_plan
         if a.cohort==MOE_SWEEP_COHORT:
@@ -266,6 +270,8 @@ def run(a):
                              dense_fallbacks=a.cohort not in MOE_COHORTS)
         atomic_json(a.output/'cpp-originals.json',originals)
         plan=make_plan(originals['requests'],a.cohort or 'regressions');atomic_json(a.output/'plan.json',plan)
+    if getattr(a,'external_plan',None) and sealed(a.external_plan)['sha256']!=plan['sha256']:
+        raise ValueError('resume external plan differs from frozen plan')
     if a.cohort and a.cohort!=plan.get('cohort','regressions'):raise ValueError('resume cohort differs')
     if (plan['schema']!='quactlize.smallm-asys.v1' or
             any(sha(ROOT/p)!=value for p,value in plan['sources'].items())):
@@ -294,7 +300,7 @@ def run(a):
     base.check_devices(devices)
     inputs=dict(plan=plan['sha256'],source_revision=rev,harness=harness_identity(ROOT),source=source_identity(ROOT),
         sdk=sdk_identity(a.sdk),cards=cards,devices=devices,l2_bytes=a.l2_bytes,
-        assignments=assignments(plan,len(cards)),
+        assignments=assignments(plan,len(cards),balanced=plan.get('cohort')=='model-tuning'),
         asys=str(asys),asys_sha256=sha(asys),smi=str(a.smi),smi_sha256=sha(a.smi),
         python_version=sys.version,timing_method=METHOD)
     base.freeze(a.output/'inputs.json',inputs)
@@ -345,6 +351,7 @@ def main():
     p.add_argument('--output',type=Path,required=True);p.add_argument('--sdk',type=Path,default=Path('/usr/local/PPU_SDK'))
     p.add_argument('--devices',default='0,1,2,3');p.add_argument('--jobs',type=int,default=8)
     p.add_argument('--cohort',choices=COHORTS)
+    p.add_argument('--external-plan',type=Path,help='model-driven small-M plan; no hard-coded model names')
     p.add_argument('--model-root',type=Path,default=Path('/sim/eec/shared/AI_workspace/llm-models/bench_model_zoo'))
     p.add_argument('--moe-models',help='comma-separated model MoE subset; default all three, resume inherits frozen scope')
     p.add_argument('--qwen35-model',type=Path);p.add_argument('--qwen122-model',type=Path);p.add_argument('--deepseek-model',type=Path)

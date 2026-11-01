@@ -138,7 +138,7 @@ def measure(a,point,arms,images,queries,run,phase,known,*,backend=None):
         b=context_type(sdk,ring,w,Helpers(Path(run['helpers'])/'libstrategy_prefill.so'),context_binding)
         owners.callback(b.close)
         sf=None
-        if any(x['recipe']['route']=='sf' for x in arms):
+        if w.qtype!=8 and any(x['recipe']['route']=='sf' for x in arms):
             mr=Ring(sdk,w,a.l2_bytes,weights=ring.w,metadata_only=True);owners.callback(mr.close)
             mb=context_type(sdk,mr,w,b.helpers,context_binding);owners.callback(mb.close)
             msf=Expansion(mb,Path(run['dequant']));owners.callback(msf.close)
@@ -296,7 +296,7 @@ def parse(capture,known,rows,apis,provenance):
 
 def compose(point,results,*,explicit_helpers=False):
     """Fresh mean component sum, helper choice factored from producer config."""
-    records={};data={};helpers={'sf':{},'full':{}};reset=None;authority=None
+    records={};data={};helpers={'sf':{},'full':{}};reset=None;resets={};authority=None
     for value in results:
         if value['status']!='PASS' or value['point']!=point['id']:raise ValueError('incomplete/mismatched prefill batch')
         if authority is not None and authority!=value['authority']:
@@ -313,8 +313,10 @@ def compose(point,results,*,explicit_helpers=False):
                 if config in helpers[role] and helpers[role][config]!=ids:raise ValueError('helper configuration changed')
                 helpers[role][config]=ids
         if value['reset'] is not None:
-            if reset is not None and reset!=value['reset']:raise ValueError('duplicate Full provider/reset jobs')
-            reset=value['reset']
+            reset=value['reset'] if reset is None else reset
+            # Different Full controls are isolated in separate captures. Use
+            # each arm's own reset samples, not whichever batch ran first.
+            resets.update({aid:value['reset'] for aid in value['arms']})
     expected={a['id'] for a in point['arms']}
     if set(data)!=expected:raise ValueError('missing prefill candidates; no partial winner')
     protocol=results[0]['protocol']
@@ -334,22 +336,22 @@ def compose(point,results,*,explicit_helpers=False):
     w=Workload(**point['workload'])
     for a in point['arms']:
         aid=a['id'];r=Recipe.from_dict(a['recipe']);keys=list(data[aid]['components']);roles[aid]=a['roles']
-        helper='full' if r.kind=='full' else 'sf' if r.route=='sf' else None
+        helper='full' if r.kind=='full' else 'sf' if r.route=='sf' and w.qtype!=8 else None
         config=None
         if helper:
             config=str(control_helper_config(w,r)) if aid=='original' or explicit_helpers else best[helper]
             if config not in helpers[helper]:raise ValueError('missing explicit helper config')
             keys+=helpers[helper][config]
         full=r.kind=='full'
-        if full and reset is None:raise ValueError('Full provider lacks isolated reset timing')
+        if full and aid not in resets:raise ValueError('Full provider lacks isolated reset timing')
         costs[aid]=[[math.fsum(records[k]['samples_us'][i][j] for k in keys)+
-                     (reset['samples_us'][i][j] if full else 0) for j in range(samples)] for i in range(rounds)]
+                     (resets[aid]['samples_us'][i][j] if full else 0) for j in range(samples)] for i in range(rounds)]
         bindings[aid]=dict(recipe=a['recipe'],helper_config=int(config) if config is not None else None)
         parts[aid]=keys
     decision=mean_decision(costs,roles)
     return dict(status='PASS',point=point['id'],workload=point['workload'],decision=decision,
         component_records=records,arm_components=parts,bindings=bindings,best_helpers=best,
-        helper_components=helpers,reset=reset,
+        helper_components=helpers,reset=reset,arm_resets=resets,
         authority=authority,protocol=protocol,
         precision='F32_IO_BF16_OPERANDS_FP32_ACC',timing_method='ASYS_GPU_ACTIVITY',
         production_changed=False,native_no_regression_admitted=False,model_tpot_admitted=False)

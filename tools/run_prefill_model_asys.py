@@ -548,6 +548,8 @@ def main():
             from dev.strategy.smallm_asys import revision
             if plan['source_revision']!=revision(ROOT):raise ValueError('frozen measurement commit changed')
             authority['source_revision']=plan['source_revision']
+        if a.finalist_plan and finalists.get('model_tuning'):
+            authority['source']=plan['source_identity']
         if old and old!=authority: raise ValueError('resume build/protocol changed')
         if not old:atomic_json(a.output/'authority.json',authority)
         clock=request_lock(a.smi,pci,1700);atomic_json(a.output/('clock-lock-'+str(time.time_ns())+'.json'),clock)

@@ -33,7 +33,7 @@ def proposal_only(rows):
                                     'GEOMETRY_ONLY', r.evidence) for r in rows)
 
 
-def load_catalog():
+def load_catalog(*, include_dense=False):
     table, sources = load_sources()
     references, proposals = {}, list(table.observations)
     sources['effective-decode'] = digest([dict(workload=asdict(r.workload), recipe=asdict(r.recipe),
@@ -41,7 +41,9 @@ def load_catalog():
                                         if r.source == 'effective-decode'])
 
     def add(w, recipe, source, role):
-        if w.operation != 'indexed' or w.compute != 'bf16' or w.storage != 'f32':
+        accepted=(w.operation=='indexed' and w.compute=='bf16' or
+                  include_dense and w.operation=='dense' and w.compute=='f16')
+        if not accepted or w.storage != 'f32':
             return
         key = digest(dict(workload=asdict(w), recipe=asdict(recipe), source=source, role=role))
         references[key] = dict(id=key, workload=asdict(w), recipe=asdict(recipe),
@@ -52,21 +54,22 @@ def load_catalog():
     # Effective production choices include robust router compromises. They
     # are controls in addition to, not instead of, each profile's best recipe.
     for row in table.observations:
-        if row.source != 'effective-decode' or row.workload.operation != 'indexed':
+        if row.source != 'effective-decode' or (row.workload.operation != 'indexed' and not include_dense):
             continue
         profiles = row.details.get('profiles') or [row.workload.router or 'real']
         source = 'effective-decode'
         for router in profiles:
-            add(replace(row.workload, router=router), row.recipe, source, 'PRODUCTION_REFERENCE')
+            add(replace(row.workload, router=router if row.workload.operation=='indexed' else ''),
+                row.recipe, source, 'PRODUCTION_REFERENCE')
 
     name = 'docs/measurements/smallm_matched_20260915.json.gz'
     sources[name] = hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
     for key, recipes in profile_winners().items():
         q, mode, n, k, experts, topk, channels, tokens, compute, router = key
-        if not mode:
+        if not mode and not include_dense:
             continue
-        w = Workload(q, n, k, tokens, 'indexed', compute, experts=experts,
-                     topk=topk, channels=channels, router=router)
+        w = Workload(q, n, k, tokens, 'indexed' if mode else 'dense', compute, experts=experts,
+                     topk=topk, channels=channels, router=router if mode else '')
         for recipe in recipes.values():
             add(w, recipe, name, 'HISTORICAL_ROUTER_WINNER')
 

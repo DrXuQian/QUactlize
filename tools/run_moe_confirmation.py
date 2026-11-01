@@ -350,11 +350,16 @@ def review(a,plan,run,codes):
 
 
 def main(a):
+    def requested_plan():
+        if getattr(a,'external_plan',None):
+            from dev.model_tuning.plans import validate_engine
+            return validate_engine(sealed(a.external_plan),'moe-prefill')
+        return plans.make_plan(a.mode,native_compare=getattr(a,'native_compare',False))
     if a.plan:
         if getattr(a,'native_from',None):
             from dev.moe_confirm.native_ab import retry_plan
             p=retry_plan(a.native_from,a.native_route)
-        else:p=plans.make_plan(a.mode,native_compare=getattr(a,'native_compare',False))
+        else:p=requested_plan()
         print(json.dumps(dict(p['counts'],scope=p['scope'],mode=a.mode),indent=2));return 0
     if a.probe:atomic_json(a.probe,base.device(a));return 0
     if a.output is None:
@@ -370,6 +375,8 @@ def main(a):
         raise ValueError('output exists: use --resume on the same GPUs, or --continue-from OLD --output NEW to change GPUs') from None
     if a.resume:
         plan,run=(sealed(a.output/n) for n in ('plan.json','run.json'));verify(a,run)
+        if getattr(a,'external_plan',None) and requested_plan()['sha256']!=plan['sha256']:
+            raise ValueError('resume external plan differs from frozen plan')
         if run['cards']!=a.devices.split(',') or run['mode']!=a.mode:raise ValueError('resume GPU/mode differs')
         if bool(run.get('native_comparison'))!=bool(getattr(a,'native_compare',False)):
             raise ValueError('resume native comparison scope differs')
@@ -380,7 +387,7 @@ def main(a):
         if getattr(a,'native_from',None):
             from dev.moe_confirm.native_ab import retry_plan
             prepared_plan=retry_plan(a.native_from,a.native_route)
-        else:prepared_plan=plans.make_plan(a.mode,native_compare=getattr(a,'native_compare',False))
+        else:prepared_plan=requested_plan()
         base.sealed(a.output/'plan.json',prepared_plan)
         plan=sealed(a.output/'plan.json')
         print('MOE_CONFIRM_PLAN '+json.dumps(plan['counts']),flush=True)
@@ -449,6 +456,7 @@ if __name__=='__main__':
     p.add_argument('--output',type=Path);p.add_argument('--sdk',type=Path,default=Path(os.environ.get('PPU_SDK','/usr/local/PPU_SDK')))
     p.add_argument('--devices',default='3,5,6,7');p.add_argument('--jobs',type=int,default=8)
     p.add_argument('--mode',choices=('all','prefill','decode','wired-prefill','refine-prefill'),default='all')
+    p.add_argument('--external-plan',type=Path,help='model-driven indexed prefill plan; uses the public helpers')
     p.add_argument('--refine-stage',choices=('screen','confirm','native'),default='screen',help=argparse.SUPPRESS)
     p.add_argument('--reuse-build',type=Path,help='reuse a prior confirmation build, not its timings; use a new output')
     p.add_argument('--native-compare',action='store_true',help='wired/refine-prefill: fresh Asys native/selected/selected/native')
@@ -464,6 +472,8 @@ if __name__=='__main__':
     p.add_argument('--preflight')
     for flag in ('plan','resume','confirm-idle','helper-gate'):p.add_argument('--'+flag,action='store_true')
     a=p.parse_args();a.sdk=a.sdk.resolve();cards=a.devices.split(',')
+    if a.external_plan and (a.mode!='refine-prefill' or a.native_from or a.continue_from):
+        p.error('--external-plan requires --mode refine-prefill and a fresh run or --resume')
     if (not cards or len(cards)>8 or len(set(cards))!=len(cards) or any(not x.isdecimal() for x in cards) or
         not 1<=a.jobs<=64 or a.l2_bytes<=0 or not 0<a.budget_hours<=24):p.error('invalid GPU/jobs/L2/budget')
     if bool(a.job)!=bool(a.attempt) or a.job and a.worker is None:p.error('incomplete child arguments')

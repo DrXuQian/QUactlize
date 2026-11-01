@@ -96,10 +96,10 @@ def pilot_plan(audit):
     return json.loads(json.dumps(result))
 
 
-def make_plan(output, inventory):
+def make_plan(output, inventory, *, source_points=None):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
-    points = models.expanded_points(inventory, ms=MS)
+    points = models.expanded_points(inventory, ms=MS) if source_points is None else source_points
     table, references, sources = load_catalog()
     screen = Prescreen(table)
     by_shape = defaultdict(list)
@@ -110,6 +110,12 @@ def make_plan(output, inventory):
 
     @lru_cache(maxsize=None)
     def generate(w):
+        if source_points is not None:
+            from dev.moe_confirm.refine_plan import parents, RULE
+            from dev.strategy.space import split_variants
+            _,seeds=parents(w,table,screen)
+            candidates=[r for seed in seeds for r in split_variants(w,seed) if not rejection(r,w)]
+            return candidates,dict(selected_reasons={r.key:[RULE] for r in candidates})
         return moe_candidates(screen, w, RULES)
 
     capabilities = full_capabilities(points, output)
@@ -152,7 +158,10 @@ def make_plan(output, inventory):
     # M5120 the large routed-row boundary. Test both concentrated/dispersed IDs.
     pilot = [p['id'] for p in points if p['workload']['m'] in (16,128,5120) and
              p['workload']['router'] in ('cluster','spread')]
-    coverage = models.coverage_report(inventory, ms=MS)
+    coverage = models.coverage_report(inventory, ms=MS) if source_points is None else dict(models=[
+        dict(model=m['name'], tp=m['tp'], points=sum(
+            any(c['model']==m['name'] for c in p['consumers']) for p in points))
+        for m in inventory['models']])
     for row in coverage['models']:
         row['header_points'] = row['points']
         row['points'] = sum(any(c['model']==row['model'] for c in point['consumers']) for point in points)
@@ -160,7 +169,7 @@ def make_plan(output, inventory):
         status='HOST_PLAN_ONLY', points=points, resources=probe,
         capability=capabilities, rules=RULES, catalog_sources=sources,
         coverage=dict(models=coverage['models'],
-            tokens=list(MS), requested_models=[m['name'] for m in inventory['models']],
+            tokens=sorted({p['workload']['m'] for p in points}), requested_models=[m['name'] for m in inventory['models']],
             inventory_sha256=digest(inventory), actual_model_weights_used=False,
             profiles='SYNTHETIC_IDS_NOT_CAPTURED_MODEL_ROUTES', excluded=inventory['excluded']),
         counts=dict(points=len(points), families=len(points)//(len(MS)*5),

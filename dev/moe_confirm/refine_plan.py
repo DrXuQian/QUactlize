@@ -23,6 +23,13 @@ def geometry(r):
     return (r.kind,r.route,*(p.get(k,-1) for k in FIELDS))
 
 
+def routing_key(w):
+    # Unlike the original two-model cohort, arbitrary models may share N/K
+    # while having different expert counts, top-k or caller strides.
+    return tuple(w[k] for k in ('qtype','n','k','channels','m','experts','topk',
+                                'compute','storage','fusion','input_stride','output_stride'))
+
+
 def parents(w,table,screen):
     """Geometry transfer only. No hard M-distance cutoff and no target N/K."""
     previous,_=old.parents(screen,table,w)
@@ -125,7 +132,7 @@ def make_plan():
 def finalists(points,screens):
     """Every routing profile confirms the same union, not different winners."""
     groups=defaultdict(list)
-    for p in points:groups[confirmation.key(p['workload'])].append(p)
+    for p in points:groups[routing_key(p['workload'])].append(p)
     result={}
     for group in groups.values():
         ids=set()
@@ -138,6 +145,8 @@ def finalists(points,screens):
         if len(ids)>48:raise ValueError('more than48 common finalists; retain screens and inspect before confirming')
         helper={}
         for route in ('sf','full'):
+            if not any(a['recipe']['route']==route for p in group for a in p['arms']):continue
+            if route=='sf' and group[0]['workload']['qtype']==8:continue  # Packed Q8 has no scale expansion.
             costs=[]
             for p in group:
                 s=screens[p['id']]
@@ -157,6 +166,7 @@ def finalists(points,screens):
                     a=dict(a,id=r.key,recipe=asdict(r))
                 if not any(b['id']==a['id'] for b in arms):arms.append(a)
             result[p['id']]=dict(p,arms=arms,
-                sf_configs=sorted({dict(a['recipe']['parameters'])['dequant_config'] for a in arms if a['recipe']['route']=='sf'}),
-                full_configs=[helper['full']],explicit_helpers=True)
+                sf_configs=sorted({dict(a['recipe']['parameters'])['dequant_config'] for a in arms
+                                   if a['recipe']['route']=='sf'}) if 'sf' in helper else [],
+                full_configs=[helper['full']] if 'full' in helper else [],explicit_helpers=True)
     return result

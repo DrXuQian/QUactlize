@@ -173,11 +173,14 @@ def candidate_recipes(w):
                 yield r
 
 
-def make_plan(output, inventory, *, selected_only=False):
+def make_plan(output, inventory, *, selected_only=False, source_points=None):
     from dev.strategy.journal import atomic_json
-    source_points = expanded_points(inventory)
+    source_points = expanded_points(inventory) if source_points is None else source_points
+    operations = {p['workload']['operation'] for p in source_points}
+    if operations not in ({'dense'}, {'indexed'}):
+        raise ValueError('plan one operation family at a time')
     originals = plan_smallm(output, [request(Workload(**p['workload'])) for p in source_points],
-                            indexed_fallbacks=True)
+                            indexed_fallbacks=operations == {'indexed'}, dense_fallbacks=operations == {'dense'})
     atomic_json(Path(output)/'cpp-originals.json', originals)
     # The SIMT-completion cohort may retain older SIMT bodies. Historical Q4
     # and TC recipes are audited by the subsequent config sweep, not introduced
@@ -231,7 +234,7 @@ def make_plan(output, inventory, *, selected_only=False):
         sf = sorted({max(0, dict(a['recipe']['parameters']).get('dequant_config', -1))
                      for a in arms if a['recipe']['route'] == 'sf' and w.qtype != 8})
         points.append(dict(source, cohort='decode', selection=old, execution_contract=execution_contract(w),
-                           arms=arms, sf_configs=sf, indexed_single_row=True, excluded=[]))
+                           arms=arms, sf_configs=sf, indexed_single_row=w.operation=='indexed', excluded=[]))
     model_coverage = []
     for model in inventory['models']:
         rows = [p for p in points if any(c['model']==model['name'] for c in p['consumers'])]
@@ -244,7 +247,8 @@ def make_plan(output, inventory, *, selected_only=False):
     result = dict(schema='quactlize.smallm-asys.v1', phase='regression-asys', cohort=COHORT,
         points=points, tc=tc, vectors=vectors,
         counts=dict(points=len(points), arms=sum(len(p['arms']) for p in points), tc_modules=len(tc),
-                    vector_modules=len(vectors), families=len(points)//36),
+                    vector_modules=len(vectors), families=len({
+                        tuple(p['workload'][k] for k in ('qtype','n','k','experts','topk','channels')) for p in points})),
         timing_method='ASYS_GPU_ACTIVITY', selection_metric='MEAN_COMPONENT_SUM',
         noise_policy='DIAGNOSTIC_NOT_VETO', historical_times_reused=False,
         production_changed=False, native_comparison=False,
