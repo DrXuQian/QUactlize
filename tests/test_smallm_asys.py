@@ -184,6 +184,7 @@ def test_frozen_source_requires_full_commit_and_lite_repack_recognizes_schema(tm
 
 def test_revision_allows_dirty_checkout_and_distinguishes_archived_sources(tmp_path):
     from dev.strategy.provenance import source_identity,harness_identity,verify_unchanged
+    from dev.strategy.moe_plan import source_stamp
     def git(*args):
         return subprocess.check_output(['git','-C',str(tmp_path),*args],text=True,stderr=subprocess.PIPE).strip()
     git('init','-q');git('config','user.name','Host Test');git('config','user.email','test@example.invalid')
@@ -193,10 +194,13 @@ def test_revision_allows_dirty_checkout_and_distinguishes_archived_sources(tmp_p
     pin=git('rev-parse','HEAD')
     git('update-index','--add','--cacheinfo','160000,'+pin+',third_party/actlize')
     git('commit','-qm','pin fixture')
+    (tmp_path/'third_party/actlize').mkdir(parents=True)
     clean=revision(tmp_path)
     archived=revision(tmp_path,archive=True)
     assert clean['snapshot']=='WORKTREE'
     assert archived==dict(clean,snapshot='COMMITTED_ARCHIVE')
+    stamp=source_stamp(tmp_path)
+    assert stamp['snapshot']=='WORKTREE' and stamp['dirty'] is False
     source=source_identity(tmp_path);harness=harness_identity(tmp_path)
     tracked.write_text('uncommitted kernel')
     (scope/'local_helper.py').write_text('untracked helper')
@@ -206,6 +210,10 @@ def test_revision_allows_dirty_checkout_and_distinguishes_archived_sources(tmp_p
     assert revision(tmp_path)==clean
     assert revision(tmp_path,archive=True)==archived
     assert clean['actlize_commit']==pin  # HEAD gitlink, not the staged replacement.
+    changed=source_stamp(tmp_path)
+    assert changed['dirty'] is True and changed['source_sha256']!=stamp['source_sha256']
+    assert changed['quactlize_commit']==stamp['quactlize_commit']
+    assert changed['actlize_commit']==pin
     current=source_identity(tmp_path)
     assert current['files']['dev/strategy/kernel.cu']!=source['files']['dev/strategy/kernel.cu']
     assert 'dev/strategy/local_helper.py' in current['files']

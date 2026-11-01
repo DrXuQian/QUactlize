@@ -245,6 +245,28 @@ def test_export_binds_source_and_binary_without_repeating_the_manifests():
     with pytest.raises(ValueError,match='binary'):provenance(dict(run,images={}))
 
 
+def test_moe_plan_stamp_uses_frozen_receipt_without_git(tmp_path,monkeypatch):
+    from dev.strategy.moe_plan import source_stamp
+    import subprocess
+    receipt=dict(quactlize_commit='a'*40,quactlize_tree='b'*40,actlize_commit='c'*40,
+                 snapshot='COMMITTED_ARCHIVE')
+    (tmp_path/'.quactlize-source.json').write_text(json.dumps(receipt))
+    source=tmp_path/'dev/strategy/probe.py';source.parent.mkdir(parents=True)
+    source.write_text('original source')
+    monkeypatch.setattr(subprocess,'check_output',lambda *a,**k:pytest.fail('archive invoked Git'))
+    first=source_stamp(tmp_path)
+    assert first['quactlize_commit']==receipt['quactlize_commit']
+    assert first['actlize_commit']==receipt['actlize_commit']
+    assert first['snapshot']=='COMMITTED_ARCHIVE' and first['dirty'] is None
+    source.write_text('changed source')
+    second=source_stamp(tmp_path)
+    assert second['quactlize_commit']==first['quactlize_commit']
+    assert second['source_sha256']!=first['source_sha256'] and second['tag']!=first['tag']
+    receipt['quactlize_commit']='short-sha'
+    (tmp_path/'.quactlize-source.json').write_text(json.dumps(receipt))
+    with pytest.raises(ValueError,match='full commit'):source_stamp(tmp_path)
+
+
 def test_runtime_miss_does_not_claim_new_measurement():
     out=policy.export([measured(point())],expected=[point()['id'],point(2)['id']])
     assert out['status']=='INCOMPLETE' and out['missing']==[point(2)['id']]

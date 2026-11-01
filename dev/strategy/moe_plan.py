@@ -145,20 +145,30 @@ def moe_candidates(screen, w, options):
 
 
 def source_stamp(root=ROOT):
+    from dev.strategy.smallm_asys import revision
     root = Path(root)
     def git(*args):
         return subprocess.check_output(['git', '-C', str(root), *args], text=True).strip()
+    rev = revision(root) if (root / '.quactlize-source.json').exists() else None
     files = {}
     for directory in ('dev', 'quactlize', 'tools', 'reference'):
         for path in sorted((root / directory).rglob('*')):
             if path.is_file() and path.suffix in ('.py', '.sh', '.cpp', '.cu', '.h', '.hpp', '.cuh', '.inl', '.inc'):
                 files[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
     source = digest(files)
-    commit = git('rev-parse', 'HEAD')
-    link = git('ls-tree', 'HEAD', 'third_party/actlize').split()
+    # Box snapshots intentionally have no .git. Keep their validated commit
+    # receipt and hash the actual files; Git dirtiness is not applicable, not
+    # proof that the extracted files still equal the original tree.
+    if rev:
+        commit, actlize = rev['quactlize_commit'], rev['actlize_commit']
+        snapshot, dirty = rev['snapshot'], None
+    else:
+        commit = git('rev-parse', 'HEAD')
+        link = git('ls-tree', 'HEAD', 'third_party/actlize').split()
+        actlize = link[2] if len(link) >= 3 else None
+        snapshot, dirty = 'WORKTREE', bool(git('status', '--porcelain', '--untracked-files=all'))
     return dict(quactlize_commit=commit, source_sha256=source,
-                actlize_commit=link[2] if len(link) >= 3 else None,
-                dirty=bool(git('status', '--porcelain', '--untracked-files=all')),
+                actlize_commit=actlize, snapshot=snapshot, dirty=dirty,
                 tag=commit[:12] + '-src-' + source[:12],
                 scope='HOST_PLAN_ACTUAL_SOURCE_NOT_A_COMPILED_BINARY_RECEIPT')
 
