@@ -13,6 +13,8 @@ python3 tools/tune_model.py plan --model /exact/model-00001-of-00003.gguf \
 
 `--models models.json` instead accepts a list of `{ "name": "any-name",
 "path": "/exact/first-shard.gguf", "tp": 1 }`. There is no model-name registry.
+Alternatively repeat `--model A.gguf --tp 1 --model B.gguf --tp 2`;
+one `--tp` applies to all inputs, or supply one for each input in the same order.
 Only GGUF headers are read. TP extents come from the caller's C++ split function
 on CPU, not dividing every N/K by TP. The existing TP adapter currently covers
 Qwen3.5 MoE and DeepSeek4, equal TP1/2/4; a new architecture's split semantics
@@ -59,6 +61,23 @@ ban: HEAD and actual source hashes are both retained. Do not edit sources during
 a campaign. The indexed-prefill `--budget-hours` is not a global timeout for the
 dense/small-M backends. Candidate counts/resource counts precede execution; no
 duration guarantee is inferred from kernel microseconds.
+
+`tools/tune_model_box.sh` wraps the same entry in a committed source archive,
+including the pinned **local** actlize commit (no network/submodule update).
+For the gate/up concatenation cohort use `--forms concat`; for example:
+
+```bash
+GPUS=0,1,2,3 IDLE_CONFIRMED=1 LLAMA_CI_DIR=/path/to/llama.cpp \
+  bash tools/tune_model_box.sh --model /models/A.gguf --tp 1 \
+  --model /models/B-00001-of-00003.gguf --tp 2 --forms concat
+```
+
+Use `plan` or `prepare` as the first argument for a host-only run. Continue with
+`RESUME_RUN=/workspace/kpack-model-tune.XXXXXXXX IDLE_CONFIRMED=1 bash tools/tune_model_box.sh`.
+Upload the printed `review-*.tgz`: it includes policy/config/component evidence
+and diagnostic log tails, not `.so`, caches, model weights or `.asysrep` files.
+The original traces remain on Box. `ACTLIZE_ROOT` may point to another local
+checkout containing the required pin; its HEAD/worktree is not changed.
 
 The four existing engines are reused, with public Quactlize helpers for MoE.
 TC/SIMT, persistent/Split-K, SF and legal Full routes retain their separate

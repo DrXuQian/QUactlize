@@ -295,6 +295,31 @@ def test_cli_plan_reads_headers_only(tmp_path):
         main(['plan','--resume','--output',str(output),'--m','2'])
 
 
+def test_cli_repeated_models_keep_tp_order_and_single_tp_default():
+    from tools.tune_model import model_list,parser
+    a=parser().parse_args(['plan','--model','/A.gguf','--tp','1','--model','/B.gguf','--tp','2'])
+    assert model_list(a)==[dict(name='A',path='/A.gguf',tp=1),dict(name='B',path='/B.gguf',tp=2)]
+    a=parser().parse_args(['plan','--model','/A.gguf','--model','/B.gguf','--tp','4'])
+    assert [m['tp'] for m in model_list(a)]==[4,4]
+    a=parser().parse_args(['plan','--model','/A.gguf','--tp','1','--tp','2'])
+    with pytest.raises(ValueError,match='one per'):model_list(a)
+
+
+def test_small_review_excludes_raw_reports_and_keeps_failure_context(tmp_path):
+    import tarfile
+    from dev.model_tuning.review import package
+    (tmp_path/'results').mkdir()
+    (tmp_path/'results/coverage.json').write_text('{"status":"INCOMPLETE"}')
+    (tmp_path/'console-1.log').write_text('setup failed\n')
+    (tmp_path/'model.gguf').write_bytes(b'weights')
+    (tmp_path/'trace.asysrep').write_bytes(b'raw')
+    (tmp_path/'results/policy.json').symlink_to('/etc/passwd')
+    with tarfile.open(package(tmp_path)) as archive:
+        assert set(archive.getnames())=={'results/coverage.json','diagnostics.json'}
+        value=json.load(archive.extractfile('diagnostics.json'))
+        assert value['logs']['console-1.log']=='setup failed\n' and value['raw_asys_retained_on_box']
+
+
 def test_external_plan_requires_correct_backend_and_control():
     p=point();w=Workload(**p['workload'])
     plan=inventory.sealed(dict(schema='quactlize.smallm-asys.v1',

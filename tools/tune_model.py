@@ -27,9 +27,9 @@ def parser():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('stage',choices=('plan','prepare','sweep','export'))
     source=p.add_mutually_exclusive_group()
-    source.add_argument('--model',type=Path,help='exact GGUF first-shard file; no recursive search')
+    source.add_argument('--model',type=Path,action='append',help='exact GGUF first-shard file; repeat for more models')
     source.add_argument('--models',type=Path,help='JSON list of {name,path,tp}; any model names')
-    p.add_argument('--tp',type=int,default=1)
+    p.add_argument('--tp',type=int,action='append',help='one TP for all --model inputs, or one per model in order; default 1')
     p.add_argument('--m',type=int,nargs='+',help='default M1..8,16,32,64,128,256,512,1024,2048,4096,5120')
     p.add_argument('--forms',help='default projection,concat,swiglu; fusion has a separate capability boundary')
     p.add_argument('--routers',help='default spread,cluster; evidence profiles, not runtime selection inputs')
@@ -58,7 +58,10 @@ def model_list(a):
         if not isinstance(result,list):raise ValueError('--models must contain a JSON list')
         return result
     if a.model:
-        return [dict(name=a.model.stem,path=str(a.model),tp=a.tp)]
+        worlds=a.tp or [1]
+        if len(worlds)==1:worlds=worlds*len(a.model)
+        if len(worlds)!=len(a.model):raise ValueError('supply one --tp or one per --model')
+        return [dict(name=path.stem,path=str(path),tp=tp) for path,tp in zip(a.model,worlds)]
     raise ValueError('supply --model or --models for a new run')
 
 

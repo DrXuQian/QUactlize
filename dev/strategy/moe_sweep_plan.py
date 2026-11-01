@@ -54,6 +54,16 @@ def make_plan(output, inventory, *, source_points=None):
                             **(dict(cta_window=window) if window is not None else {}))
                         if not rejection(r,w):common.append(r)
         if w.operation=='dense' and w.qtype==8:
+            # Columns and resident warps are independent axes of the public
+            # Q8 reader. The two optimized address/token geometries below do
+            # not replace the other legal row-reader combinations. No N/K or
+            # historical winner lookup is used to generate this floor.
+            for columns in (4,8):
+                for warps in (4,8):
+                    for split in (1,2,4,8):
+                        r=Recipe.make('simt','fq',variant=5,columns=columns,
+                                      warps=warps,values=4,split=split)
+                        if not rejection(r,w):common.append(r)
             # The existing signed/window reader family is a declared S1
             # axis, independent of N/K and of the target's historical winner.
             for columns,warps in ((4,8),(8,4)):

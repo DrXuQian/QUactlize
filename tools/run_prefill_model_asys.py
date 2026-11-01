@@ -471,7 +471,7 @@ def main():
             plan['native_comparison']=False
             plan['comparison']='QUACTLIZE_CONFIGS_VS_INCUMBENT_NOT_NATIVE_AB'
         plan.update(model_identity=identity,harness=source_seal(),source_identity=source_identity(ROOT))
-        if (ROOT/'.quactlize-source.json').is_file():
+        if (ROOT/'.quactlize-source.json').is_file() or plan.get('model_tuning'):
             from dev.strategy.smallm_asys import revision
             plan['source_revision']=revision(ROOT)
         plan['plan_sha256']=digest({k:v for k,v in plan.items() if k!='plan_sha256'})
