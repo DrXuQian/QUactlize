@@ -32,7 +32,7 @@ HOST = (
 
 # Sweep/importer tests, probes and legacy backends live on experiments/ppu-tuning.
 
-ACCURACY = ("ppu/test_public_library.py", "ppu/test_moe_library.py")
+ACCURACY = ("ppu/test_public_library.py", "ppu/test_moe_library.py", "ppu/test_ffn_library.py")
 
 
 def inventory(root=ROOT):

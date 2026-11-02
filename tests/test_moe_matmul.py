@@ -10,11 +10,11 @@ import pytest
 ROOT=Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.parametrize('source',['moe_prefill_policy_host','moe_route_host','moe_scaffold_host','moe_matmul_host'])
+@pytest.mark.parametrize('source',['moe_prefill_policy_host','moe_route_host','moe_scaffold_host','moe_matmul_host','ffn_host'])
 def test_host_contract(tmp_path,source):
     extra=[]
     if source=='moe_scaffold_host':extra=[str(ROOT/'quactlize/moe/selection.cpp')]
-    if source=='moe_matmul_host':
+    if source in ('moe_matmul_host','ffn_host'):
         (tmp_path/'catalog.inc').write_text('static std::vector<Image> kImages{};\nstatic char const kJitSource[]="";\n')
         extra=[str(ROOT/p) for p in ('quactlize/packing/sizes.cpp','quactlize/execution/simt.cpp',
                'quactlize/execution/q4_decode.cpp','quactlize/moe/selection.cpp')]
@@ -37,3 +37,10 @@ def test_measured_table_generated_and_fresh_evidence():
     bad=copy.deepcopy(data);bad['rows'][-1]['profiles'][0]['selected_samples_us'][0][0]*=2
     bad['sha256']=digest({k:v for k,v in bad.items() if k!='sha256'})
     with pytest.raises(ValueError,match='evidence differs'):validate(bad)
+
+
+def test_ffn_ctypes_layout():
+    import ctypes as C
+    from ci.support.ffn import Weight,Params,Info
+    assert C.sizeof(Weight)==112 and C.sizeof(Params)==408 and C.sizeof(Info)==656
+    assert Params.gate.offset==72 and Info.projections.offset==32

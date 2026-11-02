@@ -10,6 +10,7 @@
 
 namespace test {
 int device=0,capture=0;
+bool ffn=false;
 void const* last_a=nullptr;int32_t const* last_ids=nullptr;void* last_stream=nullptr;
 std::vector<std::string> launches;
 struct Handle {qk_compute_device_call_v4 shape;int split;};
@@ -32,11 +33,14 @@ void install(quactlize::moe::matmul::Context& ctx,quactlize::dispatch::TcDecisio
     mod->run_grouped_dynamic=[](void* h,auto d,int mode){
         auto& handle=*static_cast<Handle*>(h);auto const& c=d->device_call.call;
         assert(quactlize::runtime::same_grouped_shape(*d,handle.shape));
-        assert(mode==QK_GROUPED_COMPLETE && c.a && c.low && c.metadata && c.offsets_device && c.output);
+        assert(mode==(ffn?QK_GROUPED_PRODUCER:QK_GROUPED_COMPLETE) && c.a && c.low && c.metadata && c.offsets_device && c.output);
         assert(!c.rows_host && !c.rows_device && c.stream==last_stream);
-        launches.push_back(handle.split>1?"tc+reducer":"tc");return 0;
+        launches.push_back(handle.split>1?(ffn?"tc-partials":"tc+reducer"):"tc");return 0;
     };
-    mod->grouped_output=[](void*,auto,int,auto){return 0;};
+    mod->grouped_output=[](void* h,auto c,int mode,auto out){
+        quactlize::runtime::GroupedWorkspace layout{};layout.partials=256;
+        return quactlize::runtime::grouped_result(*c,static_cast<Handle*>(h)->split,mode,layout,*out);
+    };
     mod->destroy=[](void* h){delete static_cast<Handle*>(h);};
     r.modules.emplace(image.key,mod);kImages.push_back(image);
 }
@@ -68,7 +72,7 @@ void install_for(quactlize::moe::matmul::Context& c,quactlize_ppu_moe_matmul_par
     r.route=3;install(c,select_tc(r,false,1));
 }
 void binding(qkg_call_v1 const& c) {
-    assert(c.mode==QKG_INDEXED && c.a==last_a && c.ids==last_ids && c.stream==last_stream);
+    assert(c.mode==QKG_INDEXED && (ffn?c.a!=nullptr:c.a==last_a) && c.ids==last_ids && c.stream==last_stream);
     assert(c.input_type==QKG_F32 && c.output);launches.push_back("simt");
 }
 }
@@ -156,4 +160,5 @@ int main() {
         for(int m:{1,2,3,4,5,6,7,8,9,17,33,65,129,257,513,1025,2049,4097,5121})
             check(test::params(family[0],m,family[1],family[2],256,8,family[3]));
     std::cout<<"MOE_MATMUL_HOST PASS cases="<<cases<<" device_execution=0\n";
+    return 0;
 }

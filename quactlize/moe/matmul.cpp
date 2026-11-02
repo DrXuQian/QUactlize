@@ -1,4 +1,4 @@
-#include "matmul_validation.hpp"
+#include "matmul_internal.hpp"
 #include "selection.hpp"
 #include "../dispatch/selection.hpp"
 #include "../runtime/library.hpp"
@@ -15,36 +15,6 @@ using library::require;
 using library::dispatch_check;
 using dense::reserve;
 thread_local std::string error;
-struct Context;
-struct Plan {
-    Context* owner=nullptr;
-    quactlize_ppu_moe_matmul_params_v1 params{};
-    quactlize_ppu_moe_matmul_plan_info_v1 info{1,sizeof(info)};
-    uint8_t const *low=nullptr,*high=nullptr,*units=nullptr;
-    int kind=QKS_SMALLM_TC,dequant=-1,metadata=QK_METADATA_BF16;
-    qks_smallm_choice_v2 small{};
-    qks_choice_v1 tc{};
-    qks_request_v1 request{};
-    qzm_prepare_plan_v2 preparation{};
-    void* handle=nullptr;
-    uint64_t src=0,dst=0,offsets=0,inverse=0,counts=0,active=0,count=0;
-    uint64_t route=0,input=0,output=0,status=0,kernel=0,kernel_bytes=0;
-    uint64_t scale=0,zero=0,plane_bytes=0;
-    ~Plan() { if(handle) quactlize_kpack_dispatch_destroy_v1(handle); }
-};
-struct Context {
-    int device=0;
-    std::filesystem::path root;
-    std::string sdk;
-    void* dispatcher=nullptr;
-    bool jit=false;
-    std::mutex mutex;
-    std::vector<std::unique_ptr<Plan>> plans;
-    ~Context() { plans.clear();if(dispatcher) quactlize_kpack_dispatch_close_v1(dispatcher); }
-    void enable_jit() {
-        if(!jit) { library::enable_jit(dispatcher,root,sdk);jit=true; }
-    }
-};
 void device_check(int device) {
     int current=-1;
     require(hggcGetDevice(&current)==hggcSuccess && current==device,"MoE context/current device mismatch");
@@ -163,15 +133,8 @@ void prepare(Plan& p) {
     }
     p.kernel=reserve(cursor,p.kernel_bytes);p.info.workspace_bytes=cursor;
 }
-void run(Plan const& p,float const* input,int32_t const* ids,float* output,void* workspace,void* stream) {
-    auto const& a=p.params;auto base=static_cast<uint8_t*>(workspace);
-    if(p.kind!=QKS_SMALLM_TC) {
-        auto c=indexed(p);c.call.a=input;c.call.ids=ids;c.call.output=output;c.call.stream=stream;
-        c.call.workspace=p.kernel_bytes?base+p.kernel:nullptr;c.call.workspace_bytes=p.kernel_bytes;
-        int rc=p.kind==QKS_SMALLM_Q4?quactlize_kpack_q4_decode_run_v2(&c,&p.small.q4,&a.arrangement):
-            quactlize_kpack_simt_run_v2(&c,&p.small.base.simt,&a.arrangement);
-        require(rc==QKG_OK,"MoE indexed SIMT launch failed");return;
-    }
+void prepare_input(Plan const& p,float const* input,int32_t const* ids,void* workspace,void* stream) {
+    auto base=static_cast<uint8_t*>(workspace);
     auto ptr=[&](uint64_t offset) { return reinterpret_cast<int32_t*>(base+offset); };
     auto c=prepare_call(p);c.input=input;c.output=base+p.input;
     c.route.ids=ids;c.route.src_rows=ptr(p.src);c.route.dst_rows=ptr(p.dst);c.route.offsets=ptr(p.offsets);
@@ -179,6 +142,10 @@ void run(Plan const& p,float const* input,int32_t const* ids,float* output,void*
     c.route.workspace_bytes=p.preparation.helper.workspace_bytes;c.route.stream=stream;
     c.inverse_rows=ptr(p.inverse);c.expert_rows=ptr(p.counts);c.active_experts=ptr(p.active);c.active_count=ptr(p.count);
     require(quactlize_ppu_moe_prepare_execute_v2(&c,&p.preparation)==QZR_OK,"MoE routing/gather failed");
+}
+qk_compute_device_call_v4 grouped(Plan const& p,void const* input,int32_t const* offsets,
+                                void* workspace,void* stream,int mode) {
+    auto const& a=p.params;auto base=static_cast<uint8_t*>(workspace);
     void const* metadata=p.units;void const* zero=nullptr;
     if(p.plane_bytes) {
         metadata=base+p.scale;zero=base+p.zero;int rc;
@@ -195,13 +162,27 @@ void run(Plan const& p,float const* input,int32_t const* ids,float* output,void*
     }
     qk_call_v1 k{1,sizeof(k)};k.m=a.tokens*a.topk;k.n=a.n;k.k=a.k;k.experts=a.experts;
     k.group_size=a.arrangement.group_size;k.device=p.owner->device;k.compute_units=p.tc.compute_units;
-    k.mapping_id=a.arrangement.mapping_id;k.a=base+p.input;k.low=p.low;k.high=p.high;k.metadata=metadata;k.zero=zero;
-    k.output=base+p.output;k.offsets_device=ptr(p.offsets);k.workspace=base+p.kernel;
+    k.mapping_id=a.arrangement.mapping_id;k.a=input;k.low=p.low;k.high=p.high;k.metadata=metadata;k.zero=zero;
+    k.output=base+p.output;k.offsets_device=offsets;k.workspace=base+p.kernel;
     k.workspace_bytes=p.kernel_bytes;k.stream=stream;
     qk_compute_device_call_v4 d{4,sizeof(d),{2,sizeof(qk_device_call_v2),k,a.tokens,0},QK_COMPUTE_BF16,p.metadata};
-    dispatch_check(quactlize_kpack_dispatch_run_grouped_dynamic_v1(p.handle,&d,QK_GROUPED_COMPLETE));
+    dispatch_check(quactlize_kpack_dispatch_run_grouped_dynamic_v1(p.handle,&d,mode));
+    return d;
+}
+void run(Plan const& p,float const* input,int32_t const* ids,float* output,void* workspace,void* stream) {
+    auto const& a=p.params;auto base=static_cast<uint8_t*>(workspace);
+    if(p.kind!=QKS_SMALLM_TC) {
+        auto c=indexed(p);c.call.a=input;c.call.ids=ids;c.call.output=output;c.call.stream=stream;
+        c.call.workspace=p.kernel_bytes?base+p.kernel:nullptr;c.call.workspace_bytes=p.kernel_bytes;
+        int rc=p.kind==QKS_SMALLM_Q4?quactlize_kpack_q4_decode_run_v2(&c,&p.small.q4,&a.arrangement):
+            quactlize_kpack_simt_run_v2(&c,&p.small.base.simt,&a.arrangement);
+        require(rc==QKG_OK,"MoE indexed SIMT launch failed");return;
+    }
+    auto ptr=[&](uint64_t offset) { return reinterpret_cast<int32_t*>(base+offset); };
+    prepare_input(p,input,ids,workspace,stream);
+    auto d=grouped(p,base+p.input,ptr(p.offsets),workspace,stream,QK_GROUPED_COMPLETE);
     require(hggcMemsetAsync(ptr(p.status),0,4,static_cast<hggcStream_t>(stream))==hggcSuccess,"MoE output status reset failed");
-    require(quactlize_prefill_scatter_bf16(base+p.output,output,ptr(p.dst),k.m,a.n,a.output_stride,ptr(p.status),stream)==QKG_OK,
+    require(quactlize_prefill_scatter_bf16(base+p.output,output,ptr(p.dst),d.device_call.call.m,a.n,a.output_stride,ptr(p.status),stream)==QKG_OK,
             "MoE output scatter failed");
 }
 template<class F> int boundary(F fn) {
