@@ -33,12 +33,23 @@ Install the complete package: `libncp_quactlize.so`, `include/`,
 `quactlize-runtime/` and `manifest.json`. ncp_flash_lib only builds/installs it;
 packing, config selection and execution remain in Quactlize. The public ABI is
 declared in [packing/api.h](quactlize/packing/api.h),
-[dense/api.h](quactlize/dense/api.h) and [moe/matmul.h](quactlize/moe/matmul.h).
+[dense/api.h](quactlize/dense/api.h), [moe/matmul.h](quactlize/moe/matmul.h)
+and [ffn/api.h](quactlize/ffn/api.h).
 The independent MoE projection takes F32 activations/output and GPU IDs, with
 BF16 operands and FP32 accumulation. The library owns routing, preparation,
 selection and reduction; the caller only supplies per-stream scratch.
-This is not FFN fusion. New complete-call device/integration gates remain
-required even when the selected kernel/helper recipes were measured earlier.
+The FFN API composes separate or canonical merged gate/up weights with SwiGLU,
+Down and ordered expert weighting. It shares routing and consumes actual
+producer partials without duplicate reductions. Legal small-M Q4 routed/Q8
+shared cohorts prefer the GEMM-internal activation; other shapes retain the
+ordinary projection plus transition. Canonical fused readers allocate no
+second resident weight copy. Their device accuracy and full-call performance
+must be validated separately from the older interleaved readers' measurements.
+
+Dense prefill selection tries exact rows, bounded M/N/K buckets, then one
+N-doubling transfer for merged projections. The transfer keeps M/K/dtype and
+actual-shape legality, reports a bucket prediction, and never extrapolates FQ
+past M64. It is not an exact measurement of the doubled shape.
 
 ## Source layout
 

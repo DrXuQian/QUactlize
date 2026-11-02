@@ -50,7 +50,9 @@ typedef struct {
     // -1 means no TC routing preparation. helper=0 means not used.
     int32_t prepare_stage,prepare_helper,finish_helper,reserved;
     // Same route/precision values as dense and moe/matmul. Absent up has
-    // route=-1. This is selected projection evidence, NOT fused timing proof.
+    // route=-1. A config starting with gate-up-canonical uses a fused SwiGLU
+    // producer (or Split-K reducer). No extra weight allocation is retained.
+    // This is selected recipe evidence, NOT fused timing proof.
     quactlize_ppu_ffn_projection_info_v1 projections[3];
 } quactlize_ppu_ffn_plan_info_v1;
 

@@ -186,7 +186,7 @@ def build(sdk, output, jobs):
     runtime = output / 'quactlize-runtime'
     runtime.mkdir()
     start = time.monotonic()
-    public_sources = {p: sha(p) for directory in ('quactlize/dense', 'quactlize/dispatch', 'quactlize/moe', 'quactlize/routing', 'quactlize/ffn')
+    public_sources = {p: sha(p) for directory in ('quactlize/dense', 'quactlize/dispatch', 'quactlize/moe', 'quactlize/routing', 'quactlize/ffn', 'quactlize/fusion')
                       for p in (ROOT / directory).iterdir() if p.is_file()}
     public_sources.update({p: sha(p) for p in (ROOT/'policies').iterdir() if p.suffix in ('.hpp', '.json')})
     device_policy=ROOT/'quactlize/include/ppu_device.hpp'
@@ -255,13 +255,16 @@ def build(sdk, output, jobs):
     run('dispatch', ['g++', '-std=c++17', '-O2', '-fPIC', '-shared', '-pthread', '-Wl,-Bsymbolic',
         '-I' + str(work), str(ROOT / 'quactlize/dispatch/binding.cpp'), '-ldl',
         '-o', str(runtime / 'libquactlize_kpack_dispatch.so')])
-    include = [ROOT / 'quactlize/include', ROOT / 'third_party/actlize/include', sdk / 'include']
+    include = [ROOT / 'quactlize/include', ROOT / 'quactlize/runtime', ROOT / 'quactlize/integrations',
+               ROOT / 'third_party/actlize/include', ROOT / 'third_party/actlize/tools/util/include',
+               ROOT / 'third_party/actlize/examples/common', sdk / 'include']
 
-    def compile_one(source):
-        obj = work / (Path(source).stem + '.o')
+    def compile_one(source, definitions=(), name=None):
+        name = name or Path(source).stem
+        obj = work / (name + '.o')
         command = ([str(sdk / 'bin/hgcc'), *FLAGS] if source.endswith('.cu') else
                    ['g++', '-std=c++17', '-O2', '-fPIC', '-pthread'])
-        run(Path(source).stem, [*command, *['-I' + str(p) for p in include],
+        run(name, [*command, *definitions, *['-I' + str(p) for p in include],
             '-c', str(ROOT / source), '-o', str(obj)])
         return obj
 
@@ -269,6 +272,15 @@ def build(sdk, output, jobs):
         objects = list(pool.map(compile_one, ('quactlize/dense/runtime.cpp', 'quactlize/dense/copy.cu',
             'quactlize/moe/matmul.cpp','quactlize/moe/selection.cpp',
             'quactlize/moe/scaffold.cu','quactlize/routing/route.cu','quactlize/ffn/ffn.cpp')))
+    # Link fusion into the same public library; consumers need no second DSO.
+    fusion = [('quactlize/fusion/dispatch.cu', (), 'fusion_dispatch')]
+    for q, fmt in {8:0, 10:2, 11:3, 12:0, 13:1, 14:4}.items():
+        for kind in ('simt', 'tc'):
+            fusion.append((f'quactlize/fusion/{kind}.cu',
+                (f'-DQGU_QTYPE={q}', f'-DPPU_PACKED_FORMAT={fmt}', f'-DPPU_PACKED_SCALE={int(q!=8)}'),
+                f'fusion_{kind}_{q}'))
+    with ThreadPoolExecutor(max_workers=min(jobs, 6)) as pool:
+        objects += list(pool.map(lambda item: compile_one(*item), fusion))
     objects += [work / 'packing' / (name + '.o') for name in ('sizes.cpp', 'ppu_pack.cu')]
     run('public', ['g++', '-shared', '-pthread', '-Wl,-Bsymbolic', '-Wl,-z,defs',
         '-Wl,-soname,' + PUBLIC_LIBRARY, '-Wl,-rpath,$ORIGIN/quactlize-runtime',

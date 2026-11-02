@@ -27,8 +27,10 @@ inline int query(qkg_gate_up_call_v1 const& d,qkg_gate_up_config_v1 const& f,
         d.round_projection<0 || d.round_projection>1 ||
         f.version!=1 || f.size!=sizeof(f) || (f.backend!=QKG_GATE_UP_SIMT && f.backend!=QKG_GATE_UP_TC) ||
         (f.split!=1 && f.split!=2 && f.split!=4 && f.split!=8)) return QKG_INVALID;
-    if (layout.version!=1 || layout.size!=sizeof(layout) || layout.layout_id!=QKG_GATE_UP_N4_V1)
+    if (layout.version!=1 || layout.size!=sizeof(layout) ||
+        (layout.layout_id!=QKG_GATE_UP_N4_V1 && layout.layout_id!=QKG_GATE_UP_CANONICAL_V1))
         return QKG_ARRANGEMENT;
+    if(layout.layout_id==QKG_GATE_UP_CANONICAL_V1 && c.qtype!=8 && c.qtype!=12) return QKG_SHAPE;
     if (c.n<=0 || c.n>INT32_MAX/2 || c.out_row_stride<c.n) return QKG_SHAPE;
     qkg_sizes_v1 single{};
     int rc=execution::sizes(c.qtype,c.n,c.k,c.experts,&layout.packing,single);
@@ -102,7 +104,8 @@ inline int row_buffers(qkg_gate_up_call_v2 const& d,qkg_sizes_v1 const& sizes) {
 inline int query_recipe(qkg_gate_up_call_v2 const& d,qkg_gate_up_recipe_v2 const& r,
     qkg_gate_up_layout_v1 const& layout,qkg_sizes_v1& sizes) {
     if(d.version!=2 || d.size!=sizeof(d) || !valid_recipe(r)) return QKG_INVALID;
-    if(!recipe_capable(d.call,r) || (r.reader==Q4Paired16Reader && d.input_rows)) return QKG_SHAPE;
+    if(!recipe_capable(d.call,r,layout.layout_id==QKG_GATE_UP_CANONICAL_V1) ||
+       (r.reader==Q4Paired16Reader && d.input_rows)) return QKG_SHAPE;
     return query(d.call,r.config,layout,sizes);
 }
 }

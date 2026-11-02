@@ -20,6 +20,25 @@ from .support import Arena, Public, QTYPES, packed, check_output
 @pytest.mark.parametrize('merged', [False, True], ids=['separate', 'canonical-2n'])
 @pytest.mark.parametrize('q', QTYPES)
 def test_public_ffn(package, sdk, kind, merged, q):
+    run_ffn(package, sdk, kind, merged, q)
+
+
+@pytest.mark.parametrize('kind,q,k,hidden,down_q,ms', [
+    (0, 8, 2048, 512, 8, tuple(range(1, 9))),
+    (0, 8, 3072, 1024, 8, (1,)),
+    (1, 12, 2048, 512, 14, tuple(range(1, 9))),
+    (1, 12, 3072, 512, 13, (1,)),
+], ids=['shared-35b', 'shared-122b', 'moe-35b', 'moe-122b'])
+def test_public_ffn_fused(package, sdk, kind, q, k, hidden, down_q, ms):
+    # Actual automatic-fusion cohorts: toy shapes alone cannot prove that the
+    # new reader executes. Reuse weights over M and require the fused marker.
+    run_ffn(package, sdk, kind, True, q, hidden=hidden, k=k, n=k,
+            experts=256 if kind else 1, topk=8 if kind else 1,
+            ms=ms, down_q=down_q, fused=True)
+
+
+def run_ffn(package, sdk, kind, merged, q, *, hidden=512, k=512, n=256,
+            experts=None, topk=None, ms=None, down_q=None, fused=False):
     public = Public(package)
     api = FFN(public.lib)
     projection = MoE(public.lib) if kind else public
@@ -32,28 +51,34 @@ def test_public_ffn(package, sdk, kind, merged, q):
             options = Options(1, C.sizeof(Options), 0, 0)
             projection.check(projection.create(0, C.byref(options), C.byref(control)))
         with Arena(sdk) as storage:
-            experts, topk, hidden, k, n = (4 if kind else 1), (2 if kind else 1), 512, 512, 256
+            experts = experts or (4 if kind else 1)
+            topk = topk or (2 if kind else 1)
             descriptors, gold = [], []
             for stage in range(3):
                 if merged and stage == 1:
                     descriptors.append(Weight()); gold.append(None)
                     continue
                 columns = n if stage == 2 else hidden
-                arr, sizes, ptrs, weight = packed(storage, public, q, columns, k, experts,
+                reduction = hidden if stage == 2 else k
+                dtype = (down_q or q) if stage == 2 else q
+                arr, sizes, ptrs, weight = packed(storage, public, dtype, columns, reduction, experts,
                     pair=bool(merged and stage == 0), seed=stage*97)
-                descriptors.append(Weight(q, columns*(2 if merged and stage == 0 else 1), k, experts, arr, sizes, *ptrs))
+                descriptors.append(Weight(dtype, columns*(2 if merged and stage == 0 else 1), reduction,
+                                          experts, arr, sizes, *ptrs))
                 gold.append(weight)
             # Cover each decode M, the former cutoff, prefill and an unsampled
             # non-power-of-two M. A large-M witness is shared, not multiplied
             # across every dtype; host shape tests cover up to M8192 for all.
-            ms = (*range(1, 10), 16, 128, 513) + ((5120,) if q == 12 and merged else ())
+            ms = ms or (*range(1, 10), 16, 128, 513) + ((5120,) if q == 12 and merged else ())
             for m in ms:
-                channels = topk if kind and m % 2 == 0 else 1
+                channels = topk if kind and m % 2 == 0 and not fused else 1
                 params = Params(1, C.sizeof(Params), kind, m, topk, channels, int(merged), 0,
                     k, k*channels, topk if kind else 0, topk if kind else 0, n, *descriptors)
                 assert api.supported(C.byref(params)) == 1
                 plan, info = C.c_void_p(), Info(1, C.sizeof(Info))
                 api.check(api.prepare(context, C.byref(params), C.byref(plan), C.byref(info)))
+                selected_fused = bytes(info.projections[0].config).startswith(b'gate-up-canonical:')
+                assert selected_fused == fused, bytes(info.projections[0].config)
                 handles, control_info = [], []
                 for stage, w in enumerate(descriptors):
                     if merged and stage == 1:
@@ -61,19 +86,24 @@ def test_public_ffn(package, sdk, kind, merged, q):
                         continue
                     ch = topk if stage == 2 else channels
                     if kind:
-                        a = MoEParams(1, C.sizeof(MoEParams), q, w.n, k, experts, m, topk, ch, 0,
-                            k, k*ch, topk, w.n, w.arrangement, w.sizes)
+                        a = MoEParams(1, C.sizeof(MoEParams), w.qtype, w.n, w.k, experts, m, topk, ch, 0,
+                            w.k, w.k*ch, topk, w.n, w.arrangement, w.sizes)
                         chosen = MoEInfo(1, C.sizeof(MoEInfo))
                     else:
-                        a = DenseParams(1, C.sizeof(DenseParams), q, w.n, k, m, k, w.n, w.arrangement, w.sizes)
+                        a = DenseParams(1, C.sizeof(DenseParams), w.qtype, w.n, w.k, m, w.k, w.n,
+                                        w.arrangement, w.sizes)
                         chosen = DenseInfo(1, C.sizeof(DenseInfo))
                     handle = C.c_void_p()
                     projection.check(projection.prepare(control, C.byref(a), w.low, w.high, w.units,
                         C.byref(handle), C.byref(chosen)))
                     selected = info.projections[stage]
-                    assert (selected.route, selected.split, selected.compute_type, bytes(selected.config)) == (
-                        chosen.route, chosen.split, chosen.compute_type, bytes(chosen.config))
+                    if stage == 0 and fused:
+                        assert selected.compute_type == chosen.compute_type
+                    else:
+                        assert (selected.route, selected.split, selected.compute_type, bytes(selected.config)) == (
+                            chosen.route, chosen.split, chosen.compute_type, bytes(chosen.config))
                     handles.append(handle); control_info.append(chosen)
+                graph_safe = bool(kind) or all(i is None or i.route != 3 for i in control_info)
                 # Retire each shape's activations/scratch before the next M.
                 with Arena(sdk) as arena:
                     lanes = []
@@ -108,7 +138,7 @@ def test_public_ffn(package, sdk, kind, merged, q):
                                     ch = source.shape[1]
                                     # Check all rows against their actual expert, grouping on
                                     # CPU only for the independent oracle, never the runtime.
-                                    x = source[:, np.arange(topk) % ch].reshape(-1, k)
+                                    x = source[:, np.arange(topk) % ch].reshape(-1, descriptors[stage].k)
                                     y = out.reshape(m*topk, -1)
                                     for expert in range(experts):
                                         mask = ids.reshape(-1) == expert
@@ -144,7 +174,7 @@ def test_public_ffn(package, sdk, kind, merged, q):
                                     return api.run(plan, io['a'].ptr, io['ids'].ptr if kind else None,
                                         io['weights'].ptr if kind else None, io['out'].ptr,
                                         io['scratch'].ptr, io['scratch'].size, io['stream'])
-                                if repeat == 1:
+                                if repeat == 1 and graph_safe:
                                     graphs.append(Replay(sdk, io['stream'], run, 1))
                                 api.check(graphs[lane]() if graphs else run())
                             arena.sync()
@@ -153,6 +183,8 @@ def test_public_ffn(package, sdk, kind, merged, q):
                                 compare(got, expected[lane], denominators[lane])
                                 for key in ('a', 'ids', 'weights', 'scratch'):
                                     io[key].guard()
+                        print(f'FFN_ACCURACY kind={kind} q={q} down_q={down_q or q} m={m} '
+                              f'n={hidden} k={k} fused={int(fused)} graph={int(graph_safe)} status=PASS', flush=True)
                     finally:
                         arena.sync()
                         for graph in graphs:

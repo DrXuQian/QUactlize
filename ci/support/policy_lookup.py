@@ -1,5 +1,5 @@
 """Product correctness-test support; performance runners are on experiments/ppu-tuning."""
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 from ci.support.full_case import full_case
 from ci.support.eligibility import rejection
@@ -21,7 +21,7 @@ def legal(value, w):
     return rejection(Recipe.from_dict(execution_case(value)['recipe']), w) is None
 
 
-def policy_lookup(policy, w):
+def policy_lookup(policy, w, *, n_doubling=True):
     # Match the C++ selector, while still accepting a frozen older catalog in
     # historical experiment replays. A split M bucket is not the whole octave.
     intervals = policy.get('bucket_policy') == 'ACTIVE_MEANS_MNK_INTERVALS_V2'
@@ -42,4 +42,11 @@ def policy_lookup(policy, w):
                 bucket['bounds'][1][0] <= w.k <= bucket['bounds'][1][1] and
                 legal(policy['recipes'][bucket['recipe']], w)):
             return 'BUCKET_PREDICTION', bucket['recipe']
+    if intervals and n_doubling and w.n % 512 == 0:
+        # One-step shape transfer only. Frozen historical replays can disable
+        # this rule without changing any observation or measured cost.
+        projection = replace(w, n=w.n//2, output_stride=w.n//2)
+        _, rid = policy_lookup(policy, projection, n_doubling=False)
+        if rid and legal(policy['recipes'][rid], w):
+            return 'BUCKET_PREDICTION', rid
     return 'OUTSIDE_NEW_TABLE', None

@@ -1,6 +1,7 @@
 #include "validation.hpp"
 #include "../moe/matmul_internal.hpp"
 #include "../moe/grouped.hpp"
+#include "../fusion/validation.hpp"
 #include <cstdio>
 
 namespace quactlize::ffn {
@@ -24,6 +25,10 @@ struct Plan {
     Stage stages[3];
     uint64_t activation=0,finish_scratch=0;
     qzm_plan_v1 finish{};
+    bool fused=false;
+    qkg_gate_up_call_v2 gate_up{};
+    qkg_gate_up_recipe_v2 recipe{};
+    qkg_gate_up_layout_v1 layout{};
 };
 struct Context {
     int device=0;
@@ -97,6 +102,53 @@ void prepare_stage(Plan& p,int i,uint64_t& cursor) {
     else if(i!=2 || p.params.kind==QUACTLIZE_FFN_MOE)
         s.output=reserve(cursor,uint64_t(p.params.tokens)*p.params.topk*w.n*4);
 }
+
+bool prepare_gate_up(Plan& p,uint64_t& cursor) {
+    auto const& a=p.params;
+    if(!a.merged || a.tokens>8 || a.channels!=1) return false;
+    auto& d=p.gate_up;d={2,sizeof(d)};
+    d.call={1,sizeof(d.call)};d.call.input={2,sizeof(d.call.input)};
+    auto& c=d.call.input.call;
+    c.version=1;c.size=sizeof(c);c.qtype=a.gate.qtype;c.n=a.down.k;c.k=a.gate.k;
+    c.experts=a.gate.experts;c.rows=a.tokens*a.topk;c.topk=a.topk;c.channels=a.channels;
+    c.mode=a.kind==QUACTLIZE_FFN_MOE?QKG_INDEXED:QKG_DENSE;c.input_type=QKG_F32;
+    c.a_row_stride=a.input_row_stride;c.a_token_stride=a.input_token_stride;c.ids_stride=a.ids_stride;
+    c.out_row_stride=a.down.k;c.low=static_cast<uint8_t const*>(a.gate.low);
+    c.high=static_cast<uint8_t const*>(a.gate.high);c.units=static_cast<uint8_t const*>(a.gate.units);
+    d.call.input.compute_type=p.info.projections[0].compute_type;
+    d.call.output_type=p.stages[2].tc()?QKG_SIMT_BF16:QKG_F32;
+    d.call.round_projection=p.stages[0].tc()?1:0;
+    int consumer=a.kind==QUACTLIZE_FFN_DENSE?QKG_GATE_UP_STANDALONE:
+        p.stages[2].tc()?QKG_GATE_UP_TC_DOWN:QKG_GATE_UP_SIMT_DOWN;
+    auto request=fusion::request(d.call,p.stages[2].tc()?QKG_GATE_UP_COMPACT_ROWS:QKG_GATE_UP_ORIGINAL_ROWS,
+        consumer,a.down.qtype,a.down.n);
+    // Reuse the bounded legacy geometry, not its interleaved storage or its
+    // projection rounding. The canonical reader preserves the selected stage.
+    if(a.kind==QUACTLIZE_FFN_MOE) request.round_projection=1;
+    int selected=fusion::select(request,&p.recipe);
+    require(selected==QKG_OK || selected==QKG_SHAPE,"FFN fused selection failed");
+    if(selected!=QKG_OK) return false;
+    p.layout={1,sizeof(p.layout),QKG_GATE_UP_CANONICAL_V1,a.gate.arrangement};
+    qkg_sizes_v1 sizes{};
+    if(fusion::query_recipe(d,p.recipe,p.layout,sizes)!=QKG_OK) return false;
+    p.fused=true;cursor=0;
+    auto& gate=p.stages[0];gate.bytes=sizes.workspace_bytes;gate.scratch=reserve(cursor,gate.bytes);
+    auto& down=p.stages[2];
+    if(down.tc()) {
+        compact_scratch(*down.moe,true,true);down.bytes=down.moe->info.workspace_bytes;
+    }
+    down.scratch=reserve(cursor,down.bytes);
+    if(down.tc()) down.output=down.scratch+down.moe->output;
+    else if(a.kind==QUACTLIZE_FFN_MOE) down.output=reserve(cursor,uint64_t(a.tokens)*a.topk*a.down.n*4);
+    p.info.prepare_stage=down.tc()?2:-1;
+    auto& info=p.info.projections[0];
+    info.route=p.recipe.config.backend==QKG_GATE_UP_TC?0:2;
+    info.policy=QKS_PREDICTED;info.split=p.recipe.config.split;
+    std::snprintf(info.config,sizeof(info.config),"gate-up-canonical:%s:recipe=%016llx:round=%d",
+        p.recipe.config.backend==QKG_GATE_UP_TC?"tc":"simt",
+        static_cast<unsigned long long>(p.recipe.recipe_id),d.call.round_projection);
+    return true;
+}
 void prepare(Plan& p) {
     auto& ctx=*p.owner;auto const& a=p.params;
     if(a.kind==QUACTLIZE_FFN_DENSE && !ctx.dense) dense_check(quactlize_ppu_dense_create_v1(ctx.device,&ctx.dense));
@@ -110,6 +162,7 @@ void prepare(Plan& p) {
         prepare_stage(p,i,cursor);
         if(p.stages[i].tc() && p.info.prepare_stage<0) p.info.prepare_stage=i;
     }
+    prepare_gate_up(p,cursor);
     auto const& down=p.stages[2];
     if(down.tc()) p.activation=down.scratch+down.moe->input;
     else p.activation=reserve(cursor,uint64_t(a.tokens)*a.topk*a.down.k*4);
@@ -158,6 +211,13 @@ qzm_value_v1 produce(Plan const& p,int i,float const* input,int32_t const* ids,v
 void run(Plan const& p,float const* input,int32_t const* ids,float const* weights,float* output,void* workspace,void* stream) {
     auto const& a=p.params;auto base=static_cast<uint8_t*>(workspace);
     auto maps=prepare_maps(p,input,ids,base,stream);
+    if(p.fused) {
+        auto d=p.gate_up;auto& c=d.call.input.call;
+        c.a=input;c.ids=ids;c.output=reinterpret_cast<float*>(base+p.activation);c.stream=stream;
+        c.workspace=p.stages[0].bytes?base+p.stages[0].scratch:nullptr;
+        c.workspace_bytes=p.stages[0].bytes;d.input_rows=p.stages[2].tc()?maps.rows:nullptr;
+        require(quactlize_gate_up_run_v3(&d,&p.recipe,&p.layout)==QKG_OK,"FFN canonical fused gate/up failed");
+    } else {
     auto gate=produce(p,0,input,ids,maps.input,maps,base,stream);
     qzm_value_v1 up{};if(!a.merged) up=produce(p,1,input,ids,maps.input,maps,base,stream);
     qzm_transition_v1 c{1,sizeof(c)};c.tokens=a.tokens;c.topk=a.topk;c.hidden=a.down.k;c.merged=a.merged;
@@ -165,6 +225,7 @@ void run(Plan const& p,float const* input,int32_t const* ids,float const* weight
     c.output_order=p.stages[2].tc()?QZM_GROUPED:QZM_TOKEN_SLOT;c.output_stride=a.down.k;
     c.output=base+p.activation;c.row_ids=maps.rows;c.inverse_rows=maps.inverse;c.stream=stream;
     require(quactlize_ppu_moe_transition_run_v1(&c)==QZR_OK,"FFN SwiGLU/transition failed");
+    }
     auto activation=reinterpret_cast<float const*>(base+p.activation);
     auto down=produce(p,2,activation,ids,base+p.activation,maps,base,stream,
                       a.kind==QUACTLIZE_FFN_DENSE?output:nullptr);

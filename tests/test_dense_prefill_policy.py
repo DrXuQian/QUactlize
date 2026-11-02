@@ -107,8 +107,14 @@ int main() {
     used = sorted({p['winner'] for p in data['points']} | {b['recipe'] for b in data['buckets']})
     exact = {tuple(p['shape']):p['winner'] for p in data['points']}
 
-    def predicted(shape):
+    def predicted(shape, n_doubling=True):
         q,m,n,k = shape
+        def transfer():
+            if n_doubling and n%512 == 0:
+                donor, _ = predicted((q,m,n//2,k), False)
+                if donor >= 0:
+                    return donor, 21
+            return -1, 0
         if not (9 <= m <= 8192) or n%256 or k%(512 if q in (11,14) else 256):
             return -1, 0
         if shape in exact:
@@ -119,13 +125,13 @@ int main() {
                    b['bounds'][1][0] <= k <= b['bounds'][1][1]]
         assert len(matches) <= 1
         if not matches:
-            return -1, 0
+            return transfer()
         recipe = data['recipes'][matches[0]['recipe']]
         tc = recipe['tc']
         if tc and (k%(tc['tk']*tc['split']) or k//(tc['tk']*tc['split']) < tc['stages']-1 or n%tc['tn'] or
                    (tc['tm']==8 and m>(64 if recipe['route']==0 else 8)) or
                    (recipe['route']==0 and m>64) or tc['ap']):
-            return -1, 0
+            return transfer()
         return used.index(matches[0]['recipe']), 21
 
     cases = []
@@ -137,6 +143,8 @@ int main() {
     cases += [(12,m,1024,5120,0,0) for m in
               (0,1,8,9,15,16,31,32,63,64,65,127,128,255,256,2048,2560,3072,4096,4608,5120,8192,8193)]
     cases += [(10,2048,5120,5120,0,0)] # Q2 has no measurement in this cohort
+    cases += [(12,m,n,5120,0,0) for n in (34816,51200,102400) for m in
+              (16,32,64,128,256,512,1024,2048,4096,5120)]
     text = ''.join(' '.join(map(str,c))+'\n' for c in cases)
     rows = [tuple(map(int,line.split())) for line in subprocess.check_output([exe],input=text,text=True).splitlines()]
     assert len(rows) == len(cases)
@@ -154,3 +162,8 @@ int main() {
             coverage, rid = policy_lookup(data,w)
             expected = (used.index(rid),20 if coverage=='EXACT' else 21) if rid else (-1,0)
             assert actual == expected, (c,coverage,rid)
+    for n in (34816,51200):
+        for m in (512,1024,2048,4096,5120):
+            index, policy = predicted((12,m,n,5120))
+            assert index >= 0 and policy == 21
+            assert data['recipes'][used[index]]['route'] in (1,2)

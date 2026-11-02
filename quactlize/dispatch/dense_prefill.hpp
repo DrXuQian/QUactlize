@@ -28,7 +28,7 @@ inline bool legal(Choice const& c,qks_request_v1 const& r) {
 }
 // Called only after the complete provider verifies ZW810 and contiguous F32
 // endpoints. No dtype transfer, kernel launch, runtime tuning or remote donor.
-inline Decision select(qks_request_v1 const& r,int compute) {
+inline Decision select_direct(qks_request_v1 const& r,int compute) {
     if(!domain(r,compute)) return {};
     for(auto const& p:kExact)
         if(p.q==r.qtype && p.m==r.m && p.n==r.n && p.k==r.k && legal(kChoices[p.choice],r))
@@ -42,6 +42,16 @@ inline Decision select(qks_request_v1 const& r,int compute) {
             r.m>=b.mlo && r.m<=b.mhi && r.n>=b.nlo && r.n<=b.nhi &&
             r.k>=b.klo && r.k<=b.khi && legal(kChoices[b.choice],r))
             return {&kChoices[b.choice],QKS_DENSE_PREFILL_BUCKET};
+    return {};
+}
+inline Decision select(qks_request_v1 const& r,int compute) {
+    auto direct=select_direct(r,compute);
+    if(direct || !domain(r,compute) || r.n%512) return direct;
+    // A merged gate/up doubles N, not M or K. Transfer at most one N octave;
+    // keep actual-shape legality and report a prediction, never an exact hit.
+    auto projection=r;projection.n/=2;
+    auto donor=select_direct(projection,compute);
+    if(donor && legal(*donor.choice,r)) return {donor.choice,QKS_DENSE_PREFILL_BUCKET};
     return {};
 }
 } // namespace quactlize::dispatch::dense_prefill

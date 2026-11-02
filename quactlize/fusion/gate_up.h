@@ -2,6 +2,7 @@
 #include "../execution/simt.h"
 
 #define QKG_GATE_UP_N4_V1 UINT64_C(0x47554e3400000001)
+#define QKG_GATE_UP_CANONICAL_V1 UINT64_C(0x4755434e00000001)
 
 #ifdef __cplusplus
 extern "C" {
@@ -9,6 +10,7 @@ extern "C" {
 
 // A distinct artifact contract, not an alternative interpretation of the old
 // gate-then-up tensor. Within each expert, physical N is G4,U4,G4,U4,... .
+// CANONICAL_V1 instead reads gate rows followed by up rows, without repacking.
 // The nested arrangement defines bit packing only. Both sources must have
 // that qtype. Permute every code plane and its metadata together.
 typedef struct {
