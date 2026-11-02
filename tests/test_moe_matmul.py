@@ -64,3 +64,64 @@ def test_ffn_ctypes_layout():
     from ci.support.ffn import Weight,Params,Info
     assert C.sizeof(Weight)==112 and C.sizeof(Params)==408 and C.sizeof(Info)==656
     assert Params.gate.offset==72 and Info.projections.offset==32
+
+
+@pytest.mark.parametrize('kind,m,route,compute,policy,expected', [
+    (0, 1, 2, 0, 0, None), (0, 8, 0, 0, 18, None),
+    (0, 1, 0, 0, 17, 'f16'), (0, 9, 0, 0, 17, 'f16'),
+    (0, 128, 1, 0, 20, 'f16'), (0, 128, 0, 1, 0, None),
+    (0, 128, 3, 0, 20, 'f16'), (0, 128, 3, 1, 0, 'bf16'),
+    (1, 1, 2, 1, 0, None), (1, 4, 0, 1, 0, 'bf16'),
+    (1, 512, 1, 1, 19, 'bf16'),
+])
+def test_ffn_projection_output_precision(kind, m, route, compute, policy, expected):
+    from types import SimpleNamespace
+    from ci.support.ffn import projection_output_compute
+    info = SimpleNamespace(route=route, compute_type=compute, policy=policy)
+    assert projection_output_compute(kind, m, info) == expected
+
+
+def test_ffn_q2_subnormal_down_oracle():
+    """Exact CPU replay of the reported M9/lane0 independent Down check."""
+    import numpy as np
+    from ci.support.fixture import compare, matmul_reference, raw_weight, round_compute
+    q, m, k, hidden, n = 10, 9, 512, 512, 256
+    weights = [raw_weight(q, n if i == 2 else hidden, k, 913 + q + i*97)[1] for i in range(3)]
+    source = np.random.default_rng(301 + q + m).uniform(-.05, .05, (m, k)).astype('f4')
+    gate, _ = matmul_reference(source, weights[0], 'f16', output_compute='f16')
+    up, _ = matmul_reference(source, weights[1], 'f16', output_compute='f16')
+    gate, up = gate.astype('f4'), up.astype('f4')
+    activation = (gate/(1 + np.exp(-gate))*up).astype('f4')
+    ideal, denom = matmul_reference(activation, weights[2], 'f16')
+    got = round_compute(ideal, 'f16')
+    np.testing.assert_allclose(ideal[0, :3], [1.4479155652225018e-7, 2.5954796001315117e-7,
+                                           3.7488644011318684e-7], rtol=1e-14, atol=0)
+    np.testing.assert_array_equal(got[0, :3], np.ldexp([2., 4., 6.], -24))
+    np.testing.assert_allclose(denom[0, :3], [8.922943379729986e-7, 1.6829580999910831e-6,
+                                           1.341104507446289e-6], rtol=1e-14, atol=0)
+    # Original checker falsely rejects legitimate F16 C rounding. Keep this
+    # negative: an F32-output path must still reject this precision loss.
+    with pytest.raises(ValueError, match='typed oracle mismatch'):
+        compare(got, ideal, denom)
+    golden, rounded_denom = matmul_reference(activation, weights[2], 'f16', output_compute='f16')
+    np.testing.assert_array_equal(denom, rounded_denom)
+    assert compare(got, golden, denom)['relative_l1_error'] == 0
+    for fault in ('zero', 'row', 'ulp', 'nan'):
+        bad = got.copy()
+        if fault == 'zero': bad.fill(0)
+        elif fault == 'row': bad = np.roll(bad, 1, axis=0)
+        elif fault == 'ulp': bad[0, 0] += np.ldexp(1., -24)
+        else: bad[0, 0] = np.nan
+        with pytest.raises(ValueError, match='typed oracle mismatch'):
+            compare(bad, golden, denom)
+
+
+def test_ffn_output_precision_rejects_unknown_contract():
+    from types import SimpleNamespace
+    from ci.support.ffn import projection_output_compute
+    from ci.support.fixture import matmul_reference
+    for kind, route, compute in ((1, 3, 1), (1, 0, 0), (0, 4, 0), (0, 0, 2)):
+        with pytest.raises(ValueError, match='projection|provider|compute'):
+            projection_output_compute(kind, 9, SimpleNamespace(route=route, compute_type=compute, policy=0))
+    with pytest.raises(ValueError, match='precision contract'):
+        matmul_reference([[1.]], [[1.]], 'f16', output_compute='unknown')

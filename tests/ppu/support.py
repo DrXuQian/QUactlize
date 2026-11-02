@@ -6,7 +6,7 @@ import ctypes as C
 
 import numpy as np
 
-from ci.support.fixture import compare, planes, raw_weight, round_compute
+from ci.support.fixture import compare, matmul_reference, planes, raw_weight, round_compute
 from ci.support.dense import Arrangement, Candidate, Info, Options, Params, Sizes
 from quactlize.runtime.native import checked
 from quactlize.execution.native import arrangement
@@ -160,7 +160,7 @@ def packed(arena, lib, q, n=256, k=512, experts=1, pair=False, bit_patterns=Fals
     return arr, sizes, pointers, None if bit_patterns else np.stack(golden)
 
 
-def check_output(got, source, weight, compute):
-    a = round_compute(source, "bf16" if compute else "f16").astype("f8")
-    w = weight.astype("f8")
-    return compare(got, a @ w.T, np.abs(a) @ np.abs(w).T)
+def check_output(got, source, weight, compute, *, output_compute=None):
+    gold, denom = matmul_reference(source, weight, "bf16" if compute else "f16",
+                                   output_compute=output_compute)
+    return compare(got, gold, denom)

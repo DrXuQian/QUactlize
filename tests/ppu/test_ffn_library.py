@@ -10,7 +10,7 @@ import pytest
 
 from ci.support.dense import Params as DenseParams, Info as DenseInfo, Options
 from ci.support.moe import Params as MoEParams, Info as MoEInfo, Public as MoE
-from ci.support.ffn import Weight, Params, Info, Public as FFN
+from ci.support.ffn import Weight, Params, Info, Public as FFN, projection_output_compute
 from ci.support.fixture import compare, round_compute
 from ci.support.graph import Replay
 from .support import Arena, Public, QTYPES, packed, check_output
@@ -71,6 +71,9 @@ def run_ffn(package, sdk, kind, merged, q, *, hidden=512, k=512, n=256,
             # across every dtype; host shape tests cover up to M8192 for all.
             ms = ms or (*range(1, 10), 16, 128, 513) + ((5120,) if q == 12 and merged else ())
             for m in ms:
+                context_label = (f'kind={kind} q={q} down_q={down_q or q} m={m} '
+                                 f'n={hidden} k={k} merged={int(merged)} fused={int(fused)}')
+                print('FFN_ACCURACY_START ' + context_label, flush=True)
                 channels = topk if kind and m % 2 == 0 and not fused else 1
                 params = Params(1, C.sizeof(Params), kind, m, topk, channels, int(merged), 0,
                     k, k*channels, topk if kind else 0, topk if kind else 0, n, *descriptors)
@@ -143,7 +146,18 @@ def run_ffn(package, sdk, kind, merged, q, *, hidden=512, k=512, n=256,
                                     for expert in range(experts):
                                         mask = ids.reshape(-1) == expert
                                         if mask.any():
-                                            check_output(y[mask], x[mask], gold[stage][expert], control_info[stage].compute_type)
+                                            chosen = control_info[stage]
+                                            rounding = projection_output_compute(kind, m, chosen)
+                                            try:
+                                                check_output(y[mask], x[mask], gold[stage][expert], chosen.compute_type,
+                                                             output_compute=rounding)
+                                            except ValueError as exc:
+                                                raise AssertionError(
+                                                    f'FFN_PROJECTION_CHECK {context_label} stage={stage} '
+                                                    f'expert={expert} repeat={repeat} lane={lane} '
+                                                    f'output_rounding={rounding or "f32"} route={chosen.route} '
+                                                    f'policy={chosen.policy} split={chosen.split} '
+                                                    f'config={bytes(chosen.config).decode(errors="replace")}: {exc}') from exc
                                     return out.copy()
 
                                 gate = project(0, io['a'].ptr, a)
@@ -180,7 +194,10 @@ def run_ffn(package, sdk, kind, merged, q, *, hidden=512, k=512, n=256,
                             arena.sync()
                             for lane, io in enumerate(lanes):
                                 got = np.frombuffer(io['out'].bytes(), 'f4').reshape(m, n)
-                                compare(got, expected[lane], denominators[lane])
+                                try:
+                                    compare(got, expected[lane], denominators[lane])
+                                except ValueError as exc:
+                                    raise AssertionError(f'FFN_CHAIN_CHECK {context_label} repeat={repeat} lane={lane}: {exc}') from exc
                                 for key in ('a', 'ids', 'weights', 'scratch'):
                                     io[key].guard()
                         print(f'FFN_ACCURACY kind={kind} q={q} down_q={down_q or q} m={m} '

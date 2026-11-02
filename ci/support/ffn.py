@@ -25,6 +25,31 @@ class Info(C.Structure):
         ('projections', ProjectionInfo * 3)]
 
 
+def projection_output_compute(kind, m, info):
+    """Intermediate C type of the independent public projection, not the ABI.
+
+    Mirrors dense/runtime.cpp's native_f16 boundary and the MoE TC BF16
+    scatter. Small-M typed TC and SIMT store F32. Full reports its actual
+    storage in compute_type. No recipe/precision is selected by this helper.
+    """
+    if kind not in (0, 1) or m < 1 or info.route not in (0, 1, 2, 3) or info.compute_type not in (0, 1):
+        raise ValueError("unknown FFN projection precision contract")
+    if info.route == 3:
+        if kind:
+            raise ValueError("unexpected Full provider in independent MoE projection")
+        return "bf16" if info.compute_type else "f16"
+    if info.route == 2:
+        return None
+    if kind:
+        if info.compute_type != 1:
+            raise ValueError("independent MoE TC requires BF16 compute")
+        return "bf16"
+    # QKS_LEGACY_DENSE=17 is the native-F16 fallback even below M9.
+    if info.compute_type == 0 and (m > 8 or info.policy == 17):
+        return "f16"
+    return None
+
+
 class Public:
     def __init__(self, library):
         def bind(name, args, result=C.c_int):
