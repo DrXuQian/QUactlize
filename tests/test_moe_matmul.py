@@ -125,3 +125,46 @@ def test_ffn_output_precision_rejects_unknown_contract():
             projection_output_compute(kind, 9, SimpleNamespace(route=route, compute_type=compute, policy=0))
     with pytest.raises(ValueError, match='precision contract'):
         matmul_reference([[1.]], [[1.]], 'f16', output_compute='unknown')
+
+
+def test_ffn_q2_bf16_midpoint_oracle():
+    """M513/repeat1/lane1/expert0: a legal F32 order crosses a BF16 midpoint.
+
+    Replays local expert row 202 / column 116, original token 406, from the
+    reported fixture. This is a checker counterexample, not a reproduction of
+    the PPU's still-unreported failing coordinate or exact accumulation order.
+    """
+    import numpy as np
+    from ci.support.fixture import compare, matmul_reference, raw_weight, round_compute
+    source = np.random.default_rng(832).uniform(-.05, .05, (513, 512)).astype('f4')[406]
+    x = round_compute(source, 'bf16').astype('f8')
+    gate_up = []
+    for stage in (0, 1):
+        weight = raw_weight(10, 512, 512, 923 + stage*97)[1].astype('f8')
+        gate_up.append(round_compute(x @ weight.T, 'bf16'))
+    gate, up = gate_up
+    activation = (gate/(1 + np.exp(-gate))*up).astype('f4')
+    weight = raw_weight(10, 256, 512, 1117)[1][116:117]
+    x = round_compute(activation, 'bf16').astype('f8')
+    terms = x * weight[0].astype('f8')
+    # Products are exact F32 here; only the legal accumulation order varies.
+    np.testing.assert_array_equal(terms, terms.astype('f4'))
+    acc = np.float32(0)
+    for i in np.argsort(abs(terms))[::-1]:
+        acc = np.float32(np.float64(acc) + terms[i])
+    got = round_compute(np.array([[acc]]), 'bf16')
+    golden, denom = matmul_reference(activation[None, :], weight, 'bf16', output_compute='bf16')
+    np.testing.assert_allclose(golden[0, 0], 2.1830205292339144e-6, rtol=1e-14)
+    np.testing.assert_allclose(denom[0, 0], 2.9500172167296057e-6, rtol=1e-14)
+    assert got[0, 0] == 2.175569534301758e-6
+    rounded = round_compute(golden, 'bf16')
+    assert rounded[0, 0] == 2.1904706954956055e-6
+    with pytest.raises(ValueError, match='typed oracle mismatch'):
+        compare(got, rounded, denom)
+    result = compare(got, golden, denom)
+    assert result['tolerance'] == .005 and result['relative_l1_error'] < .002526
+    assert abs(float(acc) - golden[0, 0]) / denom[0, 0] < 1.5e-7
+    # Rounding is not permission to accept a zero, nonfinite or farther value.
+    for bad in (np.zeros_like(got), got - np.float32(2**-26), np.full_like(got, np.nan)):
+        with pytest.raises(ValueError, match='typed oracle mismatch'):
+            compare(bad, golden, denom)

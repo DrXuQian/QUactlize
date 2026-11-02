@@ -76,18 +76,21 @@ def planes(raw, q):
 
 
 def matmul_reference(source, weight, compute, *, output_compute=None):
-    """Independent GGUF dot with the selected operand and epilogue rounding.
+    """Independent GGUF dot with precision-aware comparison references.
 
     A public F32 output can be widened from a native F16/BF16 C buffer. Keep
-    that boundary explicit: rounding every F16-compute result would conceal
-    an accidental F16 store in a SIMT or typed-F32 decode kernel.
+    F16 C rounding explicit for subnormal FFN outputs; typed-F32/SIMT results
+    must still use the unrounded dot. Compare BF16 C against the UNROUNDED
+    dot: its normal RNE error is <= 2^-8 of |dot|, already inside the .005
+    absolute-dot bound. Rounding that reference again can amplify a tiny
+    FP32 summation difference into a full BF16 ULP and falsely fail the bound.
     """
     if compute not in ("f16", "bf16") or output_compute not in (None, "f16", "bf16"):
         raise ValueError("unknown matmul precision contract")
     a = round_compute(source, compute).astype("f8")
     w = np.asarray(weight, dtype="f8")
     golden = a @ w.T
-    if output_compute is not None:
+    if output_compute == "f16":
         golden = round_compute(golden, output_compute).astype("f8")
     return golden, np.abs(a) @ np.abs(w).T
 
