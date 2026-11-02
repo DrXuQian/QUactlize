@@ -64,7 +64,14 @@ duration guarantee is inferred from kernel microseconds.
 
 `tools/tune_model_box.sh` wraps the same entry in a committed source archive,
 including the pinned **local** actlize commit (no network/submodule update).
-For the gate/up concatenation cohort use `--forms concat`; for example:
+For the gate/up concatenation cohort use `--forms concat`.
+
+Use `--operation dense` for dense/shared-expert GEMM only, or
+`--operation indexed` for routed-expert MoE-GEMM only. Omit it to scan both.
+The two filtered inventories preserve the joint run's point IDs and candidate
+generation; each exports its own policy and review archive. They can run on
+disjoint GPUs. This is canonical 2N projection tuning, not whole-FFN timing or
+a paired SwiGLU epilogue. A resumed run retains its original operation scope.
 
 ```bash
 GPUS=0,1,2,3 IDLE_CONFIRMED=1 LLAMA_CI_DIR=/path/to/llama.cpp \

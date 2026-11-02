@@ -14,6 +14,7 @@ from tools.gguf_internal_shape_inventory import _metadata_authorities, _normalis
 SCHEMA = 'quactlize.model-tuning-inventory.v1'
 MS = (*range(1, 9), 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 5120)
 FORMS = ('projection', 'concat', 'swiglu')
+OPERATIONS = ('dense', 'indexed')
 PAIRED = 'QKG_GATE_UP_N4_V1:0x47554e3400000001'
 PAIRS = (
     ('ffn_gate', 'ffn_up', 'ffn_down'),
@@ -30,6 +31,9 @@ def validate(value):
     if value.get('schema') != SCHEMA or value.get('sha256') != digest(
             {k: v for k, v in value.items() if k != 'sha256'}):
         raise ValueError('model inventory schema/digest differs')
+    operations=value.get('operations',list(OPERATIONS))
+    if not operations or len(set(operations))!=len(operations) or set(operations)-set(OPERATIONS):
+        raise ValueError('invalid model inventory operations')
     seen = set()
     for p in value['points']:
         w = Workload(**p['workload'])
@@ -37,7 +41,8 @@ def validate(value):
         if p['id'] != digest(dict(workload=asdict(w), contract=c)) or p['id'] in seen:
             raise ValueError('duplicate or changed model tuning point')
         seen.add(p['id'])
-        if not p['consumers'] or c['accumulator'] != 'f32' or c['form'] not in FORMS:
+        if (not p['consumers'] or c['accumulator'] != 'f32' or c['form'] not in FORMS
+                or w.operation not in operations):
             raise ValueError('point has no consumer or unsupported arithmetic')
         if c['form'] == 'swiglu':
             if c['layout'] != PAIRED or c['weight_n'] != 2*w.n or c['output_n'] != w.n:
@@ -122,7 +127,7 @@ def _fusion(local, add, excluded, ms, routers, forms):
                         add(_point(w, form, logical.n), consumer)
 
 
-def collect(models, *, ms=MS, forms=FORMS, routers=('spread', 'cluster'),
+def collect(models, *, ms=MS, forms=FORMS, routers=('spread', 'cluster'), operations=OPERATIONS,
             loader=None, partitioner=None):
     """Loader/partitioner injection permits replay of uploaded header proofs."""
     if (not models or any(not isinstance(m.get('name'), str) or not m['name'] for m in models)
@@ -132,6 +137,8 @@ def collect(models, *, ms=MS, forms=FORMS, routers=('spread', 'cluster'),
         raise ValueError('distinct M in 1..32768 required')
     if not forms or len(set(forms)) != len(forms) or set(forms)-set(FORMS):
         raise ValueError('choose distinct projection,concat,swiglu forms')
+    if not operations or len(set(operations))!=len(operations) or set(operations)-set(OPERATIONS):
+        raise ValueError('choose distinct dense,indexed operations')
     if not routers or len(set(routers)) != len(routers) or set(routers)-{'spread', 'cluster', 'repeat2', 'repeat4', 'real'}:
         raise ValueError('unknown or duplicate routing profile')
     loader = loader or (lambda path: headers(path, capture_keys=CAPTURE_KEYS))
@@ -180,9 +187,11 @@ def collect(models, *, ms=MS, forms=FORMS, routers=('spread', 'cluster'),
             role = role[0]
             if role.operation not in ('MUL_MAT', 'MUL_MAT_ID'):
                 ignored.append(dict(ref, reason=role.operation)); continue
+            indexed = role.operation == 'MUL_MAT_ID'
+            if ('indexed' if indexed else 'dense') not in operations:
+                ignored.append(dict(ref,reason='OPERATION_NOT_SELECTED'));continue
             if q not in QTYPES:
                 excluded.append(dict(ref, reason='UNSUPPORTED_DTYPE')); continue
-            indexed = role.operation == 'MUL_MAT_ID'
             experts, topk = (dims[2], metadata.get(arch+'.expert_used_count')) if indexed else (1, 1)
             if indexed and (type(topk) is not int or not 1 <= topk <= experts
                             or metadata.get(arch+'.expert_count') != experts):
@@ -213,6 +222,7 @@ def collect(models, *, ms=MS, forms=FORMS, routers=('spread', 'cluster'),
     values = sorted(points.values(), key=lambda p: (p['workload']['operation'], p['id']))
     counts = Counter((p['workload']['operation'], p['contract']['form']) for p in values)
     result = dict(schema=SCHEMA, models=identities, ms=sorted(ms), forms=list(forms), routers=list(routers),
+        operations=list(operations),
         points=values, ignored=ignored, excluded=excluded, blocked=blocked,
         counts=[dict(operation=op, form=form, points=n) for (op, form), n in sorted(counts.items())],
         status='READY' if values and not blocked else 'INCOMPLETE', weights_read=False, gpu_work=False,

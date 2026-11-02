@@ -32,6 +32,8 @@ def parser():
     p.add_argument('--tp',type=int,action='append',help='one TP for all --model inputs, or one per model in order; default 1')
     p.add_argument('--m',type=int,nargs='+',help='default M1..8,16,32,64,128,256,512,1024,2048,4096,5120')
     p.add_argument('--forms',help='default projection,concat,swiglu; fusion has a separate capability boundary')
+    p.add_argument('--operation',choices=inventory.OPERATIONS,
+        help='dense/shared GEMM or indexed MoE-GEMM only; default both')
     p.add_argument('--routers',help='default spread,cluster; evidence profiles, not runtime selection inputs')
     p.add_argument('--headers-snapshot',type=Path,help='host-only replay of saved {GGUF path: header rows}')
     p.add_argument('--llama-source',type=Path,default=Path(os.environ['LLAMA_CI_DIR']) if os.environ.get('LLAMA_CI_DIR') else None)
@@ -69,6 +71,8 @@ def load_inventory(a):
     path=a.output/'inventory.json'
     if path.exists():
         result=inventory.validate(read(path))
+        if a.operation and [a.operation]!=result.get('operations',list(inventory.OPERATIONS)):
+            raise ValueError('resume operations differs from frozen inventory')
         for supplied,field in ((sorted(a.m) if a.m else None,'ms'),
                                (a.forms.split(',') if a.forms else None,'forms'),
                                (a.routers.split(',') if a.routers else None,'routers')):
@@ -92,6 +96,7 @@ def load_inventory(a):
         splitter=inventory.Splitter(a.llama_source,a.output/'tp-headers')
     result=inventory.collect(models,ms=a.m or inventory.MS,forms=(a.forms or ','.join(inventory.FORMS)).split(','),
                              routers=(a.routers or 'spread,cluster').split(','),
+                             operations=[a.operation] if a.operation else inventory.OPERATIONS,
                              loader=loader,partitioner=splitter)
     atomic_json(path,result)
     return result
@@ -124,6 +129,7 @@ def execute(a):
     print('MODEL_TUNING_RUN output='+str(a.output),flush=True)
     value=load_inventory(a);parts=plans.partition(value)
     summary=dict(status=value['status'],counts=value['counts'],points=len(value['points']),
+        operations=value.get('operations',list(inventory.OPERATIONS)),
         executable_points=sum(len(v) for v in parts['groups'].values()),
         unavailable=len(parts['pending']),excluded=len(value['excluded']),blocked=len(value['blocked']),
         gpu_work=False,production_changed=False)

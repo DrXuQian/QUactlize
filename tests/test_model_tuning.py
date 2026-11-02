@@ -59,6 +59,24 @@ def test_deduplicate_across_models_but_preserve_consumers():
     assert all({c['model'] for c in p['consumers']}=={'first','second'} for p in both['points'])
 
 
+def test_split_dense_and_moe_keep_identical_projection_points():
+    combined=collected(forms=['concat'])
+    subsets=[]
+    for op in inventory.OPERATIONS:
+        value=collected(forms=['concat'],operations=[op])
+        assert value['status']=='READY' and value['operations']==[op]
+        assert value['points']==[p for p in combined['points'] if p['workload']['operation']==op]
+        assert set(plans.partition(value)['groups'])==(
+            {'smallm-dense','dense-prefill'} if op=='dense' else {'smallm-indexed','moe-prefill'})
+        assert not plans.partition(value)['pending']
+        subsets.extend(p['id'] for p in value['points'])
+    assert sorted(subsets)==sorted(p['id'] for p in combined['points'])
+    # Old frozen inventories continue to validate as the original joint scope.
+    old=dict(combined);old.pop('operations')
+    assert inventory.validate(inventory.sealed(old))['points']==combined['points']
+    with pytest.raises(ValueError,match='operations'):collected(operations=['moe'])
+
+
 def test_merged_gateup_not_doubled_twice_and_mixed_pair_not_fused():
     value=inventory.collect([dict(name='x',path='/x')],ms=[1],loader=loader(merged=True))
     assert {p['contract']['weight_n'] for p in value['points']
@@ -325,6 +343,24 @@ def test_cli_repeated_models_keep_tp_order_and_single_tp_default():
     assert [m['tp'] for m in model_list(a)]==[4,4]
     a=parser().parse_args(['plan','--model','/A.gguf','--tp','1','--tp','2'])
     with pytest.raises(ValueError,match='one per'):model_list(a)
+
+
+@pytest.mark.parametrize('op',inventory.OPERATIONS)
+def test_cli_separate_operation_and_resume(tmp_path,op):
+    from tools.tune_model import main
+    rows,_=loader()('/abs/model.gguf');snap=tmp_path/'headers.json'
+    snap.write_text(json.dumps({'/abs/model.gguf':rows}))
+    output=tmp_path/'run'
+    assert main(['plan','--model','/abs/model.gguf','--headers-snapshot',str(snap),
+                 '--forms','concat','--operation',op,'--m','1','128','--output',str(output)])==0
+    value=json.loads((output/'inventory.json').read_bytes())
+    assert {p['workload']['operation'] for p in value['points']}=={op}
+    assert value['operations']==[op] and not (output/'runs').exists()
+    assert main(['plan','--resume','--output',str(output)])==0
+    assert main(['plan','--resume','--output',str(output),'--operation',op])==0
+    other='indexed' if op=='dense' else 'dense'
+    with pytest.raises(ValueError,match='resume operations'):
+        main(['plan','--resume','--output',str(output),'--operation',other])
 
 
 def test_small_review_excludes_raw_reports_and_keeps_failure_context(tmp_path):
