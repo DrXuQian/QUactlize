@@ -24,7 +24,7 @@ HOST = (
     "test_decode_selection.py", "test_moe_decode_policy.py",
     "test_grouped_dynamic.py", "test_moe_matmul.py",
     "test_prefill_refresh_policy.py", "test_dense_prefill_policy.py",
-    "test_dense_helper_admission.py",
+    "test_dense_helper_admission.py", "test_dense_concat_policy.py",
     "test_prefill_dense.py", "test_dense_full_helpers.py",
     "test_dense_cont.py", "test_dense_compact.py",
     "test_dense_q8_paired.py",

@@ -21,9 +21,10 @@ def test_all_exact_rows_are_complete_call_minima():
     data = evidence()
     validate(data)
     assert render(data) == HEADER.read_text()
-    assert len(data['points']) == 540
-    assert len(data['reviews']) == 7
-    assert all(p['winner_evidence']['captures'] == 2 for p in data['points'])
+    assert len(data['points']) == 560
+    assert len(data['reviews']) == 8
+    assert sum('model_confirmation' in p for p in data['points']) == 20
+    assert all(p['winner_evidence']['captures'] == 2 for p in data['points'] if 'model_confirmation' not in p)
     assert all(p['native_us'] is None for p in data['points'])
     old = [p for p in data['superseded_points'] if p['native_us'] is not None]
     assert len(old) == 225 and sum(p['us'] > p['native_us'] for p in old) == 14

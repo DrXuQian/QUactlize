@@ -174,6 +174,15 @@ def validate(data):
         if 'mean_evidence' in p:
             from quactlize.dispatch.dense_prefill_mean import validate_mean_point
             validate_mean_point(p, data)
+        if 'model_confirmation' in p:
+            from quactlize.dispatch.catalog_confirmation import validate as validate_confirmation, prefill_configuration
+            value = p['model_confirmation']
+            validate_confirmation(value)
+            w = value['workload']
+            require(p['shape'] == [w['qtype'],w['m'],w['n'],w['k']] and not bucket_costs(p) and
+                    p['native_us'] is None and p['us'] == value['mean_us'] and
+                    data['recipes'][p['winner']] == prefill_configuration(value),
+                    'model confirmation recipe/scope differs')
     require(len({p['key'] for p in data['points']}) == len(data['points']), 'duplicate active point')
     refreshed = data.get('bucket_policy') == 'ACTIVE_MEANS_MNK_INTERVALS_V2'
     if refreshed:

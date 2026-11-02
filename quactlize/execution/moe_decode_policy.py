@@ -79,8 +79,18 @@ def validate(data):
     keys = [[q,2,n,k,256,8,ch,m,1] for q,n,k,ch in FAMILIES for m in range(1,9)]
     if [r['key'] for r in data['rows']] != keys:
         raise ValueError('MoE exact measured denominator differs')
-    if len(data['body_hashes']) < 5 or any(sha(ROOT/p) != h for p,h in data['body_hashes'].items()):
+    # These two tables are consulted only after a QKG_DENSE guard in the
+    # hash-pinned scope headers. Dense exact admissions must not relabel MoE
+    # timing or require remeasuring unchanged indexed device bodies.
+    from quactlize.execution.token_cta_policy import catalog as token_catalog
+    from tools.generate_q8_refresh import catalog as q8_catalog
+    dense_catalogs = {'quactlize/execution/token_cta.inc': token_catalog,
+                      'quactlize/execution/q8_refresh.inc': q8_catalog}
+    if len(data['body_hashes']) < 5 or any(sha(ROOT/p) != h for p,h in data['body_hashes'].items()
+                                          if p not in dense_catalogs):
         raise ValueError('MoE measured kernel body changed; renew device evidence')
+    if any((ROOT/p).read_text() != generate() for p,generate in dense_catalogs.items()):
+        raise ValueError('unverified dense-only implementation catalog')
     points = set()
     for row in data['rows']:
         profiles = row['profiles']

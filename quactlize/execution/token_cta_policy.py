@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 TABLE = ROOT/'policies/kpack_token_cta_v1.json'
 CATALOG = ROOT/'quactlize/execution/token_cta.inc'
 ARCHIVE = '28a8d7dbaea294311ac1d2b61c329b39068c246f8bf3a585e0a146069a3c1631'
-EVIDENCE = 'fe131fec811ca2b066efc842312570e52fc351313b003523a5f558cdbf032bbb'
+EVIDENCE = 'd279a80ac6b116259166122f4267e568ae25bb8006092f26d3a62f463e844bf5'
 FIELDS = ('variant', 'columns', 'warps', 'values', 'split')
 
 
@@ -21,7 +21,7 @@ def verify(data):
                 if k != 'evidence_sha256'}) != EVIDENCE):
         raise ValueError('token CTA evidence identity differs')
     keys = {tuple(r['key']) for r in data['rows']}
-    if len(data['rows']) != 376 or len(keys) != 376 or any(
+    if len(data['rows']) != 392 or len(keys) != 392 or any(
             q not in (8,10,11,12,13,14) or mode or (e,t,ch,compute) != (1,1,1,0) or
             not 1 <= m <= 8 or n <= 0 or k <= 0 for q,mode,n,k,e,t,ch,m,compute in keys):
         raise ValueError('token CTA exact scope differs')
@@ -31,9 +31,18 @@ def verify(data):
         chosen = row['selected']
         if (chosen['mean_us'] != min(row['candidate_means_us'].values()) or
                 chosen['mean_us'] != row['candidate_means_us'][chosen['id']] or
-                not all(math.isfinite(t) and t > 0 for t in row['candidate_means_us'].values()) or
-                not 0 <= chosen['numerical_error'] < .005):
+                not all(math.isfinite(t) and t > 0 for t in row['candidate_means_us'].values())):
             raise ValueError('token CTA selected mean/numerics differ')
+        if row['cohort'] == 'concat':
+            from quactlize.dispatch.catalog_confirmation import validate, smallm_configuration
+            value = chosen['confirmation']
+            validate(value)
+            if ((chosen['config'], chosen['implementation']) != smallm_configuration(value) or
+                    chosen['mean_us'] != value['mean_us'] or chosen['recipe'] != value['binding']['recipe'] or
+                    row['key'] != [8,0,value['workload']['n'],value['workload']['k'],1,1,1,value['workload']['m'],0]):
+                raise ValueError('concat reader differs from measured configuration')
+        elif not 0 <= chosen['numerical_error'] < .005:
+            raise ValueError('token CTA selected numerics differ')
         impl, config = chosen['implementation'], chosen['config']
         if row['latency_provenance']['quactlize_commit'] != data['cohorts'][row['cohort']]['source_revision']['quactlize_commit']:
             raise ValueError('token CTA source provenance differs')
@@ -49,7 +58,7 @@ def verify(data):
                 raise ValueError('unmeasured Q8 address implementation')
         elif impl['kind'] != 'shipping':
             raise ValueError('unknown measured implementation')
-    if sum(r['selected']['implementation']['kind']=='token-cta' for r in data['rows']) != 121:
+    if sum(r['selected']['implementation']['kind']=='token-cta' for r in data['rows']) != 130:
         raise ValueError('token CTA binding denominator differs')
 
 

@@ -488,7 +488,7 @@ int main() {
         }
     }
     assert(component_sf_count==51); // Later complete-call winners supersede only exact SF entries.
-    assert(token_count==121);
+    assert(token_count==130);
     kImages.clear();auto owner=test::context(0);auto& ctx=*owner;
     // Replay all measured dense weight families over boundary M, not only
     // exact table keys. This exercises both exact and bucket/fallback order.

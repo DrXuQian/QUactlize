@@ -40,12 +40,21 @@ def m_span_boundary_points():
 
 def middle_m_points():
     # A bounded public-ABI smoke for both newly admitted TC routes at each
-    # transition M. The exhaustive 540-row selection replay remains host-only.
+    # transition M. The exhaustive 560-row selection replay remains host-only.
     data=json.loads(EVIDENCE.read_text())
     points=[min((p for p in data['points'] if p['shape'][1]==m and
                  data['recipes'][p['winner']]['route']==route),
                 key=lambda p:(p['shape'][2]*p['shape'][3],p['key']))
             for m in (16,32,64) for route in (0,1)]
+    return [(p['shape'],data['recipes'][p['winner']]) for p in points]
+
+
+def concat_prefill_points():
+    # Exact merged gate/up projections; activation and full FFN are separate
+    # contracts. Small-M coverage is already driven by token_choices below.
+    data = json.loads(EVIDENCE.read_text())
+    points = [p for p in data['points'] if 'model_confirmation' in p]
+    assert len(points) == 20
     return [(p['shape'],data['recipes'][p['winner']]) for p in points]
 
 
@@ -83,7 +92,7 @@ def test_full_dequant_provider_ordinary_calls(package, sdk, q, record_property):
     run_dense(package, sdk, q, 128, 1, record_property, full=True)
 
 
-@pytest.mark.parametrize('shape,recipe',helper_followup_points()+m_span_boundary_points()+middle_m_points(),
+@pytest.mark.parametrize('shape,recipe',helper_followup_points()+m_span_boundary_points()+middle_m_points()+concat_prefill_points(),
                          ids=lambda x: str(x) if isinstance(x,list) else '')
 def test_admitted_helper_followup_public_calls(package,sdk,shape,recipe,record_property):
     from ci.support.typed import DenseLibrary
