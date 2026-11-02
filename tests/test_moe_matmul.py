@@ -61,9 +61,11 @@ def test_concat_prefill_evidence():
 
 def test_ffn_ctypes_layout():
     import ctypes as C
-    from ci.support.ffn import Weight,Params,Info
+    from ci.support.ffn import Weight,Params,Info,Value,Transition
     assert C.sizeof(Weight)==112 and C.sizeof(Params)==408 and C.sizeof(Info)==656
     assert Params.gate.offset==72 and Info.projections.offset==32
+    assert C.sizeof(Value)==48 and Value.round_type.offset==40
+    assert C.sizeof(Transition)==168 and Transition.gate.offset==24 and Transition.stream.offset==160
 
 
 @pytest.mark.parametrize('kind,m,route,compute,policy,expected', [
@@ -168,3 +170,45 @@ def test_ffn_q2_bf16_midpoint_oracle():
     for bad in (np.zeros_like(got), got - np.float32(2**-26), np.full_like(got, np.nan)):
         with pytest.raises(ValueError, match='typed oracle mismatch'):
             compare(bad, golden, denom)
+
+
+def test_ffn_q3_activation_midpoint_oracle():
+    """Uploaded Q3 merged dense M128/repeat2/lane1, output (120,251).
+
+    A reciprocal formulation is a constructive counterexample, not proof of
+    the GPU's exp/divide instructions. It reproduces the exact output while
+    changing one half-input cell and remaining accurate to F32 at SwiGLU.
+    """
+    import numpy as np
+    from ci.support.ffn import check_swiglu
+    from ci.support.fixture import compare, raw_weight, round_compute
+    source = np.random.default_rng(455).uniform(-.05, .05, (128, 512)).astype('f4')[120:121]
+    x = round_compute(source, 'f16').astype('f8')
+    gate, up = [round_compute(x @ raw_weight(11, 512, 512, seed)[1].astype('f8').T, 'f16')
+                for seed in (924, 730)]
+    cpu = gate / (1 + np.exp(-gate)) * up
+    reciprocal = gate * np.reciprocal(1 + np.exp(-gate)) * up
+    assert cpu[0, 286].view('u4') == 0xb6defffe
+    assert reciprocal[0, 286].view('u4') == 0xb6df0000
+    for value in (cpu, reciprocal):
+        assert check_swiglu(value, gate, up)['relative_l1_error'] < 3e-7
+    typed_cpu, typed_reciprocal = [round_compute(h, 'f16').astype('f8') for h in (cpu, reciprocal)]
+    assert np.flatnonzero(typed_cpu != typed_reciprocal).tolist() == [286]
+    weight = raw_weight(11, 256, 512, 1118)[1][251:252].astype('f8')
+    gold = round_compute(typed_cpu @ weight.T, 'f16')
+    got = round_compute(typed_reciprocal @ weight.T, 'f16')
+    denom = abs(typed_cpu) @ abs(weight).T
+    assert got[0, 0] == 0 and gold[0, 0] == -2**-24
+    np.testing.assert_allclose(denom[0, 0], 5.254842108115554e-6, rtol=1e-14)
+    # Keep the final .005 gate unchanged: substituting CPU's activation
+    # creates this false rejection, even though both F32 activations pass.
+    with pytest.raises(ValueError, match='typed oracle mismatch'):
+        compare(got, gold, denom)
+    for fault in ('zero', 'column', 'scale', 'nan'):
+        bad = reciprocal.copy()
+        if fault == 'zero': bad.fill(0)
+        elif fault == 'column': bad = np.roll(bad, 1, axis=-1)
+        elif fault == 'scale': bad *= 1.001
+        else: bad[0, 286] = np.nan
+        with pytest.raises(ValueError, match='typed oracle mismatch'):
+            check_swiglu(bad, gate, up)

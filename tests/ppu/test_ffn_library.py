@@ -1,7 +1,8 @@
-"""FFN versus independent projections + CPU activation/weighted sum.
+"""FFN versus independently checked projections/activation + CPU weighted sum.
 
 Each unfused projection is also checked against original GGUF weights, not
-device-packed planes. No timers, performance admission, or llama dependency.
+device-packed planes; the F32 activation is checked against F64 CPU math.
+No timers, performance admission, or llama dependency.
 """
 import ctypes as C
 
@@ -10,7 +11,8 @@ import pytest
 
 from ci.support.dense import Params as DenseParams, Info as DenseInfo, Options
 from ci.support.moe import Params as MoEParams, Info as MoEInfo, Public as MoE
-from ci.support.ffn import Weight, Params, Info, Public as FFN, projection_output_compute
+from ci.support.ffn import (Weight, Params, Info, Public as FFN, Value, Transition,
+                            check_swiglu, projection_output_compute)
 from ci.support.fixture import compare, round_compute
 from ci.support.graph import Replay
 from .support import Arena, Public, QTYPES, packed, check_output
@@ -165,8 +167,23 @@ def run_ffn(package, sdk, kind, merged, q, *, hidden=512, k=512, n=256,
                                     gate, up = gate[..., :hidden], gate[..., hidden:]
                                 else:
                                     up = project(1, io['a'].ptr, a)
-                                hidden_value = (gate/(1+np.exp(-gate))*up).astype('f4')
-                                activation.write(hidden_value); arena.sync()
+                                # Independent token/slot-order transition, checked in F32
+                                # before Down casts to its operand type. Do not inject the
+                                # CPU exp/divide rounding into the separate GPU chain.
+                                call = Transition(1, C.sizeof(Transition), m, topk, hidden, int(merged),
+                                    Value(tmp[0].ptr, 0, 1, 0, 1, descriptors[0].n, 0, 0, 0),
+                                    Value() if merged else Value(tmp[1].ptr, 0, 1, 0, 1, hidden, 0, 0, 0),
+                                    0, 1, hidden, activation.ptr, None, None, io['stream'])
+                                activation.poison(); arena.sync()
+                                rc = api.transition(C.byref(call))
+                                assert rc == 0, f'FFN_SWIGLU_RUN {context_label} rc={rc}'
+                                arena.sync()
+                                hidden_value = np.frombuffer(activation.bytes(), 'f4').reshape(m, topk, hidden).copy()
+                                try:
+                                    check_swiglu(hidden_value, gate, up)
+                                except ValueError as exc:
+                                    raise AssertionError(
+                                        f'FFN_SWIGLU_CHECK {context_label} repeat={repeat} lane={lane}: {exc}') from exc
                                 down = project(2, activation.ptr, hidden_value)
                                 # No reduction reordering in the CPU reference.
                                 weight_values = weights if kind else np.ones_like(weights)

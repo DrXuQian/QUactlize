@@ -6,6 +6,10 @@
 #include "quactlize/fusion/paired_n4.hpp"
 #include <algorithm>
 
+static_assert(sizeof(qzm_value_v1)==48 && offsetof(qzm_value_v1,round_type)==40,"test transition value ABI");
+static_assert(sizeof(qzm_transition_v1)==168 && offsetof(qzm_transition_v1,gate)==24 &&
+              offsetof(qzm_transition_v1,stream)==160,"test transition call ABI");
+
 namespace test {
 std::vector<qzm_transition_v1> transitions;
 std::vector<qzm_finish_v1> finishes;
