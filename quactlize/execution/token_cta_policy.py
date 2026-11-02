@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 TABLE = ROOT/'policies/kpack_token_cta_v1.json'
 CATALOG = ROOT/'quactlize/execution/token_cta.inc'
 ARCHIVE = '28a8d7dbaea294311ac1d2b61c329b39068c246f8bf3a585e0a146069a3c1631'
-EVIDENCE = 'd279a80ac6b116259166122f4267e568ae25bb8006092f26d3a62f463e844bf5'
+EVIDENCE = '767c544b34eba865df83a605331aa45a2b1bc66561d48465060debec6bc703a8'
 FIELDS = ('variant', 'columns', 'warps', 'values', 'split')
 
 
@@ -21,7 +21,7 @@ def verify(data):
                 if k != 'evidence_sha256'}) != EVIDENCE):
         raise ValueError('token CTA evidence identity differs')
     keys = {tuple(r['key']) for r in data['rows']}
-    if len(data['rows']) != 392 or len(keys) != 392 or any(
+    if len(data['rows']) != 432 or len(keys) != 432 or any(
             q not in (8,10,11,12,13,14) or mode or (e,t,ch,compute) != (1,1,1,0) or
             not 1 <= m <= 8 or n <= 0 or k <= 0 for q,mode,n,k,e,t,ch,m,compute in keys):
         raise ValueError('token CTA exact scope differs')
@@ -33,17 +33,24 @@ def verify(data):
                 chosen['mean_us'] != row['candidate_means_us'][chosen['id']] or
                 not all(math.isfinite(t) and t > 0 for t in row['candidate_means_us'].values())):
             raise ValueError('token CTA selected mean/numerics differ')
-        if row['cohort'] == 'concat':
+        if row['cohort'] in ('concat','dense-concat'):
             from quactlize.dispatch.catalog_confirmation import validate, smallm_configuration
             value = chosen['confirmation']
             validate(value)
             if ((chosen['config'], chosen['implementation']) != smallm_configuration(value) or
                     chosen['mean_us'] != value['mean_us'] or chosen['recipe'] != value['binding']['recipe'] or
-                    row['key'] != [8,0,value['workload']['n'],value['workload']['k'],1,1,1,value['workload']['m'],0]):
+                    row['key'] != [value['workload']['qtype'],0,value['workload']['n'],value['workload']['k'],1,1,1,value['workload']['m'],0]):
                 raise ValueError('concat reader differs from measured configuration')
         elif not 0 <= chosen['numerical_error'] < .005:
             raise ValueError('token CTA selected numerics differ')
         impl, config = chosen['implementation'], chosen['config']
+        if config.get('legacy_adapters'):
+            original = row['original_cpp']
+            expected = dict(kind='tc', **original['parent'], legacy_adapters=True,
+                            **{k:original[k] for k in ('split','grid_mode','grid_b')})
+            expected['parent_persistent'] = expected.pop('persistent')
+            if row['changed'] or not original['native_f16'] or config != expected:
+                raise ValueError('retained native F16 call differs from its measured control')
         if row['latency_provenance']['quactlize_commit'] != data['cohorts'][row['cohort']]['source_revision']['quactlize_commit']:
             raise ValueError('token CTA source provenance differs')
         if impl['kind'] == 'token-cta':
@@ -58,7 +65,7 @@ def verify(data):
                 raise ValueError('unmeasured Q8 address implementation')
         elif impl['kind'] != 'shipping':
             raise ValueError('unknown measured implementation')
-    if sum(r['selected']['implementation']['kind']=='token-cta' for r in data['rows']) != 130:
+    if sum(r['selected']['implementation']['kind']=='token-cta' for r in data['rows']) != 136:
         raise ValueError('token CTA binding denominator differs')
 
 
@@ -79,6 +86,10 @@ def apply(baseline):
     result = copy.deepcopy(baseline)
     exact = {tuple(r['key']): r for r in result['exact']}
     for measured in data['rows']:
+        # A winning native-F16 control keeps its existing complete provider
+        # path. This small-M table describes F32-output TC calls, not adapters.
+        if measured['selected']['config'].get('legacy_adapters'):
+            continue
         row = exact.get(tuple(measured['key']))
         if not measured['changed'] and row is not None:
             continue

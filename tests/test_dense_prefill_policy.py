@@ -21,9 +21,9 @@ def test_all_exact_rows_are_complete_call_minima():
     data = evidence()
     validate(data)
     assert render(data) == HEADER.read_text()
-    assert len(data['points']) == 560
-    assert len(data['reviews']) == 8
-    assert sum('model_confirmation' in p for p in data['points']) == 20
+    assert len(data['points']) == 609
+    assert len(data['reviews']) == 9
+    assert sum('model_confirmation' in p for p in data['points']) == 69
     assert all(p['winner_evidence']['captures'] == 2 for p in data['points'] if 'model_confirmation' not in p)
     assert all(p['native_us'] is None for p in data['points'])
     old = [p for p in data['superseded_points'] if p['native_us'] is not None]
@@ -165,5 +165,5 @@ int main() {
     for n in (34816,51200):
         for m in (512,1024,2048,4096,5120):
             index, policy = predicted((12,m,n,5120))
-            assert index >= 0 and policy == 21
+            assert index >= 0 and policy == 20
             assert data['recipes'][used[index]]['route'] in (1,2)

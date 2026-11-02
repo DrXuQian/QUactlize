@@ -61,7 +61,7 @@ def test_public_provider_orchestration_and_poc_selection(tmp_path):
     from quactlize.dispatch.planning import plan_smallm
     controls=[json.loads(line.split(' ',1)[1]) for line in result.stdout.splitlines()
               if line.startswith('DENSE_M_CONTROL ')]
-    assert len(controls)==376
+    assert len(controls)==416
     planned=plan_smallm(tmp_path,[r['request'] for r in controls],dense_fallbacks=True)
     for actual,expected in zip(controls,planned['requests']):
         assert expected['status']==0 and actual['kind']==expected['kind']

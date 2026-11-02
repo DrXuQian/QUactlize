@@ -178,6 +178,25 @@ int main() {
         }
         test::exercise(p);++cases;kImages.clear();
     }
+    // Merged dense families keep their measured 2N projection and the original
+    // hidden-width Down. No fused epilogue is admitted for these families.
+    for(auto family:std::vector<std::pair<int,int>>{{12,25600},{11,17408},{12,17408},{13,17408},{14,17408}})
+    for(int m:{1,2,3,4,5,6,7,8,16,32,64,128,256,512,1024,2048,4096,5120}) {
+        auto [q,n]=family;auto a=test::ffn_params(q,m,true,true);
+        a.input_row_stride=a.input_token_stride=a.output_stride=5120;
+        a.gate=test::weight(q,2*n,5120,1,0);a.down=test::weight(14,5120,n,1,6);
+        auto ctx=std::make_unique<Context>();
+        void* handle=nullptr;quactlize_ppu_ffn_plan_info_v1 info{1,sizeof(info)};
+        int rc=quactlize_ppu_ffn_prepare_v1(ctx.get(),&a,&handle,&info);
+        if(rc) std::cerr<<quactlize_ppu_ffn_error_v1()<<'\n';assert(!rc && handle);
+        auto& p=*static_cast<quactlize::ffn::Plan*>(handle);
+        assert(!p.fused && !p.stages[1].dense && info.projections[1].route==-1);
+        auto const& gate=static_cast<test::Dense*>(p.stages[0].dense)->shape;
+        auto const& down=static_cast<test::Dense*>(p.stages[2].dense)->shape;
+        assert(gate.qtype==q && gate.m==m && gate.n==2*n && gate.k==5120);
+        assert(down.qtype==14 && down.m==m && down.n==5120 && down.k==n);
+        test::exercise(p);++cases;kImages.clear();
+    }
     for(bool dense:{false,true}) for(int k:{2048,3072}) for(int m:{1,2,3,4,5,6,7,8}) {
         int n=dense && k==3072?1024:512;
         auto a=test::ffn_params(dense?8:12,m,true,dense);

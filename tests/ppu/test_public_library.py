@@ -40,7 +40,7 @@ def m_span_boundary_points():
 
 def middle_m_points():
     # A bounded public-ABI smoke for both newly admitted TC routes at each
-    # transition M. The exhaustive 560-row selection replay remains host-only.
+    # transition M. Exhaustive selection replay remains host-only.
     data=json.loads(EVIDENCE.read_text())
     points=[min((p for p in data['points'] if p['shape'][1]==m and
                  data['recipes'][p['winner']]['route']==route),
@@ -54,7 +54,7 @@ def concat_prefill_points():
     # contracts. Small-M coverage is already driven by token_choices below.
     data = json.loads(EVIDENCE.read_text())
     points = [p for p in data['points'] if 'model_confirmation' in p]
-    assert len(points) == 20
+    assert len(points) == 69
     return [(p['shape'],data['recipes'][p['winner']]) for p in points]
 
 
@@ -139,6 +139,8 @@ def run_dense(package, sdk, q, m, compute, record_property, *, full=False,n=256,
                 if f['kind']=='tc':
                     assert info.route==f['route'] and info.split==f['split']
                     assert info.config.decode()==f['symbol']
+                    if f.get('legacy_adapters'):
+                        assert info.policy==17, 'retained native F16 control lost its adapter contract'
                 elif f['kind']=='q4':
                     assert info.route==2 and info.split==1
                     assert info.config.decode()==f'q4:r{f["reader"]}:v{f["variant"]}:w{f["warps"]}:x{f["values"]}:c{f["columns"]}'

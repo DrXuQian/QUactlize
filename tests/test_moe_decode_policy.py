@@ -68,7 +68,7 @@ def test_refresh_only_measured_keys_and_preserve_every_bucket_donor(table):
     before = baseline()
     after = gen.effective(json.loads(gen.EVIDENCE.read_bytes()))
     keys = {tuple(r['key']) for r in table['rows']}
-    assert len(before['exact']) == len(after['exact']) == 2103
+    assert len(before['exact']) == len(after['exact']) == 2135
     observed, config_changes = set(), set()
     for old, new in zip(before['exact'], after['exact']):
         assert old['key'] == new['key']
