@@ -14,13 +14,17 @@ from quactlize.runtime.tuning import digest
 ROOT = Path(__file__).resolve().parents[2]
 TABLE = ROOT / 'policies/kpack_moe_prefill_exact_v1.json'
 HEADER = TABLE.with_suffix('.hpp')
-FAMILIES = ((12,512,2048,1),(12,512,3072,1),(13,2048,512,8),(13,3072,512,8))
+BASE_FAMILIES = ((12,512,2048,1),(12,512,3072,1),(13,2048,512,8),(13,3072,512,8))
+CONCAT_FAMILIES = ((12,1024,2048,1),(12,1024,3072,1))
+FAMILIES = BASE_FAMILIES + CONCAT_FAMILIES
 MS = (16,32,64,128,256,512,1024,2048,4096,5120)
 ROUTERS = ('cluster','real','repeat2','repeat4','spread')
 COMMIT = 'abafc5668827a07cabaf5b5dd91fc27652ed24f4'
 ARCHIVE = '634e363e7ed0255d6c44584d20e719da94b5209597b52c4c9b81d21acf92cc6e'
 REFRESH_COMMIT = '6e35abb64a96f35fb1bc45bf48a036d8f50dfca8'
 REFRESH_ARCHIVE = '342200449fb4029ebf4e0ec6df3a3f5343c456b0a8294c3c859e3a0fca67f311'
+CONCAT_COMMIT = '7cb0a3482d81a86353c7e48e5297145c6ca7a391'
+CONCAT_ARCHIVE = 'c4a85ad4ca2b78cda06c6977378912e77722355fe0774736a2bb2b2d8b04b854'
 
 
 def configuration(recipe):
@@ -51,20 +55,36 @@ def validate(data):
         raise ValueError('MoE prefill evidence scope/identity differs')
     if [r['key'] for r in data['rows']] != [[q,n,k,ch,m] for q,n,k,ch in FAMILIES for m in MS]:
         raise ValueError('MoE prefill measured domain differs')
+    concat = data['concat']
+    if (concat['source_revision']['quactlize_commit'] != CONCAT_COMMIT or
+            concat['archive_sha256'] != CONCAT_ARCHIVE or
+            concat['routers'] != ['cluster','spread'] or
+            concat['baseline'] != 'ORIGINAL_MERGED_PROJECTION' or
+            concat['scope'] != 'CANONICAL_2N_PROJECTION_NOT_SWIGLU_OR_FFN_TIMING'):
+        raise ValueError('MoE concat evidence identity/scope differs')
     for row in data['rows']:
         config = configuration(row['recipe'])
         refreshed = row.get('evidence')
-        if refreshed and (row['key'] not in ([13,2048,512,8,5120],[13,3072,512,8,5120]) or
+        merged = tuple(row['key'][:4]) in CONCAT_FAMILIES
+        if merged:
+            if refreshed != {'cohort':'concat'}:
+                raise ValueError('MoE concat row lacks its measured cohort')
+        elif refreshed and (row['key'] not in ([13,2048,512,8,5120],[13,3072,512,8,5120]) or
                 refreshed['quactlize_commit'] != REFRESH_COMMIT or
                 refreshed['archive_sha256'] != REFRESH_ARCHIVE or
                 refreshed['baseline'] != 'LLAMA_NATIVE' or
                 refreshed['timing'] != data['timing']):
             raise ValueError('refreshed MoE evidence identity differs')
-        if config['qtype'] != row['key'][0] or [p['router'] for p in row['profiles']] != list(ROUTERS):
+        routers = concat['routers'] if merged else list(ROUTERS)
+        if config['qtype'] != row['key'][0] or [p['router'] for p in row['profiles']] != routers:
             raise ValueError('MoE format/router coverage differs')
         for p in row['profiles']:
-            baseline = p['native_us'] if refreshed else p['original_us']
-            if (len(p['selected_samples_us']) != (12 if refreshed else 6) or any(len(r)!=5 for r in p['selected_samples_us']) or
+            baseline = p['native_us'] if refreshed and not merged else p['original_us']
+            if merged and (p['latency_provenance']['quactlize_commit'] != CONCAT_COMMIT or
+                    p['authority']['run'] != concat['run_sha256'] or
+                    p['latency_provenance']['timing_method'] != 'ASYS_GPU_ACTIVITY'):
+                raise ValueError('MoE concat profile provenance differs')
+            if (len(p['selected_samples_us']) != (12 if refreshed and not merged else 6) or any(len(r)!=5 for r in p['selected_samples_us']) or
                     any(not math.isfinite(t) or t<=0 for r in p['selected_samples_us'] for t in r) or
                     not math.isclose(statistics.fmean(t for r in p['selected_samples_us'] for t in r),
                                      p['selected_us'],rel_tol=1e-12) or
@@ -81,7 +101,7 @@ def load():
 
 def header(data):
     validate(data)
-    lines=['// Generated from paired five-router confirmations; do not edit.',
+    lines=['// Generated from router-independent projection confirmations; do not edit.',
         '// Complete projection costs with public prepare v2, not native/model admission.',
         '#pragma once','#include "kpack_zw810_heuristic_v1.hpp"',
         'namespace quactlize_moe_prefill_exact_v1 {',

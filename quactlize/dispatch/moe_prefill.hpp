@@ -5,8 +5,8 @@
 namespace quactlize::dispatch::moe_prefill {
 namespace data = quactlize_moe_prefill_exact_v1;
 
-// Ordinary projections only. Never infer an expert distribution from
-// token M, reuse dense costs, or double N for an unmeasured fused gate/up.
+// Canonical projections, including explicitly measured concatenated gate/up.
+// Never infer a router distribution or obtain a merged row by doubling N.
 // The selected call uses public prepare v2 and complete BF16/F32 endpoints.
 inline data::Row const* select(qks_request_v1 const& r,int compute,int channels) {
     if(r.version!=1 || r.size!=sizeof(r) || (r.route!=2 && r.route!=3) ||

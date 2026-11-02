@@ -1,11 +1,11 @@
-// Generated from paired five-router confirmations; do not edit.
+// Generated from router-independent projection confirmations; do not edit.
 // Complete projection costs with public prepare v2, not native/model admission.
 #pragma once
 #include "kpack_zw810_heuristic_v1.hpp"
 namespace quactlize_moe_prefill_exact_v1 {
 using Config = quactlize_kpack_heuristic_v1::Config;
 struct Row { int q,n,k,channels,tokens,dequant; Config config; };
-inline constexpr char kEvidence[] = "2192cb6ad2d0b4594fc8dc9bc3d634e46e9d3a1a3f25f0fd8f4b1b0795850b44";
+inline constexpr char kEvidence[] = "913460f226e55db3f580ace615a0f16faba0bfa44a0ffed59e9bdf6c668aa052";
 inline constexpr Row kRows[] = {
     {12,512,2048,1,16,-1,{"moe-confirmed","fqg_q12_l1_tm16_tn128_tk256_wm16_wn16_s2_ap0_dn64_persistent","MEASURED",12,2,16,128,256,16,16,2,0,64,1,1,2,3,0,UINT64_C(0x51344b5034540001)}},
     {12,512,2048,1,32,-1,{"moe-confirmed","fqg_q12_l1_tm16_tn128_tk256_wm16_wn16_s2_ap0_dn64_persistent","MEASURED",12,2,16,128,256,16,16,2,0,64,1,1,3,3,0,UINT64_C(0x51344b5034540001)}},
@@ -47,5 +47,25 @@ inline constexpr Row kRows[] = {
     {13,3072,512,8,2048,5,{"moe-confirmed","rule_sf_q13_tm64_tn128_tk256_wm64_wn16_stages2_ap0_dn64_persistentm1","MEASURED",13,3,64,128,256,64,16,2,0,64,-1,1,2,2,0,UINT64_C(0x514b504b54000001)}},
     {13,3072,512,8,4096,5,{"moe-confirmed","rule_sf_q13_tm64_tn128_tk256_wm64_wn16_stages2_ap0_dn64_persistentm1","MEASURED",13,3,64,128,256,64,16,2,0,64,-1,1,2,2,0,UINT64_C(0x514b504b54000001)}},
     {13,3072,512,8,5120,5,{"moe-confirmed","rule_sf_q13_tm64_tn128_tk256_wm64_wn16_stages2_ap0_dn64_persistentm1","MEASURED",13,3,64,128,256,64,16,2,0,64,-1,1,2,2,0,UINT64_C(0x514b504b54000001)}},
+    {12,1024,2048,1,16,-1,{"moe-confirmed","fqg_q12_l1_tm16_tn128_tk256_wm16_wn16_s2_ap0_dn64_persistent","MEASURED",12,2,16,128,256,16,16,2,0,64,1,2,3,4,0,UINT64_C(0x51344b5034540001)}},
+    {12,1024,2048,1,32,-1,{"moe-confirmed","fqg_q12_l1_tm16_tn128_tk256_wm16_wn16_s2_ap0_dn64_persistent","MEASURED",12,2,16,128,256,16,16,2,0,64,1,2,2,4,0,UINT64_C(0x51344b5034540001)}},
+    {12,1024,2048,1,64,-1,{"moe-confirmed","fqg_q12_l1_tm16_tn128_tk256_wm16_wn16_s2_ap0_dn64_persistent","MEASURED",12,2,16,128,256,16,16,2,0,64,1,1,3,4,0,UINT64_C(0x51344b5034540001)}},
+    {12,1024,2048,1,128,-1,{"moe-confirmed","fqg_q12_l1_tm16_tn128_tk256_wm16_wn16_s2_ap0_dn64_persistent","MEASURED",12,2,16,128,256,16,16,2,0,64,1,1,2,4,0,UINT64_C(0x51344b5034540001)}},
+    {12,1024,2048,1,256,-1,{"moe-confirmed","fqg_q12_l1_tm16_tn128_tk256_wm16_wn16_s2_ap0_dn64_persistent","MEASURED",12,2,16,128,256,16,16,2,0,64,1,1,3,4,0,UINT64_C(0x51344b5034540001)}},
+    {12,1024,2048,1,512,-1,{"moe-confirmed","fqg_q12_l1_tm16_tn128_tk256_wm16_wn16_s2_ap0_dn64_persistent","MEASURED",12,2,16,128,256,16,16,2,0,64,1,1,3,4,0,UINT64_C(0x51344b5034540001)}},
+    {12,1024,2048,1,1024,5,{"moe-confirmed","sf_q12_a0_tm64_tn64_tk64_wm64_wn32_s3_bc0_ap0_dn64","MEASURED",12,3,64,64,64,64,32,3,0,64,-1,1,0,0,0,UINT64_C(0x51344b5034540001)}},
+    {12,1024,2048,1,2048,5,{"moe-confirmed","sf_q12_a0_tm64_tn64_tk64_wm64_wn32_s3_bc0_ap0_dn16","MEASURED",12,3,64,64,64,64,32,3,0,16,-1,1,2,8,0,UINT64_C(0x51344b5034540001)}},
+    {12,1024,2048,1,4096,5,{"moe-confirmed","sf_q12_a0_tm64_tn64_tk64_wm64_wn32_s3_bc0_ap0_dn16","MEASURED",12,3,64,64,64,64,32,3,0,16,-1,1,3,8,0,UINT64_C(0x51344b5034540001)}},
+    {12,1024,2048,1,5120,5,{"moe-confirmed","sf_q12_a0_tm64_tn64_tk64_wm64_wn32_s3_bc0_ap0_dn16","MEASURED",12,3,64,64,64,64,32,3,0,16,-1,1,3,8,0,UINT64_C(0x51344b5034540001)}},
+    {12,1024,3072,1,16,-1,{"moe-confirmed","rule_fq_q12_tm16_tn128_tk256_wm16_wn32_stages2_ap0_dn32_persistent1","MEASURED",12,2,16,128,256,16,32,2,0,32,1,4,3,4,0,UINT64_C(0x51344b5034540001)}},
+    {12,1024,3072,1,32,-1,{"moe-confirmed","fqg_q12_l1_tm16_tn128_tk256_wm16_wn16_s2_ap0_dn64_persistent","MEASURED",12,2,16,128,256,16,16,2,0,64,1,2,2,4,0,UINT64_C(0x51344b5034540001)}},
+    {12,1024,3072,1,64,-1,{"moe-confirmed","fqg_q12_l1_tm16_tn128_tk256_wm16_wn16_s2_ap0_dn64_persistent","MEASURED",12,2,16,128,256,16,16,2,0,64,1,1,2,4,0,UINT64_C(0x51344b5034540001)}},
+    {12,1024,3072,1,128,-1,{"moe-confirmed","fqg_q12_l1_tm16_tn128_tk256_wm16_wn16_s2_ap0_dn64_persistent","MEASURED",12,2,16,128,256,16,16,2,0,64,1,1,2,4,0,UINT64_C(0x51344b5034540001)}},
+    {12,1024,3072,1,256,-1,{"moe-confirmed","fqg_q12_l1_tm16_tn128_tk256_wm16_wn16_s2_ap0_dn64_persistent","MEASURED",12,2,16,128,256,16,16,2,0,64,1,1,2,4,0,UINT64_C(0x51344b5034540001)}},
+    {12,1024,3072,1,512,-1,{"moe-confirmed","fqg_q12_l1_tm16_tn128_tk256_wm16_wn16_s2_ap0_dn64_persistent","MEASURED",12,2,16,128,256,16,16,2,0,64,1,1,3,4,0,UINT64_C(0x51344b5034540001)}},
+    {12,1024,3072,1,1024,5,{"moe-confirmed","sf_q12_a0_tm64_tn64_tk64_wm64_wn32_s3_bc0_ap0_dn64","MEASURED",12,3,64,64,64,64,32,3,0,64,-1,1,0,0,0,UINT64_C(0x51344b5034540001)}},
+    {12,1024,3072,1,2048,0,{"moe-confirmed","sf_q12_a0_tm64_tn64_tk64_wm64_wn32_s3_bc0_ap0_dn16","MEASURED",12,3,64,64,64,64,32,3,0,16,-1,1,3,8,0,UINT64_C(0x51344b5034540001)}},
+    {12,1024,3072,1,4096,5,{"moe-confirmed","sf_q12_a0_tm64_tn64_tk64_wm64_wn32_s3_bc0_ap0_dn16","MEASURED",12,3,64,64,64,64,32,3,0,16,-1,1,2,8,0,UINT64_C(0x51344b5034540001)}},
+    {12,1024,3072,1,5120,0,{"moe-confirmed","sf_q12_a0_tm64_tn64_tk64_wm64_wn32_s3_bc0_ap0_dn16","MEASURED",12,3,64,64,64,64,32,3,0,16,-1,1,2,8,0,UINT64_C(0x51344b5034540001)}},
 };
 } // namespace quactlize_moe_prefill_exact_v1

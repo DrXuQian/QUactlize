@@ -56,14 +56,18 @@ def test_evidence_mutation_fails_closed(fault):
 
 
 def test_live_cpp_matches_every_measured_recipe(tmp_path):
+    from quactlize.dispatch.moe_prefill_policy import load as load_moe
     live=plan_prefill(tmp_path)
     rows={tuple(r['request']):r for r in live['requests']}
-    assert len(rows)==460
+    assert len(rows)==470
     for p in evidence()['points']:
         row=rows[request(Workload(**p['workload']))]
         selected=recipe_of(row)
         assert same_recipe(selected,Recipe.from_dict(current_recipe(p)))
         assert selected==Recipe.from_dict(current_recipe(p))  # symbols too, not just geometry
+    for r in load_moe()['rows']:
+        q,n,k,ch,m=r['key']
+        assert recipe_of(rows[q,2,n,k,256,8,ch,m,1])==Recipe.from_dict(r['recipe'])
     groups=prewarm_groups(live)
     assert {(c,d) for c,d,_ in groups}=={('f16',False),('bf16',False)}
 

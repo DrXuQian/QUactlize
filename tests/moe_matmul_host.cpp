@@ -156,7 +156,8 @@ int main() {
     for(auto const& r:quactlize::dispatch::moe_prefill::data::kRows) check(test::params(r.q,r.tokens,r.n,r.k,256,8,r.channels));
     for(int q:{8,10,11,12,13,14}) for(int m:{1,2,3,4,5,6,7,8,9,16,32,64,128,256,512,1024,2048,4096,5120,8192})
         for(int ch:{1,2}) check(test::params(q,m,256,512,4,2,ch));
-    for(auto const& family:std::vector<std::vector<int>>{{12,512,2048,1},{12,512,3072,1},{13,2048,512,8},{13,3072,512,8}})
+    for(auto const& family:std::vector<std::vector<int>>{{12,512,2048,1},{12,512,3072,1},{13,2048,512,8},{13,3072,512,8},
+                                                       {12,1024,2048,1},{12,1024,3072,1}})
         for(int m:{1,2,3,4,5,6,7,8,9,17,33,65,129,257,513,1025,2049,4097,5121})
             check(test::params(family[0],m,family[1],family[2],256,8,family[3]));
     std::cout<<"MOE_MATMUL_HOST PASS cases="<<cases<<" device_execution=0\n";

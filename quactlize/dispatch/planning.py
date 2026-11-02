@@ -10,6 +10,10 @@ PREFILL_SCHEMA = 'quactlize.prefill-final-selection.v1'
 
 
 def plan_prefill(output, *, historical=False):
+    from .catalog_prefill import request
+    from .moe_prefill_policy import load as load_moe
+    from .prefill_policy import EVIDENCE, LEGACY
+    from .table import Workload
     executable=Path(output)/'prefill-selection-query'
     subprocess.run(['g++','-std=c++17','-O2','-I'+str(ROOT),
                     str(ROOT/'tools/kpack_selection.cpp'),'-o',str(executable)],check=True)
@@ -18,7 +22,12 @@ def plan_prefill(output, *, historical=False):
     option='--historical-prefill-inventory' if historical else '--prefill-inventory'
     text=subprocess.check_output([str(executable),option],text=True)
     rows=[json.loads(line) for line in text.splitlines()]
-    if len(rows)!=(430 if historical else 460) or any(r['status']!=0 or r['policy'] not in (19,22) for r in rows):
+    evidence=ROOT/(LEGACY+'.json') if historical else EVIDENCE
+    expected={request(Workload(**p['workload'])) for p in json.loads(evidence.read_bytes())['points']}
+    if not historical:
+        expected.update((q,2,n,k,256,8,ch,m,1) for q,n,k,ch,m in (r['key'] for r in load_moe()['rows']))
+    if (len(rows)!=len(expected) or {tuple(r['request']) for r in rows}!=expected or
+            any(r['status']!=0 or r['policy'] not in (19,22) for r in rows)):
         raise ValueError('confirmed prefill selector denominator differs')
     return dict(schema=PREFILL_SCHEMA,scope='TYPED_PREFILL_COMPONENT_SELECTION_NOT_MODEL_ADMISSION',requests=rows)
 

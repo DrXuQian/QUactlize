@@ -118,6 +118,33 @@ int main() {
             if(rc) std::cerr<<quactlize_ppu_ffn_error_v1()<<'\n';assert(!rc && handle);
             test::exercise(*static_cast<quactlize::ffn::Plan*>(handle));++cases;kImages.clear();
         }
+    // Real merged Gate/Up families must reach the same selector as independent
+    // projections. Keep Down's original hidden width and channel broadcasting.
+    for(int k:{2048,3072}) for(int m:{9,16,32,64,128,256,512,513,1024,2048,4096,5120,5121}) {
+        auto a=test::ffn_params(12,m,true,false);
+        a.topk=8;a.ids_stride=8;a.weights_stride=8;
+        a.input_row_stride=k;a.input_token_stride=k;a.output_stride=k;
+        a.gate=test::weight(12,1024,k,256,0);a.down=test::weight(13,k,512,256,6);
+        assert(admission(&a)==1);
+        auto ctx=std::make_unique<Context>();ctx->moe=test::context();
+        for(int i:{0,2}) test::install_for(*ctx->moe,moe_params(a,i));
+        void* handle=nullptr;quactlize_ppu_ffn_plan_info_v1 info{1,sizeof(info)};
+        int rc=quactlize_ppu_ffn_prepare_v1(ctx.get(),&a,&handle,&info);
+        if(rc) std::cerr<<quactlize_ppu_ffn_error_v1()<<'\n';assert(!rc && handle);
+        auto& p=*static_cast<quactlize::ffn::Plan*>(handle);
+        assert(!p.stages[1].moe && info.projections[1].route==-1 && info.prepare_stage==0);
+        for(int i:{0,2}) {
+            auto const& projection=*p.stages[i].moe;
+            auto const& params=projection.params;
+            auto row=quactlize::dispatch::moe_prefill::select(projection.request,1,params.channels);
+            assert(row && params.n==(i==0?1024:k) && params.k==(i==0?k:512));
+            assert(params.channels==(i==0?1:8));
+            assert(info.projections[i].policy==(m==row->tokens?22:23));
+            assert(std::string(info.projections[i].config)==row->config.symbol);
+            assert(info.projections[i].split==row->config.split && projection.dequant==row->dequant);
+        }
+        test::exercise(p);++cases;kImages.clear();
+    }
     // All mixed producer boundaries, including only Down TC. Explicit host
     // fixtures do NOT promote these choices into a measured production table.
     for(int mask=0;mask<8;++mask) for(int split:{1,2,4,8}) {

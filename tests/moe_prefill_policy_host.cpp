@@ -27,7 +27,9 @@ int main() {
         auto bad=r;bad.m-=1;assert(!moe_prefill::select(bad,1,row.channels));
         bad=r;bad.mapping_id^=1;assert(!moe_prefill::select(bad,1,row.channels));
         bad=r;bad.experts=128;assert(!moe_prefill::select(bad,1,row.channels));
-        bad=r;bad.n*=2;assert(!moe_prefill::select(bad,1,row.channels));
+        // N1024 is an independently measured gate/up family, not a donor
+        // inferred from the N512 row. Other N neighbors must still miss.
+        bad=r;bad.n+=256;assert(!moe_prefill::select(bad,1,row.channels));
         for(int m:{9,15,17,33,65,129,257,513,1025,2049,4097,5121,8192}) {
             bad=r;bad.max_rows=m;bad.m=m*8;
             assert(moe_prefill::select(bad,1,row.channels));
