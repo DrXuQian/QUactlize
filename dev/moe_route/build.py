@@ -12,12 +12,21 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def revision(root):
+    root=Path(root)
+    if (root/'.quactlize-source.json').exists():
+        from dev.strategy.smallm_asys import revision as source_revision
+        value=source_revision(root)
+        # Frozen Box trees deliberately have no Git metadata. The builders
+        # hash actual inputs separately; unavailable dirtiness is not "clean".
+        return dict(commit=value['quactlize_commit'],tree=value['quactlize_tree'],
+                    actlize_commit=value['actlize_commit'],snapshot=value['snapshot'],dirty=None)
     return dict(commit=subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip(),
                 dirty=bool(subprocess.check_output(['git', '-C', str(root), 'status', '--porcelain'], text=True)))
 
 
 def build(sdk, llama, llama_build, output):
     sdk, llama, llama_build = (Path(p).resolve(strict=True) for p in (sdk, llama, llama_build))
+    source_revision=revision(ROOT)
     output = Path(output).resolve(); output.mkdir(parents=True, exist_ok=False)
     compiler, flags, flag_file = native_flags(llama, llama_build)
     cwd = flag_file.parents[2]
@@ -33,7 +42,7 @@ def build(sdk, llama, llama_build, output):
     native_headers = {str(p.relative_to(llama)): sha(p) for directory in ('ggml/include', 'ggml/src/ggml-cuda')
                       for p in (llama/directory).rglob('*') if p.suffix in ('.h', '.hpp', '.cuh')}
     images += [sdk/'lib'/('lib'+name+'.so') for name in LIBRARIES]
-    identity = dict(quactlize=revision(ROOT), sources=sources, llama=revision(llama),
+    identity = dict(quactlize=source_revision, sources=sources, llama=revision(llama),
                     native_headers=native_headers, native_flags=flags, response_files=responses,
                     libraries={str(p.resolve()): sha(p) for p in images},
                     sdk=str(sdk), compiler_sha256=sha(sdk/'bin/hgcc'),

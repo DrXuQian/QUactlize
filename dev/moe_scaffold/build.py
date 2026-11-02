@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def build(sdk, output):
     sdk = Path(sdk).resolve(strict=True); output = Path(output).resolve()
+    source_revision=revision(ROOT)  # Fail before compiling, not while writing the final receipt.
     output.mkdir(parents=True, exist_ok=False)
     sources = {str(p.relative_to(ROOT)): sha(p) for directory in
         ('quactlize/moe', 'quactlize/routing', 'dev/moe_scaffold', 'dev/moe_route')
@@ -37,7 +38,7 @@ def build(sdk, output):
             rc = subprocess.run(command, env=env, stdout=stream, stderr=subprocess.STDOUT).returncode
         if rc: raise RuntimeError(f'helper build rc={rc}: {log}\n'+log.read_text(errors='replace')[-8000:])
     if any(sha(ROOT/p) != value for p, value in sources.items()): raise ValueError('build sources changed')
-    result = dict(quactlize=revision(ROOT), sources=sources, commands=commands, candidate=str(target),
+    result = dict(quactlize=source_revision, sources=sources, commands=commands, candidate=str(target),
         candidate_sha256=sha(target), compiler_sha256=sha(sdk/'bin/hgcc'),
         libraries={str((sdk/'lib'/('lib'+name+'.so')).resolve()): sha(sdk/'lib'/('lib'+name+'.so')) for name in LIBRARIES},
         sdk=str(sdk), seconds=time.monotonic()-start, production_changed=False)

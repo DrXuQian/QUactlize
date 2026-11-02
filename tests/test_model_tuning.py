@@ -285,6 +285,66 @@ def test_moe_plan_stamp_uses_frozen_receipt_without_git(tmp_path,monkeypatch):
     with pytest.raises(ValueError,match='full commit'):source_stamp(tmp_path)
 
 
+def test_moe_helper_revision_from_archive_and_normal_checkout(tmp_path,monkeypatch):
+    from dev.moe_route.build import revision
+    import subprocess
+    receipt=dict(quactlize_commit='a'*40,quactlize_tree='b'*40,actlize_commit='c'*40,
+                 snapshot='COMMITTED_ARCHIVE')
+    path=tmp_path/'.quactlize-source.json';path.write_text(json.dumps(receipt))
+    with monkeypatch.context() as patch:
+        patch.setattr(subprocess,'check_output',lambda *a,**k:pytest.fail('archive helper invoked Git'))
+        stamp=revision(tmp_path)
+        assert stamp==dict(commit='a'*40,tree='b'*40,actlize_commit='c'*40,
+                           snapshot='COMMITTED_ARCHIVE',dirty=None)
+        receipt['quactlize_commit']='bad';path.write_text(json.dumps(receipt))
+        with pytest.raises(ValueError,match='full commit'):revision(tmp_path)
+    # Keep native llama/ordinary checkout receipts backward-compatible.
+    checkout=tmp_path/'checkout';checkout.mkdir()
+    def git(*args):
+        return subprocess.check_output(['git','-C',str(checkout),'-c','user.name=Test',
+            '-c','user.email=test@example.invalid',*args],text=True).strip()
+    git('init','-q');git('commit','--allow-empty','-qm','host fixture')
+    assert revision(checkout)==dict(commit=git('rev-parse','HEAD'),dirty=False)
+    (checkout/'untracked').write_text('not a clean checkout')
+    assert revision(checkout)['dirty'] is True
+
+
+def test_moe_scaffold_archive_build_receipt_without_git(tmp_path,monkeypatch):
+    from dev.moe_scaffold import build as builder
+    import subprocess
+    root=tmp_path/'source';root.mkdir()
+    receipt=dict(quactlize_commit='a'*40,quactlize_tree='b'*40,actlize_commit='c'*40,
+                 snapshot='COMMITTED_ARCHIVE')
+    (root/'.quactlize-source.json').write_text(json.dumps(receipt))
+    names=('quactlize/routing/route.cu','quactlize/moe/scaffold.cu','quactlize/moe/selection.cpp',
+           'dev/moe_route/build.py','dev/moe_scaffold/build.py','tools/run_moe_scaffold.py',
+           'dev/prefill_asys/trace.py','quactlize/runtime/compiler.py',
+           'dev/strategy/refresh_clock.py','dev/strategy/journal.py')
+    for name in names:
+        path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('HOST RECEIPT TEST ONLY')
+    sdk=tmp_path/'sdk'
+    for name in ('bin/hgcc',*('lib/lib'+n+'.so' for n in builder.LIBRARIES)):
+        path=sdk/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b'HOST SDK DOUBLE')
+    calls=[]
+    def compile(command,**kwargs):
+        calls.append(command)
+        Path(command[command.index('-o')+1]).write_bytes(b'HOST COMPILER DOUBLE, NOT A DEVICE IMAGE')
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(builder,'ROOT',root)
+    monkeypatch.setattr(subprocess,'run',compile)
+    monkeypatch.setattr(subprocess,'check_output',lambda *a,**k:pytest.fail('frozen helper build invoked Git'))
+    out=tmp_path/'build';result=builder.build(sdk,out)
+    assert len(calls)==4 and json.loads((out/'receipt.json').read_bytes())==result
+    assert result['quactlize']['commit']=='a'*40 and result['quactlize']['dirty'] is None
+    builder.verify(result)
+    (root/'quactlize/moe/scaffold.cu').write_text('changed input')
+    with pytest.raises(ValueError,match='helper source changed'):builder.verify(result)
+    receipt['snapshot']='UNVERIFIED';(root/'.quactlize-source.json').write_text(json.dumps(receipt))
+    calls.clear()
+    with pytest.raises(ValueError,match='frozen source receipt'):builder.build(sdk,tmp_path/'bad-build')
+    assert not calls and not (tmp_path/'bad-build').exists()
+
+
 def test_runtime_miss_does_not_claim_new_measurement():
     out=policy.export([measured(point())],expected=[point()['id'],point(2)['id']])
     assert out['status']=='INCOMPLETE' and out['missing']==[point(2)['id']]
