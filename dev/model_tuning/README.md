@@ -86,6 +86,14 @@ and diagnostic log tails, not `.so`, caches, model weights or `.asysrep` files.
 The original traces remain on Box. `ACTLIZE_ROOT` may point to another local
 checkout containing the required pin; its HEAD/worktree is not changed.
 
+For an indexed-prefill run that exceeded the flat resource-pool limit, use
+`tools/retry_moe_refine_box.sh` with `PREVIOUS_RESULTS` and `MEASUREMENT_SOURCE`
+pointing to its original results and frozen source. Stop the original run first.
+The recovery keeps the same cards, reuses valid batches and binaries, and screens
+large pools by geometry/Split-K/algorithm before refining competitive grids.
+It records the new host controller separately from the unchanged measurement
+commit. Resume it with `RESUME_RETRY`; do not edit the old source or run receipts.
+
 The four existing engines are reused, with public Quactlize helpers for MoE.
 TC/SIMT, persistent/Split-K, SF and legal Full routes retain their separate
 resource and arithmetic contracts. Shared helper samples are counted once per

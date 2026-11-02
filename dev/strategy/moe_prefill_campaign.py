@@ -157,7 +157,13 @@ def query_requests(point):
     return out
 
 
-def resolve(point,receipts,images):
+def resolve(point,receipts,images,*,inventory_only=False):
+    """Resolve launches; a full domain is only input to a staged screen.
+
+    inventory_only must NOT be passed straight to the old flat timing loop.
+    It keeps legal Split-K and grid axes for the geometry-then-grid planner.
+    The ordinary flat screen retains its existing budget and recipe identities.
+    """
     w=Workload(**point['workload']);requests=query_requests(point)
     protocol=point.get('search_protocol',PROTOCOL)
     if set(receipts)!=set(requests):raise ValueError('prefill resource coverage differs')
@@ -199,10 +205,11 @@ def resolve(point,receipts,images):
                 # top-k experts each receive all tokens. With two resident
                 # waves already available, defer extra K slices/reducers.
                 blocks=w.topk*math.ceil(w.m/p['tm'])*math.ceil(w.n/p['tn'])
-                if role=='rule' and p['split']>1 and blocks>=2*cu*occ:
+                if not inventory_only and role=='rule' and p['split']>1 and blocks>=2*cu*occ:
                     deferred.append(dict(recipe=r.key,algorithm=int(mode>=2),
                         reason='TWO_RESIDENT_WAVES_WITHOUT_SPLIT',minimum_blocks=blocks,capacity=cu*occ));continue
                 bs=([p.get('grid_b',0)] if not domain else [0] if mode==0 else
+                    range(1,min(32,occ)+1) if inventory_only else
                     sorted(set(protocol['grid_blocks_per_cu'])|{min(32,occ)}))
                 for b in bs:
                     variant=Recipe.make(r.kind,r.route,**(p|dict(grid_mode=mode,grid_b=b)))
@@ -220,8 +227,12 @@ def resolve(point,receipts,images):
         if not any('rule' in a['roles'] and scheduled_key(Recipe.from_dict(a['recipe']))==scheduled_key(r)
                    and a.get('binding',{}).get('launch')==launch for a in arms):
             raise ValueError('bounded grid/Split-K rule omitted historical launch; revise rule')
-    if not arms or not any(a['id']=='original' for a in arms) or len(arms)>384:
-        raise ValueError('empty/missing-control/unbounded resource-resolved prefill pool')
+    if not arms or not any(a['id']=='original' for a in arms):
+        raise ValueError(f'prefill resource pool lacks control: point={point["id"]} arms={len(arms)}')
+    if not inventory_only and len(arms)>384:
+        raise ValueError(f'prefill flat screen exceeds arm limit: point={point["id"]} '
+                         f'seeds={len(point["arms"])} resolved={len(arms)} limit=384; '
+                         'use retry_moe_refine.py for a staged geometry/grid screen')
     return seal(dict(point,arms=arms,resource_rejected=rejected,rule_deferred=deferred,
                      resolved=True,seed_sha256=digest(point)))
 
