@@ -35,6 +35,9 @@ def selected_smi(a):
 
 
 def workload_plan(a):
+    if a.cohort=='dense-swiglu':
+        from dev.dense_swiglu.bench import workload_plan as dense_plan
+        return dense_plan(a.smoke,a.phase)
     if a.cohort=='prefill-kernels':
         from dev.moe_prefill_helpers.bench import workload_plan as prefill_plan
         return prefill_plan(a.smoke,a.phase)
@@ -119,6 +122,8 @@ def main(a):
             from dev.moe_decode_helpers.bench import measure
         elif plan['coverage']['cohort']=='prefill-kernels':
             from dev.moe_prefill_helpers.bench import measure
+        elif plan['coverage']['cohort']=='dense-swiglu':
+            from dev.dense_swiglu.bench import measure
         def progress(done,total,case):
             atomic_json(Path(job['progress']),dict(batch=job['batch'],batches=job['batches'],completed=done,total=total,
                 current=dict(key=case.key,phase=case.phase,m=case.tokens) if case else None,updated_ns=time.time_ns()))
@@ -153,6 +158,9 @@ def main(a):
         elif a.cohort=='prefill-kernels':
             build(a.sdk,a.output/'build',scaffold_source='dev/moe_prefill_helpers/native.cu',
                   extra_sources=('dev/moe_prefill_helpers','dev/moe_decode_helpers'))
+        elif a.cohort=='dense-swiglu':
+            build(a.sdk,a.output/'build',scaffold_source='dev/dense_swiglu/native.cu',
+                  extra_sources=('dev/dense_swiglu','dev/moe_decode_helpers','quactlize/ffn'))
         else:build(a.sdk,a.output/'build')
         atomic_json(a.output/'run.json',plan)
     processes=[];start=time.monotonic()
@@ -197,7 +205,7 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--sdk',type=Path,default=Path(os.environ.get('PPU_SDK','/usr/local/PPU_SDK')))
     parser.add_argument('--output',type=Path);parser.add_argument('--devices',default='0')
-    parser.add_argument('--cohort',choices=('mechanisms','qwen-models','decode-kernels','prefill-kernels'),default='mechanisms')
+    parser.add_argument('--cohort',choices=('mechanisms','qwen-models','decode-kernels','prefill-kernels','dense-swiglu'),default='mechanisms')
     parser.add_argument('--phase',choices=('all','prepare','transition','finish'),default='all')
     parser.add_argument('--asys',type=Path);parser.add_argument('--smoke',action='store_true')
     parser.add_argument('--smi',type=Path,default=os.environ.get('PPU_SMI'))
