@@ -271,7 +271,8 @@ def build(sdk, output, jobs):
     with ThreadPoolExecutor(max_workers=min(jobs, 6)) as pool:
         objects = list(pool.map(compile_one, ('quactlize/dense/runtime.cpp', 'quactlize/dense/copy.cu',
             'quactlize/moe/matmul.cpp','quactlize/moe/selection.cpp',
-            'quactlize/moe/scaffold.cu','quactlize/routing/route.cu','quactlize/ffn/ffn.cpp')))
+            'quactlize/moe/scaffold.cu','quactlize/routing/route.cu','quactlize/ffn/ffn.cpp',
+            'quactlize/ffn/dense_swiglu.cu')))
     objects += [work / 'packing' / (name + '.o') for name in ('sizes.cpp', 'ppu_pack.cu')]
     run('public', ['g++', '-shared', '-pthread', '-Wl,-Bsymbolic', '-Wl,-z,defs',
         '-Wl,-soname,' + PUBLIC_LIBRARY, '-Wl,-rpath,$ORIGIN/quactlize-runtime',

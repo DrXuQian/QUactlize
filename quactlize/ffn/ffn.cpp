@@ -1,4 +1,5 @@
 #include "validation.hpp"
+#include "dense_swiglu.hpp"
 #include "../moe/matmul_internal.hpp"
 #include "../moe/grouped.hpp"
 #include "../moe/transition.hpp"
@@ -170,7 +171,13 @@ void run(Plan const& p,float const* input,int32_t const* ids,float const* weight
         (uint64_t(a.tokens-1)*a.weights_stride+a.topk)*4,output,
         (uint64_t(a.tokens-1)*a.output_stride+a.down.n)*4);
     auto retained=reinterpret_cast<float*>(base+p.retained_weights);
-    int transition_rc=retain?moe::transition_snapshot(&c,weights,a.weights_stride,retained):
+    int transition_rc;
+    if(a.kind==QUACTLIZE_FFN_DENSE) {
+        auto g=static_cast<float const*>(gate.data);
+        auto u=a.merged?g+a.down.k:static_cast<float const*>(up.data);
+        transition_rc=dense_swiglu(g,u,static_cast<float*>(c.output),a.tokens,a.down.k,
+            gate.row_stride,a.merged?gate.row_stride:up.row_stride,c.output_stride,stream);
+    } else transition_rc=retain?moe::transition_snapshot(&c,weights,a.weights_stride,retained):
         quactlize_ppu_moe_transition_run_v1(&c);
     require(transition_rc==QZR_OK,"FFN SwiGLU/transition failed");
     auto activation=reinterpret_cast<float const*>(base+p.activation);

@@ -17,7 +17,7 @@ HOST = (
     "test_kpack_public_contract.py", "test_kquant_any_m_abi.py",
     "test_kquant_selected_config_abi.py", "test_kquant_measured_policy.py",
     "test_kpack_policy.py", "test_kpack_native_dispatch.py", "test_kpack_jit.py",
-    "test_kpack_dynamic.py", "test_dense_provider.py", "test_ppu_library_package.py",
+    "test_kpack_dynamic.py", "test_dense_provider.py", "test_ppu_library_package.py", "test_dense_swiglu.py",
     "test_kpack_execution.py", "test_kpack_indexed.py", "test_bf16_compute.py",
     "test_bf16_metadata.py", "test_bf16_fastpath.py", "test_kpack_dequant.py",
     "test_kpack_prefill_runtime.py", "test_simt_scale_fields.py",

@@ -39,6 +39,17 @@ extern "C" int quactlize_ppu_moe_transition_run_v1(qzm_transition_v1 const* c) {
     assert(c->stream==test::last_stream);test::transitions.push_back(*c);
     test::launches.push_back("transition");return 0;
 }
+int quactlize::ffn::dense_swiglu(float const* gate,float const* up,float* output,int rows,int hidden,
+    int64_t gate_stride,int64_t up_stride,int64_t output_stride,void* stream) {
+    assert(gate && up && output && stream==test::last_stream);
+    qzm_transition_v1 t{1,sizeof(t)};t.tokens=rows;t.topk=1;t.hidden=hidden;
+    t.merged=up==gate+hidden && gate_stride==up_stride;
+    t.gate={gate,QZM_F32,QZM_TOKEN_SLOT,QZM_PROJECTED,1,gate_stride,0,QZM_F32,0};
+    if(!t.merged) t.up={up,QZM_F32,QZM_TOKEN_SLOT,QZM_PROJECTED,1,up_stride,0,QZM_F32,0};
+    t.output=output;t.output_dtype=QZM_F32;t.output_order=QZM_TOKEN_SLOT;t.output_stride=output_stride;t.stream=stream;
+    uint32_t ops=0;assert(!quactlize::moe::transition(t,ops,true));assert(ops==QZM_SWIGLU);
+    test::transitions.push_back(t);test::launches.push_back("dense-swiglu");return 0;
+}
 int quactlize::moe::transition_snapshot(qzm_transition_v1 const* c,float const* weights,int64_t stride,float* retained) {
     assert(weights && retained && stride>=c->topk);
     test::snapshots.emplace_back(weights,stride,retained);
@@ -79,6 +90,8 @@ void exercise(quactlize::ffn::Plan& p) {
         if(rc) std::cerr<<quactlize_ppu_ffn_error_v1()<<'\n';assert(!rc);
         assert(transitions.size()==1 &&
             (a.kind==QUACTLIZE_FFN_DENSE?finishes.empty():finishes.size()==1));
+        assert(std::count(launches.begin(),launches.end(),"dense-swiglu")==int(a.kind==QUACTLIZE_FFN_DENSE));
+        assert(std::count(launches.begin(),launches.end(),"transition")==int(a.kind==QUACTLIZE_FFN_MOE));
         assert(std::count(launches.begin(),launches.end(),"prepare")==int(p.info.prepare_stage>=0 && p.info.prepare_stage<2));
         assert(std::count(launches.begin(),launches.end(),"route-only")==int(p.info.prepare_stage==2));
         assert(std::count(launches.begin(),launches.end(),"scatter")==0);
