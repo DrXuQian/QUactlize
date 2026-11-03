@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Existing llama builds, or one build with Quactlize dense disabled/enabled.
+"""Existing llama builds, or one build with Quactlize disabled/enabled.
 
 No build, model conversion tool, numerical evaluation, online config sweep or
 production-policy modification. Raw traces INCLUDE warmup; analysis must exclude
@@ -48,7 +48,25 @@ def digest(path):
 
 def candidate_library(args, build, arm='quactlize'):
     package = getattr(args, 'quactlize_package', None) if arm == 'quactlize' else None
-    return (package if package else build / 'bin') / 'libquactlize_ppu.so'
+    root = package if package else build / 'bin'
+    unified = root / 'libncp_quactlize.so'
+    return unified if unified.is_file() else root / 'libquactlize_ppu.so'
+
+
+def verify_package(package):
+    # The package builder validates selectors/ABI. A model comparison binds
+    # its immutable payload, without interpreting it using an older selector.
+    manifest = json.loads((package / 'manifest.json').read_text())
+    name = manifest.get('library', 'libquactlize_ppu.so')
+    if (manifest.get('schema') != 'quactlize.ppu-library.v1' or
+            name not in ('libncp_quactlize.so', 'libquactlize_ppu.so') or
+            name not in manifest.get('payloads', {})):
+        raise ValueError('invalid unified Quactlize package manifest')
+    for relative, expected in manifest['payloads'].items():
+        path = package / relative
+        if not path.resolve().is_relative_to(package.resolve()) or not path.is_file() or digest(path) != expected:
+            raise ValueError('library payload differs: ' + relative)
+    return manifest
 
 
 def quactlize_enabled(args, arm):
@@ -98,7 +116,7 @@ def environment(args, build, arm):
     # Never let old PoC flags, -ot environment defaults, or a library override
     # leak into this comparison. SDK/system paths remain available after bin.
     env = {k: v for k, v in os.environ.items() if not k.startswith(
-        ('LLAMA_ARG_', 'LLAMA_NUMERICAL_', 'QUACTLIZE_', 'GGML_QUACTLIZE_'))}
+        ('LLAMA_ARG_', 'LLAMA_NUMERICAL_', 'QUACTLIZE_', 'GGML_QUACTLIZE'))}
     for key in ('GGML_CUDA_DISABLE_GRAPHS', 'GGML_CUDA_DISABLE_FUSION',
                 'GGML_NCP_FA_LIB', 'GGML_NCP_MOE_LIB', 'GGML_NCP_GDN_LIB', 'DG_LIBRARY_ROOT'):
         env.pop(key, None)
@@ -110,6 +128,9 @@ def environment(args, build, arm):
                CUDA_HOME=str(args.sdk / 'CUDA_SDK'), CUDA_PATH=str(args.sdk / 'CUDA_SDK'),
                CUDA_TOOLKIT_ROOT=str(args.sdk / 'CUDA_SDK'),
                CUDA_VISIBLE_DEVICES=args.device, LC_ALL='C',
+               GGML_QUACTLIZE='1' if quactlize_enabled(args, arm) else '0',
+               # Legacy dense caller compatibility; current callers use the
+               # unified switch above for both dense and routed operations.
                GGML_QUACTLIZE_DENSE='1' if quactlize_enabled(args, arm) else '0',
                LD_LIBRARY_PATH=':'.join(map(str, paths)) + ':' + env.get('LD_LIBRARY_PATH', ''),
                PATH=str(args.sdk / 'bin') + ':' + str(args.sdk / 'CUDA_SDK/bin') + ':' + env.get('PATH', ''))
@@ -118,6 +139,7 @@ def environment(args, build, arm):
         # Retain the binaries and trace for actual provider verification.
         env['GGML_CUDA_CUBLAS_ACCUMULATOR']=args.cublas_accumulator
     if quactlize_enabled(args, arm):
+        env['QUACTLIZE_PPU_LIBRARY'] = str(candidate_library(args, build, arm))
         env['QUACTLIZE_PPU_PACK_LIBRARY'] = str(candidate_library(args, build, arm))
         # Reuse the installed package's own helper and the normal JIT cache.
         # Never point this binary at the source checkout's newer helper.
@@ -176,9 +198,12 @@ def parse_rows(text, pp, tg, repeats, warmup_passes=1):
                 tpot_ms=statistics.median(r['tpot_ms'] for r in kept))
 
 
-def check_routes(text, arm, pp, require_kpack=True, tp=1):
-    plans = [dict(re.findall(r'(\w+)=([^\s]+)', line)) for line in text.splitlines()
-             if '[quactlize-dense]' in line]
+def check_routes(text, arm, pp, require_kpack=True, tp=1, routed_ffn_layers=0):
+    plans = []
+    for line in text.splitlines():
+        kind = next((kind for kind in ('dense', 'moe', 'ffn') if f'[quactlize-{kind}]' in line), None)
+        if kind:
+            plans.append(dict(re.findall(r'(\w+)=([^\s]+)', line), plan_kind=kind))
     if not require_kpack:
         if plans or '[quactlize-plan]' in text or 'KPACK_JIT_RESOLVE' in text:
             raise ValueError('BF16 control unexpectedly prepares Quactlize quantized compute')
@@ -188,12 +213,20 @@ def check_routes(text, arm, pp, require_kpack=True, tp=1):
         if plans or '[quactlize-plan]' in text:
             raise ValueError('reference unexpectedly uses Quactlize')
     elif not plans or not {'1', str(pp)} <= {p.get('m') for p in plans}:
-        raise ValueError('missing Quactlize dense plans for BOTH decode M1 and prefill; see run.log')
+        raise ValueError('missing Quactlize compute plans for BOTH decode M1 and prefill; see run.log')
     elif tp > 1:
         for rank in range(tp):
             if not {'1', str(pp)} <= {p.get('m') for p in plans if p.get('device') == str(rank)}:
-                raise ValueError(f'missing Quactlize dense M1/prefill plans on TP logical rank {rank}; see run.log')
-    return dict(plans=plans, scope='DENSE_ONLY_MOE_REMAINS_NATIVE',
+                raise ValueError(f'missing Quactlize M1/prefill plans on TP logical rank {rank}; see run.log')
+    ffn = [row for row in plans if row['plan_kind'] == 'ffn' and row.get('kind') == '1']
+    coverage = {str(m): {str(rank): len({row['tensor'] for row in ffn
+                if row.get('m') == str(m) and row.get('device', '0') == str(rank) and row.get('tensor')})
+                for rank in range(tp)} for m in sorted({1, pp})}
+    if routed_ffn_layers and any(count != routed_ffn_layers for ranks in coverage.values() for count in ranks.values()):
+        raise ValueError(f'routed FFN coverage={coverage}, expected {routed_ffn_layers} layers per M/rank; '
+                         'check matched caller/library alias-safe ABI and fusion admission; see run.log')
+    return dict(plans=plans, routed_ffn_layers=coverage,
+                scope='QUACTLIZE_COMPUTE_PLANS_NOT_KERNEL_EXECUTION_PROOF',
                 tp=tp,
                 kernel_execution='REQUIRES_TRACE_MATCHING', no_regression_admitted=False)
 
@@ -221,8 +254,8 @@ def collect_maps(pid):
 def execute(argv, env, directory, label):
     save(directory / 'command.json', dict(argv=argv, environment={k: v for k, v in env.items()
          if k in ('CUDA_VISIBLE_DEVICES', 'PPU_SDK', 'PPU_PATH', 'CUDA_HOME', 'LD_LIBRARY_PATH',
-                  'GGML_QUACTLIZE_DENSE', 'GGML_CUDA_CUBLAS_ACCUMULATOR',
-                  'QUACTLIZE_PPU_PACK_LIBRARY', 'QUACTLIZE_PPU_CACHE_DIR')}))
+                  'GGML_QUACTLIZE', 'GGML_QUACTLIZE_DENSE', 'GGML_CUDA_CUBLAS_ACCUMULATOR',
+                  'QUACTLIZE_PPU_LIBRARY', 'QUACTLIZE_PPU_PACK_LIBRARY', 'QUACTLIZE_PPU_CACHE_DIR')}))
     start = update = time.monotonic()
     maps = set()
     print(f'DENSE_MODEL_AB_START {label} log={directory / "run.log"}', flush=True)
@@ -294,10 +327,11 @@ def snapshot(args, arm, build, output):
     library = candidate_library(args, build, arm)
     runtime = library.parent / 'quactlize-runtime'
     if arm == 'quactlize' and getattr(args, 'quactlize_package', None):
-        from tools.build_ppu_library import verify
         from quactlize.runtime.native import sdk_identity
         package = args.quactlize_package
-        manifest = verify(package)
+        manifest = verify_package(package)
+        if manifest.get('library', 'libquactlize_ppu.so') != library.name:
+            raise ValueError('candidate library differs from package manifest')
         if manifest['sdk'] != sdk_identity(args.sdk):
             raise ValueError('candidate package SDK differs from selected model runtime')
         # Bind the entire private library/JIT closure, not just the top-level
@@ -365,7 +399,12 @@ def run_arm(args, model, arm, phase, build, directory):
     save(directory / 'timings.json', timings)
     tp = getattr(args, 'tp', 1)
     route_arm = 'quactlize' if quactlize_enabled(args, arm) else 'reference'
-    save(directory / 'selection.json', check_routes(text, route_arm, args.pp, require_kpack=not native_only, tp=tp))
+    coverage = check_routes(text, route_arm, args.pp, require_kpack=not native_only, tp=tp,
+                            routed_ffn_layers=getattr(args, 'routed_ffn_layers', 0) if arm == 'quactlize' else 0)
+    save(directory / 'selection.json', coverage)
+    if coverage.get('routed_ffn_layers'):
+        print('MODEL_FFN_COVERAGE ' + json.dumps(dict(arm=arm, phase=phase,
+              layers=coverage['routed_ffn_layers'], scope='PREPARED_PLANS_TRACE_REQUIRED')), flush=True)
     if phase == 'perf':
         maps = json.loads((directory / 'process.json').read_text())['loaded_images']
         for stem in ('libggml-cuda.so', 'libllama.so'):
@@ -379,7 +418,7 @@ def run_arm(args, model, arm, phase, build, directory):
             if not native_only and library not in loaded:
                 raise ValueError(f'{arm} public Quactlize library not found in loaded images')
             for path in loaded:
-                if path.name.startswith('libquactlize') and path.parent not in (
+                if path.name.startswith(('libquactlize', 'libncp_quactlize')) and path.parent not in (
                         library.parent, library.parent / 'quactlize-runtime'):
                     raise ValueError('mixed old/candidate Quactlize runtime: ' + str(path))
     else:
@@ -420,6 +459,8 @@ def main():
     p.add_argument('--compare-quactlize-packages', action='store_true',
                    help='enable Quactlize in BOTH arms: installed build/bin library versus --quactlize-package; '
                         'requires the same caller build and a quantized model')
+    p.add_argument('--routed-ffn-layers', type=int, default=0,
+                   help='optional candidate check: this many fused routed FFN plans at M1 and PP per rank')
     p.add_argument('--cublas-accumulator',choices=('f16','f32'),
                    help='explicit request for caller builds supporting GGML_CUDA_CUBLAS_ACCUMULATOR')
     p.add_argument('--sdk', type=Path, default=Path(os.environ.get('PPU_SDK', '/usr/local/PPU_SDK')))
@@ -458,6 +499,8 @@ def main():
         p.error(str(exc))
     if min(a.pp, a.tg, a.repeats, a.trace_repeats, a.warmup_passes, a.threads, a.threads_batch) < 1:
         p.error('positive workload sizes/repeats are required')
+    if a.routed_ffn_layers < 0 or (a.routed_ffn_layers and a.bf16_model):
+        p.error('--routed-ffn-layers requires a nonnegative count and a quantized model')
     if a.jit_cache and not a.jit_cache.is_absolute():
         p.error('--jit-cache must be absolute')
     a.llama_dir, a.sdk = a.llama_dir.resolve(strict=True), a.sdk.resolve(strict=True)
@@ -484,15 +527,16 @@ def main():
                    input_protocol='BATCHED_BENCH_PSEUDORANDOM_TOKENS_NOT_GENERATED_TEXT_OR_ACCURACY_TEST',
                    builds={k: str(v) for k, v in builds.items()}, results={}, failures=[],
                    caller_control=('SAME_BUILD_TWO_QUACTLIZE_PACKAGES' if a.compare_quactlize_packages else
-                                   'SAME_BUILD_DENSE_ON_OFF' if same_build else 'TWO_BUILD_AB'),
+                                   'SAME_BUILD_QUACTLIZE_ON_OFF' if same_build else 'TWO_BUILD_AB'),
                    compare_quactlize_packages=a.compare_quactlize_packages,
+                   required_routed_ffn_layers=a.routed_ffn_layers,
                    caller_defaults=a.caller_defaults,
                    candidate_package=str(a.quactlize_package) if a.quactlize_package else None,
                    caller_accumulator_request=a.cublas_accumulator,
                    no_regression_admitted=False, correctness_admitted=False,
                    scope=('QUACTLIZE_PACKAGE_AB_NOT_NATIVE_AB' if a.compare_quactlize_packages else
                           'BF16_NATIVE_COMPUTE_BUILD_CONTROL_NOT_QUANTIZED_KERNEL_AB' if a.bf16_model else
-                          'DENSE_INTEGRATION_AB_NOT_CONFIG_SWEEP_MOE_REMAINS_NATIVE'))
+                          'QUACTLIZE_MODEL_AB_NOT_CONFIG_SWEEP'))
     print(f'DENSE_MODEL_AB_RUN run={run} device={a.device} tp={a.tp} pp={a.pp} tg={a.tg} '
           f'request_batch=1 same_build={int(same_build)} caller_defaults={int(a.caller_defaults)} phases=' + a.phases,
           flush=True)

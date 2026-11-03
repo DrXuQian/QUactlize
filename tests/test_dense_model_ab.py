@@ -98,7 +98,8 @@ def test_bf16_control_rejects_incomplete_or_quantized_inventory(tmp_path,fault):
 def test_bf16_does_not_require_quantized_plans_but_rejects_them(arm):
     result=runner.check_routes('ordinary native BF16 GEMM',arm,2048,require_kpack=False)
     assert result['plans']==[] and not result['no_regression_admitted']
-    for marker in ('[quactlize-dense] m=2048','[quactlize-plan]','KPACK_JIT_RESOLVE parent=x'):
+    for marker in ('[quactlize-dense] m=2048','[quactlize-moe] m=2048','[quactlize-ffn] m=2048',
+                   '[quactlize-plan]','KPACK_JIT_RESOLVE parent=x'):
         with pytest.raises(ValueError,match='BF16 control'):
             runner.check_routes(marker,arm,2048,require_kpack=False)
 
@@ -152,6 +153,7 @@ def test_missing_and_duplicate_rows_reject():
 
 def test_no_cross_build_or_old_poc_environment(tmp_path, monkeypatch):
     for k, v in dict(QUACTLIZE_KPACK_EXECUTION='/old', QUACTLIZE_PPU_PACK_LIBRARY='/wrong.so',
+                     GGML_QUACTLIZE='1', QUACTLIZE_PPU_LIBRARY='/wrong-unified.so',
                      QUACTLIZE_KPACK_COMPUTE='bf16', LLAMA_ARG_MODEL='wrong.gguf',
                      GGML_CUDA_DISABLE_GRAPHS='1', GGML_NCP_MOE_LIB='/wrong.so').items():
         monkeypatch.setenv(k, v)
@@ -162,6 +164,7 @@ def test_no_cross_build_or_old_poc_environment(tmp_path, monkeypatch):
         assert env['LD_LIBRARY_PATH'].split(':')[0] == str(build / 'bin')
         assert env['CUDA_VISIBLE_DEVICES'] == '7'
         assert env['GGML_QUACTLIZE_DENSE'] == str(int(arm == 'quactlize'))
+        assert env['GGML_QUACTLIZE'] == str(int(arm == 'quactlize'))
         assert 'GGML_CUDA_DISABLE_GRAPHS' not in env
         assert 'QUACTLIZE_KPACK_EXECUTION' not in env
         assert 'LLAMA_ARG_MODEL' not in env
@@ -169,8 +172,10 @@ def test_no_cross_build_or_old_poc_environment(tmp_path, monkeypatch):
         assert 'QUACTLIZE_KPACK_COMPUTE' not in env
         if arm == 'quactlize':
             assert env['QUACTLIZE_PPU_PACK_LIBRARY'] == str(build / 'bin/libquactlize_ppu.so')
+            assert env['QUACTLIZE_PPU_LIBRARY'] == env['QUACTLIZE_PPU_PACK_LIBRARY']
         else:
             assert 'QUACTLIZE_PPU_PACK_LIBRARY' not in env
+            assert 'QUACTLIZE_PPU_LIBRARY' not in env
 
 
 def test_workload_and_binary_are_explicit(tmp_path):
@@ -253,23 +258,24 @@ def test_candidate_package_does_not_override_reference_or_caller(tmp_path):
 
 
 @pytest.mark.parametrize('wrong_sdk',[False,True])
-def test_fresh_package_snapshot_binds_private_payload_not_old_install(tmp_path,monkeypatch,wrong_sdk):
-    from tools import build_ppu_library
+@pytest.mark.parametrize('library',['libquactlize_ppu.so','libncp_quactlize.so'])
+def test_fresh_package_snapshot_binds_private_payload_not_old_install(tmp_path,monkeypatch,wrong_sdk,library):
     from quactlize.runtime import native
     a=args(tmp_path);a.quactlize_package=tmp_path/'fresh'
     build=tmp_path/'caller';(build/'bin').mkdir(parents=True)
     (build/'bin/llama-batched-bench').write_bytes(b'host fixture, not an executable')
     old_policy=build/'bin/quactlize-runtime/dense-prefill.json'
     old_policy.parent.mkdir();old_policy.write_text('{"old_install":true}')
-    files=['libquactlize_ppu.so','quactlize-runtime/libquactlize_ppu_prefill.so',
+    files=[library,'quactlize-runtime/libquactlize_ppu_prefill.so',
            'quactlize-runtime/dense-prefill.json','quactlize-runtime/jit/kernel.hpp']
     for name in [*files,'manifest.json']:
         path=a.quactlize_package/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('{}')
-    manifest=dict(sdk='a',payloads={name:'not-a-real-device-package' for name in files})
-    monkeypatch.setattr(build_ppu_library,'verify',lambda path:manifest)
+    manifest=dict(sdk='a',library=library,payloads={name:'not-a-real-device-package' for name in files})
+    monkeypatch.setattr(runner,'verify_package',lambda path:manifest)
     monkeypatch.setattr(native,'sdk_identity',lambda path:'b' if wrong_sdk else 'a')
     def command(argv,env,log):
-        assert env['QUACTLIZE_PPU_PACK_LIBRARY']==str(a.quactlize_package/'libquactlize_ppu.so')
+        assert env['QUACTLIZE_PPU_LIBRARY']==str(a.quactlize_package/library)
+        assert env['GGML_QUACTLIZE']=='1'
         log.write_text('--output-format -npp -ntg --fit');return 0
     monkeypatch.setattr(runner,'short_command',command)
     if wrong_sdk:
@@ -283,17 +289,65 @@ def test_fresh_package_snapshot_binds_private_payload_not_old_install(tmp_path,m
         with pytest.raises(ValueError,match='changed during'):runner.check_unchanged(receipt)
 
 
-def test_route_requires_prefill_and_decode_and_leaves_moe_native():
+def test_route_requires_prefill_and_decode_without_claiming_kernel_execution():
     text = ('[quactlize-dense] tensor=blk.0.attn.weight m=1 q=8 config=simt\n'
             '[quactlize-dense] tensor=blk.0.attn.weight m=2048 q=8 config=tc\n')
     out = runner.check_routes(text, 'quactlize', 2048)
     assert len(out['plans']) == 2 and not out['no_regression_admitted']
-    assert out['scope'] == 'DENSE_ONLY_MOE_REMAINS_NATIVE'
+    assert out['scope'] == 'QUACTLIZE_COMPUTE_PLANS_NOT_KERNEL_EXECUTION_PROOF'
     with pytest.raises(ValueError):
         runner.check_routes(text, 'reference', 2048)
     with pytest.raises(ValueError):
         runner.check_routes(text.splitlines()[0], 'quactlize', 2048)
     runner.check_routes('mul_mat_vec_q', 'reference', 2048)
+
+
+def test_current_library_wins_over_legacy_name_and_overrides_only_candidate(tmp_path):
+    a=args(tmp_path);a.quactlize_package=tmp_path/'package'
+    build=tmp_path/'build';(build/'bin').mkdir(parents=True);a.quactlize_package.mkdir()
+    for root in (build/'bin',a.quactlize_package):
+        for name in ('libquactlize_ppu.so','libncp_quactlize.so'):(root/name).touch()
+    for compare in (False,True):
+        a.compare_quactlize_packages=compare
+        reference=runner.environment(a,build,'reference')
+        candidate=runner.environment(a,build,'quactlize')
+        assert reference['GGML_QUACTLIZE']==str(int(compare))
+        assert candidate['GGML_QUACTLIZE']=='1'
+        assert candidate['QUACTLIZE_PPU_LIBRARY']==str(a.quactlize_package/'libncp_quactlize.so')
+        if compare:
+            assert reference['QUACTLIZE_PPU_LIBRARY']==str(build/'bin/libncp_quactlize.so')
+        else:
+            assert 'QUACTLIZE_PPU_LIBRARY' not in reference
+
+
+@pytest.mark.parametrize('library',['libquactlize_ppu.so','libncp_quactlize.so'])
+def test_model_package_verifies_payload_not_checkout_selector(tmp_path,library):
+    path=tmp_path/library;path.write_bytes(b'not a device image; payload hashing fixture')
+    manifest=dict(schema='quactlize.ppu-library.v1',library=library,
+                  payloads={library:runner.digest(path)})
+    runner.save(tmp_path/'manifest.json',manifest)
+    assert runner.verify_package(tmp_path)==manifest
+    path.write_bytes(b'changed')
+    with pytest.raises(ValueError,match='payload differs'):runner.verify_package(tmp_path)
+    manifest['payloads']={};runner.save(tmp_path/'manifest.json',manifest)
+    with pytest.raises(ValueError,match='manifest'):runner.verify_package(tmp_path)
+
+
+def test_all_routed_layers_required_per_m_and_rank_not_duplicated_plan_lines():
+    lines=[f'[quactlize-ffn] tensor=blk.{layer}.ffn_gate_up_exps.weight device={rank} '
+           f'kind=1 m={m} merged=1 input_alias_mask=4 alias_safe=1'
+           for rank in (0,1) for m in (1,2048) for layer in range(40)]
+    result=runner.check_routes('\n'.join(lines*2),'quactlize',2048,tp=2,routed_ffn_layers=40)
+    assert result['routed_ffn_layers']=={'1':{'0':40,'1':40},'2048':{'0':40,'1':40}}
+    assert not result['no_regression_admitted']
+    with pytest.raises(ValueError,match='routed FFN coverage'):
+        runner.check_routes('\n'.join(lines[:-1]),'quactlize',2048,tp=2,routed_ffn_layers=40)
+    # A projection plan does not prove its FFN chain was composed.
+    projection=lines[-1].replace('[quactlize-ffn]','[quactlize-ffn-projection]')
+    with pytest.raises(ValueError,match='routed FFN coverage'):
+        runner.check_routes('\n'.join([*lines[:-1],projection]),'quactlize',2048,tp=2,routed_ffn_layers=40)
+    with pytest.raises(ValueError,match='unexpectedly uses'):
+        runner.check_routes(lines[0],'reference',2048)
 
 
 def test_tp2_requires_decode_and_prefill_plans_on_each_logical_rank():
@@ -478,7 +532,7 @@ def test_same_build_control_runs_one_quantized_model(tmp_path,monkeypatch,compar
     with tarfile.open(next(output.glob('*.review.tgz'))) as tar:
         summary=json.load(tar.extractfile('summary.json'))
     assert list(summary['results'])==['explicit-model']
-    assert summary['caller_control']==('SAME_BUILD_TWO_QUACTLIZE_PACKAGES' if compare_packages else 'SAME_BUILD_DENSE_ON_OFF')
+    assert summary['caller_control']==('SAME_BUILD_TWO_QUACTLIZE_PACKAGES' if compare_packages else 'SAME_BUILD_QUACTLIZE_ON_OFF')
     assert summary['caller_defaults'] and summary['compare_quactlize_packages']==compare_packages
     if compare_packages:assert summary['scope']=='QUACTLIZE_PACKAGE_AB_NOT_NATIVE_AB'
     assert summary['split_mode']=='binary-default'
