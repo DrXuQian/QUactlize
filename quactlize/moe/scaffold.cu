@@ -215,6 +215,56 @@ __global__ void finish_kernel(qzm_finish_v1 c) {
         c.output[int64_t(token)*c.output_stride+col]=sum;
     }
 }
+
+// Already-projected token-slot F32 values need neither map lookup nor a
+// reduction/rounding dispatch. Keep the same slot order and F32 arithmetic.
+__global__ void finish_projected(qzm_finish_v1 c) {
+    int64_t col=int64_t(blockIdx.x)*128+threadIdx.x;
+    if(col>=c.columns) return;
+    for(int64_t token=blockIdx.y;token<c.tokens;token+=gridDim.y) {
+        auto base=static_cast<float const*>(c.down.data)+token*8*c.down.row_stride+col;
+        auto weights=c.weights+token*c.weights_stride;
+        float sum=0.f;
+        #pragma unroll
+        for(int slot=0;slot<8;++slot) {
+            float v=base[int64_t(slot)*c.down.row_stride];
+            float product=__fmul_rn(v,weights[slot]);
+            sum=slot?__fadd_rn(sum,product):product;
+        }
+        c.output[token*c.output_stride+col]=sum;
+    }
+}
+template<bool Snapshot>
+__global__ void transition_projected(qzm_transition_v1 c,int nr,float const* weights,
+                                     int64_t weights_stride,float* retained) {
+    int64_t col=int64_t(blockIdx.x)*256+threadIdx.x;
+    for(int64_t row=blockIdx.y;row<nr;row+=gridDim.y) {
+        if constexpr(Snapshot) {
+            // One writer per slot; Down/finish follows this launch on the same stream.
+            if(blockIdx.x==0 && threadIdx.x==0)
+                retained[row]=weights[(row/c.topk)*weights_stride+row%c.topk];
+        }
+        if(col>=c.hidden) continue;
+        auto input=static_cast<float const*>(c.gate.data)+row*c.gate.row_stride+col;
+        float g=input[0],u=input[c.hidden];
+        float v=(g/(1.f+expf(-g)))*u;
+        static_cast<float*>(c.output)[row*c.output_stride+col]=v;
+    }
+}
+template<bool Snapshot>
+int launch_transition(qzm_transition_v1 const& c,float const* weights=nullptr,
+                      int64_t stride=0,float* retained=nullptr) {
+    int nr=c.tokens*c.topk;
+    auto stream=static_cast<hggcStream_t>(c.stream);
+    if(use_projected_transition(c)) {
+        dim3 grid((int64_t(c.hidden)+255)/256,nr>65535?65535:nr);
+        transition_projected<Snapshot><<<grid,256,0,stream>>>(c,nr,weights,stride,retained);
+    } else {
+        int64_t count=int64_t(nr)*((int64_t(c.hidden)+255)/256);
+        transition_kernel<Snapshot><<<int(count>65535?65535:count),256,0,stream>>>(c,nr,weights,stride,retained);
+    }
+    return launch_status();
+}
 } // namespace quactlize::moe
 
 extern "C" int quactlize_ppu_moe_prepare_query_v1(qzm_prepare_v1 const* c,qzr_sizes_v1* out) {
@@ -234,9 +284,7 @@ extern "C" int quactlize_ppu_moe_transition_run_v1(qzm_transition_v1 const* c) {
     using namespace quactlize::moe;
     if(!c) return QZR_INVALID;
     uint32_t ops=0;int rc=transition(*c,ops,true);if(rc || ops==QZM_NOOP) return rc;
-    int64_t nr=int64_t(c->tokens)*c->topk,count=nr*((int64_t(c->hidden)+255)/256);
-    transition_kernel<false><<<int(count>65535?65535:count),256,0,static_cast<hggcStream_t>(c->stream)>>>(*c,int(nr));
-    return launch_status();
+    return launch_transition<false>(*c);
 }
 int quactlize::moe::transition_snapshot(qzm_transition_v1 const* c,float const* weights,int64_t stride,float* retained) {
     if(!c) return QZR_INVALID;
@@ -246,15 +294,17 @@ int quactlize::moe::transition_snapshot(qzm_transition_v1 const* c,float const* 
     rc=matrix_bytes(c->tokens,c->topk,stride,QZM_F32,bytes);if(rc) return rc;
     Spans spans;
     if(spans.add(weights,bytes,4,false) || spans.add(retained,uint64_t(c->tokens)*c->topk*4,4,true)) return QZR_INVALID;
-    int64_t nr=int64_t(c->tokens)*c->topk,count=nr*((int64_t(c->hidden)+255)/256);
-    transition_kernel<true><<<int(count>65535?65535:count),256,0,static_cast<hggcStream_t>(c->stream)>>>(
-        *c,int(nr),weights,stride,retained);
-    return launch_status();
+    return launch_transition<true>(*c,weights,stride,retained);
 }
 extern "C" int quactlize_ppu_moe_finish_run_v1(qzm_finish_v1 const* c) {
     using namespace quactlize::moe;
     if(!c) return QZR_INVALID;
     int rc=finish(*c,true);if(rc || !c->tokens) return rc;
+    if(use_projected_finish(*c)) {
+        dim3 grid((int64_t(c->columns)+127)/128,c->tokens>65535?65535:c->tokens);
+        finish_projected<<<grid,128,0,static_cast<hggcStream_t>(c->stream)>>>(*c);
+        return launch_status();
+    }
     int64_t count=int64_t(c->tokens)*((int64_t(c->columns)+255)/256);
     finish_kernel<<<int(count>65535?65535:count),256,0,static_cast<hggcStream_t>(c->stream)>>>(*c);
     return launch_status();

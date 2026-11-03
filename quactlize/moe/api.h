@@ -89,10 +89,11 @@ typedef struct {
 // not expert order or floating atomics. No fixed token/route-row capacity.
 int quactlize_ppu_moe_finish_run_v1(qzm_finish_v1 const*);
 
-// Selected helpers are additive: the original v1 calls above keep their
-// fixed implementations. AUTO ranks only the measured model-shaped domain;
-// outside it the original implementation is retained. Explicit alternatives
-// remain available for any shape allowed by their query, not just measured M.
+// Selected helpers are additive: v1 calls retain their arithmetic contracts,
+// including typed specializations of projected values. AUTO ranks only the
+// measured model-shaped domain; outside it the original implementation is
+// retained. Explicit alternatives remain available for any shape allowed by
+// their query, not just measured M.
 enum {
     QZM_AUTO=0,
     QZM_PREPARE_FUSED=1, QZM_PREPARE_HYBRID=2, QZM_PREPARE_SEPARATE=3,

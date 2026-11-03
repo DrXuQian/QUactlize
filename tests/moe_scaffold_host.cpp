@@ -11,7 +11,56 @@ static qzm_value_v1 value_at(uintptr_t address,int width,int state=QZM_PROJECTED
     v.partial_stride=40960LL*width;v.round_type=state==QZM_ACTIVATED?QZM_F32:QZM_BF16;
     return v;
 }
+static void projected_helpers() {
+    qzm_finish_v1 f{};f.version=1;f.size=sizeof(f);f.topk=8;f.weights_stride=8;
+    for(int m:{0,1,2,3,4,5,6,7,8,9,16,17,32,64,128,129,2048,5120}) {
+        for(int n:{1,512,2048,2051,3072,4096}) {
+            f.tokens=m;f.columns=n;f.output_stride=n;
+            f.down=value_at(0x1000000000ULL,n);f.down.order=QZM_TOKEN_SLOT;f.down.round_type=QZM_F32;
+            bool wanted=((m>=1 && m<=8) || m==16 || m==128) && (n==2048 || n==3072);
+            assert(use_projected_finish(f)==wanted);
+            qzm_plan_v1 plan{};
+            assert(quactlize_ppu_moe_finish_select_v1(&f,QZM_AUTO,&plan)==0);
+            assert(plan.implementation==QZM_FINISH_SERIAL && plan.stages==int(m>0) && !plan.workspace_bytes);
+            for(int dtype:{QZM_F16,QZM_BF16}) {
+                auto bad=f;bad.down.dtype=dtype;assert(!use_projected_finish(bad));
+                bad=f;bad.down.round_type=dtype;assert(!use_projected_finish(bad));
+            }
+            auto bad=f;bad.down.order=QZM_GROUPED;assert(!use_projected_finish(bad));
+            bad=f;bad.down.state=QZM_PARTIALS;bad.down.partial_count=4;assert(!use_projected_finish(bad));
+            bad=f;bad.topk=6;assert(!use_projected_finish(bad));
+            // Legal strides and changing addresses are call bindings, not cached selection state.
+            ++f.output_stride;++f.down.row_stride;++f.weights_stride;f.down.data=nullptr;
+            assert(use_projected_finish(f)==wanted);
+        }
+    }
+    qzm_transition_v1 t{};t.version=1;t.size=sizeof(t);t.merged=1;
+    t.output_dtype=QZM_F32;t.output_order=QZM_TOKEN_SLOT;
+    for(int m:{0,1,2,3,4,5,6,7,8,9,16,17,128,2048,5120}) {
+        for(int h:{1,256,512,513,1024,2048}) for(int k:{1,2,6,8,16}) {
+            t.tokens=m;t.topk=k;t.hidden=h;t.output_stride=h;
+            t.gate=value_at(0x1000000000ULL,2*h);t.gate.order=QZM_TOKEN_SLOT;t.gate.round_type=QZM_F32;
+            bool wanted=m>=1 && m<=8 && (h==512 || h==1024) && (k==1 || k==8);
+            uint32_t ops=0;assert(transition(t,ops,false)==0);
+            assert(ops==uint32_t(m?QZM_SWIGLU:QZM_NOOP));
+            assert(use_projected_transition(t)==wanted);
+            for(int dtype:{QZM_F16,QZM_BF16}) {
+                auto bad=t;bad.gate.dtype=dtype;assert(!use_projected_transition(bad));
+                bad=t;bad.gate.round_type=dtype;assert(!use_projected_transition(bad));
+                bad=t;bad.output_dtype=dtype;assert(!use_projected_transition(bad));
+            }
+            auto bad=t;bad.gate.order=QZM_GROUPED;assert(!use_projected_transition(bad));
+            bad=t;bad.output_order=QZM_GROUPED;assert(!use_projected_transition(bad));
+            bad=t;bad.gate.state=QZM_PARTIALS;bad.gate.partial_count=4;assert(!use_projected_transition(bad));
+            bad=t;bad.gate.state=QZM_ACTIVATED;assert(!use_projected_transition(bad));
+            bad=t;bad.merged=0;assert(!use_projected_transition(bad));
+            ++t.output_stride;++t.gate.row_stride;t.gate.data=nullptr;t.stream=reinterpret_cast<void*>(2);
+            assert(use_projected_transition(t)==wanted);
+        }
+    }
+}
 int main() {
+    projected_helpers();
     static_assert(sizeof(qzm_value_v1)==48);
     static_assert(sizeof(qzm_prepare_plan_v2)==48);
     qzm_prepare_v1 p{};p.version=1;p.size=sizeof(p);

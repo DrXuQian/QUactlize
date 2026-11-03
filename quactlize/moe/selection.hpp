@@ -2,6 +2,24 @@
 #include "validation.hpp"
 
 namespace quactlize::moe {
+// ZW810/1700MHz, source 75ede1de; Asys archive SHA256
+// b795f3fc16569a8d9170c76f60a3ebd21a8670cec153d9a63deb3d7b2f5bb8cb.
+// One fixed geometry per helper; leave other producer contracts and unmeasured
+// shapes on their existing paths. These checks run after descriptor validation.
+inline bool use_projected_finish(qzm_finish_v1 const& c) {
+    return ((c.tokens>=1 && c.tokens<=8) || c.tokens==16 || c.tokens==128) &&
+        (c.columns==2048 || c.columns==3072) && c.topk==8 &&
+        c.down.dtype==QZM_F32 && c.down.round_type==QZM_F32 &&
+        c.down.order==QZM_TOKEN_SLOT && c.down.state==QZM_PROJECTED && c.down.partial_count==1;
+}
+inline bool use_projected_transition(qzm_transition_v1 const& c) {
+    return c.tokens>=1 && c.tokens<=8 && (c.topk==1 || c.topk==8) &&
+        (c.hidden==512 || c.hidden==1024) && c.merged==1 &&
+        c.gate.dtype==QZM_F32 && c.gate.round_type==QZM_F32 &&
+        c.gate.order==QZM_TOKEN_SLOT && c.gate.state==QZM_PROJECTED && c.gate.partial_count==1 &&
+        c.output_dtype==QZM_F32 && c.output_order==QZM_TOKEN_SLOT;
+}
+
 // ZW810/SDK2.1.1, measured source 7169721d; archive SHA256
 // 7cf59b73d62cd0f23d29d5a1ac186ed31e99abea1df50777a31e8c6e2ac257c7.
 // Actual before/after clocks 1700MHz, Asys component means. This exact scope
