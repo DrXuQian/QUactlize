@@ -12,6 +12,7 @@ static_assert(sizeof(qzm_transition_v1)==168 && offsetof(qzm_transition_v1,gate)
 namespace test {
 std::vector<qzm_transition_v1> transitions;
 std::vector<qzm_finish_v1> finishes;
+std::vector<std::tuple<float const*,int64_t,float*>> snapshots;
 struct Dense {quactlize_ppu_dense_params_v1 shape;};
 struct DenseContext {std::vector<std::unique_ptr<Dense>> plans;};
 }
@@ -37,6 +38,11 @@ extern "C" int quactlize_ppu_moe_transition_run_v1(qzm_transition_v1 const* c) {
     uint32_t ops=0;assert(!quactlize::moe::transition(*c,ops,true));assert(ops & QZM_SWIGLU);
     assert(c->stream==test::last_stream);test::transitions.push_back(*c);
     test::launches.push_back("transition");return 0;
+}
+int quactlize::moe::transition_snapshot(qzm_transition_v1 const* c,float const* weights,int64_t stride,float* retained) {
+    assert(weights && retained && stride>=c->topk);
+    test::snapshots.emplace_back(weights,stride,retained);
+    return quactlize_ppu_moe_transition_run_v1(c);
 }
 extern "C" int quactlize_ppu_moe_finish_execute_v1(qzm_finish_v1 const* c,qzm_plan_v1 const* p,void* scratch,uint64_t bytes) {
     assert(!quactlize::moe::finish(*c,true));
@@ -87,6 +93,30 @@ void exercise(quactlize::ffn::Plan& p) {
         assert(quactlize_ppu_ffn_run_v1(&p,input,ids,weights,out,scratch,p.info.workspace_bytes-1,last_stream));
         assert(quactlize_ppu_ffn_run_v1(&p,input,ids,weights,const_cast<float*>(static_cast<float const*>(a.gate.low)),scratch,p.info.workspace_bytes,last_stream));
         assert(quactlize_ppu_ffn_run_v1(&p,input,ids,weights,out,const_cast<float*>(input),p.info.workspace_bytes,last_stream));
+        assert(launches.empty());
+        // v2 permits inputs reused by the final output, without another launch.
+        for(int alias=0;alias<(a.kind==QUACTLIZE_FFN_MOE?4:1);++alias) {
+            auto target=alias==0?input:alias==1?reinterpret_cast<float*>(ids):weights;
+            auto source_ids=alias==3?reinterpret_cast<int32_t*>(target):ids;
+            auto source_a=alias==3?target:input;
+            last_ids=source_ids;last_a=source_a;
+            launches.clear();transitions.clear();finishes.clear();snapshots.clear();
+            assert(!quactlize_ppu_ffn_run_v2(&p,source_a,source_ids,weights,target,scratch,p.info.workspace_bytes,last_stream));
+            const auto sequence=launches;
+            bool retain=a.kind==QUACTLIZE_FFN_MOE && alias>=2;
+            assert(snapshots.size()==size_t(retain));
+            if(retain) {
+                auto saved=static_cast<float*>(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(scratch)+p.retained_weights));
+                assert(std::get<0>(snapshots[0])==weights && std::get<1>(snapshots[0])==a.weights_stride &&
+                    std::get<2>(snapshots[0])==saved && finishes[0].weights==saved && finishes[0].weights_stride==a.topk);
+            }
+            launches.clear();
+            assert(!quactlize_ppu_ffn_run_v2(&p,source_a,source_ids,weights,out,scratch,p.info.workspace_bytes,last_stream));
+            assert(launches==sequence);
+        }
+        last_ids=ids;last_a=input;launches.clear();
+        assert(quactlize_ppu_ffn_run_v2(&p,input,ids,weights,out,input,p.info.workspace_bytes,last_stream));
+        assert(quactlize_ppu_ffn_run_v2(&p,input,ids,weights,const_cast<float*>(static_cast<float const*>(a.gate.low)),scratch,p.info.workspace_bytes,last_stream));
         assert(launches.empty());
         device=1;assert(quactlize_ppu_ffn_run_v1(&p,input,ids,weights,out,scratch,p.info.workspace_bytes,last_stream));device=0;
     }
@@ -237,7 +267,8 @@ int main() {
         }
         auto const& down=p.stages[2];p.activation=down.tc()?down.scratch+down.moe->input:reserve(cursor,uint64_t(a.tokens)*a.topk*a.down.k*4);
         auto f=finish_call(p,down.value);assert(!quactlize_ppu_moe_finish_select_v1(&f,QZM_AUTO,&p.finish));
-        p.finish_scratch=reserve(cursor,p.finish.workspace_bytes);p.info.workspace_bytes=cursor;
+        p.finish_scratch=reserve(cursor,p.finish.workspace_bytes);
+        p.retained_weights=reserve(cursor,uint64_t(a.tokens)*a.topk*4);p.info.workspace_bytes=cursor;
         test::exercise(p);++cases;kImages.clear();
     }
     std::cout<<"FFN_HOST PASS cases="<<cases<<" device_execution=0\n";

@@ -1,6 +1,7 @@
 #include "validation.hpp"
 #include "../moe/matmul_internal.hpp"
 #include "../moe/grouped.hpp"
+#include "../moe/transition.hpp"
 #include <cstdio>
 
 namespace quactlize::ffn {
@@ -22,7 +23,7 @@ struct Plan {
     quactlize_ppu_ffn_params_v1 params{};
     quactlize_ppu_ffn_plan_info_v1 info{1,sizeof(info)};
     Stage stages[3];
-    uint64_t activation=0,finish_scratch=0;
+    uint64_t activation=0,finish_scratch=0,retained_weights=0;
     qzm_plan_v1 finish{};
 };
 struct Context {
@@ -122,6 +123,7 @@ void prepare(Plan& p) {
         auto c=finish_call(p,down.value);
         require(quactlize_ppu_moe_finish_select_v1(&c,QZM_AUTO,&p.finish)==QZR_OK,"FFN finish selection failed");
         p.info.finish_helper=p.finish.implementation;p.finish_scratch=reserve(cursor,p.finish.workspace_bytes);
+        p.retained_weights=reserve(cursor,uint64_t(a.tokens)*a.topk*4);
     }
     p.info.workspace_bytes=cursor;
 }
@@ -164,12 +166,20 @@ void run(Plan const& p,float const* input,int32_t const* ids,float const* weight
     c.gate=gate;c.up=up;c.output_dtype=p.stages[2].tc()?QZM_BF16:QZM_F32;
     c.output_order=p.stages[2].tc()?QZM_GROUPED:QZM_TOKEN_SLOT;c.output_stride=a.down.k;
     c.output=base+p.activation;c.row_ids=maps.rows;c.inverse_rows=maps.inverse;c.stream=stream;
-    require(quactlize_ppu_moe_transition_run_v1(&c)==QZR_OK,"FFN SwiGLU/transition failed");
+    bool retain=a.kind==QUACTLIZE_FFN_MOE && routing::overlap(weights,
+        (uint64_t(a.tokens-1)*a.weights_stride+a.topk)*4,output,
+        (uint64_t(a.tokens-1)*a.output_stride+a.down.n)*4);
+    auto retained=reinterpret_cast<float*>(base+p.retained_weights);
+    int transition_rc=retain?moe::transition_snapshot(&c,weights,a.weights_stride,retained):
+        quactlize_ppu_moe_transition_run_v1(&c);
+    require(transition_rc==QZR_OK,"FFN SwiGLU/transition failed");
     auto activation=reinterpret_cast<float const*>(base+p.activation);
     auto down=produce(p,2,activation,ids,base+p.activation,maps,base,stream,
                       a.kind==QUACTLIZE_FFN_DENSE?output:nullptr);
     if(a.kind==QUACTLIZE_FFN_MOE) {
-        auto f=finish_call(p,down);f.inverse_rows=maps.inverse;f.weights=weights;f.output=output;f.stream=stream;
+        auto f=finish_call(p,down);f.inverse_rows=maps.inverse;f.weights=retain?retained:weights;
+        if(retain) f.weights_stride=a.topk;
+        f.output=output;f.stream=stream;
         require(quactlize_ppu_moe_finish_execute_v1(&f,&p.finish,
             p.finish.workspace_bytes?base+p.finish_scratch:nullptr,p.finish.workspace_bytes)==QZR_OK,
             "FFN weighted finish failed");
@@ -178,6 +188,15 @@ void run(Plan const& p,float const* input,int32_t const* ids,float const* weight
 template<class F> int boundary(F fn) {
     error.clear();try {fn();return 0;} catch(std::exception const& e) {error=e.what();}
     catch(...) {error="unknown FFN runtime error";}return 1;
+}
+int run_checked(void* plan,float const* input,int32_t const* ids,float const* weights,
+                float* output,void* workspace,uint64_t bytes,void* stream,bool allow_alias) {
+    return boundary([&]{
+        require(plan,"null FFN plan");auto const& p=*static_cast<Plan const*>(plan);mm::device_check(p.owner->device);
+        require(buffers(p.params,input,ids,weights,output,workspace,bytes,p.info.workspace_bytes,allow_alias),
+                "invalid FFN input/IDs/weights/output/workspace extent, alignment or overlap");
+        run(p,input,ids,weights,output,workspace,stream);
+    });
 }
 }
 extern "C" int quactlize_ppu_ffn_supported_v1(quactlize_ppu_ffn_params_v1 const* p) {
@@ -204,13 +223,11 @@ extern "C" int quactlize_ppu_ffn_prepare_v1(void* context,quactlize_ppu_ffn_para
 }
 extern "C" int quactlize_ppu_ffn_run_v1(void* plan,float const* input,int32_t const* ids,float const* weights,
                                       float* output,void* workspace,uint64_t bytes,void* stream) {
-    using namespace quactlize::ffn;
-    return boundary([&]{
-        require(plan,"null FFN plan");auto const& p=*static_cast<quactlize::ffn::Plan const*>(plan);mm::device_check(p.owner->device);
-        require(buffers(p.params,input,ids,weights,output,workspace,bytes,p.info.workspace_bytes),
-                "invalid FFN input/IDs/weights/output/workspace extent, alignment or overlap");
-        run(p,input,ids,weights,output,workspace,stream);
-    });
+    return quactlize::ffn::run_checked(plan,input,ids,weights,output,workspace,bytes,stream,false);
+}
+extern "C" int quactlize_ppu_ffn_run_v2(void* plan,float const* input,int32_t const* ids,float const* weights,
+                                      float* output,void* workspace,uint64_t bytes,void* stream) {
+    return quactlize::ffn::run_checked(plan,input,ids,weights,output,workspace,bytes,stream,true);
 }
 extern "C" void quactlize_ppu_ffn_destroy_v1(void* context) {delete static_cast<quactlize::ffn::Context*>(context);}
 extern "C" char const* quactlize_ppu_ffn_error_v1(void) {return quactlize::ffn::error.c_str();}

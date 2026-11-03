@@ -49,7 +49,7 @@ inline bool planes(quactlize_ppu_ffn_weight_v1 const& w,moe::Spans& spans) {
         !spans.add(w.units,w.sizes.units_bytes,16,false);
 }
 inline bool buffers(quactlize_ppu_ffn_params_v1 const& p,float const* input,int32_t const* ids,
-    float const* weights,float* output,void* scratch,uint64_t available,uint64_t needed) {
+    float const* weights,float* output,void* scratch,uint64_t available,uint64_t needed,bool allow_alias=false) {
     if(available<needed || (p.kind==QUACTLIZE_FFN_DENSE && (ids || weights))) return false;
     moe::Spans spans;
     for(int i=0;i<3;++i) if(!(i==1 && p.merged) && !planes(weight(p,i),spans)) return false;
@@ -60,6 +60,12 @@ inline bool buffers(quactlize_ppu_ffn_params_v1 const& p,float const* input,int3
         uint64_t wb=(uint64_t(p.tokens-1)*p.weights_stride+p.topk)*4;
         if(spans.add(ids,ib,4,false) || spans.add(weights,wb,4,false)) return false;
     }
-    return !spans.add(input,a,16,false) && !spans.add(output,c,16,true) && !spans.add(scratch,needed,256,true);
+    if(spans.add(input,a,16,false) || spans.add(scratch,needed,256,true)) return false;
+    if(!allow_alias) return !spans.add(output,c,16,true);
+    // A and IDs are consumed before final output. Aliased routing weights
+    // are retained by transition; immutable planes and scratch stay disjoint.
+    moe::Spans writes;
+    for(int i=0;i<3;++i) if(!(i==1 && p.merged) && !planes(weight(p,i),writes)) return false;
+    return !writes.add(output,c,16,true) && !writes.add(scratch,needed,256,true);
 }
 }

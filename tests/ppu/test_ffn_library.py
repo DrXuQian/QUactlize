@@ -25,6 +25,19 @@ def test_public_ffn(package, sdk, kind, merged, q):
     run_ffn(package, sdk, kind, merged, q)
 
 
+@pytest.mark.parametrize('kind', [0, 1], ids=['dense', 'moe'])
+@pytest.mark.parametrize('merged', [False, True], ids=['separate', 'canonical-2n'])
+@pytest.mark.parametrize('q', QTYPES)
+def test_public_ffn_alias(package, sdk, kind, merged, q):
+    ms = (1, 8, 9, 128, 513) + ((5120,) if q == 12 and merged else ())
+    run_ffn(package, sdk, kind, merged, q, ms=ms, aliases=True)
+
+
+def test_public_ffn_alias_qwen35(package, sdk):
+    run_ffn(package, sdk, 1, True, 12, k=2048, hidden=512, n=2048,
+            experts=256, topk=8, ms=(1, 2048), down_q=13, input_channels=1, aliases=True)
+
+
 @pytest.mark.parametrize('kind,q,k,hidden,down_q', [
     (0, 8, 2048, 512, 8),
     (0, 8, 3072, 1024, 8),
@@ -40,7 +53,7 @@ def test_public_ffn_model_shapes(package, sdk, kind, q, k, hidden, down_q):
 
 
 def run_ffn(package, sdk, kind, merged, q, *, hidden=512, k=512, n=256,
-            experts=None, topk=None, ms=None, down_q=None, input_channels=None):
+            experts=None, topk=None, ms=None, down_q=None, input_channels=None, aliases=False):
     public = Public(package)
     api = FFN(public.lib)
     projection = MoE(public.lib) if kind else public
@@ -112,6 +125,9 @@ def run_ffn(package, sdk, kind, merged, q, *, hidden=512, k=512, n=256,
                         lanes.append(dict(stream=arena.stream(), a=arena.buffer(m*channels*k*4),
                             ids=arena.buffer(m*topk*4), weights=arena.buffer(m*topk*4),
                             out=arena.buffer(m*n*4), scratch=arena.buffer(info.workspace_bytes)))
+                        if aliases:
+                            lanes[-1]['alias'] = arena.buffer(max(m*channels*k*4, m*n*4, m*topk*8) + 64)
+                            lanes[-1]['alias_graphs'] = {}
                     tmp = [arena.buffer(m*topk*w.n*4) if w.n else None for w in descriptors]
                     work = [arena.buffer(i.workspace_bytes) if i else None for i in control_info]
                     activation = arena.buffer(m*topk*hidden*4)
@@ -123,6 +139,8 @@ def run_ffn(package, sdk, kind, merged, q, *, hidden=512, k=512, n=256,
                                 a = rng.uniform(-.05, .05, (m, channels, k)).astype('f4')
                                 ids = ((np.arange(m)[:, None]*3+np.arange(topk)+repeat+lane) % experts).astype('i4')
                                 weights = rng.uniform(.1, 1, (m, topk)).astype('f4')
+                                if aliases:
+                                    io['host'] = dict(a=a, ids=ids, weights=weights)
                                 io['a'].write(a); io['ids'].write(ids); io['weights'].write(weights); io['out'].poison()
                                 arena.sync()
 
@@ -212,6 +230,9 @@ def run_ffn(package, sdk, kind, merged, q, *, hidden=512, k=512, n=256,
                                     raise AssertionError(f'FFN_CHAIN_CHECK {context_label} repeat={repeat} lane={lane}: {exc}') from exc
                                 for key in ('a', 'ids', 'weights', 'scratch'):
                                     io[key].guard()
+                                if aliases:
+                                    check_aliases(sdk, arena, api, plan, params, io, expected[lane],
+                                                  denominators[lane], repeat, graph_safe, graphs, context_label)
                         print(f'FFN_ACCURACY kind={kind} q={q} down_q={down_q or q} m={m} '
                               f'n={hidden} k={k} swiglu=transition graph={int(graph_safe)} status=PASS', flush=True)
                     finally:
@@ -222,3 +243,37 @@ def run_ffn(package, sdk, kind, merged, q, *, hidden=512, k=512, n=256,
         if control:
             projection.destroy(control)
         api.destroy(context)
+
+
+def check_aliases(sdk, arena, api, plan, params, io, expected, denom, repeat, graph_safe, graphs, label):
+    pool = io['alias']
+    for case in (('a', 'ids', 'weights', 'routing') if params.kind else ('a',)):
+        image = np.full(pool.size, 0xA5, dtype='u1')
+        pointers = {key: io[key].ptr for key in ('a', 'ids', 'weights')}
+        keys = ('ids', 'weights') if case == 'routing' else (case,)
+        offset = 16  # Exercise partial, not only identical, input/output aliases.
+        for key in keys:
+            raw = io['host'][key].view('u1').reshape(-1)
+            image[offset:offset + len(raw)] = raw
+            pointers[key] = pool.ptr + offset
+            offset += (len(raw) + 15) // 16 * 16
+        pool.write(image)
+        arena.sync()
+        args = (plan, pointers['a'], pointers['ids'] if params.kind else None,
+                pointers['weights'] if params.kind else None, pool.ptr,
+                io['scratch'].ptr, io['scratch'].size, io['stream'])
+        assert api.run(*args) != 0, 'v1 must retain its no-alias contract'
+        if repeat == 1 and graph_safe:
+            graph = Replay(sdk, io['stream'], lambda args=args: api.run_alias(*args), 1)
+            io['alias_graphs'][case] = graph
+            graphs.append(graph)
+        graph = io['alias_graphs'].get(case)
+        api.check(graph() if graph else api.run_alias(*args))
+        arena.sync()
+        got = np.frombuffer(pool.bytes(), 'f4', count=params.tokens*params.down.n).reshape(expected.shape)
+        try:
+            compare(got, expected, denom)
+        except ValueError as exc:
+            raise AssertionError(f'FFN_ALIAS_CHECK {label} alias={case} repeat={repeat}: {exc}') from exc
+        io['scratch'].guard()
+        print(f'FFN_ALIAS_CHECK {label} alias={case} repeat={repeat} graph={int(graph is not None)} status=PASS', flush=True)

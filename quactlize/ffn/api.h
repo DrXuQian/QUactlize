@@ -69,6 +69,12 @@ int quactlize_ppu_ffn_prepare_v1(void* context,quactlize_ppu_ffn_params_v1 const
 // Eager warmup before capture remains necessary for dense cuBLAS providers.
 int quactlize_ppu_ffn_run_v1(void* plan,float const* input,int32_t const* ids,float const* weights,
     float* output,void* workspace,uint64_t workspace_bytes,void* stream);
+// Same plan/shape ABI. Final output may overlap A, IDs or routing weights:
+// A/IDs are consumed before output; transition retains overlapping routing
+// weights without another launch. Scratch/packed planes must remain disjoint.
+// v1 keeps its original no-overlap contract.
+int quactlize_ppu_ffn_run_v2(void* plan,float const* input,int32_t const* ids,float const* weights,
+    float* output,void* workspace,uint64_t workspace_bytes,void* stream);
 void quactlize_ppu_ffn_destroy_v1(void* context);
 char const* quactlize_ppu_ffn_error_v1(void);
 

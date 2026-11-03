@@ -39,7 +39,7 @@ PUBLIC_EXPORTS = (
     *('quactlize_ppu_moe_matmul_' + suffix for suffix in (
         'supported_v1', 'create_v1', 'prepare_v1', 'run_v1', 'destroy_v1', 'error_v1')),
     *('quactlize_ppu_ffn_' + suffix for suffix in (
-        'supported_v1', 'create_v1', 'prepare_v1', 'run_v1', 'destroy_v1', 'error_v1')),
+        'supported_v1', 'create_v1', 'prepare_v1', 'run_v1', 'run_v2', 'destroy_v1', 'error_v1')),
 )
 JIT_PYTHON = (
     'quactlize/__init__.py', 'quactlize/runtime/__init__.py',

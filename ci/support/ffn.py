@@ -90,6 +90,7 @@ class Public:
         self.create = bind('create_v1', [C.c_int, C.POINTER(C.c_void_p)])
         self.prepare = bind('prepare_v1', [C.c_void_p, C.POINTER(Params), C.POINTER(C.c_void_p), C.POINTER(Info)])
         self.run = bind('run_v1', [C.c_void_p] * 6 + [C.c_uint64, C.c_void_p])
+        self.run_alias = bind('run_v2', [C.c_void_p] * 6 + [C.c_uint64, C.c_void_p])
         self.destroy = bind('destroy_v1', [C.c_void_p], None)
         self.error = bind('error_v1', [], C.c_char_p)
         self.transition = library.quactlize_ppu_moe_transition_run_v1
