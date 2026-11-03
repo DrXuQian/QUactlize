@@ -99,83 +99,6 @@ __global__ __launch_bounds__(T::Threads) void tc_gate_up(typename T::Params p) {
     }
 }
 
-// Canonical storage uses two ordinary N tiles in one CTA. Pair accumulator
-// coordinates after both mainloops; no global gate/up result exists at S1.
-template<class T>
-__global__ __launch_bounds__(T::Threads) void tc_gate_up_canonical(typename T::Params p) {
-    using namespace cute;
-    auto const& c=p.call;
-    int batch=int(blockIdx.z)/p.split,slice=int(blockIdx.z)%p.split;
-    int expert=batch,begin=0,rows=c.rows;
-    int64_t a_offset=0;
-    if(c.mode==QKG_INDEXED) {
-        int source=input_row(c,batch);
-        int token=source<0?0:source/c.topk,slot=source<0?0:source%c.topk;
-        expert=source<0?-1:c.ids[int64_t(token)*c.ids_stride+slot];
-        begin=batch;rows=1;a_offset=int64_t(token)*c.a_token_stride+(slot%c.channels)*c.a_row_stride;
-    } else if(c.mode==QKG_GROUPED) {
-        begin=c.offsets[expert];rows=c.offsets[expert+1]-begin;
-        if(begin<0 || rows<0 || int64_t(begin)+rows>c.rows) return;
-        a_offset=int64_t(begin)*c.a_row_stride;
-    }
-    if(c.status && *c.status) expert=-1;
-    constexpr int TM=size<0>(typename T::Tile{}),TN=size<1>(typename T::Tile{});
-    int m_base=int(blockIdx.x)*TM;
-    if(m_base>=rows) return;
-    if(expert<0 || expert>=c.experts) {
-        for(int i=threadIdx.x;i<TM*TN;i+=blockDim.x) {
-            int m=m_base+i/TN,col=int(blockIdx.y)*TN+i%TN;
-            if(m>=rows || col>=c.n/2) continue;
-            if(p.split==1) output(c,begin+m,col,__int_as_float(0x7fc00000));
-            else {
-                auto dst=static_cast<float*>(c.workspace)+(int64_t(begin+m)*p.split+slice)*c.n;
-                dst[PairedN4::gate(col)]=dst[PairedN4::up(col)]=__int_as_float(0x7fc00000);
-            }
-        }
-        return;
-    }
-    auto ml=p.mainloop;
-    ml.ptr_A+=a_offset+int64_t(m_base)*c.a_row_stride;
-    ml.ptr_B=advance_bytes(ml.ptr_B,uint64_t(expert)*p.low_bytes);
-    ml.ptr_S=advance_bytes(ml.ptr_S,uint64_t(expert)*p.unit_bytes);
-    if constexpr(!std::is_void_v<typename T::Core::High>)
-        ml.ptr_B2=advance_bytes(ml.ptr_B2,uint64_t(expert)*p.high_bytes);
-    int tile_rows=rows-m_base<TM?rows-m_base:TM;
-    auto shape=make_shape(tile_rows,c.n,c.k,1);
-    typename T::Mainloop mainloop;
-    typename T::Mma mma;
-    auto gate=make_fragment_like<float>(partition_fragment_C(mma,take<0,2>(typename T::Tile{})));
-    auto up=make_fragment_like<float>(gate);
-    clear(gate);clear(up);
-    extern __shared__ __align__(16) char storage[];
-    {
-        auto inputs=mainloop.load_init(shape,make_coord(0,int(blockIdx.y),_,0),ml);
-        auto gA=get<0>(inputs);
-        auto iterator=make_splitk_coord_iterator(cute::shape<2>(gA),slice,p.split);
-        mainloop(ml,inputs,gate,iterator,size<2>(gA)/p.split,int(threadIdx.x),storage);
-    }
-    __syncthreads();
-    {
-        auto inputs=mainloop.load_init(shape,make_coord(0,int(blockIdx.y)+c.n/(2*TN),_,0),ml);
-        auto gA=get<0>(inputs);
-        auto iterator=make_splitk_coord_iterator(cute::shape<2>(gA),slice,p.split);
-        mainloop(ml,inputs,up,iterator,size<2>(gA)/p.split,int(threadIdx.x),storage);
-    }
-    auto coordinates=mma.get_thread_slice(int(threadIdx.x)).partition_C(make_identity_tensor(take<0,2>(typename T::Tile{})));
-    CUTE_STATIC_ASSERT_V(size(gate)==size(coordinates));
-    #pragma unroll
-    for(int i=0;i<size(gate);++i) {
-        auto mn=coordinates(i);
-        int m=m_base+int(get<0>(mn)),col=int(blockIdx.y)*TN+int(get<1>(mn));
-        if(m>=rows || col>=c.n/2) continue;
-        if(p.split==1) output(c,begin+m,col,activate(c,gate(i),up(i)));
-        else {
-            auto dst=static_cast<float*>(c.workspace)+(int64_t(begin+m)*p.split+slice)*c.n;
-            dst[PairedN4::gate(col)]=gate(i);dst[PairedN4::up(col)]=up(i);
-        }
-    }
-}
-
 template<int Q,int TM,class Compute,class Source>
 int tc_launch(DeviceCall const& c,qkg_gate_up_config_v1 const& f,qkg_sizes_v1 const& sizes) {
     using namespace cute;
@@ -209,13 +132,9 @@ int tc_launch(DeviceCall const& c,qkg_gate_up_config_v1 const& f,qkg_sizes_v1 co
         sizes.low_bytes/c.experts,sizes.high_bytes/c.experts,sizes.units_bytes/c.experts,f.split};
     int bound=c.mode==QKG_INDEXED ? 1 : c.rows;
     int groups=c.mode==QKG_INDEXED ? c.rows : c.experts;
-    dim3 grid((bound+int64_t(TM)-1)/TM,c.n/(c.canonical?128:64),groups*f.split);
+    dim3 grid((bound+int64_t(TM)-1)/TM,c.n/64,groups*f.split);
     auto stream=static_cast<hggcStream_t>(c.stream);
-    if(c.canonical) {
-        if constexpr(Q==8 || Q==12)
-            tc_gate_up_canonical<T><<<grid,T::Threads,sizeof(typename Mainloop::SharedStorage),stream>>>(p);
-        else return QKG_SHAPE;
-    } else tc_gate_up<T><<<grid,T::Threads,sizeof(typename Mainloop::SharedStorage),stream>>>(p);
+    tc_gate_up<T><<<grid,T::Threads,sizeof(typename Mainloop::SharedStorage),stream>>>(p);
     if(hggcGetLastError()!=hggcSuccess) return QKG_RUNTIME;
     if(f.split>1) reduce_gate_up<<<(int64_t(c.rows)*(c.n/2)+127)/128,128,0,stream>>>(c,f.split);
     return hggcGetLastError()==hggcSuccess ? QKG_OK : QKG_RUNTIME;

@@ -3,7 +3,6 @@
 #include "moe_matmul_host.cpp"
 #undef main
 #include "quactlize/ffn/ffn.cpp"
-#include "quactlize/fusion/paired_n4.hpp"
 #include <algorithm>
 
 static_assert(sizeof(qzm_value_v1)==48 && offsetof(qzm_value_v1,round_type)==40,"test transition value ABI");
@@ -13,7 +12,6 @@ static_assert(sizeof(qzm_transition_v1)==168 && offsetof(qzm_transition_v1,gate)
 namespace test {
 std::vector<qzm_transition_v1> transitions;
 std::vector<qzm_finish_v1> finishes;
-std::vector<qkg_gate_up_call_v2> fused;
 struct Dense {quactlize_ppu_dense_params_v1 shape;};
 struct DenseContext {std::vector<std::unique_ptr<Dense>> plans;};
 }
@@ -45,15 +43,6 @@ extern "C" int quactlize_ppu_moe_finish_execute_v1(qzm_finish_v1 const* c,qzm_pl
     assert(!quactlize::moe::finish_workspace(*c,p->workspace_bytes,scratch,bytes));
     assert(c->stream==test::last_stream);test::finishes.push_back(*c);test::launches.push_back("finish");return 0;
 }
-extern "C" int quactlize_gate_up_run_v3(qkg_gate_up_call_v2 const* c,qkg_gate_up_recipe_v2 const* r,
-                                       qkg_gate_up_layout_v1 const* layout) {
-    qkg_sizes_v1 sizes{};
-    assert(!quactlize::fusion::query_recipe(*c,*r,*layout,sizes));
-    assert(!quactlize::fusion::buffers(c->call,sizes) && !quactlize::fusion::row_buffers(*c,sizes));
-    assert(c->call.input.call.stream==test::last_stream && c->call.input.call.a==test::last_a);
-    assert(c->call.input.call.ids==test::last_ids && layout->layout_id==QKG_GATE_UP_CANONICAL_V1);
-    test::launches.push_back("fused-gate-up");test::fused.push_back(*c);return 0;
-}
 namespace test {
 auto weight(int q,int n,int k,int e,int slot) {
     auto a=params(q,1,n,k,e,1,1);
@@ -79,27 +68,19 @@ void exercise(quactlize::ffn::Plan& p) {
         auto scratch=at(2);auto weights=a.kind==QUACTLIZE_FFN_MOE?static_cast<float*>(at(3)):nullptr;
         auto ids=a.kind==QUACTLIZE_FFN_MOE?static_cast<int32_t*>(at(4)):nullptr;
         last_a=input;last_ids=ids;last_stream=reinterpret_cast<void*>(repeat+1);capture=repeat;
-        launches.clear();transitions.clear();finishes.clear();fused.clear();
+        launches.clear();transitions.clear();finishes.clear();
         int rc=quactlize_ppu_ffn_run_v1(&p,input,ids,weights,out,scratch,p.info.workspace_bytes,last_stream);
         if(rc) std::cerr<<quactlize_ppu_ffn_error_v1()<<'\n';assert(!rc);
-        assert(transitions.size()==(p.fused?0:1) && fused.size()==(p.fused?1:0) &&
+        assert(transitions.size()==1 &&
             (a.kind==QUACTLIZE_FFN_DENSE?finishes.empty():finishes.size()==1));
         assert(std::count(launches.begin(),launches.end(),"prepare")==int(p.info.prepare_stage>=0 && p.info.prepare_stage<2));
         assert(std::count(launches.begin(),launches.end(),"route-only")==int(p.info.prepare_stage==2));
         assert(std::count(launches.begin(),launches.end(),"scatter")==0);
-        if(!p.fused) {
         auto const& t=transitions.back();
         assert(t.gate.order==(p.stages[0].tc()?QZM_GROUPED:QZM_TOKEN_SLOT));
         assert(t.output_order==(p.stages[2].tc()?QZM_GROUPED:QZM_TOKEN_SLOT));
         assert(t.output_dtype==(p.stages[2].tc()?QZM_BF16:QZM_F32));
         assert(t.merged==a.merged);
-        } else {
-            auto const& d=fused.back();
-            assert(d.call.input.call.n==a.down.k && d.call.input.call.k==a.gate.k);
-            assert(d.call.round_projection==int(p.stages[0].tc()));
-            assert(bool(d.input_rows)==p.stages[2].tc());
-            assert(d.call.output_type==(p.stages[2].tc()?QKG_SIMT_BF16:QKG_F32));
-        }
         for(auto const& f:finishes) assert(f.down.partial_count==p.stages[2].value.partial_count && f.output==out && f.weights==weights);
         launches.clear();
         assert(quactlize_ppu_ffn_run_v1(&p,input,ids,weights,input,scratch,p.info.workspace_bytes,last_stream));
@@ -114,15 +95,6 @@ void exercise(quactlize::ffn::Plan& p) {
 }
 int main() {
     using namespace quactlize::ffn;test::ffn=true;int cases=0;
-    for(int n:{256,512,1024,17408,25600}) {
-        std::vector<bool> seen(2*n);
-        for(int col=0;col<2*n;++col) {
-            int mapped=quactlize::fusion::CanonicalN4::column(col,2*n);
-            assert(mapped>=0 && mapped<2*n && !seen[mapped]);seen[mapped]=true;
-            assert(mapped%4==col%4);
-            assert((mapped>=n)==bool(col&4));
-        }
-    }
     for(bool dense:{false,true}) for(bool merged:{false,true}) for(int q:{8,10,11,12,13,14})
         for(int m:{1,2,3,4,5,6,7,8,9,16,32,128,512,4096,5120,8192}) {
             auto a=test::ffn_params(q,m,merged,dense);assert(admission(&a)==1);
@@ -190,7 +162,7 @@ int main() {
         int rc=quactlize_ppu_ffn_prepare_v1(ctx.get(),&a,&handle,&info);
         if(rc) std::cerr<<quactlize_ppu_ffn_error_v1()<<'\n';assert(!rc && handle);
         auto& p=*static_cast<quactlize::ffn::Plan*>(handle);
-        assert(!p.fused && !p.stages[1].dense && info.projections[1].route==-1);
+        assert(!p.stages[1].dense && info.projections[1].route==-1);
         auto const& gate=static_cast<test::Dense*>(p.stages[0].dense)->shape;
         auto const& down=static_cast<test::Dense*>(p.stages[2].dense)->shape;
         assert(gate.qtype==q && gate.m==m && gate.n==2*n && gate.k==5120);
@@ -213,8 +185,17 @@ int main() {
         int rc=quactlize_ppu_ffn_prepare_v1(ctx.get(),&a,&handle,&info);
         if(rc) std::cerr<<quactlize_ppu_ffn_error_v1()<<'\n';assert(!rc && handle);
         auto& p=*static_cast<quactlize::ffn::Plan*>(handle);
-        if(k==2048 || (m==1 && (dense || !p.stages[2].tc()))) assert(p.fused);
-        if(p.fused) assert(std::string(info.projections[0].config).find("gate-up-canonical:")==0);
+        assert(info.projections[1].route==-1);
+        for(int i:{0,2}) {
+            auto const& actual=info.projections[i];
+            if(dense) assert(std::string(actual.config)=="host-dense-double");
+            else {
+                auto const& selected=p.stages[i].moe->info;
+                assert(actual.route==selected.route && actual.policy==selected.policy &&
+                    actual.split==selected.split && actual.compute_type==selected.compute_type &&
+                    std::string(actual.config)==selected.config);
+            }
+        }
         test::exercise(p);++cases;kImages.clear();
     }
     // All mixed producer boundaries, including only Down TC. Explicit host

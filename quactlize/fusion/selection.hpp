@@ -88,7 +88,7 @@ inline qkg_gate_up_recipe_v2 const* legacy_recipe(qkg_gate_up_call_v1 const& d,
     return nullptr;
 }
 
-inline bool recipe_capable(qkg_gate_up_call_v1 const& d,qkg_gate_up_recipe_v2 const& r,bool canonical=false) {
+inline bool recipe_capable(qkg_gate_up_call_v1 const& d,qkg_gate_up_recipe_v2 const& r) {
     auto const& c=d.input.call;
     if((r.fixed_n && int64_t(c.n)*2!=r.fixed_n) || (r.fixed_k && c.k!=r.fixed_k)) return false;
     if(r.reader==GenericReader) return r.config.backend==QKG_GATE_UP_TC ||
@@ -96,7 +96,7 @@ inline bool recipe_capable(qkg_gate_up_call_v1 const& d,qkg_gate_up_recipe_v2 co
     if(c.input_type!=QKG_F32 || d.output_type!=QKG_F32) return false;
     if(r.reader==Q8Tile16Reader) return c.qtype==8 && d.input.compute_type==QKG_COMPUTE_F16 &&
         d.round_projection==0 && c.mode==QKG_DENSE && c.experts==1 && c.channels==1 && c.topk==1;
-    return c.qtype==12 && d.input.compute_type==QKG_COMPUTE_BF16 && (canonical || d.round_projection==1) &&
+    return c.qtype==12 && d.input.compute_type==QKG_COMPUTE_BF16 && d.round_projection==1 &&
         c.mode==QKG_INDEXED && c.experts==256 && c.channels==1 && c.topk==8;
 }
 }

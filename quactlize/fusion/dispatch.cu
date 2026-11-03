@@ -32,7 +32,6 @@ static int run(qkg_gate_up_call_v1 const* d,qkg_gate_up_config_v1 const* f,
     c.n*=2; c.compute_type=d->input.compute_type;
     c.output_type=d->output_type; c.round_projection=d->round_projection;
     c.input_rows=input_rows; c.status=status;
-    c.canonical=layout->layout_id==QKG_GATE_UP_CANONICAL_V1;
     if(!selected) selected=quactlize::fusion::legacy_recipe(*d,*f);
 #define CASE(Q) case Q: return f->backend==QKG_GATE_UP_TC ? qgu_tc_##Q(&c,f,&sizes) : \
         selected ? qgu_recipe_##Q(&c,selected) : qgu_simt_##Q(&c,f)

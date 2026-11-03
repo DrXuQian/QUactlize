@@ -8,7 +8,6 @@ struct DeviceCall : qkg_call_v1 {
     int compute_type, output_type, round_projection;
     int32_t const* input_rows;
     int32_t const* status;
-    bool canonical;
 };
 
 CUTLASS_DEVICE int input_row(DeviceCall const& c, int row) {

@@ -10,14 +10,6 @@ struct PairedN4 {
     CUTLASS_HOST_DEVICE static constexpr bool is_up(int physical_n) { return (physical_n & 4) != 0; }
 };
 
-// Read canonical [gate N][up N] with virtual G4/U4 lanes. Each four-word
-// packet stays contiguous; no resident paired weight copy is needed.
-struct CanonicalN4 {
-    CUTLASS_HOST_DEVICE static constexpr int column(int n, int physical_n) {
-        return PairedN4::channel(n) + (PairedN4::is_up(n) ? physical_n / 2 : 0);
-    }
-};
-
 // A virtual raw GGUF matrix consumed by the existing word/metadata packer.
 // No FP decode, requantization, or intermediate concatenation is needed.
 struct PairedRawRows {

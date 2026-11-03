@@ -25,22 +25,22 @@ def test_public_ffn(package, sdk, kind, merged, q):
     run_ffn(package, sdk, kind, merged, q)
 
 
-@pytest.mark.parametrize('kind,q,k,hidden,down_q,ms', [
-    (0, 8, 2048, 512, 8, tuple(range(1, 9))),
-    (0, 8, 3072, 1024, 8, (1,)),
-    (1, 12, 2048, 512, 14, tuple(range(1, 9))),
-    (1, 12, 3072, 512, 13, (1,)),
+@pytest.mark.parametrize('kind,q,k,hidden,down_q', [
+    (0, 8, 2048, 512, 8),
+    (0, 8, 3072, 1024, 8),
+    (1, 12, 2048, 512, 14),
+    (1, 12, 3072, 512, 13),
 ], ids=['shared-35b', 'shared-122b', 'moe-35b', 'moe-122b'])
-def test_public_ffn_fused(package, sdk, kind, q, k, hidden, down_q, ms):
-    # Actual automatic-fusion cohorts: toy shapes alone cannot prove that the
-    # new reader executes. Reuse weights over M and require the fused marker.
+def test_public_ffn_model_shapes(package, sdk, kind, q, k, hidden, down_q):
+    # Real shared/routed cohorts retain the measured 2N projection at every M.
+    # SwiGLU is a separate transition even where a historical fused rule exists.
     run_ffn(package, sdk, kind, True, q, hidden=hidden, k=k, n=k,
             experts=256 if kind else 1, topk=8 if kind else 1,
-            ms=ms, down_q=down_q, fused=True)
+            ms=tuple(range(1, 9)), down_q=down_q, input_channels=1)
 
 
 def run_ffn(package, sdk, kind, merged, q, *, hidden=512, k=512, n=256,
-            experts=None, topk=None, ms=None, down_q=None, fused=False):
+            experts=None, topk=None, ms=None, down_q=None, input_channels=None):
     public = Public(package)
     api = FFN(public.lib)
     projection = MoE(public.lib) if kind else public
@@ -74,16 +74,14 @@ def run_ffn(package, sdk, kind, merged, q, *, hidden=512, k=512, n=256,
             ms = ms or (*range(1, 10), 16, 128, 513) + ((5120,) if q == 12 and merged else ())
             for m in ms:
                 context_label = (f'kind={kind} q={q} down_q={down_q or q} m={m} '
-                                 f'n={hidden} k={k} merged={int(merged)} fused={int(fused)}')
+                                 f'n={hidden} k={k} merged={int(merged)} swiglu=transition')
                 print('FFN_ACCURACY_START ' + context_label, flush=True)
-                channels = topk if kind and m % 2 == 0 and not fused else 1
+                channels = input_channels if input_channels is not None else topk if kind and m % 2 == 0 else 1
                 params = Params(1, C.sizeof(Params), kind, m, topk, channels, int(merged), 0,
                     k, k*channels, topk if kind else 0, topk if kind else 0, n, *descriptors)
                 assert api.supported(C.byref(params)) == 1
                 plan, info = C.c_void_p(), Info(1, C.sizeof(Info))
                 api.check(api.prepare(context, C.byref(params), C.byref(plan), C.byref(info)))
-                selected_fused = bytes(info.projections[0].config).startswith(b'gate-up-canonical:')
-                assert selected_fused == fused, bytes(info.projections[0].config)
                 handles, control_info = [], []
                 for stage, w in enumerate(descriptors):
                     if merged and stage == 1:
@@ -102,11 +100,8 @@ def run_ffn(package, sdk, kind, merged, q, *, hidden=512, k=512, n=256,
                     projection.check(projection.prepare(control, C.byref(a), w.low, w.high, w.units,
                         C.byref(handle), C.byref(chosen)))
                     selected = info.projections[stage]
-                    if stage == 0 and fused:
-                        assert selected.compute_type == chosen.compute_type
-                    else:
-                        assert (selected.route, selected.split, selected.compute_type, bytes(selected.config)) == (
-                            chosen.route, chosen.split, chosen.compute_type, bytes(chosen.config))
+                    assert (selected.route, selected.policy, selected.split, selected.compute_type, bytes(selected.config)) == (
+                        chosen.route, chosen.policy, chosen.split, chosen.compute_type, bytes(chosen.config))
                     handles.append(handle); control_info.append(chosen)
                 graph_safe = bool(kind) or all(i is None or i.route != 3 for i in control_info)
                 # Retire each shape's activations/scratch before the next M.
@@ -218,7 +213,7 @@ def run_ffn(package, sdk, kind, merged, q, *, hidden=512, k=512, n=256,
                                 for key in ('a', 'ids', 'weights', 'scratch'):
                                     io[key].guard()
                         print(f'FFN_ACCURACY kind={kind} q={q} down_q={down_q or q} m={m} '
-                              f'n={hidden} k={k} fused={int(fused)} graph={int(graph_safe)} status=PASS', flush=True)
+                              f'n={hidden} k={k} swiglu=transition graph={int(graph_safe)} status=PASS', flush=True)
                     finally:
                         arena.sync()
                         for graph in graphs:

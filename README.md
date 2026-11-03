@@ -40,11 +40,10 @@ BF16 operands and FP32 accumulation. The library owns routing, preparation,
 selection and reduction; the caller only supplies per-stream scratch.
 The FFN API composes separate or canonical merged gate/up weights with SwiGLU,
 Down and ordered expert weighting. It shares routing and consumes actual
-producer partials without duplicate reductions. Legal small-M Q4 routed/Q8
-shared cohorts prefer the GEMM-internal activation; other shapes retain the
-ordinary projection plus transition. Canonical fused readers allocate no
-second resident weight copy. Their device accuracy and full-call performance
-must be validated separately from the older interleaved readers' measurements.
+producer partials without duplicate reductions. Gate/up merging produces one
+ordinary 2N projection with its measured selector. SwiGLU remains a separate
+transition for every M, followed by Down. GEMM-internal activation fusion is
+not enabled or linked into the public library.
 
 Dense prefill selection tries exact rows, bounded M/N/K buckets, then one
 N-doubling transfer for merged projections. The transfer keeps M/K/dtype and

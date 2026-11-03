@@ -29,6 +29,7 @@ typedef struct {
 // merged=1: gate holds canonical [E,2*hidden,K] (gate rows followed by up),
 // and up is entirely zero. Otherwise gate/up may have different qtypes but
 // identical N/K/E. Down.K=hidden; Down.N need not equal Gate.K.
+// SwiGLU runs in a separate transition, not in a projection or its reducer.
 // Strides count elements. Input is A[token*input_token_stride +
 // (slot%channels)*input_row_stride + K], output [token*output_stride+Down.N].
 // Dense requires topk=channels=E=1, ids_stride=weights_stride=0; run receives
@@ -50,9 +51,7 @@ typedef struct {
     // -1 means no TC routing preparation. helper=0 means not used.
     int32_t prepare_stage,prepare_helper,finish_helper,reserved;
     // Same route/precision values as dense and moe/matmul. Absent up has
-    // route=-1. A config starting with gate-up-canonical uses a fused SwiGLU
-    // producer (or Split-K reducer). No extra weight allocation is retained.
-    // This is selected recipe evidence, NOT fused timing proof.
+    // route=-1. Each projection keeps its independent selector's configuration.
     quactlize_ppu_ffn_projection_info_v1 projections[3];
 } quactlize_ppu_ffn_plan_info_v1;
 
