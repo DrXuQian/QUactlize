@@ -59,8 +59,75 @@ static void projected_helpers() {
         }
     }
 }
+static void bf16_prefill_helpers() {
+    namespace h=quactlize::moe::prefill_helpers;
+    for(int m:{0,1,8,9,17,128,511,512,513,1024,2048,2049,4096,5120,5121,65536}) {
+        for(int n:{4,512,2048,2052,3072,4096}) {
+            bool measured=(m==512 || m==2048 || m==5120) && (n==2048 || n==3072);
+            qzm_prepare_v1 p{};p.version=1;p.size=sizeof(p);
+            p.route.version=1;p.route.size=sizeof(p.route);p.route.tokens=m;
+            p.route.experts=256;p.route.topk=8;p.route.channels=1;p.route.ids_stride=8;p.route.source_stride=1;
+            p.config={1,sizeof(p.config),QZR_TILED,512};p.dtype=QZM_BF16;p.columns=n;p.input_row_stride=n;
+            assert(h::prepare_shape(p)==measured && !h::prepare_fast(p));
+            qzm_plan_v1 plan{};
+            assert(quactlize_ppu_moe_prepare_select_v1(&p,QZM_AUTO,&plan)==0);
+            if(measured) assert(plan.implementation==QZM_PREPARE_FUSED && plan.stages==3);
+            // AUTO is pointer-free. Binding addresses cannot change the plan.
+            p.input=reinterpret_cast<float const*>(0x1000000000ULL);p.output=reinterpret_cast<void*>(0x2000000000ULL);
+            assert(h::prepare_fast(p)==measured);
+            qzm_plan_v1 bound{};assert(quactlize_ppu_moe_prepare_select_v1(&p,QZM_AUTO,&bound)==0 && same_plan(plan,bound));
+            auto saved=p;p.input=reinterpret_cast<float const*>(0x1000000004ULL);assert(!h::prepare_fast(p));p=saved;
+            p.output=reinterpret_cast<void*>(0x2000000002ULL);assert(!h::prepare_fast(p));p=saved;
+            p.input_row_stride+=1;assert(!h::prepare_fast(p));p=saved;
+            p.route.topk=6;assert(!h::prepare_fast(p));p=saved;
+            p.route.channels=8;assert(!h::prepare_fast(p));p=saved;
+            p.config.tile_rows=256;assert(!h::prepare_fast(p));p=saved;
+            p.dtype=QZM_F16;assert(!h::prepare_fast(p));p=saved;
+            p.input_row_stride+=4;p.route.source_stride=5;p.route.ids_stride=12;
+            assert(h::prepare_fast(p)==measured); // aligned padded bindings retain exact addressing
+            p.config={1,sizeof(p.config),QZR_AUTO,0};qzm_prepare_plan_v2 auto_plan{};
+            assert(quactlize_ppu_moe_prepare_select_v2(&p,&auto_plan)==0);
+            if(measured) assert(auto_plan.helper.implementation==QZM_PREPARE_FUSED &&
+                                auto_plan.config.algorithm==QZR_TILED && auto_plan.config.tile_rows==512);
+
+            qzm_finish_v1 f{};f.version=1;f.size=sizeof(f);f.tokens=m;f.topk=8;f.columns=n;f.output_stride=n;
+            f.output=reinterpret_cast<float*>(0x3000000000ULL);
+            f.down=value_at(0x1000000000ULL,n);f.down.dtype=QZM_BF16;
+            assert(h::finish_fast(f)==measured);auto sf=f;
+            f.down.partial_count=4;assert(!h::finish_fast(f));f=sf;
+            f.down.state=QZM_PARTIALS;assert(!h::finish_fast(f));f=sf;
+            f.down.order=QZM_TOKEN_SLOT;assert(!h::finish_fast(f));f=sf;
+            f.down.dtype=QZM_F32;assert(!h::finish_fast(f));f=sf;
+            f.down.round_type=QZM_F16;assert(!h::finish_fast(f));f=sf;
+            f.down.data=reinterpret_cast<void*>(0x1000000002ULL);assert(!h::finish_fast(f));f=sf;
+            f.output=reinterpret_cast<float*>(0x3000000004ULL);assert(!h::finish_fast(f));f=sf;
+            f.down.row_stride+=1;assert(!h::finish_fast(f));f=sf;
+            f.output_stride+=1;assert(!h::finish_fast(f));f=sf;
+            f.topk=6;assert(!h::finish_fast(f));
+        }
+        qzm_transition_v1 t{};t.version=1;t.size=sizeof(t);t.tokens=m;t.topk=8;t.hidden=512;t.merged=1;
+        t.gate=value_at(0x1000000000ULL,1024);t.gate.dtype=QZM_BF16;
+        t.output=reinterpret_cast<void*>(0x2000000000ULL);t.output_dtype=QZM_BF16;t.output_order=QZM_GROUPED;t.output_stride=512;
+        bool measured=m==512 || m==2048 || m==5120;
+        assert(h::transition_fast(t)==measured);auto st=t;
+        t.hidden=1024;assert(!h::transition_fast(t));t=st;
+        t.topk=1;assert(!h::transition_fast(t));t=st;
+        t.merged=0;assert(!h::transition_fast(t));t=st;
+        t.gate.partial_count=4;assert(!h::transition_fast(t));t=st;
+        t.gate.state=QZM_ACTIVATED;assert(!h::transition_fast(t));t=st;
+        t.gate.dtype=QZM_F32;assert(!h::transition_fast(t));t=st;
+        t.gate.round_type=QZM_F16;assert(!h::transition_fast(t));t=st;
+        t.gate.order=QZM_TOKEN_SLOT;assert(!h::transition_fast(t));t=st;
+        t.output_order=QZM_TOKEN_SLOT;assert(!h::transition_fast(t));t=st;
+        t.output_dtype=QZM_F16;assert(!h::transition_fast(t));t=st;
+        t.output_stride+=1;assert(!h::transition_fast(t));t=st;
+        t.output=reinterpret_cast<void*>(0x2000000002ULL);assert(!h::transition_fast(t));t=st;
+        t.gate.data=reinterpret_cast<void*>(0x1000000002ULL);assert(!h::transition_fast(t));
+    }
+}
 int main() {
     projected_helpers();
+    bf16_prefill_helpers();
     static_assert(sizeof(qzm_value_v1)==48);
     static_assert(sizeof(qzm_prepare_plan_v2)==48);
     qzm_prepare_v1 p{};p.version=1;p.size=sizeof(p);

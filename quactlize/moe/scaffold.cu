@@ -4,6 +4,7 @@
 #include "selection.hpp"
 #include "transition.hpp"
 #include "../routing/kernels.cuh"
+#include "prefill_helpers.cuh"
 
 namespace quactlize::routing {
 // Internal stage launcher defined by route.cu; production helpers must not
@@ -153,9 +154,14 @@ int prepare_launch(qzm_prepare_v1 const& c,routing::Layout const& l,int stage) {
             int rc=launch_status();if(rc) return rc;
         }
         if(stage<0 || stage==2) {
-            int64_t count=int64_t(l.rows)*((int64_t(c.columns)+255)/256);
-            int blocks=int(count>65535?65535:count);
-            prepare_gather<TopK,Tile,true><<<blocks,256,0,stream>>>(c,l.rows,prefix,ranks);
+            if(prefill_helpers::prepare_fast(c)) {
+                dim3 grid((int64_t(c.columns)+1023)/1024,c.route.tokens>65535?65535:c.route.tokens);
+                prefill_helpers::prepare_token_vec4<<<grid,256,0,stream>>>(c,l.rows,prefix,ranks);
+            } else {
+                int64_t count=int64_t(l.rows)*((int64_t(c.columns)+255)/256);
+                int blocks=int(count>65535?65535:count);
+                prepare_gather<TopK,Tile,true><<<blocks,256,0,stream>>>(c,l.rows,prefix,ranks);
+            }
         }
     }
     return launch_status();
@@ -259,6 +265,9 @@ int launch_transition(qzm_transition_v1 const& c,float const* weights=nullptr,
     if(use_projected_transition(c)) {
         dim3 grid((int64_t(c.hidden)+255)/256,nr>65535?65535:nr);
         transition_projected<Snapshot><<<grid,256,0,stream>>>(c,nr,weights,stride,retained);
+    } else if(prefill_helpers::transition_fast(c)) {
+        dim3 grid((int64_t(c.hidden)+511)/512,nr>65535?65535:nr);
+        prefill_helpers::transition_vec4<Snapshot><<<grid,128,0,stream>>>(c,nr,weights,stride,retained);
     } else {
         int64_t count=int64_t(nr)*((int64_t(c.hidden)+255)/256);
         transition_kernel<Snapshot><<<int(count>65535?65535:count),256,0,stream>>>(c,nr,weights,stride,retained);
@@ -303,6 +312,11 @@ extern "C" int quactlize_ppu_moe_finish_run_v1(qzm_finish_v1 const* c) {
     if(use_projected_finish(*c)) {
         dim3 grid((int64_t(c->columns)+127)/128,c->tokens>65535?65535:c->tokens);
         finish_projected<<<grid,128,0,static_cast<hggcStream_t>(c->stream)>>>(*c);
+        return launch_status();
+    }
+    if(prefill_helpers::finish_fast(*c)) {
+        dim3 grid((int64_t(c->columns)+511)/512,c->tokens>65535?65535:c->tokens);
+        prefill_helpers::finish_vec4<<<grid,128,0,static_cast<hggcStream_t>(c->stream)>>>(*c);
         return launch_status();
     }
     int64_t count=int64_t(c->tokens)*((int64_t(c->columns)+255)/256);

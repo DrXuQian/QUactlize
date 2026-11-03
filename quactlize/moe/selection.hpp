@@ -1,5 +1,6 @@
 #pragma once
 #include "validation.hpp"
+#include "prefill_helpers.hpp"
 
 namespace quactlize::moe {
 // ZW810/1700MHz, source 75ede1de; Asys archive SHA256
@@ -30,6 +31,9 @@ inline int measured_m(int m) {
     return -1;
 }
 inline int prepare_choice(qzm_prepare_v1 const& c,routing::Layout const& l) {
+    // The admitted token-reuse gather consumes the completed prefix/ranks;
+    // the old hybrid would publish and re-read maps before a generic gather.
+    if(prefill_helpers::prepare_shape(c)) return QZM_PREPARE_FUSED;
     bool measured=l.algorithm==QZR_TILED && l.tile==512 && c.route.experts==256 &&
         c.route.topk==8 && c.route.channels==1 && c.route.source_stride==1 &&
         c.route.ids_stride==8 && c.dtype==QZM_BF16 && c.input_row_stride==c.columns &&
