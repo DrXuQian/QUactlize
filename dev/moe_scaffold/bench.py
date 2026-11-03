@@ -271,7 +271,7 @@ class Fixture:
         t.gate=Value(self.ptr('tmp_gate'),0,c.gate_order,2 if c.state==2 else 0,1,self.gcols,0,0,0)
         t.up=Value(self.ptr('tmp_up'),0,c.up_order,0,1,c.hidden,0,0,0)
         t.output=self.ptr('tmp_act');t.output_dtype=0;t.output_stride=c.hidden
-        result.append((lambda: self.lib.transition(C.byref(t)),'transition_kernel(', self.row_grid(self.rows,c.hidden)))
+        result.append((lambda: self.lib.transition(C.byref(t)),'transition_kernel', self.row_grid(self.rows,c.hidden)))
         result.append((lambda: self.lib.cast(self.ptr('tmp_act'),self.t.output,self.rows,c.hidden,c.dtype,
                        self.t.output_stride,self.rt.stream),'cast_materialized(',self.flat(self.rows,c.hidden)))
         return result
@@ -305,7 +305,7 @@ class Fixture:
                 else: symbol,grid,threads='prepare_gather<',self.row_grid(self.rows,c.columns),256
                 items.append((lambda s=stage,m=method:m(C.byref(self.p),s),symbol,grid,[threads,1,1]))
             grouped['prepare/'+arm]=items
-        grouped['transition/fused']=[(lambda:self.lib.transition(C.byref(self.t)),'transition_kernel(',self.row_grid(self.rows,c.hidden),[256,1,1])]
+        grouped['transition/fused']=[(lambda:self.lib.transition(C.byref(self.t)),'transition_kernel',self.row_grid(self.rows,c.hidden),[256,1,1])]
         grouped['transition/unfused']=[(*x,[256,1,1]) for x in self.transition_control()]
         grouped['finish/fused']=[(lambda:self.lib.finish(C.byref(self.f)),'finish_kernel(',self.row_grid(c.tokens,c.output),[256,1,1])]
         grouped['finish/unfused']=[(*x,[256,1,1]) for x in self.finish_control()]

@@ -11,20 +11,20 @@ from quactlize.runtime.compiler import FLAGS, LIBRARIES, sha
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def build(sdk, output):
+def build(sdk, output, *, scaffold_source='quactlize/moe/scaffold.cu', extra_sources=()):
     sdk = Path(sdk).resolve(strict=True); output = Path(output).resolve()
     source_revision=revision(ROOT)  # Fail before compiling, not while writing the final receipt.
     output.mkdir(parents=True, exist_ok=False)
     sources = {str(p.relative_to(ROOT)): sha(p) for directory in
-        ('quactlize/moe', 'quactlize/routing', 'dev/moe_scaffold', 'dev/moe_route')
+        ('quactlize/moe', 'quactlize/routing', 'dev/moe_scaffold', 'dev/moe_route', *extra_sources)
         for p in (ROOT/directory).glob('*') if p.is_file()}
     for name in ('tools/run_moe_scaffold.py', 'dev/prefill_asys/trace.py', 'quactlize/runtime/compiler.py',
                  'dev/strategy/refresh_clock.py', 'dev/strategy/journal.py'):
         sources[name] = sha(ROOT/name)
     target = output/'libmoe-scaffold.so'
     commands = [[str(sdk/'bin/hgcc'), *FLAGS, '-DQZR_TESTING', '-DQZM_TESTING', '-c',
-        str(ROOT/source), '-o', str(output/(Path(source).stem+'.o'))]
-        for source in ('quactlize/routing/route.cu', 'quactlize/moe/scaffold.cu')]
+        str(ROOT/source), '-o', str(output/(name+'.o'))]
+        for name,source in (('route','quactlize/routing/route.cu'),('scaffold',scaffold_source))]
     commands.append(['g++','-std=c++17','-O2','-fPIC','-c',str(ROOT/'quactlize/moe/selection.cpp'),
                      '-o',str(output/'selection.o')])
     commands.append(['g++', '-shared', '-Wl,-z,defs', '-Wl,-Bsymbolic',

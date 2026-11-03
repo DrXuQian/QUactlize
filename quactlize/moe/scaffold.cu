@@ -2,6 +2,7 @@
 #include <hggc_fp16.h>
 #include <hggc_bf16.h>
 #include "selection.hpp"
+#include "transition.hpp"
 #include "../routing/kernels.cuh"
 
 namespace quactlize::routing {
@@ -174,7 +175,15 @@ int run_prepare(qzm_prepare_v1 const* c,int stage) {
 __device__ int input_row(qzm_value_v1 const& v,int row,int order,int const* row_ids,int const* inverse) {
     return v.order==order?row:order==QZM_GROUPED?row_ids[row]:inverse[row];
 }
-__global__ void transition_kernel(qzm_transition_v1 c,int nr) {
+template<bool Snapshot=false>
+__global__ void transition_kernel(qzm_transition_v1 c,int nr,float const* weights=nullptr,
+                                 int64_t weights_stride=0,float* retained=nullptr) {
+    if constexpr(Snapshot) {
+        // Same alias-safe snapshot as develop ce9f0443; control and candidate
+        // retain weights before the later Down/finish output can overwrite them.
+        for(int64_t row=int64_t(blockIdx.x)*blockDim.x+threadIdx.x;row<nr;row+=int64_t(gridDim.x)*blockDim.x)
+            retained[row]=weights[(row/c.topk)*weights_stride+row%c.topk];
+    }
     int64_t tiles=(int64_t(c.hidden)+255)/256;
     for(int64_t tile=blockIdx.x;tile<int64_t(nr)*tiles;tile+=gridDim.x) {
         int row=int(tile/tiles);
@@ -227,7 +236,20 @@ extern "C" int quactlize_ppu_moe_transition_run_v1(qzm_transition_v1 const* c) {
     if(!c) return QZR_INVALID;
     uint32_t ops=0;int rc=transition(*c,ops,true);if(rc || ops==QZM_NOOP) return rc;
     int64_t nr=int64_t(c->tokens)*c->topk,count=nr*((int64_t(c->hidden)+255)/256);
-    transition_kernel<<<int(count>65535?65535:count),256,0,static_cast<hggcStream_t>(c->stream)>>>(*c,int(nr));
+    transition_kernel<false><<<int(count>65535?65535:count),256,0,static_cast<hggcStream_t>(c->stream)>>>(*c,int(nr));
+    return launch_status();
+}
+int quactlize::moe::transition_snapshot(qzm_transition_v1 const* c,float const* weights,int64_t stride,float* retained) {
+    if(!c) return QZR_INVALID;
+    uint32_t ops=0;int rc=transition(*c,ops,true);if(rc) return rc;
+    if(!(ops&QZM_SWIGLU)) return QZR_INVALID;
+    uint64_t bytes=0;
+    rc=matrix_bytes(c->tokens,c->topk,stride,QZM_F32,bytes);if(rc) return rc;
+    Spans spans;
+    if(spans.add(weights,bytes,4,false) || spans.add(retained,uint64_t(c->tokens)*c->topk*4,4,true)) return QZR_INVALID;
+    int64_t nr=int64_t(c->tokens)*c->topk,count=nr*((int64_t(c->hidden)+255)/256);
+    transition_kernel<true><<<int(count>65535?65535:count),256,0,static_cast<hggcStream_t>(c->stream)>>>(
+        *c,int(nr),weights,stride,retained);
     return launch_status();
 }
 extern "C" int quactlize_ppu_moe_finish_run_v1(qzm_finish_v1 const* c) {

@@ -175,12 +175,13 @@ def parse(capture, rows, apis):
         if point.get('selected_arm') is not None and point['selected_arm'] not in arms:
             raise ValueError('public selected implementation was not measured')
         points.append(dict(point, arms_us=arms,
-                           delta_pct=100*(arms['fused']/arms['unfused']-1) if arms['unfused'] else None,
-                           versus_fused_pct={k:100*(v/arms['fused']-1) for k,v in arms.items()} if arms['fused'] else {},
-                           versus_unfused_pct={k:100*(v/arms['unfused']-1) for k,v in arms.items()} if arms['unfused'] else {}))
+                           delta_pct=100*(arms['fused']/arms['unfused']-1) if arms.get('unfused') and 'fused' in arms else None,
+                           versus_fused_pct={k:100*(v/arms['fused']-1) for k,v in arms.items()} if arms.get('fused') else {},
+                           versus_unfused_pct={k:100*(v/arms['unfused']-1) for k,v in arms.items()} if arms.get('unfused') else {},
+                           versus_control_pct={k:100*(v/arms['control']-1) for k,v in arms.items()} if arms.get('control') else {}))
     return dict(status='PASS', points=points, component_us=costs, samples_us=dict(samples),
                 observed_counts=dict(observed), missing_intervals=missing, imputed_intervals=0,
-                device=capture['device'], baseline='SAME_MATH_UNFUSED_HELPERS_NOT_LLAMA_GEMM',
+                device=capture['device'], baseline=capture.get('baseline','SAME_MATH_UNFUSED_HELPERS_NOT_LLAMA_GEMM'),
                 timing_method='ASYS_SEPARATE_COMPONENT_MEANS_SUM', production_changed=False,
                 public_selected_correctness=capture.get('public_selected_correctness','NOT_CHECKED'),
                 no_regression_admitted=False, model_tpot_admitted=False)

@@ -35,6 +35,9 @@ def selected_smi(a):
 
 
 def workload_plan(a):
+    if a.cohort=='decode-kernels':
+        from dev.moe_decode_helpers.bench import workload_plan as decode_plan
+        return decode_plan(a.smoke,a.phase)
     if a.cohort=='qwen-models':return model_plan(a.smoke,a.phase)
     cases=workloads(a.smoke)
     if a.phase!='all':cases=[replace(c,phase=a.phase) for c in cases]
@@ -109,6 +112,8 @@ def main(a):
         from dev.moe_scaffold.bench import measure
         receipt=read(a.output/'build/receipt.json');verify(receipt)
         plan=read(a.output/'run.json');job=read(a.batch/'job.json')
+        if plan['coverage']['cohort']=='decode-kernels':
+            from dev.moe_decode_helpers.bench import measure
         def progress(done,total,case):
             atomic_json(Path(job['progress']),dict(batch=job['batch'],batches=job['batches'],completed=done,total=total,
                 current=dict(key=case.key,phase=case.phase,m=case.tokens) if case else None,updated_ns=time.time_ns()))
@@ -137,7 +142,10 @@ def main(a):
     else:
         if (a.output/'run.json').exists():raise ValueError('use --resume or a new output directory')
         print('MOE_SCAFFOLD_BUILD '+str(a.output),flush=True)
-        build(a.sdk,a.output/'build')
+        if a.cohort=='decode-kernels':
+            build(a.sdk,a.output/'build',scaffold_source='dev/moe_decode_helpers/native.cu',
+                  extra_sources=('dev/moe_decode_helpers',))
+        else:build(a.sdk,a.output/'build')
         atomic_json(a.output/'run.json',plan)
     processes=[];start=time.monotonic()
     for i,device in enumerate(devices):
@@ -163,7 +171,7 @@ def main(a):
     complete=not any(codes) and measured==len(cases) and all(r['status']=='PASS' for r in results)
     report=dict(status='PASS' if complete else 'INCOMPLETE',expected=len(cases),measured=measured,
         returncodes=codes,results=results,coverage=coverage,elapsed_seconds=time.monotonic()-start,
-        baseline='SAME_MATH_UNFUSED_HELPERS_NOT_LLAMA_GEMM',production_changed=False,
+        baseline=coverage.get('baseline','SAME_MATH_UNFUSED_HELPERS_NOT_LLAMA_GEMM'),production_changed=False,
         performance_admitted=False,scope='PREPARE_TRANSITION_FINISH_NOT_TC_DIRECTORY_OR_GEMM_OR_MODEL')
     atomic_json(a.output/'summary.json',report)
     with tarfile.open(a.output/'review.tgz','w:gz') as tar:
@@ -181,7 +189,7 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--sdk',type=Path,default=Path(os.environ.get('PPU_SDK','/usr/local/PPU_SDK')))
     parser.add_argument('--output',type=Path);parser.add_argument('--devices',default='0')
-    parser.add_argument('--cohort',choices=('mechanisms','qwen-models'),default='mechanisms')
+    parser.add_argument('--cohort',choices=('mechanisms','qwen-models','decode-kernels'),default='mechanisms')
     parser.add_argument('--phase',choices=('all','prepare','transition','finish'),default='all')
     parser.add_argument('--asys',type=Path);parser.add_argument('--smoke',action='store_true')
     parser.add_argument('--smi',type=Path,default=os.environ.get('PPU_SMI'))
