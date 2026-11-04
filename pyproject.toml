@@ -33,6 +33,7 @@ quactlize = [
   "include/quactlize_ppu_config.h",
   "include/quactlize_ppu_device.h",
   "include/quactlize_ppu_packed.h",
+  "backends/cuda/api.h",
 ]
 
 [tool.pytest.ini_options]

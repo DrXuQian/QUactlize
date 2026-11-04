@@ -24,6 +24,44 @@ words. Scale/zero metadata remains in a separate packed-unit channel. An
 artifact carries an explicit arrangement descriptor; consumers reject an
 unknown or incompatible descriptor instead of guessing a layout.
 
+## NVIDIA compatibility
+
+An optional CUDA C++/cuBLAS backend expands the current weight matrix or
+selected expert slots to FP16/BF16, then runs 16-bit GEMM with FP32 accumulation.
+It needs neither cuTile nor a PPU SDK. Build against an installed CUDA PyTorch
+and NVIDIA CUTLASS; for an RTX PRO 6000 Blackwell, for example:
+
+```bash
+git submodule update --init third_party/cutlass
+CUDA_HOME=/usr/local/cuda TORCH_CUDA_ARCH_LIST=12.0 QUACTLIZE_WITH_CUDA=1 \
+  pip install --no-build-isolation -e .
+python -m pytest -q tests/test_cuda_compat.py
+```
+
+`CUTLASS_ROOT` can select an existing NVIDIA CUTLASS checkout. The default
+package build remains host-only. The Python entry is
+`quactlize.cuda_compat.PreparedMatmul`; native callers use
+[`backends/cuda/api.h`](quactlize/backends/cuda/api.h).
+
+Raw GGUF accepts Q5_1, Q8_0, Q2_K through Q6_K, and IQ4_NL. Canonical K-pack
+accepts Q8_0 and Q2_K through Q6_K with the existing producer's exact descriptor
+and alignment constraints. Raw Q8_0/Q5_1 rows of width 640 are supported;
+they must not be mislabeled as a canonical K-pack artifact.
+
+Prepare and warm up before capture. Output, scratch and routing IDs remain
+device-resident and caller-owned; run performs no host readback or allocation.
+Dense and indexed calls can be captured together with other graph operations.
+Indexed calls support 512 experts/top-10, dynamic IDs, repeated IDs and inactive
+slots. Scratch expands selected **slots**, including duplicates, rather than
+every resident expert. Reuse scratch between sequential layers and retain
+handles/buffers until all dependent graphs drain.
+
+This is a format and graph compatibility backend. It does not establish full
+model throughput or force tensor-core instructions for every small matrix.
+Expanded weight writes and subsequent GEMM reads are included in its cost.
+Serving should keep GGUF weights compressed and expand bounded working sets,
+not retain a fully expanded model. PPU kernels and their dispatch are unchanged.
+
 ## Repository layout
 
 | Path | Purpose |

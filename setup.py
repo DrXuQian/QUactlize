@@ -11,6 +11,7 @@ difference between a format's reorder being checkable in CI and only on the box.
 
     pip install -e .                    host half only (works without the PPU SDK)
     QUACTLIZE_WITH_DEVICE=1 pip install -e .    also build the kernels (needs PPU_SDK_ROOT and hgcc)
+    QUACTLIZE_WITH_CUDA=1 pip install --no-build-isolation -e .  NVIDIA dequant + 16-bit GEMM
 
 The device half is not wired here yet; setting the variable reports that rather than silently building half a library
 and letting the missing ops surface as an AttributeError at the first call.
@@ -21,10 +22,12 @@ from setuptools import setup
 
 ROOT = Path(__file__).parent.resolve()
 WITH_DEVICE = os.environ.get("QUACTLIZE_WITH_DEVICE", "0") not in ("0", "", "false", "False")
+WITH_CUDA = os.environ.get("QUACTLIZE_WITH_CUDA", "0") not in ("0", "", "false", "False")
+CUTLASS_ROOT = Path(os.environ.get("CUTLASS_ROOT", ROOT / "third_party/cutlass")).resolve()
 
 try:
     import torch
-    from torch.utils.cpp_extension import BuildExtension, CppExtension
+    from torch.utils.cpp_extension import BuildExtension, CppExtension, CUDAExtension
 except ImportError:
     sys.exit("quactlize's extension needs torch installed to build")
 
@@ -59,7 +62,7 @@ ext = CppExtension(
     include_dirs=[
         str(ROOT / "quactlize/csrc/preprocess"),
         str(ROOT / "quactlize/include"),
-        str(ROOT / "third_party/cutlass/include"),
+        str(CUTLASS_ROOT / "include"),
         *cuda_inc,
     ],
     # USE_AIU compiles in the PPU column interleave. Without it the whole AIU branch vanishes from the preprocessor
@@ -71,6 +74,21 @@ ext = CppExtension(
     libraries=["dl"],
 )
 
+extensions = [ext]
+if WITH_CUDA:
+    if not (CUTLASS_ROOT / "include/cutlass/cutlass.h").is_file():
+        sys.exit("CUDA compatibility requires NVIDIA CUTLASS headers; initialize third_party/cutlass or set CUTLASS_ROOT")
+    extensions.append(CUDAExtension(
+        name="quactlize._cuda_compat",
+        sources=["quactlize/backends/cuda/compat.cu", "quactlize/packing/ppu_pack.cu", "quactlize/packing/sizes.cpp"],
+        include_dirs=[str(ROOT / "quactlize/backends/cuda"), str(ROOT / "quactlize/include"), str(CUTLASS_ROOT / "include")],
+        libraries=["cublas"],
+        depends=sorted(str(p) for p in (ROOT / "quactlize").rglob("*") if p.suffix in (".h", ".hpp", ".cuh")),
+        extra_compile_args={"cxx": ["-std=c++17", "-O2"], "nvcc": [
+            "-std=c++17", "-O3", "--fmad=false", "--expt-relaxed-constexpr", "--extended-lambda",
+        ]},
+    ))
+
 setup(
     name="quactlize",
     version="0.1.0",
@@ -80,8 +98,9 @@ setup(
         "include/quactlize_ppu_config.h",
         "include/quactlize_ppu_device.h",
         "include/quactlize_ppu_packed.h",
+        "backends/cuda/api.h",
     ]},
-    ext_modules=[ext],
+    ext_modules=extensions,
     cmdclass={"build_ext": BuildExtension},
     python_requires=">=3.9",
 )
