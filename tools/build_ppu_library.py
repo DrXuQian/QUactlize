@@ -47,6 +47,7 @@ JIT_PYTHON = (
     'quactlize/runtime/dispatch.py', 'quactlize/runtime/candidates.py',
     'quactlize/decode/compiler.py', 'quactlize/decode/grouped_compiler.py',
     'tools/kpack_jit.py', 'tools/gguf_header.py', 'quactlize/gguf_roles.py',
+    'tools/kpack_mxfp4_prewarm.py',
 )
 
 
@@ -60,6 +61,7 @@ def stage_jit(compiler, destination):
     """Preserve the compiler's exact include closure/source contract."""
     destination.mkdir(parents=True, exist_ok=False)
     files = {ROOT / name for name in JIT_PYTHON}
+    files.update(ROOT/'quactlize/mxfp4'/name for name in ('deepgemm.cuh','e8m0.hpp'))
     for directory in compiler.includes:
         files.update(p for p in directory.rglob('*') if p.is_file() and
                      p.suffix in HEADER_SUFFIXES)
@@ -186,7 +188,7 @@ def build(sdk, output, jobs):
     runtime = output / 'quactlize-runtime'
     runtime.mkdir()
     start = time.monotonic()
-    public_sources = {p: sha(p) for directory in ('quactlize/dense', 'quactlize/dispatch', 'quactlize/moe', 'quactlize/routing', 'quactlize/ffn', 'quactlize/fusion')
+    public_sources = {p: sha(p) for directory in ('quactlize/dense', 'quactlize/dispatch', 'quactlize/moe', 'quactlize/routing', 'quactlize/ffn', 'quactlize/fusion', 'quactlize/mxfp4')
                       for p in (ROOT / directory).iterdir() if p.is_file()}
     public_sources.update({p: sha(p) for p in (ROOT/'policies').iterdir() if p.suffix in ('.hpp', '.json')})
     device_policy=ROOT/'quactlize/include/ppu_device.hpp'
@@ -272,7 +274,7 @@ def build(sdk, output, jobs):
         objects = list(pool.map(compile_one, ('quactlize/dense/runtime.cpp', 'quactlize/dense/copy.cu',
             'quactlize/moe/matmul.cpp','quactlize/moe/selection.cpp',
             'quactlize/moe/scaffold.cu','quactlize/routing/route.cu','quactlize/ffn/ffn.cpp',
-            'quactlize/ffn/dense_swiglu.cu')))
+            'quactlize/ffn/dense_swiglu.cu','quactlize/mxfp4/provider.cpp')))
     objects += [work / 'packing' / (name + '.o') for name in ('sizes.cpp', 'ppu_pack.cu')]
     run('public', ['g++', '-shared', '-pthread', '-Wl,-Bsymbolic', '-Wl,-z,defs',
         '-Wl,-soname,' + PUBLIC_LIBRARY, '-Wl,-rpath,$ORIGIN/quactlize-runtime',
@@ -297,7 +299,9 @@ def build(sdk, output, jobs):
                 if p.is_file() and not p.is_relative_to(work)}
     manifest = dict(schema='quactlize.ppu-library.v1', library=PUBLIC_LIBRARY,
         payloads=payloads, commands=commands, jit_source_contract=contract,
-        sdk=compiler.sdk_identity, formats=[8, 10, 11, 12, 13, 14],
+        sdk=compiler.sdk_identity, formats=[8, 10, 11, 12, 13, 14, 39],
+        mxfp4=dict(mapping_id='4d58463441313601',provider='INSTALLED_SAIL_W4FA16',
+            scope='LOSSLESS_PACK_AND_INDEPENDENT_MOE_ONLY; NO_DENSE_OR_FFN_FUSION; DEVICE_VALIDATION_PENDING'),
         source_hashes={str(p.relative_to(ROOT)): digest for p, digest in public_sources.items()},
         execution_receipt=execution,
         final_selection=dict(path='quactlize-runtime/final-selection.json', capabilities=capabilities),

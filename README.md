@@ -43,6 +43,36 @@ and [ffn/api.h](quactlize/ffn/api.h).
 The independent MoE projection takes F32 activations/output and GPU IDs, with
 BF16 operands and FP32 accumulation. The library owns routing, preparation,
 selection and reduction; the caller only supplies per-stream scratch.
+
+The `pr/mxfp4-w4a16` feature adds native GGUF MXFP4 (type 39) independent MoE
+projections. It losslessly repacks E2M1 codes and E8M0 scale bytes into Sail
+W4FA16 layout; resident weight bytes do not grow. It does **not** convert a
+Q4_K_XL GGUF to MXFP4, quantize activations, or enable MXFP4 FFN/SwiGLU fusion.
+Its provider heuristic is unmeasured, separate from existing Q4_K tables.
+PPU accuracy/performance validation is still required before product admission.
+
+MXFP4 prepare needs the installed `DeepGEMM-for-sail` Python W4FA16 entry with
+uint8 E8M0 support (implementation checked against `f89eae10c0e90c20630b50e4314448f01321bfba`)
+and that package's `actlize_v1.0.0` headers. Quactlize's actlize gitlink is not
+replaced. The helper compiles one provider-selected recipe outside capture;
+native execution passes current A/IDs/C/workspace/stream on every call. Missing
+or incompatible providers fail preparation with diagnostics, never requantize
+or reinterpret weights. `DG_CACHE_DIR` remains the provider's JIT cache.
+The exported product is still one `libncp_quactlize.so`; ncp needs no wrapper.
+
+After building a fresh package with the command above, run the focused gate:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 PPU_SDK=/usr/local/PPU_SDK \
+  QUACTLIZE_CI_PACKAGE=/workspace/quactlize-package-RUN_ID \
+  python3 -m pytest -x -v -s tests/ppu/test_mxfp4_library.py
+```
+
+It checks every packed bit, TP/EP slices, top-6 routing, M1..8 and prefill,
+changed pointers, two streams and graph replay. Packing all E8M0 byte values
+is distinct from arithmetic validation; the zero-exponent test also detects
+silent subnormal flushing. No model is required for these tests.
+
 The FFN API composes separate or canonical merged gate/up weights with SwiGLU,
 Down and ordered expert weighting. It shares routing and consumes actual
 producer partials without duplicate reductions. Gate/up merging produces one

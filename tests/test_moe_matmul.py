@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
@@ -17,13 +18,43 @@ def test_host_contract(tmp_path,source):
     if source in ('moe_matmul_host','ffn_host'):
         (tmp_path/'catalog.inc').write_text('static std::vector<Image> kImages{};\nstatic char const kJitSource[]="";\n')
         extra=[str(ROOT/p) for p in ('quactlize/packing/sizes.cpp','quactlize/execution/simt.cpp',
-               'quactlize/execution/q4_decode.cpp','quactlize/moe/selection.cpp')]
+               'quactlize/execution/q4_decode.cpp','quactlize/moe/selection.cpp','quactlize/mxfp4/provider.cpp')]
     sdk=Path(os.environ.get('PPU_SDK','/usr/local/PPU_SDK'))
     exe=tmp_path/source
     subprocess.run(['g++','-std=c++17','-O1','-pthread','-rdynamic','-I'+str(ROOT),'-I'+str(tmp_path),
         '-I'+str(sdk/'include'),'-I'+str(ROOT/'quactlize/include'),'-I'+str(ROOT/'third_party/actlize/include'),
         str(ROOT/'tests'/f'{source}.cpp'),*extra,'-ldl','-o',str(exe)],check=True)
-    subprocess.run([str(exe)],check=True)
+    env=dict(os.environ)
+    if source=='moe_matmul_host':
+        # Real native provider/receipt boundary, CPU launch double only.
+        stub=tmp_path/'provider.cpp';image=tmp_path/'provider.so'
+        stub.write_text(r'''
+#include <cassert>
+#include <cstdint>
+extern "C" void launch(void const* a,void const* w,void const* sf,void* c,int m,int expected,void* stream,
+                       int sms,int const* counts,void* directory,int* rc) {
+    assert(a && w && sf && c && counts && directory && stream);
+    assert(m==6*17 && expected==1 && sms==64);
+    assert(w==(void const*)(1ull<<40) && sf==(void const*)(3ull<<40));
+    assert(a!=c && a!=w && counts!=directory);
+    assert((uintptr_t(a)>>40)==(uintptr_t(c)>>40));
+    assert((uintptr_t(a)>>40)==(uintptr_t(directory)>>40));
+    assert((uintptr_t(a)>>40)==4+4*(uintptr_t(stream)-1));
+    *rc=0;
+}
+''')
+        subprocess.run(['g++','-std=c++17','-shared','-fPIC',str(stub),'-o',str(image)],check=True)
+        helper=tmp_path/'jit/tools/kpack_mxfp4_prewarm.py';helper.parent.mkdir(parents=True)
+        helper.write_text('import sys\nfrom pathlib import Path\n'
+            'a=dict(zip(sys.argv[1::2],sys.argv[2::2]))\n'
+            'assert a["--m"]=="102" and a["--n"]=="256" and a["--k"]=="512" and a["--experts"]=="256"\n'
+            'print("QZ_MXFP4_V1 102 256 512 256 64 4096")\n'
+            f'print({str(image)!r})\nprint("w4fa16:CPU_ABI_DOUBLE_NOT_GPU")\n'
+            f'with Path({str(tmp_path/"prewarm-count")!r}).open("a") as out:out.write("1\\n")\n')
+        env.update(QZ_TEST_MXROOT=str(tmp_path),QUACTLIZE_PPU_PYTHON=sys.executable)
+    subprocess.run([str(exe)],check=True,env=env)
+    if source=='moe_matmul_host':
+        assert (tmp_path/'prewarm-count').read_text()=='1\n'
 
 
 def test_measured_table_generated_and_fresh_evidence():

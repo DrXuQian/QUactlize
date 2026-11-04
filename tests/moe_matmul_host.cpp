@@ -77,6 +77,10 @@ void binding(qkg_call_v1 const& c) {
 }
 }
 extern "C" hggcError_t hggcGetDevice(int* out) {*out=test::device;return hggcSuccess;}
+extern "C" hggcError_t hggcDeviceGetAttribute(int* out,hggcDeviceAttr attr,int device) {
+    assert(device==test::device && attr==hggcDevAttrMultiProcessorCount);*out=64;return hggcSuccess;
+}
+extern "C" hggcError_t hggcPeekAtLastError() {return hggcSuccess;}
 extern "C" hggcError_t hggcStreamIsCapturing(hggcStream_t,hggcStreamCaptureStatus* out) {
     *out=test::capture?hggcStreamCaptureStatusActive:hggcStreamCaptureStatusNone;return hggcSuccess;
 }
@@ -111,6 +115,30 @@ STUB(8) STUB(10) STUB(11) STUB(12) STUB(13) STUB(14)
 int main() {
     using namespace quactlize::moe::matmul;
     int cases=0;
+    if(auto root=std::getenv("QZ_TEST_MXROOT")) {
+        auto ctx=test::context();ctx->root=root;ctx->sdk=root;
+        auto p=test::params(39,17,256,512,256,6,1);
+        void* handles[2]{};quactlize_ppu_moe_matmul_plan_info_v1 info{1,sizeof(info)};
+        for(auto& handle:handles) {
+            assert(!quactlize_ppu_moe_matmul_prepare_v1(ctx.get(),&p,(void*)(1ull<<40),nullptr,
+                (void*)(3ull<<40),&handle,&info));
+            assert(info.route==QUACTLIZE_MOE_MXFP4_W4FA16 && info.compute_type==1 && info.split==1);
+        }
+        using MoEPlan=quactlize::moe::matmul::Plan;
+        assert(static_cast<MoEPlan*>(handles[0])->mxfp4==static_cast<MoEPlan*>(handles[1])->mxfp4);
+        for(int i=0;i<2;++i) {
+            auto a=reinterpret_cast<float*>(uint64_t(5+4*i)<<40);
+            auto ids=reinterpret_cast<int32_t*>(uint64_t(6+4*i)<<40);
+            auto out=reinterpret_cast<float*>(uint64_t(7+4*i)<<40);
+            auto scratch=reinterpret_cast<void*>(uint64_t(4+4*i)<<40);
+            test::last_a=a;test::last_ids=ids;test::last_stream=reinterpret_cast<void*>(i+1);
+            test::capture=i;test::launches.clear();
+            assert(!quactlize_ppu_moe_matmul_run_v1(handles[i],a,ids,out,scratch,info.workspace_bytes,test::last_stream));
+            assert((test::launches==std::vector<std::string>{"prepare","status","scatter"}));
+            assert(quactlize_ppu_moe_matmul_run_v1(handles[i],a,ids,out,scratch,info.workspace_bytes-1,test::last_stream));
+        }
+        test::capture=0;
+    }
     auto check=[&](auto p) {
         assert(quactlize_ppu_moe_matmul_supported_v1(&p)==1);
         auto admission=p;admission.tokens=0;assert(quactlize_ppu_moe_matmul_supported_v1(&admission)==1);

@@ -1,6 +1,7 @@
 #include <hggc_runtime.h>
 #include "api.h"
 #include "word_pack.hpp"
+#include "mxfp4.hpp"
 #include "../fusion/gate_up.h"
 #include "../fusion/paired_n4.hpp"
 #include <algorithm>
@@ -8,6 +9,16 @@
 
 namespace {
 using gguf_scale::KType;
+
+template<class Source>
+__global__ void pack_mxfp4(Source raw,uint32_t* low,uint8_t* scale,
+                         int n,int k,uint64_t words,uint64_t groups) {
+  for(uint64_t i=uint64_t(blockIdx.x)*blockDim.x+threadIdx.x;
+      i<words;i+=uint64_t(gridDim.x)*blockDim.x) {
+    low[i]=quactlize::mxfp4::Map::word(raw,n,k,i);
+    if(i<groups) scale[i]=quactlize::mxfp4::Map::scale(raw,n,k,i);
+  }
+}
 
 template<class Source>
 __global__ void pack_q8(Source raw, uint16_t* low, uint8_t* scale,
@@ -59,6 +70,11 @@ template<class Source>
 int launch_format(Source raw, uint8_t* low, uint8_t* high, uint8_t* units,
                   int n, int k, int qtype, quactlize_ppu_kpack_sizes_v1 const& s, void* stream) {
   if (hggcGetLastError() != hggcSuccess) return 41;
+  if (qtype == quactlize::mxfp4::qtype) {
+    pack_mxfp4<<<grid(s.low_bytes/4),256,0,static_cast<hggcStream_t>(stream)>>>(
+        raw,reinterpret_cast<uint32_t*>(low),units,n,k,s.low_bytes/4,s.units_bytes);
+    return hggcGetLastError()==hggcSuccess?0:41;
+  }
   if (qtype == 8) {
     pack_q8<<<grid(s.low_bytes/2),256,0,static_cast<hggcStream_t>(stream)>>>(
         raw,reinterpret_cast<uint16_t*>(low),units,n,k,s.low_bytes/2,s.units_bytes/2);
@@ -92,7 +108,7 @@ extern "C" int quactlize_ppu_prepare_fully_quantized_dev_for_arrangement_v2(
   int const rc = quactlize_ppu_kpack_sizes_for_arrangement_v1(n, k, experts, qtype, arrangement, &s);
   if (rc) return rc;
   if (!blocks || !low || !units || (s.high_bytes != 0) != (high != nullptr) ||
-      uintptr_t(low) % 2 || uintptr_t(high) % 2) return 20;
+      uintptr_t(low) % (qtype==quactlize::mxfp4::qtype?4:2) || uintptr_t(high) % 2) return 20;
   uintptr_t const begin[] = {uintptr_t(blocks), uintptr_t(low), uintptr_t(high), uintptr_t(units)};
   uint64_t const bytes[] = {s.raw_bytes, s.low_bytes, s.high_bytes, s.units_bytes};
   int const spans = disjoint(begin,bytes,4);
@@ -110,7 +126,7 @@ extern "C" int quactlize_ppu_prepare_gate_up_dev_for_arrangement_v1(
   rc = quactlize_ppu_kpack_sizes_for_arrangement_v1(2*n,k,experts,qtype,arrangement,&paired);
   if (rc) return rc;
   if (!gate || !up || !low || !units || (paired.high_bytes != 0) != (high != nullptr) ||
-      uintptr_t(low)%2 || uintptr_t(high)%2) return 20;
+      uintptr_t(low)%(qtype==quactlize::mxfp4::qtype?4:2) || uintptr_t(high)%2) return 20;
   uintptr_t const begin[] = {uintptr_t(gate),uintptr_t(up),uintptr_t(low),uintptr_t(high),uintptr_t(units)};
   uint64_t const bytes[] = {single.raw_bytes,single.raw_bytes,paired.low_bytes,paired.high_bytes,paired.units_bytes};
   rc = disjoint(begin,bytes,5);
@@ -122,6 +138,7 @@ extern "C" int quactlize_ppu_prepare_gate_up_dev_for_arrangement_v1(
 extern "C" int quactlize_gate_up_pack_v1(
     uint8_t const* gate, uint8_t const* up, uint8_t* low, uint8_t* high, uint8_t* units,
     int n, int k, int experts, int qtype, qkg_gate_up_layout_v1 const* layout, void* stream) {
+  if (qtype==quactlize::mxfp4::qtype) return 22;
   if (!layout || layout->version!=1 || layout->size!=sizeof(*layout) ||
       layout->layout_id!=QKG_GATE_UP_N4_V1) return 38;
   if (n<=0 || n>INT32_MAX/2 || n%8) return 24;

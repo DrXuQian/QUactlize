@@ -2,6 +2,7 @@
 #include "matmul_validation.hpp"
 #include "../dispatch/api.h"
 #include "../runtime/library.hpp"
+#include "../mxfp4/provider.hpp"
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -21,6 +22,7 @@ struct Plan {
     qks_request_v1 request{};
     qzm_prepare_plan_v2 preparation{};
     void* handle=nullptr;
+    std::shared_ptr<mxfp4::Provider> mxfp4;
     uint64_t src=0,dst=0,offsets=0,inverse=0,counts=0,active=0,count=0;
     uint64_t route=0,input=0,output=0,status=0,kernel=0,kernel_bytes=0;
     uint64_t scale=0,zero=0,plane_bytes=0;

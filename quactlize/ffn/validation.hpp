@@ -33,6 +33,9 @@ inline int admission(quactlize_ppu_ffn_params_v1 const* p) {
               uint64_t(p->weights_stride)>uint64_t(INT64_MAX)/4/(p->tokens?p->tokens:1)) return 0;
     for(int i=0;i<3;++i) {
         if(i==1 && p->merged) continue;
+        // Native MXFP4 initially uses independent projections. In particular,
+        // do not bypass DeepSeek's existing activation clamp/SwiGLU graph.
+        if(weight(*p,i).qtype==39) return 0;
         if(p->kind==QUACTLIZE_FFN_DENSE) {
             auto a=dense_params(*p,i);if(dense::admission(&a)!=1) return 0;
         } else {
