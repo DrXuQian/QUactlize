@@ -38,6 +38,14 @@ class Buffers(C.Structure):
     _fields_ += [("device_error", C.c_void_p), ("stream", C.c_void_p)]
 
 
+class RowLookup(C.Structure):
+    _fields_ = [(s, C.c_uint32) for s in ('version', 'size')]
+    _fields_ += [(s, C.c_int32) for s in ('qtype', 'compute_type', 'columns', 'capacity')]
+    _fields_ += [('table_rows', C.c_int64)]
+    _fields_ += [(s, C.c_uint64) for s in ('raw_bytes', 'ids_bytes', 'output_bytes')]
+    _fields_ += [(s, C.c_void_p) for s in ('raw', 'ids', 'num_rows', 'output', 'device_error', 'stream')]
+
+
 @lru_cache(maxsize=1)
 def _library():
     paths = sorted(Path(__file__).parent.glob("_cuda_compat*.so"))
@@ -52,6 +60,7 @@ def _library():
         getattr(lib, name).argtypes = [C.c_void_p, C.POINTER(Buffers)]
     lib.quactlize_cuda_destroy_v1.argtypes = [C.c_void_p]
     lib.quactlize_cuda_destroy_v1.restype = None
+    lib.quactlize_cuda_gather_rows_v1.argtypes = [C.POINTER(RowLookup)]
     return lib
 
 
@@ -106,6 +115,42 @@ def _matmul_fake(input, raw, low, high, units, ids, output, workspace, device_er
 # Public opaque operation for callers that bind process-local handles after
 # compiling a forward in another process. The owning PreparedMatmul stays live.
 matmul = _matmul
+
+
+@torch.library.custom_op('quactlize_cuda::gather_rows', mutates_args=('output', 'device_error'))
+def gather_rows(raw: torch.Tensor, ids: torch.Tensor, output: torch.Tensor,
+                num_rows: torch.Tensor | None, device_error: torch.Tensor,
+                qtype: int, table_rows: int) -> None:
+    """Decode selected raw GGUF rows directly into FP16/BF16 caller storage.
+
+    IDs are int64 [capacity]; num_rows is an optional device int32 scalar.
+    Inactive rows and ID -1 produce zero. Other bad IDs set device_error=1;
+    invalid live counts set device_error=2 and zero all rows. Repeated IDs are
+    independent output rows. Warm before capture; no allocation or workspace.
+    """
+    if not 0 < table_rows < 1 << 63 or not -(1 << 31) <= qtype < 1 << 31:
+        raise ValueError('row lookup dimensions or format exceed the native ABI')
+    if (output.device.type != 'cuda' or output.ndim != 2 or output.shape[0] < 1
+            or output.dtype not in (torch.float16, torch.bfloat16)
+            or ids.shape != (output.shape[0],) or ids.dtype != torch.int64
+            or raw.dtype != torch.uint8 or device_error.dtype != torch.int32 or device_error.numel() != 1):
+        raise ValueError('row lookup requires raw bytes, int64 IDs and 16-bit CUDA output [capacity,K]')
+    if num_rows is not None and (num_rows.dtype != torch.int32 or num_rows.numel() != 1):
+        raise ValueError('row lookup live count requires one device int32 element')
+    for value in (raw, ids, output, device_error, num_rows):
+        if value is not None and (value.device != output.device or not value.is_contiguous()):
+            raise ValueError('row lookup buffers must be contiguous on the output device')
+    with torch.cuda.device(output.device):
+        p = RowLookup(1, C.sizeof(RowLookup), qtype, int(output.dtype == torch.bfloat16),
+            output.shape[1], output.shape[0], table_rows, raw.nbytes, ids.nbytes, output.nbytes,
+            raw.data_ptr(), ids.data_ptr(), None if num_rows is None else num_rows.data_ptr(),
+            output.data_ptr(), device_error.data_ptr(), torch.cuda.current_stream(output.device).cuda_stream)
+        _check(_library().quactlize_cuda_gather_rows_v1(C.byref(p)))
+
+
+@gather_rows.register_fake
+def _gather_rows_fake(raw, ids, output, num_rows, device_error, qtype, table_rows):
+    pass
 
 
 def _destroy(lib, handle, device):

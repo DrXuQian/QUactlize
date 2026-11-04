@@ -47,6 +47,25 @@ int quactlize_cuda_prepare_v1(qcu_problem_v1 const*,
 int quactlize_cuda_run_v1(void* handle, qcu_buffers_v1 const*);
 // Expose expansion alone for format qualification, using the same workspace.
 int quactlize_cuda_dequant_v1(void* handle, qcu_buffers_v1 const*);
+
+// Direct GGUF row lookup for vocabulary and staged embedding tables. All
+// buffers are caller-owned; IDs and optional live-row count stay on device.
+// No handle, scratch, dummy GEMM operands or persistent expanded table.
+typedef struct {
+    uint32_t version, size;
+    int32_t qtype, compute_type, columns, capacity;
+    int64_t table_rows;
+    uint64_t raw_bytes, ids_bytes, output_bytes;
+    void const *raw;
+    int64_t const *ids;
+    int32_t const *num_rows;
+    void *output;
+    int32_t *device_error;
+    void *stream;
+} qcu_rows_v1;
+// -1 and inactive suffix rows produce zero. Other invalid IDs set error=1;
+// a live-row count outside [0,capacity] zeros the output and sets error=2.
+int quactlize_cuda_gather_rows_v1(qcu_rows_v1 const*);
 void quactlize_cuda_destroy_v1(void* handle);
 char const* quactlize_cuda_error_v1(void);
 

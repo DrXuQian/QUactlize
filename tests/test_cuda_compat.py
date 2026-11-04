@@ -16,6 +16,75 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="requires 
 FORMATS = [7, 8, 10, 11, 12, 13, 14, 20]
 
 
+@pytest.mark.parametrize('q', FORMATS)
+@pytest.mark.parametrize('dtype', [torch.float16, torch.bfloat16])
+def test_direct_embedding_rows_bit_exact_graph(q, dtype):
+    from quactlize.cuda_compat import gather_rows
+
+    k = 2560 if q == 8 else 160 if q == 20 else 512 if q in range(10, 15) else 640
+    raw = raw_blocks(q, 19, 1, k)
+    expected_table = decoded(raw, q, dtype).squeeze(1)
+    device_raw = torch.from_numpy(raw).cuda()
+    ids = torch.zeros(17, dtype=torch.int64, device='cuda')
+    live = torch.full((1,), 17, dtype=torch.int32, device='cuda')
+    error = torch.zeros((), dtype=torch.int32, device='cuda')
+    output = torch.empty((17, k), dtype=dtype, device='cuda')
+    def run():
+        gather_rows(device_raw, ids, output, live, error, q, 19)
+    compiled = torch.compile(run, fullgraph=True)
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        compiled()
+    stream.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph, stream=stream):
+        compiled()
+    try:
+        for count in (17, 13, 1, 0, -1, 18, 17):
+            host_ids = torch.tensor([18, 0, 18, -1, 19, -2, 1 << 40, 3, 8, 1, 7, 11, 16, 0, 1, 2, 3])
+            ids.copy_(host_ids)
+            live.fill_(count)
+            allocated = torch.cuda.memory_stats()['allocation.all.allocated']
+            graph.replay()
+            torch.cuda.synchronize()
+            assert torch.cuda.memory_stats()['allocation.all.allocated'] == allocated
+            expected = torch.zeros_like(output, device='cpu')
+            status = 0
+            if not 0 <= count <= 17:
+                status = 2
+            else:
+                for row, selected in enumerate(host_ids[:count].tolist()):
+                    if 0 <= selected < 19:
+                        expected[row] = expected_table[selected]
+                    elif selected != -1:
+                        status = 1
+            assert torch.equal(output.cpu().view(torch.int16), expected.view(torch.int16))
+            assert error.item() == status
+    finally:
+        stream.synchronize()
+        graph.reset()
+
+
+def test_direct_embedding_rows_reject_bad_buffers_and_overflow():
+    from quactlize.cuda_compat import gather_rows
+
+    raw = torch.from_numpy(raw_blocks(8, 32, 1, 256)).cuda()
+    ids = torch.zeros(3, dtype=torch.int64, device='cuda')
+    output = torch.empty((3, 256), dtype=torch.bfloat16, device='cuda')
+    error = torch.zeros((), dtype=torch.int32, device='cuda')
+    with pytest.raises(RuntimeError, match='capacity'):
+        gather_rows(raw[:1], ids, output, None, error, 8, 32)
+    alias = raw.flatten()[:output.nbytes].view(torch.bfloat16).view_as(output)
+    with pytest.raises(RuntimeError, match='disjoint'):
+        gather_rows(raw, ids, alias, None, error, 8, 32)
+    with pytest.raises(ValueError, match='native ABI'):
+        gather_rows(raw, ids, output, None, error, (1 << 32) + 8, 32)
+    # Torch's SymInt schema rejects this before the Python/C ABI boundary.
+    with pytest.raises(RuntimeError, match="Expected a value of type 'int'"):
+        gather_rows(raw, ids, output, None, error, 8, (1 << 64) + 32)
+
+
 def raw_blocks(q, e, n, k):
     block, size = gguf.GGML_QUANT_SIZES[gguf.GGMLQuantizationType(q)]
     rng = np.random.default_rng(7100 + q)

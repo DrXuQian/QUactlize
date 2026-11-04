@@ -207,6 +207,67 @@ template<class T> void expand_weights(Prepared const& h, qcu_buffers_v1 const& b
         case 14: launch<14,T>(h,b); break; case 20: launch<20,T>(h,b); break;
     }
 }
+
+template<int Q, class T> __global__ void gather_rows(uint8_t const* raw, int64_t const* ids,
+        int32_t const* num_rows, T* output, int32_t* error, int64_t table_rows,
+        int columns, int capacity, int block, int bytes) {
+    int live = num_rows ? *num_rows : capacity;
+    if (live < 0 || live > capacity) {
+        atomicMax(error, 2);
+        live = 0;
+    }
+    int64_t total = int64_t(capacity) * columns;
+    for (int64_t i = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+         i < total; i += int64_t(blockDim.x) * gridDim.x) {
+        int64_t row = i / columns, column = i % columns;
+        int64_t selected = row < live ? ids[row] : -1;
+        float value = 0.f;
+        if (selected >= 0 && selected < table_rows) {
+            uint64_t offset = uint64_t(selected) * (columns / block) * bytes + (column / block) * bytes;
+            value = raw_value<Q>(raw + offset, column % block);
+        } else if (selected != -1) {
+            atomicMax(error, 1);
+        }
+        output[i] = rounded<T>(value);
+    }
+}
+
+template<class T> void gather_rows(qcu_rows_v1 const& p) {
+    int block = block_elements(p.qtype), bytes = block_bytes(p.qtype);
+    int grid = int(std::min<uint64_t>((uint64_t(p.capacity) * p.columns + 255) / 256, 65535));
+#define QCU_ROWS(Q) case Q: gather_rows<Q,T><<<grid,256,0,static_cast<cudaStream_t>(p.stream)>>>( \
+    static_cast<uint8_t const*>(p.raw), p.ids, p.num_rows, static_cast<T*>(p.output), p.device_error, \
+    p.table_rows, p.columns, p.capacity, block, bytes); break
+    switch (p.qtype) {
+        QCU_ROWS(7); QCU_ROWS(8); QCU_ROWS(10); QCU_ROWS(11);
+        QCU_ROWS(12); QCU_ROWS(13); QCU_ROWS(14); QCU_ROWS(20);
+    }
+#undef QCU_ROWS
+}
+
+void validate_rows(qcu_rows_v1 const& p) {
+    require(p.version == 1 && p.size == sizeof(p), "invalid row lookup ABI");
+    require(p.columns > 0 && p.capacity > 0 && p.table_rows > 0, "invalid row lookup geometry");
+    require(p.compute_type == QCU_F16 || p.compute_type == QCU_BF16, "invalid row lookup dtype");
+    int block = block_elements(p.qtype);
+    require(p.columns % block == 0, "incomplete GGUF row lookup block");
+    uint64_t raw_bytes = multiply(multiply(p.table_rows, p.columns / block), block_bytes(p.qtype));
+    uint64_t ids_bytes = multiply(p.capacity, 8), output_bytes = multiply(multiply(p.capacity, p.columns), 2);
+    require(p.raw_bytes >= raw_bytes && p.ids_bytes >= ids_bytes && p.output_bytes >= output_bytes,
+            "row lookup buffer capacity is too small");
+    void const* pointers[] = {p.raw, p.ids, p.num_rows, p.output, p.device_error};
+    uint64_t sizes[] = {raw_bytes, ids_bytes, p.num_rows ? 4ull : 0ull, output_bytes, 4};
+    int alignment[] = {1, 8, 4, 2, 4};
+    for (int i = 0; i < 5; ++i) {
+        if (!sizes[i]) continue;
+        auto address = reinterpret_cast<uintptr_t>(pointers[i]);
+        require(quactlize::execution::span(address, sizes[i]) && address % alignment[i] == 0,
+                "invalid row lookup buffer extent or alignment");
+        for (int j = 0; j < i; ++j)
+            require(!quactlize::execution::overlap(address, sizes[i], reinterpret_cast<uintptr_t>(pointers[j]), sizes[j]),
+                    "row lookup buffers must be disjoint");
+    }
+}
 void run(Prepared& h, qcu_buffers_v1 const& b, bool gemm) {
     validate(h,b);
     cuda_check(cudaMemsetAsync(b.device_error, 0, 4, static_cast<cudaStream_t>(b.stream)));
@@ -256,5 +317,15 @@ extern "C" int quactlize_cuda_run_v1(void* handle, qcu_buffers_v1 const* buffers
 }
 extern "C" int quactlize_cuda_dequant_v1(void* handle, qcu_buffers_v1 const* buffers) {
     return guarded([&] { require(handle && buffers,"null expansion argument"); run(*static_cast<Prepared*>(handle),*buffers,false); });
+}
+extern "C" int quactlize_cuda_gather_rows_v1(qcu_rows_v1 const* rows) {
+    return guarded([&] {
+        require(rows, "null row lookup argument");
+        validate_rows(*rows);
+        cuda_check(cudaMemsetAsync(rows->device_error, 0, 4, static_cast<cudaStream_t>(rows->stream)));
+        if (rows->compute_type == QCU_F16) gather_rows<__half>(*rows);
+        else gather_rows<__nv_bfloat16>(*rows);
+        cuda_check(cudaGetLastError());
+    });
 }
 extern "C" void quactlize_cuda_destroy_v1(void* handle) { delete static_cast<Prepared*>(handle); }

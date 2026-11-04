@@ -60,6 +60,14 @@ slots. Scratch expands selected **slots**, including duplicates, rather than
 every resident expert. Reuse scratch between sequential layers and retain
 handles/buffers until all dependent graphs drain.
 
+`gather_rows` (native `quactlize_cuda_gather_rows_v1`) decodes only requested
+rows of a raw GGUF table directly to caller-owned FP16/BF16 output. IDs are
+int64; an optional device int32 live-row count masks the inactive suffix.
+An ID of -1 produces zero. Other out-of-range IDs report device error 1;
+an invalid live count zeros all output and reports error 2. It supports the
+same eight raw encodings, including Q8_0 vocabulary and IQ4_NL PLE rows,
+without GEMM, temporary expansion buffers, or host synchronization.
+
 This is a format and graph compatibility backend. It does not establish full
 model throughput or force tensor-core instructions for every small matrix.
 Expanded weight writes and subsequent GEMM reads are included in its cost.
