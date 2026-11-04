@@ -42,6 +42,10 @@ python -m pytest -q tests/test_cuda_compat.py
 package build remains host-only. The Python entry is
 `quactlize.cuda_compat.PreparedMatmul`; native callers use
 [`backends/cuda/api.h`](quactlize/backends/cuda/api.h).
+`query(Problem(...), arrangement=None)` reports scratch requirements without
+allocating GPU buffers. Frameworks compiling forwards in worker processes can
+call the public opaque `matmul` operation with a rebound process-local integer
+handle, retaining the owning `PreparedMatmul` in the capture process.
 
 Raw GGUF accepts Q5_1, Q8_0, Q2_K through Q6_K, and IQ4_NL. Canonical K-pack
 accepts Q8_0 and Q2_K through Q6_K with the existing producer's exact descriptor

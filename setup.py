@@ -27,7 +27,7 @@ CUTLASS_ROOT = Path(os.environ.get("CUTLASS_ROOT", ROOT / "third_party/cutlass")
 
 try:
     import torch
-    from torch.utils.cpp_extension import BuildExtension, CppExtension, CUDAExtension
+    from torch.utils.cpp_extension import BuildExtension, CppExtension, CUDAExtension, CUDA_HOME
 except ImportError:
     sys.exit("quactlize's extension needs torch installed to build")
 
@@ -70,7 +70,9 @@ ext = CppExtension(
     # refuses that request rather than returning wrongly-ordered bytes, but the flag is what makes it answerable.
     define_macros=[("USE_AIU", "1")],
     depends=HEADERS,
-    extra_compile_args=["-std=c++17", "-O2", "-Wno-unused-function", "-Wno-sign-compare"],
+    # BuildExtension selects the C++ standard required by the installed Torch
+    # (C++17 on 2.8, C++20 on Flare's 2.14); do not override it for host bindings.
+    extra_compile_args=["-O2", "-Wno-unused-function", "-Wno-sign-compare"],
     libraries=["dl"],
 )
 
@@ -78,10 +80,14 @@ extensions = [ext]
 if WITH_CUDA:
     if not (CUTLASS_ROOT / "include/cutlass/cutlass.h").is_file():
         sys.exit("CUDA compatibility requires NVIDIA CUTLASS headers; initialize third_party/cutlass or set CUTLASS_ROOT")
+    # CUDA 13 packages place CCCL below include/cccl. nvcc discovers it itself;
+    # host-compiled packing metadata also includes CUTLASS and needs this path.
+    cccl = Path(CUDA_HOME) / 'include/cccl' if CUDA_HOME else None
     extensions.append(CUDAExtension(
         name="quactlize._cuda_compat",
         sources=["quactlize/backends/cuda/compat.cu", "quactlize/packing/ppu_pack.cu", "quactlize/packing/sizes.cpp"],
-        include_dirs=[str(ROOT / "quactlize/backends/cuda"), str(ROOT / "quactlize/include"), str(CUTLASS_ROOT / "include")],
+        include_dirs=[str(ROOT / "quactlize/backends/cuda"), str(ROOT / "quactlize/include"), str(CUTLASS_ROOT / "include")]
+            + ([str(cccl)] if cccl is not None and cccl.is_dir() else []),
         libraries=["cublas"],
         depends=sorted(str(p) for p in (ROOT / "quactlize").rglob("*") if p.suffix in (".h", ".hpp", ".cuh")),
         extra_compile_args={"cxx": ["-std=c++17", "-O2"], "nvcc": [

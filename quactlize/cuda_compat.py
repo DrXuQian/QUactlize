@@ -70,6 +70,14 @@ def _check(result):
         raise RuntimeError(_library().quactlize_cuda_error_v1().decode())
 
 
+def query(problem, arrangement=None):
+    """Return byte requirements without allocating tensors or creating a handle."""
+    sizes = Sizes()
+    _check(_library().quactlize_cuda_query_v1(C.byref(problem),
+        C.byref(arrangement) if arrangement is not None else None, C.byref(sizes)))
+    return sizes
+
+
 def _buffers(input, raw, low, high, units, ids, output, workspace, device_error):
     b = Buffers(version=1, size=C.sizeof(Buffers))
     for name, tensor in (("input", input), ("raw", raw), ("low", low), ("high", high),
@@ -93,6 +101,11 @@ def _matmul(input: torch.Tensor, raw: torch.Tensor | None, low: torch.Tensor | N
 @_matmul.register_fake
 def _matmul_fake(input, raw, low, high, units, ids, output, workspace, device_error, handle):
     pass
+
+
+# Public opaque operation for callers that bind process-local handles after
+# compiling a forward in another process. The owning PreparedMatmul stays live.
+matmul = _matmul
 
 
 def _destroy(lib, handle, device):
@@ -134,10 +147,9 @@ class PreparedMatmul:
             raise ValueError("supply raw GGUF or a canonical K-pack arrangement")
         self.problem = Problem(1, C.sizeof(Problem), qtype, int(raw is None), int(ids is not None),
             int(input.dtype == torch.bfloat16), m, n, k, experts, topk, channels, input.device.index)
-        self.sizes = Sizes()
+        self.sizes = query(self.problem, arrangement)
         lib = _library()
         descriptor = C.byref(arrangement) if arrangement is not None else None
-        _check(lib.quactlize_cuda_query_v1(C.byref(self.problem), descriptor, C.byref(self.sizes)))
         if workspace is None:
             workspace = torch.empty(self.sizes.workspace_bytes, dtype=torch.uint8, device=input.device)
         for name, tensor in (("input", input), ("output", output), ("raw", raw), ("low", low),
