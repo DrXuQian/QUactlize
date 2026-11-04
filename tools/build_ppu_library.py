@@ -40,6 +40,9 @@ PUBLIC_EXPORTS = (
         'supported_v1', 'create_v1', 'prepare_v1', 'run_v1', 'destroy_v1', 'error_v1')),
     *('quactlize_ppu_ffn_' + suffix for suffix in (
         'supported_v1', 'create_v1', 'prepare_v1', 'run_v1', 'run_v2', 'destroy_v1', 'error_v1')),
+    *('quactlize_ppu_matmul_' + suffix for suffix in (
+        'query_v1', 'prepare_v1', 'run_v1', 'dequant_v1', 'destroy_v1', 'error_v1')),
+    'quactlize_ppu_router_run_v1', 'quactlize_ppu_swiglu_run_v1', 'quactlize_ppu_merge_run_v1',
 )
 JIT_PYTHON = (
     'quactlize/__init__.py', 'quactlize/runtime/__init__.py',
@@ -186,7 +189,7 @@ def build(sdk, output, jobs):
     runtime = output / 'quactlize-runtime'
     runtime.mkdir()
     start = time.monotonic()
-    public_sources = {p: sha(p) for directory in ('quactlize/dense', 'quactlize/dispatch', 'quactlize/moe', 'quactlize/routing', 'quactlize/ffn', 'quactlize/fusion')
+    public_sources = {p: sha(p) for directory in ('quactlize/dense', 'quactlize/dispatch', 'quactlize/moe', 'quactlize/routing', 'quactlize/ffn', 'quactlize/fusion', 'quactlize/compat')
                       for p in (ROOT / directory).iterdir() if p.is_file()}
     public_sources.update({p: sha(p) for p in (ROOT/'policies').iterdir() if p.suffix in ('.hpp', '.json')})
     device_policy=ROOT/'quactlize/include/ppu_device.hpp'
@@ -260,7 +263,7 @@ def build(sdk, output, jobs):
                ROOT / 'third_party/actlize/examples/common', sdk / 'include']
 
     def compile_one(source, definitions=(), name=None):
-        name = name or Path(source).stem
+        name = name or (('compat_' if source.startswith('quactlize/compat/') else '') + Path(source).stem)
         obj = work / (name + '.o')
         command = ([str(sdk / 'bin/hgcc'), *FLAGS] if source.endswith('.cu') else
                    ['g++', '-std=c++17', '-O2', '-fPIC', '-pthread'])
@@ -272,7 +275,7 @@ def build(sdk, output, jobs):
         objects = list(pool.map(compile_one, ('quactlize/dense/runtime.cpp', 'quactlize/dense/copy.cu',
             'quactlize/moe/matmul.cpp','quactlize/moe/selection.cpp',
             'quactlize/moe/scaffold.cu','quactlize/routing/route.cu','quactlize/ffn/ffn.cpp',
-            'quactlize/ffn/dense_swiglu.cu')))
+            'quactlize/ffn/dense_swiglu.cu', 'quactlize/compat/runtime.cu', 'quactlize/compat/helpers.cu')))
     objects += [work / 'packing' / (name + '.o') for name in ('sizes.cpp', 'ppu_pack.cu')]
     run('public', ['g++', '-shared', '-pthread', '-Wl,-Bsymbolic', '-Wl,-z,defs',
         '-Wl,-soname,' + PUBLIC_LIBRARY, '-Wl,-rpath,$ORIGIN/quactlize-runtime',
@@ -284,6 +287,7 @@ def build(sdk, output, jobs):
         'quactlize/dense/api.h': 'quactlize/dense/api.h',
         'quactlize/moe/matmul.h': 'quactlize/moe/matmul.h',
         'quactlize/ffn/api.h': 'quactlize/ffn/api.h',
+        'quactlize/compat/api.h': 'quactlize/compat/api.h',
         'quactlize/include/quactlize_ppu_config.h': 'quactlize_ppu_config.h',
     }
     for source, target in headers.items():
@@ -298,6 +302,9 @@ def build(sdk, output, jobs):
     manifest = dict(schema='quactlize.ppu-library.v1', library=PUBLIC_LIBRARY,
         payloads=payloads, commands=commands, jit_source_contract=contract,
         sdk=compiler.sdk_identity, formats=[8, 10, 11, 12, 13, 14],
+        compatibility=dict(raw_gguf_formats=[7, 8, 10, 11, 12, 13, 14],
+            native_dtypes=['F16', 'BF16'], device_admission='PENDING',
+            scope='NATIVE_TYPED_BOUNDED_COMPATIBILITY_NOT_TUNED_POLICY_REPLACEMENT'),
         source_hashes={str(p.relative_to(ROOT)): digest for p, digest in public_sources.items()},
         execution_receipt=execution,
         final_selection=dict(path='quactlize-runtime/final-selection.json', capabilities=capabilities),

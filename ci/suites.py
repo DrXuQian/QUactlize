@@ -28,11 +28,13 @@ HOST = (
     "test_prefill_dense.py", "test_dense_full_helpers.py",
     "test_dense_cont.py", "test_dense_compact.py",
     "test_dense_q8_paired.py",
+    "test_ppu_compat.py",
 )
 
 # Sweep/importer tests, probes and legacy backends live on experiments/ppu-tuning.
 
-ACCURACY = ("ppu/test_public_library.py", "ppu/test_moe_library.py", "ppu/test_ffn_library.py")
+ACCURACY = ("ppu/test_public_library.py", "ppu/test_moe_library.py", "ppu/test_ffn_library.py",
+            "ppu/test_compat_library.py")
 
 
 def inventory(root=ROOT):
