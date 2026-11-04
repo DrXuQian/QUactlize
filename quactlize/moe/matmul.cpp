@@ -46,13 +46,6 @@ qzm_prepare_v1 prepare_call(Plan const& p) {
 }
 void select(Plan& p) {
     auto& ctx=*p.owner;auto const& a=p.params;
-    if(a.qtype==39) {
-        p.mxfp4=mxfp4::resolve(ctx.root,ctx.sdk,ctx.device,a.tokens*a.topk,a.n,a.k,a.experts);
-        p.info.route=QUACTLIZE_MOE_MXFP4_W4FA16;p.info.policy=QKS_COMPUTE_INITIAL;p.info.split=1;
-        p.kernel_bytes=p.mxfp4->workspace_bytes;
-        std::snprintf(p.info.config,sizeof(p.info.config),"%s",p.mxfp4->config.c_str());
-        return;
-    }
     p.request={1,sizeof(p.request),a.qtype,QK_GROUPED_SF,a.tokens*a.topk,a.n,a.k,a.experts,a.tokens,a.arrangement.mapping_id};
     if(a.tokens<=8) {
         auto c=indexed(p);
@@ -136,8 +129,7 @@ void prepare(Plan& p) {
         p.route=reserve(cursor,p.preparation.helper.workspace_bytes);
         p.input=reserve(cursor,rows*a.k*2);p.output=reserve(cursor,rows*a.n*2);p.status=reserve(cursor,4);
         if(p.plane_bytes) {p.scale=reserve(cursor,p.plane_bytes);p.zero=reserve(cursor,p.plane_bytes);}
-        if(!p.mxfp4)
-            dispatch_check(quactlize_kpack_dispatch_prepare_grouped_dynamic_v1(p.owner->dispatcher,&p.tc,&p.handle));
+        dispatch_check(quactlize_kpack_dispatch_prepare_grouped_dynamic_v1(p.owner->dispatcher,&p.tc,&p.handle));
     }
     p.kernel=reserve(cursor,p.kernel_bytes);p.info.workspace_bytes=cursor;
 }
@@ -188,10 +180,9 @@ void run(Plan const& p,float const* input,int32_t const* ids,float* output,void*
     }
     auto ptr=[&](uint64_t offset) { return reinterpret_cast<int32_t*>(base+offset); };
     prepare_input(p,input,ids,workspace,stream);
-    if(p.mxfp4) p.mxfp4->run(base+p.input,p.low,p.units,base+p.output,ptr(p.counts),base+p.kernel,stream);
-    else grouped(p,base+p.input,ptr(p.offsets),workspace,stream,QK_GROUPED_COMPLETE);
+    auto d=grouped(p,base+p.input,ptr(p.offsets),workspace,stream,QK_GROUPED_COMPLETE);
     require(hggcMemsetAsync(ptr(p.status),0,4,static_cast<hggcStream_t>(stream))==hggcSuccess,"MoE output status reset failed");
-    require(quactlize_prefill_scatter_bf16(base+p.output,output,ptr(p.dst),a.tokens*a.topk,a.n,a.output_stride,ptr(p.status),stream)==QKG_OK,
+    require(quactlize_prefill_scatter_bf16(base+p.output,output,ptr(p.dst),d.device_call.call.m,a.n,a.output_stride,ptr(p.status),stream)==QKG_OK,
             "MoE output scatter failed");
 }
 template<class F> int boundary(F fn) {

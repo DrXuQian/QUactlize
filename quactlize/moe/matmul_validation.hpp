@@ -6,7 +6,7 @@
 namespace quactlize::moe::matmul {
 inline int admission(quactlize_ppu_moe_matmul_params_v1 const* p) {
     if(!p || p->version!=1 || p->size!=sizeof(*p)) return -1;
-    if(p->reserved || (p->qtype!=8 && p->qtype!=39 && (p->qtype<10 || p->qtype>14)) ||
+    if(p->reserved || (p->qtype!=8 && (p->qtype<10 || p->qtype>14)) ||
        p->tokens<0 || p->n<=0 || p->n>65535*16 || p->n%256 || p->k<=0 || p->k>INT_MAX/8 ||
        p->k%((p->qtype==11 || p->qtype==14)?512:256) || p->experts<1 || p->experts>1024 ||
        p->topk<1 || p->topk>32 || p->topk>p->experts || p->channels<1 || p->channels>p->topk ||

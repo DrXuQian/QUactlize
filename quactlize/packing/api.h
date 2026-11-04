@@ -15,8 +15,6 @@ typedef struct {
 // biased int8 low plane + resident FP16 d [E,K/32,N]; no high/zero plane.
 // Its metadata is NOT a K-quant packed unit. Consumers must explicitly admit
 // this mapping. An older consumer must decline before taking the buffer.
-// MXFP4 (qtype=39) has a separate DeepGEMM W4FA16 mapping: unchanged E2M1
-// codes and E8M0 bytes, not INT4 K-pack. N%64=0, K%32=0; no requantization.
 int quactlize_ppu_kpack_canonical_arrangement_v1(
     int qtype, quactlize_ppu_placed_arrangement_v2* arrangement);
 

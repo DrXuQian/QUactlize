@@ -19,8 +19,7 @@ typedef struct {
     quactlize_ppu_kpack_sizes_v1 sizes;
 } quactlize_ppu_moe_matmul_params_v1;
 
-enum { QUACTLIZE_MOE_FQ_TC=0, QUACTLIZE_MOE_SF_TC=1, QUACTLIZE_MOE_SIMT=2,
-       QUACTLIZE_MOE_MXFP4_W4FA16=3 };
+enum { QUACTLIZE_MOE_FQ_TC=0, QUACTLIZE_MOE_SF_TC=1, QUACTLIZE_MOE_SIMT=2 };
 typedef struct {
     uint32_t version,size;
     uint64_t workspace_bytes;
@@ -28,17 +27,13 @@ typedef struct {
     char config[192];
 } quactlize_ppu_moe_matmul_plan_info_v1;
 
-// Host only: 1 supported, 0 unsupported, -1 invalid ABI. Q8_0,Q2_K..Q6_K,MXFP4;
+// Host only: 1 supported, 0 unsupported, -1 invalid ABI. Q8_0,Q2_K..Q6_K;
 // N%256=0, N<=65535*16, K%256=0 (Q3/Q6: K%512=0), 1..1024 experts, 1..32 topk.
 // tokens=0 admits a weight independently of inference M. Every positive M
 // with M*topk*max(N,K)<=INT32_MAX and the checked stride extents has a path.
 // Input tokens must be an integral number of input_row_stride apart.
 // Exact model tables, then same-family M buckets; unknown large-M families
 // use an explicitly unmeasured SF proposal, NEVER a legacy FQ fallback.
-// MXFP4 uses a distinct lossless layout and installed Sail W4FA16 heuristic
-// for every M, not Q4_K timing tables. BF16 A/B/C, FP32 accumulation, F32
-// scatter. Prepare requires Sail's uint8 E8M0 W4FA16 entry and its actlize1.0
-// headers; no activation quantization, FFN fusion or performance claim.
 int quactlize_ppu_moe_matmul_supported_v1(quactlize_ppu_moe_matmul_params_v1 const*);
 
 // Create/prepare outside capture on the context device. Prepare selects and
