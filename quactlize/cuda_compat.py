@@ -79,6 +79,35 @@ def _check(result):
         raise RuntimeError(_library().quactlize_cuda_error_v1().decode())
 
 
+class CudaPpuMatmulLibrary:
+    """NVIDIA dequant/GEMM with the PPU matmul record and lifetime contract.
+
+    Select this implementation explicitly for NVIDIA qualification. It uses
+    CUDA-named symbols and the real PPU ctypes records; it is not a PPU binary.
+    Query its own scratch requirements: NVIDIA expands selected slots, whereas
+    the PPU grouped route has a different, bounded expansion workspace.
+    """
+
+    def __init__(self, path=None):
+        from .compat.native import Problem as PpuProblem, Sizes as PpuSizes, Buffers as PpuBuffers
+
+        self.lib = _library() if path is None else C.CDLL(str(path), mode=C.RTLD_LOCAL)
+        self.target = 'nvidia'
+        def bind(name, args, result=C.c_int):
+            function = getattr(self.lib, 'quactlize_cuda_matmul_' + name + '_v1')
+            function.argtypes, function.restype = args, result
+            return function
+        self.query = bind('query', [C.POINTER(PpuProblem), C.c_void_p, C.POINTER(PpuSizes)])
+        self.prepare = bind('prepare', [C.POINTER(PpuProblem), C.c_void_p, C.POINTER(PpuBuffers), C.POINTER(C.c_void_p)])
+        self.run = bind('run', [C.c_void_p, C.POINTER(PpuBuffers)])
+        self.destroy = bind('destroy', [C.c_void_p], None)
+        self.error = bind('error', [], C.c_char_p)
+
+    def check(self, status):
+        if status:
+            raise RuntimeError(f'QUactlize NVIDIA matmul status={status}: {self.error().decode(errors="replace")}')
+
+
 def query(problem, arrangement=None):
     """Return byte requirements without allocating tensors or creating a handle."""
     sizes = Sizes()

@@ -60,6 +60,30 @@ slots. Scratch expands selected **slots**, including duplicates, rather than
 every resident expert. Reuse scratch between sequential layers and retain
 handles/buffers until all dependent graphs drain.
 
+`quactlize.cuda_compat.CudaPpuMatmulLibrary` is an explicitly selected NVIDIA
+implementation of the newer PPU matmul record ABI. Native entry points are
+`quactlize_cuda_matmul_{query,prepare,run,destroy,error}_v1`; the existing CUDA
+entry points retain their layouts and behavior. The new interface consumes the
+88-byte problem, 120-byte sizes and 152-byte buffers declared in
+`quactlize.compat.native`, with field-wise conversion instead of record casts.
+It supports native 16-bit operands, padded element strides, changing buffer
+addresses and routing IDs, and sticky error bits. Preparation executes and synchronizes
+one warmup outside capture; the caller owns every input/output/workspace.
+
+The NVIDIA implementation always uses dequantization plus 16-bit GEMM and
+reports its own selected-slot expansion and cuBLAS workspace. These sizes do
+not predict the PPU grouped implementation's memory or latency. Query the
+selected library at every capacity. The new interface accepts positive M and
+the PPU matmul formats (Q5_1, Q8_0 and Q2_K through Q6_K); IQ4_NL row lookup
+remains a separate operator. No PPU kernel, target selector or ABI is modified.
+
+On RTX PRO 6000 SM120, 132 CUDA checks cover both interfaces, including padded
+FP16/BF16 layouts, dynamic routing, sticky status and rejection of crossed ABI
+handles. Flare also passes four captured bridge cases and exports actual GGUF
+Q5_1 experts through its compiled-forward path. Thirty-six standalone Rust
+replays preserve 6571524 checked bytes each exactly, without GPU allocation or
+Python/Torch/operator-host-library loading. This does not qualify PPU execution.
+
 `gather_rows` (native `quactlize_cuda_gather_rows_v1`) decodes only requested
 rows of a raw GGUF table directly to caller-owned FP16/BF16 output. IDs are
 int64; an optional device int32 live-row count masks the inactive suffix.

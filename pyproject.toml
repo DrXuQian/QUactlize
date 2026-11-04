@@ -25,7 +25,7 @@ quactlize-pack-gguf = "quactlize.pack_gguf:main"
 quactlize-verify-ppu-bundle = "quactlize.ppu_bundle:main"
 
 [tool.setuptools]
-packages = ["quactlize"]
+packages = ["quactlize", "quactlize.compat"]
 
 [tool.setuptools.package-data]
 quactlize = [
@@ -34,6 +34,8 @@ quactlize = [
   "include/quactlize_ppu_device.h",
   "include/quactlize_ppu_packed.h",
   "backends/cuda/api.h",
+  "compat/api.h",
+  "packing/api.h",
 ]
 
 [tool.pytest.ini_options]

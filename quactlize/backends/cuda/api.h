@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include "../../include/quactlize_ppu_config.h"
+#include "../../compat/api.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -68,6 +69,20 @@ typedef struct {
 int quactlize_cuda_gather_rows_v1(qcu_rows_v1 const*);
 void quactlize_cuda_destroy_v1(void* handle);
 char const* quactlize_cuda_error_v1(void);
+
+// Explicit NVIDIA implementation of the new PPU matmul record layout. The
+// symbols keep their CUDA identity; no PPU kernel or dispatch is substituted.
+// Unlike the legacy entry points, these admit padded element strides and keep
+// device_error sticky. Prepare executes and synchronizes one warmup; run only
+// enqueues dequantization and 16-bit GEMM. Query reports NVIDIA scratch, which
+// expands selected slots and is NOT the PPU grouped route's bounded workspace.
+int quactlize_cuda_matmul_query_v1(qpm_problem_v1 const*,
+    quactlize_ppu_placed_arrangement_v2 const*, qpm_sizes_v1*);
+int quactlize_cuda_matmul_prepare_v1(qpm_problem_v1 const*,
+    quactlize_ppu_placed_arrangement_v2 const*, qpm_buffers_v1 const*, void**);
+int quactlize_cuda_matmul_run_v1(void*, qpm_buffers_v1 const*);
+void quactlize_cuda_matmul_destroy_v1(void*);
+char const* quactlize_cuda_matmul_error_v1(void);
 
 // A handle is serialized during preparation/capture. Independent concurrent
 // owners need separate handles and scratch. Retain the handle and all buffers

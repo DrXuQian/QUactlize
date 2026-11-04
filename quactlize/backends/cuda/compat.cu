@@ -83,6 +83,8 @@ qcu_sizes_v1 sizes(qcu_problem_v1 const& p, quactlize_ppu_placed_arrangement_v2 
 struct Prepared {
     qcu_problem_v1 p;
     qcu_sizes_v1 s;
+    int64_t input_row_stride = 0, input_token_stride = 0, ids_stride = 0, output_stride = 0;
+    bool sticky = false;
     cublasHandle_t blas = nullptr;
     ~Prepared() { if (blas) cublasDestroy(blas); }
 };
@@ -134,6 +136,7 @@ template<int Q, class T, bool Packed>
 __global__ void expand(uint8_t const* raw, uint8_t const* low, uint8_t const* high, uint8_t const* units,
                        int32_t const* ids, T const* input, T* weight, T* gathered, int32_t* error,
                        int n, int k, int experts, int slots, int topk, int channels,
+                       int64_t input_row_stride, int64_t input_token_stride, int64_t ids_stride,
                        uint64_t raw_stride, uint64_t low_stride, uint64_t high_stride, uint64_t units_stride) {
     constexpr int block = Q >= 10 && Q <= 14 ? 256 : 32;
     constexpr int bytes = Q == 7 ? 24 : Q == 8 ? 34 : Q == 20 ? 18 : Q == 10 ? 84 :
@@ -142,7 +145,7 @@ __global__ void expand(uint8_t const* raw, uint8_t const* low, uint8_t const* hi
     for (int64_t i = int64_t(blockIdx.x) * blockDim.x + threadIdx.x; i < total; i += int64_t(blockDim.x) * gridDim.x) {
         int slot = i / nk;
         int64_t position = i % nk;
-        int expert = ids ? ids[slot] : 0;
+        int expert = ids ? ids[int64_t(slot / topk) * ids_stride + slot % topk] : 0;
         float value = 0.f;
         if (expert >= 0 && expert < experts) {
             if constexpr (Packed)
@@ -150,14 +153,15 @@ __global__ void expand(uint8_t const* raw, uint8_t const* low, uint8_t const* hi
                     high ? high + uint64_t(expert) * high_stride : nullptr,
                     units + uint64_t(expert) * units_stride, n, position / k, position % k);
             else value = raw_value<Q>(raw + uint64_t(expert) * raw_stride + (position / block) * bytes, position % block);
-        } else if (expert != -1) atomicExch(error, 1);
+        } else if (expert != -1) atomicOr(error, 1);
         weight[i] = rounded<T>(value);
     }
     if (gathered) {
         for (int64_t i = int64_t(blockIdx.x) * blockDim.x + threadIdx.x; i < int64_t(slots) * k; i += int64_t(blockDim.x) * gridDim.x) {
-            int slot = i / k, expert = ids[slot];
-            int64_t row = int64_t(slot / topk) * channels + (channels == 1 ? 0 : slot % topk);
-            gathered[i] = expert >= 0 && expert < experts ? input[row * k + i % k] : rounded<T>(0.f);
+            int slot = i / k, expert = ids[int64_t(slot / topk) * ids_stride + slot % topk];
+            int64_t offset = int64_t(slot / topk) * input_token_stride
+                + (channels == 1 ? 0 : int64_t(slot % topk) * input_row_stride);
+            gathered[i] = expert >= 0 && expert < experts ? input[offset + i % k] : rounded<T>(0.f);
         }
     }
 }
@@ -177,9 +181,12 @@ void validate(Prepared const& h, qcu_buffers_v1 const& b) {
         require(quactlize::execution::span(address, lengths[i]), "invalid buffer extent");
         int alignment = i == 7 ? 256 : i >= 6 ? 4 : (i == 1 || i == 2 || i >= 4) ? 2 : 1;
         require(address % alignment == 0, "buffer alignment differs from contract");
-        for (int j = 0; j < i; ++j)
+        for (int j = 0; j < i; ++j) {
+            if (h.sticky && i != 5 && i != 7 && i != 8 && j != 5 && j != 7 && j != 8)
+                continue; // The new ABI permits read/read aliases.
             require(!quactlize::execution::overlap(address, lengths[i], reinterpret_cast<uintptr_t>(pointers[j]), lengths[j]),
                     "input, output, selection and scratch buffers must be disjoint");
+        }
     }
     int device = -1; cuda_check(cudaGetDevice(&device));
     require(device == h.p.device, "prepared CUDA device differs from current device");
@@ -193,7 +200,8 @@ template<int Q, class T, bool Packed> void launch_layout(Prepared const& h, qcu_
     expand<Q,T,Packed><<<grid,256,0,static_cast<cudaStream_t>(b.stream)>>>(static_cast<uint8_t const*>(b.raw),
             static_cast<uint8_t const*>(b.low), static_cast<uint8_t const*>(b.high), static_cast<uint8_t const*>(b.units),
             static_cast<int32_t const*>(b.ids), static_cast<T const*>(b.input), weight, gathered, b.device_error,
-            p.n,p.k,p.experts,slots,p.topk,p.channels,s.raw_bytes/p.experts,s.low_bytes/p.experts,s.high_bytes/p.experts,s.units_bytes/p.experts);
+            p.n,p.k,p.experts,slots,p.topk,p.channels,h.input_row_stride,h.input_token_stride,h.ids_stride,
+            s.raw_bytes/p.experts,s.low_bytes/p.experts,s.high_bytes/p.experts,s.units_bytes/p.experts);
 }
 template<int Q, class T> void launch(Prepared const& h, qcu_buffers_v1 const& b) {
     if (h.p.layout == QCU_RAW_GGUF) launch_layout<Q,T,false>(h,b);
@@ -270,7 +278,8 @@ void validate_rows(qcu_rows_v1 const& p) {
 }
 void run(Prepared& h, qcu_buffers_v1 const& b, bool gemm) {
     validate(h,b);
-    cuda_check(cudaMemsetAsync(b.device_error, 0, 4, static_cast<cudaStream_t>(b.stream)));
+    if (!h.sticky)
+        cuda_check(cudaMemsetAsync(b.device_error, 0, 4, static_cast<cudaStream_t>(b.stream)));
     if (h.p.compute_type == QCU_F16) expand_weights<__half>(h,b);
     else expand_weights<__nv_bfloat16>(h,b);
     cuda_check(cudaGetLastError());
@@ -284,12 +293,59 @@ void run(Prepared& h, qcu_buffers_v1 const& b, bool gemm) {
     float one = 1.f, zero = 0.f;
     if (p.mode == QCU_DENSE)
         blas_check(cublasGemmEx(h.blas, CUBLAS_OP_T, CUBLAS_OP_N, p.n,p.m,p.k,
-            &one,scratch,type,p.k,b.input,type,p.k,&zero,b.output,type,p.n,
+            &one,scratch,type,p.k,b.input,type,int(h.input_token_stride),&zero,b.output,type,int(h.output_stride),
             CUBLAS_COMPUTE_32F,CUBLAS_GEMM_DEFAULT_TENSOR_OP));
     else
         blas_check(cublasGemmStridedBatchedEx(h.blas,CUBLAS_OP_T,CUBLAS_OP_N,p.n,1,p.k,
             &one,scratch,type,p.k,int64_t(p.n)*p.k,scratch+aligned(s.expanded_weight_bytes),type,p.k,p.k,
-            &zero,b.output,type,p.n,p.n,p.m*p.topk,CUBLAS_COMPUTE_32F,CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+            &zero,b.output,type,int(h.output_stride),h.output_stride,p.m*p.topk,CUBLAS_COMPUTE_32F,CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+}
+
+void initialize(Prepared& h, void* stream) {
+    int device; cuda_check(cudaGetDevice(&device)); require(device == h.p.device,"current device differs");
+    cudaStreamCaptureStatus status; cuda_check(cudaStreamIsCapturing(static_cast<cudaStream_t>(stream), &status));
+    require(status == cudaStreamCaptureStatusNone, "preparation must precede graph capture");
+    blas_check(cublasCreate(&h.blas));
+    blas_check(cublasSetMathMode(h.blas, CUBLAS_MATH_DISALLOW_REDUCED_PRECISION_REDUCTION));
+}
+
+uint64_t extent(int rows, int64_t stride, uint64_t columns, int bytes) {
+    require(rows > 0 && stride > 0 && uint64_t(stride) >= columns, "overlapping or invalid element stride");
+    auto offset = multiply(rows - 1, stride);
+    require(offset <= uint64_t(INT64_MAX) - columns, "strided extent overflow");
+    return multiply(offset + columns, bytes);
+}
+
+void geometry(qpm_problem_v1 const& p, quactlize_ppu_placed_arrangement_v2 const* arrangement, Prepared& h) {
+    require(p.version == 1 && p.size == sizeof(p) && !p.reserved, "invalid PPU matmul record ABI");
+    require(p.qtype == 7 || p.qtype == 8 || (p.qtype >= 10 && p.qtype <= 14), "unsupported PPU matmul format");
+    require(p.experts <= 1024 && p.topk <= 32 && p.n <= INT32_MAX - 7, "PPU matmul geometry exceeds ABI limits");
+    h.p = {1, sizeof(qcu_problem_v1), p.qtype, p.layout, p.mode, p.dtype,
+           p.m, p.n, p.k, p.experts, p.topk, p.channels, p.device};
+    h.s = sizes(h.p, arrangement);
+    require(multiply(multiply(p.m, p.topk), std::max(p.k, (p.n + 7) / 8 * 8)) <= INT32_MAX,
+            "routed tensor exceeds int32 matrix domain");
+    require(p.input_row_stride >= p.k && p.input_token_stride > 0,
+            "invalid input element strides");
+    uint64_t token_span = multiply(p.channels - 1, p.input_row_stride);
+    require(token_span <= uint64_t(INT64_MAX) - p.k, "input token extent overflow");
+    token_span += p.k;
+    h.s.input_bytes = extent(p.m, p.input_token_stride, token_span, 2);
+    h.s.output_bytes = extent(p.m * p.topk, p.output_stride, p.n, 2);
+    require(p.output_stride <= INT32_MAX && (p.mode != QCU_DENSE || p.input_token_stride <= INT32_MAX),
+            "cuBLAS leading dimension exceeds int32");
+    if (p.mode == QCU_INDEXED) h.s.ids_bytes = extent(p.m, p.ids_stride, p.topk, 4);
+    else require(p.ids_stride == 0, "dense matmul does not use ID strides");
+    h.input_row_stride = p.input_row_stride; h.input_token_stride = p.input_token_stride;
+    h.ids_stride = p.ids_stride; h.output_stride = p.output_stride; h.sticky = true;
+}
+
+qcu_buffers_v1 buffers(qpm_buffers_v1 const& b) {
+    require(b.version == 1 && b.size == sizeof(b), "invalid PPU matmul buffer ABI");
+    // These records are both 152 bytes but their byte-count offsets differ.
+    return {1, sizeof(qcu_buffers_v1), b.input, b.raw, b.low, b.high, b.units, b.ids,
+        b.output, b.workspace, b.raw_bytes, b.low_bytes, b.high_bytes, b.units_bytes,
+        b.input_bytes, b.output_bytes, b.ids_bytes, b.workspace_bytes, b.device_error, b.stream};
 }
 }
 
@@ -303,20 +359,28 @@ extern "C" int quactlize_cuda_prepare_v1(qcu_problem_v1 const* p,
     return guarded([&] {
         require(p && output,"null preparation argument"); *output = nullptr;
         auto s = sizes(*p,arrangement);
-        int device; cuda_check(cudaGetDevice(&device)); require(device == p->device,"current device differs");
-        cudaStreamCaptureStatus status; cuda_check(cudaStreamIsCapturing(static_cast<cudaStream_t>(stream), &status));
-        require(status == cudaStreamCaptureStatusNone, "preparation must precede graph capture");
         auto h = std::make_unique<Prepared>(); h->p = *p; h->s = s;
-        blas_check(cublasCreate(&h->blas));
-        blas_check(cublasSetMathMode(h->blas, CUBLAS_MATH_DISALLOW_REDUCED_PRECISION_REDUCTION));
+        h->input_row_stride = p->k; h->input_token_stride = int64_t(p->channels) * p->k;
+        h->ids_stride = p->mode == QCU_INDEXED ? p->topk : 0; h->output_stride = p->n;
+        initialize(*h, stream);
         *output = h.release();
     });
 }
 extern "C" int quactlize_cuda_run_v1(void* handle, qcu_buffers_v1 const* buffers) {
-    return guarded([&] { require(handle && buffers,"null execution argument"); run(*static_cast<Prepared*>(handle),*buffers,true); });
+    return guarded([&] {
+        require(handle && buffers,"null execution argument");
+        auto& h = *static_cast<Prepared*>(handle);
+        require(!h.sticky, "legacy matmul ABI requires its own prepared handle");
+        run(h,*buffers,true);
+    });
 }
 extern "C" int quactlize_cuda_dequant_v1(void* handle, qcu_buffers_v1 const* buffers) {
-    return guarded([&] { require(handle && buffers,"null expansion argument"); run(*static_cast<Prepared*>(handle),*buffers,false); });
+    return guarded([&] {
+        require(handle && buffers,"null expansion argument");
+        auto& h = *static_cast<Prepared*>(handle);
+        require(!h.sticky, "legacy matmul ABI requires its own prepared handle");
+        run(h,*buffers,false);
+    });
 }
 extern "C" int quactlize_cuda_gather_rows_v1(qcu_rows_v1 const* rows) {
     return guarded([&] {
@@ -329,3 +393,38 @@ extern "C" int quactlize_cuda_gather_rows_v1(qcu_rows_v1 const* rows) {
     });
 }
 extern "C" void quactlize_cuda_destroy_v1(void* handle) { delete static_cast<Prepared*>(handle); }
+
+extern "C" int quactlize_cuda_matmul_query_v1(qpm_problem_v1 const* p,
+        quactlize_ppu_placed_arrangement_v2 const* arrangement, qpm_sizes_v1* output) {
+    return guarded([&] {
+        require(p && output, "null query argument");
+        Prepared h; geometry(*p, arrangement, h);
+        auto const& s = h.s;
+        *output = {1, sizeof(qpm_sizes_v1), s.raw_bytes, s.low_bytes, s.high_bytes, s.units_bytes,
+            s.input_bytes, s.output_bytes, s.ids_bytes, s.workspace_bytes,
+            s.expanded_weight_bytes, s.expanded_input_bytes, 0, 0, QPM_GROUPED_TC, 0, 0, 0};
+    });
+}
+extern "C" int quactlize_cuda_matmul_prepare_v1(qpm_problem_v1 const* p,
+        quactlize_ppu_placed_arrangement_v2 const* arrangement, qpm_buffers_v1 const* b, void** output) {
+    if (output) *output = nullptr;
+    return guarded([&] {
+        require(p && b && output, "null preparation argument");
+        auto h = std::make_unique<Prepared>(); geometry(*p, arrangement, *h);
+        auto operands = buffers(*b);
+        initialize(*h, b->stream);
+        run(*h, operands, true);
+        cuda_check(cudaStreamSynchronize(static_cast<cudaStream_t>(b->stream)));
+        *output = h.release();
+    });
+}
+extern "C" int quactlize_cuda_matmul_run_v1(void* handle, qpm_buffers_v1 const* b) {
+    return guarded([&] {
+        require(handle && b, "null execution argument");
+        auto& h = *static_cast<Prepared*>(handle);
+        require(h.sticky, "new matmul ABI requires its own prepared handle");
+        run(h, buffers(*b), true);
+    });
+}
+extern "C" void quactlize_cuda_matmul_destroy_v1(void* handle) { quactlize_cuda_destroy_v1(handle); }
+extern "C" char const* quactlize_cuda_matmul_error_v1() { return last_error.c_str(); }

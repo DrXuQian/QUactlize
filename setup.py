@@ -98,13 +98,15 @@ if WITH_CUDA:
 setup(
     name="quactlize",
     version="0.1.0",
-    packages=["quactlize"],
+    packages=["quactlize", "quactlize.compat"],
     package_data={"quactlize": [
         "include/ppu_format_config.inc",
         "include/quactlize_ppu_config.h",
         "include/quactlize_ppu_device.h",
         "include/quactlize_ppu_packed.h",
         "backends/cuda/api.h",
+        "compat/api.h",
+        "packing/api.h",
     ]},
     ext_modules=extensions,
     cmdclass={"build_ext": BuildExtension},
