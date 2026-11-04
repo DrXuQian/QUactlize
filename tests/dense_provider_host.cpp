@@ -10,6 +10,7 @@
 #include <iostream>
 #include <sstream>
 #include <set>
+#include <utility>
 
 namespace test {
 std::vector<std::string> launches;
@@ -350,10 +351,12 @@ void reviewed_prefill() {
             assert(test::launches==expected);
         }
     };
-    // Every exact row and fitted bucket selects the same recipe on ZW610.
+    // Every exact row and fitted bucket selects the same recipe on policy aliases.
     // Only the launch resources differ; all recorded times remain ZW810 data.
-    for(int cu:{72,64}) {
-    test::compute_units=cu;test::device_name=cu==72?"PPU-ZW810":"PPU-ZW610";
+    // ZW810E CU variants below are test inputs, not hardware specifications.
+    for(auto [name,cu]:{std::pair{"PPU-ZW810",72},{"PPU-ZW610",64},
+                       {"PPU-ZW810E",72},{"PPU-ZW810E",64}}) {
+    test::compute_units=cu;test::device_name=name;
     for(auto const& row:data::kExact) {
         auto p=test::params(row.q,row.m,row.n,row.k);
         check(p,QKS_DENSE_PREFILL_EXACT);++exact;
@@ -391,14 +394,16 @@ void dense_m_controls() {
         kImages.clear();auto ctx=test::context(0,true);
         auto p=test::params(q,m,n,k);auto raw=test::plan(*ctx,p);
         auto const& plan=*static_cast<quactlize::dense::Plan*>(raw);
-        test::compute_units=64;test::device_name="PPU-ZW610";
+        for(auto [name,cu]:{std::pair{"PPU-ZW610",64},{"PPU-ZW810E",72},{"PPU-ZW810E",64}}) {
+        test::compute_units=cu;test::device_name=name;
         kImages.clear();
         auto other_ctx=test::context(0,true);other_ctx->dense_device=-1;
         assert(other_ctx->dense_policy_device());
         auto other=static_cast<quactlize::dense::Plan*>(test::plan(*other_ctx,p));
         assert(other->kind==plan.kind && other->info.policy==plan.info.policy &&
             other->info.split==plan.info.split && !std::strcmp(other->info.config,plan.info.config));
-        if(other->kind==quactlize::dense::Kind::Tc) assert(other->tc.compute_units==64);
+        if(other->kind==quactlize::dense::Kind::Tc) assert(other->tc.compute_units==cu);
+        }
         test::compute_units=72;test::device_name="PPU-ZW810";
         int kind=plan.kind==quactlize::dense::Kind::Tc?0:plan.kind==quactlize::dense::Kind::Simt?1:2;
         std::cout<<"DENSE_M_CONTROL {\"request\":["<<q<<",0,"<<n<<','<<k<<",1,1,1,"<<m

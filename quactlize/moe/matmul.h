@@ -38,8 +38,8 @@ int quactlize_ppu_moe_matmul_supported_v1(quactlize_ppu_moe_matmul_params_v1 con
 
 // Create/prepare outside capture on the context device. Prepare selects and
 // materializes a parent, not an online sweep. Context owns immutable plans;
-// weights stay immutable/alive through every queued/captured use. ZW610 uses
-// ZW810 selection estimates but its actual device resources.
+// weights stay immutable/alive through every queued/captured use. ZW610/ZW810E
+// use ZW810 selection estimates but their actual device resources.
 int quactlize_ppu_moe_matmul_create_v1(int32_t device,void** context);
 int quactlize_ppu_moe_matmul_prepare_v1(void* context,quactlize_ppu_moe_matmul_params_v1 const*,
     void const* low,void const* high,void const* units,void** plan,

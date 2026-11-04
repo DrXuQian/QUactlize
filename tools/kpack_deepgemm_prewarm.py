@@ -22,8 +22,10 @@ def resolve(args):
     torch.cuda.set_device(args.device)
     prop=torch.cuda.get_device_properties(args.device)
     # Match ppu_device.hpp policy compatibility, but compile/launch using the
-    # actual device CUs. Reusing ZW810 routing does not make ZW610 have 72 CUs.
-    if (prop.name,prop.multi_processor_count) not in (('PPU-ZW810',72),('PPU-ZW610',64)):
+    # actual device CUs, never substituting ZW810's 72 for ZW610/ZW810E.
+    policy_device=(prop.name,prop.multi_processor_count) in (('PPU-ZW810',72),('PPU-ZW610',64)) or (
+        prop.name=='PPU-ZW810E' and prop.multi_processor_count>0)
+    if not policy_device:
         raise ValueError('DeepGEMM prefill requires supported PPU1.0 device')
     mod=importlib.import_module('deep_gemm.jit_kernels.m_grouped_gemm')
     fn=mod.m_grouped_gemm_bf16_bf16_bf16_nt_nopad

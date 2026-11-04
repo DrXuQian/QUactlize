@@ -144,7 +144,8 @@ int main() {
 
 
 @pytest.mark.parametrize('grouped', [False, True])
-@pytest.mark.parametrize('device_name,compute_units', [('PPU-ZW810', 72), ('PPU-ZW610', 64)])
+@pytest.mark.parametrize('device_name,compute_units', [('PPU-ZW810', 72), ('PPU-ZW610', 64),
+                                                     ('PPU-ZW810E', 72), ('PPU-ZW810E', 64)])
 def test_actual_native_provider_composition_with_cpu_abi_stubs(tmp_path, grouped, device_name, compute_units):
     sdk=Path(os.environ.get('PPU_SDK', '/usr/local/PPU_SDK'))
     provider=tmp_path/'CUDA_SDK/targets/x86_64-linux/lib'
@@ -252,8 +253,10 @@ int main(int argc,char** argv) {
     subprocess.run(args,check=True)
 
 
-@pytest.mark.parametrize('fault', [None, 'abi', 'tuning', 'source', 'args', 'scalars', 'cu', 'omitted'])
-@pytest.mark.parametrize('device_name,compute_units', [('PPU-ZW810', 72), ('PPU-ZW610', 64)])
+@pytest.mark.parametrize('fault', [None, 'abi', 'tuning', 'source', 'args', 'scalars', 'cu', 'omitted',
+                                  'device', 'missing-cus'])
+@pytest.mark.parametrize('device_name,compute_units', [('PPU-ZW810', 72), ('PPU-ZW610', 64),
+                                                     ('PPU-ZW810E', 72), ('PPU-ZW810E', 64)])
 def test_installed_provider_compile_only_handoff(tmp_path, monkeypatch, fault, device_name, compute_units):
     from tools.kpack_deepgemm_prewarm import resolve
 
@@ -272,7 +275,9 @@ def test_installed_provider_compile_only_handoff(tmp_path, monkeypatch, fault, d
     torch.bfloat16, torch.int32 = 'bf16', 'i32'
     torch.empty = lambda shape, dtype, device: Tensor(shape, dtype, device)
     torch.cuda = types.SimpleNamespace(Stream=Stream, set_device=lambda _: None,
-        get_device_properties=lambda _: types.SimpleNamespace(multi_processor_count=compute_units, name=device_name))
+        get_device_properties=lambda _: types.SimpleNamespace(
+            multi_processor_count=0 if fault=='missing-cus' else compute_units,
+            name='PPU-ZW810E-other' if fault=='device' else device_name))
     monkeypatch.setitem(sys.modules, 'torch', torch)
     module = types.ModuleType('deep_gemm.jit_kernels.m_grouped_gemm')
     module.__file__ = str(tmp_path/'provider.py')
@@ -334,5 +339,8 @@ def test_installed_provider_compile_only_handoff(tmp_path, monkeypatch, fault, d
         assert reply.startswith(f'QKP_DEEPGEMM_V1 1024 256 512 256 {compute_units} 8192 16384\n')
         assert state['calls'] == 1
         assert (tmp_path/'quactlize-launch-m1024.json').is_file()
+        import json
+        receipt=json.loads((tmp_path/'quactlize-launch-m1024.json').read_text())
+        assert (receipt['device'],receipt['compute_units'])==(device_name,compute_units)
     assert state['mode'] == 0
     assert module.jit_tuner.compile_and_tune is compile_and_tune

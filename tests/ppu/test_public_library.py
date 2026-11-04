@@ -80,10 +80,10 @@ def test_token_cta_exact_public_bindings(package,sdk,row,record_property):
     from ci.support.typed import DenseLibrary
     from quactlize.dispatch.table import Workload
     query=DenseLibrary(package/'quactlize-runtime/libquactlize_ppu_prefill.so')
-    measured=query.choice(Workload(12,1024,5120,2048),0,allow_miss=True) is not None
+    policy_device=query.choice(Workload(12,1024,5120,2048),0,allow_miss=True) is not None
     q,mode,n,k,e,top,ch,m,compute=row['key']
     run_dense(package,sdk,q,m,compute,record_property,n=n,k=k,
-              expected_decode=row['selected'],measured_device=measured)
+              expected_decode=row['selected'],policy_device=policy_device)
 
 
 @pytest.mark.parametrize("q", [10, 11, 12, 13, 14])
@@ -97,17 +97,17 @@ def test_full_dequant_provider_ordinary_calls(package, sdk, q, record_property):
 def test_admitted_helper_followup_public_calls(package,sdk,shape,recipe,record_property):
     from ci.support.typed import DenseLibrary
     from quactlize.dispatch.table import Workload
-    # Existing host-only device guard: this fixed helper row exists on ZW810
-    # only. Other supported cards test execution, not a ZW810 policy claim.
+    # ZW610/ZW810E reuse the ZW810 exact table, not local measurements. A
+    # helper-policy hit checks compatibility, not which device was measured.
     query=DenseLibrary(package/'quactlize-runtime/libquactlize_ppu_prefill.so')
     known=Workload(qtype=12,m=2048,n=1024,k=5120,operation='dense',compute='f16',storage='f32')
-    measured_device=query.choice(known,0,allow_miss=True) is not None
-    record_property('selection_domain','ZW810_EXACT' if measured_device else 'OTHER_DEVICE_FALLBACK')
+    policy_device=query.choice(known,0,allow_miss=True) is not None
+    record_property('selection_domain','ZW810_EXACT_TABLE' if policy_device else 'OTHER_DEVICE_FALLBACK')
     q,m,n,k=shape
-    run_dense(package,sdk,q,m,0,record_property,n=n,k=k,expected=recipe,measured_device=measured_device)
+    run_dense(package,sdk,q,m,0,record_property,n=n,k=k,expected=recipe,policy_device=policy_device)
 
 
-def run_dense(package, sdk, q, m, compute, record_property, *, full=False,n=256,k=512,expected=None,measured_device=True,expected_decode=None):
+def run_dense(package, sdk, q, m, compute, record_property, *, full=False,n=256,k=512,expected=None,policy_device=True,expected_decode=None):
     lib = Public(package)
     with Arena(sdk) as arena:
         arr, sizes, weight_ptrs, gold = packed(arena, lib, q,n=n,k=k)
@@ -134,7 +134,7 @@ def run_dense(package, sdk, q, m, compute, record_property, *, full=False,n=256,
                 lib.check(lib.prepare(context, C.byref(p), *weight_ptrs, C.byref(handle), C.byref(info)))
             record_property("plan", f"route={info.route} compute={info.compute_type} split={info.split} config={info.config.decode()}")
             assert handle.value and info.config and info.split >= 1
-            if expected_decode and measured_device:
+            if expected_decode and policy_device:
                 f=expected_decode['config'];impl=expected_decode['implementation']
                 if f['kind']=='tc':
                     assert info.route==f['route'] and info.split==f['split']
@@ -149,7 +149,7 @@ def run_dense(package, sdk, q, m, compute, record_property, *, full=False,n=256,
                     name=f'simt:v{f["variant"]}:c{f["columns"]}:w{f["warps"]}:x{f["values"]}:s{f["split"]}'
                     if impl['kind']=='token-cta':name+=f':tokens{m}:window{impl["window"]}'
                     assert info.config.decode()==name
-            if expected and measured_device:
+            if expected and policy_device:
                 assert info.policy==20 and info.compute_type==0, 'expected ZW810 exact F16 recipe'
                 route=expected['route']; assert info.route==(3 if route==2 else route)
                 if route==2:
@@ -161,7 +161,7 @@ def run_dense(package, sdk, q, m, compute, record_property, *, full=False,n=256,
                     assert info.split==expected['tc']['split']
                 assert info.config.decode()==name, 'public recipe does not match admitted winner'
             elif expected:
-                assert info.policy!=20, 'ZW810 exact policy must not run on another device'
+                assert info.policy!=20, 'ZW810 exact policy must not run on an incompatible device'
             if expected:
                 record_property('oracle','ALL_OUTPUTS_FINITE; 9x33_SPOTS_FULL_K_FP64_DOT; ALL_PACKED_BYTES; TWO_STREAMS')
             def check(got,source):

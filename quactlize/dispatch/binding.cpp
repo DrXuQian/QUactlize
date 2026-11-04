@@ -393,7 +393,7 @@ std::shared_ptr<Module> load(Runtime& r,Image const& image,Config const& c,bool 
         (r.device>=0 && (r.device!=device || r.cu!=cu)))
         throw std::runtime_error("loaded module device differs from policy: probe_rc="+std::to_string(probe_rc)+
             " name="+std::string(name)+" ordinal="+std::to_string(device)+" compute_units="+std::to_string(cu)+
-            " supported_devices=PPU-ZW810/72,PPU-ZW610/64 previous_ordinal="+std::to_string(r.device)+
+            " supported_devices=PPU-ZW810/72,PPU-ZW610/64,PPU-ZW810E/positive-CUs previous_ordinal="+std::to_string(r.device)+
             " previous_compute_units="+std::to_string(r.cu));
     r.device=device; r.cu=cu;
     if (dense_io) {

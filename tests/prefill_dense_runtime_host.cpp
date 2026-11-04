@@ -7,6 +7,7 @@
 #include <cstring>
 #include <thread>
 #include <string>
+#include <utility>
 
 static thread_local std::string stages;
 
@@ -136,9 +137,12 @@ int main(int argc,char** argv){
         shape.a_stride++;miss();shape.a_stride--;
         shape.output_stride++;miss();shape.output_stride--;
         shape.weight.experts=256;miss();shape.weight.experts=1;
-        test_name="PPU-ZW610";test_cu=64;
-        assert(!quactlize_kpack_dense_helper_policy_v1(&shape,storage,&dq,&io));
-        assert(dq==row[3] && io==row[4+storage]);
+        for(auto [name,cu]:{std::pair{"PPU-ZW610",64},{"PPU-ZW810E",72},{"PPU-ZW810E",64}}) {
+            test_name=name;test_cu=cu;
+            assert(!quactlize_kpack_dense_helper_policy_v1(&shape,storage,&dq,&io));
+            assert(dq==row[3] && io==row[4+storage]);
+        }
+        test_cu=0;miss();test_name="PPU-ZW810E-other";test_cu=72;miss();
         test_name="OTHER_PPU";miss();test_name="PPU-ZW810";test_cu=72;
         test_cu=71;miss();test_cu=72;
     }
@@ -154,9 +158,12 @@ int main(int argc,char** argv){
         shape.output_stride++;miss();shape.output_stride--;
         shape.weight.experts=256;miss();shape.weight.experts=1;
         shape.src_rows=reinterpret_cast<int*>(uintptr_t(256));miss();shape.src_rows=nullptr;
-        test_name="PPU-ZW610";test_cu=64;
-        assert(!quactlize_kpack_dense_full_helper_policy_v1(&shape,storage,&dq,&io));
-        assert(dq==row.choices[storage][i].dequant && io==row.choices[storage][i].io);
+        for(auto [name,cu]:{std::pair{"PPU-ZW610",64},{"PPU-ZW810E",72},{"PPU-ZW810E",64}}) {
+            test_name=name;test_cu=cu;
+            assert(!quactlize_kpack_dense_full_helper_policy_v1(&shape,storage,&dq,&io));
+            assert(dq==row.choices[storage][i].dequant && io==row.choices[storage][i].io);
+        }
+        test_cu=0;miss();test_name="PPU-ZW810E-other";test_cu=72;miss();
         test_name="OTHER_PPU";miss();test_name="PPU-ZW810";test_cu=72;
         test_cu=71;miss();test_cu=72;
     }

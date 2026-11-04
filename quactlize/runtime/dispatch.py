@@ -34,11 +34,14 @@ def prepare_selected(backend, request, selection, *, allow_prediction=False):
     ):
         raise UnsupportedTactic("selected module parent/compiler contract differs")
     # Same policy sharing as include/ppu_device.hpp: ZW810 times are selection
-    # estimates on ZW610, not measurements of that device. prepare() still
+    # estimates on ZW610/ZW810E, not measurements of those devices. prepare() still
     # queries the real CUs/occupancy; never substitute 72 into the launch.
+    name, cu = backend.identity["device"], backend.identity["compute_units"]
+    policy_device = (name, cu) in (("PPU-ZW810", 72), ("PPU-ZW610", 64)) or (
+        name == "PPU-ZW810E" and cu > 0
+    )
     if (
-        (backend.identity["device"], backend.identity["compute_units"])
-        not in (("PPU-ZW810", 72), ("PPU-ZW610", 64))
+        not policy_device
         or any(
             backend.identity[k] != selection["module_contract"][k]
             for k in ("sdk", "kernel")

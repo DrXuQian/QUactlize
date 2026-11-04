@@ -397,14 +397,18 @@ def test_doubled_n_reaches_runtime_resource_and_prepare(tmp_path,probe,route,spl
 
 @pytest.mark.parametrize('values', [(12, 3, 8, 1024, 2048, 256, 1),
                                     (8, 1, 128, 1024, 5120, 1, 128)])
-def test_zw610_loads_same_policy_with_actual_resources(tmp_path, probe, values):
+def test_zw810_policy_aliases_keep_actual_resources(tmp_path, probe, values):
     f, initial, req = build_stub(tmp_path, probe, values=values)
     f['close'](initial)
     image = C.CDLL(str(tmp_path / 'modules' / ('a' * 64) / 'kernel.so'))
     device = image.quactlize_test_device
     device.argtypes, device.restype = [C.c_char_p, C.c_int, C.c_int], None
     baseline = None
+    # ZW810E CU variants exercise resource queries, not measured hardware specs.
     for name, cu, accepted in [('PPU-ZW810', 72, True), ('PPU-ZW610', 64, True),
+                               ('PPU-ZW810E', 72, True), ('PPU-ZW810E', 64, True),
+                               ('PPU-ZW810E', 80, True), ('PPU-ZW810E', 0, False),
+                               ('PPU-ZW810E', -1, False), ('PPU-ZW810E-other', 72, False),
                                ('PPU-ZW610', 72, False), ('PPU-ZW810', 0, False),
                                ('OTHER_PPU', 64, False)]:
         device(name.encode(), 1, cu)
@@ -423,7 +427,7 @@ def test_zw610_loads_same_policy_with_actual_resources(tmp_path, probe, values):
                 baseline = selected
             assert selected == baseline  # Device alone cannot force another rule/fallback.
             if req.route == 3:
-                assert choice.grid == 4 * cu  # 256, not the ZW810 grid of 288.
+                assert choice.grid == 4 * cu  # Never force the ZW810 grid of 288.
         finally:
             f['close'](runtime)
 
@@ -442,7 +446,8 @@ def test_python_selected_policy_shares_zw810_without_changing_device():
     selection = dict(status='MEASURED_RECENT', request=asdict(request),
                      config=config, module_contract=contract)
     module = SimpleNamespace(record=dict(parent={k: config[k] for k in PARENT_FIELDS}, identity=contract))
-    for name, cu in [('PPU-ZW810', 72), ('PPU-ZW610', 64)]:
+    for name, cu in [('PPU-ZW810', 72), ('PPU-ZW610', 64),
+                     ('PPU-ZW810E', 72), ('PPU-ZW810E', 64), ('PPU-ZW810E', 80)]:
         backend = SimpleNamespace(identity=dict(contract, device=name, compute_units=cu),
             modules={'host-policy': module}, is_capturing=lambda: False,
             prepare=lambda request, tactic: tactic)
@@ -450,6 +455,11 @@ def test_python_selected_policy_shares_zw810_without_changing_device():
         assert tactic.parent == 'host-policy' and tactic.split == 1
         assert (backend.identity['device'], backend.identity['compute_units']) == (name, cu)
         backend.identity['sdk'] = 'other-sdk'
+        with pytest.raises(UnsupportedTactic, match='device/SDK/kernel'):
+            prepare_selected(backend, request, selection)
+    for name, cu in [('PPU-ZW810E', 0), ('PPU-ZW810E', -1), ('PPU-ZW810E-other', 72),
+                     ('OTHER_PPU', 72), ('PPU-ZW610', 72)]:
+        backend.identity = dict(contract, device=name, compute_units=cu)
         with pytest.raises(UnsupportedTactic, match='device/SDK/kernel'):
             prepare_selected(backend, request, selection)
 

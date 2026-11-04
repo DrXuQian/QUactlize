@@ -26,7 +26,7 @@ inline bool legal(Choice const& c,qks_request_v1 const& r) {
         r.k%(t.tk*t.split)==0 && r.k/(t.tk*t.split)>=t.stages-1 &&
         r.n%t.tn==0 && (t.tm!=8 || r.m<=(c.route==0?64:8)) && (c.route!=0 || r.m<=64) && !t.ap;
 }
-// Called only after the complete provider verifies ZW810 and contiguous F32
+// Called only after the provider verifies ZW810 policy compatibility and contiguous F32
 // endpoints. No dtype transfer, kernel launch, runtime tuning or remote donor.
 inline Decision select_direct(qks_request_v1 const& r,int compute) {
     if(!domain(r,compute)) return {};

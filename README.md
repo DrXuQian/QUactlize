@@ -2,6 +2,11 @@
 
 Weight-only quantized GEMM/GEMV for T-Head PPU.
 
+PPU1.0 ZW610 and ZW810E reuse ZW810's exact selection tables and buckets.
+Recorded latencies remain ZW810 measurements, used as selection estimates on
+these devices. Launch grids, occupancy and resource checks use the actual
+device properties; ZW810E's CU count is not hard-coded to 72.
+
 `develop` contains production code, admitted selection tables, package builders
 and product correctness tests. `main` is the separately curated release line.
 Debug kernels, benchmarks, Asys/ACU sweeps, historical results and their tests
