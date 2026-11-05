@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 
 
 def host(target):
@@ -100,6 +101,27 @@ def host(target):
     return path
 
 
+def pytest_gate(tests, *, cwd, env, pythonpath=None, minimum_tests=1):
+    """Pytest exit zero can mean all skipped; only executed cases qualify."""
+    with tempfile.TemporaryDirectory(prefix='quactlize-installed-result-') as temporary:
+        report = Path(temporary) / 'junit.xml'
+        environment = dict(env)
+        environment.pop('PYTEST_ADDOPTS', None)
+        command = [sys.executable, '-I', '-m', 'pytest', '-q', '-s', '-o', 'addopts=',
+                   '--junitxml=' + str(report)]
+        if pythonpath is not None:
+            command.extend(('-o', 'pythonpath=' + str(pythonpath)))
+        subprocess.run([*command, *tests], cwd=cwd, env=environment, check=True)
+        root = ET.parse(report).getroot()
+        suites = [root] if root.tag == 'testsuite' else root.findall('.//testsuite')
+        counts = {name: sum(int(s.get(name, 0)) for s in suites)
+                  for name in ('tests', 'failures', 'errors', 'skipped')}
+        if counts['tests'] < minimum_tests or any(counts[k] for k in ('failures', 'errors', 'skipped')):
+            raise RuntimeError(f'device gate did not execute all required cases: {counts}; '
+                               f'require at least {minimum_tests} tests and no skips')
+        return counts
+
+
 def device_tests(source, path, flare):
     if not source:
         raise ValueError('--device-tests requires --test-source (test/oracle files only)')
@@ -113,15 +135,17 @@ def device_tests(source, path, flare):
         (root / 'ci/__init__.py').touch()
         env = {k: v for k, v in os.environ.items() if k not in (
             'PYTHONPATH', 'QUACTLIZE_CI_PACKAGE', 'QUACTLIZE_SERVING_LIBRARY')}
+        # Secondary-owner tests must reopen the same verified installed DSO.
+        env['QUACTLIZE_SERVING_LIBRARY'] = str(path)
         tests = ('tests/ppu/test_packed_native.py', 'tests/ppu/test_compat_library.py',
                  'tests/serving/test_serving_device.py')
-        subprocess.run([sys.executable, '-I', '-m', 'pytest', '-q', '-s', '-o', 'pythonpath=' + str(root),
-                        *tests], cwd=root, env=env, check=True)
+        results = {'operators': pytest_gate(tests, cwd=root, env=env, pythonpath=root)}
     if flare:
-        env = dict(os.environ, FLARE_TEST_PPU_MATMUL_LIBRARY=str(path))
+        env = dict(os.environ, FLARE_TEST_PPU_MATMUL_LIBRARY=str(path), FLARE_RUN_CUDA_TESTS='1')
         env.pop('PYTHONPATH', None)
-        subprocess.run([sys.executable, '-I', '-m', 'pytest', '-q',
-                        'tests/preparation/test_gguf_packing_cuda.py'], cwd=flare, env=env, check=True)
+        results['flare'] = pytest_gate(('tests/preparation/test_gguf_packing_cuda.py',),
+                                      cwd=flare, env=env, minimum_tests=10)
+    return results
 
 
 def main():
@@ -143,8 +167,8 @@ def main():
         sys.addaudithook(audit)
     path = host(args.target)
     if args.device_tests:
-        device_tests(args.test_source, path, args.flare)
-        print('QUACTLIZE_INSTALLED_DEVICE_PASS performance=NOT_MEASURED')
+        counts = device_tests(args.test_source, path, args.flare)
+        print('QUACTLIZE_INSTALLED_DEVICE_PASS performance=NOT_MEASURED ' + json.dumps(counts))
     else:
         print('QUACTLIZE_INSTALLED_DEVICE_NOT_RUN')
 
