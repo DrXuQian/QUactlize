@@ -7,10 +7,60 @@ import numpy as np
 import pytest
 
 from quactlize.compat.native import Problem, Sizes, Buffers, Router, SwiGLU, Merge, problem
-from ci.support.compat import FORMATS, DENSE_Q8, EXPERT_SHAPES, raw_blocks, weight, encode
+from ci.support.compat import FORMATS, DENSE_Q8, EXPERT_SHAPES, raw_blocks, weight, encode, decode, assert_merge
 from ci.support.packing import Arrangement
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_merge_fma_cancellation_is_not_a_numeric_failure():
+    values=np.array([-.2890625,-.412109375,.87109375,.1474609375,-.1142578125,
+                     .1044921875,-.85546875,-.53515625,.271484375,.7734375],'f4')[None,:,None]
+    weights=np.full((1,10),.1,'f4')
+    # For this restricted fixture the products and additions are exact in
+    # FP64; the final cast at each step reproduces correctly rounded fmaf.
+    fused=np.zeros((1,1),'f4')
+    for slot in range(10):
+        fused=(values[:,slot].astype('f8')*weights[:,slot,None].astype('f8')+fused).astype('f4')
+    assert fused.item()==-0.0038085984997451305 # Independently checked with libm.fmaf.
+    old=(values*weights[...,None]).sum(axis=1,dtype='f4')
+    with pytest.raises(AssertionError):np.testing.assert_allclose(fused,old,rtol=2e-6,atol=1e-8)
+    assert_merge(fused,values,weights)
+    assert_merge(old,values,weights) # Both legal FP32 contraction choices.
+
+
+@pytest.mark.parametrize('dtype',[0,1])
+@pytest.mark.parametrize('topk',[1,10,32])
+def test_merge_bound_accepts_native_values_and_rejects_wrong_addressing(dtype,topk):
+    rng=np.random.default_rng(719+topk)
+    values=decode(encode(rng.uniform(-.5,.5,(4,topk,17)),dtype),dtype)
+    weights=rng.uniform(.01,1,(4,topk)).astype('f4')
+    gold=(values.astype('f8')*weights[...,None]).sum(axis=1).astype('f4')
+    assert_merge(gold,values,weights)
+    dropped=gold-values[:,0]*weights[:,0,None]
+    with pytest.raises(AssertionError,match='FP32 weighted merge bound'):
+        assert_merge(dropped,values,weights)
+    with pytest.raises(AssertionError,match='FP32 weighted merge bound'):
+        assert_merge(gold,values,weights[::-1])
+    rounded_weights=decode(encode(weights,1),1)
+    with pytest.raises(AssertionError,match='FP32 weighted merge bound'):
+        assert_merge((values*rounded_weights[...,None]).sum(axis=1),values,weights)
+
+
+@pytest.mark.parametrize('scale',[0.,2**-60,1.])
+def test_merge_bound_has_no_absolute_error_floor(scale):
+    values=np.full((1,10,1),scale,'f4');weights=np.full((1,10),.1,'f4')
+    gold=(values.astype('f8')*weights[...,None]).sum(axis=1).astype('f4')
+    assert_merge(gold,values,weights)
+    with pytest.raises(AssertionError,match='FP32 weighted merge bound'):
+        assert_merge(gold+max(scale*.001,2**-80),values,weights)
+
+
+@pytest.mark.parametrize('bad',[float('nan'),float('inf'),-float('inf')])
+def test_merge_bound_rejects_nonfinite(bad):
+    values=np.ones((1,10,1),'f4');weights=np.full((1,10),.1,'f4')
+    with pytest.raises(AssertionError,match='nonfinite'):
+        assert_merge([[bad]],values,weights)
 
 
 @pytest.fixture(scope='module')

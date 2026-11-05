@@ -54,3 +54,39 @@ def assert_dot(got, a, w, dtype):
     if bad.any():
         at = tuple(np.argwhere(bad)[0])
         raise AssertionError(f'FP32 accumulation/native output bound: index={at} got={got[at]} gold={gold[at]} bound={bound[at]}')
+
+
+def assert_merge(got, values, weights, *, context=''):
+    """Native-16 expert outputs x F32 routing weights, accumulated into F32.
+
+    Use the ACTUAL projection outputs/weights to isolate this boundary. HGCC
+    contracts the slot loop to FMA; NumPy rounds the products before summing.
+    Relative error in the final sum is not a useful bound under cancellation.
+    Each term sees at most topk FP32 roundings (with or without contraction),
+    giving gamma_topk * sum(abs(products)); no arbitrary absolute tolerance.
+    """
+    got, values, weights = (np.asarray(x, 'f8') for x in (got, values, weights))
+    assert values.ndim == 3 and weights.shape == values.shape[:2]
+    assert got.shape == (values.shape[0], values.shape[2])
+    assert all(np.isfinite(x).all() for x in (got, values, weights)), 'nonfinite weighted merge'
+    topk = values.shape[1]
+    assert 1 <= topk <= 32
+    products = values * weights[..., None]
+    gold = products.sum(axis=1)
+    magnitude = np.abs(products).sum(axis=1)
+    u32, u64 = 2**-24, 2**-53
+    gamma32 = topk*u32 / (1-topk*u32)
+    gamma64 = topk*u64 / (1-topk*u64)
+    # Include FP64 reference summation and FP32 gradual-underflow rounding.
+    # Native-16 x F32 products are exactly representable in FP64.
+    bound = (gamma32+gamma64)/(1-gamma64)*magnitude + topk*2**-149/(1-topk*u32)
+    error = np.abs(got-gold)
+    bad = error > bound
+    if bad.any():
+        row, col = map(int, np.argwhere(bad)[0])
+        raise AssertionError(
+            f'FP32 weighted merge bound: {context} index=({row}, {col}) '
+            f'got={got[row,col]:.17g} gold={gold[row,col]:.17g} '
+            f'error={error[row,col]:.9g} bound={bound[row,col]:.9g} '
+            f'sum_abs={magnitude[row,col]:.9g} topk={topk} '
+            f'values={values[row,:,col].tolist()} weights={weights[row].tolist()}')

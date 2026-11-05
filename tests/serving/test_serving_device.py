@@ -10,7 +10,7 @@ from quactlize.serving import Serving, Matmul
 from quactlize.compat.native import problem
 from quactlize.compat.serving_native import Rows, Router
 from ci.support.serving import row_blocks, dequant_rows, router_reference
-from ci.support.compat import raw_blocks, weight, assert_dot
+from ci.support.compat import raw_blocks, weight, assert_dot, assert_merge
 
 
 @pytest.fixture(scope='module')
@@ -210,9 +210,7 @@ def test_whole_chain_dynamic_graph_and_shared_scratch(owner,m,e,t,dtype):
             expected_mid=(activated.float()*gu[...,h:].float()).to(dtype)
             ulp=torch.nextafter(expected_mid,torch.full_like(expected_mid,float('inf'))).float()-expected_mid.float()
             assert torch.all((mid.float()-expected_mid.float()).abs()<=ulp.abs())
-            expected=torch.zeros_like(out)
-            for slot in range(t):expected+=down[:,slot].float()*weights[:,slot,None]
-            torch.testing.assert_close(out,expected,rtol=2e-6,atol=2e-6)
+            assert_merge(cpu(out),d,cpu(weights),context=f'serving dtype={dtype} m={m} replay={iteration}')
             canary()
         start=torch.cuda.Event(enable_timing=True);end=torch.cuda.Event(enable_timing=True)
         start.record();end.record();end.synchronize() # materialize events outside timing

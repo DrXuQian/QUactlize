@@ -11,7 +11,7 @@ import pytest
 
 from quactlize.compat.native import Library, Sizes, Buffers, Router, SwiGLU, Merge, problem
 from quactlize.runtime.native import checked
-from ci.support.compat import FORMATS, DENSE_Q8, EXPERT_SHAPES, raw_blocks, weight, encode, decode, assert_dot
+from ci.support.compat import FORMATS, DENSE_Q8, EXPERT_SHAPES, raw_blocks, weight, encode, decode, assert_dot, assert_merge
 from .support import Arena, Public, packed
 
 
@@ -251,10 +251,33 @@ def test_ffn_chain_shared_scratch(lib,sdk,dtype,m):
                     # expf implementations can straddle one native RNE tie.
                     np.testing.assert_allclose(decode(actual,dtype),decode(expected,dtype),rtol=.008 if dtype else .0011,atol=2**-24)
                     d.x=actual;d.ids_host=g.ids_host;d.check(down)
-                    want=np.sum(d.result()*route[...,None],axis=1,dtype='f4')
-                    np.testing.assert_allclose(np.frombuffer(out.bytes(),'f4').reshape(m,k),want,rtol=2e-6,atol=1e-8)
+                    assert_merge(np.frombuffer(out.bytes(),'f4').reshape(m,k),d.result(),route,
+                                 context=f'FFN dtype={dtype} m={m} seed={seed}')
         finally:
             for c in reversed(calls):c.close()
+
+
+@pytest.mark.parametrize('dtype',[0,1])
+def test_merge_cancellation_and_strides(lib,sdk,dtype):
+    # Exactly native-16 values for which a legal FP32 FMA result fails the old
+    # 2e-6/1e-8 comparison to NumPy's separately rounded products.
+    slots=np.array([-.2890625,-.412109375,.87109375,.1474609375,-.1142578125,
+                    .1044921875,-.85546875,-.53515625,.271484375,.7734375],'f4')
+    m,t,n=3,10,4
+    values=np.full((m,t,n+3),37,'f4')
+    values[...,:n]=slots[None,:,None]*np.array([1,-2,.5,4],'f4')
+    values[2,:,:n]=0 # All inactive expert outputs must remain exactly zero.
+    weights=np.full((m,t+2),37,'f4');weights[:,:t]=.1
+    weights[1,:t]=np.arange(1,t+1,dtype='f4')/55
+    with Arena(sdk) as arena:
+        inp=arena.upload(encode(values,dtype));routing=arena.upload(weights)
+        out=arena.upload(np.full((m,n+5),37,'f4'));stream=arena.stream()
+        p=Merge(1,C.sizeof(Merge),m,t,n,dtype,n+3,t+2,n+5,
+                inp.ptr,routing.ptr,out.ptr,stream.value)
+        arena.sync();lib.check(lib.merge(C.byref(p)));arena.sync()
+        got=np.frombuffer(out.bytes(),'f4').reshape(m,n+5)
+        assert_merge(got[:,:n],values[...,:n],weights[:,:t],context=f'merge dtype={dtype}')
+        assert np.all(got[2,:n]==0) and np.all(got[:,n:]==37)
 
 
 def test_concurrent_streams_and_changing_addresses(lib,sdk):
