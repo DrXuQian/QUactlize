@@ -30,6 +30,7 @@ HOST = (
     "test_dense_q8_paired.py",
     "test_ppu_compat.py",
     "test_serving.py",
+    "test_flashnext_box.py",
 )
 
 # Sweep/importer tests, probes and legacy backends live on experiments/ppu-tuning.

@@ -53,6 +53,21 @@ tile choices into the PPU route.
 
 ## Build and tests (no dependency installation)
 
+For Box acceptance from an existing Quactlize checkout, use the uploaded runner:
+
+```bash
+git fetch origin feat/ppu-flash-next
+git show FETCH_HEAD:tools/run_flashnext_box.py | python3 - --ref FETCH_HEAD --device 0
+```
+
+It creates detached worktrees without changing the caller's branch/worktree,
+reuses the local pinned actlize object when available (otherwise SSH checkout),
+builds via `build.sh`, runs the native compatibility and serving tests, then
+M1/M4/M16 graphs at E512/top10/K2560/H640. Choose an idle PPU. Existing platform
+Torch/SDK must be configured; nothing is pip-installed. Failures stop later
+phases and still produce `*.review.tgz` with logs, summaries and build identity,
+not source, binaries or caches. Source/package stay on Box for diagnosis.
+
 Use the already installed platform Torch. These commands do not run pip,
 modify Torch/FlashInfer/Triton, fetch submodules, or build `_C`.
 
