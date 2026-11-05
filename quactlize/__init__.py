@@ -16,6 +16,8 @@ module fails with "dynamic module does not define module export function (PyInit
 build failure and is not one.
 """
 import glob
+from ._version import __version__
+from ._library import get_library_path, get_library_info
 import os
 from typing import Literal
 
@@ -382,6 +384,7 @@ def matmul_w4a16(a, b_packed, scales, zeros=None, group_size: int = 128,
 
 
 __all__ = [
+    "get_library_path", "get_library_info", "__version__",
     "preprocess_weights_to_layout", "symmetric_quantize", "symmetric_quantize_unprocessed",
     "gguf_scale_prepass", "gguf_scale_block_shape", "gguf_vecdot", "gguf_vecdot_dense", "gguf_vecdot_moe", "gguf_dequantize", "gguf_unpack", "gguf_prepare_gemv", "gguf_prepare_dense", "gguf_gemv_artifact_dequantize", "gguf_gemv_artifact_dequantize_scale", "gguf_dense_artifact_dequantize", "gguf_dense_artifact_dequantize_scale", "gguf_gemv_scale_first", "gguf_gemv_scale_first_moe", "gguf_dense_scale_first", "gguf_backend", "gguf_backend_for_qtype", "gguf_pack_unit", "gguf_unit_decode", "gguf_q4_artifact_dequantize",
     "pack_int4", "unpack_int4", "pack_uint4", "unpack_uint4", "matmul_w4a16",

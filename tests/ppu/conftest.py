@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 
 from quactlize.runtime.native import SDK, sdk_identity
-from tools.build_ppu_library import verify
 from ci.support.packing import bind, device_identity
 from ci.support.graph_api import graph_bind
 
@@ -14,7 +13,15 @@ from ci.support.graph_api import graph_bind
 def package():
     path = os.environ.get("QUACTLIZE_CI_PACKAGE")
     if not path:
-        pytest.fail("set QUACTLIZE_CI_PACKAGE or use run_tests.sh --suite accuracy --package PATH")
+        from quactlize import get_library_path, get_library_info
+        root = get_library_path().parent
+        info = get_library_info()
+        sdk = Path(os.environ.get("PPU_SDK", "/usr/local/PPU_SDK"))
+        release = (sdk / 'release.yaml').read_text().strip().removeprefix('version:').strip()
+        if release != info['sdk_requirements']['build_sdk']:
+            pytest.fail('installed wheel device gate requires the recorded build SDK release')
+        return root
+    from tools.build_ppu_library import verify
     root = Path(path).resolve(strict=True)
     manifest = verify(root)  # Real hashes/exports/JIT closure; no fake device libraries.
     current = sdk_identity(Path(os.environ.get("PPU_SDK", "/usr/local/PPU_SDK")))

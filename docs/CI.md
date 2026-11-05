@@ -4,6 +4,11 @@ There are two entrypoints: `build.sh` and `run_tests.sh`. CI owns authenticated
 checkout of the exact actlize gitlink. Neither entrypoint downloads dependencies
 or changes Git state.
 
+For precompiled Python distribution use `build.sh --wheel`; see
+[PPU_WHEEL.md](PPU_WHEEL.md) for installation outside the source tree and
+installed-wheel host/device/Flare qualification. Host wheel tests use explicitly
+labelled ELF fixtures, not PPU kernels.
+
 ## Prerequisites
 
 - Python 3.10+ and `python -m pip install -r ci/requirements.txt`.

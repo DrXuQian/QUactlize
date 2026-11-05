@@ -11,6 +11,7 @@ from typing import Optional
 import torch
 from .compat import serving_native as abi
 from .compat.native import Problem, Sizes, Buffers, Merge
+from ._library import resolve_library
 
 # Host library/plan owners only, NEVER device scratch. No lazy loading in ops.
 _libraries = {}
@@ -63,7 +64,8 @@ def _context(key, tensors):
 
 
 class Serving:
-    def __init__(self, library, device=0, stream=None):
+    def __init__(self, library=None, device=0, stream=None, *, target=None):
+        library = resolve_library(library, target)
         self.device = int(device)
         if torch.cuda.is_current_stream_capturing(): raise ValueError('prepare before capture')
         self.lib = abi.Library(Path(library).resolve(strict=True))

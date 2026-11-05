@@ -26,29 +26,12 @@ from quactlize.dispatch.planning import plan_smallm, validate_inventory
 from quactlize.dispatch.prefill_policy import check_receipt, receipt_fields
 from quactlize.dispatch.dense_prefill import EVIDENCE as DENSE_PREFILL_EVIDENCE, HEADER as DENSE_PREFILL_HEADER, render as dense_prefill_header
 from quactlize.dispatch.moe_prefill_policy import TABLE as MOE_PREFILL_EVIDENCE, HEADER as MOE_PREFILL_HEADER, header as moe_prefill_header
+from quactlize._library import PUBLIC_LIBRARY, PUBLIC_EXPORTS
+from tools.wheel_support import build_info, source_files
 
-PUBLIC_LIBRARY = 'libncp_quactlize.so'
-PUBLIC_EXPORTS = (
-    'quactlize_ppu_kpack_canonical_arrangement_v1',
-    'quactlize_ppu_kpack_sizes_for_arrangement_v1',
-    'quactlize_ppu_prepare_fully_quantized_dev_for_arrangement_v2',
-    'quactlize_ppu_prepare_gate_up_dev_for_arrangement_v1',
-    *('quactlize_ppu_dense_' + suffix for suffix in (
-        'supported_v1', 'create_v1', 'create_with_options_v1', 'prepare_v1', 'prepare_candidate_v1',
-        'run_v1', 'destroy_v1', 'error_v1')),
-    *('quactlize_ppu_moe_matmul_' + suffix for suffix in (
-        'supported_v1', 'create_v1', 'prepare_v1', 'run_v1', 'destroy_v1', 'error_v1')),
-    *('quactlize_ppu_ffn_' + suffix for suffix in (
-        'supported_v1', 'create_v1', 'prepare_v1', 'run_v1', 'run_v2', 'destroy_v1', 'error_v1')),
-    *('quactlize_ppu_matmul_' + suffix for suffix in (
-        'query_v1', 'prepare_v1', 'packed_query_v1', 'packed_prepare_v1',
-        'run_v1', 'dequant_v1', 'destroy_v1', 'error_v1')),
-    'quactlize_ppu_router_run_v1', 'quactlize_ppu_swiglu_run_v1', 'quactlize_ppu_merge_run_v1',
-    *('quactlize_serving_' + suffix for suffix in (
-        'prepare_v1', 'error_v1', 'router_v2', 'swiglu_v2', 'gather_rows_v1', 'merge_v1')),
-)
 JIT_PYTHON = (
     'quactlize/__init__.py', 'quactlize/runtime/__init__.py',
+    'quactlize/_version.py', 'quactlize/_library.py',
     'quactlize/runtime/compiler.py', 'quactlize/runtime/tuning.py',
     'quactlize/runtime/dispatch.py', 'quactlize/runtime/candidates.py',
     'quactlize/decode/compiler.py', 'quactlize/decode/grouped_compiler.py',
@@ -185,6 +168,7 @@ def build(sdk, output, jobs):
                  *(sdk / 'lib' / f'lib{name}.so' for name in LIBRARIES)):
         if not path.is_file():
             raise ValueError(f'incomplete PPU SDK: {path}')
+    provenance = build_info(ROOT, sdk)
     output.mkdir(parents=True, exist_ok=False)
     # Intermediates must not enter the installable runtime directory.
     work = output.parent / (output.name + '.build')
@@ -246,7 +230,8 @@ def build(sdk, output, jobs):
         'from quactlize.runtime.compiler import Compiler, source_contract; '
         'import sys; from pathlib import Path; '
         'print(source_contract(Compiler(Path(sys.argv[1]),Path(sys.argv[2])).identity))',
-        str(sdk), str(work / 'snapshot-check')], cwd=runtime / 'jit', text=True).strip()
+        str(sdk), str(work / 'snapshot-check')], cwd=runtime / 'jit', text=True,
+        env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1')).strip()
     if actual != contract:
         raise ValueError('installed JIT closure differs from dispatcher sources')
     env = dict(os.environ, PATH=str(sdk / 'bin') + ':' + os.environ.get('PATH', ''),
@@ -308,6 +293,7 @@ def build(sdk, output, jobs):
     payloads = {str(p.relative_to(output)): sha(p) for p in sorted(output.rglob('*'))
                 if p.is_file() and not p.is_relative_to(work)}
     manifest = dict(schema='quactlize.ppu-library.v1', library=PUBLIC_LIBRARY,
+        build_info=provenance,
         payloads=payloads, commands=commands, jit_source_contract=contract,
         sdk=compiler.sdk_identity, formats=[8, 10, 11, 12, 13, 14],
         packing=dict(canonical_formats=[7, 8, 10, 11, 12, 13, 14],
@@ -334,6 +320,8 @@ def build(sdk, output, jobs):
                            full_table_sha256=sha(FULL_HELPERS_HEADER),full_evidence_sha256=sha(FULL_HELPERS),
                            scope='ZW810_FULL_350_TYPED_POINTS; TC_SF_UNCHANGED; NO_GEMM_ROUTE_OR_DTYPE_CHANGE'),
         performance_admission='NOT_MEASURED', seconds=time.monotonic() - start)
+    if source_files(ROOT) != provenance['source_hashes']:
+        raise ValueError('package sources changed during public library build')
     (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     verify(output)
     print(f'QUACTLIZE_PPU_BUILD COMPLETE library={output / PUBLIC_LIBRARY} device=PENDING', flush=True)

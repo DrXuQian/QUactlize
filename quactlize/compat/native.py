@@ -4,6 +4,7 @@ No Torch/Python runtime is required by the library. This module allocates no
 device buffers, chooses no CUDA stream and does not implement a CPU fallback.
 """
 import ctypes as C
+from quactlize._library import load_library, bind_symbol
 
 
 def fields(names, dtype):
@@ -54,12 +55,10 @@ def problem(q, m, n, k, *, experts=1, topk=1, channels=1, dtype=1, layout=0, dev
 
 
 class Library:
-    def __init__(self, path, *, packed_route=None):
-        self.lib = C.CDLL(str(path), mode=C.RTLD_LOCAL)
+    def __init__(self, path=None, *, target=None, packed_route=None):
+        self.lib = load_library(path, target)
         def bind(name, args, result=C.c_int):
-            fn = getattr(self.lib, 'quactlize_ppu_' + name)
-            fn.argtypes, fn.restype = args, result
-            return fn
+            return bind_symbol(self.lib, 'quactlize_ppu_' + name, args, result)
         self.query = bind('matmul_query_v1', [C.POINTER(Problem), C.c_void_p, C.POINTER(Sizes)])
         self.prepare = bind('matmul_prepare_v1', [C.POINTER(Problem), C.c_void_p, C.POINTER(Buffers), C.POINTER(C.c_void_p)])
         if packed_route is not None:

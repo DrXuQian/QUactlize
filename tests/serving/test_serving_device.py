@@ -16,7 +16,9 @@ from ci.support.compat import raw_blocks, weight, assert_dot, assert_merge
 @pytest.fixture(scope='module')
 def owner():
     path=os.environ.get('QUACTLIZE_SERVING_LIBRARY')
-    if not path: pytest.fail('set QUACTLIZE_SERVING_LIBRARY to the PPU or separate CUDA DSO')
+    if not path:
+        from quactlize import get_library_path
+        path=get_library_path()
     if not torch.cuda.is_available():pytest.fail('this gate requires device-enabled platform Torch and a real device')
     stream=torch.cuda.Stream()
     with torch.cuda.stream(stream):

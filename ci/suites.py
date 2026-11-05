@@ -32,6 +32,7 @@ HOST = (
     "test_ppu_compat.py",
     "test_serving.py",
     "test_flashnext_box.py",
+    "test_wheel.py",
 )
 
 # Sweep/importer tests, probes and legacy backends live on experiments/ppu-tuning.

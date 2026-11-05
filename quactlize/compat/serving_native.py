@@ -1,6 +1,7 @@
 """Pure ctypes serving ABI; no Torch import or device allocation."""
 import ctypes as C
 from .native import fields, Merge
+from quactlize._library import load_library, bind_symbol
 
 BAD_ID, BAD_LOGIT, BAD_COUNT = 1, 2, 4
 
@@ -29,12 +30,10 @@ class Rows(C.Structure):
 
 
 class Library:
-    def __init__(self, path):
-        self.lib = C.CDLL(str(path), mode=C.RTLD_LOCAL)
+    def __init__(self, path=None, *, target=None):
+        self.lib = load_library(path, target)
         def bind(name, args, result=C.c_int):
-            f = getattr(self.lib, 'quactlize_serving_' + name)
-            f.argtypes, f.restype = args, result
-            return f
+            return bind_symbol(self.lib, 'quactlize_serving_' + name, args, result)
         self.prepare = bind('prepare_v1', [C.c_int32, C.c_void_p])
         self.error = bind('error_v1', [], C.c_char_p)
         self.router = bind('router_v2', [C.POINTER(Router)])
