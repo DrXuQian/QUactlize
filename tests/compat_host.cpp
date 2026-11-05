@@ -88,6 +88,7 @@ extern "C" int compat_decode_canonical(int q, uint8_t const *low, uint8_t const 
         decode_canonical<Q>(w, out, experts, dtype);                                                         \
         return 0
     switch (q) {
+        QPM_CASE(7);
         QPM_CASE(8);
         QPM_CASE(10);
         QPM_CASE(11);

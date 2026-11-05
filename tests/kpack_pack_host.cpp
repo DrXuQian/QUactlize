@@ -25,6 +25,19 @@ int pack_host(Source raw, uint8_t* low, uint8_t* high, uint8_t* units,
 
 template<class Source>
 int pack_all(int q, Source raw, uint8_t* low, uint8_t* high, uint8_t* units, int n, int k, int e) {
+  if (q == 7) {
+    uint64_t const count = uint64_t(e) * n * k;
+    for (uint64_t i=0; i<count/4; ++i) {
+      uint16_t w=quactlize_pack::Q5_1::word<false>(raw,n,k,i);
+      low[2*i]=uint8_t(w); low[2*i+1]=uint8_t(w>>8);
+    }
+    for (uint64_t i=0; i<count/16; ++i) {
+      uint16_t w=quactlize_pack::Q5_1::word<true>(raw,n,k,i);
+      high[2*i]=uint8_t(w); high[2*i+1]=uint8_t(w>>8);
+    }
+    for (uint64_t i=0; i<count/32; ++i) quactlize_pack::Q5_1::metadata(raw,units,n,k,i);
+    return 0;
+  }
   if (q == 8) {
     uint64_t const count = uint64_t(e) * n * k;
     for (uint64_t i=0; i<count/2; ++i) {
@@ -54,9 +67,9 @@ extern "C" int host_pack_pair(int q, uint8_t const* gate, uint8_t const* up,
   quactlize_ppu_kpack_sizes_v1 sizes{};
   int rc=quactlize_ppu_kpack_canonical_arrangement_v1(q,&a);
   if (rc) return rc;
-  rc=quactlize_ppu_kpack_sizes_for_arrangement_v1(n,k,e,q,&a,&sizes);
+  rc=quactlize_ppu_kpack_sizes_for_arrangement_v1(2*n,k,e,q,&a,&sizes);
   if (rc) return rc;
-  return pack_all(q,quactlize_pack::PairedRows{gate,up,sizes.raw_bytes/uint64_t(e)},
+  return pack_all(q,quactlize_pack::PairedRows{gate,up,sizes.raw_bytes/2/uint64_t(e)},
                   low,high,units,2*n,k,e);
 }
 

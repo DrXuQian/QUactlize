@@ -142,7 +142,7 @@ def test_canonical_still_rejects_special_shapes_and_wrong_mapping(host):
     fn.argtypes = [C.c_int, C.POINTER(Arrangement)]
     assert fn(8, C.byref(arr)) == 0
     s = Sizes()
-    for n,k in ((320,10240),(10240,320),(4,10240),(2560,640)):
+    for n,k in ((320,10240),(4,10240),(2560,641),(256,16)):
         p = problem(8,1,n,k,layout=1)
         assert host.compat_query(C.byref(p), C.byref(arr), C.byref(s)) != 0
     p = problem(8,1,256,512,layout=1)

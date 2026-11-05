@@ -5,6 +5,29 @@ Public headers: `quactlize/compat/api.h` (unchanged v1) and
 PPU matmul selection thresholds change. GPU qualification is separate from
 compilation and host/fake/export tests; neither qualifies PPU performance.
 
+## Canonical preparation for Flash-Next
+
+Use the existing packing API in the same `libncp_quactlize.so`:
+canonical arrangement -> sizes -> GPU repack. Q5_1 (qtype 7) now has its own
+mapping `0x5135314b50000001`, with N%16/K%128. Its low4/high1 planes retain
+unsigned codes and exact FP16 `{d,min}` bytes in `[E,K/32,N,4]`. It is not
+Q5_K, does not requantize, and keeps the same total weight bytes as raw GGUF.
+Q8_0 retains the existing K-pack2 bytes/identity with N%256/K%32; K640 and
+K320 are legal. Query/prepare still reject incompatible consumer geometry.
+
+`prepare_gate_up_dev_for_arrangement_v1` accepts separate N640 raw sources
+when combined N1280 is legal, placing `[gate;up]` **within each expert** with
+no concatenation allocation. This is not paired-N4/SwiGLU storage; Q5_1 N4
+fusion remains unsupported. The format extension does not enable old F32
+dense/MoE selectors for Q5_1 or relabel the compatibility kernel as tuned.
+
+The native16 compatibility consumer supports these packed planes with its
+existing F32 reconstruction -> one F16/BF16 weight rounding -> FP32 accumulation
+-> native16 output contract. Q5_1 tuned packed SIMT/TC execution is a separate
+remaining integration item, not proven by these format tests. The Box suite
+checks E512/top10 down N2560/K640 at M1..8/9/16/128, shared scratch, dynamic
+IDs, inactive NaN inputs, sticky errors and repeated graph replay.
+
 ## Contracts
 
 | Operation | Inputs → outputs | Semantics |

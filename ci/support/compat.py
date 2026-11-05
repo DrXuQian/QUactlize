@@ -38,6 +38,37 @@ def weight(raw, q, dtype):
     return decode(encode(result.reshape(*raw.shape[:2], -1), dtype), dtype)
 
 
+def canonical_planes(raw, q):
+    """Independent logical-to-physical pack oracle; not the C++ gather reader."""
+    if q not in (7, 8):
+        from .fixture import planes
+        values = [planes(expert, q) for expert in raw]
+        return {key: np.concatenate([x[key].reshape(-1).view('u1') for x in values])
+                for key in ('low', 'high', 'units')}
+    e, n, groups, _ = raw.shape
+    k = groups*32
+
+    def plane(codes, bits):
+        pack = 16//bits
+        # [E,N,delivery,slot,K8] -> [E,delivery,K8,N,slot].
+        tiled = codes.reshape(e,n,k//(8*pack),pack,8).transpose(0,2,4,1,3)
+        words = np.zeros(tiled.shape[:-1], dtype='<u2')
+        for slot in range(pack):
+            words |= tiled[...,slot].astype('<u2') << (bits*slot)
+        return words.reshape(-1).view('u1')
+
+    if q == 8:
+        low = plane(raw[...,2:].reshape(e,n,k)^128, 8)
+        high = np.empty(0,'u1')
+        metadata = raw[...,:2]
+    else:
+        codes = np.stack((raw[...,8:] & 15, raw[...,8:] >> 4), axis=-2).reshape(e,n,k)
+        low = plane(codes,4)
+        high = plane(np.unpackbits(raw[...,4:8],axis=-1,bitorder='little').reshape(e,n,k),1)
+        metadata = raw[...,:4]
+    return dict(low=low, high=high, units=metadata.transpose(0,2,1,3).copy().reshape(-1))
+
+
 def assert_dot(got, a, w, dtype):
     a, w = np.asarray(a, 'f8'), np.asarray(w, 'f8')
     gold = a @ w.T

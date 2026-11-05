@@ -49,8 +49,10 @@ typedef struct {
 
 // Host-only. Q5_1(7), Q8_0(8), Q2_K..Q6_K(10..14). RAW requires K%32==0
 // for 7/8, K%256==0 for K-quants, with arbitrary positive N. Canonical keeps
-// the existing producer's EXACT descriptor/alignment checks; Q5_1 has no
-// canonical mapping. M>=0; E<=1024, topk<=32, channels=1 or topk.
+// producer's EXACT descriptor/alignment checks: Q5_1 N%16/K%128; Q8_0
+// N%256/K%32; K-quants retain their existing constraints. M>=0; E<=1024,
+// topk<=32, channels=1 or topk. Canonical storage does not by itself select
+// a tuned packed kernel: this v1 remains the native16 compatibility route.
 // Null arrangement for RAW, canonical producer descriptor otherwise.
 // Query is also the workspace authority. Let R=M*topk, Np=ceil(N/8)*8.
 // For M<=8, direct indexed SIMT uses no scratch. Otherwise scratch contains:

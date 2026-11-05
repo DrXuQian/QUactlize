@@ -59,7 +59,8 @@ def commands(source, package, results, sdk, jobs):
                     '--output', str(package), '--jobs', str(jobs)]
     yield 'compat', [python, '-m', 'pytest', '-q', '-s', '-x', '--tb=short',
         '-o', 'addopts=', '-o', 'xfail_strict=true', '-p', 'no:cacheprovider',
-        '--junitxml=' + str(results / 'compat.xml'), 'tests/ppu/test_compat_library.py']
+        '--junitxml=' + str(results / 'compat.xml'), 'tests/ppu/test_compat_library.py',
+        'tests/ppu/test_packed_native.py']
     # One child process group per phase, so cancellation also reaps the test.
     yield 'serving', [python, '-m', 'pytest', '-q', '-s', '-x', '--tb=short',
         '-o', 'addopts=', '-o', 'xfail_strict=true', '-p', 'no:cacheprovider',

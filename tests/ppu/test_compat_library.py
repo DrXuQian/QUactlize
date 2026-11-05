@@ -76,7 +76,7 @@ class Call:
         self.arena.sync()
         return decode(np.frombuffer(self.output.bytes(),'<u2').reshape(self.p.m,self.p.topk,self.p.output_stride),self.p.dtype)[...,:self.p.n]
 
-    def check(self, raw=None, golden=None):
+    def check(self, raw=None, golden=None, sticky_error=0):
         p=self.p;got=self.result();x=decode(self.x,p.dtype)[...,:p.k]
         ids=self.ids_host[:,:p.topk] if p.mode else np.zeros((p.m,1),dtype='i4')
         for e in np.unique(ids):
@@ -87,7 +87,7 @@ class Call:
             w=golden[e] if golden is not None else weight(raw[e:e+1],p.qtype,p.dtype)[0]
             assert_dot(got[at[:,0],at[:,1]],x[at[:,0],at[:,1] if p.channels>1 else 0],w,p.dtype)
         status=int(np.frombuffer(self.err.bytes(),'i4')[0])
-        assert status == (1 if ((ids < -1)|(ids>=p.experts)).any() else 0)
+        assert status == (sticky_error | (1 if ((ids < -1)|(ids>=p.experts)).any() else 0))
 
     def close(self):
         self.arena.sync()
@@ -95,13 +95,14 @@ class Call:
 
 
 @contextmanager
-def graph(call, body=None):
+def graph(call, body=None, clear_status=True):
     sdk=call.arena.sdk;body=body or call.run
     source=C.c_void_p(); executable=C.c_void_p()
     call.arena.sync()
     checked(sdk.lib.hggcStreamBeginCapture(call.stream,1),'begin compat capture')
     try:
-        call.reset();body()
+        if clear_status:call.reset()
+        body()
     except BaseException:
         sdk.lib.hggcStreamEndCapture(call.stream,C.byref(source))
         if source.value:sdk.lib.hggcGraphDestroy(source)

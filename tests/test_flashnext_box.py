@@ -13,6 +13,7 @@ def test_commands_cover_both_abis_and_real_graph_geometry(tmp_path):
     assert tuple(cmds) == ('precheck','build','compat','serving','graph-m1','graph-m4','graph-m16')
     assert cmds['build'][:3] == ['bash',str(tmp_path/'source/build.sh'),'--library']
     assert 'tests/ppu/test_compat_library.py' in cmds['compat']
+    assert 'tests/ppu/test_packed_native.py' in cmds['compat']
     assert str(tmp_path/'source/tests/serving/test_serving_device.py') in cmds['serving']
     for m in (1,4,16):
         command=cmds[f'graph-m{m}']

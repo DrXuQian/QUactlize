@@ -25,6 +25,9 @@ constexpr bool matches(quactlize_ppu_placed_arrangement_v2 const* a) {
       a->mapping_id == b.mapping_id;
 }
 constexpr bool shape_supported(int n, int k, int experts) {
-  return n > 0 && k > 0 && experts > 0 && n % 256 == 0 && k % 256 == 0;
+  // The code delivery covers K16 and metadata covers K32. K256 was a
+  // legacy tactic restriction, not a property of these unchanged bytes.
+  // Individual compute consumers must still check their own tile geometry.
+  return n > 0 && k > 0 && experts > 0 && n % 256 == 0 && k % 32 == 0;
 }
 } // namespace q8_kpack2

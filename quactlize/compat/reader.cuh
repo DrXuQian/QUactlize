@@ -1,6 +1,7 @@
 #pragma once
 #include "../dequant/reader.hpp"
 #include "../include/gguf_unit_pack.hpp"
+#include "../include/q5_1_kpack.hpp"
 
 namespace quactlize::compat {
 CUTLASS_HOST_DEVICE float half_value(uint8_t const *p) {
@@ -55,7 +56,17 @@ template <int Q> CUTLASS_HOST_DEVICE float raw_value(uint8_t const *b, int i) {
 template <int Q>
 CUTLASS_HOST_DEVICE float canonical_value(uint8_t const *low, uint8_t const *high, uint8_t const *units,
                                           int n, int col, int k) {
-    if constexpr (Q == 8) {
+    if constexpr (Q == 7) {
+        auto word = [](uint8_t const *p, size_t index) {
+            return uint16_t(p[2*index]) | (uint16_t(p[2*index+1]) << 8);
+        };
+        int lo = (word(low,q5_1_kpack::Low::word_index(col,k,n)) >>
+                  (4*q5_1_kpack::Low::word_slot(k))) & 15;
+        int hi = (word(high,q5_1_kpack::High::word_index(col,k,n)) >>
+                  q5_1_kpack::High::word_slot(k)) & 1;
+        auto dm = units + 4*(int64_t(k/32)*n+col);
+        return difference(product(half_value(dm),float(lo | (hi << 4))),-half_value(dm+2));
+    } else if constexpr (Q == 8) {
         int q = execution::Q8Reader::code(reinterpret_cast<uint16_t const *>(low), nullptr, col, k, n);
         return product(float(q), half_value(units + 2 * (int64_t(k / 32) * n + col)));
     } else if constexpr (Q >= 10 && Q <= 14) {
@@ -69,7 +80,7 @@ CUTLASS_HOST_DEVICE float canonical_value(uint8_t const *low, uint8_t const *hig
         auto scale = R::affine(units, col, k / R::group, n);
         return difference(product(float(code), scale.scale), scale.minimum);
     } else
-        return 0.f; // Canonical admission rejects Q5_1.
+        return 0.f; // Canonical admission rejects unsupported qtypes.
 }
 struct Weight {
     uint8_t const *raw, *low, *high, *units;

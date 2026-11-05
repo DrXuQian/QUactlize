@@ -3,6 +3,7 @@
 #include "gguf_unit_pack.hpp"
 #include "kquant_kpack_offline.hpp"
 #include "q8_kpack2.hpp"
+#include "q5_1_kpack.hpp"
 #include <type_traits>
 
 namespace quactlize_pack {
@@ -44,6 +45,32 @@ struct Q8 {
     uint64_t const block = ((outer / groups) * n + index % n) * groups + outer % groups;
     scale[2*index] = raw[34*block];
     scale[2*index+1] = raw[34*block+1];
+  }
+};
+
+struct Q5_1 {
+  template<bool High, class Source>
+  CUTLASS_HOST_DEVICE static uint16_t word(Source raw, int n, int k, uint64_t index) {
+    using Map = std::conditional_t<High, q5_1_kpack::High, q5_1_kpack::Low>;
+    uint64_t const words = uint64_t(n) * (k / Map::kPack);
+    uint64_t const expert = index / words, local = index % words;
+    int const col = int(local % n), kg = int(local / n);
+    uint16_t result = 0;
+    for (int slot = 0; slot < Map::kPack; ++slot) {
+      int const kk = Map::logical_k(kg, slot), j = kk % 32;
+      auto block = raw + ((expert * n + col) * (k / 32) + kk / 32) * 24;
+      int code;
+      if constexpr (High) code = (block[4 + j / 8] >> (j % 8)) & 1;
+      else code = (block[8 + j % 16] >> (4 * (j / 16))) & 15;
+      result |= uint16_t(code << (Map::kBits * slot));
+    }
+    return result;
+  }
+  template<class Source>
+  CUTLASS_HOST_DEVICE static void metadata(Source raw, uint8_t *units, int n, int k, uint64_t index) {
+    uint64_t const groups = k / 32, outer = index / n;
+    uint64_t const block = ((outer / groups) * n + index % n) * groups + outer % groups;
+    for (int byte = 0; byte < 4; ++byte) units[4 * index + byte] = raw[24 * block + byte];
   }
 };
 

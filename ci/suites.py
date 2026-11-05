@@ -13,7 +13,7 @@ HOST = (
     "test_ci_entry.py",
     "test_product_tree.py",
     "test_reference_gguf_kpack.py", "test_reference_gguf_kpack_file.py",
-    "test_pack_gguf_cli.py", "test_kpack_device_pack.py", "test_q8_kpack2.py",
+    "test_pack_gguf_cli.py", "test_kpack_device_pack.py", "test_q8_kpack2.py", "test_q5_1_kpack.py",
     "test_kpack_public_contract.py", "test_kquant_any_m_abi.py",
     "test_kquant_selected_config_abi.py", "test_kquant_measured_policy.py",
     "test_kpack_policy.py", "test_kpack_native_dispatch.py", "test_kpack_jit.py",
@@ -36,7 +36,7 @@ HOST = (
 # Sweep/importer tests, probes and legacy backends live on experiments/ppu-tuning.
 
 ACCURACY = ("ppu/test_public_library.py", "ppu/test_moe_library.py", "ppu/test_ffn_library.py",
-            "ppu/test_compat_library.py")
+            "ppu/test_compat_library.py", "ppu/test_packed_native.py")
 SERVING = ("serving/test_serving_device.py",)
 
 

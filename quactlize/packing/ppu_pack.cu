@@ -27,6 +27,17 @@ __global__ void pack_words(Source raw, uint16_t* output,
     output[i] = quactlize_pack::Plane<T, High>::word(raw, n, k, i);
 }
 
+template<class Source>
+__global__ void pack_q5_1(Source raw, uint16_t *low, uint16_t *high, uint8_t *units,
+                          int n, int k, uint64_t low_words, uint64_t high_words, uint64_t groups) {
+  for (uint64_t i = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+       i < low_words; i += uint64_t(gridDim.x) * blockDim.x) {
+    low[i] = quactlize_pack::Q5_1::word<false>(raw,n,k,i);
+    if (i < high_words) high[i] = quactlize_pack::Q5_1::word<true>(raw,n,k,i);
+    if (i < groups) quactlize_pack::Q5_1::metadata(raw,units,n,k,i);
+  }
+}
+
 template <KType T, class Source>
 __global__ void pack_metadata(Source raw, uint8_t* output,
                               int n, int k, uint64_t count) {
@@ -59,6 +70,12 @@ template<class Source>
 int launch_format(Source raw, uint8_t* low, uint8_t* high, uint8_t* units,
                   int n, int k, int qtype, quactlize_ppu_kpack_sizes_v1 const& s, void* stream) {
   if (hggcGetLastError() != hggcSuccess) return 41;
+  if (qtype == 7) {
+    pack_q5_1<<<grid(s.low_bytes/2),256,0,static_cast<hggcStream_t>(stream)>>>(
+        raw,reinterpret_cast<uint16_t*>(low),reinterpret_cast<uint16_t*>(high),units,
+        n,k,s.low_bytes/2,s.high_bytes/2,s.units_bytes/4);
+    return hggcGetLastError() == hggcSuccess ? 0 : 41;
+  }
   if (qtype == 8) {
     pack_q8<<<grid(s.low_bytes/2),256,0,static_cast<hggcStream_t>(stream)>>>(
         raw,reinterpret_cast<uint16_t*>(low),units,n,k,s.low_bytes/2,s.units_bytes/2);
@@ -104,24 +121,24 @@ extern "C" int quactlize_ppu_prepare_gate_up_dev_for_arrangement_v1(
     int n, int k, int experts, int qtype,
     quactlize_ppu_placed_arrangement_v2 const* arrangement, void* stream) {
   if (n <= 0 || n > INT32_MAX/2) return 24;
-  quactlize_ppu_kpack_sizes_v1 single{}, paired{};
-  int rc = quactlize_ppu_kpack_sizes_for_arrangement_v1(n,k,experts,qtype,arrangement,&single);
-  if (rc) return rc;
-  rc = quactlize_ppu_kpack_sizes_for_arrangement_v1(2*n,k,experts,qtype,arrangement,&paired);
+  quactlize_ppu_kpack_sizes_v1 paired{};
+  int rc = quactlize_ppu_kpack_sizes_for_arrangement_v1(2*n,k,experts,qtype,arrangement,&paired);
   if (rc) return rc;
   if (!gate || !up || !low || !units || (paired.high_bytes != 0) != (high != nullptr) ||
       uintptr_t(low)%2 || uintptr_t(high)%2) return 20;
   uintptr_t const begin[] = {uintptr_t(gate),uintptr_t(up),uintptr_t(low),uintptr_t(high),uintptr_t(units)};
-  uint64_t const bytes[] = {single.raw_bytes,single.raw_bytes,paired.low_bytes,paired.high_bytes,paired.units_bytes};
+  uint64_t const source_bytes = paired.raw_bytes/2;
+  uint64_t const bytes[] = {source_bytes,source_bytes,paired.low_bytes,paired.high_bytes,paired.units_bytes};
   rc = disjoint(begin,bytes,5);
   if (rc) return rc;
-  quactlize_pack::PairedRows raw{gate,up,single.raw_bytes/uint64_t(experts)};
+  quactlize_pack::PairedRows raw{gate,up,source_bytes/uint64_t(experts)};
   return launch_format(raw,low,high,units,2*n,k,qtype,paired,stream);
 }
 
 extern "C" int quactlize_gate_up_pack_v1(
     uint8_t const* gate, uint8_t const* up, uint8_t* low, uint8_t* high, uint8_t* units,
     int n, int k, int experts, int qtype, qkg_gate_up_layout_v1 const* layout, void* stream) {
+  if (qtype == 7) return 22; // Only canonical [gate;up], not paired-N4, is supported.
   if (!layout || layout->version!=1 || layout->size!=sizeof(*layout) ||
       layout->layout_id!=QKG_GATE_UP_N4_V1) return 38;
   if (n<=0 || n>INT32_MAX/2 || n%8) return 24;
