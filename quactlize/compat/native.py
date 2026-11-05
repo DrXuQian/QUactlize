@@ -54,7 +54,7 @@ def problem(q, m, n, k, *, experts=1, topk=1, channels=1, dtype=1, layout=0, dev
 
 
 class Library:
-    def __init__(self, path):
+    def __init__(self, path, *, packed_route=None):
         self.lib = C.CDLL(str(path), mode=C.RTLD_LOCAL)
         def bind(name, args, result=C.c_int):
             fn = getattr(self.lib, 'quactlize_ppu_' + name)
@@ -62,6 +62,12 @@ class Library:
             return fn
         self.query = bind('matmul_query_v1', [C.POINTER(Problem), C.c_void_p, C.POINTER(Sizes)])
         self.prepare = bind('matmul_prepare_v1', [C.POINTER(Problem), C.c_void_p, C.POINTER(Buffers), C.POINTER(C.c_void_p)])
+        if packed_route is not None:
+            query = bind('matmul_packed_query_v1', [C.POINTER(Problem), C.c_void_p, C.c_int, C.POINTER(Sizes)])
+            prepare = bind('matmul_packed_prepare_v1', [C.POINTER(Problem), C.c_void_p, C.c_int,
+                C.POINTER(Buffers), C.POINTER(C.c_void_p)])
+            self.query = lambda p, a, s: query(p, a, packed_route, s)
+            self.prepare = lambda p, a, b, h: prepare(p, a, packed_route, b, h)
         self.run = bind('matmul_run_v1', [C.c_void_p, C.POINTER(Buffers)])
         self.dequant = bind('matmul_dequant_v1', [C.c_void_p, C.POINTER(Buffers), C.c_int32, C.c_int32,
                                               C.c_int32, C.c_void_p, C.c_uint64])

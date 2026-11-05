@@ -23,10 +23,46 @@ dense/MoE selectors for Q5_1 or relabel the compatibility kernel as tuned.
 
 The native16 compatibility consumer supports these packed planes with its
 existing F32 reconstruction -> one F16/BF16 weight rounding -> FP32 accumulation
--> native16 output contract. Q5_1 tuned packed SIMT/TC execution is a separate
-remaining integration item, not proven by these format tests. The Box suite
+-> native16 output contract. The Box suite
 checks E512/top10 down N2560/K640 at M1..8/9/16/128, shared scratch, dynamic
 IDs, inactive NaN inputs, sticky errors and repeated graph replay.
+
+## Direct packed Q5_1 candidates
+
+In the same public DSO/header, use `quactlize_ppu_matmul_packed_query_v1` and
+`quactlize_ppu_matmul_packed_prepare_v1`, followed by the existing run/destroy.
+Python binding: `Library(path, packed_route=0)`. Route 0 is a provisional
+AUTO (SIMT M<=8, TC M>8); force 2/3 to qualify SIMT/TC on either side of that
+boundary. This is not a measured optimal selector or an update of old tables.
+Only canonical Q5_1 is admitted; Q8/K-quants and raw storage are rejected.
+
+Both preserve F16/BF16 A/C, separate F32 weight multiply/add followed by one
+native16 rounding, and F32 accumulation. SIMT vectorizes across N and reuses
+K32 affine metadata. TC coalesces unique low/high/metadata words into a K128
+shared tile and decodes directly into native PPU m16n16k16 registers. No global
+native16 weights, grouped A or grouped C are materialized. This is a separate
+direct-packed implementation, not a renamed full-dequant or Q5_K kernel.
+
+Query reports route, N tile and exact workspace. SIMT and dense TC use zero
+scratch; indexed TC uses only three 256-byte-aligned `4*(E+1)` route arrays
+and one aligned `4*M*topk` slot map: 12,032 bytes at E512/top10/M128. Shared
+memory is CTA-local (512 bytes SIMT; 10,304 bytes TC), independent of model
+size. Use disjoint scratch/status/output for concurrent calls; serial layers
+may reuse max(query). No run-time compilation/allocation/sync/D2H is added.
+
+Native object compilation and host mapping/rounding tests are not PPU
+correctness/performance admission. Existing default v1 remains the control.
+The narrow Box correctness command is:
+
+```bash
+git fetch origin feat/ppu-flash-next
+git show FETCH_HEAD:tools/run_flashnext_box.py | python3 - --ref FETCH_HEAD --device 0 --packed-only
+```
+
+It checks real K640/E512/top10, forced-route N/M tails, changing pointers and
+IDs, inactive NaN input, sticky errors and concurrent graph replay. Upload
+the printed review archive; speed/default promotion needs separate paired
+same-device performance evidence after this correctness gate.
 
 ## Contracts
 

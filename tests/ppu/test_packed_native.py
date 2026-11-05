@@ -6,7 +6,7 @@ import pytest
 
 from ci.support.compat import raw_blocks, canonical_planes
 from ci.support.packing import Arrangement, Sizes
-from quactlize.compat.native import problem, Sizes as ComputeSizes
+from quactlize.compat.native import Library, problem, Sizes as ComputeSizes
 from quactlize.runtime.native import checked
 from .support import Arena, Public
 from .test_compat_library import Call, graph, lib
@@ -51,8 +51,9 @@ def test_pair_640_device_bytes(package,sdk,q):
     with Arena(sdk) as arena:pack(arena,Public(package),gate,q,up)
 
 
-@pytest.mark.parametrize('q',[7,8])
-def test_down_k640_native_graph(package,lib,sdk,q):
+@pytest.mark.parametrize('q,route',[(7,None),(8,None),(7,0)])
+def test_down_k640_native_graph(package,lib,sdk,q,route):
+    if route is not None:lib=Library(package/'libncp_quactlize.so',packed_route=route)
     e,t,n,k=512,10,2560,640
     raw=raw_blocks(q,e,n,k)
     with Arena(sdk) as arena:
@@ -65,12 +66,15 @@ def test_down_k640_native_graph(package,lib,sdk,q):
             p=problem(q,m,n,k,experts=e,topk=t,channels=t,dtype=1,layout=1,padding=1)
             call=Call(arena,lib,p,canonical=canonical,workspace=scratch)
             try:
+                if route is not None:
+                    assert call.s.route==(2 if m<=8 else 3)
+                    assert call.s.expanded_weight_bytes==call.s.grouped_input_bytes==call.s.grouped_output_bytes==0
                 call.input();call.selection();call.prepare();call.check(raw)
                 call.err.write(np.array([16],'i4'))
                 with graph(call,clear_status=False) as replay:
                     sticky=16
                     for seed,invalid in ((13,False),(61,True),(7,False)):
-                        call.input(seed);call.selection(seed,invalid)
+                        call.input(seed);call.selection(seed,invalid,distributed=(seed==13))
                         inactive=(call.ids_host[:,:t]<0)|(call.ids_host[:,:t]>=e)
                         call.x[inactive,:k]=0x7fc0 # BF16 NaN: inactive slots must not consume A.
                         call.a.write(call.x);arena.sync();replay();arena.sync()
@@ -81,5 +85,64 @@ def test_down_k640_native_graph(package,lib,sdk,q):
                 print('PACKED_NATIVE_PASS '+json.dumps(dict(qtype=q,m=m,n=n,k=k,experts=e,topk=t,
                     route=call.s.route,workspace_bytes=call.s.workspace_bytes,
                     expanded_weight_bytes=call.s.expanded_weight_bytes,
-                    scope='CANONICAL_COMPATIBILITY_NOT_TUNED_KERNEL_ADMISSION')),flush=True)
+                    scope='DIRECT_PACKED_CANDIDATE' if route is not None else 'CANONICAL_COMPATIBILITY',
+                    performance_admitted=False)),flush=True)
             finally:call.close()
+
+
+@pytest.mark.parametrize('route',[2,3],ids=['simt','tc'])
+@pytest.mark.parametrize('dtype',[0,1],ids=['f16','bf16'])
+@pytest.mark.parametrize('m',[1,9,17])
+@pytest.mark.parametrize('experts,channels',[(1,1),(3,1),(3,3)])
+def test_direct_q5_tails(package,sdk,route,dtype,m,experts,channels):
+    lib=Library(package/'libncp_quactlize.so',packed_route=route)
+    raw=raw_blocks(7,experts,80,128,seed=m)
+    with Arena(sdk) as arena:
+        canonical=pack(arena,Public(package),raw,7)
+        p=problem(7,m,80,128,experts=experts,topk=experts,channels=channels,
+                  dtype=dtype,layout=1,padding=3)
+        call=Call(arena,lib,p,canonical=canonical)
+        try:
+            call.input();call.selection(invalid=True);call.prepare();call.check(raw)
+            with graph(call) as replay:
+                call.input(125);call.selection(37);arena.sync();replay();call.check(raw)
+        finally:call.close()
+
+
+@pytest.mark.parametrize('route',[2,3])
+def test_direct_q5_zero_rows(package,sdk,route):
+    lib=Library(package/'libncp_quactlize.so',packed_route=route)
+    raw=raw_blocks(7,1,16,128)
+    with Arena(sdk) as arena:
+        canonical=pack(arena,Public(package),raw,7)
+        call=Call(arena,lib,problem(7,0,16,128,layout=1),canonical=canonical)
+        try:
+            assert call.s.workspace_bytes==0
+            call.prepare();call.run();call.check(raw)
+        finally:call.close()
+
+
+@pytest.mark.parametrize('route',[2,3])
+def test_direct_q5_dynamic_addresses_and_streams(package,sdk,route):
+    lib=Library(package/'libncp_quactlize.so',packed_route=route)
+    raw=raw_blocks(7,3,16,640,seed=71)
+    with Arena(sdk) as arena:
+        canonical=pack(arena,Public(package),raw,7)
+        p=problem(7,17,16,640,experts=3,topk=3,channels=3,layout=1,padding=1)
+        first=Call(arena,lib,p,canonical=canonical)
+        second=Call(arena,lib,p,canonical=canonical)
+        try:
+            first.input();first.selection();first.prepare();first.check(raw)
+            second.input(17);second.selection(invalid=True)
+            arena.sync()
+            # Same handle, different dynamic A/C/IDs/status/scratch AND stream.
+            run_second=lambda:lib.check(lib.run(first.handle,C.byref(second.b)))
+            run_second();second.check(raw)
+            with graph(first) as a,graph(second,body=run_second) as b:
+                for seed in (17,91,3):
+                    first.input(seed);first.selection(seed)
+                    second.input(seed+1);second.selection(seed,invalid=True)
+                    arena.sync();a();b();arena.sync()
+                    first.check(raw);second.check(raw)
+        finally:
+            second.close();first.close()

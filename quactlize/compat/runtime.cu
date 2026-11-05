@@ -1,6 +1,7 @@
 #include "contract.hpp"
 #include "reader.cuh"
 #include "grouped.cuh"
+#include "../execution/native16.cuh"
 #include <memory>
 #include <string>
 
@@ -153,6 +154,34 @@ template <int Q, class T, bool Packed> void run(Prepared const &h, qpm_buffers_v
         return;
     auto stream = static_cast<hggcStream_t>(b.stream);
     auto w = weight(h, b);
+    if constexpr (Q == 7 && Packed) {
+        namespace direct = quactlize::execution::native16;
+        if (s.route == QPM_PACKED_SIMT) {
+            unsigned blocks = unsigned(uint64_t(l.rows) * ((uint64_t(p.n) + 31) / 32));
+            direct::packed_simt<T><<<blocks, 128, 0, stream>>>(p, b, w);
+            checked(hggcGetLastError());
+            return;
+        }
+        if (s.route == QPM_PACKED_TC) {
+            int *counts = nullptr, *tiles = nullptr, *maps = nullptr;
+            if (p.mode == QPM_INDEXED) {
+                auto base = static_cast<uint8_t *>(b.workspace);
+                counts = reinterpret_cast<int *>(base + l.counts);
+                tiles = reinterpret_cast<int *>(base + l.tile_offsets);
+                maps = reinterpret_cast<int *>(base + l.maps);
+                auto cursors = reinterpret_cast<int *>(base + l.cursors);
+                checked(hggcMemsetAsync(counts, 0, 4 * (p.experts + 1), stream));
+                count_rows<<<grid(l.rows), 256, 0, stream>>>(p, b, l.rows, counts);
+                direct::prefix_tiles<<<1, 32, 0, stream>>>(counts, cursors, tiles, p.experts);
+                direct::route_slots<T><<<(l.rows + 3) / 4, 128, 0, stream>>>(p, b, l.rows, counts, cursors, maps);
+                checked(hggcGetLastError());
+            }
+            unsigned blocks = unsigned(uint64_t(l.tiles) * ((uint64_t(p.n) + 63) / 64));
+            direct::packed_tc<T><<<blocks, 128, 0, stream>>>(p, b, w, counts, tiles, maps);
+            checked(hggcGetLastError());
+            return;
+        }
+    }
     if (s.route == QPM_SIMT) {
         int blocks = int(std::min<uint64_t>((uint64_t(l.rows) * p.n + 3) / 4, 4096));
         indexed_simt<Q, T, Packed><<<blocks, 128, 0, stream>>>(p, b, w, l.rows);
@@ -243,27 +272,15 @@ void device(Prepared const &h) {
     require(current == h.p.device, "current device differs from prepared device");
 }
 int warm_helpers();
-} // namespace quactlize::compat
-
-extern "C" {
-int quactlize_ppu_matmul_query_v1(qpm_problem_v1 const *p, quactlize_ppu_placed_arrangement_v2 const *arr,
-                                  qpm_sizes_v1 *s) {
-    using namespace quactlize::compat;
-    return guarded([&] {
-        require(p && s, "null query argument");
-        *s = layout(*p, arr).sizes;
-    });
-}
-int quactlize_ppu_matmul_prepare_v1(qpm_problem_v1 const *p, quactlize_ppu_placed_arrangement_v2 const *arr,
-                                    qpm_buffers_v1 const *b, void **handle) {
-    using namespace quactlize::compat;
+int prepare(qpm_problem_v1 const *p, quactlize_ppu_placed_arrangement_v2 const *arr,
+            qpm_buffers_v1 const *b, void **handle, bool packed, int route) {
     if (handle)
         *handle = nullptr;
     return guarded([&] {
         require(p && b && handle, "null prepare argument");
         auto h = std::make_unique<Prepared>();
         h->p = *p;
-        h->l = layout(*p, arr);
+        h->l = layout(*p, arr, packed, route);
         validate(h->p, h->l, *b);
         device(*h);
         hggcStreamCaptureStatus capture;
@@ -285,6 +302,33 @@ int quactlize_ppu_matmul_prepare_v1(qpm_problem_v1 const *p, quactlize_ppu_place
         checked(hggcStreamSynchronize(stream));
         *handle = h.release();
     });
+}
+} // namespace quactlize::compat
+
+extern "C" {
+int quactlize_ppu_matmul_query_v1(qpm_problem_v1 const *p, quactlize_ppu_placed_arrangement_v2 const *arr,
+                                  qpm_sizes_v1 *s) {
+    using namespace quactlize::compat;
+    return guarded([&] {
+        require(p && s, "null query argument");
+        *s = layout(*p, arr).sizes;
+    });
+}
+int quactlize_ppu_matmul_packed_query_v1(qpm_problem_v1 const *p,
+    quactlize_ppu_placed_arrangement_v2 const *arr, int route, qpm_sizes_v1 *s) {
+    using namespace quactlize::compat;
+    return guarded([&] {
+        require(p && s, "null query argument");
+        *s = layout(*p, arr, true, route).sizes;
+    });
+}
+int quactlize_ppu_matmul_prepare_v1(qpm_problem_v1 const *p, quactlize_ppu_placed_arrangement_v2 const *arr,
+                                    qpm_buffers_v1 const *b, void **handle) {
+    return quactlize::compat::prepare(p, arr, b, handle, false, QPM_PACKED_AUTO);
+}
+int quactlize_ppu_matmul_packed_prepare_v1(qpm_problem_v1 const *p,
+    quactlize_ppu_placed_arrangement_v2 const *arr, int route, qpm_buffers_v1 const *b, void **handle) {
+    return quactlize::compat::prepare(p, arr, b, handle, true, route);
 }
 int quactlize_ppu_matmul_run_v1(void *handle, qpm_buffers_v1 const *b) {
     using namespace quactlize::compat;

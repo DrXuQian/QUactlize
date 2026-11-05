@@ -47,7 +47,7 @@ def checkout(repo, source, revision, log, env):
         return pin
 
 
-def commands(source, package, results, sdk, jobs):
+def commands(source, package, results, sdk, jobs, packed_only=False):
     from ci.suites import SERVING
     python = sys.executable
     yield 'precheck', [python, '-c',
@@ -57,6 +57,11 @@ def commands(source, package, results, sdk, jobs):
         'print("python:",sys.executable,"torch:",torch.__version__,"device:",torch.cuda.get_device_name(0))']
     yield 'build', ['bash', str(source / 'build.sh'), '--library', '--sdk', str(sdk),
                     '--output', str(package), '--jobs', str(jobs)]
+    if packed_only:
+        yield 'packed', [python, '-m', 'pytest', '-q', '-s', '-x', '--tb=short',
+            '-o', 'addopts=', '-o', 'xfail_strict=true', '-p', 'no:cacheprovider',
+            '--junitxml=' + str(results / 'packed.xml'), 'tests/ppu/test_packed_native.py']
+        return
     yield 'compat', [python, '-m', 'pytest', '-q', '-s', '-x', '--tb=short',
         '-o', 'addopts=', '-o', 'xfail_strict=true', '-p', 'no:cacheprovider',
         '--junitxml=' + str(results / 'compat.xml'), 'tests/ppu/test_compat_library.py',
@@ -103,6 +108,8 @@ def main(argv=None):
     parser.add_argument('--sdk', type=Path, default=Path(os.environ.get('PPU_SDK') or '/usr/local/PPU_SDK'))
     parser.add_argument('--jobs', type=int, default=8)
     parser.add_argument('--timeout', type=int, default=7200, help='seconds per build/test/graph phase')
+    parser.add_argument('--packed-only', action='store_true',
+                        help='build and qualify packed Q5_1 SIMT/TC plus packing controls; no performance admission')
     args = parser.parse_args(argv)
     if args.jobs < 1 or args.timeout < 1 or not args.device.strip() or ',' in args.device:
         parser.error('positive jobs/timeout and one device are required')
@@ -122,6 +129,8 @@ def main(argv=None):
         env.pop(key, None)
     summary = dict(status='INCOMPLETE', commit=revision, device=args.device, sdk=str(sdk), phases=[],
                    scope='FLASHNEXT_LIBRARY_ACCEPTANCE_NOT_MODEL_OR_PERFORMANCE_ADMISSION')
+    if args.packed_only:
+        summary['scope']='PACKED_Q5_1_EXECUTION_QUALIFICATION_NOT_PERFORMANCE_ADMISSION'
     def save():
         (results / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
     stage = 'checkout'; rc = 1
@@ -131,7 +140,7 @@ def main(argv=None):
         # Load helpers from the detached revision, not the caller's branch.
         sys.path.insert(0, str(source))
         from ci.run import run_command, pytest_counts
-        for stage, command in commands(source, package, results, sdk, args.jobs):
+        for stage, command in commands(source, package, results, sdk, args.jobs, args.packed_only):
             row = dict(stage=stage, status='FAIL', command=command)
             summary['phases'].append(row); save()
             log = results / (stage + '.log')
@@ -147,7 +156,7 @@ def main(argv=None):
                     digest = hashlib.sha256()
                     for block in iter(lambda: lib.read(1 << 20), b''): digest.update(block)
                 summary['library_sha256'] = digest.hexdigest()
-            if stage in ('compat', 'serving'):
+            if stage in ('compat', 'serving', 'packed'):
                 xml = results / (stage + '.xml')
                 row['counts'] = pytest_counts(xml); check_counts(row['counts'])
             row['status'] = 'PASS'; save()

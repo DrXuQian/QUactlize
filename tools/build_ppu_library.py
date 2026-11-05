@@ -41,7 +41,8 @@ PUBLIC_EXPORTS = (
     *('quactlize_ppu_ffn_' + suffix for suffix in (
         'supported_v1', 'create_v1', 'prepare_v1', 'run_v1', 'run_v2', 'destroy_v1', 'error_v1')),
     *('quactlize_ppu_matmul_' + suffix for suffix in (
-        'query_v1', 'prepare_v1', 'run_v1', 'dequant_v1', 'destroy_v1', 'error_v1')),
+        'query_v1', 'prepare_v1', 'packed_query_v1', 'packed_prepare_v1',
+        'run_v1', 'dequant_v1', 'destroy_v1', 'error_v1')),
     'quactlize_ppu_router_run_v1', 'quactlize_ppu_swiglu_run_v1', 'quactlize_ppu_merge_run_v1',
     *('quactlize_serving_' + suffix for suffix in (
         'prepare_v1', 'error_v1', 'router_v2', 'swiglu_v2', 'gather_rows_v1', 'merge_v1')),
@@ -194,6 +195,9 @@ def build(sdk, output, jobs):
     public_sources = {p: sha(p) for directory in ('quactlize/dense', 'quactlize/dispatch', 'quactlize/moe', 'quactlize/routing', 'quactlize/ffn', 'quactlize/fusion', 'quactlize/compat')
                       for p in (ROOT / directory).iterdir() if p.is_file()}
     public_sources.update({p: sha(p) for p in (ROOT/'policies').iterdir() if p.suffix in ('.hpp', '.json')})
+    for name in ('native16.cuh','native16_geometry.hpp'):
+        p=ROOT/'quactlize/execution'/name
+        public_sources[p]=sha(p)
     device_policy=ROOT/'quactlize/include/ppu_device.hpp'
     public_sources[device_policy]=sha(device_policy)
     helper_policy=ROOT/'quactlize/prefill/dense_helpers.hpp'
@@ -312,6 +316,9 @@ def build(sdk, output, jobs):
         compatibility=dict(raw_gguf_formats=[7, 8, 10, 11, 12, 13, 14],
             native_dtypes=['F16', 'BF16'], device_admission='PENDING',
             scope='NATIVE_TYPED_BOUNDED_COMPATIBILITY_NOT_TUNED_POLICY_REPLACEMENT'),
+        direct_packed=dict(formats=[7], native_dtypes=['F16','BF16'], accumulator='F32',
+            weight_rounding='NATIVE16_AFTER_F32_DECODE', expanded_weight_bytes=0,
+            device_admission='PENDING', performance_admitted=False),
         serving=dict(router_abi=2, swiglu_abi=2, lookup_formats=[8, 20], device_admission='PENDING'),
         source_hashes={str(p.relative_to(ROOT)): digest for p, digest in public_sources.items()},
         execution_receipt=execution,

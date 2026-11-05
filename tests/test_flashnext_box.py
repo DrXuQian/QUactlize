@@ -8,6 +8,13 @@ from ci import run as ci_run
 from tools import run_flashnext_box as box
 
 
+def test_packed_only_reuses_build_and_keeps_actual_device_gate(tmp_path):
+    cmds=dict(box.commands(tmp_path/'source',tmp_path/'package',tmp_path/'results',Path('/sdk'),3,True))
+    assert tuple(cmds)==('precheck','build','packed')
+    assert 'tests/ppu/test_packed_native.py' in cmds['packed']
+    assert '--junitxml='+str(tmp_path/'results/packed.xml') in cmds['packed']
+
+
 def test_commands_cover_both_abis_and_real_graph_geometry(tmp_path):
     cmds = dict(box.commands(tmp_path/'source', tmp_path/'package', tmp_path/'results', Path('/sdk'), 3))
     assert tuple(cmds) == ('precheck','build','compat','serving','graph-m1','graph-m4','graph-m16')

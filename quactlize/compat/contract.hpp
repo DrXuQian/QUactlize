@@ -49,17 +49,25 @@ inline int block_bytes(int q) {
 struct Layout {
     qpm_sizes_v1 sizes{};
     uint64_t counts = 0, cursors = 0, maps = 0, inverse = 0, a = 0, c = 0, w = 0, metadata = 0;
-    int rows = 0, padded_n = 0;
+    uint64_t tile_offsets = 0;
+    int rows = 0, padded_n = 0, tiles = 0;
 };
 
 // Shared by host tests and the device implementation. Shape checks cannot be
 // bypassed by prepare/run; no device pointer is dereferenced here.
-inline Layout layout(qpm_problem_v1 const &p, quactlize_ppu_placed_arrangement_v2 const *arr) {
+inline Layout layout(qpm_problem_v1 const &p, quactlize_ppu_placed_arrangement_v2 const *arr,
+                     bool packed = false, int route = QPM_PACKED_AUTO) {
     require(p.version == 1 && p.size == sizeof(p) && !p.reserved, "invalid matmul problem ABI");
     require(p.m >= 0 && p.n > 0 && p.n <= INT_MAX - 7 && p.k > 0 && p.device >= 0,
             "invalid matrix shape/device");
     require(p.dtype == QPM_F16 || p.dtype == QPM_BF16, "expected native F16 or BF16");
     require(p.mode == QPM_DENSE || p.mode == QPM_INDEXED, "invalid matmul mode");
+    if (packed) {
+        require(p.qtype == 7 && p.layout == QPM_CANONICAL_KPACK,
+                "direct-packed execution requires canonical Q5_1");
+        require(route == QPM_PACKED_AUTO || route == QPM_PACKED_SIMT || route == QPM_PACKED_TC,
+                "unknown direct-packed route");
+    }
     require(p.experts > 0 && p.experts <= 1024 && p.topk > 0 && p.topk <= 32 && p.topk <= p.experts,
             "experts/topk out of range");
     require(p.channels == 1 || p.channels == p.topk, "channels must be 1 or topk");
@@ -97,6 +105,28 @@ inline Layout layout(qpm_problem_v1 const &p, quactlize_ppu_placed_arrangement_v
         s.ids_bytes = extent(p.m, p.ids_stride, p.topk, 4);
     else
         require(p.ids_stride == 0, "dense does not accept an IDs stride");
+    if (packed) {
+        s.route = route ? route : (p.m <= 8 ? QPM_PACKED_SIMT : QPM_PACKED_TC);
+        s.column_tile = s.route == QPM_PACKED_SIMT ? 32 : 64;
+        if (s.route == QPM_PACKED_SIMT || !rows)
+            return l;
+        // Sum ceil(count_e/16) <= ceil(R/16) + min(R,E) - 1. Excess
+        // CTAs exit using device tile-prefixes, without downloading IDs/counts.
+        uint64_t tasks = (rows + 15) / 16;
+        if (p.mode == QPM_INDEXED)
+            tasks += std::min<uint64_t>(rows, p.experts) - 1;
+        require(tasks * ((uint64_t(p.n) + 63) / 64) <= INT_MAX, "packed TC grid overflow");
+        l.tiles = int(tasks);
+        if (p.mode == QPM_INDEXED) {
+            uint64_t size = align(mul(p.experts + 1, 4));
+            l.counts = 0;
+            l.cursors = size;
+            l.tile_offsets = 2 * size;
+            l.maps = 3 * size;
+            s.routing_bytes = s.workspace_bytes = add(3 * size, align(mul(rows, 4)));
+        }
+        return l;
+    }
     s.route = p.m <= 8 ? QPM_SIMT : QPM_GROUPED_TC;
     if (!rows || s.route == QPM_SIMT)
         return l;

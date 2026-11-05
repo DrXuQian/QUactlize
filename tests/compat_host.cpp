@@ -1,5 +1,29 @@
 #include "quactlize/compat/contract.hpp"
 #include "quactlize/compat/reader.cuh"
+#include "quactlize/execution/native16_geometry.hpp"
+#include "cute/atom/mma_traits_ppu0010.hpp"
+
+extern "C" int packed_query(qpm_problem_v1 const *p, quactlize_ppu_placed_arrangement_v2 const *a,
+                            int route, qpm_sizes_v1 *s) {
+    try {
+        *s = quactlize::compat::layout(*p, a, true, route).sizes;
+        return 0;
+    } catch (std::exception const &) { return 20; }
+}
+extern "C" int packed_fragment_map(int operand, int lane, int v) {
+    using Traits = cute::MMA_Traits<cute::PPU0010_16x16x16_F32BF16BF16F32_TN>;
+    using F = quactlize::execution::native16::Fragment;
+    int predicted = F::row(lane,v) + 16 * (operand == 2 ? F::column(lane,v) : F::k(lane,v));
+    int actual = operand == 0 ? Traits::ALayout{}(cute::make_coord(lane,v)) :
+                 operand == 1 ? Traits::BLayout{}(cute::make_coord(lane,v)) :
+                                Traits::CLayout{}(cute::make_coord(lane,v));
+    return actual == predicted ? actual : -1;
+}
+extern "C" int packed_q5_weight(uint16_t lo, uint16_t hi, int ls, int hs, uint32_t dm, int dtype) {
+    using namespace quactlize::execution::native16;
+    return dtype ? q5_weight<cutlass::bfloat16_t>(lo,hi,ls,hs,dm).raw() :
+                   q5_weight<cutlass::half_t>(lo,hi,ls,hs,dm).raw();
+}
 
 extern "C" int compat_query(qpm_problem_v1 const *p, quactlize_ppu_placed_arrangement_v2 const *a,
                             qpm_sizes_v1 *s) {

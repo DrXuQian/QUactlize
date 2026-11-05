@@ -13,6 +13,8 @@ enum { QPM_RAW_GGUF = 0, QPM_CANONICAL_KPACK = 1 };
 enum { QPM_DENSE = 0, QPM_INDEXED = 1 };
 enum { QPM_F16 = 0, QPM_BF16 = 1 };
 enum { QPM_SIMT = 0, QPM_GROUPED_TC = 1 };
+// Explicit direct-packed candidates, not automatic changes to the v1 route.
+enum { QPM_PACKED_AUTO = 0, QPM_PACKED_SIMT = 2, QPM_PACKED_TC = 3 };
 enum { QPM_OK = 0, QPM_INVALID = 20, QPM_RUNTIME = 41 };
 enum { QPM_BAD_ID = 1, QPM_BAD_LOGIT = 2 };
 
@@ -73,6 +75,19 @@ int quactlize_ppu_matmul_query_v1(qpm_problem_v1 const *, quactlize_ppu_placed_a
 // *handle is NULL. Query/prepare diagnostics use error_v1.
 int quactlize_ppu_matmul_prepare_v1(qpm_problem_v1 const *, quactlize_ppu_placed_arrangement_v2 const *,
                                     qpm_buffers_v1 const *, void **handle);
+
+// PPU direct-packed Q5_1 candidates. Same arithmetic/strides/graph lifetime as
+// v1; canonical descriptor required. No global expanded weights or grouped
+// A/C. AUTO uses SIMT for M<=8, TC otherwise; either can be forced for tests.
+// Query reports the actual PACKED_* route, N tile (32/64), and exact workspace.
+// TC uses M16 tiles; indexed scratch is three aligned 4*(E+1) route arrays
+// and one aligned 4*M*topk slot map. Dense TC and SIMT use no workspace.
+// Performance admission is separate: old v1/tuned selectors are unchanged.
+// Returned handles use the existing run/dequant/destroy functions below.
+int quactlize_ppu_matmul_packed_query_v1(qpm_problem_v1 const *,
+    quactlize_ppu_placed_arrangement_v2 const *, int route, qpm_sizes_v1 *);
+int quactlize_ppu_matmul_packed_prepare_v1(qpm_problem_v1 const *,
+    quactlize_ppu_placed_arrangement_v2 const *, int route, qpm_buffers_v1 const *, void **handle);
 
 // Enqueue only: no allocation, JIT, synchronization, D2H or host routing reads.
 // Duplicates are independent slots; -1 produces zero; other invalid IDs

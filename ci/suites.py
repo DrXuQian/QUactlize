@@ -14,6 +14,7 @@ HOST = (
     "test_product_tree.py",
     "test_reference_gguf_kpack.py", "test_reference_gguf_kpack_file.py",
     "test_pack_gguf_cli.py", "test_kpack_device_pack.py", "test_q8_kpack2.py", "test_q5_1_kpack.py",
+    "test_packed_execution.py",
     "test_kpack_public_contract.py", "test_kquant_any_m_abi.py",
     "test_kquant_selected_config_abi.py", "test_kquant_measured_policy.py",
     "test_kpack_policy.py", "test_kpack_native_dispatch.py", "test_kpack_jit.py",
