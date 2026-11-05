@@ -22,7 +22,7 @@ def test_inventory_has_one_owner_and_separates_legacy_and_device():
     assert "test_q8_kpack2.py" in HOST
     assert "test_dense_provider.py" in HOST
     assert "test_moe_decode_policy.py" in HOST
-    assert set(groups) == {"host", "accuracy"}
+    assert set(groups) == {"host", "accuracy", "serving"}
 
 
 @pytest.mark.parametrize("body,expected", [
@@ -81,6 +81,7 @@ def test_missing_dependencies_and_existing_output_are_not_success(tmp_path, monk
     ("build", ["build"]),
     ("accuracy", ["accuracy"]),
     ("all", ["host", "build", "accuracy"]),
+    ("serving", ["serving"]),
 ])
 def test_shell_entry_works_outside_checkout_and_lists_without_dependencies(tmp_path, suite, phases):
     env = dict(os.environ, PYTHON=sys.executable, PPU_SDK=str(tmp_path / "missing"))

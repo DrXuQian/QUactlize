@@ -55,6 +55,11 @@ N-doubling transfer for merged projections. The transfer keeps M/K/dtype and
 actual-shape legality, reports a bucket prediction, and never extrapolates FQ
 past M64. It is not an exact measurement of the doubled shape.
 
+The additive native16 [Flash-Next serving ABI](docs/serving.md) provides raw
+GGUF matmul, device-count router/row lookup and explicit SwiGLU rounding.
+Existing v1/tuned paths are unchanged. Its PPU and separately built NVIDIA
+compatibility binaries require independent device qualification.
+
 ## Source layout
 
 | Directory | Responsibility |

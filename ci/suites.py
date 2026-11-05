@@ -29,18 +29,20 @@ HOST = (
     "test_dense_cont.py", "test_dense_compact.py",
     "test_dense_q8_paired.py",
     "test_ppu_compat.py",
+    "test_serving.py",
 )
 
 # Sweep/importer tests, probes and legacy backends live on experiments/ppu-tuning.
 
 ACCURACY = ("ppu/test_public_library.py", "ppu/test_moe_library.py", "ppu/test_ffn_library.py",
             "ppu/test_compat_library.py")
+SERVING = ("serving/test_serving_device.py",)
 
 
 def inventory(root=ROOT):
     """Every product test has an explicit owner; no implicit tooling suite."""
     files = {str(p.relative_to(root / "tests")) for p in (root / "tests").rglob("test_*.py")}
-    declared = set(HOST) | set(ACCURACY)
+    declared = set(HOST) | set(ACCURACY) | set(SERVING)
     missing = declared - files
     if missing:
         raise ValueError("CI inventory names missing tests: " + ", ".join(sorted(missing)))
@@ -51,4 +53,5 @@ def inventory(root=ROOT):
     return {
         "host": sorted(HOST),
         "accuracy": sorted(ACCURACY),
+        "serving": sorted(SERVING),
     }

@@ -27,6 +27,7 @@ SUITE_PHASES = {
     "build": ("build",),
     "accuracy": ("accuracy",),
     "all": ("host", "build", "accuracy"),
+    "serving": ("serving",),
 }
 
 
@@ -75,7 +76,7 @@ def run_command(command, log, env, timeout):
 
 def preflight(phase, sdk, package):
     missing = []
-    if phase in ("host", "accuracy"):
+    if phase in ("host", "accuracy", "serving"):
         missing += [f"Python module {m}" for m in ("pytest", "numpy", "torch", "gguf")
                     if importlib.util.find_spec(m) is None]
     if phase in ("host", "build"):
@@ -86,6 +87,8 @@ def preflight(phase, sdk, package):
             missing.append("pinned third_party/actlize checkout; CI must checkout it using its own credentials")
     if phase == "accuracy" and not (package / "manifest.json").is_file():
         missing.append(f"built public package: {package}/manifest.json (run build.sh --library first)")
+    if phase == "serving" and not Path(os.environ.get('QUACTLIZE_SERVING_LIBRARY','/missing')).is_file():
+        missing.append('QUACTLIZE_SERVING_LIBRARY: separately built PPU/CUDA library')
     if missing:
         raise ValueError("missing prerequisites: " + "; ".join(missing))
 
@@ -159,7 +162,7 @@ def main(argv=None):
                 command = [sys.executable, "-m", "pytest", "-q", "-ra", "--tb=short",
                            "--strict-markers", "-o", "addopts=", "-o", "xfail_strict=true", "-p", "no:cacheprovider",
                            "--junitxml=" + str(xml),
-                           *(["-s"] if phase == "accuracy" else []),
+                           *(["-s"] if phase in ("accuracy", "serving") else []),
                            *[str(ROOT / "tests" / name) for name in catalog[phase]]]
             row["command"] = command
             write_json(args.output / f"{phase}.command.json", command)
