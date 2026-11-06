@@ -246,6 +246,40 @@ def test_followup_public_gate_covers_all_winners_and_retained_controls():
     assert all(r==exact[tuple(s)] for s,r in middle)
 
 
+@pytest.mark.parametrize('q', [7, 8, 10, 11, 12, 13, 14, 42])
+def test_native16_packer_matches_public_ctypes(library, q):
+    """Exercise the real host C queries through the device harness's strict ABI."""
+    import ctypes as C
+    from ppu.support import Arrangement as PublicArrangement, Sizes as PublicSizes
+    from ppu.test_packed_native import Arrangement, Sizes
+    from ci.support.dense import Params
+    from quactlize.packing.native import Arrangement as NativeArrangement, Sizes as NativeSizes
+
+    canonical = C.CFUNCTYPE(C.c_int, C.c_int, C.POINTER(PublicArrangement))(
+        ('quactlize_ppu_kpack_canonical_arrangement_v1', library))
+    sizes = C.CFUNCTYPE(C.c_int, *([C.c_int]*4), C.POINTER(PublicArrangement), C.POINTER(PublicSizes))(
+        ('quactlize_ppu_kpack_sizes_for_arrangement_v1', library))
+    arr, result = Arrangement(), Sizes()
+    # This exact call raised ArgumentError before reaching the C producer.
+    assert canonical(q, C.byref(arr)) == 0
+    assert sizes(256, 512, 3, q, C.byref(arr), C.byref(result)) == 0
+    assert result.raw_bytes == result.low_bytes + result.high_bytes + result.units_bytes
+    assert Arrangement is PublicArrangement is NativeArrangement
+    assert Sizes is PublicSizes is NativeSizes
+    assert C.sizeof(Params) == 112 and Params.arrangement.offset == 40 and Params.sizes.offset == 80
+    nested = Params(arrangement=arr, sizes=result)
+    assert bytes(nested.arrangement) == bytes(arr)
+    # Equal field lists/sizes do not make independently declared ctypes interchangeable.
+    class DuplicateArrangement(C.Structure):
+        _fields_ = Arrangement._fields_
+    class DuplicateSizes(C.Structure):
+        _fields_ = Sizes._fields_
+    with pytest.raises(C.ArgumentError):
+        canonical(q, C.byref(DuplicateArrangement()))
+    with pytest.raises(C.ArgumentError):
+        sizes(256, 512, 3, q, C.byref(arr), C.byref(DuplicateSizes()))
+
+
 @pytest.mark.parametrize('q', [8, 10, 11, 12, 13, 14])
 @pytest.mark.parametrize('pair', [False, True])
 def test_device_harness_packing_arguments_on_host(library, q, pair):
@@ -274,10 +308,8 @@ def test_device_harness_packing_arguments_on_host(library, q, pair):
     def canonical(q, out):
         C.memmove(out, C.byref(arrangement(q)), C.sizeof(Arrangement))
         return 0
+    canonical = C.CFUNCTYPE(C.c_int, C.c_int, C.POINTER(Arrangement))(canonical)
     sizes_fn = library.quactlize_ppu_kpack_sizes_for_arrangement_v1
-    # The same C struct has different Python class names in the two harnesses.
-    old_args = sizes_fn.argtypes
-    sizes_fn.argtypes = [C.c_int] * 4 + [C.c_void_p, C.c_void_p]
     def single(raw, low, high, units, n, k, experts, q, arr, stream):
         if raw == low:
             return 30
@@ -293,9 +325,6 @@ def test_device_harness_packing_arguments_on_host(library, q, pair):
         raw = np.concatenate((g, u), axis=1)
         return single(raw.ctypes.data, low, high, units, n * 2, k, experts, q, arr, stream)
     public = SimpleNamespace(canonical=canonical, sizes=sizes_fn, pack=single, pack_pair=paired)
-    try:
-        with Arena(sdk) as arena:
-            assert packed(arena, public, q, experts=3, pair=pair, bit_patterns=True)[3] is None
-        assert not allocations, 'harness leaked its owned buffers'
-    finally:
-        sizes_fn.argtypes = old_args
+    with Arena(sdk) as arena:
+        assert packed(arena, public, q, experts=3, pair=pair, bit_patterns=True)[3] is None
+    assert not allocations, 'harness leaked its owned buffers'
