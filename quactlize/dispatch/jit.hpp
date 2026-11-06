@@ -1,5 +1,6 @@
 #pragma once
 #include "policy.hpp"
+#include "jit_cache.hpp"
 #include <cerrno>
 #include <cstring>
 #include <filesystem>
@@ -17,6 +18,8 @@ extern char** environ;
 namespace quactlize::dispatch {
 struct Jit {
     std::string python, helper, sdk, cache, source;
+    std::string cache_environment{};
+    bool cache_initialized=false;
     bool enabled() const { return !helper.empty(); }
 };
 

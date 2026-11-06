@@ -8,6 +8,7 @@ import sys
 import pytest
 from test_kpack_native_dispatch import build_stub, probe, query, Choice, Call
 from quactlize.runtime.compiler import Compiler, sha, source_contract
+from quactlize.runtime.jit_cache import ParentCache, name as cache_name
 from quactlize.runtime.tuning import digest
 from tools.kpack_jit import parent_tuple, model_requests, inspect_modules
 ROOT = Path(__file__).resolve().parents[1]
@@ -239,6 +240,169 @@ def test_helper_rejects_foreign_dispatcher_source_before_compile(tmp_path, monke
         text=True, capture_output=True)
     assert result.returncode == 1 and "source differs" in result.stderr
     assert not result.stdout and not cache.exists()
+
+
+@pytest.fixture(scope='module')
+def cache_probe(tmp_path_factory):
+    """CPU-only probe of the exact C++ disk-hit code used by dispatch."""
+    out = tmp_path_factory.mktemp('jit-cache-probe')
+    source = out / 'probe.cpp'
+    source.write_text(r'''
+#include "quactlize/dispatch/jit_cache.hpp"
+#include <chrono>
+#include <iostream>
+int main(int argc, char** argv) {
+    using namespace quactlize::dispatch;
+    if (argc!=18 && argc!=19) return 2;
+    Config c{}; c.symbol=argv[4];
+    int* fields[]={&c.qtype,&c.route,&c.tm,&c.tn,&c.tk,&c.wm,&c.wn,
+                   &c.stages,&c.ap,&c.dn,&c.parent_persistent};
+    for (int i=0;i<11;++i) *fields[i]=std::stoi(argv[7+i]);
+    auto environment=cache_environment(argv[1],argv[3]);
+    int count=argc==19 ? std::stoi(argv[18]) : 1;
+    auto start=std::chrono::steady_clock::now();
+    std::string receipt;
+    for(int i=0;i<count;++i) {
+        receipt=cached_parent(argv[2],environment,argv[3],c,std::stoi(argv[5]),std::stoi(argv[6]));
+        if (receipt.empty()) return 4;
+    }
+    std::cerr<<std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count()/count;
+    std::cout<<receipt;
+}
+''')
+    binary = out / 'probe'
+    subprocess.run(['g++', '-std=c++17', '-O2', f'-I{ROOT}', str(source), '-o', str(binary)], check=True)
+    return binary
+
+
+def lookup(probe, cache, sdk, parent, dense=False, compute='f16', repeat=1):
+    from quactlize.runtime.tuning import ROUTES
+    values = [parent['qtype'], ROUTES.index(parent['route'])] + [parent[f] for f in
+              ('tm', 'tn', 'tk', 'wm', 'wn', 'stages', 'ap', 'dn', 'persistent')]
+    return subprocess.run([str(probe), str(sdk), str(cache.cache), cache.source, parent['symbol'],
+                           str(int(dense)), str(int(compute=='bf16')), *map(str,values), str(repeat)],
+                          text=True, capture_output=True)
+
+
+@pytest.mark.parametrize('fault', [None, 'parent', 'endpoint', 'compute', 'source', 'sdk',
+                                 'module', 'manifest', 'library-link', 'index-link', 'request'])
+def test_native_cache_matches_python_and_invalidates_without_hashing(tmp_path, monkeypatch, cache_probe, fault):
+    sdk = fake_compiler(tmp_path)
+    monkeypatch.setenv('PATH', str(sdk/'bin') + os.pathsep + os.environ['PATH'])
+    compiler = Compiler(sdk, tmp_path/'cache')
+    parent = parent_tuple('parent', [12,0,8,64,64,8,16,2,0,16,-1])
+    record = compiler.build(parent)
+    cache = ParentCache(sdk, compiler.cache, source_contract(compiler.identity))
+    cache.publish(record)
+    dense, compute = False, 'f16'
+    if fault == 'parent': parent = parent | {'stages': 3}
+    if fault == 'endpoint': dense = True
+    if fault == 'compute': compute = 'bf16'
+    if fault == 'source': cache = ParentCache(sdk, compiler.cache, '0'*64)
+    if fault == 'sdk':
+        (sdk/'lib/libhggc.so').write_bytes(b'new SDK')
+        cache = ParentCache(sdk, compiler.cache, cache.source)
+    if fault in ('module', 'manifest', 'library-link'):
+        path = compiler.cache/record['key']/('manifest.json' if fault=='manifest' else 'kernel.so')
+        if fault == 'library-link':
+            path.rename(tmp_path/'elsewhere')
+            path.symlink_to(tmp_path/'elsewhere')
+        else:
+            path.write_bytes(path.read_bytes()+b'changed')
+    if fault in ('index-link', 'request'):
+        path = cache.directory/(cache_name(cache.request(parent,False,'f16'))+'.txt')
+        if fault == 'index-link':
+            path.rename(tmp_path/'elsewhere')
+            path.symlink_to(tmp_path/'elsewhere')
+        else:
+            path.write_text(path.read_text().replace('\nparent\n','\nanother\n'))
+    # A hit must not read/hash the source, compiler or .so contents in Python.
+    monkeypatch.setattr('quactlize.runtime.compiler.sha', lambda *_: pytest.fail('hot path hashed a payload'))
+    receipt = cache.read(parent,dense,compute)
+    result = lookup(cache_probe,cache,sdk,parent,dense,compute)
+    assert result.returncode == (4 if fault else 0), result.stderr
+    assert receipt is None if fault else receipt == result.stdout
+
+
+def test_native_lookup_latency_is_host_only(tmp_path, monkeypatch, cache_probe):
+    sdk = fake_compiler(tmp_path)
+    monkeypatch.setenv('PATH',str(sdk/'bin')+os.pathsep+os.environ['PATH'])
+    compiler = Compiler(sdk,tmp_path/'cache')
+    parent = parent_tuple('parent',[12,0,8,64,64,8,16,2,0,16,-1])
+    cache = ParentCache(sdk,compiler.cache,source_contract(compiler.identity))
+    cache.publish(compiler.build(parent))
+    result = lookup(cache_probe,cache,sdk,parent,repeat=1000)
+    assert result.returncode == 0, result.stderr
+    print(f'HOST_JIT_INDEX us_per_lookup={float(result.stderr):.3f} calls=1000 '
+          'python_children=0 scope=INDEX_ONLY_NOT_DLOPEN_OR_GPU')
+
+
+def test_prewarm_indexes_all_endpoint_kinds_and_compact_reducers(tmp_path, monkeypatch, cache_probe):
+    from tools.kpack_jit import compiler_for
+    sdk = fake_compiler(tmp_path)
+    monkeypatch.setenv('PATH',str(sdk/'bin')+os.pathsep+os.environ['PATH'])
+    parent = parent_tuple('parent',[12,0,8,64,64,8,16,2,0,16,-1])
+    keys = set()
+    for dense,compute,grouped,reducer in [(False,'f16',False,False),(False,'f16',True,False),
+            (True,'f16',False,False),(True,'bf16',False,False),(False,'bf16',True,False),
+            (False,'f16',False,True)]:
+        selected = parent
+        if grouped: selected = parent | {'route':'fq-grouped','persistent':0}
+        if reducer: selected = parent | {'symbol':'parent_rc8','dense_reducer':8}
+        compiler = compiler_for(sdk,tmp_path/'cache',2,dense,compute)
+        record, = compiler.compile_only([selected])
+        keys.add(record['key'])
+        result = lookup(cache_probe,compiler.cache,sdk,selected,dense,compute)
+        assert result.returncode == 0 and result.stdout.split()[1] == record['key'], result.stderr
+    assert len(keys) == 6
+
+
+def test_existing_cache_import_keeps_keys_and_next_parent_skips_compiler(tmp_path, monkeypatch, cache_probe):
+    from tools import kpack_jit as jit
+    sdk = fake_compiler(tmp_path)
+    monkeypatch.setenv('PATH', str(sdk/'bin') + os.pathsep + os.environ['PATH'])
+    compiler = Compiler(sdk,tmp_path/'cache')
+    first = parent_tuple('first',[12,0,8,64,64,8,16,2,0,16,-1])
+    second = first | {'symbol':'second','stages':3}
+    records = [compiler.build(p) for p in (first,second)]  # Legacy cache: no fast indices.
+    cache = ParentCache(sdk,compiler.cache,source_contract(compiler.identity))
+    argv = ['resolve','--sdk',str(sdk),'--cache',str(compiler.cache),'--source-contract',cache.source,
+            '--parent','first','--tuple','12','0','8','64','64','8','16','2','0','16','-1']
+    result = subprocess.run([sys.executable,str(ROOT/'tools/kpack_jit.py'),*argv],capture_output=True,text=True)
+    assert result.returncode == 0, result.stderr
+    assert 'imported=2 compile=0' in result.stderr
+    assert result.stdout.split()[1] == records[0]['key']
+    assert lookup(cache_probe,cache,sdk,second).stdout.split()[1] == records[1]['key']
+    # Direct Python resolve also takes the index hit, without constructing a compiler.
+    argv[argv.index('first')] = 'second'
+    argv[-4] = '3'  # stages
+    monkeypatch.setattr(sys,'argv',['kpack_jit.py',*argv])
+    monkeypatch.setattr(jit,'compiler_for',lambda *_: pytest.fail('cache hit started compiler'))
+    jit.main()
+
+
+@pytest.mark.parametrize('wrong_key', [False, True])
+def test_native_disk_hit_never_starts_python_and_still_checks_loaded_abi(tmp_path, probe, wrong_key):
+    f,r,req = build_stub(tmp_path,probe,jit=True,wrong_key=wrong_key)
+    sdk = fake_compiler(tmp_path)
+    fields = query(probe,[(12,2,528,3072,512,256,129)])[0].split()
+    parent = parent_tuple(fields[0],list(map(int,fields[1:12])))
+    identity = dict(kernel='kernel',generator='generator',flags=[],base_source_contract='d'*64)
+    record = dict(key='a'*64,parent=parent,identity=identity)
+    (tmp_path/'modules'/('a'*64)/'manifest.json').write_text(json.dumps(record))
+    cache = ParentCache(sdk,tmp_path/'modules','d'*64)
+    cache.publish(record)
+    helper = helper_file(tmp_path,"raise RuntimeError('disk hit started Python')\n")
+    options = JitOptions(1,C.sizeof(JitOptions),os.fsencode(sys.executable),os.fsencode(helper),
+                        os.fsencode(sdk),os.fsencode(cache.cache))
+    for _ in range(2):  # A new runtime/process can reuse disk entries, not just the memory map.
+        assert f['enable_jit'](r,C.byref(options)) == 0
+        assert f['query'](r,C.byref(req),C.byref(Choice())) == (3 if wrong_key else 0)
+        if wrong_key: assert b'loaded parent/build identity' in f['error']()
+        f['close'](r)
+        r = C.c_void_p()
+        assert f['open'](os.fsencode(tmp_path),C.byref(r)) == 0
+    f['close'](r)
 
 
 def published_module(tmp_path):

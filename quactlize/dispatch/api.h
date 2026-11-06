@@ -151,6 +151,10 @@ typedef struct {
 // device execution or alternative-config selection occurs in the compiler.
 // Query/prepare must remain outside capture. Prepared run never invokes JIT.
 // The cache and helper must be trusted local files, like the packaged DSOs.
+// Memory/disk hits do not invoke Python or re-hash source/SDK files. The
+// dispatcher source identity, SDK file stamps and loaded module ABI bind a
+// disk hit. Replace/rebuild SDK/source installations between runtimes, never
+// while one is live. A miss still verifies the complete compiler contract.
 int quactlize_kpack_dispatch_enable_jit_v1(void* runtime, qks_jit_options_v1 const*);
 int quactlize_kpack_dispatch_query_v1(void* runtime, qks_request_v1 const*, qks_choice_v1*);
 // Additive TC selection for the measured Q4 F32-endpoint decode path. Call

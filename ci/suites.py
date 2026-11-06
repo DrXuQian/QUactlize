@@ -33,6 +33,7 @@ HOST = (
     "test_serving.py",
     "test_flashnext_box.py",
     "test_wheel.py",
+    "test_installed_gate_reporting.py",
 )
 
 # Sweep/importer tests, probes and legacy backends live on experiments/ppu-tuning.

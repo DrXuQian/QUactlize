@@ -26,6 +26,18 @@ libc are not bundled. Install the matching platform runtime before loading the
 DSO; the default Flash-Next path is AOT, while other existing APIs may use the
 bundled JIT source closure during their explicit preparation stage.
 
+JIT cache hits use the dispatcher's in-memory module map, then a native disk
+index. They do not start Python or re-hash SDK/header contents. The index binds
+the source contract, complete parent tuple, endpoint/compute dtype, SDK/compiler
+file stamps, and module/receipt file stamps; loading still checks the exported
+build identity and ABI. Source/SDK installations must remain unchanged while a
+runtime is live. A cache miss retains full compiler checks and compiles only the
+selected parent. Prewarm publishes these indices too. On the first legacy-cache
+resolve, matching old receipts are indexed once without recompilation; existing
+content-addressed module keys are unchanged. No tuning or kernel choice changes.
+This removes resolver overhead, not device module initialization, cuBLAS warmup
+or graph capture. Those costs still belong outside steady-state timing.
+
 To retain the optional legacy `_C` host preprocessing ops as well, add
 `--with-host` **on the destination platform Torch build environment**. That wheel
 gets a CPython/ABI-specific tag. The default C-ABI wheel keeps Python entrypoints
