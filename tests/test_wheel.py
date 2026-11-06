@@ -75,6 +75,63 @@ def test_discovery_is_file_only(installed, monkeypatch):
         discovery.get_library_path('ppu15')
 
 
+@pytest.mark.parametrize('explicit', [True, False])
+@pytest.mark.parametrize('compatible', [True, False])
+def test_device_package_sdk_check_matches_wheel_contract(installed, tmp_path, monkeypatch, explicit, compatible):
+    from ppu import conftest as gate
+    expected = discovery.get_library_info()['sdk_requirements']['build_sdk']
+    current = expected if compatible else 'different SDK release'
+    sdk = tmp_path / 'runtime-sdk'
+    sdk.mkdir()
+    (sdk / 'release.yaml').write_text('version: ' + current + '\n')
+    monkeypatch.setenv('PPU_SDK', str(sdk))
+    if explicit:
+        monkeypatch.setenv('QUACTLIZE_CI_PACKAGE', str(installed))
+    else:
+        monkeypatch.delenv('QUACTLIZE_CI_PACKAGE', raising=False)
+    fingerprints = []
+    def compiler_fingerprint(path):
+        fingerprints.append(path)
+        return 'same SDK release with different build-host compiler ELF'
+    monkeypatch.setattr(gate, 'sdk_identity', compiler_fingerprint)
+    if compatible:
+        assert gate.package.__wrapped__() == installed
+    else:
+        with pytest.raises(pytest.fail.Exception) as error:
+            gate.package.__wrapped__()
+        assert expected in str(error.value) and current in str(error.value)
+        assert str(sdk) in str(error.value)
+    assert not fingerprints, 'public runtime compatibility must not hash build-host tools'
+
+
+@pytest.mark.parametrize('explicit', [True, False])
+def test_device_package_still_checks_payloads(installed, monkeypatch, explicit):
+    from ppu import conftest as gate
+    if explicit:
+        monkeypatch.setenv('QUACTLIZE_CI_PACKAGE', str(installed))
+    else:
+        monkeypatch.delenv('QUACTLIZE_CI_PACKAGE', raising=False)
+    (installed / 'quactlize-runtime/jit/tools/kpack_jit.py').write_text('changed payload')
+    with pytest.raises((ValueError, discovery.LibraryError), match='payload'):
+        gate.package.__wrapped__()
+
+
+@pytest.mark.parametrize('compatible', [True, False])
+def test_legacy_package_without_release_keeps_exact_sdk_check(bundle, monkeypatch, compatible):
+    from ppu import conftest as gate
+    path = bundle / 'manifest.json'
+    manifest = json.loads(path.read_text())
+    manifest['build_info'].pop('sdk_release')
+    path.write_text(json.dumps(manifest))
+    monkeypatch.setenv('QUACTLIZE_CI_PACKAGE', str(bundle))
+    monkeypatch.setattr(gate, 'sdk_identity', lambda sdk: manifest['sdk'] if compatible else 'different')
+    if compatible:
+        assert gate.package.__wrapped__() == bundle
+    else:
+        with pytest.raises(pytest.fail.Exception, match='SDK'):
+            gate.package.__wrapped__()
+
+
 @pytest.mark.parametrize('missing', ['libncp_quactlize.so', 'quactlize-runtime/libquactlize_ppu_execution.so',
                                     'quactlize-runtime/jit/tools/kpack_jit.py', 'manifest.json'])
 def test_missing_resource_never_falls_back(installed, missing, monkeypatch):
