@@ -3,6 +3,7 @@
 #include "ppu_placed_arrangement.hpp"
 #include "q8_kpack2.hpp"
 #include "q5_1_kpack.hpp"
+#include "q2_0_kpack.hpp"
 #include "../fusion/gate_up.h"
 #include <limits>
 
@@ -29,6 +30,7 @@ extern "C" int quactlize_ppu_kpack_canonical_arrangement_v1(
   *out = {};
   if (qtype == 7) *out = q5_1_kpack::arrangement();
   else if (qtype == 8) *out = q8_kpack2::arrangement();
+  else if (qtype == 42) *out = q2_0_kpack::arrangement();
   else if (qtype == 12) *out = ppu_arrangements::q4_kpack4_transpose_v1();
   else if (qtype >= 10 && qtype <= 14) *out = ppu_arrangements::kquant_kpack_transpose_v1(qtype);
   else return 22;
@@ -37,7 +39,7 @@ extern "C" int quactlize_ppu_kpack_canonical_arrangement_v1(
 
 extern "C" int quactlize_gate_up_layout_v1(int qtype, qkg_gate_up_layout_v1* out) {
   if (!out) return 20;
-  if (qtype == 7) return 22; // N4 fused consumers do not yet admit Q5_1.
+  if (qtype == 7 || qtype == 42) return 22; // Only canonical [gate;up], not fused paired-N4.
   qkg_gate_up_layout_v1 result{1,sizeof(result),QKG_GATE_UP_N4_V1,{}};
   int rc=quactlize_ppu_kpack_canonical_arrangement_v1(qtype,&result.packing);
   if (!rc) *out=result;
@@ -49,6 +51,15 @@ extern "C" int quactlize_ppu_kpack_sizes_for_arrangement_v1(
     quactlize_ppu_placed_arrangement_v2 const* arrangement,
     quactlize_ppu_kpack_sizes_v1* sizes) {
   if (!sizes || !arrangement || n <= 0 || k <= 0 || experts <= 0) return 20;
+  if (qtype == 42) {
+    if (!q2_0_kpack::matches(arrangement)) return 38;
+    if (!q2_0_kpack::shape_supported(n,k,experts)) return 24;
+    uint64_t const blocks = uint64_t(n) * (k / 64);
+    if (blocks > uint64_t(INT64_MAX) / uint64_t(experts) / 18) return 26;
+    uint64_t const total = blocks * experts;
+    *sizes = {total * 18, total * 16, 0, total * 2};
+    return 0;
+  }
   if (qtype == 7) {
     if (!q5_1_kpack::matches(arrangement)) return 38;
     if (!q5_1_kpack::shape_supported(n,k,experts)) return 24;

@@ -18,6 +18,9 @@ typedef struct {
 // Q5_1 (qtype=7) has its own unsigned 4+1 code planes and exact {d,min}
 // FP16 bytes, not Q5_K packed units. N%16=0,K%128=0. Q8_0 keeps its
 // unchanged map with N%256=0,K%32=0; compute tactics check their own geometry.
+// Q2_0 (qtype=42, NOT Q2_K=10): N>0,K%64=0, unsigned 2-bit codes in
+// b16 [E,K/8,N], exact FP16 d in [E,K/64,N], no high plane. Per 64 values,
+// raw=18, low=16, high=0, units=2 bytes; decode is FP32 (code-1)*d.
 int quactlize_ppu_kpack_canonical_arrangement_v1(
     int qtype, quactlize_ppu_placed_arrangement_v2* arrangement);
 

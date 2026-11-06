@@ -13,11 +13,11 @@ from .test_compat_library import Call, graph, lib
 
 
 def pack(arena,public,raw,q,up=None):
-    e,n,blocks,_=raw.shape;k=blocks*(32 if q<10 else 256)
+    e,n,blocks,_=raw.shape;k=blocks*(64 if q==42 else 32 if q<10 else 256)
     final_n=n*(2 if up is not None else 1)
     arr,s=Arrangement(),Sizes()
     checked(public.canonical(q,C.byref(arr)),'canonical identity')
-    if q==7:
+    if q in (7,42):
         # A hand-built N4 descriptor must not bypass the unsupported-layout query.
         n4=public.lib.quactlize_gate_up_pack_v1
         n4.argtypes=[C.c_void_p]*5+[C.c_int]*4+[C.c_void_p]*2
@@ -38,6 +38,10 @@ def pack(arena,public,raw,q,up=None):
         got=np.frombuffer(buf.bytes(),'u1') if buf else np.empty(0,'u1')
         np.testing.assert_array_equal(got,expected[name],err_msg=f'q={q} {name} canonical bytes')
     assert s.raw_bytes==s.low_bytes+s.high_bytes+s.units_bytes
+    # Producer has drained. Prove consumers never retain/read the raw source.
+    for buf in (source,other):
+        if buf is not None:
+            buf.guard();arena.sdk.free(buf.base);arena.buffers.remove(buf)
     return arr,s,pointers,None
 
 

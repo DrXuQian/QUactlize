@@ -57,8 +57,9 @@ typedef struct {
 } qpm_swiglu_v2;
 int quactlize_serving_swiglu_v2(qpm_swiglu_v2 const *);
 
-// RAW GGUF ONLY: Q8_0=8 (32 values/34 bytes), IQ4_NL=20 (32/18).
-// Contiguous table[table_rows,columns], columns%32=0, IDs I64[capacity].
+// RAW GGUF ONLY: Q8_0=8 (32 values/34 bytes), IQ4_NL=20 (32/18), Q2_0=42 (64/18).
+// Contiguous table[table_rows,columns], complete blocks (Q2_0: columns%64=0;
+// others: columns%32=0), IDs I64[capacity].
 // Output contiguous native F16/BF16[capacity,columns], F32 decode then T round.
 // Duplicate IDs are independent. -1 -> zero without error; other invalid IDs
 // -> zero + BAD_ID. Inactive rows -> zero, read neither IDs nor raw. Invalid

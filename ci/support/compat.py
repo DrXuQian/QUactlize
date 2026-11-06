@@ -3,8 +3,9 @@ import numpy as np
 import gguf
 
 from .fixture import bf16_bits, bf16_float
+from .q2_0 import dequantize as dequantize_q2_0
 
-FORMATS = (7, 8, 10, 11, 12, 13, 14)
+FORMATS = (7, 8, 10, 11, 12, 13, 14, 42)
 # Logical N,K from target/mtp-index.json, GGUF [K,N,E] transposed explicitly.
 DENSE_Q8 = ((320, 10240), (10240, 320), (4, 10240), (2560, 640), (512, 2560),
             (640, 2560), (2560, 2560), (6144, 2560), (10240, 2560), (12288, 2560),
@@ -14,10 +15,10 @@ EXPERT_SHAPES = ((7, 2560, 640), (8, 2560, 640), (8, 640, 2560),
 
 
 def raw_blocks(q, e, n, k, seed=0):
-    block, size = gguf.GGML_QUANT_SIZES[gguf.GGMLQuantizationType(q)]
+    block, size = (64, 18) if q == 42 else gguf.GGML_QUANT_SIZES[gguf.GGMLQuantizationType(q)]
     rng = np.random.default_rng(22000 + q + seed)
     raw = rng.integers(0, 256, (e, n, k // block, size), dtype='u1')
-    offsets = {7: (0, 2), 8: (0,), 10: (80, 82), 11: (108,), 12: (0, 2), 13: (0, 2), 14: (208,)}[q]
+    offsets = {7: (0, 2), 8: (0,), 10: (80, 82), 11: (108,), 12: (0, 2), 13: (0, 2), 14: (208,), 42: (0,)}[q]
     for at in offsets:
         scales = rng.uniform(-.003, .003, raw.shape[:-1]).astype('<f2')
         raw[..., at:at+2] = scales[..., None].view('u1')
@@ -34,19 +35,20 @@ def decode(values, dtype):
 
 def weight(raw, q, dtype):
     # This oracle is the independent GGUF package, not the C++ reader/producer.
-    result = gguf.dequantize(raw.reshape(-1, raw.shape[-1]), gguf.GGMLQuantizationType(q))
+    result = dequantize_q2_0(raw) if q == 42 else gguf.dequantize(
+        raw.reshape(-1, raw.shape[-1]), gguf.GGMLQuantizationType(q))
     return decode(encode(result.reshape(*raw.shape[:2], -1), dtype), dtype)
 
 
 def canonical_planes(raw, q):
     """Independent logical-to-physical pack oracle; not the C++ gather reader."""
-    if q not in (7, 8):
+    if q not in (7, 8, 42):
         from .fixture import planes
         values = [planes(expert, q) for expert in raw]
         return {key: np.concatenate([x[key].reshape(-1).view('u1') for x in values])
                 for key in ('low', 'high', 'units')}
     e, n, groups, _ = raw.shape
-    k = groups*32
+    k = groups*(64 if q == 42 else 32)
 
     def plane(codes, bits):
         pack = 16//bits
@@ -57,7 +59,10 @@ def canonical_planes(raw, q):
             words |= tiled[...,slot].astype('<u2') << (bits*slot)
         return words.reshape(-1).view('u1')
 
-    if q == 8:
+    if q == 42:
+        codes = ((raw[...,2:,None] >> np.array([0,2,4,6],'u1')) & 3).reshape(e,n,k)
+        low, high, metadata = plane(codes,2), np.empty(0,'u1'), raw[...,:2]
+    elif q == 8:
         low = plane(raw[...,2:].reshape(e,n,k)^128, 8)
         high = np.empty(0,'u1')
         metadata = raw[...,:2]

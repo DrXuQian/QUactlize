@@ -30,6 +30,7 @@ HOST = (
     "test_dense_cont.py", "test_dense_compact.py",
     "test_dense_q8_paired.py",
     "test_ppu_compat.py",
+    "test_q2_0.py",
     "test_serving.py",
     "test_flashnext_box.py",
     "test_wheel.py",
@@ -39,7 +40,7 @@ HOST = (
 # Sweep/importer tests, probes and legacy backends live on experiments/ppu-tuning.
 
 ACCURACY = ("ppu/test_public_library.py", "ppu/test_moe_library.py", "ppu/test_ffn_library.py",
-            "ppu/test_compat_library.py", "ppu/test_packed_native.py")
+            "ppu/test_compat_library.py", "ppu/test_packed_native.py", "ppu/test_q2_0_library.py")
 SERVING = ("serving/test_serving_device.py",)
 
 

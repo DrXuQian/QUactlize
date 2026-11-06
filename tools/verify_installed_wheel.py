@@ -17,6 +17,21 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 
+def gguf_q2_reader():
+    """Separate reader admission; a native matmul query cannot establish this."""
+    import gguf
+    try:
+        q = gguf.GGMLQuantizationType(42)
+        if q.name != 'Q2_0' or gguf.GGML_QUANT_SIZES[q] != (64, 18):
+            raise ValueError('ID42 is not Q2_0 with a 64/18 block')
+    except (ValueError, KeyError) as exc:
+        raise RuntimeError('installed gguf reader lacks Q2_0 ID42; install gguf-py from '
+            'DrXuQian/llama.cpp 356a231c12910c545bfff0f781ed3be779b1ba5a; '
+            'Quactlize cannot repair a separate reader package') from exc
+    print('GGUF_Q2_0_READER_PASS '+json.dumps(dict(module=gguf.__file__,qtype=42,block=[64,18],
+        scope='READER_TYPE_DECLARATION_NOT_MODEL_TENSOR_INVENTORY')),flush=True)
+
+
 def host(target):
     import quactlize
     from quactlize.compat.native import Library, Problem, Sizes, Buffers, problem
@@ -50,7 +65,7 @@ def host(target):
     if torch.cuda.is_initialized():
         raise RuntimeError('serving import initialized the device')
     files = {}
-    for name in ('quactlize', 'quactlize.compat.native', 'quactlize.compat.serving_native',
+    for name in ('quactlize', 'quactlize.compat.native', 'quactlize.compat.formats', 'quactlize.compat.serving_native',
                  'quactlize.packing.native', 'quactlize.runtime.native', 'quactlize.serving'):
         module = importlib.import_module(name)
         file = Path(module.__file__).resolve()
@@ -68,7 +83,7 @@ def host(target):
     sizes.argtypes, sizes.restype = [C.c_int] * 4 + [C.POINTER(Arrangement), C.POINTER(PackedSizes)], C.c_int
     records = []
     for q, n, k in ((7, 2560, 640), (8, 2560, 640), (8, 1280, 2560),
-                    (12, 1280, 2560), (13, 1280, 2560)):
+                    (12, 1280, 2560), (13, 1280, 2560), (42,640,2560), (42,1280,2560), (42,2560,640)):
         arr, planes = Arrangement(), PackedSizes()
         library.check(canonical(q, C.byref(arr)))
         library.check(sizes(n, k, 512, q, C.byref(arr), C.byref(planes)))
@@ -137,7 +152,7 @@ def device_tests(source, path, flare):
             'PYTHONPATH', 'QUACTLIZE_CI_PACKAGE', 'QUACTLIZE_SERVING_LIBRARY')}
         # Secondary-owner tests must reopen the same verified installed DSO.
         env['QUACTLIZE_SERVING_LIBRARY'] = str(path)
-        tests = ('tests/ppu/test_packed_native.py', 'tests/ppu/test_compat_library.py',
+        tests = ('tests/ppu/test_packed_native.py', 'tests/ppu/test_compat_library.py', 'tests/ppu/test_q2_0_library.py',
                  'tests/serving/test_serving_device.py')
         results = {'operators': pytest_gate(tests, cwd=root, env=env, pythonpath=root)}
     if flare:
@@ -152,6 +167,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--target', default=None)
     p.add_argument('--device-tests', action='store_true')
+    p.add_argument('--require-gguf-q2', action='store_true', help='also require the separate GGUF reader ID42 definition')
     p.add_argument('--test-source', type=Path)
     p.add_argument('--flare', type=Path, help='installed Flare checkout, feat/qwen38-gguf >= 3f2083b')
     p.add_argument('--deny-root', type=Path, action='append', default=[],
@@ -166,6 +182,8 @@ def main():
                     raise RuntimeError('unexpected access to hidden build/source directory: ' + str(path))
         sys.addaudithook(audit)
     path = host(args.target)
+    if args.require_gguf_q2:
+        gguf_q2_reader()
     if args.device_tests:
         counts = device_tests(args.test_source, path, args.flare)
         print('QUACTLIZE_INSTALLED_DEVICE_PASS performance=NOT_MEASURED ' + json.dumps(counts))

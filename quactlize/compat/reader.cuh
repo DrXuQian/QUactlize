@@ -2,6 +2,7 @@
 #include "../dequant/reader.hpp"
 #include "../include/gguf_unit_pack.hpp"
 #include "../include/q5_1_kpack.hpp"
+#include "../include/q2_0_kpack.hpp"
 
 namespace quactlize::compat {
 CUTLASS_HOST_DEVICE float half_value(uint8_t const *p) {
@@ -31,6 +32,9 @@ template <int Q> CUTLASS_HOST_DEVICE float raw_value(uint8_t const *b, int i) {
         return difference(product(half_value(b), float(code)), -half_value(b + 2));
     } else if constexpr (Q == 8) {
         return product(half_value(b), float(int8_t(b[2 + i])));
+    } else if constexpr (Q == 42) {
+        int code = (b[2 + i / 4] >> (2 * (i % 4))) & 3;
+        return product(float(code - 1), half_value(b));
     } else {
         constexpr auto T = gguf_scale::KType(Q - 10);
         using C = gguf_scale::CodeTraits<T>;
@@ -66,6 +70,11 @@ CUTLASS_HOST_DEVICE float canonical_value(uint8_t const *low, uint8_t const *hig
                   q5_1_kpack::High::word_slot(k)) & 1;
         auto dm = units + 4*(int64_t(k/32)*n+col);
         return difference(product(half_value(dm),float(lo | (hi << 4))),-half_value(dm+2));
+    } else if constexpr (Q == 42) {
+        auto index = q2_0_kpack::Low::word_index(col, k, n);
+        auto word = uint16_t(low[2 * index]) | (uint16_t(low[2 * index + 1]) << 8);
+        int code = (word >> (2 * q2_0_kpack::Low::word_slot(k))) & 3;
+        return product(float(code - 1), half_value(units + 2 * (int64_t(k / 64) * n + col)));
     } else if constexpr (Q == 8) {
         int q = execution::Q8Reader::code(reinterpret_cast<uint16_t const *>(low), nullptr, col, k, n);
         return product(float(q), half_value(units + 2 * (int64_t(k / 32) * n + col)));
@@ -92,13 +101,14 @@ template <int Q, bool Packed> CUTLASS_HOST_DEVICE float value(Weight const &w, i
         return canonical_value<Q>(w.low + e * w.low_stride, w.high ? w.high + e * w.high_stride : nullptr,
                                   w.units + e * w.units_stride, w.n, n, k);
     else {
-        constexpr int block = Q < 10 ? 32 : 256;
+        constexpr int block = Q == 42 ? 64 : Q < 10 ? 32 : 256;
         constexpr int bytes = Q == 7    ? 24
                               : Q == 8  ? 34
                               : Q == 10 ? 84
                               : Q == 11 ? 110
                               : Q == 12 ? 144
                               : Q == 13 ? 176
+                              : Q == 42 ? 18
                                         : 210;
         return raw_value<Q>(w.raw + e * w.raw_stride + (int64_t(n) * w.k + k) / block * bytes, k % block);
     }

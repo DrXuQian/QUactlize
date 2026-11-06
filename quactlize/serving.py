@@ -162,9 +162,10 @@ def _rows_shapes(raw,ids,output,count,error,qtype,table_rows):
     if ids.dtype != torch.int64 or ids.ndim != 1 or not ids.is_contiguous(): raise ValueError('IDs must be I64[capacity]')
     if output.dtype not in (torch.float16,torch.bfloat16) or not output.is_contiguous():
         raise ValueError('row lookup requires contiguous native16 output')
-    if output.shape[0] != ids.shape[0] or output.shape[1]%32 or qtype not in (8,20) or table_rows < 0:
+    block = 64 if qtype == 42 else 32
+    if output.shape[0] != ids.shape[0] or output.shape[1]%block or qtype not in (8,20,42) or table_rows < 0:
         raise ValueError('invalid raw row lookup geometry/format')
-    if raw.numel() < table_rows*(output.shape[1]//32)*(34 if qtype==8 else 18):
+    if raw.numel() < table_rows*(output.shape[1]//block)*(34 if qtype==8 else 18):
         raise ValueError('raw table capacity too small')
 
 

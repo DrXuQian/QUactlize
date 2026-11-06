@@ -27,6 +27,55 @@ existing F32 reconstruction -> one F16/BF16 weight rounding -> FP32 accumulation
 checks E512/top10 down N2560/K640 at M1..8/9/16/128, shared scratch, dynamic
 IDs, inactive NaN inputs, sticky errors and repeated graph replay.
 
+## Q2_0 MTP weights (ID42)
+
+Q2_0 follows `DrXuQian/llama.cpp@356a231c12910c545bfff0f781ed3be779b1ba5a`:
+one raw block is FP16 `d` followed by 16 bytes, 64 values total. Element `i`
+is `(((qs[i/4] >> (2*(i%4))) & 3) - 1) * d`, computed in FP32. Negative/zero
+scales are valid. This is **not Q2_K (ID10)** and never requantizes to it.
+
+The unchanged canonical query/size/repack APIs now accept qtype42, any N>0,
+K%64=0, E>0. The descriptor is `{2,6,2,0,0,128,64,0,0x5132304b50000001}`.
+`low` is b16 `[E,K/8,N]` (eight K8-spaced codes per word); `units` is the
+original FP16 bits `[E,K/64,N]`. `high` is NULL. Per block, 16+0+2=18 bytes;
+no padding or extra resident weight allocation. Separate gate/up can use the
+existing dual-source repack into canonical `[E,2N,K]`. Paired-N4/SwiGLU layout
+and the old F32 tuned selector do **not** admit ID42.
+
+Use `Library()` and `problem(42, ...)`, not the Q5-only `packed_route` API.
+Raw and canonical native16 v1 both work with dense/indexed F16/BF16 operands,
+FP32 accumulation and one native16 output rounding. Each weight is reconstructed
+in FP32 then rounded once to the operand type. M<=8 uses direct SIMT (no
+workspace); larger M uses the existing bounded, grouped native16 TC path,
+not an unmeasured Q2_K recipe. `Sizes.route` reports 0/1 respectively.
+Weight expansion is at most `2*min(E,4)*min(ceil(N/8)*8,512)*K` bytes,
+independent of M. Query also includes gathered A/C, routing and alignment;
+always allocate its `workspace_bytes`, not just this weight bound.
+
+Framework buffers: IDs I32 `[M,topk]`, A native16 `[M,channels,K]` with
+channels=1 or topk, C native16 `[M,topk,N]`; strides in `Problem` are **elements**,
+extents in `Buffers` are **bytes**. For E512/top10, N640/K2560 gate/up,
+N1280/K2560 merged and N2560/K640 down are legal. Producer low is 2B aligned;
+allocate all compute weight-plane bases at 16B, A/C at 2B, IDs/status at 4B,
+scratch at 256B. Prepare on the selected device/stream outside capture, then
+retain handle, packed weights, status and scratch until stream completion.
+The raw repack source may be freed after its stream drains. Sequential calls
+on the same stream can share max(query.workspace_bytes); concurrent streams
+need disjoint scratch. Run does no JIT/allocation/synchronization or routing
+readback. IDs=-1 produce zero without reading invalid input; other illegal IDs
+produce zero and OR BAD_ID into caller-reset sticky status.
+
+`gather_rows` also accepts raw Q2_0 with columns%64=0, decoding in FP32 and
+rounding once to the requested native16 output. This preparation-time row decoder
+does not imply experts should be expanded and retained in native16.
+
+Box qualification (fresh worktree, normal build.sh, no installed-library overwrite):
+`python tools/run_flashnext_box.py --q2-only --device 0`.
+It checks byte preservation, raw/canonical math, E512/top10 at M1/2/4/6/7/8/9/16/128,
+changing/duplicate/inactive/invalid IDs, shared scratch and alternating real graph
+replays in both dtypes. Compilation/host checks alone are not PPU qualification.
+The separate GGUF reader must understand ID42; see `PPU_WHEEL.md`.
+
 ## Direct packed Q5_1 candidates
 
 In the same public DSO/header, use `quactlize_ppu_matmul_packed_query_v1` and
@@ -70,7 +119,7 @@ same-device performance evidence after this correctness gate.
 |---|---|---|
 | `quactlize_serving_router_v2` | BF16/F32 logits `[capacity,E]` → F32 selected logits, I32 IDs, F32 weights `[capacity,topk]` | Original-logit descending top-k, larger ID wins exact ties; selected-only stable softmax × multiplier. Only softmax + renormalization, no bias. |
 | `quactlize_serving_swiglu_v2` | Native F16/BF16 gate/up `[rows,H]` or `[gate;up]` per `[rows,2H]` row → native `[rows,H]` | `round_silu=1` rounds SiLU to native16 **before** multiplying up; `0` rounds only the final product. No clipping. |
-| `quactlize_serving_gather_rows_v1` | Raw GGUF bytes + I64 IDs `[capacity]` → native16 `[capacity,columns]` | Q8_0 (34B/32), IQ4_NL (18B/32). F32 decode, one target rounding. IQ4_NL width160 is 90B/row. No canonical reinterpretation. |
+| `quactlize_serving_gather_rows_v1` | Raw GGUF bytes + I64 IDs `[capacity]` → native16 `[capacity,columns]` | Q8_0 (34B/32), IQ4_NL (18B/32), Q2_0 (18B/64). F32 decode, one target rounding. IQ4_NL width160 is 90B/row. No canonical reinterpretation. |
 | `quactlize_serving_merge_v1` | Native slot values `[M,topk,N]`, F32 weights → **F32** `[M,N]` | Fixed slot order, F32 accumulation. Framework BF16 output conversion, if wanted, is explicit. |
 
 All row strides are **elements**, the inner dimension is contiguous. Row

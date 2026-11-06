@@ -57,9 +57,10 @@ inline void validate(qpm_swiglu_v2 const &p) {
     writes_disjoint(r, 2);
 }
 inline uint64_t row_bytes(int q, int columns) {
-    require((q == 8 || q == 20) && columns > 0 && columns % 32 == 0,
-            "row lookup requires raw Q8_0/IQ4_NL and complete 32-value blocks");
-    return mul(columns / 32, q == 8 ? 34 : 18);
+    int block = q == 42 ? 64 : 32;
+    require((q == 8 || q == 20 || q == 42) && columns > 0 && columns % block == 0,
+            "row lookup requires raw Q8_0/IQ4_NL (K%32) or Q2_0 (K%64)");
+    return mul(columns / block, q == 8 ? 34 : 18);
 }
 inline void validate(qpm_rows_v1 const &p) {
     require(p.version == 1 && p.size == sizeof(p), "invalid row lookup ABI");

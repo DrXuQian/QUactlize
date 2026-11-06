@@ -157,6 +157,7 @@ void run(Prepared &h, qpm_buffers_v1 const &b) {
         CASE(12);
         CASE(13);
         CASE(14);
+        CASE(42);
     }
 #undef CASE
 }

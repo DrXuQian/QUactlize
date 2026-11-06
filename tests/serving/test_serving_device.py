@@ -113,7 +113,7 @@ def test_swiglu_intermediate_subnormal_rounding(owner,dtype,tiny):
         torch.testing.assert_close(out,expected,rtol=0,atol=0)
 
 
-@pytest.mark.parametrize('q,columns',[(8,2560),(20,160)])
+@pytest.mark.parametrize('q,columns',[(8,2560),(20,160),(42,640),(42,2560)])
 @pytest.mark.parametrize('dtype',[torch.float16,torch.bfloat16])
 def test_rows_raw_format_counts_errors_and_canaries(owner,q,columns,dtype):
     raw=row_blocks(q,7,columns);table=dev(raw,torch.uint8);ids=dev([0,6,6,-1,-2,7,2],torch.int64)
@@ -254,7 +254,7 @@ def test_disjoint_streams_and_status(owner):
         g.reset();other.close()
 
 
-@pytest.mark.parametrize('q',[7,8,10,11,12,13,14])
+@pytest.mark.parametrize('q',[7,8,10,11,12,13,14,42])
 @pytest.mark.parametrize('m',[1,16])
 @pytest.mark.parametrize('dtype',[torch.float16,torch.bfloat16])
 def test_matmul_binding_formats_and_strided_slots(owner,q,m,dtype):

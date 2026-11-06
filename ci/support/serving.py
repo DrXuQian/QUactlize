@@ -4,14 +4,17 @@ import gguf
 
 
 def row_blocks(q, rows, columns):
-    assert q in (8,20) and columns%32==0
+    block = 64 if q == 42 else 32
+    assert q in (8,20,42) and columns%block==0
     width=34 if q==8 else 18
-    raw=np.empty((rows,columns//32,width),dtype='u1')
-    scale=np.resize(np.array([.03125,-.125,1.,.0009765625],dtype='<f2'),(rows,columns//32))
+    raw=np.empty((rows,columns//block,width),dtype='u1')
+    scale=np.resize(np.array([.03125,-.125,1.,.0009765625],dtype='<f2'),(rows,columns//block))
     raw[...,:2]=scale[...,None].view('u1')
     if q==8:
         codes=np.resize(np.arange(-128,128,dtype='i2').astype('i1'),(rows,columns//32,32))
         raw[...,2:]=codes.view('u1')
+    elif q == 42:
+        raw[...,2:]=np.resize(np.array([0xe4,0x1b,0,255],'u1'),raw[...,2:].shape)
     else:
         # Every codebook entry in BOTH nibbles, with different ordering.
         raw[...,2:]=np.arange(16,dtype='u1')|((15-np.arange(16,dtype='u1'))<<4)
@@ -19,6 +22,9 @@ def row_blocks(q, rows, columns):
 
 
 def dequant_rows(raw,q):
+    if q == 42:
+        from .q2_0 import dequantize
+        return dequantize(raw).reshape(raw.shape[0],-1)
     return gguf.dequantize(raw,gguf.GGMLQuantizationType(q)).astype('f4')
 
 

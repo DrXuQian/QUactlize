@@ -1,10 +1,24 @@
 """Host-only subprocess accounting tests; fixture passes are not GPU evidence."""
 import os
 import subprocess
+import sys
+from types import SimpleNamespace
 
 import pytest
 
-from tools.verify_installed_wheel import device_tests, pytest_gate
+from tools.verify_installed_wheel import device_tests, pytest_gate, gguf_q2_reader
+
+
+@pytest.mark.parametrize('block',[(64,18),(256,84)])
+def test_reader_is_checked_separately(monkeypatch,block):
+    class Q:
+        name='Q2_0'
+    q=Q()
+    fake=SimpleNamespace(GGMLQuantizationType=lambda value:q,GGML_QUANT_SIZES={q:block},__file__='fixture')
+    monkeypatch.setitem(sys.modules,'gguf',fake)
+    if block==(64,18):gguf_q2_reader()
+    else:
+        with pytest.raises(RuntimeError,match='separate reader package'):gguf_q2_reader()
 
 
 @pytest.mark.parametrize('body,accepted', [
@@ -33,6 +47,7 @@ def test_runner_sets_device_opt_in_and_verified_library_without_inherited_select
     for folder in ('tests/ppu', 'tests/serving', 'ci/support', 'reference'):
         (source / folder).mkdir(parents=True)
     for filename in ('tests/ppu/test_packed_native.py', 'tests/ppu/test_compat_library.py',
+                     'tests/ppu/test_q2_0_library.py',
                      'tests/serving/test_serving_device.py'):
         (source / filename).write_text(
             'import os\ndef test_host_fixture():\n'
@@ -45,6 +60,6 @@ def test_runner_sets_device_opt_in_and_verified_library_without_inherited_select
         '    assert os.environ["FLARE_TEST_PPU_MATMUL_LIBRARY"] == "/verified/operator.so"\n')
     monkeypatch.setenv('PYTEST_ADDOPTS', '-k does_not_exist')
     counts = device_tests(source, '/verified/operator.so', flare)
-    assert counts['operators']['tests'] == 3
+    assert counts['operators']['tests'] == 4
     assert counts['flare']['tests'] == 10
     assert counts['operators']['skipped'] == counts['flare']['skipped'] == 0

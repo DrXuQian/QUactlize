@@ -15,6 +15,13 @@ def test_packed_only_reuses_build_and_keeps_actual_device_gate(tmp_path):
     assert '--junitxml='+str(tmp_path/'results/packed.xml') in cmds['packed']
 
 
+def test_q2_only_is_a_device_gate(tmp_path):
+    cmds=dict(box.commands(tmp_path/'source',tmp_path/'package',tmp_path/'results',Path('/sdk'),3,q2_only=True))
+    assert tuple(cmds)==('precheck','build','q2-0')
+    assert 'tests/ppu/test_q2_0_library.py' in cmds['q2-0']
+    assert '--junitxml='+str(tmp_path/'results/q2-0.xml') in cmds['q2-0']
+
+
 def test_commands_cover_both_abis_and_real_graph_geometry(tmp_path):
     cmds = dict(box.commands(tmp_path/'source', tmp_path/'package', tmp_path/'results', Path('/sdk'), 3))
     assert tuple(cmds) == ('precheck','build','compat','serving','graph-m1','graph-m4','graph-m16')

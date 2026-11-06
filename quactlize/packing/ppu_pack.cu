@@ -10,6 +10,16 @@ namespace {
 using gguf_scale::KType;
 
 template<class Source>
+__global__ void pack_q2_0(Source raw, uint16_t* low, uint8_t* units,
+                         int n, int k, uint64_t words, uint64_t groups) {
+  for (uint64_t i = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+       i < words; i += uint64_t(gridDim.x) * blockDim.x) {
+    low[i] = quactlize_pack::Q2_0::word(raw,n,k,i);
+    if (i < groups) quactlize_pack::Q2_0::metadata(raw,units,n,k,i);
+  }
+}
+
+template<class Source>
 __global__ void pack_q8(Source raw, uint16_t* low, uint8_t* scale,
                         int n, int k, uint64_t words, uint64_t groups) {
   for (uint64_t i = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -70,6 +80,11 @@ template<class Source>
 int launch_format(Source raw, uint8_t* low, uint8_t* high, uint8_t* units,
                   int n, int k, int qtype, quactlize_ppu_kpack_sizes_v1 const& s, void* stream) {
   if (hggcGetLastError() != hggcSuccess) return 41;
+  if (qtype == 42) {
+    pack_q2_0<<<grid(s.low_bytes/2),256,0,static_cast<hggcStream_t>(stream)>>>(
+        raw,reinterpret_cast<uint16_t*>(low),units,n,k,s.low_bytes/2,s.units_bytes/2);
+    return hggcGetLastError() == hggcSuccess ? 0 : 41;
+  }
   if (qtype == 7) {
     pack_q5_1<<<grid(s.low_bytes/2),256,0,static_cast<hggcStream_t>(stream)>>>(
         raw,reinterpret_cast<uint16_t*>(low),reinterpret_cast<uint16_t*>(high),units,
@@ -138,7 +153,7 @@ extern "C" int quactlize_ppu_prepare_gate_up_dev_for_arrangement_v1(
 extern "C" int quactlize_gate_up_pack_v1(
     uint8_t const* gate, uint8_t const* up, uint8_t* low, uint8_t* high, uint8_t* units,
     int n, int k, int experts, int qtype, qkg_gate_up_layout_v1 const* layout, void* stream) {
-  if (qtype == 7) return 22; // Only canonical [gate;up], not paired-N4, is supported.
+  if (qtype == 7 || qtype == 42) return 22; // Only canonical [gate;up], not paired-N4, is supported.
   if (!layout || layout->version!=1 || layout->size!=sizeof(*layout) ||
       layout->layout_id!=QKG_GATE_UP_N4_V1) return 38;
   if (n<=0 || n>INT32_MAX/2 || n%8) return 24;

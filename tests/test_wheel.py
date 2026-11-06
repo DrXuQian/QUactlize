@@ -152,7 +152,7 @@ def test_real_noneditable_wheel_two_prefixes(bundle, tmp_path):
     assert len(wheels) == 1 and wheels[0].name.endswith('-py3-none-linux_x86_64.whl')
     with zipfile.ZipFile(wheels[0]) as archive:
         names = archive.namelist()
-        for name in ('compat/native.py', 'compat/serving_native.py', 'packing/native.py',
+        for name in ('compat/native.py', 'compat/formats.py', 'compat/serving_native.py', 'packing/native.py',
                      'runtime/native.py', 'serving.py', '_native/manifest.json', '_native/wheel.json'):
             assert 'quactlize/' + name in names
         assert not any('/_C.' in name or name.endswith('/libcuda.so') for name in names)

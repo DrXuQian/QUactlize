@@ -49,10 +49,10 @@ typedef struct {
     void *stream;
 } qpm_buffers_v1;
 
-// Host-only. Q5_1(7), Q8_0(8), Q2_K..Q6_K(10..14). RAW requires K%32==0
-// for 7/8, K%256==0 for K-quants, with arbitrary positive N. Canonical keeps
+// Host-only. Q5_1(7), Q8_0(8), Q2_K..Q6_K(10..14), Q2_0(42). RAW requires
+// K%32==0 for 7/8, K%256==0 for K-quants, K%64==0 for Q2_0, with N>0. Canonical keeps
 // producer's EXACT descriptor/alignment checks: Q5_1 N%16/K%128; Q8_0
-// N%256/K%32; K-quants retain their existing constraints. M>=0; E<=1024,
+// N%256/K%32; Q2_0 N>0/K%64; K-quants retain their existing constraints. M>=0; E<=1024,
 // topk<=32, channels=1 or topk. Canonical storage does not by itself select
 // a tuned packed kernel: this v1 remains the native16 compatibility route.
 // Null arrangement for RAW, canonical producer descriptor otherwise.

@@ -23,8 +23,9 @@ inline uint64_t extent(int64_t rows, int64_t stride, int64_t columns, int bytes)
     return rows ? mul(add(mul(rows - 1, stride), columns), bytes) : 0;
 }
 inline int block_elements(int q) {
-    require(q == 7 || q == 8 || (q >= 10 && q <= 14), "unsupported GGUF qtype (Q5_1 is 7, not Q5_K)");
-    return q < 10 ? 32 : 256;
+    require(q == 7 || q == 8 || q == 42 || (q >= 10 && q <= 14),
+            "unsupported GGUF qtype (Q5_1=7, Q2_0=42; neither is a K-quant)");
+    return q == 42 ? 64 : q < 10 ? 32 : 256;
 }
 inline int block_bytes(int q) {
     switch (q) {
@@ -42,6 +43,8 @@ inline int block_bytes(int q) {
         return 176;
     case 14:
         return 210;
+    case 42:
+        return 18;
     default:
         throw std::invalid_argument("unsupported GGUF qtype");
     }

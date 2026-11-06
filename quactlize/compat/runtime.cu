@@ -254,6 +254,7 @@ void dispatch(Prepared const &h, qpm_buffers_v1 const &b, int e = -1, int first 
         QPM_CASE(12);
         QPM_CASE(13);
         QPM_CASE(14);
+        QPM_CASE(42);
     default:
         require(false, "unknown qtype");
     }

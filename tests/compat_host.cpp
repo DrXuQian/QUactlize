@@ -44,7 +44,7 @@ extern "C" int compat_validate(qpm_problem_v1 const *p, qpm_buffers_v1 const *b)
     }
 }
 template <int Q> void decode(uint8_t const *raw, uint16_t *out, int count, int dtype) {
-    constexpr int block = Q < 10 ? 32 : 256;
+    int block = quactlize::compat::block_elements(Q);
     int bytes = quactlize::compat::block_bytes(Q);
     for (int i = 0; i < count; ++i) {
         float v = quactlize::compat::raw_value<Q>(raw + (i / block) * bytes, i % block);
@@ -64,6 +64,7 @@ extern "C" int compat_decode(int q, uint8_t const *raw, uint16_t *out, int count
         QPM_CASE(12);
         QPM_CASE(13);
         QPM_CASE(14);
+        QPM_CASE(42);
     default:
         return 20;
     }
@@ -119,6 +120,7 @@ extern "C" int compat_decode_canonical(int q, uint8_t const *low, uint8_t const 
         QPM_CASE(12);
         QPM_CASE(13);
         QPM_CASE(14);
+        QPM_CASE(42);
     default:
         return 20;
     }

@@ -66,7 +66,7 @@ def test_q5_1_identity_shape_overflow_and_preserved_metadata(library):
     for key in got:np.testing.assert_array_equal(got[key],expected[key])
 
 
-@pytest.mark.parametrize('q',[7,8,12,13])
+@pytest.mark.parametrize('q',[7,8,12,13,42])
 def test_pair_640_is_per_expert_concatenation(library,q):
     n,k,e=640,2560,3
     gate=raw_blocks(q,e,n,k,1);up=raw_blocks(q,e,n,k,2)

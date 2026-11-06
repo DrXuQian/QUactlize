@@ -142,6 +142,7 @@ __device__ float half_bits(uint16_t bits) {
 template <class T, int Q> __global__ void rows(qpm_rows_v1 p) {
     int live = live_count(p.capacity, p.num_rows, p.device_error);
     constexpr int bytes = Q == 8 ? 34 : 18;
+    constexpr int block = Q == 42 ? 64 : 32;
     constexpr int8_t codebook[16] = {-127, -104, -83, -65, -49, -35, -22, -10,
                                      1,    13,   25,  38,  53,  69,  89,  113};
     for (int64_t i = int64_t(blockIdx.x) * blockDim.x + threadIdx.x; i < int64_t(p.capacity) * p.columns;
@@ -151,11 +152,13 @@ template <class T, int Q> __global__ void rows(qpm_rows_v1 p) {
         if (row < live) {
             int64_t id = p.ids[row];
             if (id >= 0 && id < p.table_rows) {
-                auto b = static_cast<uint8_t const *>(p.raw) + (id * (p.columns / 32) + col / 32) * bytes;
+                auto b = static_cast<uint8_t const *>(p.raw) + (id * (p.columns / block) + col / block) * bytes;
                 float scale = half_bits(uint16_t(b[0]) | (uint16_t(b[1]) << 8));
                 int code;
                 if constexpr (Q == 8)
                     code = int(int8_t(b[2 + col % 32]));
+                else if constexpr (Q == 42)
+                    code = int((b[2 + (col % 64) / 4] >> (2 * (col % 4))) & 3) - 1;
                 else
                     code = codebook[(b[2 + col % 16] >> (col % 32 / 16 * 4)) & 15];
                 value = scale * float(code);
@@ -211,6 +214,8 @@ int quactlize_serving_prepare_v1(int32_t device, void *stream) {
         rows<BFloat, 8><<<1, 256, 0, s>>>(g);
         rows<Half, 20><<<1, 256, 0, s>>>(g);
         rows<BFloat, 20><<<1, 256, 0, s>>>(g);
+        rows<Half, 42><<<1, 256, 0, s>>>(g);
+        rows<BFloat, 42><<<1, 256, 0, s>>>(g);
         merge<Half><<<1, 256, 0, s>>>(m);
         merge<BFloat><<<1, 256, 0, s>>>(m);
         checked(QPM_RT(GetLastError)());
@@ -264,11 +269,15 @@ int quactlize_serving_gather_rows_v1(qpm_rows_v1 const *p) {
         if (p->dtype == QPM_F16) {
             if (p->qtype == 8)
                 rows<Half, 8><<<n, 256, 0, s>>>(*p);
+            else if (p->qtype == 42)
+                rows<Half, 42><<<n, 256, 0, s>>>(*p);
             else
                 rows<Half, 20><<<n, 256, 0, s>>>(*p);
         } else {
             if (p->qtype == 8)
                 rows<BFloat, 8><<<n, 256, 0, s>>>(*p);
+            else if (p->qtype == 42)
+                rows<BFloat, 42><<<n, 256, 0, s>>>(*p);
             else
                 rows<BFloat, 20><<<n, 256, 0, s>>>(*p);
         }

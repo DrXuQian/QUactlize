@@ -25,6 +25,15 @@ int pack_host(Source raw, uint8_t* low, uint8_t* high, uint8_t* units,
 
 template<class Source>
 int pack_all(int q, Source raw, uint8_t* low, uint8_t* high, uint8_t* units, int n, int k, int e) {
+  if (q == 42) {
+    uint64_t const count = uint64_t(e) * n * k;
+    for (uint64_t i=0; i<count/8; ++i) {
+      uint16_t w=quactlize_pack::Q2_0::word(raw,n,k,i);
+      low[2*i]=uint8_t(w); low[2*i+1]=uint8_t(w>>8);
+    }
+    for (uint64_t i=0; i<count/64; ++i) quactlize_pack::Q2_0::metadata(raw,units,n,k,i);
+    return 0;
+  }
   if (q == 7) {
     uint64_t const count = uint64_t(e) * n * k;
     for (uint64_t i=0; i<count/4; ++i) {

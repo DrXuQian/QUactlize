@@ -119,6 +119,8 @@ def test_fake_ops_and_complete_mutation_schemas():
         serving.swiglu(torch.empty((40,1280),dtype=torch.bfloat16),None,out,True,9999)
         serving.gather_rows(torch.empty(7*90,dtype=torch.uint8),torch.empty(4,dtype=torch.int64),
             torch.empty((4,160),dtype=torch.bfloat16),count,error,20,7,9999)
+        serving.gather_rows(torch.empty(7*180,dtype=torch.uint8),torch.empty(4,dtype=torch.int64),
+            torch.empty((4,640),dtype=torch.bfloat16),count,error,42,7,9999)
         serving.merge(torch.empty((4,10,640),dtype=torch.bfloat16),weights,torch.empty((4,640)),9999)
         serving.matmul(torch.empty((4,1,640),dtype=torch.bfloat16),torch.empty(100,dtype=torch.uint8),
             None,None,None,ids,torch.empty((4,10,640),dtype=torch.bfloat16),torch.empty(256,dtype=torch.uint8),error,9999)

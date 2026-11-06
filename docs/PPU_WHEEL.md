@@ -10,7 +10,7 @@ bash build.sh --wheel --sdk /usr/local/PPU_SDK --output dist --jobs 8
 ```
 
 This runs the existing complete public-library builder, then creates a
-non-editable `quactlize-0.2.0-py3-none-linux_x86_64.whl`. No device code is built
+non-editable `quactlize-0.2.1-py3-none-linux_x86_64.whl`. No device code is built
 during wheel installation. `--bundle /path/to/package` reuses a complete bundle
 only after checking all payload hashes, current Python/native source hashes,
 actual ELF exports, private libraries, and relative loader paths. Older bundles
@@ -49,9 +49,9 @@ discovery, packing ABI declarations and native16/serving do not load `_C`.
 After the PPU artifact channel is configured and the wheel is published there:
 
 ```bash
-python -m pip install --only-binary=quactlize quactlize==0.2.0
+python -m pip install --only-binary=quactlize quactlize==0.2.1
 # Qualification of an unpublished local artifact, without changing platform dependencies:
-python -m pip install --no-deps /path/to/quactlize-0.2.0-py3-none-linux_x86_64.whl
+python -m pip install --no-deps /path/to/quactlize-0.2.1-py3-none-linux_x86_64.whl
 ```
 
 ```python
@@ -83,6 +83,26 @@ Flare must still bind the actual DSO content identity and validate its ABI.
 
 ## Installed-wheel qualification
 
+Q2_0/ID42 is available in 0.2.1. The framework's **separate** `gguf` reader
+also needs `GGMLQuantizationType.Q2_0=42` and block extents `(64,18)` from
+`DrXuQian/llama.cpp@356a231c12910c545bfff0f781ed3be779b1ba5a/gguf-py`.
+Build/install that pinned `gguf-py` package separately, without changing platform
+Torch. Quactlize does not monkey-patch another Python package or claim a complete
+tensor inventory based on the MTP filename. That reader's ID42 header support
+does not itself provide a Python `gguf.dequantize(Q2_0)` implementation; the
+tests use the independent literal decoder matching the pinned llama C decoder.
+For an existing checkout of that exact llama commit:
+
+```bash
+python -m pip wheel --no-deps /path/to/llama.cpp/gguf-py --wheel-dir /path/to/wheels
+python -m pip install --no-deps --force-reinstall /path/to/wheels/gguf-0.19.0-py3-none-any.whl
+python -I /path/to/quactlize/tools/verify_installed_wheel.py --require-gguf-q2
+```
+
+`--require-gguf-q2` explicitly checks the separate reader declaration; the
+operator-only gate does not require it. No registry upload or GPU verification
+is implied merely by a successful wheel build.
+
 Use a **non-editable** isolated environment with platform Torch and test
 dependencies already available. Run outside the checkout with `PYTHONPATH`
 unset. The following script never inserts production source into `sys.path`:
@@ -94,7 +114,7 @@ python -I /path/to/quactlize/tools/verify_installed_wheel.py --target ppu10
 It verifies all required Python modules are under the environment prefix, no
 device initialization during import/discovery, public symbols, exact plane sizes,
 and field-wise descriptor rejection for E512/top10 Q5_1 down, Q8 down/gate-up,
-Q4_K/Q5_K gate-up at M1/8/9/128 in both native dtypes. It does not allocate device
+Q4_K/Q5_K gate-up and Q2_0 gate/up/merged/down at M1/8/9/128 in both native dtypes. It does not allocate device
 memory. Repeat in a second installation prefix; `--deny-root SOURCE --deny-root
 BUILD_OUTPUT` denies Python file access to the original source/build directories.
 Do not remove user repositories to simulate isolation.
@@ -118,5 +138,5 @@ dependencies first. Omitting `--flare` does not qualify Flare integration.
 
 Report host packaging/queries, PPU numerical/graph tests and performance
 separately. No PPU device means device tests remain **NOT RUN**, regardless of
-successful compilation, host fixtures or installation. This task changes no
-kernel layouts, rounding, tolerance, route selection or MTP behavior.
+successful compilation, host fixtures or installation. ID42 adds its own layout
+and consumers; existing formats, rounding and route selection are unchanged.
