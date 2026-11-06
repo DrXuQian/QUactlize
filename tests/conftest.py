@@ -75,6 +75,13 @@ def pytest_sessionstart(session):
     if os.environ.get("QUACTLIZE_CI_SUITE") in ("host", "accuracy", "all"):
         return
     root = _pl.Path(__file__).resolve().parent.parent
+    # Direct public-package tests also bypass _C; their fixtures validate the
+    # actual library. Mixed/default selections still retain the legacy guard.
+    public = (root / "tests/ppu", root / "tests/serving")
+    requested = [(session.config.invocation_params.dir / arg.split("::", 1)[0]).resolve()
+                 for arg in session.config.args]
+    if requested and all(any(path.is_relative_to(directory) for directory in public) for path in requested):
+        return
     so = sorted((root / "quactlize").glob("_C*.so"))
     if not so:
         return                                   # absent: let the per-test skips handle it

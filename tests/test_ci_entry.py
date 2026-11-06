@@ -25,6 +25,45 @@ def test_inventory_has_one_owner_and_separates_legacy_and_device():
     assert set(groups) == {"host", "accuracy", "serving"}
 
 
+@pytest.mark.parametrize('where,selected,expected', [
+    ('.', ['tests/ppu/test_public.py'], 0),
+    ('.', ['tests/ppu/test_public.py::test_public'], 0),
+    ('.', ['tests/ppu'], 0),
+    ('tests/ppu', ['.'], 0),
+    ('.', ['tests/serving'], 0),
+    ('.', ['tests/ppu', 'tests/serving'], 0),
+    ('.', ['tests/test_legacy.py'], 4),
+    ('.', ['tests/ppu', 'tests/test_legacy.py'], 4),
+    ('.', ['tests'], 4),
+    ('.', [], 4),
+])
+def test_stale_extension_guard_only_applies_to_legacy_selection(tmp_path, where, selected, expected):
+    # Run the real pytest hook in isolation. This is a session-routing test,
+    # not a substitute for the real public-library manifest/device checks.
+    import shutil
+    tests = tmp_path / 'tests'
+    (tests / 'ppu').mkdir(parents=True)
+    (tests / 'serving').mkdir()
+    shutil.copyfile(run.ROOT / 'tests/conftest.py', tests / 'conftest.py')
+    for path in ('ppu/test_public.py', 'serving/test_serving.py', 'test_legacy.py'):
+        (tests / path).write_text('def test_public():\n    pass\n')
+    csrc = tmp_path / 'quactlize/csrc'
+    csrc.mkdir(parents=True)
+    extension = csrc.parent / '_C.stale.so'
+    extension.write_bytes(b'not loaded: timestamp fixture only')
+    source = csrc / 'ppu_backend.cpp'
+    source.write_text('// newer source fixture\n')
+    os.utime(extension, (1, 1))
+    os.utime(source, (2, 2))
+    env = {k: v for k, v in os.environ.items() if k not in (
+        'QUACTLIZE_CI_SUITE', 'PYTEST_ADDOPTS', 'PYTEST_PLUGINS', 'PYTHONPATH')}
+    env['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
+    result = subprocess.run([sys.executable, '-m', 'pytest', '-q', '-o', 'addopts=', *selected],
+        cwd=tmp_path / where, env=env, text=True, capture_output=True, timeout=30)
+    assert result.returncode == expected, result.stdout + result.stderr
+    assert ('THE BUILT EXTENSION IS OLDER' in result.stderr) == (expected != 0)
+
+
 @pytest.mark.parametrize("body,expected", [
     ("<testcase name='a'/>", dict(tests=1, passed=1, failures=0, errors=0, skipped=0)),
     ("<testcase name='a'><skipped/></testcase>", dict(tests=1, passed=0, failures=0, errors=0, skipped=1)),
