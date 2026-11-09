@@ -213,6 +213,10 @@ class Bench:
         allocations += [a, out, ws]
         weight_bytes = sizes.low_bytes + sizes.high_bytes + sizes.units_bytes
         ids_host = None
+        cold = None
+        if getattr(args, 'cold_weights', False):
+            from tools.decode_gemv.compare_extension import cold_plan
+            cold = cold_plan(case, weight_bytes, args.l2_bytes, args.graph_calls, args.max_ring)
 
         def call_for(pl, ids_ptr):
             c = Call()
@@ -227,10 +231,10 @@ class Bench:
             ring = self.ring_for(args, weight_bytes)
             copies = self.wcache['copies'][:ring]
             calls_list = [call_for(cp, None) for cp in copies]
-            calls = max(ring, args.graph_calls)
+            calls = cold['graph_calls'] if cold else max(ring, args.graph_calls)
         else:
             per_call = rows
-            ring = max(args.graph_calls, math.ceil(experts / per_call))
+            ring = cold['ring'] if cold else max(args.graph_calls, math.ceil(experts / per_call))
             ids_host = np.empty((ring, m, topk), np.int32)
             for r in range(ring):
                 base = (r * per_call) % experts
@@ -239,7 +243,7 @@ class Bench:
             checked(self.sdk.lib.hggcMemcpy(ids, ids_host.ctypes.data, ids_host.nbytes, 1), 'ids')
             allocations.append(ids)
             calls_list = [call_for(planes, ids + r * per_call * 4) for r in range(ring)]
-            calls = ring
+            calls = cold['graph_calls'] if cold else ring
         args_t = (proto['compute'], proto['t'], proto['w'], split)
 
         def launch(i):
@@ -247,6 +251,10 @@ class Bench:
         extra = dict(route=-1, policy=-1, split=split, compute_type=proto['compute'],
                      config=f"mma:t{proto['t']}:w{proto['w']}:s{split}:c{proto['compute']}", workspace=workspace_bytes,
                      ring=ring)
+        if cold:
+            extra.update(cold_weights=cold, fixture=dict(seed=seed, gguf_sha256=self.wcache['raw_sha256'],
+                         a_sha256=hashlib.sha256(a_host.tobytes()).hexdigest(),
+                         ids_sha256=hashlib.sha256(ids_host.tobytes()).hexdigest() if ids_host is not None else None))
         self._keep = calls_list
         return launch, calls, ring, a_host, out, ids_host, extra
 
@@ -395,6 +403,10 @@ class Bench:
 
     @staticmethod
     def ring_for(args, weight_bytes):
+        if getattr(args, 'cold_weights', False):
+            from tools.decode_gemv.compare_extension import cold_plan
+            return cold_plan(dict(kind='dense'), weight_bytes, args.l2_bytes,
+                             args.graph_calls, args.max_ring)['ring']
         return max(2, min(args.max_ring, math.ceil(args.ring_mib * 2 ** 20 / weight_bytes)))
 
     def weights(self, case, args, seed):
@@ -410,6 +422,8 @@ class Bench:
             ring = self.ring_for(args, sizes.low_bytes + sizes.high_bytes + sizes.units_bytes)
             copies += [self.clone(sizes, planes) for _ in range(ring - 1)]
         self.wcache = dict(key=key, arr=arr, sizes=sizes, planes=planes, raw=raw, copies=copies)
+        if getattr(args, 'cold_weights', False):
+            self.wcache['raw_sha256'] = hashlib.sha256(raw).hexdigest()
         return self.wcache
 
     def drop_weights(self):
@@ -458,6 +472,8 @@ def main():
     parser.add_argument('--check', action='store_true')
     parser.add_argument('--packer-only', action='store_true', help='explicit prototypes plus standalone packer only')
     parser.add_argument('--correctness-only', action='store_true', help='two graph replays and GGUF oracle, no timing')
+    parser.add_argument('--cold-weights', action='store_true', help='explicit prototypes: whole rings >=2.25x queried L2')
+    parser.add_argument('--stop-on-error', action='store_true', help='stop this child after an error; do not reuse its GPU context')
     parser.add_argument('--prepare-only', action='store_true', help='selection/JIT prewarm, no kernels timed')
     parser.add_argument('--only', default='', help='comma separated case ids')
     args = parser.parse_args()
@@ -466,8 +482,14 @@ def main():
         if args.prepare_only:
             parser.error('--correctness-only cannot be combined with --prepare-only')
     cases = json.loads(Path(args.cases).read_text())
+    if args.cold_weights and (not args.packer_only or any(not c.get('proto') for c in cases)):
+        parser.error('--cold-weights requires packer-only explicit prototype cases')
     only = set(filter(None, args.only.split(',')))
     bench = Bench(args.package, os.environ['PPU_SDK'], len(cases), args.packer_only)
+    if args.cold_weights:
+        from tools.decode_gemv.compare_extension import query_l2
+        args.l2_bytes = query_l2(bench.sdk, os.environ['PPU_SDK'])
+        print('MMA_AB_DEVICE '+json.dumps(dict(**bench.device, l2_bytes=args.l2_bytes)), flush=True)
     with open(args.out, 'a') as fh:
         for index, case in enumerate(cases):
             if only and case['id'] not in only:
@@ -476,6 +498,8 @@ def main():
             try:
                 result = bench.run_case(index, case, args)
                 result['status'] = 'OK'
+                if args.stop_on_error and result.get('check', {}).get('bad', 0):
+                    result.update(status='FAIL', error='GGUF oracle failed: '+repr(result['check']))
             except Exception as exc:  # keep going; failures are recorded, never timed
                 result = dict(case=case, status='FAIL', error=repr(exc))
             result.update(index=index, marker=[MARK_BASE + 64 * 2 * index, MARK_BASE + 64 * (2 * index + 1)],
@@ -486,7 +510,10 @@ def main():
                                                           'event_us_per_call', 'error')} |
                              ({'err': result['check']['relative_l1_error']} if result.get('check') else {})),
                   flush=True)
+            if args.stop_on_error and result['status'] != 'OK':
+                return 1
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

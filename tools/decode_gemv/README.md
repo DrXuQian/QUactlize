@@ -21,6 +21,7 @@ before use; the scripts were run with SDK 2.2.1-184ee6 (cuda-12.9 variant).
 | device probes | `bw_probe.cu` (streaming read), `mma_probe.cu` (m8n16k16 fragment maps) |
 | optional actlize extension, compile only | `check_extension.py --sdk "$PPU_SDK"` (portable; does not source `env.sh`, no GPU launches) |
 | extension device retest | `retest_extension.py --sdk "$PPU_SDK" --device 1` (46 direct + 29 staged; packer-only build, GGUF oracle, graph smoke, no timing/sweep) |
+| same-config extension performance AB | `compare_extension.py --sdk "$PPU_SDK" --device 1 --confirm-idle` (portable; Box builds both revisions, 75 fixed cases, Asys main + reducer, two ABBA blocks; no config sweep or production change) |
 
 Typical use:
 

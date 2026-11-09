@@ -113,3 +113,48 @@ and text logs are included, not binaries, traces or ACU reports. Without
 `--output`, a new `qz-mma-retest-*` directory is created under the system temp
 directory and retained for debugging. `--plan-only` and `--build-only` are
 explicit non-device modes and never report a device PASS.
+
+## Same-config performance AB
+
+Box retest of e5fa0b46 passed all 46 direct and 29 staged valid cases. This is
+independent GGUF-oracle / graph-smoke evidence, not a performance result.
+
+Reserve one PPU and run from the extension branch (no SDK envsetup.sh required):
+
+```bash
+python3 tools/decode_gemv/compare_extension.py \
+  --sdk "${PPU_SDK:-/usr/local/PPU_SDK}" --device 1 --jobs 4 --confirm-idle
+```
+
+The runner exports b23397ed source from local Git objects and builds both its
+original readers and the extension with identical wrappers, compiler flags and
+actlize headers. It builds only the 75 already-validated case/config tuples,
+plus the shared standalone packer; no selected table, model package or full
+configuration sweep is involved. Git history must contain b23397ed, and the
+repository's pinned actlize checkout must be available.
+
+Default measurement is two ABBA blocks: four captures per arm. Each capture
+checks the independent oracle and collects at least 192 complete calls per case.
+The SDK's L2 capacity is queried; unique weight storage is at least 2.25x L2.
+Dense graphs traverse a whole weight-copy ring. Indexed graphs traverse whole
+sets of distinct expert slots (M3/top8 uses 240 experts without boundary reuse).
+This controls weight residency, not all input caches or a whole-model workload.
+First-use/eager/graph warmup is outside the Asys marker range.
+
+`comparison.json` keeps per-capture main/reducer times, full-call kernel sums,
+medians, deltas and range overlap. Event spans are diagnostic only. A positive
+delta is an observed slower median, even when ranges overlap; no 5% allowance,
+fastest-sample selection, or automatic production promotion is applied.
+`status=MEASURED` means data collection completed, not that every point won.
+Malformed/partial traces, numerical failure, mismatched fixtures/devices or
+missing reducers cannot be admitted as successful comparisons.
+
+The program never changes clocks or kills/waits for other users' jobs.
+`--confirm-idle` records the caller's reserved-card assertion; ppu-smi snapshots
+are retained when available but are not proof of uninterrupted idleness.
+Without `--output`, results stay in a fresh `qz-mma-ab-*` temp directory.
+An interrupted run can resume with the same arguments plus
+`--resume --output /path/printed/by/the/runner`; completed captures are reused,
+and failed attempts remain intact. Source/SDK/protocol changes need a new run.
+Upload the printed `review.tgz` (JSON/logs only); Asys/SQLite and DSOs remain on
+the Box. `--plan-only` and `--build-only` never claim a device/timing PASS.

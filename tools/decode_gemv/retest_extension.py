@@ -86,13 +86,13 @@ def run(command, log, env):
         raise RuntimeError(f'rc={result.returncode}; log={log}\n{tail}')
 
 
-def build_reader(cases, delivery, sdk, output, jobs, env):
+def build_reader(cases, delivery, sdk, output, jobs, env, source_root=ROOT):
     from quactlize.runtime.compiler import FLAGS, LIBRARIES, sha
     work = output/delivery
     work.mkdir()
     units = sources(cases, delivery)
     commands, objects = [], []
-    includes = [ROOT/'quactlize/execution', ROOT/'quactlize/include',
+    includes = [source_root/'quactlize/execution', source_root/'quactlize/include',
                 ROOT/'third_party/actlize/include', ROOT/'third_party/actlize/tools/util/include']
     for name, code in units.items():
         source = work/name
