@@ -22,10 +22,10 @@ from pathlib import Path
 
 import numpy as np
 
-SRC = Path(os.environ.get('QGEMV_SRC', '/workspace/quactlize-decode-gemv-20261108/source'))
+SRC = Path(os.environ.get('QGEMV_SRC', str(Path(__file__).resolve().parents[2])))
 sys.path.insert(0, str(SRC))
 from quactlize.runtime.native import SDK, checked  # noqa: E402
-from ci.support.packing import bind as bind_stream  # noqa: E402
+from ci.support.packing import bind as bind_stream, device_identity  # noqa: E402
 from ci.support.graph_api import graph_bind  # noqa: E402
 from ci.support.dense import Arrangement, Sizes, Params, Info, Candidate, Options  # noqa: E402
 from ci.support import moe as moe_abi  # noqa: E402
@@ -52,11 +52,14 @@ def raw_blocks(q, rows, k, rng):
 
 
 class Bench:
-    def __init__(self, package, sdk_path, cases=2048):
+    def __init__(self, package, sdk_path, cases=2048, packer_only=False):
         self.sdk = SDK(sdk_path)
         graph_bind(self.sdk)
-        self.lib = C.CDLL(str(Path(package) / 'libncp_quactlize.so'), mode=C.RTLD_LOCAL)
+        self.packer_only = packer_only
+        library = 'libquactlize_ppu_pack.so' if packer_only else 'libncp_quactlize.so'
+        self.lib = C.CDLL(str(Path(package) / library), mode=C.RTLD_LOCAL)
         bind_stream(self.sdk, self.lib)
+        self.device = device_identity(self.sdk) if packer_only else None
         L = self.lib
         sig = {
             'quactlize_ppu_kpack_canonical_arrangement_v1': ([C.c_int, C.POINTER(Arrangement)], C.c_int),
@@ -78,6 +81,9 @@ class Bench:
             'quactlize_ppu_moe_matmul_destroy_v1': ([C.c_void_p], None),
             'quactlize_ppu_moe_matmul_error_v1': ([], C.c_char_p),
         }
+        if packer_only:
+            sig = {k: v for k, v in sig.items() if k.startswith((
+                'quactlize_ppu_kpack_', 'quactlize_ppu_prepare_fully_quantized_'))}
         for name, (args, res) in sig.items():
             fn = getattr(L, name)
             fn.argtypes, fn.restype = args, res
@@ -108,6 +114,8 @@ class Bench:
 
     def check(self, rc, what):
         if rc:
+            if self.packer_only:
+                raise RuntimeError(f'{what} rc={rc} (explicit prototype, no production fallback)')
             err = (self.lib.quactlize_ppu_moe_matmul_error_v1() if what == 'moe' else
                    self.lib.quactlize_ppu_dense_error_v1())
             raise RuntimeError(f'{what} rc={rc}: {(err or b"").decode(errors="replace")}')
@@ -243,6 +251,8 @@ class Bench:
         return launch, calls, ring, a_host, out, ids_host, extra
 
     def run_case(self, index, case, args):
+        if self.packer_only and not case.get('proto'):
+            raise ValueError('packer-only mode requires an explicit prototype case')
         if args.prepare_only:
             return self.prepare_only(case)
         q, n, k, m = case['qtype'], case['n'], case['k'], case['m']
@@ -255,6 +265,8 @@ class Bench:
         allocations = []
         rng = np.random.default_rng(seed + m)
         result = dict(case=case, weight_bytes=int(weight_bytes))
+        if self.device is not None:
+            result['device'] = self.device
         if case.get('proto'):
             launch, calls, ring, a_host, out, ids_host, extra = self.proto_launch(case, args, arr, sizes, planes, rng,
                                                                                seed, allocations)
@@ -349,22 +361,29 @@ class Bench:
         checked(self.sdk.lib.hggcGraphLaunch(instance, self.stream), 'warm graph')   # upload + first replay
         self.sdk.synchronize(self.stream)
         launches = max(1, math.ceil(args.samples / calls))
-        events = [C.c_void_p(), C.c_void_p()]
-        for e in events:
-            checked(self.sdk.lib.hggcEventCreate(C.byref(e)), 'event')
-        self.marker(index, 0)
-        checked(self.sdk.lib.hggcEventRecord(events[0], self.stream), 'event')
-        for _ in range(launches):
-            checked(self.sdk.lib.hggcGraphLaunch(instance, self.stream), 'graph')
-        checked(self.sdk.lib.hggcEventRecord(events[1], self.stream), 'event')
-        self.marker(index, 1)
-        self.sdk.synchronize(self.stream)
-        elapsed = C.c_float()
-        checked(self.sdk.lib.hggcEventElapsedTime(C.byref(elapsed), events[0], events[1]), 'elapsed')
-        for e in events:
-            self.sdk.lib.hggcEventDestroy(e)
-        result.update(graph_calls=calls, launches=launches, samples=calls * launches,
-                      event_us_per_call=elapsed.value * 1000 / (calls * launches))
+        if getattr(args, 'correctness_only', False):
+            launches = 2
+            for _ in range(launches):
+                checked(self.sdk.lib.hggcGraphLaunch(instance, self.stream), 'correctness graph replay')
+            self.sdk.synchronize(self.stream)
+            result['scope'] = 'CORRECTNESS_AND_GRAPH_SMOKE_NOT_TIMING'
+        else:
+            events = [C.c_void_p(), C.c_void_p()]
+            for e in events:
+                checked(self.sdk.lib.hggcEventCreate(C.byref(e)), 'event')
+            self.marker(index, 0)
+            checked(self.sdk.lib.hggcEventRecord(events[0], self.stream), 'event')
+            for _ in range(launches):
+                checked(self.sdk.lib.hggcGraphLaunch(instance, self.stream), 'graph')
+            checked(self.sdk.lib.hggcEventRecord(events[1], self.stream), 'event')
+            self.marker(index, 1)
+            self.sdk.synchronize(self.stream)
+            elapsed = C.c_float()
+            checked(self.sdk.lib.hggcEventElapsedTime(C.byref(elapsed), events[0], events[1]), 'elapsed')
+            for e in events:
+                self.sdk.lib.hggcEventDestroy(e)
+            result['event_us_per_call'] = elapsed.value * 1000 / (calls * launches)
+        result.update(graph_calls=calls, launches=launches, samples=calls * launches)
         if args.check:
             result['check'] = self.check_output(case, raw, a_host, out, ids_host[(calls * launches - 1) % ring]
                                                 if kind == 'moe' else None)
@@ -437,12 +456,18 @@ def main():
     parser.add_argument('--graph-calls', type=int, default=48)
     parser.add_argument('--samples', type=int, default=192)
     parser.add_argument('--check', action='store_true')
+    parser.add_argument('--packer-only', action='store_true', help='explicit prototypes plus standalone packer only')
+    parser.add_argument('--correctness-only', action='store_true', help='two graph replays and GGUF oracle, no timing')
     parser.add_argument('--prepare-only', action='store_true', help='selection/JIT prewarm, no kernels timed')
     parser.add_argument('--only', default='', help='comma separated case ids')
     args = parser.parse_args()
+    if args.correctness_only:
+        args.check = True
+        if args.prepare_only:
+            parser.error('--correctness-only cannot be combined with --prepare-only')
     cases = json.loads(Path(args.cases).read_text())
     only = set(filter(None, args.only.split(',')))
-    bench = Bench(args.package, os.environ['PPU_SDK'], len(cases))
+    bench = Bench(args.package, os.environ['PPU_SDK'], len(cases), args.packer_only)
     with open(args.out, 'a') as fh:
         for index, case in enumerate(cases):
             if only and case['id'] not in only:

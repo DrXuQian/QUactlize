@@ -19,6 +19,8 @@ before use; the scripts were run with SDK 2.2.1-184ee6 (cuda-12.9 variant).
 | MMA-reader prototypes (`quactlize/execution/mma_reader.cuh`, `mma_staged.cuh`) | `build_mma_proto.sh` (`STAGED=1` for the staged reader), `mma_proto_tu.cu`, `mma_staged_tu.cu`, `mma_proto_router.cpp`, `make_proto_cases.py`, `screen_report.py`, `resources.py` |
 | access-pattern probes (step 1) | `pattern_probe.cu`, `pattern_sweep.sh`, `pattern_asys.py`, `pattern_acu.sh`, `acu_summary.py` |
 | device probes | `bw_probe.cu` (streaming read), `mma_probe.cu` (m8n16k16 fragment maps) |
+| optional actlize extension, compile only | `check_extension.py --sdk "$PPU_SDK"` (portable; does not source `env.sh`, no GPU launches) |
+| extension device retest | `retest_extension.py --sdk "$PPU_SDK" --device 1` (46 direct + 29 staged; packer-only build, GGUF oracle, graph smoke, no timing/sweep) |
 
 Typical use:
 

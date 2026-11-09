@@ -9,6 +9,7 @@ public dense (F16) / MoE (BF16) ABI, Asys GPU kernel activity, cold weights.
 | `workload_manifest.json` | 5 models, 55 unique Quactlize shapes with calls per token, non-Quactlize matrices listed separately |
 | `draft.md` | baseline evidence (M=1), C1 register-direct MMA reader results, step-1 summary |
 | `step1-access-pattern.md` | step 1: prototype vs production TC vs streaming probes (ACU + Asys) |
+| `actlize-extension.md` | optional exact-code collective, delivery policies and bounded compile gate |
 
 Data (`data/`, small files only; traces and ACU reports stay in the investigation root):
 - `baseline-m1.parsed.jsonl`: production M=1, one Asys round, per-call kernel components.
