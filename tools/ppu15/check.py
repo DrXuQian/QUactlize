@@ -16,6 +16,7 @@ from ci.support.graph_api import graph_bind
 from quactlize.execution.native import Call, SimtCallV2
 from quactlize.runtime.native import SDK, checked
 from ppu.support import Arena, bind, packed, QTYPES
+from tools.ppu15.device import validate_identity
 
 MMA_M=tuple(range(1,9))+(9,16,128)
 FIELDS=('ordinal','major','minor','compute_units','warp_size','max_threads_per_block',
@@ -43,8 +44,7 @@ def setup(sdk_path, output):
     checked(device(name,pci,values),'PPU1.5 device probe')
     identity=dict(zip(FIELDS,values),name=name.value.decode(),pci=pci.value.decode())
     print('ZW890_DEVICE '+json.dumps(identity),flush=True)
-    if 'ZW890' not in identity['name'] or identity['warp_size']!=32:
-        raise ValueError('this bring-up requires one visible ZW890 with warp size32; got '+repr(identity))
+    validate_identity(identity)
     return sdk,lib,identity
 
 def mma(sdk,lib,emit):

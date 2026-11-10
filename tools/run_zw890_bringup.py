@@ -17,7 +17,7 @@ sys.path.insert(0,str(ROOT))
 from quactlize.runtime.compiler import FLAGS, LIBRARIES
 
 EXPECTED={'mma':44,'delivery':8,'pack':12,'simt':128}
-FIELDS=('tools/run_zw890_bringup.py','tools/ppu15/check.py','tools/ppu15/native.cu',
+FIELDS=('tools/run_zw890_bringup.py','tools/ppu15/check.py','tools/ppu15/device.py','tools/ppu15/native.cu',
         'tools/ppu15/simt.cu','quactlize/packing/ppu_pack.cu','quactlize/packing/sizes.cpp')
 
 def plan():
