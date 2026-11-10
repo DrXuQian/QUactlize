@@ -72,6 +72,7 @@ def test_probe_guards_and_name_authority_remain_bound():
     assert '__HGGC_ARCH__ != 150' in native
     assert 'if(count!=1) return -1;' in native
     assert 'tools/ppu15/device.py' in probe.FIELDS
+    assert 'tools/hgcc_identity.py' in probe.FIELDS
     check = (ROOT/'tools/ppu15/check.py').read_text()
     assert check.index("checked(device(name,pci,values)") < check.index('validate_identity(identity)')
 
@@ -102,3 +103,12 @@ def test_actual_setup_cannot_skip_native_single_device_failure(monkeypatch, tmp_
         _, got_library, identity = check.setup(tmp_path, tmp_path)
         assert got_library is library
         assert identity['name'] == 'ZW-M890P' and identity['warp_size'] == 32
+
+
+def test_compiler_identity_failure_precedes_compile_or_output_creation(monkeypatch, tmp_path):
+    def failed_query(*args):
+        raise RuntimeError('missing compiler version banner')
+    monkeypatch.setattr(probe, 'compiler_identity', failed_query)
+    with pytest.raises(RuntimeError, match='missing compiler version banner'):
+        probe.build(tmp_path / 'sdk', tmp_path, 1, {})
+    assert not (tmp_path / 'build').exists()

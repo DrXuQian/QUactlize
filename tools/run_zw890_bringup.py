@@ -15,9 +15,10 @@ import time
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from quactlize.runtime.compiler import FLAGS, LIBRARIES
+from tools.hgcc_identity import compiler_identity
 
 EXPECTED={'mma':44,'delivery':8,'pack':12,'simt':128}
-FIELDS=('tools/run_zw890_bringup.py','tools/ppu15/check.py','tools/ppu15/device.py','tools/ppu15/native.cu',
+FIELDS=('tools/run_zw890_bringup.py','tools/hgcc_identity.py','tools/ppu15/check.py','tools/ppu15/device.py','tools/ppu15/native.cu',
         'tools/ppu15/simt.cu','quactlize/packing/ppu_pack.cu','quactlize/packing/sizes.cpp')
 
 def plan():
@@ -48,6 +49,7 @@ def identity():
                     'rev-parse','HEAD'],text=True).strip())
 
 def build(sdk,output,jobs,env):
+    toolchain=compiler_identity(sdk/'bin/hgcc',env)
     work=output/'build';work.mkdir()
     vendor=ROOT/'third_party/actlize'
     expected=subprocess.check_output(['git','-C',str(ROOT),'rev-parse',
@@ -75,8 +77,8 @@ def build(sdk,output,jobs,env):
           '-L'+str(sdk/'lib'),*['-l'+name for name in LIBRARIES]]
     command(argv,work/'link.log',env)
     receipt=dict(target='ppu_15',units=units,link=list(map(str,argv)),library_sha256=sha(library),
-        compiler_sha256=sha(sdk/'bin/hgcc'),compiler_version=subprocess.check_output(
-            [str(sdk/'bin/hgcc'),'--version'],env=env,text=True))
+        compiler_sha256=toolchain['sha256'],compiler_version=toolchain['version'],
+        compiler_identity=toolchain)
     (work/'receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
 
 def verdict(suite,rows,rc):
