@@ -3,3 +3,5 @@
 pytest>=7,<9
 numpy>=1.23,<3
 gguf
+setuptools>=65
+wheel>=0.44

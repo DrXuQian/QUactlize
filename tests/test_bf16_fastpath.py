@@ -20,7 +20,7 @@ def test_actual_packed_writer_and_typed_s1_query(tmp_path):
 
 
 def test_ap1_bf16_admission_keeps_the_existing_single_plane_domain(tmp_path,monkeypatch):
-    from test_kpack_jit import fake_compiler
+    from tests.test_kpack_jit import fake_compiler
     from quactlize.decode.compiler import DecodeCompiler
     from tools.kpack_jit import parent_tuple
     sdk=fake_compiler(tmp_path)

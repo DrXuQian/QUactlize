@@ -1,36 +1,74 @@
-"""Build quactlize's extension.
+"""Legacy host extension or a complete precompiled PPU wheel.
 
-TWO HALVES, AND THEY BUILD DIFFERENTLY. The preprocessing half (csrc/preprocess) is pure host C++ -- zero __global__,
-zero device intrinsics -- so it compiles with an ordinary C++ compiler anywhere torch is installed, including a
-developer machine with no PPU. The kernel half is device code that only hgcc can compile, through actlize's
-PPUToolchain.
-
-So the default build produces the HOST half alone. That is not a placeholder: it is the half that owns the physical
-weight layout, it is what an importer needs, and being able to build and test it without the accelerator is the
-difference between a format's reorder being checkable in CI and only on the box.
-
-    pip install -e .                    host half only (works without the PPU SDK)
-    QUACTLIZE_WITH_DEVICE=1 pip install -e .    also build the kernels (needs PPU_SDK_ROOT and hgcc)
-
-The device half is not wired here yet; setting the variable reports that rather than silently building half a library
-and letting the missing ops surface as an AttributeError at the first call.
+Use bash build.sh --wheel for releases. QUACTLIZE_WITH_DEVICE=1 also supports
+PEP 517 builds, with QUACTLIZE_PPU_BUNDLE for verified reuse. Without that flag,
+the existing host-only build is unchanged. QUACTLIZE_WITH_HOST=1 adds the legacy
+extension to a PPU wheel using installed platform Torch. Never fetch Torch here.
 """
 import os, sys
 from pathlib import Path
 from setuptools import setup
+from setuptools.dist import Distribution
+from setuptools.command.build_py import build_py
+from wheel.bdist_wheel import bdist_wheel
 
 ROOT = Path(__file__).parent.resolve()
 WITH_DEVICE = os.environ.get("QUACTLIZE_WITH_DEVICE", "0") not in ("0", "", "false", "False")
+WITH_HOST = not WITH_DEVICE or os.environ.get("QUACTLIZE_WITH_HOST", "0") == "1"
+
+
+class PpuBuildPy(build_py):
+    def run(self):
+        import json
+        import shutil
+        import tempfile
+        from tools.wheel_support import wheel_metadata
+        from tools.build_ppu_library import build
+
+        super().run()
+        supplied = os.environ.get('QUACTLIZE_PPU_BUNDLE')
+        with tempfile.TemporaryDirectory(prefix='quactlize-wheel-') as temporary:
+            bundle = Path(supplied).resolve(strict=True) if supplied else Path(temporary) / 'package'
+            if not supplied:
+                build(Path(os.environ.get('PPU_SDK', '/usr/local/PPU_SDK')), bundle,
+                      int(os.environ.get('JOBS', '4')))
+            metadata = wheel_metadata(bundle, ROOT)
+            destination = Path(self.build_lib) / 'quactlize/_native'
+            destination.mkdir(parents=True, exist_ok=False)
+            manifest = json.loads((bundle / 'manifest.json').read_text())
+            for name in ['manifest.json', *manifest['payloads']]:
+                out = destination / name
+                out.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(bundle / name, out)
+            (destination / 'wheel.json').write_text(json.dumps(metadata, indent=2) + '\n')
+
+
+class PpuWheel(bdist_wheel):
+    def finalize_options(self):
+        super().finalize_options()
+        self.root_is_pure = False
+
+    def get_tag(self):
+        python, abi, platform = super().get_tag()
+        return (python, abi, platform) if WITH_HOST else ('py3', 'none', platform)
+
+
+class PpuDistribution(Distribution):
+    def has_ext_modules(self):
+        # Precompiled C-ABI DSOs are platform libraries, even without a CPython extension.
+        return True
+
+
+if WITH_DEVICE and not WITH_HOST:
+    setup(ext_modules=[], distclass=PpuDistribution,
+          cmdclass={'build_py': PpuBuildPy, 'bdist_wheel': PpuWheel})
+    sys.exit(0)
 
 try:
     import torch
     from torch.utils.cpp_extension import BuildExtension, CppExtension
 except ImportError:
     sys.exit("quactlize's extension needs torch installed to build")
-
-if WITH_DEVICE:
-    sys.exit("QUACTLIZE_WITH_DEVICE is not supported by the Torch extension. "
-             "Build the standalone PPU library with bash build.sh; see docs/CI.md.")
 
 # HEADERS ARE NOT TRACKED BY setuptools. Editing weight_layout.h and rebuilding produced a .so with the OLD table
 # and a test failure that read like a logic error. `depends` makes the headers part of the extension's dependency
@@ -73,15 +111,7 @@ ext = CppExtension(
 
 setup(
     name="quactlize",
-    version="0.1.0",
-    packages=["quactlize"],
-    package_data={"quactlize": [
-        "include/ppu_format_config.inc",
-        "include/quactlize_ppu_config.h",
-        "include/quactlize_ppu_device.h",
-        "include/quactlize_ppu_packed.h",
-    ]},
     ext_modules=[ext],
-    cmdclass={"build_ext": BuildExtension},
+    cmdclass={"build_ext": BuildExtension, **({'build_py': PpuBuildPy, 'bdist_wheel': PpuWheel} if WITH_DEVICE else {})},
     python_requires=">=3.9",
 )

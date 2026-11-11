@@ -10,6 +10,8 @@
 #include "../fusion/validation.hpp"
 #include "../include/ppu_device.hpp"
 #include <dlfcn.h>
+#include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <map>
@@ -453,7 +455,16 @@ Image const& jit_image(Runtime& r,Config const& config,bool dense_io=false,int c
     if (compute_type==QK_COMPUTE_BF16) name+="/bf16";
     auto found=r.jit_images.find(name);
     if (found!=r.jit_images.end()) return found->second;
-    auto receipt=compile_parent(r.jit,config,dense_io,compute_type);
+    auto started=std::chrono::steady_clock::now();
+    if (!r.jit.cache_initialized) {
+        // Compute this once per runtime, not once per shape/parent.
+        try { r.jit.cache_environment=cache_environment(r.jit.sdk,r.jit.source); }
+        catch (std::exception const&) { /* The compiler supplies a full diagnostic on a miss. */ }
+        r.jit.cache_initialized=true;
+    }
+    auto receipt=cached_parent(r.jit.cache,r.jit.cache_environment,r.jit.source,config,dense_io,compute_type);
+    bool disk_hit=!receipt.empty();
+    if (!disk_hit) receipt=compile_parent(r.jit,config,dense_io,compute_type);
     std::istringstream in(receipt);
     std::string tag,build,contract,source,extra;
     if (!(in>>tag>>build>>contract>>source) || tag!="QK_JIT_V1" ||
@@ -465,6 +476,8 @@ Image const& jit_image(Runtime& r,Config const& config,bool dense_io=false,int c
         throw std::runtime_error("JIT module escapes its cache entry");
     Image resolved{config.symbol,build,contract,config.qtype,config.route,config.tm,config.tn,
         config.tk,config.wm,config.wn,config.stages,config.ap,config.dn,path,dense_io,compute_type};
+    if (disk_hit) std::fprintf(stderr,"KPACK_JIT parent=%s cache_hit=1 seconds=%.6f key=%s resolver=native\n",
+        config.symbol,std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count(),build.c_str());
     return r.jit_images.emplace(name,std::move(resolved)).first->second;
 }
 qk_call_v1 call_for(qks_request_v1 const& req,Runtime const& r) {

@@ -7,8 +7,8 @@ import subprocess
 import numpy as np
 import pytest
 
-from test_kpack_native_dispatch import build_stub, probe, Choice, Call
-from test_kpack_jit import enable, helper_file
+from tests.test_kpack_native_dispatch import build_stub, probe, Choice, Call
+from tests.test_kpack_jit import enable, helper_file
 
 ROOT = Path(__file__).resolve().parents[1]
 

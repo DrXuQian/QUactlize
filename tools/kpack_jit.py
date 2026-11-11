@@ -6,6 +6,7 @@ candidates or imports torch. Use the same checkout/SDK for prewarm and resolve.
 """
 
 import argparse
+import fcntl
 import json
 from pathlib import Path
 import re
@@ -15,6 +16,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from quactlize.runtime.compiler import Compiler, validate_parent, materialize_parent, source_contract, sha
+from quactlize.runtime.jit_cache import ParentCache, is_digest, name as cache_name
 from quactlize.decode.compiler import DecodeCompiler
 from quactlize.decode.grouped_compiler import GroupedComputeCompiler
 from types import SimpleNamespace
@@ -81,10 +83,68 @@ def module_source(record):
     return Compiler.source(None,record['parent'],'')
 
 
+class IndexedCompiler:
+    """Keep the existing compiler/key format, publishing only a cheap lookup."""
+    def __init__(self, compiler):
+        self.compiler = compiler
+        self.identity = compiler.identity
+        self.cache = ParentCache(compiler.sdk, compiler.cache,
+            self.identity.get('base_source_contract', source_contract(self.identity)))
+
+    def publish(self, records):
+        for record in records:
+            self.cache.publish(record)
+        return records
+
+    def build(self, parent):
+        return self.publish([self.compiler.build(parent)])[0]
+
+    def compile_only(self, parents, progress=None):
+        return self.publish(self.compiler.compile_only(parents, progress))
+
+
 def compiler_for(sdk,cache,jobs,dense_io,compute_type):
-    if dense_io:return DecodeCompiler(sdk,cache,jobs,compute_type=compute_type)
-    if compute_type=='bf16':return GroupedComputeCompiler(sdk,cache,jobs,compute_type=compute_type)
-    return Compiler(sdk,cache,jobs)
+    if dense_io:
+        compiler = DecodeCompiler(sdk,cache,jobs,compute_type=compute_type)
+    elif compute_type=='bf16':
+        compiler = GroupedComputeCompiler(sdk,cache,jobs,compute_type=compute_type)
+    else:
+        compiler = Compiler(sdk,cache,jobs)
+    return IndexedCompiler(compiler)
+
+
+def index_existing(compiler):
+    """One-time import of old cache receipts; no recompiles or kernel loading.
+
+    Existing artifacts are trusted local files, as in the native loader. We
+    validate the build/source/SDK keys here, not re-hash every shared library.
+    Subsequent edits invalidate the file stamps; dlopen/export checks remain.
+    """
+    cache = compiler.cache
+    marker = cache.directory / (cache_name(cache.environment) + '.ready')
+    with marker.with_suffix('.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if marker.exists():
+            return
+        indexed = 0
+        for directory in cache.cache.iterdir():
+            if not is_digest(directory.name) or directory.is_symlink():
+                continue
+            try:
+                record = json.loads((directory / 'manifest.json').read_text())
+                identity = record['identity']
+                contract = identity.get('base_source_contract', source_contract(identity))
+                if (record['key'] != directory.name or contract != cache.source or
+                        any(identity[k] != compiler.identity[k] for k in ('sdk', 'host')) or
+                        digest(dict(identity=identity, parent=record['parent'],
+                                    source=module_source(record))) != record['key']):
+                    continue
+                cache.publish(record)
+                indexed += 1
+            except (OSError, ValueError, KeyError, TypeError):
+                continue  # A broken/foreign entry is not admitted by the fast lookup.
+        marker.touch()
+        print(f'KPACK_JIT_INDEX imported={indexed} compile=0', file=sys.stderr, flush=True)
 
 
 def model_requests(path, tokens, include_sf=False, tensor_pattern=None):
@@ -193,11 +253,20 @@ def main():
     elif args.command == "resolve":
         parent = parent_tuple(args.parent, args.values)
         print(f"KPACK_JIT_RESOLVE parent={parent['symbol']} cache={args.cache}", file=sys.stderr, flush=True)
+        if args.source_contract:
+            cached = ParentCache(args.sdk,args.cache,args.source_contract).read(parent,args.dense_io,args.compute_type)
+            if cached:
+                print(f"KPACK_JIT parent={parent['symbol']} cache_hit=1 "
+                      f"seconds={time.monotonic()-start:.6f} key={cached.split()[1]} resolver=index",
+                      file=sys.stderr)
+                print(cached, end='')
+                return
         compiler = compiler_for(args.sdk,args.cache,1,args.dense_io,args.compute_type)
         contract = compiler.identity.get("base_source_contract", source_contract(compiler.identity))
         if args.source_contract and args.source_contract != contract:
             raise ValueError("JIT helper source differs from dispatcher; rebuild the small dispatcher")
         record = compiler.build(parent)
+        index_existing(compiler)
         print(f"KPACK_JIT parent={parent['symbol']} cache_hit={int(record['cache_hit'])} "
               f"seconds={time.monotonic()-start:.3f} key={record['key']}", file=sys.stderr)
         print("QK_JIT_V1", record["key"], digest(record["identity"]), contract)

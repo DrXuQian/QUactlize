@@ -55,6 +55,14 @@ N-doubling transfer for merged projections. The transfer keeps M/K/dtype and
 actual-shape legality, reports a bucket prediction, and never extrapolates FQ
 past M64. It is not an exact measurement of the doubled shape.
 
+The additive native16 [Flash-Next serving ABI](docs/serving.md) provides raw
+GGUF matmul, device-count router/row lookup and explicit SwiGLU rounding.
+It also supports Q5_1 and Q2_0 canonical packing, Q8 K640/K320 and native16
+indexed execution. Existing v1/tuned paths are unchanged. See
+[wheel installation](docs/PPU_WHEEL.md) for Python resource discovery without
+device initialization. The NVIDIA compatibility backend remains on its
+separate feature branch; it is not built or installed by this PPU package.
+
 ## Source layout
 
 | Directory | Responsibility |

@@ -13,7 +13,8 @@ def descriptor():
     return Arrangement(2,4,8,0,0,32,32,0,0x51384B5032540001)
 
 
-@pytest.mark.parametrize("experts,n,k", [(1,256,256),(3,256,512),(2,512,1024)])
+@pytest.mark.parametrize("experts,n,k", [(1,256,256),(3,256,512),(2,512,1024),
+    (3,2560,640),(2,10240,320),(2,256,32)])
 def test_raw_bytes_to_q8_kpack2(library,experts,n,k):
     raw=np.random.default_rng(82026).integers(0,256,(experts,n,k//32,34),dtype=np.uint8)
     codes=raw[...,2:].reshape(experts,n,k)

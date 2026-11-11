@@ -5,7 +5,7 @@ import ctypes as C
 
 import pytest
 
-from test_kpack_native_dispatch import build_stub,probe,Choice
+from tests.test_kpack_native_dispatch import build_stub,probe,Choice
 from quactlize.decode.native_compute import GroupedDeviceCall,GroupedMetadataCall
 from quactlize.runtime.native import Call
 

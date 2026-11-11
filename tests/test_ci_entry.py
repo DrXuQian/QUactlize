@@ -9,7 +9,7 @@ import pytest
 
 from ci import run
 from ci.suites import HOST, inventory
-from test_kpack_device_pack import library
+from tests.test_kpack_device_pack import library
 
 
 def test_inventory_has_one_owner_and_separates_legacy_and_device():
@@ -22,7 +22,46 @@ def test_inventory_has_one_owner_and_separates_legacy_and_device():
     assert "test_q8_kpack2.py" in HOST
     assert "test_dense_provider.py" in HOST
     assert "test_moe_decode_policy.py" in HOST
-    assert set(groups) == {"host", "accuracy"}
+    assert set(groups) == {"host", "accuracy", "serving"}
+
+
+@pytest.mark.parametrize('where,selected,expected', [
+    ('.', ['tests/ppu/test_public.py'], 0),
+    ('.', ['tests/ppu/test_public.py::test_public'], 0),
+    ('.', ['tests/ppu'], 0),
+    ('tests/ppu', ['.'], 0),
+    ('.', ['tests/serving'], 0),
+    ('.', ['tests/ppu', 'tests/serving'], 0),
+    ('.', ['tests/test_legacy.py'], 4),
+    ('.', ['tests/ppu', 'tests/test_legacy.py'], 4),
+    ('.', ['tests'], 4),
+    ('.', [], 4),
+])
+def test_stale_extension_guard_only_applies_to_legacy_selection(tmp_path, where, selected, expected):
+    # Run the real pytest hook in isolation. This is a session-routing test,
+    # not a substitute for the real public-library manifest/device checks.
+    import shutil
+    tests = tmp_path / 'tests'
+    (tests / 'ppu').mkdir(parents=True)
+    (tests / 'serving').mkdir()
+    shutil.copyfile(run.ROOT / 'tests/conftest.py', tests / 'conftest.py')
+    for path in ('ppu/test_public.py', 'serving/test_serving.py', 'test_legacy.py'):
+        (tests / path).write_text('def test_public():\n    pass\n')
+    csrc = tmp_path / 'quactlize/csrc'
+    csrc.mkdir(parents=True)
+    extension = csrc.parent / '_C.stale.so'
+    extension.write_bytes(b'not loaded: timestamp fixture only')
+    source = csrc / 'ppu_backend.cpp'
+    source.write_text('// newer source fixture\n')
+    os.utime(extension, (1, 1))
+    os.utime(source, (2, 2))
+    env = {k: v for k, v in os.environ.items() if k not in (
+        'QUACTLIZE_CI_SUITE', 'PYTEST_ADDOPTS', 'PYTEST_PLUGINS', 'PYTHONPATH')}
+    env['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
+    result = subprocess.run([sys.executable, '-m', 'pytest', '-q', '-o', 'addopts=', *selected],
+        cwd=tmp_path / where, env=env, text=True, capture_output=True, timeout=30)
+    assert result.returncode == expected, result.stdout + result.stderr
+    assert ('THE BUILT EXTENSION IS OLDER' in result.stderr) == (expected != 0)
 
 
 @pytest.mark.parametrize("body,expected", [
@@ -81,6 +120,7 @@ def test_missing_dependencies_and_existing_output_are_not_success(tmp_path, monk
     ("build", ["build"]),
     ("accuracy", ["accuracy"]),
     ("all", ["host", "build", "accuracy"]),
+    ("serving", ["serving"]),
 ])
 def test_shell_entry_works_outside_checkout_and_lists_without_dependencies(tmp_path, suite, phases):
     env = dict(os.environ, PYTHON=sys.executable, PPU_SDK=str(tmp_path / "missing"))
@@ -192,7 +232,7 @@ def test_command_nonzero_and_timeout_are_retained(tmp_path):
 def test_accuracy_inventory_and_independent_oracle():
     import ctypes as C
     import numpy as np
-    from ppu.support import QTYPES, DECODE_M, DENSE_M, Params, Info, check_output
+    from tests.ppu.support import QTYPES, DECODE_M, DENSE_M, Params, Info, check_output
     from ci.support.fixture import raw_weight, round_compute
     assert QTYPES == (8, 10, 11, 12, 13, 14)
     assert DECODE_M == tuple(range(1, 9))
@@ -221,7 +261,7 @@ def test_device_accuracy_never_requests_profilers_or_sweeps():
 
 
 def test_followup_public_gate_covers_all_winners_and_retained_controls():
-    from ppu.test_public_library import helper_followup_points, m_span_boundary_points, middle_m_points
+    from tests.ppu.test_public_library import helper_followup_points, m_span_boundary_points, middle_m_points
     from quactlize.dispatch.dense_prefill import EVIDENCE
     data=json.loads(EVIDENCE.read_text())
     points=helper_followup_points()
@@ -245,6 +285,40 @@ def test_followup_public_gate_covers_all_winners_and_retained_controls():
     assert all(r==exact[tuple(s)] for s,r in middle)
 
 
+@pytest.mark.parametrize('q', [7, 8, 10, 11, 12, 13, 14, 42])
+def test_native16_packer_matches_public_ctypes(library, q):
+    """Exercise the real host C queries through the device harness's strict ABI."""
+    import ctypes as C
+    from tests.ppu.support import Arrangement as PublicArrangement, Sizes as PublicSizes
+    from tests.ppu.test_packed_native import Arrangement, Sizes
+    from ci.support.dense import Params
+    from quactlize.packing.native import Arrangement as NativeArrangement, Sizes as NativeSizes
+
+    canonical = C.CFUNCTYPE(C.c_int, C.c_int, C.POINTER(PublicArrangement))(
+        ('quactlize_ppu_kpack_canonical_arrangement_v1', library))
+    sizes = C.CFUNCTYPE(C.c_int, *([C.c_int]*4), C.POINTER(PublicArrangement), C.POINTER(PublicSizes))(
+        ('quactlize_ppu_kpack_sizes_for_arrangement_v1', library))
+    arr, result = Arrangement(), Sizes()
+    # This exact call raised ArgumentError before reaching the C producer.
+    assert canonical(q, C.byref(arr)) == 0
+    assert sizes(256, 512, 3, q, C.byref(arr), C.byref(result)) == 0
+    assert result.raw_bytes == result.low_bytes + result.high_bytes + result.units_bytes
+    assert Arrangement is PublicArrangement is NativeArrangement
+    assert Sizes is PublicSizes is NativeSizes
+    assert C.sizeof(Params) == 112 and Params.arrangement.offset == 40 and Params.sizes.offset == 80
+    nested = Params(arrangement=arr, sizes=result)
+    assert bytes(nested.arrangement) == bytes(arr)
+    # Equal field lists/sizes do not make independently declared ctypes interchangeable.
+    class DuplicateArrangement(C.Structure):
+        _fields_ = Arrangement._fields_
+    class DuplicateSizes(C.Structure):
+        _fields_ = Sizes._fields_
+    with pytest.raises(C.ArgumentError):
+        canonical(q, C.byref(DuplicateArrangement()))
+    with pytest.raises(C.ArgumentError):
+        sizes(256, 512, 3, q, C.byref(arr), C.byref(DuplicateSizes()))
+
+
 @pytest.mark.parametrize('q', [8, 10, 11, 12, 13, 14])
 @pytest.mark.parametrize('pair', [False, True])
 def test_device_harness_packing_arguments_on_host(library, q, pair):
@@ -252,7 +326,7 @@ def test_device_harness_packing_arguments_on_host(library, q, pair):
     import ctypes as C
     from types import SimpleNamespace
     import numpy as np
-    from ppu.support import Arena, packed, Arrangement
+    from tests.ppu.support import Arena, packed, Arrangement
     from quactlize.execution.native import arrangement
 
     allocations = {}
@@ -273,10 +347,8 @@ def test_device_harness_packing_arguments_on_host(library, q, pair):
     def canonical(q, out):
         C.memmove(out, C.byref(arrangement(q)), C.sizeof(Arrangement))
         return 0
+    canonical = C.CFUNCTYPE(C.c_int, C.c_int, C.POINTER(Arrangement))(canonical)
     sizes_fn = library.quactlize_ppu_kpack_sizes_for_arrangement_v1
-    # The same C struct has different Python class names in the two harnesses.
-    old_args = sizes_fn.argtypes
-    sizes_fn.argtypes = [C.c_int] * 4 + [C.c_void_p, C.c_void_p]
     def single(raw, low, high, units, n, k, experts, q, arr, stream):
         if raw == low:
             return 30
@@ -292,9 +364,6 @@ def test_device_harness_packing_arguments_on_host(library, q, pair):
         raw = np.concatenate((g, u), axis=1)
         return single(raw.ctypes.data, low, high, units, n * 2, k, experts, q, arr, stream)
     public = SimpleNamespace(canonical=canonical, sizes=sizes_fn, pack=single, pack_pair=paired)
-    try:
-        with Arena(sdk) as arena:
-            assert packed(arena, public, q, experts=3, pair=pair, bit_patterns=True)[3] is None
-        assert not allocations, 'harness leaked its owned buffers'
-    finally:
-        sizes_fn.argtypes = old_args
+    with Arena(sdk) as arena:
+        assert packed(arena, public, q, experts=3, pair=pair, bit_patterns=True)[3] is None
+    assert not allocations, 'harness leaked its owned buffers'

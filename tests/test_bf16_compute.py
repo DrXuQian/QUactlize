@@ -19,7 +19,7 @@ def test_real_host_compute_contract(tmp_path):
 
 
 def test_compute_is_in_cache_and_source_contract(tmp_path,monkeypatch):
-    from test_kpack_jit import fake_compiler
+    from tests.test_kpack_jit import fake_compiler
     from quactlize.decode.compiler import DecodeCompiler
     from quactlize.decode.grouped_compiler import GroupedComputeCompiler
     from quactlize.runtime.compiler import source_contract

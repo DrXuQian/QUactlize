@@ -6,9 +6,9 @@ import os
 import subprocess
 
 import pytest
-from test_kpack_native_dispatch import build_stub, probe, Choice, Request
-from test_kpack_jit import enable, helper_file
-from test_kpack_dynamic import dynamic_functions
+from tests.test_kpack_native_dispatch import build_stub, probe, Choice, Request
+from tests.test_kpack_jit import enable, helper_file
+from tests.test_kpack_dynamic import dynamic_functions
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -56,7 +56,7 @@ def test_public_provider_orchestration_and_poc_selection(tmp_path):
         str(ROOT / 'quactlize/execution/simt.cpp'), str(ROOT / 'quactlize/execution/q4_decode.cpp'),
         '-ldl', '-o', str(exe)], check=True)
     result=subprocess.run([str(exe)], check=True, text=True, stdout=subprocess.PIPE)
-    from test_prefill_refresh_policy import check_materialized
+    from tests.test_prefill_refresh_policy import check_materialized
     check_materialized(result.stdout)
     from quactlize.dispatch.planning import plan_smallm
     controls=[json.loads(line.split(' ',1)[1]) for line in result.stdout.splitlines()
