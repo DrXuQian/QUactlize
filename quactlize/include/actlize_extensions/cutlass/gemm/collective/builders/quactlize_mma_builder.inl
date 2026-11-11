@@ -351,8 +351,14 @@ template <
 template <int Pack, typename Arch, typename Block_N, typename LogicalBlock_K,
           bool Swap, int ScheduledDeliveryN = 0>
 struct MixGemm_KPack_Transpose_Operand {
-  static_assert(cute::is_same_v<Arch, cutlass::arch::PPU0010>,
-                "K-pack transport is bound to the proved PPU0010 b16 pair");
+  static constexpr bool Native15 = cute::is_same_v<Arch, cutlass::arch::PPU0015>;
+  static_assert(cute::is_same_v<Arch, cutlass::arch::PPU0010> || Native15,
+                "K-pack transport requires a matched PPU1.0/1.5 b16 pair");
+  // The B-only shadow MMA used by both existing converters remains valid:
+  // PPU1.5 changes A/C ownership, not this b16 B register layout.
+  static_assert(!Native15 || cute::is_same_v<
+      typename MMA_Traits<PPU0010_16x16x16_F32F16F16F32_TN>::BLayout,
+      typename MMA_Traits<PPU0015_16x16x16_F32F16F16F32_TN>::BLayout>);
   static_assert(Pack == 2 || Pack == 4 || Pack == 8 || Pack == 16,
                 "b16 K-pack supports int8/int4/int2/int1 planes");
   static_assert(Block_N{} % kquant_kpack::kTransportN == 0,
@@ -371,6 +377,8 @@ struct MixGemm_KPack_Transpose_Operand {
                 "K-pack resolved delivery N is 16, 32 or 64");
   static_assert(Block_N{} % DeliveryN == 0,
                 "K-pack delivery N must exactly tile tactic N");
+  static_assert(!Native15 || DeliveryN >= 32,
+                "PPU1.5 b16 AIU requires at least 64 contiguous bytes; DN16 is not admitted");
   static constexpr int InstNum = Block_N{} / DeliveryN;
 
   // The offline bytes remain canonical [K/Pack,N] b16 for every DeliveryN.
@@ -382,14 +390,17 @@ struct MixGemm_KPack_Transpose_Operand {
   // MMA, barriers and workspace ABI are independent of this scheduling axis.
   static constexpr int bits_per_aiu =
       DeliveryN * PhysicalBlockK{} * sizeof_bits<TransportElement>::value;
-  using CopyInst = PPU0010_AIU_LOAD<
-      cute::C<bits_per_aiu>, TransportElement, true>;
+  using CopyInst = cute::conditional_t<Native15,
+      PPU0015_AIU_LOAD<cute::C<bits_per_aiu>, TransportElement, true,
+                      PhysicalBlockK{}, DeliveryN>,
+      PPU0010_AIU_LOAD<cute::C<bits_per_aiu>, TransportElement, true>>;
   using GmemTiledCopy = decltype(
       make_tiled_copy(Copy_Atom<CopyInst, TransportElement>{},
                       Layout<Shape<_1, _1>, Stride<_1, _1>>{},
                       Layout<Shape<Int<DeliveryN>, PhysicalBlockK>>{}));
-  using SmemCopyOp = PPU0010_TSM_LD_SWZL<
-      TransportElement, PhysicalBlockK{}, DeliveryN, Swap, true, InstNum>;
+  using SmemCopyOp = cute::conditional_t<Native15,
+      PPU0015_TSM_LD_SWZL<TransportElement, PhysicalBlockK{}, DeliveryN, Swap, true, InstNum>,
+      PPU0010_TSM_LD_SWZL<TransportElement, PhysicalBlockK{}, DeliveryN, Swap, true, InstNum>>;
   using SmemCopyAtom = Copy_Atom<SmemCopyOp, TransportElement>;
   using SmemLayoutAtom = Layout<
       Shape<Int<DeliveryN>, PhysicalBlockK>,
@@ -414,7 +425,7 @@ struct MixGemm_KPack_Transpose_Operand {
           PhysicalSharedContract<
               StageSmemLayout, TransportElement, StageBytes,
               kquant_kpack::kTransportN,
-              kquant_kpack::kReaderPhysicalK * Pack, 32>;
+              kquant_kpack::kReaderPhysicalK * Pack, Native15 ? 64 : 32>;
   struct WriterBinding {
     using G2S = typename BDeliveryTags::G2S;
     using Shared = PhysicalSharedContract;
@@ -446,6 +457,20 @@ struct MixGemm_Q4_KPack4_Transpose_Operand
     : MixGemm_KPack_Transpose_Operand<
           q4_kpack4::kPack, Arch, Block_N, LogicalBlock_K, Swap,
           ScheduledDeliveryN> {};
+
+// PPU1.5 uses the vendor A writer/reader/layout as one matched contract.
+// A Swap=false is essential (the stage-1 exact negative proves why).
+// This selector leaves every existing PPU1.0 operand type unchanged.
+template<class Arch, class Element, class M, class K, class Legacy>
+struct SelectNativeAOperand { using type = Legacy; };
+template<class Element, class M, class K, class Legacy>
+struct SelectNativeAOperand<cutlass::arch::PPU0015, Element, M, K, Legacy> {
+  struct type : config::DefaultGemm_AIU_Operand<cutlass::arch::PPU0015, Element, false, M, K, false> {
+    // The builder names both conditional branches. No PPU1.5 M8 is admitted.
+    using SmemCopyAtomM8 = typename config::DefaultGemm_AIU_Operand<
+        cutlass::arch::PPU0015, Element, false, M, K, false>::SmemCopyAtom;
+  };
+};
 
 template <bool Enabled, int Pack, typename Arch, typename Block_N,
           typename LogicalBlock_K, bool Swap, int DeliveryN,
@@ -690,6 +715,9 @@ public:
       kpack_schedule_traits<KernelScheduleType>::HighPack;
   static constexpr int KPackDeliveryN =
       kpack_schedule_traits<KernelScheduleType>::DeliveryN;
+  static_assert(!cute::is_same_v<Arch, cutlass::arch::PPU0015> ||
+                    (HasKPack && ScheduledAPackRows == 0),
+                "PPU1.5 TC bring-up admits canonical K-pack and ordinary A only");
   using ScheduledBDelivery =
       typename kpack_schedule_traits<KernelScheduleType>::BDelivery;
   static constexpr int blockM = cute::get<0>(TileShape_MNK{});
@@ -821,8 +849,10 @@ public:
   // m8 is LOGICAL only.  PPU0010's AIU write and swzl read still operate on a physical 16-row cube; `.padz` fills
   // rows outside the real problem.  The collective exposes only the first logical eight rows to the MMA fragment,
   // but the descriptor, write payload and shared allocation all follow this physical operand.
-  using OrdinaryOperandA = quactlize_detail::MixGemm_AIU_Operand<
+  using LegacyOrdinaryOperandA = quactlize_detail::MixGemm_AIU_Operand<
       RealInternalElementA, false, Int<physicalBlockM>, Int<blockK>, true>;
+  using OrdinaryOperandA = typename quactlize_detail::SelectNativeAOperand<
+      Arch, RealInternalElementA, Int<physicalBlockM>, Int<blockK>, LegacyOrdinaryOperandA>::type;
   using DefaultOperandA = cute::conditional_t<ScheduledAPackRows == 0, OrdinaryOperandA,
       quactlize_detail::MixGemm_AIU_OperandPackedA<
           ScheduledAPackRows, RealInternalElementA, Int<physicalBlockM>, Int<blockK>, true>>;

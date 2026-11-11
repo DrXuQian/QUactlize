@@ -71,7 +71,7 @@ struct GroupedTypes {
       ppu_mixed_policy::KPackMainloopPolicy<F::quant_mode, Schedule, Tile, ScaleTile, Warp, ST, true, Low, High, 0, DN, Compute, Metadata>>;
   using Mainloop = typename Policy::CollectiveOp;
   using OutputEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
-      cutlass::arch::PPU0010, cutlass::arch::OpClassTensorOp, Tile, Warp,
+      quactlize::target::Arch, cutlass::arch::OpClassTensorOp, Tile, Warp,
       cutlass::epilogue::collective::EpilogueTileAuto, float, float,
       Output, cutlass::layout::RowMajor*, 16 / sizeof(Output),
       Output, cutlass::layout::RowMajor*, 16 / sizeof(Output),
