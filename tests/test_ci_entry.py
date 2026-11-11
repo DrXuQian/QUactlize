@@ -22,7 +22,8 @@ def test_inventory_has_one_owner_and_separates_legacy_and_device():
     assert "test_q8_kpack2.py" in HOST
     assert "test_dense_provider.py" in HOST
     assert "test_moe_decode_policy.py" in HOST
-    assert set(groups) == {"host", "accuracy"}
+    assert set(groups) == {"host", "accuracy", "zw890_bringup"}
+    assert "ppu/test_zw890_library.py" not in groups["accuracy"]
 
 
 @pytest.mark.parametrize("body,expected", [

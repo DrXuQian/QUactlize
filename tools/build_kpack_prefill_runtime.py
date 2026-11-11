@@ -12,9 +12,11 @@ import time
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from quactlize.runtime.compiler import FLAGS,LIBRARIES,sha
+from quactlize.runtime.target import flags_for_arch, definitions
 
 
-def build(sdk,output,jobs,*,line_info=False):
+def build(sdk,output,jobs,*,line_info=False,arch='ppu_10'):
+    flags=flags_for_arch(FLAGS,arch)
     if jobs<1:raise ValueError('jobs must be positive')
     for name in ('bin/hgcc', *[f'lib/lib{x}.so' for x in LIBRARIES]):
         if not (sdk/name).is_file():raise ValueError('missing SDK input: '+name)
@@ -29,8 +31,8 @@ def build(sdk,output,jobs,*,line_info=False):
     commands=[];start=time.monotonic()
     def compile(source):
         obj=output/(Path(source).stem+'.o')
-        command=([str(sdk/'bin/hgcc'),*FLAGS,*(['-lineinfo']if line_info else [])] if source.endswith('.cu') else
-                 ['g++','-std=c++17','-O2','-fPIC','-pthread',f'-I{sdk}/include'])
+        command=([str(sdk/'bin/hgcc'),*flags,*(['-lineinfo']if line_info else [])] if source.endswith('.cu') else
+                 ['g++','-std=c++17','-O2','-fPIC','-pthread',*definitions(arch),f'-I{sdk}/include'])
         command += [*[f'-I{p}' for p in include],'-c',str(ROOT/source),'-o',str(obj)]
         commands.append(command)
         with (output/(Path(source).stem+'.log')).open('w') as log:
@@ -53,7 +55,7 @@ def build(sdk,output,jobs,*,line_info=False):
         if name not in symbols:raise ValueError('missing dense helper policy: '+name)
     manifest=dict(schema='quactlize.prefill-runtime.v1',library=lib.name,sha256=sha(lib),source_hashes=inputs,
         runtime={f'lib{x}.so':sha(sdk/'lib'/f'lib{x}.so') for x in LIBRARIES},compiler_sha256=sha(sdk/'bin/hgcc'),
-        commands=commands,seconds=time.monotonic()-start,device_admission='PENDING_COMPOSED_RUNTIME')
+        commands=commands,arch=arch,seconds=time.monotonic()-start,device_admission='PENDING_COMPOSED_RUNTIME')
     (output/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     print('KPACK_PREFILL_BUILD COMPLETE '+str(lib),flush=True)
 

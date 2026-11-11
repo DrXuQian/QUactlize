@@ -13,9 +13,11 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from quactlize.runtime.compiler import FLAGS, LIBRARIES, sha
+from quactlize.runtime.target import flags_for_arch
 
 
-def build(sdk, output):
+def build(sdk, output, *, arch='ppu_10'):
+    flags = flags_for_arch(FLAGS, arch)
     sdk, output = sdk.resolve(), output.resolve()
     for path in [sdk / "bin/hgcc", *[sdk / "lib" / f"lib{x}.so" for x in LIBRARIES]]:
         if not path.is_file():
@@ -32,7 +34,7 @@ def build(sdk, output):
     hashes = {str(p.relative_to(ROOT)): sha(p) for p in inputs}
     commands = []
     for name in ("sizes.cpp", "ppu_pack.cu"):
-        commands.append([str(sdk / "bin/hgcc"), *FLAGS,
+        commands.append([str(sdk / "bin/hgcc"), *flags,
                          *[f"-I{d}" for d in includes], "-c", str(source / name),
                          "-o", str(output / f"{name}.o")])
 
@@ -56,7 +58,7 @@ def build(sdk, output):
         raise ValueError("packing inputs changed during compilation")
     manifest = dict(
         schema="quactlize.kpack-device-pack-build.v1", source_hashes=hashes,
-        compiler_sha256=sha(sdk / "bin/hgcc"), flags=FLAGS,
+        compiler_sha256=sha(sdk / "bin/hgcc"), flags=flags,
         runtime={f"lib{x}.so": sha(sdk / "lib" / f"lib{x}.so") for x in LIBRARIES},
         library=library.name, sha256=sha(library), compile_seconds=time.monotonic() - start,
         formats=[8, 10, 11, 12, 13, 14], device_validated=False,

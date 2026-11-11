@@ -31,6 +31,9 @@ inline std::string compile_parent(Jit const& jit, Config const& c,bool dense_io=
         std::to_string(c.tm), std::to_string(c.tn), std::to_string(c.tk),
         std::to_string(c.wm), std::to_string(c.wn), std::to_string(c.stages),
         std::to_string(c.ap), std::to_string(c.dn), std::to_string(c.parent_persistent)};
+#if defined(QUACTLIZE_PPU_ARCH) && QUACTLIZE_PPU_ARCH == 150
+    args.insert(args.end(),{"--arch","ppu_15"});
+#endif
     if (dense_io) args.push_back("--dense-io");
     if (compute_type==QK_COMPUTE_BF16) {
         args.push_back("--compute-type");args.push_back("bf16");

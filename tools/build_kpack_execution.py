@@ -13,12 +13,14 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from quactlize.runtime.compiler import FLAGS, LIBRARIES, sha
+from quactlize.runtime.target import flags_for_arch
 from quactlize.execution import q4_decode_codegen, simt_codegen
 from quactlize.execution.q8_refresh import capability as q8_capability
 from quactlize.execution.token_cta_policy import capability as token_capability
 
 
-def build(sdk, output, jobs, variant="production"):
+def build(sdk, output, jobs, variant="production", *, arch='ppu_10'):
+    flags = flags_for_arch(FLAGS, arch)
     if variant != "production":
         raise ValueError("unknown GEMV variant")
     sdk, output = sdk.resolve(), output.resolve()
@@ -101,7 +103,7 @@ def build(sdk, output, jobs, variant="production"):
     ):
         command = [
             str(sdk / "bin/hgcc"),
-            *FLAGS,
+            *flags,
             *defines,
             *[f"-I{d}" for d in includes],
             "-c",
@@ -148,7 +150,7 @@ def build(sdk, output, jobs, variant="production"):
         schema="quactlize.kpack-execution-build.v1",
         source_hashes=hashes,
         compiler_sha256=sha(sdk / "bin/hgcc"),
-        flags=FLAGS,
+        flags=flags,
         runtime={f"lib{x}.so": sha(sdk / "lib" / f"lib{x}.so") for x in LIBRARIES},
         library=library.name,
         sha256=sha(library),

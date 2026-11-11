@@ -28,25 +28,30 @@ HOST = (
     "test_prefill_dense.py", "test_dense_full_helpers.py",
     "test_dense_cont.py", "test_dense_compact.py",
     "test_dense_q8_paired.py",
+    "test_hgcc_identity.py", "test_zw890_bringup.py", "test_zw890_tc.py", "test_zw890_library.py",
 )
 
 # Sweep/importer tests, probes and legacy backends live on experiments/ppu-tuning.
 
 ACCURACY = ("ppu/test_public_library.py", "ppu/test_moe_library.py", "ppu/test_ffn_library.py")
+# Explicit candidate gate, owned by tools/run_zw890_library.py. Do not add it
+# to the default PPU1.0 accuracy run or imply native PPU1.5 admission yet.
+ZW890 = ("ppu/test_zw890_library.py",)
 
 
 def inventory(root=ROOT):
     """Every product test has an explicit owner; no implicit tooling suite."""
     files = {str(p.relative_to(root / "tests")) for p in (root / "tests").rglob("test_*.py")}
-    declared = set(HOST) | set(ACCURACY)
+    declared = set(HOST) | set(ACCURACY) | set(ZW890)
     missing = declared - files
     if missing:
         raise ValueError("CI inventory names missing tests: " + ", ".join(sorted(missing)))
     if files - declared:
         raise ValueError("unregistered product tests: " + ", ".join(sorted(files - declared)))
-    if len(HOST) != len(set(HOST)) or set(HOST) & set(ACCURACY):
+    if len(HOST) + len(ACCURACY) + len(ZW890) != len(declared):
         raise ValueError("duplicate CI test ownership")
     return {
         "host": sorted(HOST),
         "accuracy": sorted(ACCURACY),
+        "zw890_bringup": sorted(ZW890),
     }

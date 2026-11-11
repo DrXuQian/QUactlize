@@ -20,7 +20,7 @@ template<class Core,class Source,class Output> struct DenseTypes {
     using ElementC=Output;
     using ElementD=Output;
     using CollectiveEpilogue=typename cutlass::epilogue::collective::CollectiveBuilder<
-        cutlass::arch::PPU0010,cutlass::arch::OpClassTensorOp,Tile,Warp,
+        quactlize::target::Arch,cutlass::arch::OpClassTensorOp,Tile,Warp,
         cutlass::epilogue::collective::EpilogueTileAuto,float,float,
         Output,cutlass::layout::RowMajor,16/sizeof(Output),
         Output,cutlass::layout::RowMajor,16/sizeof(Output),

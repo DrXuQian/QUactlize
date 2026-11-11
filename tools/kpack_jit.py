@@ -19,6 +19,7 @@ from quactlize.decode.compiler import DecodeCompiler
 from quactlize.decode.grouped_compiler import GroupedComputeCompiler
 from types import SimpleNamespace
 from quactlize.runtime.tuning import ROUTES, digest
+from quactlize.runtime.target import ARCHES
 
 
 def parent_tuple(symbol, values):
@@ -81,10 +82,11 @@ def module_source(record):
     return Compiler.source(None,record['parent'],'')
 
 
-def compiler_for(sdk,cache,jobs,dense_io,compute_type):
-    if dense_io:return DecodeCompiler(sdk,cache,jobs,compute_type=compute_type)
-    if compute_type=='bf16':return GroupedComputeCompiler(sdk,cache,jobs,compute_type=compute_type)
-    return Compiler(sdk,cache,jobs)
+def compiler_for(sdk,cache,jobs,dense_io,compute_type,arch=None):
+    target = dict(arch=arch) if arch is not None else {}
+    if dense_io:return DecodeCompiler(sdk,cache,jobs,compute_type=compute_type,**target)
+    if compute_type=='bf16':return GroupedComputeCompiler(sdk,cache,jobs,compute_type=compute_type,**target)
+    return Compiler(sdk,cache,jobs,**target)
 
 
 def model_requests(path, tokens, include_sf=False, tensor_pattern=None):
@@ -153,6 +155,7 @@ def main():
         p.add_argument("--sdk", type=Path, required=True)
         p.add_argument("--cache", type=Path, required=True)
         p.add_argument("--compute-type", choices=("f16","bf16"), default="f16")
+        p.add_argument('--arch', choices=ARCHES, help='default: installed package target, otherwise ppu_10')
     resolve.add_argument("--parent", required=True)
     resolve.add_argument("--source-contract", help="dispatcher source identity; check before compiling")
     resolve.add_argument("--tuple", type=int, nargs=11, required=True, dest="values")
@@ -193,7 +196,7 @@ def main():
     elif args.command == "resolve":
         parent = parent_tuple(args.parent, args.values)
         print(f"KPACK_JIT_RESOLVE parent={parent['symbol']} cache={args.cache}", file=sys.stderr, flush=True)
-        compiler = compiler_for(args.sdk,args.cache,1,args.dense_io,args.compute_type)
+        compiler = compiler_for(args.sdk,args.cache,1,args.dense_io,args.compute_type,args.arch)
         contract = compiler.identity.get("base_source_contract", source_contract(compiler.identity))
         if args.source_contract and args.source_contract != contract:
             raise ValueError("JIT helper source differs from dispatcher; rebuild the small dispatcher")
@@ -210,7 +213,7 @@ def main():
             groups=prewarm_groups(plan_record)
             records=[]
             for compute,dense,parents in groups:
-                compiler=compiler_for(args.sdk,args.cache,args.jobs,dense,compute)
+                compiler=compiler_for(args.sdk,args.cache,args.jobs,dense,compute,args.arch)
                 contract=compiler.identity.get('base_source_contract',source_contract(compiler.identity))
                 if args.source_contract and args.source_contract!=contract:
                     raise ValueError('JIT helper source differs from dispatcher; rebuild the small dispatcher')
@@ -231,7 +234,7 @@ def main():
         records=[]
         for dense,selected in groups:
             if not selected:continue
-            compiler = compiler_for(args.sdk,args.cache,args.jobs,dense,args.compute_type)
+            compiler = compiler_for(args.sdk,args.cache,args.jobs,dense,args.compute_type,args.arch)
             contract = compiler.identity.get("base_source_contract", source_contract(compiler.identity))
             if args.source_contract and args.source_contract != contract:
                 raise ValueError("JIT helper source differs from dispatcher; rebuild the small dispatcher")

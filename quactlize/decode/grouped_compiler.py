@@ -5,10 +5,10 @@ from quactlize.runtime.tuning import digest
 
 
 class GroupedComputeCompiler(Compiler):
-    def __init__(self, sdk, cache, jobs=1, compute_type="bf16"):
+    def __init__(self, sdk, cache, jobs=1, compute_type="bf16", *, arch=None):
         if compute_type not in ("f16", "bf16"):
             raise ValueError("grouped compute must be f16 or bf16")
-        super().__init__(sdk, cache, jobs)
+        super().__init__(sdk, cache, jobs, arch=arch)
         self.compute_type = compute_type
         self.identity["base_source_contract"] = source_contract(self.identity)
         self.identity["kernel"] = digest({"base": self.kernel_identity, "compute_type": compute_type})

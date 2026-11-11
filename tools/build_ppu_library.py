@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from quactlize.runtime.compiler import (Compiler, FLAGS, LIBRARIES, HEADER_SUFFIXES,
                                        sha, source_contract, validate_actlize_headers)
+from quactlize.runtime.target import ARCHES, definitions, flags_for_arch, selected_arch
 from tools.build_kpack_pack import build as build_pack
 from tools.build_kpack_execution import build as build_execution
 from tools.build_kpack_prefill_runtime import build as build_prefill
@@ -43,7 +44,7 @@ PUBLIC_EXPORTS = (
 )
 JIT_PYTHON = (
     'quactlize/__init__.py', 'quactlize/runtime/__init__.py',
-    'quactlize/runtime/compiler.py', 'quactlize/runtime/tuning.py',
+    'quactlize/runtime/compiler.py', 'quactlize/runtime/tuning.py', 'quactlize/runtime/target.py',
     'quactlize/runtime/dispatch.py', 'quactlize/runtime/candidates.py',
     'quactlize/decode/compiler.py', 'quactlize/decode/grouped_compiler.py',
     'tools/kpack_jit.py', 'tools/gguf_header.py', 'quactlize/gguf_roles.py',
@@ -68,6 +69,8 @@ def stage_jit(compiler, destination):
                      p.name.lower().startswith(('license', 'copyright', 'notice')))
     for source in sorted(files):
         copy_relative(source, destination)
+    if compiler.arch != 'ppu_10':
+        (destination/'quactlize/runtime/target.json').write_text(json.dumps(dict(arch=compiler.arch))+'\n')
     return files
 
 
@@ -101,6 +104,13 @@ def verify(output):
         raise ValueError('unknown public library manifest')
     if manifest.get('library') != PUBLIC_LIBRARY or PUBLIC_LIBRARY not in manifest['payloads']:
         raise ValueError('public library must be ' + PUBLIC_LIBRARY)
+    arch = selected_arch(manifest.get('arch', 'ppu_10'))
+    target_file = output/'quactlize-runtime/jit/quactlize/runtime/target.json'
+    jit_arch = json.loads(target_file.read_text())['arch'] if target_file.is_file() else 'ppu_10'
+    if jit_arch != arch:
+        raise ValueError('public library and installed JIT targets differ')
+    if arch == 'ppu_15' and str(target_file.relative_to(output)) not in manifest['payloads']:
+        raise ValueError('native JIT target is not sealed in the package payloads')
     for name, expected in manifest['payloads'].items():
         path = output / name
         if not path.resolve().is_relative_to(output.resolve()) or not path.is_file() or sha(path) != expected:
@@ -167,7 +177,10 @@ def verify(output):
     return manifest
 
 
-def build(sdk, output, jobs):
+def build(sdk, output, jobs, *, arch='ppu_10'):
+    arch = selected_arch(arch)
+    flags = flags_for_arch(FLAGS, arch)
+    host_defines = definitions(arch)
     # --library bypasses the legacy shell builder, including its gitlink guard.
     # Fail here before any output directory or expensive device compilation.
     validate_actlize_checkout(ROOT)
@@ -220,15 +233,15 @@ def build(sdk, output, jobs):
     (runtime/'final-selection.json').write_text(json.dumps(final_selection, indent=2)+'\n')
     # The existing device builders retain the exact production flags and
     # SIMT recipe inventory. No sweep, regenerated heuristic or fake backend.
-    build_pack(sdk, work / 'packing')
-    execution = build_execution(sdk, work / 'execution', jobs)
+    build_pack(sdk, work / 'packing', arch=arch)
+    execution = build_execution(sdk, work / 'execution', jobs, arch=arch)
     capabilities = validate_inventory(final_selection, execution, jit=True)
-    build_prefill(sdk, work / 'prefill', jobs)
+    build_prefill(sdk, work / 'prefill', jobs, arch=arch)
     for component, name in (('execution', 'libquactlize_ppu_execution.so'),
                             ('prefill', 'libquactlize_ppu_prefill.so')):
         shutil.copy2(work / component / name, runtime / name)
     shutil.copy2(work/'prefill/manifest.json',runtime/'prefill-runtime.json')
-    compiler = Compiler(sdk, work / 'modules', jobs)
+    compiler = Compiler(sdk, work / 'modules', jobs, arch=arch)
     contract = source_contract(compiler.identity)
     (work / 'catalog.inc').write_text(catalog([], contract))
     stage_jit(compiler, runtime / 'jit')
@@ -253,6 +266,7 @@ def build(sdk, output, jobs):
         print('QUACTLIZE_PPU_BUILD phase=' + name, flush=True)
 
     run('dispatch', ['g++', '-std=c++17', '-O2', '-fPIC', '-shared', '-pthread', '-Wl,-Bsymbolic',
+        *host_defines,
         '-I' + str(work), str(ROOT / 'quactlize/dispatch/binding.cpp'), '-ldl',
         '-o', str(runtime / 'libquactlize_kpack_dispatch.so')])
     include = [ROOT / 'quactlize/include', ROOT / 'quactlize/runtime', ROOT / 'quactlize/integrations',
@@ -262,8 +276,8 @@ def build(sdk, output, jobs):
     def compile_one(source, definitions=(), name=None):
         name = name or Path(source).stem
         obj = work / (name + '.o')
-        command = ([str(sdk / 'bin/hgcc'), *FLAGS] if source.endswith('.cu') else
-                   ['g++', '-std=c++17', '-O2', '-fPIC', '-pthread'])
+        command = ([str(sdk / 'bin/hgcc'), *flags] if source.endswith('.cu') else
+                   ['g++', '-std=c++17', '-O2', '-fPIC', '-pthread', *host_defines])
         run(name, [*command, *definitions, *['-I' + str(p) for p in include],
             '-c', str(ROOT / source), '-o', str(obj)])
         return obj
@@ -296,7 +310,7 @@ def build(sdk, output, jobs):
     payloads = {str(p.relative_to(output)): sha(p) for p in sorted(output.rglob('*'))
                 if p.is_file() and not p.is_relative_to(work)}
     manifest = dict(schema='quactlize.ppu-library.v1', library=PUBLIC_LIBRARY,
-        payloads=payloads, commands=commands, jit_source_contract=contract,
+        payloads=payloads, commands=commands, jit_source_contract=contract, arch=arch,
         sdk=compiler.sdk_identity, formats=[8, 10, 11, 12, 13, 14],
         source_hashes={str(p.relative_to(ROOT)): digest for p, digest in public_sources.items()},
         execution_receipt=execution,
@@ -311,6 +325,8 @@ def build(sdk, output, jobs):
         dense_helpers=dict(policy_sha256=sha(helper_policy),runtime_receipt='quactlize-runtime/prefill-runtime.json',
                            full_table_sha256=sha(FULL_HELPERS_HEADER),full_evidence_sha256=sha(FULL_HELPERS),
                            scope='ZW810_FULL_350_TYPED_POINTS; TC_SF_UNCHANGED; NO_GEMM_ROUTE_OR_DTYPE_CHANGE'),
+        policy_scope=('ZW810_ESTIMATES_NATIVE_PPU15_GEOMETRY_NOT_ZW890_MEASUREMENTS' if arch=='ppu_15'
+                      else 'ZW810_TABLES_AND_COMPATIBLE_PPU10_DEVICES'),
         performance_admission='NOT_MEASURED', seconds=time.monotonic() - start)
     (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     verify(output)
@@ -323,13 +339,15 @@ def main():
     parser.add_argument('--sdk', type=Path, default=Path(os.environ.get('PPU_SDK') or '/usr/local/PPU_SDK'))
     parser.add_argument('--output', type=Path, required=True, help='fresh package directory')
     parser.add_argument('--jobs', type=int, default=max(1, os.cpu_count() or 1))
+    parser.add_argument('--arch', choices=ARCHES, default='ppu_10',
+                        help='explicit package/JIT target; ppu_15 is the ZW890 bring-up candidate')
     parser.add_argument('--verify', action='store_true', help='verify an existing package without compilation')
     args = parser.parse_args()
     if args.verify:
         verify(args.output)
         print('QUACTLIZE_PPU_PACKAGE VERIFIED device_admission=UNCHANGED')
     else:
-        build(args.sdk, args.output, args.jobs)
+        build(args.sdk, args.output, args.jobs, arch=args.arch)
 
 
 if __name__ == '__main__':

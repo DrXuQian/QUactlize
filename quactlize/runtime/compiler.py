@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 
 from .tuning import ROUTES, digest
+from .target import flags_for_arch, selected_arch
 
 ROOT = Path(__file__).resolve().parents[2]
 FLAGS = [
@@ -158,7 +159,9 @@ def materialize_parent(parent):
 
 
 class Compiler:
-    def __init__(self, sdk, cache, jobs=1):
+    def __init__(self, sdk, cache, jobs=1, *, arch=None):
+        self.arch = selected_arch(arch)
+        self.flags = flags_for_arch(FLAGS, self.arch)
         self.sdk = Path(sdk).resolve()
         self.cache = Path(cache).resolve()
         if jobs < 1:
@@ -194,14 +197,20 @@ class Compiler:
         self.input_stats = {
             p: (p.stat().st_mtime_ns, p.stat().st_size)
             for p in paths + sdk_files + [Path(__file__), ROOT / "quactlize/decode/compiler.py",
-                                         ROOT / "quactlize/decode/grouped_compiler.py"]
+                                         ROOT / "quactlize/decode/grouped_compiler.py",
+                                         ROOT / "quactlize/runtime/target.py"]
         }
+        target_file = Path(__file__).with_name('target.json')
+        if target_file.is_file():
+            self.input_stats[target_file] = (target_file.stat().st_mtime_ns, target_file.stat().st_size)
         self.identity = dict(
             sdk=self.sdk_identity,
             kernel=self.kernel_identity,
-            flags=FLAGS,
+            flags=self.flags,
+            arch=self.arch,
             generator=digest({"base": sha(__file__), "decode": sha(ROOT / "quactlize/decode/compiler.py"),
-                              "grouped_compute": sha(ROOT / "quactlize/decode/grouped_compiler.py")}),
+                              "grouped_compute": sha(ROOT / "quactlize/decode/grouped_compiler.py"),
+                              "target": sha(ROOT / "quactlize/runtime/target.py")}),
             host=subprocess.check_output(["g++", "--version"], text=True),
         )
 
@@ -264,7 +273,7 @@ class Compiler:
                 commands = [
                     [
                         str(self.sdk / "bin/hgcc"),
-                        *FLAGS,
+                        *self.flags,
                         *defines,
                         *[f"-I{p}" for p in self.includes],
                         "-c",
