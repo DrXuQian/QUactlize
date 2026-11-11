@@ -93,7 +93,7 @@ def main():
     p.add_argument('--device', type=int, default=int(os.environ.get('DEVICE', '0')))
     p.add_argument('--jobs', type=int, default=2)
     p.add_argument('--output', type=Path)
-    p.add_argument('--cohort', choices=('dense', 'supplement'), default='dense')
+    p.add_argument('--cohort', choices=('dense', 'supplement', 'grouped-fq'), default='dense')
     p.add_argument('--plan-only', action='store_true')
     p.add_argument('--build-only', action='store_true')
     a = p.parse_args()

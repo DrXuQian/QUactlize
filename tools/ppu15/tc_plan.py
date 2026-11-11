@@ -14,6 +14,18 @@ def row_counts(m, replay):
     return (m, 0, 0) if replay == 0 else (0, 0, m)
 
 
+def grouped_launch(parent, m, split, compute_units):
+    # Match production recipe()/bounded_entries(), with max_rows=m and one
+    # CTA/CU. Device capacity alone is not enough: prepare also rejects a
+    # persistent grid larger than the directory's logical work bound.
+    tm, tn = parent['tm'], parent['tn']
+    blocks_m = min(EXPERTS*((m+tm-1)//tm), (m+min(m, EXPERTS)*(tm-1))//tm)
+    work = blocks_m*((NK[0]+tn-1)//tn)*split
+    persistent = int(parent['persistent'] == 1)
+    return dict(algorithm=persistent, grid=min(compute_units, work) if persistent else 0,
+                work_upper=work)
+
+
 def parents(cohort='dense'):
     if cohort == 'dense':
         pairs = ((12, 'fq-dense'), (12, 'sf-dense'), (14, 'fq-dense'),
@@ -23,6 +35,8 @@ def parents(cohort='dense'):
         pairs += [(q, route) for q in (10, 11, 12, 13, 14)
                   for route in ('fq-grouped', 'sf-grouped')]
         pairs += [(8, 'sf-grouped')]
+    elif cohort == 'grouped-fq':
+        pairs = [(q, 'fq-grouped') for q in (10, 11, 12, 13, 14)]
     else:
         raise ValueError('unknown PPU15 TC cohort')
     return [dict(qtype=q, route=route, tm=64, tn=64, tk=256,
@@ -52,6 +66,8 @@ def plan(cohort='dense'):
                 precision='DENSE_F16_GROUPED_BF16_A_AND_C_FP32_ACCUMULATION',
                 m_semantics='dense rows or concatenated grouped rows; NOT logical MoE tokens',
                 production_enabled=False, performance_admitted=False,
-                remaining=(['GROUPED_BF16', 'Q2_Q3_Q5_TC'] if cohort == 'dense' else []) +
+                remaining=({'dense': ['GROUPED_BF16', 'Q2_Q3_Q5_TC'],
+                            'grouped-fq': ['RETAIN_PRIOR_DENSE_AND_GROUPED_SF_RESULTS'],
+                            'supplement': []}[cohort]) +
                           ['M8_PACKED_A_RECIPE_TRANSLATION', 'PRODUCTION_SF_EXPANSION',
                            'INDEXED_ROUTER_FFN', 'FULL_LIBRARY_SELECTION', 'MODEL_INTEGRATION', 'PERFORMANCE'])

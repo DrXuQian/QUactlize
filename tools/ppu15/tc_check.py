@@ -17,7 +17,7 @@ from quactlize.decode.native_compute import (
     ComputeMetadataIdentity, GroupedDeviceCall, GroupedMetadataCall, bind_compute,
 )
 from tools.ppu15.check import Pack, setup
-from tools.ppu15.tc_plan import EXPERTS, MS, NK, SPLITS, row_counts
+from tools.ppu15.tc_plan import EXPERTS, MS, NK, SPLITS, grouped_launch, row_counts
 
 
 def run_case(sdk, module, device, weights, pointers, metadata, zero, gold, arr, m, split):
@@ -93,9 +93,8 @@ def run_grouped_case(sdk, module, device, weights, pointers, metadata, zero, gol
         wrapped = GroupedMetadataCall(
             version=4, size=C.sizeof(GroupedMetadataCall), compute_type=1, metadata_type=metadata_type,
             device_call=GroupedDeviceCall(2, C.sizeof(GroupedDeviceCall), call, m, 0))
-        persistent = int(parent['persistent'] == 1)
-        recipe = Recipe(1, C.sizeof(Recipe), persistent, split,
-                        device['compute_units'] if persistent else 0)
+        schedule = grouped_launch(parent, m, split, device['compute_units'])
+        recipe = Recipe(1, C.sizeof(Recipe), schedule['algorithm'], split, schedule['grid'])
         resources = Resources()
         checked(query(C.byref(wrapped), C.byref(recipe), C.byref(resources)), 'grouped BF16 query')
         a = arena.buffer(m*k*2); out = arena.buffer(m*n*2)
@@ -108,6 +107,10 @@ def run_grouped_case(sdk, module, device, weights, pointers, metadata, zero, gol
         offsets.write(np.cumsum((0, *row_counts(m, 0)), dtype='i4'))
         arena.sync()
         handle = C.c_void_p(); graph = None; worst = 0.
+        print('ZW890_TC_PREPARE '+json.dumps(dict(
+            parent=parent['symbol'], m=m, n=n, k=k, split=split, **schedule,
+            compute_units=device['compute_units'], occupancy=resources.occupancy,
+            shared_bytes=resources.shared_bytes, workspace_bytes=resources.workspace_bytes)), flush=True)
         checked(prepare(C.byref(wrapped), C.byref(recipe), C.byref(handle)), 'grouped BF16 prepare')
         launch = lambda: run(handle, stream)
         try:

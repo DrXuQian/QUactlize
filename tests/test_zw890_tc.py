@@ -1,9 +1,10 @@
 from pathlib import Path
+import subprocess
 
 import pytest
 
 from quactlize.runtime.compiler import Compiler, validate_parent
-from tools.ppu15.tc_plan import EXPERTS, MS, SPLITS, case_keys, parents, plan, row_counts, verdict
+from tools.ppu15.tc_plan import EXPERTS, MS, NK, SPLITS, case_keys, grouped_launch, parents, plan, row_counts, verdict
 from tools.run_zw890_tc import module_commands, module_source
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -83,7 +84,42 @@ def test_grouped_worker_uses_explicit_bf16_abi_and_live_device_offsets():
     assert 'offsets.write(bounds)' in text and 'source *= 2**20' in text
     assert 'matmul_reference(source[begin:end], gold[expert]' in text
     assert 'metadata_type = 0 if parent' in text
-    assert "device['compute_units'] if persistent else 0" in text
+    assert "grouped_launch(parent, m, split, device['compute_units'])" in text
+    assert text.index("print('ZW890_TC_PREPARE '") < text.index("'grouped BF16 prepare'")
+
+
+def test_m1_grid_does_not_exceed_four_logical_tasks():
+    parent = parents('grouped-fq')[0]
+    schedule = grouped_launch(parent, 1, 1, 39)
+    assert schedule == dict(algorithm=1, grid=4, work_upper=4)
+    # Reproduce the old recipe's admission failure before any device launch.
+    assert 39 > schedule['work_upper']
+    assert grouped_launch(parent, 1, 2, 39)['grid'] == 8
+
+
+def test_grouped_fq_retry_does_not_repeat_dense_or_sf():
+    p = plan('grouped-fq')
+    assert p['expected'] == 60 and len(p['parents']) == 5
+    assert p['parents'] == [r for r in parents('supplement') if r['route'] == 'fq-grouped']
+
+
+def test_grouped_launch_matches_shipping_cpp_recipe(tmp_path):
+    # Compile the existing host probe, not a copy of its directory formula.
+    exe = tmp_path/'recipe'
+    subprocess.run(['g++', '-std=c++17', '-O2', f'-I{ROOT}',
+                    f'-I{ROOT / "quactlize/include"}', f'-I{ROOT / "third_party/actlize/include"}',
+                    str(ROOT/'tests/kpack_dispatch_recipe.cpp'), '-o', str(exe)], check=True)
+    for parent in (parents('grouped-fq')[0], parents('supplement')[-1]):
+        for cu in (1, 39, 64, 72):
+            for m in (*MS, 4096):
+                for split in SPLITS:
+                    got = grouped_launch(parent, m, split, cu)
+                    fields = (2 if parent['persistent'] == 1 else 3, m, NK[0], EXPERTS, m,
+                              parent['tm'], parent['tn'], split, got['algorithm']*2, 1, 2, cu)
+                    line = subprocess.check_output([str(exe), *map(str, fields)], text=True)
+                    native = {k: int(v) for k, v in (item.split('=') for item in line.split())}
+                    assert native == dict(algorithm=got['algorithm'], split=split,
+                                          grid=got['grid'], work=got['work_upper'])
 
 
 def test_incomplete_duplicate_wrong_shape_or_failed_rows_do_not_pass():
