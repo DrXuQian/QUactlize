@@ -92,6 +92,7 @@ def mma(sdk,lib,emit):
 
 def delivery(sdk,lib,emit):
     run=bind(lib,'qz15_delivery',[C.c_void_p]*2+[C.c_int]*3+[C.c_void_p])
+    legacy=bind(lib,'qz15_delivery_legacy',[C.c_void_p]*2+[C.c_int,C.c_void_p])
     for width in (32,64):
         for trans in (0,1):
             for padding in (0,32):
@@ -103,15 +104,32 @@ def delivery(sdk,lib,emit):
                     launch=lambda:run(source.ptr,out.ptr,width,trans,leading,stream)
                     try:
                         for replay in range(3):
+                            context=dict(orientation='B-transposed' if trans else 'A',
+                                         width=width,leading=leading,replay=replay)
+                            print('ZW890_DELIVERY_START '+json.dumps(context),flush=True)
                             tags=((np.arange(3*16*leading,dtype='u4')*37+replay*101)&65535).astype('u2').reshape(3,16,leading)
                             source.write(tags);out.poison();arena.sync()
+                            if not trans and width==leading==32 and replay==0:
+                                checked(legacy(source.ptr,out.ptr,leading,stream),'legacy A reader')
+                                arena.sync()
+                                old=np.frombuffer(out.bytes(),'u2').reshape(tags.shape)
+                                r,c=np.indices((16,32))
+                                # Independently described 8x8 quadrant exchange, not a
+                                # permissive "any error" negative. Must reproduce 768/1536.
+                                wrong=tags[:,r%8+8*((c%16)//8),16*(c//16)+c%8+8*(r//8)]
+                                np.testing.assert_array_equal(old,wrong)
+                                mismatches=int(np.count_nonzero(old!=tags))
+                                if mismatches!=768:
+                                    raise AssertionError(f'legacy A negative differs: {mismatches}/1536')
+                                print('ZW890_DELIVERY_LEGACY PASS mismatches=768/1536',flush=True)
+                                out.poison();arena.sync()
                             if replay==1:graph=Replay(sdk,stream,launch,1)
                             checked(graph() if graph else launch(),'native1.5 AIU/TSM pair')
                             arena.sync()
                             expected=tags[:,:,:width]
                             if trans:expected=expected.transpose(0,2,1)
                             got=np.frombuffer(out.bytes(),'u2').reshape(expected.shape)
-                            np.testing.assert_array_equal(got,expected)
+                            np.testing.assert_array_equal(got,expected,err_msg=json.dumps(context))
                             source.guard()
                         emit(dict(suite='delivery',orientation='B-transposed' if trans else 'A',
                                   width=width,leading=leading,shared_stages=3,replays=2,status='PASS'))

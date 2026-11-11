@@ -45,6 +45,36 @@ def test_product_does_not_reference_the_probe():
             assert 'tools/ppu15' not in text and 'qz15_simt' not in text
 
 
+def test_a_reader_repair_and_exact_legacy_negative_remain_bound():
+    native=(ROOT/'tools/ppu15/native.cu').read_text()
+    assert 'constexpr bool Swap=Trans || LegacyA;' in native
+    assert 'Int<Rows>,Int<Cols>,Swap>' in native
+    assert 'native_delivery<false,32,true>' in native
+    assert 'PPU0015_TSM_LD_SWZL<E,16,Width,Swap,Trans,1>' in native
+    check=(ROOT/'tools/ppu15/check.py').read_text()
+    assert "bind(lib,'qz15_delivery_legacy'" in check
+    assert 'np.testing.assert_array_equal(old,wrong)' in check
+    assert 'mismatches!=768' in check
+
+
+def test_quadrant_swap_matches_reported_raw_bit_signature():
+    # No GPU/NumPy or tolerance: tags identify their exact original word.
+    bad=0
+    maximum=0
+    for stage in range(3):
+        for row in range(16):
+            for col in range(32):
+                rr=row%8+8*((col%16)//8)
+                cc=16*(col//16)+col%8+8*(row//8)
+                got=37*(stage*512+rr*32+cc)
+                want=37*(stage*512+row*32+col)
+                bad+=got!=want
+                maximum=max(maximum,abs(got-want))
+                if stage==row==0 and col==31:
+                    assert (want,got)==(1147,10323)
+    assert bad==768 and maximum==9176
+
+
 @pytest.mark.parametrize('name', ['ZW890', 'PPU-ZW890', 'ZW-M890P'])
 def test_zw890_runtime_names(name):
     # Real ZW-M890P reports a CUDA compatibility capability of8.9, not1.5.

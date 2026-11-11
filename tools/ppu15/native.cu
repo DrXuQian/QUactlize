@@ -85,13 +85,22 @@ extern "C" int qz15_mma(void const* a,void const* b,void const* c,void* d,
 // Test the vendor pair as a unit: opaque b16 tags, padded global stride,
 // three disjoint shared stages, and both A and transposed-B orientations.
 // No dequantization or arithmetic is allowed to hide a wrong word mapping.
-template<bool Trans,int Width>
+template<bool Trans,int Width,bool LegacyA=false>
 __global__ void native_delivery(uint16_t const* source,uint16_t* output,int leading) {
     constexpr int Rows=Trans?Width:16, Cols=Trans?16:Width, Stages=3;
     using E=cutlass::half_t;
+    // PPU0015 GemmConfig uses Swap=false for A and true for B. Here Trans
+    // also selects the B test. The old unconditional true swapped two 8x8
+    // quadrants of every A fragment (50% of the opaque tags).
+    constexpr bool Swap=Trans || LegacyA;
     using Operand=cutlass::gemm::config::DefaultGemm_AIU_Operand<
-        cutlass::arch::PPU0015,E,Trans,Int<Rows>,Int<Cols>,true>;
+        cutlass::arch::PPU0015,E,Trans,Int<Rows>,Int<Cols>,Swap>;
     using SL=decltype(tile_to_shape(typename Operand::SmemLayoutAtom{},Shape<Int<Rows>,Int<Cols>,Int<Stages>>{}));
+    // Bind the minimal host CuTe oracle to these exact factory results.
+    static_assert(is_same_v<typename Operand::SmemLayoutAtom,
+        Layout<Shape<Int<Rows>,Int<Cols>>,Stride<_1,Int<Rows>>>>);
+    static_assert(is_same_v<typename Operand::SmemCopyAtom,
+        Copy_Atom<PPU0015_TSM_LD_SWZL<E,16,Width,Swap,Trans,1>,E>>);
     __shared__ __align__(128) E shared[cosize_v<SL>];
     constexpr int H=Trans?Cols:Rows, W=Trans?Rows:Cols;
     AiuDesc desc{};
@@ -153,5 +162,13 @@ extern "C" int qz15_delivery(void const* src,void* dst,int width,int trans,int l
     if(trans && width==64) native_delivery<true,64><<<1,32,0,s>>>(a,b,leading);
     if(!trans && width==32) native_delivery<false,32><<<1,32,0,s>>>(a,b,leading);
     if(!trans && width==64) native_delivery<false,64><<<1,32,0,s>>>(a,b,leading);
+    return int(hggcGetLastError());
+}
+
+// Exact old A16x32 reader for the raw-bit negative; never a production path.
+extern "C" int qz15_delivery_legacy(void const* src,void* dst,int leading,void* stream) {
+    if(!src || !dst || leading<32) return -1;
+    native_delivery<false,32,true><<<1,32,0,static_cast<hggcStream_t>(stream)>>>(
+        static_cast<uint16_t const*>(src),static_cast<uint16_t*>(dst),leading);
     return int(hggcGetLastError());
 }
