@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a native PPU1.5 public package and run its bounded numerical gate."""
+"""Build or reuse a native PPU1.5 public package and run its bounded numerical gate."""
 import argparse
 import io
 import json
@@ -40,7 +40,7 @@ def run_phase(argv, stage, output, env):
 def review(output):
     archive = output.with_name(output.name+'.review.tgz')
     paths = [output/p for p in ('summary.json', 'source.json', 'build.log', 'accuracy.log',
-                              'accuracy.xml', 'package/manifest.json')]
+                              'accuracy.xml', 'package/manifest.json', 'package-manifest.json')]
     # Include compilation diagnostics but no binaries, caches or JIT headers.
     paths += sorted((output/'package.build').rglob('*.log'))
     with tarfile.open(archive, 'x:gz') as tar:
@@ -62,23 +62,28 @@ def main():
     p.add_argument('--device', type=int, default=0)
     p.add_argument('--jobs', type=int, default=4)
     p.add_argument('--output', type=Path)
+    p.add_argument('--package', type=Path, help='test an existing package without rebuilding or modifying it')
     a = p.parse_args()
     if a.device < 0 or a.jobs < 1: p.error('nonnegative device and positive jobs required')
     sdk = a.sdk.resolve()
     if not (sdk/'bin/hgcc').is_file(): p.error('SDK must contain bin/hgcc')
+    if a.package and not (a.package/'manifest.json').is_file():
+        p.error('--package must contain the built public manifest.json')
     if a.output:
         output = a.output.resolve()
         try: output.mkdir(parents=True, exist_ok=False)
         except FileExistsError: p.error('--output must be a new directory')
     else: output = Path(tempfile.mkdtemp(prefix='qz-zw890-library-'))
+    package = a.package.resolve() if a.package else output/'package'
     env = dict(os.environ, PPU_SDK=str(sdk), CUDA_VISIBLE_DEVICES=str(a.device),
-               QUACTLIZE_CI_PACKAGE=str(output/'package'), QUACTLIZE_PPU_PYTHON=sys.executable,
+               QUACTLIZE_CI_PACKAGE=str(package), QUACTLIZE_CI_SUITE='accuracy',
+               QUACTLIZE_PPU_PYTHON=sys.executable,
                OPENBLAS_NUM_THREADS='1', OMP_NUM_THREADS='1', MKL_NUM_THREADS='1')
     for key in ('PYTEST_ADDOPTS', 'PYTEST_PLUGINS', 'PYTHONOPTIMIZE'): env.pop(key, None)
     env['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
     env['LD_LIBRARY_PATH'] = str(sdk/'lib')+':'+env.get('LD_LIBRARY_PATH', '')
     summary = dict(status='FAIL', expected=EXPECTED, arch='ppu_15', requested_device=a.device,
-                   sdk=str(sdk), performance_admitted=False,
+                   sdk=str(sdk), package=str(package), package_reused=bool(a.package), performance_admitted=False,
                    production_default_changed=False, scope='PUBLIC_PACKAGE_NUMERICS_NOT_MODEL_OR_PERFORMANCE')
     start = time.monotonic()
     try:
@@ -87,12 +92,22 @@ def main():
                      'tools/build_kpack_pack.py', 'tools/build_kpack_execution.py',
                      'tools/build_kpack_prefill_runtime.py', 'tests/ppu/test_zw890_library.py',
                      'tests/ppu/test_public_library.py', 'tests/ppu/test_moe_library.py',
-                     'tests/ppu/test_ffn_library.py', 'tests/ppu/support.py', 'tests/ppu/conftest.py',
+                     'tests/ppu/test_ffn_library.py', 'tests/ppu/support.py', 'tests/ppu/conftest.py', 'tests/conftest.py',
                      'ci/support/fixture.py', 'ci/support/graph.py'):
             identity['sources'][name] = sha(ROOT/name)
         (output/'source.json').write_text(json.dumps(identity, indent=2)+'\n')
-        run_phase([sys.executable, str(ROOT/'tools/build_ppu_library.py'), '--arch', 'ppu_15',
-                   '--sdk', str(sdk), '--output', str(output/'package'), '--jobs', str(a.jobs)], 'build', output, env)
+        if a.package:
+            print(f'ZW890_LIBRARY_REUSE package={package} build=SKIPPED verification=PUBLIC_FIXTURE', flush=True)
+        else:
+            run_phase([sys.executable, str(ROOT/'tools/build_ppu_library.py'), '--arch', 'ppu_15',
+                       '--sdk', str(sdk), '--output', str(package), '--jobs', str(a.jobs)], 'build', output, env)
+        # Preserve the receipt even when the package lives outside this run.
+        # The normal public fixture still verifies every payload, exports and
+        # SDK identity; only the unrelated legacy Torch _C guard is bypassed.
+        manifest = (package/'manifest.json').read_bytes()
+        (output/'package-manifest.json').write_bytes(manifest)
+        if json.loads(manifest).get('arch') != 'ppu_15':
+            raise ValueError('this gate requires a native ppu_15 public package')
         run_phase([sys.executable, '-m', 'pytest', '-q', '-s', '--tb=short',
                    'tests/ppu/test_zw890_library.py', '--junitxml='+str(output/'accuracy.xml')], 'accuracy', output, env)
         cases = list(ET.parse(output/'accuracy.xml').getroot().iter('testcase'))

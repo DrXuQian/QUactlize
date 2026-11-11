@@ -1,5 +1,6 @@
 """Host-only target/recipe isolation. Device accuracy has a separate runner."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -69,3 +70,72 @@ def test_review_keeps_diagnostics_without_binary_payloads(tmp_path):
     with tarfile.open(archive) as tar:
         assert sorted(tar.getnames()) == ['package.build/compile.log.tail', 'summary.json']
         assert tar.getmember('package.build/compile.log.tail').size == 1024*1024
+
+
+@pytest.mark.parametrize('reuse', [False, True])
+def test_runner_public_suite_ignores_only_unrelated_stale_extension(tmp_path, monkeypatch, reuse):
+    from tools import run_zw890_library as runner
+    # A real pytest session with the real legacy guard, but no device/library
+    # calls. The deliberately stale extension must never be loaded.
+    checkout = tmp_path/'guard-checkout'
+    testdir = checkout/'tests'; testdir.mkdir(parents=True)
+    (testdir/'conftest.py').write_bytes((ROOT/'tests/conftest.py').read_bytes())
+    testfile = testdir/'test_guard.py'
+    testfile.write_text('def test_host_only():\n    assert True\n')
+    csrc = checkout/'quactlize/csrc'; csrc.mkdir(parents=True)
+    stale = csrc.parent/'_C.host-fixture.so'; stale.write_bytes(b'NEVER_LOAD')
+    source = csrc/'ppu_backend.cpp'; source.write_text('// host fixture')
+    os.utime(stale, (100, 100)); os.utime(source, (200, 200))
+    sdk = tmp_path/'sdk'; (sdk/'bin').mkdir(parents=True)
+    (sdk/'bin/hgcc').write_bytes(b'NO_COMPILATION')
+    monkeypatch.setattr(runner, 'source_identity', lambda: {'sources': {}})
+    monkeypatch.setattr(runner, 'EXPECTED', 1)
+    monkeypatch.delenv('QUACTLIZE_CI_SUITE', raising=False)
+    phases = []
+
+    def phase(argv, stage, output, env):
+        phases.append(stage)
+        if stage == 'build':
+            package = output/'package'; package.mkdir()
+            (package/'manifest.json').write_text('{"arch":"ppu_15"}')
+            return
+        # Outside the public-suite entrypoint the same stale extension must
+        # still be rejected. Do not remove or globally disable its guard.
+        command = [sys.executable, '-m', 'pytest', '-q', str(testfile)]
+        legacy = dict(env); legacy.pop('QUACTLIZE_CI_SUITE', None)
+        result = subprocess.run(command, cwd=checkout, env=legacy, text=True, capture_output=True)
+        assert result.returncode == 4
+        assert 'THE BUILT EXTENSION IS OLDER' in result.stderr
+        result = subprocess.run(command+['--junitxml='+str(output/'accuracy.xml')],
+                                cwd=checkout, env=env, text=True, capture_output=True)
+        assert result.returncode == 0, result.stdout+result.stderr
+        assert env['QUACTLIZE_CI_SUITE'] == 'accuracy'
+
+    monkeypatch.setattr(runner, 'run_phase', phase)
+    out = tmp_path/'result'
+    argv = ['run_zw890_library.py', '--sdk', str(sdk), '--output', str(out)]
+    package = tmp_path/'existing-package' if reuse else out/'package'
+    if reuse:
+        package.mkdir()
+        (package/'manifest.json').write_text('{"arch":"ppu_15"}')
+        argv += ['--package', str(package)]
+    monkeypatch.setattr(sys, 'argv', argv)
+    assert runner.main() == 0
+    assert phases == (['accuracy'] if reuse else ['build', 'accuracy'])
+    assert (out/'package-manifest.json').read_bytes() == (package/'manifest.json').read_bytes()
+    assert sorted(p.name for p in package.iterdir()) == ['manifest.json']
+    summary = json.loads((out/'summary.json').read_text())
+    assert summary['package_reused'] == reuse and summary['package'] == str(package)
+    with tarfile.open(out.with_name(out.name+'.review.tgz')) as tar:
+        assert 'package-manifest.json' in tar.getnames()
+
+
+def test_reuse_missing_package_does_not_build_or_create_results(tmp_path, monkeypatch):
+    from tools import run_zw890_library as runner
+    sdk = tmp_path/'sdk'; (sdk/'bin').mkdir(parents=True)
+    (sdk/'bin/hgcc').write_bytes(b'NO_COMPILATION')
+    out = tmp_path/'result'
+    monkeypatch.setattr(sys, 'argv', ['run_zw890_library.py', '--sdk', str(sdk),
+        '--output', str(out), '--package', str(tmp_path/'absent')])
+    with pytest.raises(SystemExit) as exc: runner.main()
+    assert exc.value.code == 2 and not out.exists()
