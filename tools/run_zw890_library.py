@@ -20,6 +20,14 @@ from quactlize.runtime.compiler import sha
 EXPECTED = 174
 
 
+def accuracy_nodes(cohort):
+    path = 'tests/ppu/test_zw890_library.py'
+    if cohort == 'typed-bf16':
+        return [f'{path}::test_dense_auto[bf16-{m}-{q}]'
+                for m in (9, 16, 128) for q in (8, 10, 11, 12, 13, 14)]
+    return [path]
+
+
 def run_phase(argv, stage, output, env):
     path = output/(stage+'.log')
     started = time.monotonic()
@@ -40,9 +48,10 @@ def run_phase(argv, stage, output, env):
 def review(output):
     archive = output.with_name(output.name+'.review.tgz')
     paths = [output/p for p in ('summary.json', 'source.json', 'build.log', 'accuracy.log',
-                              'accuracy.xml', 'package/manifest.json', 'package-manifest.json')]
+                              'typed-input.log', 'accuracy.xml', 'package/manifest.json', 'package-manifest.json')]
     # Include compilation diagnostics but no binaries, caches or JIT headers.
     paths += sorted((output/'package.build').rglob('*.log'))
+    paths += sorted(p for p in (output/'typed-input').rglob('*') if p.suffix in ('.json', '.log'))
     with tarfile.open(archive, 'x:gz') as tar:
         for path in paths:
             if not path.is_file() or path.is_symlink(): continue
@@ -63,6 +72,8 @@ def main():
     p.add_argument('--jobs', type=int, default=4)
     p.add_argument('--output', type=Path)
     p.add_argument('--package', type=Path, help='test an existing package without rebuilding or modifying it')
+    p.add_argument('--cohort', choices=('all', 'typed-bf16'), default='all',
+                   help='all 174 cases or only the 18 reported native typed-BF16 failures')
     a = p.parse_args()
     if a.device < 0 or a.jobs < 1: p.error('nonnegative device and positive jobs required')
     sdk = a.sdk.resolve()
@@ -82,13 +93,16 @@ def main():
     for key in ('PYTEST_ADDOPTS', 'PYTEST_PLUGINS', 'PYTHONOPTIMIZE'): env.pop(key, None)
     env['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
     env['LD_LIBRARY_PATH'] = str(sdk/'lib')+':'+env.get('LD_LIBRARY_PATH', '')
-    summary = dict(status='FAIL', expected=EXPECTED, arch='ppu_15', requested_device=a.device,
+    nodes = accuracy_nodes(a.cohort)
+    expected = EXPECTED if a.cohort == 'all' else len(nodes)
+    summary = dict(status='FAIL', expected=expected, cohort=a.cohort, arch='ppu_15', requested_device=a.device,
                    sdk=str(sdk), package=str(package), package_reused=bool(a.package), performance_admitted=False,
                    production_default_changed=False, scope='PUBLIC_PACKAGE_NUMERICS_NOT_MODEL_OR_PERFORMANCE')
     start = time.monotonic()
     try:
         identity = source_identity()
-        for name in ('tools/run_zw890_library.py', 'tools/build_ppu_library.py',
+        for name in ('tools/run_zw890_library.py', 'tools/ppu15/typed_input_check.py', 'tools/ppu15/typed_input.cu',
+                     'tools/build_ppu_library.py',
                      'tools/build_kpack_pack.py', 'tools/build_kpack_execution.py',
                      'tools/build_kpack_prefill_runtime.py', 'tests/ppu/test_zw890_library.py',
                      'tests/ppu/test_public_library.py', 'tests/ppu/test_moe_library.py',
@@ -96,6 +110,9 @@ def main():
                      'ci/support/fixture.py', 'ci/support/graph.py'):
             identity['sources'][name] = sha(ROOT/name)
         (output/'source.json').write_text(json.dumps(identity, indent=2)+'\n')
+        run_phase([sys.executable, str(ROOT/'tools/ppu15/typed_input_check.py'), '--sdk', str(sdk),
+                   '--output', str(output/'typed-input')], 'typed-input', output, env)
+        summary['typed_input_gate'] = 'PASS_24_RAW_BIT_CASES_WITH_LEGACY_NEGATIVE'
         if a.package:
             print(f'ZW890_LIBRARY_REUSE package={package} build=SKIPPED verification=PUBLIC_FIXTURE', flush=True)
         else:
@@ -109,12 +126,12 @@ def main():
         if json.loads(manifest).get('arch') != 'ppu_15':
             raise ValueError('this gate requires a native ppu_15 public package')
         run_phase([sys.executable, '-m', 'pytest', '-q', '-s', '--tb=short',
-                   'tests/ppu/test_zw890_library.py', '--junitxml='+str(output/'accuracy.xml')], 'accuracy', output, env)
+                   *nodes, '--junitxml='+str(output/'accuracy.xml')], 'accuracy', output, env)
         cases = list(ET.parse(output/'accuracy.xml').getroot().iter('testcase'))
         passed = sum(not any(c.find(tag) is not None for tag in ('failure', 'error', 'skipped')) for c in cases)
         summary['passed'] = passed
-        if len(cases) != passed or passed != EXPECTED:
-            raise ValueError(f'accuracy coverage differs: passed={passed} cases={len(cases)} expected={EXPECTED}')
+        if len(cases) != passed or passed != expected:
+            raise ValueError(f'accuracy coverage differs: passed={passed} cases={len(cases)} expected={expected}')
         summary['status'] = 'PASS'
         return 0
     except Exception as exc:

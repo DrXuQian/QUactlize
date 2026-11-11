@@ -23,6 +23,16 @@ def test_arch_is_explicit_and_default_flags_are_unchanged():
     with pytest.raises(ValueError): selected_arch('ppu_17')
 
 
+def test_typed_input_publisher_matches_native_layout(tmp_path):
+    sdk = Path(os.environ.get('PPU_SDK', '/usr/local/PPU_SDK'))
+    exe = tmp_path/'typed-input'
+    subprocess.run(['g++', '-std=c++17', '-O2', f'-I{ROOT}/quactlize/include',
+        f'-I{ROOT}/third_party/actlize/include', f'-I{sdk}/include',
+        f'-I{sdk}/targets/x86_64-linux/include', ROOT/'tests/zw890_typed_input_host.cpp',
+        '-o', exe], check=True)
+    assert 'ZW890_TYPED_INPUT_HOST PASS' in subprocess.check_output([exe], text=True)
+
+
 @pytest.mark.parametrize('arch', ['ppu_10', 'ppu_15'])
 def test_compiled_device_and_recipe_contract(tmp_path, arch):
     exe = tmp_path/'target'
@@ -57,6 +67,17 @@ def test_public_accuracy_collection_is_complete_without_a_device():
                              'tests/ppu/test_zw890_library.py'], cwd=ROOT, text=True, capture_output=True)
     assert result.returncode == 0, result.stdout+result.stderr
     assert result.stdout.count('tests/ppu/test_zw890_library.py::') == EXPECTED == 174
+
+
+def test_typed_bf16_retry_keeps_exact_reported_scope():
+    from tools.run_zw890_library import accuracy_nodes
+    nodes = accuracy_nodes('typed-bf16')
+    assert len(nodes) == len(set(nodes)) == 18
+    result = subprocess.run([sys.executable, '-m', 'pytest', '--collect-only', '-q', *nodes],
+                            cwd=ROOT, text=True, capture_output=True)
+    assert result.returncode == 0, result.stdout+result.stderr
+    assert result.stdout.count('tests/ppu/test_zw890_library.py::') == 18
+    assert all('bf16-' in n and 'test_dense_auto' in n for n in nodes)
 
 
 def test_review_keeps_diagnostics_without_binary_payloads(tmp_path):
@@ -95,6 +116,7 @@ def test_runner_public_suite_ignores_only_unrelated_stale_extension(tmp_path, mo
 
     def phase(argv, stage, output, env):
         phases.append(stage)
+        if stage == 'typed-input': return # Device proof is not executed by this host fixture.
         if stage == 'build':
             package = output/'package'; package.mkdir()
             (package/'manifest.json').write_text('{"arch":"ppu_15"}')
@@ -121,7 +143,7 @@ def test_runner_public_suite_ignores_only_unrelated_stale_extension(tmp_path, mo
         argv += ['--package', str(package)]
     monkeypatch.setattr(sys, 'argv', argv)
     assert runner.main() == 0
-    assert phases == (['accuracy'] if reuse else ['build', 'accuracy'])
+    assert phases == (['typed-input', 'accuracy'] if reuse else ['typed-input', 'build', 'accuracy'])
     assert (out/'package-manifest.json').read_bytes() == (package/'manifest.json').read_bytes()
     assert sorted(p.name for p in package.iterdir()) == ['manifest.json']
     summary = json.loads((out/'summary.json').read_text())

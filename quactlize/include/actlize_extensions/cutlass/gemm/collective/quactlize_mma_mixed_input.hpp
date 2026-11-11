@@ -1081,7 +1081,7 @@ public:
         detail::issue_mixed_b_g2s<BDeliveryPolicy>(gmem_tiled_copy_B,
             tBgB(_,_,_,k_iter_crd),tBsB(_,_,_,pipe),warp_idx);
         detail::copy_decode_a<PhysicalATileM,int(size<2>(TileShape{})),int(size(TiledMma{})),
-            kPackedA,kAPackRows,kAPackPitch,kAPackStagePitch>(gA,storage.smem_a.begin(),
+            kPackedA,kAPackRows,kAPackPitch,kAPackStagePitch,Arch>(gA,storage.smem_a.begin(),
                 int(k_tile),pipe,thread_idx,gmem_tiled_copy_A.desc_.dim_h);
       } else if constexpr (kPackedA) {
         detail::issue_mixed_b_g2s<BDeliveryPolicy>(

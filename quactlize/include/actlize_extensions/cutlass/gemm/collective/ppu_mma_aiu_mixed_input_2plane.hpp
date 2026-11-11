@@ -928,7 +928,7 @@ public:
       auto k_iter_crd    = cute::idx2crd(*k_tile_iter, k_iter_shape);
       auto k_iter_crd_b2 = cute::idx2crd(*k_tile_iter, k_iter_shape_b2);
       if constexpr (kDecodeInput) {
-        detail::copy_decode_a<PhysicalATileM,int(size<2>(TileShape{})),int(size(TiledMma{})),false,0,0,0>(
+        detail::copy_decode_a<PhysicalATileM,int(size<2>(TileShape{})),int(size(TiledMma{})),false,0,0,0,Arch>(
             gA,storage.smem_a.begin(),int(*k_tile_iter),k_pipe,thread_idx,gmem_tiled_copy_A.desc_.dim_h);
         copy_aiu(gmem_tiled_copy_B,tBgB(_,_,_,k_iter_crd),tBsB(_,_,_,k_pipe),warp_idx);
       } else {
@@ -1112,7 +1112,7 @@ public:
           auto k_iter_crd    = cute::idx2crd(k_tile, k_iter_shape);
           auto k_iter_crd_b2 = cute::idx2crd(k_tile, k_iter_shape_b2);
           if constexpr (kDecodeInput) {
-            detail::copy_decode_a<PhysicalATileM,int(size<2>(TileShape{})),int(size(TiledMma{})),false,0,0,0>(
+            detail::copy_decode_a<PhysicalATileM,int(size<2>(TileShape{})),int(size(TiledMma{})),false,0,0,0,Arch>(
                 gA,storage.smem_a.begin(),int(k_tile),write_stage,thread_idx,gmem_tiled_copy_A.desc_.dim_h);
             copy_aiu(gmem_tiled_copy_B,tBgB(_,_,_,k_iter_crd),tBsB(_,_,_,write_stage),warp_idx);
           } else {

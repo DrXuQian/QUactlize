@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cutlass/cutlass.h"
+#include "cutlass/arch/arch.h"
 #include "cute/tensor.hpp"
 #include "ppu_a_pack.hpp"
 
@@ -24,10 +25,11 @@ template<class Source,class Compute> struct DecodeInputTraits<DecodeInput<Source
 
 // Publish the SAME physical AIU A cube consumed by the existing swizzle atom.
 // Each owner loads eight contiguous source elements and writes one uint128.
-// Real M is at most eight; every physical padding row is explicitly zeroed.
+// Every physical padding row is explicitly zeroed.
 // The packed-row variant retains its disjoint cube/stage pitches unchanged.
 template<int Height,int TileK,int Threads,bool Packed,int PackedRows,
-         int PackedPitch,int PackedStagePitch,class Tensor,class Compute>
+         int PackedPitch,int PackedStagePitch,class Arch=cutlass::arch::PPU0010,
+         class Tensor,class Compute>
 CUTLASS_DEVICE void copy_decode_a(Tensor const& source,Compute* destination,
     int k_tile,int stage,int thread,int valid_rows) {
   static_assert(Height>=16 && Height%16==0 && TileK%64==0);
@@ -56,8 +58,16 @@ CUTLASS_DEVICE void copy_decode_a(Tensor const& source,Compute* destination,
       CUTE_UNROLL
       for (int i=0;i<8;++i) values[i]=Compute(0.f);
     }
-    auto offset=stage*StagePitch+cube*Pitch+aPackRunOffsetHalfs(Height,row,run)
-        +(half^((row/4)&1))*8;
+    int offset=stage*StagePitch+cube*Pitch;
+    if constexpr (cute::is_same_v<Arch,cutlass::arch::PPU0015>) {
+      static_assert(!Packed,"PPU1.5 has no PPU1.0 packed-row A layout");
+      // Match the native b16 AIU's 128B row-major swizzle. PPU1.0's
+      // slice-major publisher cannot feed the PPU1.5 A reader, even though
+      // both cubes contain Height*64 halfwords. Keep each 16B store intact.
+      offset+=cute::Swizzle<3,3,3>{}(row*64+half_run*8);
+    } else {
+      offset+=aPackRunOffsetHalfs(Height,row,run)+(half^((row/4)&1))*8;
+    }
     __builtin_memcpy(destination+offset,&values,16);
   }
 }
