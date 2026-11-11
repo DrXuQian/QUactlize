@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build five native PPU1.5 TC modules and check 60 dense FQ/SF cases. No sweep."""
+"""Bounded native PPU1.5 TC correctness; --cohort supplement adds missing formats/grouped BF16."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 from tools import run_zw890_bringup as base
 from tools.ppu15.tc_plan import parents, plan, verdict
 from quactlize.runtime.compiler import Compiler, FLAGS, LIBRARIES
+from quactlize.decode.grouped_compiler import GroupedComputeCompiler
 
 
 def source_identity():
@@ -39,11 +40,29 @@ def module_commands(sdk, parent, work):
     return [
         [str(sdk/'bin/hgcc'), *flags, '-arch=ppu_15', '-DQUACTLIZE_PPU_ARCH=150',
          f'-DPPU_PACKED_SCALE={int(parent["route"].startswith("fq"))}',
-         f'-DPPU_PACKED_FORMAT={ {8: 0, 12: 0, 14: 4}[q] }',
+         f'-DPPU_PACKED_FORMAT={ {8: 0, 10: 2, 11: 3, 12: 0, 13: 1, 14: 4}[q] }',
          *['-I'+str(p) for p in includes], '-c', str(work/'kernel.cu'), '-o', str(work/'kernel.o')],
         ['g++', '-shared', '-Wl,-Bsymbolic', str(work/'kernel.o'), '-o', str(work/'kernel.so'),
          '-L'+str(sdk/'lib'), *['-l'+lib for lib in LIBRARIES]],
     ]
+
+
+def module_source(parent, key):
+    if parent['route'].endswith('grouped'):
+        # The source generator is pure apart from compute_type. Avoid its
+        # cache/SDK constructor: this fresh, explicit PPU15 build owns both.
+        generator = object.__new__(GroupedComputeCompiler)
+        generator.compute_type = 'bf16'
+        source = generator.source(parent, key)
+        checked_type = f'quactlize::runtime::Group<{"true" if parent["persistent"] == 1 else "false"}>::Mainloop'
+    else:
+        source = Compiler.source(None, parent, key)
+        checked_type = 'quactlize::runtime::Dense::Mainloop'
+    return source + f'''
+using CheckedMainloop = {checked_type};
+static_assert(cute::is_same_v<CheckedMainloop::ArchTag, cutlass::arch::PPU0015>);
+static_assert(cute::size<0>(CheckedMainloop::TiledMma::AtomShape_MNK{{}}) == 16);
+'''
 
 
 def build_module(sdk, output, parent, identity, env):
@@ -52,11 +71,7 @@ def build_module(sdk, output, parent, identity, env):
     key = hashlib.sha256(json.dumps(dict(source=identity, parent=parent, target=150),
                                     sort_keys=True).encode()).hexdigest()
     # Use the same code generator and module ABI as the existing runtime.
-    source = Compiler.source(None, parent, key) + '''
-static_assert(cute::is_same_v<quactlize::runtime::Dense::Mainloop::ArchTag,
-                              cutlass::arch::PPU0015>);
-static_assert(cute::size<0>(quactlize::runtime::Dense::Mainloop::TiledMma::AtomShape_MNK{}) == 16);
-'''
+    source = module_source(parent, key)
     (work/'kernel.cu').write_text(source)
     commands = module_commands(sdk, parent, work)
     receipt = dict(parent=parent, key=key, target='ppu_15', commands=commands,
@@ -78,11 +93,12 @@ def main():
     p.add_argument('--device', type=int, default=int(os.environ.get('DEVICE', '0')))
     p.add_argument('--jobs', type=int, default=2)
     p.add_argument('--output', type=Path)
+    p.add_argument('--cohort', choices=('dense', 'supplement'), default='dense')
     p.add_argument('--plan-only', action='store_true')
     p.add_argument('--build-only', action='store_true')
     a = p.parse_args()
     if a.plan_only:
-        print('ZW890_TC_PLAN '+json.dumps(plan())); return 0
+        print('ZW890_TC_PLAN '+json.dumps(plan(a.cohort))); return 0
     if a.device < 0 or a.jobs < 1: p.error('device must be nonnegative and jobs positive')
     sdk = a.sdk.resolve()
     if not (sdk/'bin/hgcc').is_file(): p.error('--sdk/PPU_SDK must contain bin/hgcc')
@@ -94,7 +110,8 @@ def main():
     env = dict(os.environ, PPU_SDK=str(sdk), CUDA_VISIBLE_DEVICES=str(a.device),
                OPENBLAS_NUM_THREADS='1', OMP_NUM_THREADS='1')
     env['LD_LIBRARY_PATH'] = str(sdk/'lib')+':'+env.get('LD_LIBRARY_PATH', '')
-    summary = dict(plan(), status='FAIL', requested_device=a.device, sdk=str(sdk), modules={})
+    cohort = parents(a.cohort)
+    summary = dict(plan(a.cohort), status='FAIL', requested_device=a.device, sdk=str(sdk), modules={})
     started = time.monotonic()
     print(f'ZW890_TC_START output={output} device={a.device}', flush=True)
     try:
@@ -105,9 +122,9 @@ def main():
         # Build only the small established device/packer support library; none
         # of stage1's 192 cases are rerun by this command.
         base.build(sdk, output, a.jobs, env)
-        with ThreadPoolExecutor(max_workers=min(a.jobs, len(parents()))) as pool:
+        with ThreadPoolExecutor(max_workers=min(a.jobs, len(cohort))) as pool:
             records = list(pool.map(lambda parent: build_module(
-                sdk, output, parent, summary['source'], env), parents()))
+                sdk, output, parent, summary['source'], env), cohort))
         (output/'modules.json').write_text(json.dumps(records, indent=2)+'\n')
         if a.build_only:
             summary['status'] = 'BUILD_ONLY'; return 0

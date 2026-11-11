@@ -3,8 +3,8 @@ from pathlib import Path
 import pytest
 
 from quactlize.runtime.compiler import Compiler, validate_parent
-from tools.ppu15.tc_plan import MS, SPLITS, case_keys, parents, plan, verdict
-from tools.run_zw890_tc import module_commands
+from tools.ppu15.tc_plan import EXPERTS, MS, SPLITS, case_keys, parents, plan, row_counts, verdict
+from tools.run_zw890_tc import module_commands, module_source
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -18,6 +18,22 @@ def test_exact_bounded_scope():
     assert set(MS) == {1, 8, 9, 16, 65, 128} and SPLITS == (1, 2)
 
 
+def test_supplement_only_adds_missing_formats_and_grouped_precision():
+    p = plan('supplement')
+    cohort = p['parents']
+    dense = [x for x in cohort if x['route'].endswith('dense')]
+    grouped = [x for x in cohort if x['route'].endswith('grouped')]
+    assert p['expected'] == 204 and len(cohort) == 17
+    assert len(dense) == 6 and len(grouped) == 11
+    assert set(x['qtype'] for x in dense) == {10, 11, 13}
+    assert set(x['qtype'] for x in grouped) == {8, 10, 11, 12, 13, 14}
+    assert not ({x['symbol'] for x in parents()} & {x['symbol'] for x in cohort})
+    assert all(x['route'] == 'sf-grouped' for x in grouped if x['qtype'] == 8)
+    assert 'NOT logical MoE tokens' in p['m_semantics']
+    assert 'INDEXED_ROUTER_FFN' in p['remaining']
+    assert not p['production_enabled'] and not p['performance_admitted']
+
+
 @pytest.mark.parametrize('parent', parents(), ids=lambda p: p['symbol'])
 def test_parent_uses_existing_generator_and_explicit_target(parent, tmp_path):
     validate_parent(parent)
@@ -29,6 +45,45 @@ def test_parent_uses_existing_generator_and_explicit_target(parent, tmp_path):
     assert '-DQUACTLIZE_PPU_ARCH=150' in compile_cmd
     assert '-DPPU_PACKED_SCALE='+str(int(parent['route'].startswith('fq'))) in compile_cmd
     assert '-Wl,-Bsymbolic' in link_cmd
+
+
+@pytest.mark.parametrize('parent', parents('supplement'), ids=lambda p: p['symbol'])
+def test_supplement_module_generation(parent, tmp_path):
+    validate_parent(parent)
+    source = module_source(parent, 'host-test')
+    assert 'cutlass::arch::PPU0015' in source
+    assert 'AtomShape_MNK{}) == 16' in source
+    grouped = parent['route'].endswith('grouped')
+    assert ('#define QK_USE_BF16_COMPUTE 1' in source) == grouped
+    if grouped:
+        persistent = parent['route'].startswith('fq')
+        assert parent['persistent'] == (1 if persistent else -1)
+        assert f'Group<{str(persistent).lower()}>::Mainloop' in source
+    else:
+        assert parent['persistent'] == -1 and 'Dense::Mainloop' in source
+    compile_cmd, _ = module_commands(Path('/example/sdk'), parent, tmp_path)
+    fmt = {8: 0, 10: 2, 11: 3, 12: 0, 13: 1, 14: 4}[parent['qtype']]
+    assert f'-DPPU_PACKED_FORMAT={fmt}' in compile_cmd
+
+
+@pytest.mark.parametrize('m', MS)
+def test_grouped_replay_changes_device_routes_without_changing_capacity(m):
+    counts = [row_counts(m, replay) for replay in range(3)]
+    assert all(len(c) == EXPERTS and sum(c) == m and min(c) >= 0 for c in counts)
+    assert counts[0] == (m, 0, 0) and counts[2] == (0, 0, m)
+    assert counts[1] != counts[2]
+    assert max(counts[1]) - min(counts[1]) <= 1
+
+
+def test_grouped_worker_uses_explicit_bf16_abi_and_live_device_offsets():
+    text = (ROOT/'tools/ppu15/tc_check.py').read_text()
+    assert 'bind_compute(module.lib, grouped=True)' in text
+    assert 'version=4, size=C.sizeof(GroupedMetadataCall), compute_type=1' in text
+    assert 'GroupedDeviceCall(2, C.sizeof(GroupedDeviceCall), call, m, 0)' in text
+    assert 'offsets.write(bounds)' in text and 'source *= 2**20' in text
+    assert 'matmul_reference(source[begin:end], gold[expert]' in text
+    assert 'metadata_type = 0 if parent' in text
+    assert "device['compute_units'] if persistent else 0" in text
 
 
 def test_incomplete_duplicate_wrong_shape_or_failed_rows_do_not_pass():
