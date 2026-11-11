@@ -4,6 +4,7 @@
 #include "smallm.hpp"
 #include "selection.hpp"
 #include "jit.hpp"
+#include "tc_target.hpp"
 #include "moe.hpp"
 #include "../execution/moe.h"
 #include "../execution/simt_validation.hpp"
@@ -395,7 +396,7 @@ std::shared_ptr<Module> load(Runtime& r,Image const& image,Config const& c,bool 
         (r.device>=0 && (r.device!=device || r.cu!=cu)))
         throw std::runtime_error("loaded module device differs from policy: probe_rc="+std::to_string(probe_rc)+
             " name="+std::string(name)+" ordinal="+std::to_string(device)+" compute_units="+std::to_string(cu)+
-            " supported_devices=PPU-ZW810/72,PPU-ZW610/64,PPU-ZW810E/positive-CUs previous_ordinal="+std::to_string(r.device)+
+            " supported_devices="+std::string(quactlize::device::policy_devices())+" previous_ordinal="+std::to_string(r.device)+
             " previous_compute_units="+std::to_string(r.cu));
     r.device=device; r.cu=cu;
     if (dense_io) {
@@ -541,7 +542,8 @@ extern "C" int quactlize_kpack_dispatch_enable_jit_v1(void* runtime,qks_jit_opti
 static int materialize(Runtime& r,qks_request_v1 const* req,qks_choice_v1* out,
                        TcDecision const& selected,SelectionContext context,int endpoint_type,int compute_type,
                        bool remember_request=true) {
-    auto config=selected.config();
+    std::string target_name;
+    auto config=target_config(selected.config(),target_name);
     Image const* image=nullptr;
     for (auto const& candidate : kImages)
         if (candidate.parent==config.symbol && candidate.dense_io==(endpoint_type!=0) &&

@@ -7,6 +7,12 @@ Recorded latencies remain ZW810 measurements, used as selection estimates on
 these devices. Launch grids, occupancy and resource checks use the actual
 device properties; ZW810E's CU count is not hard-coded to 72.
 
+ZW890 / ZW-M890P uses a separate native PPU1.5 package:
+`bash build.sh --library --arch ppu_15 --output NEW_DIRECTORY --jobs 8`.
+It reuses ZW810 tables as estimates, adapts TC operand layouts/geometry and
+queries the actual CU count. This is numerical support, not ZW890 timing
+admission. The default target remains `ppu_10`; packages are not interchangeable.
+
 `develop` contains production code, admitted selection tables, package builders
 and product correctness tests. `main` is the separately curated release line.
 Debug kernels, benchmarks, Asys/ACU sweeps, historical results and their tests
@@ -63,6 +69,11 @@ indexed execution. Existing v1/tuned paths are unchanged. See
 device initialization. The NVIDIA compatibility backend remains on its
 separate feature branch; it is not built or installed by this PPU package.
 
+Flash-Next native16/serving and the wheel currently support **PPU1.0 only**.
+The PPU1.5 package supports the canonical Q8_0/Q2_K–Q6_K dense/MoE/FFN APIs;
+Flash-Next query/prepare return an explicit unsupported-target diagnostic.
+Their PPU1.0 validation must not be interpreted as PPU1.5 coverage.
+
 ## Source layout
 
 | Directory | Responsibility |
@@ -74,8 +85,9 @@ separate feature branch; it is not built or installed by this PPU package.
 | `ci/`, `tests/` | Product CI, reusable numerical fixtures and ABI/selection regressions |
 
 PPU1.0/1.5 use pinned actlize; [PPU1.7](quactlize/backends/ppu17/README.md)
-remains an isolated backend. Canonical formats are Q8_0 K-pack2 and
-Q2_K–Q6_K per-plane K-pack. Consumers validate versioned arrangements; they
+remains an isolated backend. Canonical formats are Q8_0 K-pack2,
+Q2_K–Q6_K per-plane K-pack, plus distinct Q5_1 and Q2_0 layouts for native16.
+Consumers validate versioned arrangements; they
 must not guess an unknown layout.
 
 ## Performance work

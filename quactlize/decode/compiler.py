@@ -11,11 +11,11 @@ from quactlize.runtime.tuning import digest
 
 
 class DecodeCompiler(Compiler):
-    def __init__(self, sdk, cache, jobs=1, compute_type="f16"):
+    def __init__(self, sdk, cache, jobs=1, compute_type="f16", *, arch=None):
         if compute_type not in ("f16", "bf16"):
             raise ValueError("decode compute must be f16 or bf16")
         self.compute_type = compute_type
-        super().__init__(sdk, cache, jobs)
+        super().__init__(sdk, cache, jobs, arch=arch)
         base_source = source_contract(self.identity)
         directory = ROOT / "quactlize/decode"
         paths = sorted(p for p in directory.iterdir() if p.suffix in (".h", ".cuh"))

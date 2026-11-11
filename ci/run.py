@@ -101,6 +101,8 @@ def main(argv=None):
     parser.add_argument("--package", type=Path, help="fresh build destination or installed accuracy-test package")
     parser.add_argument("--output", type=Path, help="new directory for logs, JUnit and summary; default mkdtemp")
     parser.add_argument("--jobs", type=int, default=4, help="build parallelism; does not change test coverage")
+    parser.add_argument("--arch", choices=("ppu_10", "ppu_15"), default="ppu_10",
+                        help="build target only; accuracy uses the package manifest's target")
     parser.add_argument("--timeout", type=int, default=7200, help="seconds per phase, including cold JIT")
     parser.add_argument("--list", action="store_true", help="print suites/files/requirements without building or importing tests")
     args = parser.parse_args(argv)
@@ -157,13 +159,20 @@ def main(argv=None):
                 if package.exists():
                     raise ValueError(f"build package must be new (will not overwrite): {package}")
                 command = ["bash", str(ROOT / "build.sh"), "--library", "--sdk", str(sdk),
-                           "--output", str(package), "--jobs", str(args.jobs)]
+                           "--output", str(package), "--jobs", str(args.jobs), "--arch", args.arch]
             else:
+                suite = phase
+                if phase == "accuracy":
+                    arch = json.loads((package / "manifest.json").read_text()).get("arch", "ppu_10")
+                    if arch not in ("ppu_10", "ppu_15"):
+                        raise ValueError("unsupported package architecture: " + str(arch))
+                    suite = "accuracy-ppu15" if arch == "ppu_15" else "accuracy"
+                row["test_inventory"] = suite
                 command = [sys.executable, "-m", "pytest", "-q", "-ra", "--tb=short",
                            "--strict-markers", "-o", "addopts=", "-o", "xfail_strict=true", "-p", "no:cacheprovider",
                            "--junitxml=" + str(xml),
                            *(["-s"] if phase in ("accuracy", "serving") else []),
-                           *[str(ROOT / "tests" / name) for name in catalog[phase]]]
+                           *[str(ROOT / "tests" / name) for name in catalog[suite]]]
             row["command"] = command
             write_json(args.output / f"{phase}.command.json", command)
             row["returncode"] = run_command(command, log, dict(env, QUACTLIZE_CI_SUITE=phase), args.timeout)

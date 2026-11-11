@@ -5,6 +5,12 @@ Public headers: `quactlize/compat/api.h` (unchanged v1) and
 PPU matmul selection thresholds change. GPU qualification is separate from
 compilation and host/fake/export tests; neither qualifies PPU performance.
 
+This interface currently requires the **PPU1.0** build target. Native PPU1.5
+packages keep the C symbols but return `QPM_INVALID` and a target diagnostic;
+the PPU1.0-specific TC implementation is not compiled into them. The separate
+canonical dense/MoE/FFN PPU1.5 path remains available. ZW890 verification of
+that path does not qualify these Flash-Next interfaces.
+
 ## Canonical preparation for Flash-Next
 
 Use the existing packing API in the same `libncp_quactlize.so`:

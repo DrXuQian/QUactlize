@@ -34,6 +34,7 @@ HOST = (
     "test_serving.py",
     "test_wheel.py",
     "test_installed_gate_reporting.py",
+    "test_zw890_library.py",
 )
 
 # Sweep/importer tests, probes and legacy backends live on experiments/ppu-tuning.
@@ -41,12 +42,13 @@ HOST = (
 ACCURACY = ("ppu/test_public_library.py", "ppu/test_moe_library.py", "ppu/test_ffn_library.py",
             "ppu/test_compat_library.py", "ppu/test_packed_native.py", "ppu/test_q2_0_library.py")
 SERVING = ("serving/test_serving_device.py",)
+ACCURACY_PPU15 = ("ppu/test_zw890_library.py",)
 
 
 def inventory(root=ROOT):
     """Every product test has an explicit owner; no implicit tooling suite."""
     files = {str(p.relative_to(root / "tests")) for p in (root / "tests").rglob("test_*.py")}
-    declared = set(HOST) | set(ACCURACY) | set(SERVING)
+    declared = set(HOST) | set(ACCURACY) | set(SERVING) | set(ACCURACY_PPU15)
     missing = declared - files
     if missing:
         raise ValueError("CI inventory names missing tests: " + ", ".join(sorted(missing)))
@@ -58,4 +60,5 @@ def inventory(root=ROOT):
         "host": sorted(HOST),
         "accuracy": sorted(ACCURACY),
         "serving": sorted(SERVING),
+        "accuracy-ppu15": sorted(ACCURACY_PPU15),
     }

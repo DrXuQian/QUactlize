@@ -36,15 +36,20 @@ def test_public_ncp_library_name(tmp_path, fault):
         assert '(SONAME)' in dynamic and '[' + PUBLIC_LIBRARY + ']' in dynamic
 
 
-def test_jit_snapshot_has_the_same_source_identity_without_checkout(tmp_path):
+@pytest.mark.parametrize('arch', ['ppu_10', 'ppu_15'])
+def test_jit_snapshot_has_the_same_source_identity_without_checkout(tmp_path, arch):
     sdk = tmp_path / 'host-identity-only-sdk'
     for name in ('bin/hgcc', 'bin/hgobjdump', *('lib/lib' + n + '.so' for n in LIBRARIES)):
         path = sdk / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b'HOST TEST ONLY, NOT A RUNTIME OR COMPILER\n')
-    compiler = Compiler(sdk, tmp_path / 'cache')
+    compiler = Compiler(sdk, tmp_path / 'cache', arch=arch)
     snapshot = tmp_path / 'installed/quactlize-runtime/jit'
     stage_jit(compiler, snapshot)
+    target_file = snapshot/'quactlize/runtime/target.json'
+    assert target_file.is_file() == (arch == 'ppu_15')
+    if target_file.is_file():
+        assert json.loads(target_file.read_text()) == dict(arch=arch)
     env = {k: v for k, v in os.environ.items() if k != 'PYTHONPATH'}
     command = [sys.executable, '-c',
         'from pathlib import Path; import sys; '

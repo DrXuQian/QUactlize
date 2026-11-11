@@ -20,15 +20,18 @@ def source_files(root):
     return {str(p.relative_to(root)): file_sha256(p) for p in sorted(paths)}
 
 
-def build_info(root, sdk):
+def build_info(root, sdk, *, arch='ppu_10'):
+    from quactlize.runtime.target import selected_arch
+    arch = selected_arch(arch)
+    target = {'ppu_10': 'ppu10', 'ppu_15': 'ppu15'}[arch]
     revision = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
     vendor = subprocess.check_output(['git', '-C', str(root / 'third_party/actlize'),
                                       'rev-parse', 'HEAD'], text=True).strip()
     return dict(version=__version__, source_revision=revision, actlize_revision=vendor,
                 source_tree_dirty=bool(subprocess.check_output(
                     ['git', '-C', str(root), 'status', '--porcelain', '--untracked-files=normal'], text=True)),
-                source_hashes=source_files(root), supported_targets=['ppu10'], default_target='ppu10',
-                device_arch='ppu_10', sdk_release=sdk_release(sdk),
+                source_hashes=source_files(root), supported_targets=[target], default_target=target,
+                device_arch=arch, sdk_release=sdk_release(sdk),
                 runtime_api=(sdk / 'VERSION.txt').read_text().strip(),
                 platform_abi_versions=sdk_abi_versions(sdk),
                 device_validation='NOT_RUN_BY_BUILDER')

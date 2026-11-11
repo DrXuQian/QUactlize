@@ -22,7 +22,7 @@ def test_inventory_has_one_owner_and_separates_legacy_and_device():
     assert "test_q8_kpack2.py" in HOST
     assert "test_dense_provider.py" in HOST
     assert "test_moe_decode_policy.py" in HOST
-    assert set(groups) == {"host", "accuracy", "serving"}
+    assert set(groups) == {"host", "accuracy", "serving", "accuracy-ppu15"}
 
 
 @pytest.mark.parametrize('where,selected,expected', [
@@ -141,11 +141,15 @@ def test_test_only_requires_explicit_package_before_creating_output(tmp_path, ca
 
 
 @pytest.mark.parametrize("failed_phase", [None, "host", "accuracy"])
-def test_existing_package_checks_both_suites_without_rebuilding(tmp_path, monkeypatch, failed_phase):
+@pytest.mark.parametrize("arch", [None, "ppu_10", "ppu_15"])
+def test_existing_package_checks_both_suites_without_rebuilding(tmp_path, monkeypatch, failed_phase, arch):
     package = tmp_path / "installed package"
     package.mkdir()
     manifest = package / "manifest.json"
-    manifest.write_bytes(b"host runner fixture, not an admitted device package\n")
+    metadata = dict(scope="HOST RUNNER FIXTURE, NOT AN ADMITTED DEVICE PACKAGE")
+    if arch is not None:
+        metadata["arch"] = arch
+    manifest.write_text(json.dumps(metadata))
     original = manifest.read_bytes()
     checks, calls = [], []
 
@@ -162,7 +166,8 @@ def test_existing_package_checks_both_suites_without_rebuilding(tmp_path, monkey
         assert env["PYTHON"] == env["QUACTLIZE_PPU_PYTHON"] == sys.executable
         assert env["CUDA_VISIBLE_DEVICES"] == "3"
         selected = [p for p in argv if p.endswith(".py")]
-        assert selected == [str(run.ROOT / "tests" / p) for p in inventory()[phase]]
+        suite = "accuracy-ppu15" if phase == "accuracy" and arch == "ppu_15" else phase
+        assert selected == [str(run.ROOT / "tests" / p) for p in inventory()[suite]]
         xml = next(Path(x.split("=", 1)[1]) for x in argv if x.startswith("--junitxml="))
         # Even exit 0 cannot admit a skipped test in the combined test-only suite.
         body = "<skipped/>" if phase == failed_phase else ""

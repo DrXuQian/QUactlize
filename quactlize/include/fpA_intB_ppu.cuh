@@ -168,7 +168,7 @@ struct DenseQ4KPack4KernelTypes {
   using EpilogueSchedule = cutlass::epilogue::EpilogueSimtVectorizedWithoutEvt;
   using EpilogueTileType = cutlass::epilogue::collective::EpilogueTileAuto;
   using CollectiveEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
-      cutlass::arch::PPU0010, OperatorClass, TileShape, ClusterShape,
+      quactlize::target::Arch, OperatorClass, TileShape, ClusterShape,
       EpilogueTileType, ElementAccumulator, ElementAccumulator,
       ElementC, LayoutC, AlignmentC, ElementD, LayoutD, AlignmentD,
       EpilogueSchedule>::CollectiveOp;
@@ -212,7 +212,7 @@ struct DenseKPackKernelTypes {
   using EpilogueSchedule = cutlass::epilogue::EpilogueSimtVectorizedWithoutEvt;
   using EpilogueTileType = cutlass::epilogue::collective::EpilogueTileAuto;
   using CollectiveEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
-      cutlass::arch::PPU0010, OperatorClass, TileShape, ClusterShape,
+      quactlize::target::Arch, OperatorClass, TileShape, ClusterShape,
       EpilogueTileType, ElementAccumulator, ElementAccumulator,
       ElementC, LayoutC, AlignmentC, ElementD, LayoutD, AlignmentD,
       EpilogueSchedule>::CollectiveOp;

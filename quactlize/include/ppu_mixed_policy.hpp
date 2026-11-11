@@ -13,6 +13,7 @@
 #include "q4_kpack4_offline.hpp"
 #include "ppu_group_schedule.hpp"
 #include "ppu_tactic_space.hpp"
+#include "ppu_target.hpp"
 #include "quactlize_actlize.hpp"
 #include "cutlass/gemm/collective/builders/ppu_mma_builder.inl"
 
@@ -355,7 +356,7 @@ struct Q4KPack4MainloopPolicy {
   using ElementBInfo = typename OperandInfo<Mode, ElementB, void,
                                             ElementScale, ElementZero>::Type;
   using CollectiveBuilderType = cutlass::gemm::collective::CollectiveBuilder<
-      cutlass::arch::PPU0010, cutlass::arch::OpClassTensorOp,
+      quactlize::target::Arch, cutlass::arch::OpClassTensorOp,
       ElementA, LayoutA, AlignmentA, ElementBInfo, LayoutB, AlignmentB, float,
       cute::tuple<TileShape, ScaleTileShape>, WarpShape, cute::Int<Stages>,
       KernelSchedule>;
@@ -472,7 +473,7 @@ struct KPackMainloopPolicy {
   using ElementBInfo = typename OperandInfo<
       Mode, ElementB, PlaneB2, ElementScale, ElementZero>::Type;
   using CollectiveBuilderType = cutlass::gemm::collective::CollectiveBuilder<
-      cutlass::arch::PPU0010, cutlass::arch::OpClassTensorOp,
+      quactlize::target::Arch, cutlass::arch::OpClassTensorOp,
       ElementA, LayoutA, AlignmentA, ElementBInfo, LayoutB, AlignmentB, float,
       cute::tuple<TileShape, ScaleTileShape>, WarpShape, cute::Int<Stages>,
       KernelSchedule>;

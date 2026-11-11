@@ -38,6 +38,15 @@ dynamic addresses, graph replay where supported, and declared shape/boundary
 cases. Host tests use explicitly identified doubles where no device is involved.
 No skip, xfail, missing test or empty test run counts as a pass.
 
+For ZW890/ZW-M890P build with `build.sh --library --arch ppu_15` (or
+`run_tests.sh --suite all --arch ppu_15`). Accuracy selects its test inventory
+from the **package manifest**, not the runner default: PPU1.5 uses the 174-case
+canonical dense/MoE/FFN cohort. The PPU1.0 inventory additionally tests
+Flash-Next native16 Q5_1/Q2_0 and special Q8 shapes. The `serving` suite
+requires PPU1.0 and `QUACTLIZE_SERVING_LIBRARY=/path/to/libncp_quactlize.so`.
+PPU1.5 Flash-Next entrypoints reject query/prepare; they are not silently
+counted as passing, skipped, or covered by the canonical PPU1.5 tests.
+
 Each run writes `summary.json`, `inventory.json`, per-phase commands/logs and
 JUnit XML. A nonzero exit is a failed gate. Omit `--output` for a unique
 temporary results directory (printed in the final line); an explicit output
